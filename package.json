@@ -1,5 +1,5 @@
 {
-  "name": "durably",
+  "name": "@coji/durably",
   "version": "0.0.1",
   "description": "Step-oriented resumable batch execution for Node.js and browsers using SQLite",
   "type": "module",
