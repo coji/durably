@@ -16,13 +16,13 @@ Step-oriented resumable batch execution for Node.js and browsers using SQLite.
 ## Installation
 
 ```bash
-npm install durably kysely better-sqlite3
+npm install @coji/durably kysely better-sqlite3
 ```
 
 ## Usage (Preview)
 
 ```ts
-import { createClient, defineJob } from 'durably'
+import { createClient, defineJob } from '@coji/durably'
 import Database from 'better-sqlite3'
 import { BetterSqlite3Dialect } from 'kysely'
 
