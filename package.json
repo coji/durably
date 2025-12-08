@@ -37,8 +37,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "git+https://github.com/coji/durably.git"
   },
+  "bugs": {
+    "url": "https://github.com/coji/durably/issues"
+  },
+  "homepage": "https://github.com/coji/durably#readme",
   "peerDependencies": {
     "kysely": ">=0.27.0"
   },
