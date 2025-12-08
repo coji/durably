@@ -1,0 +1,516 @@
+---
+
+# durably 仕様書
+
+## Why：なぜこれを作るのか
+
+この仕組みは、Node.js およびブラウザ環境において、途中で中断しても再開できるバッチ処理を、最小の依存で実現するために作る。
+
+既存の選択肢として、Redis を前提とした BullMQ、専用クラスタを必要とする Temporal、専用ランタイムを伴う DBOS や Trigger.dev などがある。しかしこれらは Node.js サーバー環境を前提としており、ブラウザでは動作しない。また、小〜中規模のアプリケーションにとっては過剰な構成を要求する。
+
+必要なのは、Node.js でもブラウザでも同じ API で動作し、外部サービスに依存せず、SQLite だけで完結する最小構成である。Node.js では better-sqlite3 や libsql を、ブラウザでは SQLite WASM（OPFS バックエンド）を使うことで、同一のジョブ定義コードがどちらの環境でも実行できる。
+
+この仕組みが目指すのは、分散ワークフローエンジンではない。cron のような時間駆動、Webhook 購読、Fan-out、複雑な再試行戦略は、すべてスコープ外である。ステップ単位で状態を永続化し、プロセスやページの再起動によって自動的に復旧する、それだけに特化した実行基盤を作る。
+
+DX としては、ジョブ定義が純粋な TypeScript 関数であること、型安全であること、環境ごとの分岐コードを書かなくてよいことを重視する。運用としては、設定項目が少なく、状態がデータベースを見れば分かり、トラブル時の対処が明確であることを重視する。また、将来的に UI で実行履歴やエラーを確認できるよう、イベントとログの仕組みを最初から備えておく。
+
+---
+
+## What：これは何なのか
+
+これは、Node.js およびブラウザで動作する、ステップ指向のバッチ実行基盤である。
+
+### ジョブとステップ
+
+ジョブは `defineJob` 関数によって定義される。ジョブは名前を持ち、実行時には `context` オブジェクトを受け取る。処理は `context.run` を通じてステップに分割され、各ステップの成功状態と戻り値がデータベースに永続化される。
+
+```ts
+import { defineJob } from 'durably'
+
+const syncUsers = defineJob("sync-users", async (ctx, payload: { orgId: string }) => {
+  const users = await ctx.run("fetch-users", async () => {
+    return api.fetchUsers(payload.orgId)
+  })
+
+  await ctx.run("save-to-db", async () => {
+    await db.upsertUsers(users)
+  })
+})
+```
+
+`ctx.run` に渡す名前は、同一ジョブ内で一意であればよい。成功したステップは再実行時に自動的にスキップされ、保存済みの戻り値が返される。この挙動は固定であり、ユーザーが選択する必要はない。
+
+このコードは Node.js でもブラウザでもそのまま動作する。環境の違いは `createClient` に渡す Kysely dialect によって吸収される。
+
+### Run とトリガー
+
+ジョブの実行単位は Run と呼ばれる。Run は `trigger` 関数によって作成され、必ず一度 `pending` 状態としてデータベースに永続化されてから実行される。
+
+```ts
+await syncUsers.trigger({ orgId: "org_123" })
+```
+
+`trigger` は Run の作成だけを行い、実行の完了を待たない。Run の実行はワーカーが非同期に行う。
+
+### 重複排除と直列化
+
+`trigger` には二種類のオプションキーを指定できる。
+
+`idempotencyKey` は、同一イベントの二重登録を防ぐためのキーである。同じジョブ名と `idempotencyKey` の組み合わせがすでに存在する場合、新しい Run は作成されず、既存の Run が返される。
+
+```ts
+await syncUsers.trigger(
+  { orgId: "org_123" },
+  { idempotencyKey: "webhook-event-456" }
+)
+```
+
+`concurrencyKey` は、同一対象への同時処理を防ぐためのキーである。同じ `concurrencyKey` を持つ Run が実行中の場合、後続の Run は実行待ちになる。ただし Run の作成自体はキャンセルされない。
+
+```ts
+await syncUsers.trigger(
+  { orgId: "org_123" },
+  { concurrencyKey: "org_123" }
+)
+```
+
+この二つは独立した概念であり、両方を同時に指定することもできる。
+
+### バッチ登録
+
+複数の `trigger` を一度にまとめて登録したい場合は `batchTrigger` を使う。これは単に複数の Run を同一トランザクションで一括登録するための API であり、実行モデルには影響しない。
+
+```ts
+await syncUsers.batchTrigger([
+  { payload: { orgId: "org_1" }, options: { idempotencyKey: "event-1" } },
+  { payload: { orgId: "org_2" }, options: { idempotencyKey: "event-2" } },
+])
+```
+
+### Run の状態
+
+Run は以下の状態を持つ。
+
+`pending` は実行待ちの状態である。ワーカーによって取得されるのを待っている。`concurrencyKey` によってブロックされている Run も、状態としては `pending` のままである。
+
+`running` は実行中の状態である。ワーカーが Run を取得し、ステップを実行している。
+
+`completed` は正常完了の状態である。すべてのステップが成功し、ジョブ関数が正常に終了した。
+
+`failed` は失敗の状態である。いずれかのステップで例外が発生し、Run が中断された。
+
+状態遷移は `pending → running → completed` または `pending → running → failed` のいずれかである。一度 `completed` または `failed` になった Run は、自動では再実行されない。
+
+### 失敗と再実行
+
+ステップが例外を投げた場合、その Run は即座に `failed` になる。自動リトライは行われない。これは意図的な設計であり、リトライ戦略をライブラリが暗黙に決めることを避けている。
+
+失敗した Run を再実行したい場合は、同じ `idempotencyKey` を使わずに新しい `trigger` を発行するか、`retry` API を使って明示的に再実行する。
+
+```ts
+await client.retry(runId)
+```
+
+`retry` は `failed` 状態の Run を `pending` に戻し、ワーカーによる再取得を可能にする。再実行時には、成功済みのステップはスキップされる。
+
+### ワーカー
+
+ワーカーは `start` 関数によって起動される。起動すると、一定間隔で `pending` 状態の Run を取得し、逐次実行する。
+
+```ts
+import { createClient } from 'durably'
+
+const client = createClient({ dialect })
+client.register(syncUsers)
+await client.migrate()
+client.start()
+```
+
+ワーカーは常に一件ずつ Run を処理する。最小構成では並列実行は行わない。`concurrencyKey` による直列化は、Run 取得時のクエリで制御される。同じ `concurrencyKey` を持つ別の Run が `running` 状態であれば、その Run は取得対象から除外される。
+
+ワーカーは `running` 状態の Run に対して、一定間隔で heartbeat を更新する。プロセスが異常終了した場合、heartbeat が更新されなくなった Run は、次に起動したワーカーによって回収され、自動的に再実行される。
+
+ワーカーを停止したい場合は `stop` を呼ぶ。これは現在実行中の Run の完了を待ってからワーカーを停止する。
+
+```ts
+await client.stop()
+```
+
+### 初期化
+
+データベーステーブルの作成は、明示的な `migrate` 関数によって行う。
+
+```ts
+await client.migrate()
+```
+
+この関数は冪等であり、何度呼んでも安全である。アプリケーション起動時またはページロード時に呼ぶことを想定している。スキーマのバージョン管理はライブラリ内部で行われ、将来のバージョンアップ時には自動的にマイグレーションが適用される。
+
+### イベントシステム
+
+ライブラリ内部で起きたことを外部に通知するためのイベントシステムを持つ。これにより、ログの永続化、外部サービスへの送信、リアルタイム UI 更新など、任意の処理を接続できる。
+
+```ts
+client.on('run:start', (event) => {
+  // { runId, jobName, payload, timestamp }
+})
+
+client.on('run:complete', (event) => {
+  // { runId, jobName, duration, timestamp }
+})
+
+client.on('run:fail', (event) => {
+  // { runId, jobName, error, failedStepName, timestamp }
+})
+
+client.on('step:start', (event) => {
+  // { runId, stepName, stepIndex, timestamp }
+})
+
+client.on('step:complete', (event) => {
+  // { runId, stepName, stepIndex, duration, output, timestamp }
+})
+
+client.on('step:fail', (event) => {
+  // { runId, stepName, stepIndex, error, timestamp }
+})
+```
+
+イベントは同期的に発火される。リスナー内で例外が発生しても、Run の実行には影響しない。
+
+### 構造化ログ
+
+ジョブ内から明示的にログを残すための API を提供する。ログは Run に紐づけられ、後から UI で確認できる。
+
+```ts
+const syncUsers = defineJob("sync-users", async (ctx, payload) => {
+  ctx.log.info("starting sync", { orgId: payload.orgId })
+  
+  const users = await ctx.run("fetch-users", async () => {
+    const result = await api.fetchUsers(payload.orgId)
+    ctx.log.info("fetched users", { count: result.length })
+    return result
+  })
+
+  if (users.length === 0) {
+    ctx.log.warn("no users found")
+  }
+})
+```
+
+ログレベルは `info`、`warn`、`error` の三種類である。各ログには任意の構造化データを付与できる。
+
+ログは `log:write` イベントとして発火される。
+
+```ts
+client.on('log:write', (event) => {
+  // { runId, stepName, level, message, data, timestamp }
+})
+```
+
+### プラグインシステム
+
+イベントを活用した拡張をプラグインとして提供する。プラグインは `use` メソッドで登録する。
+
+```ts
+import { createClient } from 'durably'
+import { withLogPersistence } from 'durably/plugins'
+
+const client = createClient({ dialect })
+client.use(withLogPersistence())
+```
+
+コアライブラリに同梱するプラグインは以下の通りである。
+
+`withLogPersistence()` はすべてのイベントとログをデータベースに永続化する。UI での履歴表示に必要となる。
+
+```ts
+client.use(withLogPersistence())
+```
+
+このプラグインを有効にすると、logs テーブルにデータが書き込まれる。プラグインを使わない場合、logs テーブルは空のままであり、ストレージを消費しない。
+
+将来的に `withRetry()`、`withTimeout()`、`withSentryIntegration()` などのプラグインを追加できる設計とする。
+
+---
+
+## How：どのように実現するのか
+
+### 構成
+
+実装はシングルスレッドの JavaScript 実行環境と SQLite のみで構成される。すべてのクエリは Kysely を通じて発行される。Kysely を選択する理由は、型安全な SQL ビルダーであること、dialect の差し替えによって複数の SQLite 実装に対応できること、ORM ではなくクエリビルダーであるため挙動が予測しやすいことである。
+
+### 環境ごとの dialect
+
+このライブラリは Kysely の dialect を外部から受け取る設計とし、環境ごとの SQLite 実装の違いを吸収する。
+
+Node.js 環境では `better-sqlite3` または `libsql` を使用する。これらは Kysely 公式の dialect が存在する。
+
+```ts
+import Database from "better-sqlite3"
+import { Kysely } from "kysely"
+import { BetterSqlite3Dialect } from "kysely"
+
+const dialect = new BetterSqlite3Dialect({
+  database: new Database("batch.db"),
+})
+const client = createClient({ dialect })
+```
+
+ブラウザ環境では SQLite WASM を使用する。推奨は `@sqlite.org/sqlite-wasm`（SQLite 公式の WASM ビルド）と OPFS バックエンドの組み合わせである。Kysely 用の dialect としては `kysely-wasm` または同等のアダプタを使用する。
+
+```ts
+import { Kysely } from "kysely"
+import { SQLiteWasmDialect } from "kysely-wasm"
+
+const dialect = new SQLiteWasmDialect({
+  database: async () => {
+    const sqlite3 = await initSqlite3()
+    return new sqlite3.oo1.OpfsDb("/batch.db")
+  },
+})
+const client = createClient({ dialect })
+```
+
+ライブラリ本体は dialect の具体的な実装に依存せず、Kysely のインターフェースのみを使用する。これにより、将来的に Postgres や MySQL に対応する場合も、同じ設計で拡張できる。
+
+### ブラウザ環境の制約
+
+ブラウザ環境には Node.js とは異なる制約がある。この仕様ではそれらを制約として明記し、ライブラリが無理に解決しようとしない方針を取る。
+
+**タブのライフサイクル**: ブラウザではタブが閉じられると処理が中断される。これは Node.js でプロセスが終了するのと同じ扱いであり、次回タブを開いた際に heartbeat 切れの Run が回収されて再実行される。
+
+**バックグラウンド制限**: ブラウザはバックグラウンドタブでの実行を制限する場合がある。長時間かかるステップがバックグラウンドで中断された場合も、heartbeat 切れとして回収される。これを避けたい場合は、ステップを細かく分割するか、Service Worker での実行を検討する。
+
+**複数タブ**: 同じデータベースファイルに複数タブからアクセスした場合、OPFS の排他制御により一方がエラーになる。このライブラリは単一タブでの使用を前提とし、複数タブの協調実行はスコープ外とする。複数タブで使いたい場合は SharedWorker を介するか、タブ間でリーダー選出を行う必要があるが、それはアプリケーション側の責務である。
+
+**OPFS の要件**: OPFS は Secure Context（HTTPS または localhost）でのみ使用可能である。また、OPFS への同期アクセスは Worker 内でのみ可能であり、メインスレッドからは非同期アクセスのみとなる。パフォーマンスを重視する場合は Web Worker 内でライブラリを使用することを推奨する。
+
+### スキーマ
+
+以下の論理スキーマを仕様として固定する。Kysely による DDL はこの仕様の実装であり、スキーマの正は仕様側にある。
+
+**runs テーブル**
+
+| カラム | 型 | 説明 |
+|--------|------|------|
+| id | TEXT (ULID) | Run の一意識別子 |
+| job_name | TEXT | ジョブ名 |
+| payload | TEXT (JSON) | ジョブに渡される引数 |
+| status | TEXT | pending / running / completed / failed |
+| idempotency_key | TEXT (nullable) | 重複排除キー |
+| concurrency_key | TEXT (nullable) | 直列化キー |
+| current_step_index | INTEGER | 次に実行すべきステップのインデックス |
+| error | TEXT (nullable) | 失敗時のエラーメッセージ |
+| heartbeat_at | TEXT (ISO8601) | 最終 heartbeat 時刻 |
+| created_at | TEXT (ISO8601) | 作成時刻 |
+| updated_at | TEXT (ISO8601) | 最終更新時刻 |
+
+**steps テーブル**
+
+| カラム | 型 | 説明 |
+|--------|------|------|
+| id | TEXT (ULID) | Step の一意識別子 |
+| run_id | TEXT | 所属する Run の ID |
+| name | TEXT | ステップ名 |
+| index | INTEGER | 実行順序 |
+| status | TEXT | completed / failed |
+| output | TEXT (JSON, nullable) | ステップの戻り値 |
+| error | TEXT (nullable) | 失敗時のエラーメッセージ |
+| started_at | TEXT (ISO8601) | 開始時刻 |
+| completed_at | TEXT (ISO8601, nullable) | 完了時刻 |
+
+**logs テーブル**
+
+| カラム | 型 | 説明 |
+|--------|------|------|
+| id | TEXT (ULID) | ログの一意識別子 |
+| run_id | TEXT | 所属する Run の ID |
+| step_name | TEXT (nullable) | ステップ名（ステップ外のログは null） |
+| level | TEXT | info / warn / error |
+| message | TEXT | ログメッセージ |
+| data | TEXT (JSON, nullable) | 追加データ |
+| timestamp | TEXT (ISO8601) | 発生時刻 |
+
+**schema_versions テーブル**
+
+| カラム | 型 | 説明 |
+|--------|------|------|
+| version | INTEGER | 適用済みのスキーマバージョン |
+| applied_at | TEXT (ISO8601) | 適用時刻 |
+
+**インデックス**
+
+- `runs`: `(job_name, idempotency_key)` の複合ユニーク制約
+- `runs`: `(status, concurrency_key)` の複合インデックス
+- `runs`: `(status, created_at)` の複合インデックス
+- `steps`: `(run_id, index)` の複合インデックス
+- `logs`: `(run_id, timestamp)` の複合インデックス
+
+### ワーカーの動作
+
+ワーカーはポーリングベースで動作する。Node.js では `setInterval`、ブラウザでも `setInterval` を使用する。デフォルトのポーリング間隔は 1000 ミリ秒であり、設定で変更できる。
+
+Run の取得クエリは以下の条件を満たすものを一件取得する。`status` が `pending` であること。`concurrency_key` が null であるか、同じ `concurrency_key` を持つ `running` 状態の Run が存在しないこと。`created_at` が最も古いものを優先すること。
+
+取得した Run は即座に `running` に更新され、`run:start` イベントが発火される。その後ステップの実行が開始される。各ステップの実行開始時に `step:start` イベントが発火され、`heartbeat_at` が更新される。ステップが成功すると、steps テーブルにレコードが挿入され、`step:complete` イベントが発火され、`current_step_index` がインクリメントされる。
+
+すべてのステップが完了すると、Run は `completed` に更新され、`run:complete` イベントが発火される。いずれかのステップで例外が発生すると、steps テーブルに失敗レコードが挿入され、`step:fail` イベントが発火され、Run は `failed` に更新され、`run:fail` イベントが発火される。
+
+### 再開時の挙動
+
+ワーカー起動時に、`running` 状態かつ `heartbeat_at` が閾値より古い Run が存在する場合、それは前プロセスまたは前タブの異常終了とみなされる。該当する Run は `pending` に戻され、通常の取得対象に含まれる。
+
+再実行時には、steps テーブルを参照し、`status` が `completed` かつ `index` が `current_step_index` より小さいステップはスキップされる。`ctx.run` が呼ばれた時点で、該当するステップがすでに成功していれば、保存済みの `output` がそのまま返される。
+
+### heartbeat
+
+ワーカーは Run の実行中、一定間隔で `heartbeat_at` を更新する。デフォルトの間隔は 5000 ミリ秒であり、設定で変更できる。heartbeat の更新は、現在実行中のステップとは非同期に行われる。
+
+回収閾値のデフォルトは 30000 ミリ秒である。これは heartbeat 間隔の 6 倍に相当し、一時的なプロセス停止や GC による遅延を許容しつつ、異常終了を合理的な時間で検知できる値として設定されている。
+
+ブラウザ環境でバックグラウンドタブになった場合、`setInterval` の実行間隔が延長される可能性がある。この場合 heartbeat が更新されず、Run が回収対象になることがある。これは意図した挙動であり、バックグラウンドで中断された処理は次回フォアグラウンドになった際に再開される。
+
+### イベント発火タイミング
+
+| イベント | 発火タイミング |
+|----------|----------------|
+| run:start | Run が running に遷移した直後 |
+| run:complete | Run が completed に遷移した直後 |
+| run:fail | Run が failed に遷移した直後 |
+| step:start | ステップの実行を開始する直前 |
+| step:complete | ステップが成功し DB に記録した直後 |
+| step:fail | ステップが失敗し DB に記録した直後 |
+| log:write | ctx.log が呼ばれた直後 |
+
+### 設定項目
+
+`createClient` に渡せる設定は以下の通りである。
+
+| 項目 | デフォルト | 説明 |
+|------|------------|------|
+| dialect | (必須) | Kysely dialect |
+| pollingInterval | 1000 | Run 取得のポーリング間隔（ミリ秒） |
+| heartbeatInterval | 5000 | heartbeat 更新間隔（ミリ秒） |
+| staleThreshold | 30000 | 回収対象とみなす heartbeat 経過時間（ミリ秒） |
+
+設定項目は意図的に最小限に抑えている。調整が必要になるのは、長時間かかるステップがある場合に `staleThreshold` を伸ばすケースがほとんどである。
+
+### パッケージ構成
+
+ライブラリは単一パッケージとして提供し、環境固有の dialect は含めない。ユーザーは自身の環境に合わせて Kysely と dialect を別途インストールする。
+
+```
+durably               # コアライブラリ（環境非依存）
+├── kysely            # peer dependency
+```
+
+Node.js で使う場合：
+```
+npm install durably kysely better-sqlite3
+```
+
+ブラウザで使う場合：
+```
+npm install durably kysely @aspect-build/kysely-wasm @aspect-build/sqlite-wasm-batteries-included
+```
+
+プラグインはコアパッケージに同梱し、サブパスからインポートする。
+
+```ts
+import { withLogPersistence } from 'durably/plugins'
+```
+
+UI は将来的に別パッケージ（`durably-ui`）として提供し、logs テーブルと runs/steps テーブルを読み取って実行履歴を表示する。
+
+---
+
+## 使用例
+
+### 基本的な使い方
+
+```ts
+import { createClient, defineJob } from 'durably'
+import Database from 'better-sqlite3'
+import { BetterSqlite3Dialect } from 'kysely'
+
+// dialect の設定
+const dialect = new BetterSqlite3Dialect({
+  database: new Database('app.db'),
+})
+
+// クライアントの作成
+const client = createClient({ dialect })
+
+// ジョブの定義
+const syncUsers = defineJob('sync-users', async (ctx, payload: { orgId: string }) => {
+  ctx.log.info('starting sync', { orgId: payload.orgId })
+
+  const users = await ctx.run('fetch-users', async () => {
+    const result = await api.fetchUsers(payload.orgId)
+    ctx.log.info('fetched users', { count: result.length })
+    return result
+  })
+
+  await ctx.run('save-to-db', async () => {
+    await db.upsertUsers(users)
+  })
+
+  ctx.log.info('sync completed')
+})
+
+// ジョブの登録
+client.register(syncUsers)
+
+// マイグレーションの実行
+await client.migrate()
+
+// ワーカーの起動
+client.start()
+
+// ジョブのトリガー
+await syncUsers.trigger({ orgId: 'org_123' })
+```
+
+### イベントの購読
+
+```ts
+client.on('run:start', (event) => {
+  console.log(`Run started: ${event.runId}`)
+})
+
+client.on('run:fail', (event) => {
+  console.error(`Run failed: ${event.runId}`, event.error)
+  // 外部の監視サービスに通知するなど
+})
+
+client.on('step:complete', (event) => {
+  console.log(`Step completed: ${event.stepName} in ${event.duration}ms`)
+})
+```
+
+### ログの永続化
+
+```ts
+import { createClient } from 'durably'
+import { withLogPersistence } from 'durably/plugins'
+
+const client = createClient({ dialect })
+client.use(withLogPersistence())
+```
+
+### 失敗した Run の再実行
+
+```ts
+// 失敗した Run を取得
+const failedRuns = await client.getRuns({ status: 'failed' })
+
+// 再実行
+for (const run of failedRuns) {
+  await client.retry(run.id)
+}
+```
+
+---
+
+この仕様により、Node.js でもブラウザでも同じジョブ定義コードが動作し、状態はすべて SQLite に集約され、プロセスやタブの再起動だけで自動復旧する実行基盤が実現される。イベントとログの仕組みにより、将来的な UI 連携や外部サービス統合も可能となる。
