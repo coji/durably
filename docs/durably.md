@@ -84,9 +84,12 @@ interface JobHandle<TName extends string, TInput, TOutput> {
 
   // イベント型（Discriminated Union 用）
   readonly $types: {
+    RunStartEvent: { type: 'run:start'; jobName: TName; payload: TInput; /* ... */ }
     RunCompleteEvent: { type: 'run:complete'; jobName: TName; output: TOutput; /* ... */ }
     RunFailEvent: { type: 'run:fail'; jobName: TName; error: string; /* ... */ }
-    // ...
+    StepStartEvent: { type: 'step:start'; jobName: TName; stepName: string; /* ... */ }
+    StepCompleteEvent: { type: 'step:complete'; jobName: TName; stepName: string; /* ... */ }
+    StepFailEvent: { type: 'step:fail'; jobName: TName; stepName: string; error: string; /* ... */ }
   }
 }
 
@@ -97,6 +100,7 @@ interface TriggerOptions {
 
 interface RunFilter {
   status?: 'pending' | 'running' | 'completed' | 'failed'
+  jobName?: string
 }
 ```
 
