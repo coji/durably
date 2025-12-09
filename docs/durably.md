@@ -390,20 +390,16 @@ const dialect = new BetterSqlite3Dialect({
 const durably = createDurably({ dialect })
 ```
 
-ブラウザ環境では SQLite WASM を使用する。推奨は `@sqlite.org/sqlite-wasm`（SQLite 公式の WASM ビルド）と OPFS バックエンドの組み合わせである。Kysely 用の dialect としては `kysely-wasm` または同等のアダプタを使用する。
+ブラウザ環境では SQLocal を使用する。SQLocal は SQLite WASM を Web Worker で実行し、OPFS による永続化を自動的に行う。Kysely 用の dialect も提供されている。
 
 ```ts
-import { Kysely } from "kysely"
-import { SQLiteWasmDialect } from "kysely-wasm"
+import { SQLocalKysely } from 'sqlocal/kysely'
 
-const dialect = new SQLiteWasmDialect({
-  database: async () => {
-    const sqlite3 = await initSqlite3()
-    return new sqlite3.oo1.OpfsDb("/batch.db")
-  },
-})
+const { dialect } = new SQLocalKysely('durably.sqlite3')
 const durably = createDurably({ dialect })
 ```
+
+Vite を使用する場合は、SQLocal の Vite プラグインを追加すると、開発サーバーでの COOP/COEP ヘッダー設定が自動化される。
 
 ライブラリ本体は dialect の具体的な実装に依存せず、Kysely のインターフェースのみを使用する。これにより、将来的に Postgres や MySQL に対応する場合も、同じ設計で拡張できる。
 
@@ -415,7 +411,7 @@ const durably = createDurably({ dialect })
 
 **バックグラウンド制限**: ブラウザはバックグラウンドタブでの実行を制限する場合がある。長時間かかるステップがバックグラウンドで中断された場合も、heartbeat 切れとして回収される。これを避けたい場合は、ステップを細かく分割するか、Service Worker での実行を検討する。
 
-**複数タブ**: 同じデータベースファイルに複数タブからアクセスした場合、OPFS の排他制御により一方がエラーになる。このライブラリは単一タブでの使用を前提とし、複数タブの協調実行はスコープ外とする。複数タブで使いたい場合は SharedWorker を介するか、タブ間でリーダー選出を行う必要があるが、それはアプリケーション側の責務である。
+**複数タブ**: SQLocal はタブ間でのデータベース変更通知をサポートしているが、このライブラリでは単一タブでのワーカー実行を前提とする。複数タブで同時にワーカーを起動すると、同じ Run を複数回実行する可能性がある。複数タブで使いたい場合は SharedWorker を介するか、タブ間でリーダー選出を行う必要があるが、それはアプリケーション側の責務である。
 
 **OPFS の要件**: OPFS は Secure Context（HTTPS または localhost）でのみ使用可能である。また、OPFS への同期アクセスは Worker 内でのみ可能であり、メインスレッドからは非同期アクセスのみとなる。パフォーマンスを重視する場合は Web Worker 内でライブラリを使用することを推奨する。
 
@@ -548,7 +544,7 @@ npm install durably kysely zod better-sqlite3
 
 ブラウザで使う場合：
 ```sh
-npm install durably kysely zod @aspect-build/kysely-wasm @aspect-build/sqlite-wasm-batteries-included
+npm install durably kysely zod sqlocal
 ```
 
 プラグインはコアパッケージに同梱し、サブパスからインポートする。
