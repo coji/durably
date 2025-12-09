@@ -73,7 +73,21 @@ const syncUsers = durably.defineJob({
 })
 ```
 
-`defineJob` を呼び出した時点でジョブは登録される。
+`defineJob` を呼び出した時点でジョブは登録される。`defineJob` は以下の型を持つ `JobHandle` を返す。
+
+```ts
+interface JobHandle<TInput, TOutput> {
+  readonly name: string
+  trigger(input: TInput, options?: TriggerOptions): Promise<Run<TOutput>>
+}
+
+interface TriggerOptions {
+  idempotencyKey?: string
+  concurrencyKey?: string
+}
+```
+
+`TInput` と `TOutput` は Zod スキーマから推論される。これにより `trigger` の引数に対してエディタ補完が効き、型チェックも行われる。
 
 入力は `trigger` 時に検証され、不正な場合は例外が発生する。出力はジョブ関数の戻り値として返し、完了時に検証されて Run に保存される。
 
