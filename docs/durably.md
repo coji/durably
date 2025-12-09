@@ -76,11 +76,18 @@ const syncUsers = durably.defineJob({
 `defineJob` を呼び出した時点でジョブは登録される。`defineJob` は以下の型を持つ `JobHandle` を返す。
 
 ```ts
-interface JobHandle<TInput, TOutput> {
-  readonly name: string
+interface JobHandle<TName extends string, TInput, TOutput> {
+  readonly name: TName
   trigger(input: TInput, options?: TriggerOptions): Promise<Run<TOutput>>
   getRun(id: string): Promise<Run<TOutput> | null>
   getRuns(filter?: RunFilter): Promise<Run<TOutput>[]>
+
+  // イベント型（Discriminated Union 用）
+  readonly $types: {
+    RunCompleteEvent: { type: 'run:complete'; jobName: TName; output: TOutput; /* ... */ }
+    RunFailEvent: { type: 'run:fail'; jobName: TName; error: string; /* ... */ }
+    // ...
+  }
 }
 
 interface TriggerOptions {
@@ -312,6 +319,33 @@ durably.on('step:fail', (event) => {
 ```
 
 イベントは同期的に発火される。リスナー内で例外が発生しても、Run の実行には影響しない。
+
+#### 型安全なイベント購読
+
+イベントの `payload` や `output` を型安全に扱いたい場合は、JobHandle の `$types` を使って Discriminated Union を構築する。
+
+```ts
+// 各ジョブの型を取り出す
+type SyncUsersEvents = typeof syncUsers.$types
+type SendEmailEvents = typeof sendEmail.$types
+
+// 全ジョブの RunCompleteEvent を Union
+type AllRunCompleteEvents =
+  | SyncUsersEvents['RunCompleteEvent']
+  | SendEmailEvents['RunCompleteEvent']
+
+// 型安全なイベント購読
+durably.on<AllRunCompleteEvents>('run:complete', (event) => {
+  // event.jobName で Discriminated Union が絞り込まれる
+  if (event.jobName === 'sync-users') {
+    console.log(event.output.syncedCount)  // number 型として補完される
+  } else if (event.jobName === 'send-email') {
+    console.log(event.output.messageId)    // string 型として補完される
+  }
+})
+```
+
+型パラメータを省略した場合、`output` は `unknown` 型になる。監視・ログ用途では型パラメータなしで十分なことが多い。
 
 ### 進捗管理
 
