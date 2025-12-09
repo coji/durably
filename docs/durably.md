@@ -79,11 +79,17 @@ const syncUsers = durably.defineJob({
 interface JobHandle<TInput, TOutput> {
   readonly name: string
   trigger(input: TInput, options?: TriggerOptions): Promise<Run<TOutput>>
+  getRun(id: string): Promise<Run<TOutput> | null>
+  getRuns(filter?: RunFilter): Promise<Run<TOutput>[]>
 }
 
 interface TriggerOptions {
   idempotencyKey?: string
   concurrencyKey?: string
+}
+
+interface RunFilter {
+  status?: 'pending' | 'running' | 'completed' | 'failed'
 }
 ```
 
@@ -174,33 +180,49 @@ await durably.retry(runId)
 
 ### Run の取得
 
-Run の状態を確認するための API を提供する。
+Run の状態を確認するための API を提供する。Run の取得には2つの方法がある。
+
+#### JobHandle 経由（型安全）
+
+アプリケーションコードで特定のジョブの Run を取得する場合は、JobHandle のメソッドを使う。`output` は Zod スキーマから推論された型になる。
 
 ```ts
-// 特定の Run を取得
-const run = await durably.getRun(runId)
+// trigger の戻り値から ID を保存しておく
+const run = await syncUsers.trigger({ orgId: "org_123" })
+saveToSession(run.id)
 
-// 状態でフィルタして取得
+// 後で結果を取得（output は型安全）
+const run = await syncUsers.getRun(getFromSession())
+if (run?.status === 'completed') {
+  console.log(run.output.syncedCount)  // number 型として補完される
+}
+
+// このジョブの失敗した Run を取得
+const failedRuns = await syncUsers.getRuns({ status: 'failed' })
+```
+
+#### durably 経由（横断的）
+
+管理画面やデバッグで全ジョブを横断的に取得する場合は、durably のメソッドを使う。`output` は `unknown` 型になる。
+
+```ts
+// 全ジョブの失敗した Run を取得
 const failedRuns = await durably.getRuns({ status: 'failed' })
-const pendingRuns = await durably.getRuns({ status: 'pending' })
+for (const run of failedRuns) {
+  console.log(run.jobName, run.error)
+}
 
 // ジョブ名でフィルタ
 const runs = await durably.getRuns({ jobName: 'sync-users' })
 
-// 組み合わせ
-const runs = await durably.getRuns({ jobName: 'sync-users', status: 'failed' })
-```
-
-`getRun` は指定した ID の Run を返す。存在しない場合は `null` を返す。completed 状態の Run は `output` プロパティにジョブの出力を持つ。
-
-```ts
+// 特定の Run を取得（どのジョブかわからない場合）
 const run = await durably.getRun(runId)
 if (run?.status === 'completed') {
-  console.log(run.output) // 出力スキーマの型で取得できる
+  console.log(run.output)  // unknown 型
 }
 ```
 
-`getRuns` はフィルタ条件に一致する Run の配列を返す。条件を指定しない場合は全件を返す。結果は `created_at` の降順でソートされる。
+`getRun` は指定した ID の Run を返す。存在しない場合は `null` を返す。`getRuns` はフィルタ条件に一致する Run の配列を返す。条件を指定しない場合は全件を返す。結果は `created_at` の降順でソートされる。
 
 ### ワーカー
 
