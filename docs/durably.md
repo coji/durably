@@ -99,6 +99,20 @@ interface RunFilter {
 
 `ctx.run` に渡す名前は、同一ジョブ内で一意であればよい。成功したステップは再実行時に自動的にスキップされ、保存済みの戻り値が返される。この挙動は固定であり、ユーザーが選択する必要はない。
 
+`ctx.run` の戻り値はステップ関数の戻り値から型推論される。
+
+```ts
+// users は User[] 型として推論される
+const users = await ctx.run("fetch-users", async () => {
+  return api.fetchUsers(payload.orgId)  // User[] を返す
+})
+
+// 明示的に型パラメータを指定することも可能
+const count = await ctx.run<number>("count", async () => {
+  return someExternalApi()
+})
+```
+
 このコードは Node.js でもブラウザでもそのまま動作する。環境の違いは `createDurably` に渡す Kysely dialect によって吸収される。
 
 ### Run とトリガー
