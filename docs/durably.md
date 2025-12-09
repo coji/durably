@@ -1,5 +1,3 @@
----
-
 # durably 仕様書
 
 ## Why：なぜこれを作るのか
@@ -20,14 +18,48 @@ DX としては、ジョブ定義が純粋な TypeScript 関数であること�
 
 これは、Node.js およびブラウザで動作する、ステップ指向のバッチ実行基盤である。
 
+### コア概念
+
+Durably は 4 つの概念で構成される。
+
+```txt
+Durably (インスタンス)
+  └── Job (ジョブ定義)
+        └── Run (実行インスタンス)
+              └── Step (処理単位)
+```
+
+**Durably** はライブラリのインスタンスである。ジョブの定義、ワーカーの起動、データベースへのアクセスを担う。
+
+**Job** は「何をするか」の定義である。名前、入力スキーマ、出力スキーマ、処理関数を持つ。Job 自体は状態を持たず、何度でも実行できるテンプレートとして機能する。
+
+**Run** は Job の実行インスタンスである。`trigger()` によって作成され、pending → running → completed/failed と状態遷移する。すべての Run はデータベースに永続化される。
+
+**Step** は Run 内の処理単位である。`ctx.run()` によって定義され、成功すると戻り値がデータベースに保存される。Run が中断・再開された場合、成功済みの Step はスキップされ、保存済みの戻り値が返される。
+
 ### ジョブとステップ
 
-ジョブは `defineJob` 関数によって定義される。ジョブは名前を持ち、実行時には `context` オブジェクトを受け取る。処理は `context.run` を通じてステップに分割され、各ステップの成功状態と戻り値がデータベースに永続化される。
+ジョブは `durably.defineJob` メソッドによって定義される。ジョブは名前、入力スキーマ、出力スキーマ、処理関数を持つ。スキーマは Zod v4 で定義し、入出力の型安全性を保証する。
 
 ```ts
-import { defineJob } from 'durably'
+import { createDurably } from 'durably'
+import { z } from 'zod'
 
-const syncUsers = defineJob("sync-users", async (ctx, payload: { orgId: string }) => {
+const durably = createDurably({ dialect })
+
+const syncUsers = durably.defineJob({
+  name: "sync-users",
+  input: z.object({
+    orgId: z.string(),
+    force: z.boolean().optional(),
+  }),
+  output: z.object({
+    syncedCount: z.number(),
+    skippedCount: z.number(),
+  }),
+}, async (ctx, payload) => {
+  // payload は { orgId: string, force?: boolean } として型推論される
+
   const users = await ctx.run("fetch-users", async () => {
     return api.fetchUsers(payload.orgId)
   })
@@ -35,12 +67,64 @@ const syncUsers = defineJob("sync-users", async (ctx, payload: { orgId: string }
   await ctx.run("save-to-db", async () => {
     await db.upsertUsers(users)
   })
+
+  // 戻り値は output スキーマで検証される
+  return { syncedCount: users.length, skippedCount: 0 }
 })
 ```
 
+`defineJob` を呼び出した時点でジョブは登録される。`defineJob` は以下の型を持つ `JobHandle` を返す。
+
+```ts
+interface JobHandle<TName extends string, TInput, TOutput> {
+  readonly name: TName
+  trigger(input: TInput, options?: TriggerOptions): Promise<Run<TOutput>>
+  getRun(id: string): Promise<Run<TOutput> | null>
+  getRuns(filter?: RunFilter): Promise<Run<TOutput>[]>
+
+  // イベント型（Discriminated Union 用）
+  readonly $types: {
+    RunStartEvent: { type: 'run:start'; jobName: TName; payload: TInput; /* ... */ }
+    RunCompleteEvent: { type: 'run:complete'; jobName: TName; output: TOutput; /* ... */ }
+    RunFailEvent: { type: 'run:fail'; jobName: TName; error: string; /* ... */ }
+    StepStartEvent: { type: 'step:start'; jobName: TName; stepName: string; /* ... */ }
+    StepCompleteEvent: { type: 'step:complete'; jobName: TName; stepName: string; /* ... */ }
+    StepFailEvent: { type: 'step:fail'; jobName: TName; stepName: string; error: string; /* ... */ }
+  }
+}
+
+interface TriggerOptions {
+  idempotencyKey?: string
+  concurrencyKey?: string
+}
+
+interface RunFilter {
+  status?: 'pending' | 'running' | 'completed' | 'failed'
+  jobName?: string
+}
+```
+
+`TInput` と `TOutput` は Zod スキーマから推論される。これにより `trigger` の引数に対してエディタ補完が効き、型チェックも行われる。
+
+入力は `trigger` 時に検証され、不正な場合は例外が発生する。出力はジョブ関数の戻り値として返し、完了時に検証されて Run に保存される。
+
 `ctx.run` に渡す名前は、同一ジョブ内で一意であればよい。成功したステップは再実行時に自動的にスキップされ、保存済みの戻り値が返される。この挙動は固定であり、ユーザーが選択する必要はない。
 
-このコードは Node.js でもブラウザでもそのまま動作する。環境の違いは `createClient` に渡す Kysely dialect によって吸収される。
+`ctx.run` の戻り値はステップ関数の戻り値から型推論される。
+
+```ts
+// users は User[] 型として推論される
+const users = await ctx.run("fetch-users", async () => {
+  return api.fetchUsers(payload.orgId)  // User[] を返す
+})
+
+// 明示的に型パラメータを指定することも可能
+const count = await ctx.run<number>("count", async () => {
+  return someExternalApi()
+})
+```
+
+このコードは Node.js でもブラウザでもそのまま動作する。環境の違いは `createDurably` に渡す Kysely dialect によって吸収される。
 
 ### Run とトリガー
 
@@ -50,7 +134,13 @@ const syncUsers = defineJob("sync-users", async (ctx, payload: { orgId: string }
 await syncUsers.trigger({ orgId: "org_123" })
 ```
 
-`trigger` は Run の作成だけを行い、実行の完了を待たない。Run の実行はワーカーが非同期に行う。
+`trigger` は Run の作成だけを行い、実行の完了を待たない。Run の実行はワーカーが非同期に行う。`trigger` は作成された Run オブジェクトを返す。
+
+```ts
+const run = await syncUsers.trigger({ orgId: "org_123" })
+console.log(run.id)     // Run の ID
+console.log(run.status) // "pending"
+```
 
 ### 重複排除と直列化
 
@@ -108,22 +198,78 @@ Run は以下の状態を持つ。
 失敗した Run を再実行したい場合は、同じ `idempotencyKey` を使わずに新しい `trigger` を発行するか、`retry` API を使って明示的に再実行する。
 
 ```ts
-await client.retry(runId)
+await durably.retry(runId)
 ```
 
 `retry` は `failed` 状態の Run を `pending` に戻し、ワーカーによる再取得を可能にする。再実行時には、成功済みのステップはスキップされる。
+
+### Run の取得
+
+Run の状態を確認するための API を提供する。Run の取得には2つの方法がある。
+
+#### JobHandle 経由（型安全）
+
+アプリケーションコードで特定のジョブの Run を取得する場合は、JobHandle のメソッドを使う。`output` は Zod スキーマから推論された型になる。
+
+```ts
+// trigger の戻り値から ID を保存しておく
+const run = await syncUsers.trigger({ orgId: "org_123" })
+saveToSession(run.id)
+
+// 後で結果を取得（output は型安全）
+const run = await syncUsers.getRun(getFromSession())
+if (run?.status === 'completed') {
+  console.log(run.output.syncedCount)  // number 型として補完される
+}
+
+// このジョブの失敗した Run を取得
+const failedRuns = await syncUsers.getRuns({ status: 'failed' })
+```
+
+#### durably 経由（横断的）
+
+管理画面やデバッグで全ジョブを横断的に取得する場合は、durably のメソッドを使う。`output` は `unknown` 型になる。
+
+```ts
+// 全ジョブの失敗した Run を取得
+const failedRuns = await durably.getRuns({ status: 'failed' })
+for (const run of failedRuns) {
+  console.log(run.jobName, run.error)
+}
+
+// ジョブ名でフィルタ
+const runs = await durably.getRuns({ jobName: 'sync-users' })
+
+// 特定の Run を取得（どのジョブかわからない場合）
+const run = await durably.getRun(runId)
+if (run?.status === 'completed') {
+  console.log(run.output)  // unknown 型
+}
+```
+
+`getRun` は指定した ID の Run を返す。存在しない場合は `null` を返す。`getRuns` はフィルタ条件に一致する Run の配列を返す。条件を指定しない場合は全件を返す。結果は `created_at` の降順でソートされる。
 
 ### ワーカー
 
 ワーカーは `start` 関数によって起動される。起動すると、一定間隔で `pending` 状態の Run を取得し、逐次実行する。
 
 ```ts
-import { createClient } from 'durably'
+import { createDurably } from 'durably'
+import { z } from 'zod'
 
-const client = createClient({ dialect })
-client.register(syncUsers)
-await client.migrate()
-client.start()
+const durably = createDurably({ dialect })
+
+const syncUsers = durably.defineJob({
+  name: "sync-users",
+  input: z.object({ orgId: z.string() }),
+  output: z.object({ syncedCount: z.number() }),
+}, async (ctx, payload) => {
+  // ...
+  return { syncedCount: 0 }
+})
+
+await durably.migrate()
+durably.start()
 ```
 
 ワーカーは常に一件ずつ Run を処理する。最小構成では並列実行は行わない。`concurrencyKey` による直列化は、Run 取得時のクエリで制御される。同じ `concurrencyKey` を持つ別の Run が `running` 状態であれば、その Run は取得対象から除外される。
@@ -133,7 +279,7 @@ client.start()
 ワーカーを停止したい場合は `stop` を呼ぶ。これは現在実行中の Run の完了を待ってからワーカーを停止する。
 
 ```ts
-await client.stop()
+await durably.stop()
 ```
 
 ### 初期化
@@ -141,7 +287,7 @@ await client.stop()
 データベーステーブルの作成は、明示的な `migrate` 関数によって行う。
 
 ```ts
-await client.migrate()
+await durably.migrate()
 ```
 
 この関数は冪等であり、何度呼んでも安全である。アプリケーション起動時またはページロード時に呼ぶことを想定している。スキーマのバージョン管理はライブラリ内部で行われ、将来のバージョンアップ時には自動的にマイグレーションが適用される。
@@ -151,41 +297,112 @@ await client.migrate()
 ライブラリ内部で起きたことを外部に通知するためのイベントシステムを持つ。これにより、ログの永続化、外部サービスへの送信、リアルタイム UI 更新など、任意の処理を接続できる。
 
 ```ts
-client.on('run:start', (event) => {
+durably.on('run:start', (event) => {
   // { runId, jobName, payload, timestamp }
 })
 
-client.on('run:complete', (event) => {
-  // { runId, jobName, duration, timestamp }
+durably.on('run:complete', (event) => {
+  // { runId, jobName, output, duration, timestamp }
 })
 
-client.on('run:fail', (event) => {
+durably.on('run:fail', (event) => {
   // { runId, jobName, error, failedStepName, timestamp }
 })
 
-client.on('step:start', (event) => {
+durably.on('step:start', (event) => {
   // { runId, stepName, stepIndex, timestamp }
 })
 
-client.on('step:complete', (event) => {
+durably.on('step:complete', (event) => {
   // { runId, stepName, stepIndex, duration, output, timestamp }
 })
 
-client.on('step:fail', (event) => {
+durably.on('step:fail', (event) => {
   // { runId, stepName, stepIndex, error, timestamp }
 })
 ```
 
 イベントは同期的に発火される。リスナー内で例外が発生しても、Run の実行には影響しない。
 
+#### 型安全なイベント購読
+
+イベントの `payload` や `output` を型安全に扱いたい場合は、JobHandle の `$types` を使って Discriminated Union を構築する。
+
+```ts
+// 各ジョブの型を取り出す
+type SyncUsersEvents = typeof syncUsers.$types
+type SendEmailEvents = typeof sendEmail.$types
+
+// 全ジョブの RunCompleteEvent を Union
+type AllRunCompleteEvents =
+  | SyncUsersEvents['RunCompleteEvent']
+  | SendEmailEvents['RunCompleteEvent']
+
+// 型安全なイベント購読
+durably.on<AllRunCompleteEvents>('run:complete', (event) => {
+  // event.jobName で Discriminated Union が絞り込まれる
+  if (event.jobName === 'sync-users') {
+    console.log(event.output.syncedCount)  // number 型として補完される
+  } else if (event.jobName === 'send-email') {
+    console.log(event.output.messageId)    // string 型として補完される
+  }
+})
+```
+
+型パラメータを省略した場合、`output` は `unknown` 型になる。監視・ログ用途では型パラメータなしで十分なことが多い。
+
+### 進捗管理
+
+ジョブの進捗状況を外部から確認できるようにするための API を提供する。
+
+```ts
+const syncUsers = durably.defineJob({
+  name: "sync-users",
+  input: z.object({ orgId: z.string() }),
+  output: z.object({ processedCount: z.number() }),
+}, async (ctx, payload) => {
+  ctx.setProgress({ current: 0, total: 100, message: "Starting..." })
+
+  const users = await ctx.run("fetch-users", async () => {
+    const result = await api.fetchUsers(payload.orgId)
+    ctx.setProgress({ current: 10, message: "Fetched users" })
+    return result
+  })
+
+  for (let i = 0; i < users.length; i++) {
+    await ctx.run(`process-user-${users[i].id}`, async () => {
+      await processUser(users[i])
+    })
+    ctx.setProgress({ current: 10 + ((i + 1) / users.length) * 90 })
+  }
+
+  return { processedCount: users.length }
+})
+```
+
+`ctx.setProgress` は進捗情報を Run に保存する。`current` は必須、`total`（デフォルト 100）と `message` は任意である。
+
+進捗は `getRun` で取得できる。
+
+```ts
+const run = await durably.getRun(runId)
+console.log(run.progress) // { current: 45, total: 100, message: "Fetched users" }
+```
+
+進捗情報は Run が再開された場合も保持される。Step の成功・失敗とは独立して管理され、UI での進捗表示に使用できる。
+
 ### 構造化ログ
 
 ジョブ内から明示的にログを残すための API を提供する。ログは Run に紐づけられ、後から UI で確認できる。
 
 ```ts
-const syncUsers = defineJob("sync-users", async (ctx, payload) => {
+const syncUsers = durably.defineJob({
+  name: "sync-users",
+  input: z.object({ orgId: z.string() }),
+  output: z.object({ syncedCount: z.number() }),
+}, async (ctx, payload) => {
   ctx.log.info("starting sync", { orgId: payload.orgId })
-  
+
   const users = await ctx.run("fetch-users", async () => {
     const result = await api.fetchUsers(payload.orgId)
     ctx.log.info("fetched users", { count: result.length })
@@ -195,6 +412,8 @@ const syncUsers = defineJob("sync-users", async (ctx, payload) => {
   if (users.length === 0) {
     ctx.log.warn("no users found")
   }
+
+  return { syncedCount: users.length }
 })
 ```
 
@@ -203,7 +422,7 @@ const syncUsers = defineJob("sync-users", async (ctx, payload) => {
 ログは `log:write` イベントとして発火される。
 
 ```ts
-client.on('log:write', (event) => {
+durably.on('log:write', (event) => {
   // { runId, stepName, level, message, data, timestamp }
 })
 ```
@@ -213,11 +432,11 @@ client.on('log:write', (event) => {
 イベントを活用した拡張をプラグインとして提供する。プラグインは `use` メソッドで登録する。
 
 ```ts
-import { createClient } from 'durably'
+import { createDurably } from 'durably'
 import { withLogPersistence } from 'durably/plugins'
 
-const client = createClient({ dialect })
-client.use(withLogPersistence())
+const durably = createDurably({ dialect })
+durably.use(withLogPersistence())
 ```
 
 コアライブラリに同梱するプラグインは以下の通りである。
@@ -225,7 +444,7 @@ client.use(withLogPersistence())
 `withLogPersistence()` はすべてのイベントとログをデータベースに永続化する。UI での履歴表示に必要となる。
 
 ```ts
-client.use(withLogPersistence())
+durably.use(withLogPersistence())
 ```
 
 このプラグインを有効にすると、logs テーブルにデータが書き込まれる。プラグインを使わない場合、logs テーブルは空のままであり、ストレージを消費しない。
@@ -254,23 +473,19 @@ import { BetterSqlite3Dialect } from "kysely"
 const dialect = new BetterSqlite3Dialect({
   database: new Database("batch.db"),
 })
-const client = createClient({ dialect })
+const durably = createDurably({ dialect })
 ```
 
-ブラウザ環境では SQLite WASM を使用する。推奨は `@sqlite.org/sqlite-wasm`（SQLite 公式の WASM ビルド）と OPFS バックエンドの組み合わせである。Kysely 用の dialect としては `kysely-wasm` または同等のアダプタを使用する。
+ブラウザ環境では SQLocal を使用する。SQLocal は SQLite WASM を Web Worker で実行し、OPFS による永続化を自動的に行う。Kysely 用の dialect も提供されている。
 
 ```ts
-import { Kysely } from "kysely"
-import { SQLiteWasmDialect } from "kysely-wasm"
+import { SQLocalKysely } from 'sqlocal/kysely'
 
-const dialect = new SQLiteWasmDialect({
-  database: async () => {
-    const sqlite3 = await initSqlite3()
-    return new sqlite3.oo1.OpfsDb("/batch.db")
-  },
-})
-const client = createClient({ dialect })
+const { dialect } = new SQLocalKysely('durably.sqlite3')
+const durably = createDurably({ dialect })
 ```
+
+Vite を使用する場合は、SQLocal の Vite プラグインを追加すると、開発サーバーでの COOP/COEP ヘッダー設定が自動化される。
 
 ライブラリ本体は dialect の具体的な実装に依存せず、Kysely のインターフェースのみを使用する。これにより、将来的に Postgres や MySQL に対応する場合も、同じ設計で拡張できる。
 
@@ -282,9 +497,9 @@ const client = createClient({ dialect })
 
 **バックグラウンド制限**: ブラウザはバックグラウンドタブでの実行を制限する場合がある。長時間かかるステップがバックグラウンドで中断された場合も、heartbeat 切れとして回収される。これを避けたい場合は、ステップを細かく分割するか、Service Worker での実行を検討する。
 
-**複数タブ**: 同じデータベースファイルに複数タブからアクセスした場合、OPFS の排他制御により一方がエラーになる。このライブラリは単一タブでの使用を前提とし、複数タブの協調実行はスコープ外とする。複数タブで使いたい場合は SharedWorker を介するか、タブ間でリーダー選出を行う必要があるが、それはアプリケーション側の責務である。
+**複数タブ**: SQLocal はタブ間でのデータベース変更通知をサポートしているが、このライブラリでは単一タブでのワーカー実行を前提とする。複数タブで同時にワーカーを起動すると、同じ Run を複数回実行する可能性がある。複数タブで使いたい場合は SharedWorker を介するか、タブ間でリーダー選出を行う必要があるが、それはアプリケーション側の責務である。
 
-**OPFS の要件**: OPFS は Secure Context（HTTPS または localhost）でのみ使用可能である。また、OPFS への同期アクセスは Worker 内でのみ可能であり、メインスレッドからは非同期アクセスのみとなる。パフォーマンスを重視する場合は Web Worker 内でライブラリを使用することを推奨する。
+**OPFS の要件**: OPFS は Secure Context（HTTPS または localhost）でのみ使用可能である。SQLocal は内部的に Web Worker を使用して OPFS への同期アクセスを処理するため、アプリケーション側で Worker を意識する必要はない。
 
 ### スキーマ
 
@@ -301,6 +516,8 @@ const client = createClient({ dialect })
 | idempotency_key | TEXT (nullable) | 重複排除キー |
 | concurrency_key | TEXT (nullable) | 直列化キー |
 | current_step_index | INTEGER | 次に実行すべきステップのインデックス |
+| progress | TEXT (JSON, nullable) | 進捗情報 { current, total, message } |
+| output | TEXT (JSON, nullable) | ジョブの出力（completed 時のみ） |
 | error | TEXT (nullable) | 失敗時のエラーメッセージ |
 | heartbeat_at | TEXT (ISO8601) | 最終 heartbeat 時刻 |
 | created_at | TEXT (ISO8601) | 作成時刻 |
@@ -385,7 +602,7 @@ Run の取得クエリは以下の条件を満たすものを一件取得する�
 
 ### 設定項目
 
-`createClient` に渡せる設定は以下の通りである。
+`createDurably` に渡せる設定は以下の通りである。
 
 | 項目 | デフォルト | 説明 |
 |------|------------|------|
@@ -400,19 +617,20 @@ Run の取得クエリは以下の条件を満たすものを一件取得する�
 
 ライブラリは単一パッケージとして提供し、環境固有の dialect は含めない。ユーザーは自身の環境に合わせて Kysely と dialect を別途インストールする。
 
-```
+```txt
 durably               # コアライブラリ（環境非依存）
 ├── kysely            # peer dependency
+├── zod               # peer dependency
 ```
 
 Node.js で使う場合：
-```
-npm install durably kysely better-sqlite3
+```sh
+npm install durably kysely zod better-sqlite3
 ```
 
 ブラウザで使う場合：
-```
-npm install durably kysely @aspect-build/kysely-wasm @aspect-build/sqlite-wasm-batteries-included
+```sh
+npm install durably kysely zod sqlocal
 ```
 
 プラグインはコアパッケージに同梱し、サブパスからインポートする。
@@ -430,20 +648,25 @@ UI は将来的に別パッケージ（`durably-ui`）として提供し、logs 
 ### 基本的な使い方
 
 ```ts
-import { createClient, defineJob } from 'durably'
+import { createDurably } from 'durably'
 import Database from 'better-sqlite3'
 import { BetterSqlite3Dialect } from 'kysely'
+import { z } from 'zod'
 
 // dialect の設定
 const dialect = new BetterSqlite3Dialect({
   database: new Database('app.db'),
 })
 
-// クライアントの作成
-const client = createClient({ dialect })
+// インスタンスの作成
+const durably = createDurably({ dialect })
 
-// ジョブの定義
-const syncUsers = defineJob('sync-users', async (ctx, payload: { orgId: string }) => {
+// ジョブの定義（定義時に自動登録される）
+const syncUsers = durably.defineJob({
+  name: 'sync-users',
+  input: z.object({ orgId: z.string() }),
+  output: z.object({ syncedCount: z.number() }),
+}, async (ctx, payload) => {
   ctx.log.info('starting sync', { orgId: payload.orgId })
 
   const users = await ctx.run('fetch-users', async () => {
@@ -457,16 +680,14 @@ const syncUsers = defineJob('sync-users', async (ctx, payload: { orgId: string }
   })
 
   ctx.log.info('sync completed')
+  return { syncedCount: users.length }
 })
 
-// ジョブの登録
-client.register(syncUsers)
-
 // マイグレーションの実行
-await client.migrate()
+await durably.migrate()
 
 // ワーカーの起動
-client.start()
+durably.start()
 
 // ジョブのトリガー
 await syncUsers.trigger({ orgId: 'org_123' })
@@ -475,16 +696,16 @@ await syncUsers.trigger({ orgId: 'org_123' })
 ### イベントの購読
 
 ```ts
-client.on('run:start', (event) => {
+durably.on('run:start', (event) => {
   console.log(`Run started: ${event.runId}`)
 })
 
-client.on('run:fail', (event) => {
+durably.on('run:fail', (event) => {
   console.error(`Run failed: ${event.runId}`, event.error)
   // 外部の監視サービスに通知するなど
 })
 
-client.on('step:complete', (event) => {
+durably.on('step:complete', (event) => {
   console.log(`Step completed: ${event.stepName} in ${event.duration}ms`)
 })
 ```
@@ -492,22 +713,22 @@ client.on('step:complete', (event) => {
 ### ログの永続化
 
 ```ts
-import { createClient } from 'durably'
+import { createDurably } from 'durably'
 import { withLogPersistence } from 'durably/plugins'
 
-const client = createClient({ dialect })
-client.use(withLogPersistence())
+const durably = createDurably({ dialect })
+durably.use(withLogPersistence())
 ```
 
 ### 失敗した Run の再実行
 
 ```ts
 // 失敗した Run を取得
-const failedRuns = await client.getRuns({ status: 'failed' })
+const failedRuns = await durably.getRuns({ status: 'failed' })
 
 // 再実行
 for (const run of failedRuns) {
-  await client.retry(run.id)
+  await durably.retry(run.id)
 }
 ```
 
