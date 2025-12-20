@@ -24,7 +24,8 @@
     "test:node": "vitest run --config vitest.config.ts",
     "test:react": "vitest run --config vitest.react.config.ts",
     "test:browser": "vitest run --config vitest.browser.config.ts",
-    "lint": "biome check .",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
     "format": "prettier --experimental-cli --check .",
     "format:fix": "prettier --experimental-cli --write ."
   },

@@ -171,11 +171,11 @@ export function createEventEmitter(): EventEmitter {
         listeners.set(type, new Set())
       }
 
-      const typeListeners = listeners.get(type)!
-      typeListeners.add(listener as unknown as EventListener<EventType>)
+      const typeListeners = listeners.get(type)
+      typeListeners?.add(listener as unknown as EventListener<EventType>)
 
       return () => {
-        typeListeners.delete(listener as unknown as EventListener<EventType>)
+        typeListeners?.delete(listener as unknown as EventListener<EventType>)
       }
     },
 

@@ -82,8 +82,8 @@ export function createWorker(
     // Get running runs to exclude their concurrency keys
     const runningRuns = await storage.getRuns({ status: 'running' })
     const excludeConcurrencyKeys = runningRuns
-      .filter((r) => r.concurrencyKey !== null)
-      .map((r) => r.concurrencyKey!)
+      .filter((r): r is typeof r & { concurrencyKey: string } => r.concurrencyKey !== null)
+      .map((r) => r.concurrencyKey)
 
     // Get next pending run
     const run = await storage.getNextPendingRun(excludeConcurrencyKeys)

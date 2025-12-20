@@ -185,12 +185,12 @@ export function createJobHandle<
 ): JobHandle<
   TName,
   z.infer<TInputSchema>,
-  TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void
+  TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : undefined
 > {
   type TInput = z.infer<TInputSchema>
   type TOutput = TOutputSchema extends z.ZodTypeAny
     ? z.infer<TOutputSchema>
-    : void
+    : undefined
 
   // Register the job
   registry.register({
