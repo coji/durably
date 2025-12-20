@@ -17,7 +17,7 @@ import {
 } from './job'
 import { runMigrations } from './migrations'
 import type { Database } from './schema'
-import { type Storage, createKyselyStorage } from './storage'
+import { type Run, type RunFilter, type Storage, createKyselyStorage } from './storage'
 import { createWorker } from './worker'
 
 /**
@@ -99,10 +99,18 @@ export interface Durably {
    */
   retry(runId: string): Promise<void>
 
+  /**
+   * Get a run by ID (returns unknown output type)
+   */
+  getRun(runId: string): Promise<Run | null>
+
+  /**
+   * Get runs with optional filtering
+   */
+  getRuns(filter?: RunFilter): Promise<Run[]>
+
   // TODO: Add more methods in later phases
   // use()
-  // getRun()
-  // getRuns()
 }
 
 /**
@@ -143,6 +151,9 @@ export function createDurably(options: DurablyOptions): Durably {
     ): JobHandle<TName, z.infer<TInputSchema>, TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void> {
       return createJobHandle(definition, fn, storage, eventEmitter, jobRegistry)
     },
+
+    getRun: storage.getRun,
+    getRuns: storage.getRuns,
 
     async retry(runId: string): Promise<void> {
       const run = await storage.getRun(runId)
