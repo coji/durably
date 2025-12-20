@@ -1,0 +1,18 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.3.8/schema.json",
+  "files": {
+    "includes": ["**", "!worker-configuration.d.ts", "!app/styles/globals.css"]
+  },
+  "assist": { "actions": { "source": { "organizeImports": "off" } } },
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true
+    }
+  }
+}

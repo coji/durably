@@ -6,11 +6,23 @@
 
 既存の選択肢として、Redis を前提とした BullMQ、専用クラスタを必要とする Temporal、専用ランタイムを伴う DBOS や Trigger.dev などがある。しかしこれらは Node.js サーバー環境を前提としており、ブラウザでは動作しない。また、小〜中規模のアプリケーションにとっては過剰な構成を要求する。
 
-必要なのは、Node.js でもブラウザでも同じ API で動作し、外部サービスに依存せず、SQLite だけで完結する最小構成である。Node.js では better-sqlite3 や libsql を、ブラウザでは SQLite WASM（OPFS バックエンド）を使うことで、同一のジョブ定義コードがどちらの環境でも実行できる。
+必要なのは、Node.js でもブラウザでも同じ API で動作し、外部サービスに依存せず、SQLite だけで完結する最小構成である。Node.js では Turso/libSQL を、ブラウザでは SQLite WASM（OPFS バックエンド）を使うことで、同一のジョブ定義コードがどちらの環境でも実行できる。
 
 この仕組みが目指すのは、分散ワークフローエンジンではない。cron のような時間駆動、Webhook 購読、Fan-out、複雑な再試行戦略は、すべてスコープ外である。ステップ単位で状態を永続化し、プロセスやページの再起動によって自動的に復旧する、それだけに特化した実行基盤を作る。
 
 DX としては、ジョブ定義が純粋な TypeScript 関数であること、型安全であること、環境ごとの分岐コードを書かなくてよいことを重視する。運用としては、設定項目が少なく、状態がデータベースを見れば分かり、トラブル時の対処が明確であることを重視する。また、将来的に UI で実行履歴やエラーを確認できるよう、イベントとログの仕組みを最初から備えておく。
+
+---
+
+## パッケージ構成
+
+npm パッケージ名は `@coji/durably` スコープを使用する。将来的にフレームワーク統合などのサブパッケージを追加する際は、同じスコープ内で `@coji/durably-react`、`@coji/durably-vue` のような命名規則を採用する。
+
+| パッケージ | 説明 |
+|-----------|------|
+| `@coji/durably` | コアライブラリ |
+| `@coji/durably-react` | React 統合（将来） |
+| `@coji/durably-vue` | Vue 統合（将来） |
 
 ---
 
@@ -42,7 +54,7 @@ Durably (インスタンス)
 ジョブは `durably.defineJob` メソッドによって定義される。ジョブは名前、入力スキーマ、出力スキーマ、処理関数を持つ。スキーマは Zod v4 で定義し、入出力の型安全性を保証する。
 
 ```ts
-import { createDurably } from 'durably'
+import { createDurably } from '@coji/durably'
 import { z } from 'zod'
 
 const durably = createDurably({ dialect })
@@ -106,9 +118,9 @@ interface RunFilter {
 
 `TInput` と `TOutput` は Zod スキーマから推論される。これにより `trigger` の引数に対してエディタ補完が効き、型チェックも行われる。
 
-入力は `trigger` 時に検証され、不正な場合は例外が発生する。出力はジョブ関数の戻り値として返し、完了時に検証されて Run に保存される。
+入力は `trigger` 時に検証され、不正な場合は例外が発生する。出力はジョブ関数の戻り値として返し、完了時に検証されて Run に保存される。出力の検証に失敗した場合、Run は `failed` 状態となり、エラー詳細が記録される。
 
-`ctx.run` に渡す名前は、同一ジョブ内で一意であればよい。成功したステップは再実行時に自動的にスキップされ、保存済みの戻り値が返される。この挙動は固定であり、ユーザーが選択する必要はない。
+`ctx.run` に渡す名前は、同一 Run 内で一意でなければならない。同じ名前のステップが複数回実行された場合はエラーとなる。成功したステップは再実行時に自動的にスキップされ、保存済みの戻り値が返される。この挙動は固定であり、ユーザーが選択する必要はない。
 
 `ctx.run` の戻り値はステップ関数の戻り値から型推論される。
 
@@ -146,7 +158,7 @@ console.log(run.status) // "pending"
 
 `trigger` には二種類のオプションキーを指定できる。
 
-`idempotencyKey` は、同一イベントの二重登録を防ぐためのキーである。同じジョブ名と `idempotencyKey` の組み合わせがすでに存在する場合、新しい Run は作成されず、既存の Run が返される。
+`idempotencyKey` は、同一イベントの二重登録を防ぐためのキーである。同じジョブ名と `idempotencyKey` の組み合わせがすでに存在する場合、新しい Run は作成されず、既存の Run が返される。`idempotencyKey` の有効期限は設けず、Run が存在する限り重複排除が機能する。古い Run を削除すれば同じキーで再登録が可能になる。
 
 ```ts
 await syncUsers.trigger(
@@ -249,12 +261,14 @@ if (run?.status === 'completed') {
 
 `getRun` は指定した ID の Run を返す。存在しない場合は `null` を返す。`getRuns` はフィルタ条件に一致する Run の配列を返す。条件を指定しない場合は全件を返す。結果は `created_at` の降順でソートされる。
 
+v1 ではページネーションは提供しない。大量の Run がある場合は `status` や `jobName` でフィルタするか、アプリケーション側で Run の削除を行って管理する。将来的に `limit` と `cursor` オプションを追加する可能性がある。
+
 ### ワーカー
 
 ワーカーは `start` 関数によって起動される。起動すると、一定間隔で `pending` 状態の Run を取得し、逐次実行する。
 
 ```ts
-import { createDurably } from 'durably'
+import { createDurably } from '@coji/durably'
 import { z } from 'zod'
 
 const durably = createDurably({ dialect })
@@ -310,19 +324,106 @@ durably.on('run:fail', (event) => {
 })
 
 durably.on('step:start', (event) => {
-  // { runId, stepName, stepIndex, timestamp }
+  // { runId, jobName, stepName, stepIndex, timestamp }
 })
 
 durably.on('step:complete', (event) => {
-  // { runId, stepName, stepIndex, duration, output, timestamp }
+  // { runId, jobName, stepName, stepIndex, duration, output, timestamp }
 })
 
 durably.on('step:fail', (event) => {
-  // { runId, stepName, stepIndex, error, timestamp }
+  // { runId, jobName, stepName, stepIndex, error, timestamp }
 })
 ```
 
 イベントは同期的に発火される。リスナー内で例外が発生しても、Run の実行には影響しない。
+
+#### イベント型定義
+
+すべてのイベントは Discriminated Union として定義される。各イベントには共通フィールドとして `type` と `timestamp` が含まれ、`sequence` フィールドで順序が保証される。
+
+```ts
+// 基本イベント型
+interface BaseEvent {
+  type: string
+  timestamp: string
+  sequence: number  // イベントの順序番号
+}
+
+// Run イベント
+interface RunStartEvent extends BaseEvent {
+  type: 'run:start'
+  runId: string
+  jobName: string
+  payload: unknown
+}
+
+interface RunCompleteEvent extends BaseEvent {
+  type: 'run:complete'
+  runId: string
+  jobName: string
+  output: unknown
+  duration: number
+}
+
+interface RunFailEvent extends BaseEvent {
+  type: 'run:fail'
+  runId: string
+  jobName: string
+  error: string
+  failedStepName: string
+}
+
+// Step イベント
+interface StepStartEvent extends BaseEvent {
+  type: 'step:start'
+  runId: string
+  jobName: string
+  stepName: string
+  stepIndex: number
+}
+
+interface StepCompleteEvent extends BaseEvent {
+  type: 'step:complete'
+  runId: string
+  jobName: string
+  stepName: string
+  stepIndex: number
+  output: unknown
+  duration: number
+}
+
+interface StepFailEvent extends BaseEvent {
+  type: 'step:fail'
+  runId: string
+  jobName: string
+  stepName: string
+  stepIndex: number
+  error: string
+}
+
+// Log イベント
+interface LogWriteEvent extends BaseEvent {
+  type: 'log:write'
+  runId: string
+  stepName: string | null
+  level: 'info' | 'warn' | 'error'
+  message: string
+  data: unknown
+}
+
+// 全イベントの Union 型
+type DurablyEvent =
+  | RunStartEvent
+  | RunCompleteEvent
+  | RunFailEvent
+  | StepStartEvent
+  | StepCompleteEvent
+  | StepFailEvent
+  | LogWriteEvent
+```
+
+この型定義により、将来的なイベント型の追加（例: `stream` イベント）が容易になる。
 
 #### 型安全なイベント購読
 
@@ -432,8 +533,8 @@ durably.on('log:write', (event) => {
 イベントを活用した拡張をプラグインとして提供する。プラグインは `use` メソッドで登録する。
 
 ```ts
-import { createDurably } from 'durably'
-import { withLogPersistence } from 'durably/plugins'
+import { createDurably } from '@coji/durably'
+import { withLogPersistence } from '@coji/durably/plugins'
 
 const durably = createDurably({ dialect })
 durably.use(withLogPersistence())
@@ -463,15 +564,14 @@ durably.use(withLogPersistence())
 
 このライブラリは Kysely の dialect を外部から受け取る設計とし、環境ごとの SQLite 実装の違いを吸収する。
 
-Node.js 環境では `better-sqlite3` または `libsql` を使用する。これらは Kysely 公式の dialect が存在する。
+Node.js 環境では Turso/libSQL を推奨する。ローカル開発では `file:` スキーマでローカルファイルを使用し、本番では Turso のクラウドデータベースに接続できる。
 
 ```ts
-import Database from "better-sqlite3"
-import { Kysely } from "kysely"
-import { BetterSqlite3Dialect } from "kysely"
+import { LibsqlDialect } from '@libsql/kysely-libsql'
 
-const dialect = new BetterSqlite3Dialect({
-  database: new Database("batch.db"),
+const dialect = new LibsqlDialect({
+  url: process.env.TURSO_DATABASE_URL ?? 'file:local.db',
+  authToken: process.env.TURSO_AUTH_TOKEN,
 })
 const durably = createDurably({ dialect })
 ```
@@ -564,6 +664,8 @@ Vite を使用する場合は、SQLocal の Vite プラグインを追加する�
 - `steps`: `(run_id, index)` の複合インデックス
 - `logs`: `(run_id, timestamp)` の複合インデックス
 
+**ULID の実装**: ID 生成には ULID（Universally Unique Lexicographically Sortable Identifier）を使用する。実装は軽量な `ulidx` パッケージを採用し、ブラウザと Node.js の両方で動作する。ULID はタイムスタンプを含むためソート可能であり、UUID と同等のユニーク性を持つ。
+
 ### ワーカーの動作
 
 ワーカーはポーリングベースで動作する。Node.js では `setInterval`、ブラウザでも `setInterval` を使用する。デフォルトのポーリング間隔は 1000 ミリ秒であり、設定で変更できる。
@@ -613,33 +715,33 @@ Run の取得クエリは以下の条件を満たすものを一件取得する�
 
 設定項目は意図的に最小限に抑えている。調整が必要になるのは、長時間かかるステップがある場合に `staleThreshold` を伸ばすケースがほとんどである。
 
-### パッケージ構成
+### 依存関係とインストール
 
 ライブラリは単一パッケージとして提供し、環境固有の dialect は含めない。ユーザーは自身の環境に合わせて Kysely と dialect を別途インストールする。
 
 ```txt
-durably               # コアライブラリ（環境非依存）
+@coji/durably         # コアライブラリ（環境非依存）
 ├── kysely            # peer dependency
 ├── zod               # peer dependency
 ```
 
-Node.js で使う場合：
+Node.js で使う場合（Turso/libSQL）：
 ```sh
-npm install durably kysely zod better-sqlite3
+npm install @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
 ```
 
 ブラウザで使う場合：
 ```sh
-npm install durably kysely zod sqlocal
+npm install @coji/durably kysely zod sqlocal
 ```
 
 プラグインはコアパッケージに同梱し、サブパスからインポートする。
 
 ```ts
-import { withLogPersistence } from 'durably/plugins'
+import { withLogPersistence } from '@coji/durably/plugins'
 ```
 
-UI は将来的に別パッケージ（`durably-ui`）として提供し、logs テーブルと runs/steps テーブルを読み取って実行履歴を表示する。
+UI は将来的に別パッケージ（`@coji/durably-ui`）として提供し、logs テーブルと runs/steps テーブルを読み取って実行履歴を表示する。
 
 ---
 
@@ -648,14 +750,14 @@ UI は将来的に別パッケージ（`durably-ui`）として提供し、logs 
 ### 基本的な使い方
 
 ```ts
-import { createDurably } from 'durably'
-import Database from 'better-sqlite3'
-import { BetterSqlite3Dialect } from 'kysely'
+import { createDurably } from '@coji/durably'
+import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { z } from 'zod'
 
-// dialect の設定
-const dialect = new BetterSqlite3Dialect({
-  database: new Database('app.db'),
+// dialect の設定（Turso/libSQL）
+const dialect = new LibsqlDialect({
+  url: process.env.TURSO_DATABASE_URL ?? 'file:app.db',
+  authToken: process.env.TURSO_AUTH_TOKEN,
 })
 
 // インスタンスの作成
@@ -713,8 +815,8 @@ durably.on('step:complete', (event) => {
 ### ログの永続化
 
 ```ts
-import { createDurably } from 'durably'
-import { withLogPersistence } from 'durably/plugins'
+import { createDurably } from '@coji/durably'
+import { withLogPersistence } from '@coji/durably/plugins'
 
 const durably = createDurably({ dialect })
 durably.use(withLogPersistence())
@@ -730,6 +832,137 @@ const failedRuns = await durably.getRuns({ status: 'failed' })
 for (const run of failedRuns) {
   await durably.retry(run.id)
 }
+```
+
+---
+
+## 内部設計指針
+
+この仕様は v1 として完結しているが、将来的な拡張（v2: AI Agent/ストリーミング対応）を見据えた設計指針を示す。実装時にはこれらの指針に従うことで、破壊的変更を最小限に抑えつつ機能拡張が可能になる。
+
+### JobContext の設計
+
+`JobContext` はクラスまたはファクトリ関数として実装し、メソッド追加が容易な構造にする。
+
+```ts
+// 推奨される実装パターン
+class JobContextImpl<TPayload> implements JobContext<TPayload> {
+  constructor(
+    private runId: string,
+    private emitter: EventEmitter,
+    private storage: Storage,
+  ) {}
+
+  async run<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    // 実装
+  }
+
+  log = {
+    info: (message: string, data?: unknown) => this.writeLog('info', message, data),
+    warn: (message: string, data?: unknown) => this.writeLog('warn', message, data),
+    error: (message: string, data?: unknown) => this.writeLog('error', message, data),
+  }
+
+  setProgress(progress: Progress): void {
+    // 実装
+  }
+
+  private writeLog(level: LogLevel, message: string, data?: unknown): void {
+    // 実装
+  }
+
+  // v2 で追加予定:
+  // async stream<T>(name: string, fn: (emit: EmitFn) => Promise<T>): Promise<T>
+}
+```
+
+内部で `EventEmitter` を保持し、イベントの emit を一元化する。これにより v2 で `stream` イベントを追加する際も、同じ emit 機構を利用できる。
+
+### Storage 層の抽象化
+
+データベース操作は Storage インターフェースとして抽象化し、将来のテーブル追加に備える。
+
+```ts
+interface Storage {
+  // Run 操作
+  createRun(run: Run): Promise<void>
+  updateRun(runId: string, data: Partial<Run>): Promise<void>
+  getRun(runId: string): Promise<Run | null>
+  getRuns(filter?: RunFilter): Promise<Run[]>
+  getNextPendingRun(excludeConcurrencyKeys: string[]): Promise<Run | null>
+
+  // Step 操作
+  createStep(step: Step): Promise<void>
+  getSteps(runId: string): Promise<Step[]>
+  getCompletedStep(runId: string, name: string): Promise<Step | null>
+
+  // Log 操作（withLogPersistence プラグイン用）
+  createLog?(log: Log): Promise<void>
+  getLogs?(runId: string): Promise<Log[]>
+
+  // v2 で追加予定:
+  // createEvent?(event: DurablyEvent): Promise<void>
+  // getEvents?(runId: string, afterSequence?: number): Promise<DurablyEvent[]>
+}
+```
+
+### イベントシーケンス
+
+イベントには `sequence` フィールドを含め、順序を保証する。v1 ではインメモリでのインクリメントで十分だが、v2 では DB 永続化時にこの値が重要になる。
+
+```ts
+class EventEmitter {
+  private sequence = 0
+
+  emit(event: Omit<DurablyEvent, 'sequence' | 'timestamp'>): void {
+    const fullEvent = {
+      ...event,
+      sequence: ++this.sequence,
+      timestamp: new Date().toISOString(),
+    }
+    // リスナーに配信
+  }
+}
+```
+
+---
+
+## 将来拡張への準備（v2 参照）
+
+v2 では AI Agent ワークフロー対応として以下の機能が計画されている。詳細は [future-spec-ai-agent.md](./future-spec-ai-agent.md) を参照。
+
+### 計画されている機能
+
+| 機能 | 概要 |
+|------|------|
+| `ctx.stream()` | ストリーミング出力をサポートするステップ |
+| `subscribe()` | Run の実行をリアルタイムで購読（ReadableStream） |
+| `events` テーブル | 粗いイベント（step:*, run:*）の永続化 |
+| `checkpoint()` | 長時間実行中の中間状態保存 |
+
+### v1 での準備事項
+
+v1 実装時に以下を守ることで、v2 への移行がスムーズになる。
+
+1. **イベント型は Discriminated Union で定義する**
+   - `type` フィールドで識別可能にする
+   - `sequence` フィールドを含める
+
+2. **JobContext はクラス/ファクトリで実装する**
+   - メソッド追加が容易な構造にする
+   - 内部で EventEmitter を保持する
+
+3. **Storage 層を抽象化する**
+   - インターフェースを定義し、実装を分離する
+   - 将来のテーブル追加に備える
+
+4. **runs テーブルの sequence カラム（任意）**
+   - v2 でイベント永続化を行う際に有用
+   - v1 では使用しないが、スキーマに含めておくとマイグレーションが不要
+
+```sql
+-- 任意: v2 に備えて追加
+ALTER TABLE runs ADD COLUMN last_event_sequence INTEGER DEFAULT 0;
 ```
 
 ---

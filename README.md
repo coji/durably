@@ -8,7 +8,7 @@ Step-oriented resumable batch execution for Node.js and browsers using SQLite.
 
 - Resumable batch processing with step-level persistence
 - Works in both Node.js and browsers
-- Uses SQLite for state management (better-sqlite3, libsql, or WASM)
+- Uses SQLite for state management (Turso/libsql for Node.js, SQLocal for browsers)
 - Minimal dependencies - just Kysely as a peer dependency
 - Event system for monitoring and extensibility
 - Plugin architecture for optional features
@@ -16,23 +16,27 @@ Step-oriented resumable batch execution for Node.js and browsers using SQLite.
 ## Installation
 
 ```bash
-npm install @coji/durably kysely better-sqlite3
+npm install @coji/durably kysely @libsql/client @libsql/kysely-libsql
 ```
 
 ## Usage (Preview)
 
 ```ts
-import { createClient, defineJob } from '@coji/durably'
-import Database from 'better-sqlite3'
-import { BetterSqlite3Dialect } from 'kysely'
+import { createDurably, defineJob } from '@coji/durably'
+import { LibsqlDialect } from '@libsql/kysely-libsql'
 
-const dialect = new BetterSqlite3Dialect({
-  database: new Database('app.db'),
+const dialect = new LibsqlDialect({
+  url: process.env.TURSO_DATABASE_URL ?? 'file:local.db',
+  authToken: process.env.TURSO_AUTH_TOKEN,
 })
 
-const client = createClient({ dialect })
+const durably = createDurably({ dialect })
 
-const syncUsers = defineJob('sync-users', async (ctx, payload: { orgId: string }) => {
+const syncUsers = durably.defineJob({
+  name: 'sync-users',
+  input: z.object({ orgId: z.string() }),
+  output: z.object({ syncedCount: z.number() }),
+}, async (ctx, payload) => {
   const users = await ctx.run('fetch-users', async () => {
     return api.fetchUsers(payload.orgId)
   })
@@ -40,14 +44,21 @@ const syncUsers = defineJob('sync-users', async (ctx, payload: { orgId: string }
   await ctx.run('save-to-db', async () => {
     await db.upsertUsers(users)
   })
+
+  return { syncedCount: users.length }
 })
 
-client.register(syncUsers)
-await client.migrate()
-client.start()
+await durably.migrate()
+durably.start()
 
 await syncUsers.trigger({ orgId: 'org_123' })
 ```
+
+## Documentation
+
+- [Specification](docs/spec.md) - Core API and concepts
+- [Streaming Extension](docs/spec-streaming.md) - AI Agent workflow support
+- [Implementation Plan](docs/implementation-plan.md) - TDD implementation roadmap
 
 ## License
 
