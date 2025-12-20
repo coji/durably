@@ -27,5 +27,6 @@ export default defineConfig({
   },
   optimizeDeps: {
     exclude: ['sqlocal'],
+    include: ['react', 'react-dom', '@testing-library/react', 'zod', 'kysely', 'ulidx'],
   },
 })
