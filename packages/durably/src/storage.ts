@@ -79,6 +79,30 @@ export interface Step {
 }
 
 /**
+ * Log data for creating a new log
+ */
+export interface CreateLogInput {
+  runId: string
+  stepName: string | null
+  level: 'info' | 'warn' | 'error'
+  message: string
+  data?: unknown
+}
+
+/**
+ * Log data returned from storage
+ */
+export interface Log {
+  id: string
+  runId: string
+  stepName: string | null
+  level: 'info' | 'warn' | 'error'
+  message: string
+  data: unknown | null
+  createdAt: string
+}
+
+/**
  * Storage interface for database operations
  */
 export interface Storage {
@@ -93,6 +117,10 @@ export interface Storage {
   createStep(input: CreateStepInput): Promise<Step>
   getSteps(runId: string): Promise<Step[]>
   getCompletedStep(runId: string, name: string): Promise<Step | null>
+
+  // Log operations
+  createLog(input: CreateLogInput): Promise<Log>
+  getLogs(runId: string): Promise<Log[]>
 }
 
 /**
@@ -130,6 +158,21 @@ function rowToStep(row: Database['steps']): Step {
     error: row.error,
     startedAt: row.started_at,
     completedAt: row.completed_at,
+  }
+}
+
+/**
+ * Convert database row to Log object
+ */
+function rowToLog(row: Database['logs']): Log {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    stepName: row.step_name,
+    level: row.level,
+    message: row.message,
+    data: row.data ? JSON.parse(row.data) : null,
+    createdAt: row.created_at,
   }
 }
 
@@ -275,6 +318,36 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         .executeTakeFirst()
 
       return row ? rowToStep(row) : null
+    },
+
+    async createLog(input: CreateLogInput): Promise<Log> {
+      const now = new Date().toISOString()
+      const id = ulid()
+
+      const log: Database['logs'] = {
+        id,
+        run_id: input.runId,
+        step_name: input.stepName,
+        level: input.level,
+        message: input.message,
+        data: input.data !== undefined ? JSON.stringify(input.data) : null,
+        created_at: now,
+      }
+
+      await db.insertInto('logs').values(log).execute()
+
+      return rowToLog(log)
+    },
+
+    async getLogs(runId: string): Promise<Log[]> {
+      const rows = await db
+        .selectFrom('logs')
+        .selectAll()
+        .where('run_id', '=', runId)
+        .orderBy('created_at', 'asc')
+        .execute()
+
+      return rows.map(rowToLog)
     },
   }
 }

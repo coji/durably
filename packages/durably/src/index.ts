@@ -4,7 +4,10 @@
 
 // Core
 export { createDurably } from './durably'
-export type { Durably, DurablyOptions } from './durably'
+export type { Durably, DurablyOptions, DurablyPlugin } from './durably'
+
+// Plugins
+export { withLogPersistence } from './plugins/log-persistence'
 
 // Events
 export type {

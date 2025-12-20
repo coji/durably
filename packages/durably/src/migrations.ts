@@ -82,14 +82,14 @@ const migrations: Migration[] = [
         .addColumn('level', 'text', (col) => col.notNull())
         .addColumn('message', 'text', (col) => col.notNull())
         .addColumn('data', 'text')
-        .addColumn('timestamp', 'text', (col) => col.notNull())
+        .addColumn('created_at', 'text', (col) => col.notNull())
         .execute()
 
       // Create logs index
       await db.schema
-        .createIndex('idx_logs_run_timestamp')
+        .createIndex('idx_logs_run_created')
         .on('logs')
-        .columns(['run_id', 'timestamp'])
+        .columns(['run_id', 'created_at'])
         .execute()
 
       // Create schema_versions table

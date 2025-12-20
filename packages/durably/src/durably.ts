@@ -40,6 +40,14 @@ const DEFAULTS = {
 } as const
 
 /**
+ * Plugin interface for extending Durably
+ */
+export interface DurablyPlugin {
+  name: string
+  install(durably: Durably): void
+}
+
+/**
  * Durably instance
  */
 export interface Durably {
@@ -109,8 +117,10 @@ export interface Durably {
    */
   getRuns(filter?: RunFilter): Promise<Run[]>
 
-  // TODO: Add more methods in later phases
-  // use()
+  /**
+   * Register a plugin
+   */
+  use(plugin: DurablyPlugin): void
 }
 
 /**
@@ -133,7 +143,7 @@ export function createDurably(options: DurablyOptions): Durably {
   let migrating: Promise<void> | null = null
   let migrated = false
 
-  return {
+  const durably: Durably = {
     db,
     storage,
     on: eventEmitter.on,
@@ -154,6 +164,10 @@ export function createDurably(options: DurablyOptions): Durably {
 
     getRun: storage.getRun,
     getRuns: storage.getRuns,
+
+    use(plugin: DurablyPlugin): void {
+      plugin.install(durably)
+    },
 
     async retry(runId: string): Promise<void> {
       const run = await storage.getRun(runId)
@@ -199,4 +213,6 @@ export function createDurably(options: DurablyOptions): Durably {
       return migrating
     },
   }
+
+  return durably
 }

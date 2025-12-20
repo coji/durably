@@ -39,7 +39,7 @@ export interface LogsTable {
   level: 'info' | 'warn' | 'error'
   message: string
   data: string | null // JSON
-  timestamp: string // ISO8601
+  created_at: string // ISO8601
 }
 
 export interface SchemaVersionsTable {
