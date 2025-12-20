@@ -36,7 +36,7 @@ export interface JobContext {
  */
 export type JobFunction<TInput, TOutput> = (
   ctx: JobContext,
-  payload: TInput
+  payload: TInput,
 ) => Promise<TOutput>
 
 /**
@@ -85,11 +85,7 @@ export type BatchTriggerInput<TInput> =
 /**
  * Job handle returned by defineJob
  */
-export interface JobHandle<
-  TName extends string,
-  TInput,
-  TOutput,
-> {
+export interface JobHandle<TName extends string, TInput, TOutput> {
   readonly name: TName
 
   /**
@@ -101,7 +97,9 @@ export interface JobHandle<
    * Trigger multiple runs in a batch
    * All inputs are validated before any runs are created
    */
-  batchTrigger(inputs: BatchTriggerInput<TInput>[]): Promise<TypedRun<TOutput>[]>
+  batchTrigger(
+    inputs: BatchTriggerInput<TInput>[],
+  ): Promise<TypedRun<TOutput>[]>
 
   /**
    * Get a run by ID
@@ -177,17 +175,22 @@ export function createJobHandle<
   TOutputSchema extends z.ZodTypeAny | undefined,
 >(
   definition: JobDefinition<TName, TInputSchema, TOutputSchema>,
-  fn: JobFunction<z.infer<TInputSchema>, TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void>,
+  fn: JobFunction<
+    z.infer<TInputSchema>,
+    TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void
+  >,
   storage: Storage,
   _eventEmitter: EventEmitter,
-  registry: JobRegistry
+  registry: JobRegistry,
 ): JobHandle<
   TName,
   z.infer<TInputSchema>,
   TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void
 > {
   type TInput = z.infer<TInputSchema>
-  type TOutput = TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void
+  type TOutput = TOutputSchema extends z.ZodTypeAny
+    ? z.infer<TOutputSchema>
+    : void
 
   // Register the job
   registry.register({
@@ -200,7 +203,10 @@ export function createJobHandle<
   return {
     name: definition.name,
 
-    async trigger(input: TInput, options?: TriggerOptions): Promise<TypedRun<TOutput>> {
+    async trigger(
+      input: TInput,
+      options?: TriggerOptions,
+    ): Promise<TypedRun<TOutput>> {
       // Validate input
       const parseResult = definition.input.safeParse(input)
       if (!parseResult.success) {
@@ -219,7 +225,7 @@ export function createJobHandle<
     },
 
     async batchTrigger(
-      inputs: (TInput | { input: TInput; options?: TriggerOptions })[]
+      inputs: (TInput | { input: TInput; options?: TriggerOptions })[],
     ): Promise<TypedRun<TOutput>[]> {
       if (inputs.length === 0) {
         return []
@@ -238,7 +244,9 @@ export function createJobHandle<
       for (let i = 0; i < normalized.length; i++) {
         const parseResult = definition.input.safeParse(normalized[i].input)
         if (!parseResult.success) {
-          throw new Error(`Invalid input at index ${i}: ${parseResult.error.message}`)
+          throw new Error(
+            `Invalid input at index ${i}: ${parseResult.error.message}`,
+          )
         }
         validated.push({
           payload: parseResult.data,
@@ -253,7 +261,7 @@ export function createJobHandle<
           payload: v.payload,
           idempotencyKey: v.options?.idempotencyKey,
           concurrencyKey: v.options?.concurrencyKey,
-        }))
+        })),
       )
 
       return runs as TypedRun<TOutput>[]
@@ -267,7 +275,9 @@ export function createJobHandle<
       return run as TypedRun<TOutput>
     },
 
-    async getRuns(filter?: Omit<RunFilter, 'jobName'>): Promise<TypedRun<TOutput>[]> {
+    async getRuns(
+      filter?: Omit<RunFilter, 'jobName'>,
+    ): Promise<TypedRun<TOutput>[]> {
       const runs = await storage.getRuns({
         ...filter,
         jobName: definition.name,

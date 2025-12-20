@@ -17,7 +17,12 @@ import {
 } from './job'
 import { runMigrations } from './migrations'
 import type { Database } from './schema'
-import { type Run, type RunFilter, type Storage, createKyselyStorage } from './storage'
+import {
+  type Run,
+  type RunFilter,
+  type Storage,
+  createKyselyStorage,
+} from './storage'
 import { createWorker } from './worker'
 
 /**
@@ -88,8 +93,15 @@ export interface Durably {
     TOutputSchema extends z.ZodTypeAny | undefined = undefined,
   >(
     definition: JobDefinition<TName, TInputSchema, TOutputSchema>,
-    fn: JobFunction<z.infer<TInputSchema>, TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void>
-  ): JobHandle<TName, z.infer<TInputSchema>, TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void>
+    fn: JobFunction<
+      z.infer<TInputSchema>,
+      TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void
+    >,
+  ): JobHandle<
+    TName,
+    z.infer<TInputSchema>,
+    TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void
+  >
 
   /**
    * Start the worker polling loop
@@ -157,8 +169,15 @@ export function createDurably(options: DurablyOptions): Durably {
       TOutputSchema extends z.ZodTypeAny | undefined = undefined,
     >(
       definition: JobDefinition<TName, TInputSchema, TOutputSchema>,
-      fn: JobFunction<z.infer<TInputSchema>, TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void>
-    ): JobHandle<TName, z.infer<TInputSchema>, TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void> {
+      fn: JobFunction<
+        z.infer<TInputSchema>,
+        TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void
+      >,
+    ): JobHandle<
+      TName,
+      z.infer<TInputSchema>,
+      TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void
+    > {
       return createJobHandle(definition, fn, storage, eventEmitter, jobRegistry)
     },
 

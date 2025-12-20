@@ -34,7 +34,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
             await new Promise((r) => setTimeout(r, 100))
           })
           executionOrder.push(`end-${payload.id}`)
-        }
+        },
       )
 
       // Trigger two runs with the same concurrency key
@@ -49,7 +49,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           const allCompleted = runs.every((r) => r.status === 'completed')
           expect(allCompleted).toBe(true)
         },
-        { timeout: 2000 }
+        { timeout: 2000 },
       )
 
       // They should run sequentially: start-1, end-1, start-2, end-2
@@ -69,7 +69,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           await ctx.run('work', async () => {
             await new Promise((r) => setTimeout(r, 100))
           })
-        }
+        },
       )
 
       // Trigger two runs with different concurrency keys
@@ -84,7 +84,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           const allCompleted = runs.every((r) => r.status === 'completed')
           expect(allCompleted).toBe(true)
         },
-        { timeout: 2000 }
+        { timeout: 2000 },
       )
 
       // Both jobs started - with single-threaded worker they still run sequentially
@@ -105,7 +105,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           await ctx.run('work', async () => {
             await new Promise((r) => setTimeout(r, 50))
           })
-        }
+        },
       )
 
       // Mix of runs with and without concurrency keys
@@ -121,7 +121,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           const allCompleted = runs.every((r) => r.status === 'completed')
           expect(allCompleted).toBe(true)
         },
-        { timeout: 2000 }
+        { timeout: 2000 },
       )
 
       expect(executionOrder).toHaveLength(3)
@@ -143,7 +143,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
             await new Promise((r) => setTimeout(r, 50))
           })
           concurrentRuns--
-        }
+        },
       )
 
       // Multiple runs with no concurrency key
@@ -159,7 +159,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           const allCompleted = runs.every((r) => r.status === 'completed')
           expect(allCompleted).toBe(true)
         },
-        { timeout: 2000 }
+        { timeout: 2000 },
       )
 
       // Single-threaded worker means maxConcurrent should be 1

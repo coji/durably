@@ -1,5 +1,4 @@
 import type { Kysely } from 'kysely'
-import { sql } from 'kysely'
 import type { Database } from './schema'
 
 /**
@@ -23,7 +22,9 @@ const migrations: Migration[] = [
         .addColumn('status', 'text', (col) => col.notNull())
         .addColumn('idempotency_key', 'text')
         .addColumn('concurrency_key', 'text')
-        .addColumn('current_step_index', 'integer', (col) => col.notNull().defaultTo(0))
+        .addColumn('current_step_index', 'integer', (col) =>
+          col.notNull().defaultTo(0),
+        )
         .addColumn('progress', 'text')
         .addColumn('output', 'text')
         .addColumn('error', 'text')

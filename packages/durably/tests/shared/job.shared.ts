@@ -25,7 +25,7 @@ export function createJobTests(createDialect: () => Dialect) {
         },
         async (_ctx, _payload) => {
           return { result: 42 }
-        }
+        },
       )
 
       expect(job).toBeDefined()
@@ -42,7 +42,7 @@ export function createJobTests(createDialect: () => Dialect) {
           input: z.object({}),
           output: z.object({}),
         },
-        async () => ({})
+        async () => ({}),
       )
 
       expect(() => {
@@ -52,7 +52,7 @@ export function createJobTests(createDialect: () => Dialect) {
             input: z.object({}),
             output: z.object({}),
           },
-          async () => ({})
+          async () => ({}),
         )
       }).toThrow(/already registered|duplicate/i)
     })
@@ -64,16 +64,16 @@ export function createJobTests(createDialect: () => Dialect) {
           input: z.object({ count: z.number().min(1) }),
           output: z.object({}),
         },
-        async () => ({})
+        async () => ({}),
       )
 
       // Invalid input should throw
       await expect(
-        job.trigger({ count: 0 } as { count: number })
+        job.trigger({ count: 0 } as { count: number }),
       ).rejects.toThrow()
 
       await expect(
-        job.trigger({ count: -1 } as { count: number })
+        job.trigger({ count: -1 } as { count: number }),
       ).rejects.toThrow()
     })
 
@@ -84,7 +84,7 @@ export function createJobTests(createDialect: () => Dialect) {
           input: z.object({ count: z.number().min(1) }),
           output: z.object({}),
         },
-        async () => ({})
+        async () => ({}),
       )
 
       // Valid input should work
@@ -111,7 +111,7 @@ export function createJobTests(createDialect: () => Dialect) {
           const _count: number = payload.count
           const _optional: boolean | undefined = payload.optional
           return { success: true }
-        }
+        },
       )
 
       const run = await job.trigger({
@@ -130,7 +130,7 @@ export function createJobTests(createDialect: () => Dialect) {
         },
         async (_ctx, _payload) => {
           // No return value
-        }
+        },
       )
 
       const run = await job.trigger({ value: 'test' })
@@ -156,10 +156,14 @@ export function createJobTests(createDialect: () => Dialect) {
           name: 'batch-job',
           input: z.object({ value: z.number() }),
         },
-        async () => {}
+        async () => {},
       )
 
-      const runs = await job.batchTrigger([{ value: 1 }, { value: 2 }, { value: 3 }])
+      const runs = await job.batchTrigger([
+        { value: 1 },
+        { value: 2 },
+        { value: 3 },
+      ])
 
       expect(runs).toHaveLength(3)
       expect(runs[0].status).toBe('pending')
@@ -177,12 +181,12 @@ export function createJobTests(createDialect: () => Dialect) {
           name: 'batch-validate-job',
           input: z.object({ value: z.number().min(1) }),
         },
-        async () => {}
+        async () => {},
       )
 
       // Second input is invalid (0 < min 1)
       await expect(
-        job.batchTrigger([{ value: 5 }, { value: 0 }, { value: 3 }])
+        job.batchTrigger([{ value: 5 }, { value: 0 }, { value: 3 }]),
       ).rejects.toThrow()
 
       // No runs should have been created
@@ -196,7 +200,7 @@ export function createJobTests(createDialect: () => Dialect) {
           name: 'batch-options-job',
           input: z.object({ id: z.string() }),
         },
-        async () => {}
+        async () => {},
       )
 
       const runs = await job.batchTrigger([
@@ -216,7 +220,7 @@ export function createJobTests(createDialect: () => Dialect) {
           name: 'batch-empty-job',
           input: z.object({}),
         },
-        async () => {}
+        async () => {},
       )
 
       const runs = await job.batchTrigger([])

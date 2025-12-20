@@ -27,7 +27,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             name: 'get-run-test',
             input: z.object({ value: z.number() }),
           },
-          async () => {}
+          async () => {},
         )
 
         const run = await job.trigger({ value: 42 })
@@ -52,7 +52,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             input: z.object({}),
             output: z.object({ result: z.string() }),
           },
-          async () => ({ result: 'hello' })
+          async () => ({ result: 'hello' }),
         )
 
         const run = await job.trigger({})
@@ -63,7 +63,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             const updated = await job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
 
         // durably.getRun returns unknown output type
@@ -76,11 +76,11 @@ export function createRunApiTests(createDialect: () => Dialect) {
       it('returns all runs', async () => {
         const job1 = durably.defineJob(
           { name: 'job1', input: z.object({}) },
-          async () => {}
+          async () => {},
         )
         const job2 = durably.defineJob(
           { name: 'job2', input: z.object({}) },
-          async () => {}
+          async () => {},
         )
 
         await job1.trigger({})
@@ -94,7 +94,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
       it('filters by status', async () => {
         const job = durably.defineJob(
           { name: 'status-filter-test', input: z.object({}) },
-          async () => {}
+          async () => {},
         )
 
         await job.trigger({})
@@ -107,7 +107,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             const completed = await durably.getRuns({ status: 'completed' })
             expect(completed.length).toBeGreaterThanOrEqual(1)
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
 
         const pending = await durably.getRuns({ status: 'pending' })
@@ -119,11 +119,11 @@ export function createRunApiTests(createDialect: () => Dialect) {
       it('filters by jobName', async () => {
         const job1 = durably.defineJob(
           { name: 'filter-job-a', input: z.object({}) },
-          async () => {}
+          async () => {},
         )
         const job2 = durably.defineJob(
           { name: 'filter-job-b', input: z.object({}) },
-          async () => {}
+          async () => {},
         )
 
         await job1.trigger({})
@@ -140,7 +140,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
       it('returns runs sorted by created_at descending', async () => {
         const job = durably.defineJob(
           { name: 'sort-test', input: z.object({ order: z.number() }) },
-          async () => {}
+          async () => {},
         )
 
         await job.trigger({ order: 1 })
@@ -167,7 +167,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             await ctx.run('step', async () => {
               await new Promise((r) => setTimeout(r, 50))
             })
-          }
+          },
         )
 
         const run = await job.trigger({})
@@ -178,7 +178,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             const updated = await job.getRun(run.id)
             expect(updated?.progress).not.toBeNull()
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
 
         const midRun = await job.getRun(run.id)
@@ -193,7 +193,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             await ctx.run('step', async () => {
               await new Promise((r) => setTimeout(r, 50))
             })
-          }
+          },
         )
 
         const run = await job.trigger({})
@@ -204,7 +204,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             const updated = await job.getRun(run.id)
             expect(updated?.progress).not.toBeNull()
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
 
         const midRun = await job.getRun(run.id)
@@ -226,7 +226,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             await ctx.run('wait', async () => {
               await new Promise((r) => setTimeout(r, 100))
             })
-          }
+          },
         )
 
         const run = await job.trigger({})
@@ -236,7 +236,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
           async () => {
             expect(progressSet).toBe(true)
           },
-          { timeout: 500 }
+          { timeout: 500 },
         )
 
         // Give time for async progress update

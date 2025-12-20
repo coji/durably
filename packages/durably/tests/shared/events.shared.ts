@@ -33,7 +33,7 @@ export function createEventsTests(createDialect: () => Dialect) {
           runId: 'run_1',
           jobName: 'test-job',
           payload: { foo: 'bar' },
-        })
+        }),
       )
     })
 
@@ -73,7 +73,10 @@ export function createEventsTests(createDialect: () => Dialect) {
       })
 
       expect(events[0].timestamp).toBeDefined()
-      expect(new Date(events[0].timestamp).getTime()).toBeCloseTo(Date.now(), -2)
+      expect(new Date(events[0].timestamp).getTime()).toBeCloseTo(
+        Date.now(),
+        -2,
+      )
     })
 
     it('can register multiple listeners for the same event', () => {

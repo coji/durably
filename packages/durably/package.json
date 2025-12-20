@@ -25,7 +25,8 @@
     "test:react": "vitest run --config vitest.react.config.ts",
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "lint": "biome check .",
-    "format": "prettier --write ."
+    "format": "prettier --experimental-cli --check .",
+    "format:fix": "prettier --experimental-cli --write ."
   },
   "keywords": [
     "batch",

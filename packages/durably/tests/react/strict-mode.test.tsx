@@ -74,7 +74,7 @@ describe('React StrictMode', () => {
     const { getByTestId, unmount } = render(
       <StrictMode>
         <TestComponent />
-      </StrictMode>
+      </StrictMode>,
     )
 
     await waitFor(() => {
@@ -134,7 +134,7 @@ describe('React StrictMode', () => {
     const { getByTestId, unmount } = render(
       <StrictMode>
         <TestComponent />
-      </StrictMode>
+      </StrictMode>,
     )
 
     await waitFor(() => {
@@ -154,7 +154,10 @@ describe('React StrictMode', () => {
     instances.push(durably)
 
     // Simulate StrictMode double-calling migrate
-    const [result1, result2] = await Promise.all([durably.migrate(), durably.migrate()])
+    const [result1, result2] = await Promise.all([
+      durably.migrate(),
+      durably.migrate(),
+    ])
 
     // Both should resolve without error
     expect(result1).toBeUndefined()
@@ -209,7 +212,7 @@ describe('React StrictMode', () => {
               async (_ctx, payload) => {
                 executionCount++
                 return { processed: payload.value.toUpperCase() }
-              }
+              },
             )
 
             const run = await job.trigger({ value: 'hello' })
@@ -250,14 +253,14 @@ describe('React StrictMode', () => {
     const { getByTestId } = render(
       <StrictMode>
         <TestComponent />
-      </StrictMode>
+      </StrictMode>,
     )
 
     await waitFor(
       () => {
         expect(getByTestId('result').textContent).toBe('HELLO')
       },
-      { timeout: 3000 }
+      { timeout: 3000 },
     )
 
     // Each StrictMode mount creates its own instance, so job may run twice
@@ -290,7 +293,7 @@ describe('React StrictMode', () => {
               name: 'event-test',
               input: z.object({}),
             },
-            async () => {}
+            async () => {},
           )
           job.trigger({}).then(() => {
             if (!cleanedUp.current) {
@@ -312,7 +315,7 @@ describe('React StrictMode', () => {
     const { unmount } = render(
       <StrictMode>
         <TestComponent />
-      </StrictMode>
+      </StrictMode>,
     )
 
     // Wait a bit for any events

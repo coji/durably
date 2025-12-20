@@ -107,12 +107,18 @@ export type EventType = DurablyEvent['type']
 /**
  * Extract event by type
  */
-export type EventByType<T extends EventType> = Extract<DurablyEvent, { type: T }>
+export type EventByType<T extends EventType> = Extract<
+  DurablyEvent,
+  { type: T }
+>
 
 /**
  * Event input (without auto-generated fields)
  */
-export type EventInput<T extends EventType> = Omit<EventByType<T>, 'timestamp' | 'sequence'>
+export type EventInput<T extends EventType> = Omit<
+  EventByType<T>,
+  'timestamp' | 'sequence'
+>
 
 /**
  * All possible event inputs as a union (properly distributed)

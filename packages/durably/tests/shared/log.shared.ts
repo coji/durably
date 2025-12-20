@@ -29,7 +29,7 @@ export function createLogTests(createDialect: () => Dialect) {
         async (ctx) => {
           ctx.log.info('Hello from job')
           await ctx.run('step', () => {})
-        }
+        },
       )
 
       await job.trigger({})
@@ -41,7 +41,7 @@ export function createLogTests(createDialect: () => Dialect) {
           expect(logEvents[0].level).toBe('info')
           expect(logEvents[0].message).toBe('Hello from job')
         },
-        { timeout: 1000 }
+        { timeout: 1000 },
       )
     })
 
@@ -54,7 +54,7 @@ export function createLogTests(createDialect: () => Dialect) {
         async (ctx) => {
           ctx.log.warn('Warning message')
           await ctx.run('step', () => {})
-        }
+        },
       )
 
       await job.trigger({})
@@ -66,7 +66,7 @@ export function createLogTests(createDialect: () => Dialect) {
           expect(logEvents[0].level).toBe('warn')
           expect(logEvents[0].message).toBe('Warning message')
         },
-        { timeout: 1000 }
+        { timeout: 1000 },
       )
     })
 
@@ -79,7 +79,7 @@ export function createLogTests(createDialect: () => Dialect) {
         async (ctx) => {
           ctx.log.error('Error message')
           await ctx.run('step', () => {})
-        }
+        },
       )
 
       await job.trigger({})
@@ -91,7 +91,7 @@ export function createLogTests(createDialect: () => Dialect) {
           expect(logEvents[0].level).toBe('error')
           expect(logEvents[0].message).toBe('Error message')
         },
-        { timeout: 1000 }
+        { timeout: 1000 },
       )
     })
 
@@ -104,7 +104,7 @@ export function createLogTests(createDialect: () => Dialect) {
         async (ctx) => {
           ctx.log.info('Processing item', { itemId: 123, status: 'active' })
           await ctx.run('step', () => {})
-        }
+        },
       )
 
       await job.trigger({})
@@ -115,7 +115,7 @@ export function createLogTests(createDialect: () => Dialect) {
           expect(logEvents.length).toBeGreaterThanOrEqual(1)
           expect(logEvents[0].data).toEqual({ itemId: 123, status: 'active' })
         },
-        { timeout: 1000 }
+        { timeout: 1000 },
       )
     })
 
@@ -128,7 +128,7 @@ export function createLogTests(createDialect: () => Dialect) {
         async (ctx) => {
           ctx.log.info('Test message')
           await ctx.run('step', () => {})
-        }
+        },
       )
 
       const run = await job.trigger({})
@@ -139,7 +139,7 @@ export function createLogTests(createDialect: () => Dialect) {
           expect(logEvents.length).toBeGreaterThanOrEqual(1)
           expect(logEvents[0].runId).toBe(run.id)
         },
-        { timeout: 1000 }
+        { timeout: 1000 },
       )
     })
   })

@@ -1,7 +1,7 @@
+import { createJobContext } from './context'
 import type { EventEmitter } from './events'
 import type { JobRegistry } from './job'
 import type { Storage } from './storage'
-import { createJobContext } from './context'
 
 /**
  * Worker configuration
@@ -39,7 +39,7 @@ export function createWorker(
   config: WorkerConfig,
   storage: Storage,
   eventEmitter: EventEmitter,
-  jobRegistry: JobRegistry
+  jobRegistry: JobRegistry,
 ): Worker {
   let running = false
   let currentRunPromise: Promise<void> | null = null
@@ -52,7 +52,9 @@ export function createWorker(
    * Recover stale runs by resetting them to pending
    */
   async function recoverStaleRuns(): Promise<void> {
-    const staleThreshold = new Date(Date.now() - config.staleThreshold).toISOString()
+    const staleThreshold = new Date(
+      Date.now() - config.staleThreshold,
+    ).toISOString()
     const runningRuns = await storage.getRuns({ status: 'running' })
 
     for (const run of runningRuns) {
@@ -152,7 +154,8 @@ export function createWorker(
         duration: Date.now() - startTime,
       })
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
+      const errorMessage =
+        error instanceof Error ? error.message : String(error)
 
       // Get the failed step name if available
       const steps = await storage.getSteps(run.id)

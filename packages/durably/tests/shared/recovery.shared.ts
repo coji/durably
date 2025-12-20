@@ -34,7 +34,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
               // Run long enough to see heartbeat updates
               await new Promise((r) => setTimeout(r, 250))
             })
-          }
+          },
         )
 
         const run = await job.trigger({})
@@ -48,7 +48,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         const midRun = await job.getRun(run.id)
         expect(midRun?.status).toBe('running')
         expect(new Date(midRun!.heartbeatAt).getTime()).toBeGreaterThan(
-          new Date(initialHeartbeat).getTime()
+          new Date(initialHeartbeat).getTime(),
         )
 
         // Wait for completion
@@ -57,7 +57,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             const updated = await job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
       })
 
@@ -87,7 +87,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
                 await new Promise((r) => setTimeout(r, 100))
               }
             })
-          }
+          },
         )
 
         const run = await job.trigger({})
@@ -98,7 +98,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             const updated = await job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
-          { timeout: 2000 }
+          { timeout: 2000 },
         )
 
         await customDurably.stop()
@@ -116,7 +116,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             name: 'stale-recovery-test',
             input: z.object({}),
           },
-          async () => {}
+          async () => {},
         )
 
         // Create a run and manually set it to running with old heartbeat
@@ -137,7 +137,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             // Should either be pending (recovered) or completed (re-executed)
             expect(['pending', 'completed']).toContain(updated?.status)
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
       })
 
@@ -159,7 +159,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
               step2Calls++
               return 'step2-done'
             })
-          }
+          },
         )
 
         // Create run and simulate partial execution
@@ -187,7 +187,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             const updated = await job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
 
         // step1 was skipped, step2 was executed
@@ -207,7 +207,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             if (payload.shouldFail) {
               throw new Error('Intentional failure')
             }
-          }
+          },
         )
 
         const run = await job.trigger({ shouldFail: true })
@@ -218,7 +218,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             const updated = await job.getRun(run.id)
             expect(updated?.status).toBe('failed')
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
 
         // Retry the failed run
@@ -235,7 +235,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             name: 'retry-completed-test',
             input: z.object({}),
           },
-          async () => {}
+          async () => {},
         )
 
         const run = await job.trigger({})
@@ -246,10 +246,12 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             const updated = await job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
 
-        await expect(durably.retry(run.id)).rejects.toThrow(/completed|cannot retry/i)
+        await expect(durably.retry(run.id)).rejects.toThrow(
+          /completed|cannot retry/i,
+        )
       })
 
       it('throws when retrying pending run', async () => {
@@ -258,13 +260,15 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             name: 'retry-pending-test',
             input: z.object({}),
           },
-          async () => {}
+          async () => {},
         )
 
         const run = await job.trigger({})
         // Don't start worker - run stays pending
 
-        await expect(durably.retry(run.id)).rejects.toThrow(/pending|cannot retry/i)
+        await expect(durably.retry(run.id)).rejects.toThrow(
+          /pending|cannot retry/i,
+        )
       })
 
       it('throws when retrying running run', async () => {
@@ -277,7 +281,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             await ctx.run('long-step', async () => {
               await new Promise((r) => setTimeout(r, 500))
             })
-          }
+          },
         )
 
         const run = await job.trigger({})
@@ -289,10 +293,12 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             const updated = await job.getRun(run.id)
             expect(updated?.status).toBe('running')
           },
-          { timeout: 500 }
+          { timeout: 500 },
         )
 
-        await expect(durably.retry(run.id)).rejects.toThrow(/running|cannot retry/i)
+        await expect(durably.retry(run.id)).rejects.toThrow(
+          /running|cannot retry/i,
+        )
       })
     })
   })

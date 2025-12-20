@@ -280,17 +280,29 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       }
 
       if (data.status !== undefined) updates.status = data.status
-      if (data.currentStepIndex !== undefined) updates.current_step_index = data.currentStepIndex
-      if (data.progress !== undefined) updates.progress = data.progress ? JSON.stringify(data.progress) : null
-      if (data.output !== undefined) updates.output = JSON.stringify(data.output) ?? null
+      if (data.currentStepIndex !== undefined)
+        updates.current_step_index = data.currentStepIndex
+      if (data.progress !== undefined)
+        updates.progress = data.progress ? JSON.stringify(data.progress) : null
+      if (data.output !== undefined)
+        updates.output = JSON.stringify(data.output) ?? null
       if (data.error !== undefined) updates.error = data.error
-      if (data.heartbeatAt !== undefined) updates.heartbeat_at = data.heartbeatAt
+      if (data.heartbeatAt !== undefined)
+        updates.heartbeat_at = data.heartbeatAt
 
-      await db.updateTable('runs').set(updates).where('id', '=', runId).execute()
+      await db
+        .updateTable('runs')
+        .set(updates)
+        .where('id', '=', runId)
+        .execute()
     },
 
     async getRun(runId: string): Promise<Run | null> {
-      const row = await db.selectFrom('runs').selectAll().where('id', '=', runId).executeTakeFirst()
+      const row = await db
+        .selectFrom('runs')
+        .selectAll()
+        .where('id', '=', runId)
+        .executeTakeFirst()
 
       return row ? rowToRun(row) : null
     },
@@ -311,7 +323,9 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       return rows.map(rowToRun)
     },
 
-    async getNextPendingRun(excludeConcurrencyKeys: string[]): Promise<Run | null> {
+    async getNextPendingRun(
+      excludeConcurrencyKeys: string[],
+    ): Promise<Run | null> {
       let query = db
         .selectFrom('runs')
         .selectAll()
@@ -321,7 +335,10 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
 
       if (excludeConcurrencyKeys.length > 0) {
         query = query.where((eb) =>
-          eb.or([eb('concurrency_key', 'is', null), eb('concurrency_key', 'not in', excludeConcurrencyKeys)])
+          eb.or([
+            eb('concurrency_key', 'is', null),
+            eb('concurrency_key', 'not in', excludeConcurrencyKeys),
+          ]),
         )
       }
 
@@ -339,7 +356,8 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         name: input.name,
         index: input.index,
         status: input.status,
-        output: input.output !== undefined ? JSON.stringify(input.output) : null,
+        output:
+          input.output !== undefined ? JSON.stringify(input.output) : null,
         error: input.error ?? null,
         started_at: now,
         completed_at: now,

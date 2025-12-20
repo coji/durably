@@ -1,7 +1,12 @@
 import type { Dialect } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { createDurably, type Durably, type StepCompleteEvent, type StepFailEvent } from '../../src'
+import {
+  createDurably,
+  type Durably,
+  type StepCompleteEvent,
+  type StepFailEvent,
+} from '../../src'
 
 export function createStepTests(createDialect: () => Dialect) {
   describe('ctx.run() Step Execution', () => {
@@ -30,7 +35,7 @@ export function createStepTests(createDialect: () => Dialect) {
         async (ctx) => {
           const value = await ctx.run('compute', () => 42)
           return { result: value }
-        }
+        },
       )
 
       const run = await job.trigger({})
@@ -42,7 +47,7 @@ export function createStepTests(createDialect: () => Dialect) {
           expect(updated?.status).toBe('completed')
           expect(updated?.output).toEqual({ result: 42 })
         },
-        { timeout: 1000 }
+        { timeout: 1000 },
       )
     })
 
@@ -55,7 +60,7 @@ export function createStepTests(createDialect: () => Dialect) {
         async (ctx) => {
           await ctx.run('step1', () => 'result1')
           await ctx.run('step2', () => 'result2')
-        }
+        },
       )
 
       const run = await job.trigger({})
@@ -72,7 +77,7 @@ export function createStepTests(createDialect: () => Dialect) {
           expect(steps[1].status).toBe('completed')
           expect(steps[1].output).toBe('result2')
         },
-        { timeout: 1000 }
+        { timeout: 1000 },
       )
     })
 
@@ -86,7 +91,7 @@ export function createStepTests(createDialect: () => Dialect) {
           await ctx.run('failing-step', () => {
             throw new Error('Step failed!')
           })
-        }
+        },
       )
 
       const run = await job.trigger({})
@@ -98,7 +103,7 @@ export function createStepTests(createDialect: () => Dialect) {
           expect(updated?.status).toBe('failed')
           expect(updated?.error).toContain('Step failed!')
         },
-        { timeout: 1000 }
+        { timeout: 1000 },
       )
 
       // Check step was recorded as failed
@@ -130,7 +135,7 @@ export function createStepTests(createDialect: () => Dialect) {
             }
             return 'step2-result'
           })
-        }
+        },
       )
 
       // First run - will fail at step2
@@ -142,7 +147,7 @@ export function createStepTests(createDialect: () => Dialect) {
           const updated = await job.getRun(run1.id)
           expect(updated?.status).toBe('failed')
         },
-        { timeout: 1000 }
+        { timeout: 1000 },
       )
 
       expect(step1Calls).toBe(1)
@@ -157,7 +162,7 @@ export function createStepTests(createDialect: () => Dialect) {
           const updated = await job.getRun(run1.id)
           expect(updated?.status).toBe('completed')
         },
-        { timeout: 1000 }
+        { timeout: 1000 },
       )
 
       // step1 was skipped (still 1), step2 was retried
@@ -192,7 +197,7 @@ export function createStepTests(createDialect: () => Dialect) {
           })
 
           return { step1Result: result }
-        }
+        },
       )
 
       // First attempt - step1 succeeds, step2 fails
@@ -204,7 +209,7 @@ export function createStepTests(createDialect: () => Dialect) {
           const updated = await job.getRun(run.id)
           expect(updated?.status).toBe('failed')
         },
-        { timeout: 1000 }
+        { timeout: 1000 },
       )
 
       expect(step1CallCount).toBe(1)
@@ -222,7 +227,7 @@ export function createStepTests(createDialect: () => Dialect) {
           // The step1Result should be from first call, not recomputed
           expect(updated?.output?.step1Result).toBe('computed-call-1')
         },
-        { timeout: 1000 }
+        { timeout: 1000 },
       )
 
       // step1 was NOT called again (still 1), step2 was retried
@@ -242,7 +247,7 @@ export function createStepTests(createDialect: () => Dialect) {
         },
         async (ctx) => {
           await ctx.run('myStep', () => 'hello')
-        }
+        },
       )
 
       await job.trigger({})
@@ -254,7 +259,7 @@ export function createStepTests(createDialect: () => Dialect) {
           expect(stepEvents[0].stepName).toBe('myStep')
           expect(stepEvents[0].output).toBe('hello')
         },
-        { timeout: 1000 }
+        { timeout: 1000 },
       )
     })
 
@@ -271,7 +276,7 @@ export function createStepTests(createDialect: () => Dialect) {
             return 'async-result'
           })
           return { value }
-        }
+        },
       )
 
       const run = await job.trigger({})
@@ -283,7 +288,7 @@ export function createStepTests(createDialect: () => Dialect) {
           expect(updated?.status).toBe('completed')
           expect(updated?.output).toEqual({ value: 'async-result' })
         },
-        { timeout: 1000 }
+        { timeout: 1000 },
       )
     })
   })

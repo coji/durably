@@ -9,7 +9,7 @@ export function createJobContext(
   run: Run,
   jobName: string,
   storage: Storage,
-  eventEmitter: EventEmitter
+  eventEmitter: EventEmitter,
 ): JobContext {
   let stepIndex = run.currentStepIndex
 
@@ -68,7 +68,8 @@ export function createJobContext(
         return result
       } catch (error) {
         // Save failed step
-        const errorMessage = error instanceof Error ? error.message : String(error)
+        const errorMessage =
+          error instanceof Error ? error.message : String(error)
 
         await storage.createStep({
           runId: run.id,

@@ -28,7 +28,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
             input: z.object({}),
             output: z.object({ done: z.boolean() }),
           },
-          async () => ({ done: true })
+          async () => ({ done: true }),
         )
 
         await job.trigger({})
@@ -40,7 +40,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
             const run = (await job.getRuns())[0]
             expect(run.status).toBe('completed')
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
       })
 
@@ -56,7 +56,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
               stepExecuted = true
               await new Promise((r) => setTimeout(r, 100))
             })
-          }
+          },
         )
 
         await job.trigger({})
@@ -94,7 +94,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
             input: z.object({}),
             output: z.object({ value: z.number() }),
           },
-          async () => ({ value: 42 })
+          async () => ({ value: 42 }),
         )
 
         const run = await job.trigger({})
@@ -107,7 +107,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
             const updated = await job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
 
         expect(states).toEqual(['running', 'completed'])
@@ -121,7 +121,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
           },
           async () => {
             throw new Error('Job failed intentionally')
-          }
+          },
         )
 
         const run = await job.trigger({})
@@ -133,7 +133,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
             expect(updated?.status).toBe('failed')
             expect(updated?.error).toContain('Job failed intentionally')
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
       })
     })
@@ -149,7 +149,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
           },
           async (_ctx, payload) => {
             receivedPayload = payload
-          }
+          },
         )
 
         await job.trigger({ value: 'hello' })
@@ -159,7 +159,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
           async () => {
             expect(receivedPayload).toEqual({ value: 'hello' })
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
       })
 
@@ -170,7 +170,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
             input: z.object({}),
             output: z.object({ result: z.number() }),
           },
-          async () => ({ result: 123 })
+          async () => ({ result: 123 }),
         )
 
         const run = await job.trigger({})
@@ -182,7 +182,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
             expect(updated?.status).toBe('completed')
             expect(updated?.output).toEqual({ result: 123 })
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
       })
 
@@ -197,7 +197,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
           async (_ctx, payload) => {
             order.push(payload.n)
             await new Promise((r) => setTimeout(r, 20))
-          }
+          },
         )
 
         await job.trigger({ n: 1 })
@@ -212,7 +212,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
             const allCompleted = runs.every((r) => r.status === 'completed')
             expect(allCompleted).toBe(true)
           },
-          { timeout: 2000 }
+          { timeout: 2000 },
         )
 
         expect(order).toEqual([1, 2, 3])

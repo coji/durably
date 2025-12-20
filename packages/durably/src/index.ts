@@ -13,14 +13,20 @@ export { withLogPersistence } from './plugins/log-persistence'
 export type {
   DurablyEvent,
   EventType,
-  RunStartEvent,
+  LogWriteEvent,
   RunCompleteEvent,
   RunFailEvent,
-  StepStartEvent,
+  RunStartEvent,
   StepCompleteEvent,
   StepFailEvent,
-  LogWriteEvent,
+  StepStartEvent,
 } from './events'
 
 // Schema types (for advanced users)
-export type { Database, RunsTable, StepsTable, LogsTable, SchemaVersionsTable } from './schema'
+export type {
+  Database,
+  LogsTable,
+  RunsTable,
+  SchemaVersionsTable,
+  StepsTable,
+} from './schema'

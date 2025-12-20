@@ -1,12 +1,7 @@
 import type { Dialect } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import {
-  createDurably,
-  type Durably,
-  type DurablyPlugin,
-  type LogWriteEvent,
-} from '../../src'
+import { createDurably, type Durably, type DurablyPlugin } from '../../src'
 
 export function createPluginTests(createDialect: () => Dialect) {
   describe('Plugin System', () => {
@@ -44,7 +39,7 @@ export function createPluginTests(createDialect: () => Dialect) {
           { name: 'plugin-test', input: z.object({}) },
           async (ctx) => {
             await ctx.run('step', () => {})
-          }
+          },
         )
 
         await job.trigger({})
@@ -54,7 +49,7 @@ export function createPluginTests(createDialect: () => Dialect) {
           async () => {
             expect(events).toContain('run:start')
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
       })
 
@@ -82,7 +77,7 @@ export function createPluginTests(createDialect: () => Dialect) {
           { name: 'multi-plugin-test', input: z.object({}) },
           async (ctx) => {
             await ctx.run('step', () => {})
-          }
+          },
         )
 
         await job.trigger({})
@@ -93,7 +88,7 @@ export function createPluginTests(createDialect: () => Dialect) {
             expect(events).toContain('plugin1')
             expect(events).toContain('plugin2')
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
       })
     })
@@ -108,7 +103,7 @@ export function createPluginTests(createDialect: () => Dialect) {
           async (ctx) => {
             ctx.log.info('Test log message', { key: 'value' })
             await ctx.run('step', () => {})
-          }
+          },
         )
 
         const run = await job.trigger({})
@@ -119,7 +114,7 @@ export function createPluginTests(createDialect: () => Dialect) {
             const updated = await job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
 
         // Check logs were persisted
@@ -136,7 +131,7 @@ export function createPluginTests(createDialect: () => Dialect) {
           async (ctx) => {
             ctx.log.info('This should not be persisted')
             await ctx.run('step', () => {})
-          }
+          },
         )
 
         const run = await job.trigger({})
@@ -147,7 +142,7 @@ export function createPluginTests(createDialect: () => Dialect) {
             const updated = await job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
-          { timeout: 1000 }
+          { timeout: 1000 },
         )
 
         // Logs should not be persisted

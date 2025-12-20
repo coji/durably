@@ -81,7 +81,10 @@ export function createStorageTests(createDialect: () => Dialect) {
       it('gets runs with filter', async () => {
         await durably.storage.createRun({ jobName: 'job-a', payload: {} })
         await durably.storage.createRun({ jobName: 'job-b', payload: {} })
-        const run3 = await durably.storage.createRun({ jobName: 'job-a', payload: {} })
+        const run3 = await durably.storage.createRun({
+          jobName: 'job-a',
+          payload: {},
+        })
         await durably.storage.updateRun(run3.id, { status: 'completed' })
 
         const pendingRuns = await durably.storage.getRuns({ status: 'pending' })
@@ -90,7 +93,9 @@ export function createStorageTests(createDialect: () => Dialect) {
         const jobARuns = await durably.storage.getRuns({ jobName: 'job-a' })
         expect(jobARuns).toHaveLength(2)
 
-        const completedRuns = await durably.storage.getRuns({ status: 'completed' })
+        const completedRuns = await durably.storage.getRuns({
+          status: 'completed',
+        })
         expect(completedRuns).toHaveLength(1)
       })
 
@@ -150,7 +155,10 @@ export function createStorageTests(createDialect: () => Dialect) {
           output: { data: [1, 2, 3] },
         })
 
-        const step = await durably.storage.getCompletedStep(run.id, 'fetch-data')
+        const step = await durably.storage.getCompletedStep(
+          run.id,
+          'fetch-data',
+        )
         expect(step).not.toBeNull()
         expect(step!.output).toEqual({ data: [1, 2, 3] })
       })
@@ -161,7 +169,10 @@ export function createStorageTests(createDialect: () => Dialect) {
           payload: {},
         })
 
-        const step = await durably.storage.getCompletedStep(run.id, 'non-existent')
+        const step = await durably.storage.getCompletedStep(
+          run.id,
+          'non-existent',
+        )
         expect(step).toBeNull()
       })
     })

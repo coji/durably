@@ -1,5 +1,3 @@
-import type { Generated } from 'kysely'
-
 /**
  * Database schema types for Durably
  */
