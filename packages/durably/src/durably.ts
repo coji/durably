@@ -1,7 +1,23 @@
 import type { Dialect } from 'kysely'
 import { Kysely } from 'kysely'
+import type { z } from 'zod'
+import {
+  type AnyEventInput,
+  type EventListener,
+  type EventType,
+  type Unsubscribe,
+  createEventEmitter,
+} from './events'
+import {
+  type JobDefinition,
+  type JobFunction,
+  type JobHandle,
+  createJobHandle,
+  createJobRegistry,
+} from './job'
 import { runMigrations } from './migrations'
 import type { Database } from './schema'
+import { type Storage, createKyselyStorage } from './storage'
 
 /**
  * Options for creating a Durably instance
@@ -38,11 +54,37 @@ export interface Durably {
    */
   readonly db: Kysely<Database>
 
+  /**
+   * Storage layer for database operations
+   */
+  readonly storage: Storage
+
+  /**
+   * Register an event listener
+   * @returns Unsubscribe function
+   */
+  on<T extends EventType>(type: T, listener: EventListener<T>): Unsubscribe
+
+  /**
+   * Emit an event (auto-assigns timestamp and sequence)
+   */
+  emit(event: AnyEventInput): void
+
+  /**
+   * Define a job
+   */
+  defineJob<
+    TName extends string,
+    TInputSchema extends z.ZodTypeAny,
+    TOutputSchema extends z.ZodTypeAny | undefined = undefined,
+  >(
+    definition: JobDefinition<TName, TInputSchema, TOutputSchema>,
+    fn: JobFunction<z.infer<TInputSchema>, TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void>
+  ): JobHandle<TName, z.infer<TInputSchema>, TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void>
+
   // TODO: Add more methods in later phases
-  // defineJob()
   // start()
   // stop()
-  // on()
   // use()
   // getRun()
   // getRuns()
@@ -60,6 +102,9 @@ export function createDurably(options: DurablyOptions): Durably {
   }
 
   const db = new Kysely<Database>({ dialect: options.dialect })
+  const storage = createKyselyStorage(db)
+  const eventEmitter = createEventEmitter()
+  const jobRegistry = createJobRegistry()
 
   // Track migration state for idempotency
   let migrating: Promise<void> | null = null
@@ -67,6 +112,20 @@ export function createDurably(options: DurablyOptions): Durably {
 
   return {
     db,
+    storage,
+    on: eventEmitter.on,
+    emit: eventEmitter.emit,
+
+    defineJob<
+      TName extends string,
+      TInputSchema extends z.ZodTypeAny,
+      TOutputSchema extends z.ZodTypeAny | undefined = undefined,
+    >(
+      definition: JobDefinition<TName, TInputSchema, TOutputSchema>,
+      fn: JobFunction<z.infer<TInputSchema>, TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void>
+    ): JobHandle<TName, z.infer<TInputSchema>, TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void> {
+      return createJobHandle(definition, fn, storage, eventEmitter, jobRegistry)
+    },
 
     async migrate(): Promise<void> {
       // Already migrated
