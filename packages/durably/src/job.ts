@@ -76,6 +76,13 @@ export interface TypedRun<TOutput> extends Omit<Run, 'output'> {
 }
 
 /**
+ * Batch trigger input - either just the input or input with options
+ */
+export type BatchTriggerInput<TInput> =
+  | TInput
+  | { input: TInput; options?: TriggerOptions }
+
+/**
  * Job handle returned by defineJob
  */
 export interface JobHandle<
@@ -89,6 +96,12 @@ export interface JobHandle<
    * Trigger a new run
    */
   trigger(input: TInput, options?: TriggerOptions): Promise<TypedRun<TOutput>>
+
+  /**
+   * Trigger multiple runs in a batch
+   * All inputs are validated before any runs are created
+   */
+  batchTrigger(inputs: BatchTriggerInput<TInput>[]): Promise<TypedRun<TOutput>[]>
 
   /**
    * Get a run by ID
@@ -203,6 +216,47 @@ export function createJobHandle<
       })
 
       return run as TypedRun<TOutput>
+    },
+
+    async batchTrigger(
+      inputs: (TInput | { input: TInput; options?: TriggerOptions })[]
+    ): Promise<TypedRun<TOutput>[]> {
+      if (inputs.length === 0) {
+        return []
+      }
+
+      // Normalize inputs to { input, options } format
+      const normalized = inputs.map((item) => {
+        if (item && typeof item === 'object' && 'input' in item) {
+          return item as { input: TInput; options?: TriggerOptions }
+        }
+        return { input: item as TInput, options: undefined }
+      })
+
+      // Validate all inputs first (before creating any runs)
+      const validated: { payload: unknown; options?: TriggerOptions }[] = []
+      for (let i = 0; i < normalized.length; i++) {
+        const parseResult = definition.input.safeParse(normalized[i].input)
+        if (!parseResult.success) {
+          throw new Error(`Invalid input at index ${i}: ${parseResult.error.message}`)
+        }
+        validated.push({
+          payload: parseResult.data,
+          options: normalized[i].options,
+        })
+      }
+
+      // Create all runs
+      const runs = await storage.batchCreateRuns(
+        validated.map((v) => ({
+          jobName: definition.name,
+          payload: v.payload,
+          idempotencyKey: v.options?.idempotencyKey,
+          concurrencyKey: v.options?.concurrencyKey,
+        }))
+      )
+
+      return runs as TypedRun<TOutput>[]
     },
 
     async getRun(id: string): Promise<TypedRun<TOutput> | null> {

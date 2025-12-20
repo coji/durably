@@ -108,6 +108,7 @@ export interface Log {
 export interface Storage {
   // Run operations
   createRun(input: CreateRunInput): Promise<Run>
+  batchCreateRuns(inputs: CreateRunInput[]): Promise<Run[]>
   updateRun(runId: string, data: UpdateRunInput): Promise<void>
   getRun(runId: string): Promise<Run | null>
   getRuns(filter?: RunFilter): Promise<Run[]>
@@ -218,6 +219,58 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       await db.insertInto('runs').values(run).execute()
 
       return rowToRun(run)
+    },
+
+    async batchCreateRuns(inputs: CreateRunInput[]): Promise<Run[]> {
+      if (inputs.length === 0) {
+        return []
+      }
+
+      const now = new Date().toISOString()
+      const runs: Database['runs'][] = []
+
+      // Process inputs - check idempotency keys and create run objects
+      for (const input of inputs) {
+        // Check for existing run with same idempotency key
+        if (input.idempotencyKey) {
+          const existing = await db
+            .selectFrom('runs')
+            .selectAll()
+            .where('job_name', '=', input.jobName)
+            .where('idempotency_key', '=', input.idempotencyKey)
+            .executeTakeFirst()
+
+          if (existing) {
+            runs.push(existing)
+            continue
+          }
+        }
+
+        const id = ulid()
+        runs.push({
+          id,
+          job_name: input.jobName,
+          payload: JSON.stringify(input.payload),
+          status: 'pending',
+          idempotency_key: input.idempotencyKey ?? null,
+          concurrency_key: input.concurrencyKey ?? null,
+          current_step_index: 0,
+          progress: null,
+          output: null,
+          error: null,
+          heartbeat_at: now,
+          created_at: now,
+          updated_at: now,
+        })
+      }
+
+      // Insert all new runs in a single batch
+      const newRuns = runs.filter((r) => r.created_at === now)
+      if (newRuns.length > 0) {
+        await db.insertInto('runs').values(newRuns).execute()
+      }
+
+      return runs.map(rowToRun)
     },
 
     async updateRun(runId: string, data: UpdateRunInput): Promise<void> {
