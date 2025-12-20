@@ -18,6 +18,7 @@ import {
 import { runMigrations } from './migrations'
 import type { Database } from './schema'
 import { type Storage, createKyselyStorage } from './storage'
+import { createWorker } from './worker'
 
 /**
  * Options for creating a Durably instance
@@ -82,9 +83,17 @@ export interface Durably {
     fn: JobFunction<z.infer<TInputSchema>, TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void>
   ): JobHandle<TName, z.infer<TInputSchema>, TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void>
 
+  /**
+   * Start the worker polling loop
+   */
+  start(): void
+
+  /**
+   * Stop the worker after current run completes
+   */
+  stop(): Promise<void>
+
   // TODO: Add more methods in later phases
-  // start()
-  // stop()
   // use()
   // getRun()
   // getRuns()
@@ -105,6 +114,7 @@ export function createDurably(options: DurablyOptions): Durably {
   const storage = createKyselyStorage(db)
   const eventEmitter = createEventEmitter()
   const jobRegistry = createJobRegistry()
+  const worker = createWorker(config, storage, eventEmitter, jobRegistry)
 
   // Track migration state for idempotency
   let migrating: Promise<void> | null = null
@@ -115,6 +125,8 @@ export function createDurably(options: DurablyOptions): Durably {
     storage,
     on: eventEmitter.on,
     emit: eventEmitter.emit,
+    start: worker.start,
+    stop: worker.stop,
 
     defineJob<
       TName extends string,

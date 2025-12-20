@@ -1,0 +1,195 @@
+import type { EventEmitter } from './events'
+import type { JobRegistry } from './job'
+import type { Storage } from './storage'
+import { createJobContext } from './context'
+
+/**
+ * Worker configuration
+ */
+export interface WorkerConfig {
+  pollingInterval: number
+  heartbeatInterval: number
+  staleThreshold: number
+}
+
+/**
+ * Worker state
+ */
+export interface Worker {
+  /**
+   * Start the worker polling loop
+   */
+  start(): void
+
+  /**
+   * Stop the worker after current run completes
+   */
+  stop(): Promise<void>
+
+  /**
+   * Check if worker is running
+   */
+  readonly isRunning: boolean
+}
+
+/**
+ * Create a worker instance
+ */
+export function createWorker(
+  config: WorkerConfig,
+  storage: Storage,
+  eventEmitter: EventEmitter,
+  jobRegistry: JobRegistry
+): Worker {
+  let running = false
+  let currentRunPromise: Promise<void> | null = null
+  let pollingTimeout: ReturnType<typeof setTimeout> | null = null
+  let stopResolver: (() => void) | null = null
+
+  async function processNextRun(): Promise<boolean> {
+    // Get running runs to exclude their concurrency keys
+    const runningRuns = await storage.getRuns({ status: 'running' })
+    const excludeConcurrencyKeys = runningRuns
+      .filter((r) => r.concurrencyKey !== null)
+      .map((r) => r.concurrencyKey!)
+
+    // Get next pending run
+    const run = await storage.getNextPendingRun(excludeConcurrencyKeys)
+    if (!run) {
+      return false
+    }
+
+    // Get the job definition
+    const job = jobRegistry.get(run.jobName)
+    if (!job) {
+      // Unknown job - mark as failed
+      await storage.updateRun(run.id, {
+        status: 'failed',
+        error: `Unknown job: ${run.jobName}`,
+      })
+      return true
+    }
+
+    // Transition to running
+    await storage.updateRun(run.id, {
+      status: 'running',
+      heartbeatAt: new Date().toISOString(),
+    })
+
+    // Emit run:start event
+    eventEmitter.emit({
+      type: 'run:start',
+      runId: run.id,
+      jobName: run.jobName,
+      payload: run.payload,
+    })
+
+    const startTime = Date.now()
+
+    try {
+      // Create context and execute job
+      const ctx = createJobContext(run, run.jobName, storage, eventEmitter)
+      const output = await job.fn(ctx, run.payload)
+
+      // Validate output if schema exists
+      if (job.outputSchema) {
+        const parseResult = job.outputSchema.safeParse(output)
+        if (!parseResult.success) {
+          throw new Error(`Invalid output: ${parseResult.error.message}`)
+        }
+      }
+
+      // Transition to completed
+      await storage.updateRun(run.id, {
+        status: 'completed',
+        output,
+      })
+
+      // Emit run:complete event
+      eventEmitter.emit({
+        type: 'run:complete',
+        runId: run.id,
+        jobName: run.jobName,
+        output,
+        duration: Date.now() - startTime,
+      })
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
+
+      // Get the failed step name if available
+      const steps = await storage.getSteps(run.id)
+      const failedStep = steps.find((s) => s.status === 'failed')
+
+      // Transition to failed
+      await storage.updateRun(run.id, {
+        status: 'failed',
+        error: errorMessage,
+      })
+
+      // Emit run:fail event
+      eventEmitter.emit({
+        type: 'run:fail',
+        runId: run.id,
+        jobName: run.jobName,
+        error: errorMessage,
+        failedStepName: failedStep?.name ?? 'unknown',
+      })
+    }
+
+    return true
+  }
+
+  async function poll(): Promise<void> {
+    if (!running) {
+      return
+    }
+
+    try {
+      currentRunPromise = processNextRun().then(() => {})
+      await currentRunPromise
+    } finally {
+      currentRunPromise = null
+    }
+
+    if (running) {
+      pollingTimeout = setTimeout(() => poll(), config.pollingInterval)
+    } else if (stopResolver) {
+      stopResolver()
+      stopResolver = null
+    }
+  }
+
+  return {
+    get isRunning(): boolean {
+      return running
+    },
+
+    start(): void {
+      if (running) {
+        return
+      }
+      running = true
+      poll()
+    },
+
+    async stop(): Promise<void> {
+      if (!running) {
+        return
+      }
+
+      running = false
+
+      if (pollingTimeout) {
+        clearTimeout(pollingTimeout)
+        pollingTimeout = null
+      }
+
+      if (currentRunPromise) {
+        // Wait for current run to complete
+        return new Promise<void>((resolve) => {
+          stopResolver = resolve
+        })
+      }
+    },
+  }
+}
