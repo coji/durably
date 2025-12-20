@@ -1,12 +1,7 @@
 import type { Dialect } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import {
-  createDurably,
-  type Durably,
-  type StepCompleteEvent,
-  type StepFailEvent,
-} from '../../src'
+import { createDurably, type Durably, type StepCompleteEvent } from '../../src'
 
 export function createStepTests(createDialect: () => Dialect) {
   describe('ctx.run() Step Execution', () => {
@@ -236,7 +231,7 @@ export function createStepTests(createDialect: () => Dialect) {
     })
 
     it('emits step:start and step:complete events', async () => {
-      const stepEvents: (StepCompleteEvent | StepFailEvent)[] = []
+      const stepEvents: StepCompleteEvent[] = []
 
       durably.on('step:complete', (e) => stepEvents.push(e))
 
