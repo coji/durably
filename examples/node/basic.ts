@@ -4,9 +4,9 @@
  * This example shows basic usage of Durably with Turso/libSQL.
  */
 
+import { createDurably } from '@coji/durably'
 import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { z } from 'zod'
-import { createDurably } from '@coji/durably'
 
 // Turso の場合は環境変数から URL と authToken を取得
 // ローカル開発では file:local.db を使用
