@@ -7,6 +7,11 @@ import type { Run, Storage } from './storage'
  */
 export interface JobContext {
   /**
+   * The ID of the current run
+   */
+  readonly runId: string
+
+  /**
    * Execute a step with automatic persistence and replay
    */
   run<T>(name: string, fn: () => T | Promise<T>): Promise<T>

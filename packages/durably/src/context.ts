@@ -14,6 +14,10 @@ export function createJobContext(
   let stepIndex = run.currentStepIndex
 
   return {
+    get runId(): string {
+      return run.id
+    },
+
     async run<T>(name: string, fn: () => T | Promise<T>): Promise<T> {
       // Check if step was already completed
       const existingStep = await storage.getCompletedStep(run.id, name)

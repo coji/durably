@@ -39,7 +39,7 @@ export interface UpdateRunInput {
   currentStepIndex?: number
   progress?: { current: number; total?: number; message?: string } | null
   output?: unknown
-  error?: string
+  error?: string | null
   heartbeatAt?: string
 }
 
@@ -186,7 +186,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       if (data.status !== undefined) updates.status = data.status
       if (data.currentStepIndex !== undefined) updates.current_step_index = data.currentStepIndex
       if (data.progress !== undefined) updates.progress = data.progress ? JSON.stringify(data.progress) : null
-      if (data.output !== undefined) updates.output = JSON.stringify(data.output)
+      if (data.output !== undefined) updates.output = JSON.stringify(data.output) ?? null
       if (data.error !== undefined) updates.error = data.error
       if (data.heartbeatAt !== undefined) updates.heartbeat_at = data.heartbeatAt
 

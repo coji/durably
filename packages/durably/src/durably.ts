@@ -93,11 +93,16 @@ export interface Durably {
    */
   stop(): Promise<void>
 
+  /**
+   * Retry a failed run by resetting it to pending
+   * @throws Error if run is not in failed status
+   */
+  retry(runId: string): Promise<void>
+
   // TODO: Add more methods in later phases
   // use()
   // getRun()
   // getRuns()
-  // retry()
 }
 
 /**
@@ -137,6 +142,27 @@ export function createDurably(options: DurablyOptions): Durably {
       fn: JobFunction<z.infer<TInputSchema>, TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void>
     ): JobHandle<TName, z.infer<TInputSchema>, TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void> {
       return createJobHandle(definition, fn, storage, eventEmitter, jobRegistry)
+    },
+
+    async retry(runId: string): Promise<void> {
+      const run = await storage.getRun(runId)
+      if (!run) {
+        throw new Error(`Run not found: ${runId}`)
+      }
+      if (run.status === 'completed') {
+        throw new Error(`Cannot retry completed run: ${runId}`)
+      }
+      if (run.status === 'pending') {
+        throw new Error(`Cannot retry pending run: ${runId}`)
+      }
+      if (run.status === 'running') {
+        throw new Error(`Cannot retry running run: ${runId}`)
+      }
+      // Only failed runs can be retried
+      await storage.updateRun(runId, {
+        status: 'pending',
+        error: null,
+      })
     },
 
     async migrate(): Promise<void> {

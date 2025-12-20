@@ -45,6 +45,36 @@ export function createWorker(
   let currentRunPromise: Promise<void> | null = null
   let pollingTimeout: ReturnType<typeof setTimeout> | null = null
   let stopResolver: (() => void) | null = null
+  let heartbeatInterval: ReturnType<typeof setInterval> | null = null
+  let currentRunId: string | null = null
+
+  /**
+   * Recover stale runs by resetting them to pending
+   */
+  async function recoverStaleRuns(): Promise<void> {
+    const staleThreshold = new Date(Date.now() - config.staleThreshold).toISOString()
+    const runningRuns = await storage.getRuns({ status: 'running' })
+
+    for (const run of runningRuns) {
+      if (run.heartbeatAt < staleThreshold) {
+        // This run is stale - reset to pending
+        await storage.updateRun(run.id, {
+          status: 'pending',
+        })
+      }
+    }
+  }
+
+  /**
+   * Update heartbeat for current run
+   */
+  async function updateHeartbeat(): Promise<void> {
+    if (currentRunId) {
+      await storage.updateRun(currentRunId, {
+        heartbeatAt: new Date().toISOString(),
+      })
+    }
+  }
 
   async function processNextRun(): Promise<boolean> {
     // Get running runs to exclude their concurrency keys
@@ -75,6 +105,14 @@ export function createWorker(
       status: 'running',
       heartbeatAt: new Date().toISOString(),
     })
+
+    // Track current run for heartbeat updates
+    currentRunId = run.id
+
+    // Start heartbeat interval
+    heartbeatInterval = setInterval(() => {
+      updateHeartbeat()
+    }, config.heartbeatInterval)
 
     // Emit run:start event
     eventEmitter.emit({
@@ -134,6 +172,13 @@ export function createWorker(
         error: errorMessage,
         failedStepName: failedStep?.name ?? 'unknown',
       })
+    } finally {
+      // Stop heartbeat interval
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval)
+        heartbeatInterval = null
+      }
+      currentRunId = null
     }
 
     return true
@@ -144,8 +189,14 @@ export function createWorker(
       return
     }
 
+    const doWork = async () => {
+      // Recover stale runs before processing
+      await recoverStaleRuns()
+      await processNextRun()
+    }
+
     try {
-      currentRunPromise = processNextRun().then(() => {})
+      currentRunPromise = doWork()
       await currentRunPromise
     } finally {
       currentRunPromise = null
@@ -182,6 +233,11 @@ export function createWorker(
       if (pollingTimeout) {
         clearTimeout(pollingTimeout)
         pollingTimeout = null
+      }
+
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval)
+        heartbeatInterval = null
       }
 
       if (currentRunPromise) {
