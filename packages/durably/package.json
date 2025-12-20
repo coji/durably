@@ -1,0 +1,71 @@
+{
+  "name": "@coji/durably",
+  "version": "0.0.1",
+  "description": "Step-oriented resumable batch execution for Node.js and browsers using SQLite",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./plugins": {
+      "types": "./dist/plugins/index.d.ts",
+      "import": "./dist/plugins/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "pnpm test:node && pnpm test:browser",
+    "test:node": "vitest run --config vitest.config.ts",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "lint": "biome check .",
+    "format": "prettier --write ."
+  },
+  "keywords": [
+    "batch",
+    "job",
+    "queue",
+    "workflow",
+    "durable",
+    "resumable",
+    "sqlite",
+    "kysely"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coji/durably.git"
+  },
+  "bugs": {
+    "url": "https://github.com/coji/durably/issues"
+  },
+  "homepage": "https://github.com/coji/durably#readme",
+  "peerDependencies": {
+    "kysely": ">=0.27.0",
+    "zod": ">=3.24.0"
+  },
+  "dependencies": {
+    "ulidx": "^2.4.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.0",
+    "@libsql/client": "^0.14.0",
+    "@libsql/kysely-libsql": "^0.4.0",
+    "@vitest/browser": "^3.0.0",
+    "kysely": "^0.27.0",
+    "playwright": "^1.49.0",
+    "prettier": "^3.7.0",
+    "prettier-plugin-organize-imports": "^4.3.0",
+    "sqlocal": "^0.12.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "zod": "^3.24.0"
+  }
+}

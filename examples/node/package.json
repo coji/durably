@@ -1,0 +1,18 @@
+{
+  "name": "example-node",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx basic.ts"
+  },
+  "dependencies": {
+    "@coji/durably": "workspace:*",
+    "@libsql/client": "^0.14.0",
+    "@libsql/kysely-libsql": "^0.4.0",
+    "kysely": "^0.27.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0"
+  }
+}

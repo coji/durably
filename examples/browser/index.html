@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Durably Browser Example</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 600px;
+        margin: 50px auto;
+        padding: 20px;
+      }
+      button {
+        padding: 10px 20px;
+        font-size: 16px;
+        cursor: pointer;
+      }
+      pre {
+        background: #f5f5f5;
+        padding: 15px;
+        border-radius: 5px;
+        overflow-x: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Durably Browser Example</h1>
+    <button id="run-btn">Run Job</button>
+    <p>Status: <span id="status">Ready</span></p>
+    <p>Progress: <span id="progress">-</span></p>
+    <pre id="result"></pre>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

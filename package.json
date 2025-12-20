@@ -1,62 +1,18 @@
 {
-  "name": "@coji/durably",
-  "version": "0.0.1",
-  "description": "Step-oriented resumable batch execution for Node.js and browsers using SQLite",
-  "type": "module",
-  "main": "./dist/index.js",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./plugins": {
-      "types": "./dist/plugins/index.d.ts",
-      "import": "./dist/plugins/index.js"
-    }
-  },
-  "files": [
-    "dist"
-  ],
+  "name": "durably-monorepo",
+  "private": true,
+  "packageManager": "pnpm@10.17.0",
   "scripts": {
-    "build": "tsup",
-    "prepublishOnly": "pnpm build"
-  },
-  "keywords": [
-    "batch",
-    "job",
-    "queue",
-    "workflow",
-    "durable",
-    "resumable",
-    "sqlite",
-    "kysely"
-  ],
-  "author": "",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/coji/durably.git"
-  },
-  "bugs": {
-    "url": "https://github.com/coji/durably/issues"
-  },
-  "homepage": "https://github.com/coji/durably#readme",
-  "peerDependencies": {
-    "kysely": ">=0.27.0"
-  },
-  "peerDependenciesMeta": {
-    "kysely": {
-      "optional": true
-    }
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "test:node": "pnpm --filter @coji/durably test:node",
+    "test:browser": "pnpm --filter @coji/durably test:browser",
+    "dev:node": "pnpm --filter example-node dev",
+    "dev:browser": "pnpm --filter example-browser dev",
+    "lint": "pnpm -r lint",
+    "format": "pnpm -r format"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.3.10",
-    "kysely": "^0.27.0",
-    "prettier": "3.7.4",
-    "prettier-plugin-organize-imports": "4.3.0",
-    "tsup": "8.5.1",
     "typescript": "^5.7.2"
   },
   "pnpm": {
