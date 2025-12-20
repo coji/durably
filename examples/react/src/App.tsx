@@ -16,10 +16,10 @@ const sqlocal = new SQLocalKysely(DB_NAME)
 const { dialect, deleteDatabaseFile } = sqlocal
 
 let durably: Durably | null = null
-let processDataJob: JobHandle<
-  'process-data',
-  { items: string[] },
-  { processed: number }
+let processImageJob: JobHandle<
+  'process-image',
+  { filename: string },
+  { url: string }
 > | null = null
 
 function getDurably() {
@@ -27,39 +27,45 @@ function getDurably() {
     durably = createDurably({
       dialect,
       pollingInterval: 100,
+      heartbeatInterval: 500,
+      staleThreshold: 3000, // 3 seconds for demo
     })
   }
   return durably
 }
 
-function getProcessDataJob(instance: Durably) {
-  if (!processDataJob) {
-    processDataJob = instance.defineJob(
+function getProcessImageJob(instance: Durably) {
+  if (!processImageJob) {
+    processImageJob = instance.defineJob(
       {
-        name: 'process-data',
-        input: z.object({ items: z.array(z.string()) }),
-        output: z.object({ processed: z.number() }),
+        name: 'process-image',
+        input: z.object({ filename: z.string() }),
+        output: z.object({ url: z.string() }),
       },
       async (ctx, payload) => {
-        ctx.progress(0, payload.items.length)
+        // Step 1: Download
+        const data = await ctx.run('download', async () => {
+          await new Promise((r) => setTimeout(r, 500))
+          return { size: 1024000 }
+        })
 
-        for (let i = 0; i < payload.items.length; i++) {
-          await ctx.run(`process-${i}`, async () => {
-            await new Promise((r) => setTimeout(r, 500))
-            return `Processed: ${payload.items[i]}`
-          })
-          ctx.progress(
-            i + 1,
-            payload.items.length,
-            `Processed ${payload.items[i]}`,
-          )
-        }
+        // Step 2: Resize
+        await ctx.run('resize', async () => {
+          await new Promise((r) => setTimeout(r, 500))
+          return { width: 800, height: 600, size: data.size / 2 }
+        })
 
-        return { processed: payload.items.length }
+        // Step 3: Upload
+        const uploaded = await ctx.run('upload', async () => {
+          await new Promise((r) => setTimeout(r, 500))
+          return { url: `https://cdn.example.com/${payload.filename}` }
+        })
+
+        return { url: uploaded.url }
       },
     )
   }
-  return processDataJob
+  return processImageJob
 }
 
 interface Stats {
@@ -70,9 +76,17 @@ interface Stats {
   failed: number
 }
 
+interface Progress {
+  current: number
+  total: number
+}
+
+type StatusState = 'default' | 'ready' | 'running' | 'completed' | 'failed'
+
 export function App() {
   const [status, setStatus] = useState('Initializing...')
-  const [progress, setProgress] = useState('-')
+  const [statusState, setStatusState] = useState<StatusState>('default')
+  const [progress, setProgress] = useState<Progress>({ current: 0, total: 0 })
   const [result, setResult] = useState('')
   const [stats, setStats] = useState<Stats | null>(null)
   const [isRunning, setIsRunning] = useState(false)
@@ -104,16 +118,24 @@ export function App() {
         await instance.migrate()
         if (cleanedUp.current) return
 
-        // Subscribe to events
+        // Subscribe to events for real-time updates
         const unsubscribes = [
+          instance.on('run:start', (event) => {
+            if (!cleanedUp.current) {
+              setStatus(`Running: ${event.jobName}`)
+              setStatusState('running')
+              updateStats()
+            }
+          }),
           instance.on('step:complete', (event) => {
             if (!cleanedUp.current) {
-              setStatus(`Step ${event.stepName} completed`)
+              setStatus(`Step: ${event.stepName} completed`)
             }
           }),
           instance.on('run:complete', (event) => {
             if (!cleanedUp.current) {
               setStatus('Completed!')
+              setStatusState('completed')
               setResult(JSON.stringify(event.output, null, 2))
               setIsRunning(false)
               updateStats()
@@ -122,6 +144,7 @@ export function App() {
           instance.on('run:fail', (event) => {
             if (!cleanedUp.current) {
               setStatus(`Failed: ${event.error}`)
+              setStatusState('failed')
               setIsRunning(false)
               updateStats()
             }
@@ -131,16 +154,22 @@ export function App() {
         instance.start()
         setIsReady(true)
         setStatus('Ready')
+        setStatusState('ready')
         await updateStats()
+
+        // Set up periodic stats refresh to catch stale run recovery
+        const statsInterval = setInterval(updateStats, 1000)
 
         return () => {
           for (const unsubscribe of unsubscribes) {
             unsubscribe()
           }
+          clearInterval(statsInterval)
         }
       } catch (err) {
         if (!cleanedUp.current) {
           setStatus(`Error: ${err instanceof Error ? err.message : 'Unknown'}`)
+          setStatusState('failed')
         }
       }
     }
@@ -156,19 +185,22 @@ export function App() {
 
   const runJob = async () => {
     const instance = getDurably()
-    const job = getProcessDataJob(instance)
+    const job = getProcessImageJob(instance)
 
     setIsRunning(true)
-    setStatus('Running...')
-    setProgress('0/3')
+    setStatus('Queued...')
+    setStatusState('default')
+    setProgress({ current: 0, total: 3 })
     setResult('')
 
     const run = await job.trigger({
-      items: ['item1', 'item2', 'item3'],
+      filename: 'photo.jpg',
     })
 
     await updateStats()
 
+    // Track step progress via polling
+    let stepCount = 0
     const interval = setInterval(async () => {
       if (cleanedUp.current) {
         clearInterval(interval)
@@ -176,14 +208,18 @@ export function App() {
       }
 
       const current = await job.getRun(run.id)
-      if (current?.progress) {
-        setProgress(`${current.progress.current}/${current.progress.total}`)
-        if (current.progress.message) {
-          setStatus(current.progress.message)
+
+      if (current?.status === 'running') {
+        const steps = await instance.storage.getSteps(run.id)
+        const completedSteps = steps.filter((s) => s.status === 'completed').length
+        if (completedSteps > stepCount) {
+          stepCount = completedSteps
+          setProgress({ current: stepCount, total: 3 })
         }
       }
 
       if (current?.status === 'completed' || current?.status === 'failed') {
+        setProgress({ current: 3, total: 3 })
         clearInterval(interval)
       }
     }, 100)
@@ -196,6 +232,7 @@ export function App() {
 
     setIsReady(false)
     setStatus('Resetting...')
+    setStatusState('default')
 
     try {
       const instance = getDurably()
@@ -205,18 +242,28 @@ export function App() {
       setTimeout(() => location.reload(), 500)
     } catch (err) {
       setStatus(`Reset failed: ${err instanceof Error ? err.message : 'Unknown'}`)
+      setStatusState('failed')
       setIsReady(true)
     }
   }
 
+  const progressPercentage =
+    progress.total > 0 ? (progress.current / progress.total) * 100 : 0
+
   return (
     <>
       <h1>Durably React Example</h1>
-      <div>
+
+      <div className="button-group">
         <button type="button" onClick={runJob} disabled={!isReady || isRunning}>
           Run Job
         </button>
-        <button type="button" onClick={updateStats} disabled={!isReady}>
+        <button
+          type="button"
+          className="secondary"
+          onClick={updateStats}
+          disabled={!isReady}
+        >
           Refresh Stats
         </button>
         <button
@@ -228,27 +275,54 @@ export function App() {
           Reset Database
         </button>
       </div>
-      <p>
-        Status: <span>{status}</span>
-      </p>
-      <p className="progress">
-        Progress: <span>{progress}</span>
-      </p>
-      <div className="stats">
-        {stats ? (
-          <>
-            <strong>Database Stats:</strong>
-            <br />
-            Total runs: {stats.total}
-            <br />
-            Pending: {stats.pending} | Running: {stats.running} | Completed:{' '}
-            {stats.completed} | Failed: {stats.failed}
-          </>
-        ) : (
-          'Stats unavailable'
-        )}
+
+      <div className="card">
+        <div className="card-header">Status</div>
+        <div className="status-row">
+          <div className={`status-indicator ${statusState}`} />
+          <span className="status-text">{status}</span>
+        </div>
+        <div className="progress-container">
+          <div className="progress-bar">
+            <div
+              className="progress-fill"
+              style={{ width: `${progressPercentage}%` }}
+            />
+          </div>
+          <div className="progress-text">
+            {progress.total > 0
+              ? `${progress.current} / ${progress.total}`
+              : '-'}
+          </div>
+        </div>
       </div>
-      <pre>{result}</pre>
+
+      <div className="card">
+        <div className="card-header">Database Stats</div>
+        <div className="stats-grid">
+          <div className="stat-item pending">
+            <div className="stat-value">{stats?.pending ?? '-'}</div>
+            <div className="stat-label">Pending</div>
+          </div>
+          <div className="stat-item running">
+            <div className="stat-value">{stats?.running ?? '-'}</div>
+            <div className="stat-label">Running</div>
+          </div>
+          <div className="stat-item completed">
+            <div className="stat-value">{stats?.completed ?? '-'}</div>
+            <div className="stat-label">Completed</div>
+          </div>
+          <div className="stat-item failed">
+            <div className="stat-value">{stats?.failed ?? '-'}</div>
+            <div className="stat-label">Failed</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header">Result</div>
+        <pre className="result">{result}</pre>
+      </div>
     </>
   )
 }

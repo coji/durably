@@ -2,6 +2,7 @@
  * Node.js Example for Durably
  *
  * This example shows basic usage of Durably with Turso/libSQL.
+ * Same job definition as browser/react examples for comparison.
  */
 
 import { createDurably } from '@coji/durably'
@@ -15,82 +16,97 @@ const dialect = new LibsqlDialect({
   authToken: process.env.TURSO_AUTH_TOKEN,
 })
 
-const durably = createDurably({ dialect })
+const durably = createDurably({
+  dialect,
+  pollingInterval: 100,
+  heartbeatInterval: 500,
+  staleThreshold: 3000,
+})
 
-// ユーザー同期ジョブを定義
-const syncUsers = durably.defineJob(
+// Image processing job with sequential steps
+const processImage = durably.defineJob(
   {
-    name: 'sync-users',
-    input: z.object({ orgId: z.string() }),
-    output: z.object({ count: z.number() }),
+    name: 'process-image',
+    input: z.object({ filename: z.string() }),
+    output: z.object({ url: z.string() }),
   },
   async (ctx, payload) => {
-    ctx.log.info('starting sync', { orgId: payload.orgId })
-
-    // Step 1: ユーザーを取得
-    const users = await ctx.run('fetch-users', async () => {
-      console.log('Fetching users...')
-      await new Promise((r) => setTimeout(r, 1000))
-      return [
-        { id: '1', name: 'Alice' },
-        { id: '2', name: 'Bob' },
-      ]
-    })
-
-    // Step 2: ユーザーを保存
-    await ctx.run('save-users', async () => {
-      ctx.log.info('saving users', { count: users.length })
-      console.log(`Saving ${users.length} users...`)
+    // Step 1: Download
+    const data = await ctx.run('download', async () => {
       await new Promise((r) => setTimeout(r, 500))
+      return { size: 1024000 }
     })
 
-    return { count: users.length }
+    // Step 2: Resize
+    await ctx.run('resize', async () => {
+      await new Promise((r) => setTimeout(r, 500))
+      return { width: 800, height: 600, size: data.size / 2 }
+    })
+
+    // Step 3: Upload
+    const uploaded = await ctx.run('upload', async () => {
+      await new Promise((r) => setTimeout(r, 500))
+      return { url: `https://cdn.example.com/${payload.filename}` }
+    })
+
+    return { url: uploaded.url }
   },
 )
 
-// イベントを購読
+// Subscribe to events
 durably.on('run:start', (event) => {
-  console.log(`Run ${event.runId} started`)
-})
-
-durably.on('run:complete', (event) => {
-  console.log(`Run ${event.runId} completed with output:`, event.output)
+  console.log(`[run:start] ${event.jobName}`)
 })
 
 durably.on('step:complete', (event) => {
-  console.log(`Step ${event.stepName} completed`)
+  console.log(`[step:complete] ${event.stepName}`)
 })
 
-// メイン処理
+durably.on('run:complete', (event) => {
+  console.log(`[run:complete] output=${JSON.stringify(event.output)} duration=${event.duration}ms`)
+})
+
+durably.on('run:fail', (event) => {
+  console.log(`[run:fail] ${event.error}`)
+})
+
+// Main
 async function main() {
   console.log('Durably Node.js Example')
-  console.log('========================')
+  console.log('=======================\n')
 
-  // マイグレーション実行
   await durably.migrate()
   console.log('Migration completed')
 
-  // ワーカー開始
   durably.start()
-  console.log('Worker started')
+  console.log('Worker started\n')
 
-  // ジョブをトリガー
-  const run = await syncUsers.trigger({ orgId: 'org_123' })
-  console.log(`Triggered run: ${run.id}`)
+  // Trigger job
+  const run = await processImage.trigger({
+    filename: 'photo.jpg',
+  })
+  console.log(`Triggered run: ${run.id}\n`)
 
-  // 完了を待つ
+  // Wait for completion
   await new Promise<void>((resolve) => {
-    const checkInterval = setInterval(async () => {
-      const current = await syncUsers.getRun(run.id)
+    const interval = setInterval(async () => {
+      const current = await processImage.getRun(run.id)
       if (current?.status === 'completed' || current?.status === 'failed') {
-        clearInterval(checkInterval)
-        console.log('\nFinal result:', JSON.stringify(current, null, 2))
+        clearInterval(interval)
         resolve()
       }
     }, 100)
   })
 
-  // クリーンアップ
+  // Show stats
+  const runs = await durably.storage.getRuns()
+  console.log(`\nDatabase Stats:`)
+  console.log(`  Pending: ${runs.filter((r) => r.status === 'pending').length}`)
+  console.log(`  Running: ${runs.filter((r) => r.status === 'running').length}`)
+  console.log(`  Completed: ${runs.filter((r) => r.status === 'completed').length}`)
+  console.log(`  Failed: ${runs.filter((r) => r.status === 'failed').length}`)
+
+  // Cleanup
   await durably.stop()
   await durably.db.destroy()
   console.log('\nDone!')
