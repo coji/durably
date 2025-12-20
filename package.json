@@ -9,8 +9,13 @@
     "test:browser": "pnpm --filter @coji/durably test:browser",
     "dev:node": "pnpm --filter example-node dev",
     "dev:browser": "pnpm --filter example-browser dev",
+    "dev:react": "pnpm --filter example-react dev",
+    "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
-    "format": "pnpm -r format"
+    "lint:fix": "pnpm -r lint:fix",
+    "format": "pnpm -r format",
+    "format:fix": "pnpm -r format:fix",
+    "validate": "pnpm format && pnpm lint && pnpm typecheck && pnpm test"
   },
   "devDependencies": {
     "typescript": "^5.7.2"

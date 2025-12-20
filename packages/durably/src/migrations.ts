@@ -16,6 +16,7 @@ const migrations: Migration[] = [
       // Create runs table
       await db.schema
         .createTable('runs')
+        .ifNotExists()
         .addColumn('id', 'text', (col) => col.primaryKey())
         .addColumn('job_name', 'text', (col) => col.notNull())
         .addColumn('payload', 'text', (col) => col.notNull())
@@ -36,6 +37,7 @@ const migrations: Migration[] = [
       // Create runs indexes
       await db.schema
         .createIndex('idx_runs_job_idempotency')
+        .ifNotExists()
         .on('runs')
         .columns(['job_name', 'idempotency_key'])
         .unique()
@@ -43,12 +45,14 @@ const migrations: Migration[] = [
 
       await db.schema
         .createIndex('idx_runs_status_concurrency')
+        .ifNotExists()
         .on('runs')
         .columns(['status', 'concurrency_key'])
         .execute()
 
       await db.schema
         .createIndex('idx_runs_status_created')
+        .ifNotExists()
         .on('runs')
         .columns(['status', 'created_at'])
         .execute()
@@ -56,6 +60,7 @@ const migrations: Migration[] = [
       // Create steps table
       await db.schema
         .createTable('steps')
+        .ifNotExists()
         .addColumn('id', 'text', (col) => col.primaryKey())
         .addColumn('run_id', 'text', (col) => col.notNull())
         .addColumn('name', 'text', (col) => col.notNull())
@@ -70,6 +75,7 @@ const migrations: Migration[] = [
       // Create steps index
       await db.schema
         .createIndex('idx_steps_run_index')
+        .ifNotExists()
         .on('steps')
         .columns(['run_id', 'index'])
         .execute()
@@ -77,6 +83,7 @@ const migrations: Migration[] = [
       // Create logs table
       await db.schema
         .createTable('logs')
+        .ifNotExists()
         .addColumn('id', 'text', (col) => col.primaryKey())
         .addColumn('run_id', 'text', (col) => col.notNull())
         .addColumn('step_name', 'text')
@@ -89,6 +96,7 @@ const migrations: Migration[] = [
       // Create logs index
       await db.schema
         .createIndex('idx_logs_run_created')
+        .ifNotExists()
         .on('logs')
         .columns(['run_id', 'created_at'])
         .execute()
@@ -96,6 +104,7 @@ const migrations: Migration[] = [
       // Create schema_versions table
       await db.schema
         .createTable('schema_versions')
+        .ifNotExists()
         .addColumn('version', 'integer', (col) => col.primaryKey())
         .addColumn('applied_at', 'text', (col) => col.notNull())
         .execute()

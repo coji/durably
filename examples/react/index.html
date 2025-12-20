@@ -1,7 +1,7 @@
 <!doctype html>
 <html>
   <head>
-    <title>Durably Browser Example</title>
+    <title>Durably React Example</title>
     <style>
       body {
         font-family: system-ui, sans-serif;
@@ -37,19 +37,13 @@
         border-radius: 5px;
         overflow-x: auto;
       }
+      .progress {
+        margin: 10px 0;
+      }
     </style>
   </head>
   <body>
-    <h1>Durably Browser Example</h1>
-    <div>
-      <button id="run-btn">Run Job</button>
-      <button id="refresh-btn">Refresh Stats</button>
-      <button id="reset-btn" class="danger">Reset Database</button>
-    </div>
-    <p>Status: <span id="status">Ready</span></p>
-    <p>Progress: <span id="progress">-</span></p>
-    <div class="stats" id="stats">Loading stats...</div>
-    <pre id="result"></pre>
-    <script type="module" src="/src/main.ts"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

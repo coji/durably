@@ -22,6 +22,9 @@ export type {
   StepStartEvent,
 } from './events'
 
+// Job types
+export type { JobContext, JobHandle } from './job'
+
 // Schema types (for advanced users)
 export type {
   Database,
