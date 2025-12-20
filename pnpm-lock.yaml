@@ -24,8 +24,8 @@ importers:
         specifier: ^0.12.0
         version: 0.12.0(kysely@0.27.6)
       zod:
-        specifier: ^3.24.0
-        version: 3.25.76
+        specifier: ^4.2.1
+        version: 4.2.1
     devDependencies:
       '@biomejs/biome':
         specifier: ^2.3.0
@@ -58,8 +58,8 @@ importers:
         specifier: ^0.27.0
         version: 0.27.6
       zod:
-        specifier: ^3.24.0
-        version: 3.25.76
+        specifier: ^4.2.1
+        version: 4.2.1
     devDependencies:
       '@biomejs/biome':
         specifier: ^2.3.0
@@ -144,8 +144,8 @@ importers:
         specifier: ^3.0.0
         version: 3.2.4(@types/node@25.0.3)(@vitest/browser@3.2.4)(jsdom@27.3.0)(tsx@4.21.0)
       zod:
-        specifier: ^3.24.0
-        version: 3.25.76
+        specifier: ^4.2.1
+        version: 4.2.1
 
 packages:
 
@@ -1746,8 +1746,8 @@ packages:
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
 
-  zod@3.25.76:
-    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+  zod@4.2.1:
+    resolution: {integrity: sha512-0wZ1IRqGGhMP76gLqz8EyfBXKk0J2qo2+H3fi4mcUP/KtTocoX08nmIAHl1Z2kJIZbZee8KOpBCSNPRgauucjw==}
 
 snapshots:
 
@@ -3181,4 +3181,4 @@ snapshots:
 
   yallist@3.1.1: {}
 
-  zod@3.25.76: {}
+  zod@4.2.1: {}
