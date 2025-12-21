@@ -35,7 +35,7 @@ export interface JobContext {
  * Job function type
  */
 export type JobFunction<TInput, TOutput> = (
-  ctx: JobContext,
+  context: JobContext,
   payload: TInput,
 ) => Promise<TOutput>
 

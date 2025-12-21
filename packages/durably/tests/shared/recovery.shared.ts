@@ -204,7 +204,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             name: 'retry-test',
             input: z.object({ shouldFail: z.boolean() }),
           },
-          async (_ctx, payload) => {
+          async (_context, payload) => {
             if (payload.shouldFail) {
               throw new Error('Intentional failure')
             }

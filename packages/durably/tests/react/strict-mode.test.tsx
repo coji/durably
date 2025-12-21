@@ -209,7 +209,7 @@ describe('React StrictMode', () => {
                 input: z.object({ value: z.string() }),
                 output: z.object({ processed: z.string() }),
               },
-              async (_ctx, payload) => {
+              async (_context, payload) => {
                 executionCount++
                 return { processed: payload.value.toUpperCase() }
               },

@@ -147,7 +147,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
             name: 'payload-test',
             input: z.object({ value: z.string() }),
           },
-          async (_ctx, payload) => {
+          async (_context, payload) => {
             receivedPayload = payload
           },
         )
@@ -194,7 +194,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
             name: 'sequential-test',
             input: z.object({ n: z.number() }),
           },
-          async (_ctx, payload) => {
+          async (_context, payload) => {
             order.push(payload.n)
             await new Promise((r) => setTimeout(r, 20))
           },
