@@ -20,18 +20,19 @@ describe('React StrictMode', () => {
   const instances: Durably[] = []
 
   afterEach(async () => {
-    // Clean up all instances
+    // Clean up all instances - only call stop(), not destroy()
+    // destroy() can cause "driver has already been destroyed" errors
+    // if there are still pending async operations (like migrations)
     for (const instance of instances) {
       try {
         await instance.stop()
-        await instance.db.destroy()
       } catch {
-        // Ignore errors from already destroyed instances
+        // Ignore errors from already stopped instances
       }
     }
     instances.length = 0
-    // Wait for any pending async operations
-    await new Promise((r) => setTimeout(r, 100))
+    // Wait for any pending async operations to complete
+    await new Promise((r) => setTimeout(r, 200))
   })
 
   it('handles double mount/unmount in StrictMode safely', async () => {
