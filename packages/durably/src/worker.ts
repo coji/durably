@@ -147,8 +147,16 @@ export function createWorker(
     currentRunId = run.id
 
     // Start heartbeat interval
+    // Errors are emitted as events but don't stop execution
     heartbeatInterval = setInterval(() => {
-      updateHeartbeat()
+      updateHeartbeat().catch((error) => {
+        eventEmitter.emit({
+          type: 'worker:error',
+          error: error instanceof Error ? error.message : String(error),
+          context: 'heartbeat',
+          runId: run.id,
+        })
+      })
     }, config.heartbeatInterval)
 
     // Emit run:start event

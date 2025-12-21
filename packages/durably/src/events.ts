@@ -88,6 +88,16 @@ export interface LogWriteEvent extends BaseEvent {
 }
 
 /**
+ * Worker error event (internal errors like heartbeat failures)
+ */
+export interface WorkerErrorEvent extends BaseEvent {
+  type: 'worker:error'
+  error: string
+  context: string
+  runId?: string
+}
+
+/**
  * All event types as discriminated union
  */
 export type DurablyEvent =
@@ -98,6 +108,7 @@ export type DurablyEvent =
   | StepCompleteEvent
   | StepFailEvent
   | LogWriteEvent
+  | WorkerErrorEvent
 
 /**
  * Event types for type-safe event names
@@ -131,6 +142,7 @@ export type AnyEventInput =
   | EventInput<'step:complete'>
   | EventInput<'step:fail'>
   | EventInput<'log:write'>
+  | EventInput<'worker:error'>
 
 /**
  * Event listener function

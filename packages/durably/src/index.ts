@@ -21,6 +21,7 @@ export type {
   StepCompleteEvent,
   StepFailEvent,
   StepStartEvent,
+  WorkerErrorEvent,
 } from './events'
 
 // Job types
