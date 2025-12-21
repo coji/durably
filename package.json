@@ -9,6 +9,7 @@
     "test": "pnpm -r test",
     "test:node": "pnpm --filter @coji/durably test:node",
     "test:browser": "pnpm --filter @coji/durably test:browser",
+    "test:react": "pnpm --filter @coji/durably test:react",
     "dev:node": "pnpm --filter example-node dev",
     "dev:browser": "pnpm --filter example-browser dev",
     "dev:react": "pnpm --filter example-react dev",
