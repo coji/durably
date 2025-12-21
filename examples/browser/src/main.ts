@@ -1,41 +1,26 @@
 /**
  * Browser Example for Durably
  *
- * This example shows basic usage of Durably with SQLocal (SQLite WASM + OPFS).
+ * Simple example showing basic durably usage in the browser.
+ * Demonstrates job resumption after page reload.
  */
 
 import { createDurably } from '@coji/durably'
 import { SQLocalKysely } from 'sqlocal/kysely'
 import { z } from 'zod'
 
-const DB_NAME = 'example.sqlite3'
-const sqlocal = new SQLocalKysely(DB_NAME)
+// Initialize Durably
+const sqlocal = new SQLocalKysely('example.sqlite3')
 const { dialect, deleteDatabaseFile } = sqlocal
 
 const durably = createDurably({
   dialect,
   pollingInterval: 100,
   heartbeatInterval: 500,
-  staleThreshold: 3000, // 3 seconds for demo
+  staleThreshold: 3000,
 })
 
-// UI elements
-const statusEl = document.getElementById('status') as HTMLElement
-const statusIndicatorEl = document.getElementById(
-  'status-indicator',
-) as HTMLElement
-const progressEl = document.getElementById('progress') as HTMLElement
-const progressFillEl = document.getElementById('progress-fill') as HTMLElement
-const resultEl = document.getElementById('result') as HTMLPreElement
-const statPendingEl = document.getElementById('stat-pending') as HTMLElement
-const statRunningEl = document.getElementById('stat-running') as HTMLElement
-const statCompletedEl = document.getElementById('stat-completed') as HTMLElement
-const statFailedEl = document.getElementById('stat-failed') as HTMLElement
-const runBtn = document.getElementById('run-btn') as HTMLButtonElement
-const refreshBtn = document.getElementById('refresh-btn') as HTMLButtonElement
-const resetBtn = document.getElementById('reset-btn') as HTMLButtonElement
-
-// Image processing job with sequential steps
+// Define job
 const processImage = durably.defineJob(
   {
     name: 'process-image',
@@ -43,183 +28,103 @@ const processImage = durably.defineJob(
     output: z.object({ url: z.string() }),
   },
   async (ctx, payload) => {
-    // Step 1: Download
-    const data = await ctx.run('download', async () => {
-      await new Promise((r) => setTimeout(r, 500))
-      return { size: 1024000 }
-    })
-
-    // Step 2: Resize
-    await ctx.run('resize', async () => {
-      await new Promise((r) => setTimeout(r, 500))
-      return { width: 800, height: 600, size: data.size / 2 }
-    })
-
-    // Step 3: Upload
-    const uploaded = await ctx.run('upload', async () => {
-      await new Promise((r) => setTimeout(r, 500))
-      return { url: `https://cdn.example.com/${payload.filename}` }
-    })
-
-    return { url: uploaded.url }
+    await ctx.run('download', () => delay(500))
+    await ctx.run('resize', () => delay(500))
+    await ctx.run('upload', () => delay(500))
+    return { url: `https://cdn.example.com/${payload.filename}` }
   },
 )
 
-// Update status indicator
-function setStatusIndicator(
-  state: 'default' | 'ready' | 'running' | 'completed' | 'failed',
-) {
-  statusIndicatorEl.className = 'status-indicator'
-  if (state !== 'default') {
-    statusIndicatorEl.classList.add(state)
-  }
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+// UI elements
+const statusEl = document.getElementById('status') as HTMLElement
+const stepEl = document.getElementById('step') as HTMLElement
+const resultEl = document.getElementById('result') as HTMLPreElement
+const runBtn = document.getElementById('run-btn') as HTMLButtonElement
+const reloadBtn = document.getElementById('reload-btn') as HTMLButtonElement
+const resetBtn = document.getElementById('reset-btn') as HTMLButtonElement
+
+// State
+let userTriggered = false
+
+const statusText: Record<string, string> = {
+  init: 'Initializing...',
+  ready: 'Ready',
+  running: 'Running',
+  resuming: '🔄 Resuming interrupted job...',
+  done: '✓ Completed',
+  error: '✗ Failed',
 }
 
-// Update progress bar
-function setProgress(current: number, total: number) {
-  const percentage = total > 0 ? (current / total) * 100 : 0
-  progressFillEl.style.width = `${percentage}%`
-  progressEl.textContent = total > 0 ? `${current} / ${total}` : '-'
+function setStatus(status: string) {
+  statusEl.textContent = statusText[status] || status
 }
 
-// Update stats display
-async function updateStats() {
-  try {
-    const runs = await durably.storage.getRuns()
-    const pending = runs.filter((r) => r.status === 'pending').length
-    const running = runs.filter((r) => r.status === 'running').length
-    const completed = runs.filter((r) => r.status === 'completed').length
-    const failed = runs.filter((r) => r.status === 'failed').length
-
-    statPendingEl.textContent = String(pending)
-    statRunningEl.textContent = String(running)
-    statCompletedEl.textContent = String(completed)
-    statFailedEl.textContent = String(failed)
-  } catch {
-    statPendingEl.textContent = '-'
-    statRunningEl.textContent = '-'
-    statCompletedEl.textContent = '-'
-    statFailedEl.textContent = '-'
-  }
+function setStep(step: string | null) {
+  stepEl.textContent = step ? `Step: ${step}` : ''
 }
 
-// Subscribe to events for real-time updates
-durably.on('run:start', (event) => {
-  statusEl.textContent = `Running: ${event.jobName}`
-  setStatusIndicator('running')
-  updateStats()
+function setResult(result: string | null, isError = false) {
+  resultEl.textContent = result || ''
+  resultEl.className = isError ? 'result error' : 'result'
+}
+
+function setProcessing(processing: boolean) {
+  runBtn.disabled = processing
+  resetBtn.disabled = processing
+}
+
+// Subscribe to events
+durably.on('run:start', () => {
+  setStatus(userTriggered ? 'running' : 'resuming')
+  setProcessing(true)
 })
 
-durably.on('step:complete', (event) => {
-  statusEl.textContent = `Step: ${event.stepName} completed`
+durably.on('step:complete', (e) => {
+  setStep(e.stepName)
 })
 
-durably.on('run:complete', (event) => {
-  statusEl.textContent = 'Completed!'
-  setStatusIndicator('completed')
-  resultEl.textContent = JSON.stringify(event.output, null, 2)
-  runBtn.disabled = false
-  updateStats()
+durably.on('run:complete', (e) => {
+  setResult(JSON.stringify(e.output, null, 2))
+  setStep(null)
+  setStatus('done')
+  setProcessing(false)
+  userTriggered = false
 })
 
-durably.on('run:fail', (event) => {
-  statusEl.textContent = `Failed: ${event.error}`
-  setStatusIndicator('failed')
-  runBtn.disabled = false
-  updateStats()
+durably.on('run:fail', (e) => {
+  setResult(e.error, true)
+  setStep(null)
+  setStatus('error')
+  setProcessing(false)
+  userTriggered = false
+})
+
+// Button handlers
+runBtn.addEventListener('click', async () => {
+  userTriggered = true
+  setStatus('running')
+  setStep(null)
+  setResult(null)
+  await processImage.trigger({ filename: 'photo.jpg' })
+})
+
+reloadBtn.addEventListener('click', () => {
+  location.reload()
+})
+
+resetBtn.addEventListener('click', async () => {
+  await durably.stop()
+  await deleteDatabaseFile()
+  location.reload()
 })
 
 // Initialize
-async function init() {
-  statusEl.textContent = 'Initializing...'
-
-  await durably.migrate()
+durably.migrate().then(() => {
   durably.start()
-
-  statusEl.textContent = 'Ready'
-  setStatusIndicator('ready')
+  setStatus('ready')
   runBtn.disabled = false
-  refreshBtn.disabled = false
+  reloadBtn.disabled = false
   resetBtn.disabled = false
-
-  await updateStats()
-
-  // Set up periodic stats refresh to catch stale run recovery
-  setInterval(updateStats, 1000)
-}
-
-// Run job
-async function runJob() {
-  runBtn.disabled = true
-  statusEl.textContent = 'Queued...'
-  setStatusIndicator('default')
-  setProgress(0, 3)
-  resultEl.textContent = ''
-
-  const run = await processImage.trigger({
-    filename: 'photo.jpg',
-  })
-
-  await updateStats()
-
-  // Track step progress via polling
-  let stepCount = 0
-  const interval = setInterval(async () => {
-    const current = await processImage.getRun(run.id)
-
-    if (current?.status === 'running') {
-      const steps = await durably.storage.getSteps(run.id)
-      const completedSteps = steps.filter((s) => s.status === 'completed').length
-      if (completedSteps > stepCount) {
-        stepCount = completedSteps
-        setProgress(stepCount, 3)
-      }
-    }
-
-    if (current?.status === 'completed' || current?.status === 'failed') {
-      setProgress(3, 3)
-      clearInterval(interval)
-    }
-  }, 100)
-}
-
-// Reset database
-async function resetDatabase() {
-  if (!confirm('Delete the database and all data?')) {
-    return
-  }
-
-  runBtn.disabled = true
-  refreshBtn.disabled = true
-  resetBtn.disabled = true
-  statusEl.textContent = 'Resetting...'
-  setStatusIndicator('default')
-
-  try {
-    await durably.stop()
-    await deleteDatabaseFile()
-    statusEl.textContent = 'Database deleted. Reloading...'
-    setTimeout(() => location.reload(), 500)
-  } catch (err) {
-    statusEl.textContent = `Reset failed: ${err instanceof Error ? err.message : 'Unknown'}`
-    runBtn.disabled = false
-    refreshBtn.disabled = false
-    resetBtn.disabled = false
-  }
-}
-
-// Event listeners
-runBtn.addEventListener('click', runJob)
-refreshBtn.addEventListener('click', updateStats)
-resetBtn.addEventListener('click', resetDatabase)
-
-runBtn.disabled = true
-refreshBtn.disabled = true
-resetBtn.disabled = true
-
-// Initialize
-init().catch((err) => {
-  statusEl.textContent = `Error: ${err.message}`
-  setStatusIndicator('failed')
-  console.error(err)
 })

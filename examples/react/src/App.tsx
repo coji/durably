@@ -1,28 +1,27 @@
 /**
  * React Example for Durably
  *
- * This example demonstrates using Durably with React and SQLocal (SQLite WASM + OPFS).
- * Jobs are defined at module level to ensure they're registered before the worker starts.
+ * Simple example showing basic durably usage with React.
+ * Demonstrates job resumption after page reload.
  */
 
 import { createDurably } from '@coji/durably'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { SQLocalKysely } from 'sqlocal/kysely'
 import { z } from 'zod'
 
-// Initialize Durably and define jobs at module level
-const DB_NAME = 'example.sqlite3'
-const sqlocal = new SQLocalKysely(DB_NAME)
+// Initialize Durably
+const sqlocal = new SQLocalKysely('example.sqlite3')
 const { dialect, deleteDatabaseFile } = sqlocal
 
 const durably = createDurably({
   dialect,
   pollingInterval: 100,
   heartbeatInterval: 500,
-  staleThreshold: 3000, // 3 seconds for demo
+  staleThreshold: 3000,
 })
 
-// Define job at module level (required for stale run recovery on reload)
+// Define job
 const processImage = durably.defineJob(
   {
     name: 'process-image',
@@ -30,277 +29,102 @@ const processImage = durably.defineJob(
     output: z.object({ url: z.string() }),
   },
   async (ctx, payload) => {
-    // Step 1: Download
-    const data = await ctx.run('download', async () => {
-      await new Promise((r) => setTimeout(r, 500))
-      return { size: 1024000 }
-    })
-
-    // Step 2: Resize
-    await ctx.run('resize', async () => {
-      await new Promise((r) => setTimeout(r, 500))
-      return { width: 800, height: 600, size: data.size / 2 }
-    })
-
-    // Step 3: Upload
-    const uploaded = await ctx.run('upload', async () => {
-      await new Promise((r) => setTimeout(r, 500))
-      return { url: `https://cdn.example.com/${payload.filename}` }
-    })
-
-    return { url: uploaded.url }
+    await ctx.run('download', () => delay(500))
+    await ctx.run('resize', () => delay(500))
+    await ctx.run('upload', () => delay(500))
+    return { url: `https://cdn.example.com/${payload.filename}` }
   },
 )
 
-interface Stats {
-  total: number
-  pending: number
-  running: number
-  completed: number
-  failed: number
-}
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-interface Progress {
-  current: number
-  total: number
-}
+// Hook for durably lifecycle
+function useDurably() {
+  const [status, setStatus] = useState<'init' | 'ready' | 'running' | 'resuming' | 'done' | 'error'>('init')
+  const [step, setStep] = useState<string | null>(null)
+  const [result, setResult] = useState<string | null>(null)
+  const userTriggered = useRef(false)
 
-type StatusState = 'default' | 'ready' | 'running' | 'completed' | 'failed'
+  useEffect(() => {
+    const unsubscribes = [
+      durably.on('run:start', () => setStatus(userTriggered.current ? 'running' : 'resuming')),
+      durably.on('step:complete', (e) => setStep(e.stepName)),
+      durably.on('run:complete', (e) => {
+        setResult(JSON.stringify(e.output, null, 2))
+        setStep(null)
+        setStatus('done')
+        userTriggered.current = false
+      }),
+      durably.on('run:fail', (e) => {
+        setResult(e.error)
+        setStep(null)
+        setStatus('error')
+        userTriggered.current = false
+      }),
+    ]
 
-export function App() {
-  const [status, setStatus] = useState('Initializing...')
-  const [statusState, setStatusState] = useState<StatusState>('default')
-  const [progress, setProgress] = useState<Progress>({ current: 0, total: 0 })
-  const [result, setResult] = useState('')
-  const [stats, setStats] = useState<Stats | null>(null)
-  const [isRunning, setIsRunning] = useState(false)
-  const [isReady, setIsReady] = useState(false)
-  const cleanedUp = useRef(false)
+    durably.migrate().then(() => {
+      durably.start()
+      setStatus('ready')
+    })
 
-  const updateStats = useCallback(async () => {
-    try {
-      const runs = await durably.storage.getRuns()
-      setStats({
-        total: runs.length,
-        pending: runs.filter((r) => r.status === 'pending').length,
-        running: runs.filter((r) => r.status === 'running').length,
-        completed: runs.filter((r) => r.status === 'completed').length,
-        failed: runs.filter((r) => r.status === 'failed').length,
-      })
-    } catch {
-      setStats(null)
+    return () => {
+      for (const fn of unsubscribes) fn()
+      durably.stop()
     }
   }, [])
 
-  useEffect(() => {
-    cleanedUp.current = false
-
-    async function init() {
-      try {
-        await durably.migrate()
-        if (cleanedUp.current) return
-
-        // Subscribe to events for real-time updates
-        const unsubscribes = [
-          durably.on('run:start', (event) => {
-            if (!cleanedUp.current) {
-              setStatus(`Running: ${event.jobName}`)
-              setStatusState('running')
-              updateStats()
-            }
-          }),
-          durably.on('step:complete', (event) => {
-            if (!cleanedUp.current) {
-              setStatus(`Step: ${event.stepName} completed`)
-            }
-          }),
-          durably.on('run:complete', (event) => {
-            if (!cleanedUp.current) {
-              setStatus('Completed!')
-              setStatusState('completed')
-              setResult(JSON.stringify(event.output, null, 2))
-              setIsRunning(false)
-              updateStats()
-            }
-          }),
-          durably.on('run:fail', (event) => {
-            if (!cleanedUp.current) {
-              setStatus(`Failed: ${event.error}`)
-              setStatusState('failed')
-              setIsRunning(false)
-              updateStats()
-            }
-          }),
-        ]
-
-        durably.start()
-        setIsReady(true)
-        setStatus('Ready')
-        setStatusState('ready')
-        await updateStats()
-
-        // Set up periodic stats refresh to catch stale run recovery
-        const statsInterval = setInterval(updateStats, 1000)
-
-        return () => {
-          for (const unsubscribe of unsubscribes) {
-            unsubscribe()
-          }
-          clearInterval(statsInterval)
-        }
-      } catch (err) {
-        if (!cleanedUp.current) {
-          setStatus(`Error: ${err instanceof Error ? err.message : 'Unknown'}`)
-          setStatusState('failed')
-        }
-      }
-    }
-
-    const cleanupPromise = init()
-
-    return () => {
-      cleanedUp.current = true
-      cleanupPromise.then((cleanup) => cleanup?.())
-      durably.stop()
-    }
-  }, [updateStats])
-
-  const runJob = async () => {
-    setIsRunning(true)
-    setStatus('Queued...')
-    setStatusState('default')
-    setProgress({ current: 0, total: 3 })
-    setResult('')
-
-    const run = await processImage.trigger({
-      filename: 'photo.jpg',
-    })
-
-    await updateStats()
-
-    // Track step progress via polling
-    let stepCount = 0
-    const interval = setInterval(async () => {
-      if (cleanedUp.current) {
-        clearInterval(interval)
-        return
-      }
-
-      const current = await processImage.getRun(run.id)
-
-      if (current?.status === 'running') {
-        const steps = await durably.storage.getSteps(run.id)
-        const completedSteps = steps.filter((s) => s.status === 'completed').length
-        if (completedSteps > stepCount) {
-          stepCount = completedSteps
-          setProgress({ current: stepCount, total: 3 })
-        }
-      }
-
-      if (current?.status === 'completed' || current?.status === 'failed') {
-        setProgress({ current: 3, total: 3 })
-        clearInterval(interval)
-      }
-    }, 100)
+  const run = async () => {
+    userTriggered.current = true
+    setStatus('running')
+    setStep(null)
+    setResult(null)
+    await processImage.trigger({ filename: 'photo.jpg' })
   }
 
-  const resetDatabase = async () => {
-    if (!confirm('Delete the database and all data?')) {
-      return
-    }
+  return { status, step, result, run }
+}
 
-    setIsReady(false)
-    setStatus('Resetting...')
-    setStatusState('default')
+// UI
+export function App() {
+  const { status, step, result, run } = useDurably()
+  const isProcessing = status === 'running' || status === 'resuming'
 
-    try {
-      await durably.stop()
-      await deleteDatabaseFile()
-      setStatus('Database deleted. Reloading...')
-      setTimeout(() => location.reload(), 500)
-    } catch (err) {
-      setStatus(`Reset failed: ${err instanceof Error ? err.message : 'Unknown'}`)
-      setStatusState('failed')
-      setIsReady(true)
-    }
+  const statusText: Record<typeof status, string> = {
+    init: 'Initializing...',
+    ready: 'Ready',
+    running: 'Running',
+    resuming: '🔄 Resuming interrupted job...',
+    done: '✓ Completed',
+    error: '✗ Failed',
   }
-
-  const progressPercentage =
-    progress.total > 0 ? (progress.current / progress.total) * 100 : 0
 
   return (
-    <>
+    <div style={{ padding: '2rem', fontFamily: 'system-ui' }}>
       <h1>Durably React Example</h1>
 
-      <div className="button-group">
-        <button type="button" onClick={runJob} disabled={!isReady || isRunning}>
+      <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem' }}>
+        <button type="button" onClick={run} disabled={status === 'init' || isProcessing}>
           Run Job
         </button>
-        <button
-          type="button"
-          className="secondary"
-          onClick={updateStats}
-          disabled={!isReady}
-        >
-          Refresh Stats
+        <button type="button" onClick={() => location.reload()} disabled={status === 'init'}>
+          Reload Page
         </button>
-        <button
-          type="button"
-          className="danger"
-          onClick={resetDatabase}
-          disabled={!isReady || isRunning}
-        >
+        <button type="button" onClick={async () => { await durably.stop(); await deleteDatabaseFile(); location.reload() }} disabled={isProcessing}>
           Reset Database
         </button>
       </div>
 
-      <div className="card">
-        <div className="card-header">Status</div>
-        <div className="status-row">
-          <div className={`status-indicator ${statusState}`} />
-          <span className="status-text">{status}</span>
-        </div>
-        <div className="progress-container">
-          <div className="progress-bar">
-            <div
-              className="progress-fill"
-              style={{ width: `${progressPercentage}%` }}
-            />
-          </div>
-          <div className="progress-text">
-            {progress.total > 0
-              ? `${progress.current} / ${progress.total}`
-              : '-'}
-          </div>
-        </div>
+      <div style={{ marginBottom: '1rem' }}>
+        <div>Status: <strong>{statusText[status]}</strong></div>
+        {step && <div style={{ color: '#666', marginTop: '0.5rem' }}>Step: {step}</div>}
       </div>
 
-      <div className="card">
-        <div className="card-header">Database Stats</div>
-        <div className="stats-grid">
-          <div className="stat-item pending">
-            <div className="stat-value">{stats?.pending ?? '-'}</div>
-            <div className="stat-label">Pending</div>
-          </div>
-          <div className="stat-item running">
-            <div className="stat-value">{stats?.running ?? '-'}</div>
-            <div className="stat-label">Running</div>
-          </div>
-          <div className="stat-item completed">
-            <div className="stat-value">{stats?.completed ?? '-'}</div>
-            <div className="stat-label">Completed</div>
-          </div>
-          <div className="stat-item failed">
-            <div className="stat-value">{stats?.failed ?? '-'}</div>
-            <div className="stat-label">Failed</div>
-          </div>
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-header">Result</div>
-        <pre className="result">{result}</pre>
-      </div>
-    </>
+      {result && (
+        <pre style={{ background: status === 'error' ? '#fee' : '#f5f5f5', padding: '1rem', borderRadius: '4px' }}>
+          {result}
+        </pre>
+      )}
+    </div>
   )
 }
