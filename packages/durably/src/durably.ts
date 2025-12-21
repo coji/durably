@@ -95,18 +95,18 @@ export interface Durably {
    */
   defineJob<
     TName extends string,
-    TInputSchema extends z.ZodTypeAny,
-    TOutputSchema extends z.ZodTypeAny | undefined = undefined,
+    TInputSchema extends z.ZodType,
+    TOutputSchema extends z.ZodType | undefined = undefined,
   >(
     definition: JobDefinition<TName, TInputSchema, TOutputSchema>,
     fn: JobFunction<
       z.infer<TInputSchema>,
-      TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void
+      TOutputSchema extends z.ZodType ? z.infer<TOutputSchema> : void
     >,
   ): JobHandle<
     TName,
     z.infer<TInputSchema>,
-    TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void
+    TOutputSchema extends z.ZodType ? z.infer<TOutputSchema> : void
   >
 
   /**
@@ -184,18 +184,18 @@ export function createDurably(options: DurablyOptions): Durably {
 
     defineJob<
       TName extends string,
-      TInputSchema extends z.ZodTypeAny,
-      TOutputSchema extends z.ZodTypeAny | undefined = undefined,
+      TInputSchema extends z.ZodType,
+      TOutputSchema extends z.ZodType | undefined = undefined,
     >(
       definition: JobDefinition<TName, TInputSchema, TOutputSchema>,
       fn: JobFunction<
         z.infer<TInputSchema>,
-        TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void
+        TOutputSchema extends z.ZodType ? z.infer<TOutputSchema> : void
       >,
     ): JobHandle<
       TName,
       z.infer<TInputSchema>,
-      TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void
+      TOutputSchema extends z.ZodType ? z.infer<TOutputSchema> : void
     > {
       return createJobHandle(definition, fn, storage, eventEmitter, jobRegistry)
     },

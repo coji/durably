@@ -44,8 +44,8 @@ export type JobFunction<TInput, TOutput> = (
  */
 export interface JobDefinition<
   TName extends string,
-  TInputSchema extends z.ZodTypeAny,
-  TOutputSchema extends z.ZodTypeAny | undefined,
+  TInputSchema extends z.ZodType,
+  TOutputSchema extends z.ZodType | undefined,
 > {
   name: TName
   input: TInputSchema
@@ -136,8 +136,8 @@ export interface JobHandle<TName extends string, TInput, TOutput> {
  */
 export interface RegisteredJob<TInput, TOutput> {
   name: string
-  inputSchema: z.ZodTypeAny
-  outputSchema: z.ZodTypeAny | undefined
+  inputSchema: z.ZodType
+  outputSchema: z.ZodType | undefined
   fn: JobFunction<TInput, TOutput>
 }
 
@@ -190,13 +190,13 @@ export function createJobRegistry(): JobRegistry {
  */
 export function createJobHandle<
   TName extends string,
-  TInputSchema extends z.ZodTypeAny,
-  TOutputSchema extends z.ZodTypeAny | undefined,
+  TInputSchema extends z.ZodType,
+  TOutputSchema extends z.ZodType | undefined,
 >(
   definition: JobDefinition<TName, TInputSchema, TOutputSchema>,
   fn: JobFunction<
     z.infer<TInputSchema>,
-    TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : void
+    TOutputSchema extends z.ZodType ? z.infer<TOutputSchema> : void
   >,
   storage: Storage,
   _eventEmitter: EventEmitter,
@@ -204,10 +204,10 @@ export function createJobHandle<
 ): JobHandle<
   TName,
   z.infer<TInputSchema>,
-  TOutputSchema extends z.ZodTypeAny ? z.infer<TOutputSchema> : undefined
+  TOutputSchema extends z.ZodType ? z.infer<TOutputSchema> : undefined
 > {
   type TInput = z.infer<TInputSchema>
-  type TOutput = TOutputSchema extends z.ZodTypeAny
+  type TOutput = TOutputSchema extends z.ZodType
     ? z.infer<TOutputSchema>
     : undefined
 
