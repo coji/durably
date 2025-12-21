@@ -1,3 +1,4 @@
+import { CancelledError } from './errors'
 import type { EventEmitter } from './events'
 import type { JobContext } from './job'
 import type { Run, Storage } from './storage'
@@ -20,6 +21,12 @@ export function createJobContext(
     },
 
     async run<T>(name: string, fn: () => T | Promise<T>): Promise<T> {
+      // Check if run was cancelled before executing this step
+      const currentRun = await storage.getRun(run.id)
+      if (currentRun?.status === 'cancelled') {
+        throw new CancelledError(run.id)
+      }
+
       // Check if step was already completed
       const existingStep = await storage.getCompletedStep(run.id, name)
       if (existingStep) {

@@ -35,3 +35,6 @@ export type {
   SchemaVersionsTable,
   StepsTable,
 } from './schema'
+
+// Errors
+export { CancelledError } from './errors'

@@ -169,7 +169,10 @@ export function createRunApiTests(createDialect: () => Dialect) {
           if (i < 5) await new Promise((r) => setTimeout(r, 5))
         }
 
-        const limited = await durably.getRuns({ jobName: 'limit-test', limit: 3 })
+        const limited = await durably.getRuns({
+          jobName: 'limit-test',
+          limit: 3,
+        })
         expect(limited).toHaveLength(3)
 
         // Should get most recent (5, 4, 3 since sorted by created_at desc)
@@ -190,7 +193,10 @@ export function createRunApiTests(createDialect: () => Dialect) {
           if (i < 5) await new Promise((r) => setTimeout(r, 5))
         }
 
-        const offset = await durably.getRuns({ jobName: 'offset-test', offset: 2 })
+        const offset = await durably.getRuns({
+          jobName: 'offset-test',
+          offset: 2,
+        })
         expect(offset).toHaveLength(3)
 
         // Should skip first 2 (5, 4) and get (3, 2, 1)
@@ -212,28 +218,43 @@ export function createRunApiTests(createDialect: () => Dialect) {
         }
 
         // Page 1: first 3 items
-        const page1 = await durably.getRuns({ jobName: 'pagination-test', limit: 3, offset: 0 })
+        const page1 = await durably.getRuns({
+          jobName: 'pagination-test',
+          limit: 3,
+          offset: 0,
+        })
         expect(page1).toHaveLength(3)
         expect((page1[0].payload as { order: number }).order).toBe(10)
         expect((page1[1].payload as { order: number }).order).toBe(9)
         expect((page1[2].payload as { order: number }).order).toBe(8)
 
         // Page 2: next 3 items
-        const page2 = await durably.getRuns({ jobName: 'pagination-test', limit: 3, offset: 3 })
+        const page2 = await durably.getRuns({
+          jobName: 'pagination-test',
+          limit: 3,
+          offset: 3,
+        })
         expect(page2).toHaveLength(3)
         expect((page2[0].payload as { order: number }).order).toBe(7)
         expect((page2[1].payload as { order: number }).order).toBe(6)
         expect((page2[2].payload as { order: number }).order).toBe(5)
 
         // Page 4: last page with only 1 item
-        const page4 = await durably.getRuns({ jobName: 'pagination-test', limit: 3, offset: 9 })
+        const page4 = await durably.getRuns({
+          jobName: 'pagination-test',
+          limit: 3,
+          offset: 9,
+        })
         expect(page4).toHaveLength(1)
         expect((page4[0].payload as { order: number }).order).toBe(1)
       })
 
       it('combines pagination with other filters', async () => {
         const job = durably.defineJob(
-          { name: 'combined-filter-pagination-test', input: z.object({ order: z.number() }) },
+          {
+            name: 'combined-filter-pagination-test',
+            input: z.object({ order: z.number() }),
+          },
           async () => {},
         )
 
@@ -264,7 +285,10 @@ export function createRunApiTests(createDialect: () => Dialect) {
         await job.trigger({})
         await job.trigger({})
 
-        const result = await durably.getRuns({ jobName: 'offset-exceeds-test', offset: 10 })
+        const result = await durably.getRuns({
+          jobName: 'offset-exceeds-test',
+          offset: 10,
+        })
         expect(result).toHaveLength(0)
       })
     })
@@ -363,9 +387,9 @@ export function createRunApiTests(createDialect: () => Dialect) {
         // Don't start the worker - job will never complete
         // Or start with a delay that exceeds timeout
 
-        await expect(
-          job.triggerAndWait({}, { timeout: 100 }),
-        ).rejects.toThrow('timeout')
+        await expect(job.triggerAndWait({}, { timeout: 100 })).rejects.toThrow(
+          'timeout',
+        )
       })
     })
 

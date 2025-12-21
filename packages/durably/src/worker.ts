@@ -1,4 +1,5 @@
 import { createJobContext } from './context'
+import { CancelledError } from './errors'
 import type { EventEmitter } from './events'
 import type { JobRegistry } from './job'
 import type { Storage } from './storage'
@@ -94,6 +95,12 @@ export function createWorker(
     output: unknown,
     startTime: number,
   ): Promise<void> {
+    // Check if run was cancelled during execution - don't overwrite cancelled status
+    const currentRun = await storage.getRun(runId)
+    if (currentRun?.status === 'cancelled') {
+      return
+    }
+
     await storage.updateRun(runId, {
       status: 'completed',
       output,
@@ -116,6 +123,18 @@ export function createWorker(
     jobName: string,
     error: unknown,
   ): Promise<void> {
+    // If the error is CancelledError, don't treat it as a failure
+    // The run status is already 'cancelled'
+    if (error instanceof CancelledError) {
+      return
+    }
+
+    // Check if run was cancelled during execution - don't overwrite cancelled status
+    const currentRun = await storage.getRun(runId)
+    if (currentRun?.status === 'cancelled') {
+      return
+    }
+
     const errorMessage = getErrorMessage(error)
 
     // Get the failed step name if available

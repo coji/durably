@@ -286,7 +286,9 @@ export function createJobHandle<
         if (options?.timeout !== undefined) {
           timeoutId = setTimeout(() => {
             cleanup()
-            reject(new Error(`triggerAndWait timeout after ${options.timeout}ms`))
+            reject(
+              new Error(`triggerAndWait timeout after ${options.timeout}ms`),
+            )
           }, options.timeout)
         }
       })

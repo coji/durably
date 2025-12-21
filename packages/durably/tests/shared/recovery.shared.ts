@@ -429,6 +429,100 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           /not found/i,
         )
       })
+
+      it('stops execution before next step when cancelled during run', async () => {
+        let step1Executed = false
+        let step2Executed = false
+        let step3Executed = false
+
+        const job = durably.defineJob(
+          {
+            name: 'cancel-mid-execution-test',
+            input: z.object({}),
+          },
+          async (ctx) => {
+            await ctx.run('step1', async () => {
+              step1Executed = true
+              // Give time for cancellation to be triggered
+              await new Promise((r) => setTimeout(r, 100))
+              return 'step1'
+            })
+            await ctx.run('step2', async () => {
+              step2Executed = true
+              return 'step2'
+            })
+            await ctx.run('step3', async () => {
+              step3Executed = true
+              return 'step3'
+            })
+          },
+        )
+
+        const run = await job.trigger({})
+        durably.start()
+
+        // Wait until running
+        await vi.waitFor(
+          async () => {
+            const updated = await job.getRun(run.id)
+            expect(updated?.status).toBe('running')
+          },
+          { timeout: 500 },
+        )
+
+        // Cancel while step1 is executing
+        await durably.cancel(run.id)
+
+        // Wait for worker to finish processing
+        await new Promise((r) => setTimeout(r, 200))
+
+        // Run should stay cancelled (not overwritten to completed)
+        const finalRun = await job.getRun(run.id)
+        expect(finalRun?.status).toBe('cancelled')
+
+        // step1 was executed (was in progress when cancelled)
+        expect(step1Executed).toBe(true)
+        // step2 and step3 should NOT have executed (cancelled before they started)
+        expect(step2Executed).toBe(false)
+        expect(step3Executed).toBe(false)
+      })
+
+      it('does not overwrite cancelled status with completed', async () => {
+        const job = durably.defineJob(
+          {
+            name: 'cancel-no-overwrite-test',
+            input: z.object({}),
+          },
+          async (ctx) => {
+            await ctx.run('step1', async () => {
+              await new Promise((r) => setTimeout(r, 150))
+              return 'done'
+            })
+          },
+        )
+
+        const run = await job.trigger({})
+        durably.start()
+
+        // Wait until running
+        await vi.waitFor(
+          async () => {
+            const updated = await job.getRun(run.id)
+            expect(updated?.status).toBe('running')
+          },
+          { timeout: 500 },
+        )
+
+        // Cancel while step is executing
+        await durably.cancel(run.id)
+
+        // Wait for step to complete naturally
+        await new Promise((r) => setTimeout(r, 300))
+
+        // Status should remain cancelled even though job function returned normally
+        const finalRun = await job.getRun(run.id)
+        expect(finalRun?.status).toBe('cancelled')
+      })
     })
 
     describe('deleteRun() API', () => {
