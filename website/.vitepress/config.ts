@@ -43,6 +43,7 @@ export default defineConfig({
               items: [
                 { text: 'Node.js', link: '/ja/guide/nodejs' },
                 { text: 'ブラウザ', link: '/ja/guide/browser' },
+                { text: 'React', link: '/ja/guide/react' },
                 { text: 'デプロイ', link: '/ja/guide/deployment' },
               ],
             },
@@ -99,6 +100,7 @@ export default defineConfig({
           items: [
             { text: 'Node.js', link: '/guide/nodejs' },
             { text: 'Browser', link: '/guide/browser' },
+            { text: 'React', link: '/guide/react' },
             { text: 'Deployment', link: '/guide/deployment' },
           ],
         },
