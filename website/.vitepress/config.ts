@@ -63,7 +63,7 @@ export default defineConfig({
         },
         footer: {
           message: 'MITライセンスの下で公開されています。',
-          copyright: 'Copyright 2024-present coji',
+          copyright: 'Copyright 2025-present coji',
         },
       },
     },
@@ -126,7 +126,7 @@ export default defineConfig({
 
     footer: {
       message: 'Released under the MIT License.',
-      copyright: 'Copyright 2024-present coji',
+      copyright: 'Copyright 2025-present coji',
     },
 
     search: {
