@@ -1,4 +1,9 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "pnpm --filter example-react build",
+  "outputDirectory": "examples/react/dist",
+  "installCommand": "pnpm install",
+  "framework": "vite",
   "headers": [
     {
       "source": "/(.*)",
