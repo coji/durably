@@ -232,6 +232,30 @@ export function createRunApiTests(createDialect: () => Dialect) {
         const runs = await job.getRuns()
         expect(runs[0].idempotencyKey).toBe('test-key')
       })
+
+      it('times out if job does not complete within timeout', async () => {
+        const job = durably.defineJob(
+          {
+            name: 'trigger-and-wait-timeout',
+            input: z.object({}),
+            output: z.object({}),
+          },
+          async (ctx) => {
+            await ctx.run('slow-step', async () => {
+              // This step takes longer than the timeout
+              await new Promise((r) => setTimeout(r, 500))
+            })
+            return {}
+          },
+        )
+
+        // Don't start the worker - job will never complete
+        // Or start with a delay that exceeds timeout
+
+        await expect(
+          job.triggerAndWait({}, { timeout: 100 }),
+        ).rejects.toThrow('timeout')
+      })
     })
 
     describe('ctx.progress()', () => {

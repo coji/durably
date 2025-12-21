@@ -58,6 +58,8 @@ export interface JobDefinition<
 export interface TriggerOptions {
   idempotencyKey?: string
   concurrencyKey?: string
+  /** Timeout in milliseconds for triggerAndWait() */
+  timeout?: number
 }
 
 /**
@@ -250,12 +252,21 @@ export function createJobHandle<
 
       // Wait for completion via event subscription
       return new Promise((resolve, reject) => {
+        let timeoutId: ReturnType<typeof setTimeout> | undefined
+
+        const cleanup = () => {
+          unsubscribeComplete()
+          unsubscribeFail()
+          if (timeoutId) {
+            clearTimeout(timeoutId)
+          }
+        }
+
         const unsubscribeComplete = _eventEmitter.on(
           'run:complete',
           (event) => {
             if (event.runId === run.id) {
-              unsubscribeComplete()
-              unsubscribeFail()
+              cleanup()
               resolve({
                 id: run.id,
                 output: event.output as TOutput,
@@ -266,11 +277,18 @@ export function createJobHandle<
 
         const unsubscribeFail = _eventEmitter.on('run:fail', (event) => {
           if (event.runId === run.id) {
-            unsubscribeComplete()
-            unsubscribeFail()
+            cleanup()
             reject(new Error(event.error))
           }
         })
+
+        // Set timeout if specified
+        if (options?.timeout !== undefined) {
+          timeoutId = setTimeout(() => {
+            cleanup()
+            reject(new Error(`triggerAndWait timeout after ${options.timeout}ms`))
+          }, options.timeout)
+        }
       })
     },
 
