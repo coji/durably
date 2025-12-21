@@ -162,5 +162,32 @@ export function createEventsTests(createDialect: () => Dialect) {
       expect(startListener).toHaveBeenCalledTimes(1)
       expect(completeListener).toHaveBeenCalledTimes(0)
     })
+
+    it('calls onError handler when listener throws', () => {
+      const errorHandler = vi.fn()
+      const failingListener = vi.fn(() => {
+        throw new Error('Listener error')
+      })
+
+      durably.onError(errorHandler)
+      durably.on('run:start', failingListener)
+
+      durably.emit({
+        type: 'run:start',
+        runId: 'run_1',
+        jobName: 'test-job',
+        payload: {},
+      })
+
+      expect(failingListener).toHaveBeenCalledTimes(1)
+      expect(errorHandler).toHaveBeenCalledTimes(1)
+      expect(errorHandler).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({
+          type: 'run:start',
+          runId: 'run_1',
+        }),
+      )
+    })
   })
 }

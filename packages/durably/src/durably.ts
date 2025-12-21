@@ -3,6 +3,7 @@ import { Kysely } from 'kysely'
 import type { z } from 'zod'
 import {
   type AnyEventInput,
+  type ErrorHandler,
   type EventListener,
   type EventType,
   type Unsubscribe,
@@ -85,6 +86,11 @@ export interface Durably {
   emit(event: AnyEventInput): void
 
   /**
+   * Register an error handler for listener exceptions
+   */
+  onError(handler: ErrorHandler): void
+
+  /**
    * Define a job
    */
   defineJob<
@@ -160,6 +166,7 @@ export function createDurably(options: DurablyOptions): Durably {
     storage,
     on: eventEmitter.on,
     emit: eventEmitter.emit,
+    onError: eventEmitter.onError,
     start: worker.start,
     stop: worker.stop,
 

@@ -12,6 +12,7 @@ export { withLogPersistence } from './plugins/log-persistence'
 // Events
 export type {
   DurablyEvent,
+  ErrorHandler,
   EventType,
   LogWriteEvent,
   RunCompleteEvent,

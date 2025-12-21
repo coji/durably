@@ -143,6 +143,11 @@ export type EventListener<T extends EventType> = (event: EventByType<T>) => void
 export type Unsubscribe = () => void
 
 /**
+ * Error handler function for listener exceptions
+ */
+export type ErrorHandler = (error: Error, event: DurablyEvent) => void
+
+/**
  * Event emitter interface
  */
 export interface EventEmitter {
@@ -151,6 +156,11 @@ export interface EventEmitter {
    * @returns Unsubscribe function
    */
   on<T extends EventType>(type: T, listener: EventListener<T>): Unsubscribe
+
+  /**
+   * Register an error handler for listener exceptions
+   */
+  onError(handler: ErrorHandler): void
 
   /**
    * Emit an event (auto-assigns timestamp and sequence)
@@ -164,6 +174,7 @@ export interface EventEmitter {
 export function createEventEmitter(): EventEmitter {
   const listeners = new Map<EventType, Set<EventListener<EventType>>>()
   let sequence = 0
+  let errorHandler: ErrorHandler | null = null
 
   return {
     on<T extends EventType>(type: T, listener: EventListener<T>): Unsubscribe {
@@ -177,6 +188,10 @@ export function createEventEmitter(): EventEmitter {
       return () => {
         typeListeners?.delete(listener as unknown as EventListener<EventType>)
       }
+    },
+
+    onError(handler: ErrorHandler): void {
+      errorHandler = handler
     },
 
     emit(event: AnyEventInput): void {
@@ -195,8 +210,14 @@ export function createEventEmitter(): EventEmitter {
       for (const listener of typeListeners) {
         try {
           listener(fullEvent)
-        } catch {
-          // Ignore listener exceptions - they should not affect other listeners
+        } catch (error) {
+          if (errorHandler) {
+            errorHandler(
+              error instanceof Error ? error : new Error(String(error)),
+              fullEvent,
+            )
+          }
+          // Continue to next listener regardless of error
         }
       }
     },
