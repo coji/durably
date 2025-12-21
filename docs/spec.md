@@ -91,10 +91,12 @@ const syncUsers = durably.defineJob({
 interface JobHandle<TName extends string, TInput, TOutput> {
   readonly name: TName
   trigger(input: TInput, options?: TriggerOptions): Promise<Run<TOutput>>
+  triggerAndWait(input: TInput, options?: TriggerOptions): Promise<{ id: string; output: TOutput }>
+  batchTrigger(inputs: BatchTriggerInput<TInput>[]): Promise<Run<TOutput>[]>
   getRun(id: string): Promise<Run<TOutput> | null>
   getRuns(filter?: RunFilter): Promise<Run<TOutput>[]>
 
-  // イベント型（Discriminated Union 用）
+  // イベント型（Discriminated Union 用、将来実装予定）
   readonly $types: {
     RunStartEvent: { type: 'run:start'; jobName: TName; payload: TInput; /* ... */ }
     RunCompleteEvent: { type: 'run:complete'; jobName: TName; output: TOutput; /* ... */ }
@@ -462,11 +464,11 @@ const syncUsers = durably.defineJob({
   input: z.object({ orgId: z.string() }),
   output: z.object({ processedCount: z.number() }),
 }, async (ctx, payload) => {
-  ctx.setProgress({ current: 0, total: 100, message: "Starting..." })
+  ctx.progress(0, 100, "Starting...")
 
   const users = await ctx.run("fetch-users", async () => {
     const result = await api.fetchUsers(payload.orgId)
-    ctx.setProgress({ current: 10, message: "Fetched users" })
+    ctx.progress(10, 100, "Fetched users")
     return result
   })
 
@@ -474,14 +476,14 @@ const syncUsers = durably.defineJob({
     await ctx.run(`process-user-${users[i].id}`, async () => {
       await processUser(users[i])
     })
-    ctx.setProgress({ current: 10 + ((i + 1) / users.length) * 90 })
+    ctx.progress(10 + ((i + 1) / users.length) * 90)
   }
 
   return { processedCount: users.length }
 })
 ```
 
-`ctx.setProgress` は進捗情報を Run に保存する。`current` は必須、`total`（デフォルト 100）と `message` は任意である。
+`ctx.progress(current, total?, message?)` は進捗情報を Run に保存する。`current` は必須、`total` と `message` は任意である。
 
 進捗は `getRun` で取得できる。
 
@@ -662,7 +664,7 @@ Vite を使用する場合は、SQLocal の Vite プラグインを追加する�
 - `runs`: `(status, concurrency_key)` の複合インデックス
 - `runs`: `(status, created_at)` の複合インデックス
 - `steps`: `(run_id, index)` の複合インデックス
-- `logs`: `(run_id, timestamp)` の複合インデックス
+- `logs`: `(run_id, created_at)` の複合インデックス
 
 **ULID の実装**: ID 生成には ULID（Universally Unique Lexicographically Sortable Identifier）を使用する。実装は軽量な `ulidx` パッケージを採用し、ブラウザと Node.js の両方で動作する。ULID はタイムスタンプを含むためソート可能であり、UUID と同等のユニーク性を持つ。
 
