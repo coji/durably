@@ -8,6 +8,18 @@ import type { Durably } from '@coji/durably'
 
 let durably: Durably
 
+/**
+ * Escape HTML special characters to prevent XSS
+ */
+function escapeHtml(unsafe: string): string {
+  return unsafe
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
 const runsTbody = document.getElementById(
   'runs-tbody',
 ) as HTMLTableSectionElement
@@ -86,21 +98,21 @@ async function showRunDetails(runId: string) {
   const steps = await durably.storage.getSteps(runId)
 
   detailsContent.innerHTML = `
-    <p><strong>ID:</strong> <span class="run-id">${run.id}</span></p>
-    <p><strong>Job:</strong> ${run.jobName}</p>
+    <p><strong>ID:</strong> <span class="run-id">${escapeHtml(run.id)}</span></p>
+    <p><strong>Job:</strong> ${escapeHtml(run.jobName)}</p>
     <p><strong>Status:</strong> <span class="status-badge status-${run.status}">${run.status}</span></p>
     <p><strong>Created:</strong> ${formatDate(run.createdAt)}</p>
-    ${run.progress ? `<p><strong>Progress:</strong> ${run.progress.current}${run.progress.total ? `/${run.progress.total}` : ''} ${run.progress.message || ''}</p>` : ''}
-    ${run.error ? `<p><strong>Error:</strong> <span style="color: #dc3545">${run.error}</span></p>` : ''}
-    ${run.output ? `<p><strong>Output:</strong></p><pre class="result">${JSON.stringify(run.output, null, 2)}</pre>` : ''}
+    ${run.progress ? `<p><strong>Progress:</strong> ${run.progress.current}${run.progress.total ? `/${run.progress.total}` : ''} ${escapeHtml(run.progress.message || '')}</p>` : ''}
+    ${run.error ? `<p><strong>Error:</strong> <span style="color: #dc3545">${escapeHtml(run.error)}</span></p>` : ''}
+    ${run.output ? `<p><strong>Output:</strong></p><pre class="result">${escapeHtml(JSON.stringify(run.output, null, 2))}</pre>` : ''}
     <p><strong>Payload:</strong></p>
-    <pre class="result">${JSON.stringify(run.payload, null, 2)}</pre>
+    <pre class="result">${escapeHtml(JSON.stringify(run.payload, null, 2))}</pre>
     ${
       steps.length > 0
         ? `
       <p><strong>Steps:</strong></p>
       <ul class="steps-list">
-        ${steps.map((s) => `<li><span>${s.name}</span><span class="status-badge status-${s.status === 'completed' ? 'completed' : 'failed'}">${s.status}</span></li>`).join('')}
+        ${steps.map((s) => `<li><span>${escapeHtml(s.name)}</span><span class="status-badge status-${s.status === 'completed' ? 'completed' : 'failed'}">${s.status}</span></li>`).join('')}
       </ul>
     `
         : ''

@@ -89,7 +89,9 @@ interface DashboardProps {
 export function Dashboard({ durably, onMount }: DashboardProps) {
   const [runs, setRuns] = useState<Run[]>([])
   const [selectedRun, setSelectedRun] = useState<Run | null>(null)
-  const [steps, setSteps] = useState<{ name: string; status: string }[]>([])
+  const [steps, setSteps] = useState<
+    { index: number; name: string; status: string }[]
+  >([])
 
   const refresh = useCallback(async () => {
     const data = await durably.getRuns({ limit: 20 })
@@ -106,7 +108,9 @@ export function Dashboard({ durably, onMount }: DashboardProps) {
     if (run) {
       setSelectedRun(run)
       const stepsData = await durably.storage.getSteps(runId)
-      setSteps(stepsData.map((s) => ({ name: s.name, status: s.status })))
+      setSteps(
+        stepsData.map((s, i) => ({ index: i, name: s.name, status: s.status })),
+      )
     }
   }
 
@@ -283,7 +287,7 @@ export function Dashboard({ durably, onMount }: DashboardProps) {
               </p>
               <ul style={styles.stepsList}>
                 {steps.map((s) => (
-                  <li key={s.name} style={styles.stepsItem}>
+                  <li key={s.index} style={styles.stepsItem}>
                     <span>{s.name}</span>
                     <span
                       style={styles.badge(
