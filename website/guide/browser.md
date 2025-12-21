@@ -75,68 +75,7 @@ const durably = createDurably({
 
 ## React Integration
 
-### Basic Hook
-
-```tsx
-import { useEffect, useState } from 'react'
-
-function useDurably() {
-  const [status, setStatus] = useState<'init' | 'ready' | 'running'>('init')
-
-  useEffect(() => {
-    const unsubscribes = [
-      durably.on('run:start', () => setStatus('running')),
-      durably.on('run:complete', () => setStatus('ready')),
-      durably.on('run:fail', () => setStatus('ready')),
-    ]
-
-    durably.migrate().then(() => {
-      durably.start()
-      setStatus('ready')
-    })
-
-    return () => {
-      unsubscribes.forEach((fn) => fn())
-      durably.stop()
-    }
-  }, [])
-
-  return { status }
-}
-```
-
-### With Job Triggering
-
-```tsx
-function App() {
-  const [isProcessing, setIsProcessing] = useState(false)
-
-  useEffect(() => {
-    const unsubs = [
-      durably.on('run:start', () => setIsProcessing(true)),
-      durably.on('run:complete', () => setIsProcessing(false)),
-      durably.on('run:fail', () => setIsProcessing(false)),
-    ]
-
-    durably.migrate().then(() => durably.start())
-
-    return () => {
-      unsubs.forEach((fn) => fn())
-      durably.stop()
-    }
-  }, [])
-
-  const handleClick = async () => {
-    await myJob.trigger({ data: 'value' })
-  }
-
-  return (
-    <button onClick={handleClick} disabled={isProcessing}>
-      {isProcessing ? 'Processing...' : 'Run Job'}
-    </button>
-  )
-}
-```
+For React-specific patterns including hooks, StrictMode compatibility, and state management, see the dedicated [React guide](/guide/react).
 
 ## Tab Suspension
 

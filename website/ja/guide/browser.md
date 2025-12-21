@@ -75,68 +75,7 @@ const durably = createDurably({
 
 ## React統合
 
-### 基本的なフック
-
-```tsx
-import { useEffect, useState } from 'react'
-
-function useDurably() {
-  const [status, setStatus] = useState<'init' | 'ready' | 'running'>('init')
-
-  useEffect(() => {
-    const unsubscribes = [
-      durably.on('run:start', () => setStatus('running')),
-      durably.on('run:complete', () => setStatus('ready')),
-      durably.on('run:fail', () => setStatus('ready')),
-    ]
-
-    durably.migrate().then(() => {
-      durably.start()
-      setStatus('ready')
-    })
-
-    return () => {
-      unsubscribes.forEach((fn) => fn())
-      durably.stop()
-    }
-  }, [])
-
-  return { status }
-}
-```
-
-### ジョブトリガー付き
-
-```tsx
-function App() {
-  const [isProcessing, setIsProcessing] = useState(false)
-
-  useEffect(() => {
-    const unsubs = [
-      durably.on('run:start', () => setIsProcessing(true)),
-      durably.on('run:complete', () => setIsProcessing(false)),
-      durably.on('run:fail', () => setIsProcessing(false)),
-    ]
-
-    durably.migrate().then(() => durably.start())
-
-    return () => {
-      unsubs.forEach((fn) => fn())
-      durably.stop()
-    }
-  }, [])
-
-  const handleClick = async () => {
-    await myJob.trigger({ data: 'value' })
-  }
-
-  return (
-    <button onClick={handleClick} disabled={isProcessing}>
-      {isProcessing ? '処理中...' : 'ジョブを実行'}
-    </button>
-  )
-}
-```
+hooks、StrictMode互換性、状態管理などのReact固有のパターンについては、専用の[Reactガイド](/ja/guide/react)を参照してください。
 
 ## タブのサスペンド
 
