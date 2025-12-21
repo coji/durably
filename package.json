@@ -19,6 +19,9 @@
     "validate": "pnpm format && pnpm lint && pnpm typecheck && pnpm test"
   },
   "devDependencies": {
+    "@types/node": "^22.19.3",
+    "cc-hooks-ts": "2.0.70",
+    "tsx": "^4.21.0",
     "typescript": "^5.7.2"
   },
   "pnpm": {
