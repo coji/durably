@@ -190,8 +190,8 @@ export function createWorker(
 
     try {
       // Create context and execute job
-      const ctx = createJobContext(run, run.jobName, storage, eventEmitter)
-      const output = await job.fn(ctx, run.payload)
+      const context = createJobContext(run, run.jobName, storage, eventEmitter)
+      const output = await job.fn(context, run.payload)
 
       // Validate output if schema exists
       if (job.outputSchema) {

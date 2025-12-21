@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { createDurably, type Durably, type LogWriteEvent } from '../../src'
 
 export function createLogTests(createDialect: () => Dialect) {
-  describe('ctx.log', () => {
+  describe('context.log', () => {
     let durably: Durably
 
     beforeEach(async () => {
@@ -20,15 +20,15 @@ export function createLogTests(createDialect: () => Dialect) {
       await durably.db.destroy()
     })
 
-    it('ctx.log.info() emits log:write event', async () => {
+    it('context.log.info() emits log:write event', async () => {
       const logEvents: LogWriteEvent[] = []
       durably.on('log:write', (e) => logEvents.push(e))
 
       const job = durably.defineJob(
         { name: 'log-info-test', input: z.object({}) },
-        async (ctx) => {
-          ctx.log.info('Hello from job')
-          await ctx.run('step', () => {})
+        async (context) => {
+          context.log.info('Hello from job')
+          await context.run('step', () => {})
         },
       )
 
@@ -45,15 +45,15 @@ export function createLogTests(createDialect: () => Dialect) {
       )
     })
 
-    it('ctx.log.warn() sets level to warn', async () => {
+    it('context.log.warn() sets level to warn', async () => {
       const logEvents: LogWriteEvent[] = []
       durably.on('log:write', (e) => logEvents.push(e))
 
       const job = durably.defineJob(
         { name: 'log-warn-test', input: z.object({}) },
-        async (ctx) => {
-          ctx.log.warn('Warning message')
-          await ctx.run('step', () => {})
+        async (context) => {
+          context.log.warn('Warning message')
+          await context.run('step', () => {})
         },
       )
 
@@ -70,15 +70,15 @@ export function createLogTests(createDialect: () => Dialect) {
       )
     })
 
-    it('ctx.log.error() sets level to error', async () => {
+    it('context.log.error() sets level to error', async () => {
       const logEvents: LogWriteEvent[] = []
       durably.on('log:write', (e) => logEvents.push(e))
 
       const job = durably.defineJob(
         { name: 'log-error-test', input: z.object({}) },
-        async (ctx) => {
-          ctx.log.error('Error message')
-          await ctx.run('step', () => {})
+        async (context) => {
+          context.log.error('Error message')
+          await context.run('step', () => {})
         },
       )
 
@@ -101,9 +101,9 @@ export function createLogTests(createDialect: () => Dialect) {
 
       const job = durably.defineJob(
         { name: 'log-data-test', input: z.object({}) },
-        async (ctx) => {
-          ctx.log.info('Processing item', { itemId: 123, status: 'active' })
-          await ctx.run('step', () => {})
+        async (context) => {
+          context.log.info('Processing item', { itemId: 123, status: 'active' })
+          await context.run('step', () => {})
         },
       )
 
@@ -125,9 +125,9 @@ export function createLogTests(createDialect: () => Dialect) {
 
       const job = durably.defineJob(
         { name: 'log-runid-test', input: z.object({}) },
-        async (ctx) => {
-          ctx.log.info('Test message')
-          await ctx.run('step', () => {})
+        async (context) => {
+          context.log.info('Test message')
+          await context.run('step', () => {})
         },
       )
 
@@ -149,12 +149,12 @@ export function createLogTests(createDialect: () => Dialect) {
 
       const job = durably.defineJob(
         { name: 'log-stepname-test', input: z.object({}) },
-        async (ctx) => {
-          ctx.log.info('Outside step') // stepName should be null
-          await ctx.run('my-step', () => {
-            ctx.log.info('Inside step') // stepName should be 'my-step'
+        async (context) => {
+          context.log.info('Outside step') // stepName should be null
+          await context.run('my-step', () => {
+            context.log.info('Inside step') // stepName should be 'my-step'
           })
-          ctx.log.info('After step') // stepName should be null
+          context.log.info('After step') // stepName should be null
         },
       )
 

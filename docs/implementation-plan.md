@@ -454,15 +454,15 @@ type DurablyEvent =
 **実装ファイル**
 - `src/worker.ts` - ワーカーロジック
 
-### 3.2 ctx.run() によるステップ実行
+### 3.2 context.run() によるステップ実行
 
 **テスト項目**
-- [ ] `ctx.run()` が関数を実行して結果を返す
+- [ ] `context.run()` が関数を実行して結果を返す
 - [ ] ステップ成功時に steps テーブルに記録される
 - [ ] ステップ失敗時に Run が failed になる
 - [ ] 成功したステップは再実行時にスキップされる
 - [ ] スキップ時は保存済みの output が返される
-- [ ] `ctx.run()` の戻り値の型が推論される
+- [ ] `context.run()` の戻り値の型が推論される
 
 **実装ファイル**
 - `src/context.ts` - JobContext 実装
@@ -513,7 +513,7 @@ type DurablyEvent =
 - [ ] `getRuns({ jobName })` でフィルタできる
 - [ ] 結果は created_at 降順でソートされる
 
-### 5.2 ctx.setProgress()
+### 5.2 context.setProgress()
 
 **テスト項目**
 - [ ] `setProgress({ current })` で進捗が保存される
@@ -548,12 +548,12 @@ type DurablyEvent =
 
 ## Phase 7: ログシステム
 
-### 7.1 ctx.log
+### 7.1 context.log
 
 **テスト項目**
-- [ ] `ctx.log.info()` で log:write イベントが発火する
-- [ ] `ctx.log.warn()` で level が warn になる
-- [ ] `ctx.log.error()` で level が error になる
+- [ ] `context.log.info()` で log:write イベントが発火する
+- [ ] `context.log.warn()` で level が warn になる
+- [ ] `context.log.error()` で level が error になる
 - [ ] 構造化データを付与できる
 
 ### 7.2 withLogPersistence プラグイン
@@ -626,17 +626,17 @@ const syncUsers = durably.defineJob({
   name: 'sync-users',
   input: z.object({ orgId: z.string() }),
   output: z.object({ count: z.number() }),
-}, async (ctx, payload) => {
-  ctx.log.info('starting sync', { orgId: payload.orgId })
+}, async (context, payload) => {
+  context.log.info('starting sync', { orgId: payload.orgId })
 
-  const users = await ctx.run('fetch-users', async () => {
+  const users = await context.run('fetch-users', async () => {
     // 外部 API からユーザー取得（シミュレート）
     await new Promise(r => setTimeout(r, 1000))
     return [{ id: '1', name: 'Alice' }, { id: '2', name: 'Bob' }]
   })
 
-  await ctx.run('save-users', async () => {
-    ctx.log.info('saving users', { count: users.length })
+  await context.run('save-users', async () => {
+    context.log.info('saving users', { count: users.length })
     // DB に保存（シミュレート）
     await new Promise(r => setTimeout(r, 500))
   })
@@ -701,15 +701,15 @@ const processData = durably.defineJob({
   name: 'process-data',
   input: z.object({ items: z.array(z.string()) }),
   output: z.object({ processed: z.number() }),
-}, async (ctx, payload) => {
-  ctx.setProgress({ current: 0, total: payload.items.length })
+}, async (context, payload) => {
+  context.setProgress({ current: 0, total: payload.items.length })
 
   for (let i = 0; i < payload.items.length; i++) {
-    await ctx.run(`process-${i}`, async () => {
+    await context.run(`process-${i}`, async () => {
       // 処理（シミュレート）
       await new Promise(r => setTimeout(r, 200))
     })
-    ctx.setProgress({ current: i + 1, message: `Processed ${payload.items[i]}` })
+    context.setProgress({ current: i + 1, message: `Processed ${payload.items[i]}` })
   }
 
   return { processed: payload.items.length }
@@ -780,10 +780,10 @@ export default defineConfig({
 |-------|----------------------|
 | Phase 1 | 基本構成、migrate() |
 | Phase 2 | defineJob(), trigger() |
-| Phase 3 | ワーカー起動、ctx.run() |
+| Phase 3 | ワーカー起動、context.run() |
 | Phase 5 | getRun(), setProgress() |
 | Phase 6 | イベント購読 |
-| Phase 7 | ctx.log, withLogPersistence |
+| Phase 7 | context.log, withLogPersistence |
 
 ---
 
@@ -802,7 +802,7 @@ durably/                          # リポジトリルート
 │       │   ├── storage.ts        # Storage インターフェースと KyselyStorage 実装
 │       │   ├── job.ts            # defineJob, JobHandle
 │       │   ├── run.ts            # Run の作成・取得
-│       │   ├── context.ts        # JobContext（ctx.run, ctx.log, ctx.setProgress）
+│       │   ├── context.ts        # JobContext（context.run, context.log, context.setProgress）
 │       │   ├── worker.ts         # ワーカー（ポーリング、実行）
 │       │   ├── heartbeat.ts      # Heartbeat 管理
 │       │   ├── events.ts         # イベントエミッター（sequence 付与）
