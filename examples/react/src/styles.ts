@@ -9,6 +9,25 @@ export const styles = {
     maxWidth: '800px',
     margin: '0 auto',
   },
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '1.5rem',
+  },
+  title: {
+    margin: 0,
+    fontSize: '1.5rem',
+  },
+  links: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.5rem',
+    fontSize: '0.875rem',
+  },
+  linkSeparator: {
+    color: '#999',
+  },
   tabs: {
     display: 'flex',
     gap: 0,

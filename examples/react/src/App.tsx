@@ -114,6 +114,10 @@ function useDurably() {
   return { status, step, result, run, setRefreshDashboard }
 }
 
+// Links
+const GITHUB_REPO = 'https://github.com/coji/durably'
+const SOURCE_CODE = `${GITHUB_REPO}/tree/main/examples/react`
+
 // Main App
 export function App() {
   const { status, step, result, run, setRefreshDashboard } = useDurably()
@@ -131,7 +135,18 @@ export function App() {
 
   return (
     <div style={styles.container}>
-      <h1>Durably React Example</h1>
+      <header style={styles.header}>
+        <h1 style={styles.title}>Durably React Example</h1>
+        <div style={styles.links}>
+          <a href={GITHUB_REPO} target="_blank" rel="noopener noreferrer">
+            GitHub
+          </a>
+          <span style={styles.linkSeparator}>|</span>
+          <a href={SOURCE_CODE} target="_blank" rel="noopener noreferrer">
+            Source Code
+          </a>
+        </div>
+      </header>
 
       <div style={styles.tabs}>
         <button

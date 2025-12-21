@@ -2,6 +2,8 @@
 
 Step-oriented resumable batch execution for Node.js and browsers using SQLite.
 
+**[Live Demo](https://durably.vercel.app)** - Try it in your browser!
+
 ## Features
 
 - Resumable batch processing with step-level persistence
