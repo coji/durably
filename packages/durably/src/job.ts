@@ -253,8 +253,11 @@ export function createJobHandle<
       // Wait for completion via event subscription
       return new Promise((resolve, reject) => {
         let timeoutId: ReturnType<typeof setTimeout> | undefined
+        let resolved = false
 
         const cleanup = () => {
+          if (resolved) return
+          resolved = true
           unsubscribeComplete()
           unsubscribeFail()
           if (timeoutId) {
@@ -265,7 +268,7 @@ export function createJobHandle<
         const unsubscribeComplete = _eventEmitter.on(
           'run:complete',
           (event) => {
-            if (event.runId === run.id) {
+            if (event.runId === run.id && !resolved) {
               cleanup()
               resolve({
                 id: run.id,
@@ -276,19 +279,37 @@ export function createJobHandle<
         )
 
         const unsubscribeFail = _eventEmitter.on('run:fail', (event) => {
-          if (event.runId === run.id) {
+          if (event.runId === run.id && !resolved) {
             cleanup()
             reject(new Error(event.error))
+          }
+        })
+
+        // Check current status after subscribing (race condition mitigation)
+        // If the run completed before we subscribed, we need to handle it
+        storage.getRun(run.id).then((currentRun) => {
+          if (resolved || !currentRun) return
+          if (currentRun.status === 'completed') {
+            cleanup()
+            resolve({
+              id: run.id,
+              output: currentRun.output as TOutput,
+            })
+          } else if (currentRun.status === 'failed') {
+            cleanup()
+            reject(new Error(currentRun.error || 'Run failed'))
           }
         })
 
         // Set timeout if specified
         if (options?.timeout !== undefined) {
           timeoutId = setTimeout(() => {
-            cleanup()
-            reject(
-              new Error(`triggerAndWait timeout after ${options.timeout}ms`),
-            )
+            if (!resolved) {
+              cleanup()
+              reject(
+                new Error(`triggerAndWait timeout after ${options.timeout}ms`),
+              )
+            }
           }, options.timeout)
         }
       })
