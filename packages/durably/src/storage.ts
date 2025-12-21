@@ -226,51 +226,54 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         return []
       }
 
-      const now = new Date().toISOString()
-      const runs: Database['runs'][] = []
+      // Use transaction to ensure atomicity of idempotency checks and inserts
+      return await db.transaction().execute(async (trx) => {
+        const now = new Date().toISOString()
+        const runs: Database['runs'][] = []
 
-      // Process inputs - check idempotency keys and create run objects
-      for (const input of inputs) {
-        // Check for existing run with same idempotency key
-        if (input.idempotencyKey) {
-          const existing = await db
-            .selectFrom('runs')
-            .selectAll()
-            .where('job_name', '=', input.jobName)
-            .where('idempotency_key', '=', input.idempotencyKey)
-            .executeTakeFirst()
+        // Process inputs - check idempotency keys and create run objects
+        for (const input of inputs) {
+          // Check for existing run with same idempotency key
+          if (input.idempotencyKey) {
+            const existing = await trx
+              .selectFrom('runs')
+              .selectAll()
+              .where('job_name', '=', input.jobName)
+              .where('idempotency_key', '=', input.idempotencyKey)
+              .executeTakeFirst()
 
-          if (existing) {
-            runs.push(existing)
-            continue
+            if (existing) {
+              runs.push(existing)
+              continue
+            }
           }
+
+          const id = ulid()
+          runs.push({
+            id,
+            job_name: input.jobName,
+            payload: JSON.stringify(input.payload),
+            status: 'pending',
+            idempotency_key: input.idempotencyKey ?? null,
+            concurrency_key: input.concurrencyKey ?? null,
+            current_step_index: 0,
+            progress: null,
+            output: null,
+            error: null,
+            heartbeat_at: now,
+            created_at: now,
+            updated_at: now,
+          })
         }
 
-        const id = ulid()
-        runs.push({
-          id,
-          job_name: input.jobName,
-          payload: JSON.stringify(input.payload),
-          status: 'pending',
-          idempotency_key: input.idempotencyKey ?? null,
-          concurrency_key: input.concurrencyKey ?? null,
-          current_step_index: 0,
-          progress: null,
-          output: null,
-          error: null,
-          heartbeat_at: now,
-          created_at: now,
-          updated_at: now,
-        })
-      }
+        // Insert all new runs in a single batch
+        const newRuns = runs.filter((r) => r.created_at === now)
+        if (newRuns.length > 0) {
+          await trx.insertInto('runs').values(newRuns).execute()
+        }
 
-      // Insert all new runs in a single batch
-      const newRuns = runs.filter((r) => r.created_at === now)
-      if (newRuns.length > 0) {
-        await db.insertInto('runs').values(newRuns).execute()
-      }
-
-      return runs.map(rowToRun)
+        return runs.map(rowToRun)
+      })
     },
 
     async updateRun(runId: string, data: UpdateRunInput): Promise<void> {
