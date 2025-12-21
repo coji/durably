@@ -119,7 +119,10 @@ export default defineConfig({
       ],
     },
 
-    socialLinks: [{ icon: 'github', link: 'https://github.com/coji/durably' }],
+    socialLinks: [
+      { icon: 'github', link: 'https://github.com/coji/durably' },
+      { icon: 'x', link: 'https://x.com/techtalkjp' },
+    ],
 
     footer: {
       message: 'Released under the MIT License.',
