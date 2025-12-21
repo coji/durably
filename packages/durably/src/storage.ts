@@ -285,7 +285,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       if (data.progress !== undefined)
         updates.progress = data.progress ? JSON.stringify(data.progress) : null
       if (data.output !== undefined)
-        updates.output = JSON.stringify(data.output) ?? null
+        updates.output = JSON.stringify(data.output)
       if (data.error !== undefined) updates.error = data.error
       if (data.heartbeatAt !== undefined)
         updates.heartbeat_at = data.heartbeatAt
