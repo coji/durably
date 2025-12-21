@@ -100,6 +100,7 @@ interface JobHandle<TName extends string, TInput, TOutput> {
 interface TriggerOptions {
   idempotencyKey?: string
   concurrencyKey?: string
+  timeout?: number  // triggerAndWait 用のタイムアウト（ミリ秒）
 }
 
 interface RunFilter {
@@ -145,6 +146,19 @@ const run = await syncUsers.trigger({ orgId: "org_123" })
 console.log(run.id)     // Run の ID
 console.log(run.status) // "pending"
 ```
+
+`triggerAndWait` は Run の作成と完了待ちを一度に行う。`timeout` オプションを指定すると、指定時間内に完了しなかった場合にタイムアウトエラーが発生する。
+
+```ts
+// 5秒でタイムアウト
+const result = await syncUsers.triggerAndWait(
+  { orgId: "org_123" },
+  { timeout: 5000 }
+)
+console.log(result.output.syncedCount)
+```
+
+タイムアウトしても Run 自体は中断されず、バックグラウンドで継続する。タイムアウトは呼び出し側の待機のみを制限する。
 
 ### 重複排除と直列化
 
@@ -330,6 +344,16 @@ durably.on('step:fail', (event) => {
 
 イベントは同期的に発火される。リスナー内で例外が発生しても、Run の実行には影響しない。
 
+リスナー内で発生した例外を補足するには、`onError` ハンドラを登録する。
+
+```ts
+durably.onError((error, event) => {
+  console.error('Listener error:', error, 'during event:', event.type)
+})
+```
+
+`onError` に渡されるハンドラは、リスナーが例外を投げた際に呼ばれる。エラーと、そのエラーを引き起こしたイベントが引数として渡される。
+
 #### イベント型定義
 
 すべてのイベントは Discriminated Union として定義される。各イベントには共通フィールドとして `type` と `timestamp` が含まれ、`sequence` フィールドで順序が保証される。
@@ -404,6 +428,14 @@ interface LogWriteEvent extends BaseEvent {
   data: unknown
 }
 
+// Worker エラーイベント（ハートビート失敗など内部エラー）
+interface WorkerErrorEvent extends BaseEvent {
+  type: 'worker:error'
+  error: string
+  context: string  // 'heartbeat' など
+  runId?: string
+}
+
 // 全イベントの Union 型
 type DurablyEvent =
   | RunStartEvent
@@ -413,6 +445,7 @@ type DurablyEvent =
   | StepCompleteEvent
   | StepFailEvent
   | LogWriteEvent
+  | WorkerErrorEvent
 ```
 
 この型定義により、将来的なイベント型の追加（例: `stream` イベント）が容易になる。
@@ -666,6 +699,7 @@ Run の取得クエリは以下の条件を満たすものを一件取得する�
 | step:complete | ステップが成功し DB に記録した直後 |
 | step:fail | ステップが失敗し DB に記録した直後 |
 | log:write | ctx.log が呼ばれた直後 |
+| worker:error | ワーカー内部でエラーが発生した時（ハートビート失敗など） |
 
 ### 設定項目
 
