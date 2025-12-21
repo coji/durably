@@ -1,6 +1,7 @@
 {
   "name": "durably-monorepo",
   "private": true,
+  "type": "module",
   "license": "MIT",
   "packageManager": "pnpm@10.17.0",
   "scripts": {
