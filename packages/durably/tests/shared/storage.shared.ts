@@ -133,6 +133,7 @@ export function createStorageTests(createDialect: () => Dialect) {
           index: 0,
           status: 'completed',
           output: { result: 42 },
+          startedAt: new Date().toISOString(),
         })
 
         const steps = await durably.storage.getSteps(run.id)
@@ -153,6 +154,7 @@ export function createStorageTests(createDialect: () => Dialect) {
           index: 0,
           status: 'completed',
           output: { data: [1, 2, 3] },
+          startedAt: new Date().toISOString(),
         })
 
         const step = await durably.storage.getCompletedStep(

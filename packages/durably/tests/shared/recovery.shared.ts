@@ -172,6 +172,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           index: 0,
           status: 'completed',
           output: 'step1-done',
+          startedAt: new Date().toISOString(),
         })
 
         await durably.storage.updateRun(run.id, {

@@ -61,6 +61,7 @@ export interface CreateStepInput {
   status: 'completed' | 'failed'
   output?: unknown
   error?: string
+  startedAt: string // ISO8601 timestamp when step execution started
 }
 
 /**
@@ -350,7 +351,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
     },
 
     async createStep(input: CreateStepInput): Promise<Step> {
-      const now = new Date().toISOString()
+      const completedAt = new Date().toISOString()
       const id = ulid()
 
       const step: Database['steps'] = {
@@ -362,8 +363,8 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         output:
           input.output !== undefined ? JSON.stringify(input.output) : null,
         error: input.error ?? null,
-        started_at: now,
-        completed_at: now,
+        started_at: input.startedAt,
+        completed_at: completedAt,
       }
 
       await db.insertInto('steps').values(step).execute()

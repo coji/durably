@@ -286,5 +286,45 @@ export function createStepTests(createDialect: () => Dialect) {
         { timeout: 1000 },
       )
     })
+
+    it('records step started_at before execution and completed_at after', async () => {
+      const job = durably.defineJob(
+        {
+          name: 'step-timing-test',
+          input: z.object({}),
+        },
+        async (ctx) => {
+          await ctx.run('slow-step', async () => {
+            await new Promise((r) => setTimeout(r, 100))
+            return 'done'
+          })
+        },
+      )
+
+      const run = await job.trigger({})
+      durably.start()
+
+      await vi.waitFor(
+        async () => {
+          const updated = await job.getRun(run.id)
+          expect(updated?.status).toBe('completed')
+        },
+        { timeout: 1000 },
+      )
+
+      const steps = await durably.storage.getSteps(run.id)
+      expect(steps).toHaveLength(1)
+
+      const step = steps[0]
+      expect(step.startedAt).toBeDefined()
+      expect(step.completedAt).toBeDefined()
+
+      // completed_at should be after started_at (step took ~100ms)
+      const startedAt = new Date(step.startedAt).getTime()
+      const completedAt = new Date(step.completedAt!).getTime()
+      const duration = completedAt - startedAt
+
+      expect(duration).toBeGreaterThanOrEqual(90) // Allow some timing variance
+    })
   })
 }

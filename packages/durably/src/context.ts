@@ -30,6 +30,10 @@ export function createJobContext(
       // Track current step for log attribution
       currentStepName = name
 
+      // Record step start time
+      const startedAt = new Date().toISOString()
+      const startTime = Date.now()
+
       // Emit step:start event
       eventEmitter.emit({
         type: 'step:start',
@@ -38,8 +42,6 @@ export function createJobContext(
         stepName: name,
         stepIndex,
       })
-
-      const startTime = Date.now()
 
       try {
         // Execute the step
@@ -52,6 +54,7 @@ export function createJobContext(
           index: stepIndex,
           status: 'completed',
           output: result,
+          startedAt,
         })
 
         // Update run's current step index
@@ -81,6 +84,7 @@ export function createJobContext(
           index: stepIndex,
           status: 'failed',
           error: errorMessage,
+          startedAt,
         })
 
         // Emit step:fail event
