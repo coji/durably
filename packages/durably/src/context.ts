@@ -12,6 +12,7 @@ export function createJobContext(
   eventEmitter: EventEmitter,
 ): JobContext {
   let stepIndex = run.currentStepIndex
+  let currentStepName: string | null = null
 
   return {
     get runId(): string {
@@ -25,6 +26,9 @@ export function createJobContext(
         stepIndex++
         return existingStep.output as T
       }
+
+      // Track current step for log attribution
+      currentStepName = name
 
       // Emit step:start event
       eventEmitter.emit({
@@ -90,6 +94,9 @@ export function createJobContext(
         })
 
         throw error
+      } finally {
+        // Clear current step after execution
+        currentStepName = null
       }
     },
 
@@ -105,7 +112,7 @@ export function createJobContext(
         eventEmitter.emit({
           type: 'log:write',
           runId: run.id,
-          stepName: null,
+          stepName: currentStepName,
           level: 'info',
           message,
           data,
@@ -116,7 +123,7 @@ export function createJobContext(
         eventEmitter.emit({
           type: 'log:write',
           runId: run.id,
-          stepName: null,
+          stepName: currentStepName,
           level: 'warn',
           message,
           data,
@@ -127,7 +134,7 @@ export function createJobContext(
         eventEmitter.emit({
           type: 'log:write',
           runId: run.id,
-          stepName: null,
+          stepName: currentStepName,
           level: 'error',
           message,
           data,

@@ -142,5 +142,37 @@ export function createLogTests(createDialect: () => Dialect) {
         { timeout: 1000 },
       )
     })
+
+    it('logs inside step include stepName', async () => {
+      const logEvents: LogWriteEvent[] = []
+      durably.on('log:write', (e) => logEvents.push(e))
+
+      const job = durably.defineJob(
+        { name: 'log-stepname-test', input: z.object({}) },
+        async (ctx) => {
+          ctx.log.info('Outside step') // stepName should be null
+          await ctx.run('my-step', () => {
+            ctx.log.info('Inside step') // stepName should be 'my-step'
+          })
+          ctx.log.info('After step') // stepName should be null
+        },
+      )
+
+      await job.trigger({})
+      durably.start()
+
+      await vi.waitFor(
+        async () => {
+          expect(logEvents.length).toBe(3)
+          expect(logEvents[0].stepName).toBeNull()
+          expect(logEvents[0].message).toBe('Outside step')
+          expect(logEvents[1].stepName).toBe('my-step')
+          expect(logEvents[1].message).toBe('Inside step')
+          expect(logEvents[2].stepName).toBeNull()
+          expect(logEvents[2].message).toBe('After step')
+        },
+        { timeout: 1000 },
+      )
+    })
   })
 }

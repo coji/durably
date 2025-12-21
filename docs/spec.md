@@ -612,7 +612,7 @@ Vite を使用する場合は、SQLocal の Vite プラグインを追加する�
 | level | TEXT | info / warn / error |
 | message | TEXT | ログメッセージ |
 | data | TEXT (JSON, nullable) | 追加データ |
-| timestamp | TEXT (ISO8601) | 発生時刻 |
+| created_at | TEXT (ISO8601) | 発生時刻 |
 
 **schema_versions テーブル**
 
