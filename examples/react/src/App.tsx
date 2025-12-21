@@ -40,14 +40,18 @@ const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 // Hook for durably lifecycle
 function useDurably() {
-  const [status, setStatus] = useState<'init' | 'ready' | 'running' | 'resuming' | 'done' | 'error'>('init')
+  const [status, setStatus] = useState<
+    'init' | 'ready' | 'running' | 'resuming' | 'done' | 'error'
+  >('init')
   const [step, setStep] = useState<string | null>(null)
   const [result, setResult] = useState<string | null>(null)
   const userTriggered = useRef(false)
 
   useEffect(() => {
     const unsubscribes = [
-      durably.on('run:start', () => setStatus(userTriggered.current ? 'running' : 'resuming')),
+      durably.on('run:start', () =>
+        setStatus(userTriggered.current ? 'running' : 'resuming'),
+      ),
       durably.on('step:complete', (e) => setStep(e.stepName)),
       durably.on('run:complete', (e) => {
         setResult(JSON.stringify(e.output, null, 2))
@@ -104,24 +108,50 @@ export function App() {
       <h1>Durably React Example</h1>
 
       <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem' }}>
-        <button type="button" onClick={run} disabled={status === 'init' || isProcessing}>
+        <button
+          type="button"
+          onClick={run}
+          disabled={status === 'init' || isProcessing}
+        >
           Run Job
         </button>
-        <button type="button" onClick={() => location.reload()} disabled={status === 'init'}>
+        <button
+          type="button"
+          onClick={() => location.reload()}
+          disabled={status === 'init'}
+        >
           Reload Page
         </button>
-        <button type="button" onClick={async () => { await durably.stop(); await deleteDatabaseFile(); location.reload() }} disabled={isProcessing}>
+        <button
+          type="button"
+          onClick={async () => {
+            await durably.stop()
+            await deleteDatabaseFile()
+            location.reload()
+          }}
+          disabled={isProcessing}
+        >
           Reset Database
         </button>
       </div>
 
       <div style={{ marginBottom: '1rem' }}>
-        <div>Status: <strong>{statusText[status]}</strong></div>
-        {step && <div style={{ color: '#666', marginTop: '0.5rem' }}>Step: {step}</div>}
+        <div>
+          Status: <strong>{statusText[status]}</strong>
+        </div>
+        {step && (
+          <div style={{ color: '#666', marginTop: '0.5rem' }}>Step: {step}</div>
+        )}
       </div>
 
       {result && (
-        <pre style={{ background: status === 'error' ? '#fee' : '#f5f5f5', padding: '1rem', borderRadius: '4px' }}>
+        <pre
+          style={{
+            background: status === 'error' ? '#fee' : '#f5f5f5',
+            padding: '1rem',
+            borderRadius: '4px',
+          }}
+        >
           {result}
         </pre>
       )}

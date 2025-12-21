@@ -63,7 +63,9 @@ durably.on('step:complete', (event) => {
 })
 
 durably.on('run:complete', (event) => {
-  console.log(`[run:complete] output=${JSON.stringify(event.output)} duration=${event.duration}ms`)
+  console.log(
+    `[run:complete] output=${JSON.stringify(event.output)} duration=${event.duration}ms`,
+  )
 })
 
 durably.on('run:fail', (event) => {
@@ -93,7 +95,9 @@ async function main() {
   console.log(`\nDatabase Stats:`)
   console.log(`  Pending: ${runs.filter((r) => r.status === 'pending').length}`)
   console.log(`  Running: ${runs.filter((r) => r.status === 'running').length}`)
-  console.log(`  Completed: ${runs.filter((r) => r.status === 'completed').length}`)
+  console.log(
+    `  Completed: ${runs.filter((r) => r.status === 'completed').length}`,
+  )
   console.log(`  Failed: ${runs.filter((r) => r.status === 'failed').length}`)
 
   // Cleanup

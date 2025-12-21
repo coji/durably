@@ -203,7 +203,9 @@ export function createRunApiTests(createDialect: () => Dialect) {
 
         durably.start()
 
-        await expect(job.triggerAndWait({})).rejects.toThrow('Intentional failure')
+        await expect(job.triggerAndWait({})).rejects.toThrow(
+          'Intentional failure',
+        )
       })
 
       it('works with options', async () => {
@@ -220,7 +222,10 @@ export function createRunApiTests(createDialect: () => Dialect) {
 
         durably.start()
 
-        const { output } = await job.triggerAndWait({}, { idempotencyKey: 'test-key' })
+        const { output } = await job.triggerAndWait(
+          {},
+          { idempotencyKey: 'test-key' },
+        )
         expect(output).toEqual({ done: true })
 
         // Verify idempotency key was used
