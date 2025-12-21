@@ -45,7 +45,7 @@ export default defineConfig({
 
 ## SQLiteセットアップ
 
-OPFSを使用した[sqlocal](https://github.com/nicksger/sqlocal)：
+OPFSを使用した[SQLocal](https://sqlocal.dev/)：
 
 ```ts
 import { SQLocalKysely } from 'sqlocal/kysely'
