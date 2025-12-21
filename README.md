@@ -9,16 +9,21 @@ Step-oriented resumable batch execution for Node.js and browsers using SQLite.
 - Resumable batch processing with step-level persistence
 - Works in both Node.js and browsers
 - Uses SQLite for state management (better-sqlite3/libsql for Node.js, SQLite WASM for browsers)
-- Minimal dependencies - just Kysely as a peer dependency
+- Minimal dependencies - just Kysely and Zod as peer dependencies
 - Event system for monitoring and extensibility
 - Type-safe input/output with Zod schemas
 
 ## Installation
 
 ```bash
-npm install @coji/durably kysely better-sqlite3
-# or for libsql
-npm install @coji/durably kysely @libsql/client @libsql/kysely-libsql
+# Node.js with better-sqlite3
+npm install @coji/durably kysely zod better-sqlite3
+
+# Node.js with libsql
+npm install @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
+
+# Browser with SQLocal
+npm install @coji/durably kysely zod sqlocal
 ```
 
 ## Usage
