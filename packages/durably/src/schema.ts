@@ -46,8 +46,8 @@ export interface SchemaVersionsTable {
 }
 
 export interface Database {
-  runs: RunsTable
-  steps: StepsTable
-  logs: LogsTable
-  schema_versions: SchemaVersionsTable
+  durably_runs: RunsTable
+  durably_steps: StepsTable
+  durably_logs: LogsTable
+  durably_schema_versions: SchemaVersionsTable
 }

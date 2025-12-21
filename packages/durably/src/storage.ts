@@ -133,7 +133,7 @@ export interface Storage {
 /**
  * Convert database row to Run object
  */
-function rowToRun(row: Database['runs']): Run {
+function rowToRun(row: Database['durably_runs']): Run {
   return {
     id: row.id,
     jobName: row.job_name,
@@ -154,7 +154,7 @@ function rowToRun(row: Database['runs']): Run {
 /**
  * Convert database row to Step object
  */
-function rowToStep(row: Database['steps']): Step {
+function rowToStep(row: Database['durably_steps']): Step {
   return {
     id: row.id,
     runId: row.run_id,
@@ -171,7 +171,7 @@ function rowToStep(row: Database['steps']): Step {
 /**
  * Convert database row to Log object
  */
-function rowToLog(row: Database['logs']): Log {
+function rowToLog(row: Database['durably_logs']): Log {
   return {
     id: row.id,
     runId: row.run_id,
@@ -194,7 +194,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       // Check for existing run with same idempotency key
       if (input.idempotencyKey) {
         const existing = await db
-          .selectFrom('runs')
+          .selectFrom('durably_runs')
           .selectAll()
           .where('job_name', '=', input.jobName)
           .where('idempotency_key', '=', input.idempotencyKey)
@@ -206,7 +206,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       }
 
       const id = ulid()
-      const run: Database['runs'] = {
+      const run: Database['durably_runs'] = {
         id,
         job_name: input.jobName,
         payload: JSON.stringify(input.payload),
@@ -222,7 +222,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         updated_at: now,
       }
 
-      await db.insertInto('runs').values(run).execute()
+      await db.insertInto('durably_runs').values(run).execute()
 
       return rowToRun(run)
     },
@@ -235,14 +235,14 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       // Use transaction to ensure atomicity of idempotency checks and inserts
       return await db.transaction().execute(async (trx) => {
         const now = new Date().toISOString()
-        const runs: Database['runs'][] = []
+        const runs: Database['durably_runs'][] = []
 
         // Process inputs - check idempotency keys and create run objects
         for (const input of inputs) {
           // Check for existing run with same idempotency key
           if (input.idempotencyKey) {
             const existing = await trx
-              .selectFrom('runs')
+              .selectFrom('durably_runs')
               .selectAll()
               .where('job_name', '=', input.jobName)
               .where('idempotency_key', '=', input.idempotencyKey)
@@ -275,7 +275,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         // Insert all new runs in a single batch
         const newRuns = runs.filter((r) => r.created_at === now)
         if (newRuns.length > 0) {
-          await trx.insertInto('runs').values(newRuns).execute()
+          await trx.insertInto('durably_runs').values(newRuns).execute()
         }
 
         return runs.map(rowToRun)
@@ -284,7 +284,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
 
     async updateRun(runId: string, data: UpdateRunInput): Promise<void> {
       const now = new Date().toISOString()
-      const updates: Partial<Database['runs']> = {
+      const updates: Partial<Database['durably_runs']> = {
         updated_at: now,
       }
 
@@ -300,7 +300,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         updates.heartbeat_at = data.heartbeatAt
 
       await db
-        .updateTable('runs')
+        .updateTable('durably_runs')
         .set(updates)
         .where('id', '=', runId)
         .execute()
@@ -308,14 +308,14 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
 
     async deleteRun(runId: string): Promise<void> {
       // Delete in order: logs -> steps -> run (due to foreign key constraints)
-      await db.deleteFrom('logs').where('run_id', '=', runId).execute()
-      await db.deleteFrom('steps').where('run_id', '=', runId).execute()
-      await db.deleteFrom('runs').where('id', '=', runId).execute()
+      await db.deleteFrom('durably_logs').where('run_id', '=', runId).execute()
+      await db.deleteFrom('durably_steps').where('run_id', '=', runId).execute()
+      await db.deleteFrom('durably_runs').where('id', '=', runId).execute()
     },
 
     async getRun(runId: string): Promise<Run | null> {
       const row = await db
-        .selectFrom('runs')
+        .selectFrom('durably_runs')
         .selectAll()
         .where('id', '=', runId)
         .executeTakeFirst()
@@ -324,7 +324,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
     },
 
     async getRuns(filter?: RunFilter): Promise<Run[]> {
-      let query = db.selectFrom('runs').selectAll()
+      let query = db.selectFrom('durably_runs').selectAll()
 
       if (filter?.status) {
         query = query.where('status', '=', filter.status)
@@ -354,7 +354,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       excludeConcurrencyKeys: string[],
     ): Promise<Run | null> {
       let query = db
-        .selectFrom('runs')
+        .selectFrom('durably_runs')
         .selectAll()
         .where('status', '=', 'pending')
         .orderBy('created_at', 'asc')
@@ -377,7 +377,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       const completedAt = new Date().toISOString()
       const id = ulid()
 
-      const step: Database['steps'] = {
+      const step: Database['durably_steps'] = {
         id,
         run_id: input.runId,
         name: input.name,
@@ -390,14 +390,14 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         completed_at: completedAt,
       }
 
-      await db.insertInto('steps').values(step).execute()
+      await db.insertInto('durably_steps').values(step).execute()
 
       return rowToStep(step)
     },
 
     async getSteps(runId: string): Promise<Step[]> {
       const rows = await db
-        .selectFrom('steps')
+        .selectFrom('durably_steps')
         .selectAll()
         .where('run_id', '=', runId)
         .orderBy('index', 'asc')
@@ -408,7 +408,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
 
     async getCompletedStep(runId: string, name: string): Promise<Step | null> {
       const row = await db
-        .selectFrom('steps')
+        .selectFrom('durably_steps')
         .selectAll()
         .where('run_id', '=', runId)
         .where('name', '=', name)
@@ -422,7 +422,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       const now = new Date().toISOString()
       const id = ulid()
 
-      const log: Database['logs'] = {
+      const log: Database['durably_logs'] = {
         id,
         run_id: input.runId,
         step_name: input.stepName,
@@ -432,14 +432,14 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         created_at: now,
       }
 
-      await db.insertInto('logs').values(log).execute()
+      await db.insertInto('durably_logs').values(log).execute()
 
       return rowToLog(log)
     },
 
     async getLogs(runId: string): Promise<Log[]> {
       const rows = await db
-        .selectFrom('logs')
+        .selectFrom('durably_logs')
         .selectAll()
         .where('run_id', '=', runId)
         .orderBy('created_at', 'asc')

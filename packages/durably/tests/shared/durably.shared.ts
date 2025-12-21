@@ -47,7 +47,10 @@ export function createDurablyTests(createDialect: () => Dialect) {
       await durably.migrate()
 
       // Can use db directly for queries
-      const result = await durably.db.selectFrom('runs').selectAll().execute()
+      const result = await durably.db
+        .selectFrom('durably_runs')
+        .selectAll()
+        .execute()
       expect(result).toEqual([])
     })
 

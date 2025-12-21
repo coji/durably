@@ -15,7 +15,7 @@ const migrations: Migration[] = [
     up: async (db) => {
       // Create runs table
       await db.schema
-        .createTable('runs')
+        .createTable('durably_runs')
         .ifNotExists()
         .addColumn('id', 'text', (col) => col.primaryKey())
         .addColumn('job_name', 'text', (col) => col.notNull())
@@ -36,30 +36,30 @@ const migrations: Migration[] = [
 
       // Create runs indexes
       await db.schema
-        .createIndex('idx_runs_job_idempotency')
+        .createIndex('idx_durably_runs_job_idempotency')
         .ifNotExists()
-        .on('runs')
+        .on('durably_runs')
         .columns(['job_name', 'idempotency_key'])
         .unique()
         .execute()
 
       await db.schema
-        .createIndex('idx_runs_status_concurrency')
+        .createIndex('idx_durably_runs_status_concurrency')
         .ifNotExists()
-        .on('runs')
+        .on('durably_runs')
         .columns(['status', 'concurrency_key'])
         .execute()
 
       await db.schema
-        .createIndex('idx_runs_status_created')
+        .createIndex('idx_durably_runs_status_created')
         .ifNotExists()
-        .on('runs')
+        .on('durably_runs')
         .columns(['status', 'created_at'])
         .execute()
 
       // Create steps table
       await db.schema
-        .createTable('steps')
+        .createTable('durably_steps')
         .ifNotExists()
         .addColumn('id', 'text', (col) => col.primaryKey())
         .addColumn('run_id', 'text', (col) => col.notNull())
@@ -74,15 +74,15 @@ const migrations: Migration[] = [
 
       // Create steps index
       await db.schema
-        .createIndex('idx_steps_run_index')
+        .createIndex('idx_durably_steps_run_index')
         .ifNotExists()
-        .on('steps')
+        .on('durably_steps')
         .columns(['run_id', 'index'])
         .execute()
 
       // Create logs table
       await db.schema
-        .createTable('logs')
+        .createTable('durably_logs')
         .ifNotExists()
         .addColumn('id', 'text', (col) => col.primaryKey())
         .addColumn('run_id', 'text', (col) => col.notNull())
@@ -95,15 +95,15 @@ const migrations: Migration[] = [
 
       // Create logs index
       await db.schema
-        .createIndex('idx_logs_run_created')
+        .createIndex('idx_durably_logs_run_created')
         .ifNotExists()
-        .on('logs')
+        .on('durably_logs')
         .columns(['run_id', 'created_at'])
         .execute()
 
       // Create schema_versions table
       await db.schema
-        .createTable('schema_versions')
+        .createTable('durably_schema_versions')
         .ifNotExists()
         .addColumn('version', 'integer', (col) => col.primaryKey())
         .addColumn('applied_at', 'text', (col) => col.notNull())
@@ -118,7 +118,7 @@ const migrations: Migration[] = [
 async function getCurrentVersion(db: Kysely<Database>): Promise<number> {
   try {
     const result = await db
-      .selectFrom('schema_versions')
+      .selectFrom('durably_schema_versions')
       .select('version')
       .orderBy('version', 'desc')
       .limit(1)
@@ -142,7 +142,7 @@ export async function runMigrations(db: Kysely<Database>): Promise<void> {
       await migration.up(db)
 
       await db
-        .insertInto('schema_versions')
+        .insertInto('durably_schema_versions')
         .values({
           version: migration.version,
           applied_at: new Date().toISOString(),

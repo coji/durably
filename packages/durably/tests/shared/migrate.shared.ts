@@ -11,52 +11,52 @@ export function createMigrateTests(createDialect: () => Dialect) {
       await durably.db.destroy()
     })
 
-    it('creates runs table', async () => {
+    it('creates durably_runs table', async () => {
       durably = createDurably({ dialect: createDialect() })
       await durably.migrate()
 
       const result = await sql<{ name: string }>`
-        SELECT name FROM sqlite_master WHERE type='table' AND name='runs'
+        SELECT name FROM sqlite_master WHERE type='table' AND name='durably_runs'
       `.execute(durably.db)
 
       expect(result.rows).toHaveLength(1)
-      expect(result.rows[0].name).toBe('runs')
+      expect(result.rows[0].name).toBe('durably_runs')
     })
 
-    it('creates steps table', async () => {
+    it('creates durably_steps table', async () => {
       durably = createDurably({ dialect: createDialect() })
       await durably.migrate()
 
       const result = await sql<{ name: string }>`
-        SELECT name FROM sqlite_master WHERE type='table' AND name='steps'
+        SELECT name FROM sqlite_master WHERE type='table' AND name='durably_steps'
       `.execute(durably.db)
 
       expect(result.rows).toHaveLength(1)
-      expect(result.rows[0].name).toBe('steps')
+      expect(result.rows[0].name).toBe('durably_steps')
     })
 
-    it('creates logs table', async () => {
+    it('creates durably_logs table', async () => {
       durably = createDurably({ dialect: createDialect() })
       await durably.migrate()
 
       const result = await sql<{ name: string }>`
-        SELECT name FROM sqlite_master WHERE type='table' AND name='logs'
+        SELECT name FROM sqlite_master WHERE type='table' AND name='durably_logs'
       `.execute(durably.db)
 
       expect(result.rows).toHaveLength(1)
-      expect(result.rows[0].name).toBe('logs')
+      expect(result.rows[0].name).toBe('durably_logs')
     })
 
-    it('creates schema_versions table', async () => {
+    it('creates durably_schema_versions table', async () => {
       durably = createDurably({ dialect: createDialect() })
       await durably.migrate()
 
       const result = await sql<{ name: string }>`
-        SELECT name FROM sqlite_master WHERE type='table' AND name='schema_versions'
+        SELECT name FROM sqlite_master WHERE type='table' AND name='durably_schema_versions'
       `.execute(durably.db)
 
       expect(result.rows).toHaveLength(1)
-      expect(result.rows[0].name).toBe('schema_versions')
+      expect(result.rows[0].name).toBe('durably_schema_versions')
     })
 
     it('records schema version after migration', async () => {
@@ -64,7 +64,7 @@ export function createMigrateTests(createDialect: () => Dialect) {
       await durably.migrate()
 
       const result = await sql<{ version: number }>`
-        SELECT version FROM schema_versions ORDER BY version DESC LIMIT 1
+        SELECT version FROM durably_schema_versions ORDER BY version DESC LIMIT 1
       `.execute(durably.db)
 
       expect(result.rows).toHaveLength(1)
@@ -79,7 +79,7 @@ export function createMigrateTests(createDialect: () => Dialect) {
       await durably.migrate()
 
       const result = await sql<{ version: number }>`
-        SELECT version FROM schema_versions
+        SELECT version FROM durably_schema_versions
       `.execute(durably.db)
 
       // Should only have one version record
