@@ -2,71 +2,55 @@
  * React Example for Durably
  *
  * This example demonstrates using Durably with React and SQLocal (SQLite WASM + OPFS).
- * It uses a singleton pattern to safely handle React StrictMode's double mount behavior.
+ * Jobs are defined at module level to ensure they're registered before the worker starts.
  */
 
-import { createDurably, type Durably, type JobHandle } from '@coji/durably'
+import { createDurably } from '@coji/durably'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { SQLocalKysely } from 'sqlocal/kysely'
 import { z } from 'zod'
 
-// Singleton instance to handle StrictMode
+// Initialize Durably and define jobs at module level
 const DB_NAME = 'example.sqlite3'
 const sqlocal = new SQLocalKysely(DB_NAME)
 const { dialect, deleteDatabaseFile } = sqlocal
 
-let durably: Durably | null = null
-let processImageJob: JobHandle<
-  'process-image',
-  { filename: string },
-  { url: string }
-> | null = null
+const durably = createDurably({
+  dialect,
+  pollingInterval: 100,
+  heartbeatInterval: 500,
+  staleThreshold: 3000, // 3 seconds for demo
+})
 
-function getDurably() {
-  if (!durably) {
-    durably = createDurably({
-      dialect,
-      pollingInterval: 100,
-      heartbeatInterval: 500,
-      staleThreshold: 3000, // 3 seconds for demo
+// Define job at module level (required for stale run recovery on reload)
+const processImage = durably.defineJob(
+  {
+    name: 'process-image',
+    input: z.object({ filename: z.string() }),
+    output: z.object({ url: z.string() }),
+  },
+  async (ctx, payload) => {
+    // Step 1: Download
+    const data = await ctx.run('download', async () => {
+      await new Promise((r) => setTimeout(r, 500))
+      return { size: 1024000 }
     })
-  }
-  return durably
-}
 
-function getProcessImageJob(instance: Durably) {
-  if (!processImageJob) {
-    processImageJob = instance.defineJob(
-      {
-        name: 'process-image',
-        input: z.object({ filename: z.string() }),
-        output: z.object({ url: z.string() }),
-      },
-      async (ctx, payload) => {
-        // Step 1: Download
-        const data = await ctx.run('download', async () => {
-          await new Promise((r) => setTimeout(r, 500))
-          return { size: 1024000 }
-        })
+    // Step 2: Resize
+    await ctx.run('resize', async () => {
+      await new Promise((r) => setTimeout(r, 500))
+      return { width: 800, height: 600, size: data.size / 2 }
+    })
 
-        // Step 2: Resize
-        await ctx.run('resize', async () => {
-          await new Promise((r) => setTimeout(r, 500))
-          return { width: 800, height: 600, size: data.size / 2 }
-        })
+    // Step 3: Upload
+    const uploaded = await ctx.run('upload', async () => {
+      await new Promise((r) => setTimeout(r, 500))
+      return { url: `https://cdn.example.com/${payload.filename}` }
+    })
 
-        // Step 3: Upload
-        const uploaded = await ctx.run('upload', async () => {
-          await new Promise((r) => setTimeout(r, 500))
-          return { url: `https://cdn.example.com/${payload.filename}` }
-        })
-
-        return { url: uploaded.url }
-      },
-    )
-  }
-  return processImageJob
-}
+    return { url: uploaded.url }
+  },
+)
 
 interface Stats {
   total: number
@@ -95,8 +79,7 @@ export function App() {
 
   const updateStats = useCallback(async () => {
     try {
-      const instance = getDurably()
-      const runs = await instance.storage.getRuns()
+      const runs = await durably.storage.getRuns()
       setStats({
         total: runs.length,
         pending: runs.filter((r) => r.status === 'pending').length,
@@ -111,28 +94,27 @@ export function App() {
 
   useEffect(() => {
     cleanedUp.current = false
-    const instance = getDurably()
 
     async function init() {
       try {
-        await instance.migrate()
+        await durably.migrate()
         if (cleanedUp.current) return
 
         // Subscribe to events for real-time updates
         const unsubscribes = [
-          instance.on('run:start', (event) => {
+          durably.on('run:start', (event) => {
             if (!cleanedUp.current) {
               setStatus(`Running: ${event.jobName}`)
               setStatusState('running')
               updateStats()
             }
           }),
-          instance.on('step:complete', (event) => {
+          durably.on('step:complete', (event) => {
             if (!cleanedUp.current) {
               setStatus(`Step: ${event.stepName} completed`)
             }
           }),
-          instance.on('run:complete', (event) => {
+          durably.on('run:complete', (event) => {
             if (!cleanedUp.current) {
               setStatus('Completed!')
               setStatusState('completed')
@@ -141,7 +123,7 @@ export function App() {
               updateStats()
             }
           }),
-          instance.on('run:fail', (event) => {
+          durably.on('run:fail', (event) => {
             if (!cleanedUp.current) {
               setStatus(`Failed: ${event.error}`)
               setStatusState('failed')
@@ -151,7 +133,7 @@ export function App() {
           }),
         ]
 
-        instance.start()
+        durably.start()
         setIsReady(true)
         setStatus('Ready')
         setStatusState('ready')
@@ -179,21 +161,18 @@ export function App() {
     return () => {
       cleanedUp.current = true
       cleanupPromise.then((cleanup) => cleanup?.())
-      instance.stop()
+      durably.stop()
     }
   }, [updateStats])
 
   const runJob = async () => {
-    const instance = getDurably()
-    const job = getProcessImageJob(instance)
-
     setIsRunning(true)
     setStatus('Queued...')
     setStatusState('default')
     setProgress({ current: 0, total: 3 })
     setResult('')
 
-    const run = await job.trigger({
+    const run = await processImage.trigger({
       filename: 'photo.jpg',
     })
 
@@ -207,10 +186,10 @@ export function App() {
         return
       }
 
-      const current = await job.getRun(run.id)
+      const current = await processImage.getRun(run.id)
 
       if (current?.status === 'running') {
-        const steps = await instance.storage.getSteps(run.id)
+        const steps = await durably.storage.getSteps(run.id)
         const completedSteps = steps.filter((s) => s.status === 'completed').length
         if (completedSteps > stepCount) {
           stepCount = completedSteps
@@ -235,8 +214,7 @@ export function App() {
     setStatusState('default')
 
     try {
-      const instance = getDurably()
-      await instance.stop()
+      await durably.stop()
       await deleteDatabaseFile()
       setStatus('Database deleted. Reloading...')
       setTimeout(() => location.reload(), 500)
