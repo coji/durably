@@ -36,5 +36,8 @@ export type {
   StepsTable,
 } from './schema'
 
+// Storage types
+export type { Log, Run, RunFilter, Step } from './storage'
+
 // Errors
 export { CancelledError } from './errors'

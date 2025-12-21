@@ -5,12 +5,42 @@
     <style>
       body {
         font-family: system-ui, sans-serif;
-        max-width: 600px;
+        max-width: 800px;
         margin: 0 auto;
         padding: 2rem;
       }
       h1 {
         margin: 0 0 1.5rem;
+      }
+      .tabs {
+        display: flex;
+        gap: 0;
+        margin-bottom: 1.5rem;
+        border-bottom: 2px solid #e0e0e0;
+      }
+      .tab {
+        padding: 0.75rem 1.5rem;
+        background: none;
+        border: none;
+        font-size: 1rem;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+        color: #666;
+      }
+      .tab.active {
+        border-bottom-color: #007bff;
+        color: #007bff;
+        font-weight: 500;
+      }
+      .tab:hover:not(.active) {
+        background: #f5f5f5;
+      }
+      .tab-content {
+        display: none;
+      }
+      .tab-content.active {
+        display: block;
       }
       .buttons {
         display: flex;
@@ -43,22 +73,156 @@
       .result.error {
         background: #fee;
       }
+
+      /* Dashboard styles */
+      .dashboard-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+      }
+      .dashboard-header h2 {
+        margin: 0;
+      }
+      .refresh-btn {
+        padding: 0.25rem 0.5rem;
+        font-size: 0.875rem;
+      }
+      .runs-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.875rem;
+      }
+      .runs-table th,
+      .runs-table td {
+        padding: 0.5rem;
+        text-align: left;
+        border-bottom: 1px solid #e0e0e0;
+      }
+      .runs-table th {
+        background: #f5f5f5;
+        font-weight: 500;
+      }
+      .runs-table tr:hover {
+        background: #fafafa;
+      }
+      .status-badge {
+        display: inline-block;
+        padding: 0.125rem 0.5rem;
+        border-radius: 9999px;
+        font-size: 0.75rem;
+        font-weight: 500;
+      }
+      .status-pending {
+        background: #fff3cd;
+        color: #856404;
+      }
+      .status-running {
+        background: #cce5ff;
+        color: #004085;
+      }
+      .status-completed {
+        background: #d4edda;
+        color: #155724;
+      }
+      .status-failed {
+        background: #f8d7da;
+        color: #721c24;
+      }
+      .status-cancelled {
+        background: #e2e3e5;
+        color: #383d41;
+      }
+      .empty-state {
+        text-align: center;
+        padding: 2rem;
+        color: #666;
+      }
+      .run-id {
+        font-family: monospace;
+        font-size: 0.75rem;
+        color: #666;
+      }
+      .run-details {
+        margin-top: 1.5rem;
+        padding: 1rem;
+        background: #f9f9f9;
+        border-radius: 4px;
+      }
+      .run-details h3 {
+        margin: 0 0 1rem;
+      }
+      .steps-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      .steps-list li {
+        padding: 0.5rem;
+        border-bottom: 1px solid #e0e0e0;
+        display: flex;
+        justify-content: space-between;
+      }
+      .steps-list li:last-child {
+        border-bottom: none;
+      }
+      .action-btn {
+        padding: 0.25rem 0.5rem;
+        font-size: 0.75rem;
+        margin-left: 0.25rem;
+      }
     </style>
   </head>
   <body>
     <h1>Durably Browser Example</h1>
 
-    <div class="buttons">
-      <button id="run-btn" disabled>Run Job</button>
-      <button id="reload-btn" disabled>Reload Page</button>
-      <button id="reset-btn" disabled>Reset Database</button>
+    <div class="tabs">
+      <button class="tab active" data-tab="demo">Demo</button>
+      <button class="tab" data-tab="dashboard">Dashboard</button>
     </div>
 
-    <div class="status">
-      Status: <strong id="status">Initializing...</strong>
+    <!-- Demo Tab -->
+    <div id="demo-tab" class="tab-content active">
+      <div class="buttons">
+        <button id="run-btn" disabled>Run Job</button>
+        <button id="reload-btn" disabled>Reload Page</button>
+        <button id="reset-btn" disabled>Reset Database</button>
+      </div>
+
+      <div class="status">
+        Status: <strong id="status">Initializing...</strong>
+      </div>
+      <div class="step" id="step"></div>
+      <pre class="result" id="result"></pre>
     </div>
-    <div class="step" id="step"></div>
-    <pre class="result" id="result"></pre>
+
+    <!-- Dashboard Tab -->
+    <div id="dashboard-tab" class="tab-content">
+      <div class="dashboard-header">
+        <h2>Runs</h2>
+        <button class="refresh-btn" id="refresh-btn">↻ Refresh</button>
+      </div>
+      <table class="runs-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Job</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="runs-tbody">
+          <tr>
+            <td colspan="5" class="empty-state">Loading...</td>
+          </tr>
+        </tbody>
+      </table>
+      <div id="run-details" class="run-details" style="display: none">
+        <h3>Run Details</h3>
+        <div id="details-content"></div>
+      </div>
+    </div>
 
     <script type="module" src="/src/main.ts"></script>
   </body>
