@@ -63,7 +63,7 @@ await syncUsers.trigger({ orgId: 'org_123' })
 ## Documentation
 
 - [Specification](docs/spec.md) - Core API and concepts
-- [Streaming Extension](docs/spec-streaming.md) - AI Agent workflow support
+- [Streaming Extension](docs/spec-streaming.md) - AI Agent workflow support (conceptual, not yet implemented)
 
 ## License
 
