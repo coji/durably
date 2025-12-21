@@ -83,6 +83,14 @@ export type BatchTriggerInput<TInput> =
   | { input: TInput; options?: TriggerOptions }
 
 /**
+ * Result of triggerAndWait
+ */
+export interface TriggerAndWaitResult<TOutput> {
+  id: string
+  output: TOutput
+}
+
+/**
  * Job handle returned by defineJob
  */
 export interface JobHandle<TName extends string, TInput, TOutput> {
@@ -92,6 +100,15 @@ export interface JobHandle<TName extends string, TInput, TOutput> {
    * Trigger a new run
    */
   trigger(input: TInput, options?: TriggerOptions): Promise<TypedRun<TOutput>>
+
+  /**
+   * Trigger a new run and wait for completion
+   * Returns the output directly, throws if the run fails
+   */
+  triggerAndWait(
+    input: TInput,
+    options?: TriggerOptions,
+  ): Promise<TriggerAndWaitResult<TOutput>>
 
   /**
    * Trigger multiple runs in a batch
@@ -222,6 +239,39 @@ export function createJobHandle<
       })
 
       return run as TypedRun<TOutput>
+    },
+
+    async triggerAndWait(
+      input: TInput,
+      options?: TriggerOptions,
+    ): Promise<TriggerAndWaitResult<TOutput>> {
+      // Trigger the run
+      const run = await this.trigger(input, options)
+
+      // Wait for completion via event subscription
+      return new Promise((resolve, reject) => {
+        const unsubscribeComplete = _eventEmitter.on(
+          'run:complete',
+          (event) => {
+            if (event.runId === run.id) {
+              unsubscribeComplete()
+              unsubscribeFail()
+              resolve({
+                id: run.id,
+                output: event.output as TOutput,
+              })
+            }
+          },
+        )
+
+        const unsubscribeFail = _eventEmitter.on('run:fail', (event) => {
+          if (event.runId === run.id) {
+            unsubscribeComplete()
+            unsubscribeFail()
+            reject(new Error(event.error))
+          }
+        })
+      })
     },
 
     async batchTrigger(

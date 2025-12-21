@@ -158,6 +158,77 @@ export function createRunApiTests(createDialect: () => Dialect) {
       })
     })
 
+    describe('triggerAndWait()', () => {
+      it('triggers and waits for successful completion', async () => {
+        const job = durably.defineJob(
+          {
+            name: 'trigger-and-wait-success',
+            input: z.object({ value: z.number() }),
+            output: z.object({ result: z.number() }),
+          },
+          async (ctx, payload) => {
+            await ctx.run('compute', async () => {
+              await new Promise((r) => setTimeout(r, 50))
+            })
+            return { result: payload.value * 2 }
+          },
+        )
+
+        durably.start()
+
+        const { id, output } = await job.triggerAndWait({ value: 21 })
+
+        expect(id).toBeDefined()
+        expect(output).toEqual({ result: 42 })
+
+        // Verify run is completed
+        const run = await job.getRun(id)
+        expect(run?.status).toBe('completed')
+      })
+
+      it('rejects when job fails', async () => {
+        const job = durably.defineJob(
+          {
+            name: 'trigger-and-wait-fail',
+            input: z.object({}),
+            output: z.object({}),
+          },
+          async (ctx) => {
+            await ctx.run('fail-step', async () => {
+              throw new Error('Intentional failure')
+            })
+            return {}
+          },
+        )
+
+        durably.start()
+
+        await expect(job.triggerAndWait({})).rejects.toThrow('Intentional failure')
+      })
+
+      it('works with options', async () => {
+        const job = durably.defineJob(
+          {
+            name: 'trigger-and-wait-options',
+            input: z.object({}),
+            output: z.object({ done: z.boolean() }),
+          },
+          async () => {
+            return { done: true }
+          },
+        )
+
+        durably.start()
+
+        const { output } = await job.triggerAndWait({}, { idempotencyKey: 'test-key' })
+        expect(output).toEqual({ done: true })
+
+        // Verify idempotency key was used
+        const runs = await job.getRuns()
+        expect(runs[0].idempotencyKey).toBe('test-key')
+      })
+    })
+
     describe('ctx.progress()', () => {
       it('saves progress with current value', async () => {
         const job = durably.defineJob(

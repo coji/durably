@@ -81,22 +81,12 @@ async function main() {
   durably.start()
   console.log('Worker started\n')
 
-  // Trigger job
-  const run = await processImage.trigger({
+  // Trigger job and wait for completion
+  const { id, output } = await processImage.triggerAndWait({
     filename: 'photo.jpg',
   })
-  console.log(`Triggered run: ${run.id}\n`)
-
-  // Wait for completion
-  await new Promise<void>((resolve) => {
-    const interval = setInterval(async () => {
-      const current = await processImage.getRun(run.id)
-      if (current?.status === 'completed' || current?.status === 'failed') {
-        clearInterval(interval)
-        resolve()
-      }
-    }, 100)
-  })
+  console.log(`\nRun ${id} completed`)
+  console.log(`Output: ${JSON.stringify(output)}`)
 
   // Show stats
   const runs = await durably.storage.getRuns()
