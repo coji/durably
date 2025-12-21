@@ -156,6 +156,117 @@ export function createRunApiTests(createDialect: () => Dialect) {
         expect((runs[1].payload as { order: number }).order).toBe(2)
         expect((runs[2].payload as { order: number }).order).toBe(1)
       })
+
+      it('supports limit option', async () => {
+        const job = durably.defineJob(
+          { name: 'limit-test', input: z.object({ order: z.number() }) },
+          async () => {},
+        )
+
+        // Add slight delays to ensure distinct created_at timestamps
+        for (let i = 1; i <= 5; i++) {
+          await job.trigger({ order: i })
+          if (i < 5) await new Promise((r) => setTimeout(r, 5))
+        }
+
+        const limited = await durably.getRuns({ jobName: 'limit-test', limit: 3 })
+        expect(limited).toHaveLength(3)
+
+        // Should get most recent (5, 4, 3 since sorted by created_at desc)
+        expect((limited[0].payload as { order: number }).order).toBe(5)
+        expect((limited[1].payload as { order: number }).order).toBe(4)
+        expect((limited[2].payload as { order: number }).order).toBe(3)
+      })
+
+      it('supports offset option', async () => {
+        const job = durably.defineJob(
+          { name: 'offset-test', input: z.object({ order: z.number() }) },
+          async () => {},
+        )
+
+        // Add slight delays to ensure distinct created_at timestamps
+        for (let i = 1; i <= 5; i++) {
+          await job.trigger({ order: i })
+          if (i < 5) await new Promise((r) => setTimeout(r, 5))
+        }
+
+        const offset = await durably.getRuns({ jobName: 'offset-test', offset: 2 })
+        expect(offset).toHaveLength(3)
+
+        // Should skip first 2 (5, 4) and get (3, 2, 1)
+        expect((offset[0].payload as { order: number }).order).toBe(3)
+        expect((offset[1].payload as { order: number }).order).toBe(2)
+        expect((offset[2].payload as { order: number }).order).toBe(1)
+      })
+
+      it('supports limit and offset together for pagination', async () => {
+        const job = durably.defineJob(
+          { name: 'pagination-test', input: z.object({ order: z.number() }) },
+          async () => {},
+        )
+
+        // Add slight delays to ensure distinct created_at timestamps
+        for (let i = 1; i <= 10; i++) {
+          await job.trigger({ order: i })
+          if (i < 10) await new Promise((r) => setTimeout(r, 5))
+        }
+
+        // Page 1: first 3 items
+        const page1 = await durably.getRuns({ jobName: 'pagination-test', limit: 3, offset: 0 })
+        expect(page1).toHaveLength(3)
+        expect((page1[0].payload as { order: number }).order).toBe(10)
+        expect((page1[1].payload as { order: number }).order).toBe(9)
+        expect((page1[2].payload as { order: number }).order).toBe(8)
+
+        // Page 2: next 3 items
+        const page2 = await durably.getRuns({ jobName: 'pagination-test', limit: 3, offset: 3 })
+        expect(page2).toHaveLength(3)
+        expect((page2[0].payload as { order: number }).order).toBe(7)
+        expect((page2[1].payload as { order: number }).order).toBe(6)
+        expect((page2[2].payload as { order: number }).order).toBe(5)
+
+        // Page 4: last page with only 1 item
+        const page4 = await durably.getRuns({ jobName: 'pagination-test', limit: 3, offset: 9 })
+        expect(page4).toHaveLength(1)
+        expect((page4[0].payload as { order: number }).order).toBe(1)
+      })
+
+      it('combines pagination with other filters', async () => {
+        const job = durably.defineJob(
+          { name: 'combined-filter-pagination-test', input: z.object({ order: z.number() }) },
+          async () => {},
+        )
+
+        // Add slight delays to ensure distinct created_at timestamps
+        for (let i = 1; i <= 6; i++) {
+          await job.trigger({ order: i })
+          if (i < 6) await new Promise((r) => setTimeout(r, 5))
+        }
+
+        const filtered = await durably.getRuns({
+          jobName: 'combined-filter-pagination-test',
+          limit: 2,
+          offset: 1,
+        })
+
+        expect(filtered).toHaveLength(2)
+        // Should skip first (6) and get next 2 (5, 4)
+        expect((filtered[0].payload as { order: number }).order).toBe(5)
+        expect((filtered[1].payload as { order: number }).order).toBe(4)
+      })
+
+      it('returns empty array when offset exceeds total', async () => {
+        const job = durably.defineJob(
+          { name: 'offset-exceeds-test', input: z.object({}) },
+          async () => {},
+        )
+
+        await job.trigger({})
+        await job.trigger({})
+
+        const result = await durably.getRuns({ jobName: 'offset-exceeds-test', offset: 10 })
+        expect(result).toHaveLength(0)
+      })
     })
 
     describe('triggerAndWait()', () => {

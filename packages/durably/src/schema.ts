@@ -6,7 +6,7 @@ export interface RunsTable {
   id: string
   job_name: string
   payload: string // JSON
-  status: 'pending' | 'running' | 'completed' | 'failed'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   idempotency_key: string | null
   concurrency_key: string | null
   current_step_index: number

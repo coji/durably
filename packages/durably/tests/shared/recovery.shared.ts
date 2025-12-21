@@ -302,5 +302,272 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         )
       })
     })
+
+    describe('cancel() API', () => {
+      it('cancels pending run', async () => {
+        const job = durably.defineJob(
+          {
+            name: 'cancel-pending-test',
+            input: z.object({}),
+          },
+          async () => {},
+        )
+
+        const run = await job.trigger({})
+        // Don't start worker - run stays pending
+
+        await durably.cancel(run.id)
+
+        const cancelled = await job.getRun(run.id)
+        expect(cancelled?.status).toBe('cancelled')
+      })
+
+      it('cancels running run immediately', async () => {
+        const job = durably.defineJob(
+          {
+            name: 'cancel-running-test',
+            input: z.object({}),
+          },
+          async (ctx) => {
+            await ctx.run('step1', async () => {
+              await new Promise((r) => setTimeout(r, 500))
+              return 'done'
+            })
+          },
+        )
+
+        const run = await job.trigger({})
+        durably.start()
+
+        // Wait until running
+        await vi.waitFor(
+          async () => {
+            const updated = await job.getRun(run.id)
+            expect(updated?.status).toBe('running')
+          },
+          { timeout: 500 },
+        )
+
+        // Cancel while running - marks as cancelled immediately
+        await durably.cancel(run.id)
+
+        const cancelled = await job.getRun(run.id)
+        expect(cancelled?.status).toBe('cancelled')
+      })
+
+      it('throws when cancelling completed run', async () => {
+        const job = durably.defineJob(
+          {
+            name: 'cancel-completed-test',
+            input: z.object({}),
+          },
+          async () => {},
+        )
+
+        const run = await job.trigger({})
+        durably.start()
+
+        await vi.waitFor(
+          async () => {
+            const updated = await job.getRun(run.id)
+            expect(updated?.status).toBe('completed')
+          },
+          { timeout: 1000 },
+        )
+
+        await expect(durably.cancel(run.id)).rejects.toThrow(
+          /completed|cannot cancel/i,
+        )
+      })
+
+      it('throws when cancelling failed run', async () => {
+        const job = durably.defineJob(
+          {
+            name: 'cancel-failed-test',
+            input: z.object({}),
+          },
+          async () => {
+            throw new Error('fail')
+          },
+        )
+
+        const run = await job.trigger({})
+        durably.start()
+
+        await vi.waitFor(
+          async () => {
+            const updated = await job.getRun(run.id)
+            expect(updated?.status).toBe('failed')
+          },
+          { timeout: 1000 },
+        )
+
+        await expect(durably.cancel(run.id)).rejects.toThrow(
+          /failed|cannot cancel/i,
+        )
+      })
+
+      it('throws when cancelling already cancelled run', async () => {
+        const job = durably.defineJob(
+          {
+            name: 'cancel-cancelled-test',
+            input: z.object({}),
+          },
+          async () => {},
+        )
+
+        const run = await job.trigger({})
+        await durably.cancel(run.id)
+
+        await expect(durably.cancel(run.id)).rejects.toThrow(
+          /cancelled|cannot cancel/i,
+        )
+      })
+
+      it('throws when run does not exist', async () => {
+        await expect(durably.cancel('non-existent-id')).rejects.toThrow(
+          /not found/i,
+        )
+      })
+    })
+
+    describe('deleteRun() API', () => {
+      it('deletes completed run with its steps and logs', async () => {
+        const job = durably.defineJob(
+          {
+            name: 'delete-completed-test',
+            input: z.object({}),
+          },
+          async (ctx) => {
+            ctx.log.info('test log')
+            await ctx.run('step1', () => 'done')
+          },
+        )
+
+        const run = await job.trigger({})
+        durably.start()
+
+        await vi.waitFor(
+          async () => {
+            const updated = await job.getRun(run.id)
+            expect(updated?.status).toBe('completed')
+          },
+          { timeout: 1000 },
+        )
+
+        // Verify steps and logs exist
+        const steps = await durably.storage.getSteps(run.id)
+        expect(steps.length).toBeGreaterThan(0)
+
+        // Delete the run
+        await durably.deleteRun(run.id)
+
+        // Run should be gone
+        const deleted = await job.getRun(run.id)
+        expect(deleted).toBeNull()
+
+        // Steps should also be deleted
+        const deletedSteps = await durably.storage.getSteps(run.id)
+        expect(deletedSteps.length).toBe(0)
+      })
+
+      it('deletes failed run', async () => {
+        const job = durably.defineJob(
+          {
+            name: 'delete-failed-test',
+            input: z.object({}),
+          },
+          async () => {
+            throw new Error('fail')
+          },
+        )
+
+        const run = await job.trigger({})
+        durably.start()
+
+        await vi.waitFor(
+          async () => {
+            const updated = await job.getRun(run.id)
+            expect(updated?.status).toBe('failed')
+          },
+          { timeout: 1000 },
+        )
+
+        await durably.deleteRun(run.id)
+
+        const deleted = await job.getRun(run.id)
+        expect(deleted).toBeNull()
+      })
+
+      it('deletes cancelled run', async () => {
+        const job = durably.defineJob(
+          {
+            name: 'delete-cancelled-test',
+            input: z.object({}),
+          },
+          async () => {},
+        )
+
+        const run = await job.trigger({})
+        await durably.cancel(run.id)
+
+        await durably.deleteRun(run.id)
+
+        const deleted = await job.getRun(run.id)
+        expect(deleted).toBeNull()
+      })
+
+      it('throws when deleting pending run', async () => {
+        const job = durably.defineJob(
+          {
+            name: 'delete-pending-test',
+            input: z.object({}),
+          },
+          async () => {},
+        )
+
+        const run = await job.trigger({})
+        // Don't start worker - run stays pending
+
+        await expect(durably.deleteRun(run.id)).rejects.toThrow(
+          /pending|cannot delete/i,
+        )
+      })
+
+      it('throws when deleting running run', async () => {
+        const job = durably.defineJob(
+          {
+            name: 'delete-running-test',
+            input: z.object({}),
+          },
+          async (ctx) => {
+            await ctx.run('long-step', async () => {
+              await new Promise((r) => setTimeout(r, 500))
+            })
+          },
+        )
+
+        const run = await job.trigger({})
+        durably.start()
+
+        await vi.waitFor(
+          async () => {
+            const updated = await job.getRun(run.id)
+            expect(updated?.status).toBe('running')
+          },
+          { timeout: 500 },
+        )
+
+        await expect(durably.deleteRun(run.id)).rejects.toThrow(
+          /running|cannot delete/i,
+        )
+      })
+
+      it('throws when run does not exist', async () => {
+        await expect(durably.deleteRun('non-existent-id')).rejects.toThrow(
+          /not found/i,
+        )
+      })
+    })
   })
 }

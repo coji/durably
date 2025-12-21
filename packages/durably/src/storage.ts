@@ -19,7 +19,7 @@ export interface Run {
   id: string
   jobName: string
   payload: unknown
-  status: 'pending' | 'running' | 'completed' | 'failed'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   idempotencyKey: string | null
   concurrencyKey: string | null
   currentStepIndex: number
@@ -35,7 +35,7 @@ export interface Run {
  * Run update data
  */
 export interface UpdateRunInput {
-  status?: 'pending' | 'running' | 'completed' | 'failed'
+  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   currentStepIndex?: number
   progress?: { current: number; total?: number; message?: string } | null
   output?: unknown
@@ -47,8 +47,12 @@ export interface UpdateRunInput {
  * Run filter options
  */
 export interface RunFilter {
-  status?: 'pending' | 'running' | 'completed' | 'failed'
+  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   jobName?: string
+  /** Maximum number of runs to return */
+  limit?: number
+  /** Number of runs to skip (for pagination) */
+  offset?: number
 }
 
 /**
@@ -111,6 +115,7 @@ export interface Storage {
   createRun(input: CreateRunInput): Promise<Run>
   batchCreateRuns(inputs: CreateRunInput[]): Promise<Run[]>
   updateRun(runId: string, data: UpdateRunInput): Promise<void>
+  deleteRun(runId: string): Promise<void>
   getRun(runId: string): Promise<Run | null>
   getRuns(filter?: RunFilter): Promise<Run[]>
   getNextPendingRun(excludeConcurrencyKeys: string[]): Promise<Run | null>
@@ -301,6 +306,13 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         .execute()
     },
 
+    async deleteRun(runId: string): Promise<void> {
+      // Delete in order: logs -> steps -> run (due to foreign key constraints)
+      await db.deleteFrom('logs').where('run_id', '=', runId).execute()
+      await db.deleteFrom('steps').where('run_id', '=', runId).execute()
+      await db.deleteFrom('runs').where('id', '=', runId).execute()
+    },
+
     async getRun(runId: string): Promise<Run | null> {
       const row = await db
         .selectFrom('runs')
@@ -322,6 +334,17 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       }
 
       query = query.orderBy('created_at', 'desc')
+
+      if (filter?.limit !== undefined) {
+        query = query.limit(filter.limit)
+      }
+      if (filter?.offset !== undefined) {
+        // SQLite requires LIMIT when using OFFSET
+        if (filter.limit === undefined) {
+          query = query.limit(-1) // -1 means unlimited in SQLite
+        }
+        query = query.offset(filter.offset)
+      }
 
       const rows = await query.execute()
       return rows.map(rowToRun)

@@ -45,7 +45,7 @@ Durably (インスタンス)
 
 **Job** は「何をするか」の定義である。名前、入力スキーマ、出力スキーマ、処理関数を持つ。Job 自体は状態を持たず、何度でも実行できるテンプレートとして機能する。
 
-**Run** は Job の実行インスタンスである。`trigger()` によって作成され、pending → running → completed/failed と状態遷移する。すべての Run はデータベースに永続化される。
+**Run** は Job の実行インスタンスである。`trigger()` によって作成され、pending → running → completed/failed/cancelled と状態遷移する。すべての Run はデータベースに永続化される。
 
 **Step** は Run 内の処理単位である。`ctx.run()` によって定義され、成功すると戻り値がデータベースに保存される。Run が中断・再開された場合、成功済みの Step はスキップされ、保存済みの戻り値が返される。
 
@@ -104,8 +104,10 @@ interface TriggerOptions {
 }
 
 interface RunFilter {
-  status?: 'pending' | 'running' | 'completed' | 'failed'
+  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   jobName?: string
+  limit?: number   // 取得する最大件数
+  offset?: number  // スキップする件数（ページネーション用）
 }
 ```
 
@@ -207,7 +209,9 @@ Run は以下の状態を持つ。
 
 `failed` は失敗の状態である。いずれかのステップで例外が発生し、Run が中断された。
 
-状態遷移は `pending → running → completed` または `pending → running → failed` のいずれかである。一度 `completed` または `failed` になった Run は、自動では再実行されない。
+`cancelled` はキャンセルされた状態である。`cancel` API により手動でキャンセルされた。
+
+状態遷移は `pending → running → completed` または `pending → running → failed` のいずれかが基本である。`cancel` API により、`pending` または `running` から `cancelled` への遷移も可能である。一度 `completed`、`failed`、または `cancelled` になった Run は、自動では再実行されない。
 
 ### 失敗と再実行
 
@@ -220,6 +224,30 @@ await durably.retry(runId)
 ```
 
 `retry` は `failed` 状態の Run を `pending` に戻し、ワーカーによる再取得を可能にする。再実行時には、成功済みのステップはスキップされる。
+
+### キャンセル
+
+実行中または待機中の Run をキャンセルするには `cancel` API を使う。
+
+```ts
+await durably.cancel(runId)
+```
+
+`cancel` は `pending` または `running` 状態の Run を `cancelled` に遷移させる。`completed`、`failed`、`cancelled` 状態の Run に対して呼び出すとエラーになる。
+
+注意: `running` 状態の Run をキャンセルした場合、データベース上のステータスは即座に `cancelled` になるが、実行中のステップは完了するまで継続する。ワーカーはステップ完了後に Run のステータスを確認し、`cancelled` であれば後続のステップを実行しない（将来の実装で対応予定）。
+
+### Run の削除
+
+完了、失敗、またはキャンセルされた Run を削除するには `deleteRun` API を使う。
+
+```ts
+await durably.deleteRun(runId)
+```
+
+`deleteRun` は Run とそれに関連するステップ、ログをすべて削除する。`pending` または `running` 状態の Run に対して呼び出すとエラーになる。
+
+削除された Run と同じ `idempotencyKey` で新しい Run を作成することが可能になる。これにより、古い Run を削除して同じキーで再実行するというワークフローが実現できる。
 
 ### Run の取得
 
@@ -267,7 +295,26 @@ if (run?.status === 'completed') {
 
 `getRun` は指定した ID の Run を返す。存在しない場合は `null` を返す。`getRuns` はフィルタ条件に一致する Run の配列を返す。条件を指定しない場合は全件を返す。結果は `created_at` の降順でソートされる。
 
-v1 ではページネーションは提供しない。大量の Run がある場合は `status` や `jobName` でフィルタするか、アプリケーション側で Run の削除を行って管理する。将来的に `limit` と `cursor` オプションを追加する可能性がある。
+#### ページネーション
+
+`getRuns` は `limit` と `offset` オプションでページネーションをサポートする。
+
+```ts
+// 最新の 10 件を取得
+const page1 = await durably.getRuns({ limit: 10 })
+
+// 次の 10 件を取得
+const page2 = await durably.getRuns({ limit: 10, offset: 10 })
+
+// フィルタと組み合わせ可能
+const failedRuns = await durably.getRuns({
+  status: 'failed',
+  limit: 20,
+  offset: 0,
+})
+```
+
+`limit` は取得する最大件数、`offset` はスキップする件数を指定する。両方を組み合わせることで、ページ単位の取得が可能になる。
 
 ### ワーカー
 
@@ -610,7 +657,7 @@ Vite を使用する場合は、SQLocal の Vite プラグインを追加する�
 | id | TEXT (ULID) | Run の一意識別子 |
 | job_name | TEXT | ジョブ名 |
 | payload | TEXT (JSON) | ジョブに渡される引数 |
-| status | TEXT | pending / running / completed / failed |
+| status | TEXT | pending / running / completed / failed / cancelled |
 | idempotency_key | TEXT (nullable) | 重複排除キー |
 | concurrency_key | TEXT (nullable) | 直列化キー |
 | current_step_index | INTEGER | 次に実行すべきステップのインデックス |

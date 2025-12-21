@@ -126,6 +126,18 @@ export interface Durably {
   retry(runId: string): Promise<void>
 
   /**
+   * Cancel a pending or running run
+   * @throws Error if run is already completed, failed, or cancelled
+   */
+  cancel(runId: string): Promise<void>
+
+  /**
+   * Delete a completed, failed, or cancelled run and its associated steps and logs
+   * @throws Error if run is pending or running, or does not exist
+   */
+  deleteRun(runId: string): Promise<void>
+
+  /**
    * Get a run by ID (returns unknown output type)
    */
   getRun(runId: string): Promise<Run | null>
@@ -214,6 +226,41 @@ export function createDurably(options: DurablyOptions): Durably {
         status: 'pending',
         error: null,
       })
+    },
+
+    async cancel(runId: string): Promise<void> {
+      const run = await storage.getRun(runId)
+      if (!run) {
+        throw new Error(`Run not found: ${runId}`)
+      }
+      if (run.status === 'completed') {
+        throw new Error(`Cannot cancel completed run: ${runId}`)
+      }
+      if (run.status === 'failed') {
+        throw new Error(`Cannot cancel failed run: ${runId}`)
+      }
+      if (run.status === 'cancelled') {
+        throw new Error(`Cannot cancel already cancelled run: ${runId}`)
+      }
+      // pending or running can be cancelled
+      await storage.updateRun(runId, {
+        status: 'cancelled',
+      })
+    },
+
+    async deleteRun(runId: string): Promise<void> {
+      const run = await storage.getRun(runId)
+      if (!run) {
+        throw new Error(`Run not found: ${runId}`)
+      }
+      if (run.status === 'pending') {
+        throw new Error(`Cannot delete pending run: ${runId}`)
+      }
+      if (run.status === 'running') {
+        throw new Error(`Cannot delete running run: ${runId}`)
+      }
+      // completed, failed, or cancelled can be deleted
+      await storage.deleteRun(runId)
     },
 
     async migrate(): Promise<void> {
