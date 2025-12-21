@@ -78,6 +78,115 @@ export function createWorker(
     }
   }
 
+  /**
+   * Extract error message from unknown error
+   */
+  function getErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error)
+  }
+
+  /**
+   * Handle successful run completion
+   */
+  async function handleRunSuccess(
+    runId: string,
+    jobName: string,
+    output: unknown,
+    startTime: number,
+  ): Promise<void> {
+    await storage.updateRun(runId, {
+      status: 'completed',
+      output,
+    })
+
+    eventEmitter.emit({
+      type: 'run:complete',
+      runId,
+      jobName,
+      output,
+      duration: Date.now() - startTime,
+    })
+  }
+
+  /**
+   * Handle failed run
+   */
+  async function handleRunFailure(
+    runId: string,
+    jobName: string,
+    error: unknown,
+  ): Promise<void> {
+    const errorMessage = getErrorMessage(error)
+
+    // Get the failed step name if available
+    const steps = await storage.getSteps(runId)
+    const failedStep = steps.find((s) => s.status === 'failed')
+
+    await storage.updateRun(runId, {
+      status: 'failed',
+      error: errorMessage,
+    })
+
+    eventEmitter.emit({
+      type: 'run:fail',
+      runId,
+      jobName,
+      error: errorMessage,
+      failedStepName: failedStep?.name ?? 'unknown',
+    })
+  }
+
+  /**
+   * Execute a run with heartbeat management
+   */
+  async function executeRun(
+    run: Awaited<ReturnType<typeof storage.getRun>> & { id: string },
+    job: NonNullable<ReturnType<typeof jobRegistry.get>>,
+  ): Promise<void> {
+    // Track current run for heartbeat updates
+    currentRunId = run.id
+
+    // Start heartbeat interval
+    heartbeatInterval = setInterval(() => {
+      updateHeartbeat()
+    }, config.heartbeatInterval)
+
+    // Emit run:start event
+    eventEmitter.emit({
+      type: 'run:start',
+      runId: run.id,
+      jobName: run.jobName,
+      payload: run.payload,
+    })
+
+    const startTime = Date.now()
+
+    try {
+      // Create context and execute job
+      const ctx = createJobContext(run, run.jobName, storage, eventEmitter)
+      const output = await job.fn(ctx, run.payload)
+
+      // Validate output if schema exists
+      if (job.outputSchema) {
+        const parseResult = job.outputSchema.safeParse(output)
+        if (!parseResult.success) {
+          throw new Error(`Invalid output: ${parseResult.error.message}`)
+        }
+      }
+
+      await handleRunSuccess(run.id, run.jobName, output, startTime)
+    } catch (error) {
+      await handleRunFailure(run.id, run.jobName, error)
+    } finally {
+      // Stop heartbeat interval
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval)
+        heartbeatInterval = null
+      }
+      currentRunId = null
+    }
+  }
+
   async function processNextRun(): Promise<boolean> {
     // Get running runs to exclude their concurrency keys
     const runningRuns = await storage.getRuns({ status: 'running' })
@@ -111,81 +220,7 @@ export function createWorker(
       heartbeatAt: new Date().toISOString(),
     })
 
-    // Track current run for heartbeat updates
-    currentRunId = run.id
-
-    // Start heartbeat interval
-    heartbeatInterval = setInterval(() => {
-      updateHeartbeat()
-    }, config.heartbeatInterval)
-
-    // Emit run:start event
-    eventEmitter.emit({
-      type: 'run:start',
-      runId: run.id,
-      jobName: run.jobName,
-      payload: run.payload,
-    })
-
-    const startTime = Date.now()
-
-    try {
-      // Create context and execute job
-      const ctx = createJobContext(run, run.jobName, storage, eventEmitter)
-      const output = await job.fn(ctx, run.payload)
-
-      // Validate output if schema exists
-      if (job.outputSchema) {
-        const parseResult = job.outputSchema.safeParse(output)
-        if (!parseResult.success) {
-          throw new Error(`Invalid output: ${parseResult.error.message}`)
-        }
-      }
-
-      // Transition to completed
-      await storage.updateRun(run.id, {
-        status: 'completed',
-        output,
-      })
-
-      // Emit run:complete event
-      eventEmitter.emit({
-        type: 'run:complete',
-        runId: run.id,
-        jobName: run.jobName,
-        output,
-        duration: Date.now() - startTime,
-      })
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error)
-
-      // Get the failed step name if available
-      const steps = await storage.getSteps(run.id)
-      const failedStep = steps.find((s) => s.status === 'failed')
-
-      // Transition to failed
-      await storage.updateRun(run.id, {
-        status: 'failed',
-        error: errorMessage,
-      })
-
-      // Emit run:fail event
-      eventEmitter.emit({
-        type: 'run:fail',
-        runId: run.id,
-        jobName: run.jobName,
-        error: errorMessage,
-        failedStepName: failedStep?.name ?? 'unknown',
-      })
-    } finally {
-      // Stop heartbeat interval
-      if (heartbeatInterval) {
-        clearInterval(heartbeatInterval)
-        heartbeatInterval = null
-      }
-      currentRunId = null
-    }
+    await executeRun(run, job)
 
     return true
   }
