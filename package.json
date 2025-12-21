@@ -1,63 +1,30 @@
 {
-  "name": "@coji/durably",
-  "version": "0.0.1",
-  "description": "Step-oriented resumable batch execution for Node.js and browsers using SQLite",
+  "name": "durably-monorepo",
+  "private": true,
   "type": "module",
-  "main": "./dist/index.js",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./plugins": {
-      "types": "./dist/plugins/index.d.ts",
-      "import": "./dist/plugins/index.js"
-    }
-  },
-  "files": [
-    "dist"
-  ],
-  "scripts": {
-    "build": "tsup",
-    "prepublishOnly": "pnpm build"
-  },
-  "keywords": [
-    "batch",
-    "job",
-    "queue",
-    "workflow",
-    "durable",
-    "resumable",
-    "sqlite",
-    "kysely"
-  ],
-  "author": "",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/coji/durably.git"
-  },
-  "bugs": {
-    "url": "https://github.com/coji/durably/issues"
-  },
-  "homepage": "https://github.com/coji/durably#readme",
-  "peerDependencies": {
-    "kysely": ">=0.27.0"
-  },
-  "peerDependenciesMeta": {
-    "kysely": {
-      "optional": true
-    }
+  "packageManager": "pnpm@10.26.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "test:node": "pnpm --filter @coji/durably test:node",
+    "test:browser": "pnpm --filter @coji/durably test:browser",
+    "test:react": "pnpm --filter @coji/durably test:react",
+    "dev:node": "pnpm --filter example-node dev",
+    "dev:browser": "pnpm --filter example-browser dev",
+    "dev:react": "pnpm --filter example-react dev",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "lint:fix": "pnpm -r lint:fix",
+    "format": "pnpm -r format",
+    "format:fix": "pnpm -r format:fix",
+    "validate": "pnpm format && pnpm lint && pnpm typecheck && pnpm test"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.3.10",
-    "kysely": "^0.27.0",
-    "prettier": "3.7.4",
-    "prettier-plugin-organize-imports": "4.3.0",
-    "tsup": "8.5.1",
-    "typescript": "^5.7.2"
+    "@types/node": "^25.0.3",
+    "cc-hooks-ts": "2.0.70",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

@@ -4,20 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Durably is a step-oriented batch execution framework for Node.js and browsers. It enables resumable batch processing with minimal dependencies using only SQLite for persistence. The same job definition code runs in both environments - Node.js uses Turso/libsql, browsers use SQLocal (SQLite WASM with OPFS backend).
-
-**Current Status**: Specification phase only (see `docs/spec.md`). No implementation exists yet.
+Durably is a step-oriented batch execution framework for Node.js and browsers. It enables resumable batch processing with minimal dependencies using only SQLite for persistence. The same job definition code runs in both environments - Node.js uses better-sqlite3/libsql, browsers use SQLite WASM with OPFS backend.
 
 ## Documentation
 
 - `docs/spec.md` - Core specification
 - `docs/spec-streaming.md` - Streaming extension for AI Agent workflows
-- `docs/implementation-plan.md` - TDD implementation roadmap
 
 ## Core Concepts
 
 - **Job**: Defined via `durably.defineJob()`, receives a context object and payload
-- **Step**: Created via `ctx.run()`, each step's success state and return value is persisted
+- **Step**: Created via `context.run()`, each step's success state and return value is persisted
 - **Run**: A job execution instance, created via `trigger()`, always persisted as `pending` before execution
 - **Worker**: Polls for pending runs and executes them sequentially
 
@@ -27,12 +24,12 @@ Durably is a step-oriented batch execution framework for Node.js and browsers. I
 - No automatic retry - failures are immediate and explicit (`retry()` API for manual retry)
 - Dialect injection pattern - Kysely dialect passed to `createDurably()` to abstract SQLite implementations
 - Event system for extensibility (`run:start`, `run:complete`, `run:fail`, `step:*`, `log:write`)
-- Plugin architecture (`durably.use()`) for optional features like log persistence
 
 ## Database Schema
 
 Four tables: `runs`, `steps`, `logs`, `schema_versions`. Key fields:
-- Runs have: `status` (pending/running/completed/failed), `idempotency_key`, `concurrency_key`, `heartbeat_at`
+
+- Runs have: `status` (pending/running/completed/failed/cancelled), `idempotency_key`, `concurrency_key`, `heartbeat_at`
 - Steps have: `status` (completed/failed), `output` (JSON), indexed by `run_id` and `index`
 
 ## Configuration Defaults
@@ -46,3 +43,12 @@ Four tables: `runs`, `steps`, `logs`, `schema_versions`. Key fields:
 - Single tab usage assumed (OPFS exclusivity)
 - Background tab interruptions handled via heartbeat recovery
 - Requires Secure Context (HTTPS/localhost) for OPFS
+
+## Development Commands
+
+```bash
+pnpm validate      # Format check, lint, typecheck, tests
+pnpm test          # Run all tests
+pnpm format        # Fix formatting
+pnpm lint:fix      # Fix lint issues
+```

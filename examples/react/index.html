@@ -1,0 +1,197 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Durably React Example</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu,
+          sans-serif;
+        max-width: 640px;
+        margin: 0 auto;
+        padding: 40px 20px;
+        background: #f8fafc;
+        color: #1e293b;
+        line-height: 1.5;
+      }
+      h1 {
+        font-size: 1.75rem;
+        font-weight: 600;
+        margin: 0 0 24px;
+        color: #0f172a;
+      }
+      .button-group {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 24px;
+      }
+      button {
+        padding: 10px 16px;
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+        border: none;
+        border-radius: 8px;
+        background: #3b82f6;
+        color: white;
+        transition: all 0.15s ease;
+      }
+      button:hover:not(:disabled) {
+        background: #2563eb;
+        transform: translateY(-1px);
+      }
+      button:active:not(:disabled) {
+        transform: translateY(0);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      button.secondary {
+        background: #e2e8f0;
+        color: #475569;
+      }
+      button.secondary:hover:not(:disabled) {
+        background: #cbd5e1;
+      }
+      button.danger {
+        background: #ef4444;
+      }
+      button.danger:hover:not(:disabled) {
+        background: #dc2626;
+      }
+      .card {
+        background: white;
+        border-radius: 12px;
+        padding: 20px;
+        margin-bottom: 16px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      }
+      .card-header {
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #64748b;
+        margin-bottom: 8px;
+      }
+      .status-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .status-indicator {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #94a3b8;
+      }
+      .status-indicator.ready {
+        background: #22c55e;
+      }
+      .status-indicator.running {
+        background: #3b82f6;
+        animation: pulse 1s infinite;
+      }
+      .status-indicator.completed {
+        background: #22c55e;
+      }
+      .status-indicator.failed {
+        background: #ef4444;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+      .status-text {
+        font-size: 15px;
+        color: #334155;
+      }
+      .progress-container {
+        margin-top: 12px;
+      }
+      .progress-bar {
+        height: 8px;
+        background: #e2e8f0;
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      .progress-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+        border-radius: 4px;
+        transition: width 0.3s ease;
+      }
+      .progress-text {
+        font-size: 13px;
+        color: #64748b;
+        margin-top: 6px;
+      }
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 12px;
+      }
+      .stat-item {
+        text-align: center;
+        padding: 12px 8px;
+        background: #f8fafc;
+        border-radius: 8px;
+      }
+      .stat-value {
+        font-size: 24px;
+        font-weight: 600;
+        color: #0f172a;
+      }
+      .stat-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #64748b;
+        margin-top: 4px;
+      }
+      .stat-item.pending .stat-value {
+        color: #f59e0b;
+      }
+      .stat-item.running .stat-value {
+        color: #3b82f6;
+      }
+      .stat-item.completed .stat-value {
+        color: #22c55e;
+      }
+      .stat-item.failed .stat-value {
+        color: #ef4444;
+      }
+      .result {
+        background: #1e293b;
+        color: #e2e8f0;
+        padding: 16px;
+        border-radius: 8px;
+        font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+        font-size: 13px;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        min-height: 60px;
+        margin: 0;
+      }
+      .result:empty::before {
+        content: 'Output will appear here...';
+        color: #64748b;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

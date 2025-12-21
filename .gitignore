@@ -2,3 +2,10 @@ node_modules/
 dist/
 *.log
 .DS_Store
+__screenshots__/
+local.db
+.serena/
+
+# VitePress
+website/.vitepress/cache/
+website/.vitepress/dist/

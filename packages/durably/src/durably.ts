@@ -1,0 +1,291 @@
+import type { Dialect } from 'kysely'
+import { Kysely } from 'kysely'
+import type { z } from 'zod'
+import {
+  type AnyEventInput,
+  type ErrorHandler,
+  type EventListener,
+  type EventType,
+  type Unsubscribe,
+  createEventEmitter,
+} from './events'
+import {
+  type JobDefinition,
+  type JobFunction,
+  type JobHandle,
+  createJobHandle,
+  createJobRegistry,
+} from './job'
+import { runMigrations } from './migrations'
+import type { Database } from './schema'
+import {
+  type Run,
+  type RunFilter,
+  type Storage,
+  createKyselyStorage,
+} from './storage'
+import { createWorker } from './worker'
+
+/**
+ * Options for creating a Durably instance
+ */
+export interface DurablyOptions {
+  dialect: Dialect
+  pollingInterval?: number
+  heartbeatInterval?: number
+  staleThreshold?: number
+}
+
+/**
+ * Default configuration values
+ */
+const DEFAULTS = {
+  pollingInterval: 1000,
+  heartbeatInterval: 5000,
+  staleThreshold: 30000,
+} as const
+
+/**
+ * Plugin interface for extending Durably
+ */
+export interface DurablyPlugin {
+  name: string
+  install(durably: Durably): void
+}
+
+/**
+ * Durably instance
+ */
+export interface Durably {
+  /**
+   * Run database migrations
+   * This is idempotent and safe to call multiple times
+   */
+  migrate(): Promise<void>
+
+  /**
+   * Get the underlying Kysely database instance
+   * Useful for testing and advanced use cases
+   */
+  readonly db: Kysely<Database>
+
+  /**
+   * Storage layer for database operations
+   */
+  readonly storage: Storage
+
+  /**
+   * Register an event listener
+   * @returns Unsubscribe function
+   */
+  on<T extends EventType>(type: T, listener: EventListener<T>): Unsubscribe
+
+  /**
+   * Emit an event (auto-assigns timestamp and sequence)
+   */
+  emit(event: AnyEventInput): void
+
+  /**
+   * Register an error handler for listener exceptions
+   */
+  onError(handler: ErrorHandler): void
+
+  /**
+   * Define a job
+   */
+  defineJob<
+    TName extends string,
+    TInputSchema extends z.ZodType,
+    TOutputSchema extends z.ZodType | undefined = undefined,
+  >(
+    definition: JobDefinition<TName, TInputSchema, TOutputSchema>,
+    fn: JobFunction<
+      z.infer<TInputSchema>,
+      TOutputSchema extends z.ZodType ? z.infer<TOutputSchema> : void
+    >,
+  ): JobHandle<
+    TName,
+    z.infer<TInputSchema>,
+    TOutputSchema extends z.ZodType ? z.infer<TOutputSchema> : void
+  >
+
+  /**
+   * Start the worker polling loop
+   */
+  start(): void
+
+  /**
+   * Stop the worker after current run completes
+   */
+  stop(): Promise<void>
+
+  /**
+   * Retry a failed run by resetting it to pending
+   * @throws Error if run is not in failed status
+   */
+  retry(runId: string): Promise<void>
+
+  /**
+   * Cancel a pending or running run
+   * @throws Error if run is already completed, failed, or cancelled
+   */
+  cancel(runId: string): Promise<void>
+
+  /**
+   * Delete a completed, failed, or cancelled run and its associated steps and logs
+   * @throws Error if run is pending or running, or does not exist
+   */
+  deleteRun(runId: string): Promise<void>
+
+  /**
+   * Get a run by ID (returns unknown output type)
+   */
+  getRun(runId: string): Promise<Run | null>
+
+  /**
+   * Get runs with optional filtering
+   */
+  getRuns(filter?: RunFilter): Promise<Run[]>
+
+  /**
+   * Register a plugin
+   */
+  use(plugin: DurablyPlugin): void
+}
+
+/**
+ * Create a Durably instance
+ */
+export function createDurably(options: DurablyOptions): Durably {
+  const config = {
+    pollingInterval: options.pollingInterval ?? DEFAULTS.pollingInterval,
+    heartbeatInterval: options.heartbeatInterval ?? DEFAULTS.heartbeatInterval,
+    staleThreshold: options.staleThreshold ?? DEFAULTS.staleThreshold,
+  }
+
+  const db = new Kysely<Database>({ dialect: options.dialect })
+  const storage = createKyselyStorage(db)
+  const eventEmitter = createEventEmitter()
+  const jobRegistry = createJobRegistry()
+  const worker = createWorker(config, storage, eventEmitter, jobRegistry)
+
+  // Track migration state for idempotency
+  let migrating: Promise<void> | null = null
+  let migrated = false
+
+  const durably: Durably = {
+    db,
+    storage,
+    on: eventEmitter.on,
+    emit: eventEmitter.emit,
+    onError: eventEmitter.onError,
+    start: worker.start,
+    stop: worker.stop,
+
+    defineJob<
+      TName extends string,
+      TInputSchema extends z.ZodType,
+      TOutputSchema extends z.ZodType | undefined = undefined,
+    >(
+      definition: JobDefinition<TName, TInputSchema, TOutputSchema>,
+      fn: JobFunction<
+        z.infer<TInputSchema>,
+        TOutputSchema extends z.ZodType ? z.infer<TOutputSchema> : void
+      >,
+    ): JobHandle<
+      TName,
+      z.infer<TInputSchema>,
+      TOutputSchema extends z.ZodType ? z.infer<TOutputSchema> : void
+    > {
+      return createJobHandle(definition, fn, storage, eventEmitter, jobRegistry)
+    },
+
+    getRun: storage.getRun,
+    getRuns: storage.getRuns,
+
+    use(plugin: DurablyPlugin): void {
+      plugin.install(durably)
+    },
+
+    async retry(runId: string): Promise<void> {
+      const run = await storage.getRun(runId)
+      if (!run) {
+        throw new Error(`Run not found: ${runId}`)
+      }
+      if (run.status === 'completed') {
+        throw new Error(`Cannot retry completed run: ${runId}`)
+      }
+      if (run.status === 'pending') {
+        throw new Error(`Cannot retry pending run: ${runId}`)
+      }
+      if (run.status === 'running') {
+        throw new Error(`Cannot retry running run: ${runId}`)
+      }
+      // Only failed runs can be retried
+      await storage.updateRun(runId, {
+        status: 'pending',
+        error: null,
+      })
+    },
+
+    async cancel(runId: string): Promise<void> {
+      const run = await storage.getRun(runId)
+      if (!run) {
+        throw new Error(`Run not found: ${runId}`)
+      }
+      if (run.status === 'completed') {
+        throw new Error(`Cannot cancel completed run: ${runId}`)
+      }
+      if (run.status === 'failed') {
+        throw new Error(`Cannot cancel failed run: ${runId}`)
+      }
+      if (run.status === 'cancelled') {
+        throw new Error(`Cannot cancel already cancelled run: ${runId}`)
+      }
+      // pending or running can be cancelled
+      await storage.updateRun(runId, {
+        status: 'cancelled',
+      })
+    },
+
+    async deleteRun(runId: string): Promise<void> {
+      const run = await storage.getRun(runId)
+      if (!run) {
+        throw new Error(`Run not found: ${runId}`)
+      }
+      if (run.status === 'pending') {
+        throw new Error(`Cannot delete pending run: ${runId}`)
+      }
+      if (run.status === 'running') {
+        throw new Error(`Cannot delete running run: ${runId}`)
+      }
+      // completed, failed, or cancelled can be deleted
+      await storage.deleteRun(runId)
+    },
+
+    async migrate(): Promise<void> {
+      // Already migrated
+      if (migrated) {
+        return
+      }
+
+      // Migration in progress, wait for it
+      if (migrating) {
+        return migrating
+      }
+
+      // Start migration
+      migrating = runMigrations(db)
+        .then(() => {
+          migrated = true
+        })
+        .finally(() => {
+          migrating = null
+        })
+
+      return migrating
+    },
+  }
+
+  return durably
+}

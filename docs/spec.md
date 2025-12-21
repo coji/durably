@@ -45,9 +45,9 @@ Durably (インスタンス)
 
 **Job** は「何をするか」の定義である。名前、入力スキーマ、出力スキーマ、処理関数を持つ。Job 自体は状態を持たず、何度でも実行できるテンプレートとして機能する。
 
-**Run** は Job の実行インスタンスである。`trigger()` によって作成され、pending → running → completed/failed と状態遷移する。すべての Run はデータベースに永続化される。
+**Run** は Job の実行インスタンスである。`trigger()` によって作成され、pending → running → completed/failed/cancelled と状態遷移する。すべての Run はデータベースに永続化される。
 
-**Step** は Run 内の処理単位である。`ctx.run()` によって定義され、成功すると戻り値がデータベースに保存される。Run が中断・再開された場合、成功済みの Step はスキップされ、保存済みの戻り値が返される。
+**Step** は Run 内の処理単位である。`context.run()` によって定義され、成功すると戻り値がデータベースに保存される。Run が中断・再開された場合、成功済みの Step はスキップされ、保存済みの戻り値が返される。
 
 ### ジョブとステップ
 
@@ -69,14 +69,14 @@ const syncUsers = durably.defineJob({
     syncedCount: z.number(),
     skippedCount: z.number(),
   }),
-}, async (ctx, payload) => {
+}, async (context, payload) => {
   // payload は { orgId: string, force?: boolean } として型推論される
 
-  const users = await ctx.run("fetch-users", async () => {
+  const users = await context.run("fetch-users", async () => {
     return api.fetchUsers(payload.orgId)
   })
 
-  await ctx.run("save-to-db", async () => {
+  await context.run("save-to-db", async () => {
     await db.upsertUsers(users)
   })
 
@@ -91,28 +91,23 @@ const syncUsers = durably.defineJob({
 interface JobHandle<TName extends string, TInput, TOutput> {
   readonly name: TName
   trigger(input: TInput, options?: TriggerOptions): Promise<Run<TOutput>>
+  triggerAndWait(input: TInput, options?: TriggerOptions): Promise<{ id: string; output: TOutput }>
+  batchTrigger(inputs: BatchTriggerInput<TInput>[]): Promise<Run<TOutput>[]>
   getRun(id: string): Promise<Run<TOutput> | null>
   getRuns(filter?: RunFilter): Promise<Run<TOutput>[]>
-
-  // イベント型（Discriminated Union 用）
-  readonly $types: {
-    RunStartEvent: { type: 'run:start'; jobName: TName; payload: TInput; /* ... */ }
-    RunCompleteEvent: { type: 'run:complete'; jobName: TName; output: TOutput; /* ... */ }
-    RunFailEvent: { type: 'run:fail'; jobName: TName; error: string; /* ... */ }
-    StepStartEvent: { type: 'step:start'; jobName: TName; stepName: string; /* ... */ }
-    StepCompleteEvent: { type: 'step:complete'; jobName: TName; stepName: string; /* ... */ }
-    StepFailEvent: { type: 'step:fail'; jobName: TName; stepName: string; error: string; /* ... */ }
-  }
 }
 
 interface TriggerOptions {
   idempotencyKey?: string
   concurrencyKey?: string
+  timeout?: number  // triggerAndWait 用のタイムアウト（ミリ秒）
 }
 
 interface RunFilter {
-  status?: 'pending' | 'running' | 'completed' | 'failed'
+  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   jobName?: string
+  limit?: number   // 取得する最大件数
+  offset?: number  // スキップする件数（ページネーション用）
 }
 ```
 
@@ -120,18 +115,18 @@ interface RunFilter {
 
 入力は `trigger` 時に検証され、不正な場合は例外が発生する。出力はジョブ関数の戻り値として返し、完了時に検証されて Run に保存される。出力の検証に失敗した場合、Run は `failed` 状態となり、エラー詳細が記録される。
 
-`ctx.run` に渡す名前は、同一 Run 内で一意でなければならない。同じ名前のステップが複数回実行された場合はエラーとなる。成功したステップは再実行時に自動的にスキップされ、保存済みの戻り値が返される。この挙動は固定であり、ユーザーが選択する必要はない。
+`context.run` に渡す名前は、同一 Run 内で一意でなければならない。同じ名前のステップが複数回実行された場合はエラーとなる。成功したステップは再実行時に自動的にスキップされ、保存済みの戻り値が返される。この挙動は固定であり、ユーザーが選択する必要はない。
 
-`ctx.run` の戻り値はステップ関数の戻り値から型推論される。
+`context.run` の戻り値はステップ関数の戻り値から型推論される。
 
 ```ts
 // users は User[] 型として推論される
-const users = await ctx.run("fetch-users", async () => {
+const users = await context.run("fetch-users", async () => {
   return api.fetchUsers(payload.orgId)  // User[] を返す
 })
 
 // 明示的に型パラメータを指定することも可能
-const count = await ctx.run<number>("count", async () => {
+const count = await context.run<number>("count", async () => {
   return someExternalApi()
 })
 ```
@@ -153,6 +148,19 @@ const run = await syncUsers.trigger({ orgId: "org_123" })
 console.log(run.id)     // Run の ID
 console.log(run.status) // "pending"
 ```
+
+`triggerAndWait` は Run の作成と完了待ちを一度に行う。`timeout` オプションを指定すると、指定時間内に完了しなかった場合にタイムアウトエラーが発生する。
+
+```ts
+// 5秒でタイムアウト
+const result = await syncUsers.triggerAndWait(
+  { orgId: "org_123" },
+  { timeout: 5000 }
+)
+console.log(result.output.syncedCount)
+```
+
+タイムアウトしても Run 自体は中断されず、バックグラウンドで継続する。タイムアウトは呼び出し側の待機のみを制限する。
 
 ### 重複排除と直列化
 
@@ -201,7 +209,9 @@ Run は以下の状態を持つ。
 
 `failed` は失敗の状態である。いずれかのステップで例外が発生し、Run が中断された。
 
-状態遷移は `pending → running → completed` または `pending → running → failed` のいずれかである。一度 `completed` または `failed` になった Run は、自動では再実行されない。
+`cancelled` はキャンセルされた状態である。`cancel` API により手動でキャンセルされた。
+
+状態遷移は `pending → running → completed` または `pending → running → failed` のいずれかが基本である。`cancel` API により、`pending` または `running` から `cancelled` への遷移も可能である。一度 `completed`、`failed`、または `cancelled` になった Run は、自動では再実行されない。
 
 ### 失敗と再実行
 
@@ -214,6 +224,30 @@ await durably.retry(runId)
 ```
 
 `retry` は `failed` 状態の Run を `pending` に戻し、ワーカーによる再取得を可能にする。再実行時には、成功済みのステップはスキップされる。
+
+### キャンセル
+
+実行中または待機中の Run をキャンセルするには `cancel` API を使う。
+
+```ts
+await durably.cancel(runId)
+```
+
+`cancel` は `pending` または `running` 状態の Run を `cancelled` に遷移させる。`completed`、`failed`、`cancelled` 状態の Run に対して呼び出すとエラーになる。
+
+注意: `running` 状態の Run をキャンセルした場合、データベース上のステータスは即座に `cancelled` になるが、実行中のステップは完了するまで継続する。ワーカーはステップ完了後に Run のステータスを確認し、`cancelled` であれば後続のステップを実行しない（将来の実装で対応予定）。
+
+### Run の削除
+
+完了、失敗、またはキャンセルされた Run を削除するには `deleteRun` API を使う。
+
+```ts
+await durably.deleteRun(runId)
+```
+
+`deleteRun` は Run とそれに関連するステップ、ログをすべて削除する。`pending` または `running` 状態の Run に対して呼び出すとエラーになる。
+
+削除された Run と同じ `idempotencyKey` で新しい Run を作成することが可能になる。これにより、古い Run を削除して同じキーで再実行するというワークフローが実現できる。
 
 ### Run の取得
 
@@ -261,7 +295,26 @@ if (run?.status === 'completed') {
 
 `getRun` は指定した ID の Run を返す。存在しない場合は `null` を返す。`getRuns` はフィルタ条件に一致する Run の配列を返す。条件を指定しない場合は全件を返す。結果は `created_at` の降順でソートされる。
 
-v1 ではページネーションは提供しない。大量の Run がある場合は `status` や `jobName` でフィルタするか、アプリケーション側で Run の削除を行って管理する。将来的に `limit` と `cursor` オプションを追加する可能性がある。
+#### ページネーション
+
+`getRuns` は `limit` と `offset` オプションでページネーションをサポートする。
+
+```ts
+// 最新の 10 件を取得
+const page1 = await durably.getRuns({ limit: 10 })
+
+// 次の 10 件を取得
+const page2 = await durably.getRuns({ limit: 10, offset: 10 })
+
+// フィルタと組み合わせ可能
+const failedRuns = await durably.getRuns({
+  status: 'failed',
+  limit: 20,
+  offset: 0,
+})
+```
+
+`limit` は取得する最大件数、`offset` はスキップする件数を指定する。両方を組み合わせることで、ページ単位の取得が可能になる。
 
 ### ワーカー
 
@@ -277,7 +330,7 @@ const syncUsers = durably.defineJob({
   name: "sync-users",
   input: z.object({ orgId: z.string() }),
   output: z.object({ syncedCount: z.number() }),
-}, async (ctx, payload) => {
+}, async (context, payload) => {
   // ...
   return { syncedCount: 0 }
 })
@@ -337,6 +390,16 @@ durably.on('step:fail', (event) => {
 ```
 
 イベントは同期的に発火される。リスナー内で例外が発生しても、Run の実行には影響しない。
+
+リスナー内で発生した例外を補足するには、`onError` ハンドラを登録する。
+
+```ts
+durably.onError((error, event) => {
+  console.error('Listener error:', error, 'during event:', event.type)
+})
+```
+
+`onError` に渡されるハンドラは、リスナーが例外を投げた際に呼ばれる。エラーと、そのエラーを引き起こしたイベントが引数として渡される。
 
 #### イベント型定義
 
@@ -412,6 +475,14 @@ interface LogWriteEvent extends BaseEvent {
   data: unknown
 }
 
+// Worker エラーイベント（ハートビート失敗など内部エラー）
+interface WorkerErrorEvent extends BaseEvent {
+  type: 'worker:error'
+  error: string
+  context: string  // 'heartbeat' など
+  runId?: string
+}
+
 // 全イベントの Union 型
 type DurablyEvent =
   | RunStartEvent
@@ -421,36 +492,10 @@ type DurablyEvent =
   | StepCompleteEvent
   | StepFailEvent
   | LogWriteEvent
+  | WorkerErrorEvent
 ```
 
 この型定義により、将来的なイベント型の追加（例: `stream` イベント）が容易になる。
-
-#### 型安全なイベント購読
-
-イベントの `payload` や `output` を型安全に扱いたい場合は、JobHandle の `$types` を使って Discriminated Union を構築する。
-
-```ts
-// 各ジョブの型を取り出す
-type SyncUsersEvents = typeof syncUsers.$types
-type SendEmailEvents = typeof sendEmail.$types
-
-// 全ジョブの RunCompleteEvent を Union
-type AllRunCompleteEvents =
-  | SyncUsersEvents['RunCompleteEvent']
-  | SendEmailEvents['RunCompleteEvent']
-
-// 型安全なイベント購読
-durably.on<AllRunCompleteEvents>('run:complete', (event) => {
-  // event.jobName で Discriminated Union が絞り込まれる
-  if (event.jobName === 'sync-users') {
-    console.log(event.output.syncedCount)  // number 型として補完される
-  } else if (event.jobName === 'send-email') {
-    console.log(event.output.messageId)    // string 型として補完される
-  }
-})
-```
-
-型パラメータを省略した場合、`output` は `unknown` 型になる。監視・ログ用途では型パラメータなしで十分なことが多い。
 
 ### 進捗管理
 
@@ -461,27 +506,27 @@ const syncUsers = durably.defineJob({
   name: "sync-users",
   input: z.object({ orgId: z.string() }),
   output: z.object({ processedCount: z.number() }),
-}, async (ctx, payload) => {
-  ctx.setProgress({ current: 0, total: 100, message: "Starting..." })
+}, async (context, payload) => {
+  context.progress(0, 100, "Starting...")
 
-  const users = await ctx.run("fetch-users", async () => {
+  const users = await context.run("fetch-users", async () => {
     const result = await api.fetchUsers(payload.orgId)
-    ctx.setProgress({ current: 10, message: "Fetched users" })
+    context.progress(10, 100, "Fetched users")
     return result
   })
 
   for (let i = 0; i < users.length; i++) {
-    await ctx.run(`process-user-${users[i].id}`, async () => {
+    await context.run(`process-user-${users[i].id}`, async () => {
       await processUser(users[i])
     })
-    ctx.setProgress({ current: 10 + ((i + 1) / users.length) * 90 })
+    context.progress(10 + ((i + 1) / users.length) * 90)
   }
 
   return { processedCount: users.length }
 })
 ```
 
-`ctx.setProgress` は進捗情報を Run に保存する。`current` は必須、`total`（デフォルト 100）と `message` は任意である。
+`context.progress(current, total?, message?)` は進捗情報を Run に保存する。`current` は必須、`total` と `message` は任意である。
 
 進捗は `getRun` で取得できる。
 
@@ -501,17 +546,17 @@ const syncUsers = durably.defineJob({
   name: "sync-users",
   input: z.object({ orgId: z.string() }),
   output: z.object({ syncedCount: z.number() }),
-}, async (ctx, payload) => {
-  ctx.log.info("starting sync", { orgId: payload.orgId })
+}, async (context, payload) => {
+  context.log.info("starting sync", { orgId: payload.orgId })
 
-  const users = await ctx.run("fetch-users", async () => {
+  const users = await context.run("fetch-users", async () => {
     const result = await api.fetchUsers(payload.orgId)
-    ctx.log.info("fetched users", { count: result.length })
+    context.log.info("fetched users", { count: result.length })
     return result
   })
 
   if (users.length === 0) {
-    ctx.log.warn("no users found")
+    context.log.warn("no users found")
   }
 
   return { syncedCount: users.length }
@@ -612,7 +657,7 @@ Vite を使用する場合は、SQLocal の Vite プラグインを追加する�
 | id | TEXT (ULID) | Run の一意識別子 |
 | job_name | TEXT | ジョブ名 |
 | payload | TEXT (JSON) | ジョブに渡される引数 |
-| status | TEXT | pending / running / completed / failed |
+| status | TEXT | pending / running / completed / failed / cancelled |
 | idempotency_key | TEXT (nullable) | 重複排除キー |
 | concurrency_key | TEXT (nullable) | 直列化キー |
 | current_step_index | INTEGER | 次に実行すべきステップのインデックス |
@@ -647,7 +692,7 @@ Vite を使用する場合は、SQLocal の Vite プラグインを追加する�
 | level | TEXT | info / warn / error |
 | message | TEXT | ログメッセージ |
 | data | TEXT (JSON, nullable) | 追加データ |
-| timestamp | TEXT (ISO8601) | 発生時刻 |
+| created_at | TEXT (ISO8601) | 発生時刻 |
 
 **schema_versions テーブル**
 
@@ -662,7 +707,7 @@ Vite を使用する場合は、SQLocal の Vite プラグインを追加する�
 - `runs`: `(status, concurrency_key)` の複合インデックス
 - `runs`: `(status, created_at)` の複合インデックス
 - `steps`: `(run_id, index)` の複合インデックス
-- `logs`: `(run_id, timestamp)` の複合インデックス
+- `logs`: `(run_id, created_at)` の複合インデックス
 
 **ULID の実装**: ID 生成には ULID（Universally Unique Lexicographically Sortable Identifier）を使用する。実装は軽量な `ulidx` パッケージを採用し、ブラウザと Node.js の両方で動作する。ULID はタイムスタンプを含むためソート可能であり、UUID と同等のユニーク性を持つ。
 
@@ -680,7 +725,7 @@ Run の取得クエリは以下の条件を満たすものを一件取得する�
 
 ワーカー起動時に、`running` 状態かつ `heartbeat_at` が閾値より古い Run が存在する場合、それは前プロセスまたは前タブの異常終了とみなされる。該当する Run は `pending` に戻され、通常の取得対象に含まれる。
 
-再実行時には、steps テーブルを参照し、`status` が `completed` かつ `index` が `current_step_index` より小さいステップはスキップされる。`ctx.run` が呼ばれた時点で、該当するステップがすでに成功していれば、保存済みの `output` がそのまま返される。
+再実行時には、steps テーブルを参照し、`status` が `completed` かつ `index` が `current_step_index` より小さいステップはスキップされる。`context.run` が呼ばれた時点で、該当するステップがすでに成功していれば、保存済みの `output` がそのまま返される。
 
 ### heartbeat
 
@@ -700,7 +745,8 @@ Run の取得クエリは以下の条件を満たすものを一件取得する�
 | step:start | ステップの実行を開始する直前 |
 | step:complete | ステップが成功し DB に記録した直後 |
 | step:fail | ステップが失敗し DB に記録した直後 |
-| log:write | ctx.log が呼ばれた直後 |
+| log:write | context.log が呼ばれた直後 |
+| worker:error | ワーカー内部でエラーが発生した時（ハートビート失敗など） |
 
 ### 設定項目
 
@@ -768,20 +814,20 @@ const syncUsers = durably.defineJob({
   name: 'sync-users',
   input: z.object({ orgId: z.string() }),
   output: z.object({ syncedCount: z.number() }),
-}, async (ctx, payload) => {
-  ctx.log.info('starting sync', { orgId: payload.orgId })
+}, async (context, payload) => {
+  context.log.info('starting sync', { orgId: payload.orgId })
 
-  const users = await ctx.run('fetch-users', async () => {
+  const users = await context.run('fetch-users', async () => {
     const result = await api.fetchUsers(payload.orgId)
-    ctx.log.info('fetched users', { count: result.length })
+    context.log.info('fetched users', { count: result.length })
     return result
   })
 
-  await ctx.run('save-to-db', async () => {
+  await context.run('save-to-db', async () => {
     await db.upsertUsers(users)
   })
 
-  ctx.log.info('sync completed')
+  context.log.info('sync completed')
   return { syncedCount: users.length }
 })
 
@@ -935,7 +981,7 @@ v2 では AI Agent ワークフロー対応として以下の機能が計画さ�
 
 | 機能 | 概要 |
 |------|------|
-| `ctx.stream()` | ストリーミング出力をサポートするステップ |
+| `context.stream()` | ストリーミング出力をサポートするステップ |
 | `subscribe()` | Run の実行をリアルタイムで購読（ReadableStream） |
 | `events` テーブル | 粗いイベント（step:*, run:*）の永続化 |
 | `checkpoint()` | 長時間実行中の中間状態保存 |
