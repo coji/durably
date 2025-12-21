@@ -2,51 +2,55 @@
 
 Step-oriented resumable batch execution for Node.js and browsers using SQLite.
 
-> **Note**: This package is under development. The API is not yet implemented.
-
-## Features (Planned)
+## Features
 
 - Resumable batch processing with step-level persistence
 - Works in both Node.js and browsers
-- Uses SQLite for state management (Turso/libsql for Node.js, SQLocal for browsers)
+- Uses SQLite for state management (better-sqlite3/libsql for Node.js, SQLite WASM for browsers)
 - Minimal dependencies - just Kysely as a peer dependency
 - Event system for monitoring and extensibility
-- Plugin architecture for optional features
+- Type-safe input/output with Zod schemas
 
 ## Installation
 
 ```bash
+npm install @coji/durably kysely better-sqlite3
+# or for libsql
 npm install @coji/durably kysely @libsql/client @libsql/kysely-libsql
 ```
 
-## Usage (Preview)
+## Usage
 
 ```ts
-import { createDurably, defineJob } from '@coji/durably'
-import { LibsqlDialect } from '@libsql/kysely-libsql'
+import { createDurably } from '@coji/durably'
+import SQLite from 'better-sqlite3'
+import { SqliteDialect } from 'kysely'
+import { z } from 'zod'
 
-const dialect = new LibsqlDialect({
-  url: process.env.TURSO_DATABASE_URL ?? 'file:local.db',
-  authToken: process.env.TURSO_AUTH_TOKEN,
+const dialect = new SqliteDialect({
+  database: new SQLite('local.db'),
 })
 
 const durably = createDurably({ dialect })
 
-const syncUsers = durably.defineJob({
-  name: 'sync-users',
-  input: z.object({ orgId: z.string() }),
-  output: z.object({ syncedCount: z.number() }),
-}, async (ctx, payload) => {
-  const users = await ctx.run('fetch-users', async () => {
-    return api.fetchUsers(payload.orgId)
-  })
+const syncUsers = durably.defineJob(
+  {
+    name: 'sync-users',
+    input: z.object({ orgId: z.string() }),
+    output: z.object({ syncedCount: z.number() }),
+  },
+  async (ctx, payload) => {
+    const users = await ctx.run('fetch-users', async () => {
+      return api.fetchUsers(payload.orgId)
+    })
 
-  await ctx.run('save-to-db', async () => {
-    await db.upsertUsers(users)
-  })
+    await ctx.run('save-to-db', async () => {
+      await db.upsertUsers(users)
+    })
 
-  return { syncedCount: users.length }
-})
+    return { syncedCount: users.length }
+  },
+)
 
 await durably.migrate()
 durably.start()
@@ -58,7 +62,6 @@ await syncUsers.trigger({ orgId: 'org_123' })
 
 - [Specification](docs/spec.md) - Core API and concepts
 - [Streaming Extension](docs/spec-streaming.md) - AI Agent workflow support
-- [Implementation Plan](docs/implementation-plan.md) - TDD implementation roadmap
 
 ## License
 
