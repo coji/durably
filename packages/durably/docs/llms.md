@@ -30,9 +30,9 @@ const dialect = new LibsqlDialect({ client })
 
 const durably = createDurably({
   dialect,
-  pollingInterval: 1000,    // Job polling interval (ms)
-  heartbeatInterval: 5000,  // Heartbeat update interval (ms)
-  staleThreshold: 30000,    // When to consider a job abandoned (ms)
+  pollingInterval: 1000, // Job polling interval (ms)
+  heartbeatInterval: 5000, // Heartbeat update interval (ms)
+  staleThreshold: 30000, // When to consider a job abandoned (ms)
 })
 ```
 
@@ -83,21 +83,18 @@ console.log(run.id, run.status) // "pending"
 // Wait for completion
 const result = await syncUsers.triggerAndWait(
   { orgId: 'org_123' },
-  { timeout: 5000 }
+  { timeout: 5000 },
 )
 console.log(result.output.syncedCount)
 
 // With idempotency key (prevents duplicate jobs)
 await syncUsers.trigger(
   { orgId: 'org_123' },
-  { idempotencyKey: 'webhook-event-456' }
+  { idempotencyKey: 'webhook-event-456' },
 )
 
 // With concurrency key (serializes execution)
-await syncUsers.trigger(
-  { orgId: 'org_123' },
-  { concurrencyKey: 'org_123' }
-)
+await syncUsers.trigger({ orgId: 'org_123' }, { concurrencyKey: 'org_123' })
 ```
 
 ## Step Context API
@@ -191,7 +188,9 @@ durably.on('run:fail', (e) => console.error('Failed:', e.error))
 
 durably.on('step:start', (e) => console.log('Step:', e.stepName))
 durably.on('step:complete', (e) => console.log('Step done:', e.stepName))
-durably.on('step:skip', (e) => console.log('Step skipped (cached):', e.stepName))
+durably.on('step:skip', (e) =>
+  console.log('Step skipped (cached):', e.stepName),
+)
 
 durably.on('log:write', (e) => console.log(`[${e.level}]`, e.message))
 ```
@@ -282,7 +281,10 @@ interface Run<TOutput = unknown> {
 interface JobHandle<TName, TInput, TOutput> {
   name: TName
   trigger(input: TInput, options?: TriggerOptions): Promise<Run<TOutput>>
-  triggerAndWait(input: TInput, options?: TriggerOptions): Promise<{ id: string; output: TOutput }>
+  triggerAndWait(
+    input: TInput,
+    options?: TriggerOptions,
+  ): Promise<{ id: string; output: TOutput }>
   batchTrigger(inputs: BatchTriggerInput<TInput>[]): Promise<Run<TOutput>[]>
   getRun(id: string): Promise<Run<TOutput> | null>
   getRuns(filter?: RunFilter): Promise<Run<TOutput>[]>
