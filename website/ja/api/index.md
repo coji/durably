@@ -8,7 +8,7 @@
 |--------|-------------|
 | [`createDurably`](/ja/api/create-durably) | Durablyインスタンスを作成 |
 | [`defineJob`](/ja/api/define-job) | ジョブを定義（インスタンス経由） |
-| [`Context`](/ja/api/context) | ジョブ実行コンテキスト |
+| [`Step`](/ja/api/step) | ジョブハンドラー用のステップコンテキスト |
 | [`Events`](/ja/api/events) | イベント型と購読 |
 
 ## クイックリファレンス
@@ -51,17 +51,17 @@ const job = durably.defineJob(...)
 await job.trigger(input, options?)
 ```
 
-### コンテキストメソッド
+### ステップメソッド
 
 ```ts
-durably.defineJob(..., async (context, payload) => {
+durably.defineJob(..., async (step, payload) => {
   // ステップを実行
-  const result = await context.run('step-name', async () => {
+  const result = await step.run('step-name', async () => {
     return value
   })
 
   // メッセージをログ
-  context.log('info', 'message', { data })
+  step.log.info('message', { data })
 })
 ```
 
@@ -73,7 +73,7 @@ import type {
   DurablyOptions,
   Job,
   JobOptions,
-  Context,
+  StepContext,
   TriggerOptions,
   RunStatus,
   StepStatus,

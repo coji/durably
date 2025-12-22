@@ -25,7 +25,7 @@ export type {
 } from './events'
 
 // Job types
-export type { JobContext, JobHandle, TriggerAndWaitResult } from './job'
+export type { JobHandle, StepContext, TriggerAndWaitResult } from './job'
 
 // Schema types (for advanced users)
 export type {

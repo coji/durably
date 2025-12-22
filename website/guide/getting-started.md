@@ -66,19 +66,19 @@ const processOrder = durably.defineJob(
     input: z.object({ orderId: z.string() }),
     output: z.object({ status: z.string() }),
   },
-  async (context, payload) => {
+  async (step, payload) => {
     // Step 1: Validate order
-    const order = await context.run('validate', async () => {
+    const order = await step.run('validate', async () => {
       return await validateOrder(payload.orderId)
     })
 
     // Step 2: Process payment
-    await context.run('payment', async () => {
+    await step.run('payment', async () => {
       await processPayment(order)
     })
 
     // Step 3: Send confirmation
-    await context.run('notify', async () => {
+    await step.run('notify', async () => {
       await sendConfirmation(order)
     })
 
@@ -118,12 +118,12 @@ const syncData = durably.defineJob(
     name: 'sync-data',
     input: z.object({ userId: z.string() }),
   },
-  async (context, payload) => {
-    const data = await context.run('fetch', async () => {
+  async (step, payload) => {
+    const data = await step.run('fetch', async () => {
       return await fetchUserData(payload.userId)
     })
 
-    await context.run('save', async () => {
+    await step.run('save', async () => {
       await saveLocally(data)
     })
   },

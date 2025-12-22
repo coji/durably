@@ -1,17 +1,17 @@
 import { CancelledError } from './errors'
 import type { EventEmitter } from './events'
-import type { JobContext } from './job'
+import type { StepContext } from './job'
 import type { Run, Storage } from './storage'
 
 /**
- * Create a job context for executing a run
+ * Create a step context for executing a run
  */
-export function createJobContext(
+export function createStepContext(
   run: Run,
   jobName: string,
   storage: Storage,
   eventEmitter: EventEmitter,
-): JobContext {
+): StepContext {
   let stepIndex = run.currentStepIndex
   let currentStepName: string | null = null
 

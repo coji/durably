@@ -69,20 +69,20 @@ function useDurably() {
 
 ## Logging
 
-Use `context.log()` within jobs to emit log events:
+Use `step.log` within jobs to emit log events:
 
 ```ts
 durably.defineJob(
   { name: 'my-job', input: z.object({}) },
-  async (context) => {
-    context.log('info', 'Starting processing')
+  async (step) => {
+    step.log.info('Starting processing')
 
-    await context.run('step1', async () => {
-      context.log('debug', 'Step 1 details', { someData: 123 })
+    await step.run('step1', async () => {
+      step.log.info('Step 1 details', { someData: 123 })
       return result
     })
 
-    context.log('info', 'Completed')
+    step.log.info('Completed')
   },
 )
 

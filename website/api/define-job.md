@@ -7,7 +7,7 @@ Defines a new job with typed input and output.
 ```ts
 durably.defineJob<I, O>(
   options: JobOptions<I, O>,
-  handler: (context: Context, payload: I) => Promise<O>
+  handler: (step: StepContext, payload: I) => Promise<O>
 ): Job<I, O>
 ```
 
@@ -31,7 +31,7 @@ interface JobOptions<I, O> {
 
 The handler function receives:
 
-- `context`: The [Context](/api/context) object for creating steps and logging
+- `step`: The [Step](/api/step) object for creating steps and logging
 - `payload`: The validated input payload
 
 ## Returns
@@ -80,14 +80,14 @@ const syncUsers = durably.defineJob(
       errors: z.array(z.string()),
     }),
   },
-  async (context, payload) => {
-    const users = await context.run('fetch-users', async () => {
+  async (step, payload) => {
+    const users = await step.run('fetch-users', async () => {
       return await api.fetchUsers(payload.orgId)
     })
 
     const errors: string[] = []
     for (const user of users) {
-      await context.run(`sync-${user.id}`, async () => {
+      await step.run(`sync-${user.id}`, async () => {
         try {
           await db.upsertUser(user)
         } catch (e) {
@@ -124,7 +124,7 @@ const job = durably.defineJob(
     input: z.object({ id: z.string() }),
     output: z.object({ result: z.number() }),
   },
-  async (context, payload) => {
+  async (step, payload) => {
     // payload is typed as { id: string }
     return { result: 42 }  // Must match output schema
   },

@@ -301,8 +301,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
             input: z.object({ value: z.number() }),
             output: z.object({ result: z.number() }),
           },
-          async (context, payload) => {
-            await context.run('compute', async () => {
+          async (step, payload) => {
+            await step.run('compute', async () => {
               await new Promise((r) => setTimeout(r, 50))
             })
             return { result: payload.value * 2 }
@@ -328,8 +328,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
             input: z.object({}),
             output: z.object({}),
           },
-          async (context) => {
-            await context.run('fail-step', async () => {
+          async (step) => {
+            await step.run('fail-step', async () => {
               throw new Error('Intentional failure')
             })
             return {}
@@ -375,8 +375,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
             input: z.object({}),
             output: z.object({}),
           },
-          async (context) => {
-            await context.run('slow-step', async () => {
+          async (step) => {
+            await step.run('slow-step', async () => {
               // This step takes longer than the timeout
               await new Promise((r) => setTimeout(r, 500))
             })
@@ -393,13 +393,13 @@ export function createRunApiTests(createDialect: () => Dialect) {
       })
     })
 
-    describe('context.progress()', () => {
+    describe('step.progress()', () => {
       it('saves progress with current value', async () => {
         const job = durably.defineJob(
           { name: 'progress-test', input: z.object({}) },
-          async (context) => {
-            context.progress(50)
-            await context.run('step', async () => {
+          async (step) => {
+            step.progress(50)
+            await step.run('step', async () => {
               await new Promise((r) => setTimeout(r, 50))
             })
           },
@@ -423,9 +423,9 @@ export function createRunApiTests(createDialect: () => Dialect) {
       it('saves progress with all fields', async () => {
         const job = durably.defineJob(
           { name: 'full-progress-test', input: z.object({}) },
-          async (context) => {
-            context.progress(25, 100, 'Processing items...')
-            await context.run('step', async () => {
+          async (step) => {
+            step.progress(25, 100, 'Processing items...')
+            await step.run('step', async () => {
               await new Promise((r) => setTimeout(r, 50))
             })
           },
@@ -455,10 +455,10 @@ export function createRunApiTests(createDialect: () => Dialect) {
 
         const job = durably.defineJob(
           { name: 'get-progress-test', input: z.object({}) },
-          async (context) => {
-            context.progress(75, 100)
+          async (step) => {
+            step.progress(75, 100)
             progressSet = true
-            await context.run('wait', async () => {
+            await step.run('wait', async () => {
               await new Promise((r) => setTimeout(r, 100))
             })
           },

@@ -13,8 +13,8 @@ Durably is a step-oriented batch execution framework for Node.js and browsers. I
 
 ## Core Concepts
 
-- **Job**: Defined via `durably.defineJob()`, receives a context object and payload
-- **Step**: Created via `context.run()`, each step's success state and return value is persisted
+- **Job**: Defined via `durably.defineJob()`, receives a step context and payload
+- **Step**: Created via `step.run()`, each step's success state and return value is persisted
 - **Run**: A job execution instance, created via `trigger()`, always persisted as `pending` before execution
 - **Worker**: Polls for pending runs and executes them sequentially
 

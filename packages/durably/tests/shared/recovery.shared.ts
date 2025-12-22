@@ -29,8 +29,8 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             name: 'heartbeat-test',
             input: z.object({}),
           },
-          async (context) => {
-            await context.run('long-step', async () => {
+          async (step) => {
+            await step.run('long-step', async () => {
               // Run long enough to see heartbeat updates
               await new Promise((r) => setTimeout(r, 250))
             })
@@ -78,11 +78,11 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             name: 'custom-heartbeat-test',
             input: z.object({}),
           },
-          async (context) => {
-            await context.run('step', async () => {
+          async (step) => {
+            await step.run('step', async () => {
               // Record heartbeat timestamps during execution
               for (let i = 0; i < 3; i++) {
-                const run = await customDurably.storage.getRun(context.runId)
+                const run = await customDurably.storage.getRun(step.runId)
                 if (run) timestamps.push(run.heartbeatAt)
                 await new Promise((r) => setTimeout(r, 100))
               }
@@ -150,12 +150,12 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             name: 'resume-skip-test',
             input: z.object({}),
           },
-          async (context) => {
-            await context.run('step1', () => {
+          async (step) => {
+            await step.run('step1', () => {
               step1Calls++
               return 'step1-done'
             })
-            await context.run('step2', () => {
+            await step.run('step2', () => {
               step2Calls++
               return 'step2-done'
             })
@@ -204,7 +204,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             name: 'retry-test',
             input: z.object({ shouldFail: z.boolean() }),
           },
-          async (_context, payload) => {
+          async (_step, payload) => {
             if (payload.shouldFail) {
               throw new Error('Intentional failure')
             }
@@ -278,8 +278,8 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             name: 'retry-running-test',
             input: z.object({}),
           },
-          async (context) => {
-            await context.run('long-step', async () => {
+          async (step) => {
+            await step.run('long-step', async () => {
               await new Promise((r) => setTimeout(r, 500))
             })
           },
@@ -328,8 +328,8 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             name: 'cancel-running-test',
             input: z.object({}),
           },
-          async (context) => {
-            await context.run('step1', async () => {
+          async (step) => {
+            await step.run('step1', async () => {
               await new Promise((r) => setTimeout(r, 500))
               return 'done'
             })
@@ -440,18 +440,18 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             name: 'cancel-mid-execution-test',
             input: z.object({}),
           },
-          async (context) => {
-            await context.run('step1', async () => {
+          async (step) => {
+            await step.run('step1', async () => {
               step1Executed = true
               // Give time for cancellation to be triggered
               await new Promise((r) => setTimeout(r, 100))
               return 'step1'
             })
-            await context.run('step2', async () => {
+            await step.run('step2', async () => {
               step2Executed = true
               return 'step2'
             })
-            await context.run('step3', async () => {
+            await step.run('step3', async () => {
               step3Executed = true
               return 'step3'
             })
@@ -493,8 +493,8 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             name: 'cancel-no-overwrite-test',
             input: z.object({}),
           },
-          async (context) => {
-            await context.run('step1', async () => {
+          async (step) => {
+            await step.run('step1', async () => {
               await new Promise((r) => setTimeout(r, 150))
               return 'done'
             })
@@ -532,9 +532,9 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             name: 'delete-completed-test',
             input: z.object({}),
           },
-          async (context) => {
-            context.log.info('test log')
-            await context.run('step1', () => 'done')
+          async (step) => {
+            step.log.info('test log')
+            await step.run('step1', () => 'done')
           },
         )
 
@@ -634,8 +634,8 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             name: 'delete-running-test',
             input: z.object({}),
           },
-          async (context) => {
-            await context.run('long-step', async () => {
+          async (step) => {
+            await step.run('long-step', async () => {
               await new Promise((r) => setTimeout(r, 500))
             })
           },

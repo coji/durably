@@ -24,14 +24,14 @@ const syncUsers = durably.defineJob(
     name: 'sync-users',
     input: z.object({ orgId: z.string() }),
   },
-  async (context, payload) => {
+  async (step, payload) => {
     // ステップ1: ユーザーを取得（完了後に永続化）
-    const users = await context.run('fetch-users', async () => {
+    const users = await step.run('fetch-users', async () => {
       return api.fetchUsers(payload.orgId)
     })
 
     // ステップ2: データベースに保存（既に完了していればスキップ）
-    await context.run('save-to-db', async () => {
+    await step.run('save-to-db', async () => {
       await db.upsertUsers(users)
     })
 
@@ -42,7 +42,7 @@ const syncUsers = durably.defineJob(
 
 ## 主な機能
 
-- **ステップレベルの永続化**: 各`context.run()`呼び出しがチェックポイントを作成
+- **ステップレベルの永続化**: 各`step.run()`呼び出しがチェックポイントを作成
 - **自動再開**: 中断されたジョブは最後に成功したステップから再開
 - **クロスプラットフォーム**: 同じコードがNode.jsとブラウザで動作
 - **最小限の依存関係**: KyselyとZodのみ

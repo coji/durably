@@ -6,21 +6,21 @@ Durably's core feature is automatic job resumption. This page explains how it wo
 
 ### Step Persistence
 
-Every `context.run()` call creates a checkpoint:
+Every `step.run()` call creates a checkpoint:
 
 ```ts
 // Step 1: Result persisted to SQLite
-const users = await context.run('fetch-users', async () => {
+const users = await step.run('fetch-users', async () => {
   return await api.fetchUsers()  // Takes 5 seconds
 })
 
 // Step 2: If crash happens here...
-await context.run('process-users', async () => {
+await step.run('process-users', async () => {
   await processAll(users)  // Crash!
 })
 
 // Step 3: Never reached
-await context.run('notify', async () => {
+await step.run('notify', async () => {
   await sendNotification()
 })
 ```
@@ -31,17 +31,17 @@ When the job restarts:
 
 ```ts
 // Step 1: Returns cached result instantly (no API call)
-const users = await context.run('fetch-users', async () => {
+const users = await step.run('fetch-users', async () => {
   return await api.fetchUsers()  // Skipped!
 })
 
 // Step 2: Re-executes from the beginning
-await context.run('process-users', async () => {
+await step.run('process-users', async () => {
   await processAll(users)  // Runs again
 })
 
 // Step 3: Runs normally
-await context.run('notify', async () => {
+await step.run('notify', async () => {
   await sendNotification()
 })
 ```
@@ -79,12 +79,12 @@ Steps should be designed to be safely re-runnable:
 
 ```ts
 // Using upsert instead of insert
-await context.run('save-user', async () => {
+await step.run('save-user', async () => {
   await db.upsertUser(user)  // Safe to retry
 })
 
 // Checking before action
-await context.run('send-email', async () => {
+await step.run('send-email', async () => {
   const sent = await db.wasEmailSent(userId)
   if (!sent) {
     await sendEmail(user)
@@ -97,7 +97,7 @@ await context.run('send-email', async () => {
 
 ```ts
 // Be careful with operations that can't be safely repeated
-await context.run('charge-card', async () => {
+await step.run('charge-card', async () => {
   // Use idempotency keys with payment providers
   await stripe.charges.create({
     amount: 1000,
@@ -111,7 +111,7 @@ await context.run('charge-card', async () => {
 If a step crashes mid-execution, the entire step is re-run:
 
 ```ts
-await context.run('process-items', async () => {
+await step.run('process-items', async () => {
   for (const item of items) {
     await processItem(item)  // Crash after 50 items
   }
@@ -124,7 +124,7 @@ For large operations, consider breaking into smaller steps:
 ```ts
 // Better: Process in batches
 for (let i = 0; i < items.length; i += 100) {
-  await context.run(`batch-${i}`, async () => {
+  await step.run(`batch-${i}`, async () => {
     const batch = items.slice(i, i + 100)
     for (const item of batch) {
       await processItem(item)

@@ -47,7 +47,7 @@ Durably (インスタンス)
 
 **Run** は Job の実行インスタンスである。`trigger()` によって作成され、pending → running → completed/failed/cancelled と状態遷移する。すべての Run はデータベースに永続化される。
 
-**Step** は Run 内の処理単位である。`context.run()` によって定義され、成功すると戻り値がデータベースに保存される。Run が中断・再開された場合、成功済みの Step はスキップされ、保存済みの戻り値が返される。
+**Step** は Run 内の処理単位である。`step.run()` によって定義され、成功すると戻り値がデータベースに保存される。Run が中断・再開された場合、成功済みの Step はスキップされ、保存済みの戻り値が返される。
 
 ### ジョブとステップ
 
@@ -69,14 +69,14 @@ const syncUsers = durably.defineJob({
     syncedCount: z.number(),
     skippedCount: z.number(),
   }),
-}, async (context, payload) => {
+}, async (step, payload) => {
   // payload は { orgId: string, force?: boolean } として型推論される
 
-  const users = await context.run("fetch-users", async () => {
+  const users = await step.run("fetch-users", async () => {
     return api.fetchUsers(payload.orgId)
   })
 
-  await context.run("save-to-db", async () => {
+  await step.run("save-to-db", async () => {
     await db.upsertUsers(users)
   })
 
@@ -115,18 +115,18 @@ interface RunFilter {
 
 入力は `trigger` 時に検証され、不正な場合は例外が発生する。出力はジョブ関数の戻り値として返し、完了時に検証されて Run に保存される。出力の検証に失敗した場合、Run は `failed` 状態となり、エラー詳細が記録される。
 
-`context.run` に渡す名前は、同一 Run 内で一意でなければならない。同じ名前のステップが複数回実行された場合はエラーとなる。成功したステップは再実行時に自動的にスキップされ、保存済みの戻り値が返される。この挙動は固定であり、ユーザーが選択する必要はない。
+`step.run` に渡す名前は、同一 Run 内で一意でなければならない。同じ名前のステップが複数回実行された場合はエラーとなる。成功したステップは再実行時に自動的にスキップされ、保存済みの戻り値が返される。この挙動は固定であり、ユーザーが選択する必要はない。
 
-`context.run` の戻り値はステップ関数の戻り値から型推論される。
+`step.run` の戻り値はステップ関数の戻り値から型推論される。
 
 ```ts
 // users は User[] 型として推論される
-const users = await context.run("fetch-users", async () => {
+const users = await step.run("fetch-users", async () => {
   return api.fetchUsers(payload.orgId)  // User[] を返す
 })
 
 // 明示的に型パラメータを指定することも可能
-const count = await context.run<number>("count", async () => {
+const count = await step.run<number>("count", async () => {
   return someExternalApi()
 })
 ```
@@ -330,7 +330,7 @@ const syncUsers = durably.defineJob({
   name: "sync-users",
   input: z.object({ orgId: z.string() }),
   output: z.object({ syncedCount: z.number() }),
-}, async (context, payload) => {
+}, async (step, payload) => {
   // ...
   return { syncedCount: 0 }
 })
@@ -506,27 +506,27 @@ const syncUsers = durably.defineJob({
   name: "sync-users",
   input: z.object({ orgId: z.string() }),
   output: z.object({ processedCount: z.number() }),
-}, async (context, payload) => {
-  context.progress(0, 100, "Starting...")
+}, async (step, payload) => {
+  step.progress(0, 100, "Starting...")
 
-  const users = await context.run("fetch-users", async () => {
+  const users = await step.run("fetch-users", async () => {
     const result = await api.fetchUsers(payload.orgId)
-    context.progress(10, 100, "Fetched users")
+    step.progress(10, 100, "Fetched users")
     return result
   })
 
   for (let i = 0; i < users.length; i++) {
-    await context.run(`process-user-${users[i].id}`, async () => {
+    await step.run(`process-user-${users[i].id}`, async () => {
       await processUser(users[i])
     })
-    context.progress(10 + ((i + 1) / users.length) * 90)
+    step.progress(10 + ((i + 1) / users.length) * 90)
   }
 
   return { processedCount: users.length }
 })
 ```
 
-`context.progress(current, total?, message?)` は進捗情報を Run に保存する。`current` は必須、`total` と `message` は任意である。
+`step.progress(current, total?, message?)` は進捗情報を Run に保存する。`current` は必須、`total` と `message` は任意である。
 
 進捗は `getRun` で取得できる。
 
@@ -546,17 +546,17 @@ const syncUsers = durably.defineJob({
   name: "sync-users",
   input: z.object({ orgId: z.string() }),
   output: z.object({ syncedCount: z.number() }),
-}, async (context, payload) => {
-  context.log.info("starting sync", { orgId: payload.orgId })
+}, async (step, payload) => {
+  step.log.info("starting sync", { orgId: payload.orgId })
 
-  const users = await context.run("fetch-users", async () => {
+  const users = await step.run("fetch-users", async () => {
     const result = await api.fetchUsers(payload.orgId)
-    context.log.info("fetched users", { count: result.length })
+    step.log.info("fetched users", { count: result.length })
     return result
   })
 
   if (users.length === 0) {
-    context.log.warn("no users found")
+    step.log.warn("no users found")
   }
 
   return { syncedCount: users.length }
@@ -725,7 +725,7 @@ Run の取得クエリは以下の条件を満たすものを一件取得する�
 
 ワーカー起動時に、`running` 状態かつ `heartbeat_at` が閾値より古い Run が存在する場合、それは前プロセスまたは前タブの異常終了とみなされる。該当する Run は `pending` に戻され、通常の取得対象に含まれる。
 
-再実行時には、steps テーブルを参照し、`status` が `completed` かつ `index` が `current_step_index` より小さいステップはスキップされる。`context.run` が呼ばれた時点で、該当するステップがすでに成功していれば、保存済みの `output` がそのまま返される。
+再実行時には、steps テーブルを参照し、`status` が `completed` かつ `index` が `current_step_index` より小さいステップはスキップされる。`step.run` が呼ばれた時点で、該当するステップがすでに成功していれば、保存済みの `output` がそのまま返される。
 
 ### heartbeat
 
@@ -745,7 +745,7 @@ Run の取得クエリは以下の条件を満たすものを一件取得する�
 | step:start | ステップの実行を開始する直前 |
 | step:complete | ステップが成功し DB に記録した直後 |
 | step:fail | ステップが失敗し DB に記録した直後 |
-| log:write | context.log が呼ばれた直後 |
+| log:write | step.log が呼ばれた直後 |
 | worker:error | ワーカー内部でエラーが発生した時（ハートビート失敗など） |
 
 ### 設定項目
@@ -814,20 +814,20 @@ const syncUsers = durably.defineJob({
   name: 'sync-users',
   input: z.object({ orgId: z.string() }),
   output: z.object({ syncedCount: z.number() }),
-}, async (context, payload) => {
-  context.log.info('starting sync', { orgId: payload.orgId })
+}, async (step, payload) => {
+  step.log.info('starting sync', { orgId: payload.orgId })
 
-  const users = await context.run('fetch-users', async () => {
+  const users = await step.run('fetch-users', async () => {
     const result = await api.fetchUsers(payload.orgId)
-    context.log.info('fetched users', { count: result.length })
+    step.log.info('fetched users', { count: result.length })
     return result
   })
 
-  await context.run('save-to-db', async () => {
+  await step.run('save-to-db', async () => {
     await db.upsertUsers(users)
   })
 
-  context.log.info('sync completed')
+  step.log.info('sync completed')
   return { syncedCount: users.length }
 })
 
@@ -981,7 +981,7 @@ v2 では AI Agent ワークフロー対応として以下の機能が計画さ�
 
 | 機能 | 概要 |
 |------|------|
-| `context.stream()` | ストリーミング出力をサポートするステップ |
+| `step.stream()` | ストリーミング出力をサポートするステップ |
 | `subscribe()` | Run の実行をリアルタイムで購読（ReadableStream） |
 | `events` テーブル | 粗いイベント（step:*, run:*）の永続化 |
 | `checkpoint()` | 長時間実行中の中間状態保存 |

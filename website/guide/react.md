@@ -266,16 +266,16 @@ const processDataJob = durably.defineJob(
     input: z.object({ items: z.array(z.string()) }),
     output: z.object({ processed: z.number() }),
   },
-  async (context, payload) => {
+  async (step, payload) => {
     let processed = 0
 
     for (const item of payload.items) {
-      await context.run(`process-${item}`, async () => {
+      await step.run(`process-${item}`, async () => {
         // Simulate work
         await new Promise((r) => setTimeout(r, 500))
         processed++
       })
-      context.progress(processed, payload.items.length)
+      step.progress(processed, payload.items.length)
     }
 
     return { processed }

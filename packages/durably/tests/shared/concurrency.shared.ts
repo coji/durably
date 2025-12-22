@@ -28,9 +28,9 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           name: 'concurrency-test',
           input: z.object({ id: z.string() }),
         },
-        async (context, payload) => {
+        async (step, payload) => {
           executionOrder.push(`start-${payload.id}`)
-          await context.run('work', async () => {
+          await step.run('work', async () => {
             await new Promise((r) => setTimeout(r, 100))
           })
           executionOrder.push(`end-${payload.id}`)
@@ -64,9 +64,9 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           name: 'different-keys-test',
           input: z.object({ id: z.string() }),
         },
-        async (context, payload) => {
+        async (step, payload) => {
           startTimes[payload.id] = Date.now()
-          await context.run('work', async () => {
+          await step.run('work', async () => {
             await new Promise((r) => setTimeout(r, 100))
           })
         },
@@ -100,9 +100,9 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           name: 'no-key-test',
           input: z.object({ id: z.string() }),
         },
-        async (context, payload) => {
+        async (step, payload) => {
           executionOrder.push(payload.id)
-          await context.run('work', async () => {
+          await step.run('work', async () => {
             await new Promise((r) => setTimeout(r, 50))
           })
         },
@@ -136,10 +136,10 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           name: 'null-key-test',
           input: z.object({ id: z.number() }),
         },
-        async (context) => {
+        async (step) => {
           concurrentRuns++
           maxConcurrent = Math.max(maxConcurrent, concurrentRuns)
-          await context.run('work', async () => {
+          await step.run('work', async () => {
             await new Promise((r) => setTimeout(r, 50))
           })
           concurrentRuns--

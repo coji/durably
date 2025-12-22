@@ -46,12 +46,12 @@ const syncUsers = durably.defineJob(
     input: z.object({ orgId: z.string() }),
     output: z.object({ syncedCount: z.number() }),
   },
-  async (context, payload) => {
-    const users = await context.run('fetch-users', async () => {
+  async (step, payload) => {
+    const users = await step.run('fetch-users', async () => {
       return api.fetchUsers(payload.orgId)
     })
 
-    await context.run('save-to-db', async () => {
+    await step.run('save-to-db', async () => {
       await db.upsertUsers(users)
     })
 
