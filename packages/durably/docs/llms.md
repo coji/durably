@@ -230,7 +230,7 @@ durably.start()
 
 ## Run Lifecycle
 
-```
+```text
 trigger() → pending → running → completed
                   ↘           ↗
                     → failed
