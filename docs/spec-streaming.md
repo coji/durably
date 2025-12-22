@@ -33,24 +33,24 @@ LLM を使った AI Agent のワークフローを durably で実装したい。
 
 ## 拡張案
 
-### 1. ストリーミングステップ (`context.stream()`)
+### 1. ストリーミングステップ (`step.stream()`)
 
-通常の `context.run()` に加えて、ストリーミング出力をサポートするステップを追加。
+通常の `step.run()` に加えて、ストリーミング出力をサポートするステップを追加。
 
 ```ts
 const aiAgent = durably.defineJob({
   name: 'ai-agent',
   input: z.object({ prompt: z.string() }),
   output: z.object({ response: z.string() }),
-}, async (context, payload) => {
+}, async (step, payload) => {
 
   // 通常のステップ（永続化される）
-  const context = await context.run('fetch-context', async () => {
+  const context = await step.run('fetch-context', async () => {
     return await fetchRelevantDocuments(payload.prompt)
   })
 
   // ストリーミングステップ
-  const response = await context.stream('generate-response', async (emit) => {
+  const response = await step.stream('generate-response', async (emit) => {
     const stream = await llm.chat({
       messages: [{ role: 'user', content: payload.prompt }],
       context,
@@ -206,7 +206,7 @@ CREATE INDEX idx_events_run_sequence ON events(run_id, sequence);
 LLM Agent は数分〜数十分かかることがある。途中状態を細かく保存する仕組み。
 
 ```ts
-const response = await context.stream('generate-response', async (emit, checkpoint) => {
+const response = await step.stream('generate-response', async (emit, checkpoint) => {
   let fullResponse = ''
 
   for await (const chunk of stream) {
@@ -304,14 +304,14 @@ interface StreamEvent {
 }
 ```
 
-### JobContext の拡張
+### StepContext の拡張
 
 ```ts
-interface JobContext {
+interface StepContext {
   // 既存
   run<T>(name: string, fn: () => Promise<T>): Promise<T>
   log: Logger
-  setProgress(progress: Progress): void
+  progress(current: number, total: number, message?: string): void
 
   // 新規
   stream<T>(
@@ -331,7 +331,7 @@ type CheckpointFn = (state: unknown) => Promise<void>
 ### Phase A: イベントログ基盤（v0.2）
 
 - `events` テーブルの追加
-- `context.stream()` の基本実装（emit のみ、checkpoint なし）
+- `step.stream()` の基本実装（emit のみ、checkpoint なし）
 - `subscribe()` の実装（ReadableStream を返す、ポーリングベース）
 
 ### Phase B: 再接続とタブ間通知（v0.3）
@@ -378,7 +378,7 @@ stream（トークン単位の emit）
 **実装イメージ**:
 
 ```ts
-context.stream('generate-response', async (emit) => {
+step.stream('generate-response', async (emit) => {
   for await (const chunk of llmStream) {
     // emit はメモリのみ → 接続中のクライアントに即座に配信
     emit({ type: 'token', text: chunk.text })
@@ -430,10 +430,10 @@ const codingAssistant = durably.defineJob({
       diff: z.string(),
     })),
   }),
-}, async (context, payload) => {
+}, async (step, payload) => {
 
   // Step 1: タスク分析
-  const analysis = await context.stream('analyze-task', async (emit) => {
+  const analysis = await step.stream('analyze-task', async (emit) => {
     const stream = await llm.chat({
       messages: [
         { role: 'system', content: 'Analyze the coding task...' },
@@ -449,17 +449,17 @@ const codingAssistant = durably.defineJob({
     return JSON.parse(result)
   })
 
-  context.setProgress({ current: 1, total: 3, message: 'Task analyzed' })
+  step.progress(1, 3, 'Task analyzed')
 
   // Step 2: コード検索
-  const relevantFiles = await context.run('search-code', async () => {
+  const relevantFiles = await step.run('search-code', async () => {
     return await searchCodebase(payload.codebase, analysis.keywords)
   })
 
-  context.setProgress({ current: 2, total: 3, message: 'Code searched' })
+  step.progress(2, 3, 'Code searched')
 
   // Step 3: 変更生成
-  const changes = await context.stream('generate-changes', async (emit) => {
+  const changes = await step.stream('generate-changes', async (emit) => {
     const changes = []
 
     for (const file of analysis.filesToModify) {
@@ -523,7 +523,7 @@ for await (const event of stream) {
 
 | 機能 | 優先度 | 複雑度 | 備考 |
 |------|--------|--------|------|
-| `context.stream()` | 高 | 中 | AI Agent の基本要件 |
+| `step.stream()` | 高 | 中 | AI Agent の基本要件 |
 | `subscribe()` (ReadableStream) | 高 | 低 | Web Streams API、追加依存なし |
 | 粗いイベントのみ永続化 | 高 | 低 | step:*, run:* のみ DB 保存。トークン単位はメモリのみ |
 | `resumeFrom` 再接続 | 高 | 低 | 完了済みステップから再生 |

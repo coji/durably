@@ -8,7 +8,7 @@ This section provides detailed API documentation for Durably.
 |--------|-------------|
 | [`createDurably`](/api/create-durably) | Create a Durably instance |
 | [`defineJob`](/api/define-job) | Define a job (via instance) |
-| [`Context`](/api/context) | Job execution context |
+| [`Step`](/api/step) | Step context for job handlers |
 | [`Events`](/api/events) | Event types and subscriptions |
 
 ## Quick Reference
@@ -51,17 +51,17 @@ const job = durably.defineJob(...)
 await job.trigger(input, options?)
 ```
 
-### Context Methods
+### Step Methods
 
 ```ts
-durably.defineJob(..., async (context, payload) => {
+durably.defineJob(..., async (step, payload) => {
   // Execute a step
-  const result = await context.run('step-name', async () => {
+  const result = await step.run('step-name', async () => {
     return value
   })
 
   // Log a message
-  context.log('info', 'message', { data })
+  step.log.info('message', { data })
 })
 ```
 
@@ -73,7 +73,7 @@ import type {
   DurablyOptions,
   Job,
   JobOptions,
-  Context,
+  StepContext,
   TriggerOptions,
   RunStatus,
   StepStatus,

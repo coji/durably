@@ -1,4 +1,4 @@
-import { createJobContext } from './context'
+import { createStepContext } from './context'
 import { CancelledError } from './errors'
 import type { EventEmitter } from './events'
 import type { JobRegistry } from './job'
@@ -189,9 +189,9 @@ export function createWorker(
     const startTime = Date.now()
 
     try {
-      // Create context and execute job
-      const context = createJobContext(run, run.jobName, storage, eventEmitter)
-      const output = await job.fn(context, run.payload)
+      // Create step context and execute job
+      const step = createStepContext(run, run.jobName, storage, eventEmitter)
+      const output = await job.fn(step, run.payload)
 
       // Validate output if schema exists
       if (job.outputSchema) {

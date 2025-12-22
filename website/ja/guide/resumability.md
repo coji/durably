@@ -6,21 +6,21 @@ Durablyの核心機能は自動的なジョブ再開です。このページで�
 
 ### ステップの永続化
 
-すべての`context.run()`呼び出しがチェックポイントを作成します：
+すべての`step.run()`呼び出しがチェックポイントを作成します：
 
 ```ts
 // ステップ1: 結果がSQLiteに永続化される
-const users = await context.run('fetch-users', async () => {
+const users = await step.run('fetch-users', async () => {
   return await api.fetchUsers()  // 5秒かかる
 })
 
 // ステップ2: ここでクラッシュした場合...
-await context.run('process-users', async () => {
+await step.run('process-users', async () => {
   await processAll(users)  // クラッシュ！
 })
 
 // ステップ3: 到達しない
-await context.run('notify', async () => {
+await step.run('notify', async () => {
   await sendNotification()
 })
 ```
@@ -31,17 +31,17 @@ await context.run('notify', async () => {
 
 ```ts
 // ステップ1: キャッシュされた結果を即座に返す（APIコールなし）
-const users = await context.run('fetch-users', async () => {
+const users = await step.run('fetch-users', async () => {
   return await api.fetchUsers()  // スキップ！
 })
 
 // ステップ2: 最初から再実行
-await context.run('process-users', async () => {
+await step.run('process-users', async () => {
   await processAll(users)  // 再び実行
 })
 
 // ステップ3: 通常通り実行
-await context.run('notify', async () => {
+await step.run('notify', async () => {
   await sendNotification()
 })
 ```
@@ -79,12 +79,12 @@ const durably = createDurably({
 
 ```ts
 // insertの代わりにupsertを使用
-await context.run('save-user', async () => {
+await step.run('save-user', async () => {
   await db.upsertUser(user)  // リトライしても安全
 })
 
 // アクション前にチェック
-await context.run('send-email', async () => {
+await step.run('send-email', async () => {
   const sent = await db.wasEmailSent(userId)
   if (!sent) {
     await sendEmail(user)
@@ -97,7 +97,7 @@ await context.run('send-email', async () => {
 
 ```ts
 // 安全に繰り返せない操作には注意
-await context.run('charge-card', async () => {
+await step.run('charge-card', async () => {
   // 決済プロバイダーには冪等性キーを使用
   await stripe.charges.create({
     amount: 1000,
@@ -111,7 +111,7 @@ await context.run('charge-card', async () => {
 ステップが実行中にクラッシュした場合、ステップ全体が再実行されます：
 
 ```ts
-await context.run('process-items', async () => {
+await step.run('process-items', async () => {
   for (const item of items) {
     await processItem(item)  // 50アイテム後にクラッシュ
   }
@@ -124,7 +124,7 @@ await context.run('process-items', async () => {
 ```ts
 // より良い方法: バッチで処理
 for (let i = 0; i < items.length; i += 100) {
-  await context.run(`batch-${i}`, async () => {
+  await step.run(`batch-${i}`, async () => {
     const batch = items.slice(i, i + 100)
     for (const item of batch) {
       await processItem(item)

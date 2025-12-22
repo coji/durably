@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { createDurably, type Durably, type LogWriteEvent } from '../../src'
 
 export function createLogTests(createDialect: () => Dialect) {
-  describe('context.log', () => {
+  describe('step.log', () => {
     let durably: Durably
 
     beforeEach(async () => {
@@ -20,15 +20,15 @@ export function createLogTests(createDialect: () => Dialect) {
       await durably.db.destroy()
     })
 
-    it('context.log.info() emits log:write event', async () => {
+    it('step.log.info() emits log:write event', async () => {
       const logEvents: LogWriteEvent[] = []
       durably.on('log:write', (e) => logEvents.push(e))
 
       const job = durably.defineJob(
         { name: 'log-info-test', input: z.object({}) },
-        async (context) => {
-          context.log.info('Hello from job')
-          await context.run('step', () => {})
+        async (step) => {
+          step.log.info('Hello from job')
+          await step.run('step', () => {})
         },
       )
 
@@ -45,15 +45,15 @@ export function createLogTests(createDialect: () => Dialect) {
       )
     })
 
-    it('context.log.warn() sets level to warn', async () => {
+    it('step.log.warn() sets level to warn', async () => {
       const logEvents: LogWriteEvent[] = []
       durably.on('log:write', (e) => logEvents.push(e))
 
       const job = durably.defineJob(
         { name: 'log-warn-test', input: z.object({}) },
-        async (context) => {
-          context.log.warn('Warning message')
-          await context.run('step', () => {})
+        async (step) => {
+          step.log.warn('Warning message')
+          await step.run('step', () => {})
         },
       )
 
@@ -70,15 +70,15 @@ export function createLogTests(createDialect: () => Dialect) {
       )
     })
 
-    it('context.log.error() sets level to error', async () => {
+    it('step.log.error() sets level to error', async () => {
       const logEvents: LogWriteEvent[] = []
       durably.on('log:write', (e) => logEvents.push(e))
 
       const job = durably.defineJob(
         { name: 'log-error-test', input: z.object({}) },
-        async (context) => {
-          context.log.error('Error message')
-          await context.run('step', () => {})
+        async (step) => {
+          step.log.error('Error message')
+          await step.run('step', () => {})
         },
       )
 
@@ -101,9 +101,9 @@ export function createLogTests(createDialect: () => Dialect) {
 
       const job = durably.defineJob(
         { name: 'log-data-test', input: z.object({}) },
-        async (context) => {
-          context.log.info('Processing item', { itemId: 123, status: 'active' })
-          await context.run('step', () => {})
+        async (step) => {
+          step.log.info('Processing item', { itemId: 123, status: 'active' })
+          await step.run('step', () => {})
         },
       )
 
@@ -125,9 +125,9 @@ export function createLogTests(createDialect: () => Dialect) {
 
       const job = durably.defineJob(
         { name: 'log-runid-test', input: z.object({}) },
-        async (context) => {
-          context.log.info('Test message')
-          await context.run('step', () => {})
+        async (step) => {
+          step.log.info('Test message')
+          await step.run('step', () => {})
         },
       )
 
@@ -149,12 +149,12 @@ export function createLogTests(createDialect: () => Dialect) {
 
       const job = durably.defineJob(
         { name: 'log-stepname-test', input: z.object({}) },
-        async (context) => {
-          context.log.info('Outside step') // stepName should be null
-          await context.run('my-step', () => {
-            context.log.info('Inside step') // stepName should be 'my-step'
+        async (step) => {
+          step.log.info('Outside step') // stepName should be null
+          await step.run('my-step', () => {
+            step.log.info('Inside step') // stepName should be 'my-step'
           })
-          context.log.info('After step') // stepName should be null
+          step.log.info('After step') // stepName should be null
         },
       )
 

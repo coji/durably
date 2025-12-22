@@ -69,20 +69,20 @@ function useDurably() {
 
 ## ロギング
 
-ジョブ内で`context.log()`を使用してログイベントを発行します：
+ジョブ内で`step.log`を使用してログイベントを発行します：
 
 ```ts
 durably.defineJob(
   { name: 'my-job', input: z.object({}) },
-  async (context) => {
-    context.log('info', '処理を開始')
+  async (step) => {
+    step.log.info('処理を開始')
 
-    await context.run('step1', async () => {
-      context.log('debug', 'ステップ1の詳細', { someData: 123 })
+    await step.run('step1', async () => {
+      step.log.info('ステップ1の詳細', { someData: 123 })
       return result
     })
 
-    context.log('info', '完了')
+    step.log.info('完了')
   },
 )
 

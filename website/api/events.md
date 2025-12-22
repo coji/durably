@@ -128,7 +128,7 @@ durably.on('step:fail', (event) => {
 
 #### `log:write`
 
-Fired when `context.log()` is called.
+Fired when `step.log` methods are called.
 
 ```ts
 durably.on('log:write', (event) => {

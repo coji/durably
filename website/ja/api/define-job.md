@@ -7,7 +7,7 @@
 ```ts
 durably.defineJob<I, O>(
   options: JobOptions<I, O>,
-  handler: (context: Context, payload: I) => Promise<O>
+  handler: (step: StepContext, payload: I) => Promise<O>
 ): Job<I, O>
 ```
 
@@ -31,7 +31,7 @@ interface JobOptions<I, O> {
 
 ハンドラー関数は以下を受け取ります：
 
-- `context`: ステップの作成とロギングのための[Context](/ja/api/context)オブジェクト
+- `step`: ステップの作成とロギングのための[Step](/ja/api/step)オブジェクト
 - `payload`: 検証済みの入力ペイロード
 
 ## 戻り値
@@ -80,14 +80,14 @@ const syncUsers = durably.defineJob(
       errors: z.array(z.string()),
     }),
   },
-  async (context, payload) => {
-    const users = await context.run('fetch-users', async () => {
+  async (step, payload) => {
+    const users = await step.run('fetch-users', async () => {
       return await api.fetchUsers(payload.orgId)
     })
 
     const errors: string[] = []
     for (const user of users) {
-      await context.run(`sync-${user.id}`, async () => {
+      await step.run(`sync-${user.id}`, async () => {
         try {
           await db.upsertUser(user)
         } catch (e) {
@@ -124,7 +124,7 @@ const job = durably.defineJob(
     input: z.object({ id: z.string() }),
     output: z.object({ result: z.number() }),
   },
-  async (context, payload) => {
+  async (step, payload) => {
     // payloadは{ id: string }として型付け
     return { result: 42 }  // 出力スキーマと一致する必要あり
   },

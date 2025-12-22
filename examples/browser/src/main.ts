@@ -28,21 +28,21 @@ const processImage = durably.defineJob(
     input: z.object({ filename: z.string(), width: z.number() }),
     output: z.object({ url: z.string(), size: z.number() }),
   },
-  async (context, payload) => {
+  async (step, payload) => {
     // Download original image
-    const fileSize = await context.run('download', async () => {
+    const fileSize = await step.run('download', async () => {
       await delay(300)
       return Math.floor(Math.random() * 1000000) + 500000 // 500KB-1.5MB
     })
 
     // Resize to target width
-    const resizedSize = await context.run('resize', async () => {
+    const resizedSize = await step.run('resize', async () => {
       await delay(400)
       return Math.floor(fileSize * (payload.width / 1920))
     })
 
     // Upload to CDN
-    const url = await context.run('upload', async () => {
+    const url = await step.run('upload', async () => {
       await delay(300)
       return `https://cdn.example.com/${payload.width}/${payload.filename}`
     })

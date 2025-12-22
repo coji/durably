@@ -30,21 +30,21 @@ const processImage = durably.defineJob(
     input: z.object({ filename: z.string() }),
     output: z.object({ url: z.string() }),
   },
-  async (context, payload) => {
+  async (step, payload) => {
     // Step 1: Download
-    const data = await context.run('download', async () => {
+    const data = await step.run('download', async () => {
       await new Promise((r) => setTimeout(r, 500))
       return { size: 1024000 }
     })
 
     // Step 2: Resize
-    await context.run('resize', async () => {
+    await step.run('resize', async () => {
       await new Promise((r) => setTimeout(r, 500))
       return { width: 800, height: 600, size: data.size / 2 }
     })
 
     // Step 3: Upload
-    const uploaded = await context.run('upload', async () => {
+    const uploaded = await step.run('upload', async () => {
       await new Promise((r) => setTimeout(r, 500))
       return { url: `https://cdn.example.com/${payload.filename}` }
     })

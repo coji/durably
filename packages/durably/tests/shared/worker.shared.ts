@@ -51,8 +51,8 @@ export function createWorkerTests(createDialect: () => Dialect) {
             name: 'stop-test',
             input: z.object({}),
           },
-          async (context) => {
-            await context.run('step1', async () => {
+          async (step) => {
+            await step.run('step1', async () => {
               stepExecuted = true
               await new Promise((r) => setTimeout(r, 100))
             })

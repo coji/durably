@@ -37,8 +37,8 @@ export function createPluginTests(createDialect: () => Dialect) {
 
         const job = durably.defineJob(
           { name: 'plugin-test', input: z.object({}) },
-          async (context) => {
-            await context.run('step', () => {})
+          async (step) => {
+            await step.run('step', () => {})
           },
         )
 
@@ -75,8 +75,8 @@ export function createPluginTests(createDialect: () => Dialect) {
 
         const job = durably.defineJob(
           { name: 'multi-plugin-test', input: z.object({}) },
-          async (context) => {
-            await context.run('step', () => {})
+          async (step) => {
+            await step.run('step', () => {})
           },
         )
 
@@ -100,9 +100,9 @@ export function createPluginTests(createDialect: () => Dialect) {
 
         const job = durably.defineJob(
           { name: 'log-persist-test', input: z.object({}) },
-          async (context) => {
-            context.log.info('Test log message', { key: 'value' })
-            await context.run('step', () => {})
+          async (step) => {
+            step.log.info('Test log message', { key: 'value' })
+            await step.run('step', () => {})
           },
         )
 
@@ -128,9 +128,9 @@ export function createPluginTests(createDialect: () => Dialect) {
       it('logs table is empty without plugin', async () => {
         const job = durably.defineJob(
           { name: 'no-log-persist-test', input: z.object({}) },
-          async (context) => {
-            context.log.info('This should not be persisted')
-            await context.run('step', () => {})
+          async (step) => {
+            step.log.info('This should not be persisted')
+            await step.run('step', () => {})
           },
         )
 

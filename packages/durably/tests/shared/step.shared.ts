@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { createDurably, type Durably, type StepCompleteEvent } from '../../src'
 
 export function createStepTests(createDialect: () => Dialect) {
-  describe('context.run() Step Execution', () => {
+  describe('step.run() Step Execution', () => {
     let durably: Durably
 
     beforeEach(async () => {
@@ -27,8 +27,8 @@ export function createStepTests(createDialect: () => Dialect) {
           input: z.object({}),
           output: z.object({ result: z.number() }),
         },
-        async (context) => {
-          const value = await context.run('compute', () => 42)
+        async (step) => {
+          const value = await step.run('compute', () => 42)
           return { result: value }
         },
       )
@@ -52,9 +52,9 @@ export function createStepTests(createDialect: () => Dialect) {
           name: 'step-record-test',
           input: z.object({}),
         },
-        async (context) => {
-          await context.run('step1', () => 'result1')
-          await context.run('step2', () => 'result2')
+        async (step) => {
+          await step.run('step1', () => 'result1')
+          await step.run('step2', () => 'result2')
         },
       )
 
@@ -82,8 +82,8 @@ export function createStepTests(createDialect: () => Dialect) {
           name: 'step-fail-test',
           input: z.object({}),
         },
-        async (context) => {
-          await context.run('failing-step', () => {
+        async (step) => {
+          await step.run('failing-step', () => {
             throw new Error('Step failed!')
           })
         },
@@ -117,13 +117,13 @@ export function createStepTests(createDialect: () => Dialect) {
           name: 'step-resume-test',
           input: z.object({ shouldFail: z.boolean() }),
         },
-        async (context, payload) => {
-          await context.run('step1', () => {
+        async (step, payload) => {
+          await step.run('step1', () => {
             step1Calls++
             return 'step1-result'
           })
 
-          await context.run('step2', () => {
+          await step.run('step2', () => {
             step2Calls++
             if (payload.shouldFail && step2Calls === 1) {
               throw new Error('Intentional failure')
@@ -175,15 +175,15 @@ export function createStepTests(createDialect: () => Dialect) {
           input: z.object({}),
           output: z.object({ step1Result: z.string() }),
         },
-        async (context) => {
+        async (step) => {
           // step1 computes a unique value each time it's called
-          const result = await context.run('step1', () => {
+          const result = await step.run('step1', () => {
             step1CallCount++
             return `computed-call-${step1CallCount}`
           })
 
           // step2 fails on first attempt
-          await context.run('step2', () => {
+          await step.run('step2', () => {
             if (step2CallCount === 0) {
               step2CallCount++
               throw new Error('First attempt failure')
@@ -240,8 +240,8 @@ export function createStepTests(createDialect: () => Dialect) {
           name: 'step-events-test',
           input: z.object({}),
         },
-        async (context) => {
-          await context.run('myStep', () => 'hello')
+        async (step) => {
+          await step.run('myStep', () => 'hello')
         },
       )
 
@@ -265,8 +265,8 @@ export function createStepTests(createDialect: () => Dialect) {
           input: z.object({}),
           output: z.object({ value: z.string() }),
         },
-        async (context) => {
-          const value = await context.run('async-step', async () => {
+        async (step) => {
+          const value = await step.run('async-step', async () => {
             await new Promise((r) => setTimeout(r, 50))
             return 'async-result'
           })
@@ -293,8 +293,8 @@ export function createStepTests(createDialect: () => Dialect) {
           name: 'step-timing-test',
           input: z.object({}),
         },
-        async (context) => {
-          await context.run('slow-step', async () => {
+        async (step) => {
+          await step.run('slow-step', async () => {
             await new Promise((r) => setTimeout(r, 100))
             return 'done'
           })

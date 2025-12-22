@@ -11,7 +11,7 @@ const myJob = durably.defineJob(
     input: z.object({ id: z.string() }),
     output: z.object({ result: z.string() }),
   },
-  async (context, payload) => {
+  async (step, payload) => {
     // ジョブの実装
     return { result: 'done' }
   },
@@ -28,10 +28,10 @@ const myJob = durably.defineJob(
 
 ## ステップの作成
 
-ステップは`context.run()`を使用して作成します：
+ステップは`step.run()`を使用して作成します：
 
 ```ts
-const result = await context.run('step-name', async () => {
+const result = await step.run('step-name', async () => {
   // ステップのロジック
   return someValue
 })
@@ -49,12 +49,12 @@ const result = await context.run('step-name', async () => {
 
 ```ts
 // 良い例 - 一意の名前
-await context.run('fetch-user', async () => { ... })
-await context.run('update-profile', async () => { ... })
+await step.run('fetch-user', async () => { ... })
+await step.run('update-profile', async () => { ... })
 
 // 悪い例 - 重複した名前は問題を引き起こす
-await context.run('step', async () => { ... })
-await context.run('step', async () => { ... }) // 正しく動作しない
+await step.run('step', async () => { ... })
+await step.run('step', async () => { ... }) // 正しく動作しない
 ```
 
 ## ジョブのトリガー
@@ -105,7 +105,7 @@ trigger() → pending → running → completed
 ステップ内のエラーはジョブの失敗を引き起こします：
 
 ```ts
-await context.run('might-fail', async () => {
+await step.run('might-fail', async () => {
   if (someCondition) {
     throw new Error('何か問題が発生しました')
   }

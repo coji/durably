@@ -11,7 +11,7 @@ const myJob = durably.defineJob(
     input: z.object({ id: z.string() }),
     output: z.object({ result: z.string() }),
   },
-  async (context, payload) => {
+  async (step, payload) => {
     // Job implementation
     return { result: 'done' }
   },
@@ -28,10 +28,10 @@ const myJob = durably.defineJob(
 
 ## Creating Steps
 
-Steps are created using `context.run()`:
+Steps are created using `step.run()`:
 
 ```ts
-const result = await context.run('step-name', async () => {
+const result = await step.run('step-name', async () => {
   // Step logic here
   return someValue
 })
@@ -49,12 +49,12 @@ Step names must be unique within a job:
 
 ```ts
 // Good - unique names
-await context.run('fetch-user', async () => { ... })
-await context.run('update-profile', async () => { ... })
+await step.run('fetch-user', async () => { ... })
+await step.run('update-profile', async () => { ... })
 
 // Bad - duplicate names will cause issues
-await context.run('step', async () => { ... })
-await context.run('step', async () => { ... }) // Won't work correctly
+await step.run('step', async () => { ... })
+await step.run('step', async () => { ... }) // Won't work correctly
 ```
 
 ## Triggering Jobs
@@ -105,7 +105,7 @@ trigger() → pending → running → completed
 Errors in steps cause the job to fail:
 
 ```ts
-await context.run('might-fail', async () => {
+await step.run('might-fail', async () => {
   if (someCondition) {
     throw new Error('Something went wrong')
   }

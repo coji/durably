@@ -24,14 +24,14 @@ const syncUsers = durably.defineJob(
     name: 'sync-users',
     input: z.object({ orgId: z.string() }),
   },
-  async (context, payload) => {
+  async (step, payload) => {
     // Step 1: Fetch users (persisted after completion)
-    const users = await context.run('fetch-users', async () => {
+    const users = await step.run('fetch-users', async () => {
       return api.fetchUsers(payload.orgId)
     })
 
     // Step 2: Save to database (skipped if already done)
-    await context.run('save-to-db', async () => {
+    await step.run('save-to-db', async () => {
       await db.upsertUsers(users)
     })
 
@@ -42,7 +42,7 @@ const syncUsers = durably.defineJob(
 
 ## Key Features
 
-- **Step-level persistence**: Each `context.run()` call creates a checkpoint
+- **Step-level persistence**: Each `step.run()` call creates a checkpoint
 - **Automatic resumption**: Interrupted jobs resume from the last successful step
 - **Cross-platform**: Same code runs in Node.js and browsers
 - **Minimal dependencies**: Just Kysely and Zod

@@ -3,9 +3,9 @@ import type { EventEmitter } from './events'
 import type { Run, Storage } from './storage'
 
 /**
- * Job context passed to the job function
+ * Step context passed to the job function
  */
-export interface JobContext {
+export interface StepContext {
   /**
    * The ID of the current run
    */
@@ -35,7 +35,7 @@ export interface JobContext {
  * Job function type
  */
 export type JobFunction<TInput, TOutput> = (
-  context: JobContext,
+  step: StepContext,
   payload: TInput,
 ) => Promise<TOutput>
 
