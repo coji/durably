@@ -69,6 +69,10 @@ await syncUsers.trigger({ orgId: 'org_123' })
 
 For full documentation, visit [coji.github.io/durably](https://coji.github.io/durably/).
 
+### For LLMs / AI Agents
+
+This package includes `docs/llms.md` with API documentation optimized for LLMs and coding agents. You can read it directly from `node_modules/@coji/durably/docs/llms.md` or access it at [coji.github.io/durably/llms.txt](https://coji.github.io/durably/llms.txt).
+
 ## License
 
 MIT

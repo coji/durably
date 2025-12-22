@@ -10,6 +10,13 @@ Durably is a step-oriented batch execution framework for Node.js and browsers. I
 
 - `docs/spec.md` - Core specification
 - `docs/spec-streaming.md` - Streaming extension for AI Agent workflows
+- `packages/durably/docs/llms.md` - LLM/AI agent documentation (bundled in npm package)
+
+### LLM Documentation Maintenance
+
+When API changes are made, update `packages/durably/docs/llms.md` to keep it in sync. This file is:
+- Bundled in the npm package for coding agents to read from `node_modules`
+- Symlinked to `website/public/llms.txt` for web access
 
 ## Core Concepts
 
