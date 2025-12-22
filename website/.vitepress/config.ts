@@ -20,7 +20,7 @@ export default defineConfig({
           { text: 'ガイド', link: '/ja/guide/getting-started' },
           { text: 'API', link: '/ja/api/' },
           { text: 'デモ', link: 'https://durably-demo.vercel.app' },
-          { text: 'llms.txt', link: '/llms.txt' },
+          { text: 'llms.txt', link: '/durably/llms.txt' },
         ],
         sidebar: {
           '/ja/guide/': [
@@ -77,7 +77,7 @@ export default defineConfig({
       { text: 'Guide', link: '/guide/getting-started' },
       { text: 'API', link: '/api/' },
       { text: 'Demo', link: 'https://durably-demo.vercel.app' },
-      { text: 'llms.txt', link: '/llms.txt' },
+      { text: 'llms.txt', link: '/durably/llms.txt' },
     ],
 
     sidebar: {
