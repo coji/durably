@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   })
 ```
 
-## [0.1.1] - 2025-12-XX
+## [0.1.1] - 2025-12-21
 
 ### Added
 
