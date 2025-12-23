@@ -5,6 +5,7 @@ import {
   createDurably,
   defineJob,
   type Durably,
+  type RunProgressEvent,
   type StepCompleteEvent,
 } from '../../src'
 
@@ -322,6 +323,56 @@ export function createStepTests(createDialect: () => Dialect) {
       const duration = completedAt - startedAt
 
       expect(duration).toBeGreaterThanOrEqual(90) // Allow some timing variance
+    })
+
+    it('emits run:progress event when step.progress() is called', async () => {
+      const progressEvents: RunProgressEvent[] = []
+
+      durably.on('run:progress', (e) => progressEvents.push(e))
+
+      const progressTestDef = defineJob({
+        name: 'progress-test',
+        input: z.object({}),
+        run: async (step) => {
+          step.progress(1, 3, 'Step 1 of 3')
+          await step.run('step1', () => 'done')
+          step.progress(2, 3, 'Step 2 of 3')
+          await step.run('step2', () => 'done')
+          step.progress(3, 3, 'Complete')
+        },
+      })
+      const job = durably.register(progressTestDef)
+
+      const run = await job.trigger({})
+      durably.start()
+
+      await vi.waitFor(
+        async () => {
+          const updated = await job.getRun(run.id)
+          expect(updated?.status).toBe('completed')
+        },
+        { timeout: 1000 },
+      )
+
+      expect(progressEvents).toHaveLength(3)
+      expect(progressEvents[0]).toMatchObject({
+        type: 'run:progress',
+        runId: run.id,
+        jobName: 'progress-test',
+        progress: { current: 1, total: 3, message: 'Step 1 of 3' },
+      })
+      expect(progressEvents[1]).toMatchObject({
+        type: 'run:progress',
+        runId: run.id,
+        jobName: 'progress-test',
+        progress: { current: 2, total: 3, message: 'Step 2 of 3' },
+      })
+      expect(progressEvents[2]).toMatchObject({
+        type: 'run:progress',
+        runId: run.id,
+        jobName: 'progress-test',
+        progress: { current: 3, total: 3, message: 'Complete' },
+      })
     })
   })
 }

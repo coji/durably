@@ -112,9 +112,15 @@ export function createStepContext(
     },
 
     progress(current: number, total?: number, message?: string): void {
+      const progressData = { current, total, message }
       // Fire and forget - don't await
-      storage.updateRun(run.id, {
-        progress: { current, total, message },
+      storage.updateRun(run.id, { progress: progressData })
+      // Emit progress event
+      eventEmitter.emit({
+        type: 'run:progress',
+        runId: run.id,
+        jobName,
+        progress: progressData,
       })
     },
 

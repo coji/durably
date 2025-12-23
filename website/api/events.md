@@ -65,6 +65,23 @@ durably.on('run:fail', (event) => {
 })
 ```
 
+#### `run:progress`
+
+Fired when `step.progress()` is called.
+
+```ts
+durably.on('run:progress', (event) => {
+  // event: {
+  //   type: 'run:progress',
+  //   runId: string,
+  //   jobName: string,
+  //   progress: { current: number, total?: number, message?: string },
+  //   timestamp: string,
+  //   sequence: number
+  // }
+})
+```
+
 ### Step Events
 
 #### `step:start`
@@ -189,6 +206,7 @@ type DurablyEvent =
   | RunStartEvent
   | RunCompleteEvent
   | RunFailEvent
+  | RunProgressEvent
   | StepStartEvent
   | StepCompleteEvent
   | StepFailEvent
