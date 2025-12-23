@@ -11,6 +11,8 @@
 | ソースコード | 3 | 3 | 高 |
 | テスト | 8 | 79 | 高 |
 | ドキュメント（llms.md） | 1 | 2 | 高 |
+| Website（英語） | 7 | 多数 | 高 |
+| Website（日本語） | 7 | 多数 | 高 |
 | Examples | 3 | 3 | 中 |
 
 ---
@@ -212,6 +214,43 @@ const syncUsersJob = durably.register(syncUsers)
 2. **ブラウザ例（行 225 付近）**
    - 同様のパターンで更新
 
+### 3.2 Website ドキュメント（英語）
+
+以下のファイルで旧 API パターンを新 API に更新する。
+
+| ファイル | 概要 |
+|---------|------|
+| `website/guide/getting-started.md` | 入門ガイドのコード例 |
+| `website/guide/jobs-and-steps.md` | ジョブ定義の説明とコード例 |
+| `website/guide/index.md` | ガイドトップのコード例 |
+| `website/guide/react.md` | React フックのコード例 |
+| `website/api/define-job.md` | **要全面書き換え**: API リファレンス |
+| `website/api/create-durably.md` | `defineJob()` 削除、`register()` 追加 |
+| `website/api/index.md` | API 概要の更新 |
+
+**`website/api/define-job.md` の変更**:
+- 関数シグネチャを `defineJob()` → スタンドアロン関数に変更
+- 戻り値を `JobHandle` → `JobDefinition` に変更
+- `durably.register()` との組み合わせ例を追加
+
+**`website/api/create-durably.md` の変更**:
+- `defineJob()` メソッドを削除
+- `register()` メソッドのドキュメントを追加
+
+### 3.3 Website ドキュメント（日本語）
+
+英語版と同一構造で、以下のファイルを更新する。
+
+| ファイル |
+|---------|
+| `website/ja/guide/getting-started.md` |
+| `website/ja/guide/jobs-and-steps.md` |
+| `website/ja/guide/index.md` |
+| `website/ja/guide/react.md` |
+| `website/ja/api/define-job.md` |
+| `website/ja/api/create-durably.md` |
+| `website/ja/api/index.md` |
+
 ---
 
 ## Phase 4: Examples 更新
@@ -291,12 +330,33 @@ await syncUsersJob.trigger({ orgId: 'org_123' })
 ### Step 3: ドキュメント更新（必須）
 - [ ] `packages/durably/docs/llms.md`
 
-### Step 4: Examples 更新（推奨）
+### Step 4: Website ドキュメント更新（必須）
+
+**英語**:
+- [ ] `website/api/define-job.md` - 全面書き換え
+- [ ] `website/api/create-durably.md` - `register()` 追加
+- [ ] `website/api/index.md`
+- [ ] `website/guide/getting-started.md`
+- [ ] `website/guide/jobs-and-steps.md`
+- [ ] `website/guide/index.md`
+- [ ] `website/guide/react.md`
+
+**日本語**:
+- [ ] `website/ja/api/define-job.md`
+- [ ] `website/ja/api/create-durably.md`
+- [ ] `website/ja/api/index.md`
+- [ ] `website/ja/guide/getting-started.md`
+- [ ] `website/ja/guide/jobs-and-steps.md`
+- [ ] `website/ja/guide/index.md`
+- [ ] `website/ja/guide/react.md`
+
+### Step 5: Examples 更新（推奨）
 - [ ] `examples/node/basic.ts`
 - [ ] `examples/browser/src/main.ts`
 - [ ] `examples/react/src/App.tsx`
 
-### Step 5: 検証
+### Step 6: 検証
+- [ ] `pnpm format:fix` - コードフォーマット
 - [ ] `pnpm test` - 全テスト通過
 - [ ] `pnpm validate` - lint, typecheck 通過
 - [ ] Examples の動作確認
