@@ -9,11 +9,7 @@ import {
   type Unsubscribe,
   createEventEmitter,
 } from './events'
-import {
-  type JobHandle,
-  createJobHandle,
-  createJobRegistry,
-} from './job'
+import { type JobHandle, createJobHandle, createJobRegistry } from './job'
 import { runMigrations } from './migrations'
 import type { Database } from './schema'
 import {

@@ -13,11 +13,7 @@ export type JobRunFunction<TInput, TOutput> = (
  * Job definition - a standalone description of a job
  * This is the result of calling defineJob() and can be passed to durably.register()
  */
-export interface JobDefinition<
-  TName extends string,
-  TInput,
-  TOutput,
-> {
+export interface JobDefinition<TName extends string, TInput, TOutput> {
   readonly name: TName
   readonly input: z.ZodType<TInput>
   readonly output: z.ZodType<TOutput> | undefined
