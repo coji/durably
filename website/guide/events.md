@@ -13,6 +13,7 @@ Examples on this page assume you have a `durably` instance created via `createDu
 | `run:start` | Job execution started | `{ runId, jobName, input }` |
 | `run:complete` | Job completed successfully | `{ runId, jobName, output }` |
 | `run:fail` | Job failed with error | `{ runId, jobName, error }` |
+| `run:progress` | Progress updated | `{ runId, jobName, progress }` |
 | `step:start` | Step execution started | `{ runId, stepName, stepIndex }` |
 | `step:complete` | Step completed | `{ runId, stepName, stepIndex, output }` |
 | `step:skip` | Step skipped (cached) | `{ runId, stepName, stepIndex, output }` |

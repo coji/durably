@@ -40,6 +40,16 @@ export interface RunFailEvent extends BaseEvent {
 }
 
 /**
+ * Run progress event
+ */
+export interface RunProgressEvent extends BaseEvent {
+  type: 'run:progress'
+  runId: string
+  jobName: string
+  progress: { current: number; total?: number; message?: string }
+}
+
+/**
  * Step start event
  */
 export interface StepStartEvent extends BaseEvent {
@@ -104,6 +114,7 @@ export type DurablyEvent =
   | RunStartEvent
   | RunCompleteEvent
   | RunFailEvent
+  | RunProgressEvent
   | StepStartEvent
   | StepCompleteEvent
   | StepFailEvent
@@ -138,6 +149,7 @@ export type AnyEventInput =
   | EventInput<'run:start'>
   | EventInput<'run:complete'>
   | EventInput<'run:fail'>
+  | EventInput<'run:progress'>
   | EventInput<'step:start'>
   | EventInput<'step:complete'>
   | EventInput<'step:fail'>
