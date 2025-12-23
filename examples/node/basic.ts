@@ -5,7 +5,7 @@
  * Same job definition as browser/react examples for comparison.
  */
 
-import { createDurably } from '@coji/durably'
+import { createDurably, defineJob } from '@coji/durably'
 import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { z } from 'zod'
 
@@ -24,33 +24,33 @@ const durably = createDurably({
 })
 
 // Image processing job with sequential steps
-const processImage = durably.defineJob(
-  {
+const processImage = durably.register(
+  defineJob({
     name: 'process-image',
     input: z.object({ filename: z.string() }),
     output: z.object({ url: z.string() }),
-  },
-  async (step, payload) => {
-    // Step 1: Download
-    const data = await step.run('download', async () => {
-      await new Promise((r) => setTimeout(r, 500))
-      return { size: 1024000 }
-    })
+    run: async (step, payload) => {
+      // Step 1: Download
+      const data = await step.run('download', async () => {
+        await new Promise((r) => setTimeout(r, 500))
+        return { size: 1024000 }
+      })
 
-    // Step 2: Resize
-    await step.run('resize', async () => {
-      await new Promise((r) => setTimeout(r, 500))
-      return { width: 800, height: 600, size: data.size / 2 }
-    })
+      // Step 2: Resize
+      await step.run('resize', async () => {
+        await new Promise((r) => setTimeout(r, 500))
+        return { width: 800, height: 600, size: data.size / 2 }
+      })
 
-    // Step 3: Upload
-    const uploaded = await step.run('upload', async () => {
-      await new Promise((r) => setTimeout(r, 500))
-      return { url: `https://cdn.example.com/${payload.filename}` }
-    })
+      // Step 3: Upload
+      const uploaded = await step.run('upload', async () => {
+        await new Promise((r) => setTimeout(r, 500))
+        return { url: `https://cdn.example.com/${payload.filename}` }
+      })
 
-    return { url: uploaded.url }
-  },
+      return { url: uploaded.url }
+    },
+  }),
 )
 
 // Subscribe to events
