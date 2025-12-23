@@ -38,39 +38,42 @@ LLM を使った AI Agent のワークフローを durably で実装したい。
 通常の `step.run()` に加えて、ストリーミング出力をサポートするステップを追加。
 
 ```ts
-const aiAgent = durably.defineJob({
+import { defineJob } from '@coji/durably'
+import { z } from 'zod'
+
+export const aiAgent = defineJob({
   name: 'ai-agent',
   input: z.object({ prompt: z.string() }),
   output: z.object({ response: z.string() }),
-}, async (step, payload) => {
-
-  // 通常のステップ（永続化される）
-  const context = await step.run('fetch-context', async () => {
-    return await fetchRelevantDocuments(payload.prompt)
-  })
-
-  // ストリーミングステップ
-  const response = await step.stream('generate-response', async (emit) => {
-    const stream = await llm.chat({
-      messages: [{ role: 'user', content: payload.prompt }],
-      context,
+  run: async (step, payload) => {
+    // 通常のステップ（永続化される）
+    const context = await step.run('fetch-context', async () => {
+      return await fetchRelevantDocuments(payload.prompt)
     })
 
-    let fullResponse = ''
-    for await (const chunk of stream) {
-      fullResponse += chunk.text
-      emit({ type: 'token', text: chunk.text })
+    // ストリーミングステップ
+    const response = await step.stream('generate-response', async (emit) => {
+      const stream = await llm.chat({
+        messages: [{ role: 'user', content: payload.prompt }],
+        context,
+      })
 
-      // ツール呼び出しも emit
-      if (chunk.toolCall) {
-        emit({ type: 'tool-call', name: chunk.toolCall.name })
+      let fullResponse = ''
+      for await (const chunk of stream) {
+        fullResponse += chunk.text
+        emit({ type: 'token', text: chunk.text })
+
+        // ツール呼び出しも emit
+        if (chunk.toolCall) {
+          emit({ type: 'tool-call', name: chunk.toolCall.name })
+        }
       }
-    }
 
-    return fullResponse // これが永続化される
-  })
+      return fullResponse // これが永続化される
+    })
 
-  return { response }
+    return { response }
+  },
 })
 ```
 
@@ -417,7 +420,11 @@ step.stream('generate-response', async (emit) => {
 ## ユースケース例: AI Coding Assistant
 
 ```ts
-const codingAssistant = durably.defineJob({
+// jobs.ts
+import { defineJob } from '@coji/durably'
+import { z } from 'zod'
+
+export const codingAssistant = defineJob({
   name: 'coding-assistant',
   input: z.object({
     task: z.string(),
@@ -430,70 +437,76 @@ const codingAssistant = durably.defineJob({
       diff: z.string(),
     })),
   }),
-}, async (step, payload) => {
-
-  // Step 1: タスク分析
-  const analysis = await step.stream('analyze-task', async (emit) => {
-    const stream = await llm.chat({
-      messages: [
-        { role: 'system', content: 'Analyze the coding task...' },
-        { role: 'user', content: payload.task },
-      ],
-    })
-
-    let result = ''
-    for await (const chunk of stream) {
-      result += chunk.text
-      emit({ type: 'thinking', text: chunk.text })
-    }
-    return JSON.parse(result)
-  })
-
-  step.progress(1, 3, 'Task analyzed')
-
-  // Step 2: コード検索
-  const relevantFiles = await step.run('search-code', async () => {
-    return await searchCodebase(payload.codebase, analysis.keywords)
-  })
-
-  step.progress(2, 3, 'Code searched')
-
-  // Step 3: 変更生成
-  const changes = await step.stream('generate-changes', async (emit) => {
-    const changes = []
-
-    for (const file of analysis.filesToModify) {
-      emit({ type: 'status', message: `Modifying ${file}...` })
-
+  run: async (step, payload) => {
+    // Step 1: タスク分析
+    const analysis = await step.stream('analyze-task', async (emit) => {
       const stream = await llm.chat({
         messages: [
-          { role: 'system', content: 'Generate code changes...' },
-          { role: 'user', content: `File: ${file}\nTask: ${analysis.plan}` },
+          { role: 'system', content: 'Analyze the coding task...' },
+          { role: 'user', content: payload.task },
         ],
       })
 
-      let diff = ''
+      let result = ''
       for await (const chunk of stream) {
-        diff += chunk.text
-        emit({ type: 'diff-chunk', file, text: chunk.text })
+        result += chunk.text
+        emit({ type: 'thinking', text: chunk.text })
+      }
+      return JSON.parse(result)
+    })
+
+    step.progress(1, 3, 'Task analyzed')
+
+    // Step 2: コード検索
+    const relevantFiles = await step.run('search-code', async () => {
+      return await searchCodebase(payload.codebase, analysis.keywords)
+    })
+
+    step.progress(2, 3, 'Code searched')
+
+    // Step 3: 変更生成
+    const changes = await step.stream('generate-changes', async (emit) => {
+      const changes = []
+
+      for (const file of analysis.filesToModify) {
+        emit({ type: 'status', message: `Modifying ${file}...` })
+
+        const stream = await llm.chat({
+          messages: [
+            { role: 'system', content: 'Generate code changes...' },
+            { role: 'user', content: `File: ${file}\nTask: ${analysis.plan}` },
+          ],
+        })
+
+        let diff = ''
+        for await (const chunk of stream) {
+          diff += chunk.text
+          emit({ type: 'diff-chunk', file, text: chunk.text })
+        }
+
+        changes.push({ file, diff })
       }
 
-      changes.push({ file, diff })
-    }
+      return changes
+    })
 
-    return changes
-  })
-
-  return { plan: analysis.plan, changes }
+    return { plan: analysis.plan, changes }
+  },
 })
 
-// クライアント側
-const run = await codingAssistant.trigger({
+// main.ts
+import { createDurably } from '@coji/durably'
+import { codingAssistant } from './jobs'
+
+const durably = createDurably({ dialect })
+const codingAssistantJob = durably.register(codingAssistant)
+
+const run = await codingAssistantJob.trigger({
   task: 'Add user authentication',
   codebase: '/path/to/repo',
 })
 
-const stream = await codingAssistant.subscribe(run.id)
+const stream = await codingAssistantJob.subscribe(run.id)
 
 for await (const event of stream) {
   switch (event.type) {

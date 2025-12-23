@@ -49,17 +49,18 @@ Durably (インスタンス)
 
 **Step** は Run 内の処理単位である。`step.run()` によって定義され、成功すると戻り値がデータベースに保存される。Run が中断・再開された場合、成功済みの Step はスキップされ、保存済みの戻り値が返される。
 
-### ジョブとステップ
+### ジョブ定義
 
-ジョブは `durably.defineJob` メソッドによって定義される。ジョブは名前、入力スキーマ、出力スキーマ、処理関数を持つ。スキーマは Zod v4 で定義し、入出力の型安全性を保証する。
+ジョブは `defineJob` 関数によって定義される。ジョブ定義は durably インスタンスから独立しており、静的に宣言できる。これにより、ジョブ定義を別ファイルに分離し、複数のコンポーネントやモジュールから再利用できる。
+
+スキーマは Zod v4 で定義し、入出力の型安全性を保証する。
 
 ```ts
-import { createDurably } from '@coji/durably'
+// jobs.ts - ジョブ定義（durably インスタンス不要）
+import { defineJob } from '@coji/durably'
 import { z } from 'zod'
 
-const durably = createDurably({ dialect })
-
-const syncUsers = durably.defineJob({
+export const syncUsers = defineJob({
   name: "sync-users",
   input: z.object({
     orgId: z.string(),
@@ -69,23 +70,57 @@ const syncUsers = durably.defineJob({
     syncedCount: z.number(),
     skippedCount: z.number(),
   }),
-}, async (step, payload) => {
-  // payload は { orgId: string, force?: boolean } として型推論される
+  run: async (step, payload) => {
+    // payload は { orgId: string, force?: boolean } として型推論される
 
-  const users = await step.run("fetch-users", async () => {
-    return api.fetchUsers(payload.orgId)
-  })
+    const users = await step.run("fetch-users", async () => {
+      return api.fetchUsers(payload.orgId)
+    })
 
-  await step.run("save-to-db", async () => {
-    await db.upsertUsers(users)
-  })
+    await step.run("save-to-db", async () => {
+      await db.upsertUsers(users)
+    })
 
-  // 戻り値は output スキーマで検証される
-  return { syncedCount: users.length, skippedCount: 0 }
+    // 戻り値は output スキーマで検証される
+    return { syncedCount: users.length, skippedCount: 0 }
+  },
 })
 ```
 
-`defineJob` を呼び出した時点でジョブは登録される。`defineJob` は以下の型を持つ `JobHandle` を返す。
+`defineJob` は `JobDefinition` を返す。これはジョブの静的な定義であり、まだ実行可能ではない。
+
+```ts
+interface JobDefinition<TName extends string, TInput, TOutput> {
+  readonly name: TName
+  readonly inputSchema: z.ZodSchema<TInput>
+  readonly outputSchema: z.ZodSchema<TOutput>
+  readonly run: (step: StepContext, payload: TInput) => Promise<TOutput>
+}
+```
+
+### ジョブの登録と実行
+
+ジョブを実行するには、durably インスタンスに登録する必要がある。`register` メソッドは `JobDefinition` を受け取り、実行可能な `JobHandle` を返す。
+
+```ts
+// main.ts - 実行時に durably に接続
+import { createDurably } from '@coji/durably'
+import { syncUsers } from './jobs'
+
+const durably = createDurably({ dialect })
+await durably.migrate()
+durably.start()
+
+// ジョブを登録して JobHandle を取得
+const syncUsersJob = durably.register(syncUsers)
+
+// trigger で実行
+await syncUsersJob.trigger({ orgId: "org_123" })
+```
+
+同じ `JobDefinition` を複数回 `register` しても、同名のジョブは一度だけ登録される。
+
+`JobHandle` は以下の型を持つ。
 
 ```ts
 interface JobHandle<TName extends string, TInput, TOutput> {
@@ -114,6 +149,8 @@ interface RunFilter {
 `TInput` と `TOutput` は Zod スキーマから推論される。これにより `trigger` の引数に対してエディタ補完が効き、型チェックも行われる。
 
 入力は `trigger` 時に検証され、不正な場合は例外が発生する。出力はジョブ関数の戻り値として返し、完了時に検証されて Run に保存される。出力の検証に失敗した場合、Run は `failed` 状態となり、エラー詳細が記録される。
+
+### ステップ
 
 `step.run` に渡す名前は、同一 Run 内で一意でなければならない。同じ名前のステップが複数回実行された場合はエラーとなる。成功したステップは再実行時に自動的にスキップされ、保存済みの戻り値が返される。この挙動は固定であり、ユーザーが選択する必要はない。
 
@@ -321,21 +358,18 @@ const failedRuns = await durably.getRuns({
 ワーカーは `start` 関数によって起動される。起動すると、一定間隔で `pending` 状態の Run を取得し、逐次実行する。
 
 ```ts
-import { createDurably } from '@coji/durably'
+import { createDurably, defineJob } from '@coji/durably'
 import { z } from 'zod'
+import { syncUsers } from './jobs'
 
 const durably = createDurably({ dialect })
 
-const syncUsers = durably.defineJob({
-  name: "sync-users",
-  input: z.object({ orgId: z.string() }),
-  output: z.object({ syncedCount: z.number() }),
-}, async (step, payload) => {
-  // ...
-  return { syncedCount: 0 }
-})
-
 await durably.migrate()
+
+// ジョブを登録
+durably.register(syncUsers)
+
+// ワーカーを起動
 durably.start()
 ```
 
@@ -502,27 +536,32 @@ type DurablyEvent =
 ジョブの進捗状況を外部から確認できるようにするための API を提供する。
 
 ```ts
-const syncUsers = durably.defineJob({
-  name: "sync-users",
+// jobs.ts
+import { defineJob } from '@coji/durably'
+import { z } from 'zod'
+
+export const syncUsers = defineJob({
+  name: 'sync-users',
   input: z.object({ orgId: z.string() }),
   output: z.object({ processedCount: z.number() }),
-}, async (step, payload) => {
-  step.progress(0, 100, "Starting...")
+  run: async (step, payload) => {
+    step.progress(0, 100, 'Starting...')
 
-  const users = await step.run("fetch-users", async () => {
-    const result = await api.fetchUsers(payload.orgId)
-    step.progress(10, 100, "Fetched users")
-    return result
-  })
-
-  for (let i = 0; i < users.length; i++) {
-    await step.run(`process-user-${users[i].id}`, async () => {
-      await processUser(users[i])
+    const users = await step.run('fetch-users', async () => {
+      const result = await api.fetchUsers(payload.orgId)
+      step.progress(10, 100, 'Fetched users')
+      return result
     })
-    step.progress(10 + ((i + 1) / users.length) * 90)
-  }
 
-  return { processedCount: users.length }
+    for (let i = 0; i < users.length; i++) {
+      await step.run(`process-user-${users[i].id}`, async () => {
+        await processUser(users[i])
+      })
+      step.progress(10 + ((i + 1) / users.length) * 90)
+    }
+
+    return { processedCount: users.length }
+  },
 })
 ```
 
@@ -542,24 +581,29 @@ console.log(run.progress) // { current: 45, total: 100, message: "Fetched users"
 ジョブ内から明示的にログを残すための API を提供する。ログは Run に紐づけられ、後から UI で確認できる。
 
 ```ts
-const syncUsers = durably.defineJob({
-  name: "sync-users",
+// jobs.ts
+import { defineJob } from '@coji/durably'
+import { z } from 'zod'
+
+export const syncUsers = defineJob({
+  name: 'sync-users',
   input: z.object({ orgId: z.string() }),
   output: z.object({ syncedCount: z.number() }),
-}, async (step, payload) => {
-  step.log.info("starting sync", { orgId: payload.orgId })
+  run: async (step, payload) => {
+    step.log.info('starting sync', { orgId: payload.orgId })
 
-  const users = await step.run("fetch-users", async () => {
-    const result = await api.fetchUsers(payload.orgId)
-    step.log.info("fetched users", { count: result.length })
-    return result
-  })
+    const users = await step.run('fetch-users', async () => {
+      const result = await api.fetchUsers(payload.orgId)
+      step.log.info('fetched users', { count: result.length })
+      return result
+    })
 
-  if (users.length === 0) {
-    step.log.warn("no users found")
-  }
+    if (users.length === 0) {
+      step.log.warn('no users found')
+    }
 
-  return { syncedCount: users.length }
+    return { syncedCount: users.length }
+  },
 })
 ```
 
@@ -796,9 +840,40 @@ UI は将来的に別パッケージ（`@coji/durably-ui`）として提供し�
 ### 基本的な使い方
 
 ```ts
+// ========================================
+// jobs.ts - ジョブ定義（durably 不要）
+// ========================================
+import { defineJob } from '@coji/durably'
+import { z } from 'zod'
+
+export const syncUsers = defineJob({
+  name: 'sync-users',
+  input: z.object({ orgId: z.string() }),
+  output: z.object({ syncedCount: z.number() }),
+  run: async (step, payload) => {
+    step.log.info('starting sync', { orgId: payload.orgId })
+
+    const users = await step.run('fetch-users', async () => {
+      const result = await api.fetchUsers(payload.orgId)
+      step.log.info('fetched users', { count: result.length })
+      return result
+    })
+
+    await step.run('save-to-db', async () => {
+      await db.upsertUsers(users)
+    })
+
+    step.log.info('sync completed')
+    return { syncedCount: users.length }
+  },
+})
+
+// ========================================
+// main.ts - 実行
+// ========================================
 import { createDurably } from '@coji/durably'
 import { LibsqlDialect } from '@libsql/kysely-libsql'
-import { z } from 'zod'
+import { syncUsers } from './jobs'
 
 // dialect の設定（Turso/libSQL）
 const dialect = new LibsqlDialect({
@@ -809,36 +884,15 @@ const dialect = new LibsqlDialect({
 // インスタンスの作成
 const durably = createDurably({ dialect })
 
-// ジョブの定義（定義時に自動登録される）
-const syncUsers = durably.defineJob({
-  name: 'sync-users',
-  input: z.object({ orgId: z.string() }),
-  output: z.object({ syncedCount: z.number() }),
-}, async (step, payload) => {
-  step.log.info('starting sync', { orgId: payload.orgId })
-
-  const users = await step.run('fetch-users', async () => {
-    const result = await api.fetchUsers(payload.orgId)
-    step.log.info('fetched users', { count: result.length })
-    return result
-  })
-
-  await step.run('save-to-db', async () => {
-    await db.upsertUsers(users)
-  })
-
-  step.log.info('sync completed')
-  return { syncedCount: users.length }
-})
-
 // マイグレーションの実行
 await durably.migrate()
 
 // ワーカーの起動
 durably.start()
 
-// ジョブのトリガー
-await syncUsers.trigger({ orgId: 'org_123' })
+// ジョブを登録してトリガー
+const syncUsersJob = durably.register(syncUsers)
+await syncUsersJob.trigger({ orgId: 'org_123' })
 ```
 
 ### イベントの購読
@@ -975,7 +1029,7 @@ class EventEmitter {
 
 ## 将来拡張への準備（v2 参照）
 
-v2 では AI Agent ワークフロー対応として以下の機能が計画されている。詳細は [future-spec-ai-agent.md](./future-spec-ai-agent.md) を参照。
+v2 では AI Agent ワークフロー対応として以下の機能が計画されている。詳細は [spec-streaming.md](./spec-streaming.md) を参照。
 
 ### 計画されている機能
 
