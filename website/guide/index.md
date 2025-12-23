@@ -16,7 +16,7 @@ Traditional approaches require you to either:
 
 ## The Solution
 
-Durably automatically persists the result of each step to SQLite. If a job is interrupted, it resumes from the last successful step.
+Durably automatically persists the result of each step to SQLite. If a job is interrupted, it resumes from the last successful step. Durably uses [Kysely](https://kysely.dev) for database access—you provide a dialect for your SQLite implementation.
 
 ```ts
 import { createDurably, defineJob } from '@coji/durably'
