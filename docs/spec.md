@@ -92,8 +92,8 @@ export const syncUsers = defineJob({
 ```ts
 interface JobDefinition<TName extends string, TInput, TOutput> {
   readonly name: TName
-  readonly inputSchema: z.ZodSchema<TInput>
-  readonly outputSchema: z.ZodSchema<TOutput>
+  readonly input: z.ZodType<TInput>
+  readonly output: z.ZodType<TOutput> | undefined
   readonly run: (step: StepContext, payload: TInput) => Promise<TOutput>
 }
 ```

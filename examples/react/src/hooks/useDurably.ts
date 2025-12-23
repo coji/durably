@@ -57,12 +57,20 @@ export function useDurably() {
       }),
     ]
 
-    durably.migrate().then(() => {
-      if (!cancelled) {
-        durably.start()
-        setStatus('ready')
-      }
-    })
+    durably
+      .migrate()
+      .then(() => {
+        if (!cancelled) {
+          durably.start()
+          setStatus('ready')
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.error('Durably migration failed:', err)
+          setStatus('error')
+        }
+      })
 
     return () => {
       cancelled = true
