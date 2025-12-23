@@ -2,7 +2,13 @@
  * Durably singleton instance
  *
  * This module exports a singleton durably instance for use throughout the app.
- * In the future, this pattern will be provided by @coji/durably-react.
+ *
+ * NOTE: This simple singleton pattern does NOT handle HMR (Hot Module Replacement).
+ * During development, if this file is modified, a full page reload is required.
+ *
+ * In the future, @coji/durably-react will provide DurablyProvider that handles
+ * HMR and StrictMode correctly using dialectFactory pattern.
+ * See: docs/spec-react.md
  */
 
 import { createDurably } from '@coji/durably'
