@@ -134,9 +134,21 @@ function App() {
 
 #### なぜ `dialectFactory` なのか
 
-コアライブラリの `createDurably({ dialect })` は dialect インスタンスを直接受け取る。これはアプリケーション起動時に一度だけ呼ばれるためである。
+コアライブラリの `createDurably({ dialect })` は dialect インスタンスを直接受け取る。
 
-一方、React コンポーネントは再レンダリングのたびに関数が実行される。`dialect` を直接渡すと毎回新しいインスタンスが生成されてしまう。`dialectFactory` はファクトリ関数を受け取り、Provider 内部で一度だけ実行することでこの問題を回避する。
+React コンポーネントでは、JSX 内でインスタンスを生成するパターンがよく使われる：
+
+```tsx
+// 悪い例: レンダリングのたびに new SQLocalKysely() が実行される
+<DurablyProvider dialect={new SQLocalKysely('app.sqlite3').dialect}>
+```
+
+`dialectFactory` はファクトリ関数を受け取り、Provider 内部で一度だけ実行することでこの問題を回避する：
+
+```tsx
+// 良い例: ファクトリ関数は Provider 内部で一度だけ実行される
+<DurablyProvider dialectFactory={() => new SQLocalKysely('app.sqlite3').dialect}>
+```
 
 #### ライフサイクル
 
