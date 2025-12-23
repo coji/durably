@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2025-12-23
+
+### Breaking Changes
+
+- **New API pattern**: `defineJob()` + `durably.register()` replaces `durably.defineJob()`
+  - `defineJob()` is now a standalone function that creates a `JobDefinition`
+  - `durably.register(jobDef)` registers the definition and returns a `JobHandle`
+  - This enables idempotent registration (safe for React StrictMode)
+
+### Migration
+
+```diff
+- import { createDurably } from '@coji/durably'
++ import { createDurably, defineJob } from '@coji/durably'
+
+- const myJob = durably.defineJob({
+-   name: 'my-job',
+-   input: z.object({ id: z.string() }),
+- }, async (step, payload) => {
+-   // ...
+- })
++ const myJob = durably.register(
++   defineJob({
++     name: 'my-job',
++     input: z.object({ id: z.string() }),
++     run: async (step, payload) => {
++       // ...
++     },
++   })
++ )
+```
+
+### Removed
+
+- Japanese documentation (consolidated to English only for easier maintenance)
+
 ## [0.3.0] - 2025-12-22
 
 ### Added
