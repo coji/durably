@@ -7,7 +7,7 @@ This section provides detailed API documentation for Durably.
 | Export | Description |
 |--------|-------------|
 | [`createDurably`](/api/create-durably) | Create a Durably instance |
-| [`defineJob`](/api/define-job) | Define a job (via instance) |
+| [`defineJob`](/api/define-job) | Define a job (standalone function) |
 | [`Step`](/api/step) | Step context for job handlers |
 | [`Events`](/api/events) | Event types and subscriptions |
 
@@ -16,7 +16,7 @@ This section provides detailed API documentation for Durably.
 ### Creating an Instance
 
 ```ts
-import { createDurably } from '@coji/durably'
+import { createDurably, defineJob } from '@coji/durably'
 
 const durably = createDurably({
   dialect,                    // Kysely SQLite dialect
@@ -35,33 +35,53 @@ durably.start()               // Start the worker
 await durably.stop()          // Stop the worker gracefully
 
 // Job management
-const job = durably.defineJob(options, handler)
-await durably.retry(runId)    // Retry a failed run
+const job = durably.register(jobDef)  // Register a job definition
+await durably.retry(runId)            // Retry a failed run
 
 // Events
 const unsub = durably.on(event, handler)
 ```
 
-### Job Methods
+### Defining and Registering Jobs
 
 ```ts
-const job = durably.defineJob(...)
+import { defineJob } from '@coji/durably'
+
+// Define a job
+const myJobDef = defineJob({
+  name: 'my-job',
+  input: z.object({ id: z.string() }),
+  output: z.object({ result: z.string() }),
+  run: async (step, payload) => {
+    const result = await step.run('step-name', async () => {
+      return value
+    })
+    return { result }
+  },
+})
+
+// Register with durably instance
+const myJob = durably.register(myJobDef)
 
 // Trigger a new run
-await job.trigger(input, options?)
+await myJob.trigger(input, options?)
 ```
 
 ### Step Methods
 
 ```ts
-durably.defineJob(..., async (step, payload) => {
-  // Execute a step
-  const result = await step.run('step-name', async () => {
-    return value
-  })
+defineJob({
+  name: 'example',
+  input: z.object({}),
+  run: async (step, payload) => {
+    // Execute a step
+    const result = await step.run('step-name', async () => {
+      return value
+    })
 
-  // Log a message
-  step.log.info('message', { data })
+    // Log a message
+    step.log.info('message', { data })
+  },
 })
 ```
 
@@ -71,8 +91,8 @@ durably.defineJob(..., async (step, payload) => {
 import type {
   Durably,
   DurablyOptions,
-  Job,
-  JobOptions,
+  JobDefinition,
+  JobHandle,
   StepContext,
   TriggerOptions,
   RunStatus,

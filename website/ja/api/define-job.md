@@ -1,23 +1,28 @@
 # defineJob
 
-型付き入出力を持つ新しいジョブを定義します。
+型付き入出力と実行関数を持つ新しいジョブ定義を作成します。
 
 ## シグネチャ
 
 ```ts
-durably.defineJob<I, O>(
-  options: JobOptions<I, O>,
-  handler: (step: StepContext, payload: I) => Promise<O>
-): Job<I, O>
+import { defineJob } from '@coji/durably'
+
+const jobDef = defineJob<TName, TInput, TOutput>({
+  name: TName,
+  input: z.ZodType<TInput>,
+  output?: z.ZodType<TOutput>,
+  run: (step: StepContext, payload: TInput) => Promise<TOutput>
+})
 ```
 
 ## オプション
 
 ```ts
-interface JobOptions<I, O> {
-  name: string
-  input: z.ZodType<I>
-  output?: z.ZodType<O>
+interface DefineJobConfig<TName, TInput, TOutput> {
+  name: TName
+  input: z.ZodType<TInput>
+  output?: z.ZodType<TOutput>
+  run: (step: StepContext, payload: TInput) => Promise<TOutput>
 }
 ```
 
@@ -26,25 +31,36 @@ interface JobOptions<I, O> {
 | `name` | `string` | はい | ジョブの一意の識別子 |
 | `input` | `ZodSchema` | はい | ジョブ入力を検証するZodスキーマ |
 | `output` | `ZodSchema` | いいえ | ジョブ出力を検証するZodスキーマ |
+| `run` | `Function` | はい | ジョブの実行関数 |
 
-## ハンドラー
+## 実行関数
 
-ハンドラー関数は以下を受け取ります：
+実行関数は以下を受け取ります：
 
 - `step`: ステップの作成とロギングのための[Step](/ja/api/step)オブジェクト
 - `payload`: 検証済みの入力ペイロード
 
 ## 戻り値
 
-以下のメソッドを持つ`Job`オブジェクトを返します：
+`durably.register()`で登録できる`JobDefinition`オブジェクトを返します。
+
+## ジョブの登録
+
+`durably.register()`を使用してジョブ定義を登録し、ジョブハンドルを取得します：
+
+```ts
+const job = durably.register(jobDef)
+```
+
+ジョブハンドルは以下のメソッドを提供します：
 
 ### `trigger()`
 
 ```ts
 await job.trigger(
-  input: I,
+  input: TInput,
   options?: TriggerOptions
-): Promise<void>
+): Promise<Run<TOutput>>
 ```
 
 新しいジョブ実行をトリガーします。
@@ -66,21 +82,21 @@ interface TriggerOptions {
 ## 例
 
 ```ts
+import { createDurably, defineJob } from '@coji/durably'
 import { z } from 'zod'
 
-const syncUsers = durably.defineJob(
-  {
-    name: 'sync-users',
-    input: z.object({
-      orgId: z.string(),
-      force: z.boolean().optional(),
-    }),
-    output: z.object({
-      syncedCount: z.number(),
-      errors: z.array(z.string()),
-    }),
-  },
-  async (step, payload) => {
+// ジョブを定義
+const syncUsersJob = defineJob({
+  name: 'sync-users',
+  input: z.object({
+    orgId: z.string(),
+    force: z.boolean().optional(),
+  }),
+  output: z.object({
+    syncedCount: z.number(),
+    errors: z.array(z.string()),
+  }),
+  run: async (step, payload) => {
     const users = await step.run('fetch-users', async () => {
       return await api.fetchUsers(payload.orgId)
     })
@@ -101,7 +117,10 @@ const syncUsers = durably.defineJob(
       errors,
     }
   },
-)
+})
+
+// durablyインスタンスに登録
+const syncUsers = durably.register(syncUsersJob)
 
 // ジョブをトリガー
 await syncUsers.trigger({ orgId: 'org_123' })
@@ -118,19 +137,34 @@ await syncUsers.trigger(
 入出力の型はZodスキーマから推論されます：
 
 ```ts
-const job = durably.defineJob(
-  {
-    name: 'example',
-    input: z.object({ id: z.string() }),
-    output: z.object({ result: z.number() }),
-  },
-  async (step, payload) => {
+const exampleJob = defineJob({
+  name: 'example',
+  input: z.object({ id: z.string() }),
+  output: z.object({ result: z.number() }),
+  run: async (step, payload) => {
     // payloadは{ id: string }として型付け
     return { result: 42 }  // 出力スキーマと一致する必要あり
   },
-)
+})
+
+const job = durably.register(exampleJob)
 
 // trigger()は型付けされている
 await job.trigger({ id: 'abc' })  // OK
 await job.trigger({ wrong: 1 })   // 型エラー
 ```
+
+## 冪等な登録
+
+同じ`JobDefinition`インスタンスを複数回登録しても、同じジョブハンドルが返されます：
+
+```ts
+const jobDef = defineJob({ name: 'my-job', ... })
+
+const handle1 = durably.register(jobDef)
+const handle2 = durably.register(jobDef)
+
+console.log(handle1 === handle2) // true
+```
+
+これにより、エフェクトが複数回実行される可能性のあるReactコンポーネントでも安全に使用できます。

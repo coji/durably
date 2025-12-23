@@ -35,7 +35,7 @@ durably.start()               // ワーカーを開始
 await durably.stop()          // ワーカーを正常に停止
 
 // ジョブ管理
-const job = durably.defineJob(options, handler)
+const job = durably.register(defineJob(options, handler)
 await durably.retry(runId)    // 失敗した実行をリトライ
 
 // イベント
@@ -45,7 +45,7 @@ const unsub = durably.on(event, handler)
 ### ジョブメソッド
 
 ```ts
-const job = durably.defineJob(...)
+const job = durably.register(defineJob(...)
 
 // 新しい実行をトリガー
 await job.trigger(input, options?)
@@ -54,7 +54,7 @@ await job.trigger(input, options?)
 ### ステップメソッド
 
 ```ts
-durably.defineJob(..., async (step, payload) => {
+durably.register(defineJob(..., async (step, payload) => {
   // ステップを実行
   const result = await step.run('step-name', async () => {
     return value

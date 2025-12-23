@@ -2,10 +2,10 @@
 
 ## ジョブの定義
 
-ジョブは`durably.defineJob()`を使用して定義します：
+ジョブは`durably.register(defineJob()`を使用して定義します：
 
 ```ts
-const myJob = durably.defineJob(
+const myJob = durably.register(defineJob(
   {
     name: 'my-job',
     input: z.object({ id: z.string() }),

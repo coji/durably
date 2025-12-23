@@ -72,7 +72,7 @@ function useDurably() {
 ジョブ内で`step.log`を使用してログイベントを発行します：
 
 ```ts
-durably.defineJob(
+durably.register(defineJob(
   { name: 'my-job', input: z.object({}) },
   async (step) => {
     step.log.info('処理を開始')

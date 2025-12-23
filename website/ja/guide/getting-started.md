@@ -60,7 +60,7 @@ const dialect = new LibsqlDialect({ client })
 const durably = createDurably({ dialect })
 
 // ジョブを定義
-const processOrder = durably.defineJob(
+const processOrder = durably.register(defineJob(
   {
     name: 'process-order',
     input: z.object({ orderId: z.string() }),
@@ -113,7 +113,7 @@ const durably = createDurably({
 })
 
 // Node.jsと同じ方法でジョブを定義して使用
-const syncData = durably.defineJob(
+const syncData = durably.register(defineJob(
   {
     name: 'sync-data',
     input: z.object({ userId: z.string() }),

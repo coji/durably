@@ -101,7 +101,7 @@ const index: number = step.stepIndex
 ## 例
 
 ```ts
-durably.defineJob(
+durably.register(defineJob(
   {
     name: 'process-order',
     input: z.object({ orderId: z.string() }),

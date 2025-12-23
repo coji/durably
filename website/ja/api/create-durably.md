@@ -105,7 +105,7 @@ await durably.migrate()
 durably.start()
 
 // ジョブを定義...
-const myJob = durably.defineJob(...)
+const myJob = durably.register(defineJob(...)
 
 // クリーンシャットダウン
 process.on('SIGTERM', async () => {

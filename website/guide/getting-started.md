@@ -47,7 +47,7 @@ npm install sqlocal
 ### Node.js Example
 
 ```ts
-import { createDurably } from '@coji/durably'
+import { createDurably, defineJob } from '@coji/durably'
 import { createClient } from '@libsql/client'
 import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { z } from 'zod'
@@ -60,13 +60,11 @@ const dialect = new LibsqlDialect({ client })
 const durably = createDurably({ dialect })
 
 // Define a job
-const processOrder = durably.defineJob(
-  {
-    name: 'process-order',
-    input: z.object({ orderId: z.string() }),
-    output: z.object({ status: z.string() }),
-  },
-  async (step, payload) => {
+const processOrderJob = defineJob({
+  name: 'process-order',
+  input: z.object({ orderId: z.string() }),
+  output: z.object({ status: z.string() }),
+  run: async (step, payload) => {
     // Step 1: Validate order
     const order = await step.run('validate', async () => {
       return await validateOrder(payload.orderId)
@@ -84,7 +82,10 @@ const processOrder = durably.defineJob(
 
     return { status: 'completed' }
   },
-)
+})
+
+// Register the job
+const processOrder = durably.register(processOrderJob)
 
 // Start the worker and run migrations
 await durably.migrate()
@@ -97,7 +98,7 @@ await processOrder.trigger({ orderId: 'order_123' })
 ### Browser Example
 
 ```ts
-import { createDurably } from '@coji/durably'
+import { createDurably, defineJob } from '@coji/durably'
 import { SQLocalKysely } from 'sqlocal/kysely'
 import { z } from 'zod'
 
@@ -112,21 +113,21 @@ const durably = createDurably({
   staleThreshold: 3000,
 })
 
-// Define and use jobs the same way as Node.js
-const syncData = durably.defineJob(
-  {
+// Define and register jobs the same way as Node.js
+const syncData = durably.register(
+  defineJob({
     name: 'sync-data',
     input: z.object({ userId: z.string() }),
-  },
-  async (step, payload) => {
-    const data = await step.run('fetch', async () => {
-      return await fetchUserData(payload.userId)
-    })
+    run: async (step, payload) => {
+      const data = await step.run('fetch', async () => {
+        return await fetchUserData(payload.userId)
+      })
 
-    await step.run('save', async () => {
-      await saveLocally(data)
-    })
-  },
+      await step.run('save', async () => {
+        await saveLocally(data)
+      })
+    },
+  }),
 )
 
 await durably.migrate()

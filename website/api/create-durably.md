@@ -54,16 +54,15 @@ await durably.stop(): Promise<void>
 
 Stops the worker gracefully, waiting for the current job to complete.
 
-### `defineJob()`
+### `register()`
 
 ```ts
-durably.defineJob<I, O>(
-  options: JobOptions<I, O>,
-  handler: JobHandler<I, O>
-): Job<I, O>
+durably.register<TName, TInput, TOutput>(
+  jobDef: JobDefinition<TName, TInput, TOutput>
+): JobHandle<TName, TInput, TOutput>
 ```
 
-Defines a new job. See [defineJob](/api/define-job) for details.
+Registers a job definition and returns a job handle. See [defineJob](/api/define-job) for details.
 
 ### `on()`
 
@@ -104,8 +103,18 @@ const durably = createDurably({
 await durably.migrate()
 durably.start()
 
-// Define jobs...
-const myJob = durably.defineJob(...)
+// Define and register jobs
+import { defineJob } from '@coji/durably'
+
+const myJob = durably.register(
+  defineJob({
+    name: 'my-job',
+    input: z.object({ id: z.string() }),
+    run: async (step, payload) => {
+      // ...
+    },
+  }),
+)
 
 // Clean shutdown
 process.on('SIGTERM', async () => {

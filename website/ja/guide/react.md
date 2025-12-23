@@ -260,7 +260,7 @@ import { z } from 'zod'
 import { durably } from './lib/durably'
 
 // コンポーネントの外でジョブを定義
-const processDataJob = durably.defineJob(
+const processDataJob = durably.register(defineJob(
   {
     name: 'process-data',
     input: z.object({ items: z.array(z.string()) }),

@@ -19,12 +19,12 @@ Traditional approaches require you to either:
 Durably automatically persists the result of each step to SQLite. If a job is interrupted, it resumes from the last successful step.
 
 ```ts
-const syncUsers = durably.defineJob(
-  {
-    name: 'sync-users',
-    input: z.object({ orgId: z.string() }),
-  },
-  async (step, payload) => {
+import { defineJob } from '@coji/durably'
+
+const syncUsersJob = defineJob({
+  name: 'sync-users',
+  input: z.object({ orgId: z.string() }),
+  run: async (step, payload) => {
     // Step 1: Fetch users (persisted after completion)
     const users = await step.run('fetch-users', async () => {
       return api.fetchUsers(payload.orgId)
@@ -37,7 +37,11 @@ const syncUsers = durably.defineJob(
 
     return { syncedCount: users.length }
   },
-)
+})
+
+// Register and use
+const syncUsers = durably.register(syncUsersJob)
+await syncUsers.trigger({ orgId: 'org_123' })
 ```
 
 ## Key Features

@@ -19,7 +19,7 @@ Durablyは、Node.jsとブラウザの両方で**再開可能なワークフロ�
 Durablyは各ステップの結果をSQLiteに自動的に永続化します。ジョブが中断された場合、最後に成功したステップから再開します。
 
 ```ts
-const syncUsers = durably.defineJob(
+const syncUsers = durably.register(defineJob(
   {
     name: 'sync-users',
     input: z.object({ orgId: z.string() }),
