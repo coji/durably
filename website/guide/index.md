@@ -20,9 +20,11 @@ Durably automatically persists the result of each step to SQLite. If a job is in
 
 ```ts
 import { createDurably, defineJob } from '@coji/durably'
+import { LibsqlDialect } from '@libsql/kysely-libsql' // or your SQLite dialect
 import { z } from 'zod'
 
-// Create durably instance with your SQLite dialect
+// Create durably instance with SQLite dialect
+const dialect = new LibsqlDialect({ url: 'file:app.db' })
 const durably = createDurably({ dialect })
 
 // Define job (static, can be in a separate file)

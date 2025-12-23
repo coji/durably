@@ -8,7 +8,7 @@ Jobs are defined using the standalone `defineJob()` function and registered with
 import { createDurably, defineJob } from '@coji/durably'
 import { z } from 'zod'
 
-// Create durably instance (see Getting Started for full setup)
+// Create durably instance (see Getting Started for dialect setup)
 const durably = createDurably({ dialect })
 
 const myJobDef = defineJob({
