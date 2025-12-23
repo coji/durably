@@ -1,6 +1,6 @@
 import type { Dialect } from 'kysely'
 import { Kysely } from 'kysely'
-import type { z } from 'zod'
+import type { JobDefinition } from './define-job'
 import {
   type AnyEventInput,
   type ErrorHandler,
@@ -10,8 +10,6 @@ import {
   createEventEmitter,
 } from './events'
 import {
-  type JobDefinition,
-  type JobFunction,
   type JobHandle,
   createJobHandle,
   createJobRegistry,
@@ -91,23 +89,13 @@ export interface Durably {
   onError(handler: ErrorHandler): void
 
   /**
-   * Define a job
+   * Register a job definition and return a job handle
+   * Same JobDefinition can be registered multiple times (idempotent)
+   * Different JobDefinitions with the same name will throw an error
    */
-  defineJob<
-    TName extends string,
-    TInputSchema extends z.ZodType,
-    TOutputSchema extends z.ZodType | undefined = undefined,
-  >(
-    definition: JobDefinition<TName, TInputSchema, TOutputSchema>,
-    fn: JobFunction<
-      z.infer<TInputSchema>,
-      TOutputSchema extends z.ZodType ? z.infer<TOutputSchema> : void
-    >,
-  ): JobHandle<
-    TName,
-    z.infer<TInputSchema>,
-    TOutputSchema extends z.ZodType ? z.infer<TOutputSchema> : void
-  >
+  register<TName extends string, TInput, TOutput>(
+    jobDef: JobDefinition<TName, TInput, TOutput>,
+  ): JobHandle<TName, TInput, TOutput>
 
   /**
    * Start the worker polling loop
@@ -182,22 +170,10 @@ export function createDurably(options: DurablyOptions): Durably {
     start: worker.start,
     stop: worker.stop,
 
-    defineJob<
-      TName extends string,
-      TInputSchema extends z.ZodType,
-      TOutputSchema extends z.ZodType | undefined = undefined,
-    >(
-      definition: JobDefinition<TName, TInputSchema, TOutputSchema>,
-      fn: JobFunction<
-        z.infer<TInputSchema>,
-        TOutputSchema extends z.ZodType ? z.infer<TOutputSchema> : void
-      >,
-    ): JobHandle<
-      TName,
-      z.infer<TInputSchema>,
-      TOutputSchema extends z.ZodType ? z.infer<TOutputSchema> : void
-    > {
-      return createJobHandle(definition, fn, storage, eventEmitter, jobRegistry)
+    register<TName extends string, TInput, TOutput>(
+      jobDef: JobDefinition<TName, TInput, TOutput>,
+    ): JobHandle<TName, TInput, TOutput> {
+      return createJobHandle(jobDef, storage, eventEmitter, jobRegistry)
     },
 
     getRun: storage.getRun,

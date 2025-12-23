@@ -6,6 +6,10 @@
 export { createDurably } from './durably'
 export type { Durably, DurablyOptions, DurablyPlugin } from './durably'
 
+// Job Definition
+export { defineJob } from './define-job'
+export type { JobDefinition } from './define-job'
+
 // Plugins
 export { withLogPersistence } from './plugins/log-persistence'
 

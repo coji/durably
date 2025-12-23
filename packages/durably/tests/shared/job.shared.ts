@@ -1,10 +1,10 @@
 import type { Dialect } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { createDurably, type Durably } from '../../src'
+import { createDurably, defineJob, type Durably } from '../../src'
 
 export function createJobTests(createDialect: () => Dialect) {
-  describe('defineJob()', () => {
+  describe('register()', () => {
     let durably: Durably
 
     beforeEach(async () => {
@@ -17,16 +17,15 @@ export function createJobTests(createDialect: () => Dialect) {
     })
 
     it('returns a JobHandle', () => {
-      const job = durably.defineJob(
-        {
-          name: 'test-job',
-          input: z.object({ value: z.number() }),
-          output: z.object({ result: z.number() }),
-        },
-        async (_step, _payload) => {
+      const testJobDef = defineJob({
+        name: 'test-job',
+        input: z.object({ value: z.number() }),
+        output: z.object({ result: z.number() }),
+        run: async (_step, _payload) => {
           return { result: 42 }
         },
-      )
+      })
+      const job = durably.register(testJobDef)
 
       expect(job).toBeDefined()
       expect(job.name).toBe('test-job')
@@ -35,37 +34,50 @@ export function createJobTests(createDialect: () => Dialect) {
       expect(job.getRuns).toBeTypeOf('function')
     })
 
-    it('throws if job name is already registered', () => {
-      durably.defineJob(
-        {
-          name: 'duplicate-job',
-          input: z.object({}),
-          output: z.object({}),
-        },
-        async () => ({}),
-      )
+    it('returns same JobHandle for same JobDefinition (idempotent)', () => {
+      const jobDef = defineJob({
+        name: 'idempotent-job',
+        input: z.object({}),
+        output: z.object({}),
+        run: async () => ({}),
+      })
+
+      const handle1 = durably.register(jobDef)
+      const handle2 = durably.register(jobDef)
+
+      expect(handle1).toBe(handle2)
+    })
+
+    it('throws if different JobDefinition has same name', () => {
+      const jobDef1 = defineJob({
+        name: 'conflict-job',
+        input: z.object({}),
+        output: z.object({}),
+        run: async () => ({}),
+      })
+
+      const jobDef2 = defineJob({
+        name: 'conflict-job',
+        input: z.object({}),
+        output: z.object({}),
+        run: async () => ({}),
+      })
+
+      durably.register(jobDef1)
 
       expect(() => {
-        durably.defineJob(
-          {
-            name: 'duplicate-job',
-            input: z.object({}),
-            output: z.object({}),
-          },
-          async () => ({}),
-        )
-      }).toThrow(/already registered|duplicate/i)
+        durably.register(jobDef2)
+      }).toThrow(/already registered|different/i)
     })
 
     it('validates input with Zod schema on trigger', async () => {
-      const job = durably.defineJob(
-        {
-          name: 'validated-job',
-          input: z.object({ count: z.number().min(1) }),
-          output: z.object({}),
-        },
-        async () => ({}),
-      )
+      const validatedJobDef = defineJob({
+        name: 'validated-job',
+        input: z.object({ count: z.number().min(1) }),
+        output: z.object({}),
+        run: async () => ({}),
+      })
+      const job = durably.register(validatedJobDef)
 
       // Invalid input should throw
       await expect(
@@ -78,14 +90,13 @@ export function createJobTests(createDialect: () => Dialect) {
     })
 
     it('accepts valid input on trigger', async () => {
-      const job = durably.defineJob(
-        {
-          name: 'valid-input-job',
-          input: z.object({ count: z.number().min(1) }),
-          output: z.object({}),
-        },
-        async () => ({}),
-      )
+      const validInputJobDef = defineJob({
+        name: 'valid-input-job',
+        input: z.object({ count: z.number().min(1) }),
+        output: z.object({}),
+        run: async () => ({}),
+      })
+      const job = durably.register(validInputJobDef)
 
       // Valid input should work
       const run = await job.trigger({ count: 1 })
@@ -95,24 +106,23 @@ export function createJobTests(createDialect: () => Dialect) {
     })
 
     it('infers input type from Zod schema', async () => {
-      const job = durably.defineJob(
-        {
-          name: 'typed-input-job',
-          input: z.object({
-            name: z.string(),
-            count: z.number(),
-            optional: z.boolean().optional(),
-          }),
-          output: z.object({ success: z.boolean() }),
-        },
-        async (_step, payload) => {
+      const typedInputJobDef = defineJob({
+        name: 'typed-input-job',
+        input: z.object({
+          name: z.string(),
+          count: z.number(),
+          optional: z.boolean().optional(),
+        }),
+        output: z.object({ success: z.boolean() }),
+        run: async (_step, payload) => {
           // Type inference test - this should compile
           const _name: string = payload.name
           const _count: number = payload.count
           const _optional: boolean | undefined = payload.optional
           return { success: true }
         },
-      )
+      })
+      const job = durably.register(typedInputJobDef)
 
       const run = await job.trigger({
         name: 'test',
@@ -123,15 +133,14 @@ export function createJobTests(createDialect: () => Dialect) {
     })
 
     it('can define job without output schema (defaults to void)', async () => {
-      const job = durably.defineJob(
-        {
-          name: 'no-output-job',
-          input: z.object({ value: z.string() }),
-        },
-        async (_step, _payload) => {
+      const noOutputJobDef = defineJob({
+        name: 'no-output-job',
+        input: z.object({ value: z.string() }),
+        run: async (_step, _payload) => {
           // No return value
         },
-      )
+      })
+      const job = durably.register(noOutputJobDef)
 
       const run = await job.trigger({ value: 'test' })
       expect(run.status).toBe('pending')
@@ -151,13 +160,12 @@ export function createJobTests(createDialect: () => Dialect) {
     })
 
     it('creates multiple runs in a single call', async () => {
-      const job = durably.defineJob(
-        {
-          name: 'batch-job',
-          input: z.object({ value: z.number() }),
-        },
-        async () => {},
-      )
+      const batchJobDef = defineJob({
+        name: 'batch-job',
+        input: z.object({ value: z.number() }),
+        run: async () => {},
+      })
+      const job = durably.register(batchJobDef)
 
       const runs = await job.batchTrigger([
         { value: 1 },
@@ -176,13 +184,12 @@ export function createJobTests(createDialect: () => Dialect) {
     })
 
     it('validates all inputs before creating any runs', async () => {
-      const job = durably.defineJob(
-        {
-          name: 'batch-validate-job',
-          input: z.object({ value: z.number().min(1) }),
-        },
-        async () => {},
-      )
+      const batchValidateJobDef = defineJob({
+        name: 'batch-validate-job',
+        input: z.object({ value: z.number().min(1) }),
+        run: async () => {},
+      })
+      const job = durably.register(batchValidateJobDef)
 
       // Second input is invalid (0 < min 1)
       await expect(
@@ -195,13 +202,12 @@ export function createJobTests(createDialect: () => Dialect) {
     })
 
     it('accepts trigger options for each input', async () => {
-      const job = durably.defineJob(
-        {
-          name: 'batch-options-job',
-          input: z.object({ id: z.string() }),
-        },
-        async () => {},
-      )
+      const batchOptionsJobDef = defineJob({
+        name: 'batch-options-job',
+        input: z.object({ id: z.string() }),
+        run: async () => {},
+      })
+      const job = durably.register(batchOptionsJobDef)
 
       const runs = await job.batchTrigger([
         { input: { id: 'a' }, options: { idempotencyKey: 'key-a' } },
@@ -215,13 +221,12 @@ export function createJobTests(createDialect: () => Dialect) {
     })
 
     it('returns empty array for empty input', async () => {
-      const job = durably.defineJob(
-        {
-          name: 'batch-empty-job',
-          input: z.object({}),
-        },
-        async () => {},
-      )
+      const batchEmptyJobDef = defineJob({
+        name: 'batch-empty-job',
+        input: z.object({}),
+        run: async () => {},
+      })
+      const job = durably.register(batchEmptyJobDef)
 
       const runs = await job.batchTrigger([])
       expect(runs).toEqual([])

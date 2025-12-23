@@ -1,7 +1,7 @@
 import type { Dialect } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { createDurably, type Durably } from '../../src'
+import { createDurably, defineJob, type Durably } from '../../src'
 
 export function createConcurrencyTests(createDialect: () => Dialect) {
   describe('concurrencyKey Serialization', () => {
@@ -23,19 +23,18 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
     it('excludes runs with same concurrencyKey when one is running', async () => {
       const executionOrder: string[] = []
 
-      const job = durably.defineJob(
-        {
-          name: 'concurrency-test',
-          input: z.object({ id: z.string() }),
-        },
-        async (step, payload) => {
+      const concurrencyTestDef = defineJob({
+        name: 'concurrency-test',
+        input: z.object({ id: z.string() }),
+        run: async (step, payload) => {
           executionOrder.push(`start-${payload.id}`)
           await step.run('work', async () => {
             await new Promise((r) => setTimeout(r, 100))
           })
           executionOrder.push(`end-${payload.id}`)
         },
-      )
+      })
+      const job = durably.register(concurrencyTestDef)
 
       // Trigger two runs with the same concurrency key
       await job.trigger({ id: '1' }, { concurrencyKey: 'user-123' })
@@ -59,18 +58,17 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
     it('allows runs with different concurrencyKeys to be fetched independently', async () => {
       const startTimes: Record<string, number> = {}
 
-      const job = durably.defineJob(
-        {
-          name: 'different-keys-test',
-          input: z.object({ id: z.string() }),
-        },
-        async (step, payload) => {
+      const differentKeysTestDef = defineJob({
+        name: 'different-keys-test',
+        input: z.object({ id: z.string() }),
+        run: async (step, payload) => {
           startTimes[payload.id] = Date.now()
           await step.run('work', async () => {
             await new Promise((r) => setTimeout(r, 100))
           })
         },
-      )
+      })
+      const job = durably.register(differentKeysTestDef)
 
       // Trigger two runs with different concurrency keys
       await job.trigger({ id: 'a' }, { concurrencyKey: 'user-A' })
@@ -95,18 +93,17 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
     it('runs without concurrencyKey are not blocked', async () => {
       const executionOrder: string[] = []
 
-      const job = durably.defineJob(
-        {
-          name: 'no-key-test',
-          input: z.object({ id: z.string() }),
-        },
-        async (step, payload) => {
+      const noKeyTestDef = defineJob({
+        name: 'no-key-test',
+        input: z.object({ id: z.string() }),
+        run: async (step, payload) => {
           executionOrder.push(payload.id)
           await step.run('work', async () => {
             await new Promise((r) => setTimeout(r, 50))
           })
         },
-      )
+      })
+      const job = durably.register(noKeyTestDef)
 
       // Mix of runs with and without concurrency keys
       await job.trigger({ id: '1' }) // no key
@@ -131,12 +128,10 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
       let concurrentRuns = 0
       let maxConcurrent = 0
 
-      const job = durably.defineJob(
-        {
-          name: 'null-key-test',
-          input: z.object({ id: z.number() }),
-        },
-        async (step) => {
+      const nullKeyTestDef = defineJob({
+        name: 'null-key-test',
+        input: z.object({ id: z.number() }),
+        run: async (step) => {
           concurrentRuns++
           maxConcurrent = Math.max(maxConcurrent, concurrentRuns)
           await step.run('work', async () => {
@@ -144,7 +139,8 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           })
           concurrentRuns--
         },
-      )
+      })
+      const job = durably.register(nullKeyTestDef)
 
       // Multiple runs with no concurrency key
       await job.trigger({ id: 1 })

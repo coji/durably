@@ -1,7 +1,12 @@
 import type { Dialect } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { createDurably, type Durably, type LogWriteEvent } from '../../src'
+import {
+  createDurably,
+  defineJob,
+  type Durably,
+  type LogWriteEvent,
+} from '../../src'
 
 export function createLogTests(createDialect: () => Dialect) {
   describe('step.log', () => {
@@ -24,13 +29,15 @@ export function createLogTests(createDialect: () => Dialect) {
       const logEvents: LogWriteEvent[] = []
       durably.on('log:write', (e) => logEvents.push(e))
 
-      const job = durably.defineJob(
-        { name: 'log-info-test', input: z.object({}) },
-        async (step) => {
+      const logInfoTestDef = defineJob({
+        name: 'log-info-test',
+        input: z.object({}),
+        run: async (step) => {
           step.log.info('Hello from job')
           await step.run('step', () => {})
         },
-      )
+      })
+      const job = durably.register(logInfoTestDef)
 
       await job.trigger({})
       durably.start()
@@ -49,13 +56,15 @@ export function createLogTests(createDialect: () => Dialect) {
       const logEvents: LogWriteEvent[] = []
       durably.on('log:write', (e) => logEvents.push(e))
 
-      const job = durably.defineJob(
-        { name: 'log-warn-test', input: z.object({}) },
-        async (step) => {
+      const logWarnTestDef = defineJob({
+        name: 'log-warn-test',
+        input: z.object({}),
+        run: async (step) => {
           step.log.warn('Warning message')
           await step.run('step', () => {})
         },
-      )
+      })
+      const job = durably.register(logWarnTestDef)
 
       await job.trigger({})
       durably.start()
@@ -74,13 +83,15 @@ export function createLogTests(createDialect: () => Dialect) {
       const logEvents: LogWriteEvent[] = []
       durably.on('log:write', (e) => logEvents.push(e))
 
-      const job = durably.defineJob(
-        { name: 'log-error-test', input: z.object({}) },
-        async (step) => {
+      const logErrorTestDef = defineJob({
+        name: 'log-error-test',
+        input: z.object({}),
+        run: async (step) => {
           step.log.error('Error message')
           await step.run('step', () => {})
         },
-      )
+      })
+      const job = durably.register(logErrorTestDef)
 
       await job.trigger({})
       durably.start()
@@ -99,13 +110,15 @@ export function createLogTests(createDialect: () => Dialect) {
       const logEvents: LogWriteEvent[] = []
       durably.on('log:write', (e) => logEvents.push(e))
 
-      const job = durably.defineJob(
-        { name: 'log-data-test', input: z.object({}) },
-        async (step) => {
+      const logDataTestDef = defineJob({
+        name: 'log-data-test',
+        input: z.object({}),
+        run: async (step) => {
           step.log.info('Processing item', { itemId: 123, status: 'active' })
           await step.run('step', () => {})
         },
-      )
+      })
+      const job = durably.register(logDataTestDef)
 
       await job.trigger({})
       durably.start()
@@ -123,13 +136,15 @@ export function createLogTests(createDialect: () => Dialect) {
       const logEvents: LogWriteEvent[] = []
       durably.on('log:write', (e) => logEvents.push(e))
 
-      const job = durably.defineJob(
-        { name: 'log-runid-test', input: z.object({}) },
-        async (step) => {
+      const logRunIdTestDef = defineJob({
+        name: 'log-runid-test',
+        input: z.object({}),
+        run: async (step) => {
           step.log.info('Test message')
           await step.run('step', () => {})
         },
-      )
+      })
+      const job = durably.register(logRunIdTestDef)
 
       const run = await job.trigger({})
       durably.start()
@@ -147,16 +162,18 @@ export function createLogTests(createDialect: () => Dialect) {
       const logEvents: LogWriteEvent[] = []
       durably.on('log:write', (e) => logEvents.push(e))
 
-      const job = durably.defineJob(
-        { name: 'log-stepname-test', input: z.object({}) },
-        async (step) => {
+      const logStepNameTestDef = defineJob({
+        name: 'log-stepname-test',
+        input: z.object({}),
+        run: async (step) => {
           step.log.info('Outside step') // stepName should be null
           await step.run('my-step', () => {
             step.log.info('Inside step') // stepName should be 'my-step'
           })
           step.log.info('After step') // stepName should be null
         },
-      )
+      })
+      const job = durably.register(logStepNameTestDef)
 
       await job.trigger({})
       durably.start()
