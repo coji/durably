@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2025-12-24
+
+### Added
+
+- `run:progress` event: Now emitted when `step.progress()` is called
+  - Enables real-time progress tracking via event subscription
+  - Event payload: `{ runId, jobName, progress: { current, total?, message? } }`
+
 ## [0.4.0] - 2025-12-23
 
 ### Breaking Changes
