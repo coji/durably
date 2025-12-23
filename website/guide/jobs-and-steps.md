@@ -5,7 +5,11 @@
 Jobs are defined using the standalone `defineJob()` function and registered with `durably.register()`:
 
 ```ts
-import { defineJob } from '@coji/durably'
+import { createDurably, defineJob } from '@coji/durably'
+import { z } from 'zod'
+
+// Create durably instance (see Getting Started for full setup)
+const durably = createDurably({ dialect })
 
 const myJobDef = defineJob({
   name: 'my-job',

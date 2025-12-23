@@ -19,8 +19,13 @@ Traditional approaches require you to either:
 Durably automatically persists the result of each step to SQLite. If a job is interrupted, it resumes from the last successful step.
 
 ```ts
-import { defineJob } from '@coji/durably'
+import { createDurably, defineJob } from '@coji/durably'
+import { z } from 'zod'
 
+// Create durably instance with your SQLite dialect
+const durably = createDurably({ dialect })
+
+// Define job (static, can be in a separate file)
 const syncUsersJob = defineJob({
   name: 'sync-users',
   input: z.object({ orgId: z.string() }),
@@ -39,7 +44,7 @@ const syncUsersJob = defineJob({
   },
 })
 
-// Register and use
+// Register and trigger
 const syncUsers = durably.register(syncUsersJob)
 await syncUsers.trigger({ orgId: 'org_123' })
 ```

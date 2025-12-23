@@ -2,6 +2,10 @@
 
 Durably provides an event system to monitor job execution.
 
+::: tip
+Examples on this page assume you have a `durably` instance created via `createDurably()`. See [Getting Started](/guide/getting-started) for setup.
+:::
+
 ## Available Events
 
 | Event | Description | Payload |
