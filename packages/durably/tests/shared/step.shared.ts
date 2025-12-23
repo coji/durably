@@ -1,7 +1,12 @@
 import type { Dialect } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { createDurably, type Durably, type StepCompleteEvent } from '../../src'
+import {
+  createDurably,
+  defineJob,
+  type Durably,
+  type StepCompleteEvent,
+} from '../../src'
 
 export function createStepTests(createDialect: () => Dialect) {
   describe('step.run() Step Execution', () => {
@@ -21,17 +26,16 @@ export function createStepTests(createDialect: () => Dialect) {
     })
 
     it('executes step function and returns result', async () => {
-      const job = durably.defineJob(
-        {
-          name: 'step-return-test',
-          input: z.object({}),
-          output: z.object({ result: z.number() }),
-        },
-        async (step) => {
+      const stepReturnTestDef = defineJob({
+        name: 'step-return-test',
+        input: z.object({}),
+        output: z.object({ result: z.number() }),
+        run: async (step) => {
           const value = await step.run('compute', () => 42)
           return { result: value }
         },
-      )
+      })
+      const job = durably.register(stepReturnTestDef)
 
       const run = await job.trigger({})
       durably.start()
@@ -47,16 +51,15 @@ export function createStepTests(createDialect: () => Dialect) {
     })
 
     it('records step in steps table on success', async () => {
-      const job = durably.defineJob(
-        {
-          name: 'step-record-test',
-          input: z.object({}),
-        },
-        async (step) => {
+      const stepRecordTestDef = defineJob({
+        name: 'step-record-test',
+        input: z.object({}),
+        run: async (step) => {
           await step.run('step1', () => 'result1')
           await step.run('step2', () => 'result2')
         },
-      )
+      })
+      const job = durably.register(stepRecordTestDef)
 
       const run = await job.trigger({})
       durably.start()
@@ -77,17 +80,16 @@ export function createStepTests(createDialect: () => Dialect) {
     })
 
     it('transitions run to failed when step throws', async () => {
-      const job = durably.defineJob(
-        {
-          name: 'step-fail-test',
-          input: z.object({}),
-        },
-        async (step) => {
+      const stepFailTestDef = defineJob({
+        name: 'step-fail-test',
+        input: z.object({}),
+        run: async (step) => {
           await step.run('failing-step', () => {
             throw new Error('Step failed!')
           })
         },
-      )
+      })
+      const job = durably.register(stepFailTestDef)
 
       const run = await job.trigger({})
       durably.start()
@@ -112,12 +114,10 @@ export function createStepTests(createDialect: () => Dialect) {
       let step1Calls = 0
       let step2Calls = 0
 
-      const job = durably.defineJob(
-        {
-          name: 'step-resume-test',
-          input: z.object({ shouldFail: z.boolean() }),
-        },
-        async (step, payload) => {
+      const stepResumeTestDef = defineJob({
+        name: 'step-resume-test',
+        input: z.object({ shouldFail: z.boolean() }),
+        run: async (step, payload) => {
           await step.run('step1', () => {
             step1Calls++
             return 'step1-result'
@@ -131,7 +131,8 @@ export function createStepTests(createDialect: () => Dialect) {
             return 'step2-result'
           })
         },
-      )
+      })
+      const job = durably.register(stepResumeTestDef)
 
       // First run - will fail at step2
       const run1 = await job.trigger({ shouldFail: true })
@@ -169,13 +170,11 @@ export function createStepTests(createDialect: () => Dialect) {
       let step1CallCount = 0
       let step2CallCount = 0
 
-      const job = durably.defineJob(
-        {
-          name: 'step-output-resume-test',
-          input: z.object({}),
-          output: z.object({ step1Result: z.string() }),
-        },
-        async (step) => {
+      const stepOutputResumeTestDef = defineJob({
+        name: 'step-output-resume-test',
+        input: z.object({}),
+        output: z.object({ step1Result: z.string() }),
+        run: async (step) => {
           // step1 computes a unique value each time it's called
           const result = await step.run('step1', () => {
             step1CallCount++
@@ -193,7 +192,8 @@ export function createStepTests(createDialect: () => Dialect) {
 
           return { step1Result: result }
         },
-      )
+      })
+      const job = durably.register(stepOutputResumeTestDef)
 
       // First attempt - step1 succeeds, step2 fails
       const run = await job.trigger({})
@@ -235,15 +235,14 @@ export function createStepTests(createDialect: () => Dialect) {
 
       durably.on('step:complete', (e) => stepEvents.push(e))
 
-      const job = durably.defineJob(
-        {
-          name: 'step-events-test',
-          input: z.object({}),
-        },
-        async (step) => {
+      const stepEventsTestDef = defineJob({
+        name: 'step-events-test',
+        input: z.object({}),
+        run: async (step) => {
           await step.run('myStep', () => 'hello')
         },
-      )
+      })
+      const job = durably.register(stepEventsTestDef)
 
       await job.trigger({})
       durably.start()
@@ -259,20 +258,19 @@ export function createStepTests(createDialect: () => Dialect) {
     })
 
     it('handles async step functions', async () => {
-      const job = durably.defineJob(
-        {
-          name: 'async-step-test',
-          input: z.object({}),
-          output: z.object({ value: z.string() }),
-        },
-        async (step) => {
+      const asyncStepTestDef = defineJob({
+        name: 'async-step-test',
+        input: z.object({}),
+        output: z.object({ value: z.string() }),
+        run: async (step) => {
           const value = await step.run('async-step', async () => {
             await new Promise((r) => setTimeout(r, 50))
             return 'async-result'
           })
           return { value }
         },
-      )
+      })
+      const job = durably.register(asyncStepTestDef)
 
       const run = await job.trigger({})
       durably.start()
@@ -288,18 +286,17 @@ export function createStepTests(createDialect: () => Dialect) {
     })
 
     it('records step started_at before execution and completed_at after', async () => {
-      const job = durably.defineJob(
-        {
-          name: 'step-timing-test',
-          input: z.object({}),
-        },
-        async (step) => {
+      const stepTimingTestDef = defineJob({
+        name: 'step-timing-test',
+        input: z.object({}),
+        run: async (step) => {
           await step.run('slow-step', async () => {
             await new Promise((r) => setTimeout(r, 100))
             return 'done'
           })
         },
-      )
+      })
+      const job = durably.register(stepTimingTestDef)
 
       const run = await job.trigger({})
       durably.start()

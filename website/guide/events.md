@@ -2,6 +2,10 @@
 
 Durably provides an event system to monitor job execution.
 
+::: tip
+Examples on this page assume you have a `durably` instance created via `createDurably()`. See [Getting Started](/guide/getting-started) for setup.
+:::
+
 ## Available Events
 
 | Event | Description | Payload |
@@ -72,18 +76,23 @@ function useDurably() {
 Use `step.log` within jobs to emit log events:
 
 ```ts
-durably.defineJob(
-  { name: 'my-job', input: z.object({}) },
-  async (step) => {
-    step.log.info('Starting processing')
+import { defineJob } from '@coji/durably'
 
-    await step.run('step1', async () => {
-      step.log.info('Step 1 details', { someData: 123 })
-      return result
-    })
+const myJob = durably.register(
+  defineJob({
+    name: 'my-job',
+    input: z.object({}),
+    run: async (step) => {
+      step.log.info('Starting processing')
 
-    step.log.info('Completed')
-  },
+      await step.run('step1', async () => {
+        step.log.info('Step 1 details', { someData: 123 })
+        return result
+      })
+
+      step.log.info('Completed')
+    },
+  }),
 )
 
 // Subscribe to logs

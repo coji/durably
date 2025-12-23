@@ -1,23 +1,28 @@
 # defineJob
 
-Defines a new job with typed input and output.
+Defines a new job definition with typed input, output, and run function.
 
 ## Signature
 
 ```ts
-durably.defineJob<I, O>(
-  options: JobOptions<I, O>,
-  handler: (step: StepContext, payload: I) => Promise<O>
-): Job<I, O>
+import { defineJob } from '@coji/durably'
+
+const jobDef = defineJob<TName, TInput, TOutput>({
+  name: TName,
+  input: z.ZodType<TInput>,
+  output?: z.ZodType<TOutput>,
+  run: (step: StepContext, payload: TInput) => Promise<TOutput>
+})
 ```
 
 ## Options
 
 ```ts
-interface JobOptions<I, O> {
-  name: string
-  input: z.ZodType<I>
-  output?: z.ZodType<O>
+interface DefineJobConfig<TName, TInput, TOutput> {
+  name: TName
+  input: z.ZodType<TInput>
+  output?: z.ZodType<TOutput>
+  run: (step: StepContext, payload: TInput) => Promise<TOutput>
 }
 ```
 
@@ -26,25 +31,36 @@ interface JobOptions<I, O> {
 | `name` | `string` | Yes | Unique identifier for the job |
 | `input` | `ZodSchema` | Yes | Zod schema for validating job input |
 | `output` | `ZodSchema` | No | Zod schema for validating job output |
+| `run` | `Function` | Yes | The job's run function |
 
-## Handler
+## Run Function
 
-The handler function receives:
+The run function receives:
 
 - `step`: The [Step](/api/step) object for creating steps and logging
 - `payload`: The validated input payload
 
 ## Returns
 
-Returns a `Job` object with the following methods:
+Returns a `JobDefinition` object that can be registered with `durably.register()`.
+
+## Registering Jobs
+
+Use `durably.register()` to register a job definition and get a job handle:
+
+```ts
+const job = durably.register(jobDef)
+```
+
+The job handle provides the following methods:
 
 ### `trigger()`
 
 ```ts
 await job.trigger(
-  input: I,
+  input: TInput,
   options?: TriggerOptions
-): Promise<void>
+): Promise<Run<TOutput>>
 ```
 
 Triggers a new job run.
@@ -66,21 +82,21 @@ interface TriggerOptions {
 ## Example
 
 ```ts
+import { createDurably, defineJob } from '@coji/durably'
 import { z } from 'zod'
 
-const syncUsers = durably.defineJob(
-  {
-    name: 'sync-users',
-    input: z.object({
-      orgId: z.string(),
-      force: z.boolean().optional(),
-    }),
-    output: z.object({
-      syncedCount: z.number(),
-      errors: z.array(z.string()),
-    }),
-  },
-  async (step, payload) => {
+// Define the job
+const syncUsersJob = defineJob({
+  name: 'sync-users',
+  input: z.object({
+    orgId: z.string(),
+    force: z.boolean().optional(),
+  }),
+  output: z.object({
+    syncedCount: z.number(),
+    errors: z.array(z.string()),
+  }),
+  run: async (step, payload) => {
     const users = await step.run('fetch-users', async () => {
       return await api.fetchUsers(payload.orgId)
     })
@@ -101,7 +117,10 @@ const syncUsers = durably.defineJob(
       errors,
     }
   },
-)
+})
+
+// Register with durably instance
+const syncUsers = durably.register(syncUsersJob)
 
 // Trigger the job
 await syncUsers.trigger({ orgId: 'org_123' })
@@ -118,19 +137,34 @@ await syncUsers.trigger(
 Input and output types are inferred from the Zod schemas:
 
 ```ts
-const job = durably.defineJob(
-  {
-    name: 'example',
-    input: z.object({ id: z.string() }),
-    output: z.object({ result: z.number() }),
-  },
-  async (step, payload) => {
+const exampleJob = defineJob({
+  name: 'example',
+  input: z.object({ id: z.string() }),
+  output: z.object({ result: z.number() }),
+  run: async (step, payload) => {
     // payload is typed as { id: string }
     return { result: 42 }  // Must match output schema
   },
-)
+})
+
+const job = durably.register(exampleJob)
 
 // trigger() is typed
 await job.trigger({ id: 'abc' })  // OK
 await job.trigger({ wrong: 1 })   // Type error
 ```
+
+## Idempotent Registration
+
+Registering the same `JobDefinition` instance multiple times returns the same job handle:
+
+```ts
+const jobDef = defineJob({ name: 'my-job', ... })
+
+const handle1 = durably.register(jobDef)
+const handle2 = durably.register(jobDef)
+
+console.log(handle1 === handle2) // true
+```
+
+This enables safe usage in React components where effects may run multiple times.

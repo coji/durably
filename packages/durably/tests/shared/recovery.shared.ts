@@ -1,7 +1,7 @@
 import type { Dialect } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { createDurably, type Durably } from '../../src'
+import { createDurably, defineJob, type Durably } from '../../src'
 
 export function createRecoveryTests(createDialect: () => Dialect) {
   describe('Failure Recovery', () => {
@@ -24,17 +24,17 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
     describe('Heartbeat', () => {
       it('updates heartbeat_at periodically for running runs', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'heartbeat-test',
             input: z.object({}),
-          },
-          async (step) => {
-            await step.run('long-step', async () => {
-              // Run long enough to see heartbeat updates
-              await new Promise((r) => setTimeout(r, 250))
-            })
-          },
+            run: async (step) => {
+              await step.run('long-step', async () => {
+                // Run long enough to see heartbeat updates
+                await new Promise((r) => setTimeout(r, 250))
+              })
+            },
+          }),
         )
 
         const run = await job.trigger({})
@@ -73,21 +73,21 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
         const timestamps: string[] = []
 
-        const job = customDurably.defineJob(
-          {
+        const job = customDurably.register(
+          defineJob({
             name: 'custom-heartbeat-test',
             input: z.object({}),
-          },
-          async (step) => {
-            await step.run('step', async () => {
-              // Record heartbeat timestamps during execution
-              for (let i = 0; i < 3; i++) {
-                const run = await customDurably.storage.getRun(step.runId)
-                if (run) timestamps.push(run.heartbeatAt)
-                await new Promise((r) => setTimeout(r, 100))
-              }
-            })
-          },
+            run: async (step) => {
+              await step.run('step', async () => {
+                // Record heartbeat timestamps during execution
+                for (let i = 0; i < 3; i++) {
+                  const run = await customDurably.storage.getRun(step.runId)
+                  if (run) timestamps.push(run.heartbeatAt)
+                  await new Promise((r) => setTimeout(r, 100))
+                }
+              })
+            },
+          }),
         )
 
         const run = await job.trigger({})
@@ -111,12 +111,12 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
     describe('Stale Run Recovery', () => {
       it('recovers stale running runs to pending', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'stale-recovery-test',
             input: z.object({}),
-          },
-          async () => {},
+            run: async () => {},
+          }),
         )
 
         // Create a run and manually set it to running with old heartbeat
@@ -145,21 +145,21 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         let step1Calls = 0
         let step2Calls = 0
 
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'resume-skip-test',
             input: z.object({}),
-          },
-          async (step) => {
-            await step.run('step1', () => {
-              step1Calls++
-              return 'step1-done'
-            })
-            await step.run('step2', () => {
-              step2Calls++
-              return 'step2-done'
-            })
-          },
+            run: async (step) => {
+              await step.run('step1', () => {
+                step1Calls++
+                return 'step1-done'
+              })
+              await step.run('step2', () => {
+                step2Calls++
+                return 'step2-done'
+              })
+            },
+          }),
         )
 
         // Create run and simulate partial execution
@@ -199,16 +199,16 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
     describe('retry() API', () => {
       it('resets failed run to pending', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'retry-test',
             input: z.object({ shouldFail: z.boolean() }),
-          },
-          async (_step, payload) => {
-            if (payload.shouldFail) {
-              throw new Error('Intentional failure')
-            }
-          },
+            run: async (_step, payload) => {
+              if (payload.shouldFail) {
+                throw new Error('Intentional failure')
+              }
+            },
+          }),
         )
 
         const run = await job.trigger({ shouldFail: true })
@@ -231,12 +231,12 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
 
       it('throws when retrying completed run', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'retry-completed-test',
             input: z.object({}),
-          },
-          async () => {},
+            run: async () => {},
+          }),
         )
 
         const run = await job.trigger({})
@@ -256,12 +256,12 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
 
       it('throws when retrying pending run', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'retry-pending-test',
             input: z.object({}),
-          },
-          async () => {},
+            run: async () => {},
+          }),
         )
 
         const run = await job.trigger({})
@@ -273,16 +273,16 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
 
       it('throws when retrying running run', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'retry-running-test',
             input: z.object({}),
-          },
-          async (step) => {
-            await step.run('long-step', async () => {
-              await new Promise((r) => setTimeout(r, 500))
-            })
-          },
+            run: async (step) => {
+              await step.run('long-step', async () => {
+                await new Promise((r) => setTimeout(r, 500))
+              })
+            },
+          }),
         )
 
         const run = await job.trigger({})
@@ -305,12 +305,12 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
     describe('cancel() API', () => {
       it('cancels pending run', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'cancel-pending-test',
             input: z.object({}),
-          },
-          async () => {},
+            run: async () => {},
+          }),
         )
 
         const run = await job.trigger({})
@@ -323,17 +323,17 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
 
       it('cancels running run immediately', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'cancel-running-test',
             input: z.object({}),
-          },
-          async (step) => {
-            await step.run('step1', async () => {
-              await new Promise((r) => setTimeout(r, 500))
-              return 'done'
-            })
-          },
+            run: async (step) => {
+              await step.run('step1', async () => {
+                await new Promise((r) => setTimeout(r, 500))
+                return 'done'
+              })
+            },
+          }),
         )
 
         const run = await job.trigger({})
@@ -356,12 +356,12 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
 
       it('throws when cancelling completed run', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'cancel-completed-test',
             input: z.object({}),
-          },
-          async () => {},
+            run: async () => {},
+          }),
         )
 
         const run = await job.trigger({})
@@ -381,14 +381,14 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
 
       it('throws when cancelling failed run', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'cancel-failed-test',
             input: z.object({}),
-          },
-          async () => {
-            throw new Error('fail')
-          },
+            run: async () => {
+              throw new Error('fail')
+            },
+          }),
         )
 
         const run = await job.trigger({})
@@ -408,12 +408,12 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
 
       it('throws when cancelling already cancelled run', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'cancel-cancelled-test',
             input: z.object({}),
-          },
-          async () => {},
+            run: async () => {},
+          }),
         )
 
         const run = await job.trigger({})
@@ -435,27 +435,27 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         let step2Executed = false
         let step3Executed = false
 
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'cancel-mid-execution-test',
             input: z.object({}),
-          },
-          async (step) => {
-            await step.run('step1', async () => {
-              step1Executed = true
-              // Give time for cancellation to be triggered
-              await new Promise((r) => setTimeout(r, 100))
-              return 'step1'
-            })
-            await step.run('step2', async () => {
-              step2Executed = true
-              return 'step2'
-            })
-            await step.run('step3', async () => {
-              step3Executed = true
-              return 'step3'
-            })
-          },
+            run: async (step) => {
+              await step.run('step1', async () => {
+                step1Executed = true
+                // Give time for cancellation to be triggered
+                await new Promise((r) => setTimeout(r, 100))
+                return 'step1'
+              })
+              await step.run('step2', async () => {
+                step2Executed = true
+                return 'step2'
+              })
+              await step.run('step3', async () => {
+                step3Executed = true
+                return 'step3'
+              })
+            },
+          }),
         )
 
         const run = await job.trigger({})
@@ -488,17 +488,17 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
 
       it('does not overwrite cancelled status with completed', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'cancel-no-overwrite-test',
             input: z.object({}),
-          },
-          async (step) => {
-            await step.run('step1', async () => {
-              await new Promise((r) => setTimeout(r, 150))
-              return 'done'
-            })
-          },
+            run: async (step) => {
+              await step.run('step1', async () => {
+                await new Promise((r) => setTimeout(r, 150))
+                return 'done'
+              })
+            },
+          }),
         )
 
         const run = await job.trigger({})
@@ -527,15 +527,15 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
     describe('deleteRun() API', () => {
       it('deletes completed run with its steps and logs', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'delete-completed-test',
             input: z.object({}),
-          },
-          async (step) => {
-            step.log.info('test log')
-            await step.run('step1', () => 'done')
-          },
+            run: async (step) => {
+              step.log.info('test log')
+              await step.run('step1', () => 'done')
+            },
+          }),
         )
 
         const run = await job.trigger({})
@@ -566,14 +566,14 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
 
       it('deletes failed run', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'delete-failed-test',
             input: z.object({}),
-          },
-          async () => {
-            throw new Error('fail')
-          },
+            run: async () => {
+              throw new Error('fail')
+            },
+          }),
         )
 
         const run = await job.trigger({})
@@ -594,12 +594,12 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
 
       it('deletes cancelled run', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'delete-cancelled-test',
             input: z.object({}),
-          },
-          async () => {},
+            run: async () => {},
+          }),
         )
 
         const run = await job.trigger({})
@@ -612,12 +612,12 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
 
       it('throws when deleting pending run', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'delete-pending-test',
             input: z.object({}),
-          },
-          async () => {},
+            run: async () => {},
+          }),
         )
 
         const run = await job.trigger({})
@@ -629,16 +629,16 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
 
       it('throws when deleting running run', async () => {
-        const job = durably.defineJob(
-          {
+        const job = durably.register(
+          defineJob({
             name: 'delete-running-test',
             input: z.object({}),
-          },
-          async (step) => {
-            await step.run('long-step', async () => {
-              await new Promise((r) => setTimeout(r, 500))
-            })
-          },
+            run: async (step) => {
+              await step.run('long-step', async () => {
+                await new Promise((r) => setTimeout(r, 500))
+              })
+            },
+          }),
         )
 
         const run = await job.trigger({})

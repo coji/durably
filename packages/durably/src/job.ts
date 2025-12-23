@@ -1,4 +1,5 @@
 import type { z } from 'zod'
+import type { JobDefinition } from './define-job'
 import type { EventEmitter } from './events'
 import type { Run, Storage } from './storage'
 
@@ -38,19 +39,6 @@ export type JobFunction<TInput, TOutput> = (
   step: StepContext,
   payload: TInput,
 ) => Promise<TOutput>
-
-/**
- * Job definition options
- */
-export interface JobDefinition<
-  TName extends string,
-  TInputSchema extends z.ZodType,
-  TOutputSchema extends z.ZodType | undefined,
-> {
-  name: TName
-  input: TInputSchema
-  output?: TOutputSchema
-}
 
 /**
  * Trigger options
@@ -139,6 +127,8 @@ export interface RegisteredJob<TInput, TOutput> {
   inputSchema: z.ZodType
   outputSchema: z.ZodType | undefined
   fn: JobFunction<TInput, TOutput>
+  jobDef: JobDefinition<string, TInput, TOutput>
+  handle: JobHandle<string, TInput, TOutput>
 }
 
 /**
@@ -146,9 +136,9 @@ export interface RegisteredJob<TInput, TOutput> {
  */
 export interface JobRegistry {
   /**
-   * Register a job
+   * Register a job (called internally by createJobHandle)
    */
-  register<TInput, TOutput>(job: RegisteredJob<TInput, TOutput>): void
+  set<TInput, TOutput>(job: RegisteredJob<TInput, TOutput>): void
 
   /**
    * Get a registered job by name
@@ -168,10 +158,7 @@ export function createJobRegistry(): JobRegistry {
   const jobs = new Map<string, RegisteredJob<unknown, unknown>>()
 
   return {
-    register<TInput, TOutput>(job: RegisteredJob<TInput, TOutput>): void {
-      if (jobs.has(job.name)) {
-        throw new Error(`Job "${job.name}" is already registered`)
-      }
+    set<TInput, TOutput>(job: RegisteredJob<TInput, TOutput>): void {
       jobs.set(job.name, job as RegisteredJob<unknown, unknown>)
     },
 
@@ -186,55 +173,46 @@ export function createJobRegistry(): JobRegistry {
 }
 
 /**
- * Create a job handle
+ * Create a job handle from a JobDefinition
  */
-export function createJobHandle<
-  TName extends string,
-  TInputSchema extends z.ZodType,
-  TOutputSchema extends z.ZodType | undefined,
->(
-  definition: JobDefinition<TName, TInputSchema, TOutputSchema>,
-  fn: JobFunction<
-    z.infer<TInputSchema>,
-    TOutputSchema extends z.ZodType ? z.infer<TOutputSchema> : void
-  >,
+export function createJobHandle<TName extends string, TInput, TOutput>(
+  jobDef: JobDefinition<TName, TInput, TOutput>,
   storage: Storage,
   _eventEmitter: EventEmitter,
   registry: JobRegistry,
-): JobHandle<
-  TName,
-  z.infer<TInputSchema>,
-  TOutputSchema extends z.ZodType ? z.infer<TOutputSchema> : undefined
-> {
-  type TInput = z.infer<TInputSchema>
-  type TOutput = TOutputSchema extends z.ZodType
-    ? z.infer<TOutputSchema>
-    : undefined
+): JobHandle<TName, TInput, TOutput> {
+  // Check if same JobDefinition is already registered (idempotent)
+  const existingJob = registry.get(jobDef.name)
+  if (existingJob) {
+    // If same JobDefinition (same reference), return existing handle
+    if (existingJob.jobDef === jobDef) {
+      return existingJob.handle as JobHandle<TName, TInput, TOutput>
+    }
+    // Different JobDefinition with same name - error
+    throw new Error(
+      `Job "${jobDef.name}" is already registered with a different definition`,
+    )
+  }
 
-  // Register the job
-  registry.register({
-    name: definition.name,
-    inputSchema: definition.input,
-    outputSchema: definition.output,
-    fn: fn as JobFunction<unknown, unknown>,
-  })
+  const inputSchema = jobDef.input as z.ZodType<TInput>
+  const outputSchema = jobDef.output as z.ZodType<TOutput> | undefined
 
-  return {
-    name: definition.name,
+  const handle: JobHandle<TName, TInput, TOutput> = {
+    name: jobDef.name,
 
     async trigger(
       input: TInput,
       options?: TriggerOptions,
     ): Promise<TypedRun<TOutput>> {
       // Validate input
-      const parseResult = definition.input.safeParse(input)
+      const parseResult = inputSchema.safeParse(input)
       if (!parseResult.success) {
         throw new Error(`Invalid input: ${parseResult.error.message}`)
       }
 
       // Create the run
       const run = await storage.createRun({
-        jobName: definition.name,
+        jobName: jobDef.name,
         payload: parseResult.data,
         idempotencyKey: options?.idempotencyKey,
         concurrencyKey: options?.concurrencyKey,
@@ -333,7 +311,7 @@ export function createJobHandle<
       // Validate all inputs first (before creating any runs)
       const validated: { payload: unknown; options?: TriggerOptions }[] = []
       for (let i = 0; i < normalized.length; i++) {
-        const parseResult = definition.input.safeParse(normalized[i].input)
+        const parseResult = inputSchema.safeParse(normalized[i].input)
         if (!parseResult.success) {
           throw new Error(
             `Invalid input at index ${i}: ${parseResult.error.message}`,
@@ -348,7 +326,7 @@ export function createJobHandle<
       // Create all runs
       const runs = await storage.batchCreateRuns(
         validated.map((v) => ({
-          jobName: definition.name,
+          jobName: jobDef.name,
           payload: v.payload,
           idempotencyKey: v.options?.idempotencyKey,
           concurrencyKey: v.options?.concurrencyKey,
@@ -360,7 +338,7 @@ export function createJobHandle<
 
     async getRun(id: string): Promise<TypedRun<TOutput> | null> {
       const run = await storage.getRun(id)
-      if (!run || run.jobName !== definition.name) {
+      if (!run || run.jobName !== jobDef.name) {
         return null
       }
       return run as TypedRun<TOutput>
@@ -371,9 +349,21 @@ export function createJobHandle<
     ): Promise<TypedRun<TOutput>[]> {
       const runs = await storage.getRuns({
         ...filter,
-        jobName: definition.name,
+        jobName: jobDef.name,
       })
       return runs as TypedRun<TOutput>[]
     },
   }
+
+  // Register the job with the handle
+  registry.set({
+    name: jobDef.name,
+    inputSchema,
+    outputSchema,
+    fn: jobDef.run as JobFunction<unknown, unknown>,
+    jobDef: jobDef as JobDefinition<string, TInput, TOutput>,
+    handle: handle as JobHandle<string, TInput, TOutput>,
+  })
+
+  return handle
 }

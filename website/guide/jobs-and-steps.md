@@ -2,20 +2,27 @@
 
 ## Defining a Job
 
-Jobs are defined using `durably.defineJob()`:
+Jobs are defined using the standalone `defineJob()` function and registered with `durably.register()`:
 
 ```ts
-const myJob = durably.defineJob(
-  {
-    name: 'my-job',
-    input: z.object({ id: z.string() }),
-    output: z.object({ result: z.string() }),
-  },
-  async (step, payload) => {
+import { createDurably, defineJob } from '@coji/durably'
+import { z } from 'zod'
+
+// Create durably instance (see Getting Started for dialect setup)
+const durably = createDurably({ dialect })
+
+const myJobDef = defineJob({
+  name: 'my-job',
+  input: z.object({ id: z.string() }),
+  output: z.object({ result: z.string() }),
+  run: async (step, payload) => {
     // Job implementation
     return { result: 'done' }
   },
-)
+})
+
+// Register to get a job handle
+const myJob = durably.register(myJobDef)
 ```
 
 ### Job Options
@@ -25,6 +32,7 @@ const myJob = durably.defineJob(
 | `name` | `string` | Yes | Unique job identifier |
 | `input` | `ZodSchema` | Yes | Schema for job payload |
 | `output` | `ZodSchema` | No | Schema for job return value |
+| `run` | `Function` | Yes | The job's run function |
 
 ## Creating Steps
 

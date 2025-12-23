@@ -7,69 +7,6 @@ export default defineConfig({
 
   head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/durably/logo.svg' }]],
 
-  locales: {
-    root: {
-      label: 'English',
-      lang: 'en',
-    },
-    ja: {
-      label: '日本語',
-      lang: 'ja',
-      themeConfig: {
-        nav: [
-          { text: 'ガイド', link: '/ja/guide/getting-started' },
-          { text: 'API', link: '/ja/api/' },
-          { text: 'デモ', link: 'https://durably-demo.vercel.app' },
-          { text: 'llms.txt', link: '/durably/llms.txt' },
-        ],
-        sidebar: {
-          '/ja/guide/': [
-            {
-              text: 'はじめに',
-              items: [
-                { text: 'Durablyとは？', link: '/ja/guide/' },
-                { text: 'はじめる', link: '/ja/guide/getting-started' },
-              ],
-            },
-            {
-              text: 'コアコンセプト',
-              items: [
-                { text: 'ジョブとステップ', link: '/ja/guide/jobs-and-steps' },
-                { text: '再開可能性', link: '/ja/guide/resumability' },
-                { text: 'イベント', link: '/ja/guide/events' },
-              ],
-            },
-            {
-              text: 'プラットフォーム',
-              items: [
-                { text: 'Node.js', link: '/ja/guide/nodejs' },
-                { text: 'ブラウザ', link: '/ja/guide/browser' },
-                { text: 'React', link: '/ja/guide/react' },
-                { text: 'デプロイ', link: '/ja/guide/deployment' },
-              ],
-            },
-          ],
-          '/ja/api/': [
-            {
-              text: 'APIリファレンス',
-              items: [
-                { text: '概要', link: '/ja/api/' },
-                { text: 'createDurably', link: '/ja/api/create-durably' },
-                { text: 'defineJob', link: '/ja/api/define-job' },
-                { text: 'Step', link: '/ja/api/step' },
-                { text: 'イベント', link: '/ja/api/events' },
-              ],
-            },
-          ],
-        },
-        footer: {
-          message: 'MITライセンスの下で公開されています。',
-          copyright: 'Copyright 2025-present coji',
-        },
-      },
-    },
-  },
-
   themeConfig: {
     logo: '/logo.svg',
 

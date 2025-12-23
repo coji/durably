@@ -12,7 +12,7 @@ import { act, render, waitFor } from '@testing-library/react'
 import { StrictMode, useEffect, useRef, useState } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { createDurably, type Durably } from '../../src'
+import { createDurably, defineJob, type Durably } from '../../src'
 import { createBrowserDialect } from '../helpers/browser-dialect'
 
 describe('React StrictMode', () => {
@@ -204,16 +204,16 @@ describe('React StrictMode', () => {
             await instance.migrate()
             if (cleanedUp.current) return
 
-            const job = instance.defineJob(
-              {
+            const job = instance.register(
+              defineJob({
                 name: 'strict-mode-test',
                 input: z.object({ value: z.string() }),
                 output: z.object({ processed: z.string() }),
-              },
-              async (_context, payload) => {
-                executionCount++
-                return { processed: payload.value.toUpperCase() }
-              },
+                run: async (_context, payload) => {
+                  executionCount++
+                  return { processed: payload.value.toUpperCase() }
+                },
+              }),
             )
 
             const run = await job.trigger({ value: 'hello' })
@@ -289,12 +289,12 @@ describe('React StrictMode', () => {
 
         instance.migrate().then(() => {
           if (cleanedUp.current) return
-          const job = instance.defineJob(
-            {
+          const job = instance.register(
+            defineJob({
               name: 'event-test',
               input: z.object({}),
-            },
-            async () => {},
+              run: async () => {},
+            }),
           )
           job.trigger({}).then(() => {
             if (!cleanedUp.current) {

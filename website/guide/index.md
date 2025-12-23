@@ -16,15 +16,22 @@ Traditional approaches require you to either:
 
 ## The Solution
 
-Durably automatically persists the result of each step to SQLite. If a job is interrupted, it resumes from the last successful step.
+Durably automatically persists the result of each step to SQLite. If a job is interrupted, it resumes from the last successful step. Durably uses [Kysely](https://kysely.dev) for database access—you provide a dialect for your SQLite implementation.
 
 ```ts
-const syncUsers = durably.defineJob(
-  {
-    name: 'sync-users',
-    input: z.object({ orgId: z.string() }),
-  },
-  async (step, payload) => {
+import { createDurably, defineJob } from '@coji/durably'
+import { LibsqlDialect } from '@libsql/kysely-libsql' // or your SQLite dialect
+import { z } from 'zod'
+
+// Create durably instance with SQLite dialect
+const dialect = new LibsqlDialect({ url: 'file:app.db' })
+const durably = createDurably({ dialect })
+
+// Define job (static, can be in a separate file)
+const syncUsersJob = defineJob({
+  name: 'sync-users',
+  input: z.object({ orgId: z.string() }),
+  run: async (step, payload) => {
     // Step 1: Fetch users (persisted after completion)
     const users = await step.run('fetch-users', async () => {
       return api.fetchUsers(payload.orgId)
@@ -37,7 +44,11 @@ const syncUsers = durably.defineJob(
 
     return { syncedCount: users.length }
   },
-)
+})
+
+// Register and trigger
+const syncUsers = durably.register(syncUsersJob)
+await syncUsers.trigger({ orgId: 'org_123' })
 ```
 
 ## Key Features

@@ -256,17 +256,16 @@ function ProgressBar({ runId }: { runId: string | null }) {
 
 ```tsx
 import { useEffect, useState } from 'react'
+import { defineJob } from '@coji/durably'
 import { z } from 'zod'
 import { durably } from './lib/durably'
 
 // Define job outside component
-const processDataJob = durably.defineJob(
-  {
-    name: 'process-data',
-    input: z.object({ items: z.array(z.string()) }),
-    output: z.object({ processed: z.number() }),
-  },
-  async (step, payload) => {
+const processDataJobDef = defineJob({
+  name: 'process-data',
+  input: z.object({ items: z.array(z.string()) }),
+  output: z.object({ processed: z.number() }),
+  run: async (step, payload) => {
     let processed = 0
 
     for (const item of payload.items) {
@@ -280,7 +279,10 @@ const processDataJob = durably.defineJob(
 
     return { processed }
   },
-)
+})
+
+// Register the job
+const processDataJob = durably.register(processDataJobDef)
 
 function App() {
   const [ready, setReady] = useState(false)

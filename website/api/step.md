@@ -101,12 +101,12 @@ const index: number = step.stepIndex
 ## Example
 
 ```ts
-durably.defineJob(
-  {
-    name: 'process-order',
-    input: z.object({ orderId: z.string() }),
-  },
-  async (step, payload) => {
+import { defineJob } from '@coji/durably'
+
+const processOrderJob = defineJob({
+  name: 'process-order',
+  input: z.object({ orderId: z.string() }),
+  run: async (step, payload) => {
     step.log.info('Starting order processing', { orderId: payload.orderId })
 
     // Step 1
@@ -132,7 +132,11 @@ durably.defineJob(
     step.log.info('Order processing complete')
     return { success: true }
   },
-)
+})
+
+// Register and use
+const processOrder = durably.register(processOrderJob)
+await processOrder.trigger({ orderId: 'order_123' })
 ```
 
 ## Step Naming Best Practices

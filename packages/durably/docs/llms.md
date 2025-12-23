@@ -39,15 +39,14 @@ const durably = createDurably({
 ### 2. Job Definition
 
 ```ts
+import { defineJob } from '@coji/durably'
 import { z } from 'zod'
 
-const syncUsers = durably.defineJob(
-  {
-    name: 'sync-users',
-    input: z.object({ orgId: z.string() }),
-    output: z.object({ syncedCount: z.number() }),
-  },
-  async (step, payload) => {
+const syncUsersJob = defineJob({
+  name: 'sync-users',
+  input: z.object({ orgId: z.string() }),
+  output: z.object({ syncedCount: z.number() }),
+  run: async (step, payload) => {
     // Step 1: Fetch users (result is persisted)
     const users = await step.run('fetch-users', async () => {
       return await api.fetchUsers(payload.orgId)
@@ -60,7 +59,10 @@ const syncUsers = durably.defineJob(
 
     return { syncedCount: users.length }
   },
-)
+})
+
+// Register the job with durably instance
+const syncUsers = durably.register(syncUsersJob)
 ```
 
 ### 3. Starting the Worker
@@ -208,7 +210,7 @@ durably.use(withLogPersistence())
 ## Browser Usage
 
 ```ts
-import { createDurably } from '@coji/durably'
+import { createDurably, defineJob } from '@coji/durably'
 import { SQLocalKysely } from 'sqlocal/kysely'
 import { z } from 'zod'
 
@@ -222,7 +224,15 @@ const durably = createDurably({
 })
 
 // Same API as Node.js
-const myJob = durably.defineJob(/* ... */)
+const myJob = durably.register(
+  defineJob({
+    name: 'my-job',
+    input: z.object({}),
+    run: async (step) => {
+      /* ... */
+    },
+  }),
+)
 
 await durably.migrate()
 durably.start()
@@ -255,6 +265,13 @@ When a job resumes after interruption:
 ## Type Definitions
 
 ```ts
+interface JobDefinition<TName, TInput, TOutput> {
+  name: TName
+  input: ZodType<TInput>
+  output?: ZodType<TOutput>
+  run: (step: StepContext, payload: TInput) => Promise<TOutput>
+}
+
 interface StepContext {
   runId: string
   run<T>(name: string, fn: () => T | Promise<T>): Promise<T>
