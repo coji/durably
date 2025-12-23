@@ -187,6 +187,9 @@ Subscribe to job execution events:
 durably.on('run:start', (e) => console.log('Started:', e.runId))
 durably.on('run:complete', (e) => console.log('Done:', e.output))
 durably.on('run:fail', (e) => console.error('Failed:', e.error))
+durably.on('run:progress', (e) =>
+  console.log('Progress:', e.progress.current, '/', e.progress.total),
+)
 
 durably.on('step:start', (e) => console.log('Step:', e.stepName))
 durably.on('step:complete', (e) => console.log('Step done:', e.stepName))
