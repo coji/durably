@@ -15,7 +15,7 @@ Vercel AI SDK v5 のアーキテクチャを参考に、以下の2つの動作�
 
 ## パッケージ構成
 
-```
+```text
 @coji/durably-react
 ├── index.ts          # ブラウザ完結モード用（DurablyProvider + hooks）
 └── client.ts         # サーバー連携モード用（軽量、@coji/durably 不要）
@@ -286,7 +286,7 @@ handler.subscribe(request: Request): Response         // GET (SSE)
 
 **SSE イベント形式**:
 
-```
+```text
 data: {"type":"run:start","runId":"xxx","jobName":"process-task",...}
 
 data: {"type":"run:progress","runId":"xxx","progress":{"current":1,"total":2}}
