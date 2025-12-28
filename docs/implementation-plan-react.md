@@ -4,6 +4,11 @@
 
 この文書は `@coji/durably-react` パッケージの実装計画を定義する。仕様は `docs/spec-react.md` に基づく。
 
+**開発手法**: TDD（テスト駆動開発）
+- 各フェーズで「テスト → 実装 → リファクタ」のサイクルを回す
+- 小さなステップで確実に進める
+- 機能単位で垂直スライス
+
 2つの動作モードをサポート:
 - **ブラウザ完結モード**: ブラウザ内で Durably を実行
 - **サーバー連携モード**: サーバーで Durably を実行、クライアントは SSE で購読
@@ -17,18 +22,11 @@
 ```
 packages/durably-react/
 ├── src/
-│   ├── index.ts              # ブラウザ完結モード (DurablyProvider + hooks)
-│   ├── client.ts             # サーバー連携モード (軽量、@coji/durably 不要)
-│   ├── context.tsx           # DurablyContext & DurablyProvider
-│   ├── hooks/
-│   │   ├── use-durably.ts    # useDurably hook
-│   │   ├── use-job.ts        # useJob hook (ブラウザ)
-│   │   ├── use-job-run.ts    # useJobRun hook (ブラウザ)
-│   │   └── use-job-logs.ts   # useJobLogs hook (ブラウザ)
-│   ├── client/
-│   │   ├── use-job.ts        # useJob hook (サーバー連携)
-│   │   ├── use-job-run.ts    # useJobRun hook (サーバー連携)
-│   │   └── use-job-logs.ts   # useJobLogs hook (サーバー連携)
+│   ├── index.ts              # ブラウザ完結モード
+│   ├── client.ts             # サーバー連携モード
+│   ├── context.tsx           # DurablyProvider
+│   ├── hooks/                # ブラウザ完結モード用 hooks
+│   ├── client/               # サーバー連携モード用 hooks
 │   └── types.ts              # 共有型定義
 ├── tests/
 │   ├── browser/              # ブラウザ完結モードのテスト
@@ -64,20 +62,9 @@ packages/durably-react/
     "@coji/durably": {
       "optional": true
     }
-  },
-  "devDependencies": {
-    "@coji/durably": "workspace:*",
-    "@testing-library/react": "^16.x",
-    "react": "^19.x",
-    "react-dom": "^19.x",
-    "vitest": "^4.x"
   }
 }
 ```
-
-**ポイント**:
-- `@coji/durably` は optional peer dependency（サーバー連携モードでは不要）
-- 2つのエントリポイント: `.` と `./client`
 
 ---
 
@@ -87,49 +74,48 @@ packages/durably-react/
 
 - `durably.on()` が unsubscribe 関数を返す ✅
 - `durably.register(jobDef)` で JobHandle を取得 ✅
-- `run:progress` イベント ✅ (Phase 0 で実装済み)
+- `run:progress` イベント ✅
 
 ### 新規（サーバー連携用）
 
-1. **`durably.subscribe(runId): ReadableStream<DurablyEvent>`**
-   - Run のイベントを ReadableStream で返す
-   - SSE に変換可能
-
-2. **`durably.getJob(jobName): JobHandle`**
-   - 登録済みジョブを名前で取得
-
-3. **`createDurablyHandler(durably)`** (`@coji/durably/server`)
-   - Web 標準の Request/Response を扱うヘルパー
+1. `durably.getJob(jobName): JobHandle | undefined`
+2. `durably.subscribe(runId): ReadableStream<DurablyEvent>`
+3. `createDurablyHandler(durably)` (`@coji/durably/server`)
 
 ---
 
-## 3. 実装フェーズ
+## 3. 実装フェーズ（TDD）
+
+各フェーズで以下のサイクルを回す:
+1. **Red**: テストを書く（失敗する）
+2. **Green**: 最小限の実装で通す
+3. **Refactor**: コードを整理
+
+---
 
 ### Phase 1: 基盤構築
 
-**目標**: パッケージ構造とビルド環境の整備
+**目標**: パッケージ構造とビルド環境
 
 **タスク**:
-1. `packages/durably-react/` ディレクトリ作成
-2. `package.json` 作成（2つのエントリポイント）
-3. `tsconfig.json` 作成
-4. `tsup.config.ts` 作成（`index.ts` と `client.ts` を両方ビルド）
-5. `vitest.config.ts` 作成
+1. ディレクトリ作成
+2. package.json（2エントリポイント）
+3. tsconfig.json
+4. tsup.config.ts
+5. vitest.config.ts
 6. 空のエクスポートでビルド確認
 
-**成果物**:
-- 空の durably-react パッケージがビルドできる状態
+**成果物**: 空パッケージがビルドできる
 
 ---
 
-### Phase 2: 共通型定義
+### Phase 2: 型定義
 
-**目標**: 両モードで共有する型を定義
+**目標**: 共有型の定義
 
 **タスク**:
 `src/types.ts`:
 ```ts
-// 共通
 export type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 export interface Progress {
@@ -147,339 +133,715 @@ export interface LogEntry {
   data: unknown
   timestamp: string
 }
-
-// useJob 戻り値（共通部分）
-export interface UseJobState<TOutput> {
-  status: RunStatus | null
-  output: TOutput | null
-  error: string | null
-  logs: LogEntry[]
-  progress: Progress | null
-  currentRunId: string | null
-}
 ```
+
+**成果物**: 型定義ファイル
 
 ---
 
-### Phase 3: ブラウザ完結モード - Provider
+### Phase 3: DurablyProvider - 初期化
 
-**目標**: DurablyProvider と useDurably の実装
+**目標**: Provider が Durably を初期化できる
 
-**タスク**:
-
-1. `src/context.tsx`:
+**テスト（Red）**:
 ```tsx
-interface DurablyContextValue {
-  durably: Durably | null
-  isReady: boolean
-  error: Error | null
-}
+// tests/browser/provider.test.tsx
+describe('DurablyProvider', () => {
+  it('initializes Durably and provides isReady=true', async () => {
+    const dialectFactory = () => createMockDialect()
 
-interface DurablyProviderProps {
-  dialectFactory: () => Dialect
-  options?: DurablyOptions
-  autoStart?: boolean      // default: true
-  autoMigrate?: boolean    // default: true
-  children: ReactNode
-}
+    const { result } = renderHook(() => useDurably(), {
+      wrapper: ({ children }) => (
+        <DurablyProvider dialectFactory={dialectFactory}>
+          {children}
+        </DurablyProvider>
+      ),
+    })
+
+    await waitFor(() => {
+      expect(result.current.isReady).toBe(true)
+    })
+    expect(result.current.durably).not.toBeNull()
+  })
+})
 ```
 
-**実装ポイント**:
-- `useRef` で初期化済みフラグを管理（StrictMode 対応）
-- `dialectFactory()` は一度だけ実行
-- マウント時: `createDurably()` → `migrate()` → `start()`
-- アンマウント時: `stop()`
+**実装（Green）**:
+- `src/context.tsx`: DurablyContext, DurablyProvider
+- `src/hooks/use-durably.ts`: useDurably
 
-2. `src/hooks/use-durably.ts`:
-- Context から値を取得
-- Provider 外で使用時はエラー
-
-**テスト**:
-- 正常な初期化フロー
-- StrictMode での二重マウント
-- autoStart/autoMigrate オプション
+**Refactor**: StrictMode 対応
 
 ---
 
-### Phase 4: ブラウザ完結モード - useJob
+### Phase 4: DurablyProvider - オプション
 
-**目標**: ジョブ実行と状態管理
+**目標**: autoStart, autoMigrate オプション
 
-**タスク**:
-
-`src/hooks/use-job.ts`:
+**テスト（Red）**:
 ```tsx
-function useJob<TInput, TOutput>(
-  job: JobDefinition<string, TInput, TOutput>,
-  options?: { initialRunId?: string }
-): {
-  isReady: boolean
-  trigger: (input: TInput) => Promise<{ runId: string }>
-  triggerAndWait: (input: TInput) => Promise<{ runId: string; output: TOutput }>
-  status: RunStatus | null
-  output: TOutput | null
-  error: string | null
-  logs: LogEntry[]
-  progress: Progress | null
-  isRunning: boolean
-  isPending: boolean
-  isCompleted: boolean
-  isFailed: boolean
-  currentRunId: string | null
-  reset: () => void
-}
+it('respects autoStart=false', async () => {
+  // start() が呼ばれないことを確認
+})
+
+it('respects autoMigrate=false', async () => {
+  // migrate() が呼ばれないことを確認
+})
 ```
 
-**実装ポイント**:
-- `useDurably()` で context を取得
-- `durably.register(job)` で JobHandle 取得
-- `trigger()` 時に `durably.on()` でイベント購読
-- Run 完了時にリスナー解除
-- `initialRunId` で既存 Run を購読
-
-**テスト**:
-- trigger でジョブ実行
-- 状態遷移 (pending → running → completed/failed)
-- ログ・進捗の収集
-- アンマウント時のクリーンアップ
+**実装（Green）**: オプション処理
 
 ---
 
-### Phase 5: ブラウザ完結モード - useJobRun & useJobLogs
+### Phase 5: DurablyProvider - クリーンアップ
 
-**目標**: 単独の Run 購読とログ購読
+**目標**: アンマウント時に stop() が呼ばれる
 
-**タスク**:
-
-1. `src/hooks/use-job-run.ts`:
+**テスト（Red）**:
 ```tsx
-function useJobRun(options: { runId: string | null }): {
-  status: RunStatus | null
-  output: unknown
-  error: string | null
-  logs: LogEntry[]
-  progress: Progress | null
-}
+it('calls stop() on unmount', async () => {
+  const stopSpy = vi.fn()
+  // ...
+  unmount()
+  expect(stopSpy).toHaveBeenCalled()
+})
 ```
 
-2. `src/hooks/use-job-logs.ts`:
-```tsx
-function useJobLogs(options: { runId: string; maxLogs?: number }): {
-  logs: LogEntry[]
-  clear: () => void
-}
-```
-
-**テスト**:
-- 既存 Run の購読
-- null runId の扱い
-- maxLogs 制限
+**実装（Green）**: cleanup 処理
 
 ---
 
-### Phase 6: コア拡張 - サーバー連携用 API
+### Phase 6: DurablyProvider - StrictMode
 
-**目標**: `@coji/durably` にサーバー連携用 API を追加
+**目標**: StrictMode で二重初期化しない
 
-**タスク**:
+**テスト（Red）**:
+```tsx
+it('does not double-initialize in StrictMode', async () => {
+  const dialectFactory = vi.fn(() => createMockDialect())
 
-1. `packages/durably/src/durably.ts` に追加:
-```ts
-// 登録済みジョブを名前で取得
-getJob(jobName: string): JobHandle | undefined
+  render(
+    <StrictMode>
+      <DurablyProvider dialectFactory={dialectFactory}>
+        <TestComponent />
+      </DurablyProvider>
+    </StrictMode>
+  )
 
-// Run のイベントを ReadableStream で返す
-subscribe(runId: string): ReadableStream<DurablyEvent>
+  await waitFor(() => {})
+  expect(dialectFactory).toHaveBeenCalledTimes(1)
+})
 ```
 
-2. `packages/durably/src/server.ts` 新規作成:
-```ts
-export function createDurablyHandler(durably: Durably) {
-  return {
-    // POST: ジョブ起動
-    async trigger(request: Request): Promise<Response> {
-      const { jobName, input } = await request.json()
-      const job = durably.getJob(jobName)
-      if (!job) return new Response('Job not found', { status: 404 })
-      const run = await job.trigger(input)
-      return Response.json({ runId: run.id })
-    },
-
-    // GET: SSE 購読
-    subscribe(request: Request): Response {
-      const url = new URL(request.url)
-      const runId = url.searchParams.get('runId')
-      if (!runId) return new Response('Missing runId', { status: 400 })
-
-      const stream = durably.subscribe(runId)
-      return new Response(stream, {
-        headers: {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
-        },
-      })
-    },
-  }
-}
-```
-
-3. `packages/durably/package.json` の exports に追加:
-```json
-"./server": {
-  "types": "./dist/server.d.ts",
-  "import": "./dist/server.js"
-}
-```
-
-**テスト**:
-- `getJob()` で登録済みジョブを取得
-- `subscribe()` が ReadableStream を返す
-- `createDurablyHandler` の trigger/subscribe
+**実装（Green）**: useRef で初期化フラグ管理
 
 ---
 
-### Phase 7: サーバー連携モード - useJob
+### Phase 7: useJob - trigger
 
-**目標**: サーバー連携用の軽量 useJob
+**目標**: trigger でジョブを実行し runId を返す
 
-**タスク**:
-
-`src/client/use-job.ts`:
+**テスト（Red）**:
 ```tsx
-function useJob<TInput, TOutput>(options: {
-  api: string
-  jobName: string
-  initialRunId?: string
-}): {
-  isReady: true  // 常に true
-  trigger: (input: TInput) => Promise<{ runId: string }>
-  triggerAndWait: (input: TInput) => Promise<{ runId: string; output: TOutput }>
-  status: RunStatus | null
-  output: TOutput | null
-  error: string | null
-  logs: LogEntry[]
-  progress: Progress | null
-  isRunning: boolean
-  isPending: boolean
-  isCompleted: boolean
-  isFailed: boolean
-  currentRunId: string | null
-  reset: () => void
-}
+describe('useJob', () => {
+  it('returns trigger function that executes job', async () => {
+    const { result } = renderHook(() => useJob(testJob), { wrapper })
+
+    await waitFor(() => expect(result.current.isReady).toBe(true))
+
+    const { runId } = await result.current.trigger({ input: 'test' })
+
+    expect(runId).toBeDefined()
+    expect(typeof runId).toBe('string')
+  })
+})
 ```
 
-**実装ポイント**:
-- `fetch()` で trigger
-- `EventSource` で SSE 購読
-- `@coji/durably` に依存しない
-- `isReady` は常に `true`
-
-**テスト**:
-- fetch mock で trigger テスト
-- EventSource mock で購読テスト
+**実装（Green）**:
+- `src/hooks/use-job.ts`: trigger 関数のみ
 
 ---
 
-### Phase 8: サーバー連携モード - useJobRun & useJobLogs
+### Phase 8: useJob - status 購読
 
-**目標**: サーバー連携用の useJobRun と useJobLogs
+**目標**: trigger 後に status が更新される
 
-**タスク**:
-
-1. `src/client/use-job-run.ts`:
+**テスト（Red）**:
 ```tsx
-function useJobRun(options: {
-  api: string
-  runId: string
-}): {
-  status: RunStatus | null
-  output: unknown
-  error: string | null
-  logs: LogEntry[]
-  progress: Progress | null
-}
+it('updates status from pending to running to completed', async () => {
+  const { result } = renderHook(() => useJob(testJob), { wrapper })
+
+  await waitFor(() => expect(result.current.isReady).toBe(true))
+
+  expect(result.current.status).toBeNull()
+
+  act(() => {
+    result.current.trigger({ input: 'test' })
+  })
+
+  await waitFor(() => {
+    expect(result.current.status).toBe('completed')
+  })
+})
 ```
 
-2. `src/client/use-job-logs.ts`:
-```tsx
-function useJobLogs(options: {
-  api: string
-  runId: string
-  maxLogs?: number
-}): {
-  logs: LogEntry[]
-  clear: () => void
-}
-```
-
-**実装ポイント**:
-- `EventSource` で SSE 購読
-- API エンドポイントからイベントを受信
+**実装（Green）**: イベント購読で status 更新
 
 ---
 
-### Phase 9: エントリポイント整備
+### Phase 9: useJob - output 取得
+
+**目標**: 完了時に output が取得できる
+
+**テスト（Red）**:
+```tsx
+it('provides output when completed', async () => {
+  const { result } = renderHook(() => useJob(testJob), { wrapper })
+
+  await result.current.trigger({ input: 'test' })
+
+  await waitFor(() => {
+    expect(result.current.output).toEqual({ success: true })
+  })
+})
+```
+
+**実装（Green）**: run:complete で output を設定
+
+---
+
+### Phase 10: useJob - error 取得
+
+**目標**: 失敗時に error が取得できる
+
+**テスト（Red）**:
+```tsx
+it('provides error when failed', async () => {
+  const { result } = renderHook(() => useJob(failingJob), { wrapper })
+
+  await result.current.trigger({ input: 'test' })
+
+  await waitFor(() => {
+    expect(result.current.status).toBe('failed')
+    expect(result.current.error).toBe('Something went wrong')
+  })
+})
+```
+
+**実装（Green）**: run:fail で error を設定
+
+---
+
+### Phase 11: useJob - progress 購読
+
+**目標**: progress が更新される
+
+**テスト（Red）**:
+```tsx
+it('updates progress during execution', async () => {
+  const { result } = renderHook(() => useJob(progressJob), { wrapper })
+
+  result.current.trigger({ input: 'test' })
+
+  await waitFor(() => {
+    expect(result.current.progress).toEqual({
+      current: 1,
+      total: 3,
+      message: 'Step 1',
+    })
+  })
+})
+```
+
+**実装（Green）**: run:progress で progress を設定
+
+---
+
+### Phase 12: useJob - logs 購読
+
+**目標**: logs が収集される
+
+**テスト（Red）**:
+```tsx
+it('collects logs during execution', async () => {
+  const { result } = renderHook(() => useJob(loggingJob), { wrapper })
+
+  await result.current.trigger({ input: 'test' })
+
+  await waitFor(() => {
+    expect(result.current.logs).toHaveLength(2)
+    expect(result.current.logs[0].message).toBe('Starting')
+  })
+})
+```
+
+**実装（Green）**: log:write で logs に追加
+
+---
+
+### Phase 13: useJob - boolean ヘルパー
+
+**目標**: isRunning, isPending, isCompleted, isFailed
+
+**テスト（Red）**:
+```tsx
+it('provides boolean helpers', async () => {
+  const { result } = renderHook(() => useJob(testJob), { wrapper })
+
+  expect(result.current.isRunning).toBe(false)
+  expect(result.current.isPending).toBe(false)
+
+  act(() => {
+    result.current.trigger({ input: 'test' })
+  })
+
+  // pending 状態
+  expect(result.current.isPending).toBe(true)
+
+  await waitFor(() => {
+    expect(result.current.isCompleted).toBe(true)
+  })
+})
+```
+
+**実装（Green）**: 派生状態を計算
+
+---
+
+### Phase 14: useJob - triggerAndWait
+
+**目標**: 完了まで待つ関数
+
+**テスト（Red）**:
+```tsx
+it('triggerAndWait resolves with output', async () => {
+  const { result } = renderHook(() => useJob(testJob), { wrapper })
+
+  await waitFor(() => expect(result.current.isReady).toBe(true))
+
+  const { runId, output } = await result.current.triggerAndWait({ input: 'test' })
+
+  expect(runId).toBeDefined()
+  expect(output).toEqual({ success: true })
+})
+```
+
+**実装（Green）**: Promise でラップ
+
+---
+
+### Phase 15: useJob - reset
+
+**目標**: 状態をリセット
+
+**テスト（Red）**:
+```tsx
+it('reset clears all state', async () => {
+  const { result } = renderHook(() => useJob(testJob), { wrapper })
+
+  await result.current.trigger({ input: 'test' })
+  await waitFor(() => expect(result.current.isCompleted).toBe(true))
+
+  act(() => {
+    result.current.reset()
+  })
+
+  expect(result.current.status).toBeNull()
+  expect(result.current.output).toBeNull()
+  expect(result.current.currentRunId).toBeNull()
+})
+```
+
+**実装（Green）**: 初期状態に戻す
+
+---
+
+### Phase 16: useJob - initialRunId
+
+**目標**: 既存 Run を購読
+
+**テスト（Red）**:
+```tsx
+it('subscribes to existing run with initialRunId', async () => {
+  // 先にジョブを実行して runId を取得
+  const existingRunId = await triggerJobDirectly()
+
+  const { result } = renderHook(
+    () => useJob(testJob, { initialRunId: existingRunId }),
+    { wrapper }
+  )
+
+  await waitFor(() => {
+    expect(result.current.currentRunId).toBe(existingRunId)
+  })
+})
+```
+
+**実装（Green）**: 初期化時に購読開始
+
+---
+
+### Phase 17: useJob - クリーンアップ
+
+**目標**: アンマウント時にリスナー解除
+
+**テスト（Red）**:
+```tsx
+it('unsubscribes on unmount', async () => {
+  const { result, unmount } = renderHook(() => useJob(testJob), { wrapper })
+
+  await result.current.trigger({ input: 'test' })
+
+  // まだ running 中にアンマウント
+  unmount()
+
+  // メモリリークがないことを確認（エラーが出ないこと）
+})
+```
+
+**実装（Green）**: useEffect の cleanup で解除
+
+---
+
+### Phase 18: useJobRun - 基本
+
+**目標**: runId で購読
+
+**テスト（Red）**:
+```tsx
+describe('useJobRun', () => {
+  it('subscribes to run by id', async () => {
+    const runId = await triggerJobDirectly()
+
+    const { result } = renderHook(
+      () => useJobRun({ runId }),
+      { wrapper }
+    )
+
+    await waitFor(() => {
+      expect(result.current.status).not.toBeNull()
+    })
+  })
+
+  it('handles null runId', () => {
+    const { result } = renderHook(
+      () => useJobRun({ runId: null }),
+      { wrapper }
+    )
+
+    expect(result.current.status).toBeNull()
+  })
+})
+```
+
+**実装（Green）**: `src/hooks/use-job-run.ts`
+
+---
+
+### Phase 19: useJobLogs - 基本
+
+**目標**: ログを購読
+
+**テスト（Red）**:
+```tsx
+describe('useJobLogs', () => {
+  it('collects logs for run', async () => {
+    const runId = await triggerLoggingJob()
+
+    const { result } = renderHook(
+      () => useJobLogs({ runId }),
+      { wrapper }
+    )
+
+    await waitFor(() => {
+      expect(result.current.logs.length).toBeGreaterThan(0)
+    })
+  })
+
+  it('respects maxLogs limit', async () => {
+    const { result } = renderHook(
+      () => useJobLogs({ runId, maxLogs: 5 }),
+      { wrapper }
+    )
+
+    // 多くのログを生成しても 5 件まで
+    await waitFor(() => {
+      expect(result.current.logs.length).toBeLessThanOrEqual(5)
+    })
+  })
+
+  it('clear removes all logs', async () => {
+    const { result } = renderHook(
+      () => useJobLogs({ runId }),
+      { wrapper }
+    )
+
+    await waitFor(() => expect(result.current.logs.length).toBeGreaterThan(0))
+
+    act(() => {
+      result.current.clear()
+    })
+
+    expect(result.current.logs).toHaveLength(0)
+  })
+})
+```
+
+**実装（Green）**: `src/hooks/use-job-logs.ts`
+
+---
+
+### Phase 20: コア拡張 - getJob
+
+**目標**: 登録済みジョブを名前で取得
+
+**テスト（Red）**:
+```tsx
+// packages/durably/tests/durably.test.ts
+describe('getJob', () => {
+  it('returns registered job by name', () => {
+    const durably = createDurably({ dialect })
+    durably.register(testJob)
+
+    const job = durably.getJob('test-job')
+
+    expect(job).toBeDefined()
+    expect(job?.name).toBe('test-job')
+  })
+
+  it('returns undefined for unknown job', () => {
+    const durably = createDurably({ dialect })
+
+    expect(durably.getJob('unknown')).toBeUndefined()
+  })
+})
+```
+
+**実装（Green）**: `packages/durably/src/durably.ts` に追加
+
+---
+
+### Phase 21: コア拡張 - subscribe
+
+**目標**: Run のイベントを ReadableStream で返す
+
+**テスト（Red）**:
+```tsx
+describe('subscribe', () => {
+  it('returns ReadableStream of events', async () => {
+    const durably = createDurably({ dialect })
+    durably.register(testJob)
+    await durably.migrate()
+    durably.start()
+
+    const job = durably.getJob('test-job')!
+    const run = await job.trigger({ input: 'test' })
+
+    const stream = durably.subscribe(run.id)
+    const reader = stream.getReader()
+
+    const events: DurablyEvent[] = []
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      events.push(value)
+    }
+
+    expect(events.some(e => e.type === 'run:complete')).toBe(true)
+  })
+})
+```
+
+**実装（Green）**: `packages/durably/src/durably.ts` に追加
+
+---
+
+### Phase 22: コア拡張 - createDurablyHandler
+
+**目標**: Web 標準の Request/Response ヘルパー
+
+**テスト（Red）**:
+```tsx
+// packages/durably/tests/server.test.ts
+describe('createDurablyHandler', () => {
+  it('trigger returns runId', async () => {
+    const handler = createDurablyHandler(durably)
+
+    const request = new Request('http://localhost/api', {
+      method: 'POST',
+      body: JSON.stringify({ jobName: 'test-job', input: { value: 1 } }),
+    })
+
+    const response = await handler.trigger(request)
+    const { runId } = await response.json()
+
+    expect(runId).toBeDefined()
+  })
+
+  it('subscribe returns SSE stream', async () => {
+    const handler = createDurablyHandler(durably)
+
+    const request = new Request('http://localhost/api?runId=xxx')
+    const response = handler.subscribe(request)
+
+    expect(response.headers.get('Content-Type')).toBe('text/event-stream')
+  })
+})
+```
+
+**実装（Green）**: `packages/durably/src/server.ts` 新規作成
+
+---
+
+### Phase 23: サーバー連携 - useJob trigger
+
+**目標**: fetch で trigger
+
+**テスト（Red）**:
+```tsx
+// tests/client/use-job.test.tsx
+describe('useJob (client)', () => {
+  it('triggers via fetch', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ runId: 'test-run-id' }),
+    })
+    global.fetch = fetchMock
+
+    const { result } = renderHook(() =>
+      useJob({ api: '/api/durably', jobName: 'test-job' })
+    )
+
+    const { runId } = await result.current.trigger({ input: 'test' })
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/durably', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ jobName: 'test-job', input: { input: 'test' } }),
+    }))
+    expect(runId).toBe('test-run-id')
+  })
+})
+```
+
+**実装（Green）**: `src/client/use-job.ts`
+
+---
+
+### Phase 24: サーバー連携 - useJob SSE 購読
+
+**目標**: EventSource で購読
+
+**テスト（Red）**:
+```tsx
+it('subscribes via EventSource', async () => {
+  const mockEventSource = createMockEventSource()
+  global.EventSource = mockEventSource
+
+  const { result } = renderHook(() =>
+    useJob({ api: '/api/durably', jobName: 'test-job' })
+  )
+
+  await result.current.trigger({ input: 'test' })
+
+  // SSE イベントをシミュレート
+  mockEventSource.emit({ type: 'run:start', runId: 'xxx' })
+
+  await waitFor(() => {
+    expect(result.current.status).toBe('running')
+  })
+
+  mockEventSource.emit({ type: 'run:complete', runId: 'xxx', output: { ok: true } })
+
+  await waitFor(() => {
+    expect(result.current.status).toBe('completed')
+    expect(result.current.output).toEqual({ ok: true })
+  })
+})
+```
+
+**実装（Green）**: EventSource 購読
+
+---
+
+### Phase 25: サーバー連携 - useJob 完全実装
+
+**目標**: progress, logs, エラー処理
+
+**テスト（Red）**:
+```tsx
+it('handles progress events', async () => {
+  // ...
+})
+
+it('handles log events', async () => {
+  // ...
+})
+
+it('handles connection errors', async () => {
+  // ...
+})
+```
+
+**実装（Green）**: 残りのイベント処理
+
+---
+
+### Phase 26: サーバー連携 - useJobRun
+
+**目標**: runId で購読
+
+**テスト（Red）**:
+```tsx
+describe('useJobRun (client)', () => {
+  it('subscribes to run via SSE', async () => {
+    // ...
+  })
+})
+```
+
+**実装（Green）**: `src/client/use-job-run.ts`
+
+---
+
+### Phase 27: サーバー連携 - useJobLogs
+
+**目標**: ログ購読
+
+**テスト（Red）**:
+```tsx
+describe('useJobLogs (client)', () => {
+  it('collects logs from SSE', async () => {
+    // ...
+  })
+})
+```
+
+**実装（Green）**: `src/client/use-job-logs.ts`
+
+---
+
+### Phase 28: エントリポイント整備
 
 **目標**: 公開 API の整備
 
 **タスク**:
-
-1. `src/index.ts` (ブラウザ完結モード):
-```ts
-// Provider
-export { DurablyProvider } from './context'
-export type { DurablyProviderProps } from './types'
-
-// Hooks
-export { useDurably } from './hooks/use-durably'
-export { useJob } from './hooks/use-job'
-export { useJobRun } from './hooks/use-job-run'
-export { useJobLogs } from './hooks/use-job-logs'
-
-// Types
-export type { Progress, LogEntry, RunStatus } from './types'
-```
-
-2. `src/client.ts` (サーバー連携モード):
-```ts
-// Hooks only (no Provider needed)
-export { useJob } from './client/use-job'
-export { useJobRun } from './client/use-job-run'
-export { useJobLogs } from './client/use-job-logs'
-
-// Types
-export type { Progress, LogEntry, RunStatus } from './types'
-```
+1. `src/index.ts` - ブラウザ完結モード
+2. `src/client.ts` - サーバー連携モード
+3. ビルド確認
 
 ---
 
-### Phase 10: ドキュメントと例
+### Phase 29: ドキュメント
 
-**目標**: README とサンプルの整備
+**目標**: README と LLM ドキュメント
 
 **タスク**:
-1. `packages/durably-react/README.md` 作成
-2. `packages/durably-react/docs/llms.md` 作成
-3. `examples/react-browser/` - ブラウザ完結モードの例
-4. `examples/react-server/` - サーバー連携モードの例
+1. `packages/durably-react/README.md`
+2. `packages/durably-react/docs/llms.md`
 
 ---
 
-### Phase 11: テストと品質保証
-
-**目標**: 完全なテストカバレッジ
-
-**タスク**:
-1. ブラウザモードのテスト (jsdom)
-2. サーバー連携モードのテスト (fetch/EventSource mock)
-3. StrictMode テスト
-4. TypeScript 型チェック
-5. Biome lint
-
----
-
-### Phase 12: パブリッシュ準備
+### Phase 30: パブリッシュ準備
 
 **目標**: npm パブリッシュの準備
 
@@ -492,118 +854,26 @@ export type { Progress, LogEntry, RunStatus } from './types'
 
 ## 4. 実装順序のまとめ
 
-| Phase | 内容 | 依存 |
-|-------|------|------|
-| 1 | 基盤構築 | - |
-| 2 | 共通型定義 | Phase 1 |
-| 3 | ブラウザ: Provider | Phase 2 |
-| 4 | ブラウザ: useJob | Phase 3 |
-| 5 | ブラウザ: useJobRun, useJobLogs | Phase 3 |
-| 6 | コア拡張: サーバー連携用 API | - |
-| 7 | サーバー連携: useJob | Phase 2, 6 |
-| 8 | サーバー連携: useJobRun, useJobLogs | Phase 7 |
-| 9 | エントリポイント整備 | Phase 5, 8 |
-| 10 | ドキュメント | Phase 9 |
-| 11 | テスト・品質保証 | Phase 10 |
-| 12 | パブリッシュ準備 | Phase 11 |
+| Phase | 内容                             | TDD |
+|-------|----------------------------------|-----|
+| 1-2   | 基盤・型定義                     | -   |
+| 3-6   | DurablyProvider                  | ✅  |
+| 7-17  | useJob（ブラウザ）               | ✅  |
+| 18-19 | useJobRun, useJobLogs（ブラウザ）| ✅  |
+| 20-22 | コア拡張                         | ✅  |
+| 23-27 | サーバー連携 hooks               | ✅  |
+| 28-30 | 整備・ドキュメント               | -   |
 
 ---
 
-## 5. 技術的な決定事項
+## 5. 完了条件
 
-### StrictMode 対応
-
-```tsx
-function DurablyProvider({ dialectFactory, children }: Props) {
-  const [state, setState] = useState({ durably: null, isReady: false, error: null })
-  const initializedRef = useRef(false)
-
-  useEffect(() => {
-    if (initializedRef.current) return
-    initializedRef.current = true
-
-    const dialect = dialectFactory()
-    const durably = createDurably({ dialect })
-    let cancelled = false
-
-    async function init() {
-      try {
-        await durably.migrate()
-        if (cancelled) return
-        durably.start()
-        setState({ durably, isReady: true, error: null })
-      } catch (error) {
-        if (!cancelled) setState(s => ({ ...s, error: error as Error }))
-      }
-    }
-
-    init()
-
-    return () => {
-      cancelled = true
-      durably.stop()
-    }
-  }, [dialectFactory])
-
-  return <Context.Provider value={state}>{children}</Context.Provider>
-}
-```
-
-### SSE 購読の実装
-
-```tsx
-// サーバー連携モードの useJob 内部
-function subscribeToRun(runId: string) {
-  const eventSource = new EventSource(`${api}?runId=${runId}`)
-
-  eventSource.onmessage = (event) => {
-    const data = JSON.parse(event.data) as DurablyEvent
-
-    switch (data.type) {
-      case 'run:start':
-        setState(s => ({ ...s, status: 'running' }))
-        break
-      case 'run:complete':
-        setState(s => ({ ...s, status: 'completed', output: data.output }))
-        eventSource.close()
-        break
-      case 'run:fail':
-        setState(s => ({ ...s, status: 'failed', error: data.error }))
-        eventSource.close()
-        break
-      case 'run:progress':
-        setState(s => ({ ...s, progress: data.progress }))
-        break
-      case 'log:write':
-        setState(s => ({ ...s, logs: [...s.logs, data] }))
-        break
-    }
-  }
-
-  return () => eventSource.close()
-}
-```
-
----
-
-## 6. リスクと対策
-
-| リスク | 対策 |
-|--------|------|
-| StrictMode での予期せぬ動作 | 二重マウントテストを十分に行う |
-| EventSource の再接続ループ | エラー時の適切なハンドリング |
-| SSE が終了しない | Run 完了時に必ず close() |
-| 型推論が複雑で失敗 | ジェネリクスの型テストを追加 |
-
----
-
-## 7. 完了条件
-
+- [ ] 全フェーズでテストが先に書かれている
+- [ ] 全テストがパスする
 - [ ] ブラウザ完結モードの全フックが実装されている
 - [ ] サーバー連携モードの全フックが実装されている
 - [ ] コア側に `getJob`, `subscribe`, `createDurablyHandler` が追加されている
 - [ ] 2つのエントリポイント (`.` と `./client`) が機能する
 - [ ] StrictMode で正しく動作する
 - [ ] 型推論が正しく機能する
-- [ ] テストがすべてパスする
 - [ ] ドキュメントが整備されている
