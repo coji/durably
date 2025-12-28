@@ -253,10 +253,11 @@ const {
 
 **戻り値の詳細**:
 
-| メソッド                | 戻り値                                        | 説明                        |
-|-------------------------|-----------------------------------------------|-----------------------------|
-| `trigger(input)`        | `Promise<{ runId: string }>`                  | ジョブを実行、Run ID を返す |
-| `triggerAndWait(input)` | `Promise<{ runId: string; output: TOutput }>` | 実行して完了を待つ          |
+| プロパティ              | 型                                            | 説明                                                                 |
+|-------------------------|-----------------------------------------------|----------------------------------------------------------------------|
+| `isReady`               | `boolean`                                     | 準備完了（ブラウザ: 初期化完了、サーバー連携: 常に `true`）          |
+| `trigger(input)`        | `Promise<{ runId: string }>`                  | ジョブを実行、Run ID を返す                                          |
+| `triggerAndWait(input)` | `Promise<{ runId: string; output: TOutput }>` | 実行して完了を待つ                                                   |
 
 #### useJobRun
 
@@ -273,7 +274,7 @@ Run ID のみで購読（trigger なし）。
 #### useJobLogs
 
 ```tsx
-const { logs, clear } = useJobLogs({ runId?, maxLogs? })
+const { logs, clear } = useJobLogs({ runId, maxLogs? })
 ```
 
 ---
@@ -373,7 +374,7 @@ const { logs, clear } = useJobLogs({
 | オプション | 型       | 必須 | 説明                                  |
 |------------|----------|------|---------------------------------------|
 | `api`      | `string` | Yes  | API エンドポイント                    |
-| `runId`    | `string` | -    | 特定 Run のログのみ（省略時は全ログ） |
+| `runId`    | `string` | Yes  | Run ID                                |
 | `maxLogs`  | `number` | -    | 保持する最大ログ数（デフォルト: 100） |
 
 ---
