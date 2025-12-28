@@ -72,6 +72,7 @@ export interface UseJobResult<TInput, TOutput> {
 export function useJob<
   TName extends string,
   TInput extends Record<string, unknown>,
+  // biome-ignore lint/suspicious/noConfusingVoidType: TOutput can be void for jobs without return value
   TOutput extends Record<string, unknown> | void,
 >(
   jobDefinition: JobDefinition<TName, TInput, TOutput>,
