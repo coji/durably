@@ -1,0 +1,82 @@
+{
+  "name": "@coji/durably-react",
+  "version": "0.1.0",
+  "description": "React bindings for Durably - step-oriented resumable batch execution",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "pnpm test:react",
+    "test:react": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "format": "prettier --experimental-cli --check .",
+    "format:fix": "prettier --experimental-cli --write ."
+  },
+  "keywords": [
+    "react",
+    "hooks",
+    "durably",
+    "batch",
+    "job",
+    "queue",
+    "workflow",
+    "durable"
+  ],
+  "author": "coji",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coji/durably.git"
+  },
+  "bugs": {
+    "url": "https://github.com/coji/durably/issues"
+  },
+  "homepage": "https://github.com/coji/durably#readme",
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@coji/durably": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.10",
+    "@coji/durably": "workspace:*",
+    "@testing-library/react": "^16.3.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.2",
+    "@vitest/browser": "^4.0.16",
+    "@vitest/browser-playwright": "4.0.16",
+    "kysely": "^0.28.9",
+    "playwright": "^1.57.0",
+    "prettier": "^3.7.4",
+    "prettier-plugin-organize-imports": "^4.3.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "sqlocal": "^0.16.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.16",
+    "zod": "^4.2.1"
+  }
+}
