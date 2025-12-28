@@ -140,6 +140,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url)
   const runId = url.searchParams.get('runId')
 
+  if (!runId) {
+    return new Response('Missing runId', { status: 400 })
+  }
+
   const stream = durably.subscribe(runId)
 
   return new Response(stream, {
@@ -247,13 +251,24 @@ const {
 | `jobDefinition` | `JobDefinition` | ジョブ定義 |
 | `options.initialRunId` | `string` | 初期購読 Run ID |
 
+**戻り値の詳細**:
+
+| メソッド                | 戻り値                                        | 説明                        |
+|-------------------------|-----------------------------------------------|-----------------------------|
+| `trigger(input)`        | `Promise<{ runId: string }>`                  | ジョブを実行、Run ID を返す |
+| `triggerAndWait(input)` | `Promise<{ runId: string; output: TOutput }>` | 実行して完了を待つ          |
+
 #### useJobRun
 
 ```tsx
-const { status, output, error, logs, progress } = useJobRun(runId)
+const { status, output, error, logs, progress } = useJobRun({ runId })
 ```
 
 Run ID のみで購読（trigger なし）。
+
+| 引数    | 型               | 説明            |
+|---------|------------------|-----------------|
+| `runId` | `string \| null` | 購読する Run ID |
 
 #### useJobLogs
 
@@ -284,14 +299,18 @@ handler.subscribe(request: Request): Response         // GET (SSE)
 | `/api/durably` | POST | `{ jobName, input }` | `{ runId }` |
 | `/api/durably?runId=xxx` | GET | - | SSE stream |
 
+> **Note**: 認証・認可、CORS、CSRF の扱いは本仕様のスコープ外。アプリケーション側で適切に実装すること。
+
 **SSE イベント形式**:
 
 ```text
-data: {"type":"run:start","runId":"xxx","jobName":"process-task",...}
+data: {"type":"run:start","runId":"xxx","jobName":"process-task","payload":{...}}
 
-data: {"type":"run:progress","runId":"xxx","progress":{"current":1,"total":2}}
+data: {"type":"run:progress","runId":"xxx","jobName":"process-task","progress":{"current":1,"total":2}}
 
-data: {"type":"run:complete","runId":"xxx","output":{"success":true}}
+data: {"type":"run:complete","runId":"xxx","jobName":"process-task","output":{"success":true},"duration":1234}
+
+data: {"type":"run:fail","runId":"xxx","jobName":"process-task","error":"Something went wrong"}
 
 ```
 
@@ -313,11 +332,12 @@ const { status, progress, output } = useJobRun({
 })
 ```
 
-| オプション | 型 | 必須 | 説明 |
-|-----------|-----|------|------|
-| `api` | `string` | Yes | API エンドポイント |
-| `jobName` | `string` | Yes (useJob) | ジョブ名 |
-| `runId` | `string` | Yes (useJobRun) | Run ID |
+| オプション     | 型       | 必須            | 説明                           |
+|----------------|----------|-----------------|--------------------------------|
+| `api`          | `string` | Yes             | API エンドポイント             |
+| `jobName`      | `string` | Yes (useJob)    | ジョブ名                       |
+| `runId`        | `string` | Yes (useJobRun) | Run ID                         |
+| `initialRunId` | `string` | -               | 初期購読 Run ID（再接続用）    |
 
 ---
 
@@ -351,7 +371,7 @@ type DurablyEvent =
   | { type: 'run:progress'; runId: string; jobName: string; progress: Progress }
   | { type: 'step:start'; runId: string; stepName: string; stepIndex: number }
   | { type: 'step:complete'; runId: string; stepName: string; stepIndex: number; output: unknown }
-  | { type: 'log:write'; runId: string; level: string; message: string; data: unknown }
+  | { type: 'log:write'; runId: string; level: 'info' | 'warn' | 'error'; message: string; data: unknown }
 ```
 
 ---
@@ -561,6 +581,21 @@ function TaskPage() {
 ---
 
 ## 将来拡張
+
+### キャンセル API
+
+Run のキャンセル機能を追加予定。
+
+```tsx
+// useJob に cancel を追加
+const { trigger, cancel, status } = useJob(job)
+await cancel()  // 現在の Run をキャンセル
+
+// サーバー API
+DELETE /api/durably?runId=xxx  → { success: true }
+```
+
+> **Note**: キャンセルは cooperative。ステップ実行中は即座に止められず、次のステップに進む前にチェックされる。
 
 ### Streaming 対応
 
