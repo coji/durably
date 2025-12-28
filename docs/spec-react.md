@@ -317,27 +317,64 @@ data: {"type":"run:fail","runId":"xxx","jobName":"process-task","error":"Somethi
 #### クライアント側 (`@coji/durably-react/client`)
 
 ```tsx
-import { useJob, useJobRun } from '@coji/durably-react/client'
+import { useJob, useJobRun, useJobLogs } from '@coji/durably-react/client'
 
 // ジョブ実行 + 購読
-const { trigger, status, progress, output } = useJob({
+const {
+  trigger,
+  triggerAndWait,
+  status,
+  output,
+  error,
+  logs,
+  progress,
+  isReady,
+  isRunning,
+  isPending,
+  isCompleted,
+  isFailed,
+  currentRunId,
+  reset,
+} = useJob({
   api: '/api/durably',
   jobName: 'process-task',
 })
 
 // 既存 Run の購読のみ
-const { status, progress, output } = useJobRun({
+const { status, output, error, logs, progress } = useJobRun({
+  api: '/api/durably',
+  runId: 'xxx',
+})
+
+// ログ購読
+const { logs, clear } = useJobLogs({
   api: '/api/durably',
   runId: 'xxx',
 })
 ```
 
-| オプション     | 型       | 必須            | 説明                           |
-|----------------|----------|-----------------|--------------------------------|
-| `api`          | `string` | Yes             | API エンドポイント             |
-| `jobName`      | `string` | Yes (useJob)    | ジョブ名                       |
-| `runId`        | `string` | Yes (useJobRun) | Run ID                         |
-| `initialRunId` | `string` | -               | 初期購読 Run ID（再接続用）    |
+**useJob オプション**:
+
+| オプション     | 型       | 必須 | 説明                        |
+|----------------|----------|------|-----------------------------|
+| `api`          | `string` | Yes  | API エンドポイント          |
+| `jobName`      | `string` | Yes  | ジョブ名                    |
+| `initialRunId` | `string` | -    | 初期購読 Run ID（再接続用） |
+
+**useJobRun オプション**:
+
+| オプション | 型       | 必須 | 説明               |
+|------------|----------|------|--------------------|
+| `api`      | `string` | Yes  | API エンドポイント |
+| `runId`    | `string` | Yes  | Run ID             |
+
+**useJobLogs オプション**:
+
+| オプション | 型       | 必須 | 説明                                  |
+|------------|----------|------|---------------------------------------|
+| `api`      | `string` | Yes  | API エンドポイント                    |
+| `runId`    | `string` | -    | 特定 Run のログのみ（省略時は全ログ） |
+| `maxLogs`  | `number` | -    | 保持する最大ログ数（デフォルト: 100） |
 
 ---
 
@@ -346,6 +383,12 @@ const { status, progress, output } = useJobRun({
 ```ts
 // 共通
 type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+interface DurablyOptions {
+  pollingInterval?: number   // デフォルト: 1000ms
+  heartbeatInterval?: number // デフォルト: 5000ms
+  staleThreshold?: number    // デフォルト: 30000ms
+}
 
 interface Progress {
   current: number
@@ -369,9 +412,9 @@ type DurablyEvent =
   | { type: 'run:complete'; runId: string; jobName: string; output: unknown; duration: number }
   | { type: 'run:fail'; runId: string; jobName: string; error: string }
   | { type: 'run:progress'; runId: string; jobName: string; progress: Progress }
-  | { type: 'step:start'; runId: string; stepName: string; stepIndex: number }
-  | { type: 'step:complete'; runId: string; stepName: string; stepIndex: number; output: unknown }
-  | { type: 'log:write'; runId: string; level: 'info' | 'warn' | 'error'; message: string; data: unknown }
+  | { type: 'step:start'; runId: string; jobName: string; stepName: string; stepIndex: number }
+  | { type: 'step:complete'; runId: string; jobName: string; stepName: string; stepIndex: number; output: unknown }
+  | { type: 'log:write'; runId: string; jobName: string; level: 'info' | 'warn' | 'error'; message: string; data: unknown }
 ```
 
 ---
@@ -380,7 +423,7 @@ type DurablyEvent =
 
 ### ブラウザ完結モード
 
-```
+```text
 @coji/durably-react
 ├── @coji/durably  (peer dependency)
 ├── react          (peer dependency, >= 18.0.0)
