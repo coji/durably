@@ -46,3 +46,7 @@ export type { Log, Run, RunFilter, Step } from './storage'
 
 // Errors
 export { CancelledError } from './errors'
+
+// Server
+export { createDurablyHandler } from './server'
+export type { DurablyHandler, TriggerRequest, TriggerResponse } from './server'

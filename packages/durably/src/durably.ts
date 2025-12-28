@@ -3,6 +3,7 @@ import { Kysely } from 'kysely'
 import type { JobDefinition } from './define-job'
 import {
   type AnyEventInput,
+  type DurablyEvent,
   type ErrorHandler,
   type EventListener,
   type EventType,
@@ -135,6 +136,20 @@ export interface Durably {
    * Register a plugin
    */
   use(plugin: DurablyPlugin): void
+
+  /**
+   * Get a registered job handle by name
+   * Returns undefined if job is not registered
+   */
+  getJob<TName extends string = string>(
+    name: TName,
+  ): JobHandle<TName, Record<string, unknown>, unknown> | undefined
+
+  /**
+   * Subscribe to events for a specific run
+   * Returns a ReadableStream that can be used for SSE
+   */
+  subscribe(runId: string): ReadableStream<DurablyEvent>
 }
 
 /**
@@ -177,6 +192,109 @@ export function createDurably(options: DurablyOptions): Durably {
 
     use(plugin: DurablyPlugin): void {
       plugin.install(durably)
+    },
+
+    getJob<TName extends string = string>(
+      name: TName,
+    ): JobHandle<TName, Record<string, unknown>, unknown> | undefined {
+      const registeredJob = jobRegistry.get(name)
+      if (!registeredJob) {
+        return undefined
+      }
+      return registeredJob.handle as JobHandle<
+        TName,
+        Record<string, unknown>,
+        unknown
+      >
+    },
+
+    subscribe(runId: string): ReadableStream<DurablyEvent> {
+      return new ReadableStream<DurablyEvent>({
+        start: (controller) => {
+          // Track if stream is closed
+          let closed = false
+
+          // Subscribe to all events that match this runId
+          const unsubscribeStart = eventEmitter.on('run:start', (event) => {
+            if (!closed && event.runId === runId) {
+              controller.enqueue(event)
+            }
+          })
+
+          const unsubscribeComplete = eventEmitter.on(
+            'run:complete',
+            (event) => {
+              if (!closed && event.runId === runId) {
+                controller.enqueue(event)
+                // Close stream on completion
+                closed = true
+                cleanup()
+                controller.close()
+              }
+            },
+          )
+
+          const unsubscribeFail = eventEmitter.on('run:fail', (event) => {
+            if (!closed && event.runId === runId) {
+              controller.enqueue(event)
+              // Close stream on failure
+              closed = true
+              cleanup()
+              controller.close()
+            }
+          })
+
+          const unsubscribeProgress = eventEmitter.on(
+            'run:progress',
+            (event) => {
+              if (!closed && event.runId === runId) {
+                controller.enqueue(event)
+              }
+            },
+          )
+
+          const unsubscribeStepStart = eventEmitter.on(
+            'step:start',
+            (event) => {
+              if (!closed && event.runId === runId) {
+                controller.enqueue(event)
+              }
+            },
+          )
+
+          const unsubscribeStepComplete = eventEmitter.on(
+            'step:complete',
+            (event) => {
+              if (!closed && event.runId === runId) {
+                controller.enqueue(event)
+              }
+            },
+          )
+
+          const unsubscribeStepFail = eventEmitter.on('step:fail', (event) => {
+            if (!closed && event.runId === runId) {
+              controller.enqueue(event)
+            }
+          })
+
+          const unsubscribeLog = eventEmitter.on('log:write', (event) => {
+            if (!closed && event.runId === runId) {
+              controller.enqueue(event)
+            }
+          })
+
+          const cleanup = () => {
+            unsubscribeStart()
+            unsubscribeComplete()
+            unsubscribeFail()
+            unsubscribeProgress()
+            unsubscribeStepStart()
+            unsubscribeStepComplete()
+            unsubscribeStepFail()
+            unsubscribeLog()
+          }
+        },
+      })
     },
 
     async retry(runId: string): Promise<void> {
