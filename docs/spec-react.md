@@ -265,7 +265,7 @@ const {
 const { status, output, error, logs, progress } = useJobRun({ runId })
 ```
 
-Run ID のみで購読（trigger なし）。
+Run ID のみで購読（trigger なし）。`runId` が `null` の場合は購読せず待機する。
 
 | 引数    | 型               | 説明            |
 |---------|------------------|-----------------|
@@ -367,7 +367,7 @@ const { logs, clear } = useJobLogs({
 | オプション | 型       | 必須 | 説明               |
 |------------|----------|------|--------------------|
 | `api`      | `string` | Yes  | API エンドポイント |
-| `runId`    | `string` | Yes  | Run ID             |
+| `runId`    | `string \| null` | Yes  | Run ID（`null` の場合は購読しない） |
 
 **useJobLogs オプション**:
 
@@ -383,7 +383,7 @@ const { logs, clear } = useJobLogs({
 
 ```ts
 // 共通
-type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+type RunStatus = 'pending' | 'running' | 'completed' | 'failed'
 
 interface DurablyOptions {
   pollingInterval?: number   // デフォルト: 1000ms

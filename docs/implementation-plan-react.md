@@ -116,7 +116,7 @@ packages/durably-react/
 **タスク**:
 `src/types.ts`:
 ```ts
-export type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type RunStatus = 'pending' | 'running' | 'completed' | 'failed'
 
 export interface Progress {
   current: number
@@ -201,6 +201,10 @@ it('respects autoStart=false', async () => {
 it('respects autoMigrate=false', async () => {
   // migrate() が呼ばれないことを確認
 })
+
+it('passes options to createDurably', async () => {
+  // createDurably に DurablyOptions が渡されることを確認
+})
 ```
 
 **実装（Green）**: オプション処理
@@ -252,7 +256,7 @@ describe('useJob', () => {
 
 ### Phase 7: useJob - status 購読
 
-**目標**: trigger 後に status が更新される
+**目標**: trigger 後に status が更新される（初期は `null`、trigger 時に `pending`）
 
 **テスト（Red）**:
 ```tsx
@@ -266,6 +270,8 @@ it('updates status from pending to running to completed', async () => {
   act(() => {
     result.current.trigger({ input: 'test' })
   })
+
+  expect(result.current.status).toBe('pending')
 
   await waitFor(() => {
     expect(result.current.status).toBe('completed')
@@ -412,9 +418,19 @@ it('triggerAndWait resolves with output', async () => {
   expect(runId).toBeDefined()
   expect(output).toEqual({ success: true })
 })
+
+it('triggerAndWait rejects on failure', async () => {
+  const { result } = renderHook(() => useJob(failingJob), { wrapper })
+
+  await waitFor(() => expect(result.current.isReady).toBe(true))
+
+  await expect(result.current.triggerAndWait({ input: 'test' })).rejects.toThrow(
+    'Something went wrong'
+  )
+})
 ```
 
-**実装（Green）**: Promise でラップ
+**実装（Green）**: `run:complete` で resolve、`run:fail` で reject
 
 ---
 
@@ -505,6 +521,7 @@ it('unsubscribes on unmount', async () => {
 function useRunSubscription(runId: string | null) {
   // status, output, error, logs, progress の状態管理
   // durably.on() でイベント購読
+  // runId が null の場合は購読しない（idle）
   // cleanup でリスナー解除
 }
 ```
@@ -703,6 +720,31 @@ describe('createDurablyHandler', () => {
 
 ---
 
+### テストユーティリティ: createMockEventSource
+
+**目標**: サーバー連携テストで使う EventSource モックを仕様化
+
+**API 仕様**:
+```ts
+type MockEventSourceController = {
+  instances: MockEventSourceInstance[]
+  emit: (event: DurablyEvent) => void
+  triggerError: (error: Error) => void
+}
+
+function createMockEventSource(opts?: { onClose?: () => void }): typeof EventSource & MockEventSourceController
+```
+
+**挙動**:
+- `new EventSource(url)` でインスタンスを生成し `instances` に追加
+- `emit(event)` は最新インスタンスへ `message` を配送（`data` は JSON 文字列）
+- `triggerError(error)` は最新インスタンスへ `error` を配送
+- `close()` が呼ばれたら `onClose` を実行
+
+**実装（Green）**: `tests/client/mock-event-source.ts`
+
+---
+
 ### Phase 23: サーバー連携 - useJob trigger
 
 **目標**: fetch で trigger
@@ -835,6 +877,15 @@ describe('useJobRun (client)', () => {
     await waitFor(() => {
       expect(result.current.status).toBe('running')
     })
+  })
+
+  it('does not subscribe when runId is null', () => {
+    const mockEventSource = createMockEventSource()
+    global.EventSource = mockEventSource
+
+    renderHook(() => useJobRun({ api: '/api/durably', runId: null }))
+
+    expect(mockEventSource.instances).toHaveLength(0)
   })
 
   it('closes EventSource on unmount', () => {
