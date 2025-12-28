@@ -139,9 +139,9 @@ export interface LogEntry {
 
 ---
 
-### Phase 3: DurablyProvider - 初期化
+### Phase 3: DurablyProvider - 初期化 & StrictMode
 
-**目標**: Provider が Durably を初期化できる
+**目標**: Provider が Durably を初期化できる、StrictMode で二重初期化しない
 
 **テスト（Red）**:
 ```tsx
@@ -163,14 +163,28 @@ describe('DurablyProvider', () => {
     })
     expect(result.current.durably).not.toBeNull()
   })
+
+  it('does not double-initialize in StrictMode', async () => {
+    const dialectFactory = vi.fn(() => createMockDialect())
+
+    render(
+      <StrictMode>
+        <DurablyProvider dialectFactory={dialectFactory}>
+          <TestComponent />
+        </DurablyProvider>
+      </StrictMode>
+    )
+
+    await waitFor(() => {})
+    expect(dialectFactory).toHaveBeenCalledTimes(1)
+  })
 })
 ```
 
 **実装（Green）**:
 - `src/context.tsx`: DurablyContext, DurablyProvider
 - `src/hooks/use-durably.ts`: useDurably
-
-**Refactor**: StrictMode 対応
+- `useRef` で初期化フラグ管理（StrictMode 対応）
 
 ---
 
@@ -211,33 +225,7 @@ it('calls stop() on unmount', async () => {
 
 ---
 
-### Phase 6: DurablyProvider - StrictMode
-
-**目標**: StrictMode で二重初期化しない
-
-**テスト（Red）**:
-```tsx
-it('does not double-initialize in StrictMode', async () => {
-  const dialectFactory = vi.fn(() => createMockDialect())
-
-  render(
-    <StrictMode>
-      <DurablyProvider dialectFactory={dialectFactory}>
-        <TestComponent />
-      </DurablyProvider>
-    </StrictMode>
-  )
-
-  await waitFor(() => {})
-  expect(dialectFactory).toHaveBeenCalledTimes(1)
-})
-```
-
-**実装（Green）**: useRef で初期化フラグ管理
-
----
-
-### Phase 7: useJob - trigger
+### Phase 6: useJob - trigger
 
 **目標**: trigger でジョブを実行し runId を返す
 
@@ -262,7 +250,7 @@ describe('useJob', () => {
 
 ---
 
-### Phase 8: useJob - status 購読
+### Phase 7: useJob - status 購読
 
 **目標**: trigger 後に status が更新される
 
@@ -289,7 +277,7 @@ it('updates status from pending to running to completed', async () => {
 
 ---
 
-### Phase 9: useJob - output 取得
+### Phase 8: useJob - output 取得
 
 **目標**: 完了時に output が取得できる
 
@@ -310,7 +298,7 @@ it('provides output when completed', async () => {
 
 ---
 
-### Phase 10: useJob - error 取得
+### Phase 9: useJob - error 取得
 
 **目標**: 失敗時に error が取得できる
 
@@ -332,7 +320,7 @@ it('provides error when failed', async () => {
 
 ---
 
-### Phase 11: useJob - progress 購読
+### Phase 10: useJob - progress 購読
 
 **目標**: progress が更新される
 
@@ -357,7 +345,7 @@ it('updates progress during execution', async () => {
 
 ---
 
-### Phase 12: useJob - logs 購読
+### Phase 11: useJob - logs 購読
 
 **目標**: logs が収集される
 
@@ -379,7 +367,7 @@ it('collects logs during execution', async () => {
 
 ---
 
-### Phase 13: useJob - boolean ヘルパー
+### Phase 12: useJob - boolean ヘルパー
 
 **目標**: isRunning, isPending, isCompleted, isFailed
 
@@ -408,7 +396,7 @@ it('provides boolean helpers', async () => {
 
 ---
 
-### Phase 14: useJob - triggerAndWait
+### Phase 13: useJob - triggerAndWait
 
 **目標**: 完了まで待つ関数
 
@@ -430,7 +418,7 @@ it('triggerAndWait resolves with output', async () => {
 
 ---
 
-### Phase 15: useJob - reset
+### Phase 14: useJob - reset
 
 **目標**: 状態をリセット
 
@@ -456,7 +444,7 @@ it('reset clears all state', async () => {
 
 ---
 
-### Phase 16: useJob - initialRunId
+### Phase 15: useJob - initialRunId
 
 **目標**: 既存 Run を購読
 
@@ -481,7 +469,7 @@ it('subscribes to existing run with initialRunId', async () => {
 
 ---
 
-### Phase 17: useJob - クリーンアップ
+### Phase 16: useJob - クリーンアップ
 
 **目標**: アンマウント時にリスナー解除
 
@@ -500,6 +488,28 @@ it('unsubscribes on unmount', async () => {
 ```
 
 **実装（Green）**: useEffect の cleanup で解除
+
+---
+
+### Phase 17: 共通ロジック抽出
+
+**目標**: useJob と useJobRun/useJobLogs で共有するロジックを抽出
+
+**タスク**:
+- `src/hooks/use-run-subscription.ts`: Run 購読の共通ロジック
+  - イベントリスナー登録/解除
+  - 状態管理（status, output, error, logs, progress）
+
+```ts
+// 共通フック（内部用）
+function useRunSubscription(runId: string | null) {
+  // status, output, error, logs, progress の状態管理
+  // durably.on() でイベント購読
+  // cleanup でリスナー解除
+}
+```
+
+**Refactor**: useJob から共通部分を抽出
 
 ---
 
@@ -538,7 +548,7 @@ describe('useJobRun', () => {
 
 ---
 
-### Phase 19: useJobLogs - 基本
+### Phase 18: useJobLogs - 基本
 
 **目標**: ログを購読
 
@@ -591,7 +601,7 @@ describe('useJobLogs', () => {
 
 ---
 
-### Phase 20: コア拡張 - getJob
+### Phase 19: コア拡張 - getJob
 
 **目標**: 登録済みジョブを名前で取得
 
@@ -621,7 +631,7 @@ describe('getJob', () => {
 
 ---
 
-### Phase 21: コア拡張 - subscribe
+### Phase 20: コア拡張 - subscribe
 
 **目標**: Run のイベントを ReadableStream で返す
 
@@ -656,7 +666,7 @@ describe('subscribe', () => {
 
 ---
 
-### Phase 22: コア拡張 - createDurablyHandler
+### Phase 21: コア拡張 - createDurablyHandler
 
 **目標**: Web 標準の Request/Response ヘルパー
 
@@ -693,7 +703,7 @@ describe('createDurablyHandler', () => {
 
 ---
 
-### Phase 23: サーバー連携 - useJob trigger
+### Phase 22: サーバー連携 - useJob trigger
 
 **目標**: fetch で trigger
 
@@ -727,7 +737,7 @@ describe('useJob (client)', () => {
 
 ---
 
-### Phase 24: サーバー連携 - useJob SSE 購読
+### Phase 23: サーバー連携 - useJob SSE 購読
 
 **目標**: EventSource で購読
 
@@ -763,22 +773,41 @@ it('subscribes via EventSource', async () => {
 
 ---
 
-### Phase 25: サーバー連携 - useJob 完全実装
+### Phase 24: サーバー連携 - useJob 完全実装
 
 **目標**: progress, logs, エラー処理
 
 **テスト（Red）**:
 ```tsx
 it('handles progress events', async () => {
-  // ...
+  mockEventSource.emit({ type: 'run:progress', runId: 'xxx', progress: { current: 1, total: 3 } })
+
+  await waitFor(() => {
+    expect(result.current.progress).toEqual({ current: 1, total: 3 })
+  })
 })
 
 it('handles log events', async () => {
-  // ...
+  mockEventSource.emit({
+    type: 'log:write',
+    runId: 'xxx',
+    level: 'info',
+    message: 'Processing',
+    data: null,
+  })
+
+  await waitFor(() => {
+    expect(result.current.logs).toHaveLength(1)
+    expect(result.current.logs[0].message).toBe('Processing')
+  })
 })
 
 it('handles connection errors', async () => {
-  // ...
+  mockEventSource.triggerError(new Error('Connection failed'))
+
+  await waitFor(() => {
+    expect(result.current.error).toBe('Connection failed')
+  })
 })
 ```
 
@@ -786,7 +815,7 @@ it('handles connection errors', async () => {
 
 ---
 
-### Phase 26: サーバー連携 - useJobRun
+### Phase 25: サーバー連携 - useJobRun
 
 **目標**: runId で購読
 
@@ -794,7 +823,30 @@ it('handles connection errors', async () => {
 ```tsx
 describe('useJobRun (client)', () => {
   it('subscribes to run via SSE', async () => {
-    // ...
+    const mockEventSource = createMockEventSource()
+    global.EventSource = mockEventSource
+
+    const { result } = renderHook(() =>
+      useJobRun({ api: '/api/durably', runId: 'existing-run' })
+    )
+
+    mockEventSource.emit({ type: 'run:start', runId: 'existing-run' })
+
+    await waitFor(() => {
+      expect(result.current.status).toBe('running')
+    })
+  })
+
+  it('closes EventSource on unmount', () => {
+    const closeSpy = vi.fn()
+    const mockEventSource = createMockEventSource({ onClose: closeSpy })
+
+    const { unmount } = renderHook(() =>
+      useJobRun({ api: '/api/durably', runId: 'xxx' })
+    )
+
+    unmount()
+    expect(closeSpy).toHaveBeenCalled()
   })
 })
 ```
@@ -803,7 +855,7 @@ describe('useJobRun (client)', () => {
 
 ---
 
-### Phase 27: サーバー連携 - useJobLogs
+### Phase 26: サーバー連携 - useJobLogs
 
 **目標**: ログ購読
 
@@ -811,7 +863,45 @@ describe('useJobRun (client)', () => {
 ```tsx
 describe('useJobLogs (client)', () => {
   it('collects logs from SSE', async () => {
-    // ...
+    const mockEventSource = createMockEventSource()
+    global.EventSource = mockEventSource
+
+    const { result } = renderHook(() =>
+      useJobLogs({ api: '/api/durably', runId: 'xxx' })
+    )
+
+    mockEventSource.emit({
+      type: 'log:write',
+      runId: 'xxx',
+      level: 'info',
+      message: 'Log 1',
+    })
+    mockEventSource.emit({
+      type: 'log:write',
+      runId: 'xxx',
+      level: 'warn',
+      message: 'Log 2',
+    })
+
+    await waitFor(() => {
+      expect(result.current.logs).toHaveLength(2)
+    })
+  })
+
+  it('respects maxLogs limit', async () => {
+    const { result } = renderHook(() =>
+      useJobLogs({ api: '/api/durably', runId: 'xxx', maxLogs: 2 })
+    )
+
+    // 3つのログを送信
+    for (let i = 0; i < 3; i++) {
+      mockEventSource.emit({ type: 'log:write', runId: 'xxx', message: `Log ${i}` })
+    }
+
+    await waitFor(() => {
+      expect(result.current.logs).toHaveLength(2)
+      expect(result.current.logs[0].message).toBe('Log 1') // 最初のログは削除される
+    })
   })
 })
 ```
@@ -820,7 +910,7 @@ describe('useJobLogs (client)', () => {
 
 ---
 
-### Phase 28: エントリポイント整備
+### Phase 27: エントリポイント整備
 
 **目標**: 公開 API の整備
 
@@ -828,6 +918,45 @@ describe('useJobLogs (client)', () => {
 1. `src/index.ts` - ブラウザ完結モード
 2. `src/client.ts` - サーバー連携モード
 3. ビルド確認
+
+---
+
+### Phase 28: 型テスト
+
+**目標**: 型推論が正しく機能することを確認
+
+**テスト**:
+```ts
+// tests/types.test.ts
+import { expectTypeOf } from 'vitest'
+import { useJob } from '../src'
+import { testJob } from './fixtures'
+
+describe('Type inference', () => {
+  it('infers output type from job definition', () => {
+    const { output, trigger } = useJob(testJob)
+
+    // output は TOutput | null
+    expectTypeOf(output).toEqualTypeOf<{ success: boolean } | null>()
+
+    // trigger の引数は TInput
+    expectTypeOf(trigger).parameter(0).toEqualTypeOf<{ taskId: string }>()
+  })
+
+  it('triggerAndWait returns typed output', async () => {
+    const { triggerAndWait } = useJob(testJob)
+
+    const result = await triggerAndWait({ taskId: '123' })
+
+    expectTypeOf(result.output).toEqualTypeOf<{ success: boolean }>()
+  })
+})
+```
+
+**確認事項**:
+- `useJob(jobDef)` で input/output の型が推論される
+- `trigger()` の引数が型チェックされる
+- `output` が正しい型で返される
 
 ---
 
@@ -854,15 +983,18 @@ describe('useJobLogs (client)', () => {
 
 ## 4. 実装順序のまとめ
 
-| Phase | 内容                             | TDD |
-|-------|----------------------------------|-----|
-| 1-2   | 基盤・型定義                     | -   |
-| 3-6   | DurablyProvider                  | ✅  |
-| 7-17  | useJob（ブラウザ）               | ✅  |
-| 18-19 | useJobRun, useJobLogs（ブラウザ）| ✅  |
-| 20-22 | コア拡張                         | ✅  |
-| 23-27 | サーバー連携 hooks               | ✅  |
-| 28-30 | 整備・ドキュメント               | -   |
+| Phase | 内容                              | TDD |
+|-------|-----------------------------------|-----|
+| 1-2   | 基盤・型定義                      | -   |
+| 3-5   | DurablyProvider                   | ✅  |
+| 6-16  | useJob（ブラウザ）                | ✅  |
+| 17    | 共通ロジック抽出                  | -   |
+| 18-19 | useJobRun, useJobLogs（ブラウザ） | ✅  |
+| 20-22 | コア拡張                          | ✅  |
+| 23-26 | サーバー連携 hooks                | ✅  |
+| 27    | エントリポイント整備              | -   |
+| 28    | 型テスト                          | ✅  |
+| 29-30 | ドキュメント・パブリッシュ        | -   |
 
 ---
 
