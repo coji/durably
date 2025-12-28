@@ -548,7 +548,7 @@ describe('useJobRun', () => {
 
 ---
 
-### Phase 18: useJobLogs - 基本
+### Phase 19: useJobLogs - 基本
 
 **目標**: ログを購読
 
@@ -601,7 +601,7 @@ describe('useJobLogs', () => {
 
 ---
 
-### Phase 19: コア拡張 - getJob
+### Phase 20: コア拡張 - getJob
 
 **目標**: 登録済みジョブを名前で取得
 
@@ -631,7 +631,7 @@ describe('getJob', () => {
 
 ---
 
-### Phase 20: コア拡張 - subscribe
+### Phase 21: コア拡張 - subscribe
 
 **目標**: Run のイベントを ReadableStream で返す
 
@@ -666,7 +666,7 @@ describe('subscribe', () => {
 
 ---
 
-### Phase 21: コア拡張 - createDurablyHandler
+### Phase 22: コア拡張 - createDurablyHandler
 
 **目標**: Web 標準の Request/Response ヘルパー
 
@@ -703,7 +703,7 @@ describe('createDurablyHandler', () => {
 
 ---
 
-### Phase 22: サーバー連携 - useJob trigger
+### Phase 23: サーバー連携 - useJob trigger
 
 **目標**: fetch で trigger
 
@@ -737,7 +737,7 @@ describe('useJob (client)', () => {
 
 ---
 
-### Phase 23: サーバー連携 - useJob SSE 購読
+### Phase 24: サーバー連携 - useJob SSE 購読
 
 **目標**: EventSource で購読
 
@@ -773,7 +773,7 @@ it('subscribes via EventSource', async () => {
 
 ---
 
-### Phase 24: サーバー連携 - useJob 完全実装
+### Phase 25: サーバー連携 - useJob 完全実装
 
 **目標**: progress, logs, エラー処理
 
@@ -815,7 +815,7 @@ it('handles connection errors', async () => {
 
 ---
 
-### Phase 25: サーバー連携 - useJobRun
+### Phase 26: サーバー連携 - useJobRun
 
 **目標**: runId で購読
 
@@ -855,7 +855,7 @@ describe('useJobRun (client)', () => {
 
 ---
 
-### Phase 26: サーバー連携 - useJobLogs
+### Phase 27: サーバー連携 - useJobLogs
 
 **目標**: ログ購読
 
@@ -910,7 +910,7 @@ describe('useJobLogs (client)', () => {
 
 ---
 
-### Phase 27: エントリポイント整備
+### Phase 28: エントリポイント整備
 
 **目標**: 公開 API の整備
 
@@ -921,7 +921,7 @@ describe('useJobLogs (client)', () => {
 
 ---
 
-### Phase 28: 型テスト
+### Phase 29: 型テスト
 
 **目標**: 型推論が正しく機能することを確認
 
@@ -960,7 +960,7 @@ describe('Type inference', () => {
 
 ---
 
-### Phase 29: ドキュメント
+### Phase 30: ドキュメント
 
 **目標**: README と LLM ドキュメント
 
@@ -970,7 +970,7 @@ describe('Type inference', () => {
 
 ---
 
-### Phase 30: パブリッシュ準備
+### Phase 31: パブリッシュ準備
 
 **目標**: npm パブリッシュの準備
 
@@ -991,10 +991,10 @@ describe('Type inference', () => {
 | 17    | 共通ロジック抽出                  | -   |
 | 18-19 | useJobRun, useJobLogs（ブラウザ） | ✅  |
 | 20-22 | コア拡張                          | ✅  |
-| 23-26 | サーバー連携 hooks                | ✅  |
-| 27    | エントリポイント整備              | -   |
-| 28    | 型テスト                          | ✅  |
-| 29-30 | ドキュメント・パブリッシュ        | -   |
+| 23-27 | サーバー連携 hooks                | ✅  |
+| 28    | エントリポイント整備              | -   |
+| 29    | 型テスト                          | ✅  |
+| 30-31 | ドキュメント・パブリッシュ        | -   |
 
 ---
 
