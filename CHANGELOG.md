@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2025-12-29
+
+### Breaking Changes
+
+- **`register()` API simplified**: `registerAll()` renamed to `register()`, old single-job signature removed
+  - New: `const { job } = durably.register({ job: jobDef })`
+  - Old (removed): `const job = durably.register(jobDef)`
+
+### Changed
+
+- Simplified README files - detailed documentation moved to website
+- Updated all examples to use new `register()` API pattern
+
+### Fixed
+
+- Type inference for `register()` return value now works correctly
+
 ## [0.5.0] - 2025-12-24
 
 ### Added
