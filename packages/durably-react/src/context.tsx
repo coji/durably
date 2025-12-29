@@ -65,14 +65,23 @@ export function DurablyProvider({
   // Use ref to track initialization state for StrictMode safety
   const initializedRef = useRef(false)
   const instanceRef = useRef<Durably | null>(null)
+  const initPromiseRef = useRef<Promise<void> | null>(null)
 
   useEffect(() => {
     // Prevent double initialization in StrictMode
     if (initializedRef.current) {
-      // If already initialized, just use the existing instance
-      if (instanceRef.current) {
-        setDurably(instanceRef.current)
-        setIsReady(true)
+      // If already initialized, wait for init to complete and use existing instance
+      if (initPromiseRef.current) {
+        initPromiseRef.current.then(() => {
+          if (instanceRef.current) {
+            setDurably(instanceRef.current)
+            setIsReady(true)
+            // Restart worker if it was stopped during unmount
+            if (autoStart) {
+              instanceRef.current.start()
+            }
+          }
+        })
       }
       return
     }
@@ -86,18 +95,18 @@ export function DurablyProvider({
         const instance = createDurably({ dialect, ...options })
         instanceRef.current = instance
 
-        if (cleanedUp) return
-
         if (autoMigrate) {
           await instance.migrate()
-          if (cleanedUp) return
+        }
+
+        if (cleanedUp) {
+          // StrictMode unmounted us, but keep the instance for remount
+          return
         }
 
         if (autoStart) {
           instance.start()
         }
-
-        if (cleanedUp) return
 
         setDurably(instance)
         setIsReady(true)
@@ -108,15 +117,25 @@ export function DurablyProvider({
       }
     }
 
-    init()
+    initPromiseRef.current = init()
 
     return () => {
       cleanedUp = true
+      // Don't stop the worker here - StrictMode will remount and we want to keep running
+    }
+  }, [dialectFactory, options, autoStart, autoMigrate, onReady])
+
+  // Separate cleanup effect that only runs when truly unmounting
+  // This works because React guarantees cleanup order: child effects clean up before parent
+  useEffect(() => {
+    return () => {
+      // This cleanup runs when the component is truly removed
+      // We need to stop the worker here
       if (instanceRef.current) {
         instanceRef.current.stop()
       }
     }
-  }, [dialectFactory, options, autoStart, autoMigrate, onReady])
+  }, [])
 
   return (
     <DurablyContext.Provider value={{ durably, isReady, error }}>

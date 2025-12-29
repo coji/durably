@@ -2,39 +2,48 @@
  * Process Image Job
  *
  * Example job that simulates image processing with multiple steps.
+ * This is a standalone job definition - registration happens in DurablyProvider.
  */
 
 import { defineJob } from '@coji/durably'
 import { z } from 'zod'
-import { durably } from '../lib/durably'
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-export const { processImage } = durably.register({
-  processImage: defineJob({
-    name: 'process-image',
-    input: z.object({ filename: z.string(), width: z.number() }),
-    output: z.object({ url: z.string(), size: z.number() }),
-    run: async (step, payload) => {
-      // Download original image
-      const fileSize = await step.run('download', async () => {
-        await delay(300)
-        return Math.floor(Math.random() * 1000000) + 500000 // 500KB-1.5MB
-      })
+export const processImageJob = defineJob({
+  name: 'process-image',
+  input: z.object({ filename: z.string(), width: z.number() }),
+  output: z.object({ url: z.string(), size: z.number() }),
+  run: async (step, payload) => {
+    step.log.info(`Starting image processing: ${payload.filename}`)
 
-      // Resize to target width
-      const resizedSize = await step.run('resize', async () => {
-        await delay(400)
-        return Math.floor(fileSize * (payload.width / 1920))
-      })
+    // Download original image
+    const fileSize = await step.run('download', async () => {
+      step.progress(1, 3, 'Downloading...')
+      await delay(300)
+      return Math.floor(Math.random() * 1000000) + 500000 // 500KB-1.5MB
+    })
 
-      // Upload to CDN
-      const url = await step.run('upload', async () => {
-        await delay(300)
-        return `https://cdn.example.com/${payload.width}/${payload.filename}`
-      })
+    step.log.info(`Downloaded: ${fileSize} bytes`)
 
-      return { url, size: resizedSize }
-    },
-  }),
+    // Resize to target width
+    const resizedSize = await step.run('resize', async () => {
+      step.progress(2, 3, 'Resizing...')
+      await delay(400)
+      return Math.floor(fileSize * (payload.width / 1920))
+    })
+
+    step.log.info(`Resized to: ${resizedSize} bytes`)
+
+    // Upload to CDN
+    const url = await step.run('upload', async () => {
+      step.progress(3, 3, 'Uploading...')
+      await delay(300)
+      return `https://cdn.example.com/${payload.width}/${payload.filename}`
+    })
+
+    step.log.info(`Uploaded to: ${url}`)
+
+    return { url, size: resizedSize }
+  },
 })

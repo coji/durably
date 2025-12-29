@@ -97,6 +97,9 @@ importers:
       '@coji/durably':
         specifier: workspace:*
         version: link:../../packages/durably
+      '@coji/durably-react':
+        specifier: workspace:*
+        version: link:../../packages/durably-react
       kysely:
         specifier: ^0.28.9
         version: 0.28.9

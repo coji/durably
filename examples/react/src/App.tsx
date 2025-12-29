@@ -1,134 +1,209 @@
 /**
  * React Example for Durably
  *
- * Simple example showing basic durably usage with React.
- * Demonstrates job resumption after page reload.
- *
- * Structure follows the pattern that will be provided by @coji/durably-react:
- * - lib/durably.ts: Singleton durably instance
- * - hooks/useDurably.ts: React lifecycle management hook
- * - jobs/*.ts: Job definitions
+ * Demonstrates @coji/durably-react usage with:
+ * - DurablyProvider for context
+ * - useJob hook for triggering and monitoring jobs
+ * - useDurably hook for direct Durably access
  */
 
+import {
+  DurablyProvider,
+  useDurably,
+  useJob,
+  type LogEntry,
+} from '@coji/durably-react'
 import { useState } from 'react'
-import { Dashboard } from './Dashboard'
-import { useDurably } from './hooks/useDurably'
-import { processImage } from './jobs/processImage'
-import { deleteDatabaseFile, durably } from './lib/durably'
+import { SQLocalKysely } from 'sqlocal/kysely'
+import { processImageJob } from './jobs/processImage'
 import { styles } from './styles'
 
 // Links
 const GITHUB_REPO = 'https://github.com/coji/durably'
 const SOURCE_CODE = `${GITHUB_REPO}/tree/main/examples/react`
 
-// Main App
-export function App() {
-  const {
-    status,
-    currentStep,
-    result,
-    markUserTriggered,
-    setRefreshDashboard,
-    refreshDashboard,
-  } = useDurably()
-  const [activeTab, setActiveTab] = useState<'demo' | 'dashboard'>('demo')
-  const isProcessing = status === 'running' || status === 'resuming'
+// SQLocal instance for database operations
+const sqlocal = new SQLocalKysely('example.sqlite3')
 
-  const statusText: Record<typeof status, string> = {
-    init: 'Initializing...',
-    ready: 'Ready',
-    running: 'Running',
-    resuming: '🔄 Resuming interrupted job...',
-    done: '✓ Completed',
-    error: '✗ Failed',
-  }
+// Durably configuration (defined outside component to maintain stable reference)
+const dialectFactory = () => sqlocal.dialect
+const durablyOptions = {
+  pollingInterval: 100,
+  heartbeatInterval: 500,
+  staleThreshold: 3000,
+}
+
+function Demo() {
+  const { durably } = useDurably()
+  const {
+    trigger,
+    status,
+    output,
+    error,
+    progress,
+    logs,
+    isRunning,
+    isCompleted,
+    isFailed,
+    isReady,
+    reset,
+  } = useJob(processImageJob)
 
   const handleRun = async () => {
-    markUserTriggered()
-    await processImage.trigger({ filename: 'photo.jpg', width: 800 })
-    refreshDashboard()
+    await trigger({ filename: 'photo.jpg', width: 800 })
   }
 
   const handleReset = async () => {
-    await durably.stop()
-    await deleteDatabaseFile()
+    if (durably) {
+      await durably.stop()
+    }
+    await sqlocal.deleteDatabaseFile()
     location.reload()
   }
 
-  return (
-    <div style={styles.container}>
-      <header style={styles.header}>
-        <h1 style={styles.title}>Durably React Example</h1>
-        <div style={styles.links}>
-          <a href={GITHUB_REPO} target="_blank" rel="noopener noreferrer">
-            GitHub
-          </a>
-          <span style={styles.linkSeparator}>|</span>
-          <a href={SOURCE_CODE} target="_blank" rel="noopener noreferrer">
-            Source Code
-          </a>
-        </div>
-      </header>
+  const statusText = isRunning
+    ? 'Running...'
+    : isCompleted
+      ? '✓ Completed'
+      : isFailed
+        ? '✗ Failed'
+        : isReady
+          ? 'Ready'
+          : 'Initializing...'
 
-      <div style={styles.tabs}>
+  return (
+    <>
+      <div style={styles.buttons}>
         <button
           type="button"
-          style={styles.tab(activeTab === 'demo')}
-          onClick={() => setActiveTab('demo')}
+          onClick={handleRun}
+          disabled={!isReady || isRunning}
         >
-          Demo
+          Run Job
         </button>
         <button
           type="button"
-          style={styles.tab(activeTab === 'dashboard')}
-          onClick={() => setActiveTab('dashboard')}
+          onClick={() => location.reload()}
+          disabled={!isReady}
         >
-          Dashboard
+          Reload Page
+        </button>
+        <button type="button" onClick={reset} disabled={isRunning}>
+          Reset State
+        </button>
+        <button type="button" onClick={handleReset} disabled={isRunning}>
+          Reset Database
         </button>
       </div>
 
-      {activeTab === 'demo' && (
-        <>
-          <div style={styles.buttons}>
-            <button
-              type="button"
-              onClick={handleRun}
-              disabled={status === 'init' || isProcessing}
-            >
-              Run Job
-            </button>
-            <button
-              type="button"
-              onClick={() => location.reload()}
-              disabled={status === 'init'}
-            >
-              Reload Page
-            </button>
-            <button type="button" onClick={handleReset} disabled={isProcessing}>
-              Reset Database
-            </button>
+      <div style={{ marginBottom: '1rem' }}>
+        <div>
+          Status: <strong>{statusText}</strong>
+        </div>
+        {status && (
+          <div style={{ color: '#666', marginTop: '0.5rem' }}>
+            Run status: {status}
           </div>
-
-          <div style={{ marginBottom: '1rem' }}>
-            <div>
-              Status: <strong>{statusText[status]}</strong>
-            </div>
-            {currentStep && (
-              <div style={{ color: '#666', marginTop: '0.5rem' }}>
-                Step: {currentStep}
-              </div>
-            )}
+        )}
+        {progress && (
+          <div style={{ color: '#666', marginTop: '0.5rem' }}>
+            Progress: {progress.current}
+            {progress.total ? `/${progress.total}` : ''}{' '}
+            {progress.message || ''}
           </div>
+        )}
+      </div>
 
-          {result && (
-            <pre style={styles.result(status === 'error')}>{result}</pre>
-          )}
-        </>
+      {output && (
+        <pre style={styles.result(false)}>
+          {JSON.stringify(output, null, 2)}
+        </pre>
       )}
 
-      {activeTab === 'dashboard' && (
-        <Dashboard durably={durably} onMount={setRefreshDashboard} />
+      {error && <pre style={styles.result(true)}>{error}</pre>}
+
+      {logs.length > 0 && (
+        <div style={{ marginTop: '1rem' }}>
+          <strong>Logs:</strong>
+          <ul style={{ margin: '0.5rem 0', padding: '0 0 0 1.5rem' }}>
+            {logs.map((log: LogEntry) => (
+              <li key={log.id} style={{ fontSize: '0.875rem', color: '#666' }}>
+                [{log.level}] {log.message}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
-    </div>
+    </>
+  )
+}
+
+export function App() {
+  const [showInfo, setShowInfo] = useState(false)
+
+  return (
+    <DurablyProvider dialectFactory={dialectFactory} options={durablyOptions}>
+      <div style={styles.container}>
+        <header style={styles.header}>
+          <h1 style={styles.title}>Durably React Example</h1>
+          <div style={styles.links}>
+            <a href={GITHUB_REPO} target="_blank" rel="noopener noreferrer">
+              GitHub
+            </a>
+            <span style={styles.linkSeparator}>|</span>
+            <a href={SOURCE_CODE} target="_blank" rel="noopener noreferrer">
+              Source Code
+            </a>
+            <span style={styles.linkSeparator}>|</span>
+            <button
+              type="button"
+              onClick={() => setShowInfo(!showInfo)}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#0066cc',
+                cursor: 'pointer',
+                padding: 0,
+                font: 'inherit',
+              }}
+            >
+              {showInfo ? 'Hide Info' : 'Show Info'}
+            </button>
+          </div>
+        </header>
+
+        {showInfo && (
+          <div
+            style={{
+              background: '#f5f5f5',
+              padding: '1rem',
+              borderRadius: '4px',
+              marginBottom: '1rem',
+              fontSize: '0.875rem',
+            }}
+          >
+            <p style={{ margin: '0 0 0.5rem' }}>
+              This example uses <code>@coji/durably-react</code> for seamless
+              React integration:
+            </p>
+            <ul style={{ margin: 0, paddingLeft: '1.5rem' }}>
+              <li>
+                <code>DurablyProvider</code> - Context provider with auto
+                migration and worker start
+              </li>
+              <li>
+                <code>useJob</code> - Hook for triggering jobs and real-time
+                status updates
+              </li>
+              <li>
+                <code>useDurably</code> - Direct access to Durably instance
+              </li>
+            </ul>
+          </div>
+        )}
+
+        <Demo />
+      </div>
+    </DurablyProvider>
   )
 }
