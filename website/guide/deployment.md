@@ -101,7 +101,7 @@ For browser-based workers (using SQLite WASM with OPFS):
 - Data persists in OPFS (Origin Private File System)
 - Requires HTTPS (Secure Context) and COOP/COEP headers
 
-See [React Guide](/guide/react#browser-complete-mode) for details.
+See [Browser-Only Guide](/guide/browser-only) for details.
 
 ## Database Considerations
 

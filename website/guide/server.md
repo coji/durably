@@ -1,6 +1,6 @@
-# Node.js
+# Server
 
-This guide covers using Durably in Node.js environments.
+This guide covers running Durably on the server (Node.js).
 
 ## SQLite Drivers
 

@@ -35,10 +35,11 @@ export default defineConfig({
           ],
         },
         {
-          text: 'Platforms',
+          text: 'Usage',
           items: [
-            { text: 'Node.js', link: '/guide/nodejs' },
-            { text: 'React', link: '/guide/react' },
+            { text: 'Server', link: '/guide/server' },
+            { text: 'Full-Stack', link: '/guide/full-stack' },
+            { text: 'Browser-Only', link: '/guide/browser-only' },
             { text: 'Deployment', link: '/guide/deployment' },
           ],
         },

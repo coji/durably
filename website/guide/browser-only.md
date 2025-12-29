@@ -1,30 +1,26 @@
-# React
+# Browser-Only
 
-This guide covers using Durably in React applications.
+Run Durably entirely in the browser without a server. Jobs execute in the browser using SQLite WASM with OPFS for persistence.
 
-The `@coji/durably-react` package provides React hooks for triggering and monitoring Durably jobs.
+## When to Use
+
+- Offline-capable applications
+- Local-first apps where data stays on the user's device
+- Prototyping without backend infrastructure
 
 ## Installation
 
 ```bash
-# Browser-complete mode (run Durably entirely in the browser)
 npm install @coji/durably-react @coji/durably kysely zod sqlocal
-
-# Server-connected mode (connect to a Durably server)
-npm install @coji/durably-react
 ```
 
-## Browser-Complete Mode
+## Requirements
 
-Run Durably entirely in the browser using SQLite WASM with OPFS backend.
+### Secure Context
 
-### Requirements
+Browser-only mode requires a [Secure Context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts) (HTTPS or localhost) for OPFS access.
 
-#### Secure Context
-
-Browser-complete mode requires a [Secure Context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts) (HTTPS or localhost) for OPFS access.
-
-#### COOP/COEP Headers
+### COOP/COEP Headers
 
 SQLite WASM requires cross-origin isolation:
 
@@ -59,7 +55,7 @@ export default defineConfig({
 })
 ```
 
-### Usage
+## Usage
 
 ```tsx
 import { DurablyProvider, useJob } from '@coji/durably-react'
@@ -115,43 +111,6 @@ function App() {
 }
 ```
 
-### Limitations
-
-- **Single tab**: OPFS has exclusive access - only one tab can use the database
-- **Storage limits**: Browser storage quotas apply
-- **No background sync**: Jobs only run when the tab is active
-
-### Tab Suspension
-
-Browsers can suspend inactive tabs. Durably handles this automatically:
-
-1. Tab becomes inactive → heartbeat stops
-2. Job is marked stale after `staleThreshold`
-3. Tab becomes active → worker restarts
-4. Stale job is picked up and resumed
-
-## Server-Connected Mode
-
-Connect to a Durably server via HTTP/SSE. No `@coji/durably` dependency needed on the client.
-
-```tsx
-import { useJob } from '@coji/durably-react/client'
-
-function SyncButton() {
-  const { trigger, status, output } = useJob<
-    { userId: string },
-    { count: number }
-  >({
-    api: '/api/durably',
-    jobName: 'sync-data',
-  })
-
-  return (
-    <button onClick={() => trigger({ userId: 'user_123' })}>Sync</button>
-  )
-}
-```
-
 ## Available Hooks
 
 | Hook | Description |
@@ -159,6 +118,21 @@ function SyncButton() {
 | `useJob` | Trigger and monitor a job with real-time status, progress, and logs |
 | `useJobRun` | Subscribe to an existing run by ID |
 | `useJobLogs` | Subscribe to logs from a run with optional limit |
-| `useDurably` | Access the Durably instance directly (browser mode only) |
+| `useDurably` | Access the Durably instance directly |
 
 See the [API Reference](/api/durably-react) for detailed documentation.
+
+## Limitations
+
+- **Single tab**: OPFS has exclusive access - only one tab can use the database
+- **Storage limits**: Browser storage quotas apply
+- **No background sync**: Jobs only run when the tab is active
+
+## Tab Suspension
+
+Browsers can suspend inactive tabs. Durably handles this automatically:
+
+1. Tab becomes inactive → heartbeat stops
+2. Job is marked stale after `staleThreshold`
+3. Tab becomes active → worker restarts
+4. Stale job is picked up and resumed
