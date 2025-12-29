@@ -200,6 +200,95 @@ durably.on('step:skip', (e) =>
 durably.on('log:write', (e) => console.log(`[${e.level}]`, e.message))
 ```
 
+## Advanced APIs
+
+### getJob
+
+Get a registered job by name:
+
+```ts
+const job = durably.getJob('sync-users')
+if (job) {
+  const run = await job.trigger({ orgId: 'org_123' })
+}
+```
+
+### subscribe
+
+Subscribe to events for a specific run as a ReadableStream:
+
+```ts
+const stream = durably.subscribe(runId)
+const reader = stream.getReader()
+
+while (true) {
+  const { done, value } = await reader.read()
+  if (done) break
+
+  switch (value.type) {
+    case 'run:start':
+      console.log('Started')
+      break
+    case 'run:complete':
+      console.log('Completed:', value.output)
+      break
+    case 'run:fail':
+      console.error('Failed:', value.error)
+      break
+    case 'run:progress':
+      console.log('Progress:', value.progress)
+      break
+    case 'log:write':
+      console.log(`[${value.level}]`, value.message)
+      break
+  }
+}
+```
+
+### createDurablyHandler
+
+Create HTTP handlers for client/server architecture using Web Standard Request/Response:
+
+```ts
+import { createDurablyHandler } from '@coji/durably'
+
+const handler = createDurablyHandler(durably)
+
+// Trigger endpoint (POST)
+// Request body: { jobName, input, idempotencyKey?, concurrencyKey? }
+// Response: { runId }
+app.post('/api/durably/trigger', async (req) => {
+  return await handler.trigger(req)
+})
+
+// Subscribe endpoint (GET with SSE)
+// Query param: runId
+// Response: Server-Sent Events stream
+app.get('/api/durably/subscribe', (req) => {
+  return handler.subscribe(req)
+})
+```
+
+**Handler Interface:**
+
+```ts
+interface DurablyHandler {
+  trigger(request: Request): Promise<Response>
+  subscribe(request: Request): Response
+}
+
+interface TriggerRequest {
+  jobName: string
+  input: Record<string, unknown>
+  idempotencyKey?: string
+  concurrencyKey?: string
+}
+
+interface TriggerResponse {
+  runId: string
+}
+```
+
 ## Plugins
 
 ### Log Persistence
