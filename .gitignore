@@ -5,6 +5,7 @@ dist/
 __screenshots__/
 local.db
 .serena/
+.turbo/
 
 # VitePress
 website/.vitepress/cache/
