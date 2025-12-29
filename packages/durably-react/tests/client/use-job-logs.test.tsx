@@ -1,7 +1,7 @@
 /**
  * Client mode useJobLogs tests
  *
- * Phase 27: Test log subscription via SSE
+ * Test log subscription via SSE
  */
 
 import { act, renderHook, waitFor } from '@testing-library/react'

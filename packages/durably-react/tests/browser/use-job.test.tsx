@@ -1,7 +1,7 @@
 /**
  * useJob Tests
  *
- * Phase 6-16: Test useJob hook for browser-complete mode
+ * Test useJob hook for browser-complete mode
  */
 
 import { defineJob, type Durably } from '@coji/durably'
@@ -83,7 +83,6 @@ describe('useJob', () => {
       </DurablyProvider>
     )
 
-  // Phase 6: trigger
   it('returns trigger function that executes job', async () => {
     const { result } = renderHook(() => useJob(testJob), {
       wrapper: createWrapper(),
@@ -97,7 +96,6 @@ describe('useJob', () => {
     expect(typeof runId).toBe('string')
   })
 
-  // Phase 7: status subscription
   it('updates status from pending to running to completed', async () => {
     const { result } = renderHook(() => useJob(testJob), {
       wrapper: createWrapper(),
@@ -121,7 +119,6 @@ describe('useJob', () => {
     })
   })
 
-  // Phase 8: output
   it('provides output when completed', async () => {
     const { result } = renderHook(() => useJob(testJob), {
       wrapper: createWrapper(),
@@ -136,7 +133,6 @@ describe('useJob', () => {
     })
   })
 
-  // Phase 9: error
   it('provides error when failed', async () => {
     const { result } = renderHook(() => useJob(failingJob), {
       wrapper: createWrapper(),
@@ -152,7 +148,6 @@ describe('useJob', () => {
     })
   })
 
-  // Phase 10: progress
   it('updates progress during execution', async () => {
     const { result } = renderHook(() => useJob(progressJob), {
       wrapper: createWrapper(),
@@ -173,7 +168,6 @@ describe('useJob', () => {
     })
   })
 
-  // Phase 11: logs
   it('collects logs during execution', async () => {
     const { result } = renderHook(() => useJob(loggingJob), {
       wrapper: createWrapper(),
@@ -193,7 +187,6 @@ describe('useJob', () => {
     expect(log.level).toBe('info')
   })
 
-  // Phase 12: boolean helpers
   it('provides boolean helpers', async () => {
     const { result } = renderHook(() => useJob(testJob), {
       wrapper: createWrapper(),
@@ -227,7 +220,6 @@ describe('useJob', () => {
     expect(result.current.isFailed).toBe(false)
   })
 
-  // Phase 13: triggerAndWait
   it('triggerAndWait resolves with output', async () => {
     const { result } = renderHook(() => useJob(testJob), {
       wrapper: createWrapper(),
@@ -255,7 +247,6 @@ describe('useJob', () => {
     ).rejects.toThrow('Something went wrong')
   })
 
-  // Phase 14: reset
   it('reset clears all state', async () => {
     const { result } = renderHook(() => useJob(testJob), {
       wrapper: createWrapper(),
@@ -276,7 +267,6 @@ describe('useJob', () => {
     expect(result.current.currentRunId).toBeNull()
   })
 
-  // Phase 15: initialRunId
   it('sets initialRunId as currentRunId', async () => {
     const fakeRunId = 'test-run-123'
 
@@ -291,7 +281,6 @@ describe('useJob', () => {
     expect(result.current.currentRunId).toBe(fakeRunId)
   })
 
-  // Phase 16: cleanup
   it('unsubscribes on unmount', async () => {
     const { result, unmount } = renderHook(() => useJob(testJob), {
       wrapper: createWrapper(),

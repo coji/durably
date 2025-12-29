@@ -1,7 +1,7 @@
 /**
  * useJobLogs Tests
  *
- * Phase 19: Test useJobLogs hook for subscribing to logs
+ * Test useJobLogs hook for subscribing to logs
  */
 
 import { defineJob, type Durably } from '@coji/durably'

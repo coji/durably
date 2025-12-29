@@ -1,7 +1,7 @@
 /**
  * useJobRun Tests
  *
- * Phase 18: Test useJobRun hook for subscribing to existing runs
+ * Test useJobRun hook for subscribing to existing runs
  */
 
 import { defineJob, type Durably } from '@coji/durably'

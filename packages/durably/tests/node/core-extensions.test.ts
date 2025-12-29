@@ -1,7 +1,7 @@
 /**
  * Core Extensions Tests
  *
- * Phase 20-22: Test getJob, subscribe, and createDurablyHandler
+ * Test getJob, subscribe, and createDurablyHandler
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -28,7 +28,7 @@ describe('Core Extensions', () => {
     await durably.stop()
   })
 
-  describe('getJob (Phase 20)', () => {
+  describe('getJob', () => {
     const testJob = defineJob({
       name: 'test-job-getjob',
       input: z.object({ value: z.number() }),
@@ -60,7 +60,7 @@ describe('Core Extensions', () => {
     })
   })
 
-  describe('subscribe (Phase 21)', () => {
+  describe('subscribe', () => {
     const testJob = defineJob({
       name: 'test-job-subscribe',
       input: z.object({ input: z.string() }),
@@ -133,7 +133,7 @@ describe('Core Extensions', () => {
     })
   })
 
-  describe('createDurablyHandler (Phase 22)', () => {
+  describe('createDurablyHandler', () => {
     const testJob = defineJob({
       name: 'test-job-handler',
       input: z.object({ value: z.number() }),

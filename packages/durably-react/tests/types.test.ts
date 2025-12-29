@@ -1,7 +1,7 @@
 /**
  * Type inference tests
  *
- * Phase 29: Verify that types are correctly inferred from job definitions
+ * Verify that types are correctly inferred from job definitions
  *
  * These tests use vitest's expectTypeOf to verify compile-time type inference
  * rather than runtime behavior.

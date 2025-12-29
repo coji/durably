@@ -1,7 +1,7 @@
 /**
  * Client mode useJobRun tests
  *
- * Phase 26: Test SSE subscription for existing runs
+ * Test SSE subscription for existing runs
  */
 
 import { act, renderHook, waitFor } from '@testing-library/react'

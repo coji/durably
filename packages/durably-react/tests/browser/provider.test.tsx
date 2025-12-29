@@ -1,7 +1,7 @@
 /**
  * DurablyProvider Tests
  *
- * Phase 3-5: Test DurablyProvider initialization, options, and cleanup
+ * Test DurablyProvider initialization, options, and cleanup
  */
 
 import type { Durably } from '@coji/durably'

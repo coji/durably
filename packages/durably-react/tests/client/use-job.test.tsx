@@ -1,7 +1,7 @@
 /**
  * Client mode useJob tests
  *
- * Phase 23-25: Test trigger via fetch and SSE subscription
+ * Test trigger via fetch and SSE subscription
  */
 
 import { act, renderHook, waitFor } from '@testing-library/react'
