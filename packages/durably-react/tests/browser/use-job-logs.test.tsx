@@ -106,7 +106,9 @@ describe('useJobLogs', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { _job: handle } = result.current.durably!.register({ _job: loggingJob })
+    const { _job: handle } = result.current.durably!.register({
+      _job: loggingJob,
+    })
     const run = await handle.trigger({ count: 3 })
     result.current.setRunId(run.id)
 
@@ -156,7 +158,9 @@ describe('useJobLogs', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { _job: handle } = result.current.durably!.register({ _job: loggingJob })
+    const { _job: handle } = result.current.durably!.register({
+      _job: loggingJob,
+    })
     const run = await handle.trigger({ count: 10 })
     result.current.setRunId(run.id)
 
@@ -188,7 +192,9 @@ describe('useJobLogs', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { _job: handle } = result.current.durably!.register({ _job: loggingJob })
+    const { _job: handle } = result.current.durably!.register({
+      _job: loggingJob,
+    })
     const run = await handle.trigger({ count: 3 })
     result.current.setRunId(run.id)
 

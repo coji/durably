@@ -10,8 +10,8 @@ import { durably } from '../lib/durably'
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-export const processImage = durably.register(
-  defineJob({
+export const { processImage } = durably.register({
+  processImage: defineJob({
     name: 'process-image',
     input: z.object({ filename: z.string(), width: z.number() }),
     output: z.object({ url: z.string(), size: z.number() }),
@@ -37,4 +37,4 @@ export const processImage = durably.register(
       return { url, size: resizedSize }
     },
   }),
-)
+})

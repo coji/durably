@@ -24,8 +24,8 @@ const durably = createDurably({
 })
 
 // Image processing job with sequential steps
-const processImage = durably.register(
-  defineJob({
+const { processImage } = durably.register({
+  processImage: defineJob({
     name: 'process-image',
     input: z.object({ filename: z.string() }),
     output: z.object({ url: z.string() }),
@@ -51,7 +51,7 @@ const processImage = durably.register(
       return { url: uploaded.url }
     },
   }),
-)
+})
 
 // Subscribe to events
 durably.on('run:start', (event) => {

@@ -214,7 +214,9 @@ describe('useJobRun', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { _job: handle } = result.current.durably!.register({ _job: failingJob })
+    const { _job: handle } = result.current.durably!.register({
+      _job: failingJob,
+    })
     const run = await handle.trigger({ input: 'test' })
     result.current.setRunId(run.id)
 
@@ -248,7 +250,9 @@ describe('useJobRun', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { _job: handle } = result.current.durably!.register({ _job: progressJob })
+    const { _job: handle } = result.current.durably!.register({
+      _job: progressJob,
+    })
     const run = await handle.trigger({ input: 'test' })
     result.current.setRunId(run.id)
 
