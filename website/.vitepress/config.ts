@@ -46,7 +46,7 @@ export default defineConfig({
       ],
       '/api/': [
         {
-          text: 'API Reference',
+          text: 'Core API',
           items: [
             { text: 'Overview', link: '/api/' },
             { text: 'createDurably', link: '/api/create-durably' },
@@ -54,6 +54,10 @@ export default defineConfig({
             { text: 'Step', link: '/api/step' },
             { text: 'Events', link: '/api/events' },
           ],
+        },
+        {
+          text: 'React API',
+          items: [{ text: 'durably-react', link: '/api/durably-react' }],
         },
       ],
     },

@@ -2,7 +2,7 @@
 
 This section provides detailed API documentation for Durably.
 
-## Core API
+## Core API (@coji/durably)
 
 | Export | Description |
 |--------|-------------|
@@ -10,6 +10,18 @@ This section provides detailed API documentation for Durably.
 | [`defineJob`](/api/define-job) | Define a job (standalone function) |
 | [`Step`](/api/step) | Step context for job handlers |
 | [`Events`](/api/events) | Event types and subscriptions |
+
+## React API (@coji/durably-react)
+
+| Export | Description |
+|--------|-------------|
+| [`DurablyProvider`](/api/durably-react#durablyprovider) | React context provider |
+| [`useJob`](/api/durably-react#usejob) | Trigger and monitor a job |
+| [`useJobRun`](/api/durably-react#usejobrun) | Subscribe to an existing run |
+| [`useJobLogs`](/api/durably-react#usejoblogs) | Subscribe to logs from a run |
+| [`useDurably`](/api/durably-react#usedurably) | Access Durably instance directly |
+
+See the [durably-react API reference](/api/durably-react) for detailed documentation.
 
 ## Quick Reference
 

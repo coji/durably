@@ -9,9 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+#### @coji/durably
+
 - `run:progress` event: Now emitted when `step.progress()` is called
   - Enables real-time progress tracking via event subscription
   - Event payload: `{ runId, jobName, progress: { current, total?, message? } }`
+- `getJob(name)`: Retrieve a registered job by name
+- `subscribe(runId)`: Subscribe to run events as a ReadableStream
+- `createDurablyHandler(durably)`: Create HTTP handlers for client/server architecture
+
+#### @coji/durably-react (New Package)
+
+- Initial release of React bindings for Durably
+- **Browser-complete mode**: Run Durably entirely in the browser with SQLite WASM
+  - `DurablyProvider`: React context provider for Durably instance
+  - `useDurably`: Access the Durably instance directly
+  - `useJob`: Trigger and monitor a job with real-time updates
+  - `useJobRun`: Subscribe to an existing run by ID
+  - `useJobLogs`: Subscribe to logs from a run
+- **Server-connected mode**: Connect to a remote Durably server via SSE
+  - `useJob`, `useJobRun`, `useJobLogs` from `@coji/durably-react/client`
+  - Works with `createDurablyHandler` on the server
 
 ## [0.4.0] - 2025-12-23
 

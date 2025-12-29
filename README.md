@@ -4,6 +4,13 @@ Step-oriented resumable batch execution for Node.js and browsers using SQLite.
 
 **[Documentation](https://coji.github.io/durably/)** | **[Live Demo](https://durably-demo.vercel.app)**
 
+## Packages
+
+| Package | Description |
+|---------|-------------|
+| [@coji/durably](./packages/durably) | Core library - job definitions, steps, and persistence |
+| [@coji/durably-react](./packages/durably-react) | React bindings - hooks for triggering and monitoring jobs |
+
 ## Features
 
 - Resumable batch processing with step-level persistence
