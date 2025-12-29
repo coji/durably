@@ -14,9 +14,52 @@ npm install @coji/durably-react @coji/durably kysely zod sqlocal
 npm install @coji/durably-react
 ```
 
-### Browser-Complete Mode
+## Browser-Complete Mode
 
 Run Durably entirely in the browser using SQLite WASM with OPFS backend.
+
+### Requirements
+
+#### Secure Context
+
+Browser-complete mode requires a [Secure Context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts) (HTTPS or localhost) for OPFS access.
+
+#### COOP/COEP Headers
+
+SQLite WASM requires cross-origin isolation:
+
+```http
+Cross-Origin-Embedder-Policy: require-corp
+Cross-Origin-Opener-Policy: same-origin
+```
+
+**Vite Configuration:**
+
+```ts
+// vite.config.ts
+export default defineConfig({
+  plugins: [
+    {
+      name: 'configure-response-headers',
+      configureServer: (server) => {
+        server.middlewares.use((_req, res, next) => {
+          res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+          res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+          next()
+        })
+      },
+    },
+  ],
+  worker: {
+    format: 'es',
+  },
+  optimizeDeps: {
+    exclude: ['sqlocal'],
+  },
+})
+```
+
+### Usage
 
 ```tsx
 import { DurablyProvider, useJob } from '@coji/durably-react'
@@ -72,7 +115,22 @@ function App() {
 }
 ```
 
-### Server-Connected Mode
+### Limitations
+
+- **Single tab**: OPFS has exclusive access - only one tab can use the database
+- **Storage limits**: Browser storage quotas apply
+- **No background sync**: Jobs only run when the tab is active
+
+### Tab Suspension
+
+Browsers can suspend inactive tabs. Durably handles this automatically:
+
+1. Tab becomes inactive → heartbeat stops
+2. Job is marked stale after `staleThreshold`
+3. Tab becomes active → worker restarts
+4. Stale job is picked up and resumed
+
+## Server-Connected Mode
 
 Connect to a Durably server via HTTP/SSE. No `@coji/durably` dependency needed on the client.
 
@@ -94,7 +152,7 @@ function SyncButton() {
 }
 ```
 
-### Available Hooks
+## Available Hooks
 
 | Hook | Description |
 |------|-------------|

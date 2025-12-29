@@ -99,9 +99,9 @@ For browser-based workers (using SQLite WASM with OPFS):
 - Host your static site anywhere (Vercel, Netlify, GitHub Pages)
 - The worker runs entirely in the user's browser
 - Data persists in OPFS (Origin Private File System)
-- Requires HTTPS (Secure Context)
+- Requires HTTPS (Secure Context) and COOP/COEP headers
 
-See [Browser Guide](/guide/browser) for details.
+See [React Guide](/guide/react#browser-complete-mode) for details.
 
 ## Database Considerations
 

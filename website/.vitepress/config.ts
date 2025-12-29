@@ -38,7 +38,6 @@ export default defineConfig({
           text: 'Platforms',
           items: [
             { text: 'Node.js', link: '/guide/nodejs' },
-            { text: 'Browser', link: '/guide/browser' },
             { text: 'React', link: '/guide/react' },
             { text: 'Deployment', link: '/guide/deployment' },
           ],
