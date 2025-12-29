@@ -29,7 +29,7 @@ describe('Core Extensions', () => {
   })
 
   describe('getJob', () => {
-    const testJob = defineJob({
+    const testJobDef = defineJob({
       name: 'test-job-getjob',
       input: z.object({ value: z.number() }),
       output: z.object({ result: z.number() }),
@@ -37,7 +37,7 @@ describe('Core Extensions', () => {
     })
 
     it('returns registered job by name', () => {
-      durably.register(testJob)
+      durably.register({ testJob: testJobDef })
 
       const job = durably.getJob('test-job-getjob')
 
@@ -50,7 +50,7 @@ describe('Core Extensions', () => {
     })
 
     it('can trigger job via getJob handle', async () => {
-      durably.register(testJob)
+      durably.register({ testJob: testJobDef })
 
       const job = durably.getJob('test-job-getjob')
       const run = await job!.trigger({ value: 5 })
@@ -61,7 +61,7 @@ describe('Core Extensions', () => {
   })
 
   describe('subscribe', () => {
-    const testJob = defineJob({
+    const testJobDef = defineJob({
       name: 'test-job-subscribe',
       input: z.object({ input: z.string() }),
       output: z.object({ result: z.string() }),
@@ -72,7 +72,7 @@ describe('Core Extensions', () => {
     })
 
     it('returns ReadableStream of events', async () => {
-      durably.register(testJob)
+      durably.register({ testJob: testJobDef })
       durably.start()
 
       const job = durably.getJob('test-job-subscribe')!
@@ -92,7 +92,7 @@ describe('Core Extensions', () => {
     })
 
     it('emits run:start event', async () => {
-      durably.register(testJob)
+      durably.register({ testJob: testJobDef })
       durably.start()
 
       const job = durably.getJob('test-job-subscribe')!
@@ -112,7 +112,7 @@ describe('Core Extensions', () => {
     })
 
     it('emits step events', async () => {
-      durably.register(testJob)
+      durably.register({ testJob: testJobDef })
       durably.start()
 
       const job = durably.getJob('test-job-subscribe')!
@@ -134,7 +134,7 @@ describe('Core Extensions', () => {
   })
 
   describe('createDurablyHandler', () => {
-    const testJob = defineJob({
+    const testJobDef = defineJob({
       name: 'test-job-handler',
       input: z.object({ value: z.number() }),
       output: z.object({ result: z.number() }),
@@ -142,7 +142,7 @@ describe('Core Extensions', () => {
     })
 
     beforeEach(() => {
-      durably.register(testJob)
+      durably.register({ testJob: testJobDef })
     })
 
     it('trigger returns runId', async () => {

@@ -499,7 +499,9 @@ import { createDurably } from '@coji/durably'
 import { codingAssistant } from './jobs'
 
 const durably = createDurably({ dialect })
-const codingAssistantJob = durably.register(codingAssistant)
+const { codingAssistant: codingAssistantJob } = durably.register({
+  codingAssistant,
+})
 
 const run = await codingAssistantJob.trigger({
   task: 'Add user authentication',

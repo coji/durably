@@ -36,7 +36,7 @@ export function createStepTests(createDialect: () => Dialect) {
           return { result: value }
         },
       })
-      const job = durably.register(stepReturnTestDef)
+      const { job } = durably.register({ job: stepReturnTestDef })
 
       const run = await job.trigger({})
       durably.start()
@@ -60,7 +60,7 @@ export function createStepTests(createDialect: () => Dialect) {
           await step.run('step2', () => 'result2')
         },
       })
-      const job = durably.register(stepRecordTestDef)
+      const { job } = durably.register({ job: stepRecordTestDef })
 
       const run = await job.trigger({})
       durably.start()
@@ -90,7 +90,7 @@ export function createStepTests(createDialect: () => Dialect) {
           })
         },
       })
-      const job = durably.register(stepFailTestDef)
+      const { job } = durably.register({ job: stepFailTestDef })
 
       const run = await job.trigger({})
       durably.start()
@@ -133,7 +133,7 @@ export function createStepTests(createDialect: () => Dialect) {
           })
         },
       })
-      const job = durably.register(stepResumeTestDef)
+      const { job } = durably.register({ job: stepResumeTestDef })
 
       // First run - will fail at step2
       const run1 = await job.trigger({ shouldFail: true })
@@ -194,7 +194,7 @@ export function createStepTests(createDialect: () => Dialect) {
           return { step1Result: result }
         },
       })
-      const job = durably.register(stepOutputResumeTestDef)
+      const { job } = durably.register({ job: stepOutputResumeTestDef })
 
       // First attempt - step1 succeeds, step2 fails
       const run = await job.trigger({})
@@ -243,7 +243,7 @@ export function createStepTests(createDialect: () => Dialect) {
           await step.run('myStep', () => 'hello')
         },
       })
-      const job = durably.register(stepEventsTestDef)
+      const { job } = durably.register({ job: stepEventsTestDef })
 
       await job.trigger({})
       durably.start()
@@ -271,7 +271,7 @@ export function createStepTests(createDialect: () => Dialect) {
           return { value }
         },
       })
-      const job = durably.register(asyncStepTestDef)
+      const { job } = durably.register({ job: asyncStepTestDef })
 
       const run = await job.trigger({})
       durably.start()
@@ -297,7 +297,7 @@ export function createStepTests(createDialect: () => Dialect) {
           })
         },
       })
-      const job = durably.register(stepTimingTestDef)
+      const { job } = durably.register({ job: stepTimingTestDef })
 
       const run = await job.trigger({})
       durably.start()
@@ -341,7 +341,7 @@ export function createStepTests(createDialect: () => Dialect) {
           step.progress(3, 3, 'Complete')
         },
       })
-      const job = durably.register(progressTestDef)
+      const { job } = durably.register({ job: progressTestDef })
 
       const run = await job.trigger({})
       durably.start()

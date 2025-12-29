@@ -22,13 +22,13 @@ export function createRunApiTests(createDialect: () => Dialect) {
 
     describe('durably.getRun()', () => {
       it('returns a run by ID', async () => {
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'get-run-test',
             input: z.object({ value: z.number() }),
             run: async () => {},
           }),
-        )
+        })
 
         const run = await job.trigger({ value: 42 })
         const fetched = await durably.getRun(run.id)
@@ -46,14 +46,14 @@ export function createRunApiTests(createDialect: () => Dialect) {
       })
 
       it('returns run with unknown output type', async () => {
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'unknown-output-test',
             input: z.object({}),
             output: z.object({ result: z.string() }),
             run: async () => ({ result: 'hello' }),
           }),
-        )
+        })
 
         const run = await job.trigger({})
         durably.start()
@@ -74,20 +74,20 @@ export function createRunApiTests(createDialect: () => Dialect) {
 
     describe('durably.getRuns()', () => {
       it('returns all runs', async () => {
-        const job1 = durably.register(
-          defineJob({
+        const { job1 } = durably.register({
+          job1: defineJob({
             name: 'job1',
             input: z.object({}),
             run: async () => {},
           }),
-        )
-        const job2 = durably.register(
-          defineJob({
+        })
+        const { job2 } = durably.register({
+          job2: defineJob({
             name: 'job2',
             input: z.object({}),
             run: async () => {},
           }),
-        )
+        })
 
         await job1.trigger({})
         await job2.trigger({})
@@ -98,13 +98,13 @@ export function createRunApiTests(createDialect: () => Dialect) {
       })
 
       it('filters by status', async () => {
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'status-filter-test',
             input: z.object({}),
             run: async () => {},
           }),
-        )
+        })
 
         await job.trigger({})
         await job.trigger({})
@@ -126,20 +126,20 @@ export function createRunApiTests(createDialect: () => Dialect) {
       })
 
       it('filters by jobName', async () => {
-        const job1 = durably.register(
-          defineJob({
+        const { job1 } = durably.register({
+          job1: defineJob({
             name: 'filter-job-a',
             input: z.object({}),
             run: async () => {},
           }),
-        )
-        const job2 = durably.register(
-          defineJob({
+        })
+        const { job2 } = durably.register({
+          job2: defineJob({
             name: 'filter-job-b',
             input: z.object({}),
             run: async () => {},
           }),
-        )
+        })
 
         await job1.trigger({})
         await job1.trigger({})
@@ -153,13 +153,13 @@ export function createRunApiTests(createDialect: () => Dialect) {
       })
 
       it('returns runs sorted by created_at descending', async () => {
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'sort-test',
             input: z.object({ order: z.number() }),
             run: async () => {},
           }),
-        )
+        })
 
         await job.trigger({ order: 1 })
         await new Promise((r) => setTimeout(r, 10))
@@ -176,13 +176,13 @@ export function createRunApiTests(createDialect: () => Dialect) {
       })
 
       it('supports limit option', async () => {
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'limit-test',
             input: z.object({ order: z.number() }),
             run: async () => {},
           }),
-        )
+        })
 
         // Add slight delays to ensure distinct created_at timestamps
         for (let i = 1; i <= 5; i++) {
@@ -203,13 +203,13 @@ export function createRunApiTests(createDialect: () => Dialect) {
       })
 
       it('supports offset option', async () => {
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'offset-test',
             input: z.object({ order: z.number() }),
             run: async () => {},
           }),
-        )
+        })
 
         // Add slight delays to ensure distinct created_at timestamps
         for (let i = 1; i <= 5; i++) {
@@ -230,13 +230,13 @@ export function createRunApiTests(createDialect: () => Dialect) {
       })
 
       it('supports limit and offset together for pagination', async () => {
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'pagination-test',
             input: z.object({ order: z.number() }),
             run: async () => {},
           }),
-        )
+        })
 
         // Add slight delays to ensure distinct created_at timestamps
         for (let i = 1; i <= 10; i++) {
@@ -277,13 +277,13 @@ export function createRunApiTests(createDialect: () => Dialect) {
       })
 
       it('combines pagination with other filters', async () => {
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'combined-filter-pagination-test',
             input: z.object({ order: z.number() }),
             run: async () => {},
           }),
-        )
+        })
 
         // Add slight delays to ensure distinct created_at timestamps
         for (let i = 1; i <= 6; i++) {
@@ -304,13 +304,13 @@ export function createRunApiTests(createDialect: () => Dialect) {
       })
 
       it('returns empty array when offset exceeds total', async () => {
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'offset-exceeds-test',
             input: z.object({}),
             run: async () => {},
           }),
-        )
+        })
 
         await job.trigger({})
         await job.trigger({})
@@ -325,8 +325,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
 
     describe('triggerAndWait()', () => {
       it('triggers and waits for successful completion', async () => {
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'trigger-and-wait-success',
             input: z.object({ value: z.number() }),
             output: z.object({ result: z.number() }),
@@ -337,7 +337,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
               return { result: payload.value * 2 }
             },
           }),
-        )
+        })
 
         durably.start()
 
@@ -352,8 +352,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
       })
 
       it('rejects when job fails', async () => {
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'trigger-and-wait-fail',
             input: z.object({}),
             output: z.object({}),
@@ -364,7 +364,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
               return {}
             },
           }),
-        )
+        })
 
         durably.start()
 
@@ -374,8 +374,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
       })
 
       it('works with options', async () => {
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'trigger-and-wait-options',
             input: z.object({}),
             output: z.object({ done: z.boolean() }),
@@ -383,7 +383,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
               return { done: true }
             },
           }),
-        )
+        })
 
         durably.start()
 
@@ -399,8 +399,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
       })
 
       it('times out if job does not complete within timeout', async () => {
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'trigger-and-wait-timeout',
             input: z.object({}),
             output: z.object({}),
@@ -412,7 +412,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
               return {}
             },
           }),
-        )
+        })
 
         // Don't start the worker - job will never complete
         // Or start with a delay that exceeds timeout
@@ -425,8 +425,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
 
     describe('step.progress()', () => {
       it('saves progress with current value', async () => {
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'progress-test',
             input: z.object({}),
             run: async (step) => {
@@ -436,7 +436,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
               })
             },
           }),
-        )
+        })
 
         const run = await job.trigger({})
         durably.start()
@@ -454,8 +454,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
       })
 
       it('saves progress with all fields', async () => {
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'full-progress-test',
             input: z.object({}),
             run: async (step) => {
@@ -465,7 +465,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
               })
             },
           }),
-        )
+        })
 
         const run = await job.trigger({})
         durably.start()
@@ -489,8 +489,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
       it('progress is available via getRun()', async () => {
         let progressSet = false
 
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'get-progress-test',
             input: z.object({}),
             run: async (step) => {
@@ -501,7 +501,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
               })
             },
           }),
-        )
+        })
 
         const run = await job.trigger({})
         durably.start()

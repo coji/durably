@@ -304,7 +304,7 @@ const syncJob = defineJob({
     // Job logic
   },
 })
-durably.register(syncJob)
+durably.register({ syncJob })
 
 await durably.migrate()
 durably.start()

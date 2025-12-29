@@ -166,7 +166,7 @@ const durably = createDurably({ dialect })
 const handler = createDurablyHandler(durably)
 
 // Register jobs
-durably.register(syncJob)
+durably.register({ syncJob })
 
 // Route handlers
 app.post('/api/durably/trigger', (req) => handler.trigger(req))

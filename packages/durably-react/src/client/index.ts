@@ -3,6 +3,16 @@
  * Use these when connecting to a remote Durably server via HTTP/SSE
  */
 
+export { createDurablyClient } from './create-durably-client'
+export type {
+  CreateDurablyClientOptions,
+  DurablyClient,
+  JobClient,
+} from './create-durably-client'
+
+export { createJobHooks } from './create-job-hooks'
+export type { CreateJobHooksOptions, JobHooks } from './create-job-hooks'
+
 export { useJob } from './use-job'
 export type { UseJobClientOptions, UseJobClientResult } from './use-job'
 

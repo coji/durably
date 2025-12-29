@@ -34,7 +34,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           executionOrder.push(`end-${payload.id}`)
         },
       })
-      const job = durably.register(concurrencyTestDef)
+      const { job } = durably.register({ job: concurrencyTestDef })
 
       // Trigger two runs with the same concurrency key
       await job.trigger({ id: '1' }, { concurrencyKey: 'user-123' })
@@ -68,7 +68,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           })
         },
       })
-      const job = durably.register(differentKeysTestDef)
+      const { job } = durably.register({ job: differentKeysTestDef })
 
       // Trigger two runs with different concurrency keys
       await job.trigger({ id: 'a' }, { concurrencyKey: 'user-A' })
@@ -103,7 +103,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           })
         },
       })
-      const job = durably.register(noKeyTestDef)
+      const { job } = durably.register({ job: noKeyTestDef })
 
       // Mix of runs with and without concurrency keys
       await job.trigger({ id: '1' }) // no key
@@ -140,7 +140,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           concurrentRuns--
         },
       })
-      const job = durably.register(nullKeyTestDef)
+      const { job } = durably.register({ job: nullKeyTestDef })
 
       // Multiple runs with no concurrency key
       await job.trigger({ id: 1 })

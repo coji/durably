@@ -61,8 +61,10 @@ const syncUsersJob = defineJob({
   },
 })
 
-// Register the job with durably instance
-const syncUsers = durably.register(syncUsersJob)
+// Register jobs with durably instance
+const { syncUsers } = durably.register({
+  syncUsers: syncUsersJob,
+})
 ```
 
 ### 3. Starting the Worker
@@ -316,15 +318,15 @@ const durably = createDurably({
 })
 
 // Same API as Node.js
-const myJob = durably.register(
-  defineJob({
+const { myJob } = durably.register({
+  myJob: defineJob({
     name: 'my-job',
     input: z.object({}),
     run: async (step) => {
       /* ... */
     },
   }),
-)
+})
 
 await durably.migrate()
 durably.start()

@@ -112,7 +112,9 @@ await durably.migrate()
 durably.start()
 
 // ジョブを登録して JobHandle を取得
-const syncUsersJob = durably.register(syncUsers)
+const { syncUsers: syncUsersJob } = durably.register({
+  syncUsers,
+})
 
 // trigger で実行
 await syncUsersJob.trigger({ orgId: "org_123" })
@@ -367,7 +369,7 @@ const durably = createDurably({ dialect })
 await durably.migrate()
 
 // ジョブを登録
-durably.register(syncUsers)
+durably.register({ syncUsers })
 
 // ワーカーを起動
 durably.start()
@@ -891,7 +893,7 @@ await durably.migrate()
 durably.start()
 
 // ジョブを登録してトリガー
-const syncUsersJob = durably.register(syncUsers)
+const { syncUsers: syncUsersJob } = durably.register({ syncUsers })
 await syncUsersJob.trigger({ orgId: 'org_123' })
 ```
 

@@ -37,7 +37,7 @@ export function createLogTests(createDialect: () => Dialect) {
           await step.run('step', () => {})
         },
       })
-      const job = durably.register(logInfoTestDef)
+      const { job } = durably.register({ job: logInfoTestDef })
 
       await job.trigger({})
       durably.start()
@@ -64,7 +64,7 @@ export function createLogTests(createDialect: () => Dialect) {
           await step.run('step', () => {})
         },
       })
-      const job = durably.register(logWarnTestDef)
+      const { job } = durably.register({ job: logWarnTestDef })
 
       await job.trigger({})
       durably.start()
@@ -91,7 +91,7 @@ export function createLogTests(createDialect: () => Dialect) {
           await step.run('step', () => {})
         },
       })
-      const job = durably.register(logErrorTestDef)
+      const { job } = durably.register({ job: logErrorTestDef })
 
       await job.trigger({})
       durably.start()
@@ -118,7 +118,7 @@ export function createLogTests(createDialect: () => Dialect) {
           await step.run('step', () => {})
         },
       })
-      const job = durably.register(logDataTestDef)
+      const { job } = durably.register({ job: logDataTestDef })
 
       await job.trigger({})
       durably.start()
@@ -144,7 +144,7 @@ export function createLogTests(createDialect: () => Dialect) {
           await step.run('step', () => {})
         },
       })
-      const job = durably.register(logRunIdTestDef)
+      const { job } = durably.register({ job: logRunIdTestDef })
 
       const run = await job.trigger({})
       durably.start()
@@ -173,7 +173,7 @@ export function createLogTests(createDialect: () => Dialect) {
           step.log.info('After step') // stepName should be null
         },
       })
-      const job = durably.register(logStepNameTestDef)
+      const { job } = durably.register({ job: logStepNameTestDef })
 
       await job.trigger({})
       durably.start()

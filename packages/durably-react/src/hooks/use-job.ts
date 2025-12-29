@@ -98,8 +98,10 @@ export function useJob<
   useEffect(() => {
     if (!durably || !isDurablyReady) return
 
-    // Register the job
-    const jobHandle = durably.register(jobDefinition)
+    // Register the job (use fixed key for simpler type handling)
+    const { _job: jobHandle } = durably.register({
+      _job: jobDefinition,
+    })
     jobHandleRef.current = jobHandle
 
     // Subscribe to each event type separately

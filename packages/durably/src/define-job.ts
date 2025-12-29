@@ -21,6 +21,26 @@ export interface JobDefinition<TName extends string, TInput, TOutput> {
 }
 
 /**
+ * Extract input type from a JobDefinition
+ * @example
+ * ```ts
+ * type Input = JobInput<typeof myJob> // { userId: string }
+ * ```
+ */
+export type JobInput<T> =
+  T extends JobDefinition<string, infer TInput, unknown> ? TInput : never
+
+/**
+ * Extract output type from a JobDefinition
+ * @example
+ * ```ts
+ * type Output = JobOutput<typeof myJob> // { count: number }
+ * ```
+ */
+export type JobOutput<T> =
+  T extends JobDefinition<string, unknown, infer TOutput> ? TOutput : never
+
+/**
  * Configuration for defining a job
  */
 export interface DefineJobConfig<

@@ -204,8 +204,8 @@ describe('React StrictMode', () => {
             await instance.migrate()
             if (cleanedUp.current) return
 
-            const job = instance.register(
-              defineJob({
+            const { job } = instance.register({
+              job: defineJob({
                 name: 'strict-mode-test',
                 input: z.object({ value: z.string() }),
                 output: z.object({ processed: z.string() }),
@@ -214,7 +214,7 @@ describe('React StrictMode', () => {
                   return { processed: payload.value.toUpperCase() }
                 },
               }),
-            )
+            })
 
             const run = await job.trigger({ value: 'hello' })
             if (cleanedUp.current) return
@@ -289,13 +289,13 @@ describe('React StrictMode', () => {
 
         instance.migrate().then(() => {
           if (cleanedUp.current) return
-          const job = instance.register(
-            defineJob({
+          const { job } = instance.register({
+            job: defineJob({
               name: 'event-test',
               input: z.object({}),
               run: async () => {},
             }),
-          )
+          })
           job.trigger({}).then(() => {
             if (!cleanedUp.current) {
               instance.start()

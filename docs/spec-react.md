@@ -608,7 +608,7 @@ function TaskPage() {
 ### 既存（実装済み）
 
 - `durably.on()` が unsubscribe 関数を返す
-- `durably.register(jobDef)` で JobHandle を取得
+- `durably.register({ name: jobDef })` で JobHandle のオブジェクトを取得
 
 ### 新規（サーバー連携用）
 

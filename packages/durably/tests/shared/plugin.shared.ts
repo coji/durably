@@ -40,15 +40,15 @@ export function createPluginTests(createDialect: () => Dialect) {
 
         durably.use(plugin)
 
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'plugin-test',
             input: z.object({}),
             run: async (step) => {
               await step.run('step', () => {})
             },
           }),
-        )
+        })
 
         await job.trigger({})
         durably.start()
@@ -81,15 +81,15 @@ export function createPluginTests(createDialect: () => Dialect) {
         durably.use(plugin1)
         durably.use(plugin2)
 
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'multi-plugin-test',
             input: z.object({}),
             run: async (step) => {
               await step.run('step', () => {})
             },
           }),
-        )
+        })
 
         await job.trigger({})
         durably.start()
@@ -109,8 +109,8 @@ export function createPluginTests(createDialect: () => Dialect) {
         const { withLogPersistence } = await import('../../src')
         durably.use(withLogPersistence())
 
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'log-persist-test',
             input: z.object({}),
             run: async (step) => {
@@ -118,7 +118,7 @@ export function createPluginTests(createDialect: () => Dialect) {
               await step.run('step', () => {})
             },
           }),
-        )
+        })
 
         const run = await job.trigger({})
         durably.start()
@@ -140,8 +140,8 @@ export function createPluginTests(createDialect: () => Dialect) {
       })
 
       it('logs table is empty without plugin', async () => {
-        const job = durably.register(
-          defineJob({
+        const { job } = durably.register({
+          job: defineJob({
             name: 'no-log-persist-test',
             input: z.object({}),
             run: async (step) => {
@@ -149,7 +149,7 @@ export function createPluginTests(createDialect: () => Dialect) {
               await step.run('step', () => {})
             },
           }),
-        )
+        })
 
         const run = await job.trigger({})
         durably.start()

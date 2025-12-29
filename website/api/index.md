@@ -47,7 +47,7 @@ durably.start()               // Start the worker
 await durably.stop()          // Stop the worker gracefully
 
 // Job management
-const job = durably.register(jobDef)  // Register a job definition
+const { job } = durably.register({ job: jobDef })  // Register jobs
 await durably.retry(runId)            // Retry a failed run
 
 // Events
@@ -73,7 +73,9 @@ const myJobDef = defineJob({
 })
 
 // Register with durably instance
-const myJob = durably.register(myJobDef)
+const { myJob } = durably.register({
+  myJob: myJobDef,
+})
 
 // Trigger a new run
 await myJob.trigger(input, options?)

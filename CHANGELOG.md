@@ -37,8 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **New API pattern**: `defineJob()` + `durably.register()` replaces `durably.defineJob()`
   - `defineJob()` is now a standalone function that creates a `JobDefinition`
-  - `durably.register(jobDef)` registers the definition and returns a `JobHandle`
+  - `durably.register({ name: jobDef })` registers jobs and returns an object of `JobHandle`s
   - This enables idempotent registration (safe for React StrictMode)
+  - Supports registering multiple jobs in a single call
 
 ### Migration
 
@@ -52,15 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - }, async (step, payload) => {
 -   // ...
 - })
-+ const myJob = durably.register(
-+   defineJob({
-+     name: 'my-job',
-+     input: z.object({ id: z.string() }),
-+     run: async (step, payload) => {
-+       // ...
-+     },
-+   })
-+ )
++ const myJobDef = defineJob({
++   name: 'my-job',
++   input: z.object({ id: z.string() }),
++   run: async (step, payload) => {
++     // ...
++   },
++ })
++ const { myJob } = durably.register({ myJob: myJobDef })
 ```
 
 ### Removed

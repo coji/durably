@@ -46,10 +46,18 @@ Returns a `JobDefinition` object that can be registered with `durably.register()
 
 ## Registering Jobs
 
-Use `durably.register()` to register a job definition and get a job handle:
+Use `durably.register()` to register job definitions and get job handles:
 
 ```ts
-const job = durably.register(jobDef)
+const { job } = durably.register({
+  job: jobDef,
+})
+
+// Multiple jobs at once
+const { syncUsers, importCsv } = durably.register({
+  syncUsers: syncUsersJob,
+  importCsv: importCsvJob,
+})
 ```
 
 The job handle provides the following methods:
@@ -120,7 +128,9 @@ const syncUsersJob = defineJob({
 })
 
 // Register with durably instance
-const syncUsers = durably.register(syncUsersJob)
+const { syncUsers } = durably.register({
+  syncUsers: syncUsersJob,
+})
 
 // Trigger the job
 await syncUsers.trigger({ orgId: 'org_123' })
@@ -147,7 +157,9 @@ const exampleJob = defineJob({
   },
 })
 
-const job = durably.register(exampleJob)
+const { job } = durably.register({
+  job: exampleJob,
+})
 
 // trigger() is typed
 await job.trigger({ id: 'abc' })  // OK
@@ -161,8 +173,8 @@ Registering the same `JobDefinition` instance multiple times returns the same jo
 ```ts
 const jobDef = defineJob({ name: 'my-job', ... })
 
-const handle1 = durably.register(jobDef)
-const handle2 = durably.register(jobDef)
+const { job: handle1 } = durably.register({ job: jobDef })
+const { job: handle2 } = durably.register({ job: jobDef })
 
 console.log(handle1 === handle2) // true
 ```

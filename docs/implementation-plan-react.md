@@ -73,7 +73,7 @@ packages/durably-react/
 ### 既存（実装済み）
 
 - `durably.on()` が unsubscribe 関数を返す ✅
-- `durably.register(jobDef)` で JobHandle を取得 ✅
+- `durably.register({ name: jobDef })` で JobHandle のオブジェクトを取得 ✅
 - `run:progress` イベント ✅
 
 ### 新規（サーバー連携用）
@@ -628,7 +628,7 @@ describe('useJobLogs', () => {
 describe('getJob', () => {
   it('returns registered job by name', () => {
     const durably = createDurably({ dialect })
-    durably.register(testJob)
+    durably.register({ testJob })
 
     const job = durably.getJob('test-job')
 
@@ -657,7 +657,7 @@ describe('getJob', () => {
 describe('subscribe', () => {
   it('returns ReadableStream of events', async () => {
     const durably = createDurably({ dialect })
-    durably.register(testJob)
+    durably.register({ testJob })
     await durably.migrate()
     durably.start()
 

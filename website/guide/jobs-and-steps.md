@@ -22,7 +22,9 @@ const myJobDef = defineJob({
 })
 
 // Register to get a job handle
-const myJob = durably.register(myJobDef)
+const { myJob } = durably.register({
+  myJob: myJobDef,
+})
 ```
 
 ### Job Options

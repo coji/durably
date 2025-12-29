@@ -131,7 +131,7 @@ describe('useJobRun', () => {
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
     // Trigger job and set runId
-    const handle = result.current.durably!.register(testJob)
+    const { _job: handle } = result.current.durably!.register({ _job: testJob })
     const run = await handle.trigger({ input: 'test' })
 
     // Update runId to start subscription
@@ -180,7 +180,7 @@ describe('useJobRun', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const handle = result.current.durably!.register(testJob)
+    const { _job: handle } = result.current.durably!.register({ _job: testJob })
     const run = await handle.trigger({ input: 'hello' })
     result.current.setRunId(run.id)
 
@@ -214,7 +214,7 @@ describe('useJobRun', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const handle = result.current.durably!.register(failingJob)
+    const { _job: handle } = result.current.durably!.register({ _job: failingJob })
     const run = await handle.trigger({ input: 'test' })
     result.current.setRunId(run.id)
 
@@ -248,7 +248,7 @@ describe('useJobRun', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const handle = result.current.durably!.register(progressJob)
+    const { _job: handle } = result.current.durably!.register({ _job: progressJob })
     const run = await handle.trigger({ input: 'test' })
     result.current.setRunId(run.id)
 
@@ -285,7 +285,7 @@ describe('useJobRun', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const handle = result.current.durably!.register(testJob)
+    const { _job: handle } = result.current.durably!.register({ _job: testJob })
     const run = await handle.trigger({ input: 'test' })
     result.current.setRunId(run.id)
 

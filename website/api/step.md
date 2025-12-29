@@ -135,7 +135,9 @@ const processOrderJob = defineJob({
 })
 
 // Register and use
-const processOrder = durably.register(processOrderJob)
+const { processOrder } = durably.register({
+  processOrder: processOrderJob,
+})
 await processOrder.trigger({ orderId: 'order_123' })
 ```
 

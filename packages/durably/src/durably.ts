@@ -86,13 +86,30 @@ export interface Durably {
   onError(handler: ErrorHandler): void
 
   /**
-   * Register a job definition and return a job handle
+   * Register job definitions and return a registry of job handles
    * Same JobDefinition can be registered multiple times (idempotent)
    * Different JobDefinitions with the same name will throw an error
+   * @example
+   * ```ts
+   * const jobs = durably.register({
+   *   importCsv: importCsvJob,
+   *   syncUsers: syncUsersJob,
+   * })
+   * // Usage: jobs.importCsv.trigger({ rows: [...] })
+   * ```
    */
-  register<TName extends string, TInput, TOutput>(
-    jobDef: JobDefinition<TName, TInput, TOutput>,
-  ): JobHandle<TName, TInput, TOutput>
+  // biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
+  register<TJobs extends Record<string, JobDefinition<string, any, any>>>(
+    jobDefs: TJobs,
+  ): {
+    [K in keyof TJobs]: TJobs[K] extends JobDefinition<
+      infer TName,
+      infer TInput,
+      infer TOutput
+    >
+      ? JobHandle<TName & string, TInput, TOutput>
+      : never
+  }
 
   /**
    * Start the worker polling loop
@@ -181,10 +198,39 @@ export function createDurably(options: DurablyOptions): Durably {
     start: worker.start,
     stop: worker.stop,
 
-    register<TName extends string, TInput, TOutput>(
-      jobDef: JobDefinition<TName, TInput, TOutput>,
-    ): JobHandle<TName, TInput, TOutput> {
-      return createJobHandle(jobDef, storage, eventEmitter, jobRegistry)
+    // biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
+    register<TJobs extends Record<string, JobDefinition<string, any, any>>>(
+      jobDefs: TJobs,
+    ): {
+      [K in keyof TJobs]: TJobs[K] extends JobDefinition<
+        infer TName,
+        infer TInput,
+        infer TOutput
+      >
+        ? JobHandle<TName & string, TInput, TOutput>
+        : never
+    } {
+      const result = {} as {
+        [K in keyof TJobs]: TJobs[K] extends JobDefinition<
+          infer TName,
+          infer TInput,
+          infer TOutput
+        >
+          ? JobHandle<TName & string, TInput, TOutput>
+          : never
+      }
+
+      for (const key of Object.keys(jobDefs) as (keyof TJobs)[]) {
+        const jobDef = jobDefs[key]
+        result[key] = createJobHandle(
+          jobDef,
+          storage,
+          eventEmitter,
+          jobRegistry,
+        ) as (typeof result)[typeof key]
+      }
+
+      return result
     },
 
     getRun: storage.getRun,

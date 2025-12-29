@@ -12,10 +12,10 @@ This guide uses [React Router v7](https://reactrouter.com/) as the full-stack fr
 
 ## Architecture
 
-```
+```txt
 ┌─────────────────┐     HTTP/SSE     ┌─────────────────┐
 │  React Client   │ ◄──────────────► │  React Router   │
-│  (useJob hooks) │                  │  Server (Durably)│
+│  (durably hooks)│                  │  Server (Durably)│
 └─────────────────┘                  └─────────────────┘
 ```
 
@@ -29,21 +29,21 @@ npm install @coji/durably @coji/durably-react kysely zod @libsql/client @libsql/
 
 ```txt
 app/
-├── .server/
-│   └── durably.ts        # Durably instance and jobs
+├── lib/
+│   ├── durably.server.ts # Durably instance and jobs (server-only)
+│   └── durably.client.ts # Type-safe client hooks (client-only)
 ├── routes/
 │   ├── api.durably.trigger.ts   # POST /api/durably/trigger
-│   └── api.durably.subscribe.ts # GET /api/durably/subscribe
-└── routes/
-    └── _index.tsx        # Client component with useJob
+│   ├── api.durably.subscribe.ts # GET /api/durably/subscribe
+│   └── _index.tsx        # Upload form with action
 ```
 
-## Server Setup
+## Setup
 
-### 1. Create Durably Instance
+### 1. Server (`durably.server.ts`)
 
 ```ts
-// app/.server/durably.ts
+// app/lib/durably.server.ts
 import { createDurably, createDurablyHandler, defineJob } from '@coji/durably'
 import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { createClient } from '@libsql/client'
@@ -55,39 +55,65 @@ const dialect = new LibsqlDialect({ client })
 export const durably = createDurably({ dialect })
 export const handler = createDurablyHandler(durably)
 
-// Define and register jobs
-export const syncJob = defineJob({
-  name: 'sync-data',
-  input: z.object({ userId: z.string() }),
-  output: z.object({ count: z.number() }),
+// Define jobs
+const importCsvJob = defineJob({
+  name: 'importCsv',
+  input: z.object({ rows: z.array(z.record(z.string())) }),
+  output: z.object({ imported: z.number(), skipped: z.number() }),
   run: async (step, payload) => {
-    const users = await step.run('fetch-users', async () => {
-      return await api.fetchUsers(payload.userId)
-    })
+    let imported = 0
+    let skipped = 0
 
-    await step.run('save-to-db', async () => {
-      await db.saveUsers(users)
-    })
+    for (let i = 0; i < payload.rows.length; i++) {
+      await step.run(`import-row-${i}`, async () => {
+        try {
+          await db.insert('users', payload.rows[i])
+          imported++
+        } catch {
+          skipped++
+        }
+      })
+      step.setProgress({ current: i + 1, total: payload.rows.length })
+    }
 
-    return { count: users.length }
+    return { imported, skipped }
   },
 })
 
-durably.register(syncJob)
+// Register jobs
+export const jobs = durably.register({
+  importCsv: importCsvJob,
+  // Add more jobs here:
+  // syncUsers: syncUsersJob,
+})
 
 // Initialize on server start
 await durably.migrate()
 durably.start()
 ```
 
-### 2. Create API Routes
+### 2. Client (`durably.client.ts`)
+
+Create a type-safe client once, import the jobs type using `import type`:
+
+```ts
+// app/lib/durably.client.ts
+import { createDurablyClient } from '@coji/durably-react/client'
+import type { jobs } from '~/lib/durably.server'
+
+export const durably = createDurablyClient<typeof jobs>({
+  api: '/api/durably',
+})
+```
+
+### 3. API Routes
 
 **Trigger Route:**
 
 ```ts
 // app/routes/api.durably.trigger.ts
 import type { Route } from './+types/api.durably.trigger'
-import { handler } from '~/.server/durably'
+import { handler } from '~/lib/durably.server'
 
 export async function action({ request }: Route.ActionArgs) {
   return handler.trigger(request)
@@ -99,94 +125,109 @@ export async function action({ request }: Route.ActionArgs) {
 ```ts
 // app/routes/api.durably.subscribe.ts
 import type { Route } from './+types/api.durably.subscribe'
-import { handler } from '~/.server/durably'
+import { handler } from '~/lib/durably.server'
 
 export async function loader({ request }: Route.LoaderArgs) {
   return handler.subscribe(request)
 }
 ```
 
-## Client Setup
+## Usage
 
-### useJob Hook
+### Server-Side Trigger (Form with action)
 
 ```tsx
 // app/routes/_index.tsx
-import { useJob } from '@coji/durably-react/client'
+import { Form } from 'react-router'
+import type { Route } from './+types/_index'
+import { jobs } from '~/lib/durably.server'
+import { durably } from '~/lib/durably.client'
 
-export default function Index() {
-  const {
-    trigger,
-    status,
-    output,
-    error,
-    progress,
-    isRunning,
-    isCompleted,
-    isFailed,
-  } = useJob<
-    { userId: string },
-    { count: number }
-  >({
-    api: '/api/durably',
-    jobName: 'sync-data',
+function parseCSV(text: string): Record<string, string>[] {
+  const lines = text.trim().split('\n')
+  const headers = lines[0].split(',')
+  return lines.slice(1).map((line) => {
+    const values = line.split(',')
+    return Object.fromEntries(headers.map((h, i) => [h, values[i]]))
   })
+}
+
+export async function action({ request }: Route.ActionArgs) {
+  const formData = await request.formData()
+  const file = formData.get('file') as File
+  const text = await file.text()
+  const rows = parseCSV(text)
+
+  const { runId } = await jobs.importCsv.trigger({ rows })
+  return { runId }
+}
+
+export default function CsvImporter({ actionData }: Route.ComponentProps) {
+  const { progress, output, error, isRunning, isCompleted, isFailed } =
+    durably.importCsv.useRun(actionData?.runId ?? null)
 
   return (
     <div>
-      <button
-        onClick={() => trigger({ userId: 'user_123' })}
-        disabled={isRunning}
-      >
-        {isRunning ? 'Syncing...' : 'Sync Data'}
-      </button>
+      <Form method="post" encType="multipart/form-data">
+        <input type="file" name="file" accept=".csv" disabled={isRunning} />
+        <button type="submit" disabled={isRunning}>
+          {isRunning ? 'Importing...' : 'Import CSV'}
+        </button>
+      </Form>
 
       {progress && (
-        <p>Progress: {progress.current}/{progress.total}</p>
+        <div>
+          <progress value={progress.current} max={progress.total} />
+          <p>{progress.current} / {progress.total} rows</p>
+        </div>
       )}
 
-      {isCompleted && <p>Synced {output?.count} items</p>}
+      {isCompleted && (
+        <p>Done! Imported {output?.imported}, skipped {output?.skipped}</p>
+      )}
       {isFailed && <p>Error: {error}</p>}
     </div>
   )
 }
 ```
 
-### useJobRun Hook
+### Client-Side Trigger
 
-Subscribe to an existing run by ID:
+For cases where you trigger from the client:
 
 ```tsx
-import { useJobRun } from '@coji/durably-react/client'
+import { durably } from '~/lib/durably.client'
 
-function RunMonitor({ runId }: { runId: string }) {
-  const { status, output, error, progress } = useJobRun<{ count: number }>({
-    api: '/api/durably',
-    runId,
-  })
+function SimpleImporter() {
+  const { trigger, progress, isRunning, isCompleted, output } =
+    durably.importCsv.useJob()
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    const text = await file.text()
+    const rows = parseCSV(text)
+    trigger({ rows }) // Fully type-safe with autocomplete!
+  }
 
   return (
     <div>
-      <p>Status: {status}</p>
-      {output && <p>Result: {output.count} items</p>}
+      <input type="file" accept=".csv" onChange={handleFileChange} />
+      {isRunning && <p>Progress: {progress?.current}/{progress?.total}</p>}
+      {isCompleted && <p>Imported {output?.imported} rows</p>}
     </div>
   )
 }
 ```
 
-### useJobLogs Hook
-
-Subscribe to logs from a run:
+### Subscribe to Logs
 
 ```tsx
-import { useJobLogs } from '@coji/durably-react/client'
+import { durably } from '~/lib/durably.client'
 
-function LogViewer({ runId }: { runId: string }) {
-  const { logs, clearLogs } = useJobLogs({
-    api: '/api/durably',
-    runId,
-    maxLogs: 100,
-  })
+function ImportLogs({ runId }: { runId: string }) {
+  const { logs, clearLogs } = durably.importCsv.useLogs(runId, { maxLogs: 100 })
 
   return (
     <div>
@@ -203,12 +244,13 @@ function LogViewer({ runId }: { runId: string }) {
 }
 ```
 
-## Available Hooks
+## API Reference
 
-| Hook | Description |
-|------|-------------|
-| `useJob` | Trigger and monitor a job with real-time status, progress, and logs |
-| `useJobRun` | Subscribe to an existing run by ID |
-| `useJobLogs` | Subscribe to logs from a run with optional limit |
+| Function                             | Description                          |
+| ------------------------------------ | ------------------------------------ |
+| `createDurablyClient<typeof jobs>()` | Create type-safe client for all jobs |
+| `durably.jobName.useJob()`           | Trigger and monitor a job            |
+| `durably.jobName.useRun(runId)`      | Subscribe to an existing run         |
+| `durably.jobName.useLogs(runId)`     | Subscribe to logs from a run         |
 
 See the [API Reference](/api/durably-react#server-connected-mode) for detailed documentation.

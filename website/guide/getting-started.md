@@ -32,37 +32,40 @@ const client = createClient({ url: 'file:local.db' })
 const dialect = new LibsqlDialect({ client })
 const durably = createDurably({ dialect })
 
-// Define a job
-const syncUsersJob = defineJob({
-  name: 'sync-users',
-  input: z.object({ orgId: z.string() }),
+// Define a CSV import job
+const importCsvJob = defineJob({
+  name: 'import-csv',
+  input: z.object({ filePath: z.string() }),
   output: z.object({ count: z.number() }),
   run: async (step, payload) => {
-    // Step 1: Fetch users
-    const users = await step.run('fetch', async () => {
-      const res = await fetch(`https://api.example.com/orgs/${payload.orgId}/users`)
-      return res.json()
+    // Step 1: Parse CSV
+    const rows = await step.run('parse', async () => {
+      const fs = await import('fs/promises')
+      const csv = await fs.readFile(payload.filePath, 'utf-8')
+      return csv.split('\n').slice(1).map((line) => line.split(','))
     })
 
-    // Step 2: Save to database
-    await step.run('save', async () => {
+    // Step 2: Import rows
+    await step.run('import', async () => {
       // Your database logic here
-      console.log(`Saving ${users.length} users`)
+      console.log(`Importing ${rows.length} rows`)
     })
 
-    return { count: users.length }
+    return { count: rows.length }
   },
 })
 
 // Register the job
-const syncUsers = durably.register(syncUsersJob)
+const { importCsv } = durably.register({
+  importCsv: importCsvJob,
+})
 
 // Initialize and start
 await durably.migrate()
 durably.start()
 
 // Trigger a job
-await syncUsers.trigger({ orgId: 'org_123' })
+await importCsv.trigger({ filePath: './data/users.csv' })
 ```
 
 ### 3. Run
@@ -71,7 +74,7 @@ await syncUsers.trigger({ orgId: 'org_123' })
 npx tsx jobs.ts
 ```
 
-If the process crashes after step 1, restarting will skip the fetch and continue from step 2.
+If the process crashes after step 1, restarting will skip the parse and continue from step 2.
 
 ## Next Steps
 

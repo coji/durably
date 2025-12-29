@@ -6,15 +6,15 @@ Durably is a **resumable job execution** library for Node.js and browsers. Split
 
 ### Long-Running Jobs with Progress UI
 
-Execute jobs on the server and show real-time progress in your React app via SSE.
+Import a CSV with thousands of rows and show real-time progress in your React app via SSE.
 
 ```tsx
 const { trigger, progress, isRunning } = useJob({
   api: '/api/durably',
-  jobName: 'sync-data',
+  jobName: 'import-csv',
 })
 
-// Progress: 50/100
+// Progress: 500/1000 rows
 ```
 
 [Full-Stack Guide →](/guide/full-stack)
@@ -24,14 +24,16 @@ const { trigger, progress, isRunning } = useJob({
 Fetch data from APIs, transform, and save. If the process fails midway, it resumes from where it left off.
 
 ```ts
-const syncJob = defineJob({
-  name: 'sync-users',
+const importJob = defineJob({
+  name: 'import-csv',
   run: async (step, payload) => {
-    // Step 1: Fetch (persisted after completion)
-    const users = await step.run('fetch', () => api.getUsers())
+    // Step 1: Parse CSV (persisted after completion)
+    const rows = await step.run('parse', () => parseCSV(payload.csv))
 
-    // Step 2: Save (skipped if already done)
-    await step.run('save', () => db.saveUsers(users))
+    // Step 2: Import (skipped if already done)
+    for (const [i, row] of rows.entries()) {
+      await step.run(`import-${i}`, () => db.insert(row))
+    }
   },
 })
 ```
