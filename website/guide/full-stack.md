@@ -2,6 +2,8 @@
 
 Run jobs on the server and monitor them from a React frontend. The server handles job execution while the client provides real-time status updates via SSE.
 
+This guide uses [React Router v7](https://reactrouter.com/) as the full-stack framework.
+
 ## When to Use
 
 - Web applications with long-running background jobs
@@ -12,23 +14,28 @@ Run jobs on the server and monitor them from a React frontend. The server handle
 
 ```
 ┌─────────────────┐     HTTP/SSE     ┌─────────────────┐
-│  React Client   │ ◄──────────────► │  Node.js Server │
-│  (useJob hooks) │                  │  (Durably)      │
+│  React Client   │ ◄──────────────► │  React Router   │
+│  (useJob hooks) │                  │  Server (Durably)│
 └─────────────────┘                  └─────────────────┘
 ```
 
 ## Installation
 
-**Client:**
-
 ```bash
-npm install @coji/durably-react
+npm install @coji/durably @coji/durably-react kysely zod @libsql/client @libsql/kysely-libsql
 ```
 
-**Server:**
+## Project Structure
 
-```bash
-npm install @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
+```txt
+app/
+├── .server/
+│   └── durably.ts        # Durably instance and jobs
+├── routes/
+│   ├── api.durably.trigger.ts   # POST /api/durably/trigger
+│   └── api.durably.subscribe.ts # GET /api/durably/subscribe
+└── routes/
+    └── _index.tsx        # Client component with useJob
 ```
 
 ## Server Setup
@@ -36,7 +43,7 @@ npm install @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
 ### 1. Create Durably Instance
 
 ```ts
-// server/durably.ts
+// app/.server/durably.ts
 import { createDurably, createDurablyHandler, defineJob } from '@coji/durably'
 import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { createClient } from '@libsql/client'
@@ -67,56 +74,36 @@ export const syncJob = defineJob({
 })
 
 durably.register(syncJob)
+
+// Initialize on server start
+await durably.migrate()
+durably.start()
 ```
 
 ### 2. Create API Routes
 
-**Express:**
+**Trigger Route:**
 
 ```ts
-import express from 'express'
-import { durably, handler } from './durably'
+// app/routes/api.durably.trigger.ts
+import type { Route } from './+types/api.durably.trigger'
+import { handler } from '~/.server/durably'
 
-const app = express()
-app.use(express.json())
-
-// Trigger a job
-app.post('/api/durably/trigger', async (req, res) => {
-  const result = await handler.trigger(req)
-  res.json(result)
-})
-
-// Subscribe to job events (SSE)
-app.get('/api/durably/subscribe', (req, res) => {
-  return handler.subscribe(req, res)
-})
-
-// Start server and worker
-await durably.migrate()
-durably.start()
-app.listen(3000)
+export async function action({ request }: Route.ActionArgs) {
+  return handler.trigger(request)
+}
 ```
 
-**Hono:**
+**Subscribe Route (SSE):**
 
 ```ts
-import { Hono } from 'hono'
-import { durably, handler } from './durably'
+// app/routes/api.durably.subscribe.ts
+import type { Route } from './+types/api.durably.subscribe'
+import { handler } from '~/.server/durably'
 
-const app = new Hono()
-
-app.post('/api/durably/trigger', async (c) => {
-  const result = await handler.trigger(c.req.raw)
-  return c.json(result)
-})
-
-app.get('/api/durably/subscribe', (c) => {
-  return handler.subscribe(c.req.raw)
-})
-
-await durably.migrate()
-durably.start()
-export default app
+export async function loader({ request }: Route.LoaderArgs) {
+  return handler.subscribe(request)
+}
 ```
 
 ## Client Setup
@@ -124,25 +111,22 @@ export default app
 ### useJob Hook
 
 ```tsx
+// app/routes/_index.tsx
 import { useJob } from '@coji/durably-react/client'
 
-function SyncButton() {
+export default function Index() {
   const {
     trigger,
-    triggerAndWait,
     status,
     output,
     error,
-    logs,
     progress,
     isRunning,
     isCompleted,
     isFailed,
-    currentRunId,
-    reset,
   } = useJob<
-    { userId: string }, // Input type
-    { count: number }   // Output type
+    { userId: string },
+    { count: number }
   >({
     api: '/api/durably',
     jobName: 'sync-data',
@@ -176,7 +160,7 @@ Subscribe to an existing run by ID:
 import { useJobRun } from '@coji/durably-react/client'
 
 function RunMonitor({ runId }: { runId: string }) {
-  const { status, output, error, progress, logs } = useJobRun<{ count: number }>({
+  const { status, output, error, progress } = useJobRun<{ count: number }>({
     api: '/api/durably',
     runId,
   })

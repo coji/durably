@@ -1,141 +1,86 @@
 # Getting Started
 
-## Installation
+## Choose Your Setup
 
-::: code-group
+| Setup | Description | Guide |
+|-------|-------------|-------|
+| **Server** | Run jobs on Node.js server | [→](/guide/server) |
+| **Full-Stack** | Server execution + React UI for monitoring | [→](/guide/full-stack) |
+| **Browser-Only** | Run entirely in the browser (no server) | [→](/guide/browser-only) |
 
-```bash [npm]
-npm install @coji/durably kysely zod
-```
+## Quick Start (Server)
 
-```bash [pnpm]
-pnpm add @coji/durably kysely zod
-```
+The simplest way to get started.
 
-```bash [yarn]
-yarn add @coji/durably kysely zod
-```
-
-:::
-
-### Node.js
-
-For Node.js, you'll also need a SQLite driver:
-
-::: code-group
-
-```bash [libsql (recommended)]
-npm install @libsql/client @libsql/kysely-libsql
-```
-
-```bash [better-sqlite3]
-npm install better-sqlite3
-```
-
-:::
-
-### Browser
-
-For browsers, use SQLite WASM with OPFS:
+### 1. Install
 
 ```bash
-npm install sqlocal
+npm install @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
 ```
 
-## Quick Start
-
-### Node.js Example
+### 2. Define a Job
 
 ```ts
+// jobs.ts
 import { createDurably, defineJob } from '@coji/durably'
-import { createClient } from '@libsql/client'
 import { LibsqlDialect } from '@libsql/kysely-libsql'
+import { createClient } from '@libsql/client'
 import { z } from 'zod'
 
-// Create SQLite client
+// Create Durably instance
 const client = createClient({ url: 'file:local.db' })
 const dialect = new LibsqlDialect({ client })
-
-// Initialize Durably
 const durably = createDurably({ dialect })
 
 // Define a job
-const processOrderJob = defineJob({
-  name: 'process-order',
-  input: z.object({ orderId: z.string() }),
-  output: z.object({ status: z.string() }),
+const syncUsersJob = defineJob({
+  name: 'sync-users',
+  input: z.object({ orgId: z.string() }),
+  output: z.object({ count: z.number() }),
   run: async (step, payload) => {
-    // Step 1: Validate order
-    const order = await step.run('validate', async () => {
-      return await validateOrder(payload.orderId)
+    // Step 1: Fetch users
+    const users = await step.run('fetch', async () => {
+      const res = await fetch(`https://api.example.com/orgs/${payload.orgId}/users`)
+      return res.json()
     })
 
-    // Step 2: Process payment
-    await step.run('payment', async () => {
-      await processPayment(order)
+    // Step 2: Save to database
+    await step.run('save', async () => {
+      // Your database logic here
+      console.log(`Saving ${users.length} users`)
     })
 
-    // Step 3: Send confirmation
-    await step.run('notify', async () => {
-      await sendConfirmation(order)
-    })
-
-    return { status: 'completed' }
+    return { count: users.length }
   },
 })
 
 // Register the job
-const processOrder = durably.register(processOrderJob)
+const syncUsers = durably.register(syncUsersJob)
 
-// Start the worker and run migrations
+// Initialize and start
 await durably.migrate()
 durably.start()
 
 // Trigger a job
-await processOrder.trigger({ orderId: 'order_123' })
+await syncUsers.trigger({ orgId: 'org_123' })
 ```
 
-### Browser Example
+### 3. Run
 
-```ts
-import { createDurably, defineJob } from '@coji/durably'
-import { SQLocalKysely } from 'sqlocal/kysely'
-import { z } from 'zod'
-
-// Create SQLite client with OPFS
-const { dialect } = new SQLocalKysely('app.sqlite3')
-
-// Initialize Durably
-const durably = createDurably({
-  dialect,
-  pollingInterval: 100,
-  heartbeatInterval: 500,
-  staleThreshold: 3000,
-})
-
-// Define and register jobs the same way as Node.js
-const syncData = durably.register(
-  defineJob({
-    name: 'sync-data',
-    input: z.object({ userId: z.string() }),
-    run: async (step, payload) => {
-      const data = await step.run('fetch', async () => {
-        return await fetchUserData(payload.userId)
-      })
-
-      await step.run('save', async () => {
-        await saveLocally(data)
-      })
-    },
-  }),
-)
-
-await durably.migrate()
-durably.start()
+```bash
+npx tsx jobs.ts
 ```
+
+If the process crashes after step 1, restarting will skip the fetch and continue from step 2.
 
 ## Next Steps
 
-- [Jobs and Steps](/guide/jobs-and-steps) - Learn about defining jobs and steps
-- [Resumability](/guide/resumability) - Understand how resumption works
-- [Events](/guide/events) - Monitor job execution with events
+Learn the concepts:
+- [Jobs and Steps](/guide/jobs-and-steps) - How jobs and steps work
+- [Resumability](/guide/resumability) - How resumption works
+- [Events](/guide/events) - Monitor job execution
+
+Choose your setup:
+- [Server](/guide/server) - Detailed server-side guide
+- [Full-Stack](/guide/full-stack) - React Router v7 + React hooks
+- [Browser-Only](/guide/browser-only) - Browser-only with SQLite WASM

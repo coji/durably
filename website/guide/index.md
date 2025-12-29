@@ -1,75 +1,78 @@
 # What is Durably?
 
-Durably is a step-oriented batch execution framework that enables **resumable workflows** in both Node.js and browsers.
+Durably is a **resumable job execution** library for Node.js and browsers. Split long-running tasks into steps, and if interrupted, resume from the last successful step.
 
-## The Problem
+## Use Cases
 
-When running batch jobs or workflows, failures can happen at any point:
-- Network errors during API calls
-- Process crashes
-- Browser tab closures
-- Server restarts
+### Long-Running Jobs with Progress UI
 
-Traditional approaches require you to either:
-- Re-run the entire job from the beginning
-- Implement complex checkpointing logic manually
+Execute jobs on the server and show real-time progress in your React app via SSE.
 
-## The Solution
-
-Durably automatically persists the result of each step to SQLite. If a job is interrupted, it resumes from the last successful step. Durably uses [Kysely](https://kysely.dev) for database access—you provide a dialect for your SQLite implementation.
-
-```ts
-import { createDurably, defineJob } from '@coji/durably'
-import { LibsqlDialect } from '@libsql/kysely-libsql' // or your SQLite dialect
-import { z } from 'zod'
-
-// Create durably instance with SQLite dialect
-const dialect = new LibsqlDialect({ url: 'file:app.db' })
-const durably = createDurably({ dialect })
-
-// Define job (static, can be in a separate file)
-const syncUsersJob = defineJob({
-  name: 'sync-users',
-  input: z.object({ orgId: z.string() }),
-  run: async (step, payload) => {
-    // Step 1: Fetch users (persisted after completion)
-    const users = await step.run('fetch-users', async () => {
-      return api.fetchUsers(payload.orgId)
-    })
-
-    // Step 2: Save to database (skipped if already done)
-    await step.run('save-to-db', async () => {
-      await db.upsertUsers(users)
-    })
-
-    return { syncedCount: users.length }
-  },
+```tsx
+const { trigger, progress, isRunning } = useJob({
+  api: '/api/durably',
+  jobName: 'sync-data',
 })
 
-// Register and trigger
-const syncUsers = durably.register(syncUsersJob)
-await syncUsers.trigger({ orgId: 'org_123' })
+// Progress: 50/100
 ```
 
-## Key Features
+[Full-Stack Guide →](/guide/full-stack)
 
-- **Step-level persistence**: Each `step.run()` call creates a checkpoint
-- **Automatic resumption**: Interrupted jobs resume from the last successful step
-- **Cross-platform**: Same code runs in Node.js and browsers
-- **Minimal dependencies**: Just Kysely and Zod
-- **Type-safe**: Full TypeScript support with schema validation
+### Data Sync & Batch Processing
 
-## When to Use Durably
+Fetch data from APIs, transform, and save. If the process fails midway, it resumes from where it left off.
 
-Durably is ideal for:
+```ts
+const syncJob = defineJob({
+  name: 'sync-users',
+  run: async (step, payload) => {
+    // Step 1: Fetch (persisted after completion)
+    const users = await step.run('fetch', () => api.getUsers())
 
-- **Data synchronization jobs** - Fetching and processing data from external APIs
-- **Batch processing** - Processing large datasets in steps
-- **Browser workflows** - Long-running operations that survive page reloads
-- **Offline-first applications** - Operations that need to resume after connectivity is restored
+    // Step 2: Save (skipped if already done)
+    await step.run('save', () => db.saveUsers(users))
+  },
+})
+```
+
+[Server Guide →](/guide/server)
+
+### Offline-Capable Apps
+
+Run Durably entirely in the browser with SQLite WASM. Works offline, survives tab closes.
+
+```tsx
+<DurablyProvider dialectFactory={() => new SQLocalKysely('app.db').dialect}>
+  <App />
+</DurablyProvider>
+```
+
+[Browser-Only Guide →](/guide/browser-only)
+
+## How It Works
+
+Each `step.run()` persists its result to SQLite. On resume, completed steps return their cached results instantly.
+
+```ts
+// First run: executes all steps
+// Second run (after crash): step 1 returns cached result, step 2 executes
+
+const result = await step.run('expensive-api-call', async () => {
+  return await fetch('/api/data').then((r) => r.json())
+})
+```
+
+## Features
+
+- **Step-level persistence** - Each step is a checkpoint
+- **Automatic resumption** - Resume from last successful step
+- **Cross-platform** - Node.js and browsers
+- **TypeScript** - Full type safety with Zod schemas
+- **Minimal dependencies** - Just Kysely and Zod
 
 ## Next Steps
 
-- [Getting Started](/guide/getting-started) - Install and create your first job
-- [Jobs and Steps](/guide/jobs-and-steps) - Learn about the core concepts
+- [Getting Started](/guide/getting-started) - Install and run your first job
+- [Jobs and Steps](/guide/jobs-and-steps) - Core concepts
 - [Live Demo](https://durably-demo.vercel.app) - Try it in your browser
