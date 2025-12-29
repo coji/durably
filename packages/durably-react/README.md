@@ -25,13 +25,17 @@ const myJob = defineJob({
   name: 'my-job',
   input: z.object({ id: z.string() }),
   run: async (step, payload) => {
-    await step.run('step-1', async () => { /* ... */ })
+    await step.run('step-1', async () => {
+      /* ... */
+    })
   },
 })
 
 function App() {
   return (
-    <DurablyProvider dialectFactory={() => new SQLocalKysely('app.sqlite3').dialect}>
+    <DurablyProvider
+      dialectFactory={() => new SQLocalKysely('app.sqlite3').dialect}
+    >
       <MyComponent />
     </DurablyProvider>
   )
@@ -39,7 +43,11 @@ function App() {
 
 function MyComponent() {
   const { trigger, isRunning, isCompleted } = useJob(myJob)
-  return <button onClick={() => trigger({ id: '123' })} disabled={isRunning}>Run</button>
+  return (
+    <button onClick={() => trigger({ id: '123' })} disabled={isRunning}>
+      Run
+    </button>
+  )
 }
 ```
 
