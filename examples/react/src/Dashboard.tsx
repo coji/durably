@@ -82,6 +82,8 @@ const styles = {
   },
 }
 
+const PAGE_SIZE = 10
+
 export function Dashboard() {
   const { durably } = useDurably()
   const [runs, setRuns] = useState<Run[]>([])
@@ -89,12 +91,15 @@ export function Dashboard() {
   const [steps, setSteps] = useState<
     { index: number; name: string; status: string }[]
   >([])
+  const [page, setPage] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
 
   const refresh = useCallback(async () => {
     if (!durably) return
-    const data = await durably.getRuns({ limit: 20 })
-    setRuns(data)
-  }, [durably])
+    const data = await durably.getRuns({ limit: PAGE_SIZE + 1, offset: page * PAGE_SIZE })
+    setHasMore(data.length > PAGE_SIZE)
+    setRuns(data.slice(0, PAGE_SIZE))
+  }, [durably, page])
 
   // Initial fetch and subscribe to run events for real-time updates
   useEffect(() => {
@@ -245,6 +250,36 @@ export function Dashboard() {
           )}
         </tbody>
       </table>
+
+      {(page > 0 || hasMore) && (
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginTop: '0.75rem',
+            fontSize: '0.875rem',
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            disabled={page === 0}
+            style={{ ...styles.actionBtn, marginLeft: 0 }}
+          >
+            ← Prev
+          </button>
+          <span style={{ color: '#666' }}>Page {page + 1}</span>
+          <button
+            type="button"
+            onClick={() => setPage((p) => p + 1)}
+            disabled={!hasMore}
+            style={styles.actionBtn}
+          >
+            Next →
+          </button>
+        </div>
+      )}
 
       {selectedRun && (
         <div style={styles.details}>

@@ -115,8 +115,17 @@ export function useJob<
 
     unsubscribes.push(
       durably.on('run:start', (event) => {
-        if (event.runId !== currentRunIdRef.current) return
+        // Check if this is a run for our job
+        if (event.jobName !== jobDefinition.name) return
+        // Switch to tracking the running job
+        setCurrentRunId(event.runId)
+        currentRunIdRef.current = event.runId
         setStatus('running')
+        // Reset output/error when switching to a new run
+        setOutput(null)
+        setError(null)
+        setLogs([])
+        setProgress(null)
       }),
     )
 
@@ -248,6 +257,7 @@ export function useJob<
 
       const run = await jobHandle.trigger(input)
       setCurrentRunId(run.id)
+      currentRunIdRef.current = run.id
       setStatus('pending')
 
       return { runId: run.id }
@@ -270,6 +280,7 @@ export function useJob<
 
       const run = await jobHandle.trigger(input)
       setCurrentRunId(run.id)
+      currentRunIdRef.current = run.id
       setStatus('pending')
 
       // Wait for completion

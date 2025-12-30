@@ -129,7 +129,7 @@ function AppContent() {
         <button
           type="button"
           onClick={handleRun}
-          disabled={!isReady || isRunning}
+          disabled={!isReady}
         >
           Run Job
         </button>
