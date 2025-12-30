@@ -296,4 +296,86 @@ describe('useJob', () => {
     // No errors should occur (memory leak test)
     await new Promise((r) => setTimeout(r, 100))
   })
+
+  describe('followLatest option', () => {
+    it('switches to latest running job by default (followLatest: true)', async () => {
+      const slowJob = defineJob({
+        name: 'slow-job',
+        input: z.object({ id: z.number() }),
+        output: z.object({ id: z.number() }),
+        run: async (context, payload) => {
+          await context.run('work', async () => {
+            await new Promise((r) => setTimeout(r, 200))
+          })
+          return { id: payload.id }
+        },
+      })
+
+      const { result } = renderHook(() => useJob(slowJob), {
+        wrapper: createWrapper(),
+      })
+
+      await waitFor(() => expect(result.current.isReady).toBe(true))
+
+      // Trigger first job
+      const { runId: firstRunId } = await result.current.trigger({ id: 1 })
+
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe(firstRunId)
+      })
+
+      // Trigger second job while first is still running
+      const { runId: secondRunId } = await result.current.trigger({ id: 2 })
+
+      // Should switch to the second job when it starts running
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe(secondRunId)
+      })
+    })
+
+    it('stays on current run when followLatest: false and external run starts', async () => {
+      // This test verifies that followLatest: false keeps tracking the current run
+      // even when run:start events fire (from the worker starting jobs)
+      const slowJob = defineJob({
+        name: 'slow-job-no-follow',
+        input: z.object({ id: z.number() }),
+        output: z.object({ id: z.number() }),
+        run: async (context, payload) => {
+          await context.run('work', async () => {
+            await new Promise((r) => setTimeout(r, 300))
+          })
+          return { id: payload.id }
+        },
+      })
+
+      const { result } = renderHook(
+        () => useJob(slowJob, { followLatest: false }),
+        { wrapper: createWrapper() },
+      )
+
+      await waitFor(() => expect(result.current.isReady).toBe(true))
+
+      // Trigger first job
+      const { runId: firstRunId } = await result.current.trigger({ id: 1 })
+
+      // Wait for it to start running (status becomes 'running')
+      await waitFor(() => {
+        expect(result.current.status).toBe('running')
+        expect(result.current.currentRunId).toBe(firstRunId)
+      })
+
+      // Wait for the first run to complete - with followLatest: false,
+      // it should stay on firstRunId and eventually complete
+      await waitFor(
+        () => {
+          expect(result.current.status).toBe('completed')
+          expect(result.current.currentRunId).toBe(firstRunId)
+        },
+        { timeout: 5000 },
+      )
+
+      // Verify output is from the first job
+      expect(result.current.output).toEqual({ id: 1 })
+    })
+  })
 })
