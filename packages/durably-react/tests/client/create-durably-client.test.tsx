@@ -1,10 +1,12 @@
 /**
  * createDurablyClient Tests
  *
- * Test the type-safe client factory
+ * Test the type-safe client factory.
+ * Note: Hook behavior (SSE subscription, logs, etc.) is tested in the individual hook tests.
+ * These tests focus on the factory's proxy behavior and job name mapping.
  */
 
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createDurablyClient } from '../../src/client/create-durably-client'
 import {
@@ -45,7 +47,7 @@ describe('createDurablyClient', () => {
     vi.restoreAllMocks()
   })
 
-  it('creates a client with job accessors', () => {
+  it('creates a client with job accessors via proxy', () => {
     const client = createDurablyClient<MockJobs>({ api: '/api/durably' })
 
     // Verify the proxy creates job clients on access
@@ -56,7 +58,7 @@ describe('createDurablyClient', () => {
     expect(client.importCsv.useLogs).toBeTypeOf('function')
   })
 
-  it('useJob triggers correct job name', async () => {
+  it('maps property name to jobName in trigger', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({ runId: 'test-run-id' }),
@@ -66,15 +68,12 @@ describe('createDurablyClient', () => {
     const client = createDurablyClient<MockJobs>({ api: '/api/durably' })
 
     const { result } = renderHook(() => client.importCsv.useJob())
-
-    expect(result.current.isReady).toBe(true)
-
     await result.current.trigger({ filename: 'data.csv' })
 
+    // Verify jobName is derived from property name 'importCsv'
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/durably/trigger',
       expect.objectContaining({
-        method: 'POST',
         body: JSON.stringify({
           jobName: 'importCsv',
           input: { filename: 'data.csv' },
@@ -83,69 +82,7 @@ describe('createDurablyClient', () => {
     )
   })
 
-  it('useRun subscribes to run by ID', async () => {
-    const client = createDurablyClient<MockJobs>({ api: '/api/durably' })
-
-    const instanceCountBefore = mockEventSource.instances.length
-    const { result } = renderHook(() =>
-      client.importCsv.useRun('test-run-123'),
-    )
-
-    // Wait for EventSource to be created
-    await waitFor(() => {
-      expect(mockEventSource.instances.length).toBeGreaterThan(instanceCountBefore)
-    })
-
-    // Verify SSE subscription URL - get the latest instance
-    const instance = mockEventSource.instances[mockEventSource.instances.length - 1]
-    expect(instance.url).toContain('/api/durably/subscribe?runId=test-run-123')
-
-    // Emit complete event
-    act(() => {
-      mockEventSource.emit({
-        type: 'run:complete',
-        runId: 'test-run-123',
-        output: { rowCount: 42 },
-      })
-    })
-
-    await waitFor(() => {
-      expect(result.current.status).toBe('completed')
-      expect(result.current.output).toEqual({ rowCount: 42 })
-    })
-  })
-
-  it('useLogs subscribes to logs from run', async () => {
-    const client = createDurablyClient<MockJobs>({ api: '/api/durably' })
-
-    const instanceCountBefore = mockEventSource.instances.length
-    const { result } = renderHook(() =>
-      client.importCsv.useLogs('log-run-123', { maxLogs: 50 }),
-    )
-
-    // Wait for EventSource to be created
-    await waitFor(() => {
-      expect(mockEventSource.instances.length).toBeGreaterThan(instanceCountBefore)
-    })
-
-    // Emit log event
-    act(() => {
-      mockEventSource.emit({
-        type: 'log:write',
-        runId: 'log-run-123',
-        level: 'info',
-        message: 'Processing row 1',
-        data: null,
-      })
-    })
-
-    await waitFor(() => {
-      expect(result.current.logs.length).toBe(1)
-      expect(result.current.logs[0].message).toBe('Processing row 1')
-    })
-  })
-
-  it('different jobs use different job names', async () => {
+  it('different properties map to different job names', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({ runId: 'run-1' }),
@@ -154,7 +91,7 @@ describe('createDurablyClient', () => {
 
     const client = createDurablyClient<MockJobs>({ api: '/api/durably' })
 
-    // Test importCsv
+    // Trigger via importCsv
     const { result: importResult } = renderHook(() => client.importCsv.useJob())
     await importResult.current.trigger({ filename: 'test.csv' })
 
@@ -165,7 +102,7 @@ describe('createDurablyClient', () => {
       }),
     )
 
-    // Test syncUsers
+    // Trigger via syncUsers - should use different jobName
     const { result: syncResult } = renderHook(() => client.syncUsers.useJob())
     await syncResult.current.trigger({ orgId: 'org-123' })
 
@@ -177,27 +114,23 @@ describe('createDurablyClient', () => {
     )
   })
 
-  it('useRun with null runId does not subscribe', async () => {
+  it('useRun returns a hook function', () => {
     const client = createDurablyClient<MockJobs>({ api: '/api/durably' })
 
-    const instanceCountBefore = mockEventSource.instances.length
     const { result } = renderHook(() => client.importCsv.useRun(null))
 
-    // Wait a bit to ensure no NEW EventSource is created
-    await new Promise((r) => setTimeout(r, 50))
-    expect(mockEventSource.instances.length).toBe(instanceCountBefore)
+    // Verify the hook returns expected shape
     expect(result.current.status).toBeNull()
+    expect(result.current.isReady).toBe(true)
   })
 
-  it('useLogs with null runId does not subscribe', async () => {
+  it('useLogs returns a hook function', () => {
     const client = createDurablyClient<MockJobs>({ api: '/api/durably' })
 
-    const instanceCountBefore = mockEventSource.instances.length
     const { result } = renderHook(() => client.importCsv.useLogs(null))
 
-    // Wait a bit to ensure no NEW EventSource is created
-    await new Promise((r) => setTimeout(r, 50))
-    expect(mockEventSource.instances.length).toBe(instanceCountBefore)
+    // Verify the hook returns expected shape
     expect(result.current.logs).toEqual([])
+    expect(result.current.isReady).toBe(true)
   })
 })

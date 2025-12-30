@@ -10,10 +10,7 @@ export type {
 } from './client/create-durably-client'
 
 export { createJobHooks } from './client/create-job-hooks'
-export type {
-  CreateJobHooksOptions,
-  JobHooks,
-} from './client/create-job-hooks'
+export type { CreateJobHooksOptions, JobHooks } from './client/create-job-hooks'
 
 // Low-level hooks (for advanced use cases)
 export { useJob } from './client/use-job'

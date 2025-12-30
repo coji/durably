@@ -89,10 +89,9 @@ describe('useRuns', () => {
       run: async () => {},
     })
 
-    const { result } = renderHook(
-      () => useRuns({ jobName: 'test-job-runs' }),
-      { wrapper: createWrapper() },
-    )
+    const { result } = renderHook(() => useRuns({ jobName: 'test-job-runs' }), {
+      wrapper: createWrapper(),
+    })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
@@ -113,10 +112,9 @@ describe('useRuns', () => {
   })
 
   it('filters by status', async () => {
-    const { result } = renderHook(
-      () => useRuns({ status: 'completed' }),
-      { wrapper: createWrapper() },
-    )
+    const { result } = renderHook(() => useRuns({ status: 'completed' }), {
+      wrapper: createWrapper(),
+    })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
@@ -145,10 +143,9 @@ describe('useRuns', () => {
   })
 
   it('supports pagination', async () => {
-    const { result } = renderHook(
-      () => useRuns({ pageSize: 2 }),
-      { wrapper: createWrapper() },
-    )
+    const { result } = renderHook(() => useRuns({ pageSize: 2 }), {
+      wrapper: createWrapper(),
+    })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
@@ -183,10 +180,9 @@ describe('useRuns', () => {
   })
 
   it('goToPage navigates directly', async () => {
-    const { result } = renderHook(
-      () => useRuns({ pageSize: 1 }),
-      { wrapper: createWrapper() },
-    )
+    const { result } = renderHook(() => useRuns({ pageSize: 1 }), {
+      wrapper: createWrapper(),
+    })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
@@ -253,10 +249,9 @@ describe('useRuns', () => {
   })
 
   it('disables real-time updates when realtime=false', async () => {
-    const { result } = renderHook(
-      () => useRuns({ realtime: false }),
-      { wrapper: createWrapper() },
-    )
+    const { result } = renderHook(() => useRuns({ realtime: false }), {
+      wrapper: createWrapper(),
+    })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 

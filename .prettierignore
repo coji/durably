@@ -1,1 +1,9 @@
 pnpm-lock.yaml
+dist/
+node_modules/
+.turbo/
+__screenshots__/
+website/.vitepress/cache/
+website/.vitepress/dist/
+*.log
+CHANGELOG.md

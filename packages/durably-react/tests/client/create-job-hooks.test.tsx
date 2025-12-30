@@ -1,11 +1,13 @@
 /**
  * createJobHooks Tests
  *
- * Test the type-safe job hooks factory
+ * Test the type-safe job hooks factory.
+ * Note: Hook behavior (SSE subscription, logs, progress, etc.) is tested in the individual hook tests.
+ * These tests focus on the factory returning correctly configured hooks.
  */
 
 import { defineJob } from '@coji/durably'
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { createJobHooks } from '../../src/client/create-job-hooks'
@@ -51,7 +53,7 @@ describe('createJobHooks', () => {
     expect(hooks.useLogs).toBeTypeOf('function')
   })
 
-  it('useJob triggers with correct job name', async () => {
+  it('useJob uses the configured jobName', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({ runId: 'csv-run-id' }),
@@ -64,15 +66,12 @@ describe('createJobHooks', () => {
     })
 
     const { result } = renderHook(() => hooks.useJob())
-
-    expect(result.current.isReady).toBe(true)
-
     await result.current.trigger({ filename: 'data.csv' })
 
+    // Verify the configured jobName is used
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/durably/trigger',
       expect.objectContaining({
-        method: 'POST',
         body: JSON.stringify({
           jobName: 'import-csv',
           input: { filename: 'data.csv' },
@@ -81,193 +80,51 @@ describe('createJobHooks', () => {
     )
   })
 
-  it('useJob handles completion with typed output', async () => {
+  it('useJob uses the configured api endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({ runId: 'typed-run-id' }),
+      json: () => Promise.resolve({ runId: 'run-id' }),
     })
     globalThis.fetch = fetchMock
 
     const hooks = createJobHooks<typeof importCsvJob>({
-      api: '/api/durably',
+      api: '/custom/api/path',
       jobName: 'import-csv',
     })
 
     const { result } = renderHook(() => hooks.useJob())
-
     await result.current.trigger({ filename: 'test.csv' })
 
-    await waitFor(() => {
-      expect(mockEventSource.instances.length).toBeGreaterThan(0)
-    })
-
-    act(() => {
-      mockEventSource.emit({
-        type: 'run:complete',
-        runId: 'typed-run-id',
-        output: { rowCount: 500, errors: 2 },
-      })
-    })
-
-    await waitFor(() => {
-      expect(result.current.status).toBe('completed')
-      expect(result.current.output).toEqual({ rowCount: 500, errors: 2 })
-      // Type should be inferred correctly
-      expect(result.current.output?.rowCount).toBe(500)
-      expect(result.current.output?.errors).toBe(2)
-    })
-  })
-
-  it('useRun subscribes to existing run', async () => {
-    const hooks = createJobHooks<typeof importCsvJob>({
-      api: '/api/durably',
-      jobName: 'import-csv',
-    })
-
-    const instanceCountBefore = mockEventSource.instances.length
-    const { result } = renderHook(() => hooks.useRun('existing-run-123'))
-
-    await waitFor(() => {
-      expect(mockEventSource.instances.length).toBeGreaterThan(instanceCountBefore)
-    })
-
-    const instance = mockEventSource.instances[mockEventSource.instances.length - 1]
-    expect(instance.url).toContain(
-      '/api/durably/subscribe?runId=existing-run-123',
+    // Verify the configured api endpoint is used
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/custom/api/path/trigger',
+      expect.anything(),
     )
-
-    act(() => {
-      mockEventSource.emit({
-        type: 'run:start',
-        runId: 'existing-run-123',
-      })
-    })
-
-    await waitFor(() => {
-      expect(result.current.status).toBe('running')
-      expect(result.current.isRunning).toBe(true)
-    })
   })
 
-  it('useLogs collects logs from run', async () => {
+  it('useRun returns a hook function', () => {
     const hooks = createJobHooks<typeof importCsvJob>({
       api: '/api/durably',
       jobName: 'import-csv',
     })
 
-    const instanceCountBefore = mockEventSource.instances.length
-    const { result } = renderHook(() => hooks.useLogs('logs-run-123'))
-
-    await waitFor(() => {
-      expect(mockEventSource.instances.length).toBeGreaterThan(instanceCountBefore)
-    })
-
-    act(() => {
-      mockEventSource.emit({
-        type: 'log:write',
-        runId: 'logs-run-123',
-        level: 'info',
-        message: 'Starting import',
-        data: null,
-      })
-    })
-
-    act(() => {
-      mockEventSource.emit({
-        type: 'log:write',
-        runId: 'logs-run-123',
-        level: 'warn',
-        message: 'Skipping invalid row',
-        data: { row: 5 },
-      })
-    })
-
-    await waitFor(() => {
-      expect(result.current.logs.length).toBe(2)
-      expect(result.current.logs[0].level).toBe('info')
-      expect(result.current.logs[1].level).toBe('warn')
-    })
-  })
-
-  it('useLogs respects maxLogs option', async () => {
-    const hooks = createJobHooks<typeof importCsvJob>({
-      api: '/api/durably',
-      jobName: 'import-csv',
-    })
-
-    const instanceCountBefore = mockEventSource.instances.length
-    const { result } = renderHook(() =>
-      hooks.useLogs('max-logs-run', { maxLogs: 2 }),
-    )
-
-    await waitFor(() => {
-      expect(mockEventSource.instances.length).toBeGreaterThan(instanceCountBefore)
-    })
-
-    // Emit 3 logs
-    act(() => {
-      mockEventSource.emit({
-        type: 'log:write',
-        runId: 'max-logs-run',
-        level: 'info',
-        message: 'Log 1',
-        data: null,
-      })
-    })
-
-    act(() => {
-      mockEventSource.emit({
-        type: 'log:write',
-        runId: 'max-logs-run',
-        level: 'info',
-        message: 'Log 2',
-        data: null,
-      })
-    })
-
-    act(() => {
-      mockEventSource.emit({
-        type: 'log:write',
-        runId: 'max-logs-run',
-        level: 'info',
-        message: 'Log 3',
-        data: null,
-      })
-    })
-
-    await waitFor(() => {
-      // Should only keep last 2 logs due to maxLogs: 2
-      expect(result.current.logs.length).toBe(2)
-      expect(result.current.logs[0].message).toBe('Log 2')
-      expect(result.current.logs[1].message).toBe('Log 3')
-    })
-  })
-
-  it('useRun with null runId does not subscribe', async () => {
-    const hooks = createJobHooks<typeof importCsvJob>({
-      api: '/api/durably',
-      jobName: 'import-csv',
-    })
-
-    const instanceCountBefore = mockEventSource.instances.length
     const { result } = renderHook(() => hooks.useRun(null))
 
-    await new Promise((r) => setTimeout(r, 50))
-    expect(mockEventSource.instances.length).toBe(instanceCountBefore)
+    // Verify the hook returns expected shape
     expect(result.current.status).toBeNull()
+    expect(result.current.isReady).toBe(true)
   })
 
-  it('useLogs with null runId does not subscribe', async () => {
+  it('useLogs returns a hook function', () => {
     const hooks = createJobHooks<typeof importCsvJob>({
       api: '/api/durably',
       jobName: 'import-csv',
     })
 
-    const instanceCountBefore = mockEventSource.instances.length
     const { result } = renderHook(() => hooks.useLogs(null))
 
-    await new Promise((r) => setTimeout(r, 50))
-    expect(mockEventSource.instances.length).toBe(instanceCountBefore)
+    // Verify the hook returns expected shape
     expect(result.current.logs).toEqual([])
+    expect(result.current.isReady).toBe(true)
   })
 })

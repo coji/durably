@@ -64,26 +64,36 @@ export async function refreshDashboard() {
 
   // Add event listeners
   runsTbody.querySelectorAll('.view-btn').forEach((btn) => {
-    btn.addEventListener('click', () =>
-      showRunDetails((btn as HTMLElement).dataset.id!),
-    )
+    btn.addEventListener('click', () => {
+      const id = (btn as HTMLElement).dataset.id
+      if (id) showRunDetails(id)
+    })
   })
   runsTbody.querySelectorAll('.retry-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      await durably.retry((btn as HTMLElement).dataset.id!)
-      refreshDashboard()
+      const id = (btn as HTMLElement).dataset.id
+      if (id) {
+        await durably.retry(id)
+        refreshDashboard()
+      }
     })
   })
   runsTbody.querySelectorAll('.cancel-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      await durably.cancel((btn as HTMLElement).dataset.id!)
-      refreshDashboard()
+      const id = (btn as HTMLElement).dataset.id
+      if (id) {
+        await durably.cancel(id)
+        refreshDashboard()
+      }
     })
   })
   runsTbody.querySelectorAll('.delete-btn').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      await durably.deleteRun((btn as HTMLElement).dataset.id!)
-      refreshDashboard()
+      const id = (btn as HTMLElement).dataset.id
+      if (id) {
+        await durably.deleteRun(id)
+        refreshDashboard()
+      }
     })
   })
 }

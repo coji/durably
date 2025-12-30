@@ -27,6 +27,7 @@ export default defineConfig({
       headless: true,
     },
     coverage: {
+      enabled: true,
       provider: 'v8',
       include: ['src/**/*.ts', 'src/**/*.tsx'],
       exclude: ['src/**/*.d.ts', 'src/index.ts', 'src/client.ts'],
