@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.6.0] - 2025-12-29
+## [0.6.0] - 2025-12-30
 
 ### Breaking Changes
 
@@ -13,10 +13,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - New: `const { job } = durably.register({ job: jobDef })`
   - Old (removed): `const job = durably.register(jobDef)`
 
+### Added
+
+#### @coji/durably-react
+
+- `useRuns`: List and paginate job runs with filtering and real-time updates
+  - Supports filtering by `jobName` and `status`
+  - Built-in pagination with `nextPage`, `prevPage`, `goToPage`
+  - Real-time updates via `realtime` option (default: true)
+- `useJob` options:
+  - `autoResume`: Automatically resume tracking pending/running jobs on mount (default: true)
+  - `followLatest`: Automatically switch to tracking the latest running job (default: true)
+- `createDurablyClient`: Type-safe client factory for server-connected mode
+- `createJobHooks`: Per-job hook factory for server-connected mode
+
 ### Changed
 
 - Simplified README files - detailed documentation moved to website
 - Updated all examples to use new `register()` API pattern
+- Added Turbo for monorepo task orchestration
 
 ### Fixed
 
