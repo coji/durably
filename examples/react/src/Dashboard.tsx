@@ -96,7 +96,10 @@ export function Dashboard() {
 
   const refresh = useCallback(async () => {
     if (!durably) return
-    const data = await durably.getRuns({ limit: PAGE_SIZE + 1, offset: page * PAGE_SIZE })
+    const data = await durably.getRuns({
+      limit: PAGE_SIZE + 1,
+      offset: page * PAGE_SIZE,
+    })
     setHasMore(data.length > PAGE_SIZE)
     setRuns(data.slice(0, PAGE_SIZE))
   }, [durably, page])

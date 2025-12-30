@@ -126,11 +126,7 @@ function AppContent() {
       )}
 
       <div style={styles.buttons}>
-        <button
-          type="button"
-          onClick={handleRun}
-          disabled={!isReady}
-        >
+        <button type="button" onClick={handleRun} disabled={!isReady}>
           Run Job
         </button>
         <button
