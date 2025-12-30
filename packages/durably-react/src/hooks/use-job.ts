@@ -14,6 +14,13 @@ export interface UseJobOptions {
    * @default true
    */
   autoResume?: boolean
+  /**
+   * Automatically switch to tracking the latest running job when a new run starts.
+   * When true, the hook will update to track any new run for this job as soon as it starts running.
+   * When false, the hook will only track the run that was triggered or explicitly set.
+   * @default true
+   */
+  followLatest?: boolean
 }
 
 export interface UseJobResult<TInput, TOutput> {
@@ -117,7 +124,15 @@ export function useJob<
       durably.on('run:start', (event) => {
         // Check if this is a run for our job
         if (event.jobName !== jobDefinition.name) return
-        // Switch to tracking the running job
+
+        // If followLatest is disabled, only update if this is our current run
+        if (options?.followLatest === false) {
+          if (event.runId !== currentRunIdRef.current) return
+          setStatus('running')
+          return
+        }
+
+        // Switch to tracking the running job (followLatest: true, default)
         setCurrentRunId(event.runId)
         currentRunIdRef.current = event.runId
         setStatus('running')
@@ -220,6 +235,7 @@ export function useJob<
     jobDefinition,
     options?.initialRunId,
     options?.autoResume,
+    options?.followLatest,
   ])
 
   // Update state when currentRunId changes (for initialRunId scenario)

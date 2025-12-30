@@ -1,6 +1,21 @@
 // @coji/durably-react/client - Server-connected mode
 // This entry point is for connecting to a remote Durably server via HTTP/SSE
 
+// Type-safe client factories (recommended)
+export { createDurablyClient } from './client/create-durably-client'
+export type {
+  CreateDurablyClientOptions,
+  DurablyClient,
+  JobClient,
+} from './client/create-durably-client'
+
+export { createJobHooks } from './client/create-job-hooks'
+export type {
+  CreateJobHooksOptions,
+  JobHooks,
+} from './client/create-job-hooks'
+
+// Low-level hooks (for advanced use cases)
 export { useJob } from './client/use-job'
 export type { UseJobClientOptions, UseJobClientResult } from './client/use-job'
 
