@@ -189,12 +189,15 @@ describe('useJobRun (client)', () => {
       expect(mockEventSource.instances.length).toBeGreaterThan(0)
     })
 
+    // With runId set, status starts as 'pending' until SSE events arrive
+    expect(result.current.status).toBe('pending')
+
     act(() => {
       mockEventSource.emit({ type: 'run:start', runId: 'other-run' })
     })
 
-    // Status should remain null since event is for a different run
+    // Status should remain 'pending' since event is for a different run
     await new Promise((r) => setTimeout(r, 50))
-    expect(result.current.status).toBeNull()
+    expect(result.current.status).toBe('pending')
   })
 })

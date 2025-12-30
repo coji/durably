@@ -28,5 +28,18 @@ export type {
   UseJobLogsClientResult,
 } from './use-job-logs'
 
+export { useRuns } from './use-runs'
+export type {
+  ClientRun,
+  UseRunsClientOptions,
+  UseRunsClientResult,
+} from './use-runs'
+
+export { useRunActions } from './use-run-actions'
+export type {
+  UseRunActionsClientOptions,
+  UseRunActionsClientResult,
+} from './use-run-actions'
+
 // Re-export types for convenience
 export type { LogEntry, Progress, RunStatus } from '../types'

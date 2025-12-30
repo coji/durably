@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { LogEntry, Progress, RunStatus } from '../types'
 import { useSSESubscription } from './use-sse-subscription'
 
@@ -10,6 +11,18 @@ export interface UseJobRunClientOptions {
    * The run ID to subscribe to
    */
   runId: string | null
+  /**
+   * Callback when run starts (transitions to pending/running)
+   */
+  onStart?: () => void
+  /**
+   * Callback when run completes successfully
+   */
+  onComplete?: () => void
+  /**
+   * Callback when run fails
+   */
+  onFail?: () => void
 }
 
 export interface UseJobRunClientResult<TOutput = unknown> {
@@ -62,20 +75,59 @@ export interface UseJobRunClientResult<TOutput = unknown> {
 export function useJobRun<TOutput = unknown>(
   options: UseJobRunClientOptions,
 ): UseJobRunClientResult<TOutput> {
-  const { api, runId } = options
+  const { api, runId, onStart, onComplete, onFail } = options
 
   const subscription = useSSESubscription<TOutput>(api, runId)
 
+  // If we have a runId but no status yet, treat as pending
+  const effectiveStatus = subscription.status ?? (runId ? 'pending' : null)
+
+  const isCompleted = effectiveStatus === 'completed'
+  const isFailed = effectiveStatus === 'failed'
+  const isPending = effectiveStatus === 'pending'
+  const isRunning = effectiveStatus === 'running'
+
+  // Track previous status to detect transitions
+  const prevStatusRef = useRef<RunStatus | null>(null)
+
+  useEffect(() => {
+    const prevStatus = prevStatusRef.current
+    prevStatusRef.current = subscription.status
+
+    // Only fire callbacks on status transitions
+    if (prevStatus !== subscription.status) {
+      // Fire onStart when transitioning from null to pending/running
+      if (prevStatus === null && (isPending || isRunning) && onStart) {
+        onStart()
+      }
+      if (isCompleted && onComplete) {
+        onComplete()
+      }
+      if (isFailed && onFail) {
+        onFail()
+      }
+    }
+  }, [
+    subscription.status,
+    isPending,
+    isRunning,
+    isCompleted,
+    isFailed,
+    onStart,
+    onComplete,
+    onFail,
+  ])
+
   return {
     isReady: true,
-    status: subscription.status,
+    status: effectiveStatus,
     output: subscription.output,
     error: subscription.error,
     logs: subscription.logs,
     progress: subscription.progress,
-    isRunning: subscription.status === 'running',
-    isPending: subscription.status === 'pending',
-    isCompleted: subscription.status === 'completed',
-    isFailed: subscription.status === 'failed',
+    isRunning,
+    isPending,
+    isCompleted,
+    isFailed,
   }
 }
