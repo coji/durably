@@ -12,7 +12,15 @@ import {
 import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { jobs } from '~/jobs'
 
-// HMR-safe singleton helper
+/**
+ * HMR-safe singleton helper for React Router dev server.
+ *
+ * During development, React Router's HMR reloads this module on every change,
+ * which would create new Durably/database instances each time. This helper
+ * stores instances on globalThis to persist them across HMR reloads.
+ *
+ * In production, this just works as a normal singleton pattern.
+ */
 function singleton<T>(name: string, factory: () => T): T {
   const g = globalThis as unknown as Record<string, T>
   if (g[name] === undefined) {

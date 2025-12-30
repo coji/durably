@@ -5,13 +5,14 @@
  */
 
 import { useJobRun } from '@coji/durably-react/client'
+import type { ImportCsvOutput } from '~/jobs'
 
 interface RunProgressProps {
   runId: string | null
 }
 
 export function RunProgress({ runId }: RunProgressProps) {
-  const run = useJobRun<{ imported: number; failed: number }>({
+  const run = useJobRun<ImportCsvOutput>({
     api: '/api/durably',
     runId,
   })
