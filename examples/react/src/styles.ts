@@ -6,8 +6,6 @@ export const styles = {
   container: {
     padding: '2rem',
     fontFamily: 'system-ui',
-    maxWidth: '800px',
-    margin: '0 auto',
   },
   header: {
     display: 'flex',

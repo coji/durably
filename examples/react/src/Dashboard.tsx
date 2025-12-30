@@ -4,7 +4,8 @@
  * Displays run history with status, details, and action buttons.
  */
 
-import type { Durably, Run } from '@coji/durably'
+import type { Run } from '@coji/durably'
+import { useDurably } from '@coji/durably-react'
 import { useCallback, useEffect, useState } from 'react'
 
 // Styles
@@ -81,12 +82,8 @@ const styles = {
   },
 }
 
-interface DashboardProps {
-  durably: Durably
-  onMount: (refresh: () => void) => void
-}
-
-export function Dashboard({ durably, onMount }: DashboardProps) {
+export function Dashboard() {
+  const { durably } = useDurably()
   const [runs, setRuns] = useState<Run[]>([])
   const [selectedRun, setSelectedRun] = useState<Run | null>(null)
   const [steps, setSteps] = useState<
@@ -94,16 +91,32 @@ export function Dashboard({ durably, onMount }: DashboardProps) {
   >([])
 
   const refresh = useCallback(async () => {
+    if (!durably) return
     const data = await durably.getRuns({ limit: 20 })
     setRuns(data)
   }, [durably])
 
+  // Initial fetch and subscribe to run events for real-time updates
   useEffect(() => {
+    if (!durably) return
+
     refresh()
-    onMount(refresh)
-  }, [refresh, onMount])
+
+    const unsubscribes = [
+      durably.on('run:start', refresh),
+      durably.on('run:complete', refresh),
+      durably.on('run:fail', refresh),
+    ]
+
+    return () => {
+      for (const unsubscribe of unsubscribes) {
+        unsubscribe()
+      }
+    }
+  }, [durably, refresh])
 
   const showDetails = async (runId: string) => {
+    if (!durably) return
     const run = await durably.getRun(runId)
     if (run) {
       setSelectedRun(run)
@@ -115,16 +128,19 @@ export function Dashboard({ durably, onMount }: DashboardProps) {
   }
 
   const handleRetry = async (runId: string) => {
+    if (!durably) return
     await durably.retry(runId)
     refresh()
   }
 
   const handleCancel = async (runId: string) => {
+    if (!durably) return
     await durably.cancel(runId)
     refresh()
   }
 
   const handleDelete = async (runId: string) => {
+    if (!durably) return
     await durably.deleteRun(runId)
     setSelectedRun(null)
     refresh()

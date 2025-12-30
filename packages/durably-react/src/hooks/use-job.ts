@@ -8,6 +8,12 @@ export interface UseJobOptions {
    * Initial Run ID to subscribe to (for reconnection scenarios)
    */
   initialRunId?: string
+  /**
+   * Automatically resume tracking any pending or running job on initialization.
+   * If a pending or running run exists for this job, the hook will subscribe to it.
+   * @default true
+   */
+  autoResume?: boolean
 }
 
 export interface UseJobResult<TInput, TOutput> {
@@ -170,12 +176,42 @@ export function useJob<
       })
     }
 
+    // Auto-resume: find any pending or running runs for this job (default: true)
+    if (options?.autoResume !== false && !options?.initialRunId) {
+      ;(async () => {
+        // First check for running runs
+        const runningRuns = await jobHandle.getRuns({ status: 'running' })
+        if (runningRuns.length > 0) {
+          const run = runningRuns[0]
+          setCurrentRunId(run.id)
+          currentRunIdRef.current = run.id
+          setStatus(run.status as RunStatus)
+          return
+        }
+
+        // Then check for pending runs
+        const pendingRuns = await jobHandle.getRuns({ status: 'pending' })
+        if (pendingRuns.length > 0) {
+          const run = pendingRuns[0]
+          setCurrentRunId(run.id)
+          currentRunIdRef.current = run.id
+          setStatus(run.status as RunStatus)
+        }
+      })()
+    }
+
     return () => {
       for (const unsubscribe of unsubscribes) {
         unsubscribe()
       }
     }
-  }, [durably, isDurablyReady, jobDefinition, options?.initialRunId])
+  }, [
+    durably,
+    isDurablyReady,
+    jobDefinition,
+    options?.initialRunId,
+    options?.autoResume,
+  ])
 
   // Update state when currentRunId changes (for initialRunId scenario)
   useEffect(() => {
