@@ -7,11 +7,11 @@
  * - Dashboard: useRuns with SSE for real-time updates and pagination
  */
 
-import type { Route } from './+types/_index'
 import { Form, useActionData, useNavigation } from 'react-router'
-import { RunProgress } from './_index/run-progress'
-import { Dashboard } from './_index/dashboard'
 import { registeredJobs } from '~/lib/durably.server'
+import type { Route } from './+types/_index'
+import { Dashboard } from './_index/dashboard'
+import { RunProgress } from './_index/run-progress'
 
 export function meta() {
   return [
@@ -37,7 +37,9 @@ function generateDummyRows(count: number) {
   return Array.from({ length: count }, (_, i) => ({
     id: i + 1,
     name: names[i % names.length],
-    email: `${names[i % names.length].toLowerCase()}${i}@${domains[i % domains.length]}`,
+    email: `${names[i % names.length].toLowerCase()}${i}@${
+      domains[i % domains.length]
+    }`,
     amount: Math.floor(Math.random() * 1000) + 10,
   }))
 }

@@ -42,11 +42,15 @@ export function RunProgress({ runId }: RunProgressProps) {
             <div
               className="bg-blue-600 h-2 rounded-full transition-all duration-200"
               style={{
-                width: `${(run.progress.current / (run.progress.total || 1)) * 100}%`,
+                width: `${
+                  (run.progress.current / (run.progress.total || 1)) * 100
+                }%`,
               }}
             />
           </div>
-          <div className="text-xs text-blue-600 mt-2">{run.progress.message}</div>
+          <div className="text-xs text-blue-600 mt-2">
+            {run.progress.message}
+          </div>
         </section>
       )}
 

@@ -5,16 +5,16 @@
  * First page auto-subscribes to SSE for instant updates.
  */
 
-import { useRuns } from "@coji/durably-react/client";
+import { useRuns } from '@coji/durably-react/client'
 
 export function Dashboard() {
   const { runs, isLoading, error, page, hasMore, nextPage, prevPage } = useRuns(
     {
-      api: "/api/durably",
-      jobName: "import-csv",
+      api: '/api/durably',
+      jobName: 'import-csv',
       pageSize: 6,
-    }
-  );
+    },
+  )
 
   return (
     <section className="bg-white rounded-lg shadow p-6">
@@ -45,13 +45,13 @@ export function Dashboard() {
                 </div>
                 <span
                   className={`text-sm font-medium px-2 py-1 rounded ${
-                    r.status === "completed"
-                      ? "bg-green-100 text-green-800"
-                      : r.status === "failed"
-                      ? "bg-red-100 text-red-800"
-                      : r.status === "running"
-                      ? "bg-blue-100 text-blue-800"
-                      : "bg-gray-100 text-gray-800"
+                    r.status === 'completed'
+                      ? 'bg-green-100 text-green-800'
+                      : r.status === 'failed'
+                        ? 'bg-red-100 text-red-800'
+                        : r.status === 'running'
+                          ? 'bg-blue-100 text-blue-800'
+                          : 'bg-gray-100 text-gray-800'
                   }`}
                 >
                   {r.status}
@@ -83,5 +83,5 @@ export function Dashboard() {
         </>
       )}
     </section>
-  );
+  )
 }

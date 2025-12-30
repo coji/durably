@@ -5,10 +5,7 @@
  * Server-only - do not import in client code.
  */
 
-import {
-  createDurably,
-  createDurablyHandler,
-} from '@coji/durably'
+import { createDurably, createDurablyHandler } from '@coji/durably'
 import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { jobs } from '~/jobs'
 
