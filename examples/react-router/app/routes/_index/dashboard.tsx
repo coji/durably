@@ -5,16 +5,24 @@
  * First page auto-subscribes to SSE for instant updates.
  */
 
-import { useRuns } from '@coji/durably-react/client'
+import { useRunActions, useRuns } from '@coji/durably-react/client'
 
 export function Dashboard() {
-  const { runs, isLoading, error, page, hasMore, nextPage, prevPage } = useRuns(
-    {
+  const { runs, isLoading, error, page, hasMore, nextPage, prevPage, refresh } =
+    useRuns({
       api: '/api/durably',
       jobName: 'import-csv',
       pageSize: 6,
-    },
-  )
+    })
+
+  const { cancel, isLoading: isCancelling } = useRunActions({
+    api: '/api/durably',
+  })
+
+  const handleCancel = async (runId: string) => {
+    await cancel(runId)
+    refresh()
+  }
 
   return (
     <section className="bg-white rounded-lg shadow p-6">
@@ -43,19 +51,31 @@ export function Dashboard() {
                     {new Date(r.createdAt).toLocaleString()}
                   </span>
                 </div>
-                <span
-                  className={`text-sm font-medium px-2 py-1 rounded ${
-                    r.status === 'completed'
-                      ? 'bg-green-100 text-green-800'
-                      : r.status === 'failed'
-                        ? 'bg-red-100 text-red-800'
-                        : r.status === 'running'
-                          ? 'bg-blue-100 text-blue-800'
-                          : 'bg-gray-100 text-gray-800'
-                  }`}
-                >
-                  {r.status}
-                </span>
+                <div className="flex items-center gap-2">
+                  {(r.status === 'pending' || r.status === 'running') && (
+                    <button
+                      type="button"
+                      onClick={() => handleCancel(r.id)}
+                      disabled={isCancelling}
+                      className="text-xs text-red-600 hover:text-red-800 disabled:text-gray-400 disabled:cursor-not-allowed"
+                    >
+                      {isCancelling ? 'Cancelling...' : 'Cancel'}
+                    </button>
+                  )}
+                  <span
+                    className={`text-sm font-medium px-2 py-1 rounded ${
+                      r.status === 'completed'
+                        ? 'bg-green-100 text-green-800'
+                        : r.status === 'failed'
+                          ? 'bg-red-100 text-red-800'
+                          : r.status === 'running'
+                            ? 'bg-blue-100 text-blue-800'
+                            : 'bg-gray-100 text-gray-800'
+                    }`}
+                  >
+                    {r.status}
+                  </span>
+                </div>
               </li>
             ))}
           </ul>
