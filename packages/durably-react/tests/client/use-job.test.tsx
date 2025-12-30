@@ -313,4 +313,25 @@ describe('useJob (client)', () => {
       'Job not found',
     )
   })
+
+  it('throws on fetch error with empty text', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: () => Promise.resolve(''),
+    })
+    globalThis.fetch = fetchMock
+
+    const { result } = renderHook(() =>
+      useJob({ api: '/api/durably', jobName: 'test-job' }),
+    )
+
+    await expect(result.current.trigger({ input: 'test' })).rejects.toThrow(
+      'HTTP 500',
+    )
+  })
+
+  // Note: triggerAndWait tests are difficult to test with the polling-based implementation
+  // because the hook needs to re-render to see the updated subscription.status.
+  // The triggerAndWait function is covered indirectly through the browser tests.
 })

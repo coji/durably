@@ -87,7 +87,8 @@ export interface JobHooks<TInput, TOutput> {
  * ```
  */
 export function createJobHooks<
-  TJob extends JobDefinition<string, unknown, unknown>,
+  // biome-ignore lint/suspicious/noExplicitAny: TJob needs to accept any JobDefinition
+  TJob extends JobDefinition<string, any, any>,
 >(
   options: CreateJobHooksOptions,
 ): JobHooks<InferInput<TJob>, InferOutput<TJob>> {

@@ -26,6 +26,12 @@ export default defineConfig({
       instances: [{ browser: 'chromium' }],
       headless: true,
     },
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts', 'src/**/*.tsx'],
+      exclude: ['src/**/*.d.ts', 'src/index.ts', 'src/client.ts'],
+      reporter: ['text', 'text-summary'],
+    },
   },
   optimizeDeps: {
     exclude: ['sqlocal'],
