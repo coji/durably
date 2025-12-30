@@ -2,11 +2,12 @@
  * Dashboard Component for Durably React Example
  *
  * Displays run history with status, details, and action buttons.
+ * Uses useRuns hook for pagination and real-time updates.
  */
 
 import type { Run } from '@coji/durably'
-import { useDurably } from '@coji/durably-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useDurably, useRuns } from '@coji/durably-react'
+import { useState } from 'react'
 
 // Styles
 const styles = {
@@ -82,46 +83,16 @@ const styles = {
   },
 }
 
-const PAGE_SIZE = 10
-
 export function Dashboard() {
   const { durably } = useDurably()
-  const [runs, setRuns] = useState<Run[]>([])
+  const { runs, page, hasMore, refresh, nextPage, prevPage } = useRuns({
+    pageSize: 10,
+  })
+
   const [selectedRun, setSelectedRun] = useState<Run | null>(null)
   const [steps, setSteps] = useState<
     { index: number; name: string; status: string }[]
   >([])
-  const [page, setPage] = useState(0)
-  const [hasMore, setHasMore] = useState(false)
-
-  const refresh = useCallback(async () => {
-    if (!durably) return
-    const data = await durably.getRuns({
-      limit: PAGE_SIZE + 1,
-      offset: page * PAGE_SIZE,
-    })
-    setHasMore(data.length > PAGE_SIZE)
-    setRuns(data.slice(0, PAGE_SIZE))
-  }, [durably, page])
-
-  // Initial fetch and subscribe to run events for real-time updates
-  useEffect(() => {
-    if (!durably) return
-
-    refresh()
-
-    const unsubscribes = [
-      durably.on('run:start', refresh),
-      durably.on('run:complete', refresh),
-      durably.on('run:fail', refresh),
-    ]
-
-    return () => {
-      for (const unsubscribe of unsubscribes) {
-        unsubscribe()
-      }
-    }
-  }, [durably, refresh])
 
   const showDetails = async (runId: string) => {
     if (!durably) return
@@ -266,7 +237,7 @@ export function Dashboard() {
         >
           <button
             type="button"
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            onClick={prevPage}
             disabled={page === 0}
             style={{ ...styles.actionBtn, marginLeft: 0 }}
           >
@@ -275,7 +246,7 @@ export function Dashboard() {
           <span style={{ color: '#666' }}>Page {page + 1}</span>
           <button
             type="button"
-            onClick={() => setPage((p) => p + 1)}
+            onClick={nextPage}
             disabled={!hasMore}
             style={styles.actionBtn}
           >

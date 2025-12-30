@@ -37,8 +37,18 @@ const durablyOptions = {
 function AppContent() {
   const [showInfo, setShowInfo] = useState(false)
   const { durably } = useDurably()
-  const { trigger, status, output, error, progress, logs, isRunning, isReady } =
-    useJob(processImageJob)
+  const {
+    trigger,
+    output,
+    error,
+    progress,
+    logs,
+    isReady,
+    isPending,
+    isRunning,
+    isCompleted,
+    isFailed,
+  } = useJob(processImageJob)
 
   const handleRun = async () => {
     await trigger({ filename: 'photo.jpg', width: 800 })
@@ -52,18 +62,17 @@ function AppContent() {
     location.reload()
   }
 
-  const statusText =
-    status === 'running'
-      ? 'Running...'
-      : status === 'completed'
-        ? '✓ Completed'
-        : status === 'failed'
-          ? '✗ Failed'
-          : status === 'pending'
-            ? 'Pending...'
-            : isReady
-              ? 'Ready'
-              : 'Initializing...'
+  const statusText = isRunning
+    ? 'Running...'
+    : isCompleted
+      ? '✓ Completed'
+      : isFailed
+        ? '✗ Failed'
+        : isPending
+          ? 'Pending...'
+          : isReady
+            ? 'Ready'
+            : 'Initializing...'
 
   return (
     <div style={styles.container}>
@@ -148,11 +157,6 @@ function AppContent() {
             <div>
               Status: <strong>{statusText}</strong>
             </div>
-            {status && (
-              <div style={{ color: '#666', marginTop: '0.5rem' }}>
-                Run status: {status}
-              </div>
-            )}
             {progress && (
               <div style={{ color: '#666', marginTop: '0.5rem' }}>
                 Progress: {progress.current}
