@@ -1,6 +1,11 @@
 // Shared type definitions for @coji/durably-react
 
-export type RunStatus = 'pending' | 'running' | 'completed' | 'failed'
+export type RunStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
 
 export interface Progress {
   current: number

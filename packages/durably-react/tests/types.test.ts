@@ -35,7 +35,7 @@ describe('Type inference', () => {
 
       expectTypeOf<Result['isReady']>().toEqualTypeOf<boolean>()
       expectTypeOf<Result['status']>().toEqualTypeOf<
-        'pending' | 'running' | 'completed' | 'failed' | null
+        'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | null
       >()
       expectTypeOf<Result['output']>().toEqualTypeOf<{
         success: boolean
@@ -88,7 +88,7 @@ describe('Type inference', () => {
         data: number[]
       } | null>()
       expectTypeOf<Result['status']>().toEqualTypeOf<
-        'pending' | 'running' | 'completed' | 'failed' | null
+        'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | null
       >()
       expectTypeOf<Result['error']>().toEqualTypeOf<string | null>()
     })
