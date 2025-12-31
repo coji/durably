@@ -21,7 +21,11 @@ export interface ClientRun {
  * SSE notification event from /runs/subscribe
  */
 type RunUpdateEvent =
-  | { type: 'run:start' | 'run:complete' | 'run:fail'; runId: string; jobName: string }
+  | {
+      type: 'run:start' | 'run:complete' | 'run:fail'
+      runId: string
+      jobName: string
+    }
   | { type: 'run:progress'; runId: string; jobName: string; progress: Progress }
 
 export interface UseRunsClientOptions {

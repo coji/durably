@@ -45,16 +45,17 @@ describe('useRuns (client)', () => {
   })
 
   it('fetches runs on mount', async () => {
-    const mockRuns = [createMockRun({ id: 'run-1' }), createMockRun({ id: 'run-2' })]
+    const mockRuns = [
+      createMockRun({ id: 'run-1' }),
+      createMockRun({ id: 'run-2' }),
+    ]
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve(mockRuns),
     })
     globalThis.fetch = fetchMock
 
-    const { result } = renderHook(() =>
-      useRuns({ api: '/api/durably' }),
-    )
+    const { result } = renderHook(() => useRuns({ api: '/api/durably' }))
 
     expect(result.current.isLoading).toBe(true)
 
@@ -76,9 +77,7 @@ describe('useRuns (client)', () => {
     })
     globalThis.fetch = fetchMock
 
-    renderHook(() =>
-      useRuns({ api: '/api/durably', jobName: 'my-job' }),
-    )
+    renderHook(() => useRuns({ api: '/api/durably', jobName: 'my-job' }))
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalled()
@@ -95,9 +94,7 @@ describe('useRuns (client)', () => {
     })
     globalThis.fetch = fetchMock
 
-    renderHook(() =>
-      useRuns({ api: '/api/durably', status: 'completed' }),
-    )
+    renderHook(() => useRuns({ api: '/api/durably', status: 'completed' }))
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalled()
@@ -166,7 +163,9 @@ describe('useRuns (client)', () => {
       expect(mockEventSource.instances.length).toBeGreaterThan(0)
     })
 
-    expect(mockEventSource.instances[0].url).toContain('/api/durably/runs/subscribe')
+    expect(mockEventSource.instances[0].url).toContain(
+      '/api/durably/runs/subscribe',
+    )
   })
 
   it('includes jobName filter in SSE URL', async () => {
@@ -176,9 +175,7 @@ describe('useRuns (client)', () => {
     })
     globalThis.fetch = fetchMock
 
-    renderHook(() =>
-      useRuns({ api: '/api/durably', jobName: 'my-job' }),
-    )
+    renderHook(() => useRuns({ api: '/api/durably', jobName: 'my-job' }))
 
     await waitFor(() => {
       expect(mockEventSource.instances.length).toBeGreaterThan(0)
@@ -203,7 +200,11 @@ describe('useRuns (client)', () => {
     const initialCallCount = fetchMock.mock.calls.length
 
     act(() => {
-      mockEventSource.emit({ type: 'run:start', runId: 'new-run', jobName: 'test-job' })
+      mockEventSource.emit({
+        type: 'run:start',
+        runId: 'new-run',
+        jobName: 'test-job',
+      })
     })
 
     await waitFor(() => {
@@ -227,7 +228,11 @@ describe('useRuns (client)', () => {
     const initialCallCount = fetchMock.mock.calls.length
 
     act(() => {
-      mockEventSource.emit({ type: 'run:complete', runId: 'run-1', jobName: 'test-job' })
+      mockEventSource.emit({
+        type: 'run:complete',
+        runId: 'run-1',
+        jobName: 'test-job',
+      })
     })
 
     await waitFor(() => {
@@ -251,7 +256,11 @@ describe('useRuns (client)', () => {
     const initialCallCount = fetchMock.mock.calls.length
 
     act(() => {
-      mockEventSource.emit({ type: 'run:fail', runId: 'run-1', jobName: 'test-job' })
+      mockEventSource.emit({
+        type: 'run:fail',
+        runId: 'run-1',
+        jobName: 'test-job',
+      })
     })
 
     await waitFor(() => {
@@ -351,7 +360,9 @@ describe('useRuns (client)', () => {
     const { result } = renderHook(() => useRuns({ api: '/api/durably' }))
 
     await waitFor(() => {
-      expect(result.current.error).toBe('Failed to fetch runs: Internal Server Error')
+      expect(result.current.error).toBe(
+        'Failed to fetch runs: Internal Server Error',
+      )
     })
 
     expect(result.current.isLoading).toBe(false)
