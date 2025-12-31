@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { RunStatus } from '../types'
+import type { Progress, RunStatus } from '../types'
 
 /**
  * Run type for client mode (matches server response)
@@ -11,6 +11,7 @@ export interface ClientRun {
   input: unknown
   output: unknown | null
   error: string | null
+  progress: Progress | null
   createdAt: string
   startedAt: string | null
   completedAt: string | null
@@ -19,11 +20,9 @@ export interface ClientRun {
 /**
  * SSE notification event from /runs/subscribe
  */
-interface RunUpdateEvent {
-  type: 'run:start' | 'run:complete' | 'run:fail'
-  runId: string
-  jobName: string
-}
+type RunUpdateEvent =
+  | { type: 'run:start' | 'run:complete' | 'run:fail'; runId: string; jobName: string }
+  | { type: 'run:progress'; runId: string; jobName: string; progress: Progress }
 
 export interface UseRunsClientOptions {
   /**
@@ -191,13 +190,21 @@ export function useRuns(options: UseRunsClientOptions): UseRunsClientResult {
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data) as RunUpdateEvent
-        // On any run update, refresh the list
+        // On run lifecycle events, refresh the list
         if (
           data.type === 'run:start' ||
           data.type === 'run:complete' ||
           data.type === 'run:fail'
         ) {
           refresh()
+        }
+        // On progress update, update the run in place
+        if (data.type === 'run:progress') {
+          setRuns((prev) =>
+            prev.map((run) =>
+              run.id === data.runId ? { ...run, progress: data.progress } : run,
+            ),
+          )
         }
       } catch {
         // Ignore parse errors

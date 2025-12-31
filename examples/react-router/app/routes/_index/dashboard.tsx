@@ -42,14 +42,32 @@ export function Dashboard() {
           <ul className="divide-y divide-gray-100">
             {runs.map((r) => (
               <li key={r.id} className="py-3 flex items-center justify-between">
-                <div>
-                  <span className="font-mono text-sm text-gray-600">
-                    {r.id.slice(0, 8)}
-                  </span>
-                  <span className="text-gray-400 mx-2">-</span>
-                  <span className="text-sm text-gray-500">
-                    {new Date(r.createdAt).toLocaleString()}
-                  </span>
+                <div className="flex items-center gap-3">
+                  <div>
+                    <span className="font-mono text-sm text-gray-600">
+                      {r.id.slice(0, 8)}
+                    </span>
+                    <span className="text-gray-400 mx-2">-</span>
+                    <span className="text-sm text-gray-500">
+                      {new Date(r.createdAt).toLocaleString()}
+                    </span>
+                  </div>
+                  {r.progress && (
+                    <div className="flex items-center gap-2">
+                      <div className="w-20 bg-gray-200 rounded h-1.5">
+                        <div
+                          className="bg-blue-600 h-1.5 rounded"
+                          style={{
+                            width: `${(r.progress.current / (r.progress.total || r.progress.current)) * 100}%`,
+                          }}
+                        />
+                      </div>
+                      <span className="text-xs text-gray-500">
+                        {r.progress.current}
+                        {r.progress.total && `/${r.progress.total}`}
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   {(r.status === 'pending' || r.status === 'running') && (

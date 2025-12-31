@@ -44,7 +44,7 @@ function generateDummyRows(count: number) {
   }))
 }
 
-// Action: Trigger job from Form submit
+// Action: Trigger job
 export async function action({ request }: Route.ActionArgs) {
   const formData = await request.formData()
   const filename = formData.get('filename') as string

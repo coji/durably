@@ -416,12 +416,26 @@ export function createDurablyHandler(
             controller.enqueue(encoder.encode(data))
           })
 
+          const unsubscribeProgress = durably.on('run:progress', (event) => {
+            if (closed) return
+            if (jobNameFilter && event.jobName !== jobNameFilter) return
+
+            const data = `data: ${JSON.stringify({
+              type: 'run:progress',
+              runId: event.runId,
+              jobName: event.jobName,
+              progress: event.progress,
+            })}\n\n`
+            controller.enqueue(encoder.encode(data))
+          })
+
           // Store cleanup function for cancel
           ;(controller as unknown as { cleanup: () => void }).cleanup = () => {
             closed = true
             unsubscribeStart()
             unsubscribeComplete()
             unsubscribeFail()
+            unsubscribeProgress()
           }
         },
         cancel(controller) {
