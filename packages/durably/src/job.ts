@@ -54,8 +54,12 @@ export interface TriggerOptions {
  * Run filter options
  */
 export interface RunFilter {
-  status?: 'pending' | 'running' | 'completed' | 'failed'
+  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   jobName?: string
+  /** Maximum number of runs to return */
+  limit?: number
+  /** Number of runs to skip (for pagination) */
+  offset?: number
 }
 
 /**

@@ -156,6 +156,15 @@ interface RunFilter {
 
 `step.run` に渡す名前は、同一 Run 内で一意でなければならない。同じ名前のステップが複数回実行された場合はエラーとなる。成功したステップは再実行時に自動的にスキップされ、保存済みの戻り値が返される。この挙動は固定であり、ユーザーが選択する必要はない。
 
+`step.runId` プロパティで現在の Run の ID にアクセスできる。これは外部サービスへの通知や、ログに Run ID を含める場合に有用である。
+
+```ts
+const users = await step.run("fetch-users", async () => {
+  console.log(`Processing run: ${step.runId}`)
+  return api.fetchUsers(payload.orgId)
+})
+```
+
 `step.run` の戻り値はステップ関数の戻り値から型推論される。
 
 ```ts
@@ -355,6 +364,38 @@ const failedRuns = await durably.getRuns({
 
 `limit` は取得する最大件数、`offset` はスキップする件数を指定する。両方を組み合わせることで、ページ単位の取得が可能になる。
 
+### ジョブの取得
+
+登録済みのジョブを名前で取得するには `getJob` メソッドを使う。
+
+```ts
+const job = durably.getJob('sync-users')
+if (job) {
+  await job.trigger({ orgId: 'org_123' })
+}
+```
+
+`getJob` は登録済みのジョブがあれば `JobHandle` を返し、なければ `undefined` を返す。これは動的にジョブを取得したい場合（例: API ハンドラでジョブ名をパラメータとして受け取る場合）に有用である。
+
+### Run のリアルタイム購読
+
+Run の実行をリアルタイムで購読するには `subscribe` メソッドを使う。
+
+```ts
+const stream = durably.subscribe(runId)
+
+const reader = stream.getReader()
+while (true) {
+  const { done, value } = await reader.read()
+  if (done) break
+  console.log(value)  // DurablyEvent
+}
+```
+
+`subscribe` は指定した Run の実行中に発火されるイベントを `ReadableStream<DurablyEvent>` として返す。ストリームは `run:complete` または `run:fail` イベントが発火されると自動的にクローズされる。
+
+これにより、UI でのリアルタイム進捗表示や、SSE（Server-Sent Events）を介したクライアントへのイベント配信が可能になる。
+
 ### ワーカー
 
 ワーカーは `start` 関数によって起動される。起動すると、一定間隔で `pending` 状態の Run を取得し、逐次実行する。
@@ -410,6 +451,10 @@ durably.on('run:complete', (event) => {
 
 durably.on('run:fail', (event) => {
   // { runId, jobName, error, failedStepName, timestamp }
+})
+
+durably.on('run:progress', (event) => {
+  // { runId, jobName, progress: { current, total?, message? }, timestamp }
 })
 
 durably.on('step:start', (event) => {
@@ -473,6 +518,13 @@ interface RunFailEvent extends BaseEvent {
   failedStepName: string
 }
 
+interface RunProgressEvent extends BaseEvent {
+  type: 'run:progress'
+  runId: string
+  jobName: string
+  progress: { current: number; total?: number; message?: string }
+}
+
 // Step イベント
 interface StepStartEvent extends BaseEvent {
   type: 'step:start'
@@ -524,6 +576,7 @@ type DurablyEvent =
   | RunStartEvent
   | RunCompleteEvent
   | RunFailEvent
+  | RunProgressEvent
   | StepStartEvent
   | StepCompleteEvent
   | StepFailEvent
@@ -788,6 +841,7 @@ Run の取得クエリは以下の条件を満たすものを一件取得する�
 | run:start | Run が running に遷移した直後 |
 | run:complete | Run が completed に遷移した直後 |
 | run:fail | Run が failed に遷移した直後 |
+| run:progress | step.progress が呼ばれた直後 |
 | step:start | ステップの実行を開始する直前 |
 | step:complete | ステップが成功し DB に記録した直後 |
 | step:fail | ステップが失敗し DB に記録した直後 |
@@ -1038,9 +1092,10 @@ v2 では AI Agent ワークフロー対応として以下の機能が計画さ�
 | 機能 | 概要 |
 |------|------|
 | `step.stream()` | ストリーミング出力をサポートするステップ |
-| `subscribe()` | Run の実行をリアルタイムで購読（ReadableStream） |
 | `events` テーブル | 粗いイベント（step:*, run:*）の永続化 |
 | `checkpoint()` | 長時間実行中の中間状態保存 |
+
+注: `subscribe()` は v1 で実装済み。詳細は「Run のリアルタイム購読」セクションを参照。
 
 ### v1 での準備事項
 
