@@ -11,6 +11,11 @@ export interface UseJobClientOptions {
    * Job name to trigger
    */
   jobName: string
+  /**
+   * Initial Run ID to subscribe to (for reconnection scenarios)
+   * When provided, the hook will immediately start subscribing to this run
+   */
+  initialRunId?: string
 }
 
 export interface UseJobClientResult<TInput, TOutput> {
@@ -80,9 +85,11 @@ export function useJob<
   TInput extends Record<string, unknown> = Record<string, unknown>,
   TOutput extends Record<string, unknown> = Record<string, unknown>,
 >(options: UseJobClientOptions): UseJobClientResult<TInput, TOutput> {
-  const { api, jobName } = options
+  const { api, jobName, initialRunId } = options
 
-  const [currentRunId, setCurrentRunId] = useState<string | null>(null)
+  const [currentRunId, setCurrentRunId] = useState<string | null>(
+    initialRunId ?? null,
+  )
   const [isPending, setIsPending] = useState(false)
 
   const subscription = useSSESubscription<TOutput>(api, currentRunId)

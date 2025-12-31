@@ -334,4 +334,121 @@ describe('useJob (client)', () => {
   // Note: triggerAndWait tests are difficult to test with the polling-based implementation
   // because the hook needs to re-render to see the updated subscription.status.
   // The triggerAndWait function is covered indirectly through the browser tests.
+
+  describe('initialRunId', () => {
+    it('sets currentRunId from initialRunId', () => {
+      const fetchMock = vi.fn()
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          initialRunId: 'existing-run-id',
+        }),
+      )
+
+      expect(result.current.currentRunId).toBe('existing-run-id')
+    })
+
+    it('subscribes to initialRunId via EventSource immediately', async () => {
+      const fetchMock = vi.fn()
+      globalThis.fetch = fetchMock
+
+      renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          initialRunId: 'existing-run-id',
+        }),
+      )
+
+      // EventSource should be created for the initial run
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      expect(mockEventSource.instances[0].url).toContain('existing-run-id')
+    })
+
+    it('receives events for initialRunId', async () => {
+      const fetchMock = vi.fn()
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useJob<{ input: string }, { result: string }>({
+          api: '/api/durably',
+          jobName: 'test-job',
+          initialRunId: 'existing-run-id',
+        }),
+      )
+
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      // Simulate receiving events for the existing run
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:progress',
+          runId: 'existing-run-id',
+          progress: { current: 5, total: 10, message: 'In progress' },
+        })
+      })
+
+      await waitFor(() => {
+        expect(result.current.progress).toEqual({
+          current: 5,
+          total: 10,
+          message: 'In progress',
+        })
+      })
+
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:complete',
+          runId: 'existing-run-id',
+          output: { result: 'reconnected' },
+        })
+      })
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('completed')
+        expect(result.current.output).toEqual({ result: 'reconnected' })
+        expect(result.current.isCompleted).toBe(true)
+      })
+    })
+
+    it('can trigger new run after initialRunId', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ runId: 'new-run-id' }),
+      })
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          initialRunId: 'existing-run-id',
+        }),
+      )
+
+      expect(result.current.currentRunId).toBe('existing-run-id')
+
+      // Trigger a new run
+      await result.current.trigger({ input: 'new' })
+
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe('new-run-id')
+      })
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/durably/trigger',
+        expect.objectContaining({
+          method: 'POST',
+        }),
+      )
+    })
+  })
 })
