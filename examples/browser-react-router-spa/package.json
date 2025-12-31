@@ -1,0 +1,41 @@
+{
+  "name": "example-browser-react-router-spa",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "react-router build",
+    "dev": "react-router dev",
+    "preview": "vite preview",
+    "typecheck": "echo 'Run pnpm dev first to generate types' && tsc",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "format": "prettier --experimental-cli --check .",
+    "format:fix": "prettier --experimental-cli --write ."
+  },
+  "dependencies": {
+    "@coji/durably": "workspace:*",
+    "@coji/durably-react": "workspace:*",
+    "@react-router/node": "7.11.0",
+    "kysely": "^0.28.9",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "react-router": "7.11.0",
+    "sqlocal": "^0.16.0",
+    "zod": "^4.3.2",
+    "isbot": "^5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.10",
+    "@react-router/dev": "7.11.0",
+    "@types/node": "^22",
+    "@tailwindcss/vite": "^4.1.18",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "prettier": "^3.7.4",
+    "prettier-plugin-organize-imports": "^4.3.0",
+    "tailwindcss": "^4.1.18",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.0",
+    "vite-tsconfig-paths": "^6.0.3"
+  }
+}

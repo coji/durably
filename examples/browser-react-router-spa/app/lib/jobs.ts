@@ -1,0 +1,104 @@
+/**
+ * Job definitions for browser-only mode
+ *
+ * These jobs run entirely in the browser using SQLite WASM with OPFS.
+ */
+
+import { defineJob } from '@coji/durably'
+import { z } from 'zod'
+
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Process Image Job
+ *
+ * Simulates image processing with multiple steps.
+ */
+export const processImageJob = defineJob({
+  name: 'process-image',
+  input: z.object({ filename: z.string(), width: z.number() }),
+  output: z.object({ url: z.string(), size: z.number() }),
+  run: async (step, payload) => {
+    step.log.info(`Starting image processing: ${payload.filename}`)
+
+    // Download original image
+    const fileSize = await step.run('download', async () => {
+      step.progress(1, 3, 'Downloading...')
+      await delay(500)
+      return Math.floor(Math.random() * 1000000) + 500000 // 500KB-1.5MB
+    })
+
+    step.log.info(`Downloaded: ${fileSize} bytes`)
+
+    // Resize to target width
+    const resizedSize = await step.run('resize', async () => {
+      step.progress(2, 3, 'Resizing...')
+      await delay(600)
+      return Math.floor(fileSize * (payload.width / 1920))
+    })
+
+    step.log.info(`Resized to: ${resizedSize} bytes`)
+
+    // Upload to CDN
+    const url = await step.run('upload', async () => {
+      step.progress(3, 3, 'Uploading...')
+      await delay(400)
+      return `https://cdn.example.com/${payload.width}/${payload.filename}`
+    })
+
+    step.log.info(`Uploaded to: ${url}`)
+
+    return { url, size: resizedSize }
+  },
+})
+
+/**
+ * Data Sync Job
+ *
+ * Simulates syncing data with a remote server.
+ */
+export const dataSyncJob = defineJob({
+  name: 'data-sync',
+  input: z.object({ userId: z.string() }),
+  output: z.object({ synced: z.number(), failed: z.number() }),
+  run: async (step, payload) => {
+    step.log.info(`Starting sync for user: ${payload.userId}`)
+
+    const items = await step.run('fetch-local', async () => {
+      step.progress(1, 4, 'Fetching local data...')
+      await delay(300)
+      return Array.from({ length: 10 }, (_, i) => ({
+        id: `item-${i}`,
+        data: `Data for ${payload.userId}`,
+      }))
+    })
+
+    let synced = 0
+    let failed = 0
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      const success = await step.run(`sync-item-${item.id}`, async () => {
+        step.progress(2 + Math.floor(i / 5), 4, `Syncing item ${i + 1}...`)
+        await delay(100)
+        return Math.random() > 0.1 // 90% success rate
+      })
+
+      if (success) {
+        synced++
+      } else {
+        failed++
+        step.log.warn(`Failed to sync item: ${item.id}`)
+      }
+    }
+
+    await step.run('finalize', async () => {
+      step.progress(4, 4, 'Finalizing...')
+      await delay(200)
+    })
+
+    step.log.info(`Sync complete: ${synced} synced, ${failed} failed`)
+
+    return { synced, failed }
+  },
+})
