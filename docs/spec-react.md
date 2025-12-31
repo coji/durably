@@ -113,14 +113,13 @@ import { durably } from '~/lib/durably.server'
 
 const handler = createDurablyHandler(durably)
 
-// POST /api/durably - ジョブ起動
-export async function action({ request }: ActionFunctionArgs) {
-  return handler.trigger(request)
+// 全ルートを自動処理（推奨）
+export async function loader({ request }: LoaderFunctionArgs) {
+  return handler.handle(request, '/api/durably')
 }
 
-// GET /api/durably?runId=xxx - SSE 購読
-export async function loader({ request }: LoaderFunctionArgs) {
-  return handler.subscribe(request)
+export async function action({ request }: ActionFunctionArgs) {
+  return handler.handle(request, '/api/durably')
 }
 ```
 
@@ -250,6 +249,8 @@ const {
 |------|-----|------|
 | `jobDefinition` | `JobDefinition` | ジョブ定義 |
 | `options.initialRunId` | `string` | 初期購読 Run ID |
+| `options.autoResume` | `boolean` | pending/running の Run を自動再開（デフォルト: true） |
+| `options.followLatest` | `boolean` | 新しい Run 開始時に自動切替（デフォルト: true） |
 
 **戻り値の詳細**:
 
@@ -277,6 +278,29 @@ Run ID のみで購読（trigger なし）。`runId` が `null` の場合は購�
 const { logs, clear } = useJobLogs({ runId, maxLogs? })
 ```
 
+#### useRuns
+
+```tsx
+const {
+  runs,
+  isLoading,
+  error,
+  page,
+  hasMore,
+  nextPage,
+  prevPage,
+  goToPage,
+  refresh,
+} = useRuns(options?)
+```
+
+| オプション | 型 | 説明 |
+|------------|------|------|
+| `jobName` | `string` | ジョブ名でフィルタ |
+| `status` | `RunStatus` | ステータスでフィルタ |
+| `limit` | `number` | 1ページの件数（デフォルト: 20） |
+| `realtime` | `boolean` | リアルタイム更新（デフォルト: true） |
+
 ---
 
 ### サーバー連携モード
@@ -288,17 +312,30 @@ import { createDurablyHandler } from '@coji/durably/server'
 
 const handler = createDurablyHandler(durably)
 
-// Request handlers
-handler.trigger(request: Request): Promise<Response>  // POST
-handler.subscribe(request: Request): Response         // GET (SSE)
+// 自動ルーティング（推奨）
+handler.handle(request: Request, basePath: string): Promise<Response>
+
+// 個別ハンドラー
+handler.trigger(request: Request): Promise<Response>      // POST /trigger
+handler.subscribe(request: Request): Response             // GET /subscribe?runId=xxx
+handler.runs(request: Request): Promise<Response>         // GET /runs
+handler.run(request: Request): Promise<Response>          // GET /run?runId=xxx
+handler.retry(request: Request): Promise<Response>        // POST /retry?runId=xxx
+handler.cancel(request: Request): Promise<Response>       // POST /cancel?runId=xxx
+handler.subscribeRuns(request: Request): Response         // GET /runs/subscribe
 ```
 
 **API 規約**:
 
 | エンドポイント | メソッド | リクエスト | レスポンス |
 |---------------|---------|-----------|-----------|
-| `/api/durably` | POST | `{ jobName, input }` | `{ runId }` |
-| `/api/durably?runId=xxx` | GET | - | SSE stream |
+| `{basePath}/trigger` | POST | `{ jobName, input, idempotencyKey?, concurrencyKey? }` | `{ runId }` |
+| `{basePath}/subscribe?runId=xxx` | GET | - | SSE stream (single run) |
+| `{basePath}/runs` | GET | `?jobName=&status=&limit=&offset=` | `Run[]` |
+| `{basePath}/run?runId=xxx` | GET | - | `Run` or 404 |
+| `{basePath}/retry?runId=xxx` | POST | - | `{ success: true }` |
+| `{basePath}/cancel?runId=xxx` | POST | - | `{ success: true }` |
+| `{basePath}/runs/subscribe` | GET | `?jobName=` | SSE stream (run updates) |
 
 > **Note**: 認証・認可、CORS、CSRF の扱いは本仕様のスコープ外。アプリケーション側で適切に実装すること。
 
@@ -377,13 +414,92 @@ const { logs, clear } = useJobLogs({
 | `runId`    | `string` | Yes  | Run ID                                |
 | `maxLogs`  | `number` | -    | 保持する最大ログ数（デフォルト: 100） |
 
+**useRuns オプション**:
+
+```tsx
+import { useRuns } from '@coji/durably-react/client'
+
+const {
+  runs,
+  isLoading,
+  error,
+  page,
+  hasMore,
+  nextPage,
+  prevPage,
+  goToPage,
+  refresh,
+} = useRuns({
+  api: '/api/durably',
+  jobName?: 'my-job',
+  status?: 'completed',
+  limit?: 20,
+  realtime?: true,
+})
+```
+
+| オプション | 型 | 必須 | 説明 |
+|------------|------|------|------|
+| `api` | `string` | Yes | API エンドポイント |
+| `jobName` | `string` | - | ジョブ名でフィルタ |
+| `status` | `RunStatus` | - | ステータスでフィルタ |
+| `limit` | `number` | - | 1ページの件数（デフォルト: 20） |
+| `realtime` | `boolean` | - | リアルタイム更新（デフォルト: true） |
+
+**useRunActions オプション**:
+
+```tsx
+import { useRunActions } from '@coji/durably-react/client'
+
+const { retry, cancel, isLoading, error } = useRunActions({
+  api: '/api/durably',
+})
+
+// 使用例
+await retry(runId)   // 失敗した Run を再実行
+await cancel(runId)  // 実行中の Run をキャンセル
+```
+
+| 戻り値 | 型 | 説明 |
+|--------|------|------|
+| `retry` | `(runId: string) => Promise<void>` | Run を再実行 |
+| `cancel` | `(runId: string) => Promise<void>` | Run をキャンセル |
+| `isLoading` | `boolean` | アクション実行中 |
+| `error` | `string \| null` | エラーメッセージ |
+
+---
+
+### 型安全クライアントファクトリ（推奨）
+
+```tsx
+import { createDurablyClient, createJobHooks } from '@coji/durably-react/client'
+import type { processTask, syncUsers } from './jobs'
+
+// 方法1: createDurablyClient
+const client = createDurablyClient<{
+  'process-task': typeof processTask
+  'sync-users': typeof syncUsers
+}>({ api: '/api/durably' })
+
+const { trigger, status } = client.useJob('process-task')
+await trigger({ taskId: '123' })  // 型安全
+
+// 方法2: createJobHooks
+const { useProcessTask, useSyncUsers } = createJobHooks<{
+  'process-task': typeof processTask
+  'sync-users': typeof syncUsers
+}>({ api: '/api/durably' })
+
+const { trigger, status } = useProcessTask()
+```
+
 ---
 
 ## 型定義
 
 ```ts
 // 共通
-type RunStatus = 'pending' | 'running' | 'completed' | 'failed'
+type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 interface DurablyOptions {
   pollingInterval?: number   // デフォルト: 1000ms
@@ -625,21 +741,6 @@ function TaskPage() {
 ---
 
 ## 将来拡張
-
-### キャンセル API
-
-Run のキャンセル機能を追加予定。
-
-```tsx
-// useJob に cancel を追加
-const { trigger, cancel, status } = useJob(job)
-await cancel()  // 現在の Run をキャンセル
-
-// サーバー API
-DELETE /api/durably?runId=xxx  → { success: true }
-```
-
-> **Note**: キャンセルは cooperative。ステップ実行中は即座に止められず、次のステップに進む前にチェックされる。
 
 ### Streaming 対応
 
