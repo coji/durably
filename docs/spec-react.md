@@ -126,7 +126,7 @@ export async function action({ request }: ActionFunctionArgs) {
 または手動で実装:
 
 ```ts
-// POST /api/durably
+// POST /api/durably/trigger
 export async function action({ request }: ActionFunctionArgs) {
   const { jobName, input } = await request.json()
   const job = durably.getJob(jobName)
@@ -134,7 +134,7 @@ export async function action({ request }: ActionFunctionArgs) {
   return Response.json({ runId: run.id })
 }
 
-// GET /api/durably?runId=xxx
+// GET /api/durably/subscribe?runId=xxx
 export async function loader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url)
   const runId = url.searchParams.get('runId')
@@ -310,7 +310,13 @@ const {
 ```ts
 import { createDurablyHandler } from '@coji/durably/server'
 
-const handler = createDurablyHandler(durably)
+const handler = createDurablyHandler(durably, {
+  // リクエスト処理前に呼ばれる（オプション）
+  onRequest: async () => {
+    await durably.migrate()
+    durably.start()
+  }
+})
 
 // 自動ルーティング（推奨）
 handler.handle(request: Request, basePath: string): Promise<Response>
@@ -322,7 +328,7 @@ handler.runs(request: Request): Promise<Response>         // GET /runs
 handler.run(request: Request): Promise<Response>          // GET /run?runId=xxx
 handler.retry(request: Request): Promise<Response>        // POST /retry?runId=xxx
 handler.cancel(request: Request): Promise<Response>       // POST /cancel?runId=xxx
-handler.subscribeRuns(request: Request): Response         // GET /runs/subscribe
+handler.runsSubscribe(request: Request): Response         // GET /runs/subscribe
 ```
 
 **API 規約**:

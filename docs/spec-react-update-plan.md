@@ -185,7 +185,7 @@ handler.runs(request: Request): Promise<Response>         // GET /runs
 handler.run(request: Request): Promise<Response>          // GET /run?runId=xxx
 handler.retry(request: Request): Promise<Response>        // POST /retry?runId=xxx
 handler.cancel(request: Request): Promise<Response>       // POST /cancel?runId=xxx
-handler.subscribeRuns(request: Request): Response         // GET /runs/subscribe
+handler.runsSubscribe(request: Request): Response         // GET /runs/subscribe
 ```
 
 ---

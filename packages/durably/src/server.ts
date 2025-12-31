@@ -107,7 +107,7 @@ export interface DurablyHandler {
    * Expects GET with optional query param: jobName
    * Returns SSE stream of run update notifications
    */
-  subscribeRuns(request: Request): Response
+  runsSubscribe(request: Request): Response
 }
 
 /**
@@ -155,7 +155,7 @@ export function createDurablyHandler(
         if (path === '/subscribe') return handler.subscribe(request)
         if (path === '/runs') return handler.runs(request)
         if (path === '/run') return handler.run(request)
-        if (path === '/runs/subscribe') return handler.subscribeRuns(request)
+        if (path === '/runs/subscribe') return handler.runsSubscribe(request)
       }
 
       // POST routes
@@ -370,7 +370,7 @@ export function createDurablyHandler(
       }
     },
 
-    subscribeRuns(request: Request): Response {
+    runsSubscribe(request: Request): Response {
       const url = new URL(request.url)
       const jobNameFilter = url.searchParams.get('jobName')
 
