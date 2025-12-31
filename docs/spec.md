@@ -1041,20 +1041,22 @@ class JobContextImpl<TPayload> implements JobContext<TPayload> {
 ```ts
 interface Storage {
   // Run 操作
-  createRun(run: Run): Promise<void>
-  updateRun(runId: string, data: Partial<Run>): Promise<void>
+  createRun(input: CreateRunInput): Promise<Run>
+  batchCreateRuns(inputs: CreateRunInput[]): Promise<Run[]>
+  updateRun(runId: string, data: UpdateRunInput): Promise<void>
+  deleteRun(runId: string): Promise<void>
   getRun(runId: string): Promise<Run | null>
   getRuns(filter?: RunFilter): Promise<Run[]>
   getNextPendingRun(excludeConcurrencyKeys: string[]): Promise<Run | null>
 
   // Step 操作
-  createStep(step: Step): Promise<void>
+  createStep(input: CreateStepInput): Promise<Step>
   getSteps(runId: string): Promise<Step[]>
   getCompletedStep(runId: string, name: string): Promise<Step | null>
 
-  // Log 操作（withLogPersistence プラグイン用）
-  createLog?(log: Log): Promise<void>
-  getLogs?(runId: string): Promise<Log[]>
+  // Log 操作
+  createLog(input: CreateLogInput): Promise<Log>
+  getLogs(runId: string): Promise<Log[]>
 
   // v2 で追加予定:
   // createEvent?(event: DurablyEvent): Promise<void>
