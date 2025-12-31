@@ -10,7 +10,7 @@ import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { DurablyProvider, useJob } from '../../src'
-import { createBrowserDialect } from '../helpers/browser-dialect'
+import { createTestDurably } from '../helpers/create-test-durably'
 
 // Test job definitions
 const testJob = defineJob({
@@ -70,22 +70,19 @@ describe('useJob', () => {
     await new Promise((r) => setTimeout(r, 200))
   })
 
-  // Helper to create wrapper
-  const createWrapper =
-    () =>
-    ({ children }: { children: ReactNode }) => (
-      <DurablyProvider
-        dialectFactory={() => createBrowserDialect()}
-        options={{ pollingInterval: 50 }}
-        onReady={(durably) => instances.push(durably)}
-      >
-        {children}
-      </DurablyProvider>
+  // Helper to create wrapper with a fresh durably instance
+  const createWrapper = (durably: Durably) => {
+    return ({ children }: { children: ReactNode }) => (
+      <DurablyProvider durably={durably}>{children}</DurablyProvider>
     )
+  }
 
   it('returns trigger function that executes job', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useJob(testJob), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
@@ -97,8 +94,11 @@ describe('useJob', () => {
   })
 
   it('updates status from pending to running to completed', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useJob(testJob), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
@@ -120,8 +120,11 @@ describe('useJob', () => {
   })
 
   it('provides output when completed', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useJob(testJob), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
@@ -134,8 +137,11 @@ describe('useJob', () => {
   })
 
   it('provides error when failed', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useJob(failingJob), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
@@ -149,8 +155,11 @@ describe('useJob', () => {
   })
 
   it('updates progress during execution', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useJob(progressJob), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
@@ -169,8 +178,11 @@ describe('useJob', () => {
   })
 
   it('collects logs during execution', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useJob(loggingJob), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
@@ -188,8 +200,11 @@ describe('useJob', () => {
   })
 
   it('provides boolean helpers', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useJob(testJob), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
@@ -221,8 +236,11 @@ describe('useJob', () => {
   })
 
   it('triggerAndWait resolves with output', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useJob(testJob), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
@@ -236,8 +254,11 @@ describe('useJob', () => {
   })
 
   it('triggerAndWait rejects on failure', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useJob(failingJob), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
@@ -248,8 +269,11 @@ describe('useJob', () => {
   })
 
   it('reset clears all state', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useJob(testJob), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
@@ -268,11 +292,14 @@ describe('useJob', () => {
   })
 
   it('sets initialRunId as currentRunId', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const fakeRunId = 'test-run-123'
 
     const { result } = renderHook(
       () => useJob(testJob, { initialRunId: fakeRunId }),
-      { wrapper: createWrapper() },
+      { wrapper: createWrapper(durably) },
     )
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
@@ -282,8 +309,11 @@ describe('useJob', () => {
   })
 
   it('unsubscribes on unmount', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result, unmount } = renderHook(() => useJob(testJob), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
@@ -299,6 +329,9 @@ describe('useJob', () => {
 
   describe('followLatest option', () => {
     it('switches to latest running job by default (followLatest: true)', async () => {
+      const durably = await createTestDurably({ pollingInterval: 50 })
+      instances.push(durably)
+
       const slowJob = defineJob({
         name: 'slow-job',
         input: z.object({ id: z.number() }),
@@ -312,7 +345,7 @@ describe('useJob', () => {
       })
 
       const { result } = renderHook(() => useJob(slowJob), {
-        wrapper: createWrapper(),
+        wrapper: createWrapper(durably),
       })
 
       await waitFor(() => expect(result.current.isReady).toBe(true))
@@ -334,6 +367,9 @@ describe('useJob', () => {
     })
 
     it('stays on current run when followLatest: false and external run starts', async () => {
+      const durably = await createTestDurably({ pollingInterval: 50 })
+      instances.push(durably)
+
       // This test verifies that followLatest: false keeps tracking the current run
       // even when run:start events fire (from the worker starting jobs)
       const slowJob = defineJob({
@@ -350,7 +386,7 @@ describe('useJob', () => {
 
       const { result } = renderHook(
         () => useJob(slowJob, { followLatest: false }),
-        { wrapper: createWrapper() },
+        { wrapper: createWrapper(durably) },
       )
 
       await waitFor(() => expect(result.current.isReady).toBe(true))

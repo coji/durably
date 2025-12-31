@@ -7,32 +7,21 @@
  * - useDurably hook for direct Durably access
  */
 
+import type { Durably } from '@coji/durably'
 import {
   DurablyProvider,
   useDurably,
   useJob,
   type LogEntry,
 } from '@coji/durably-react'
-import { useState } from 'react'
-import { SQLocalKysely } from 'sqlocal/kysely'
+import { useEffect, useState } from 'react'
 import { Dashboard } from './Dashboard'
-import { processImageJob } from './jobs/processImage'
+import { getDurably, processImageJob, sqlocal } from './durably'
 import { styles } from './styles'
 
 // Links
 const GITHUB_REPO = 'https://github.com/coji/durably'
 const SOURCE_CODE = `${GITHUB_REPO}/tree/main/examples/react`
-
-// SQLocal instance for database operations
-const sqlocal = new SQLocalKysely('example.sqlite3')
-
-// Durably configuration
-const dialectFactory = () => sqlocal.dialect
-const durablyOptions = {
-  pollingInterval: 100,
-  heartbeatInterval: 500,
-  staleThreshold: 3000,
-}
 
 function AppContent() {
   const [showInfo, setShowInfo] = useState(false)
@@ -120,8 +109,8 @@ function AppContent() {
           </p>
           <ul style={{ margin: 0, paddingLeft: '1.5rem' }}>
             <li>
-              <code>DurablyProvider</code> - Context provider with auto
-              migration and worker start
+              <code>DurablyProvider</code> - Context provider for Durably
+              instance
             </li>
             <li>
               <code>useJob</code> - Hook for triggering jobs and real-time
@@ -199,9 +188,35 @@ function AppContent() {
   )
 }
 
-export function App() {
+function Loading() {
   return (
-    <DurablyProvider dialectFactory={dialectFactory} options={durablyOptions}>
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        minHeight: '100vh',
+        color: '#666',
+      }}
+    >
+      Loading...
+    </div>
+  )
+}
+
+export function App() {
+  const [durably, setDurably] = useState<Durably | null>(null)
+
+  useEffect(() => {
+    getDurably().then(setDurably)
+  }, [])
+
+  if (!durably) {
+    return <Loading />
+  }
+
+  return (
+    <DurablyProvider durably={durably}>
       <AppContent />
     </DurablyProvider>
   )

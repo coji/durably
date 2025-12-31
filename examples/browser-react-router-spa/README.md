@@ -55,13 +55,13 @@ app/
 
 ## Key Differences from Fullstack Mode
 
-| Aspect | Browser-Only (SPA) | Fullstack (SSR) |
-|--------|-------------------|-----------------|
-| Database | SQLite WASM + OPFS | libsql/better-sqlite3 |
-| Provider | `DurablyProvider` | No provider needed |
-| Hooks | `useJob(jobDefinition)` | `durably.jobName.useJob()` |
-| Data | Stays in browser | Server-side storage |
-| Offline | Works offline | Requires server |
+| Aspect   | Browser-Only (SPA)      | Fullstack (SSR)            |
+| -------- | ----------------------- | -------------------------- |
+| Database | SQLite WASM + OPFS      | libsql/better-sqlite3      |
+| Provider | `DurablyProvider`       | No provider needed         |
+| Hooks    | `useJob(jobDefinition)` | `durably.jobName.useJob()` |
+| Data     | Stays in browser        | Server-side storage        |
+| Offline  | Works offline           | Requires server            |
 
 ## Try It
 

@@ -10,7 +10,7 @@ import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { DurablyProvider, useRuns } from '../../src'
-import { createBrowserDialect } from '../helpers/browser-dialect'
+import { createTestDurably } from '../helpers/create-test-durably'
 
 // Test job definition
 const testJob = defineJob({
@@ -39,21 +39,18 @@ describe('useRuns', () => {
     await new Promise((r) => setTimeout(r, 200))
   })
 
-  const createWrapper =
-    () =>
-    ({ children }: { children: ReactNode }) => (
-      <DurablyProvider
-        dialectFactory={() => createBrowserDialect()}
-        options={{ pollingInterval: 50 }}
-        onReady={(durably) => instances.push(durably)}
-      >
-        {children}
-      </DurablyProvider>
+  const createWrapper = (durably: Durably) => {
+    return ({ children }: { children: ReactNode }) => (
+      <DurablyProvider durably={durably}>{children}</DurablyProvider>
     )
+  }
 
   it('returns empty runs initially', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useRuns(), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
@@ -63,14 +60,16 @@ describe('useRuns', () => {
   })
 
   it('lists runs after job execution', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useRuns(), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
     // Trigger a job using the durably instance directly
-    const durably = instances[0]
     const { testJobHandle } = durably.register({ testJobHandle: testJob })
     await testJobHandle.trigger({ value: 10 })
 
@@ -83,6 +82,9 @@ describe('useRuns', () => {
   })
 
   it('filters by jobName', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const otherJob = defineJob({
       name: 'other-job',
       input: z.object({ x: z.string() }),
@@ -90,12 +92,11 @@ describe('useRuns', () => {
     })
 
     const { result } = renderHook(() => useRuns({ jobName: 'test-job-runs' }), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const durably = instances[0]
     const { testJobHandle, otherJobHandle } = durably.register({
       testJobHandle: testJob,
       otherJobHandle: otherJob,
@@ -112,13 +113,15 @@ describe('useRuns', () => {
   })
 
   it('filters by status', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useRuns({ status: 'completed' }), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const durably = instances[0]
     const { testJobHandle } = durably.register({ testJobHandle: testJob })
 
     // Trigger and wait for completion
@@ -143,13 +146,15 @@ describe('useRuns', () => {
   })
 
   it('supports pagination', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useRuns({ pageSize: 2 }), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const durably = instances[0]
     const { testJobHandle } = durably.register({ testJobHandle: testJob })
 
     // Create 3 runs
@@ -180,13 +185,15 @@ describe('useRuns', () => {
   })
 
   it('goToPage navigates directly', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useRuns({ pageSize: 1 }), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const durably = instances[0]
     const { testJobHandle } = durably.register({ testJobHandle: testJob })
 
     // Create 3 runs
@@ -206,13 +213,15 @@ describe('useRuns', () => {
   })
 
   it('refresh reloads data', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useRuns(), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const durably = instances[0]
     const { testJobHandle } = durably.register({ testJobHandle: testJob })
 
     // Initially empty
@@ -229,13 +238,15 @@ describe('useRuns', () => {
   })
 
   it('updates in real-time by default', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useRuns(), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const durably = instances[0]
     const { testJobHandle } = durably.register({ testJobHandle: testJob })
 
     expect(result.current.runs.length).toBe(0)
@@ -249,13 +260,15 @@ describe('useRuns', () => {
   })
 
   it('disables real-time updates when realtime=false', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useRuns({ realtime: false }), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const durably = instances[0]
     const { testJobHandle } = durably.register({ testJobHandle: testJob })
 
     await testJobHandle.trigger({ value: 77 })

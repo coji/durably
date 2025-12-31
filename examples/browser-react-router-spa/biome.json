@@ -1,13 +1,10 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.0.5/schema.json",
-  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
-  "formatter": { "enabled": false },
-  "linter": {
-    "enabled": true,
-    "rules": { "recommended": true }
-  },
-  "organizeImports": { "enabled": false },
-  "javascript": {
-    "globals": []
+  "$schema": "https://biomejs.dev/schemas/2.3.10/schema.json",
+  "extends": ["../../biome.json"],
+  "css": {
+    "parser": {
+      "cssModules": true,
+      "tailwindDirectives": true
+    }
   }
 }

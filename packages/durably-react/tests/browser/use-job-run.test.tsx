@@ -11,7 +11,7 @@ import { useState } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { DurablyProvider, useDurably, useJobRun } from '../../src'
-import { createBrowserDialect } from '../helpers/browser-dialect'
+import { createTestDurably } from '../helpers/create-test-durably'
 
 // Test job definitions - use slow jobs to ensure we can subscribe before completion
 const testJob = defineJob({
@@ -52,48 +52,7 @@ const progressJob = defineJob({
 })
 
 describe('useJobRun', () => {
-  // Track all instances created during tests for cleanup
   const instances: Durably[] = []
-
-  // Create a shared dialect for tests that need to share the same Durably instance
-  let sharedDialect: ReturnType<typeof createBrowserDialect> | null = null
-
-  const getSharedDialect = () => {
-    if (!sharedDialect) {
-      sharedDialect = createBrowserDialect()
-    }
-    return sharedDialect
-  }
-
-  // Helper to create wrapper with shared dialect
-  const createSharedWrapper =
-    () =>
-    ({ children }: { children: ReactNode }) => (
-      <DurablyProvider
-        dialectFactory={getSharedDialect}
-        options={{ pollingInterval: 50 }}
-        onReady={(durably) => {
-          if (!instances.includes(durably)) {
-            instances.push(durably)
-          }
-        }}
-      >
-        {children}
-      </DurablyProvider>
-    )
-
-  // Helper to create wrapper with new dialect
-  const createWrapper =
-    () =>
-    ({ children }: { children: ReactNode }) => (
-      <DurablyProvider
-        dialectFactory={() => createBrowserDialect()}
-        options={{ pollingInterval: 50 }}
-        onReady={(durably) => instances.push(durably)}
-      >
-        {children}
-      </DurablyProvider>
-    )
 
   afterEach(async () => {
     for (const instance of instances) {
@@ -104,34 +63,41 @@ describe('useJobRun', () => {
       }
     }
     instances.length = 0
-    sharedDialect = null
     await new Promise((r) => setTimeout(r, 200))
   })
 
+  const createWrapper = (durably: Durably) => {
+    return ({ children }: { children: ReactNode }) => (
+      <DurablyProvider durably={durably}>{children}</DurablyProvider>
+    )
+  }
+
   it('subscribes to run by id', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     // Use a combined hook that triggers then subscribes
     function useTriggerAndSubscribe() {
-      const { durably, isReady: durablyReady } = useDurably()
+      const { isReady: durablyReady } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobRun({ runId })
 
       return {
         ...subscription,
         isReady: durablyReady && subscription.isReady,
-        durably,
         runId,
         setRunId,
       }
     }
 
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
-      wrapper: createSharedWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
     // Trigger job and set runId
-    const { _job: handle } = result.current.durably!.register({ _job: testJob })
+    const { _job: handle } = durably.register({ _job: testJob })
     const run = await handle.trigger({ input: 'test' })
 
     // Update runId to start subscription
@@ -147,8 +113,11 @@ describe('useJobRun', () => {
   })
 
   it('handles null runId', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     const { result } = renderHook(() => useJobRun({ runId: null }), {
-      wrapper: createWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
@@ -160,27 +129,29 @@ describe('useJobRun', () => {
   })
 
   it('provides output when run completes', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     function useTriggerAndSubscribe() {
-      const { durably, isReady: durablyReady } = useDurably()
+      const { isReady: durablyReady } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobRun<{ result: string }>({ runId })
 
       return {
         ...subscription,
         isReady: durablyReady && subscription.isReady,
-        durably,
         runId,
         setRunId,
       }
     }
 
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
-      wrapper: createSharedWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { _job: handle } = result.current.durably!.register({ _job: testJob })
+    const { _job: handle } = durably.register({ _job: testJob })
     const run = await handle.trigger({ input: 'hello' })
     result.current.setRunId(run.id)
 
@@ -194,27 +165,29 @@ describe('useJobRun', () => {
   })
 
   it('provides error when run fails', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     function useTriggerAndSubscribe() {
-      const { durably, isReady: durablyReady } = useDurably()
+      const { isReady: durablyReady } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobRun({ runId })
 
       return {
         ...subscription,
         isReady: durablyReady && subscription.isReady,
-        durably,
         runId,
         setRunId,
       }
     }
 
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
-      wrapper: createSharedWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { _job: handle } = result.current.durably!.register({
+    const { _job: handle } = durably.register({
       _job: failingJob,
     })
     const run = await handle.trigger({ input: 'test' })
@@ -230,27 +203,29 @@ describe('useJobRun', () => {
   })
 
   it('tracks progress updates', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     function useTriggerAndSubscribe() {
-      const { durably, isReady: durablyReady } = useDurably()
+      const { isReady: durablyReady } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobRun({ runId })
 
       return {
         ...subscription,
         isReady: durablyReady && subscription.isReady,
-        durably,
         runId,
         setRunId,
       }
     }
 
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
-      wrapper: createSharedWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { _job: handle } = result.current.durably!.register({
+    const { _job: handle } = durably.register({
       _job: progressJob,
     })
     const run = await handle.trigger({ input: 'test' })
@@ -269,27 +244,29 @@ describe('useJobRun', () => {
   })
 
   it('provides boolean helpers', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
     function useTriggerAndSubscribe() {
-      const { durably, isReady: durablyReady } = useDurably()
+      const { isReady: durablyReady } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobRun({ runId })
 
       return {
         ...subscription,
         isReady: durablyReady && subscription.isReady,
-        durably,
         runId,
         setRunId,
       }
     }
 
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
-      wrapper: createSharedWrapper(),
+      wrapper: createWrapper(durably),
     })
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { _job: handle } = result.current.durably!.register({ _job: testJob })
+    const { _job: handle } = durably.register({ _job: testJob })
     const run = await handle.trigger({ input: 'test' })
     result.current.setRunId(run.id)
 
