@@ -15,6 +15,7 @@ import { SQLocalKysely } from 'sqlocal/kysely'
 import { dataSyncJob, processImageJob } from '~/lib/jobs'
 import { Dashboard } from './_index/dashboard'
 
+// Same database as root.tsx - for reset functionality
 const sqlocal = new SQLocalKysely('example.sqlite3')
 
 export default function Index() {
