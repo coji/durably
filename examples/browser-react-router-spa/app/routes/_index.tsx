@@ -283,7 +283,7 @@ function JobPanel({
             </div>
           )}
 
-          {output && (
+          {output !== null && output !== undefined && (
             <div className="bg-green-50 border border-green-200 rounded-md p-4">
               <h3 className="text-sm font-medium text-green-800 mb-2">
                 Output
