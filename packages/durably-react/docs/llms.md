@@ -520,34 +520,42 @@ function Dashboard() {
 
 ### Client useRunActions
 
-Get run details with steps and actions:
+Imperative actions for runs (retry, cancel, delete, get):
 
 ```tsx
 import { useRunActions } from '@coji/durably-react/client'
 
-function RunDetail({ runId }: { runId: string }) {
-  const { run, steps, isLoading, cancel, retry, deleteRun } = useRunActions({
-    api: '/api/durably',
-    runId,
-  })
+function RunActions({ runId, status }: { runId: string; status: string }) {
+  const { retry, cancel, deleteRun, getRun, getSteps, isLoading, error } =
+    useRunActions({
+      api: '/api/durably',
+    })
 
-  if (!run) return <div>Loading...</div>
+  const handleViewDetails = async () => {
+    const run = await getRun(runId)
+    const steps = await getSteps(runId)
+    console.log('Run:', run, 'Steps:', steps)
+  }
 
   return (
     <div>
-      <h2>Run: {run.id}</h2>
-      <p>Status: {run.status}</p>
-      <h3>Steps:</h3>
-      <ul>
-        {steps.map((step) => (
-          <li key={step.index}>
-            {step.name}: {step.status}
-          </li>
-        ))}
-      </ul>
-      {run.status === 'running' && <button onClick={cancel}>Cancel</button>}
-      {run.status === 'failed' && <button onClick={retry}>Retry</button>}
-      <button onClick={deleteRun}>Delete</button>
+      {(status === 'failed' || status === 'cancelled') && (
+        <button onClick={() => retry(runId)} disabled={isLoading}>
+          Retry
+        </button>
+      )}
+      {(status === 'pending' || status === 'running') && (
+        <button onClick={() => cancel(runId)} disabled={isLoading}>
+          Cancel
+        </button>
+      )}
+      <button onClick={handleViewDetails} disabled={isLoading}>
+        View Details
+      </button>
+      <button onClick={() => deleteRun(runId)} disabled={isLoading}>
+        Delete
+      </button>
+      {error && <span>{error}</span>}
     </div>
   )
 }
