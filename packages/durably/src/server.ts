@@ -110,6 +110,13 @@ export interface DurablyHandler {
   delete(request: Request): Promise<Response>
 
   /**
+   * Handle steps request
+   * Expects GET with query param: runId
+   * Returns JSON array of steps
+   */
+  steps(request: Request): Promise<Response>
+
+  /**
    * Handle runs subscription request
    * Expects GET with optional query param: jobName
    * Returns SSE stream of run update notifications
@@ -162,6 +169,7 @@ export function createDurablyHandler(
         if (path === '/subscribe') return handler.subscribe(request)
         if (path === '/runs') return handler.runs(request)
         if (path === '/run') return handler.run(request)
+        if (path === '/steps') return handler.steps(request)
         if (path === '/runs/subscribe') return handler.runsSubscribe(request)
       }
 
@@ -397,6 +405,33 @@ export function createDurablyHandler(
         await durably.deleteRun(runId)
 
         return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        return new Response(JSON.stringify({ error: message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+    },
+
+    async steps(request: Request): Promise<Response> {
+      try {
+        const url = new URL(request.url)
+        const runId = url.searchParams.get('runId')
+
+        if (!runId) {
+          return new Response(
+            JSON.stringify({ error: 'runId query parameter is required' }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+
+        const steps = await durably.storage.getSteps(runId)
+
+        return new Response(JSON.stringify(steps), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         })

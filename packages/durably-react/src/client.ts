@@ -38,6 +38,7 @@ export type {
 export { useRunActions } from './client/use-run-actions'
 export type {
   RunRecord,
+  StepRecord,
   UseRunActionsClientOptions,
   UseRunActionsClientResult,
 } from './client/use-run-actions'

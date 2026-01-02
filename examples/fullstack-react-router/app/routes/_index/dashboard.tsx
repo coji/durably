@@ -5,7 +5,7 @@
  * First page auto-subscribes to SSE for instant updates.
  */
 
-import type { RunRecord } from '@coji/durably-react/client'
+import type { RunRecord, StepRecord } from '@coji/durably-react/client'
 import { useRunActions, useRuns } from '@coji/durably-react/client'
 import { useState } from 'react'
 
@@ -22,12 +22,14 @@ export function Dashboard() {
     retry,
     deleteRun,
     getRun,
+    getSteps,
     isLoading: isActioning,
   } = useRunActions({
     api: '/api/durably',
   })
 
   const [selectedRun, setSelectedRun] = useState<RunRecord | null>(null)
+  const [steps, setSteps] = useState<StepRecord[]>([])
 
   const handleCancel = async (runId: string) => {
     await cancel(runId)
@@ -49,6 +51,8 @@ export function Dashboard() {
     const run = await getRun(runId)
     if (run) {
       setSelectedRun(run)
+      const stepsData = await getSteps(runId)
+      setSteps(stepsData)
     }
   }
 
@@ -251,6 +255,31 @@ export function Dashboard() {
                     {JSON.stringify(selectedRun.payload, null, 2)}
                   </pre>
                 </div>
+
+                {steps.length > 0 && (
+                  <div>
+                    <span className="font-medium text-gray-600">Steps:</span>
+                    <ul className="mt-1 divide-y divide-gray-100 border rounded">
+                      {steps.map((s) => (
+                        <li
+                          key={s.name}
+                          className="flex justify-between items-center p-2"
+                        >
+                          <span className="text-gray-800">{s.name}</span>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                              s.status === 'completed'
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-red-100 text-red-800'
+                            }`}
+                          >
+                            {s.status}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
             </div>
           </div>

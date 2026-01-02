@@ -92,6 +92,9 @@ export function Dashboard() {
                     Status
                   </th>
                   <th className="text-left py-2 px-2 font-medium text-gray-600">
+                    Progress
+                  </th>
+                  <th className="text-left py-2 px-2 font-medium text-gray-600">
                     Created
                   </th>
                   <th className="text-left py-2 px-2 font-medium text-gray-600">
@@ -112,6 +115,26 @@ export function Dashboard() {
                       >
                         {run.status}
                       </span>
+                    </td>
+                    <td className="py-2 px-2">
+                      {run.progress ? (
+                        <div className="flex items-center gap-2">
+                          <div className="w-16 bg-gray-200 rounded h-1.5">
+                            <div
+                              className="bg-blue-600 h-1.5 rounded"
+                              style={{
+                                width: `${(run.progress.current / (run.progress.total || run.progress.current)) * 100}%`,
+                              }}
+                            />
+                          </div>
+                          <span className="text-xs text-gray-500">
+                            {run.progress.current}
+                            {run.progress.total && `/${run.progress.total}`}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">-</span>
+                      )}
                     </td>
                     <td className="py-2 px-2 text-gray-600">
                       {formatDate(run.createdAt)}

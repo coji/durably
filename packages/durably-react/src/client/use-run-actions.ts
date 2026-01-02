@@ -16,6 +16,15 @@ export interface RunRecord {
   completedAt: string | null
 }
 
+/**
+ * Step record returned from the server API
+ */
+export interface StepRecord {
+  name: string
+  status: 'completed' | 'failed'
+  output: unknown
+}
+
 export interface UseRunActionsClientOptions {
   /**
    * API endpoint URL (e.g., '/api/durably')
@@ -40,6 +49,10 @@ export interface UseRunActionsClientResult {
    * Get a single run by ID
    */
   getRun: (runId: string) => Promise<RunRecord | null>
+  /**
+   * Get steps for a run
+   */
+  getSteps: (runId: string) => Promise<StepRecord[]>
   /**
    * Whether an action is in progress
    */
@@ -196,11 +209,40 @@ export function useRunActions(
     [api],
   )
 
+  const getSteps = useCallback(
+    async (runId: string): Promise<StepRecord[]> => {
+      setIsLoading(true)
+      setError(null)
+
+      try {
+        const url = `${api}/steps?runId=${encodeURIComponent(runId)}`
+        const response = await fetch(url)
+
+        if (!response.ok) {
+          const data = await response.json()
+          throw new Error(
+            data.error || `Failed to get steps: ${response.statusText}`,
+          )
+        }
+
+        return (await response.json()) as StepRecord[]
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error'
+        setError(message)
+        throw err
+      } finally {
+        setIsLoading(false)
+      }
+    },
+    [api],
+  )
+
   return {
     retry,
     cancel,
     deleteRun,
     getRun,
+    getSteps,
     isLoading,
     error,
   }
