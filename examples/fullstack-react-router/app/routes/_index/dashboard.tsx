@@ -146,7 +146,7 @@ export function Dashboard() {
                             <div
                               className="bg-blue-600 h-1.5 rounded"
                               style={{
-                                width: `${(run.progress.current / (run.progress.total || run.progress.current)) * 100}%`,
+                                width: `${run.progress.total ? (run.progress.current / run.progress.total) * 100 : run.progress.current > 0 ? 100 : 0}%`,
                               }}
                             />
                           </div>
