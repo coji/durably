@@ -294,18 +294,20 @@ function createDurablyInstance<
           const unsubscribeFail = eventEmitter.on('run:fail', (event) => {
             if (!closed && event.runId === runId) {
               controller.enqueue(event)
-              closed = true
-              cleanup()
-              controller.close()
+              // Don't close stream on fail - retry is possible
             }
           })
 
           const unsubscribeCancel = eventEmitter.on('run:cancel', (event) => {
             if (!closed && event.runId === runId) {
               controller.enqueue(event)
-              closed = true
-              cleanup()
-              controller.close()
+              // Don't close stream on cancel - retry is possible
+            }
+          })
+
+          const unsubscribeRetry = eventEmitter.on('run:retry', (event) => {
+            if (!closed && event.runId === runId) {
+              controller.enqueue(event)
             }
           })
 
@@ -353,6 +355,7 @@ function createDurablyInstance<
             unsubscribeComplete()
             unsubscribeFail()
             unsubscribeCancel()
+            unsubscribeRetry()
             unsubscribeProgress()
             unsubscribeStepStart()
             unsubscribeStepComplete()

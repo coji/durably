@@ -46,9 +46,23 @@ export function useSSESubscription<TOutput = unknown>(
 
   const eventSourceRef = useRef<EventSource | null>(null)
   const runIdRef = useRef<string | null>(runId)
-  runIdRef.current = runId
+  const prevRunIdRef = useRef<string | null>(null)
 
   const maxLogs = options?.maxLogs ?? 0
+
+  // Reset state when runId changes
+  if (prevRunIdRef.current !== runId) {
+    prevRunIdRef.current = runId
+    // Only reset if this isn't the initial render (runIdRef already set)
+    if (runIdRef.current !== runId) {
+      setStatus(null)
+      setOutput(null)
+      setError(null)
+      setLogs([])
+      setProgress(null)
+    }
+  }
+  runIdRef.current = runId
 
   // Subscribe to SSE events
   useEffect(() => {

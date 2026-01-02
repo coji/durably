@@ -300,6 +300,141 @@ describe('useJobRun', () => {
     )
   })
 
+  it('tracks retry from failed through completion', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
+    // Job that fails first time, succeeds on retry (use attempt counter via steps)
+    let attemptCount = 0
+    const retryableJob = defineJob({
+      name: 'retryable-job',
+      input: z.object({ input: z.string() }),
+      output: z.object({ result: z.string() }),
+      run: async (context, payload) => {
+        attemptCount++
+        await context.run('process', async () => {
+          await new Promise((r) => setTimeout(r, 30))
+        })
+        if (attemptCount === 1) {
+          throw new Error('First attempt failed')
+        }
+        return { result: `success: ${payload.input}` }
+      },
+    })
+
+    function useTriggerAndSubscribe() {
+      const { isReady: durablyReady } = useDurably()
+      const [runId, setRunId] = useState<string | null>(null)
+      const subscription = useJobRun<{ result: string }>({ runId })
+
+      return {
+        ...subscription,
+        isReady: durablyReady && subscription.isReady,
+        runId,
+        setRunId,
+      }
+    }
+
+    const { result } = renderHook(() => useTriggerAndSubscribe(), {
+      wrapper: createWrapper(durably),
+    })
+
+    await waitFor(() => expect(result.current.isReady).toBe(true))
+
+    const d = durably.register({ _job: retryableJob })
+    const run = await d.jobs._job.trigger({ input: 'test' })
+    result.current.setRunId(run.id)
+
+    // Wait for the run to fail
+    await waitFor(
+      () => {
+        expect(result.current.status).toBe('failed')
+      },
+      { timeout: 3000 },
+    )
+
+    // Retry the run (worker is still running, will pick it up)
+    await durably.retry(run.id)
+
+    // Should track through to completion
+    await waitFor(
+      () => {
+        expect(result.current.status).toBe('completed')
+        expect(result.current.output).toEqual({ result: 'success: test' })
+      },
+      { timeout: 3000 },
+    )
+  })
+
+  it('tracks retry from cancelled through completion', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
+    // Use autoStart=false wrapper so we can control when the worker runs
+    const noAutoStartWrapper = ({ children }: { children: ReactNode }) => (
+      <DurablyProvider durably={durably} autoStart={false}>
+        {children}
+      </DurablyProvider>
+    )
+
+    function useTriggerAndSubscribe() {
+      const { isReady: durablyReady } = useDurably()
+      const [runId, setRunId] = useState<string | null>(null)
+      const subscription = useJobRun<{ result: string }>({ runId })
+
+      return {
+        ...subscription,
+        isReady: durablyReady && subscription.isReady,
+        runId,
+        setRunId,
+      }
+    }
+
+    const { result } = renderHook(() => useTriggerAndSubscribe(), {
+      wrapper: noAutoStartWrapper,
+    })
+
+    await waitFor(() => expect(result.current.isReady).toBe(true))
+
+    const d = durably.register({ _job: testJob })
+    const run = await d.jobs._job.trigger({ input: 'test' })
+    result.current.setRunId(run.id)
+
+    // Cancel the pending run
+    await durably.cancel(run.id)
+
+    await waitFor(
+      () => {
+        expect(result.current.status).toBe('cancelled')
+        expect(result.current.isCancelled).toBe(true)
+      },
+      { timeout: 3000 },
+    )
+
+    // Retry the run
+    await durably.retry(run.id)
+
+    // Should see pending
+    await waitFor(
+      () => {
+        expect(result.current.status).toBe('pending')
+      },
+      { timeout: 3000 },
+    )
+
+    // Start the worker to process the retry
+    durably.start()
+
+    // Should track through to completion
+    await waitFor(
+      () => {
+        expect(result.current.status).toBe('completed')
+        expect(result.current.output).toEqual({ result: 'processed: test' })
+      },
+      { timeout: 3000 },
+    )
+  })
+
   it('tracks progress updates', async () => {
     const durably = await createTestDurably({ pollingInterval: 50 })
     instances.push(durably)
