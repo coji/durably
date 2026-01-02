@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { LogEntry, Progress, RunStatus } from '../types'
 import { useSSESubscription } from './use-sse-subscription'
 
@@ -151,9 +151,11 @@ export function useJob<
   const effectiveStatus = subscription.status ?? (isPending ? 'pending' : null)
 
   // Clear pending when we get a real status
-  if (subscription.status && isPending) {
-    setIsPending(false)
-  }
+  useEffect(() => {
+    if (subscription.status && isPending) {
+      setIsPending(false)
+    }
+  }, [subscription.status, isPending])
 
   return {
     isReady: true,
