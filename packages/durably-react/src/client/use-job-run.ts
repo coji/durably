@@ -92,15 +92,15 @@ export function useJobRun<TOutput = unknown>(
   const isRunning = effectiveStatus === 'running'
   const isCancelled = effectiveStatus === 'cancelled'
 
-  // Track previous status to detect transitions
+  // Track previous status to detect transitions (use effectiveStatus, not subscription.status)
   const prevStatusRef = useRef<RunStatus | null>(null)
 
   useEffect(() => {
     const prevStatus = prevStatusRef.current
-    prevStatusRef.current = subscription.status
+    prevStatusRef.current = effectiveStatus
 
     // Only fire callbacks on status transitions
-    if (prevStatus !== subscription.status) {
+    if (prevStatus !== effectiveStatus) {
       // Fire onStart when transitioning from null to pending/running
       if (prevStatus === null && (isPending || isRunning) && onStart) {
         onStart()
@@ -113,7 +113,7 @@ export function useJobRun<TOutput = unknown>(
       }
     }
   }, [
-    subscription.status,
+    effectiveStatus,
     isPending,
     isRunning,
     isCompleted,

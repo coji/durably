@@ -260,4 +260,98 @@ describe('useJobRun (client)', () => {
     await new Promise((r) => setTimeout(r, 50))
     expect(result.current.status).toBe('pending')
   })
+
+  describe('callbacks', () => {
+    it('fires onStart only once when transitioning from null to pending to running', async () => {
+      const onStart = vi.fn()
+
+      const { result } = renderHook(() =>
+        useJobRun({ api: '/api/durably', runId: 'callback-run', onStart }),
+      )
+
+      // Initially pending (runId exists but no SSE events yet)
+      await waitFor(() => {
+        expect(result.current.status).toBe('pending')
+      })
+
+      // onStart should have been called once for pending status
+      expect(onStart).toHaveBeenCalledTimes(1)
+
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      // Emit run:start to transition to running
+      act(() => {
+        mockEventSource.emit({ type: 'run:start', runId: 'callback-run' })
+      })
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('running')
+      })
+
+      // onStart should NOT have been called again - still just once
+      expect(onStart).toHaveBeenCalledTimes(1)
+    })
+
+    it('fires onComplete when run completes', async () => {
+      const onComplete = vi.fn()
+
+      const { result } = renderHook(() =>
+        useJobRun({
+          api: '/api/durably',
+          runId: 'complete-callback-run',
+          onComplete,
+        }),
+      )
+
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:complete',
+          runId: 'complete-callback-run',
+          output: { done: true },
+        })
+      })
+
+      await waitFor(() => {
+        expect(result.current.isCompleted).toBe(true)
+      })
+
+      expect(onComplete).toHaveBeenCalledTimes(1)
+    })
+
+    it('fires onFail when run fails', async () => {
+      const onFail = vi.fn()
+
+      const { result } = renderHook(() =>
+        useJobRun({
+          api: '/api/durably',
+          runId: 'fail-callback-run',
+          onFail,
+        }),
+      )
+
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:fail',
+          runId: 'fail-callback-run',
+          error: 'Test error',
+        })
+      })
+
+      await waitFor(() => {
+        expect(result.current.isFailed).toBe(true)
+      })
+
+      expect(onFail).toHaveBeenCalledTimes(1)
+    })
+  })
 })
