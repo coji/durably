@@ -59,6 +59,15 @@ export interface RunCancelEvent extends BaseEvent {
 }
 
 /**
+ * Run retry event (emitted when a failed run is retried)
+ */
+export interface RunRetryEvent extends BaseEvent {
+  type: 'run:retry'
+  runId: string
+  jobName: string
+}
+
+/**
  * Run progress event
  */
 export interface RunProgressEvent extends BaseEvent {
@@ -135,6 +144,7 @@ export type DurablyEvent =
   | RunCompleteEvent
   | RunFailEvent
   | RunCancelEvent
+  | RunRetryEvent
   | RunProgressEvent
   | StepStartEvent
   | StepCompleteEvent
@@ -172,6 +182,7 @@ export type AnyEventInput =
   | EventInput<'run:complete'>
   | EventInput<'run:fail'>
   | EventInput<'run:cancel'>
+  | EventInput<'run:retry'>
   | EventInput<'run:progress'>
   | EventInput<'step:start'>
   | EventInput<'step:complete'>

@@ -28,6 +28,7 @@ type RunUpdateEvent =
         | 'run:complete'
         | 'run:fail'
         | 'run:cancel'
+        | 'run:retry'
       runId: string
       jobName: string
     }
@@ -205,7 +206,8 @@ export function useRuns(options: UseRunsClientOptions): UseRunsClientResult {
           data.type === 'run:start' ||
           data.type === 'run:complete' ||
           data.type === 'run:fail' ||
-          data.type === 'run:cancel'
+          data.type === 'run:cancel' ||
+          data.type === 'run:retry'
         ) {
           refresh()
         }

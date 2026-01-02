@@ -300,6 +300,15 @@ function createDurablyInstance<
             }
           })
 
+          const unsubscribeCancel = eventEmitter.on('run:cancel', (event) => {
+            if (!closed && event.runId === runId) {
+              controller.enqueue(event)
+              closed = true
+              cleanup()
+              controller.close()
+            }
+          })
+
           const unsubscribeProgress = eventEmitter.on(
             'run:progress',
             (event) => {
@@ -343,6 +352,7 @@ function createDurablyInstance<
             unsubscribeStart()
             unsubscribeComplete()
             unsubscribeFail()
+            unsubscribeCancel()
             unsubscribeProgress()
             unsubscribeStepStart()
             unsubscribeStepComplete()
@@ -370,6 +380,13 @@ function createDurablyInstance<
       await storage.updateRun(runId, {
         status: 'pending',
         error: null,
+      })
+
+      // Emit run:retry event
+      eventEmitter.emit({
+        type: 'run:retry',
+        runId,
+        jobName: run.jobName,
       })
     },
 

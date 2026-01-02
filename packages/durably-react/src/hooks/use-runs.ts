@@ -126,6 +126,7 @@ export function useRuns(options?: UseRunsOptions): UseRunsResult {
       durably.on('run:complete', refresh),
       durably.on('run:fail', refresh),
       durably.on('run:cancel', refresh),
+      durably.on('run:retry', refresh),
     ]
 
     return () => {

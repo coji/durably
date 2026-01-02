@@ -738,6 +738,57 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(allEvents).toContain('run:cancel')
       })
 
+      it('streams run:retry when job is retried', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'runs-subscribe-retry-test',
+            input: z.object({}),
+            run: async () => {
+              throw new Error('test error')
+            },
+          }),
+        })
+
+        // First, trigger and let it fail
+        const run = await d.jobs.job.trigger({})
+        d.start()
+
+        // Wait for the job to fail
+        await new Promise((r) => setTimeout(r, 200))
+
+        const request = new Request(
+          'http://localhost/api/durably/runs/subscribe',
+          { method: 'GET' },
+        )
+
+        const response = handler.runsSubscribe(request)
+        const reader = response.body!.getReader()
+        const decoder = new TextDecoder()
+
+        const events: string[] = []
+        const readPromise = (async () => {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            events.push(decoder.decode(value))
+            // Stop after receiving the retry event
+            if (events.some((e) => e.includes('run:retry'))) break
+          }
+        })()
+
+        // Retry the failed job
+        await d.retry(run.id)
+
+        await Promise.race([
+          readPromise,
+          new Promise((r) => setTimeout(r, 500)),
+        ])
+
+        // Should have received run:retry event
+        const allEvents = events.join('')
+        expect(allEvents).toContain('run:retry')
+      })
+
       it('streams run lifecycle events', async () => {
         const d = durably.register({
           job: defineJob({

@@ -440,6 +440,18 @@ export function createDurablyHandler(
             controller.enqueue(encoder.encode(data))
           })
 
+          const unsubscribeRetry = durably.on('run:retry', (event) => {
+            if (closed) return
+            if (jobNameFilter && event.jobName !== jobNameFilter) return
+
+            const data = `data: ${JSON.stringify({
+              type: 'run:retry',
+              runId: event.runId,
+              jobName: event.jobName,
+            })}\n\n`
+            controller.enqueue(encoder.encode(data))
+          })
+
           const unsubscribeProgress = durably.on('run:progress', (event) => {
             if (closed) return
             if (jobNameFilter && event.jobName !== jobNameFilter) return
@@ -461,6 +473,7 @@ export function createDurablyHandler(
             unsubscribeComplete()
             unsubscribeFail()
             unsubscribeCancel()
+            unsubscribeRetry()
             unsubscribeProgress()
           }
         },
