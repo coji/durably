@@ -3,46 +3,26 @@
  *
  * Sets up Durably instance, registers jobs, and provides HTTP handler.
  * Server-only - do not import in client code.
+ *
+ * Note: In development with HMR, this module may reload on changes.
+ * For production apps, consider using a singleton pattern to prevent
+ * multiple instances.
  */
 
 import { createDurably, createDurablyHandler } from '@coji/durably'
-import { LibsqlDialect } from '@libsql/kysely-libsql'
-import { jobs } from '~/jobs'
+import { importCsvJob } from '~/jobs'
+import { dialect } from './database.server'
 
-/**
- * HMR-safe singleton helper for React Router dev server.
- *
- * During development, React Router's HMR reloads this module on every change,
- * which would create new Durably/database instances each time. This helper
- * stores instances on globalThis to persist them across HMR reloads.
- *
- * In production, this just works as a normal singleton pattern.
- */
-function singleton<T>(name: string, factory: () => T): T {
-  const g = globalThis as unknown as Record<string, T>
-  if (g[name] === undefined) {
-    g[name] = factory()
-  }
-  return g[name]
-}
-
-// Durably instance with registered jobs
-export const durably = singleton('__durably', () =>
-  createDurably({
-    dialect: new LibsqlDialect({
-      url: process.env.DATABASE_URL ?? 'file:./local.db',
-    }),
-  }).register(jobs),
-)
-
-// HTTP handler
-export const durablyHandler = singleton('__durablyHandler', () =>
-  createDurablyHandler(durably),
-)
-
-// Initialize on first load
-singleton('__durablyInitialized', async () => {
-  await durably.migrate()
-  durably.start()
-  return true
+// Create Durably instance with registered jobs
+export const durably = createDurably({
+  dialect,
+}).register({
+  importCsv: importCsvJob,
 })
+
+// HTTP handler for SSE streaming
+export const durablyHandler = createDurablyHandler(durably)
+
+// Initialize database and start worker
+await durably.migrate()
+durably.start()

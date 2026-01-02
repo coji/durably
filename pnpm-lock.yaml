@@ -4,9 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  zod: ^4.2.1
-
 importers:
 
   .:
@@ -21,8 +18,8 @@ importers:
         specifier: 4.0.16
         version: 4.0.16(@vitest/browser@4.0.16(vite@7.3.0(@types/node@25.0.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0))(vitest@4.0.16))(vitest@4.0.16)
       cc-hooks-ts:
-        specifier: 2.0.70
-        version: 2.0.70(typescript@5.9.3)(zod@4.3.4)
+        specifier: 2.0.76
+        version: 2.0.76(typescript@5.9.3)(zod@4.3.4)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -63,7 +60,7 @@ importers:
         specifier: ^0.16.0
         version: 0.16.0(kysely@0.28.9)(react@19.2.3)(vite@7.3.0(@types/node@25.0.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0))(vue@3.5.26(typescript@5.9.3))
       zod:
-        specifier: ^4.2.1
+        specifier: ^4.3.4
         version: 4.3.4
     devDependencies:
       '@biomejs/biome':
@@ -124,12 +121,15 @@ importers:
         specifier: ^0.16.0
         version: 0.16.0(kysely@0.28.9)(react@19.2.3)(vite@7.3.0(@types/node@25.0.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0))(vue@3.5.26(typescript@5.9.3))
       zod:
-        specifier: ^4.2.1
+        specifier: ^4.3.4
         version: 4.3.4
     devDependencies:
       '@biomejs/biome':
         specifier: ^2.3.10
         version: 2.3.10
+      '@tailwindcss/vite':
+        specifier: ^4.1.18
+        version: 4.1.18(vite@7.3.0(@types/node@25.0.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0))
       '@types/react':
         specifier: ^19.2.7
         version: 19.2.7
@@ -145,6 +145,9 @@ importers:
       prettier-plugin-organize-imports:
         specifier: ^4.3.0
         version: 4.3.0(prettier@3.7.4)(typescript@5.9.3)
+      tailwindcss:
+        specifier: ^4.1.18
+        version: 4.1.18
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -182,7 +185,7 @@ importers:
         specifier: 7.11.0
         version: 7.11.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       zod:
-        specifier: ^4.2.1
+        specifier: ^4.3.4
         version: 4.3.4
     devDependencies:
       '@biomejs/biome':
@@ -237,7 +240,7 @@ importers:
         specifier: ^0.28.9
         version: 0.28.9
       zod:
-        specifier: ^4.2.1
+        specifier: ^4.3.4
         version: 4.3.4
     devDependencies:
       '@biomejs/biome':
@@ -326,7 +329,7 @@ importers:
         specifier: ^4.0.16
         version: 4.0.16(@types/node@25.0.3)(@vitest/browser-playwright@4.0.16)(jiti@2.6.1)(jsdom@27.4.0)(lightningcss@1.30.2)(tsx@4.21.0)
       zod:
-        specifier: ^4.2.1
+        specifier: ^4.3.4
         version: 4.3.4
 
   packages/durably-react:
@@ -386,7 +389,7 @@ importers:
         specifier: ^4.0.16
         version: 4.0.16(@types/node@25.0.3)(@vitest/browser-playwright@4.0.16)(jiti@2.6.1)(jsdom@27.4.0)(lightningcss@1.30.2)(tsx@4.21.0)
       zod:
-        specifier: ^4.2.1
+        specifier: ^4.3.4
         version: 4.3.4
 
   website:
@@ -476,11 +479,11 @@ packages:
     resolution: {integrity: sha512-ciPihkletp7ttweJ8Zt+GukSVLp2ANJHU+9ttiSxsJZThXc4Y2yJ8HGVWesW5jN1zrsZsezN71KrMx/iZsOYpg==}
     engines: {node: '>= 14.0.0'}
 
-  '@anthropic-ai/claude-agent-sdk@0.1.70':
-    resolution: {integrity: sha512-4jpFPDX8asys6skO1r3Pzh0Fe9nbND2ASYTWuyFB5iN9bWEL6WScTFyGokjql3M2TkEp9ZGuB2YYpTCdaqT9Sw==}
+  '@anthropic-ai/claude-agent-sdk@0.1.76':
+    resolution: {integrity: sha512-s7RvpXoFaLXLG7A1cJBAPD8ilwOhhc/12fb5mJXRuD561o4FmPtQ+WRfuy9akMmrFRfLsKv8Ornw3ClGAPL2fw==}
     engines: {node: '>=18.0.0'}
     peerDependencies:
-      zod: ^4.2.1
+      zod: ^3.24.1 || ^4.0.0
 
   '@asamuzakjp/css-color@4.1.1':
     resolution: {integrity: sha512-B0Hv6G3gWGMn0xKJ0txEi/jM5iFpT3MfDxmhZFb4W047GvytCf1DHQ1D69W3zHI4yWe2aTZAA0JnbMZ7Xc8DuQ==}
@@ -1900,8 +1903,8 @@ packages:
   caniuse-lite@1.0.30001762:
     resolution: {integrity: sha512-PxZwGNvH7Ak8WX5iXzoK1KPZttBXNPuaOvI2ZYU7NrlM+d9Ov+TUvlLOBNGzVXAntMSMMlJPd+jY6ovrVjSmUw==}
 
-  cc-hooks-ts@2.0.70:
-    resolution: {integrity: sha512-VIUAEXw/huaTev21xlKjCpWso51vHRIuodGc6T0ihVyA7BXwmQHlfxBnhfsvYtTbo9xVsijSPIgwS7/flJOjAQ==}
+  cc-hooks-ts@2.0.76:
+    resolution: {integrity: sha512-5b4UyCiqCxUM4UfvWYASTP5DqdNsHuAq4Zyks5uNqgGs4DQo2BAhFTQG8g5vj4SqLXYaFjszBDtsGhi3lkAkCw==}
     engines: {node: ^20.12.0 || ^22.0.0 || >=24.0.0}
 
   ccount@2.0.1:
@@ -3430,7 +3433,7 @@ snapshots:
     dependencies:
       '@algolia/client-common': 5.46.2
 
-  '@anthropic-ai/claude-agent-sdk@0.1.70(zod@4.3.4)':
+  '@anthropic-ai/claude-agent-sdk@0.1.76(zod@4.3.4)':
     dependencies:
       zod: 4.3.4
     optionalDependencies:
@@ -4776,9 +4779,9 @@ snapshots:
 
   caniuse-lite@1.0.30001762: {}
 
-  cc-hooks-ts@2.0.70(typescript@5.9.3)(zod@4.3.4):
+  cc-hooks-ts@2.0.76(typescript@5.9.3)(zod@4.3.4):
     dependencies:
-      '@anthropic-ai/claude-agent-sdk': 0.1.70(zod@4.3.4)
+      '@anthropic-ai/claude-agent-sdk': 0.1.76(zod@4.3.4)
       valibot: 1.2.0(typescript@5.9.3)
     transitivePeerDependencies:
       - typescript

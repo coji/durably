@@ -58,9 +58,8 @@ export interface DurablyPlugin {
 /**
  * Helper type to transform JobDefinition record to JobHandle record
  */
-// biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
 type TransformToHandles<
-  TJobs extends Record<string, JobDefinition<string, any, any>>,
+  TJobs extends Record<string, JobDefinition<string, unknown, unknown>>,
 > = {
   [K in keyof TJobs]: TJobs[K] extends JobDefinition<
     infer TName,

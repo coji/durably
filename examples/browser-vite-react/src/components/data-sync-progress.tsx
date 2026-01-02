@@ -1,19 +1,18 @@
 /**
  * Data Sync Progress Component
  *
- * Displays progress for the data sync job using initialRunId.
+ * Displays progress for the data sync job.
  */
 
 import { useJob } from '@coji/durably-react'
-import { useActionData } from 'react-router'
-import { dataSyncJob } from '~/jobs'
-import type { clientAction } from '../_index'
+import { dataSyncJob } from '../jobs'
 import { RunProgress } from './run-progress'
 
-export function DataSyncProgress() {
-  const actionData = useActionData<typeof clientAction>()
-  const runId = actionData?.intent === 'sync' ? actionData.runId : undefined
+interface DataSyncProgressProps {
+  runId?: string
+}
 
+export function DataSyncProgress({ runId }: DataSyncProgressProps) {
   const {
     progress,
     output,

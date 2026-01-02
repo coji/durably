@@ -6,7 +6,7 @@
 
 import { useJob } from '@coji/durably-react'
 import { useActionData } from 'react-router'
-import { processImageJob } from '~/lib/jobs'
+import { processImageJob } from '~/jobs'
 import type { clientAction } from '../_index'
 import { RunProgress } from './run-progress'
 

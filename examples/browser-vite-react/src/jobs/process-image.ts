@@ -1,8 +1,7 @@
 /**
  * Process Image Job
  *
- * Example job that simulates image processing with multiple steps.
- * This is a standalone job definition - registration happens in DurablyProvider.
+ * Simulates image processing with multiple steps.
  */
 
 import { defineJob } from '@coji/durably'
