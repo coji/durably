@@ -103,6 +103,13 @@ export interface DurablyHandler {
   cancel(request: Request): Promise<Response>
 
   /**
+   * Handle delete request
+   * Expects DELETE with query param: runId
+   * Returns JSON: { success: true }
+   */
+  delete(request: Request): Promise<Response>
+
+  /**
    * Handle runs subscription request
    * Expects GET with optional query param: jobName
    * Returns SSE stream of run update notifications
@@ -163,6 +170,11 @@ export function createDurablyHandler(
         if (path === '/trigger') return handler.trigger(request)
         if (path === '/retry') return handler.retry(request)
         if (path === '/cancel') return handler.cancel(request)
+      }
+
+      // DELETE routes
+      if (method === 'DELETE') {
+        if (path === '/run') return handler.delete(request)
       }
 
       return new Response('Not Found', { status: 404 })
@@ -356,6 +368,33 @@ export function createDurablyHandler(
         }
 
         await durably.cancel(runId)
+
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        return new Response(JSON.stringify({ error: message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+    },
+
+    async delete(request: Request): Promise<Response> {
+      try {
+        const url = new URL(request.url)
+        const runId = url.searchParams.get('runId')
+
+        if (!runId) {
+          return new Response(
+            JSON.stringify({ error: 'runId query parameter is required' }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+
+        await durably.deleteRun(runId)
 
         return new Response(JSON.stringify({ success: true }), {
           status: 200,

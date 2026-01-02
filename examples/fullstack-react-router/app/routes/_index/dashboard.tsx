@@ -5,7 +5,9 @@
  * First page auto-subscribes to SSE for instant updates.
  */
 
+import type { RunRecord } from '@coji/durably-react/client'
 import { useRunActions, useRuns } from '@coji/durably-react/client'
+import { useState } from 'react'
 
 export function Dashboard() {
   const { runs, isLoading, error, page, hasMore, nextPage, prevPage, refresh } =
@@ -18,10 +20,14 @@ export function Dashboard() {
   const {
     cancel,
     retry,
+    deleteRun,
+    getRun,
     isLoading: isActioning,
   } = useRunActions({
     api: '/api/durably',
   })
+
+  const [selectedRun, setSelectedRun] = useState<RunRecord | null>(null)
 
   const handleCancel = async (runId: string) => {
     await cancel(runId)
@@ -31,6 +37,29 @@ export function Dashboard() {
   const handleRetry = async (runId: string) => {
     await retry(runId)
     refresh()
+  }
+
+  const handleDelete = async (runId: string) => {
+    await deleteRun(runId)
+    setSelectedRun(null)
+    refresh()
+  }
+
+  const showDetails = async (runId: string) => {
+    const run = await getRun(runId)
+    if (run) {
+      setSelectedRun(run)
+    }
+  }
+
+  const formatDate = (iso: string) => new Date(iso).toLocaleString()
+
+  const statusClasses: Record<string, string> = {
+    pending: 'bg-yellow-100 text-yellow-800',
+    running: 'bg-blue-100 text-blue-800',
+    completed: 'bg-green-100 text-green-800',
+    failed: 'bg-red-100 text-red-800',
+    cancelled: 'bg-gray-100 text-gray-800',
   }
 
   return (
@@ -79,12 +108,19 @@ export function Dashboard() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => showDetails(r.id)}
+                    className="text-xs text-blue-600 hover:text-blue-800"
+                  >
+                    View
+                  </button>
                   {(r.status === 'pending' || r.status === 'running') && (
                     <button
                       type="button"
                       onClick={() => handleCancel(r.id)}
                       disabled={isActioning}
-                      className="text-xs text-red-600 hover:text-red-800 disabled:text-gray-400 disabled:cursor-not-allowed"
+                      className="text-xs text-orange-600 hover:text-orange-800 disabled:text-gray-400 disabled:cursor-not-allowed"
                     >
                       Cancel
                     </button>
@@ -94,21 +130,23 @@ export function Dashboard() {
                       type="button"
                       onClick={() => handleRetry(r.id)}
                       disabled={isActioning}
-                      className="text-xs text-blue-600 hover:text-blue-800 disabled:text-gray-400 disabled:cursor-not-allowed"
+                      className="text-xs text-green-600 hover:text-green-800 disabled:text-gray-400 disabled:cursor-not-allowed"
                     >
                       Retry
                     </button>
                   )}
+                  {r.status !== 'running' && r.status !== 'pending' && (
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(r.id)}
+                      disabled={isActioning}
+                      className="text-xs text-red-600 hover:text-red-800 disabled:text-gray-400 disabled:cursor-not-allowed"
+                    >
+                      Delete
+                    </button>
+                  )}
                   <span
-                    className={`text-sm font-medium px-2 py-1 rounded ${
-                      r.status === 'completed'
-                        ? 'bg-green-100 text-green-800'
-                        : r.status === 'failed'
-                          ? 'bg-red-100 text-red-800'
-                          : r.status === 'running'
-                            ? 'bg-blue-100 text-blue-800'
-                            : 'bg-gray-100 text-gray-800'
-                    }`}
+                    className={`text-sm font-medium px-2 py-1 rounded ${statusClasses[r.status] || 'bg-gray-100 text-gray-800'}`}
                   >
                     {r.status}
                   </span>
@@ -138,6 +176,85 @@ export function Dashboard() {
             </button>
           </div>
         </>
+      )}
+
+      {/* Run Details Modal */}
+      {selectedRun && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold">Run Details</h3>
+                <button
+                  type="button"
+                  onClick={() => setSelectedRun(null)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="space-y-3 text-sm">
+                <div>
+                  <span className="font-medium text-gray-600">ID:</span>{' '}
+                  <span className="font-mono text-gray-800">
+                    {selectedRun.id}
+                  </span>
+                </div>
+                <div>
+                  <span className="font-medium text-gray-600">Job:</span>{' '}
+                  {selectedRun.jobName}
+                </div>
+                <div>
+                  <span className="font-medium text-gray-600">Status:</span>{' '}
+                  <span
+                    className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${statusClasses[selectedRun.status] || 'bg-gray-100 text-gray-800'}`}
+                  >
+                    {selectedRun.status}
+                  </span>
+                </div>
+                <div>
+                  <span className="font-medium text-gray-600">Created:</span>{' '}
+                  {formatDate(selectedRun.createdAt)}
+                </div>
+
+                {selectedRun.progress && (
+                  <div>
+                    <span className="font-medium text-gray-600">Progress:</span>{' '}
+                    {selectedRun.progress.current}
+                    {selectedRun.progress.total
+                      ? `/${selectedRun.progress.total}`
+                      : ''}{' '}
+                    {selectedRun.progress.message || ''}
+                  </div>
+                )}
+
+                {selectedRun.error && (
+                  <div>
+                    <span className="font-medium text-gray-600">Error:</span>{' '}
+                    <span className="text-red-600">{selectedRun.error}</span>
+                  </div>
+                )}
+
+                {selectedRun.output !== null && (
+                  <div>
+                    <span className="font-medium text-gray-600">Output:</span>
+                    <pre className="mt-1 p-3 bg-gray-50 rounded border text-xs overflow-auto">
+                      {JSON.stringify(selectedRun.output, null, 2)}
+                    </pre>
+                  </div>
+                )}
+
+                <div>
+                  <span className="font-medium text-gray-600">Payload:</span>
+                  <pre className="mt-1 p-3 bg-gray-50 rounded border text-xs overflow-auto">
+                    {JSON.stringify(selectedRun.payload, null, 2)}
+                  </pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </section>
   )

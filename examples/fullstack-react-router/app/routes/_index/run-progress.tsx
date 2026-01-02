@@ -54,6 +54,16 @@ export function RunProgress({ runId }: RunProgressProps) {
         </section>
       )}
 
+      {/* Cancelled State */}
+      {run.isCancelled && (
+        <section className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+          <div className="text-gray-800 font-medium">Import Cancelled</div>
+          <div className="text-gray-600 text-sm mt-1">
+            The import was cancelled before completion.
+          </div>
+        </section>
+      )}
+
       {/* Success Result */}
       {run.isCompleted && run.output && (
         <section className="bg-green-50 border border-green-200 rounded-lg p-4">
@@ -70,6 +80,29 @@ export function RunProgress({ runId }: RunProgressProps) {
         <section className="bg-red-50 border border-red-200 rounded-lg p-4">
           <div className="text-red-800 font-medium">Import Failed</div>
           <div className="text-red-700 text-sm mt-1">{run.error}</div>
+        </section>
+      )}
+
+      {/* Logs Display */}
+      {run.logs.length > 0 && (
+        <section className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+          <div className="text-gray-800 font-medium mb-2">Logs</div>
+          <div className="space-y-1 max-h-40 overflow-y-auto">
+            {run.logs.map((log) => (
+              <div
+                key={log.id}
+                className={`text-xs font-mono ${
+                  log.level === 'error'
+                    ? 'text-red-600'
+                    : log.level === 'warn'
+                      ? 'text-yellow-600'
+                      : 'text-gray-600'
+                }`}
+              >
+                [{log.level}] {log.message}
+              </div>
+            ))}
+          </div>
         </section>
       )}
     </>

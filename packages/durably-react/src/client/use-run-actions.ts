@@ -1,5 +1,21 @@
 import { useCallback, useState } from 'react'
 
+/**
+ * Run record returned from the server API
+ */
+export interface RunRecord {
+  id: string
+  jobName: string
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  payload: unknown
+  output: unknown | null
+  error: string | null
+  progress: { current: number; total?: number; message?: string } | null
+  createdAt: string
+  startedAt: string | null
+  completedAt: string | null
+}
+
 export interface UseRunActionsClientOptions {
   /**
    * API endpoint URL (e.g., '/api/durably')
@@ -9,13 +25,21 @@ export interface UseRunActionsClientOptions {
 
 export interface UseRunActionsClientResult {
   /**
-   * Retry a failed run
+   * Retry a failed or cancelled run
    */
   retry: (runId: string) => Promise<void>
   /**
    * Cancel a pending or running run
    */
   cancel: (runId: string) => Promise<void>
+  /**
+   * Delete a run (only completed, failed, or cancelled runs)
+   */
+  deleteRun: (runId: string) => Promise<void>
+  /**
+   * Get a single run by ID
+   */
+  getRun: (runId: string) => Promise<RunRecord | null>
   /**
    * Whether an action is in progress
    */
@@ -114,9 +138,69 @@ export function useRunActions(
     [api],
   )
 
+  const deleteRun = useCallback(
+    async (runId: string) => {
+      setIsLoading(true)
+      setError(null)
+
+      try {
+        const url = `${api}/run?runId=${encodeURIComponent(runId)}`
+        const response = await fetch(url, { method: 'DELETE' })
+
+        if (!response.ok) {
+          const data = await response.json()
+          throw new Error(
+            data.error || `Failed to delete: ${response.statusText}`,
+          )
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error'
+        setError(message)
+        throw err
+      } finally {
+        setIsLoading(false)
+      }
+    },
+    [api],
+  )
+
+  const getRun = useCallback(
+    async (runId: string): Promise<RunRecord | null> => {
+      setIsLoading(true)
+      setError(null)
+
+      try {
+        const url = `${api}/run?runId=${encodeURIComponent(runId)}`
+        const response = await fetch(url)
+
+        if (response.status === 404) {
+          return null
+        }
+
+        if (!response.ok) {
+          const data = await response.json()
+          throw new Error(
+            data.error || `Failed to get run: ${response.statusText}`,
+          )
+        }
+
+        return (await response.json()) as RunRecord
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error'
+        setError(message)
+        throw err
+      } finally {
+        setIsLoading(false)
+      }
+    },
+    [api],
+  )
+
   return {
     retry,
     cancel,
+    deleteRun,
+    getRun,
     isLoading,
     error,
   }

@@ -37,6 +37,7 @@ export type {
 
 export { useRunActions } from './use-run-actions'
 export type {
+  RunRecord,
   UseRunActionsClientOptions,
   UseRunActionsClientResult,
 } from './use-run-actions'
