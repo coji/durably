@@ -53,6 +53,11 @@ export interface DurablyPlugin {
  */
 export interface Durably {
   /**
+   * Registered job handles (type-safe access after register())
+   */
+  readonly jobs: Record<string, JobHandle<string, unknown, unknown>>
+
+  /**
    * Run database migrations
    * This is idempotent and safe to call multiple times
    */
@@ -86,16 +91,18 @@ export interface Durably {
   onError(handler: ErrorHandler): void
 
   /**
-   * Register job definitions and return a registry of job handles
+   * Register job definitions and populate durably.jobs
    * Same JobDefinition can be registered multiple times (idempotent)
    * Different JobDefinitions with the same name will throw an error
    * @example
    * ```ts
-   * const jobs = durably.register({
+   * const durably = createDurably({ dialect })
+   * await durably.migrate()
+   * durably.register({
    *   importCsv: importCsvJob,
    *   syncUsers: syncUsersJob,
    * })
-   * // Usage: jobs.importCsv.trigger({ rows: [...] })
+   * // Usage: durably.jobs.importCsv.trigger({ rows: [...] })
    * ```
    */
   // biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
@@ -189,9 +196,13 @@ export function createDurably(options: DurablyOptions): Durably {
   let migrating: Promise<void> | null = null
   let migrated = false
 
+  // Mutable jobs registry that gets populated by register()
+  const jobs: Record<string, JobHandle<string, unknown, unknown>> = {}
+
   const durably: Durably = {
     db,
     storage,
+    jobs,
     on: eventEmitter.on,
     emit: eventEmitter.emit,
     onError: eventEmitter.onError,
@@ -222,12 +233,15 @@ export function createDurably(options: DurablyOptions): Durably {
 
       for (const key of Object.keys(jobDefs) as (keyof TJobs)[]) {
         const jobDef = jobDefs[key]
-        result[key] = createJobHandle(
+        const handle = createJobHandle(
           jobDef,
           storage,
           eventEmitter,
           jobRegistry,
-        ) as (typeof result)[typeof key]
+        )
+        result[key] = handle as (typeof result)[typeof key]
+        // Also populate durably.jobs for direct access
+        jobs[key as string] = handle
       }
 
       return result

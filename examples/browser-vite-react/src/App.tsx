@@ -7,16 +7,15 @@
  * - useDurably hook for direct Durably access
  */
 
-import type { Durably } from '@coji/durably'
 import {
   DurablyProvider,
   useDurably,
   useJob,
   type LogEntry,
 } from '@coji/durably-react'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Dashboard } from './Dashboard'
-import { getDurably, processImageJob, sqlocal } from './durably'
+import { durably, processImageJob, sqlocal } from './durably'
 import { styles } from './styles'
 
 // Links
@@ -205,18 +204,8 @@ function Loading() {
 }
 
 export function App() {
-  const [durably, setDurably] = useState<Durably | null>(null)
-
-  useEffect(() => {
-    getDurably().then(setDurably)
-  }, [])
-
-  if (!durably) {
-    return <Loading />
-  }
-
   return (
-    <DurablyProvider durably={durably}>
+    <DurablyProvider durably={durably} fallback={<Loading />}>
       <AppContent />
     </DurablyProvider>
   )

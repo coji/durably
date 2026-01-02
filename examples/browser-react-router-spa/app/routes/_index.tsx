@@ -10,7 +10,8 @@
  */
 
 import { useState } from 'react'
-import { getDurably, sqlocal, triggerJob } from '~/lib/durably'
+import { Form } from 'react-router'
+import { durably, sqlocal } from '~/lib/durably'
 import { Dashboard } from './_index/dashboard'
 import { DataSyncForm } from './_index/data-sync-form'
 import { DataSyncProgress } from './_index/data-sync-progress'
@@ -32,14 +33,21 @@ export async function clientAction({ request }: { request: Request }) {
   if (intent === 'image') {
     const filename = formData.get('filename') as string
     const width = Number(formData.get('width'))
-    const run = await triggerJob('processImage', { filename, width })
+    const run = await durably.jobs.processImage.trigger({ filename, width })
     return { intent: 'image', runId: run.id }
   }
 
   if (intent === 'sync') {
     const userId = formData.get('userId') as string
-    const run = await triggerJob('dataSync', { userId })
+    const run = await durably.jobs.dataSync.trigger({ userId })
     return { intent: 'sync', runId: run.id }
+  }
+
+  if (intent === 'reset') {
+    await durably.stop()
+    await sqlocal.deleteDatabaseFile()
+    location.reload()
+    return null
   }
 
   return null
@@ -47,13 +55,6 @@ export async function clientAction({ request }: { request: Request }) {
 
 export default function Index() {
   const [activeJob, setActiveJob] = useState<'image' | 'sync'>('image')
-
-  const handleReset = async () => {
-    const durably = await getDurably()
-    await durably.stop()
-    await sqlocal.deleteDatabaseFile()
-    location.reload()
-  }
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -82,24 +83,27 @@ export default function Index() {
                   >
                     Reload
                   </button>
-                  <button
-                    type="button"
-                    onClick={handleReset}
-                    className="text-sm text-red-600 hover:text-red-800"
-                  >
-                    Reset DB
-                  </button>
+                  <Form method="post">
+                    <button
+                      type="submit"
+                      name="intent"
+                      value="reset"
+                      className="text-sm text-red-600 hover:text-red-800"
+                    >
+                      Reset DB
+                    </button>
+                  </Form>
                 </div>
               </div>
 
-              <div className="flex gap-2 mb-4">
+              <div className="flex border-b border-gray-200 mb-4">
                 <button
                   type="button"
                   onClick={() => setActiveJob('image')}
-                  className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                  className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
                     activeJob === 'image'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      ? 'border-blue-600 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                   }`}
                 >
                   Image Processing
@@ -107,10 +111,10 @@ export default function Index() {
                 <button
                   type="button"
                   onClick={() => setActiveJob('sync')}
-                  className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                  className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
                     activeJob === 'sync'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      ? 'border-blue-600 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                   }`}
                 >
                   Data Sync

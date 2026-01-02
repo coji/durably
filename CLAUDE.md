@@ -27,6 +27,7 @@ When API changes are made, update `packages/durably/docs/llms.md` to keep it in 
 
 ## Key Design Decisions
 
+- **ESM-only**: This library is ESM-only. CommonJS is not supported. Always use top-level `await` for async initialization (e.g., `await durably.migrate()`). Do not wrap in async IIFE or Promise chains.
 - Single-threaded execution, no parallel run processing in minimal config
 - No automatic retry - failures are immediate and explicit (`retry()` API for manual retry)
 - Dialect injection pattern - Kysely dialect passed to `createDurably()` to abstract SQLite implementations

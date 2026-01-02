@@ -1,6 +1,8 @@
 import type { Durably } from '@coji/durably'
 import {
+  Suspense,
   createContext,
+  use,
   useContext,
   useEffect,
   useRef,
@@ -18,10 +20,26 @@ const DurablyContext = createContext<DurablyContextValue | null>(null)
 
 export interface DurablyProviderProps {
   /**
-   * Pre-created Durably instance.
+   * Durably instance or Promise that resolves to one.
    * The instance should already be migrated and have jobs registered if needed.
+   *
+   * When passing a Promise, wrap the provider with Suspense or use the fallback prop.
+   *
+   * @example
+   * // With Suspense (recommended)
+   * <Suspense fallback={<Loading />}>
+   *   <DurablyProvider durably={durablyPromise}>
+   *     <App />
+   *   </DurablyProvider>
+   * </Suspense>
+   *
+   * @example
+   * // With fallback prop
+   * <DurablyProvider durably={durablyPromise} fallback={<Loading />}>
+   *   <App />
+   * </DurablyProvider>
    */
-  durably: Durably
+  durably: Durably | Promise<Durably>
   /**
    * Whether to automatically call start() after mounting.
    * @default true
@@ -31,15 +49,29 @@ export interface DurablyProviderProps {
    * Callback when Durably instance is ready.
    */
   onReady?: (durably: Durably) => void
+  /**
+   * Fallback to show while waiting for the Durably Promise to resolve.
+   * This wraps the provider content in a Suspense boundary automatically.
+   */
+  fallback?: ReactNode
   children: ReactNode
 }
 
-export function DurablyProvider({
-  durably: externalDurably,
+/**
+ * Internal component that uses the `use()` hook to resolve the Promise
+ */
+function DurablyProviderInner({
+  durably: durablyOrPromise,
   autoStart = true,
   onReady,
   children,
-}: DurablyProviderProps) {
+}: Omit<DurablyProviderProps, 'fallback'>) {
+  // Resolve Promise using React 19's use() hook
+  const resolvedDurably =
+    durablyOrPromise instanceof Promise
+      ? use(durablyOrPromise)
+      : durablyOrPromise
+
   const [durably, setDurably] = useState<Durably | null>(null)
   const [isReady, setIsReady] = useState(false)
   const [error, setError] = useState<Error | null>(null)
@@ -48,25 +80,50 @@ export function DurablyProvider({
 
   useEffect(() => {
     try {
-      instanceRef.current = externalDurably
+      instanceRef.current = resolvedDurably
 
       if (autoStart) {
-        externalDurably.start()
+        resolvedDurably.start()
       }
 
-      setDurably(externalDurably)
+      setDurably(resolvedDurably)
       setIsReady(true)
-      onReady?.(externalDurably)
+      onReady?.(resolvedDurably)
     } catch (err) {
       setError(err instanceof Error ? err : new Error(String(err)))
     }
-  }, [externalDurably, autoStart, onReady])
+  }, [resolvedDurably, autoStart, onReady])
 
   return (
     <DurablyContext.Provider value={{ durably, isReady, error }}>
       {children}
     </DurablyContext.Provider>
   )
+}
+
+export function DurablyProvider({
+  durably,
+  autoStart = true,
+  onReady,
+  fallback,
+  children,
+}: DurablyProviderProps) {
+  const inner = (
+    <DurablyProviderInner
+      durably={durably}
+      autoStart={autoStart}
+      onReady={onReady}
+    >
+      {children}
+    </DurablyProviderInner>
+  )
+
+  // If fallback is provided, wrap in Suspense
+  if (fallback !== undefined) {
+    return <Suspense fallback={fallback}>{inner}</Suspense>
+  }
+
+  return inner
 }
 
 export function useDurably(): DurablyContextValue {

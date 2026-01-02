@@ -4,6 +4,8 @@ React bindings for [Durably](https://github.com/coji/durably) - step-oriented re
 
 **[Documentation](https://coji.github.io/durably/)** | **[GitHub](https://github.com/coji/durably)**
 
+> **Note:** This package is ESM-only. CommonJS is not supported.
+
 ## Installation
 
 ```bash

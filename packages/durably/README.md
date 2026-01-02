@@ -4,6 +4,8 @@ Step-oriented resumable batch execution for Node.js and browsers using SQLite.
 
 **[Documentation](https://coji.github.io/durably/)** | **[GitHub](https://github.com/coji/durably)** | **[Live Demo](https://durably-demo.vercel.app)**
 
+> **Note:** This package is ESM-only. CommonJS is not supported.
+
 ## Installation
 
 ```bash

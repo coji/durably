@@ -9,7 +9,7 @@ import {
 } from 'react-router'
 import type { Route } from './+types/root'
 import './app.css'
-import { getDurably } from './lib/durably'
+import { durably } from './lib/durably'
 
 export function links() {
   return [
@@ -24,21 +24,6 @@ export function links() {
       href: 'https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap',
     },
   ]
-}
-
-// clientLoader: Get shared durably instance
-export async function clientLoader() {
-  const durably = await getDurably()
-  return { durably }
-}
-
-// HydrateFallback: Show while clientLoader is running
-export function HydrateFallback() {
-  return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-      <div className="text-gray-500">Loading...</div>
-    </div>
-  )
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {
@@ -59,9 +44,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
   )
 }
 
-export default function App({ loaderData }: Route.ComponentProps) {
+export default function App() {
   return (
-    <DurablyProvider durably={loaderData.durably}>
+    <DurablyProvider durably={durably}>
       <Outlet />
     </DurablyProvider>
   )

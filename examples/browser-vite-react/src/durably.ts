@@ -14,36 +14,20 @@ export { processImageJob }
 // SQLocal instance for SQLite WASM with OPFS
 export const sqlocal = new SQLocalKysely('example.sqlite3')
 
-// Singleton Durably instance (lazily initialized)
-let durablyInstance: Durably | null = null
-let durablyPromise: Promise<Durably> | null = null
+async function initDurably(): Promise<Durably> {
+  const instance = createDurably({
+    dialect: sqlocal.dialect,
+    pollingInterval: 100,
+    heartbeatInterval: 500,
+    staleThreshold: 3000,
+  })
+  await instance.migrate()
+  instance.register({ processImage: processImageJob })
+  return instance
+}
 
 /**
- * Get the shared Durably instance.
- * Creates and migrates on first call, returns cached instance thereafter.
+ * Shared Durably instance promise.
+ * Can be passed directly to DurablyProvider.
  */
-export async function getDurably(): Promise<Durably> {
-  if (durablyInstance) {
-    return durablyInstance
-  }
-
-  if (!durablyPromise) {
-    durablyPromise = (async () => {
-      const instance = createDurably({
-        dialect: sqlocal.dialect,
-        pollingInterval: 100,
-        heartbeatInterval: 500,
-        staleThreshold: 3000,
-      })
-      await instance.migrate()
-
-      // Pre-register jobs immediately after migration
-      instance.register({ processImage: processImageJob })
-
-      durablyInstance = instance
-      return instance
-    })()
-  }
-
-  return durablyPromise
-}
+export const durably = initDurably()
