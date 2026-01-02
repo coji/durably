@@ -186,19 +186,23 @@ await durably.deleteRun(runId)
 Subscribe to job execution events:
 
 ```ts
+// Run lifecycle events
+durably.on('run:trigger', (e) => console.log('Triggered:', e.runId))
 durably.on('run:start', (e) => console.log('Started:', e.runId))
 durably.on('run:complete', (e) => console.log('Done:', e.output))
 durably.on('run:fail', (e) => console.error('Failed:', e.error))
+durably.on('run:cancel', (e) => console.log('Cancelled:', e.runId))
+durably.on('run:retry', (e) => console.log('Retried:', e.runId))
 durably.on('run:progress', (e) =>
   console.log('Progress:', e.progress.current, '/', e.progress.total),
 )
 
+// Step events
 durably.on('step:start', (e) => console.log('Step:', e.stepName))
 durably.on('step:complete', (e) => console.log('Step done:', e.stepName))
-durably.on('step:skip', (e) =>
-  console.log('Step skipped (cached):', e.stepName),
-)
+durably.on('step:fail', (e) => console.error('Step failed:', e.stepName))
 
+// Log events
 durably.on('log:write', (e) => console.log(`[${e.level}]`, e.message))
 ```
 
@@ -252,31 +256,44 @@ while (true) {
 Create HTTP handlers for client/server architecture using Web Standard Request/Response:
 
 ```ts
-import { createDurablyHandler } from '@coji/durably'
+import { createDurablyHandler } from '@coji/durably/server'
 
 const handler = createDurablyHandler(durably)
 
-// Trigger endpoint (POST)
-// Request body: { jobName, input, idempotencyKey?, concurrencyKey? }
-// Response: { runId }
-app.post('/api/durably/trigger', async (req) => {
-  return await handler.trigger(req)
+// Use the unified handle() method with automatic routing
+app.all('/api/durably/*', async (req) => {
+  return await handler.handle(req, '/api/durably')
 })
 
-// Subscribe endpoint (GET with SSE)
-// Query param: runId
-// Response: Server-Sent Events stream
-app.get('/api/durably/subscribe', (req) => {
-  return handler.subscribe(req)
-})
+// Or use individual endpoints
+app.post('/api/durably/trigger', (req) => handler.trigger(req))
+app.get('/api/durably/subscribe', (req) => handler.subscribe(req))
+app.get('/api/durably/runs', (req) => handler.runs(req))
+app.get('/api/durably/run', (req) => handler.run(req))
+app.get('/api/durably/steps', (req) => handler.steps(req))
+app.get('/api/durably/runs/subscribe', (req) => handler.runsSubscribe(req))
+app.post('/api/durably/retry', (req) => handler.retry(req))
+app.post('/api/durably/cancel', (req) => handler.cancel(req))
+app.delete('/api/durably/run', (req) => handler.delete(req))
 ```
 
 **Handler Interface:**
 
 ```ts
 interface DurablyHandler {
-  trigger(request: Request): Promise<Response>
-  subscribe(request: Request): Response
+  // Unified routing handler
+  handle(request: Request, basePath: string): Promise<Response>
+
+  // Individual endpoints
+  trigger(request: Request): Promise<Response> // POST /trigger
+  subscribe(request: Request): Response // GET /subscribe?runId=xxx (SSE)
+  runs(request: Request): Promise<Response> // GET /runs
+  run(request: Request): Promise<Response> // GET /run?runId=xxx
+  steps(request: Request): Promise<Response> // GET /steps?runId=xxx
+  runsSubscribe(request: Request): Response // GET /runs/subscribe (SSE)
+  retry(request: Request): Promise<Response> // POST /retry?runId=xxx
+  cancel(request: Request): Promise<Response> // POST /cancel?runId=xxx
+  delete(request: Request): Promise<Response> // DELETE /run?runId=xxx
 }
 
 interface TriggerRequest {

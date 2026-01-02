@@ -23,20 +23,38 @@ npm install @coji/durably-react
 
 ### DurablyProvider
 
-Wraps your app and initializes Durably:
+Wraps your app and provides the Durably instance to all hooks:
 
 ```tsx
+import { Suspense } from 'react'
 import { DurablyProvider } from '@coji/durably-react'
+import { createDurably } from '@coji/durably'
 import { SQLocalKysely } from 'sqlocal/kysely'
+
+// Create and initialize Durably
+async function initDurably() {
+  const sqlocal = new SQLocalKysely('app.sqlite3')
+  const durably = createDurably({ dialect: sqlocal.dialect })
+  await durably.migrate()
+  return durably
+}
+
+const durablyPromise = initDurably()
 
 function App() {
   return (
-    <DurablyProvider
-      dialectFactory={() => new SQLocalKysely('app.sqlite3').dialect}
-      options={{ pollingInterval: 100 }}
-      autoStart={true}
-      autoMigrate={true}
-    >
+    <Suspense fallback={<div>Loading...</div>}>
+      <DurablyProvider durably={durablyPromise}>
+        <MyComponent />
+      </DurablyProvider>
+    </Suspense>
+  )
+}
+
+// Or use the fallback prop
+function AppAlt() {
+  return (
+    <DurablyProvider durably={durablyPromise} fallback={<div>Loading...</div>}>
       <MyComponent />
     </DurablyProvider>
   )
@@ -45,11 +63,10 @@ function App() {
 
 **Props:**
 
-- `dialectFactory: () => Dialect` - Factory for Kysely dialect
-- `options?: DurablyOptions` - Durably configuration
+- `durably: Durably | Promise<Durably>` - Durably instance or Promise
 - `autoStart?: boolean` - Auto-start worker (default: true)
-- `autoMigrate?: boolean` - Auto-run migrations (default: true)
 - `onReady?: (durably: Durably) => void` - Callback when ready
+- `fallback?: ReactNode` - Fallback to show while Promise resolves
 
 ### useDurably
 
@@ -101,9 +118,14 @@ function Component() {
     isPending,
     isCompleted,
     isFailed,
+    isCancelled,
     currentRunId,
     reset,
-  } = useJob(myJob, { initialRunId: undefined })
+  } = useJob(myJob, {
+    initialRunId: undefined,
+    autoResume: true, // Auto-resume pending/running jobs (default: true)
+    followLatest: true, // Switch to tracking new runs (default: true)
+  })
 
   // Trigger job
   const handleClick = async () => {
@@ -136,6 +158,16 @@ function Component() {
 }
 ```
 
+**Options:**
+
+```ts
+interface UseJobOptions {
+  initialRunId?: string // Initial Run ID to subscribe to
+  autoResume?: boolean // Auto-resume pending/running jobs (default: true)
+  followLatest?: boolean // Switch to tracking new runs (default: true)
+}
+```
+
 **Return type:**
 
 ```ts
@@ -143,7 +175,7 @@ interface UseJobResult<TInput, TOutput> {
   isReady: boolean
   trigger: (input: TInput) => Promise<{ runId: string }>
   triggerAndWait: (input: TInput) => Promise<{ runId: string; output: TOutput }>
-  status: 'pending' | 'running' | 'completed' | 'failed' | null
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | null
   output: TOutput | null
   error: string | null
   logs: LogEntry[]
@@ -152,6 +184,7 @@ interface UseJobResult<TInput, TOutput> {
   isPending: boolean
   isCompleted: boolean
   isFailed: boolean
+  isCancelled: boolean
   currentRunId: string | null
   reset: () => void
 }
@@ -202,6 +235,7 @@ interface UseJobRunResult<TOutput> {
   isPending: boolean
   isCompleted: boolean
   isFailed: boolean
+  isCancelled: boolean
 }
 ```
 
@@ -251,6 +285,65 @@ interface LogEntry {
   message: string
   data: unknown
   timestamp: string
+}
+```
+
+### useRuns
+
+List runs with pagination and real-time updates:
+
+```tsx
+import { useRuns } from '@coji/durably-react'
+
+function Dashboard() {
+  const {
+    isReady,
+    runs,
+    page,
+    hasMore,
+    isLoading,
+    nextPage,
+    prevPage,
+    goToPage,
+    refresh,
+  } = useRuns({
+    jobName: 'my-job', // Optional: filter by job
+    status: 'running', // Optional: filter by status
+    pageSize: 20, // Optional: items per page (default: 10)
+    realtime: true, // Optional: subscribe to updates (default: true)
+  })
+
+  return (
+    <div>
+      {runs.map((run) => (
+        <div key={run.id}>
+          {run.jobName}: {run.status}
+        </div>
+      ))}
+      <button onClick={prevPage} disabled={page === 0}>
+        Prev
+      </button>
+      <button onClick={nextPage} disabled={!hasMore}>
+        Next
+      </button>
+    </div>
+  )
+}
+```
+
+**Return type:**
+
+```ts
+interface UseRunsResult {
+  isReady: boolean
+  runs: Run[]
+  page: number
+  hasMore: boolean
+  isLoading: boolean
+  nextPage: () => void
+  prevPage: () => void
+  goToPage: (page: number) => void
+  refresh: () => Promise<void>
 }
 ```
 
@@ -335,32 +428,37 @@ function Component({ runId }: { runId: string }) {
 
 ### Server Handler Setup
 
-On your server, use `createDurablyHandler` from `@coji/durably`:
+On your server, use `createDurablyHandler` from `@coji/durably/server`:
 
 ```ts
-import { createDurably, createDurablyHandler, defineJob } from '@coji/durably'
+import { createDurably, defineJob } from '@coji/durably'
+import { createDurablyHandler } from '@coji/durably/server'
 import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { createClient } from '@libsql/client'
+import { z } from 'zod'
 
 const client = createClient({ url: 'file:local.db' })
 const dialect = new LibsqlDialect({ client })
 
 const durably = createDurably({ dialect })
-const handler = createDurablyHandler(durably)
 
-// Register jobs
+// Define and register jobs
 const syncJob = defineJob({
   name: 'sync-data',
   input: z.object({ userId: z.string() }),
   output: z.object({ count: z.number() }),
   run: async (step, payload) => {
     // Job logic
+    return { count: 42 }
   },
 })
 durably.register({ syncJob })
 
 await durably.migrate()
 durably.start()
+
+// Create handler
+const handler = createDurablyHandler(durably)
 
 // Express/Hono/etc route handlers
 app.post('/api/durably/trigger', async (req) => {
@@ -370,12 +468,152 @@ app.post('/api/durably/trigger', async (req) => {
 app.get('/api/durably/subscribe', (req) => {
   return handler.subscribe(req)
 })
+
+app.post('/api/durably/cancel', async (req) => {
+  return handler.cancel(req)
+})
+
+app.get('/api/durably/runs', async (req) => {
+  return handler.getRuns(req)
+})
+
+app.get('/api/durably/runs/:runId', async (req) => {
+  return handler.getRun(req)
+})
+```
+
+### Client useRuns
+
+List runs with pagination:
+
+```tsx
+import { useRuns } from '@coji/durably-react/client'
+
+function Dashboard() {
+  const {
+    runs,
+    page,
+    hasMore,
+    isLoading,
+    nextPage,
+    prevPage,
+    goToPage,
+    refresh,
+  } = useRuns({
+    api: '/api/durably',
+    jobName: 'sync-data', // Optional: filter by job
+    status: 'running', // Optional: filter by status
+    pageSize: 20, // Optional: items per page
+  })
+
+  return (
+    <div>
+      {runs.map((run) => (
+        <div key={run.id}>
+          {run.jobName}: {run.status}
+        </div>
+      ))}
+    </div>
+  )
+}
+```
+
+### Client useRunActions
+
+Get run details with steps and actions:
+
+```tsx
+import { useRunActions } from '@coji/durably-react/client'
+
+function RunDetail({ runId }: { runId: string }) {
+  const { run, steps, isLoading, cancel, retry, deleteRun } = useRunActions({
+    api: '/api/durably',
+    runId,
+  })
+
+  if (!run) return <div>Loading...</div>
+
+  return (
+    <div>
+      <h2>Run: {run.id}</h2>
+      <p>Status: {run.status}</p>
+      <h3>Steps:</h3>
+      <ul>
+        {steps.map((step) => (
+          <li key={step.index}>
+            {step.name}: {step.status}
+          </li>
+        ))}
+      </ul>
+      {run.status === 'running' && <button onClick={cancel}>Cancel</button>}
+      {run.status === 'failed' && <button onClick={retry}>Retry</button>}
+      <button onClick={deleteRun}>Delete</button>
+    </div>
+  )
+}
+```
+
+### Type-Safe Client Factories
+
+#### createJobHooks
+
+Create type-safe hooks for a single job:
+
+```tsx
+import type { importCsvJob } from '~/lib/durably.server'
+import { createJobHooks } from '@coji/durably-react/client'
+
+const importCsv = createJobHooks<typeof importCsvJob>({
+  api: '/api/durably',
+  jobName: 'import-csv',
+})
+
+function CsvImporter() {
+  const { trigger, output, progress, isRunning } = importCsv.useJob()
+
+  return (
+    <button onClick={() => trigger({ rows: [...] })}>
+      Import
+    </button>
+  )
+}
+```
+
+#### createDurablyClient
+
+Create a type-safe client for all registered jobs:
+
+```tsx
+// Server: register jobs (app/lib/durably.server.ts)
+export const jobs = durably.register({
+  importCsv: importCsvJob,
+  syncUsers: syncUsersJob,
+})
+
+// Client: create typed client (app/lib/durably.client.ts)
+import type { jobs } from '~/lib/durably.server'
+import { createDurablyClient } from '@coji/durably-react/client'
+
+export const durably = createDurablyClient<typeof jobs>({
+  api: '/api/durably',
+})
+
+// In your component - fully type-safe with autocomplete
+function CsvImporter() {
+  const { trigger, output, isRunning } = durably.importCsv.useJob()
+
+  return (
+    <button onClick={() => trigger({ rows: [...] })}>
+      Import
+    </button>
+  )
+}
 ```
 
 ## Type Definitions
 
 ```ts
-type RunStatus = 'pending' | 'running' | 'completed' | 'failed'
+type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 interface Progress {
   current: number

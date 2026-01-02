@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.6.0] - 2025-12-30
+## [0.6.0] - 2026-01-02
 
 ### Breaking Changes
 
@@ -14,6 +14,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - Old (removed): `const job = durably.register(jobDef)`
 
 ### Added
+
+#### @coji/durably
+
+- **New events for run lifecycle**:
+  - `run:trigger`: Emitted when a job is triggered (before worker picks it up)
+  - `run:cancel`: Emitted when a run is cancelled via `cancel()` API
+  - `run:retry`: Emitted when a failed/cancelled run is retried via `retry()` API
+- **Type-safe `durably.jobs` property**: Access registered jobs with full type inference
+  ```ts
+  const durably = createDurably({ dialect })
+    .register({ processImage, syncUsers })
+  await durably.jobs.processImage.trigger({ imageId: '123' }) // Type-safe
+  ```
+- **Retry from cancelled state**: `retry()` now works on both `failed` and `cancelled` runs
+
+#### @coji/durably/server
+
+- **New endpoints**:
+  - `GET /steps?runId=xxx`: Get steps for a run
+  - `DELETE /run?runId=xxx`: Delete a run
+- **SSE event streaming**: `/runs/subscribe` now streams `run:trigger`, `run:cancel`, `run:retry` events
 
 #### @coji/durably-react
 
@@ -27,15 +48,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `createDurablyClient`: Type-safe client factory for server-connected mode
 - `createJobHooks`: Per-job hook factory for server-connected mode
 
+#### @coji/durably-react/client
+
+- **`useRunActions` enhancements**:
+  - `deleteRun(runId)`: Delete a completed/failed/cancelled run
+  - `getRun(runId)`: Get a single run by ID
+  - `getSteps(runId)`: Get steps for a run
+- **New type exports**: `RunRecord`, `StepRecord` for type-safe run and step data
+
 ### Changed
 
 - Simplified README files - detailed documentation moved to website
 - Updated all examples to use new `register()` API pattern
 - Added Turbo for monorepo task orchestration
+- Unified dashboard UI across all examples (View, Retry, Cancel, Delete, Progress, Steps)
 
 ### Fixed
 
 - Type inference for `register()` return value now works correctly
+- SSE stream lifecycle properly cleaned up on client disconnect
 
 ## [0.5.0] - 2025-12-24
 

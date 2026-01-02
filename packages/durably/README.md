@@ -18,8 +18,9 @@ See the [Getting Started Guide](https://coji.github.io/durably/guide/getting-sta
 
 ```ts
 import { createDurably, defineJob } from '@coji/durably'
+import { z } from 'zod'
 
-const job = defineJob({
+const myJob = defineJob({
   name: 'my-job',
   input: z.object({ id: z.string() }),
   run: async (step, payload) => {
@@ -30,11 +31,11 @@ const job = defineJob({
 })
 
 const durably = createDurably({ dialect })
-const { myJob } = durably.register({ myJob: job })
+const jobs = durably.register({ myJob })
 
 await durably.migrate()
 durably.start()
-await myJob.trigger({ id: '123' })
+await jobs.myJob.trigger({ id: '123' })
 ```
 
 ## Documentation

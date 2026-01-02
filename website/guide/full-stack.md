@@ -44,7 +44,8 @@ app/
 
 ```ts
 // app/lib/durably.server.ts
-import { createDurably, createDurablyHandler, defineJob } from '@coji/durably'
+import { createDurably, defineJob } from '@coji/durably'
+import { createDurablyHandler } from '@coji/durably/server'
 import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { createClient } from '@libsql/client'
 import { z } from 'zod'
@@ -73,7 +74,7 @@ const importCsvJob = defineJob({
           skipped++
         }
       })
-      step.setProgress({ current: i + 1, total: payload.rows.length })
+      step.progress(i + 1, payload.rows.length)
     }
 
     return { imported, skipped }

@@ -57,12 +57,24 @@ Stops the worker gracefully, waiting for the current job to complete.
 ### `register()`
 
 ```ts
-durably.register<TName, TInput, TOutput>(
-  jobDef: JobDefinition<TName, TInput, TOutput>
-): JobHandle<TName, TInput, TOutput>
+durably.register<TJobs extends Record<string, JobDefinition>>(
+  jobs: TJobs
+): { [K in keyof TJobs]: JobHandle }
 ```
 
-Registers a job definition and returns a job handle. See [defineJob](/api/define-job) for details.
+Registers one or more job definitions and returns an object of job handles. Also populates `durably.jobs` with the same handles for type-safe access.
+
+```ts
+const { syncUsers, processImage } = durably.register({
+  syncUsers: syncUsersJob,
+  processImage: processImageJob,
+})
+
+// Or access via durably.jobs
+await durably.jobs.syncUsers.trigger({ orgId: '123' })
+```
+
+See [defineJob](/api/define-job) for details.
 
 ### `on()`
 
@@ -81,7 +93,62 @@ Subscribes to an event. Returns an unsubscribe function. See [Events](/api/event
 await durably.retry(runId: string): Promise<void>
 ```
 
-Retries a failed run by resetting its status to pending.
+Retries a failed or cancelled run by resetting its status to pending.
+
+### `cancel()`
+
+```ts
+await durably.cancel(runId: string): Promise<void>
+```
+
+Cancels a pending or running run.
+
+### `deleteRun()`
+
+```ts
+await durably.deleteRun(runId: string): Promise<void>
+```
+
+Deletes a run and its associated steps and logs.
+
+### `getRun()`
+
+```ts
+await durably.getRun(runId: string): Promise<Run | null>
+```
+
+Gets a single run by ID.
+
+### `getRuns()`
+
+```ts
+await durably.getRuns(filter?: RunFilter): Promise<Run[]>
+
+interface RunFilter {
+  jobName?: string
+  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  limit?: number
+  offset?: number
+}
+```
+
+Gets runs with optional filtering and pagination.
+
+### `getJob()`
+
+```ts
+durably.getJob(name: string): JobHandle | undefined
+```
+
+Gets a registered job by name.
+
+### `subscribe()`
+
+```ts
+durably.subscribe(runId: string): ReadableStream<DurablyEvent>
+```
+
+Subscribes to events for a specific run as a ReadableStream. The stream automatically closes when the run completes or fails.
 
 ## Example
 
@@ -105,16 +172,20 @@ durably.start()
 
 // Define and register jobs
 import { defineJob } from '@coji/durably'
+import { z } from 'zod'
 
-const myJob = durably.register(
-  defineJob({
-    name: 'my-job',
-    input: z.object({ id: z.string() }),
-    run: async (step, payload) => {
-      // ...
-    },
-  }),
-)
+const myJobDef = defineJob({
+  name: 'my-job',
+  input: z.object({ id: z.string() }),
+  run: async (step, payload) => {
+    // ...
+  },
+})
+
+const { myJob } = durably.register({ myJob: myJobDef })
+
+// Or trigger via durably.jobs
+await durably.jobs.myJob.trigger({ id: '123' })
 
 // Clean shutdown
 process.on('SIGTERM', async () => {

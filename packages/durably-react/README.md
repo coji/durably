@@ -19,9 +19,11 @@ npm install @coji/durably-react
 ## Quick Start
 
 ```tsx
-import { defineJob } from '@coji/durably'
+import { Suspense } from 'react'
+import { createDurably, defineJob } from '@coji/durably'
 import { DurablyProvider, useJob } from '@coji/durably-react'
 import { SQLocalKysely } from 'sqlocal/kysely'
+import { z } from 'zod'
 
 const myJob = defineJob({
   name: 'my-job',
@@ -33,18 +35,53 @@ const myJob = defineJob({
   },
 })
 
+// Initialize Durably
+async function initDurably() {
+  const sqlocal = new SQLocalKysely('app.sqlite3')
+  const durably = createDurably({ dialect: sqlocal.dialect })
+  durably.register({ myJob })
+  await durably.migrate()
+  return durably
+}
+
+const durablyPromise = initDurably()
+
 function App() {
   return (
-    <DurablyProvider
-      dialectFactory={() => new SQLocalKysely('app.sqlite3').dialect}
-    >
-      <MyComponent />
-    </DurablyProvider>
+    <Suspense fallback={<div>Loading...</div>}>
+      <DurablyProvider durably={durablyPromise}>
+        <MyComponent />
+      </DurablyProvider>
+    </Suspense>
   )
 }
 
 function MyComponent() {
   const { trigger, isRunning, isCompleted } = useJob(myJob)
+  return (
+    <button onClick={() => trigger({ id: '123' })} disabled={isRunning}>
+      Run
+    </button>
+  )
+}
+```
+
+## Server-Connected Mode
+
+For full-stack apps, use hooks from `@coji/durably-react/client`:
+
+```tsx
+import { useJob } from '@coji/durably-react/client'
+
+function MyComponent() {
+  const { trigger, status, output, isRunning } = useJob<
+    { id: string },
+    { result: number }
+  >({
+    api: '/api/durably',
+    jobName: 'my-job',
+  })
+
   return (
     <button onClick={() => trigger({ id: '123' })} disabled={isRunning}>
       Run

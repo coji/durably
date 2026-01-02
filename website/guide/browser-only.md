@@ -59,12 +59,12 @@ export default defineConfig({
 
 ```tsx
 import { DurablyProvider, useJob } from '@coji/durably-react'
-import { defineJob } from '@coji/durably'
+import { createDurably, defineJob } from '@coji/durably'
 import { SQLocalKysely } from 'sqlocal/kysely'
 import { z } from 'zod'
 
 // Define job outside component
-const syncJob = defineJob({
+const syncJobDef = defineJob({
   name: 'sync-data',
   input: z.object({ userId: z.string() }),
   output: z.object({ count: z.number() }),
@@ -75,9 +75,21 @@ const syncJob = defineJob({
   },
 })
 
+// Create and configure Durably instance
+async function createBrowserDurably() {
+  const { dialect } = new SQLocalKysely('app.sqlite3')
+  const durably = createDurably({ dialect })
+  durably.register({ syncData: syncJobDef })
+  await durably.migrate()
+  return durably
+}
+
+// Create a promise that resolves to the durably instance
+const durablyPromise = createBrowserDurably()
+
 function SyncButton() {
   const { trigger, status, output, error, progress, isRunning, isCompleted } =
-    useJob(syncJob)
+    useJob(syncJobDef)
 
   return (
     <div>
@@ -102,9 +114,7 @@ function SyncButton() {
 
 function App() {
   return (
-    <DurablyProvider
-      dialectFactory={() => new SQLocalKysely('app.sqlite3').dialect}
-    >
+    <DurablyProvider durably={durablyPromise} fallback={<p>Loading...</p>}>
       <SyncButton />
     </DurablyProvider>
   )

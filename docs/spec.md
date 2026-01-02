@@ -441,6 +441,11 @@ await durably.migrate()
 ライブラリ内部で起きたことを外部に通知するためのイベントシステムを持つ。これにより、ログの永続化、外部サービスへの送信、リアルタイム UI 更新など、任意の処理を接続できる。
 
 ```ts
+durably.on('run:trigger', (event) => {
+  // { runId, jobName, payload, timestamp }
+  // ジョブがトリガーされた時（Worker 実行前）
+})
+
 durably.on('run:start', (event) => {
   // { runId, jobName, payload, timestamp }
 })
@@ -451,6 +456,16 @@ durably.on('run:complete', (event) => {
 
 durably.on('run:fail', (event) => {
   // { runId, jobName, error, failedStepName, timestamp }
+})
+
+durably.on('run:cancel', (event) => {
+  // { runId, jobName, timestamp }
+  // Run がキャンセルされた時
+})
+
+durably.on('run:retry', (event) => {
+  // { runId, jobName, timestamp }
+  // Run がリトライされた時
 })
 
 durably.on('run:progress', (event) => {
@@ -495,6 +510,13 @@ interface BaseEvent {
 }
 
 // Run イベント
+interface RunTriggerEvent extends BaseEvent {
+  type: 'run:trigger'
+  runId: string
+  jobName: string
+  payload: unknown
+}
+
 interface RunStartEvent extends BaseEvent {
   type: 'run:start'
   runId: string
@@ -516,6 +538,18 @@ interface RunFailEvent extends BaseEvent {
   jobName: string
   error: string
   failedStepName: string
+}
+
+interface RunCancelEvent extends BaseEvent {
+  type: 'run:cancel'
+  runId: string
+  jobName: string
+}
+
+interface RunRetryEvent extends BaseEvent {
+  type: 'run:retry'
+  runId: string
+  jobName: string
 }
 
 interface RunProgressEvent extends BaseEvent {
@@ -573,9 +607,12 @@ interface WorkerErrorEvent extends BaseEvent {
 
 // 全イベントの Union 型
 type DurablyEvent =
+  | RunTriggerEvent
   | RunStartEvent
   | RunCompleteEvent
   | RunFailEvent
+  | RunCancelEvent
+  | RunRetryEvent
   | RunProgressEvent
   | StepStartEvent
   | StepCompleteEvent
@@ -836,17 +873,20 @@ Run の取得クエリは以下の条件を満たすものを一件取得する�
 
 ### イベント発火タイミング
 
-| イベント | 発火タイミング |
-|----------|----------------|
-| run:start | Run が running に遷移した直後 |
-| run:complete | Run が completed に遷移した直後 |
-| run:fail | Run が failed に遷移した直後 |
-| run:progress | step.progress が呼ばれた直後 |
-| step:start | ステップの実行を開始する直前 |
-| step:complete | ステップが成功し DB に記録した直後 |
-| step:fail | ステップが失敗し DB に記録した直後 |
-| log:write | step.log が呼ばれた直後 |
-| worker:error | ワーカー内部でエラーが発生した時（ハートビート失敗など） |
+| イベント       | 発火タイミング                                           |
+|----------------|----------------------------------------------------------|
+| run:trigger    | trigger() が呼ばれ、Run が pending として作成された直後   |
+| run:start      | Run が running に遷移した直後                             |
+| run:complete   | Run が completed に遷移した直後                           |
+| run:fail       | Run が failed に遷移した直後                              |
+| run:cancel     | cancel() が呼ばれ、Run が cancelled に遷移した直後        |
+| run:retry      | retry() が呼ばれ、Run が pending に戻った直後             |
+| run:progress   | step.progress が呼ばれた直後                              |
+| step:start     | ステップの実行を開始する直前                              |
+| step:complete  | ステップが成功し DB に記録した直後                        |
+| step:fail      | ステップが失敗し DB に記録した直後                        |
+| log:write      | step.log が呼ばれた直後                                   |
+| worker:error   | ワーカー内部でエラーが発生した時（ハートビート失敗など）   |
 
 ### 設定項目
 

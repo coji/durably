@@ -22,16 +22,23 @@ Wraps your app and initializes Durably.
 
 ```tsx
 import { DurablyProvider } from '@coji/durably-react'
+import { createDurably, defineJob } from '@coji/durably'
 import { SQLocalKysely } from 'sqlocal/kysely'
+
+// Create Durably instance
+async function createBrowserDurably() {
+  const { dialect } = new SQLocalKysely('app.sqlite3')
+  const durably = createDurably({ dialect, pollingInterval: 100 })
+  durably.register({ myJob: myJobDef })
+  await durably.migrate()
+  return durably
+}
+
+const durablyPromise = createBrowserDurably()
 
 function App() {
   return (
-    <DurablyProvider
-      dialectFactory={() => new SQLocalKysely('app.sqlite3').dialect}
-      options={{ pollingInterval: 100 }}
-      autoStart={true}
-      autoMigrate={true}
-    >
+    <DurablyProvider durably={durablyPromise} fallback={<p>Loading...</p>}>
       <MyComponent />
     </DurablyProvider>
   )
@@ -42,11 +49,10 @@ function App() {
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `dialectFactory` | `() => Dialect` | required | Factory for Kysely dialect |
-| `options` | `DurablyOptions` | - | Durably configuration |
-| `autoStart` | `boolean` | `true` | Auto-start worker |
-| `autoMigrate` | `boolean` | `true` | Auto-run migrations |
+| `durably` | `Durably \| Promise<Durably>` | required | Durably instance or Promise |
+| `autoStart` | `boolean` | `true` | Auto-start worker on mount |
 | `onReady` | `(durably: Durably) => void` | - | Callback when ready |
+| `fallback` | `ReactNode` | - | Loading fallback (wraps in Suspense) |
 
 ### useDurably
 
@@ -282,12 +288,14 @@ function Component({ runId }: { runId: string }) {
 
 ### Server Setup
 
-On your server, use `createDurablyHandler` from `@coji/durably`:
+On your server, use `createDurablyHandler` from `@coji/durably/server`:
 
 ```ts
-import { createDurably, createDurablyHandler, defineJob } from '@coji/durably'
+import { createDurably, defineJob } from '@coji/durably'
+import { createDurablyHandler } from '@coji/durably/server'
 import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { createClient } from '@libsql/client'
+import { z } from 'zod'
 
 const client = createClient({ url: 'file:local.db' })
 const dialect = new LibsqlDialect({ client })
@@ -295,34 +303,119 @@ const dialect = new LibsqlDialect({ client })
 const durably = createDurably({ dialect })
 const handler = createDurablyHandler(durably)
 
-// Register jobs
-const syncJob = defineJob({
+// Define and register jobs
+const syncJobDef = defineJob({
   name: 'sync-data',
   input: z.object({ userId: z.string() }),
   output: z.object({ count: z.number() }),
   run: async (step, payload) => {
     // Job logic
+    return { count: 0 }
   },
 })
-durably.register({ syncJob })
+
+export const jobs = durably.register({ syncData: syncJobDef })
 
 await durably.migrate()
 durably.start()
 
-// Route handlers (Express/Hono/etc)
-app.post('/api/durably/trigger', async (req) => {
-  return handler.trigger(req)
+// Use the unified handle() method (recommended)
+app.all('/api/durably/*', async (req) => {
+  return handler.handle(req, '/api/durably')
 })
 
-app.get('/api/durably/subscribe', (req) => {
-  return handler.subscribe(req)
+// Or use individual route handlers
+app.post('/api/durably/trigger', (req) => handler.trigger(req))
+app.get('/api/durably/subscribe', (req) => handler.subscribe(req))
+app.get('/api/durably/runs', (req) => handler.runs(req))
+app.get('/api/durably/runs/subscribe', (req) => handler.runsSubscribe(req))
+```
+
+### createDurablyClient
+
+Create a type-safe client for all registered jobs:
+
+```ts
+// durably.client.ts
+import { createDurablyClient } from '@coji/durably-react/client'
+import type { jobs } from './durably.server'
+
+export const durably = createDurablyClient<typeof jobs>({
+  api: '/api/durably',
 })
+
+// Usage in components
+function Component() {
+  const { trigger, status, output } = durably.syncData.useJob()
+  // trigger() is type-safe!
+}
+```
+
+### useRuns
+
+List and paginate job runs with real-time updates:
+
+```tsx
+import { useRuns } from '@coji/durably-react/client'
+
+function Dashboard() {
+  const {
+    runs,
+    isLoading,
+    error,
+    page,
+    hasMore,
+    nextPage,
+    prevPage,
+    refresh,
+  } = useRuns({
+    api: '/api/durably',
+    jobName: 'sync-data', // optional filter
+    pageSize: 10,
+    realtime: true, // auto-refresh on SSE events
+  })
+
+  return (
+    <ul>
+      {runs.map((run) => (
+        <li key={run.id}>{run.status}</li>
+      ))}
+    </ul>
+  )
+}
+```
+
+### useRunActions
+
+Perform actions on runs:
+
+```tsx
+import { useRunActions } from '@coji/durably-react/client'
+
+function RunActions({ runId }: { runId: string }) {
+  const {
+    cancel,
+    retry,
+    deleteRun,
+    getRun,
+    getSteps,
+    isLoading,
+  } = useRunActions({ api: '/api/durably' })
+
+  return (
+    <div>
+      <button onClick={() => cancel(runId)}>Cancel</button>
+      <button onClick={() => retry(runId)}>Retry</button>
+      <button onClick={() => deleteRun(runId)}>Delete</button>
+    </div>
+  )
+}
 ```
 
 ## Type Definitions
 
 ```ts
-type RunStatus = 'pending' | 'running' | 'completed' | 'failed'
+type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 interface Progress {
   current: number
@@ -338,5 +431,26 @@ interface LogEntry {
   message: string
   data: unknown
   timestamp: string
+}
+
+interface RunRecord {
+  id: string
+  jobName: string
+  status: RunStatus
+  payload: unknown
+  output: unknown
+  error: string | null
+  progress: Progress | null
+  createdAt: string
+  updatedAt: string
+}
+
+interface StepRecord {
+  name: string
+  status: 'completed' | 'failed'
+  output: unknown
+  error: string | null
+  startedAt: string
+  completedAt: string | null
 }
 ```
