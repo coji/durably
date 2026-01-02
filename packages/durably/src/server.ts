@@ -380,6 +380,18 @@ export function createDurablyHandler(
       const sseStream = new ReadableStream({
         start(controller) {
           // Subscribe to run lifecycle events
+          const unsubscribeTrigger = durably.on('run:trigger', (event) => {
+            if (closed) return
+            if (jobNameFilter && event.jobName !== jobNameFilter) return
+
+            const data = `data: ${JSON.stringify({
+              type: 'run:trigger',
+              runId: event.runId,
+              jobName: event.jobName,
+            })}\n\n`
+            controller.enqueue(encoder.encode(data))
+          })
+
           const unsubscribeStart = durably.on('run:start', (event) => {
             if (closed) return
             if (jobNameFilter && event.jobName !== jobNameFilter) return
@@ -416,6 +428,18 @@ export function createDurablyHandler(
             controller.enqueue(encoder.encode(data))
           })
 
+          const unsubscribeCancel = durably.on('run:cancel', (event) => {
+            if (closed) return
+            if (jobNameFilter && event.jobName !== jobNameFilter) return
+
+            const data = `data: ${JSON.stringify({
+              type: 'run:cancel',
+              runId: event.runId,
+              jobName: event.jobName,
+            })}\n\n`
+            controller.enqueue(encoder.encode(data))
+          })
+
           const unsubscribeProgress = durably.on('run:progress', (event) => {
             if (closed) return
             if (jobNameFilter && event.jobName !== jobNameFilter) return
@@ -432,9 +456,11 @@ export function createDurablyHandler(
           // Store cleanup function for cancel
           ;(controller as unknown as { cleanup: () => void }).cleanup = () => {
             closed = true
+            unsubscribeTrigger()
             unsubscribeStart()
             unsubscribeComplete()
             unsubscribeFail()
+            unsubscribeCancel()
             unsubscribeProgress()
           }
         },

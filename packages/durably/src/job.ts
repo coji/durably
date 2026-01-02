@@ -182,7 +182,7 @@ export function createJobRegistry(): JobRegistry {
 export function createJobHandle<TName extends string, TInput, TOutput>(
   jobDef: JobDefinition<TName, TInput, TOutput>,
   storage: Storage,
-  _eventEmitter: EventEmitter,
+  eventEmitter: EventEmitter,
   registry: JobRegistry,
 ): JobHandle<TName, TInput, TOutput> {
   // Check if same JobDefinition is already registered (idempotent)
@@ -222,6 +222,14 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
         concurrencyKey: options?.concurrencyKey,
       })
 
+      // Emit run:trigger event
+      eventEmitter.emit({
+        type: 'run:trigger',
+        runId: run.id,
+        jobName: jobDef.name,
+        payload: parseResult.data,
+      })
+
       return run as TypedRun<TOutput>
     },
 
@@ -247,20 +255,17 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
           }
         }
 
-        const unsubscribeComplete = _eventEmitter.on(
-          'run:complete',
-          (event) => {
-            if (event.runId === run.id && !resolved) {
-              cleanup()
-              resolve({
-                id: run.id,
-                output: event.output as TOutput,
-              })
-            }
-          },
-        )
+        const unsubscribeComplete = eventEmitter.on('run:complete', (event) => {
+          if (event.runId === run.id && !resolved) {
+            cleanup()
+            resolve({
+              id: run.id,
+              output: event.output as TOutput,
+            })
+          }
+        })
 
-        const unsubscribeFail = _eventEmitter.on('run:fail', (event) => {
+        const unsubscribeFail = eventEmitter.on('run:fail', (event) => {
           if (event.runId === run.id && !resolved) {
             cleanup()
             reject(new Error(event.error))
@@ -336,6 +341,16 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
           concurrencyKey: v.options?.concurrencyKey,
         })),
       )
+
+      // Emit run:trigger events for all created runs
+      for (let i = 0; i < runs.length; i++) {
+        eventEmitter.emit({
+          type: 'run:trigger',
+          runId: runs[i].id,
+          jobName: jobDef.name,
+          payload: validated[i].payload,
+        })
+      }
 
       return runs as TypedRun<TOutput>[]
     },

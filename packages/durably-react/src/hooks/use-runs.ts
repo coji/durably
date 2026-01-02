@@ -121,9 +121,11 @@ export function useRuns(options?: UseRunsOptions): UseRunsResult {
     if (!realtime) return
 
     const unsubscribes = [
+      durably.on('run:trigger', refresh),
       durably.on('run:start', refresh),
       durably.on('run:complete', refresh),
       durably.on('run:fail', refresh),
+      durably.on('run:cancel', refresh),
     ]
 
     return () => {

@@ -22,7 +22,12 @@ export interface ClientRun {
  */
 type RunUpdateEvent =
   | {
-      type: 'run:start' | 'run:complete' | 'run:fail'
+      type:
+        | 'run:trigger'
+        | 'run:start'
+        | 'run:complete'
+        | 'run:fail'
+        | 'run:cancel'
       runId: string
       jobName: string
     }
@@ -196,9 +201,11 @@ export function useRuns(options: UseRunsClientOptions): UseRunsClientResult {
         const data = JSON.parse(event.data) as RunUpdateEvent
         // On run lifecycle events, refresh the list
         if (
+          data.type === 'run:trigger' ||
           data.type === 'run:start' ||
           data.type === 'run:complete' ||
-          data.type === 'run:fail'
+          data.type === 'run:fail' ||
+          data.type === 'run:cancel'
         ) {
           refresh()
         }

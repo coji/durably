@@ -653,6 +653,91 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(response.headers.get('Content-Type')).toBe('text/event-stream')
       })
 
+      it('streams run:trigger immediately when job is triggered', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'runs-subscribe-trigger-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        const request = new Request(
+          'http://localhost/api/durably/runs/subscribe',
+          { method: 'GET' },
+        )
+
+        const response = handler.runsSubscribe(request)
+        const reader = response.body!.getReader()
+        const decoder = new TextDecoder()
+
+        const events: string[] = []
+        const readPromise = (async () => {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            events.push(decoder.decode(value))
+            // Stop after receiving the trigger event
+            if (events.some((e) => e.includes('run:trigger'))) break
+          }
+        })()
+
+        // Trigger the job (don't start worker yet)
+        await d.jobs.job.trigger({})
+
+        await Promise.race([
+          readPromise,
+          new Promise((r) => setTimeout(r, 500)),
+        ])
+
+        // Should have received run:trigger event immediately
+        const allEvents = events.join('')
+        expect(allEvents).toContain('run:trigger')
+      })
+
+      it('streams run:cancel when job is cancelled', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'runs-subscribe-cancel-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        const request = new Request(
+          'http://localhost/api/durably/runs/subscribe',
+          { method: 'GET' },
+        )
+
+        const response = handler.runsSubscribe(request)
+        const reader = response.body!.getReader()
+        const decoder = new TextDecoder()
+
+        const events: string[] = []
+        const readPromise = (async () => {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            events.push(decoder.decode(value))
+            // Stop after receiving the cancel event
+            if (events.some((e) => e.includes('run:cancel'))) break
+          }
+        })()
+
+        // Trigger and then cancel the job
+        const run = await d.jobs.job.trigger({})
+        await d.cancel(run.id)
+
+        await Promise.race([
+          readPromise,
+          new Promise((r) => setTimeout(r, 500)),
+        ])
+
+        // Should have received run:cancel event
+        const allEvents = events.join('')
+        expect(allEvents).toContain('run:cancel')
+      })
+
       it('streams run lifecycle events', async () => {
         const d = durably.register({
           job: defineJob({
@@ -685,7 +770,7 @@ export function createServerTests(createDialect: () => Dialect) {
             if (done) break
             events.push(decoder.decode(value))
             // Stop after receiving some events
-            if (events.length >= 2) break
+            if (events.length >= 3) break
           }
         }
 
@@ -694,7 +779,7 @@ export function createServerTests(createDialect: () => Dialect) {
           new Promise((r) => setTimeout(r, 1000)),
         ])
 
-        // Should have received run:start and run:complete events
+        // Should have received run:trigger, run:start and run:complete events
         expect(events.length).toBeGreaterThan(0)
         const allEvents = events.join('')
         expect(allEvents).toContain('data:')

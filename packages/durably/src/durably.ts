@@ -390,6 +390,13 @@ function createDurablyInstance<
       await storage.updateRun(runId, {
         status: 'cancelled',
       })
+
+      // Emit run:cancel event
+      eventEmitter.emit({
+        type: 'run:cancel',
+        runId,
+        jobName: run.jobName,
+      })
     },
 
     async deleteRun(runId: string): Promise<void> {
