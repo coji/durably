@@ -125,7 +125,8 @@ export function Dashboard() {
                         >
                           View
                         </button>
-                        {run.status === 'failed' && (
+                        {(run.status === 'failed' ||
+                          run.status === 'cancelled') && (
                           <button
                             type="button"
                             onClick={() => handleRetry(run.id)}

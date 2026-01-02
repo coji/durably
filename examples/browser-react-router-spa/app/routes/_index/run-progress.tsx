@@ -15,6 +15,7 @@ interface RunProgressProps {
   isRunning: boolean
   isCompleted: boolean
   isFailed: boolean
+  isCancelled: boolean
 }
 
 export function RunProgress({
@@ -26,9 +27,10 @@ export function RunProgress({
   isRunning,
   isCompleted,
   isFailed,
+  isCancelled,
 }: RunProgressProps) {
   // Don't render anything if no activity
-  if (!isPending && !isRunning && !isCompleted && !isFailed) {
+  if (!isPending && !isRunning && !isCompleted && !isFailed && !isCancelled) {
     return null
   }
 
@@ -79,6 +81,16 @@ export function RunProgress({
         <section className="bg-red-50 border border-red-200 rounded-lg p-4">
           <div className="text-red-800 font-medium">Failed</div>
           <div className="text-red-700 text-sm mt-1">{error}</div>
+        </section>
+      )}
+
+      {/* Cancelled Result */}
+      {isCancelled && (
+        <section className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+          <div className="text-gray-800 font-medium">Cancelled</div>
+          <div className="text-gray-600 text-sm mt-1">
+            The job was cancelled before completion.
+          </div>
         </section>
       )}
 

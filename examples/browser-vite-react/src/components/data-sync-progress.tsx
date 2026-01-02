@@ -22,6 +22,7 @@ export function DataSyncProgress({ runId }: DataSyncProgressProps) {
     isRunning,
     isCompleted,
     isFailed,
+    isCancelled,
   } = useJob(dataSyncJob, { initialRunId: runId })
 
   return (
@@ -34,6 +35,7 @@ export function DataSyncProgress({ runId }: DataSyncProgressProps) {
       isRunning={isRunning}
       isCompleted={isCompleted}
       isFailed={isFailed}
+      isCancelled={isCancelled}
     />
   )
 }

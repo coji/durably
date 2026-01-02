@@ -23,6 +23,7 @@ export function ImageProcessingProgress() {
     isRunning,
     isCompleted,
     isFailed,
+    isCancelled,
   } = useJob(processImageJob, { initialRunId: runId })
 
   return (
@@ -35,6 +36,7 @@ export function ImageProcessingProgress() {
       isRunning={isRunning}
       isCompleted={isCompleted}
       isFailed={isFailed}
+      isCancelled={isCancelled}
     />
   )
 }
