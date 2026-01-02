@@ -57,6 +57,7 @@ const loggingJob = defineJob({
 const longRunningJob = defineJob({
   name: 'long-running-job',
   input: z.object({ input: z.string() }),
+  output: z.object({ done: z.boolean() }),
   run: async (context) => {
     // Simulate a long-running job by waiting
     await context.run('wait', async () => {

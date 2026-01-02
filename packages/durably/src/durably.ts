@@ -269,10 +269,12 @@ function createDurablyInstance<
     },
 
     subscribe(runId: string): ReadableStream<DurablyEvent> {
+      // Track closed state and cleanup function in outer scope for cancel handler
+      let closed = false
+      let cleanup: (() => void) | null = null
+
       return new ReadableStream<DurablyEvent>({
         start: (controller) => {
-          let closed = false
-
           const unsubscribeStart = eventEmitter.on('run:start', (event) => {
             if (!closed && event.runId === runId) {
               controller.enqueue(event)
@@ -285,7 +287,7 @@ function createDurablyInstance<
               if (!closed && event.runId === runId) {
                 controller.enqueue(event)
                 closed = true
-                cleanup()
+                cleanup?.()
                 controller.close()
               }
             },
@@ -350,7 +352,8 @@ function createDurablyInstance<
             }
           })
 
-          const cleanup = () => {
+          // Assign cleanup function to outer scope for cancel handler
+          cleanup = () => {
             unsubscribeStart()
             unsubscribeComplete()
             unsubscribeFail()
@@ -361,6 +364,13 @@ function createDurablyInstance<
             unsubscribeStepComplete()
             unsubscribeStepFail()
             unsubscribeLog()
+          }
+        },
+        cancel: () => {
+          // Clean up event listeners when stream is cancelled by consumer
+          if (!closed) {
+            closed = true
+            cleanup?.()
           }
         },
       })

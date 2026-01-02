@@ -131,6 +131,42 @@ describe('Core Extensions', () => {
       expect(events.some((e) => e.type === 'step:start')).toBe(true)
       expect(events.some((e) => e.type === 'step:complete')).toBe(true)
     })
+
+    it('cleans up event listeners when stream is cancelled', async () => {
+      const longRunningJob = defineJob({
+        name: 'long-running-subscribe',
+        input: z.object({ input: z.string() }),
+        run: async (ctx) => {
+          await ctx.run('wait', async () => {
+            await new Promise((resolve) => setTimeout(resolve, 10000))
+          })
+        },
+      })
+
+      durably.register({ longRunningJob })
+      durably.start()
+
+      const job = durably.getJob('long-running-subscribe')!
+      const run = await job.trigger({ input: 'test' })
+
+      const stream = durably.subscribe(run.id)
+      const reader = stream.getReader()
+
+      // Read one event (run:start)
+      const { value } = await reader.read()
+      expect(value?.type).toBe('run:start')
+
+      // Cancel the stream before the job completes
+      await reader.cancel()
+
+      // The stream should be cancelled and no errors should occur
+      // If event listeners are not cleaned up, this would cause memory leaks
+      // Wait a bit to ensure no errors are thrown after cancellation
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      // Cancel the run to clean up
+      await durably.cancel(run.id)
+    })
   })
 
   describe('createDurablyHandler', () => {
