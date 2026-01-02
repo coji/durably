@@ -15,12 +15,21 @@ export function Dashboard() {
       pageSize: 6,
     })
 
-  const { cancel, isLoading: isCancelling } = useRunActions({
+  const {
+    cancel,
+    retry,
+    isLoading: isActioning,
+  } = useRunActions({
     api: '/api/durably',
   })
 
   const handleCancel = async (runId: string) => {
     await cancel(runId)
+    refresh()
+  }
+
+  const handleRetry = async (runId: string) => {
+    await retry(runId)
     refresh()
   }
 
@@ -74,10 +83,20 @@ export function Dashboard() {
                     <button
                       type="button"
                       onClick={() => handleCancel(r.id)}
-                      disabled={isCancelling}
+                      disabled={isActioning}
                       className="text-xs text-red-600 hover:text-red-800 disabled:text-gray-400 disabled:cursor-not-allowed"
                     >
-                      {isCancelling ? 'Cancelling...' : 'Cancel'}
+                      Cancel
+                    </button>
+                  )}
+                  {(r.status === 'failed' || r.status === 'cancelled') && (
+                    <button
+                      type="button"
+                      onClick={() => handleRetry(r.id)}
+                      disabled={isActioning}
+                      className="text-xs text-blue-600 hover:text-blue-800 disabled:text-gray-400 disabled:cursor-not-allowed"
+                    >
+                      Retry
                     </button>
                   )}
                   <span
