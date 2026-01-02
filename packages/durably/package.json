@@ -53,8 +53,8 @@
   },
   "homepage": "https://github.com/coji/durably#readme",
   "peerDependencies": {
-    "kysely": ">=0.27.0",
-    "zod": ">=4.0.0"
+    "kysely": "^0.27.0",
+    "zod": "^4.0.0"
   },
   "dependencies": {
     "ulidx": "^2.4.1"

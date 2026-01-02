@@ -6,7 +6,7 @@
 
 import { useJob } from '@coji/durably-react'
 import { useActionData } from 'react-router'
-import { dataSyncJob } from '~/lib/durably'
+import { dataSyncJob } from '~/lib/jobs'
 import type { clientAction } from '../_index'
 import { RunProgress } from './run-progress'
 
