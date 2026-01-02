@@ -10,13 +10,15 @@
  */
 
 import { createDurably, createDurablyHandler } from '@coji/durably'
-import { importCsvJob } from '~/jobs'
+import { dataSyncJob, importCsvJob, processImageJob } from '~/jobs'
 import { dialect } from './database.server'
 
 // Create Durably instance with registered jobs
 export const durably = createDurably({
   dialect,
 }).register({
+  processImage: processImageJob,
+  dataSync: dataSyncJob,
   importCsv: importCsvJob,
 })
 

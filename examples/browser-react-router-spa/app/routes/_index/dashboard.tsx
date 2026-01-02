@@ -171,7 +171,7 @@ export function Dashboard() {
                           <button
                             type="button"
                             onClick={() => handleRetry(run.id)}
-                            className="text-xs text-green-600 hover:text-green-800"
+                            className="text-xs text-green-600 hover:text-green-800 disabled:text-gray-400 disabled:cursor-not-allowed"
                           >
                             Retry
                           </button>
@@ -181,7 +181,7 @@ export function Dashboard() {
                           <button
                             type="button"
                             onClick={() => handleCancel(run.id)}
-                            className="text-xs text-orange-600 hover:text-orange-800"
+                            className="text-xs text-orange-600 hover:text-orange-800 disabled:text-gray-400 disabled:cursor-not-allowed"
                           >
                             Cancel
                           </button>
@@ -191,7 +191,7 @@ export function Dashboard() {
                             <button
                               type="button"
                               onClick={() => handleDelete(run.id)}
-                              className="text-xs text-red-600 hover:text-red-800"
+                              className="text-xs text-red-600 hover:text-red-800 disabled:text-gray-400 disabled:cursor-not-allowed"
                             >
                               Delete
                             </button>
@@ -307,7 +307,7 @@ export function Dashboard() {
                     <ul className="mt-1 divide-y divide-gray-100 border rounded">
                       {steps.map((s) => (
                         <li
-                          key={s.index}
+                          key={s.name}
                           className="flex justify-between items-center p-2"
                         >
                           <span className="text-gray-800">{s.name}</span>
