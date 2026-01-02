@@ -17,10 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 #### @coji/durably
 
-- **New events for run lifecycle**:
-  - `run:trigger`: Emitted when a job is triggered (before worker picks it up)
-  - `run:cancel`: Emitted when a run is cancelled via `cancel()` API
-  - `run:retry`: Emitted when a failed/cancelled run is retried via `retry()` API
 - **Type-safe `durably.jobs` property**: Access registered jobs with full type inference
   ```ts
   const durably = createDurably({ dialect })
@@ -28,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   await durably.jobs.processImage.trigger({ imageId: '123' }) // Type-safe
   ```
 - **Retry from cancelled state**: `retry()` now works on both `failed` and `cancelled` runs
+- **New events for run lifecycle**:
+  - `run:trigger`: Emitted when a job is triggered (before worker picks it up)
+  - `run:cancel`: Emitted when a run is cancelled via `cancel()` API
+  - `run:retry`: Emitted when a failed/cancelled run is retried via `retry()` API
+- **`stepCount` added to `Run` type**: Run now includes `stepCount` property reflecting the number of completed steps
+  - Computed dynamically via JOIN query (no schema change required)
+  - Available in `getRun()`, `getRuns()`, `getNextPendingRun()`
 
 #### @coji/durably/server
 
@@ -38,15 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 #### @coji/durably-react
 
-- `useRuns`: List and paginate job runs with filtering and real-time updates
+- **`useRuns`**: List and paginate job runs with filtering and real-time updates
   - Supports filtering by `jobName` and `status`
   - Built-in pagination with `nextPage`, `prevPage`, `goToPage`
   - Real-time updates via `realtime` option (default: true)
-- `useJob` options:
+- **`useJob` options**:
   - `autoResume`: Automatically resume tracking pending/running jobs on mount (default: true)
   - `followLatest`: Automatically switch to tracking the latest running job (default: true)
-- `createDurablyClient`: Type-safe client factory for server-connected mode
-- `createJobHooks`: Per-job hook factory for server-connected mode
+- **`createDurablyClient`**: Type-safe client factory for server-connected mode
+- **`createJobHooks`**: Per-job hook factory for server-connected mode
 
 #### @coji/durably-react/client
 
@@ -54,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - `deleteRun(runId)`: Delete a completed/failed/cancelled run
   - `getRun(runId)`: Get a single run by ID
   - `getSteps(runId)`: Get steps for a run
+- **`stepCount` and `currentStepIndex`**: Added to `ClientRun` and `RunRecord` types for step progress display
 - **New type exports**: `RunRecord`, `StepRecord` for type-safe run and step data
 
 ### Changed

@@ -11,6 +11,8 @@ export interface ClientRun {
   input: unknown
   output: unknown | null
   error: string | null
+  currentStepIndex: number
+  stepCount: number
   progress: Progress | null
   createdAt: string
   startedAt: string | null

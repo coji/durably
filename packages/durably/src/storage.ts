@@ -23,6 +23,7 @@ export interface Run {
   idempotencyKey: string | null
   concurrencyKey: string | null
   currentStepIndex: number
+  stepCount: number
   progress: { current: number; total?: number; message?: string } | null
   output: unknown | null
   error: string | null
@@ -133,7 +134,9 @@ export interface Storage {
 /**
  * Convert database row to Run object
  */
-function rowToRun(row: Database['durably_runs']): Run {
+function rowToRun(
+  row: Database['durably_runs'] & { step_count?: number | bigint | null },
+): Run {
   return {
     id: row.id,
     jobName: row.job_name,
@@ -142,6 +145,7 @@ function rowToRun(row: Database['durably_runs']): Run {
     idempotencyKey: row.idempotency_key,
     concurrencyKey: row.concurrency_key,
     currentStepIndex: row.current_step_index,
+    stepCount: Number(row.step_count ?? 0),
     progress: row.progress ? JSON.parse(row.progress) : null,
     output: row.output ? JSON.parse(row.output) : null,
     error: row.error,
@@ -316,24 +320,36 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
     async getRun(runId: string): Promise<Run | null> {
       const row = await db
         .selectFrom('durably_runs')
-        .selectAll()
-        .where('id', '=', runId)
+        .leftJoin('durably_steps', 'durably_runs.id', 'durably_steps.run_id')
+        .selectAll('durably_runs')
+        .select((eb) =>
+          eb.fn.count<number>('durably_steps.id').as('step_count'),
+        )
+        .where('durably_runs.id', '=', runId)
+        .groupBy('durably_runs.id')
         .executeTakeFirst()
 
       return row ? rowToRun(row) : null
     },
 
     async getRuns(filter?: RunFilter): Promise<Run[]> {
-      let query = db.selectFrom('durably_runs').selectAll()
+      let query = db
+        .selectFrom('durably_runs')
+        .leftJoin('durably_steps', 'durably_runs.id', 'durably_steps.run_id')
+        .selectAll('durably_runs')
+        .select((eb) =>
+          eb.fn.count<number>('durably_steps.id').as('step_count'),
+        )
+        .groupBy('durably_runs.id')
 
       if (filter?.status) {
-        query = query.where('status', '=', filter.status)
+        query = query.where('durably_runs.status', '=', filter.status)
       }
       if (filter?.jobName) {
-        query = query.where('job_name', '=', filter.jobName)
+        query = query.where('durably_runs.job_name', '=', filter.jobName)
       }
 
-      query = query.orderBy('created_at', 'desc')
+      query = query.orderBy('durably_runs.created_at', 'desc')
 
       if (filter?.limit !== undefined) {
         query = query.limit(filter.limit)
@@ -355,16 +371,25 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
     ): Promise<Run | null> {
       let query = db
         .selectFrom('durably_runs')
-        .selectAll()
-        .where('status', '=', 'pending')
-        .orderBy('created_at', 'asc')
+        .leftJoin('durably_steps', 'durably_runs.id', 'durably_steps.run_id')
+        .selectAll('durably_runs')
+        .select((eb) =>
+          eb.fn.count<number>('durably_steps.id').as('step_count'),
+        )
+        .where('durably_runs.status', '=', 'pending')
+        .groupBy('durably_runs.id')
+        .orderBy('durably_runs.created_at', 'asc')
         .limit(1)
 
       if (excludeConcurrencyKeys.length > 0) {
         query = query.where((eb) =>
           eb.or([
-            eb('concurrency_key', 'is', null),
-            eb('concurrency_key', 'not in', excludeConcurrencyKeys),
+            eb('durably_runs.concurrency_key', 'is', null),
+            eb(
+              'durably_runs.concurrency_key',
+              'not in',
+              excludeConcurrencyKeys,
+            ),
           ]),
         )
       }

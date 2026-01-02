@@ -6,4 +6,5 @@
  */
 
 export { dataSyncJob } from './data-sync'
+export { importCsvJob, type ImportCsvOutput } from './import-csv'
 export { processImageJob } from './process-image'

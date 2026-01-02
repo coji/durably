@@ -11,9 +11,10 @@ import { useState } from 'react'
 
 export function Dashboard() {
   const { durably } = useDurably()
-  const { runs, page, hasMore, refresh, nextPage, prevPage } = useRuns({
-    pageSize: 6,
-  })
+  const { runs, page, hasMore, isLoading, refresh, nextPage, prevPage } =
+    useRuns({
+      pageSize: 6,
+    })
 
   const [selectedRun, setSelectedRun] = useState<Run | null>(null)
   const [steps, setSteps] = useState<
@@ -65,13 +66,18 @@ export function Dashboard() {
     <section className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-gray-900">Run History</h2>
-        <button
-          type="button"
-          onClick={refresh}
-          className="text-sm text-blue-600 hover:text-blue-800"
-        >
-          ↻ Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          {isLoading && (
+            <span className="text-xs text-gray-400">Refreshing...</span>
+          )}
+          <button
+            type="button"
+            onClick={refresh}
+            className="text-sm text-blue-600 hover:text-blue-800"
+          >
+            ↻ Refresh
+          </button>
+        </div>
       </div>
 
       {runs.length === 0 ? (
@@ -90,6 +96,9 @@ export function Dashboard() {
                   </th>
                   <th className="text-left py-2 px-2 font-medium text-gray-600">
                     Status
+                  </th>
+                  <th className="text-left py-2 px-2 font-medium text-gray-600">
+                    Step
                   </th>
                   <th className="text-left py-2 px-2 font-medium text-gray-600">
                     Progress
@@ -115,6 +124,15 @@ export function Dashboard() {
                       >
                         {run.status}
                       </span>
+                    </td>
+                    <td className="py-2 px-2">
+                      {run.stepCount > 0 ? (
+                        <span className="text-xs text-gray-600">
+                          {run.currentStepIndex}/{run.stepCount}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400">-</span>
+                      )}
                     </td>
                     <td className="py-2 px-2">
                       {run.progress ? (

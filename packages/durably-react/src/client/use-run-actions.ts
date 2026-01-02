@@ -11,6 +11,8 @@ export interface RunRecord {
   output: unknown | null
   error: string | null
   progress: { current: number; total?: number; message?: string } | null
+  currentStepIndex: number
+  stepCount: number
   createdAt: string
   startedAt: string | null
   completedAt: string | null

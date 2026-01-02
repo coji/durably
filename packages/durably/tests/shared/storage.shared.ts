@@ -59,6 +59,98 @@ export function createStorageTests(createDialect: () => Dialect) {
         expect(run!.jobName).toBe('test-job')
       })
 
+      it('returns stepCount as 0 for new run', async () => {
+        const created = await durably.storage.createRun({
+          jobName: 'test-job',
+          payload: {},
+        })
+
+        const run = await durably.storage.getRun(created.id)
+
+        expect(run).not.toBeNull()
+        expect(run!.stepCount).toBe(0)
+      })
+
+      it('returns stepCount reflecting completed steps', async () => {
+        const created = await durably.storage.createRun({
+          jobName: 'test-job',
+          payload: {},
+        })
+
+        // Add 3 steps
+        await durably.storage.createStep({
+          runId: created.id,
+          name: 'step-1',
+          index: 0,
+          status: 'completed',
+          startedAt: new Date().toISOString(),
+        })
+        await durably.storage.createStep({
+          runId: created.id,
+          name: 'step-2',
+          index: 1,
+          status: 'completed',
+          startedAt: new Date().toISOString(),
+        })
+        await durably.storage.createStep({
+          runId: created.id,
+          name: 'step-3',
+          index: 2,
+          status: 'completed',
+          startedAt: new Date().toISOString(),
+        })
+
+        const run = await durably.storage.getRun(created.id)
+
+        expect(run).not.toBeNull()
+        expect(run!.stepCount).toBe(3)
+      })
+
+      it('returns stepCount in getRuns', async () => {
+        const run1 = await durably.storage.createRun({
+          jobName: 'job-a',
+          payload: {},
+        })
+        const run2 = await durably.storage.createRun({
+          jobName: 'job-b',
+          payload: {},
+        })
+
+        // Add 2 steps to run1
+        await durably.storage.createStep({
+          runId: run1.id,
+          name: 'step-1',
+          index: 0,
+          status: 'completed',
+          startedAt: new Date().toISOString(),
+        })
+        await durably.storage.createStep({
+          runId: run1.id,
+          name: 'step-2',
+          index: 1,
+          status: 'completed',
+          startedAt: new Date().toISOString(),
+        })
+
+        // Add 1 step to run2
+        await durably.storage.createStep({
+          runId: run2.id,
+          name: 'step-1',
+          index: 0,
+          status: 'completed',
+          startedAt: new Date().toISOString(),
+        })
+
+        const runs = await durably.storage.getRuns()
+
+        // runs are ordered by created_at desc
+        const foundRun1 = runs.find((r) => r.id === run1.id)
+        const foundRun2 = runs.find((r) => r.id === run2.id)
+
+        expect(foundRun1!.stepCount).toBe(2)
+        expect(foundRun2!.stepCount).toBe(1)
+      })
+
       it('returns null for non-existent run', async () => {
         const run = await durably.storage.getRun('non-existent-id')
         expect(run).toBeNull()
