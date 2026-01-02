@@ -109,10 +109,16 @@ export function useRunActions(
         const response = await fetch(url, { method: 'POST' })
 
         if (!response.ok) {
-          const data = await response.json()
-          throw new Error(
-            data.error || `Failed to retry: ${response.statusText}`,
-          )
+          let errorMessage = `Failed to retry: ${response.statusText}`
+          try {
+            const data = await response.json()
+            if (data.error) {
+              errorMessage = data.error
+            }
+          } catch {
+            // Response is not JSON, use statusText
+          }
+          throw new Error(errorMessage)
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error'
@@ -135,10 +141,16 @@ export function useRunActions(
         const response = await fetch(url, { method: 'POST' })
 
         if (!response.ok) {
-          const data = await response.json()
-          throw new Error(
-            data.error || `Failed to cancel: ${response.statusText}`,
-          )
+          let errorMessage = `Failed to cancel: ${response.statusText}`
+          try {
+            const data = await response.json()
+            if (data.error) {
+              errorMessage = data.error
+            }
+          } catch {
+            // Response is not JSON, use statusText
+          }
+          throw new Error(errorMessage)
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error'
@@ -161,10 +173,16 @@ export function useRunActions(
         const response = await fetch(url, { method: 'DELETE' })
 
         if (!response.ok) {
-          const data = await response.json()
-          throw new Error(
-            data.error || `Failed to delete: ${response.statusText}`,
-          )
+          let errorMessage = `Failed to delete: ${response.statusText}`
+          try {
+            const data = await response.json()
+            if (data.error) {
+              errorMessage = data.error
+            }
+          } catch {
+            // Response is not JSON, use statusText
+          }
+          throw new Error(errorMessage)
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error'
@@ -191,10 +209,16 @@ export function useRunActions(
         }
 
         if (!response.ok) {
-          const data = await response.json()
-          throw new Error(
-            data.error || `Failed to get run: ${response.statusText}`,
-          )
+          let errorMessage = `Failed to get run: ${response.statusText}`
+          try {
+            const data = await response.json()
+            if (data.error) {
+              errorMessage = data.error
+            }
+          } catch {
+            // Response is not JSON, use statusText
+          }
+          throw new Error(errorMessage)
         }
 
         return (await response.json()) as RunRecord
@@ -219,10 +243,16 @@ export function useRunActions(
         const response = await fetch(url)
 
         if (!response.ok) {
-          const data = await response.json()
-          throw new Error(
-            data.error || `Failed to get steps: ${response.statusText}`,
-          )
+          let errorMessage = `Failed to get steps: ${response.statusText}`
+          try {
+            const data = await response.json()
+            if (data.error) {
+              errorMessage = data.error
+            }
+          } catch {
+            // Response is not JSON, use statusText
+          }
+          throw new Error(errorMessage)
         }
 
         return (await response.json()) as StepRecord[]

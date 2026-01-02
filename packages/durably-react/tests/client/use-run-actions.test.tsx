@@ -152,6 +152,35 @@ describe('useRunActions (client)', () => {
       )
     })
 
+    it('handles non-JSON error response', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        statusText: 'Internal Server Error',
+        json: () => Promise.reject(new Error('Invalid JSON')),
+      })
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useRunActions({ api: '/api/durably' }),
+      )
+
+      let thrownError: Error | undefined
+      await act(async () => {
+        try {
+          await result.current.retry('run-123')
+        } catch (err) {
+          thrownError = err as Error
+        }
+      })
+
+      expect(thrownError?.message).toBe(
+        'Failed to retry: Internal Server Error',
+      )
+      expect(result.current.error).toBe(
+        'Failed to retry: Internal Server Error',
+      )
+    })
+
     it('clears error on new request', async () => {
       const fetchMock = vi
         .fn()
@@ -298,6 +327,35 @@ describe('useRunActions (client)', () => {
         ok: false,
         statusText: 'Internal Server Error',
         json: () => Promise.resolve({}),
+      })
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useRunActions({ api: '/api/durably' }),
+      )
+
+      let thrownError: Error | undefined
+      await act(async () => {
+        try {
+          await result.current.cancel('run-456')
+        } catch (err) {
+          thrownError = err as Error
+        }
+      })
+
+      expect(thrownError?.message).toBe(
+        'Failed to cancel: Internal Server Error',
+      )
+      expect(result.current.error).toBe(
+        'Failed to cancel: Internal Server Error',
+      )
+    })
+
+    it('handles non-JSON error response', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        statusText: 'Internal Server Error',
+        json: () => Promise.reject(new Error('Invalid JSON')),
       })
       globalThis.fetch = fetchMock
 
