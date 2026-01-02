@@ -81,6 +81,21 @@ export function useRunSubscription<TOutput = unknown>(
     )
 
     unsubscribes.push(
+      durably.on('run:cancel', (event) => {
+        if (event.runId !== runIdRef.current) return
+        setStatus('cancelled')
+      }),
+    )
+
+    unsubscribes.push(
+      durably.on('run:retry', (event) => {
+        if (event.runId !== runIdRef.current) return
+        setStatus('pending')
+        setError(null)
+      }),
+    )
+
+    unsubscribes.push(
       durably.on('run:progress', (event) => {
         if (event.runId !== runIdRef.current) return
         setProgress(event.progress)

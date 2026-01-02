@@ -75,6 +75,13 @@ export function useSSESubscription<TOutput = unknown>(
             setStatus('failed')
             setError(data.error)
             break
+          case 'run:cancel':
+            setStatus('cancelled')
+            break
+          case 'run:retry':
+            setStatus('pending')
+            setError(null)
+            break
           case 'run:progress':
             setProgress(data.progress)
             break

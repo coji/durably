@@ -51,6 +51,10 @@ export interface UseJobRunResult<TOutput = unknown> {
    * Whether the run failed
    */
   isFailed: boolean
+  /**
+   * Whether the run was cancelled
+   */
+  isCancelled: boolean
 }
 
 /**
@@ -90,5 +94,6 @@ export function useJobRun<TOutput = unknown>(
     isPending: subscription.status === 'pending',
     isCompleted: subscription.status === 'completed',
     isFailed: subscription.status === 'failed',
+    isCancelled: subscription.status === 'cancelled',
   }
 }

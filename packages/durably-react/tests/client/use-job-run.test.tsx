@@ -110,6 +110,66 @@ describe('useJobRun (client)', () => {
     })
   })
 
+  it('updates status when run is cancelled', async () => {
+    const { result } = renderHook(() =>
+      useJobRun({ api: '/api/durably', runId: 'cancel-run' }),
+    )
+
+    await waitFor(() => {
+      expect(mockEventSource.instances.length).toBeGreaterThan(0)
+    })
+
+    act(() => {
+      mockEventSource.emit({
+        type: 'run:cancel',
+        runId: 'cancel-run',
+      })
+    })
+
+    await waitFor(() => {
+      expect(result.current.status).toBe('cancelled')
+      expect(result.current.isCancelled).toBe(true)
+    })
+  })
+
+  it('resets status when run is retried', async () => {
+    const { result } = renderHook(() =>
+      useJobRun({ api: '/api/durably', runId: 'retry-run' }),
+    )
+
+    await waitFor(() => {
+      expect(mockEventSource.instances.length).toBeGreaterThan(0)
+    })
+
+    // First fail the run
+    act(() => {
+      mockEventSource.emit({
+        type: 'run:fail',
+        runId: 'retry-run',
+        error: 'Something went wrong',
+      })
+    })
+
+    await waitFor(() => {
+      expect(result.current.status).toBe('failed')
+      expect(result.current.error).toBe('Something went wrong')
+    })
+
+    // Then retry it
+    act(() => {
+      mockEventSource.emit({
+        type: 'run:retry',
+        runId: 'retry-run',
+      })
+    })
+
+    await waitFor(() => {
+      expect(result.current.status).toBe('pending')
+      expect(result.current.error).toBeNull()
+      expect(result.current.isPending).toBe(true)
+    })
+  })
+
   it('tracks progress updates', async () => {
     const { result } = renderHook(() =>
       useJobRun({ api: '/api/durably', runId: 'progress-run' }),

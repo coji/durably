@@ -202,6 +202,104 @@ describe('useJobRun', () => {
     )
   })
 
+  it('updates status when run is cancelled', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
+    // Use autoStart=false wrapper so worker doesn't pick up the job
+    const noAutoStartWrapper = ({ children }: { children: ReactNode }) => (
+      <DurablyProvider durably={durably} autoStart={false}>
+        {children}
+      </DurablyProvider>
+    )
+
+    function useTriggerAndSubscribe() {
+      const { isReady: durablyReady } = useDurably()
+      const [runId, setRunId] = useState<string | null>(null)
+      const subscription = useJobRun({ runId })
+
+      return {
+        ...subscription,
+        isReady: durablyReady && subscription.isReady,
+        runId,
+        setRunId,
+      }
+    }
+
+    const { result } = renderHook(() => useTriggerAndSubscribe(), {
+      wrapper: noAutoStartWrapper,
+    })
+
+    await waitFor(() => expect(result.current.isReady).toBe(true))
+
+    const d = durably.register({ _job: testJob })
+    const run = await d.jobs._job.trigger({ input: 'test' })
+    result.current.setRunId(run.id)
+
+    // Cancel the pending run (worker is not running)
+    await durably.cancel(run.id)
+
+    await waitFor(
+      () => {
+        expect(result.current.status).toBe('cancelled')
+        expect(result.current.isCancelled).toBe(true)
+      },
+      { timeout: 3000 },
+    )
+  })
+
+  it('resets status when run is retried', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
+    function useTriggerAndSubscribe() {
+      const { isReady: durablyReady } = useDurably()
+      const [runId, setRunId] = useState<string | null>(null)
+      const subscription = useJobRun({ runId })
+
+      return {
+        ...subscription,
+        isReady: durablyReady && subscription.isReady,
+        runId,
+        setRunId,
+      }
+    }
+
+    const { result } = renderHook(() => useTriggerAndSubscribe(), {
+      wrapper: createWrapper(durably),
+    })
+
+    await waitFor(() => expect(result.current.isReady).toBe(true))
+
+    const d = durably.register({ _job: failingJob })
+    const run = await d.jobs._job.trigger({ input: 'test' })
+    result.current.setRunId(run.id)
+
+    // Wait for the run to fail
+    await waitFor(
+      () => {
+        expect(result.current.status).toBe('failed')
+        expect(result.current.error).toBe('Job failed')
+      },
+      { timeout: 3000 },
+    )
+
+    // Stop worker so retry doesn't immediately re-run
+    await durably.stop()
+
+    // Retry the run
+    await durably.retry(run.id)
+
+    await waitFor(
+      () => {
+        expect(result.current.status).toBe('pending')
+        expect(result.current.error).toBeNull()
+        expect(result.current.isPending).toBe(true)
+      },
+      { timeout: 3000 },
+    )
+  })
+
   it('tracks progress updates', async () => {
     const durably = await createTestDurably({ pollingInterval: 50 })
     instances.push(durably)

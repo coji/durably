@@ -66,6 +66,10 @@ export interface UseJobRunClientResult<TOutput = unknown> {
    * Whether the run failed
    */
   isFailed: boolean
+  /**
+   * Whether the run was cancelled
+   */
+  isCancelled: boolean
 }
 
 /**
@@ -86,6 +90,7 @@ export function useJobRun<TOutput = unknown>(
   const isFailed = effectiveStatus === 'failed'
   const isPending = effectiveStatus === 'pending'
   const isRunning = effectiveStatus === 'running'
+  const isCancelled = effectiveStatus === 'cancelled'
 
   // Track previous status to detect transitions
   const prevStatusRef = useRef<RunStatus | null>(null)
@@ -129,5 +134,6 @@ export function useJobRun<TOutput = unknown>(
     isPending,
     isCompleted,
     isFailed,
+    isCancelled,
   }
 }

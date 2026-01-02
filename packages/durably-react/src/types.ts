@@ -34,6 +34,8 @@ export type DurablyEvent =
       duration: number
     }
   | { type: 'run:fail'; runId: string; jobName: string; error: string }
+  | { type: 'run:cancel'; runId: string; jobName: string }
+  | { type: 'run:retry'; runId: string; jobName: string }
   | {
       type: 'run:progress'
       runId: string
