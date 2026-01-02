@@ -72,10 +72,10 @@ describe('useJobLogs', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { _job: handle } = durably.register({
+    const d = durably.register({
       _job: loggingJob,
     })
-    const run = await handle.trigger({ count: 3 })
+    const run = await d.jobs._job.trigger({ count: 3 })
     result.current.setRunId(run.id)
 
     await waitFor(
@@ -129,10 +129,10 @@ describe('useJobLogs', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { _job: handle } = durably.register({
+    const d = durably.register({
       _job: loggingJob,
     })
-    const run = await handle.trigger({ count: 10 })
+    const run = await d.jobs._job.trigger({ count: 10 })
     result.current.setRunId(run.id)
 
     // Wait for job to complete
@@ -165,10 +165,10 @@ describe('useJobLogs', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { _job: handle } = durably.register({
+    const d = durably.register({
       _job: loggingJob,
     })
-    const run = await handle.trigger({ count: 3 })
+    const run = await d.jobs._job.trigger({ count: 3 })
     result.current.setRunId(run.id)
 
     // Wait for job to complete and logs to be collected

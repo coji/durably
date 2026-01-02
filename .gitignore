@@ -10,3 +10,6 @@ local.db
 # VitePress
 website/.vitepress/cache/
 website/.vitepress/dist/
+
+# test coverage
+coverage

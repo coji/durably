@@ -5,12 +5,18 @@ import {
   type AnyEventInput,
   type DurablyEvent,
   type ErrorHandler,
+  type EventEmitter,
   type EventListener,
   type EventType,
   type Unsubscribe,
   createEventEmitter,
 } from './events'
-import { type JobHandle, createJobHandle, createJobRegistry } from './job'
+import {
+  type JobHandle,
+  type JobRegistry,
+  createJobHandle,
+  createJobRegistry,
+} from './job'
 import { runMigrations } from './migrations'
 import type { Database } from './schema'
 import {
@@ -19,7 +25,7 @@ import {
   type Storage,
   createKyselyStorage,
 } from './storage'
-import { createWorker } from './worker'
+import { type Worker, createWorker } from './worker'
 
 /**
  * Options for creating a Durably instance
@@ -45,17 +51,39 @@ const DEFAULTS = {
  */
 export interface DurablyPlugin {
   name: string
-  install(durably: Durably): void
+  // biome-ignore lint/suspicious/noExplicitAny: plugin needs to accept any Durably instance
+  install(durably: Durably<any>): void
 }
 
 /**
- * Durably instance
+ * Helper type to transform JobDefinition record to JobHandle record
  */
-export interface Durably {
+// biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
+type TransformToHandles<
+  TJobs extends Record<string, JobDefinition<string, any, any>>,
+> = {
+  [K in keyof TJobs]: TJobs[K] extends JobDefinition<
+    infer TName,
+    infer TInput,
+    infer TOutput
+  >
+    ? JobHandle<TName & string, TInput, TOutput>
+    : never
+}
+
+/**
+ * Durably instance with type-safe jobs
+ */
+export interface Durably<
+  TJobs extends Record<string, JobHandle<string, unknown, unknown>> = Record<
+    string,
+    never
+  >,
+> {
   /**
-   * Registered job handles (type-safe access after register())
+   * Registered job handles (type-safe)
    */
-  readonly jobs: Record<string, JobHandle<string, unknown, unknown>>
+  readonly jobs: TJobs
 
   /**
    * Run database migrations
@@ -91,32 +119,22 @@ export interface Durably {
   onError(handler: ErrorHandler): void
 
   /**
-   * Register job definitions and populate durably.jobs
-   * Same JobDefinition can be registered multiple times (idempotent)
-   * Different JobDefinitions with the same name will throw an error
+   * Register job definitions and return a new Durably instance with type-safe jobs
    * @example
    * ```ts
    * const durably = createDurably({ dialect })
+   *   .register({
+   *     importCsv: importCsvJob,
+   *     syncUsers: syncUsersJob,
+   *   })
    * await durably.migrate()
-   * durably.register({
-   *   importCsv: importCsvJob,
-   *   syncUsers: syncUsersJob,
-   * })
    * // Usage: durably.jobs.importCsv.trigger({ rows: [...] })
    * ```
    */
   // biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
-  register<TJobs extends Record<string, JobDefinition<string, any, any>>>(
-    jobDefs: TJobs,
-  ): {
-    [K in keyof TJobs]: TJobs[K] extends JobDefinition<
-      infer TName,
-      infer TInput,
-      infer TOutput
-    >
-      ? JobHandle<TName & string, TInput, TOutput>
-      : never
-  }
+  register<TNewJobs extends Record<string, JobDefinition<string, any, any>>>(
+    jobDefs: TNewJobs,
+  ): Durably<TJobs & TransformToHandles<TNewJobs>>
 
   /**
    * Start the worker polling loop
@@ -177,29 +195,27 @@ export interface Durably {
 }
 
 /**
- * Create a Durably instance
+ * Internal state shared across Durably instances
  */
-export function createDurably(options: DurablyOptions): Durably {
-  const config = {
-    pollingInterval: options.pollingInterval ?? DEFAULTS.pollingInterval,
-    heartbeatInterval: options.heartbeatInterval ?? DEFAULTS.heartbeatInterval,
-    staleThreshold: options.staleThreshold ?? DEFAULTS.staleThreshold,
-  }
+interface DurablyState {
+  db: Kysely<Database>
+  storage: Storage
+  eventEmitter: EventEmitter
+  jobRegistry: JobRegistry
+  worker: Worker
+  migrating: Promise<void> | null
+  migrated: boolean
+}
 
-  const db = new Kysely<Database>({ dialect: options.dialect })
-  const storage = createKyselyStorage(db)
-  const eventEmitter = createEventEmitter()
-  const jobRegistry = createJobRegistry()
-  const worker = createWorker(config, storage, eventEmitter, jobRegistry)
+/**
+ * Create a Durably instance implementation
+ */
+function createDurablyInstance<
+  TJobs extends Record<string, JobHandle<string, unknown, unknown>>,
+>(state: DurablyState, jobs: TJobs): Durably<TJobs> {
+  const { db, storage, eventEmitter, jobRegistry, worker } = state
 
-  // Track migration state for idempotency
-  let migrating: Promise<void> | null = null
-  let migrated = false
-
-  // Mutable jobs registry that gets populated by register()
-  const jobs: Record<string, JobHandle<string, unknown, unknown>> = {}
-
-  const durably: Durably = {
+  const durably: Durably<TJobs> = {
     db,
     storage,
     jobs,
@@ -210,28 +226,12 @@ export function createDurably(options: DurablyOptions): Durably {
     stop: worker.stop,
 
     // biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
-    register<TJobs extends Record<string, JobDefinition<string, any, any>>>(
-      jobDefs: TJobs,
-    ): {
-      [K in keyof TJobs]: TJobs[K] extends JobDefinition<
-        infer TName,
-        infer TInput,
-        infer TOutput
-      >
-        ? JobHandle<TName & string, TInput, TOutput>
-        : never
-    } {
-      const result = {} as {
-        [K in keyof TJobs]: TJobs[K] extends JobDefinition<
-          infer TName,
-          infer TInput,
-          infer TOutput
-        >
-          ? JobHandle<TName & string, TInput, TOutput>
-          : never
-      }
+    register<TNewJobs extends Record<string, JobDefinition<string, any, any>>>(
+      jobDefs: TNewJobs,
+    ): Durably<TJobs & TransformToHandles<TNewJobs>> {
+      const newHandles = {} as TransformToHandles<TNewJobs>
 
-      for (const key of Object.keys(jobDefs) as (keyof TJobs)[]) {
+      for (const key of Object.keys(jobDefs) as (keyof TNewJobs)[]) {
         const jobDef = jobDefs[key]
         const handle = createJobHandle(
           jobDef,
@@ -239,12 +239,13 @@ export function createDurably(options: DurablyOptions): Durably {
           eventEmitter,
           jobRegistry,
         )
-        result[key] = handle as (typeof result)[typeof key]
-        // Also populate durably.jobs for direct access
-        jobs[key as string] = handle
+        newHandles[key] = handle as TransformToHandles<TNewJobs>[typeof key]
       }
 
-      return result
+      // Create new instance with merged jobs
+      const mergedJobs = { ...jobs, ...newHandles } as TJobs &
+        TransformToHandles<TNewJobs>
+      return createDurablyInstance(state, mergedJobs)
     },
 
     getRun: storage.getRun,
@@ -271,10 +272,8 @@ export function createDurably(options: DurablyOptions): Durably {
     subscribe(runId: string): ReadableStream<DurablyEvent> {
       return new ReadableStream<DurablyEvent>({
         start: (controller) => {
-          // Track if stream is closed
           let closed = false
 
-          // Subscribe to all events that match this runId
           const unsubscribeStart = eventEmitter.on('run:start', (event) => {
             if (!closed && event.runId === runId) {
               controller.enqueue(event)
@@ -286,7 +285,6 @@ export function createDurably(options: DurablyOptions): Durably {
             (event) => {
               if (!closed && event.runId === runId) {
                 controller.enqueue(event)
-                // Close stream on completion
                 closed = true
                 cleanup()
                 controller.close()
@@ -297,7 +295,6 @@ export function createDurably(options: DurablyOptions): Durably {
           const unsubscribeFail = eventEmitter.on('run:fail', (event) => {
             if (!closed && event.runId === runId) {
               controller.enqueue(event)
-              // Close stream on failure
               closed = true
               cleanup()
               controller.close()
@@ -371,7 +368,6 @@ export function createDurably(options: DurablyOptions): Durably {
       if (run.status === 'running') {
         throw new Error(`Cannot retry running run: ${runId}`)
       }
-      // Only failed runs can be retried
       await storage.updateRun(runId, {
         status: 'pending',
         error: null,
@@ -392,7 +388,6 @@ export function createDurably(options: DurablyOptions): Durably {
       if (run.status === 'cancelled') {
         throw new Error(`Cannot cancel already cancelled run: ${runId}`)
       }
-      // pending or running can be cancelled
       await storage.updateRun(runId, {
         status: 'cancelled',
       })
@@ -409,33 +404,60 @@ export function createDurably(options: DurablyOptions): Durably {
       if (run.status === 'running') {
         throw new Error(`Cannot delete running run: ${runId}`)
       }
-      // completed, failed, or cancelled can be deleted
       await storage.deleteRun(runId)
     },
 
     async migrate(): Promise<void> {
-      // Already migrated
-      if (migrated) {
+      if (state.migrated) {
         return
       }
 
-      // Migration in progress, wait for it
-      if (migrating) {
-        return migrating
+      if (state.migrating) {
+        return state.migrating
       }
 
-      // Start migration
-      migrating = runMigrations(db)
+      state.migrating = runMigrations(db)
         .then(() => {
-          migrated = true
+          state.migrated = true
         })
         .finally(() => {
-          migrating = null
+          state.migrating = null
         })
 
-      return migrating
+      return state.migrating
     },
   }
 
   return durably
+}
+
+/**
+ * Create a Durably instance
+ */
+export function createDurably(
+  options: DurablyOptions,
+): Durably<Record<string, never>> {
+  const config = {
+    pollingInterval: options.pollingInterval ?? DEFAULTS.pollingInterval,
+    heartbeatInterval: options.heartbeatInterval ?? DEFAULTS.heartbeatInterval,
+    staleThreshold: options.staleThreshold ?? DEFAULTS.staleThreshold,
+  }
+
+  const db = new Kysely<Database>({ dialect: options.dialect })
+  const storage = createKyselyStorage(db)
+  const eventEmitter = createEventEmitter()
+  const jobRegistry = createJobRegistry()
+  const worker = createWorker(config, storage, eventEmitter, jobRegistry)
+
+  const state: DurablyState = {
+    db,
+    storage,
+    eventEmitter,
+    jobRegistry,
+    worker,
+    migrating: null,
+    migrated: false,
+  }
+
+  return createDurablyInstance(state, {})
 }

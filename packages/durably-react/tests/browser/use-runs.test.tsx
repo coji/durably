@@ -70,8 +70,8 @@ describe('useRuns', () => {
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
     // Trigger a job using the durably instance directly
-    const { testJobHandle } = durably.register({ testJobHandle: testJob })
-    await testJobHandle.trigger({ value: 10 })
+    const d = durably.register({ testJobHandle: testJob })
+    await d.jobs.testJobHandle.trigger({ value: 10 })
 
     // Wait for runs to update
     await waitFor(() => {
@@ -97,13 +97,13 @@ describe('useRuns', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { testJobHandle, otherJobHandle } = durably.register({
+    const d = durably.register({
       testJobHandle: testJob,
       otherJobHandle: otherJob,
     })
 
-    await testJobHandle.trigger({ value: 1 })
-    await otherJobHandle.trigger({ x: 'test' })
+    await d.jobs.testJobHandle.trigger({ value: 1 })
+    await d.jobs.otherJobHandle.trigger({ x: 'test' })
 
     await waitFor(() => {
       expect(result.current.runs.length).toBe(1)
@@ -122,15 +122,15 @@ describe('useRuns', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { testJobHandle } = durably.register({ testJobHandle: testJob })
+    const d = durably.register({ testJobHandle: testJob })
 
     // Trigger and wait for completion
-    const run = await testJobHandle.trigger({ value: 5 })
+    const run = await d.jobs.testJobHandle.trigger({ value: 5 })
 
     // Wait for run to complete
     await waitFor(
       async () => {
-        const runData = await testJobHandle.getRun(run.id)
+        const runData = await d.jobs.testJobHandle.getRun(run.id)
         expect(runData?.status).toBe('completed')
       },
       { timeout: 5000 },
@@ -155,12 +155,12 @@ describe('useRuns', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { testJobHandle } = durably.register({ testJobHandle: testJob })
+    const d = durably.register({ testJobHandle: testJob })
 
     // Create 3 runs
-    await testJobHandle.trigger({ value: 1 })
-    await testJobHandle.trigger({ value: 2 })
-    await testJobHandle.trigger({ value: 3 })
+    await d.jobs.testJobHandle.trigger({ value: 1 })
+    await d.jobs.testJobHandle.trigger({ value: 2 })
+    await d.jobs.testJobHandle.trigger({ value: 3 })
 
     await waitFor(() => {
       expect(result.current.runs.length).toBe(2)
@@ -194,12 +194,12 @@ describe('useRuns', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { testJobHandle } = durably.register({ testJobHandle: testJob })
+    const d = durably.register({ testJobHandle: testJob })
 
     // Create 3 runs
-    await testJobHandle.trigger({ value: 1 })
-    await testJobHandle.trigger({ value: 2 })
-    await testJobHandle.trigger({ value: 3 })
+    await d.jobs.testJobHandle.trigger({ value: 1 })
+    await d.jobs.testJobHandle.trigger({ value: 2 })
+    await d.jobs.testJobHandle.trigger({ value: 3 })
 
     await waitFor(() => {
       expect(result.current.runs.length).toBe(1)
@@ -222,12 +222,12 @@ describe('useRuns', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { testJobHandle } = durably.register({ testJobHandle: testJob })
+    const d = durably.register({ testJobHandle: testJob })
 
     // Initially empty
     expect(result.current.runs).toEqual([])
 
-    await testJobHandle.trigger({ value: 42 })
+    await d.jobs.testJobHandle.trigger({ value: 42 })
 
     // Manually refresh
     await result.current.refresh()
@@ -247,12 +247,12 @@ describe('useRuns', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { testJobHandle } = durably.register({ testJobHandle: testJob })
+    const d = durably.register({ testJobHandle: testJob })
 
     expect(result.current.runs.length).toBe(0)
 
     // Trigger job - should update automatically via events
-    await testJobHandle.trigger({ value: 99 })
+    await d.jobs.testJobHandle.trigger({ value: 99 })
 
     await waitFor(() => {
       expect(result.current.runs.length).toBe(1)
@@ -269,9 +269,9 @@ describe('useRuns', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { testJobHandle } = durably.register({ testJobHandle: testJob })
+    const d = durably.register({ testJobHandle: testJob })
 
-    await testJobHandle.trigger({ value: 77 })
+    await d.jobs.testJobHandle.trigger({ value: 77 })
 
     // Wait a bit - should NOT update automatically
     await new Promise((r) => setTimeout(r, 100))

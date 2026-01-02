@@ -40,7 +40,7 @@ export function createPluginTests(createDialect: () => Dialect) {
 
         durably.use(plugin)
 
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'plugin-test',
             input: z.object({}),
@@ -50,8 +50,8 @@ export function createPluginTests(createDialect: () => Dialect) {
           }),
         })
 
-        await job.trigger({})
-        durably.start()
+        await d.jobs.job.trigger({})
+        d.start()
 
         await vi.waitFor(
           async () => {
@@ -81,7 +81,7 @@ export function createPluginTests(createDialect: () => Dialect) {
         durably.use(plugin1)
         durably.use(plugin2)
 
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'multi-plugin-test',
             input: z.object({}),
@@ -91,8 +91,8 @@ export function createPluginTests(createDialect: () => Dialect) {
           }),
         })
 
-        await job.trigger({})
-        durably.start()
+        await d.jobs.job.trigger({})
+        d.start()
 
         await vi.waitFor(
           async () => {
@@ -109,7 +109,7 @@ export function createPluginTests(createDialect: () => Dialect) {
         const { withLogPersistence } = await import('../../src')
         durably.use(withLogPersistence())
 
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'log-persist-test',
             input: z.object({}),
@@ -120,19 +120,19 @@ export function createPluginTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
-        durably.start()
+        const run = await d.jobs.job.trigger({})
+        d.start()
 
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
           { timeout: 1000 },
         )
 
         // Check logs were persisted
-        const logs = await durably.storage.getLogs(run.id)
+        const logs = await d.storage.getLogs(run.id)
         expect(logs.length).toBeGreaterThanOrEqual(1)
         expect(logs[0].message).toBe('Test log message')
         expect(logs[0].level).toBe('info')
@@ -140,7 +140,7 @@ export function createPluginTests(createDialect: () => Dialect) {
       })
 
       it('logs table is empty without plugin', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'no-log-persist-test',
             input: z.object({}),
@@ -151,19 +151,19 @@ export function createPluginTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
-        durably.start()
+        const run = await d.jobs.job.trigger({})
+        d.start()
 
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
           { timeout: 1000 },
         )
 
         // Logs should not be persisted
-        const logs = await durably.storage.getLogs(run.id)
+        const logs = await d.storage.getLogs(run.id)
         expect(logs).toHaveLength(0)
       })
     })

@@ -16,7 +16,7 @@ export function createJobTests(createDialect: () => Dialect) {
       await durably.db.destroy()
     })
 
-    it('returns a JobHandle', () => {
+    it('returns a Durably instance with typed jobs', () => {
       const testJobDef = defineJob({
         name: 'test-job',
         input: z.object({ value: z.number() }),
@@ -25,13 +25,13 @@ export function createJobTests(createDialect: () => Dialect) {
           return { result: 42 }
         },
       })
-      const { testJob: job } = durably.register({ testJob: testJobDef })
+      const d = durably.register({ testJob: testJobDef })
 
-      expect(job).toBeDefined()
-      expect(job.name).toBe('test-job')
-      expect(job.trigger).toBeTypeOf('function')
-      expect(job.getRun).toBeTypeOf('function')
-      expect(job.getRuns).toBeTypeOf('function')
+      expect(d.jobs.testJob).toBeDefined()
+      expect(d.jobs.testJob.name).toBe('test-job')
+      expect(d.jobs.testJob.trigger).toBeTypeOf('function')
+      expect(d.jobs.testJob.getRun).toBeTypeOf('function')
+      expect(d.jobs.testJob.getRuns).toBeTypeOf('function')
     })
 
     it('returns same JobHandle for same JobDefinition (idempotent)', () => {
@@ -42,10 +42,10 @@ export function createJobTests(createDialect: () => Dialect) {
         run: async () => ({}),
       })
 
-      const { job: handle1 } = durably.register({ job: jobDef })
-      const { job: handle2 } = durably.register({ job: jobDef })
+      const d1 = durably.register({ job: jobDef })
+      const d2 = d1.register({ job2: jobDef })
 
-      expect(handle1).toBe(handle2)
+      expect(d1.jobs.job).toBe(d2.jobs.job2)
     })
 
     it('throws if different JobDefinition has same name', () => {
@@ -63,10 +63,10 @@ export function createJobTests(createDialect: () => Dialect) {
         run: async () => ({}),
       })
 
-      durably.register({ job1: jobDef1 })
+      const d = durably.register({ job1: jobDef1 })
 
       expect(() => {
-        durably.register({ job2: jobDef2 })
+        d.register({ job2: jobDef2 })
       }).toThrow(/already registered|different/i)
     })
 
@@ -83,18 +83,18 @@ export function createJobTests(createDialect: () => Dialect) {
         run: async () => {},
       })
 
-      const { importCsv, syncUsers } = durably.register({
+      const d = durably.register({
         importCsv: importCsvDef,
         syncUsers: syncUsersDef,
       })
 
       // Verify both handles are returned correctly
-      expect(importCsv.name).toBe('import-csv')
-      expect(syncUsers.name).toBe('sync-users')
+      expect(d.jobs.importCsv.name).toBe('import-csv')
+      expect(d.jobs.syncUsers.name).toBe('sync-users')
 
       // Verify both can be triggered independently
-      const csvRun = await importCsv.trigger({ rows: ['a', 'b'] })
-      const userRun = await syncUsers.trigger({ userId: 'user-1' })
+      const csvRun = await d.jobs.importCsv.trigger({ rows: ['a', 'b'] })
+      const userRun = await d.jobs.syncUsers.trigger({ userId: 'user-1' })
 
       expect(csvRun.id).toBeDefined()
       expect(userRun.id).toBeDefined()
@@ -108,15 +108,15 @@ export function createJobTests(createDialect: () => Dialect) {
         output: z.object({}),
         run: async () => ({}),
       })
-      const { job } = durably.register({ job: validatedJobDef })
+      const d = durably.register({ job: validatedJobDef })
 
       // Invalid input should throw
       await expect(
-        job.trigger({ count: 0 } as { count: number }),
+        d.jobs.job.trigger({ count: 0 } as { count: number }),
       ).rejects.toThrow()
 
       await expect(
-        job.trigger({ count: -1 } as { count: number }),
+        d.jobs.job.trigger({ count: -1 } as { count: number }),
       ).rejects.toThrow()
     })
 
@@ -127,10 +127,10 @@ export function createJobTests(createDialect: () => Dialect) {
         output: z.object({}),
         run: async () => ({}),
       })
-      const { job } = durably.register({ job: validInputJobDef })
+      const d = durably.register({ job: validInputJobDef })
 
       // Valid input should work
-      const run = await job.trigger({ count: 1 })
+      const run = await d.jobs.job.trigger({ count: 1 })
       expect(run).toBeDefined()
       expect(run.id).toBeDefined()
       expect(run.status).toBe('pending')
@@ -153,9 +153,9 @@ export function createJobTests(createDialect: () => Dialect) {
           return { success: true }
         },
       })
-      const { job } = durably.register({ job: typedInputJobDef })
+      const d = durably.register({ job: typedInputJobDef })
 
-      const run = await job.trigger({
+      const run = await d.jobs.job.trigger({
         name: 'test',
         count: 42,
       })
@@ -171,9 +171,9 @@ export function createJobTests(createDialect: () => Dialect) {
           // No return value
         },
       })
-      const { job } = durably.register({ job: noOutputJobDef })
+      const d = durably.register({ job: noOutputJobDef })
 
-      const run = await job.trigger({ value: 'test' })
+      const run = await d.jobs.job.trigger({ value: 'test' })
       expect(run.status).toBe('pending')
     })
   })
@@ -196,9 +196,9 @@ export function createJobTests(createDialect: () => Dialect) {
         input: z.object({ value: z.number() }),
         run: async () => {},
       })
-      const { job } = durably.register({ job: batchJobDef })
+      const d = durably.register({ job: batchJobDef })
 
-      const runs = await job.batchTrigger([
+      const runs = await d.jobs.job.batchTrigger([
         { value: 1 },
         { value: 2 },
         { value: 3 },
@@ -210,7 +210,7 @@ export function createJobTests(createDialect: () => Dialect) {
       expect(runs[2].status).toBe('pending')
 
       // Verify all runs exist in DB
-      const allRuns = await job.getRuns()
+      const allRuns = await d.jobs.job.getRuns()
       expect(allRuns).toHaveLength(3)
     })
 
@@ -220,15 +220,15 @@ export function createJobTests(createDialect: () => Dialect) {
         input: z.object({ value: z.number().min(1) }),
         run: async () => {},
       })
-      const { job } = durably.register({ job: batchValidateJobDef })
+      const d = durably.register({ job: batchValidateJobDef })
 
       // Second input is invalid (0 < min 1)
       await expect(
-        job.batchTrigger([{ value: 5 }, { value: 0 }, { value: 3 }]),
+        d.jobs.job.batchTrigger([{ value: 5 }, { value: 0 }, { value: 3 }]),
       ).rejects.toThrow()
 
       // No runs should have been created
-      const allRuns = await job.getRuns()
+      const allRuns = await d.jobs.job.getRuns()
       expect(allRuns).toHaveLength(0)
     })
 
@@ -238,9 +238,9 @@ export function createJobTests(createDialect: () => Dialect) {
         input: z.object({ id: z.string() }),
         run: async () => {},
       })
-      const { job } = durably.register({ job: batchOptionsJobDef })
+      const d = durably.register({ job: batchOptionsJobDef })
 
-      const runs = await job.batchTrigger([
+      const runs = await d.jobs.job.batchTrigger([
         { input: { id: 'a' }, options: { idempotencyKey: 'key-a' } },
         { input: { id: 'b' }, options: { concurrencyKey: 'group-1' } },
         { input: { id: 'c' } },
@@ -257,9 +257,9 @@ export function createJobTests(createDialect: () => Dialect) {
         input: z.object({}),
         run: async () => {},
       })
-      const { job } = durably.register({ job: batchEmptyJobDef })
+      const d = durably.register({ job: batchEmptyJobDef })
 
-      const runs = await job.batchTrigger([])
+      const runs = await d.jobs.job.batchTrigger([])
       expect(runs).toEqual([])
     })
   })

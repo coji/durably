@@ -112,9 +112,10 @@ export function useJob<
     if (!durably || !isDurablyReady) return
 
     // Register the job (use fixed key for simpler type handling)
-    const { _job: jobHandle } = durably.register({
+    const d = durably.register({
       _job: jobDefinition,
     })
+    const jobHandle = d.jobs._job
     jobHandleRef.current = jobHandle
 
     // Subscribe to each event type separately

@@ -97,8 +97,8 @@ describe('useJobRun', () => {
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
     // Trigger job and set runId
-    const { _job: handle } = durably.register({ _job: testJob })
-    const run = await handle.trigger({ input: 'test' })
+    const d = durably.register({ _job: testJob })
+    const run = await d.jobs._job.trigger({ input: 'test' })
 
     // Update runId to start subscription
     result.current.setRunId(run.id)
@@ -151,8 +151,8 @@ describe('useJobRun', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { _job: handle } = durably.register({ _job: testJob })
-    const run = await handle.trigger({ input: 'hello' })
+    const d = durably.register({ _job: testJob })
+    const run = await d.jobs._job.trigger({ input: 'hello' })
     result.current.setRunId(run.id)
 
     await waitFor(
@@ -187,10 +187,10 @@ describe('useJobRun', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { _job: handle } = durably.register({
+    const d = durably.register({
       _job: failingJob,
     })
-    const run = await handle.trigger({ input: 'test' })
+    const run = await d.jobs._job.trigger({ input: 'test' })
     result.current.setRunId(run.id)
 
     await waitFor(
@@ -225,10 +225,10 @@ describe('useJobRun', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { _job: handle } = durably.register({
+    const d = durably.register({
       _job: progressJob,
     })
-    const run = await handle.trigger({ input: 'test' })
+    const run = await d.jobs._job.trigger({ input: 'test' })
     result.current.setRunId(run.id)
 
     // Should eventually see progress or complete
@@ -266,8 +266,8 @@ describe('useJobRun', () => {
 
     await waitFor(() => expect(result.current.isReady).toBe(true))
 
-    const { _job: handle } = durably.register({ _job: testJob })
-    const run = await handle.trigger({ input: 'test' })
+    const d = durably.register({ _job: testJob })
+    const run = await d.jobs._job.trigger({ input: 'test' })
     result.current.setRunId(run.id)
 
     await waitFor(

@@ -8,7 +8,7 @@
  */
 
 import { Form, useActionData, useNavigation } from 'react-router'
-import { registeredJobs } from '~/lib/durably.server'
+import { durably } from '~/lib/durably.server'
 import type { Route } from './+types/_index'
 import { Dashboard } from './_index/dashboard'
 import { RunProgress } from './_index/run-progress'
@@ -53,7 +53,7 @@ export async function action({ request }: Route.ActionArgs) {
   // Generate dummy CSV rows
   const rows = generateDummyRows(rowCount)
 
-  const run = await registeredJobs.importCsv.trigger({ filename, rows })
+  const run = await durably.jobs.importCsv.trigger({ filename, rows })
   return { runId: run.id }
 }
 

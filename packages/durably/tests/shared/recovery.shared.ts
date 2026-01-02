@@ -24,7 +24,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
     describe('Heartbeat', () => {
       it('updates heartbeat_at periodically for running runs', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'heartbeat-test',
             input: z.object({}),
@@ -37,15 +37,15 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
+        const run = await d.jobs.job.trigger({})
         const initialHeartbeat = run.heartbeatAt
 
-        durably.start()
+        d.start()
 
         // Wait a bit then check heartbeat was updated
         await new Promise((r) => setTimeout(r, 200))
 
-        const midRun = await job.getRun(run.id)
+        const midRun = await d.jobs.job.getRun(run.id)
         expect(midRun?.status).toBe('running')
         expect(new Date(midRun!.heartbeatAt).getTime()).toBeGreaterThan(
           new Date(initialHeartbeat).getTime(),
@@ -54,7 +54,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         // Wait for completion
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
           { timeout: 1000 },
@@ -73,7 +73,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
         const timestamps: string[] = []
 
-        const { job } = customDurably.register({
+        const d = customDurably.register({
           job: defineJob({
             name: 'custom-heartbeat-test',
             input: z.object({}),
@@ -90,18 +90,18 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
-        customDurably.start()
+        const run = await d.jobs.job.trigger({})
+        d.start()
 
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
           { timeout: 2000 },
         )
 
-        await customDurably.stop()
+        await d.stop()
         await customDurably.db.destroy()
 
         // Should have recorded multiple timestamps
@@ -111,7 +111,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
     describe('Stale Run Recovery', () => {
       it('recovers stale running runs to pending', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'stale-recovery-test',
             input: z.object({}),
@@ -120,20 +120,20 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         })
 
         // Create a run and manually set it to running with old heartbeat
-        const run = await job.trigger({})
+        const run = await d.jobs.job.trigger({})
         const oldTime = new Date(Date.now() - 1000).toISOString() // 1 second ago
 
-        await durably.storage.updateRun(run.id, {
+        await d.storage.updateRun(run.id, {
           status: 'running',
           heartbeatAt: oldTime,
         })
 
         // Start worker - should recover the stale run
-        durably.start()
+        d.start()
 
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             // Should either be pending (recovered) or completed (re-executed)
             expect(['pending', 'completed']).toContain(updated?.status)
           },
@@ -145,7 +145,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         let step1Calls = 0
         let step2Calls = 0
 
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'resume-skip-test',
             input: z.object({}),
@@ -163,10 +163,10 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         })
 
         // Create run and simulate partial execution
-        const run = await job.trigger({})
+        const run = await d.jobs.job.trigger({})
 
         // Manually complete step1
-        await durably.storage.createStep({
+        await d.storage.createStep({
           runId: run.id,
           name: 'step1',
           index: 0,
@@ -175,17 +175,17 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           startedAt: new Date().toISOString(),
         })
 
-        await durably.storage.updateRun(run.id, {
+        await d.storage.updateRun(run.id, {
           status: 'running',
           currentStepIndex: 1,
           heartbeatAt: new Date(Date.now() - 1000).toISOString(),
         })
 
-        durably.start()
+        d.start()
 
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
           { timeout: 1000 },
@@ -199,7 +199,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
     describe('retry() API', () => {
       it('resets failed run to pending', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'retry-test',
             input: z.object({ shouldFail: z.boolean() }),
@@ -211,27 +211,27 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({ shouldFail: true })
-        durably.start()
+        const run = await d.jobs.job.trigger({ shouldFail: true })
+        d.start()
 
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('failed')
           },
           { timeout: 1000 },
         )
 
         // Retry the failed run
-        await durably.retry(run.id)
+        await d.retry(run.id)
 
-        const retried = await job.getRun(run.id)
+        const retried = await d.jobs.job.getRun(run.id)
         expect(retried?.status).toBe('pending')
         expect(retried?.error).toBeNull()
       })
 
       it('throws when retrying completed run', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'retry-completed-test',
             input: z.object({}),
@@ -239,24 +239,22 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
-        durably.start()
+        const run = await d.jobs.job.trigger({})
+        d.start()
 
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
           { timeout: 1000 },
         )
 
-        await expect(durably.retry(run.id)).rejects.toThrow(
-          /completed|cannot retry/i,
-        )
+        await expect(d.retry(run.id)).rejects.toThrow(/completed|cannot retry/i)
       })
 
       it('throws when retrying pending run', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'retry-pending-test',
             input: z.object({}),
@@ -264,16 +262,14 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
+        const run = await d.jobs.job.trigger({})
         // Don't start worker - run stays pending
 
-        await expect(durably.retry(run.id)).rejects.toThrow(
-          /pending|cannot retry/i,
-        )
+        await expect(d.retry(run.id)).rejects.toThrow(/pending|cannot retry/i)
       })
 
       it('throws when retrying running run', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'retry-running-test',
             input: z.object({}),
@@ -285,27 +281,25 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
-        durably.start()
+        const run = await d.jobs.job.trigger({})
+        d.start()
 
         // Wait until running
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('running')
           },
           { timeout: 500 },
         )
 
-        await expect(durably.retry(run.id)).rejects.toThrow(
-          /running|cannot retry/i,
-        )
+        await expect(d.retry(run.id)).rejects.toThrow(/running|cannot retry/i)
       })
     })
 
     describe('cancel() API', () => {
       it('cancels pending run', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'cancel-pending-test',
             input: z.object({}),
@@ -313,17 +307,17 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
+        const run = await d.jobs.job.trigger({})
         // Don't start worker - run stays pending
 
-        await durably.cancel(run.id)
+        await d.cancel(run.id)
 
-        const cancelled = await job.getRun(run.id)
+        const cancelled = await d.jobs.job.getRun(run.id)
         expect(cancelled?.status).toBe('cancelled')
       })
 
       it('cancels running run immediately', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'cancel-running-test',
             input: z.object({}),
@@ -336,27 +330,27 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
-        durably.start()
+        const run = await d.jobs.job.trigger({})
+        d.start()
 
         // Wait until running
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('running')
           },
           { timeout: 500 },
         )
 
         // Cancel while running - marks as cancelled immediately
-        await durably.cancel(run.id)
+        await d.cancel(run.id)
 
-        const cancelled = await job.getRun(run.id)
+        const cancelled = await d.jobs.job.getRun(run.id)
         expect(cancelled?.status).toBe('cancelled')
       })
 
       it('throws when cancelling completed run', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'cancel-completed-test',
             input: z.object({}),
@@ -364,24 +358,24 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
-        durably.start()
+        const run = await d.jobs.job.trigger({})
+        d.start()
 
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
           { timeout: 1000 },
         )
 
-        await expect(durably.cancel(run.id)).rejects.toThrow(
+        await expect(d.cancel(run.id)).rejects.toThrow(
           /completed|cannot cancel/i,
         )
       })
 
       it('throws when cancelling failed run', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'cancel-failed-test',
             input: z.object({}),
@@ -391,24 +385,22 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
-        durably.start()
+        const run = await d.jobs.job.trigger({})
+        d.start()
 
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('failed')
           },
           { timeout: 1000 },
         )
 
-        await expect(durably.cancel(run.id)).rejects.toThrow(
-          /failed|cannot cancel/i,
-        )
+        await expect(d.cancel(run.id)).rejects.toThrow(/failed|cannot cancel/i)
       })
 
       it('throws when cancelling already cancelled run', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'cancel-cancelled-test',
             input: z.object({}),
@@ -416,10 +408,10 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
-        await durably.cancel(run.id)
+        const run = await d.jobs.job.trigger({})
+        await d.cancel(run.id)
 
-        await expect(durably.cancel(run.id)).rejects.toThrow(
+        await expect(d.cancel(run.id)).rejects.toThrow(
           /cancelled|cannot cancel/i,
         )
       })
@@ -435,7 +427,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         let step2Executed = false
         let step3Executed = false
 
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'cancel-mid-execution-test',
             input: z.object({}),
@@ -458,26 +450,26 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
-        durably.start()
+        const run = await d.jobs.job.trigger({})
+        d.start()
 
         // Wait until running
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('running')
           },
           { timeout: 500 },
         )
 
         // Cancel while step1 is executing
-        await durably.cancel(run.id)
+        await d.cancel(run.id)
 
         // Wait for worker to finish processing
         await new Promise((r) => setTimeout(r, 200))
 
         // Run should stay cancelled (not overwritten to completed)
-        const finalRun = await job.getRun(run.id)
+        const finalRun = await d.jobs.job.getRun(run.id)
         expect(finalRun?.status).toBe('cancelled')
 
         // step1 was executed (was in progress when cancelled)
@@ -488,7 +480,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
 
       it('does not overwrite cancelled status with completed', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'cancel-no-overwrite-test',
             input: z.object({}),
@@ -501,33 +493,33 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
-        durably.start()
+        const run = await d.jobs.job.trigger({})
+        d.start()
 
         // Wait until running
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('running')
           },
           { timeout: 500 },
         )
 
         // Cancel while step is executing
-        await durably.cancel(run.id)
+        await d.cancel(run.id)
 
         // Wait for step to complete naturally
         await new Promise((r) => setTimeout(r, 300))
 
         // Status should remain cancelled even though job function returned normally
-        const finalRun = await job.getRun(run.id)
+        const finalRun = await d.jobs.job.getRun(run.id)
         expect(finalRun?.status).toBe('cancelled')
       })
     })
 
     describe('deleteRun() API', () => {
       it('deletes completed run with its steps and logs', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'delete-completed-test',
             input: z.object({}),
@@ -538,35 +530,35 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
-        durably.start()
+        const run = await d.jobs.job.trigger({})
+        d.start()
 
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
           { timeout: 1000 },
         )
 
         // Verify steps and logs exist
-        const steps = await durably.storage.getSteps(run.id)
+        const steps = await d.storage.getSteps(run.id)
         expect(steps.length).toBeGreaterThan(0)
 
         // Delete the run
-        await durably.deleteRun(run.id)
+        await d.deleteRun(run.id)
 
         // Run should be gone
-        const deleted = await job.getRun(run.id)
+        const deleted = await d.jobs.job.getRun(run.id)
         expect(deleted).toBeNull()
 
         // Steps should also be deleted
-        const deletedSteps = await durably.storage.getSteps(run.id)
+        const deletedSteps = await d.storage.getSteps(run.id)
         expect(deletedSteps.length).toBe(0)
       })
 
       it('deletes failed run', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'delete-failed-test',
             input: z.object({}),
@@ -576,25 +568,25 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
-        durably.start()
+        const run = await d.jobs.job.trigger({})
+        d.start()
 
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('failed')
           },
           { timeout: 1000 },
         )
 
-        await durably.deleteRun(run.id)
+        await d.deleteRun(run.id)
 
-        const deleted = await job.getRun(run.id)
+        const deleted = await d.jobs.job.getRun(run.id)
         expect(deleted).toBeNull()
       })
 
       it('deletes cancelled run', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'delete-cancelled-test',
             input: z.object({}),
@@ -602,17 +594,17 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
-        await durably.cancel(run.id)
+        const run = await d.jobs.job.trigger({})
+        await d.cancel(run.id)
 
-        await durably.deleteRun(run.id)
+        await d.deleteRun(run.id)
 
-        const deleted = await job.getRun(run.id)
+        const deleted = await d.jobs.job.getRun(run.id)
         expect(deleted).toBeNull()
       })
 
       it('throws when deleting pending run', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'delete-pending-test',
             input: z.object({}),
@@ -620,16 +612,16 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
+        const run = await d.jobs.job.trigger({})
         // Don't start worker - run stays pending
 
-        await expect(durably.deleteRun(run.id)).rejects.toThrow(
+        await expect(d.deleteRun(run.id)).rejects.toThrow(
           /pending|cannot delete/i,
         )
       })
 
       it('throws when deleting running run', async () => {
-        const { job } = durably.register({
+        const d = durably.register({
           job: defineJob({
             name: 'delete-running-test',
             input: z.object({}),
@@ -641,18 +633,18 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        const run = await job.trigger({})
-        durably.start()
+        const run = await d.jobs.job.trigger({})
+        d.start()
 
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('running')
           },
           { timeout: 500 },
         )
 
-        await expect(durably.deleteRun(run.id)).rejects.toThrow(
+        await expect(d.deleteRun(run.id)).rejects.toThrow(
           /running|cannot delete/i,
         )
       })

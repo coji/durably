@@ -16,15 +16,13 @@ const dialect = new LibsqlDialect({
   authToken: process.env.TURSO_AUTH_TOKEN,
 })
 
+// Create durably instance with chained register()
 const durably = createDurably({
   dialect,
   pollingInterval: 100,
   heartbeatInterval: 500,
   staleThreshold: 3000,
-})
-
-// Image processing job with sequential steps
-const { processImage } = durably.register({
+}).register({
   processImage: defineJob({
     name: 'process-image',
     input: z.object({ filename: z.string() }),
@@ -84,7 +82,7 @@ async function main() {
   console.log('Worker started\n')
 
   // Trigger job and wait for completion
-  const { id, output } = await processImage.triggerAndWait({
+  const { id, output } = await durably.jobs.processImage.triggerAndWait({
     filename: 'photo.jpg',
   })
   console.log(`\nRun ${id} completed`)

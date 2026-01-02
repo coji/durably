@@ -26,17 +26,14 @@ function singleton<T>(name: string, factory: () => T): T {
   return g[name]
 }
 
-// Durably instance
+// Durably instance with registered jobs
 export const durably = singleton('__durably', () =>
   createDurably({
     dialect: new LibsqlDialect({
       url: process.env.DATABASE_URL ?? 'file:./local.db',
     }),
-  }),
+  }).register(jobs),
 )
-
-// Registered jobs
-export const registeredJobs = singleton('__jobs', () => durably.register(jobs))
 
 // HTTP handler
 export const durablyHandler = singleton('__durablyHandler', () =>
