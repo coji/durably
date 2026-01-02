@@ -54,6 +54,18 @@ const loggingJob = defineJob({
   },
 })
 
+const longRunningJob = defineJob({
+  name: 'long-running-job',
+  input: z.object({ input: z.string() }),
+  run: async (context) => {
+    // Simulate a long-running job by waiting
+    await context.run('wait', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5000))
+    })
+    return { done: true }
+  },
+})
+
 describe('useJob', () => {
   // Track all instances created during tests for cleanup
   const instances: Durably[] = []
@@ -413,5 +425,32 @@ describe('useJob', () => {
       // Verify output is from the first job
       expect(result.current.output).toEqual({ id: 1 })
     })
+  })
+
+  it('triggerAndWait rejects on cancelled', async () => {
+    const durably = await createTestDurably({ pollingInterval: 50 })
+    instances.push(durably)
+
+    const { result } = renderHook(() => useJob(longRunningJob), {
+      wrapper: createWrapper(durably),
+    })
+
+    await waitFor(() => expect(result.current.isReady).toBe(true))
+
+    // Start the long-running job and get the promise
+    const waitPromise = result.current.triggerAndWait({ input: 'test' })
+
+    // Wait for the job to start running
+    await waitFor(() => {
+      expect(result.current.currentRunId).not.toBeNull()
+      expect(result.current.status).toBe('running')
+    })
+
+    // Cancel the job
+    const runId = result.current.currentRunId!
+    await durably.cancel(runId)
+
+    // The promise should reject with 'Job cancelled'
+    await expect(waitPromise).rejects.toThrow('Job cancelled')
   })
 })

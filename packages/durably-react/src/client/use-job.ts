@@ -134,6 +134,9 @@ export function useJob<
           } else if (subscription.status === 'failed') {
             clearInterval(checkInterval)
             reject(new Error(subscription.error ?? 'Job failed'))
+          } else if (subscription.status === 'cancelled') {
+            clearInterval(checkInterval)
+            reject(new Error('Job cancelled'))
           }
         }, 50)
       })

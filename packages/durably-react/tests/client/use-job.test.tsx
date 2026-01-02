@@ -333,7 +333,7 @@ describe('useJob (client)', () => {
 
   // Note: triggerAndWait tests are difficult to test with the polling-based implementation
   // because the hook needs to re-render to see the updated subscription.status.
-  // The triggerAndWait function is covered indirectly through the browser tests.
+  // The triggerAndWait function is covered by the browser tests which use real React re-renders.
 
   describe('initialRunId', () => {
     it('sets currentRunId from initialRunId', () => {

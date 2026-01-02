@@ -317,6 +317,8 @@ export function useJob<
             resolve({ runId: run.id, output: updatedRun.output as TOutput })
           } else if (updatedRun.status === 'failed') {
             reject(new Error(updatedRun.error ?? 'Job failed'))
+          } else if (updatedRun.status === 'cancelled') {
+            reject(new Error('Job cancelled'))
           } else {
             // Still running, check again
             setTimeout(checkCompletion, 50)
