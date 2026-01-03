@@ -1,115 +1,156 @@
 # API Reference
 
-This section provides detailed API documentation for Durably.
+Complete API documentation for Durably.
 
 ## Core API (@coji/durably)
 
 | Export | Description |
 |--------|-------------|
 | [`createDurably`](/api/create-durably) | Create a Durably instance |
-| [`defineJob`](/api/define-job) | Define a job (standalone function) |
+| [`defineJob`](/api/define-job) | Define a job with type-safe schema |
 | [`Step`](/api/step) | Step context for job handlers |
 | [`Events`](/api/events) | Event types and subscriptions |
 
 ## React API (@coji/durably-react)
 
+### Browser-Complete Mode
+
 | Export | Description |
 |--------|-------------|
-| [`DurablyProvider`](/api/durably-react#durablyprovider) | React context provider |
-| [`useJob`](/api/durably-react#usejob) | Trigger and monitor a job |
-| [`useJobRun`](/api/durably-react#usejobrun) | Subscribe to an existing run |
-| [`useJobLogs`](/api/durably-react#usejoblogs) | Subscribe to logs from a run |
-| [`useDurably`](/api/durably-react#usedurably) | Access Durably instance directly |
+| [`DurablyProvider`](/api/durably-react/browser#durablyprovider) | React context provider |
+| [`useDurably`](/api/durably-react/browser#usedurably) | Access Durably instance directly |
+| [`useJob`](/api/durably-react/browser#usejob) | Trigger and monitor a job |
+| [`useJobRun`](/api/durably-react/browser#usejobrun) | Subscribe to an existing run |
+| [`useJobLogs`](/api/durably-react/browser#usejoblogs) | Subscribe to logs from a run |
+| [`useRuns`](/api/durably-react/browser#useruns) | List runs with filtering |
 
-See the [durably-react API reference](/api/durably-react) for detailed documentation.
+### Server-Connected Mode (@coji/durably-react/client)
 
-## Quick Reference
+| Export | Description |
+|--------|-------------|
+| [`createDurablyClient`](/api/durably-react/client#createdurablyclient) | Type-safe client for server mode |
+| [`useJob`](/api/durably-react/client#usejob) | Trigger job via HTTP |
+| [`useJobRun`](/api/durably-react/client#usejobrun) | Subscribe to run via SSE |
+| [`useJobLogs`](/api/durably-react/client#usejoblogs) | Subscribe to logs via SSE |
+| [`useRuns`](/api/durably-react/client#useruns) | List and paginate runs |
+| [`useRunActions`](/api/durably-react/client#userunactions) | Run actions (cancel, retry, delete) |
 
-### Creating an Instance
+[Full React API Reference →](/api/durably-react/)
+
+## Server API (@coji/durably)
+
+| Export | Description |
+|--------|-------------|
+| [`createDurablyHandler`](/api/create-durably#createdurablyhandler) | Create HTTP handlers for Durably |
+
+## Quick Start
+
+### Installation
+
+```bash
+# Core package
+npm install @coji/durably kysely zod
+
+# React bindings (optional)
+npm install @coji/durably-react
+
+# SQLite driver (choose one)
+npm install @libsql/kysely-libsql   # Server (libSQL/Turso)
+npm install sqlocal                  # Browser (OPFS)
+```
+
+### Basic Setup
 
 ```ts
 import { createDurably, defineJob } from '@coji/durably'
+import { LibsqlDialect } from '@libsql/kysely-libsql'
+import { createClient } from '@libsql/client'
+import { z } from 'zod'
 
-const durably = createDurably({
-  dialect,                    // Kysely SQLite dialect
-  pollingInterval: 1000,      // Worker polling interval (ms)
-  heartbeatInterval: 5000,    // Heartbeat update interval (ms)
-  staleThreshold: 30000,      // Time until job is considered stale (ms)
-})
-```
+// 1. Create SQLite dialect
+const client = createClient({ url: 'file:local.db' })
+const dialect = new LibsqlDialect({ client })
 
-### Instance Methods
-
-```ts
-// Lifecycle
-await durably.migrate()       // Run database migrations
-durably.start()               // Start the worker
-await durably.stop()          // Stop the worker gracefully
-
-// Job management
-const { job } = durably.register({ job: jobDef })  // Register jobs
-await durably.retry(runId)            // Retry a failed run
-
-// Events
-const unsub = durably.on(event, handler)
-```
-
-### Defining and Registering Jobs
-
-```ts
-import { defineJob } from '@coji/durably'
-
-// Define a job
-const myJobDef = defineJob({
-  name: 'my-job',
-  input: z.object({ id: z.string() }),
-  output: z.object({ result: z.string() }),
+// 2. Define job
+const processDataJob = defineJob({
+  name: 'process-data',
+  input: z.object({ items: z.array(z.string()) }),
+  output: z.object({ count: z.number() }),
   run: async (step, payload) => {
-    const result = await step.run('step-name', async () => {
-      return value
-    })
-    return { result }
+    for (let i = 0; i < payload.items.length; i++) {
+      await step.run(`process-${i}`, async () => {
+        // Process item
+      })
+      step.progress(i + 1, payload.items.length)
+    }
+    return { count: payload.items.length }
   },
 })
 
-// Register with durably instance
-const { myJob } = durably.register({
-  myJob: myJobDef,
+// 3. Create Durably instance with registered jobs
+const durably = createDurably({ dialect }).register({
+  processData: processDataJob,
 })
 
-// Trigger a new run
-await myJob.trigger(input, options?)
-```
+// 4. Initialize and start
+await durably.migrate()
+durably.start()
 
-### Step Methods
-
-```ts
-defineJob({
-  name: 'example',
-  input: z.object({}),
-  run: async (step, payload) => {
-    // Execute a step
-    const result = await step.run('step-name', async () => {
-      return value
-    })
-
-    // Log a message
-    step.log.info('message', { data })
-  },
-})
+// 5. Trigger a job
+const run = await durably.jobs.processData.trigger({ items: ['a', 'b', 'c'] })
+console.log('Run ID:', run.id)
 ```
 
 ## Type Exports
 
 ```ts
 import type {
+  // Core
   Durably,
   DurablyOptions,
+  DurablyPlugin,
+
+  // Job
   JobDefinition,
   JobHandle,
+  JobInput,
+  JobOutput,
+
+  // Step
   StepContext,
-  TriggerOptions,
+
+  // Run
+  Run,
+  RunFilter,
   RunStatus,
-  StepStatus,
+  TriggerOptions,
+  TriggerAndWaitResult,
+
+  // Events
+  DurablyEvent,
+  EventType,
+  EventListener,
+  Unsubscribe,
+  ErrorHandler,
+  RunStartEvent,
+  RunCompleteEvent,
+  RunFailEvent,
+  RunProgressEvent,
+  StepStartEvent,
+  StepCompleteEvent,
+  StepFailEvent,
+  LogWriteEvent,
+  WorkerErrorEvent,
+
+  // Server
+  DurablyHandler,
+  TriggerRequest,
+  TriggerResponse,
+
+  // Database (advanced)
+  Database,
+  RunsTable,
+  StepsTable,
+  LogsTable,
 } from '@coji/durably'
 ```

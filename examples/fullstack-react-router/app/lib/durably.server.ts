@@ -26,5 +26,4 @@ export const durably = createDurably({
 export const durablyHandler = createDurablyHandler(durably)
 
 // Initialize database and start worker
-await durably.migrate()
-durably.start()
+await durably.init()

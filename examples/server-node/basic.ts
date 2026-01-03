@@ -31,11 +31,8 @@ async function main() {
   console.log('Durably Node.js Example')
   console.log('=======================\n')
 
-  await durably.migrate()
-  console.log('Migration completed')
-
-  durably.start()
-  console.log('Worker started\n')
+  await durably.init()
+  console.log('Initialized\n')
 
   // Trigger job and wait for completion
   const { id, output } = await durably.jobs.processImage.triggerAndWait({

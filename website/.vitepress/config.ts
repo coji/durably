@@ -11,7 +11,7 @@ export default defineConfig({
     logo: '/logo.svg',
 
     nav: [
-      { text: 'Guide', link: '/guide/getting-started' },
+      { text: 'Guide', link: '/guide/' },
       { text: 'API', link: '/api/' },
       { text: 'Demo', link: 'https://durably-demo.vercel.app' },
       { text: 'llms.txt', link: '/durably/llms.txt' },
@@ -27,20 +27,17 @@ export default defineConfig({
           ],
         },
         {
-          text: 'Core Concepts',
+          text: 'Use Cases',
           items: [
-            { text: 'Jobs and Steps', link: '/guide/jobs-and-steps' },
-            { text: 'Resumability', link: '/guide/resumability' },
-            { text: 'Events', link: '/guide/events' },
+            { text: 'CSV Import (Full-Stack)', link: '/guide/csv-import' },
+            { text: 'Offline App (Browser)', link: '/guide/offline-app' },
+            { text: 'Background Sync (Server)', link: '/guide/background-sync' },
           ],
         },
         {
-          text: 'Usage',
+          text: 'Reference',
           items: [
-            { text: 'Server', link: '/guide/server' },
-            { text: 'Full-Stack', link: '/guide/full-stack' },
-            { text: 'Browser-Only', link: '/guide/browser-only' },
-            { text: 'Deployment', link: '/guide/deployment' },
+            { text: 'Core Concepts', link: '/guide/concepts' },
           ],
         },
       ],
@@ -57,7 +54,12 @@ export default defineConfig({
         },
         {
           text: 'React API',
-          items: [{ text: 'durably-react', link: '/api/durably-react' }],
+          items: [
+            { text: 'Overview', link: '/api/durably-react/' },
+            { text: 'Browser Mode', link: '/api/durably-react/browser' },
+            { text: 'Server Mode', link: '/api/durably-react/client' },
+            { text: 'Types', link: '/api/durably-react/types' },
+          ],
         },
       ],
     },

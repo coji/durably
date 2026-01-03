@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 280">
+  <defs>
+    <style>
+      .box-title { font: bold 13px system-ui, sans-serif; fill: #1f2937; }
+      .box-text { font: 11px system-ui, sans-serif; fill: #6b7280; }
+      .protocol { font: bold 10px ui-monospace, monospace; fill: #6b7280; }
+      .endpoint { font: 10px ui-monospace, monospace; fill: #8b5cf6; }
+      .box { rx: 8; }
+    </style>
+    <marker id="arrowR" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,1 L0,7 L7,4 z" fill="#3b82f6"/>
+    </marker>
+    <marker id="arrowL" markerWidth="8" markerHeight="8" refX="1" refY="4" orient="auto">
+      <path d="M8,1 L8,7 L1,4 z" fill="#22c55e"/>
+    </marker>
+  </defs>
+
+  <!-- Browser Box -->
+  <rect x="30" y="30" width="200" height="220" fill="#f0f9ff" stroke="#0ea5e9" stroke-width="2" class="box"/>
+  <text x="130" y="55" text-anchor="middle" class="box-title">Browser</text>
+
+  <!-- Browser internals -->
+  <rect x="50" y="70" width="160" height="40" fill="white" stroke="#d1d5db" stroke-width="1" class="box"/>
+  <text x="130" y="95" text-anchor="middle" class="box-text">Form (CSV Upload)</text>
+
+  <rect x="50" y="120" width="160" height="40" fill="white" stroke="#d1d5db" stroke-width="1" class="box"/>
+  <text x="130" y="145" text-anchor="middle" class="box-text">useRun(runId)</text>
+
+  <rect x="50" y="170" width="160" height="60" fill="white" stroke="#d1d5db" stroke-width="1" class="box"/>
+  <text x="130" y="192" text-anchor="middle" class="box-text">Progress UI</text>
+  <text x="130" y="210" text-anchor="middle" class="endpoint">50/100 rows</text>
+
+  <!-- Server Box -->
+  <rect x="400" y="30" width="270" height="220" fill="#f0fdf4" stroke="#22c55e" stroke-width="2" class="box"/>
+  <text x="535" y="55" text-anchor="middle" class="box-title">Server (React Router)</text>
+
+  <!-- Server internals -->
+  <rect x="420" y="70" width="230" height="40" fill="white" stroke="#d1d5db" stroke-width="1" class="box"/>
+  <text x="535" y="88" text-anchor="middle" class="box-text">action: Parse CSV + Trigger Job</text>
+  <text x="535" y="102" text-anchor="middle" class="endpoint">/api/durably/trigger</text>
+
+  <rect x="420" y="120" width="230" height="50" fill="white" stroke="#d1d5db" stroke-width="1" class="box"/>
+  <text x="535" y="140" text-anchor="middle" class="box-text">Durably Worker</text>
+  <text x="535" y="158" text-anchor="middle" class="endpoint">Execute steps, emit events</text>
+
+  <rect x="420" y="180" width="230" height="50" fill="white" stroke="#d1d5db" stroke-width="1" class="box"/>
+  <text x="535" y="200" text-anchor="middle" class="box-text">SSE Stream</text>
+  <text x="535" y="218" text-anchor="middle" class="endpoint">/api/durably/subscribe</text>
+
+  <!-- Arrows -->
+  <!-- POST request -->
+  <path d="M215 90 L395 90" stroke="#3b82f6" stroke-width="2" marker-end="url(#arrowR)"/>
+  <rect x="265" y="75" width="60" height="18" fill="white"/>
+  <text x="295" y="88" text-anchor="middle" class="protocol">POST</text>
+
+  <!-- SSE response -->
+  <path d="M395 200 L215 165" stroke="#22c55e" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arrowL)"/>
+  <rect x="265" y="168" width="60" height="18" fill="white"/>
+  <text x="295" y="181" text-anchor="middle" class="protocol">SSE</text>
+
+  <!-- Legend -->
+  <rect x="250" y="250" width="200" height="24" fill="#f9fafb" stroke="#e5e7eb" stroke-width="1" rx="4"/>
+  <line x1="270" y1="262" x2="300" y2="262" stroke="#3b82f6" stroke-width="2"/>
+  <text x="310" y="266" class="box-text">Request</text>
+  <line x1="370" y1="262" x2="400" y2="262" stroke="#22c55e" stroke-width="2" stroke-dasharray="6,3"/>
+  <text x="410" y="266" class="box-text">Events</text>
+</svg>

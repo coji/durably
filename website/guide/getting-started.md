@@ -1,89 +1,165 @@
 # Getting Started
 
-## Choose Your Setup
+Build a CSV importer with real-time progress UI. This guide uses React Router v7 for full-stack development.
 
-| Setup | Description | Guide |
-|-------|-------------|-------|
-| **Server** | Run jobs on Node.js server | [→](/guide/server) |
-| **Full-Stack** | Server execution + React UI for monitoring | [→](/guide/full-stack) |
-| **Browser-Only** | Run entirely in the browser (no server) | [→](/guide/browser-only) |
+![Getting Started Overview](/images/getting-started-overview.svg)
 
-## Quick Start (Server)
-
-The simplest way to get started.
-
-### 1. Install
+## Install
 
 ```bash
-npm install @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
+npm install @coji/durably @coji/durably-react kysely zod @libsql/client @libsql/kysely-libsql
 ```
 
-### 2. Define a Job
+## 1. Define a Job (Server)
 
 ```ts
-// jobs.ts
-import { createDurably, defineJob } from '@coji/durably'
-import { LibsqlDialect } from '@libsql/kysely-libsql'
-import { createClient } from '@libsql/client'
+// app/jobs/import-csv.ts
+import { defineJob } from '@coji/durably'
 import { z } from 'zod'
 
-// Create Durably instance
-const client = createClient({ url: 'file:local.db' })
-const dialect = new LibsqlDialect({ client })
-const durably = createDurably({ dialect })
-
-// Define a CSV import job
-const importCsvJob = defineJob({
+export const importCsvJob = defineJob({
   name: 'import-csv',
-  input: z.object({ filePath: z.string() }),
-  output: z.object({ count: z.number() }),
+  input: z.object({
+    filename: z.string(),
+    rows: z.array(z.object({
+      name: z.string(),
+      email: z.string(),
+    })),
+  }),
+  output: z.object({ imported: z.number() }),
   run: async (step, payload) => {
-    // Step 1: Parse CSV
-    const rows = await step.run('parse', async () => {
-      const fs = await import('fs/promises')
-      const csv = await fs.readFile(payload.filePath, 'utf-8')
-      return csv.split('\n').slice(1).map((line) => line.split(','))
+    step.log.info(`Starting import of ${payload.filename}`)
+
+    // Step 1: Validate
+    const validRows = await step.run('validate', async () => {
+      step.progress(1, 3, 'Validating...')
+      return payload.rows.filter(row => row.email.includes('@'))
     })
 
-    // Step 2: Import rows
+    // Step 2: Import
     await step.run('import', async () => {
-      // Your database logic here
-      console.log(`Importing ${rows.length} rows`)
+      for (let i = 0; i < validRows.length; i++) {
+        step.progress(i + 1, validRows.length, `Importing ${validRows[i].name}...`)
+        // await db.insert('users', validRows[i])
+      }
     })
 
-    return { count: rows.length }
+    return { imported: validRows.length }
   },
 })
+```
 
-// Register the job
-const { importCsv } = durably.register({
+```ts
+// app/lib/durably.server.ts
+import { createDurably, createDurablyHandler } from '@coji/durably'
+import { LibsqlDialect } from '@libsql/kysely-libsql'
+import { createClient } from '@libsql/client'
+import { importCsvJob } from '~/jobs/import-csv'
+
+const client = createClient({ url: 'file:local.db' })
+const dialect = new LibsqlDialect({ client })
+
+export const durably = createDurably({ dialect }).register({
   importCsv: importCsvJob,
 })
 
-// Initialize and start
-await durably.migrate()
-durably.start()
+export const durablyHandler = createDurablyHandler(durably)
 
-// Trigger a job
-await importCsv.trigger({ filePath: './data/users.csv' })
+await durably.init()
 ```
 
-### 3. Run
+## 2. Create API Route (Splat)
 
-```bash
-npx tsx jobs.ts
+```ts
+// app/routes/api.durably.$.ts
+import { durablyHandler } from '~/lib/durably.server'
+import type { Route } from './+types/api.durably.$'
+
+export async function loader({ request }: Route.LoaderArgs) {
+  return durablyHandler.handle(request, '/api/durably')
+}
+
+export async function action({ request }: Route.ActionArgs) {
+  return durablyHandler.handle(request, '/api/durably')
+}
 ```
 
-If the process crashes after step 1, restarting will skip the parse and continue from step 2.
+## 3. Create Type-Safe Client
+
+```ts
+// app/lib/durably.client.ts
+import { createDurablyClient } from '@coji/durably-react/client'
+import type { durably } from './durably.server'
+
+export const durablyClient = createDurablyClient<typeof durably>({
+  api: '/api/durably',
+})
+```
+
+## 4. Build the UI
+
+```tsx
+// app/routes/_index.tsx
+import { Form, useActionData } from 'react-router'
+import { durably } from '~/lib/durably.server'
+import { durablyClient } from '~/lib/durably.client'
+import type { Route } from './+types/_index'
+
+export async function action({ request }: Route.ActionArgs) {
+  const formData = await request.formData()
+  const file = formData.get('file') as File
+  const text = await file.text()
+  const rows = text.split('\n').slice(1).map(line => {
+    const [name, email] = line.split(',')
+    return { name, email }
+  })
+  const run = await durably.jobs.importCsv.trigger({
+    filename: file.name,
+    rows,
+  })
+  return { runId: run.id }
+}
+
+export default function Home() {
+  const actionData = useActionData<typeof action>()
+  const { progress, output, isRunning, isCompleted } =
+    durablyClient.importCsv.useRun(actionData?.runId ?? null)
+
+  return (
+    <div>
+      <Form method="post" encType="multipart/form-data">
+        <input type="file" name="file" accept=".csv" />
+        <button disabled={isRunning}>
+          {isRunning ? 'Importing...' : 'Import'}
+        </button>
+      </Form>
+
+      {progress && (
+        <p>Progress: {progress.current}/{progress.total} - {progress.message}</p>
+      )}
+      {isCompleted && <p>Done! Imported {output?.imported} rows</p>}
+    </div>
+  )
+}
+```
+
+## Try It
+
+1. Create a `test.csv`:
+   ```csv
+   name,email
+   Alice,alice@example.com
+   Bob,bob@example.com
+   ```
+
+2. Run: `npm run dev`
+
+3. Upload the CSV and watch real-time progress!
+
+If you stop the server mid-import and restart, it resumes from where it left off.
 
 ## Next Steps
 
-Learn the concepts:
-- [Jobs and Steps](/guide/jobs-and-steps) - How jobs and steps work
-- [Resumability](/guide/resumability) - How resumption works
-- [Events](/guide/events) - Monitor job execution
-
-Choose your setup:
-- [Server](/guide/server) - Detailed server-side guide
-- [Full-Stack](/guide/full-stack) - React Router v7 + React hooks
-- [Browser-Only](/guide/browser-only) - Browser-only with SQLite WASM
+- **[CSV Import (Full-Stack)](/guide/csv-import)** — Complete tutorial with dashboard
+- **[Offline App (Browser-Only)](/guide/offline-app)** — Run entirely in the browser
+- **[Background Sync (Server)](/guide/background-sync)** — Server-only batch processing

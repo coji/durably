@@ -85,6 +85,18 @@ export interface Durably<
   readonly jobs: TJobs
 
   /**
+   * Initialize Durably: run migrations and start the worker
+   * This is the recommended way to start Durably.
+   * Equivalent to calling migrate() then start().
+   * @example
+   * ```ts
+   * const durably = createDurably({ dialect }).register({ ... })
+   * await durably.init()
+   * ```
+   */
+  init(): Promise<void>
+
+  /**
    * Run database migrations
    * This is idempotent and safe to call multiple times
    */
@@ -461,6 +473,11 @@ function createDurablyInstance<
         })
 
       return state.migrating
+    },
+
+    async init(): Promise<void> {
+      await this.migrate()
+      this.start()
     },
   }
 

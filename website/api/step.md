@@ -90,14 +90,6 @@ The unique identifier of the current run.
 const id: string = step.runId
 ```
 
-### `stepIndex`
-
-The current step index (0-based).
-
-```ts
-const index: number = step.stepIndex
-```
-
 ## Example
 
 ```ts

@@ -1,80 +1,49 @@
 # What is Durably?
 
-Durably is a **resumable job execution** library for Node.js and browsers. Split long-running tasks into steps, and if interrupted, resume from the last successful step.
+Durably is a **resumable job execution** library for TypeScript. Split long-running tasks into steps — if interrupted, resume from the last successful step.
 
-## Use Cases
+## The Problem
 
-### Long-Running Jobs with Progress UI
+Long-running tasks fail. Networks drop, servers restart, browsers close. Traditional approaches either:
 
-Import a CSV with thousands of rows and show real-time progress in your React app via SSE.
+- **Lose all progress** and restart from scratch
+- **Require complex infrastructure** like Redis queues or cloud services
 
-```tsx
-const { trigger, progress, isRunning } = useJob({
-  api: '/api/durably',
-  jobName: 'import-csv',
-})
+## The Solution
 
-// Progress: 500/1000 rows
-```
+Durably saves each step's result to SQLite. On resume, completed steps return cached results instantly.
 
-[Full-Stack Guide →](/guide/full-stack)
-
-### Data Sync & Batch Processing
-
-Fetch data from APIs, transform, and save. If the process fails midway, it resumes from where it left off.
+![Resumability](/images/resumability.svg)
 
 ```ts
-const importJob = defineJob({
+const job = defineJob({
   name: 'import-csv',
   run: async (step, payload) => {
-    // Step 1: Parse CSV (persisted after completion)
-    const rows = await step.run('parse', () => parseCSV(payload.csv))
+    // Step 1: Parse (cached after first run)
+    const rows = await step.run('parse', () => parseCSV(payload.file))
 
-    // Step 2: Import (skipped if already done)
+    // Step 2: Import each row
     for (const [i, row] of rows.entries()) {
       await step.run(`import-${i}`, () => db.insert(row))
+      step.progress(i + 1, rows.length)
     }
+
+    return { count: rows.length }
   },
 })
 ```
 
-[Server Guide →](/guide/server)
+If the process crashes after importing 500 of 1000 rows, restart picks up at row 501.
 
-### Offline-Capable Apps
+## Where It Runs
 
-Run Durably entirely in the browser with SQLite WASM. Works offline, survives tab closes.
+| Environment | Storage | Use Case |
+|-------------|---------|----------|
+| **Node.js** | libsql/better-sqlite3 | Server-side batch jobs |
+| **Browser** | SQLite WASM + OPFS | Offline-capable apps |
 
-```tsx
-<DurablyProvider dialectFactory={() => new SQLocalKysely('app.db').dialect}>
-  <App />
-</DurablyProvider>
-```
+Same job definition works in both environments.
 
-[Browser-Only Guide →](/guide/browser-only)
+## Next Step
 
-## How It Works
-
-Each `step.run()` persists its result to SQLite. On resume, completed steps return their cached results instantly.
-
-```ts
-// First run: executes all steps
-// Second run (after crash): step 1 returns cached result, step 2 executes
-
-const result = await step.run('expensive-api-call', async () => {
-  return await fetch('/api/data').then((r) => r.json())
-})
-```
-
-## Features
-
-- **Step-level persistence** - Each step is a checkpoint
-- **Automatic resumption** - Resume from last successful step
-- **Cross-platform** - Node.js and browsers
-- **TypeScript** - Full type safety with Zod schemas
-- **Minimal dependencies** - Just Kysely and Zod
-
-## Next Steps
-
-- [Getting Started](/guide/getting-started) - Install and run your first job
-- [Jobs and Steps](/guide/jobs-and-steps) - Core concepts
-- [Live Demo](https://durably-demo.vercel.app) - Try it in your browser
+**[Getting Started →](/guide/getting-started)** — Build a CSV importer with progress UI in 5 minutes.

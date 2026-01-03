@@ -30,13 +30,21 @@ interface DurablyOptions {
 
 Returns a `Durably` instance with the following methods:
 
+### `init()`
+
+```ts
+await durably.init(): Promise<void>
+```
+
+Initialize Durably: runs database migrations and starts the worker. This is the recommended way to start Durably. Equivalent to calling `migrate()` then `start()`.
+
 ### `migrate()`
 
 ```ts
 await durably.migrate(): Promise<void>
 ```
 
-Runs database migrations to create the required tables.
+Runs database migrations to create the required tables. Use this when you need to run migrations without starting the worker (e.g., in browser mode where `DurablyProvider` handles starting).
 
 ### `start()`
 
@@ -44,7 +52,7 @@ Runs database migrations to create the required tables.
 durably.start(): void
 ```
 
-Starts the worker that processes pending jobs.
+Starts the worker that processes pending jobs. Typically called after `migrate()`, or use `init()` for both.
 
 ### `stop()`
 
@@ -167,8 +175,8 @@ const durably = createDurably({
   staleThreshold: 30000,
 })
 
-await durably.migrate()
-durably.start()
+// Initialize (migrate + start)
+await durably.init()
 
 // Define and register jobs
 import { defineJob } from '@coji/durably'
@@ -191,4 +199,86 @@ await durably.jobs.myJob.trigger({ id: '123' })
 process.on('SIGTERM', async () => {
   await durably.stop()
 })
+```
+
+## createDurablyHandler
+
+Create HTTP handlers for exposing Durably via REST/SSE. Import from `@coji/durably/server`.
+
+```ts
+import { createDurablyHandler } from '@coji/durably/server'
+
+const handler = createDurablyHandler(durably, {
+  onRequest: async () => {
+    await durably.init()
+  },
+})
+```
+
+### Options
+
+```ts
+interface CreateDurablyHandlerOptions {
+  /** Called before handling each request */
+  onRequest?: () => Promise<void> | void
+}
+```
+
+### handle(request, basePath)
+
+Handle all Durably HTTP requests with automatic routing.
+
+```ts
+// React Router / Remix
+export async function loader({ request }) {
+  return handler.handle(request, '/api/durably')
+}
+
+export async function action({ request }) {
+  return handler.handle(request, '/api/durably')
+}
+```
+
+### Routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/subscribe?runId=xxx` | SSE stream for run events |
+| `GET` | `/runs` | List runs (query: jobName, status, limit, offset) |
+| `GET` | `/run?runId=xxx` | Get single run |
+| `GET` | `/steps?runId=xxx` | Get steps for a run |
+| `GET` | `/runs/subscribe` | SSE stream for run list updates |
+| `POST` | `/trigger` | Trigger a job |
+| `POST` | `/retry?runId=xxx` | Retry a failed run |
+| `POST` | `/cancel?runId=xxx` | Cancel a run |
+| `DELETE` | `/run?runId=xxx` | Delete a run |
+
+### Individual Handlers
+
+For custom routing, use individual handlers:
+
+```ts
+app.post('/api/durably/trigger', (req) => handler.trigger(req))
+app.get('/api/durably/subscribe', (req) => handler.subscribe(req))
+app.get('/api/durably/runs', (req) => handler.runs(req))
+app.get('/api/durably/run', (req) => handler.run(req))
+app.get('/api/durably/steps', (req) => handler.steps(req))
+app.post('/api/durably/retry', (req) => handler.retry(req))
+app.post('/api/durably/cancel', (req) => handler.cancel(req))
+app.delete('/api/durably/run', (req) => handler.delete(req))
+app.get('/api/durably/runs/subscribe', (req) => handler.runsSubscribe(req))
+```
+
+### Trigger Request Format
+
+```ts
+// POST /api/durably/trigger
+{
+  "jobName": "import-csv",
+  "input": { "file": "data.csv" },
+  "idempotencyKey": "unique-key",  // optional
+  "concurrencyKey": "user-123"      // optional
+}
+
+// Response: { "runId": "run_abc123" }
 ```

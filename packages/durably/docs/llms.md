@@ -70,11 +70,12 @@ const { syncUsers } = durably.register({
 ### 3. Starting the Worker
 
 ```ts
-// Run migrations (creates tables if needed)
-await durably.migrate()
+// Initialize: runs migrations and starts the worker
+await durably.init()
 
-// Start the worker (polls for pending jobs)
-durably.start()
+// Or separately if needed:
+// await durably.migrate()  // Run migrations only
+// durably.start()          // Start worker only
 ```
 
 ### 4. Triggering Jobs
@@ -345,8 +346,9 @@ const { myJob } = durably.register({
   }),
 })
 
+// For browser, use migrate() only if using DurablyProvider (it handles start())
+// Otherwise use init() for both migrations and worker
 await durably.migrate()
-durably.start()
 ```
 
 ## Run Lifecycle
