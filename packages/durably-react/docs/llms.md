@@ -447,8 +447,12 @@ function Dashboard() {
           {run.jobName}: {run.status}
         </div>
       ))}
-      <button onClick={prevPage} disabled={page === 0}>Prev</button>
-      <button onClick={nextPage} disabled={!hasMore}>Next</button>
+      <button onClick={prevPage} disabled={page === 0}>
+        Prev
+      </button>
+      <button onClick={nextPage} disabled={!hasMore}>
+        Next
+      </button>
     </div>
   )
 }
