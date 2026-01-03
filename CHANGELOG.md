@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - Extracted HTTP response helpers to `http.ts`
   - Centralized error handling in `errors.ts`
 
+#### @coji/durably-react
+
+- Internal code organization improvements (no API changes)
+  - Extracted shared subscription logic to `shared/` directory
+  - Created `useSubscription` hook for unified state management
+  - Extracted `useAutoResume` and `useJobSubscription` hooks
+  - Unified event subscriber patterns between browser and client modes
+
 ## [0.6.0] - 2026-01-02
 
 ### Breaking Changes

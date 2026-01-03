@@ -1,6 +1,6 @@
 {
   "name": "@coji/durably-react",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "React bindings for Durably - step-oriented resumable batch execution",
   "type": "module",
   "main": "./dist/index.js",
