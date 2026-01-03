@@ -164,7 +164,7 @@ export function createWorker(
       updateHeartbeat().catch((error) => {
         eventEmitter.emit({
           type: 'worker:error',
-          error: error instanceof Error ? error.message : String(error),
+          error: getErrorMessage(error),
           context: 'heartbeat',
           runId: run.id,
         })

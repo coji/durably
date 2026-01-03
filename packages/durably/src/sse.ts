@@ -69,6 +69,9 @@ export function createSSEStreamFromReader<T>(
         controller.error(error)
       }
     },
+    cancel() {
+      reader.releaseLock()
+    },
   })
 }
 
