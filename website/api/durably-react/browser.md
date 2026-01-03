@@ -239,24 +239,35 @@ function LogViewer({ runId }: { runId: string | null }) {
 
 ## useRuns
 
-List runs with optional filtering.
+List runs with optional filtering and real-time updates.
+
+The hook automatically subscribes to Durably events and refreshes the list when runs change. It listens to:
+- `run:trigger`, `run:start`, `run:complete`, `run:fail`, `run:cancel`, `run:retry` - refresh list
+- `run:progress` - update progress in place
+- `step:start`, `step:complete` - refresh for step count updates
 
 ```tsx
 import { useRuns } from '@coji/durably-react'
 
 function RunList() {
-  const { runs, isLoading } = useRuns({
+  const { runs, isLoading, refresh } = useRuns({
     jobName: 'my-job',
     status: 'completed',
     limit: 10,
   })
 
   return (
-    <ul>
-      {runs.map(run => (
-        <li key={run.id}>{run.status}</li>
-      ))}
-    </ul>
+    <div>
+      <button onClick={refresh}>Refresh</button>
+      <ul>
+        {runs.map(run => (
+          <li key={run.id}>
+            {run.jobName}: {run.status}
+            {run.progress && ` (${run.progress.current}/${run.progress.total})`}
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
 ```
@@ -268,3 +279,11 @@ function RunList() {
 | `jobName` | `string` | Filter by job name |
 | `status` | `RunStatus` | Filter by status |
 | `limit` | `number` | Maximum number of runs to return |
+
+### Return Type
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `runs` | `Run[]` | List of runs |
+| `isLoading` | `boolean` | Loading state |
+| `refresh` | `() => void` | Manually refresh the list |

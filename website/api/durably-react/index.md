@@ -2,6 +2,10 @@
 
 React bindings for Durably - hooks for triggering and monitoring jobs.
 
+## Requirements
+
+- **React 19+** (uses `React.use()` for Promise resolution)
+
 ## Installation
 
 ```bash

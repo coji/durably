@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - <DurablyProvider durably={durably} autoStart onReady={() => console.log('ready')}>
   + <DurablyProvider durably={durably}>
   ```
+- **React 19 required**: `peerDependencies` now requires React 19+ (uses `React.use()` hook)
 
 ### Added
 
@@ -49,11 +50,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 #### @coji/durably/server
 
 - **New endpoints**: `GET /steps?runId=xxx`, `DELETE /run?runId=xxx`
-- **SSE enhancements**: `/runs/subscribe` now streams `run:trigger`, `run:cancel`, `run:retry` events
+- **SSE enhancements**: `/runs/subscribe` now streams all lifecycle events
+  - Run events: `run:trigger`, `run:start`, `run:complete`, `run:fail`, `run:cancel`, `run:retry`, `run:progress`
+  - Step events: `step:start`, `step:complete`, `step:fail`
+  - Log events: `log:write`
 
 #### @coji/durably-react
 
 - **`useRuns` hook**: List and paginate runs with filtering (`jobName`, `status`) and real-time updates
+  - Subscribes to step and progress events for live dashboard updates
 - **`useJob` options**: `autoResume` (track pending/running jobs on mount), `followLatest` (switch to latest run)
 - **`createDurablyClient`**: Type-safe client factory for server-connected mode
 - **`createJobHooks`**: Per-job hook factory for server-connected mode
