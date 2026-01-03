@@ -44,7 +44,7 @@ Initialize Durably: runs database migrations and starts the worker. This is the 
 await durably.migrate(): Promise<void>
 ```
 
-Runs database migrations to create the required tables. Use this when you need to run migrations without starting the worker (e.g., in browser mode where `DurablyProvider` handles starting).
+Runs database migrations to create the required tables. Use `init()` instead for most cases.
 
 ### `start()`
 

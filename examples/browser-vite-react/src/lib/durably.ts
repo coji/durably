@@ -20,6 +20,6 @@ const durably = createDurably({
   dataSync: dataSyncJob,
 })
 
-await durably.migrate()
+await durably.init()
 
 export { durably }

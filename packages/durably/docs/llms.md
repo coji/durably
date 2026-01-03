@@ -346,9 +346,8 @@ const { myJob } = durably.register({
   }),
 })
 
-// For browser, use migrate() only if using DurablyProvider (it handles start())
-// Otherwise use init() for both migrations and worker
-await durably.migrate()
+// Initialize (same as Node.js)
+await durably.init()
 ```
 
 ## Run Lifecycle
