@@ -5,7 +5,6 @@
 
 import { getErrorMessage } from './errors'
 
-// Re-export for convenience
 export { getErrorMessage }
 
 /**
