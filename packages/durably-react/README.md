@@ -38,12 +38,12 @@ const myJob = defineJob({
 // Initialize Durably
 async function initDurably() {
   const sqlocal = new SQLocalKysely('app.sqlite3')
-  const durably = createDurably({ dialect: sqlocal.dialect })
-  durably.register({ myJob })
-  await durably.migrate()
+  const durably = createDurably({ dialect: sqlocal.dialect }).register({
+    myJob,
+  })
+  await durably.init() // migrate + start
   return durably
 }
-
 const durablyPromise = initDurably()
 
 function App() {

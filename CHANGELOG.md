@@ -9,63 +9,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking Changes
 
+#### @coji/durably
+
 - **`register()` API simplified**: `registerAll()` renamed to `register()`, old single-job signature removed
-  - New: `const { job } = durably.register({ job: jobDef })`
-  - Old (removed): `const job = durably.register(jobDef)`
+  ```diff
+  - const job = durably.register(jobDef)
+  + const { job } = durably.register({ job: jobDef })
+  ```
+
+#### @coji/durably-react
+
+- **`DurablyProvider` simplified**: Removed `autoStart`, `onReady` props and `isReady` state
+  - Provider now only provides context; durably instance must be initialized before passing
+  - All hooks no longer return `isReady` - always ready when durably is available
+  - Migration: Call `await durably.init()` before passing to `DurablyProvider`
+  ```diff
+  - <DurablyProvider durably={durably} autoStart onReady={() => console.log('ready')}>
+  + <DurablyProvider durably={durably}>
+  ```
 
 ### Added
 
 #### @coji/durably
 
-- **Type-safe `durably.jobs` property**: Access registered jobs with full type inference
+- **`init()` method**: Combines `migrate()` and `start()` for simpler initialization
   ```ts
   const durably = createDurably({ dialect })
-    .register({ processImage, syncUsers })
+  await durably.init() // migrate + start in one call
+  ```
+- **Type-safe `durably.jobs` property**: Access registered jobs with full type inference
+  ```ts
+  const durably = createDurably({ dialect }).register({ processImage, syncUsers })
   await durably.jobs.processImage.trigger({ imageId: '123' }) // Type-safe
   ```
 - **Retry from cancelled state**: `retry()` now works on both `failed` and `cancelled` runs
-- **New events for run lifecycle**:
-  - `run:trigger`: Emitted when a job is triggered (before worker picks it up)
-  - `run:cancel`: Emitted when a run is cancelled via `cancel()` API
-  - `run:retry`: Emitted when a failed/cancelled run is retried via `retry()` API
-- **`stepCount` added to `Run` type**: Run now includes `stepCount` property reflecting the number of completed steps
-  - Computed dynamically via JOIN query (no schema change required)
-  - Available in `getRun()`, `getRuns()`, `getNextPendingRun()`
+- **New events**: `run:trigger`, `run:cancel`, `run:retry` for complete run lifecycle tracking
+- **`stepCount` on `Run` type**: Number of completed steps, available in `getRun()`, `getRuns()`
 
 #### @coji/durably/server
 
-- **New endpoints**:
-  - `GET /steps?runId=xxx`: Get steps for a run
-  - `DELETE /run?runId=xxx`: Delete a run
-- **SSE event streaming**: `/runs/subscribe` now streams `run:trigger`, `run:cancel`, `run:retry` events
+- **New endpoints**: `GET /steps?runId=xxx`, `DELETE /run?runId=xxx`
+- **SSE enhancements**: `/runs/subscribe` now streams `run:trigger`, `run:cancel`, `run:retry` events
 
 #### @coji/durably-react
 
-- **`useRuns`**: List and paginate job runs with filtering and real-time updates
-  - Supports filtering by `jobName` and `status`
-  - Built-in pagination with `nextPage`, `prevPage`, `goToPage`
-  - Real-time updates via `realtime` option (default: true)
-- **`useJob` options**:
-  - `autoResume`: Automatically resume tracking pending/running jobs on mount (default: true)
-  - `followLatest`: Automatically switch to tracking the latest running job (default: true)
+- **`useRuns` hook**: List and paginate runs with filtering (`jobName`, `status`) and real-time updates
+- **`useJob` options**: `autoResume` (track pending/running jobs on mount), `followLatest` (switch to latest run)
 - **`createDurablyClient`**: Type-safe client factory for server-connected mode
 - **`createJobHooks`**: Per-job hook factory for server-connected mode
 
 #### @coji/durably-react/client
 
-- **`useRunActions` enhancements**:
-  - `deleteRun(runId)`: Delete a completed/failed/cancelled run
-  - `getRun(runId)`: Get a single run by ID
-  - `getSteps(runId)`: Get steps for a run
-- **`stepCount` and `currentStepIndex`**: Added to `ClientRun` and `RunRecord` types for step progress display
-- **New type exports**: `RunRecord`, `StepRecord` for type-safe run and step data
+- **`useRunActions` enhancements**: `deleteRun()`, `getRun()`, `getSteps()`
+- **Step progress**: `stepCount` and `currentStepIndex` on `ClientRun` and `RunRecord` types
+- **New type exports**: `RunRecord`, `StepRecord`
 
 ### Changed
 
 - Simplified README files - detailed documentation moved to website
 - Updated all examples to use new `register()` API pattern
 - Added Turbo for monorepo task orchestration
-- Unified dashboard UI across all examples (View, Retry, Cancel, Delete, Progress, Steps)
+- Unified dashboard UI across all examples
 
 ### Fixed
 
