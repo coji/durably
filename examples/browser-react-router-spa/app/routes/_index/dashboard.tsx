@@ -3,27 +3,42 @@
  *
  * Displays run history with real-time updates and pagination.
  * Uses browser-only mode hooks for direct durably access.
+ *
+ * Demonstrates typed useRuns with generic type parameter for multi-job dashboards.
  */
 
-import type { Run } from '@coji/durably'
-import { useDurably, useRuns } from '@coji/durably-react'
+import { type TypedRun, useDurably, useRuns } from '@coji/durably-react'
 import { useState } from 'react'
+import type {
+  DataSyncInput,
+  DataSyncOutput,
+  ImportCsvInput,
+  ImportCsvOutput,
+  ProcessImageInput,
+  ProcessImageOutput,
+} from '~/jobs'
+
+/** Union type for all job runs in this dashboard */
+type DashboardRun =
+  | TypedRun<DataSyncInput, DataSyncOutput>
+  | TypedRun<ImportCsvInput, ImportCsvOutput>
+  | TypedRun<ProcessImageInput, ProcessImageOutput>
 
 export function Dashboard() {
   const { durably } = useDurably()
   const { runs, page, hasMore, isLoading, refresh, nextPage, prevPage } =
-    useRuns({
+    useRuns<DashboardRun>({
       pageSize: 6,
     })
 
-  const [selectedRun, setSelectedRun] = useState<Run | null>(null)
+  const [selectedRun, setSelectedRun] = useState<DashboardRun | null>(null)
   const [steps, setSteps] = useState<
     { index: number; name: string; status: string }[]
   >([])
 
   const showDetails = async (runId: string) => {
     if (!durably) return
-    const run = await durably.getRun(runId)
+    const run = await durably.getRun<DashboardRun>(runId)
     if (run) {
       setSelectedRun(run)
       const stepsData = await durably.storage.getSteps(runId)

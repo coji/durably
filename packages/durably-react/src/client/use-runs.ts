@@ -1,23 +1,14 @@
+import type { JobDefinition } from '@coji/durably'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Progress, RunStatus } from '../types'
+import {
+  type Progress,
+  type RunStatus,
+  type TypedClientRun,
+  isJobDefinition,
+} from '../types'
 
-/**
- * Run type for client mode (matches server response)
- */
-export interface ClientRun {
-  id: string
-  jobName: string
-  status: RunStatus
-  input: unknown
-  output: unknown | null
-  error: string | null
-  currentStepIndex: number
-  stepCount: number
-  progress: Progress | null
-  createdAt: string
-  startedAt: string | null
-  completedAt: string | null
-}
+// Re-export types for convenience
+export type { ClientRun, TypedClientRun } from '../types'
 
 /**
  * SSE notification event from /runs/subscribe
@@ -79,11 +70,16 @@ export interface UseRunsClientOptions {
   pageSize?: number
 }
 
-export interface UseRunsClientResult {
+export interface UseRunsClientResult<
+  TInput extends Record<string, unknown> = Record<string, unknown>,
+  TOutput extends Record<string, unknown> | undefined =
+    | Record<string, unknown>
+    | undefined,
+> {
   /**
    * List of runs for the current page
    */
-  runs: ClientRun[]
+  runs: TypedClientRun<TInput, TOutput>[]
   /**
    * Current page (0-indexed)
    */
@@ -123,32 +119,86 @@ export interface UseRunsClientResult {
  * First page (page 0) automatically subscribes to SSE for real-time updates.
  * Other pages are static and require manual refresh.
  *
- * @example
+ * @example With generic type parameter (dashboard with multiple job types)
+ * ```tsx
+ * type DashboardRun = TypedClientRun<ImportInput, ImportOutput> | TypedClientRun<SyncInput, SyncOutput>
+ *
+ * function Dashboard() {
+ *   const { runs } = useRuns<DashboardRun>({ api: '/api/durably', pageSize: 10 })
+ *   // runs are typed as DashboardRun[]
+ * }
+ * ```
+ *
+ * @example With JobDefinition (single job, auto-filters by jobName)
+ * ```tsx
+ * const myJob = defineJob({ name: 'my-job', ... })
+ *
+ * function RunHistory() {
+ *   const { runs } = useRuns(myJob, { api: '/api/durably' })
+ *   // runs[0].output is typed!
+ *   return <div>{runs[0]?.output?.someField}</div>
+ * }
+ * ```
+ *
+ * @example With options only (untyped)
  * ```tsx
  * function RunHistory() {
- *   const { runs, page, hasMore, nextPage, prevPage, refresh } = useRuns({
- *     api: '/api/durably',
- *     jobName: 'import-csv',
- *     pageSize: 10,
- *   })
- *
- *   return (
- *     <div>
- *       {runs.map(run => (
- *         <div key={run.id}>{run.jobName}: {run.status}</div>
- *       ))}
- *       <button onClick={prevPage} disabled={page === 0}>Prev</button>
- *       <button onClick={nextPage} disabled={!hasMore}>Next</button>
- *       <button onClick={refresh}>Refresh</button>
- *     </div>
- *   )
+ *   const { runs } = useRuns({ api: '/api/durably', pageSize: 10 })
+ *   // runs[0].output is unknown
  * }
  * ```
  */
-export function useRuns(options: UseRunsClientOptions): UseRunsClientResult {
-  const { api, jobName, status, pageSize = 10 } = options
+// Overload 1: With generic type parameter
+export function useRuns<
+  TRun extends TypedClientRun<
+    Record<string, unknown>,
+    Record<string, unknown> | undefined
+  >,
+>(
+  options: UseRunsClientOptions,
+): UseRunsClientResult<
+  TRun extends TypedClientRun<infer I, infer _O> ? I : Record<string, unknown>,
+  TRun extends TypedClientRun<infer _I, infer O> ? O : Record<string, unknown>
+>
 
-  const [runs, setRuns] = useState<ClientRun[]>([])
+// Overload 2: With JobDefinition for type inference (auto-filters by jobName)
+export function useRuns<
+  TName extends string,
+  TInput extends Record<string, unknown>,
+  TOutput extends Record<string, unknown> | undefined,
+>(
+  jobDefinition: JobDefinition<TName, TInput, TOutput>,
+  options: Omit<UseRunsClientOptions, 'jobName'>,
+): UseRunsClientResult<TInput, TOutput>
+
+// Overload 3: Without type parameter (untyped, backward compatible)
+export function useRuns(options: UseRunsClientOptions): UseRunsClientResult
+
+// Implementation
+export function useRuns<
+  TName extends string,
+  TInput extends Record<string, unknown>,
+  TOutput extends Record<string, unknown> | undefined,
+>(
+  jobDefinitionOrOptions:
+    | JobDefinition<TName, TInput, TOutput>
+    | UseRunsClientOptions,
+  optionsArg?: Omit<UseRunsClientOptions, 'jobName'>,
+): UseRunsClientResult<TInput, TOutput> {
+  // Determine if first argument is a JobDefinition using type guard
+  const isJob = isJobDefinition(jobDefinitionOrOptions)
+
+  const jobName = isJob
+    ? jobDefinitionOrOptions.name
+    : (jobDefinitionOrOptions as UseRunsClientOptions).jobName
+
+  const options = isJob
+    ? (optionsArg as Omit<UseRunsClientOptions, 'jobName'>)
+    : (jobDefinitionOrOptions as UseRunsClientOptions)
+
+  const { api, status, pageSize = 10 } = options
+
+  const [runs, setRuns] = useState<TypedClientRun<TInput, TOutput>[]>([])
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
@@ -175,7 +225,7 @@ export function useRuns(options: UseRunsClientOptions): UseRunsClientResult {
         throw new Error(`Failed to fetch runs: ${response.statusText}`)
       }
 
-      const data = (await response.json()) as ClientRun[]
+      const data = (await response.json()) as TypedClientRun<TInput, TOutput>[]
 
       if (isMountedRef.current) {
         setHasMore(data.length > pageSize)

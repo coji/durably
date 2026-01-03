@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [0.7.0] - 2026-01-03
+
+### Added
+
+#### @coji/durably
+
+- **Generic type parameter for `getRun<T>()` and `getRuns<T>()`**: Type-safe run retrieval
+  ```ts
+  // Untyped (returns Run)
+  const run = await durably.getRun(runId)
+
+  // Typed (returns custom type)
+  type MyRun = Run & { payload: { userId: string }; output: { count: number } | null }
+  const typedRun = await durably.getRun<MyRun>(runId)
+  ```
+
+#### @coji/durably-react
+
+- **Generic type support for `useRuns` hook**: Multiple ways to get type-safe run access
+  - `useRuns<TRun>(options)` - Pass type parameter for dashboards with multiple job types
+  - `useRuns(jobDefinition, options?)` - Pass JobDefinition to infer types and auto-filter by jobName
+  - `useRuns(options?)` - Untyped usage for simple cases
+  - New `TypedRun<TInput, TOutput>` type for browser hooks
+  - New `TypedClientRun<TInput, TOutput>` type for client hooks
+  ```tsx
+  // Dashboard with multiple job types
+  type DashboardRun = TypedRun<ImportInput, ImportOutput> | TypedRun<SyncInput, SyncOutput>
+  const { runs } = useRuns<DashboardRun>({ pageSize: 10 })
+
+  // Single job with auto-filter
+  const { runs } = useRuns(myJob)
+  // runs[0].output is typed as the job's output type
+  ```
+
 ## [0.6.1] - 2026-01-03
 
 ### Fixed

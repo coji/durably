@@ -1,6 +1,10 @@
-import type { Run } from '@coji/durably'
+import type { JobDefinition } from '@coji/durably'
 import { useCallback, useEffect, useState } from 'react'
 import { useDurably } from '../context'
+import { type TypedRun, isJobDefinition } from '../types'
+
+// Re-export TypedRun for convenience
+export type { TypedRun } from '../types'
 
 export interface UseRunsOptions {
   /**
@@ -23,11 +27,16 @@ export interface UseRunsOptions {
   realtime?: boolean
 }
 
-export interface UseRunsResult {
+export interface UseRunsResult<
+  TInput extends Record<string, unknown> = Record<string, unknown>,
+  TOutput extends Record<string, unknown> | undefined =
+    | Record<string, unknown>
+    | undefined,
+> {
   /**
    * List of runs for the current page
    */
-  runs: Run[]
+  runs: TypedRun<TInput, TOutput>[]
   /**
    * Current page (0-indexed)
    */
@@ -61,31 +70,90 @@ export interface UseRunsResult {
 /**
  * Hook for listing runs with pagination and real-time updates.
  *
- * @example
+ * @example With generic type parameter (dashboard with multiple job types)
+ * ```tsx
+ * type DashboardRun = TypedRun<ImportInput, ImportOutput> | TypedRun<SyncInput, SyncOutput>
+ *
+ * function Dashboard() {
+ *   const { runs } = useRuns<DashboardRun>({ pageSize: 10 })
+ *   // runs are typed as DashboardRun[]
+ * }
+ * ```
+ *
+ * @example With JobDefinition (single job, auto-filters by jobName)
+ * ```tsx
+ * const myJob = defineJob({ name: 'my-job', ... })
+ *
+ * function Dashboard() {
+ *   const { runs } = useRuns(myJob)
+ *   // runs[0].output is typed!
+ *   return <div>{runs[0]?.output?.someField}</div>
+ * }
+ * ```
+ *
+ * @example With options only (untyped)
  * ```tsx
  * function Dashboard() {
- *   const { runs, page, hasMore, nextPage, prevPage, isLoading } = useRuns({
- *     pageSize: 20,
- *   })
- *
- *   return (
- *     <div>
- *       {runs.map(run => (
- *         <div key={run.id}>{run.jobName}: {run.status}</div>
- *       ))}
- *       <button onClick={prevPage} disabled={page === 0}>Prev</button>
- *       <button onClick={nextPage} disabled={!hasMore}>Next</button>
- *     </div>
- *   )
+ *   const { runs } = useRuns({ pageSize: 20 })
+ *   // runs[0].output is unknown
  * }
  * ```
  */
-export function useRuns(options?: UseRunsOptions): UseRunsResult {
+// Overload 1: With generic type parameter
+export function useRuns<
+  TRun extends TypedRun<
+    Record<string, unknown>,
+    Record<string, unknown> | undefined
+  >,
+>(
+  options?: UseRunsOptions,
+): UseRunsResult<
+  TRun extends TypedRun<infer I, infer _O> ? I : Record<string, unknown>,
+  TRun extends TypedRun<infer _I, infer O> ? O : Record<string, unknown>
+>
+
+// Overload 2: With JobDefinition for type inference (auto-filters by jobName)
+export function useRuns<
+  TName extends string,
+  TInput extends Record<string, unknown>,
+  TOutput extends Record<string, unknown> | undefined,
+>(
+  jobDefinition: JobDefinition<TName, TInput, TOutput>,
+  options?: Omit<UseRunsOptions, 'jobName'>,
+): UseRunsResult<TInput, TOutput>
+
+// Overload 3: Without type parameter (untyped, backward compatible)
+export function useRuns(options?: UseRunsOptions): UseRunsResult
+
+// Implementation
+export function useRuns<
+  TName extends string,
+  TInput extends Record<string, unknown>,
+  TOutput extends Record<string, unknown> | undefined,
+>(
+  jobDefinitionOrOptions?:
+    | JobDefinition<TName, TInput, TOutput>
+    | UseRunsOptions,
+  optionsArg?: Omit<UseRunsOptions, 'jobName'>,
+): UseRunsResult<TInput, TOutput> {
   const { durably } = useDurably()
+
+  // Determine if first argument is a JobDefinition using type guard
+  const isJob = isJobDefinition(jobDefinitionOrOptions)
+
+  const jobName = isJob
+    ? jobDefinitionOrOptions.name
+    : (jobDefinitionOrOptions as UseRunsOptions | undefined)?.jobName
+
+  const options = isJob
+    ? optionsArg
+    : (jobDefinitionOrOptions as UseRunsOptions | undefined)
+
   const pageSize = options?.pageSize ?? 10
   const realtime = options?.realtime ?? true
+  const status = options?.status
 
-  const [runs, setRuns] = useState<Run[]>([])
+  const [runs, setRuns] = useState<TypedRun<TInput, TOutput>[]>([])
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
@@ -96,17 +164,17 @@ export function useRuns(options?: UseRunsOptions): UseRunsResult {
     setIsLoading(true)
     try {
       const data = await durably.getRuns({
-        jobName: options?.jobName,
-        status: options?.status,
+        jobName,
+        status,
         limit: pageSize + 1,
         offset: page * pageSize,
       })
       setHasMore(data.length > pageSize)
-      setRuns(data.slice(0, pageSize))
+      setRuns(data.slice(0, pageSize) as TypedRun<TInput, TOutput>[])
     } finally {
       setIsLoading(false)
     }
-  }, [durably, options?.jobName, options?.status, pageSize, page])
+  }, [durably, jobName, status, pageSize, page])
 
   // Initial fetch and subscribe to events
   useEffect(() => {

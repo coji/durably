@@ -10,9 +10,14 @@
 import { defineJob } from '@coji/durably'
 import { describe, expectTypeOf, it } from 'vitest'
 import { z } from 'zod'
+import type {
+  TypedClientRun,
+  UseRunsClientResult,
+} from '../src/client/use-runs'
 import type { UseJobResult } from '../src/hooks/use-job'
 import type { UseJobLogsResult } from '../src/hooks/use-job-logs'
 import type { UseJobRunResult } from '../src/hooks/use-job-run'
+import type { TypedRun, UseRunsResult } from '../src/hooks/use-runs'
 
 // Test job definitions
 const typedJob = defineJob({
@@ -131,6 +136,127 @@ describe('Type inference', () => {
       // Void output job returns void, so no output schema is defined
       // We just verify the job compiles correctly without explicit output
       expectTypeOf(voidOutputJob.name).toEqualTypeOf<'void-output-job'>()
+    })
+  })
+
+  describe('useRuns (browser)', () => {
+    it('TypedRun has correct payload and output types', () => {
+      type TestRun = TypedRun<{ taskId: string }, { success: boolean }>
+
+      expectTypeOf<TestRun['payload']>().toEqualTypeOf<{ taskId: string }>()
+      expectTypeOf<TestRun['output']>().toEqualTypeOf<{
+        success: boolean
+      } | null>()
+      expectTypeOf<TestRun['id']>().toEqualTypeOf<string>()
+      expectTypeOf<TestRun['jobName']>().toEqualTypeOf<string>()
+      expectTypeOf<TestRun['status']>().toEqualTypeOf<
+        'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+      >()
+    })
+
+    it('UseRunsResult with generic type has typed runs', () => {
+      type Result = UseRunsResult<{ taskId: string }, { success: boolean }>
+
+      expectTypeOf<Result['runs']>().toBeArray()
+      expectTypeOf<Result['runs'][0]['payload']>().toEqualTypeOf<{
+        taskId: string
+      }>()
+      expectTypeOf<Result['runs'][0]['output']>().toEqualTypeOf<{
+        success: boolean
+      } | null>()
+    })
+
+    it('UseRunsResult has pagination controls', () => {
+      type Result = UseRunsResult<{ taskId: string }, { success: boolean }>
+
+      expectTypeOf<Result['page']>().toEqualTypeOf<number>()
+      expectTypeOf<Result['hasMore']>().toEqualTypeOf<boolean>()
+      expectTypeOf<Result['isLoading']>().toEqualTypeOf<boolean>()
+      expectTypeOf<Result['nextPage']>().toBeFunction()
+      expectTypeOf<Result['prevPage']>().toBeFunction()
+      expectTypeOf<Result['goToPage']>().toBeFunction()
+      expectTypeOf<Result['refresh']>().toBeFunction()
+    })
+
+    it('union types work for multi-job dashboards', () => {
+      type ImportRun = TypedRun<{ file: string }, { count: number }>
+      type SyncRun = TypedRun<{ userId: string }, { synced: boolean }>
+      type DashboardRun = ImportRun | SyncRun
+
+      type Result = UseRunsResult<
+        DashboardRun extends TypedRun<infer I, infer _O> ? I : never,
+        DashboardRun extends TypedRun<infer _I, infer O> ? O : never
+      >
+
+      // runs array should accept either type
+      expectTypeOf<Result['runs'][0]['payload']>().toEqualTypeOf<
+        { file: string } | { userId: string }
+      >()
+    })
+  })
+
+  describe('useRuns (client)', () => {
+    it('TypedClientRun has correct input and output types', () => {
+      type TestRun = TypedClientRun<{ taskId: string }, { success: boolean }>
+
+      expectTypeOf<TestRun['input']>().toEqualTypeOf<{ taskId: string }>()
+      expectTypeOf<TestRun['output']>().toEqualTypeOf<{
+        success: boolean
+      } | null>()
+      expectTypeOf<TestRun['id']>().toEqualTypeOf<string>()
+      expectTypeOf<TestRun['jobName']>().toEqualTypeOf<string>()
+      expectTypeOf<TestRun['status']>().toEqualTypeOf<
+        'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+      >()
+      expectTypeOf<TestRun['currentStepIndex']>().toEqualTypeOf<number>()
+      expectTypeOf<TestRun['stepCount']>().toEqualTypeOf<number>()
+    })
+
+    it('UseRunsClientResult with generic type has typed runs', () => {
+      type Result = UseRunsClientResult<
+        { taskId: string },
+        { success: boolean }
+      >
+
+      expectTypeOf<Result['runs']>().toBeArray()
+      expectTypeOf<Result['runs'][0]['input']>().toEqualTypeOf<{
+        taskId: string
+      }>()
+      expectTypeOf<Result['runs'][0]['output']>().toEqualTypeOf<{
+        success: boolean
+      } | null>()
+    })
+
+    it('UseRunsClientResult has pagination and error', () => {
+      type Result = UseRunsClientResult<
+        { taskId: string },
+        { success: boolean }
+      >
+
+      expectTypeOf<Result['page']>().toEqualTypeOf<number>()
+      expectTypeOf<Result['hasMore']>().toEqualTypeOf<boolean>()
+      expectTypeOf<Result['isLoading']>().toEqualTypeOf<boolean>()
+      expectTypeOf<Result['error']>().toEqualTypeOf<string | null>()
+      expectTypeOf<Result['nextPage']>().toBeFunction()
+      expectTypeOf<Result['prevPage']>().toBeFunction()
+      expectTypeOf<Result['goToPage']>().toBeFunction()
+      expectTypeOf<Result['refresh']>().toBeFunction()
+    })
+
+    it('union types work for multi-job dashboards', () => {
+      type ImportRun = TypedClientRun<{ file: string }, { count: number }>
+      type SyncRun = TypedClientRun<{ userId: string }, { synced: boolean }>
+      type DashboardRun = ImportRun | SyncRun
+
+      type Result = UseRunsClientResult<
+        DashboardRun extends TypedClientRun<infer I, infer _O> ? I : never,
+        DashboardRun extends TypedClientRun<infer _I, infer O> ? O : never
+      >
+
+      // runs array should accept either type
+      expectTypeOf<Result['runs'][0]['input']>().toEqualTypeOf<
+        { file: string } | { userId: string }
+      >()
     })
   })
 })

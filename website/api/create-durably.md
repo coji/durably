@@ -122,15 +122,24 @@ Deletes a run and its associated steps and logs.
 ### `getRun()`
 
 ```ts
-await durably.getRun(runId: string): Promise<Run | null>
+await durably.getRun<T extends Run = Run>(runId: string): Promise<T | null>
 ```
 
-Gets a single run by ID.
+Gets a single run by ID. Supports generic type parameter for type-safe access.
+
+```ts
+// Untyped (returns Run)
+const run = await durably.getRun(runId)
+
+// Typed (returns custom type)
+type MyRun = Run & { payload: { userId: string }; output: { count: number } | null }
+const typedRun = await durably.getRun<MyRun>(runId)
+```
 
 ### `getRuns()`
 
 ```ts
-await durably.getRuns(filter?: RunFilter): Promise<Run[]>
+await durably.getRuns<T extends Run = Run>(filter?: RunFilter): Promise<T[]>
 
 interface RunFilter {
   jobName?: string
@@ -140,7 +149,13 @@ interface RunFilter {
 }
 ```
 
-Gets runs with optional filtering and pagination.
+Gets runs with optional filtering and pagination. Supports generic type parameter.
+
+```ts
+// Typed getRuns
+type MyRun = Run & { payload: { userId: string }; output: { count: number } | null }
+const runs = await durably.getRuns<MyRun>({ jobName: 'my-job' })
+```
 
 ### `getJob()`
 
