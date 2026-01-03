@@ -1,27 +1,8 @@
 import type { JobDefinition } from '@coji/durably'
+import type { InferInput, InferOutput } from '../types'
 import { useJob, type UseJobClientResult } from './use-job'
 import { useJobLogs, type UseJobLogsClientResult } from './use-job-logs'
 import { useJobRun, type UseJobRunClientResult } from './use-job-run'
-
-/**
- * Extract input type from a JobDefinition
- */
-type InferInput<T> =
-  T extends JobDefinition<string, infer TInput, unknown>
-    ? TInput extends Record<string, unknown>
-      ? TInput
-      : Record<string, unknown>
-    : Record<string, unknown>
-
-/**
- * Extract output type from a JobDefinition
- */
-type InferOutput<T> =
-  T extends JobDefinition<string, unknown, infer TOutput>
-    ? TOutput extends Record<string, unknown>
-      ? TOutput
-      : Record<string, unknown>
-    : Record<string, unknown>
 
 /**
  * Options for createJobHooks

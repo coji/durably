@@ -1,5 +1,32 @@
 // Shared type definitions for @coji/durably-react
 
+import type { JobDefinition } from '@coji/durably'
+
+// Type inference utilities for extracting Input/Output types from JobDefinition
+export type InferInput<T> =
+  T extends JobDefinition<string, infer TInput, unknown>
+    ? TInput extends Record<string, unknown>
+      ? TInput
+      : Record<string, unknown>
+    : T extends { trigger: (input: infer TInput) => unknown }
+      ? TInput extends Record<string, unknown>
+        ? TInput
+        : Record<string, unknown>
+      : Record<string, unknown>
+
+export type InferOutput<T> =
+  T extends JobDefinition<string, unknown, infer TOutput>
+    ? TOutput extends Record<string, unknown>
+      ? TOutput
+      : Record<string, unknown>
+    : T extends {
+          trigger: (input: unknown) => Promise<{ output?: infer TOutput }>
+        }
+      ? TOutput extends Record<string, unknown>
+        ? TOutput
+        : Record<string, unknown>
+      : Record<string, unknown>
+
 export type RunStatus =
   | 'pending'
   | 'running'
@@ -21,6 +48,15 @@ export interface LogEntry {
   message: string
   data: unknown
   timestamp: string
+}
+
+// Shared subscription state (used by both direct and SSE subscriptions)
+export interface SubscriptionState<TOutput = unknown> {
+  status: RunStatus | null
+  output: TOutput | null
+  error: string | null
+  logs: LogEntry[]
+  progress: Progress | null
 }
 
 // SSE event types (sent from server)
