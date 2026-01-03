@@ -10,10 +10,10 @@ Durably is a minimal workflow engine that persists step results to SQLite. If a 
 
 ```bash
 # Node.js with libsql (recommended)
-npm install @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
+pnpm add @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
 
 # Browser with SQLocal
-npm install @coji/durably kysely zod sqlocal
+pnpm add @coji/durably kysely zod sqlocal
 ```
 
 ## Core Concepts
@@ -61,18 +61,21 @@ const syncUsersJob = defineJob({
   },
 })
 
-// Register the job with durably instance
-const syncUsers = durably.register(syncUsersJob)
+// Register jobs with durably instance
+const { syncUsers } = durably.register({
+  syncUsers: syncUsersJob,
+})
 ```
 
 ### 3. Starting the Worker
 
 ```ts
-// Run migrations (creates tables if needed)
-await durably.migrate()
+// Initialize: runs migrations and starts the worker
+await durably.init()
 
-// Start the worker (polls for pending jobs)
-durably.start()
+// Or separately if needed:
+// await durably.migrate()  // Run migrations only
+// durably.start()          // Start worker only
 ```
 
 ### 4. Triggering Jobs
@@ -184,20 +187,126 @@ await durably.deleteRun(runId)
 Subscribe to job execution events:
 
 ```ts
+// Run lifecycle events
+durably.on('run:trigger', (e) => console.log('Triggered:', e.runId))
 durably.on('run:start', (e) => console.log('Started:', e.runId))
 durably.on('run:complete', (e) => console.log('Done:', e.output))
 durably.on('run:fail', (e) => console.error('Failed:', e.error))
+durably.on('run:cancel', (e) => console.log('Cancelled:', e.runId))
+durably.on('run:retry', (e) => console.log('Retried:', e.runId))
 durably.on('run:progress', (e) =>
   console.log('Progress:', e.progress.current, '/', e.progress.total),
 )
 
+// Step events
 durably.on('step:start', (e) => console.log('Step:', e.stepName))
 durably.on('step:complete', (e) => console.log('Step done:', e.stepName))
-durably.on('step:skip', (e) =>
-  console.log('Step skipped (cached):', e.stepName),
-)
+durably.on('step:fail', (e) => console.error('Step failed:', e.stepName))
 
+// Log events
 durably.on('log:write', (e) => console.log(`[${e.level}]`, e.message))
+```
+
+## Advanced APIs
+
+### getJob
+
+Get a registered job by name:
+
+```ts
+const job = durably.getJob('sync-users')
+if (job) {
+  const run = await job.trigger({ orgId: 'org_123' })
+}
+```
+
+### subscribe
+
+Subscribe to events for a specific run as a ReadableStream:
+
+```ts
+const stream = durably.subscribe(runId)
+const reader = stream.getReader()
+
+while (true) {
+  const { done, value } = await reader.read()
+  if (done) break
+
+  switch (value.type) {
+    case 'run:start':
+      console.log('Started')
+      break
+    case 'run:complete':
+      console.log('Completed:', value.output)
+      break
+    case 'run:fail':
+      console.error('Failed:', value.error)
+      break
+    case 'run:progress':
+      console.log('Progress:', value.progress)
+      break
+    case 'log:write':
+      console.log(`[${value.level}]`, value.message)
+      break
+  }
+}
+```
+
+### createDurablyHandler
+
+Create HTTP handlers for client/server architecture using Web Standard Request/Response:
+
+```ts
+import { createDurablyHandler } from '@coji/durably'
+
+const handler = createDurablyHandler(durably)
+
+// Use the unified handle() method with automatic routing
+app.all('/api/durably/*', async (req) => {
+  return await handler.handle(req, '/api/durably')
+})
+
+// Or use individual endpoints
+app.post('/api/durably/trigger', (req) => handler.trigger(req))
+app.get('/api/durably/subscribe', (req) => handler.subscribe(req))
+app.get('/api/durably/runs', (req) => handler.runs(req))
+app.get('/api/durably/run', (req) => handler.run(req))
+app.get('/api/durably/steps', (req) => handler.steps(req))
+app.get('/api/durably/runs/subscribe', (req) => handler.runsSubscribe(req))
+app.post('/api/durably/retry', (req) => handler.retry(req))
+app.post('/api/durably/cancel', (req) => handler.cancel(req))
+app.delete('/api/durably/run', (req) => handler.delete(req))
+```
+
+**Handler Interface:**
+
+```ts
+interface DurablyHandler {
+  // Unified routing handler
+  handle(request: Request, basePath: string): Promise<Response>
+
+  // Individual endpoints
+  trigger(request: Request): Promise<Response> // POST /trigger
+  subscribe(request: Request): Response // GET /subscribe?runId=xxx (SSE)
+  runs(request: Request): Promise<Response> // GET /runs
+  run(request: Request): Promise<Response> // GET /run?runId=xxx
+  steps(request: Request): Promise<Response> // GET /steps?runId=xxx
+  runsSubscribe(request: Request): Response // GET /runs/subscribe (SSE)
+  retry(request: Request): Promise<Response> // POST /retry?runId=xxx
+  cancel(request: Request): Promise<Response> // POST /cancel?runId=xxx
+  delete(request: Request): Promise<Response> // DELETE /run?runId=xxx
+}
+
+interface TriggerRequest {
+  jobName: string
+  input: Record<string, unknown>
+  idempotencyKey?: string
+  concurrencyKey?: string
+}
+
+interface TriggerResponse {
+  runId: string
+}
 ```
 
 ## Plugins
@@ -205,7 +314,7 @@ durably.on('log:write', (e) => console.log(`[${e.level}]`, e.message))
 ### Log Persistence
 
 ```ts
-import { withLogPersistence } from '@coji/durably/plugins'
+import { withLogPersistence } from '@coji/durably'
 
 durably.use(withLogPersistence())
 ```
@@ -227,18 +336,18 @@ const durably = createDurably({
 })
 
 // Same API as Node.js
-const myJob = durably.register(
-  defineJob({
+const { myJob } = durably.register({
+  myJob: defineJob({
     name: 'my-job',
     input: z.object({}),
     run: async (step) => {
       /* ... */
     },
   }),
-)
+})
 
-await durably.migrate()
-durably.start()
+// Initialize (same as Node.js)
+await durably.init()
 ```
 
 ## Run Lifecycle

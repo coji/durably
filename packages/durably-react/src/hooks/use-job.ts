@@ -1,0 +1,353 @@
+import type { JobDefinition, JobHandle } from '@coji/durably'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useDurably } from '../context'
+import type { LogEntry, Progress, RunStatus } from '../types'
+
+export interface UseJobOptions {
+  /**
+   * Initial Run ID to subscribe to (for reconnection scenarios)
+   */
+  initialRunId?: string
+  /**
+   * Automatically resume tracking any pending or running job on initialization.
+   * If a pending or running run exists for this job, the hook will subscribe to it.
+   * @default true
+   */
+  autoResume?: boolean
+  /**
+   * Automatically switch to tracking the latest running job when a new run starts.
+   * When true, the hook will update to track any new run for this job as soon as it starts running.
+   * When false, the hook will only track the run that was triggered or explicitly set.
+   * @default true
+   */
+  followLatest?: boolean
+}
+
+export interface UseJobResult<TInput, TOutput> {
+  /**
+   * Trigger the job with the given input
+   */
+  trigger: (input: TInput) => Promise<{ runId: string }>
+  /**
+   * Trigger and wait for completion
+   */
+  triggerAndWait: (input: TInput) => Promise<{ runId: string; output: TOutput }>
+  /**
+   * Current run status
+   */
+  status: RunStatus | null
+  /**
+   * Output from completed run
+   */
+  output: TOutput | null
+  /**
+   * Error message from failed run
+   */
+  error: string | null
+  /**
+   * Logs collected during execution
+   */
+  logs: LogEntry[]
+  /**
+   * Current progress
+   */
+  progress: Progress | null
+  /**
+   * Whether a run is currently running
+   */
+  isRunning: boolean
+  /**
+   * Whether a run is pending
+   */
+  isPending: boolean
+  /**
+   * Whether the run completed successfully
+   */
+  isCompleted: boolean
+  /**
+   * Whether the run failed
+   */
+  isFailed: boolean
+  /**
+   * Whether the run was cancelled
+   */
+  isCancelled: boolean
+  /**
+   * Current run ID
+   */
+  currentRunId: string | null
+  /**
+   * Reset all state
+   */
+  reset: () => void
+}
+
+export function useJob<
+  TName extends string,
+  TInput extends Record<string, unknown>,
+  // biome-ignore lint/suspicious/noConfusingVoidType: TOutput can be void for jobs without return value
+  TOutput extends Record<string, unknown> | void,
+>(
+  jobDefinition: JobDefinition<TName, TInput, TOutput>,
+  options?: UseJobOptions,
+): UseJobResult<TInput, TOutput> {
+  const { durably } = useDurably()
+
+  const [status, setStatus] = useState<RunStatus | null>(null)
+  const [output, setOutput] = useState<TOutput | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [logs, setLogs] = useState<LogEntry[]>([])
+  const [progress, setProgress] = useState<Progress | null>(null)
+  const [currentRunId, setCurrentRunId] = useState<string | null>(
+    options?.initialRunId ?? null,
+  )
+
+  const jobHandleRef = useRef<JobHandle<TName, TInput, TOutput> | null>(null)
+  // Use ref to track the latest runId for event filtering
+  const currentRunIdRef = useRef<string | null>(currentRunId)
+  currentRunIdRef.current = currentRunId
+
+  // Register job and set up event listeners
+  useEffect(() => {
+    if (!durably) return
+
+    // Register the job (use fixed key for simpler type handling)
+    const d = durably.register({
+      _job: jobDefinition,
+    })
+    const jobHandle = d.jobs._job
+    jobHandleRef.current = jobHandle
+
+    // Subscribe to each event type separately
+    const unsubscribes: (() => void)[] = []
+
+    unsubscribes.push(
+      durably.on('run:start', (event) => {
+        // Check if this is a run for our job
+        if (event.jobName !== jobDefinition.name) return
+
+        // If followLatest is disabled, only update if this is our current run
+        if (options?.followLatest === false) {
+          if (event.runId !== currentRunIdRef.current) return
+          setStatus('running')
+          return
+        }
+
+        // Switch to tracking the running job (followLatest: true, default)
+        setCurrentRunId(event.runId)
+        currentRunIdRef.current = event.runId
+        setStatus('running')
+        // Reset output/error when switching to a new run
+        setOutput(null)
+        setError(null)
+        setLogs([])
+        setProgress(null)
+      }),
+    )
+
+    unsubscribes.push(
+      durably.on('run:complete', (event) => {
+        if (event.runId !== currentRunIdRef.current) return
+        setStatus('completed')
+        setOutput(event.output as TOutput)
+      }),
+    )
+
+    unsubscribes.push(
+      durably.on('run:fail', (event) => {
+        if (event.runId !== currentRunIdRef.current) return
+        setStatus('failed')
+        setError(event.error)
+      }),
+    )
+
+    unsubscribes.push(
+      durably.on('run:progress', (event) => {
+        if (event.runId !== currentRunIdRef.current) return
+        setProgress(event.progress)
+      }),
+    )
+
+    unsubscribes.push(
+      durably.on('log:write', (event) => {
+        if (event.runId !== currentRunIdRef.current) return
+        setLogs((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            runId: event.runId,
+            stepName: event.stepName,
+            level: event.level,
+            message: event.message,
+            data: event.data,
+            timestamp: new Date().toISOString(),
+          },
+        ])
+      }),
+    )
+
+    // If we have an initialRunId, fetch its current state
+    if (options?.initialRunId && currentRunIdRef.current) {
+      jobHandle.getRun(currentRunIdRef.current).then((run) => {
+        if (run) {
+          setStatus(run.status as RunStatus)
+          if (run.status === 'completed' && run.output) {
+            setOutput(run.output as TOutput)
+          }
+          if (run.status === 'failed' && run.error) {
+            setError(run.error)
+          }
+        }
+      })
+    }
+
+    // Auto-resume: find any pending or running runs for this job (default: true)
+    if (options?.autoResume !== false && !options?.initialRunId) {
+      ;(async () => {
+        // First check for running runs
+        const runningRuns = await jobHandle.getRuns({ status: 'running' })
+        if (runningRuns.length > 0) {
+          const run = runningRuns[0]
+          setCurrentRunId(run.id)
+          currentRunIdRef.current = run.id
+          setStatus(run.status as RunStatus)
+          return
+        }
+
+        // Then check for pending runs
+        const pendingRuns = await jobHandle.getRuns({ status: 'pending' })
+        if (pendingRuns.length > 0) {
+          const run = pendingRuns[0]
+          setCurrentRunId(run.id)
+          currentRunIdRef.current = run.id
+          setStatus(run.status as RunStatus)
+        }
+      })()
+    }
+
+    return () => {
+      for (const unsubscribe of unsubscribes) {
+        unsubscribe()
+      }
+    }
+  }, [
+    durably,
+    jobDefinition,
+    options?.initialRunId,
+    options?.autoResume,
+    options?.followLatest,
+  ])
+
+  // Update state when currentRunId changes (for initialRunId scenario)
+  useEffect(() => {
+    if (!durably || !currentRunId) return
+
+    const jobHandle = jobHandleRef.current
+    if (jobHandle && options?.initialRunId) {
+      jobHandle.getRun(currentRunId).then((run) => {
+        if (run) {
+          setStatus(run.status as RunStatus)
+          if (run.status === 'completed' && run.output) {
+            setOutput(run.output as TOutput)
+          }
+          if (run.status === 'failed' && run.error) {
+            setError(run.error)
+          }
+        }
+      })
+    }
+  }, [durably, currentRunId, options?.initialRunId])
+
+  const trigger = useCallback(
+    async (input: TInput): Promise<{ runId: string }> => {
+      const jobHandle = jobHandleRef.current
+      if (!jobHandle) {
+        throw new Error('Job not ready')
+      }
+
+      // Reset state
+      setOutput(null)
+      setError(null)
+      setLogs([])
+      setProgress(null)
+
+      const run = await jobHandle.trigger(input)
+      setCurrentRunId(run.id)
+      currentRunIdRef.current = run.id
+      setStatus('pending')
+
+      return { runId: run.id }
+    },
+    [],
+  )
+
+  const triggerAndWait = useCallback(
+    async (input: TInput): Promise<{ runId: string; output: TOutput }> => {
+      const jobHandle = jobHandleRef.current
+      if (!jobHandle || !durably) {
+        throw new Error('Job not ready')
+      }
+
+      // Reset state
+      setOutput(null)
+      setError(null)
+      setLogs([])
+      setProgress(null)
+
+      const run = await jobHandle.trigger(input)
+      setCurrentRunId(run.id)
+      currentRunIdRef.current = run.id
+      setStatus('pending')
+
+      // Wait for completion
+      return new Promise((resolve, reject) => {
+        const checkCompletion = async () => {
+          const updatedRun = await jobHandle.getRun(run.id)
+          if (!updatedRun) {
+            reject(new Error('Run not found'))
+            return
+          }
+
+          if (updatedRun.status === 'completed') {
+            resolve({ runId: run.id, output: updatedRun.output as TOutput })
+          } else if (updatedRun.status === 'failed') {
+            reject(new Error(updatedRun.error ?? 'Job failed'))
+          } else if (updatedRun.status === 'cancelled') {
+            reject(new Error('Job cancelled'))
+          } else {
+            // Still running, check again
+            setTimeout(checkCompletion, 50)
+          }
+        }
+        checkCompletion()
+      })
+    },
+    [durably],
+  )
+
+  const reset = useCallback(() => {
+    setStatus(null)
+    setOutput(null)
+    setError(null)
+    setLogs([])
+    setProgress(null)
+    setCurrentRunId(null)
+  }, [])
+
+  return {
+    trigger,
+    triggerAndWait,
+    status,
+    output,
+    error,
+    logs,
+    progress,
+    isRunning: status === 'running',
+    isPending: status === 'pending',
+    isCompleted: status === 'completed',
+    isFailed: status === 'failed',
+    isCancelled: status === 'cancelled',
+    currentRunId,
+    reset,
+  }
+}

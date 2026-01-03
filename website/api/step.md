@@ -90,14 +90,6 @@ The unique identifier of the current run.
 const id: string = step.runId
 ```
 
-### `stepIndex`
-
-The current step index (0-based).
-
-```ts
-const index: number = step.stepIndex
-```
-
 ## Example
 
 ```ts
@@ -135,7 +127,9 @@ const processOrderJob = defineJob({
 })
 
 // Register and use
-const processOrder = durably.register(processOrderJob)
+const { processOrder } = durably.register({
+  processOrder: processOrderJob,
+})
 await processOrder.trigger({ orderId: 'order_123' })
 ```
 

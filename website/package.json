@@ -3,8 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vitepress dev",
-    "build": "vitepress build",
+    "generate:llms": "node scripts/generate-llms.js",
+    "dev": "pnpm generate:llms && vitepress dev",
+    "build": "pnpm generate:llms && vitepress build",
     "preview": "vitepress preview"
   },
   "devDependencies": {

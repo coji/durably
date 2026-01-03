@@ -1,42 +1,114 @@
 # @coji/durably-react 仕様書
 
-## Why: なぜ React 統合が必要か
-
-Durably をブラウザの React アプリケーションで使用する場合、以下の課題が発生する。
-
-1. **ライフサイクル管理の複雑さ**: Durably インスタンスの初期化・終了を React のライフサイクルに合わせる必要がある
-2. **イベントリスナーの蓄積**: コンポーネントのマウント/アンマウントでリスナーが適切にクリーンアップされない
-3. **状態管理のボイラープレート**: Run のステータス、進捗、ログを React の状態として管理するコードが冗長
-4. **型安全性の欠如**: イベントハンドラやジョブ出力の型が失われやすい
-
-React 統合パッケージはこれらを解決し、宣言的で型安全な API を提供する。
-
----
-
-## What: これは何か
+## 概要
 
 `@coji/durably-react` は、Durably を React アプリケーションで使うためのバインディングである。
 
-### 提供するもの
+以下の2つの動作モードをサポートする:
 
-| Export             | 説明                                         |
-| ------------------ | -------------------------------------------- |
-| `DurablyProvider`  | Durably インスタンスのライフサイクル管理     |
-| `useDurably()`     | Durably インスタンスと初期化状態へのアクセス |
-| `useJob(job)`      | ジョブの実行とステータス管理                 |
-| `useJobRun(runId)` | 特定の Run のステータス購読                  |
-| `useJobLogs()`     | リアルタイムログ購読                         |
-
-※ `defineJob` は `@coji/durably` から直接 import する。
+| モード | 説明 | サーバー | クライアント |
+|--------|------|----------|--------------|
+| **ブラウザ完結** | ブラウザ内で Durably を実行 | 不要 | `@coji/durably-react` + `@coji/durably` |
+| **サーバー連携** | サーバーで Durably を実行、クライアントで購読 | `@coji/durably` | `@coji/durably-react/client`（軽量） |
 
 ---
 
-## 基本的な使い方
+## パッケージ構成
+
+```text
+@coji/durably-react
+├── index.ts          # ブラウザ完結モード用（DurablyProvider + hooks）
+└── client/index.ts   # サーバー連携モード用（軽量、@coji/durably 不要）
+
+@coji/durably
+└── server.ts         # サーバー側ヘルパー（Web 標準 API）
+```
+
+---
+
+## パターン A: ブラウザ完結モード
+
+ブラウザ内で SQLite（OPFS）を使い、Durably を完全にクライアントサイドで実行する。
+
+### セットアップ
+
+Durably インスタンスは Promise として export し、DurablyProvider に直接渡す:
+
+```ts
+// lib/durably.ts
+import { createDurably, type Durably } from '@coji/durably'
+import { SQLocalKysely } from 'sqlocal/kysely'
+import { processImageJob } from './jobs'
+
+export { processImageJob }
+
+export const sqlocal = new SQLocalKysely('app.sqlite3')
+
+async function initDurably(): Promise<Durably> {
+  const instance = createDurably({
+    dialect: sqlocal.dialect,
+    pollingInterval: 100,
+    heartbeatInterval: 500,
+    staleThreshold: 3000,
+  })
+  await instance.migrate()
+  instance.register({ processImage: processImageJob })
+  return instance
+}
+
+/** Shared Durably instance promise */
+export const durably = initDurably()
+```
 
 ```tsx
-// ========================================
-// 1. ジョブ定義（React の外、静的）
-// ========================================
+// App.tsx
+import { DurablyProvider } from '@coji/durably-react'
+import { durably } from './lib/durably'
+
+function Loading() {
+  return <div>Loading...</div>
+}
+
+export function App() {
+  return (
+    <DurablyProvider durably={durably} fallback={<Loading />}>
+      <AppContent />
+    </DurablyProvider>
+  )
+}
+```
+
+`DurablyProvider` は `Durably` または `Promise<Durably>` を受け付ける。Promise の場合は内部で React 19 の `use()` を使って解決する。`fallback` を指定すると自動的に Suspense でラップされる。
+
+React Router 7 の場合は `clientLoader` を使用することもできる:
+
+```tsx
+// root.tsx
+import { DurablyProvider } from '@coji/durably-react'
+import { Outlet } from 'react-router'
+import { getDurably } from './lib/durably'
+
+export async function clientLoader() {
+  const durably = await getDurably()
+  return { durably }
+}
+
+export function HydrateFallback() {
+  return <div>Loading...</div>
+}
+
+export default function App({ loaderData }) {
+  return (
+    <DurablyProvider durably={loaderData.durably}>
+      <Outlet />
+    </DurablyProvider>
+  )
+}
+```
+
+### ジョブ定義
+
+```ts
 // jobs.ts
 import { defineJob } from '@coji/durably'
 import { z } from 'zod'
@@ -47,37 +119,23 @@ export const processTask = defineJob({
   output: z.object({ success: z.boolean() }),
   run: async (step, payload) => {
     await step.run('validate', () => validate(payload.taskId))
+    step.progress(1, 2, 'Validating...')
     await step.run('process', () => process(payload.taskId))
+    step.progress(2, 2, 'Processing...')
     return { success: true }
   },
 })
+```
 
-// ========================================
-// 2. Provider（root）
-// ========================================
-// root.tsx
-import { DurablyProvider } from '@coji/durably-react'
-import { SQLocalKysely } from 'sqlocal/kysely'
+### 使用
 
-export default function App() {
-  return (
-    <DurablyProvider
-      dialectFactory={() => new SQLocalKysely('app.sqlite3').dialect}
-    >
-      <Outlet />
-    </DurablyProvider>
-  )
-}
-
-// ========================================
-// 3. 使用（シンプル）
-// ========================================
+```tsx
 // component.tsx
 import { useJob } from '@coji/durably-react'
 import { processTask } from './jobs'
 
 function TaskRunner() {
-  const { trigger, status, output, isRunning } = useJob(processTask)
+  const { trigger, status, output, progress, isRunning } = useJob(processTask)
 
   return (
     <div>
@@ -88,7 +146,99 @@ function TaskRunner() {
         {isRunning ? 'Processing...' : 'Process Task'}
       </button>
 
-      {status === 'completed' && <div>Done: {output?.success ? '✓' : '✗'}</div>}
+      {progress && (
+        <progress value={progress.current} max={progress.total} />
+      )}
+
+      {status === 'completed' && <div>Done: {output?.success ? 'Yes' : 'No'}</div>}
+    </div>
+  )
+}
+```
+
+---
+
+## パターン B: サーバー連携モード
+
+サーバーで Durably を実行し、クライアントは HTTP/SSE で接続する。
+
+### サーバー側（Web 標準 API）
+
+```ts
+// app/routes/api.durably.ts (React Router / Remix example)
+import { createDurablyHandler } from '@coji/durably/server'
+import { durably } from '~/lib/durably.server'
+
+const handler = createDurablyHandler(durably)
+
+// 全ルートを自動処理（推奨）
+export async function loader({ request }: LoaderFunctionArgs) {
+  return handler.handle(request, '/api/durably')
+}
+
+export async function action({ request }: ActionFunctionArgs) {
+  return handler.handle(request, '/api/durably')
+}
+```
+
+または手動で実装:
+
+```ts
+// POST /api/durably/trigger
+export async function action({ request }: ActionFunctionArgs) {
+  const { jobName, input } = await request.json()
+  const job = durably.getJob(jobName)
+  const run = await job.trigger(input)
+  return Response.json({ runId: run.id })
+}
+
+// GET /api/durably/subscribe?runId=xxx
+export async function loader({ request }: LoaderFunctionArgs) {
+  const url = new URL(request.url)
+  const runId = url.searchParams.get('runId')
+
+  if (!runId) {
+    return new Response('Missing runId', { status: 400 })
+  }
+
+  const stream = durably.subscribe(runId)
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  })
+}
+```
+
+### クライアント側（軽量）
+
+```tsx
+// component.tsx
+import { useJob } from '@coji/durably-react/client'
+
+function TaskRunner() {
+  const { trigger, status, output, progress, isRunning } = useJob({
+    baseUrl: '/api/durably',
+    jobName: 'process-task',
+  })
+
+  return (
+    <div>
+      <button
+        onClick={() => trigger({ taskId: '123' })}
+        disabled={isRunning}
+      >
+        {isRunning ? 'Processing...' : 'Process Task'}
+      </button>
+
+      {progress && (
+        <progress value={progress.current} max={progress.total} />
+      )}
+
+      {status === 'completed' && <div>Done!</div>}
     </div>
   )
 }
@@ -98,300 +248,398 @@ function TaskRunner() {
 
 ## API 仕様
 
-### DurablyProvider
+### ブラウザ完結モード (`@coji/durably-react`)
 
-Durably インスタンスを作成し、子コンポーネントに提供する。
-
-```tsx
-import { DurablyProvider } from '@coji/durably-react'
-import { SQLocalKysely } from 'sqlocal/kysely'
-
-function App() {
-  return (
-    <DurablyProvider
-      dialectFactory={() => new SQLocalKysely('app.sqlite3').dialect}
-      options={{
-        pollingInterval: 1000,
-        heartbeatInterval: 5000,
-        staleThreshold: 30000,
-      }}
-    >
-      <MyApp />
-    </DurablyProvider>
-  )
-}
-```
-
-#### Props
-
-| Prop             | 型                 | 必須 | 説明                                                           |
-| ---------------- | ------------------ | ---- | -------------------------------------------------------------- |
-| `dialectFactory` | `() => Dialect`    | ✓    | Dialect を生成するファクトリ関数（Provider 内部で一度だけ実行）|
-| `options`        | `DurablyOptions`   | -    | Durably 設定オプション                                         |
-| `autoStart`      | `boolean`          | -    | マウント時に自動で `start()` を呼ぶ（デフォルト: true）        |
-| `autoMigrate`    | `boolean`          | -    | マウント時に自動で `migrate()` を呼ぶ（デフォルト: true）      |
-| `children`       | `ReactNode`        | ✓    | 子コンポーネント                                               |
-
-#### なぜ `dialectFactory` なのか
-
-コアライブラリの `createDurably({ dialect })` は dialect インスタンスを直接受け取る。これはアプリケーション起動時に一度だけ呼ばれるためである。
-
-一方、React コンポーネントは再レンダリングのたびに関数が実行される。`dialect` を直接渡すと毎回新しいインスタンスが生成されてしまう。`dialectFactory` はファクトリ関数を受け取り、Provider 内部で一度だけ実行することでこの問題を回避する。
-
-#### ライフサイクル
-
-1. **マウント時**: `dialectFactory()` → `createDurably()` → `migrate()` → `start()` の順で初期化
-2. **アンマウント時**: `stop()` を呼び、イベントリスナーをすべて解除
-3. **Strict Mode**: 二重マウントでも正しく動作（ref で初期化済みフラグを管理）
-
-### useDurably
-
-Durably インスタンスと初期化状態を取得する。通常は `useJob` を使うため、直接使用することは少ない。
+#### DurablyProvider
 
 ```tsx
-import { useDurably } from '@coji/durably-react'
+// Promise を渡す場合（推奨）
+<DurablyProvider durably={durablyPromise} fallback={<Loading />}>
+  {children}
+</DurablyProvider>
 
-function MyComponent() {
-  const { durably, isReady, error } = useDurably()
-
-  if (error) return <div>Error: {error.message}</div>
-  if (!isReady) return <div>Loading...</div>
-
-  // durably インスタンスを直接使用
-}
+// 解決済みインスタンスを渡す場合
+<DurablyProvider
+  durably={durably}
+  autoStart={true}
+  onReady={(durably) => console.log('Ready!')}
+>
+  {children}
+</DurablyProvider>
 ```
 
-#### 戻り値
+| Prop | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `durably` | `Durably \| Promise<Durably>` | Yes | Durably インスタンスまたは Promise |
+| `autoStart` | `boolean` | - | 自動 start()（デフォルト: true） |
+| `onReady` | `(durably: Durably) => void` | - | 準備完了コールバック |
+| `fallback` | `ReactNode` | - | Promise 解決中のフォールバック UI |
 
-| プロパティ | 型               | 説明                                    |
-| ---------- | ---------------- | --------------------------------------- |
-| `durably`  | `Durably \| null`| Durably インスタンス（未初期化時は null）|
-| `isReady`  | `boolean`        | 初期化完了フラグ                        |
-| `error`    | `Error \| null`  | 初期化エラー                            |
-
-### useJob
-
-ジョブの実行とステータス管理を行う。`JobDefinition` を受け取り、自動で durably に登録する。
+#### useDurably
 
 ```tsx
-import { useJob } from '@coji/durably-react'
-import { processTask } from './jobs'
-
-function TaskRunner() {
-  const {
-    isReady,
-    trigger,
-    status,
-    output,
-    error,
-    logs,
-    progress,
-    isRunning,
-    isPending,
-    isCompleted,
-    isFailed,
-    currentRunId,
-    reset,
-  } = useJob(processTask)
-
-  return (
-    <div>
-      <button
-        onClick={() => trigger({ taskId: '123' })}
-        disabled={!isReady || isRunning}
-      >
-        {!isReady ? 'Initializing...' : isRunning ? 'Running...' : 'Run Job'}
-      </button>
-
-      {progress && (
-        <progress value={progress.current} max={progress.total} />
-      )}
-
-      {isCompleted && <div>Result: {JSON.stringify(output)}</div>}
-      {isFailed && <div>Error: {error}</div>}
-
-      <ul>
-        {logs.map((log) => (
-          <li key={log.id}>{log.message}</li>
-        ))}
-      </ul>
-    </div>
-  )
-}
+const { durably, isReady, error } = useDurably()
 ```
 
-#### 引数
+| 戻り値 | 型 | 説明 |
+|--------|-----|------|
+| `durably` | `Durably \| null` | インスタンス |
+| `isReady` | `boolean` | 初期化完了 |
+| `error` | `Error \| null` | 初期化エラー |
 
-| 引数      | 型                                      | 説明                                             |
-| --------- | --------------------------------------- | ------------------------------------------------ |
-| `job`     | `JobDefinition<TName, TInput, TOutput>` | ジョブ定義                                       |
-| `options` | `UseJobOptions`                         | オプション設定（省略可）                         |
-
-#### UseJobOptions
-
-| プロパティ     | 型       | 説明                                                     |
-| -------------- | -------- | -------------------------------------------------------- |
-| `initialRunId` | `string` | 初期状態で購読する Run ID（ページリロード時の復元に使用）|
-
-#### 戻り値
-
-| プロパティ       | 型                                                              | 説明                                 |
-| ---------------- | --------------------------------------------------------------- | ------------------------------------ |
-| `isReady`        | `boolean`                                                       | Durably 初期化完了フラグ             |
-| `trigger`        | `(input: TInput, options?: TriggerOptions) => Promise<Run>`     | ジョブを実行                         |
-| `triggerAndWait` | `(input: TInput, options?: TriggerOptions) => Promise<{...}>`   | 実行して完了を待つ                   |
-| `status`         | `RunStatus \| null`                                             | 現在の Run のステータス              |
-| `output`         | `TOutput \| null`                                               | 完了時の出力（型安全）               |
-| `error`          | `string \| null`                                                | 失敗時のエラーメッセージ             |
-| `logs`           | `LogEntry[]`                                                    | リアルタイムログ                     |
-| `progress`       | `Progress \| null`                                              | 進捗情報                             |
-| `isRunning`      | `boolean`                                                       | 実行中かどうか                       |
-| `isPending`      | `boolean`                                                       | 待機中かどうか                       |
-| `isCompleted`    | `boolean`                                                       | 完了したかどうか                     |
-| `isFailed`       | `boolean`                                                       | 失敗したかどうか                     |
-| `currentRunId`   | `string \| null`                                                | 現在の Run ID                        |
-| `reset`          | `() => void`                                                    | 状態をリセット                       |
-
-※ `isReady` が `false` の間は `trigger()` を呼ばないこと。呼んだ場合は例外がスローされる。
-
-#### 動作
-
-- `useJob` 呼び出し時に、内部で `durably.register(job)` を実行
-- `trigger()` 呼び出し時にイベントリスナーを登録
-- Run の完了/失敗時に自動でリスナーを解除
-- コンポーネントのアンマウント時にもリスナーを解除
-
-### useJobRun
-
-特定の Run ID のステータスを購読する。ページリロード後に既存の Run を再購読する場合に使用。
-
-> **Note**: ページリロード時の Run 復元には `useJob` の `initialRunId` オプションを使うことを推奨。
-> `useJobRun` は、ジョブ定義なしで Run ID のみで購読したい場合に使用する。
+#### useJob
 
 ```tsx
-// 推奨: useJob + initialRunId（trigger も使える）
-import { useJob } from '@coji/durably-react'
-import { useSearchParams } from 'react-router'
-import { processTask } from './jobs'
-
-function TaskRunner() {
-  const [searchParams, setSearchParams] = useSearchParams()
-  const runId = searchParams.get('runId')
-
-  const { isReady, trigger, status, output } = useJob(processTask, {
-    initialRunId: runId ?? undefined,
-  })
-
-  const handleRun = async () => {
-    const run = await trigger({ taskId: '123' })
-    setSearchParams({ runId: run.id })
-  }
-
-  return (
-    <div>
-      <button onClick={handleRun} disabled={!isReady || status === 'running'}>
-        Run
-      </button>
-      {status === 'completed' && <div>Result: {JSON.stringify(output)}</div>}
-    </div>
-  )
-}
+const {
+  isReady,
+  trigger,
+  triggerAndWait,
+  status,
+  output,
+  error,
+  logs,
+  progress,
+  isRunning,
+  isPending,
+  isCompleted,
+  isFailed,
+  currentRunId,
+  reset,
+} = useJob(jobDefinition, options?)
 ```
+
+| 引数 | 型 | 説明 |
+|------|-----|------|
+| `jobDefinition` | `JobDefinition` | ジョブ定義 |
+| `options.initialRunId` | `string` | 初期購読 Run ID |
+| `options.autoResume` | `boolean` | pending/running の Run を自動再開（デフォルト: true） |
+| `options.followLatest` | `boolean` | 新しい Run 開始時に自動切替（デフォルト: true） |
+
+**戻り値の詳細**:
+
+| プロパティ | 型 | 説明 |
+|-----------|-----|------|
+| `isReady` | `boolean` | 準備完了 |
+| `trigger(input)` | `Promise<{ runId: string }>` | ジョブを実行、Run ID を返す |
+| `triggerAndWait(input)` | `Promise<{ runId: string; output: TOutput }>` | 実行して完了を待つ |
+| `status` | `RunStatus \| null` | 現在のステータス |
+| `output` | `TOutput \| null` | 完了時の出力 |
+| `error` | `string \| null` | 失敗時のエラー |
+| `logs` | `LogEntry[]` | ログ一覧 |
+| `progress` | `Progress \| null` | 進捗情報 |
+| `isRunning` | `boolean` | 実行中 |
+| `isPending` | `boolean` | 待機中 |
+| `isCompleted` | `boolean` | 完了 |
+| `isFailed` | `boolean` | 失敗 |
+| `currentRunId` | `string \| null` | 現在の Run ID |
+| `reset` | `() => void` | 状態リセット |
+
+#### useJobRun
 
 ```tsx
-// useJobRun: Run ID のみで購読（trigger なし）
-import { useJobRun } from '@coji/durably-react'
-import { useSearchParams } from 'react-router'
-
-function RunStatus() {
-  const [searchParams] = useSearchParams()
-  const runId = searchParams.get('runId')
-
-  const { status, output, error, logs, progress } = useJobRun(runId)
-
-  if (!runId) return <div>No run ID</div>
-
-  return (
-    <div>
-      <h2>Run: {runId}</h2>
-      <p>Status: {status}</p>
-
-      {progress && (
-        <progress value={progress.current} max={progress.total} />
-      )}
-
-      {status === 'completed' && (
-        <pre>{JSON.stringify(output, null, 2)}</pre>
-      )}
-
-      {status === 'failed' && (
-        <div className="error">{error}</div>
-      )}
-    </div>
-  )
-}
+const { status, output, error, logs, progress } = useJobRun({ runId })
 ```
 
-#### 引数
+Run ID のみで購読（trigger なし）。`runId` が `null` の場合は購読せず待機する。
 
-| 引数    | 型               | 説明            |
-| ------- | ---------------- | --------------- |
+| 引数 | 型 | 説明 |
+|------|-----|------|
 | `runId` | `string \| null` | 購読する Run ID |
 
-#### 戻り値
-
-`useJob` の戻り値から `trigger` 系を除いたもの。
-
-### useJobLogs
-
-ログをリアルタイムで購読する。
+#### useJobLogs
 
 ```tsx
-import { useJobLogs } from '@coji/durably-react'
+const { logs, clear } = useJobLogs({ runId, maxLogs? })
+```
 
-function LogViewer({ runId }: { runId?: string }) {
-  const { logs, clear } = useJobLogs({ runId, maxLogs: 100 })
+| 引数 | 型 | 説明 |
+|------|-----|------|
+| `runId` | `string \| null` | Run ID |
+| `maxLogs` | `number` | 最大ログ数（デフォルト: 100） |
 
-  return (
-    <div>
-      <button onClick={clear}>Clear</button>
-      <ul>
-        {logs.map((log) => (
-          <li key={log.id} className={`log-${log.level}`}>
-            [{log.timestamp}] {log.message}
-          </li>
-        ))}
-      </ul>
-    </div>
-  )
+#### useRuns
+
+```tsx
+const {
+  isReady,
+  runs,
+  isLoading,
+  page,
+  hasMore,
+  nextPage,
+  prevPage,
+  goToPage,
+  refresh,
+} = useRuns(options?)
+```
+
+| オプション | 型 | 説明 |
+|------------|------|------|
+| `jobName` | `string` | ジョブ名でフィルタ |
+| `status` | `RunStatus` | ステータスでフィルタ |
+| `pageSize` | `number` | 1ページの件数（デフォルト: 10） |
+| `realtime` | `boolean` | リアルタイム更新（デフォルト: true） |
+
+| 戻り値 | 型 | 説明 |
+|--------|-----|------|
+| `isReady` | `boolean` | 準備完了 |
+| `runs` | `Run[]` | Run 一覧 |
+| `isLoading` | `boolean` | 読み込み中 |
+| `page` | `number` | 現在ページ |
+| `hasMore` | `boolean` | 次ページあり |
+| `nextPage` | `() => void` | 次ページへ |
+| `prevPage` | `() => void` | 前ページへ |
+| `goToPage` | `(page: number) => void` | 指定ページへ |
+| `refresh` | `() => Promise<void>` | 再読み込み |
+
+> **Note**: Run アクション（retry, cancel, delete）は `useDurably` から取得した Durably インスタンスを使用するか、サーバー連携モードでは `useRunActions` を使用する。
+
+---
+
+### サーバー連携モード
+
+#### サーバー側 (`@coji/durably/server`)
+
+```ts
+import { createDurablyHandler } from '@coji/durably/server'
+
+const handler = createDurablyHandler(durably, {
+  onRequest: async () => {
+    await durably.migrate()
+    durably.start()
+  }
+})
+
+// 自動ルーティング（推奨）
+handler.handle(request: Request, basePath: string): Promise<Response>
+
+// 個別ハンドラー
+handler.trigger(request: Request): Promise<Response>      // POST /trigger
+handler.subscribe(request: Request): Response             // GET /subscribe?runId=xxx
+handler.runs(request: Request): Promise<Response>         // GET /runs
+handler.run(request: Request): Promise<Response>          // GET /run?runId=xxx
+handler.steps(request: Request): Promise<Response>        // GET /steps?runId=xxx
+handler.retry(request: Request): Promise<Response>        // POST /retry?runId=xxx
+handler.cancel(request: Request): Promise<Response>       // POST /cancel?runId=xxx
+handler.delete(request: Request): Promise<Response>       // DELETE /run?runId=xxx
+handler.runsSubscribe(request: Request): Response         // GET /runs/subscribe
+```
+
+**API 規約**:
+
+| エンドポイント | メソッド | リクエスト | レスポンス |
+|---------------|---------|-----------|-----------|
+| `{basePath}/trigger` | POST | `{ jobName, input, idempotencyKey?, concurrencyKey? }` | `{ runId }` |
+| `{basePath}/subscribe?runId=xxx` | GET | - | SSE stream (single run) |
+| `{basePath}/runs` | GET | `?jobName=&status=&limit=&offset=` | `Run[]` |
+| `{basePath}/run?runId=xxx` | GET | - | `Run` or 404 |
+| `{basePath}/steps?runId=xxx` | GET | - | `Step[]` |
+| `{basePath}/retry?runId=xxx` | POST | - | `{ success: true }` |
+| `{basePath}/cancel?runId=xxx` | POST | - | `{ success: true }` |
+| `{basePath}/run?runId=xxx` | DELETE | - | `{ success: true }` |
+| `{basePath}/runs/subscribe` | GET | `?jobName=` | SSE stream (run updates) |
+
+> **Note**: 認証・認可、CORS、CSRF の扱いは本仕様のスコープ外。アプリケーション側で適切に実装すること。
+
+**SSE イベント形式**:
+
+Single run subscription (`/subscribe?runId=xxx`):
+```text
+data: {"type":"run:start","runId":"xxx","jobName":"process-task","payload":{...}}
+
+data: {"type":"run:progress","runId":"xxx","jobName":"process-task","progress":{"current":1,"total":2}}
+
+data: {"type":"run:complete","runId":"xxx","jobName":"process-task","output":{"success":true},"duration":1234}
+
+data: {"type":"run:fail","runId":"xxx","jobName":"process-task","error":"Something went wrong"}
+
+data: {"type":"run:cancel","runId":"xxx","jobName":"process-task"}
+
+data: {"type":"run:retry","runId":"xxx","jobName":"process-task"}
+
+```
+
+Runs subscription (`/runs/subscribe`):
+```text
+data: {"type":"run:trigger","runId":"xxx","jobName":"process-task"}
+
+data: {"type":"run:start","runId":"xxx","jobName":"process-task"}
+
+data: {"type":"run:complete","runId":"xxx","jobName":"process-task"}
+
+data: {"type":"run:fail","runId":"xxx","jobName":"process-task"}
+
+data: {"type":"run:cancel","runId":"xxx","jobName":"process-task"}
+
+data: {"type":"run:retry","runId":"xxx","jobName":"process-task"}
+
+data: {"type":"run:progress","runId":"xxx","jobName":"process-task","progress":{"current":1,"total":2}}
+
+```
+
+#### クライアント側 (`@coji/durably-react/client`)
+
+```tsx
+import { useJob, useJobRun, useJobLogs, useRuns, useRunActions } from '@coji/durably-react/client'
+
+// ジョブ実行 + 購読
+const {
+  trigger,
+  triggerAndWait,
+  status,
+  output,
+  error,
+  logs,
+  progress,
+  isReady,
+  isRunning,
+  isPending,
+  isCompleted,
+  isFailed,
+  currentRunId,
+  reset,
+} = useJob({
+  api: '/api/durably',
+  jobName: 'process-task',
+})
+
+// 既存 Run の購読のみ
+const { status, output, error, logs, progress } = useJobRun({
+  api: '/api/durably',
+  runId: 'xxx',
+})
+
+// ログ購読
+const { logs, clear } = useJobLogs({
+  api: '/api/durably',
+  runId: 'xxx',
+})
+
+// Run 一覧
+const { runs, isLoading, hasMore, nextPage, prevPage, refresh } = useRuns({
+  api: '/api/durably',
+  jobName: 'process-task',
+})
+
+// Run アクション
+const { retry, cancel, deleteRun, getRun, getSteps, isLoading, error } = useRunActions({
+  api: '/api/durably',
+})
+```
+
+**useJob オプション**:
+
+| オプション | 型 | 必須 | 説明 |
+|------------|------|------|------|
+| `api` | `string` | Yes | API エンドポイント |
+| `jobName` | `string` | Yes | ジョブ名 |
+| `initialRunId` | `string` | - | 初期購読 Run ID（再接続用） |
+
+**useJobRun オプション**:
+
+| オプション | 型 | 必須 | 説明 |
+|------------|------|------|------|
+| `api` | `string` | Yes | API エンドポイント |
+| `runId` | `string \| null` | Yes | Run ID（`null` の場合は購読しない） |
+
+**useJobLogs オプション**:
+
+| オプション | 型 | 必須 | 説明 |
+|------------|------|------|------|
+| `api` | `string` | Yes | API エンドポイント |
+| `runId` | `string \| null` | Yes | Run ID（`null` の場合は購読しない） |
+| `maxLogs` | `number` | - | 保持する最大ログ数（デフォルト: 100） |
+
+**useRuns オプション**:
+
+| オプション | 型 | 必須 | 説明 |
+|------------|------|------|------|
+| `api` | `string` | Yes | API エンドポイント |
+| `jobName` | `string` | - | ジョブ名でフィルタ |
+| `status` | `RunStatus` | - | ステータスでフィルタ |
+| `pageSize` | `number` | - | 1ページの件数（デフォルト: 10） |
+
+**useRunActions オプション**:
+
+| オプション | 型       | 必須 | 説明               |
+|------------|----------|------|--------------------|
+| `api`      | `string` | Yes  | API エンドポイント |
+
+| 戻り値      | 型                                                 | 説明            |
+|-------------|---------------------------------------------------|-----------------|
+| `retry`     | `(runId: string) => Promise<void>`                | Run を再実行    |
+| `cancel`    | `(runId: string) => Promise<void>`                | Run をキャンセル |
+| `deleteRun` | `(runId: string) => Promise<void>`                | Run を削除      |
+| `getRun`    | `(runId: string) => Promise<RunRecord \| null>`   | Run を取得      |
+| `getSteps`  | `(runId: string) => Promise<StepRecord[]>`        | Steps を取得    |
+| `isLoading` | `boolean`                                         | アクション実行中 |
+| `error`     | `string \| null`                                  | エラーメッセージ |
+
+**RunRecord 型**:
+
+```ts
+interface RunRecord {
+  id: string
+  jobName: string
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  payload: unknown
+  output: unknown | null
+  error: string | null
+  progress: { current: number; total?: number; message?: string } | null
+  createdAt: string
+  startedAt: string | null
+  completedAt: string | null
 }
 ```
 
-#### オプション
+**StepRecord 型**:
 
-| オプション | 型       | 説明                                      |
-| ---------- | -------- | ----------------------------------------- |
-| `runId`    | `string` | 特定の Run のログのみ購読（省略時は全ログ）|
-| `maxLogs`  | `number` | 保持する最大ログ数（デフォルト: 100）     |
+```ts
+interface StepRecord {
+  name: string
+  status: 'completed' | 'failed'
+  output: unknown
+}
+```
 
-#### 戻り値
+---
 
-| プロパティ | 型           | 説明               |
-| ---------- | ------------ | ------------------ |
-| `logs`     | `LogEntry[]` | ログエントリの配列 |
-| `clear`    | `() => void` | ログをクリア       |
+### 型安全クライアントファクトリ
+
+```tsx
+import { createDurablyClient, createJobHooks } from '@coji/durably-react/client'
+import type { jobs } from './durably.server'  // サーバー側の jobs をインポート
+
+// 方法1: createDurablyClient（推奨）
+// サーバー側で register() した jobs の型を使用
+const durably = createDurablyClient<typeof jobs>({
+  api: '/api/durably',
+})
+
+// 型安全なアクセス
+const { trigger, status } = durably.processTask.useJob()
+await trigger({ taskId: '123' })  // 型安全
+
+const { status, output } = durably.processTask.useRun(runId)
+const { logs, clearLogs } = durably.processTask.useLogs(runId)
+
+// 方法2: createJobHooks（単一ジョブ用）
+import type { processTaskJob } from './jobs'
+
+const processTaskHooks = createJobHooks<typeof processTaskJob>({
+  api: '/api/durably',
+  jobName: 'process-task',
+})
+
+const { trigger, status } = processTaskHooks.useJob()
+```
 
 ---
 
 ## 型定義
 
 ```ts
-interface DurablyOptions {
-  pollingInterval?: number
-  heartbeatInterval?: number
-  staleThreshold?: number
-}
-
+// 共通
 type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 interface Progress {
@@ -410,63 +658,84 @@ interface LogEntry {
   timestamp: string
 }
 
-interface Run<TOutput = unknown> {
-  id: string
-  jobName: string
-  status: RunStatus
-  output: TOutput | null
-  error: string | null
-  progress: Progress | null
-  createdAt: string
-  updatedAt: string
-}
+// イベント（SSE で送信される）
+type DurablyEvent =
+  | { type: 'run:trigger'; runId: string; jobName: string; payload: unknown }
+  | { type: 'run:start'; runId: string; jobName: string; payload: unknown }
+  | { type: 'run:complete'; runId: string; jobName: string; output: unknown; duration: number }
+  | { type: 'run:fail'; runId: string; jobName: string; error: string; failedStepName: string }
+  | { type: 'run:cancel'; runId: string; jobName: string }
+  | { type: 'run:retry'; runId: string; jobName: string }
+  | { type: 'run:progress'; runId: string; jobName: string; progress: Progress }
+  | { type: 'step:start'; runId: string; jobName: string; stepName: string; stepIndex: number }
+  | { type: 'step:complete'; runId: string; jobName: string; stepName: string; stepIndex: number; output: unknown; duration: number }
+  | { type: 'step:fail'; runId: string; jobName: string; stepName: string; stepIndex: number; error: string }
+  | { type: 'log:write'; runId: string; stepName: string | null; level: 'info' | 'warn' | 'error'; message: string; data: unknown }
+  | { type: 'worker:error'; error: string; context: string; runId?: string }
+```
+
+---
+
+## 依存関係
+
+### ブラウザ完結モード
+
+```text
+@coji/durably-react
+├── @coji/durably  (peer dependency)
+├── react          (peer dependency, >= 18.0.0)
+└── react-dom      (peer dependency, >= 18.0.0)
+```
+
+```bash
+npm install @coji/durably-react @coji/durably kysely zod sqlocal react react-dom
+```
+
+### サーバー連携モード
+
+**サーバー**:
+```bash
+npm install @coji/durably kysely zod better-sqlite3
+```
+
+**クライアント**（軽量、`@coji/durably` 不要）:
+```bash
+npm install @coji/durably-react react react-dom
 ```
 
 ---
 
 ## 使用例
 
-### 進捗表示付きバッチ処理
+### 進捗表示付きバッチ処理（ブラウザ完結）
 
 ```tsx
 // jobs.ts
-import { defineJob } from '@coji/durably'
-import { z } from 'zod'
-
 export const batchProcess = defineJob({
   name: 'batch-process',
   input: z.object({ items: z.array(z.string()) }),
   output: z.object({ processed: z.number() }),
   run: async (step, payload) => {
     const { items } = payload
-    let processed = 0
-
     for (let i = 0; i < items.length; i++) {
-      await step.run(`process-${items[i]}`, async () => {
-        await processItem(items[i])
-      })
-      processed++
-      step.progress(processed, items.length, `Processing ${items[i]}`)
+      await step.run(`process-${i}`, () => processItem(items[i]))
+      step.progress(i + 1, items.length, `Processing ${items[i]}`)
     }
-
-    return { processed }
+    return { processed: items.length }
   },
 })
 
 // component.tsx
-import { useJob } from '@coji/durably-react'
-import { batchProcess } from './jobs'
-
 function BatchProcessor() {
   const { trigger, progress, isRunning, output } = useJob(batchProcess)
 
   return (
     <div>
       <button
-        onClick={() => trigger({ items: ['a', 'b', 'c', 'd', 'e'] })}
+        onClick={() => trigger({ items: ['a', 'b', 'c'] })}
         disabled={isRunning}
       >
-        Start Batch
+        Start
       </button>
 
       {progress && (
@@ -476,7 +745,60 @@ function BatchProcessor() {
         </div>
       )}
 
-      {output && <div>Processed: {output.processed} items</div>}
+      {output && <div>Processed: {output.processed}</div>}
+    </div>
+  )
+}
+```
+
+### AI エージェント（サーバー連携）
+
+```tsx
+// サーバー: jobs.server.ts
+export const aiAgent = defineJob({
+  name: 'ai-agent',
+  input: z.object({ prompt: z.string() }),
+  output: z.object({ response: z.string() }),
+  run: async (step, { prompt }) => {
+    step.log.info('Processing prompt', { prompt })
+
+    const plan = await step.run('plan', () => generatePlan(prompt))
+    step.progress(1, 3, 'Planning...')
+
+    const research = await step.run('research', () => doResearch(plan))
+    step.progress(2, 3, 'Researching...')
+
+    const response = await step.run('generate', () => generate(research))
+    step.progress(3, 3, 'Generating...')
+
+    return { response }
+  },
+})
+
+// クライアント: component.tsx
+import { useJob } from '@coji/durably-react/client'
+
+function AIChat() {
+  const { trigger, status, progress, output, logs } = useJob({
+    api: '/api/durably',
+    jobName: 'ai-agent',
+  })
+
+  return (
+    <div>
+      <button onClick={() => trigger({ prompt: 'Hello' })}>
+        Send
+      </button>
+
+      {progress && <div>{progress.message}</div>}
+
+      <div>
+        {logs.map((log, i) => (
+          <div key={i}>[{log.level}] {log.message}</div>
+        ))}
+      </div>
+
+      {output && <div>{output.response}</div>}
     </div>
   )
 }
@@ -485,35 +807,169 @@ function BatchProcessor() {
 ### ページリロード後の再接続
 
 ```tsx
-import { useJob, useJobRun } from '@coji/durably-react'
-import { useSearchParams, useNavigate } from 'react-router'
-import { processTask } from './jobs'
+import { useJob } from '@coji/durably-react/client'
+import { useSearchParams } from 'react-router'
 
 function TaskPage() {
-  const [searchParams] = useSearchParams()
-  const navigate = useNavigate()
-  const existingRunId = searchParams.get('runId')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const runId = searchParams.get('runId')
 
-  // 新規実行用
-  const { trigger, currentRunId } = useJob(processTask)
-
-  // 既存 Run の購読用
-  const { status, progress, output } = useJobRun(existingRunId ?? currentRunId)
+  const { trigger, status, output } = useJob({
+    api: '/api/durably',
+    jobName: 'process-task',
+    initialRunId: runId ?? undefined,  // 既存 Run を再購読
+  })
 
   const handleStart = async () => {
-    const run = await trigger({ taskId: 'task-1' })
-    navigate(`?runId=${run.id}`)  // URL に runId を保存
+    const { runId } = await trigger({ taskId: '123' })
+    setSearchParams({ runId })  // URL に保存
   }
 
   return (
     <div>
       <button onClick={handleStart} disabled={status === 'running'}>
-        Start Task
+        Start
       </button>
+      {status === 'completed' && <pre>{JSON.stringify(output)}</pre>}
+    </div>
+  )
+}
+```
 
-      {status && <p>Status: {status}</p>}
-      {progress && <progress value={progress.current} max={progress.total} />}
-      {output && <pre>{JSON.stringify(output, null, 2)}</pre>}
+### Run 一覧ダッシュボード（ブラウザ完結モード）
+
+```tsx
+import { useRuns, useDurably } from '@coji/durably-react'
+
+function Dashboard() {
+  const { durably } = useDurably()
+  const {
+    runs,
+    isLoading,
+    page,
+    hasMore,
+    nextPage,
+    prevPage,
+    refresh,
+  } = useRuns({ pageSize: 10 })
+
+  const handleRetry = async (runId: string) => {
+    await durably?.retry(runId)
+    refresh()
+  }
+
+  const handleCancel = async (runId: string) => {
+    await durably?.cancel(runId)
+    refresh()
+  }
+
+  return (
+    <div>
+      <button onClick={refresh}>Refresh</button>
+
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Job</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((run) => (
+            <tr key={run.id}>
+              <td>{run.id}</td>
+              <td>{run.jobName}</td>
+              <td>{run.status}</td>
+              <td>
+                {(run.status === 'failed' || run.status === 'cancelled') && (
+                  <button onClick={() => handleRetry(run.id)}>Retry</button>
+                )}
+                {(run.status === 'pending' || run.status === 'running') && (
+                  <button onClick={() => handleCancel(run.id)}>Cancel</button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div>
+        <button onClick={prevPage} disabled={page === 0}>Prev</button>
+        <span>Page {page + 1}</span>
+        <button onClick={nextPage} disabled={!hasMore}>Next</button>
+      </div>
+    </div>
+  )
+}
+```
+
+### Run 一覧ダッシュボード（サーバー連携モード）
+
+```tsx
+import { useRuns, useRunActions } from '@coji/durably-react/client'
+
+function Dashboard() {
+  const { runs, isLoading, page, hasMore, nextPage, prevPage, refresh } = useRuns({
+    api: '/api/durably',
+    pageSize: 10,
+  })
+  const { retry, cancel, isLoading: isActioning } = useRunActions({
+    api: '/api/durably',
+  })
+
+  const handleRetry = async (runId: string) => {
+    await retry(runId)
+    refresh()
+  }
+
+  const handleCancel = async (runId: string) => {
+    await cancel(runId)
+    refresh()
+  }
+
+  return (
+    <div>
+      <button onClick={refresh}>Refresh</button>
+
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Job</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((run) => (
+            <tr key={run.id}>
+              <td>{run.id}</td>
+              <td>{run.jobName}</td>
+              <td>{run.status}</td>
+              <td>
+                {(run.status === 'failed' || run.status === 'cancelled') && (
+                  <button onClick={() => handleRetry(run.id)} disabled={isActioning}>
+                    Retry
+                  </button>
+                )}
+                {(run.status === 'pending' || run.status === 'running') && (
+                  <button onClick={() => handleCancel(run.id)} disabled={isActioning}>
+                    Cancel
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div>
+        <button onClick={prevPage} disabled={page === 0}>Prev</button>
+        <span>Page {page + 1}</span>
+        <button onClick={nextPage} disabled={!hasMore}>Next</button>
+      </div>
     </div>
   )
 }
@@ -523,252 +979,146 @@ function TaskPage() {
 
 ## 内部実装指針
 
-### useJob の実装
+### ブラウザ完結モード
+
+- `DurablyProvider` で渡された `durably` インスタンスを Context に保持
+- `autoStart=true` の場合、マウント時に `durably.start()` を呼び出し
+- `useJob` は `durably.on()` でイベント購読
+- アンマウント時にリスナー解除
+
+### サーバー連携モード
+
+- `useJob` は `fetch()` で trigger、`EventSource` で購読
+- SSE の再接続は自動（EventSource の標準動作）
+- `@coji/durably` に依存しない
+
+### Strict Mode 対応
+
+- ref で初期化済みフラグを管理
+- 二重マウントでも正しく動作
+
+---
+
+## 将来拡張
+
+### Streaming 対応
+
+`step.stream()` でトークン単位のストリーミングを追加予定。
 
 ```tsx
-function useJob<TName extends string, TInput, TOutput>(
-  jobDef: JobDefinition<TName, TInput, TOutput>
-) {
-  const { durably, isReady } = useDurably()
-  const [state, setState] = useState(initialState)
-  const listenersRef = useRef<Array<() => void>>([])
-  const jobHandleRef = useRef<JobHandle<TName, TInput, TOutput> | null>(null)
+// 将来
+const { trigger, chunks, fullText, isStreaming } = useJobStream({
+  baseUrl: '/api/durably',
+  jobName: 'ai-chat',
+})
+```
 
-  // ジョブを登録
-  useEffect(() => {
-    if (!durably || !isReady) return
-    jobHandleRef.current = durably.register(jobDef)
-  }, [durably, isReady, jobDef.name])
+### カスタム API アダプター
 
-  const trigger = useCallback(async (input: TInput, options?: TriggerOptions) => {
-    const jobHandle = jobHandleRef.current
-    if (!durably || !jobHandle) {
-      throw new Error('Durably not initialized')
-    }
-
-    const run = await jobHandle.trigger(input, options)
-    setState(s => ({ ...s, currentRunId: run.id, status: 'pending' }))
-
-    // リスナー登録
-    const unsubs = [
-      durably.on('run:start', (e) => {
-        if (e.runId === run.id) {
-          setState(s => ({ ...s, status: 'running' }))
-        }
-      }),
-      durably.on('run:complete', (e) => {
-        if (e.runId === run.id) {
-          setState(s => ({ ...s, status: 'completed', output: e.output }))
-          cleanup()
-        }
-      }),
-      durably.on('run:fail', (e) => {
-        if (e.runId === run.id) {
-          setState(s => ({ ...s, status: 'failed', error: e.error }))
-          cleanup()
-        }
-      }),
-      durably.on('log:write', (e) => {
-        if (e.runId === run.id) {
-          setState(s => ({ ...s, logs: [...s.logs, e] }))
-        }
-      }),
-    ]
-
-    listenersRef.current = unsubs
-    return run
-  }, [durably])
-
-  const cleanup = useCallback(() => {
-    listenersRef.current.forEach(unsub => unsub())
-    listenersRef.current = []
-  }, [])
-
-  useEffect(() => cleanup, [cleanup])
-
-  return { trigger, ...state }
-}
+```tsx
+// 将来: カスタム API 実装
+const { trigger, status } = useJob({
+  trigger: async (input) => {
+    const res = await fetch('/custom/trigger', { ... })
+    return res.json()
+  },
+  subscribe: (runId) => new EventSource(`/custom/subscribe/${runId}`),
+})
 ```
 
 ---
 
-## Durably コア側の要件
+## v1 からの変更点
 
-React 統合を実現するために、コアライブラリに以下が必要。
+### @coji/durably コアパッケージ
 
-### 1. イベントリスナーの解除機能
+#### 型安全な `durably.jobs` API
 
-`on()` が unsubscribe 関数を返す必要がある。
+`register()` がオブジェクト形式を受け取り、型安全な `jobs` プロパティを返すようになった:
 
 ```ts
-const unsubscribe = durably.on('run:complete', handler)
-unsubscribe() // リスナーを解除
-```
+// 旧: 個別に register
+const processImageHandle = durably.register(processImageJob)
+const syncUsersHandle = durably.register(syncUsersJob)
 
-### 2. register メソッド
-
-`JobDefinition` を受け取り、`JobHandle` を返す。
-
-```ts
-const jobHandle = durably.register(jobDef)
-```
-
----
-
-## 依存関係
-
-```
-@coji/durably-react
-├── @coji/durably  (peer dependency)
-├── react          (peer dependency, >= 18.0.0)
-└── react-dom      (peer dependency, >= 18.0.0)
-
-@coji/durably
-├── kysely         (peer dependency)
-└── zod            (peer dependency)
-```
-
-インストール（ブラウザ環境）:
-
-```bash
-npm install @coji/durably-react @coji/durably kysely zod sqlocal react react-dom
-```
-
----
-
-## 検討事項
-
-### SSR 対応
-
-- `DurablyProvider` はクライアントサイドのみで動作
-- SSR 時は `isReady: false` を返し、ハイドレーション後に初期化
-
-### React 19 の Strict Mode
-
-- 開発モードでの二重マウントに対応
-- ref を使った初期化済みフラグで重複初期化を防止
-
-### エラーバウンダリ
-
-- Provider 初期化エラーは `error` として公開
-- 子コンポーネントでエラーバウンダリを使用することを推奨
-
----
-
-## 将来拡張への準備
-
-### Streaming 対応 (spec-streaming.md 参照)
-
-v2 で `durably.subscribe()` が実装された際、以下の拡張を予定している。現在の設計はこれらを妨げないよう考慮されている。
-
-#### 1. useJob の events 追加
-
-```tsx
-// v1（現在）
-const { trigger, status, output, logs, progress } = useJob(job)
-
-// v2（将来）- events を追加
-const { trigger, status, output, logs, progress, events } = useJob(job)
-
-// events は AsyncIterable<DurablyEvent>
-for await (const event of events) {
-  if (event.type === 'stream') {
-    // トークン単位のストリーミングデータ
-    console.log(event.data)
-  }
-}
-```
-
-`events` は v1 では `null` を返す。v2 で追加しても破壊的変更にならない。
-
-#### 2. 内部実装の切り替え
-
-| バージョン | イベント購読方式                                            |
-| ---------- | ----------------------------------------------------------- |
-| v1         | `durably.on()` ベース（同期的、プロセス内のみ）             |
-| v2         | `durably.subscribe()` ベース（ReadableStream、再接続対応）  |
-
-外部 API は変わらない。内部で使用するイベントソースを切り替える。
-
-#### 3. useJobStream フック（新規、v2）
-
-streaming 専用のフック。`step.stream()` の emit をリアルタイムで消費する。
-
-```tsx
-import { useJobStream } from '@coji/durably-react'
-
-function AIChat() {
-  const { trigger, isStreaming, chunks, fullText } = useJobStream(chatJob)
-
-  return (
-    <div>
-      <button onClick={() => trigger({ prompt: 'Hello' })}>
-        Send
-      </button>
-
-      {isStreaming && (
-        <div className="streaming">
-          {chunks.map((chunk, i) => (
-            <span key={i}>{chunk.text}</span>
-          ))}
-        </div>
-      )}
-
-      {!isStreaming && fullText && (
-        <div className="complete">{fullText}</div>
-      )}
-    </div>
-  )
-}
-```
-
-#### 4. サーバー実行 + クライアント購読
-
-サーバーサイドで Durably を実行し、クライアントで購読するパターン。常駐サーバー（非 Serverless）を前提とする。
-
-```tsx
-// サーバー側: Resource Route で SSE エンドポイント
-// app/routes/api.runs.$runId.stream.ts
-export async function loader({ params }: LoaderFunctionArgs) {
-  const stream = await durably.subscribe(params.runId)
-
-  const sseStream = stream.pipeThrough(new TransformStream({
-    transform(event, controller) {
-      controller.enqueue(`data: ${JSON.stringify(event)}\n\n`)
-    }
-  }))
-
-  return new Response(sseStream, {
-    headers: { 'Content-Type': 'text-event-stream' },
+// 新: オブジェクト形式で一括登録、型安全な jobs プロパティ
+const durably = createDurably({ dialect })
+  .register({
+    processImage: processImageJob,
+    syncUsers: syncUsersJob,
   })
+
+// 型安全なアクセス
+await durably.jobs.processImage.trigger({ imageId: '123' })
+await durably.jobs.syncUsers.trigger({ source: 'api' })
+```
+
+#### 新しいイベント
+
+以下のイベントが追加された:
+
+| イベント        | 説明                                |
+|-----------------|-------------------------------------|
+| `run:trigger`   | ジョブがトリガーされた時（Worker 実行前） |
+| `run:cancel`    | Run がキャンセルされた時             |
+| `run:retry`     | Run がリトライされた時               |
+
+#### `subscribe()` メソッド
+
+`durably.subscribe(runId)` で特定 Run のイベントを `ReadableStream` で購読可能:
+
+```ts
+const stream = durably.subscribe(runId)
+const reader = stream.getReader()
+
+while (true) {
+  const { done, value } = await reader.read()
+  if (done) break
+  console.log(value) // DurablyEvent
 }
 ```
 
-```tsx
-// クライアント側: SSE を消費するフック
-import { useEventSource } from '@coji/durably-react/client'
+#### `getJob()` メソッド
 
-function TaskStatus({ runId }: { runId: string }) {
-  const { status, progress, output } = useEventSource(
-    `/api/runs/${runId}/stream`
-  )
+名前で登録済みジョブを取得:
 
-  return <div>Status: {status}</div>
+```ts
+const job = durably.getJob('process-image')
+if (job) {
+  await job.trigger({ imageId: '123' })
 }
 ```
 
-`@coji/durably-react/client` は Durably 本体に依存しない軽量なフック集として提供予定。
+### @coji/durably/server
 
-### 設計上の考慮事項
+#### 新しいエンドポイント
 
-1. **useJob の戻り値は拡張可能**
-   - 新しいプロパティを追加しても既存コードは壊れない
-   - `events` など将来のプロパティは `null` または `undefined` を返す
+| エンドポイント                 | メソッド | 説明                     |
+|--------------------------------|----------|--------------------------|
+| `{basePath}/steps?runId=xxx`   | GET      | Run のステップ一覧を取得 |
+| `{basePath}/run?runId=xxx`     | DELETE   | Run を削除               |
 
-2. **Provider の props は安定**
-   - `dialect` と `options` の構造は変わらない
-   - 新しいオプションは追加されるが、既存は維持
+#### SSE イベント拡張
 
-3. **内部でのイベントソース抽象化**
-   - `on()` から `subscribe()` への移行を内部で吸収
-   - フック利用者は実装の詳細を意識しない
+`/runs/subscribe` エンドポイントで以下の新しいイベントを配信:
+
+- `run:trigger` - ジョブトリガー時
+- `run:cancel` - キャンセル時
+- `run:retry` - リトライ時
+
+### @coji/durably-react/client
+
+#### `useRunActions` の拡張
+
+新しいメソッドが追加された:
+
+| メソッド      | 説明              |
+|---------------|-------------------|
+| `deleteRun()` | Run を削除        |
+| `getRun()`    | Run を取得        |
+| `getSteps()`  | Steps を取得      |
+
+新しい型がエクスポートされた:
+
+- `RunRecord` - Run のレコード型
+- `StepRecord` - Step のレコード型

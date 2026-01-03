@@ -1,75 +1,49 @@
 # What is Durably?
 
-Durably is a step-oriented batch execution framework that enables **resumable workflows** in both Node.js and browsers.
+Durably is a **resumable job execution** library for TypeScript. Split long-running tasks into steps — if interrupted, resume from the last successful step.
 
 ## The Problem
 
-When running batch jobs or workflows, failures can happen at any point:
-- Network errors during API calls
-- Process crashes
-- Browser tab closures
-- Server restarts
+Long-running tasks fail. Networks drop, servers restart, browsers close. Traditional approaches either:
 
-Traditional approaches require you to either:
-- Re-run the entire job from the beginning
-- Implement complex checkpointing logic manually
+- **Lose all progress** and restart from scratch
+- **Require complex infrastructure** like Redis queues or cloud services
 
 ## The Solution
 
-Durably automatically persists the result of each step to SQLite. If a job is interrupted, it resumes from the last successful step. Durably uses [Kysely](https://kysely.dev) for database access—you provide a dialect for your SQLite implementation.
+Durably saves each step's result to SQLite. On resume, completed steps return cached results instantly.
+
+![Resumability](/images/resumability.svg)
 
 ```ts
-import { createDurably, defineJob } from '@coji/durably'
-import { LibsqlDialect } from '@libsql/kysely-libsql' // or your SQLite dialect
-import { z } from 'zod'
-
-// Create durably instance with SQLite dialect
-const dialect = new LibsqlDialect({ url: 'file:app.db' })
-const durably = createDurably({ dialect })
-
-// Define job (static, can be in a separate file)
-const syncUsersJob = defineJob({
-  name: 'sync-users',
-  input: z.object({ orgId: z.string() }),
+const job = defineJob({
+  name: 'import-csv',
   run: async (step, payload) => {
-    // Step 1: Fetch users (persisted after completion)
-    const users = await step.run('fetch-users', async () => {
-      return api.fetchUsers(payload.orgId)
-    })
+    // Step 1: Parse (cached after first run)
+    const rows = await step.run('parse', () => parseCSV(payload.file))
 
-    // Step 2: Save to database (skipped if already done)
-    await step.run('save-to-db', async () => {
-      await db.upsertUsers(users)
-    })
+    // Step 2: Import each row
+    for (const [i, row] of rows.entries()) {
+      await step.run(`import-${i}`, () => db.insert(row))
+      step.progress(i + 1, rows.length)
+    }
 
-    return { syncedCount: users.length }
+    return { count: rows.length }
   },
 })
-
-// Register and trigger
-const syncUsers = durably.register(syncUsersJob)
-await syncUsers.trigger({ orgId: 'org_123' })
 ```
 
-## Key Features
+If the process crashes after importing 500 of 1000 rows, restart picks up at row 501.
 
-- **Step-level persistence**: Each `step.run()` call creates a checkpoint
-- **Automatic resumption**: Interrupted jobs resume from the last successful step
-- **Cross-platform**: Same code runs in Node.js and browsers
-- **Minimal dependencies**: Just Kysely and Zod
-- **Type-safe**: Full TypeScript support with schema validation
+## Where It Runs
 
-## When to Use Durably
+| Environment | Storage | Use Case |
+|-------------|---------|----------|
+| **Node.js** | @libsql/client, better-sqlite3 | Server-side batch jobs |
+| **Browser** | SQLite WASM + OPFS | Offline-capable apps |
 
-Durably is ideal for:
+Same job definition works in both environments.
 
-- **Data synchronization jobs** - Fetching and processing data from external APIs
-- **Batch processing** - Processing large datasets in steps
-- **Browser workflows** - Long-running operations that survive page reloads
-- **Offline-first applications** - Operations that need to resume after connectivity is restored
+## Next Step
 
-## Next Steps
-
-- [Getting Started](/guide/getting-started) - Install and create your first job
-- [Jobs and Steps](/guide/jobs-and-steps) - Learn about the core concepts
-- [Live Demo](https://durably-demo.vercel.app) - Try it in your browser
+**[Getting Started →](/guide/getting-started)** — Build a CSV importer with progress UI in 5 minutes.

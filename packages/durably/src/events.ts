@@ -8,6 +8,16 @@ export interface BaseEvent {
 }
 
 /**
+ * Run trigger event (emitted when a job is triggered, before worker picks it up)
+ */
+export interface RunTriggerEvent extends BaseEvent {
+  type: 'run:trigger'
+  runId: string
+  jobName: string
+  payload: unknown
+}
+
+/**
  * Run start event
  */
 export interface RunStartEvent extends BaseEvent {
@@ -37,6 +47,24 @@ export interface RunFailEvent extends BaseEvent {
   jobName: string
   error: string
   failedStepName: string
+}
+
+/**
+ * Run cancel event
+ */
+export interface RunCancelEvent extends BaseEvent {
+  type: 'run:cancel'
+  runId: string
+  jobName: string
+}
+
+/**
+ * Run retry event (emitted when a failed run is retried)
+ */
+export interface RunRetryEvent extends BaseEvent {
+  type: 'run:retry'
+  runId: string
+  jobName: string
 }
 
 /**
@@ -111,9 +139,12 @@ export interface WorkerErrorEvent extends BaseEvent {
  * All event types as discriminated union
  */
 export type DurablyEvent =
+  | RunTriggerEvent
   | RunStartEvent
   | RunCompleteEvent
   | RunFailEvent
+  | RunCancelEvent
+  | RunRetryEvent
   | RunProgressEvent
   | StepStartEvent
   | StepCompleteEvent
@@ -146,9 +177,12 @@ export type EventInput<T extends EventType> = Omit<
  * All possible event inputs as a union (properly distributed)
  */
 export type AnyEventInput =
+  | EventInput<'run:trigger'>
   | EventInput<'run:start'>
   | EventInput<'run:complete'>
   | EventInput<'run:fail'>
+  | EventInput<'run:cancel'>
+  | EventInput<'run:retry'>
   | EventInput<'run:progress'>
   | EventInput<'step:start'>
   | EventInput<'step:complete'>

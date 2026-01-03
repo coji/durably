@@ -12,6 +12,23 @@ durably.on(eventType: string, listener: (event) => void): void
 
 ### Run Events
 
+#### `run:trigger`
+
+Fired when a job is triggered (before worker picks it up).
+
+```ts
+durably.on('run:trigger', (event) => {
+  // event: {
+  //   type: 'run:trigger',
+  //   runId: string,
+  //   jobName: string,
+  //   payload: unknown,
+  //   timestamp: string,
+  //   sequence: number
+  // }
+})
+```
+
 #### `run:start`
 
 Fired when a run begins execution.
@@ -76,6 +93,38 @@ durably.on('run:progress', (event) => {
   //   runId: string,
   //   jobName: string,
   //   progress: { current: number, total?: number, message?: string },
+  //   timestamp: string,
+  //   sequence: number
+  // }
+})
+```
+
+#### `run:cancel`
+
+Fired when a run is cancelled via `cancel()` API.
+
+```ts
+durably.on('run:cancel', (event) => {
+  // event: {
+  //   type: 'run:cancel',
+  //   runId: string,
+  //   jobName: string,
+  //   timestamp: string,
+  //   sequence: number
+  // }
+})
+```
+
+#### `run:retry`
+
+Fired when a failed or cancelled run is retried via `retry()` API.
+
+```ts
+durably.on('run:retry', (event) => {
+  // event: {
+  //   type: 'run:retry',
+  //   runId: string,
+  //   jobName: string,
   //   timestamp: string,
   //   sequence: number
   // }
@@ -203,9 +252,12 @@ interface BaseEvent {
 }
 
 type DurablyEvent =
+  | RunTriggerEvent
   | RunStartEvent
   | RunCompleteEvent
   | RunFailEvent
+  | RunCancelEvent
+  | RunRetryEvent
   | RunProgressEvent
   | StepStartEvent
   | StepCompleteEvent

@@ -34,17 +34,17 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           executionOrder.push(`end-${payload.id}`)
         },
       })
-      const job = durably.register(concurrencyTestDef)
+      const d = durably.register({ job: concurrencyTestDef })
 
       // Trigger two runs with the same concurrency key
-      await job.trigger({ id: '1' }, { concurrencyKey: 'user-123' })
-      await job.trigger({ id: '2' }, { concurrencyKey: 'user-123' })
+      await d.jobs.job.trigger({ id: '1' }, { concurrencyKey: 'user-123' })
+      await d.jobs.job.trigger({ id: '2' }, { concurrencyKey: 'user-123' })
 
-      durably.start()
+      d.start()
 
       await vi.waitFor(
         async () => {
-          const runs = await job.getRuns()
+          const runs = await d.jobs.job.getRuns()
           const allCompleted = runs.every((r) => r.status === 'completed')
           expect(allCompleted).toBe(true)
         },
@@ -68,17 +68,17 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           })
         },
       })
-      const job = durably.register(differentKeysTestDef)
+      const d = durably.register({ job: differentKeysTestDef })
 
       // Trigger two runs with different concurrency keys
-      await job.trigger({ id: 'a' }, { concurrencyKey: 'user-A' })
-      await job.trigger({ id: 'b' }, { concurrencyKey: 'user-B' })
+      await d.jobs.job.trigger({ id: 'a' }, { concurrencyKey: 'user-A' })
+      await d.jobs.job.trigger({ id: 'b' }, { concurrencyKey: 'user-B' })
 
-      durably.start()
+      d.start()
 
       await vi.waitFor(
         async () => {
-          const runs = await job.getRuns()
+          const runs = await d.jobs.job.getRuns()
           const allCompleted = runs.every((r) => r.status === 'completed')
           expect(allCompleted).toBe(true)
         },
@@ -103,18 +103,18 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           })
         },
       })
-      const job = durably.register(noKeyTestDef)
+      const d = durably.register({ job: noKeyTestDef })
 
       // Mix of runs with and without concurrency keys
-      await job.trigger({ id: '1' }) // no key
-      await job.trigger({ id: '2' }, { concurrencyKey: 'key-x' })
-      await job.trigger({ id: '3' }) // no key
+      await d.jobs.job.trigger({ id: '1' }) // no key
+      await d.jobs.job.trigger({ id: '2' }, { concurrencyKey: 'key-x' })
+      await d.jobs.job.trigger({ id: '3' }) // no key
 
-      durably.start()
+      d.start()
 
       await vi.waitFor(
         async () => {
-          const runs = await job.getRuns()
+          const runs = await d.jobs.job.getRuns()
           const allCompleted = runs.every((r) => r.status === 'completed')
           expect(allCompleted).toBe(true)
         },
@@ -140,18 +140,18 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           concurrentRuns--
         },
       })
-      const job = durably.register(nullKeyTestDef)
+      const d = durably.register({ job: nullKeyTestDef })
 
       // Multiple runs with no concurrency key
-      await job.trigger({ id: 1 })
-      await job.trigger({ id: 2 })
-      await job.trigger({ id: 3 })
+      await d.jobs.job.trigger({ id: 1 })
+      await d.jobs.job.trigger({ id: 2 })
+      await d.jobs.job.trigger({ id: 3 })
 
-      durably.start()
+      d.start()
 
       await vi.waitFor(
         async () => {
-          const runs = await job.getRuns()
+          const runs = await d.jobs.job.getRuns()
           const allCompleted = runs.every((r) => r.status === 'completed')
           expect(allCompleted).toBe(true)
         },

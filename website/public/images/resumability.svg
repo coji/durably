@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 320">
+  <defs>
+    <style>
+      .title { font: bold 14px system-ui, sans-serif; fill: #374151; }
+      .label { font: 12px system-ui, sans-serif; fill: #6b7280; }
+      .step-text { font: 11px ui-monospace, monospace; fill: #1f2937; }
+      .status { font: bold 11px system-ui, sans-serif; }
+      .box { rx: 6; }
+    </style>
+  </defs>
+
+  <!-- First Run -->
+  <text x="200" y="30" text-anchor="middle" class="title">First Run</text>
+
+  <!-- Step boxes - First Run -->
+  <rect x="40" y="50" width="100" height="50" fill="#dbeafe" stroke="#3b82f6" stroke-width="2" class="box"/>
+  <text x="90" y="80" text-anchor="middle" class="step-text">Step 1: Parse</text>
+
+  <rect x="160" y="50" width="100" height="50" fill="#dbeafe" stroke="#3b82f6" stroke-width="2" class="box"/>
+  <text x="210" y="80" text-anchor="middle" class="step-text">Step 2: Import</text>
+
+  <rect x="280" y="50" width="100" height="50" fill="#fee2e2" stroke="#ef4444" stroke-width="2" class="box"/>
+  <text x="330" y="75" text-anchor="middle" class="step-text">Step 3: Notify</text>
+  <text x="330" y="90" text-anchor="middle" class="status" fill="#ef4444">CRASH!</text>
+
+  <!-- Arrows - First Run -->
+  <path d="M140 75 L155 75" stroke="#9ca3af" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M260 75 L275 75" stroke="#9ca3af" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- Checkmarks -->
+  <circle cx="130" cy="55" r="10" fill="#22c55e"/>
+  <path d="M125 55 L128 58 L135 51" stroke="white" stroke-width="2" fill="none"/>
+
+  <circle cx="250" cy="55" r="10" fill="#22c55e"/>
+  <path d="M245 55 L248 58 L255 51" stroke="white" stroke-width="2" fill="none"/>
+
+  <!-- Database saves -->
+  <text x="90" y="118" text-anchor="middle" class="label">saved</text>
+  <text x="210" y="118" text-anchor="middle" class="label">saved</text>
+
+  <!-- Divider -->
+  <line x1="20" y1="160" x2="380" y2="160" stroke="#e5e7eb" stroke-width="2" stroke-dasharray="5,5"/>
+  <text x="200" y="175" text-anchor="middle" class="label">Process restarts...</text>
+
+  <!-- Second Run -->
+  <text x="200" y="210" text-anchor="middle" class="title">After Restart</text>
+
+  <!-- Step boxes - Second Run -->
+  <rect x="40" y="230" width="100" height="50" fill="#f0fdf4" stroke="#22c55e" stroke-width="2" class="box"/>
+  <text x="90" y="252" text-anchor="middle" class="step-text">Step 1: Parse</text>
+  <text x="90" y="268" text-anchor="middle" class="status" fill="#22c55e">CACHED</text>
+
+  <rect x="160" y="230" width="100" height="50" fill="#f0fdf4" stroke="#22c55e" stroke-width="2" class="box"/>
+  <text x="210" y="252" text-anchor="middle" class="step-text">Step 2: Import</text>
+  <text x="210" y="268" text-anchor="middle" class="status" fill="#22c55e">CACHED</text>
+
+  <rect x="280" y="230" width="100" height="50" fill="#dbeafe" stroke="#3b82f6" stroke-width="2" class="box"/>
+  <text x="330" y="252" text-anchor="middle" class="step-text">Step 3: Notify</text>
+  <text x="330" y="268" text-anchor="middle" class="status" fill="#3b82f6">RUNS</text>
+
+  <!-- Arrows - Second Run -->
+  <path d="M140 255 L155 255" stroke="#9ca3af" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M260 255 L275 255" stroke="#9ca3af" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- Skip indicators -->
+  <path d="M90 225 Q90 200 210 200 Q330 200 330 225" stroke="#22c55e" stroke-width="2" fill="none" stroke-dasharray="4,2"/>
+  <text x="210" y="195" text-anchor="middle" class="label" fill="#22c55e">skip completed steps</text>
+
+  <!-- Right side: Summary -->
+  <rect x="440" y="40" width="340" height="260" fill="#f9fafb" stroke="#e5e7eb" stroke-width="1" class="box"/>
+
+  <text x="610" y="70" text-anchor="middle" class="title">How Durably Works</text>
+
+  <circle cx="470" cy="105" r="8" fill="#3b82f6"/>
+  <text x="490" y="110" class="step-text">Each step.run() saves result to SQLite</text>
+
+  <circle cx="470" cy="145" r="8" fill="#ef4444"/>
+  <text x="490" y="150" class="step-text">Process crashes mid-execution</text>
+
+  <circle cx="470" cy="185" r="8" fill="#22c55e"/>
+  <text x="490" y="190" class="step-text">On restart: completed steps return</text>
+  <text x="490" y="205" class="step-text">cached results instantly</text>
+
+  <circle cx="470" cy="245" r="8" fill="#8b5cf6"/>
+  <text x="490" y="250" class="step-text">Execution continues from next</text>
+  <text x="490" y="265" class="step-text">incomplete step</text>
+
+  <!-- Arrow marker -->
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#9ca3af"/>
+    </marker>
+  </defs>
+</svg>

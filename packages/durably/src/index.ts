@@ -8,7 +8,7 @@ export type { Durably, DurablyOptions, DurablyPlugin } from './durably'
 
 // Job Definition
 export { defineJob } from './define-job'
-export type { JobDefinition } from './define-job'
+export type { JobDefinition, JobInput, JobOutput } from './define-job'
 
 // Plugins
 export { withLogPersistence } from './plugins/log-persistence'
@@ -46,3 +46,7 @@ export type { Log, Run, RunFilter, Step } from './storage'
 
 // Errors
 export { CancelledError } from './errors'
+
+// Server
+export { createDurablyHandler } from './server'
+export type { DurablyHandler, TriggerRequest, TriggerResponse } from './server'

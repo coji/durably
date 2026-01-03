@@ -36,14 +36,14 @@ export function createStepTests(createDialect: () => Dialect) {
           return { result: value }
         },
       })
-      const job = durably.register(stepReturnTestDef)
+      const d = durably.register({ job: stepReturnTestDef })
 
-      const run = await job.trigger({})
-      durably.start()
+      const run = await d.jobs.job.trigger({})
+      d.start()
 
       await vi.waitFor(
         async () => {
-          const updated = await job.getRun(run.id)
+          const updated = await d.jobs.job.getRun(run.id)
           expect(updated?.status).toBe('completed')
           expect(updated?.output).toEqual({ result: 42 })
         },
@@ -60,14 +60,14 @@ export function createStepTests(createDialect: () => Dialect) {
           await step.run('step2', () => 'result2')
         },
       })
-      const job = durably.register(stepRecordTestDef)
+      const d = durably.register({ job: stepRecordTestDef })
 
-      const run = await job.trigger({})
-      durably.start()
+      const run = await d.jobs.job.trigger({})
+      d.start()
 
       await vi.waitFor(
         async () => {
-          const steps = await durably.storage.getSteps(run.id)
+          const steps = await d.storage.getSteps(run.id)
           expect(steps).toHaveLength(2)
           expect(steps[0].name).toBe('step1')
           expect(steps[0].status).toBe('completed')
@@ -90,14 +90,14 @@ export function createStepTests(createDialect: () => Dialect) {
           })
         },
       })
-      const job = durably.register(stepFailTestDef)
+      const d = durably.register({ job: stepFailTestDef })
 
-      const run = await job.trigger({})
-      durably.start()
+      const run = await d.jobs.job.trigger({})
+      d.start()
 
       await vi.waitFor(
         async () => {
-          const updated = await job.getRun(run.id)
+          const updated = await d.jobs.job.getRun(run.id)
           expect(updated?.status).toBe('failed')
           expect(updated?.error).toContain('Step failed!')
         },
@@ -105,7 +105,7 @@ export function createStepTests(createDialect: () => Dialect) {
       )
 
       // Check step was recorded as failed
-      const steps = await durably.storage.getSteps(run.id)
+      const steps = await d.storage.getSteps(run.id)
       expect(steps).toHaveLength(1)
       expect(steps[0].status).toBe('failed')
       expect(steps[0].error).toContain('Step failed!')
@@ -133,15 +133,15 @@ export function createStepTests(createDialect: () => Dialect) {
           })
         },
       })
-      const job = durably.register(stepResumeTestDef)
+      const d = durably.register({ job: stepResumeTestDef })
 
       // First run - will fail at step2
-      const run1 = await job.trigger({ shouldFail: true })
-      durably.start()
+      const run1 = await d.jobs.job.trigger({ shouldFail: true })
+      d.start()
 
       await vi.waitFor(
         async () => {
-          const updated = await job.getRun(run1.id)
+          const updated = await d.jobs.job.getRun(run1.id)
           expect(updated?.status).toBe('failed')
         },
         { timeout: 1000 },
@@ -151,12 +151,12 @@ export function createStepTests(createDialect: () => Dialect) {
       expect(step2Calls).toBe(1)
 
       // Reset run to pending for retry (simulate retry behavior)
-      await durably.storage.updateRun(run1.id, { status: 'pending' })
+      await d.storage.updateRun(run1.id, { status: 'pending' })
 
       // Second run - step1 should be skipped
       await vi.waitFor(
         async () => {
-          const updated = await job.getRun(run1.id)
+          const updated = await d.jobs.job.getRun(run1.id)
           expect(updated?.status).toBe('completed')
         },
         { timeout: 1000 },
@@ -194,15 +194,15 @@ export function createStepTests(createDialect: () => Dialect) {
           return { step1Result: result }
         },
       })
-      const job = durably.register(stepOutputResumeTestDef)
+      const d = durably.register({ job: stepOutputResumeTestDef })
 
       // First attempt - step1 succeeds, step2 fails
-      const run = await job.trigger({})
-      durably.start()
+      const run = await d.jobs.job.trigger({})
+      d.start()
 
       await vi.waitFor(
         async () => {
-          const updated = await job.getRun(run.id)
+          const updated = await d.jobs.job.getRun(run.id)
           expect(updated?.status).toBe('failed')
         },
         { timeout: 1000 },
@@ -212,13 +212,13 @@ export function createStepTests(createDialect: () => Dialect) {
       expect(step2CallCount).toBe(1)
 
       // Retry - step1 should be skipped and return stored value
-      await durably.storage.updateRun(run.id, {
+      await d.storage.updateRun(run.id, {
         status: 'pending',
       })
 
       await vi.waitFor(
         async () => {
-          const updated = await job.getRun(run.id)
+          const updated = await d.jobs.job.getRun(run.id)
           expect(updated?.status).toBe('completed')
           // The step1Result should be from first call, not recomputed
           expect(updated?.output?.step1Result).toBe('computed-call-1')
@@ -243,10 +243,10 @@ export function createStepTests(createDialect: () => Dialect) {
           await step.run('myStep', () => 'hello')
         },
       })
-      const job = durably.register(stepEventsTestDef)
+      const d = durably.register({ job: stepEventsTestDef })
 
-      await job.trigger({})
-      durably.start()
+      await d.jobs.job.trigger({})
+      d.start()
 
       await vi.waitFor(
         async () => {
@@ -271,14 +271,14 @@ export function createStepTests(createDialect: () => Dialect) {
           return { value }
         },
       })
-      const job = durably.register(asyncStepTestDef)
+      const d = durably.register({ job: asyncStepTestDef })
 
-      const run = await job.trigger({})
-      durably.start()
+      const run = await d.jobs.job.trigger({})
+      d.start()
 
       await vi.waitFor(
         async () => {
-          const updated = await job.getRun(run.id)
+          const updated = await d.jobs.job.getRun(run.id)
           expect(updated?.status).toBe('completed')
           expect(updated?.output).toEqual({ value: 'async-result' })
         },
@@ -297,20 +297,20 @@ export function createStepTests(createDialect: () => Dialect) {
           })
         },
       })
-      const job = durably.register(stepTimingTestDef)
+      const d = durably.register({ job: stepTimingTestDef })
 
-      const run = await job.trigger({})
-      durably.start()
+      const run = await d.jobs.job.trigger({})
+      d.start()
 
       await vi.waitFor(
         async () => {
-          const updated = await job.getRun(run.id)
+          const updated = await d.jobs.job.getRun(run.id)
           expect(updated?.status).toBe('completed')
         },
         { timeout: 1000 },
       )
 
-      const steps = await durably.storage.getSteps(run.id)
+      const steps = await d.storage.getSteps(run.id)
       expect(steps).toHaveLength(1)
 
       const step = steps[0]
@@ -341,14 +341,14 @@ export function createStepTests(createDialect: () => Dialect) {
           step.progress(3, 3, 'Complete')
         },
       })
-      const job = durably.register(progressTestDef)
+      const d = durably.register({ job: progressTestDef })
 
-      const run = await job.trigger({})
-      durably.start()
+      const run = await d.jobs.job.trigger({})
+      d.start()
 
       await vi.waitFor(
         async () => {
-          const updated = await job.getRun(run.id)
+          const updated = await d.jobs.job.getRun(run.id)
           expect(updated?.status).toBe('completed')
         },
         { timeout: 1000 },

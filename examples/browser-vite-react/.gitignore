@@ -1,0 +1,8 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# SQLite database files
+*.db

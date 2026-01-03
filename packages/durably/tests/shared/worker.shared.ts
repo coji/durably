@@ -28,15 +28,15 @@ export function createWorkerTests(createDialect: () => Dialect) {
           output: z.object({ done: z.boolean() }),
           run: async () => ({ done: true }),
         })
-        const job = durably.register(pollingTestDef)
+        const d = durably.register({ job: pollingTestDef })
 
-        await job.trigger({})
-        durably.start()
+        await d.jobs.job.trigger({})
+        d.start()
 
         // Wait for polling to pick up the job
         await vi.waitFor(
           async () => {
-            const run = (await job.getRuns())[0]
+            const run = (await d.jobs.job.getRuns())[0]
             expect(run.status).toBe('completed')
           },
           { timeout: 1000 },
@@ -55,17 +55,17 @@ export function createWorkerTests(createDialect: () => Dialect) {
             })
           },
         })
-        const job = durably.register(stopTestDef)
+        const d = durably.register({ job: stopTestDef })
 
-        await job.trigger({})
-        durably.start()
+        await d.jobs.job.trigger({})
+        d.start()
 
         // Wait a bit then stop
         await new Promise((r) => setTimeout(r, 50))
-        await durably.stop()
+        await d.stop()
 
         expect(stepExecuted).toBe(true)
-        const run = (await job.getRuns())[0]
+        const run = (await d.jobs.job.getRuns())[0]
         expect(run.status).toBe('completed')
       })
 
@@ -92,16 +92,16 @@ export function createWorkerTests(createDialect: () => Dialect) {
           output: z.object({ value: z.number() }),
           run: async () => ({ value: 42 }),
         })
-        const job = durably.register(stateTestDef)
+        const d = durably.register({ job: stateTestDef })
 
-        const run = await job.trigger({})
+        const run = await d.jobs.job.trigger({})
         expect(run.status).toBe('pending')
 
-        durably.start()
+        d.start()
 
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
           { timeout: 1000 },
@@ -118,14 +118,14 @@ export function createWorkerTests(createDialect: () => Dialect) {
             throw new Error('Job failed intentionally')
           },
         })
-        const job = durably.register(failTestDef)
+        const d = durably.register({ job: failTestDef })
 
-        const run = await job.trigger({})
-        durably.start()
+        const run = await d.jobs.job.trigger({})
+        d.start()
 
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('failed')
             expect(updated?.error).toContain('Job failed intentionally')
           },
@@ -145,10 +145,10 @@ export function createWorkerTests(createDialect: () => Dialect) {
             receivedPayload = payload
           },
         })
-        const job = durably.register(payloadTestDef)
+        const d = durably.register({ job: payloadTestDef })
 
-        await job.trigger({ value: 'hello' })
-        durably.start()
+        await d.jobs.job.trigger({ value: 'hello' })
+        d.start()
 
         await vi.waitFor(
           async () => {
@@ -165,14 +165,14 @@ export function createWorkerTests(createDialect: () => Dialect) {
           output: z.object({ result: z.number() }),
           run: async () => ({ result: 123 }),
         })
-        const job = durably.register(outputTestDef)
+        const d = durably.register({ job: outputTestDef })
 
-        const run = await job.trigger({})
-        durably.start()
+        const run = await d.jobs.job.trigger({})
+        d.start()
 
         await vi.waitFor(
           async () => {
-            const updated = await job.getRun(run.id)
+            const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('completed')
             expect(updated?.output).toEqual({ result: 123 })
           },
@@ -191,17 +191,17 @@ export function createWorkerTests(createDialect: () => Dialect) {
             await new Promise((r) => setTimeout(r, 20))
           },
         })
-        const job = durably.register(sequentialTestDef)
+        const d = durably.register({ job: sequentialTestDef })
 
-        await job.trigger({ n: 1 })
-        await job.trigger({ n: 2 })
-        await job.trigger({ n: 3 })
+        await d.jobs.job.trigger({ n: 1 })
+        await d.jobs.job.trigger({ n: 2 })
+        await d.jobs.job.trigger({ n: 3 })
 
-        durably.start()
+        d.start()
 
         await vi.waitFor(
           async () => {
-            const runs = await job.getRuns()
+            const runs = await d.jobs.job.getRuns()
             const allCompleted = runs.every((r) => r.status === 'completed')
             expect(allCompleted).toBe(true)
           },

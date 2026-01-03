@@ -112,7 +112,9 @@ await durably.migrate()
 durably.start()
 
 // ジョブを登録して JobHandle を取得
-const syncUsersJob = durably.register(syncUsers)
+const { syncUsers: syncUsersJob } = durably.register({
+  syncUsers,
+})
 
 // trigger で実行
 await syncUsersJob.trigger({ orgId: "org_123" })
@@ -153,6 +155,15 @@ interface RunFilter {
 ### ステップ
 
 `step.run` に渡す名前は、同一 Run 内で一意でなければならない。同じ名前のステップが複数回実行された場合はエラーとなる。成功したステップは再実行時に自動的にスキップされ、保存済みの戻り値が返される。この挙動は固定であり、ユーザーが選択する必要はない。
+
+`step.runId` プロパティで現在の Run の ID にアクセスできる。これは外部サービスへの通知や、ログに Run ID を含める場合に有用である。
+
+```ts
+const users = await step.run("fetch-users", async () => {
+  console.log(`Processing run: ${step.runId}`)
+  return api.fetchUsers(payload.orgId)
+})
+```
 
 `step.run` の戻り値はステップ関数の戻り値から型推論される。
 
@@ -353,6 +364,38 @@ const failedRuns = await durably.getRuns({
 
 `limit` は取得する最大件数、`offset` はスキップする件数を指定する。両方を組み合わせることで、ページ単位の取得が可能になる。
 
+### ジョブの取得
+
+登録済みのジョブを名前で取得するには `getJob` メソッドを使う。
+
+```ts
+const job = durably.getJob('sync-users')
+if (job) {
+  await job.trigger({ orgId: 'org_123' })
+}
+```
+
+`getJob` は登録済みのジョブがあれば `JobHandle` を返し、なければ `undefined` を返す。これは動的にジョブを取得したい場合（例: API ハンドラでジョブ名をパラメータとして受け取る場合）に有用である。
+
+### Run のリアルタイム購読
+
+Run の実行をリアルタイムで購読するには `subscribe` メソッドを使う。
+
+```ts
+const stream = durably.subscribe(runId)
+
+const reader = stream.getReader()
+while (true) {
+  const { done, value } = await reader.read()
+  if (done) break
+  console.log(value)  // DurablyEvent
+}
+```
+
+`subscribe` は指定した Run の実行中に発火されるイベントを `ReadableStream<DurablyEvent>` として返す。ストリームは `run:complete` または `run:fail` イベントが発火されると自動的にクローズされる。
+
+これにより、UI でのリアルタイム進捗表示や、SSE（Server-Sent Events）を介したクライアントへのイベント配信が可能になる。
+
 ### ワーカー
 
 ワーカーは `start` 関数によって起動される。起動すると、一定間隔で `pending` 状態の Run を取得し、逐次実行する。
@@ -367,7 +410,7 @@ const durably = createDurably({ dialect })
 await durably.migrate()
 
 // ジョブを登録
-durably.register(syncUsers)
+durably.register({ syncUsers })
 
 // ワーカーを起動
 durably.start()
@@ -398,6 +441,11 @@ await durably.migrate()
 ライブラリ内部で起きたことを外部に通知するためのイベントシステムを持つ。これにより、ログの永続化、外部サービスへの送信、リアルタイム UI 更新など、任意の処理を接続できる。
 
 ```ts
+durably.on('run:trigger', (event) => {
+  // { runId, jobName, payload, timestamp }
+  // ジョブがトリガーされた時（Worker 実行前）
+})
+
 durably.on('run:start', (event) => {
   // { runId, jobName, payload, timestamp }
 })
@@ -408,6 +456,20 @@ durably.on('run:complete', (event) => {
 
 durably.on('run:fail', (event) => {
   // { runId, jobName, error, failedStepName, timestamp }
+})
+
+durably.on('run:cancel', (event) => {
+  // { runId, jobName, timestamp }
+  // Run がキャンセルされた時
+})
+
+durably.on('run:retry', (event) => {
+  // { runId, jobName, timestamp }
+  // Run がリトライされた時
+})
+
+durably.on('run:progress', (event) => {
+  // { runId, jobName, progress: { current, total?, message? }, timestamp }
 })
 
 durably.on('step:start', (event) => {
@@ -448,6 +510,13 @@ interface BaseEvent {
 }
 
 // Run イベント
+interface RunTriggerEvent extends BaseEvent {
+  type: 'run:trigger'
+  runId: string
+  jobName: string
+  payload: unknown
+}
+
 interface RunStartEvent extends BaseEvent {
   type: 'run:start'
   runId: string
@@ -469,6 +538,25 @@ interface RunFailEvent extends BaseEvent {
   jobName: string
   error: string
   failedStepName: string
+}
+
+interface RunCancelEvent extends BaseEvent {
+  type: 'run:cancel'
+  runId: string
+  jobName: string
+}
+
+interface RunRetryEvent extends BaseEvent {
+  type: 'run:retry'
+  runId: string
+  jobName: string
+}
+
+interface RunProgressEvent extends BaseEvent {
+  type: 'run:progress'
+  runId: string
+  jobName: string
+  progress: { current: number; total?: number; message?: string }
 }
 
 // Step イベント
@@ -519,9 +607,13 @@ interface WorkerErrorEvent extends BaseEvent {
 
 // 全イベントの Union 型
 type DurablyEvent =
+  | RunTriggerEvent
   | RunStartEvent
   | RunCompleteEvent
   | RunFailEvent
+  | RunCancelEvent
+  | RunRetryEvent
+  | RunProgressEvent
   | StepStartEvent
   | StepCompleteEvent
   | StepFailEvent
@@ -781,16 +873,20 @@ Run の取得クエリは以下の条件を満たすものを一件取得する�
 
 ### イベント発火タイミング
 
-| イベント | 発火タイミング |
-|----------|----------------|
-| run:start | Run が running に遷移した直後 |
-| run:complete | Run が completed に遷移した直後 |
-| run:fail | Run が failed に遷移した直後 |
-| step:start | ステップの実行を開始する直前 |
-| step:complete | ステップが成功し DB に記録した直後 |
-| step:fail | ステップが失敗し DB に記録した直後 |
-| log:write | step.log が呼ばれた直後 |
-| worker:error | ワーカー内部でエラーが発生した時（ハートビート失敗など） |
+| イベント       | 発火タイミング                                           |
+|----------------|----------------------------------------------------------|
+| run:trigger    | trigger() が呼ばれ、Run が pending として作成された直後   |
+| run:start      | Run が running に遷移した直後                             |
+| run:complete   | Run が completed に遷移した直後                           |
+| run:fail       | Run が failed に遷移した直後                              |
+| run:cancel     | cancel() が呼ばれ、Run が cancelled に遷移した直後        |
+| run:retry      | retry() が呼ばれ、Run が pending に戻った直後             |
+| run:progress   | step.progress が呼ばれた直後                              |
+| step:start     | ステップの実行を開始する直前                              |
+| step:complete  | ステップが成功し DB に記録した直後                        |
+| step:fail      | ステップが失敗し DB に記録した直後                        |
+| log:write      | step.log が呼ばれた直後                                   |
+| worker:error   | ワーカー内部でエラーが発生した時（ハートビート失敗など）   |
 
 ### 設定項目
 
@@ -891,7 +987,7 @@ await durably.migrate()
 durably.start()
 
 // ジョブを登録してトリガー
-const syncUsersJob = durably.register(syncUsers)
+const { syncUsers: syncUsersJob } = durably.register({ syncUsers })
 await syncUsersJob.trigger({ orgId: 'org_123' })
 ```
 
@@ -985,20 +1081,22 @@ class JobContextImpl<TPayload> implements JobContext<TPayload> {
 ```ts
 interface Storage {
   // Run 操作
-  createRun(run: Run): Promise<void>
-  updateRun(runId: string, data: Partial<Run>): Promise<void>
+  createRun(input: CreateRunInput): Promise<Run>
+  batchCreateRuns(inputs: CreateRunInput[]): Promise<Run[]>
+  updateRun(runId: string, data: UpdateRunInput): Promise<void>
+  deleteRun(runId: string): Promise<void>
   getRun(runId: string): Promise<Run | null>
   getRuns(filter?: RunFilter): Promise<Run[]>
   getNextPendingRun(excludeConcurrencyKeys: string[]): Promise<Run | null>
 
   // Step 操作
-  createStep(step: Step): Promise<void>
+  createStep(input: CreateStepInput): Promise<Step>
   getSteps(runId: string): Promise<Step[]>
   getCompletedStep(runId: string, name: string): Promise<Step | null>
 
-  // Log 操作（withLogPersistence プラグイン用）
-  createLog?(log: Log): Promise<void>
-  getLogs?(runId: string): Promise<Log[]>
+  // Log 操作
+  createLog(input: CreateLogInput): Promise<Log>
+  getLogs(runId: string): Promise<Log[]>
 
   // v2 で追加予定:
   // createEvent?(event: DurablyEvent): Promise<void>
@@ -1036,9 +1134,10 @@ v2 では AI Agent ワークフロー対応として以下の機能が計画さ�
 | 機能 | 概要 |
 |------|------|
 | `step.stream()` | ストリーミング出力をサポートするステップ |
-| `subscribe()` | Run の実行をリアルタイムで購読（ReadableStream） |
 | `events` テーブル | 粗いイベント（step:*, run:*）の永続化 |
 | `checkpoint()` | 長時間実行中の中間状態保存 |
+
+注: `subscribe()` は v1 で実装済み。詳細は「Run のリアルタイム購読」セクションを参照。
 
 ### v1 での準備事項
 

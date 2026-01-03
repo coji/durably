@@ -20,13 +20,14 @@ When API changes are made, update `packages/durably/docs/llms.md` to keep it in 
 
 ## Core Concepts
 
-- **Job**: Defined via `durably.defineJob()`, receives a step context and payload
+- **Job**: Defined via `defineJob()` and registered with `durably.register()`, receives a step context and payload
 - **Step**: Created via `step.run()`, each step's success state and return value is persisted
 - **Run**: A job execution instance, created via `trigger()`, always persisted as `pending` before execution
 - **Worker**: Polls for pending runs and executes them sequentially
 
 ## Key Design Decisions
 
+- **ESM-only**: This library is ESM-only. CommonJS is not supported. Always use top-level `await` for async initialization (e.g., `await durably.migrate()`). Do not wrap in async IIFE or Promise chains.
 - Single-threaded execution, no parallel run processing in minimal config
 - No automatic retry - failures are immediate and explicit (`retry()` API for manual retry)
 - Dialect injection pattern - Kysely dialect passed to `createDurably()` to abstract SQLite implementations

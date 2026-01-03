@@ -37,10 +37,10 @@ export function createLogTests(createDialect: () => Dialect) {
           await step.run('step', () => {})
         },
       })
-      const job = durably.register(logInfoTestDef)
+      const d = durably.register({ job: logInfoTestDef })
 
-      await job.trigger({})
-      durably.start()
+      await d.jobs.job.trigger({})
+      d.start()
 
       await vi.waitFor(
         async () => {
@@ -64,10 +64,10 @@ export function createLogTests(createDialect: () => Dialect) {
           await step.run('step', () => {})
         },
       })
-      const job = durably.register(logWarnTestDef)
+      const d = durably.register({ job: logWarnTestDef })
 
-      await job.trigger({})
-      durably.start()
+      await d.jobs.job.trigger({})
+      d.start()
 
       await vi.waitFor(
         async () => {
@@ -91,10 +91,10 @@ export function createLogTests(createDialect: () => Dialect) {
           await step.run('step', () => {})
         },
       })
-      const job = durably.register(logErrorTestDef)
+      const d = durably.register({ job: logErrorTestDef })
 
-      await job.trigger({})
-      durably.start()
+      await d.jobs.job.trigger({})
+      d.start()
 
       await vi.waitFor(
         async () => {
@@ -118,10 +118,10 @@ export function createLogTests(createDialect: () => Dialect) {
           await step.run('step', () => {})
         },
       })
-      const job = durably.register(logDataTestDef)
+      const d = durably.register({ job: logDataTestDef })
 
-      await job.trigger({})
-      durably.start()
+      await d.jobs.job.trigger({})
+      d.start()
 
       await vi.waitFor(
         async () => {
@@ -144,10 +144,10 @@ export function createLogTests(createDialect: () => Dialect) {
           await step.run('step', () => {})
         },
       })
-      const job = durably.register(logRunIdTestDef)
+      const d = durably.register({ job: logRunIdTestDef })
 
-      const run = await job.trigger({})
-      durably.start()
+      const run = await d.jobs.job.trigger({})
+      d.start()
 
       await vi.waitFor(
         async () => {
@@ -173,10 +173,10 @@ export function createLogTests(createDialect: () => Dialect) {
           step.log.info('After step') // stepName should be null
         },
       })
-      const job = durably.register(logStepNameTestDef)
+      const d = durably.register({ job: logStepNameTestDef })
 
-      await job.trigger({})
-      durably.start()
+      await d.jobs.job.trigger({})
+      d.start()
 
       await vi.waitFor(
         async () => {
