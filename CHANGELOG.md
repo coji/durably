@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-01-03
+
+### Fixed
+
+#### @coji/durably
+
+- Run ordering now deterministic when multiple runs are created within the same millisecond
+  - Added ULID-based secondary sort key to `getNextPendingRun()`
+
+### Changed
+
+#### @coji/durably
+
+- Internal code organization improvements (no API changes)
+  - Extracted SSE utilities to `sse.ts`
+  - Extracted HTTP response helpers to `http.ts`
+  - Centralized error handling in `errors.ts`
+
 ## [0.6.0] - 2026-01-02
 
 ### Breaking Changes

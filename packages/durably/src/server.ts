@@ -1,5 +1,18 @@
 import type { Durably } from './durably'
 import type { AnyEventInput } from './events'
+import {
+  errorResponse,
+  getErrorMessage,
+  getRequiredQueryParam,
+  jsonResponse,
+  successResponse,
+} from './http'
+import {
+  createSSEResponse,
+  createSSEStreamFromReader,
+  createSSEStreamFromSubscriptions,
+  type SSEStreamController,
+} from './sse'
 
 /**
  * Request body for triggering a job
@@ -193,18 +206,12 @@ export function createDurablyHandler(
         const body = (await request.json()) as TriggerRequest
 
         if (!body.jobName) {
-          return new Response(
-            JSON.stringify({ error: 'jobName is required' }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } },
-          )
+          return errorResponse('jobName is required', 400)
         }
 
         const job = durably.getJob(body.jobName)
         if (!job) {
-          return new Response(
-            JSON.stringify({ error: `Job not found: ${body.jobName}` }),
-            { status: 404, headers: { 'Content-Type': 'application/json' } },
-          )
+          return errorResponse(`Job not found: ${body.jobName}`, 404)
         }
 
         const run = await job.trigger(body.input ?? {}, {
@@ -213,65 +220,23 @@ export function createDurablyHandler(
         })
 
         const response: TriggerResponse = { runId: run.id }
-        return new Response(JSON.stringify(response), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return jsonResponse(response)
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error'
-        return new Response(JSON.stringify({ error: message }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return errorResponse(getErrorMessage(error), 500)
       }
     },
 
     subscribe(request: Request): Response {
       const url = new URL(request.url)
-      const runId = url.searchParams.get('runId')
-
-      if (!runId) {
-        return new Response(
-          JSON.stringify({ error: 'runId query parameter is required' }),
-          { status: 400, headers: { 'Content-Type': 'application/json' } },
-        )
-      }
+      const runId = getRequiredQueryParam(url, 'runId')
+      if (runId instanceof Response) return runId
 
       const stream = durably.subscribe(runId)
+      const sseStream = createSSEStreamFromReader(
+        stream.getReader() as ReadableStreamDefaultReader<AnyEventInput>,
+      )
 
-      // Transform stream to SSE format
-      const encoder = new TextEncoder()
-      const sseStream = new ReadableStream({
-        async start(controller) {
-          const reader = stream.getReader()
-
-          try {
-            while (true) {
-              const { done, value } = await reader.read()
-              if (done) {
-                controller.close()
-                break
-              }
-
-              // Format as SSE
-              const event = value as AnyEventInput
-              const data = `data: ${JSON.stringify(event)}\n\n`
-              controller.enqueue(encoder.encode(data))
-            }
-          } catch (error) {
-            controller.error(error)
-          }
-        },
-      })
-
-      return new Response(sseStream, {
-        status: 200,
-        headers: {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          Connection: 'keep-alive',
-        },
-      })
+      return createSSEResponse(sseStream)
     },
 
     async runs(request: Request): Promise<Response> {
@@ -289,158 +254,83 @@ export function createDurablyHandler(
           offset: offset ? Number.parseInt(offset, 10) : undefined,
         })
 
-        return new Response(JSON.stringify(runs), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return jsonResponse(runs)
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error'
-        return new Response(JSON.stringify({ error: message }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return errorResponse(getErrorMessage(error), 500)
       }
     },
 
     async run(request: Request): Promise<Response> {
       try {
         const url = new URL(request.url)
-        const runId = url.searchParams.get('runId')
-
-        if (!runId) {
-          return new Response(
-            JSON.stringify({ error: 'runId query parameter is required' }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } },
-          )
-        }
+        const runId = getRequiredQueryParam(url, 'runId')
+        if (runId instanceof Response) return runId
 
         const run = await durably.getRun(runId)
 
         if (!run) {
-          return new Response(JSON.stringify({ error: 'Run not found' }), {
-            status: 404,
-            headers: { 'Content-Type': 'application/json' },
-          })
+          return errorResponse('Run not found', 404)
         }
 
-        return new Response(JSON.stringify(run), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return jsonResponse(run)
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error'
-        return new Response(JSON.stringify({ error: message }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return errorResponse(getErrorMessage(error), 500)
       }
     },
 
     async retry(request: Request): Promise<Response> {
       try {
         const url = new URL(request.url)
-        const runId = url.searchParams.get('runId')
-
-        if (!runId) {
-          return new Response(
-            JSON.stringify({ error: 'runId query parameter is required' }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } },
-          )
-        }
+        const runId = getRequiredQueryParam(url, 'runId')
+        if (runId instanceof Response) return runId
 
         await durably.retry(runId)
 
-        return new Response(JSON.stringify({ success: true }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return successResponse()
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error'
-        return new Response(JSON.stringify({ error: message }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return errorResponse(getErrorMessage(error), 500)
       }
     },
 
     async cancel(request: Request): Promise<Response> {
       try {
         const url = new URL(request.url)
-        const runId = url.searchParams.get('runId')
-
-        if (!runId) {
-          return new Response(
-            JSON.stringify({ error: 'runId query parameter is required' }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } },
-          )
-        }
+        const runId = getRequiredQueryParam(url, 'runId')
+        if (runId instanceof Response) return runId
 
         await durably.cancel(runId)
 
-        return new Response(JSON.stringify({ success: true }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return successResponse()
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error'
-        return new Response(JSON.stringify({ error: message }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return errorResponse(getErrorMessage(error), 500)
       }
     },
 
     async delete(request: Request): Promise<Response> {
       try {
         const url = new URL(request.url)
-        const runId = url.searchParams.get('runId')
-
-        if (!runId) {
-          return new Response(
-            JSON.stringify({ error: 'runId query parameter is required' }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } },
-          )
-        }
+        const runId = getRequiredQueryParam(url, 'runId')
+        if (runId instanceof Response) return runId
 
         await durably.deleteRun(runId)
 
-        return new Response(JSON.stringify({ success: true }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return successResponse()
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error'
-        return new Response(JSON.stringify({ error: message }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return errorResponse(getErrorMessage(error), 500)
       }
     },
 
     async steps(request: Request): Promise<Response> {
       try {
         const url = new URL(request.url)
-        const runId = url.searchParams.get('runId')
-
-        if (!runId) {
-          return new Response(
-            JSON.stringify({ error: 'runId query parameter is required' }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } },
-          )
-        }
+        const runId = getRequiredQueryParam(url, 'runId')
+        if (runId instanceof Response) return runId
 
         const steps = await durably.storage.getSteps(runId)
 
-        return new Response(JSON.stringify(steps), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return jsonResponse(steps)
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error'
-        return new Response(JSON.stringify({ error: message }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return errorResponse(getErrorMessage(error), 500)
       }
     },
 
@@ -448,191 +338,138 @@ export function createDurablyHandler(
       const url = new URL(request.url)
       const jobNameFilter = url.searchParams.get('jobName')
 
-      const encoder = new TextEncoder()
-      let closed = false
+      // Helper to check job name filter
+      const matchesFilter = (jobName: string) =>
+        !jobNameFilter || jobName === jobNameFilter
 
-      const sseStream = new ReadableStream({
-        start(controller) {
-          // Subscribe to run lifecycle events
-          const unsubscribeTrigger = durably.on('run:trigger', (event) => {
-            if (closed) return
-            if (jobNameFilter && event.jobName !== jobNameFilter) return
+      const sseStream = createSSEStreamFromSubscriptions(
+        (ctrl: SSEStreamController) => [
+          durably.on('run:trigger', (event) => {
+            if (matchesFilter(event.jobName)) {
+              ctrl.enqueue({
+                type: 'run:trigger',
+                runId: event.runId,
+                jobName: event.jobName,
+              })
+            }
+          }),
 
-            const data = `data: ${JSON.stringify({
-              type: 'run:trigger',
-              runId: event.runId,
-              jobName: event.jobName,
-            })}\n\n`
-            controller.enqueue(encoder.encode(data))
-          })
+          durably.on('run:start', (event) => {
+            if (matchesFilter(event.jobName)) {
+              ctrl.enqueue({
+                type: 'run:start',
+                runId: event.runId,
+                jobName: event.jobName,
+              })
+            }
+          }),
 
-          const unsubscribeStart = durably.on('run:start', (event) => {
-            if (closed) return
-            if (jobNameFilter && event.jobName !== jobNameFilter) return
+          durably.on('run:complete', (event) => {
+            if (matchesFilter(event.jobName)) {
+              ctrl.enqueue({
+                type: 'run:complete',
+                runId: event.runId,
+                jobName: event.jobName,
+              })
+            }
+          }),
 
-            const data = `data: ${JSON.stringify({
-              type: 'run:start',
-              runId: event.runId,
-              jobName: event.jobName,
-            })}\n\n`
-            controller.enqueue(encoder.encode(data))
-          })
+          durably.on('run:fail', (event) => {
+            if (matchesFilter(event.jobName)) {
+              ctrl.enqueue({
+                type: 'run:fail',
+                runId: event.runId,
+                jobName: event.jobName,
+              })
+            }
+          }),
 
-          const unsubscribeComplete = durably.on('run:complete', (event) => {
-            if (closed) return
-            if (jobNameFilter && event.jobName !== jobNameFilter) return
+          durably.on('run:cancel', (event) => {
+            if (matchesFilter(event.jobName)) {
+              ctrl.enqueue({
+                type: 'run:cancel',
+                runId: event.runId,
+                jobName: event.jobName,
+              })
+            }
+          }),
 
-            const data = `data: ${JSON.stringify({
-              type: 'run:complete',
-              runId: event.runId,
-              jobName: event.jobName,
-            })}\n\n`
-            controller.enqueue(encoder.encode(data))
-          })
+          durably.on('run:retry', (event) => {
+            if (matchesFilter(event.jobName)) {
+              ctrl.enqueue({
+                type: 'run:retry',
+                runId: event.runId,
+                jobName: event.jobName,
+              })
+            }
+          }),
 
-          const unsubscribeFail = durably.on('run:fail', (event) => {
-            if (closed) return
-            if (jobNameFilter && event.jobName !== jobNameFilter) return
+          durably.on('run:progress', (event) => {
+            if (matchesFilter(event.jobName)) {
+              ctrl.enqueue({
+                type: 'run:progress',
+                runId: event.runId,
+                jobName: event.jobName,
+                progress: event.progress,
+              })
+            }
+          }),
 
-            const data = `data: ${JSON.stringify({
-              type: 'run:fail',
-              runId: event.runId,
-              jobName: event.jobName,
-            })}\n\n`
-            controller.enqueue(encoder.encode(data))
-          })
+          durably.on('step:start', (event) => {
+            if (matchesFilter(event.jobName)) {
+              ctrl.enqueue({
+                type: 'step:start',
+                runId: event.runId,
+                jobName: event.jobName,
+                stepName: event.stepName,
+                stepIndex: event.stepIndex,
+              })
+            }
+          }),
 
-          const unsubscribeCancel = durably.on('run:cancel', (event) => {
-            if (closed) return
-            if (jobNameFilter && event.jobName !== jobNameFilter) return
-
-            const data = `data: ${JSON.stringify({
-              type: 'run:cancel',
-              runId: event.runId,
-              jobName: event.jobName,
-            })}\n\n`
-            controller.enqueue(encoder.encode(data))
-          })
-
-          const unsubscribeRetry = durably.on('run:retry', (event) => {
-            if (closed) return
-            if (jobNameFilter && event.jobName !== jobNameFilter) return
-
-            const data = `data: ${JSON.stringify({
-              type: 'run:retry',
-              runId: event.runId,
-              jobName: event.jobName,
-            })}\n\n`
-            controller.enqueue(encoder.encode(data))
-          })
-
-          const unsubscribeProgress = durably.on('run:progress', (event) => {
-            if (closed) return
-            if (jobNameFilter && event.jobName !== jobNameFilter) return
-
-            const data = `data: ${JSON.stringify({
-              type: 'run:progress',
-              runId: event.runId,
-              jobName: event.jobName,
-              progress: event.progress,
-            })}\n\n`
-            controller.enqueue(encoder.encode(data))
-          })
-
-          const unsubscribeStepStart = durably.on('step:start', (event) => {
-            if (closed) return
-            if (jobNameFilter && event.jobName !== jobNameFilter) return
-
-            const data = `data: ${JSON.stringify({
-              type: 'step:start',
-              runId: event.runId,
-              jobName: event.jobName,
-              stepName: event.stepName,
-              stepIndex: event.stepIndex,
-            })}\n\n`
-            controller.enqueue(encoder.encode(data))
-          })
-
-          const unsubscribeStepComplete = durably.on(
-            'step:complete',
-            (event) => {
-              if (closed) return
-              if (jobNameFilter && event.jobName !== jobNameFilter) return
-
-              const data = `data: ${JSON.stringify({
+          durably.on('step:complete', (event) => {
+            if (matchesFilter(event.jobName)) {
+              ctrl.enqueue({
                 type: 'step:complete',
                 runId: event.runId,
                 jobName: event.jobName,
                 stepName: event.stepName,
                 stepIndex: event.stepIndex,
-              })}\n\n`
-              controller.enqueue(encoder.encode(data))
-            },
-          )
+              })
+            }
+          }),
 
-          const unsubscribeStepFail = durably.on('step:fail', (event) => {
-            if (closed) return
-            if (jobNameFilter && event.jobName !== jobNameFilter) return
+          durably.on('step:fail', (event) => {
+            if (matchesFilter(event.jobName)) {
+              ctrl.enqueue({
+                type: 'step:fail',
+                runId: event.runId,
+                jobName: event.jobName,
+                stepName: event.stepName,
+                stepIndex: event.stepIndex,
+                error: event.error,
+              })
+            }
+          }),
 
-            const data = `data: ${JSON.stringify({
-              type: 'step:fail',
-              runId: event.runId,
-              jobName: event.jobName,
-              stepName: event.stepName,
-              stepIndex: event.stepIndex,
-              error: event.error,
-            })}\n\n`
-            controller.enqueue(encoder.encode(data))
-          })
-
-          const unsubscribeLogWrite = durably.on('log:write', (event) => {
-            if (closed) return
+          durably.on('log:write', (event) => {
             // log:write doesn't have jobName, so we can't filter by it
             // Send all logs when no filter, or skip if filter is set
-            if (jobNameFilter) return
+            if (!jobNameFilter) {
+              ctrl.enqueue({
+                type: 'log:write',
+                runId: event.runId,
+                stepName: event.stepName,
+                level: event.level,
+                message: event.message,
+                data: event.data,
+              })
+            }
+          }),
+        ],
+      )
 
-            const data = `data: ${JSON.stringify({
-              type: 'log:write',
-              runId: event.runId,
-              stepName: event.stepName,
-              level: event.level,
-              message: event.message,
-              data: event.data,
-            })}\n\n`
-            controller.enqueue(encoder.encode(data))
-          })
-
-          // Store cleanup function for cancel
-          ;(controller as unknown as { cleanup: () => void }).cleanup = () => {
-            closed = true
-            unsubscribeTrigger()
-            unsubscribeStart()
-            unsubscribeComplete()
-            unsubscribeFail()
-            unsubscribeCancel()
-            unsubscribeRetry()
-            unsubscribeProgress()
-            unsubscribeStepStart()
-            unsubscribeStepComplete()
-            unsubscribeStepFail()
-            unsubscribeLogWrite()
-          }
-        },
-        cancel(controller) {
-          const cleanup = (controller as unknown as { cleanup: () => void })
-            .cleanup
-          if (cleanup) cleanup()
-        },
-      })
-
-      return new Response(sseStream, {
-        status: 200,
-        headers: {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          Connection: 'keep-alive',
-        },
-      })
+      return createSSEResponse(sseStream)
     },
   }
 

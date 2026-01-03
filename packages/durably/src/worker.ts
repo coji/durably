@@ -1,5 +1,6 @@
+import { prettifyError } from 'zod'
 import { createStepContext } from './context'
-import { CancelledError } from './errors'
+import { CancelledError, getErrorMessage } from './errors'
 import type { EventEmitter } from './events'
 import type { JobRegistry } from './job'
 import type { Storage } from './storage'
@@ -77,13 +78,6 @@ export function createWorker(
         heartbeatAt: new Date().toISOString(),
       })
     }
-  }
-
-  /**
-   * Extract error message from unknown error
-   */
-  function getErrorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error)
   }
 
   /**
@@ -171,7 +165,7 @@ export function createWorker(
       updateHeartbeat().catch((error) => {
         eventEmitter.emit({
           type: 'worker:error',
-          error: error instanceof Error ? error.message : String(error),
+          error: getErrorMessage(error),
           context: 'heartbeat',
           runId: run.id,
         })
@@ -197,7 +191,7 @@ export function createWorker(
       if (job.outputSchema) {
         const parseResult = job.outputSchema.safeParse(output)
         if (!parseResult.success) {
-          throw new Error(`Invalid output: ${parseResult.error.message}`)
+          throw new Error(`Invalid output: ${prettifyError(parseResult.error)}`)
         }
       }
 

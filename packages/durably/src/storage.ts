@@ -379,6 +379,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         .where('durably_runs.status', '=', 'pending')
         .groupBy('durably_runs.id')
         .orderBy('durably_runs.created_at', 'asc')
+        .orderBy('durably_runs.id', 'asc')
         .limit(1)
 
       if (excludeConcurrencyKeys.length > 0) {

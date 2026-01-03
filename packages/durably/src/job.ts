@@ -1,7 +1,23 @@
-import type { z } from 'zod'
+import { type z, prettifyError } from 'zod'
 import type { JobDefinition } from './define-job'
 import type { EventEmitter } from './events'
 import type { Run, Storage } from './storage'
+
+/**
+ * Validate job input and throw on failure
+ */
+function validateJobInputOrThrow<T>(
+  schema: z.ZodType<T>,
+  input: unknown,
+  context?: string,
+): T {
+  const result = schema.safeParse(input)
+  if (!result.success) {
+    const prefix = context ? `${context}: ` : ''
+    throw new Error(`${prefix}Invalid input: ${prettifyError(result.error)}`)
+  }
+  return result.data
+}
 
 /**
  * Step context passed to the job function
@@ -209,15 +225,12 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
       options?: TriggerOptions,
     ): Promise<TypedRun<TOutput>> {
       // Validate input
-      const parseResult = inputSchema.safeParse(input)
-      if (!parseResult.success) {
-        throw new Error(`Invalid input: ${parseResult.error.message}`)
-      }
+      const validatedInput = validateJobInputOrThrow(inputSchema, input)
 
       // Create the run
       const run = await storage.createRun({
         jobName: jobDef.name,
-        payload: parseResult.data,
+        payload: validatedInput,
         idempotencyKey: options?.idempotencyKey,
         concurrencyKey: options?.concurrencyKey,
       })
@@ -227,7 +240,7 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
         type: 'run:trigger',
         runId: run.id,
         jobName: jobDef.name,
-        payload: parseResult.data,
+        payload: validatedInput,
       })
 
       return run as TypedRun<TOutput>
@@ -320,14 +333,13 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
       // Validate all inputs first (before creating any runs)
       const validated: { payload: unknown; options?: TriggerOptions }[] = []
       for (let i = 0; i < normalized.length; i++) {
-        const parseResult = inputSchema.safeParse(normalized[i].input)
-        if (!parseResult.success) {
-          throw new Error(
-            `Invalid input at index ${i}: ${parseResult.error.message}`,
-          )
-        }
+        const validatedInput = validateJobInputOrThrow(
+          inputSchema,
+          normalized[i].input,
+          `at index ${i}`,
+        )
         validated.push({
-          payload: parseResult.data,
+          payload: validatedInput,
           options: normalized[i].options,
         })
       }
