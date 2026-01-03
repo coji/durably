@@ -98,7 +98,7 @@ export function Dashboard() {
                     Status
                   </th>
                   <th className="text-left py-2 px-2 font-medium text-gray-600">
-                    Step
+                    Steps
                   </th>
                   <th className="text-left py-2 px-2 font-medium text-gray-600">
                     Progress
@@ -128,7 +128,7 @@ export function Dashboard() {
                     <td className="py-2 px-2">
                       {run.stepCount > 0 ? (
                         <span className="text-xs text-gray-600">
-                          {run.currentStepIndex}/{run.stepCount}
+                          {run.stepCount}
                         </span>
                       ) : (
                         <span className="text-gray-400">-</span>

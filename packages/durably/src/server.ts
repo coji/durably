@@ -539,6 +539,69 @@ export function createDurablyHandler(
             controller.enqueue(encoder.encode(data))
           })
 
+          const unsubscribeStepStart = durably.on('step:start', (event) => {
+            if (closed) return
+            if (jobNameFilter && event.jobName !== jobNameFilter) return
+
+            const data = `data: ${JSON.stringify({
+              type: 'step:start',
+              runId: event.runId,
+              jobName: event.jobName,
+              stepName: event.stepName,
+              stepIndex: event.stepIndex,
+            })}\n\n`
+            controller.enqueue(encoder.encode(data))
+          })
+
+          const unsubscribeStepComplete = durably.on(
+            'step:complete',
+            (event) => {
+              if (closed) return
+              if (jobNameFilter && event.jobName !== jobNameFilter) return
+
+              const data = `data: ${JSON.stringify({
+                type: 'step:complete',
+                runId: event.runId,
+                jobName: event.jobName,
+                stepName: event.stepName,
+                stepIndex: event.stepIndex,
+              })}\n\n`
+              controller.enqueue(encoder.encode(data))
+            },
+          )
+
+          const unsubscribeStepFail = durably.on('step:fail', (event) => {
+            if (closed) return
+            if (jobNameFilter && event.jobName !== jobNameFilter) return
+
+            const data = `data: ${JSON.stringify({
+              type: 'step:fail',
+              runId: event.runId,
+              jobName: event.jobName,
+              stepName: event.stepName,
+              stepIndex: event.stepIndex,
+              error: event.error,
+            })}\n\n`
+            controller.enqueue(encoder.encode(data))
+          })
+
+          const unsubscribeLogWrite = durably.on('log:write', (event) => {
+            if (closed) return
+            // log:write doesn't have jobName, so we can't filter by it
+            // Send all logs when no filter, or skip if filter is set
+            if (jobNameFilter) return
+
+            const data = `data: ${JSON.stringify({
+              type: 'log:write',
+              runId: event.runId,
+              stepName: event.stepName,
+              level: event.level,
+              message: event.message,
+              data: event.data,
+            })}\n\n`
+            controller.enqueue(encoder.encode(data))
+          })
+
           // Store cleanup function for cancel
           ;(controller as unknown as { cleanup: () => void }).cleanup = () => {
             closed = true
@@ -549,6 +612,10 @@ export function createDurablyHandler(
             unsubscribeCancel()
             unsubscribeRetry()
             unsubscribeProgress()
+            unsubscribeStepStart()
+            unsubscribeStepComplete()
+            unsubscribeStepFail()
+            unsubscribeLogWrite()
           }
         },
         cancel(controller) {

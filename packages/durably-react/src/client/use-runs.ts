@@ -35,6 +35,29 @@ type RunUpdateEvent =
       jobName: string
     }
   | { type: 'run:progress'; runId: string; jobName: string; progress: Progress }
+  | {
+      type: 'step:start' | 'step:complete'
+      runId: string
+      jobName: string
+      stepName: string
+      stepIndex: number
+    }
+  | {
+      type: 'step:fail'
+      runId: string
+      jobName: string
+      stepName: string
+      stepIndex: number
+      error: string
+    }
+  | {
+      type: 'log:write'
+      runId: string
+      stepName: string | null
+      level: 'info' | 'warn' | 'error'
+      message: string
+      data: unknown
+    }
 
 export interface UseRunsClientOptions {
   /**
@@ -221,6 +244,21 @@ export function useRuns(options: UseRunsClientOptions): UseRunsClientResult {
             ),
           )
         }
+        // On step complete, update currentStepIndex
+        if (data.type === 'step:complete') {
+          setRuns((prev) =>
+            prev.map((run) =>
+              run.id === data.runId
+                ? { ...run, currentStepIndex: data.stepIndex + 1 }
+                : run,
+            ),
+          )
+        }
+        // On step start or fail, refresh to get latest state
+        if (data.type === 'step:start' || data.type === 'step:fail') {
+          refresh()
+        }
+        // log:write is handled by useJobLogs, not useRuns
       } catch {
         // Ignore parse errors
       }
