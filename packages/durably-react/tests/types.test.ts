@@ -33,7 +33,6 @@ describe('Type inference', () => {
     it('infers correct return type', () => {
       type Result = UseJobResult<{ taskId: string }, { success: boolean }>
 
-      expectTypeOf<Result['isReady']>().toEqualTypeOf<boolean>()
       expectTypeOf<Result['status']>().toEqualTypeOf<
         'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | null
       >()
@@ -106,7 +105,6 @@ describe('Type inference', () => {
 
       expectTypeOf<Result['logs']>().toBeArray()
       expectTypeOf<Result['clearLogs']>().toBeFunction()
-      expectTypeOf<Result['isReady']>().toEqualTypeOf<boolean>()
     })
   })
 

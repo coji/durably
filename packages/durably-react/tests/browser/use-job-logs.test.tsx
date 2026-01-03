@@ -60,7 +60,7 @@ describe('useJobLogs', () => {
 
       return {
         ...subscription,
-        
+
         runId,
         setRunId,
       }
@@ -69,7 +69,6 @@ describe('useJobLogs', () => {
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
       wrapper: createWrapper(durably),
     })
-
 
     const d = durably.register({
       _job: loggingJob,
@@ -99,7 +98,6 @@ describe('useJobLogs', () => {
       wrapper: createWrapper(durably),
     })
 
-
     // With null runId, logs should be empty
     expect(result.current.logs).toEqual([])
   })
@@ -115,7 +113,7 @@ describe('useJobLogs', () => {
 
       return {
         ...subscription,
-        
+
         runId,
         setRunId,
       }
@@ -124,7 +122,6 @@ describe('useJobLogs', () => {
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
       wrapper: createWrapper(durably),
     })
-
 
     const d = durably.register({
       _job: loggingJob,
@@ -150,7 +147,7 @@ describe('useJobLogs', () => {
 
       return {
         ...subscription,
-        
+
         runId,
         setRunId,
       }
@@ -159,7 +156,6 @@ describe('useJobLogs', () => {
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
       wrapper: createWrapper(durably),
     })
-
 
     const d = durably.register({
       _job: loggingJob,

@@ -195,10 +195,13 @@ describe('useJobRun', () => {
   })
 
   it('updates status when run is cancelled', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({
+      pollingInterval: 50,
+      autoStart: false,
+    })
     instances.push(durably)
 
-    // Use autoStart=false wrapper so worker doesn't pick up the job
+    // Worker is not started, so we can cancel before the job runs
     const noAutoStartWrapper = ({ children }: { children: ReactNode }) => (
       <DurablyProvider durably={durably}>{children}</DurablyProvider>
     )
@@ -351,10 +354,13 @@ describe('useJobRun', () => {
   })
 
   it('tracks retry from cancelled through completion', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({
+      pollingInterval: 50,
+      autoStart: false,
+    })
     instances.push(durably)
 
-    // Use autoStart=false wrapper so we can control when the worker runs
+    // Worker is not started, so we can control when the worker runs
     const noAutoStartWrapper = ({ children }: { children: ReactNode }) => (
       <DurablyProvider durably={durably}>{children}</DurablyProvider>
     )

@@ -41,7 +41,6 @@ describe('useJob (client)', () => {
       useJob({ api: '/api/durably', jobName: 'test-job' }),
     )
 
-
     const { runId } = await result.current.trigger({ input: 'test' })
 
     expect(fetchMock).toHaveBeenCalledWith(

@@ -4,11 +4,16 @@ import { createBrowserDialect } from './browser-dialect'
 export interface TestDurablyOptions {
   pollingInterval?: number
   autoMigrate?: boolean
+  /**
+   * Whether to start the worker. When false, only migrate() is called.
+   * @default true
+   */
+  autoStart?: boolean
 }
 
 /**
  * Create a Durably instance for testing.
- * The instance is migrated unless autoMigrate is false.
+ * The instance is initialized (migrate + start) unless autoMigrate is false.
  */
 export async function createTestDurably(
   options?: TestDurablyOptions,
@@ -22,7 +27,13 @@ export async function createTestDurably(
   })
 
   if (options?.autoMigrate !== false) {
-    await durably.migrate()
+    if (options?.autoStart === false) {
+      // Only migrate, don't start the worker
+      await durably.migrate()
+    } else {
+      // Default: init() = migrate() + start()
+      await durably.init()
+    }
   }
 
   return durably

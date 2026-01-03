@@ -32,7 +32,6 @@ describe('useJobLogs (client)', () => {
       useJobLogs({ api: '/api/durably', runId: 'log-run' }),
     )
 
-
     await waitFor(() => {
       expect(mockEventSource.instances.length).toBeGreaterThan(0)
     })

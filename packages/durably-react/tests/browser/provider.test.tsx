@@ -46,9 +46,7 @@ describe('DurablyProvider', () => {
 
     function TestComponent() {
       const { durably: d } = useDurably()
-      return (
-        <div data-testid="status">{d ? 'has-durably' : 'no-durably'}</div>
-      )
+      return <div data-testid="status">{d ? 'has-durably' : 'no-durably'}</div>
     }
 
     const { getByTestId } = render(

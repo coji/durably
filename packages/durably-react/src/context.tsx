@@ -1,11 +1,5 @@
 import type { Durably } from '@coji/durably'
-import {
-  Suspense,
-  createContext,
-  use,
-  useContext,
-  type ReactNode,
-} from 'react'
+import { Suspense, createContext, use, useContext, type ReactNode } from 'react'
 
 interface DurablyContextValue {
   durably: Durably

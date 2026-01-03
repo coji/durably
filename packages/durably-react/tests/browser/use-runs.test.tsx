@@ -66,7 +66,6 @@ describe('useRuns', () => {
       wrapper: createWrapper(durably),
     })
 
-
     // Trigger a job using the durably instance directly
     const d = durably.register({ testJobHandle: testJob })
     await d.jobs.testJobHandle.trigger({ value: 10 })
@@ -93,7 +92,6 @@ describe('useRuns', () => {
       wrapper: createWrapper(durably),
     })
 
-
     const d = durably.register({
       testJobHandle: testJob,
       otherJobHandle: otherJob,
@@ -116,7 +114,6 @@ describe('useRuns', () => {
     const { result } = renderHook(() => useRuns({ status: 'completed' }), {
       wrapper: createWrapper(durably),
     })
-
 
     const d = durably.register({ testJobHandle: testJob })
 
@@ -148,7 +145,6 @@ describe('useRuns', () => {
     const { result } = renderHook(() => useRuns({ pageSize: 2 }), {
       wrapper: createWrapper(durably),
     })
-
 
     const d = durably.register({ testJobHandle: testJob })
 
@@ -187,7 +183,6 @@ describe('useRuns', () => {
       wrapper: createWrapper(durably),
     })
 
-
     const d = durably.register({ testJobHandle: testJob })
 
     // Create 3 runs
@@ -214,7 +209,6 @@ describe('useRuns', () => {
       wrapper: createWrapper(durably),
     })
 
-
     const d = durably.register({ testJobHandle: testJob })
 
     // Initially empty
@@ -238,7 +232,6 @@ describe('useRuns', () => {
       wrapper: createWrapper(durably),
     })
 
-
     const d = durably.register({ testJobHandle: testJob })
 
     expect(result.current.runs.length).toBe(0)
@@ -258,7 +251,6 @@ describe('useRuns', () => {
     const { result } = renderHook(() => useRuns({ realtime: false }), {
       wrapper: createWrapper(durably),
     })
-
 
     const d = durably.register({ testJobHandle: testJob })
 
