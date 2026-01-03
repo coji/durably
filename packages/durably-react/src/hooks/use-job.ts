@@ -25,10 +25,6 @@ export interface UseJobOptions {
 
 export interface UseJobResult<TInput, TOutput> {
   /**
-   * Whether the hook is ready (Durably is initialized)
-   */
-  isReady: boolean
-  /**
    * Trigger the job with the given input
    */
   trigger: (input: TInput) => Promise<{ runId: string }>
@@ -95,7 +91,7 @@ export function useJob<
   jobDefinition: JobDefinition<TName, TInput, TOutput>,
   options?: UseJobOptions,
 ): UseJobResult<TInput, TOutput> {
-  const { durably, isReady: isDurablyReady } = useDurably()
+  const { durably } = useDurably()
 
   const [status, setStatus] = useState<RunStatus | null>(null)
   const [output, setOutput] = useState<TOutput | null>(null)
@@ -113,7 +109,7 @@ export function useJob<
 
   // Register job and set up event listeners
   useEffect(() => {
-    if (!durably || !isDurablyReady) return
+    if (!durably) return
 
     // Register the job (use fixed key for simpler type handling)
     const d = durably.register({
@@ -236,7 +232,6 @@ export function useJob<
     }
   }, [
     durably,
-    isDurablyReady,
     jobDefinition,
     options?.initialRunId,
     options?.autoResume,
@@ -340,7 +335,6 @@ export function useJob<
   }, [])
 
   return {
-    isReady: isDurablyReady,
     trigger,
     triggerAndWait,
     status,

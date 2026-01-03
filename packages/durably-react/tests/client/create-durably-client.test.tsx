@@ -121,7 +121,6 @@ describe('createDurablyClient', () => {
 
     // Verify the hook returns expected shape
     expect(result.current.status).toBeNull()
-    expect(result.current.isReady).toBe(true)
   })
 
   it('useLogs returns a hook function', () => {
@@ -131,6 +130,5 @@ describe('createDurablyClient', () => {
 
     // Verify the hook returns expected shape
     expect(result.current.logs).toEqual([])
-    expect(result.current.isReady).toBe(true)
   })
 })

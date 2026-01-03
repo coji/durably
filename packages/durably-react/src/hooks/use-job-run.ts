@@ -12,10 +12,6 @@ export interface UseJobRunOptions {
 
 export interface UseJobRunResult<TOutput = unknown> {
   /**
-   * Whether the hook is ready (Durably is initialized)
-   */
-  isReady: boolean
-  /**
    * Current run status
    */
   status: RunStatus | null
@@ -64,7 +60,7 @@ export interface UseJobRunResult<TOutput = unknown> {
 export function useJobRun<TOutput = unknown>(
   options: UseJobRunOptions,
 ): UseJobRunResult<TOutput> {
-  const { durably, isReady: isDurablyReady } = useDurably()
+  const { durably } = useDurably()
   const { runId } = options
 
   const subscription = useRunSubscription<TOutput>(durably, runId)
@@ -84,7 +80,6 @@ export function useJobRun<TOutput = unknown>(
   }, [durably, runId])
 
   return {
-    isReady: isDurablyReady,
     status: subscription.status,
     output: subscription.output,
     error: subscription.error,

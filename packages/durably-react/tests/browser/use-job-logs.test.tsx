@@ -54,13 +54,13 @@ describe('useJobLogs', () => {
     instances.push(durably)
 
     function useTriggerAndSubscribe() {
-      const { isReady: durablyReady } = useDurably()
+      const { durably: _ } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobLogs({ runId })
 
       return {
         ...subscription,
-        isReady: durablyReady && subscription.isReady,
+        
         runId,
         setRunId,
       }
@@ -70,7 +70,6 @@ describe('useJobLogs', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({
       _job: loggingJob,
@@ -100,7 +99,6 @@ describe('useJobLogs', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     // With null runId, logs should be empty
     expect(result.current.logs).toEqual([])
@@ -111,13 +109,13 @@ describe('useJobLogs', () => {
     instances.push(durably)
 
     function useTriggerAndSubscribe() {
-      const { isReady: durablyReady } = useDurably()
+      const { durably: _ } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobLogs({ runId, maxLogs: 5 })
 
       return {
         ...subscription,
-        isReady: durablyReady && subscription.isReady,
+        
         runId,
         setRunId,
       }
@@ -127,7 +125,6 @@ describe('useJobLogs', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({
       _job: loggingJob,
@@ -147,13 +144,13 @@ describe('useJobLogs', () => {
     instances.push(durably)
 
     function useTriggerAndSubscribe() {
-      const { isReady: durablyReady } = useDurably()
+      const { durably: _ } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobLogs({ runId })
 
       return {
         ...subscription,
-        isReady: durablyReady && subscription.isReady,
+        
         runId,
         setRunId,
       }
@@ -163,7 +160,6 @@ describe('useJobLogs', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({
       _job: loggingJob,

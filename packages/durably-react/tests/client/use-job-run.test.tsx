@@ -32,7 +32,6 @@ describe('useJobRun (client)', () => {
       useJobRun({ api: '/api/durably', runId: 'existing-run' }),
     )
 
-    expect(result.current.isReady).toBe(true)
 
     await waitFor(() => {
       expect(mockEventSource.instances.length).toBeGreaterThan(0)

@@ -25,10 +25,6 @@ export interface UseRunsOptions {
 
 export interface UseRunsResult {
   /**
-   * Whether the hook is ready (Durably is initialized)
-   */
-  isReady: boolean
-  /**
    * List of runs for the current page
    */
   runs: Run[]
@@ -85,7 +81,7 @@ export interface UseRunsResult {
  * ```
  */
 export function useRuns(options?: UseRunsOptions): UseRunsResult {
-  const { durably, isReady: isDurablyReady } = useDurably()
+  const { durably } = useDurably()
   const pageSize = options?.pageSize ?? 10
   const realtime = options?.realtime ?? true
 
@@ -114,7 +110,7 @@ export function useRuns(options?: UseRunsOptions): UseRunsResult {
 
   // Initial fetch and subscribe to events
   useEffect(() => {
-    if (!durably || !isDurablyReady) return
+    if (!durably) return
 
     refresh()
 
@@ -134,7 +130,7 @@ export function useRuns(options?: UseRunsOptions): UseRunsResult {
         unsubscribe()
       }
     }
-  }, [durably, isDurablyReady, refresh, realtime])
+  }, [durably, refresh, realtime])
 
   const nextPage = useCallback(() => {
     if (hasMore) {
@@ -151,7 +147,6 @@ export function useRuns(options?: UseRunsOptions): UseRunsResult {
   }, [])
 
   return {
-    isReady: isDurablyReady,
     runs,
     page,
     hasMore,

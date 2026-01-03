@@ -98,7 +98,6 @@ describe('useJob', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const { runId } = await result.current.trigger({ input: 'test' })
 
@@ -114,7 +113,6 @@ describe('useJob', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     expect(result.current.status).toBeNull()
 
@@ -140,7 +138,6 @@ describe('useJob', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     await result.current.trigger({ input: 'test' })
 
@@ -157,7 +154,6 @@ describe('useJob', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     await result.current.trigger({ input: 'test' })
 
@@ -175,7 +171,6 @@ describe('useJob', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     result.current.trigger({ input: 'test' })
 
@@ -198,7 +193,6 @@ describe('useJob', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     await result.current.trigger({ input: 'test' })
 
@@ -220,7 +214,6 @@ describe('useJob', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     expect(result.current.isRunning).toBe(false)
     expect(result.current.isPending).toBe(false)
@@ -256,7 +249,6 @@ describe('useJob', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const { runId, output } = await result.current.triggerAndWait({
       input: 'test',
@@ -274,7 +266,6 @@ describe('useJob', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     await expect(
       result.current.triggerAndWait({ input: 'test' }),
@@ -289,7 +280,6 @@ describe('useJob', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     await result.current.trigger({ input: 'test' })
     await waitFor(() => expect(result.current.isCompleted).toBe(true))
@@ -315,7 +305,6 @@ describe('useJob', () => {
       { wrapper: createWrapper(durably) },
     )
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     // Should have the initial runId set
     expect(result.current.currentRunId).toBe(fakeRunId)
@@ -329,7 +318,6 @@ describe('useJob', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     result.current.trigger({ input: 'test' })
 
@@ -361,7 +349,6 @@ describe('useJob', () => {
         wrapper: createWrapper(durably),
       })
 
-      await waitFor(() => expect(result.current.isReady).toBe(true))
 
       // Trigger first job
       const { runId: firstRunId } = await result.current.trigger({ id: 1 })
@@ -402,7 +389,6 @@ describe('useJob', () => {
         { wrapper: createWrapper(durably) },
       )
 
-      await waitFor(() => expect(result.current.isReady).toBe(true))
 
       // Trigger first job
       const { runId: firstRunId } = await result.current.trigger({ id: 1 })
@@ -436,7 +422,6 @@ describe('useJob', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     // Start the long-running job and get the promise
     const waitPromise = result.current.triggerAndWait({ input: 'test' })

@@ -1,13 +1,13 @@
 /**
  * DurablyProvider Tests
  *
- * Test DurablyProvider initialization, options, and cleanup
+ * Test DurablyProvider initialization and context
  */
 
 import type { Durably } from '@coji/durably'
 import { render, renderHook, waitFor } from '@testing-library/react'
 import { StrictMode } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { DurablyProvider, useDurably } from '../../src'
 import { createTestDurably } from '../helpers/create-test-durably'
 
@@ -27,7 +27,7 @@ describe('DurablyProvider', () => {
     await new Promise((r) => setTimeout(r, 200))
   })
 
-  it('initializes Durably and provides isReady=true', async () => {
+  it('provides Durably instance via context', async () => {
     const durably = await createTestDurably()
     instances.push(durably)
 
@@ -37,11 +37,7 @@ describe('DurablyProvider', () => {
       ),
     })
 
-    await waitFor(() => {
-      expect(result.current.isReady).toBe(true)
-    })
     expect(result.current.durably).toBe(durably)
-    expect(result.current.error).toBeNull()
   })
 
   it('works correctly in StrictMode', async () => {
@@ -49,11 +45,9 @@ describe('DurablyProvider', () => {
     instances.push(durably)
 
     function TestComponent() {
-      const { isReady, durably: d } = useDurably()
+      const { durably: d } = useDurably()
       return (
-        <div data-testid="status">
-          {isReady ? 'ready' : 'loading'}-{d ? 'has-durably' : 'no-durably'}
-        </div>
+        <div data-testid="status">{d ? 'has-durably' : 'no-durably'}</div>
       )
     }
 
@@ -66,71 +60,8 @@ describe('DurablyProvider', () => {
     )
 
     await waitFor(() => {
-      expect(getByTestId('status').textContent).toBe('ready-has-durably')
+      expect(getByTestId('status').textContent).toBe('has-durably')
     })
-  })
-
-  it('respects autoStart=false', async () => {
-    const durably = await createTestDurably()
-    instances.push(durably)
-
-    // Spy on start to verify it's not called
-    const startSpy = vi.spyOn(durably, 'start')
-
-    const { result } = renderHook(() => useDurably(), {
-      wrapper: ({ children }) => (
-        <DurablyProvider durably={durably} autoStart={false}>
-          {children}
-        </DurablyProvider>
-      ),
-    })
-
-    await waitFor(() => {
-      expect(result.current.isReady).toBe(true)
-    })
-
-    expect(startSpy).not.toHaveBeenCalled()
-  })
-
-  it('calls start() by default (autoStart=true)', async () => {
-    const durably = await createTestDurably()
-    instances.push(durably)
-
-    // Spy on start to verify it's called
-    const startSpy = vi.spyOn(durably, 'start')
-
-    const { result } = renderHook(() => useDurably(), {
-      wrapper: ({ children }) => (
-        <DurablyProvider durably={durably}>{children}</DurablyProvider>
-      ),
-    })
-
-    await waitFor(() => {
-      expect(result.current.isReady).toBe(true)
-    })
-
-    expect(startSpy).toHaveBeenCalled()
-  })
-
-  it('calls onReady callback when ready', async () => {
-    const durably = await createTestDurably()
-    instances.push(durably)
-
-    const onReady = vi.fn()
-
-    const { result } = renderHook(() => useDurably(), {
-      wrapper: ({ children }) => (
-        <DurablyProvider durably={durably} onReady={onReady}>
-          {children}
-        </DurablyProvider>
-      ),
-    })
-
-    await waitFor(() => {
-      expect(result.current.isReady).toBe(true)
-    })
-
-    expect(onReady).toHaveBeenCalledWith(durably)
   })
 
   it('provides the same durably instance from useDurably', async () => {
@@ -141,10 +72,6 @@ describe('DurablyProvider', () => {
       wrapper: ({ children }) => (
         <DurablyProvider durably={durably}>{children}</DurablyProvider>
       ),
-    })
-
-    await waitFor(() => {
-      expect(result.current.isReady).toBe(true)
     })
 
     // Should be the exact same instance

@@ -78,13 +78,13 @@ describe('useJobRun', () => {
 
     // Use a combined hook that triggers then subscribes
     function useTriggerAndSubscribe() {
-      const { isReady: durablyReady } = useDurably()
+      const { durably: _ } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobRun({ runId })
 
       return {
         ...subscription,
-        isReady: durablyReady && subscription.isReady,
+
         runId,
         setRunId,
       }
@@ -93,8 +93,6 @@ describe('useJobRun', () => {
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
       wrapper: createWrapper(durably),
     })
-
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     // Trigger job and set runId
     const d = durably.register({ _job: testJob })
@@ -120,8 +118,6 @@ describe('useJobRun', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
-
     // With null runId, status should remain null
     expect(result.current.status).toBeNull()
     expect(result.current.output).toBeNull()
@@ -133,13 +129,13 @@ describe('useJobRun', () => {
     instances.push(durably)
 
     function useTriggerAndSubscribe() {
-      const { isReady: durablyReady } = useDurably()
+      const { durably: _ } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobRun<{ result: string }>({ runId })
 
       return {
         ...subscription,
-        isReady: durablyReady && subscription.isReady,
+
         runId,
         setRunId,
       }
@@ -148,8 +144,6 @@ describe('useJobRun', () => {
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
       wrapper: createWrapper(durably),
     })
-
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({ _job: testJob })
     const run = await d.jobs._job.trigger({ input: 'hello' })
@@ -169,13 +163,13 @@ describe('useJobRun', () => {
     instances.push(durably)
 
     function useTriggerAndSubscribe() {
-      const { isReady: durablyReady } = useDurably()
+      const { durably: _ } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobRun({ runId })
 
       return {
         ...subscription,
-        isReady: durablyReady && subscription.isReady,
+
         runId,
         setRunId,
       }
@@ -184,8 +178,6 @@ describe('useJobRun', () => {
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
       wrapper: createWrapper(durably),
     })
-
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({
       _job: failingJob,
@@ -208,19 +200,17 @@ describe('useJobRun', () => {
 
     // Use autoStart=false wrapper so worker doesn't pick up the job
     const noAutoStartWrapper = ({ children }: { children: ReactNode }) => (
-      <DurablyProvider durably={durably} autoStart={false}>
-        {children}
-      </DurablyProvider>
+      <DurablyProvider durably={durably}>{children}</DurablyProvider>
     )
 
     function useTriggerAndSubscribe() {
-      const { isReady: durablyReady } = useDurably()
+      const { durably: _ } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobRun({ runId })
 
       return {
         ...subscription,
-        isReady: durablyReady && subscription.isReady,
+
         runId,
         setRunId,
       }
@@ -229,8 +219,6 @@ describe('useJobRun', () => {
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
       wrapper: noAutoStartWrapper,
     })
-
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({ _job: testJob })
     const run = await d.jobs._job.trigger({ input: 'test' })
@@ -253,13 +241,13 @@ describe('useJobRun', () => {
     instances.push(durably)
 
     function useTriggerAndSubscribe() {
-      const { isReady: durablyReady } = useDurably()
+      const { durably: _ } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobRun({ runId })
 
       return {
         ...subscription,
-        isReady: durablyReady && subscription.isReady,
+
         runId,
         setRunId,
       }
@@ -268,8 +256,6 @@ describe('useJobRun', () => {
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
       wrapper: createWrapper(durably),
     })
-
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({ _job: failingJob })
     const run = await d.jobs._job.trigger({ input: 'test' })
@@ -323,13 +309,13 @@ describe('useJobRun', () => {
     })
 
     function useTriggerAndSubscribe() {
-      const { isReady: durablyReady } = useDurably()
+      const { durably: _ } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobRun<{ result: string }>({ runId })
 
       return {
         ...subscription,
-        isReady: durablyReady && subscription.isReady,
+
         runId,
         setRunId,
       }
@@ -338,8 +324,6 @@ describe('useJobRun', () => {
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
       wrapper: createWrapper(durably),
     })
-
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({ _job: retryableJob })
     const run = await d.jobs._job.trigger({ input: 'test' })
@@ -372,19 +356,17 @@ describe('useJobRun', () => {
 
     // Use autoStart=false wrapper so we can control when the worker runs
     const noAutoStartWrapper = ({ children }: { children: ReactNode }) => (
-      <DurablyProvider durably={durably} autoStart={false}>
-        {children}
-      </DurablyProvider>
+      <DurablyProvider durably={durably}>{children}</DurablyProvider>
     )
 
     function useTriggerAndSubscribe() {
-      const { isReady: durablyReady } = useDurably()
+      const { durably: _ } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobRun<{ result: string }>({ runId })
 
       return {
         ...subscription,
-        isReady: durablyReady && subscription.isReady,
+
         runId,
         setRunId,
       }
@@ -393,8 +375,6 @@ describe('useJobRun', () => {
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
       wrapper: noAutoStartWrapper,
     })
-
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({ _job: testJob })
     const run = await d.jobs._job.trigger({ input: 'test' })
@@ -440,13 +420,13 @@ describe('useJobRun', () => {
     instances.push(durably)
 
     function useTriggerAndSubscribe() {
-      const { isReady: durablyReady } = useDurably()
+      const { durably: _ } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobRun({ runId })
 
       return {
         ...subscription,
-        isReady: durablyReady && subscription.isReady,
+
         runId,
         setRunId,
       }
@@ -455,8 +435,6 @@ describe('useJobRun', () => {
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
       wrapper: createWrapper(durably),
     })
-
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({
       _job: progressJob,
@@ -481,13 +459,13 @@ describe('useJobRun', () => {
     instances.push(durably)
 
     function useTriggerAndSubscribe() {
-      const { isReady: durablyReady } = useDurably()
+      const { durably: _ } = useDurably()
       const [runId, setRunId] = useState<string | null>(null)
       const subscription = useJobRun({ runId })
 
       return {
         ...subscription,
-        isReady: durablyReady && subscription.isReady,
+
         runId,
         setRunId,
       }
@@ -496,8 +474,6 @@ describe('useJobRun', () => {
     const { result } = renderHook(() => useTriggerAndSubscribe(), {
       wrapper: createWrapper(durably),
     })
-
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({ _job: testJob })
     const run = await d.jobs._job.trigger({ input: 'test' })

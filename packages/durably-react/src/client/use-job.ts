@@ -22,7 +22,6 @@ export interface UseJobClientResult<TInput, TOutput> {
   /**
    * Whether the hook is ready (always true for client mode)
    */
-  isReady: boolean
   /**
    * Trigger the job with the given input
    */
@@ -161,7 +160,6 @@ export function useJob<
   }, [subscription.status, isPending])
 
   return {
-    isReady: true,
     trigger,
     triggerAndWait,
     status: effectiveStatus,

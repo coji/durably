@@ -41,7 +41,6 @@ describe('useJob (client)', () => {
       useJob({ api: '/api/durably', jobName: 'test-job' }),
     )
 
-    expect(result.current.isReady).toBe(true)
 
     const { runId } = await result.current.trigger({ input: 'test' })
 

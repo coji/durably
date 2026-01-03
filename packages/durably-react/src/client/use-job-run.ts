@@ -29,7 +29,6 @@ export interface UseJobRunClientResult<TOutput = unknown> {
   /**
    * Whether the hook is ready (always true for client mode)
    */
-  isReady: boolean
   /**
    * Current run status
    */
@@ -124,7 +123,6 @@ export function useJobRun<TOutput = unknown>(
   ])
 
   return {
-    isReady: true,
     status: effectiveStatus,
     output: subscription.output,
     error: subscription.error,

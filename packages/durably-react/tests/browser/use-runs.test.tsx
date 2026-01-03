@@ -53,7 +53,6 @@ describe('useRuns', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
     expect(result.current.runs).toEqual([])
     expect(result.current.page).toBe(0)
     expect(result.current.hasMore).toBe(false)
@@ -67,7 +66,6 @@ describe('useRuns', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     // Trigger a job using the durably instance directly
     const d = durably.register({ testJobHandle: testJob })
@@ -95,7 +93,6 @@ describe('useRuns', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({
       testJobHandle: testJob,
@@ -120,7 +117,6 @@ describe('useRuns', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({ testJobHandle: testJob })
 
@@ -153,7 +149,6 @@ describe('useRuns', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({ testJobHandle: testJob })
 
@@ -192,7 +187,6 @@ describe('useRuns', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({ testJobHandle: testJob })
 
@@ -220,7 +214,6 @@ describe('useRuns', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({ testJobHandle: testJob })
 
@@ -245,7 +238,6 @@ describe('useRuns', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({ testJobHandle: testJob })
 
@@ -267,7 +259,6 @@ describe('useRuns', () => {
       wrapper: createWrapper(durably),
     })
 
-    await waitFor(() => expect(result.current.isReady).toBe(true))
 
     const d = durably.register({ testJobHandle: testJob })
 

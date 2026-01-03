@@ -20,7 +20,6 @@ export interface UseJobLogsClientResult {
   /**
    * Whether the hook is ready (always true for client mode)
    */
-  isReady: boolean
   /**
    * Logs collected during execution
    */
@@ -43,7 +42,6 @@ export function useJobLogs(
   const subscription = useSSESubscription(api, runId, { maxLogs })
 
   return {
-    isReady: true,
     logs: subscription.logs,
     clearLogs: subscription.clearLogs,
   }

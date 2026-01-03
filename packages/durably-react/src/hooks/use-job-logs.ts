@@ -15,10 +15,6 @@ export interface UseJobLogsOptions {
 
 export interface UseJobLogsResult {
   /**
-   * Whether the hook is ready (Durably is initialized)
-   */
-  isReady: boolean
-  /**
    * Logs collected during execution
    */
   logs: LogEntry[]
@@ -33,13 +29,12 @@ export interface UseJobLogsResult {
  * Use this when you only need logs, not full run status.
  */
 export function useJobLogs(options: UseJobLogsOptions): UseJobLogsResult {
-  const { durably, isReady: isDurablyReady } = useDurably()
+  const { durably } = useDurably()
   const { runId, maxLogs } = options
 
   const subscription = useRunSubscription(durably, runId, { maxLogs })
 
   return {
-    isReady: isDurablyReady,
     logs: subscription.logs,
     clearLogs: subscription.clearLogs,
   }

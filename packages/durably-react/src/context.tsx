@@ -4,16 +4,11 @@ import {
   createContext,
   use,
   useContext,
-  useEffect,
-  useRef,
-  useState,
   type ReactNode,
 } from 'react'
 
 interface DurablyContextValue {
-  durably: Durably | null
-  isReady: boolean
-  error: Error | null
+  durably: Durably
 }
 
 const DurablyContext = createContext<DurablyContextValue | null>(null)
@@ -21,7 +16,7 @@ const DurablyContext = createContext<DurablyContextValue | null>(null)
 export interface DurablyProviderProps {
   /**
    * Durably instance or Promise that resolves to one.
-   * The instance should already be migrated and have jobs registered if needed.
+   * The instance should already be initialized via `await durably.init()`.
    *
    * When passing a Promise, wrap the provider with Suspense or use the fallback prop.
    *
@@ -41,15 +36,6 @@ export interface DurablyProviderProps {
    */
   durably: Durably | Promise<Durably>
   /**
-   * Whether to automatically call start() after mounting.
-   * @default true
-   */
-  autoStart?: boolean
-  /**
-   * Callback when Durably instance is ready.
-   */
-  onReady?: (durably: Durably) => void
-  /**
    * Fallback to show while waiting for the Durably Promise to resolve.
    * This wraps the provider content in a Suspense boundary automatically.
    */
@@ -62,40 +48,15 @@ export interface DurablyProviderProps {
  */
 function DurablyProviderInner({
   durably: durablyOrPromise,
-  autoStart = true,
-  onReady,
   children,
 }: Omit<DurablyProviderProps, 'fallback'>) {
-  // Resolve Promise using React 19's use() hook
-  const resolvedDurably =
+  const durably =
     durablyOrPromise instanceof Promise
       ? use(durablyOrPromise)
       : durablyOrPromise
 
-  const [durably, setDurably] = useState<Durably | null>(null)
-  const [isReady, setIsReady] = useState(false)
-  const [error, setError] = useState<Error | null>(null)
-
-  const instanceRef = useRef<Durably | null>(null)
-
-  useEffect(() => {
-    try {
-      instanceRef.current = resolvedDurably
-
-      if (autoStart) {
-        resolvedDurably.start()
-      }
-
-      setDurably(resolvedDurably)
-      setIsReady(true)
-      onReady?.(resolvedDurably)
-    } catch (err) {
-      setError(err instanceof Error ? err : new Error(String(err)))
-    }
-  }, [resolvedDurably, autoStart, onReady])
-
   return (
-    <DurablyContext.Provider value={{ durably, isReady, error }}>
+    <DurablyContext.Provider value={{ durably }}>
       {children}
     </DurablyContext.Provider>
   )
@@ -103,22 +64,13 @@ function DurablyProviderInner({
 
 export function DurablyProvider({
   durably,
-  autoStart = true,
-  onReady,
   fallback,
   children,
 }: DurablyProviderProps) {
   const inner = (
-    <DurablyProviderInner
-      durably={durably}
-      autoStart={autoStart}
-      onReady={onReady}
-    >
-      {children}
-    </DurablyProviderInner>
+    <DurablyProviderInner durably={durably}>{children}</DurablyProviderInner>
   )
 
-  // If fallback is provided, wrap in Suspense
   if (fallback !== undefined) {
     return <Suspense fallback={fallback}>{inner}</Suspense>
   }

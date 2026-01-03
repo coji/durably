@@ -8,7 +8,7 @@
  * - Tailwind CSS for styling
  */
 
-import { DurablyProvider, useDurably } from '@coji/durably-react'
+import { DurablyProvider } from '@coji/durably-react'
 import { useState } from 'react'
 import {
   Dashboard,
@@ -21,7 +21,6 @@ import { sqlocal } from './lib/database'
 import { durably } from './lib/durably'
 
 function AppContent() {
-  const { isReady } = useDurably()
   const [activeJob, setActiveJob] = useState<'image' | 'sync'>('image')
   const [imageRunId, setImageRunId] = useState<string | null>(null)
   const [syncRunId, setSyncRunId] = useState<string | null>(null)
@@ -86,8 +85,7 @@ function AppContent() {
                   <button
                     type="button"
                     onClick={handleReset}
-                    disabled={!isReady}
-                    className="text-sm text-red-600 hover:text-red-800 disabled:opacity-50"
+                    className="text-sm text-red-600 hover:text-red-800"
                   >
                     Reset DB
                   </button>
