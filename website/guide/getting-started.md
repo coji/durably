@@ -7,10 +7,16 @@ Build a CSV importer with real-time progress UI. This guide uses React Router v7
 ## Install
 
 ```bash
-npm install @coji/durably @coji/durably-react kysely zod @libsql/client @libsql/kysely-libsql
+pnpm add @coji/durably @coji/durably-react kysely zod @libsql/client @libsql/kysely-libsql
 ```
 
-## 1. Define a Job (Server)
+---
+
+## Server
+
+### 1. Define a Job
+
+Define a job with multiple steps using `step.run()`. Each step's completion state is automatically persisted to SQLite.
 
 ```ts
 // app/jobs/import-csv.ts
@@ -49,6 +55,8 @@ export const importCsvJob = defineJob({
 })
 ```
 
+Create a Durably instance and register the job. `createDurablyHandler` provides HTTP/SSE endpoints for the client.
+
 ```ts
 // app/lib/durably.server.ts
 import { createDurably, createDurablyHandler } from '@coji/durably'
@@ -68,7 +76,9 @@ export const durablyHandler = createDurablyHandler(durably)
 await durably.init()
 ```
 
-## 2. Create API Route (Splat)
+### 2. Create API Route
+
+Use a React Router splat route to expose the Durably API. This automatically provides `/api/durably/trigger`, `/api/durably/subscribe`, and other endpoints.
 
 ```ts
 // app/routes/api.durably.$.ts
@@ -84,11 +94,18 @@ export async function action({ request }: Route.ActionArgs) {
 }
 ```
 
-## 3. Create Type-Safe Client
+---
+
+## Client
+
+### 3. Create Type-Safe Client
+
+Create a type-safe client using the server's Durably type. This gives you full type inference for job inputs and outputs.
 
 ```ts
 // app/lib/durably.client.ts
 import { createDurablyClient } from '@coji/durably-react/client'
+// Type-only import: no server code is bundled, just TypeScript types
 import type { durably } from './durably.server'
 
 export const durablyClient = createDurablyClient<typeof durably>({
@@ -96,15 +113,21 @@ export const durablyClient = createDurablyClient<typeof durably>({
 })
 ```
 
-## 4. Build the UI
+### 4. Build the UI
+
+Build the UI with real-time progress updates.
+
+- **action**: Trigger the job on the server when form is submitted
+- **useRun**: Subscribe to job progress via SSE
 
 ```tsx
 // app/routes/_index.tsx
-import { Form, useActionData } from 'react-router'
+import { Form } from 'react-router'
 import { durably } from '~/lib/durably.server'
 import { durablyClient } from '~/lib/durably.client'
 import type { Route } from './+types/_index'
 
+// Server: trigger job on form submit
 export async function action({ request }: Route.ActionArgs) {
   const formData = await request.formData()
   const file = formData.get('file') as File
@@ -120,8 +143,8 @@ export async function action({ request }: Route.ActionArgs) {
   return { runId: run.id }
 }
 
-export default function Home() {
-  const actionData = useActionData<typeof action>()
+// Client: subscribe to real-time progress via SSE
+export default function Home({ actionData }: Route.ComponentProps) {
   const { progress, output, isRunning, isCompleted } =
     durablyClient.importCsv.useRun(actionData?.runId ?? null)
 
@@ -143,20 +166,22 @@ export default function Home() {
 }
 ```
 
+---
+
 ## Try It
 
-1. Create a `test.csv`:
+1. Create `test.csv`:
    ```csv
    name,email
    Alice,alice@example.com
    Bob,bob@example.com
    ```
 
-2. Run: `npm run dev`
+2. Start server: `pnpm dev`
 
 3. Upload the CSV and watch real-time progress!
 
-If you stop the server mid-import and restart, it resumes from where it left off.
+**Resume support**: Stop the server mid-import and restart — it picks up right where it left off.
 
 ## Next Steps
 

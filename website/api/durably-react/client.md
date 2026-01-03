@@ -1,6 +1,6 @@
-# Server-Connected Mode
+# Server Hooks
 
-Connect to a Durably server via HTTP/SSE for real-time job monitoring.
+Connect to a Durably server via HTTP/SSE for real-time job monitoring. Jobs run on the server with updates streamed to the client.
 
 ```tsx
 import {

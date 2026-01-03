@@ -24,6 +24,7 @@ export default defineConfig({
           items: [
             { text: 'What is Durably?', link: '/guide/' },
             { text: 'Getting Started', link: '/guide/getting-started' },
+            { text: 'Core Concepts', link: '/guide/concepts' },
           ],
         },
         {
@@ -34,31 +35,116 @@ export default defineConfig({
             { text: 'Background Sync (Server)', link: '/guide/background-sync' },
           ],
         },
-        {
-          text: 'Reference',
-          items: [
-            { text: 'Core Concepts', link: '/guide/concepts' },
-          ],
-        },
       ],
       '/api/': [
         {
-          text: 'Core API',
+          text: 'Getting Started',
           items: [
-            { text: 'Overview', link: '/api/' },
-            { text: 'createDurably', link: '/api/create-durably' },
-            { text: 'defineJob', link: '/api/define-job' },
-            { text: 'Step', link: '/api/step' },
-            { text: 'Events', link: '/api/events' },
+            { text: 'Quick Reference', link: '/api/' },
           ],
         },
         {
-          text: 'React API',
+          text: 'Job Definition',
+          items: [
+            {
+              text: 'defineJob',
+              link: '/api/define-job',
+              collapsed: false,
+              items: [
+                { text: 'trigger', link: '/api/define-job#trigger' },
+                { text: 'triggerAndWait', link: '/api/define-job#triggerandwait' },
+                { text: 'batchTrigger', link: '/api/define-job#batchtrigger' },
+              ],
+            },
+            {
+              text: 'Step Context',
+              link: '/api/step',
+              collapsed: false,
+              items: [
+                { text: 'step.run', link: '/api/step#run' },
+                { text: 'step.progress', link: '/api/step#progress' },
+                { text: 'step.log', link: '/api/step#log' },
+              ],
+            },
+          ],
+        },
+        {
+          text: 'Instance & Lifecycle',
+          items: [
+            {
+              text: 'createDurably',
+              link: '/api/create-durably',
+              collapsed: false,
+              items: [
+                { text: 'init / migrate / start', link: '/api/create-durably#init' },
+                { text: 'register', link: '/api/create-durably#register' },
+                { text: 'on (events)', link: '/api/create-durably#on' },
+                { text: 'stop', link: '/api/create-durably#stop' },
+                { text: 'retry / cancel', link: '/api/create-durably#retry' },
+                { text: 'getRun / getRuns', link: '/api/create-durably#getrun' },
+              ],
+            },
+            {
+              text: 'Events',
+              link: '/api/events',
+              collapsed: false,
+              items: [
+                { text: 'Run Events', link: '/api/events#run-events' },
+                { text: 'Step Events', link: '/api/events#step-events' },
+                { text: 'Log Events', link: '/api/events#log-events' },
+                { text: 'Worker Events', link: '/api/events#worker-events' },
+              ],
+            },
+          ],
+        },
+        {
+          text: 'Server Integration',
+          items: [
+            {
+              text: 'HTTP Handler',
+              link: '/api/http-handler',
+              collapsed: false,
+              items: [
+                { text: 'createDurablyHandler', link: '/api/http-handler#createdurablyhandler' },
+                { text: 'Framework Integration', link: '/api/http-handler#framework-integration' },
+                { text: 'Endpoints', link: '/api/http-handler#endpoints' },
+                { text: 'SSE Events', link: '/api/http-handler#sse-event-stream' },
+                { text: 'Security', link: '/api/http-handler#security-considerations' },
+              ],
+            },
+          ],
+        },
+        {
+          text: 'React Hooks',
           items: [
             { text: 'Overview', link: '/api/durably-react/' },
-            { text: 'Browser Mode', link: '/api/durably-react/browser' },
-            { text: 'Server Mode', link: '/api/durably-react/client' },
-            { text: 'Types', link: '/api/durably-react/types' },
+            {
+              text: 'Browser Hooks',
+              link: '/api/durably-react/browser',
+              collapsed: false,
+              items: [
+                { text: 'DurablyProvider', link: '/api/durably-react/browser#durablyprovider' },
+                { text: 'useDurably', link: '/api/durably-react/browser#usedurably' },
+                { text: 'useJob', link: '/api/durably-react/browser#usejob' },
+                { text: 'useJobRun', link: '/api/durably-react/browser#usejobrun' },
+                { text: 'useJobLogs', link: '/api/durably-react/browser#usejoblogs' },
+                { text: 'useRuns', link: '/api/durably-react/browser#useruns' },
+              ],
+            },
+            {
+              text: 'Server Hooks',
+              link: '/api/durably-react/client',
+              collapsed: false,
+              items: [
+                { text: 'createDurablyClient', link: '/api/durably-react/client#createdurablyclient' },
+                { text: 'useJob', link: '/api/durably-react/client#usejob' },
+                { text: 'useJobRun', link: '/api/durably-react/client#usejobrun' },
+                { text: 'useJobLogs', link: '/api/durably-react/client#usejoblogs' },
+                { text: 'useRuns', link: '/api/durably-react/client#useruns' },
+                { text: 'useRunActions', link: '/api/durably-react/client#userunactions' },
+              ],
+            },
+            { text: 'Type Definitions', link: '/api/durably-react/types' },
           ],
         },
       ],

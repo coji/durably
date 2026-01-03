@@ -1,6 +1,6 @@
-# Browser-Complete Mode
+# Browser Hooks
 
-Run Durably entirely in the browser using SQLite WASM with OPFS persistence.
+Run Durably entirely in the browser using SQLite WASM with OPFS persistence. Jobs execute client-side with data stored in the browser's Origin Private File System.
 
 ```tsx
 import { DurablyProvider, useDurably, useJob, useJobRun, useJobLogs, useRuns } from '@coji/durably-react'

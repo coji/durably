@@ -14,7 +14,7 @@ Run batch jobs on Node.js without a frontend. Perfect for cron jobs, data pipeli
 ## Installation
 
 ```bash
-npm install @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
+pnpm add @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
 ```
 
 ## Project Structure
@@ -32,6 +32,8 @@ npm install @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
 
 ### Database
 
+Create a libsql dialect for SQLite persistence. Supports both local files and Turso cloud databases.
+
 ```ts
 // lib/database.ts
 import { LibsqlDialect } from '@libsql/kysely-libsql'
@@ -43,6 +45,8 @@ export const dialect = new LibsqlDialect({
 ```
 
 ### Job Definition
+
+Define a job with multiple steps. Each `step.run()` creates a checkpoint - if the process crashes, it resumes from the last completed step.
 
 ```ts
 // jobs/process-image.ts
@@ -81,6 +85,8 @@ export const processImageJob = defineJob({
 
 ### Durably Instance
 
+Create the Durably instance and register jobs. The shorter intervals are suitable for development; use longer intervals in production to reduce database load.
+
 ```ts
 // lib/durably.ts
 import { createDurably } from '@coji/durably'
@@ -98,6 +104,8 @@ export const durably = createDurably({
 ```
 
 ## Basic Usage
+
+Use `triggerAndWait()` to trigger a job and wait for completion. This blocks until the job finishes and returns the output.
 
 ```ts
 // basic.ts
@@ -123,6 +131,8 @@ main().catch(console.error)
 
 ## Event Monitoring
 
+Subscribe to events to monitor job execution. Useful for logging, metrics, and debugging.
+
 ```ts
 durably.on('run:start', (event) => {
   console.log(`[run:start] ${event.jobName}`)
@@ -143,6 +153,8 @@ durably.on('run:fail', (event) => {
 
 ## Cron Integration
 
+Combine Durably with node-cron for scheduled job execution. Jobs remain resumable even when triggered by cron.
+
 ```ts
 // cron-job.ts
 import cron from 'node-cron'
@@ -159,6 +171,8 @@ cron.schedule('0 * * * *', async () => {
 ```
 
 ## CLI with Progress
+
+Build command-line tools with real-time progress output using the `run:progress` event.
 
 ```ts
 // cli.ts
@@ -185,7 +199,7 @@ program.parse()
 
 ## Idempotency
 
-Prevent duplicate runs with idempotency keys:
+Prevent duplicate runs with idempotency keys. If a run with the same key already exists, it returns the existing run instead of creating a new one.
 
 ```ts
 await durably.jobs.processImage.trigger(
@@ -197,7 +211,7 @@ await durably.jobs.processImage.trigger(
 
 ## Concurrency Control
 
-Limit concurrent jobs:
+Limit concurrent jobs with concurrency keys. Only one job with the same key can run at a time - others wait in the queue.
 
 ```ts
 await durably.jobs.processImage.trigger(
@@ -208,6 +222,8 @@ await durably.jobs.processImage.trigger(
 ```
 
 ## Error Handling & Retry
+
+Durably doesn't auto-retry failures. Use `retry()` to manually retry failed runs, or `cancel()` to stop running jobs.
 
 ```ts
 // Manual retry on failure

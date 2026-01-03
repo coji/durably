@@ -39,7 +39,7 @@ If the process crashes after importing 500 of 1000 rows, restart picks up at row
 
 | Environment | Storage | Use Case |
 |-------------|---------|----------|
-| **Node.js** | libsql/better-sqlite3 | Server-side batch jobs |
+| **Node.js** | @libsql/client, better-sqlite3 | Server-side batch jobs |
 | **Browser** | SQLite WASM + OPFS | Offline-capable apps |
 
 Same job definition works in both environments.

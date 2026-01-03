@@ -42,12 +42,14 @@ export default defineConfig({
 ## Installation
 
 ```bash
-npm install @coji/durably @coji/durably-react kysely zod sqlocal
+pnpm add @coji/durably @coji/durably-react kysely zod sqlocal
 ```
 
 ## Setup
 
 ### Database
+
+Create a SQLocal instance for SQLite WASM with OPFS persistence. This database file will be stored in the browser's Origin Private File System.
 
 ```ts
 // lib/database.ts
@@ -57,6 +59,8 @@ export const sqlocal = new SQLocalKysely('app.sqlite3')
 ```
 
 ### Job Definition
+
+Define a job with multiple steps. Each `step.run()` call creates a checkpoint - if the browser tab is closed mid-execution, the job will resume from the last completed step.
 
 ```ts
 // jobs/data-sync.ts
@@ -114,6 +118,8 @@ export const dataSyncJob = defineJob({
 
 ### Durably Instance
 
+Create the Durably instance with SQLocal's dialect. The shorter intervals are optimized for browser environments where tab suspension can occur more frequently.
+
 ```ts
 // lib/durably.ts
 import { createDurably } from '@coji/durably'
@@ -122,9 +128,9 @@ import { sqlocal } from './database'
 
 const durably = createDurably({
   dialect: sqlocal.dialect,
-  pollingInterval: 100,
-  heartbeatInterval: 500,
-  staleThreshold: 3000,
+  pollingInterval: 100,    // Check for pending jobs every 100ms
+  heartbeatInterval: 500,  // Send heartbeat every 500ms
+  staleThreshold: 3000,    // Mark job as stale after 3s without heartbeat
 }).register({
   dataSync: dataSyncJob,
 })
@@ -135,6 +141,10 @@ export { durably }
 ```
 
 ## Usage
+
+Wrap your app with `DurablyProvider` to enable the hooks. The `fallback` component is shown while the database is initializing.
+
+Use `useJob` to trigger jobs and subscribe to their progress. The hook returns the current status, progress, and output.
 
 ```tsx
 // App.tsx

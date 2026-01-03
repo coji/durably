@@ -201,84 +201,8 @@ process.on('SIGTERM', async () => {
 })
 ```
 
-## createDurablyHandler
+## See Also
 
-Create HTTP handlers for exposing Durably via REST/SSE. Import from `@coji/durably/server`.
-
-```ts
-import { createDurablyHandler } from '@coji/durably/server'
-
-const handler = createDurablyHandler(durably, {
-  onRequest: async () => {
-    await durably.init()
-  },
-})
-```
-
-### Options
-
-```ts
-interface CreateDurablyHandlerOptions {
-  /** Called before handling each request */
-  onRequest?: () => Promise<void> | void
-}
-```
-
-### handle(request, basePath)
-
-Handle all Durably HTTP requests with automatic routing.
-
-```ts
-// React Router / Remix
-export async function loader({ request }) {
-  return handler.handle(request, '/api/durably')
-}
-
-export async function action({ request }) {
-  return handler.handle(request, '/api/durably')
-}
-```
-
-### Routes
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/subscribe?runId=xxx` | SSE stream for run events |
-| `GET` | `/runs` | List runs (query: jobName, status, limit, offset) |
-| `GET` | `/run?runId=xxx` | Get single run |
-| `GET` | `/steps?runId=xxx` | Get steps for a run |
-| `GET` | `/runs/subscribe` | SSE stream for run list updates |
-| `POST` | `/trigger` | Trigger a job |
-| `POST` | `/retry?runId=xxx` | Retry a failed run |
-| `POST` | `/cancel?runId=xxx` | Cancel a run |
-| `DELETE` | `/run?runId=xxx` | Delete a run |
-
-### Individual Handlers
-
-For custom routing, use individual handlers:
-
-```ts
-app.post('/api/durably/trigger', (req) => handler.trigger(req))
-app.get('/api/durably/subscribe', (req) => handler.subscribe(req))
-app.get('/api/durably/runs', (req) => handler.runs(req))
-app.get('/api/durably/run', (req) => handler.run(req))
-app.get('/api/durably/steps', (req) => handler.steps(req))
-app.post('/api/durably/retry', (req) => handler.retry(req))
-app.post('/api/durably/cancel', (req) => handler.cancel(req))
-app.delete('/api/durably/run', (req) => handler.delete(req))
-app.get('/api/durably/runs/subscribe', (req) => handler.runsSubscribe(req))
-```
-
-### Trigger Request Format
-
-```ts
-// POST /api/durably/trigger
-{
-  "jobName": "import-csv",
-  "input": { "file": "data.csv" },
-  "idempotencyKey": "unique-key",  // optional
-  "concurrencyKey": "user-123"      // optional
-}
-
-// Response: { "runId": "run_abc123" }
-```
+- [HTTP Handler](/api/http-handler) — Expose Durably via HTTP/SSE for React clients
+- [defineJob](/api/define-job) — Define jobs with typed schemas
+- [Events](/api/events) — Subscribe to run and step events

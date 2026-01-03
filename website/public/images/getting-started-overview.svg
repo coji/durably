@@ -1,10 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 240">
   <defs>
     <style>
       .num { font: bold 18px system-ui, sans-serif; fill: white; }
       .title { font: bold 13px system-ui, sans-serif; fill: #1f2937; }
       .desc { font: 11px system-ui, sans-serif; fill: #6b7280; }
       .file { font: 10px ui-monospace, monospace; fill: #8b5cf6; }
+      .label { font: bold 11px system-ui, sans-serif; fill: #6b7280; }
       .box { rx: 8; }
     </style>
     <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
@@ -12,48 +13,57 @@
     </marker>
   </defs>
 
+  <!-- Server Section -->
+  <rect x="10" y="10" width="390" height="220" fill="#fafafa" stroke="#e5e7eb" stroke-width="1" rx="12"/>
+  <text x="205" y="35" text-anchor="middle" class="label">SERVER</text>
+
   <!-- Step 1 -->
-  <rect x="20" y="30" width="170" height="140" fill="#f0f9ff" stroke="#0ea5e9" stroke-width="2" class="box"/>
-  <circle cx="50" cy="55" r="15" fill="#0ea5e9"/>
-  <text x="50" y="60" text-anchor="middle" class="num">1</text>
-  <text x="105" y="55" text-anchor="middle" class="title">Define Job</text>
-  <text x="105" y="90" text-anchor="middle" class="desc">Create job with</text>
-  <text x="105" y="105" text-anchor="middle" class="desc">steps and schema</text>
-  <text x="105" y="140" text-anchor="middle" class="file">durably.server.ts</text>
+  <rect x="20" y="50" width="170" height="160" fill="#f0f9ff" stroke="#0ea5e9" stroke-width="2" class="box"/>
+  <circle cx="50" cy="75" r="15" fill="#0ea5e9"/>
+  <text x="50" y="80" text-anchor="middle" class="num">1</text>
+  <text x="105" y="75" text-anchor="middle" class="title">Define Job</text>
+  <text x="105" y="110" text-anchor="middle" class="desc">Create job with</text>
+  <text x="105" y="125" text-anchor="middle" class="desc">steps and schema</text>
+  <text x="105" y="165" text-anchor="middle" class="file">import-csv.ts</text>
+  <text x="105" y="180" text-anchor="middle" class="file">durably.server.ts</text>
 
   <!-- Arrow 1 -->
-  <path d="M195 100 L215 100" stroke="#d1d5db" stroke-width="2" marker-end="url(#arr)"/>
+  <path d="M195 130 L215 130" stroke="#d1d5db" stroke-width="2" marker-end="url(#arr)"/>
 
   <!-- Step 2 -->
-  <rect x="220" y="30" width="170" height="140" fill="#fdf4ff" stroke="#a855f7" stroke-width="2" class="box"/>
-  <circle cx="250" cy="55" r="15" fill="#a855f7"/>
-  <text x="250" y="60" text-anchor="middle" class="num">2</text>
-  <text x="305" y="55" text-anchor="middle" class="title">API Routes</text>
-  <text x="305" y="90" text-anchor="middle" class="desc">Expose trigger</text>
-  <text x="305" y="105" text-anchor="middle" class="desc">and subscribe</text>
-  <text x="305" y="140" text-anchor="middle" class="file">api.durably.*.ts</text>
+  <rect x="220" y="50" width="170" height="160" fill="#fdf4ff" stroke="#a855f7" stroke-width="2" class="box"/>
+  <circle cx="250" cy="75" r="15" fill="#a855f7"/>
+  <text x="250" y="80" text-anchor="middle" class="num">2</text>
+  <text x="305" y="75" text-anchor="middle" class="title">API Route</text>
+  <text x="305" y="110" text-anchor="middle" class="desc">Expose HTTP</text>
+  <text x="305" y="125" text-anchor="middle" class="desc">and SSE endpoints</text>
+  <text x="305" y="170" text-anchor="middle" class="file">api.durably.$.ts</text>
+
+  <!-- Client Section -->
+  <rect x="400" y="10" width="390" height="220" fill="#fafafa" stroke="#e5e7eb" stroke-width="1" rx="12"/>
+  <text x="595" y="35" text-anchor="middle" class="label">CLIENT</text>
 
   <!-- Arrow 2 -->
-  <path d="M395 100 L415 100" stroke="#d1d5db" stroke-width="2" marker-end="url(#arr)"/>
+  <path d="M395 130 L415 130" stroke="#d1d5db" stroke-width="2" marker-end="url(#arr)"/>
 
   <!-- Step 3 -->
-  <rect x="420" y="30" width="170" height="140" fill="#f0fdf4" stroke="#22c55e" stroke-width="2" class="box"/>
-  <circle cx="450" cy="55" r="15" fill="#22c55e"/>
-  <text x="450" y="60" text-anchor="middle" class="num">3</text>
-  <text x="505" y="55" text-anchor="middle" class="title">Client Hooks</text>
-  <text x="505" y="90" text-anchor="middle" class="desc">Type-safe React</text>
-  <text x="505" y="105" text-anchor="middle" class="desc">hooks for UI</text>
-  <text x="505" y="140" text-anchor="middle" class="file">durably.client.ts</text>
+  <rect x="420" y="50" width="170" height="160" fill="#f0fdf4" stroke="#22c55e" stroke-width="2" class="box"/>
+  <circle cx="450" cy="75" r="15" fill="#22c55e"/>
+  <text x="450" y="80" text-anchor="middle" class="num">3</text>
+  <text x="505" y="75" text-anchor="middle" class="title">Create Client</text>
+  <text x="505" y="110" text-anchor="middle" class="desc">Type-safe hooks</text>
+  <text x="505" y="125" text-anchor="middle" class="desc">from server types</text>
+  <text x="505" y="170" text-anchor="middle" class="file">durably.client.ts</text>
 
   <!-- Arrow 3 -->
-  <path d="M595 100 L615 100" stroke="#d1d5db" stroke-width="2" marker-end="url(#arr)"/>
+  <path d="M595 130 L615 130" stroke="#d1d5db" stroke-width="2" marker-end="url(#arr)"/>
 
   <!-- Step 4 -->
-  <rect x="620" y="30" width="160" height="140" fill="#fef3c7" stroke="#f59e0b" stroke-width="2" class="box"/>
-  <circle cx="650" cy="55" r="15" fill="#f59e0b"/>
-  <text x="650" y="60" text-anchor="middle" class="num">4</text>
-  <text x="700" y="55" text-anchor="middle" class="title">Build UI</text>
-  <text x="700" y="90" text-anchor="middle" class="desc">Form + Progress</text>
-  <text x="700" y="105" text-anchor="middle" class="desc">with real-time SSE</text>
-  <text x="700" y="140" text-anchor="middle" class="file">_index.tsx</text>
+  <rect x="620" y="50" width="160" height="160" fill="#fef3c7" stroke="#f59e0b" stroke-width="2" class="box"/>
+  <circle cx="650" cy="75" r="15" fill="#f59e0b"/>
+  <text x="650" y="80" text-anchor="middle" class="num">4</text>
+  <text x="700" y="75" text-anchor="middle" class="title">Build UI</text>
+  <text x="700" y="110" text-anchor="middle" class="desc">Form + Progress</text>
+  <text x="700" y="125" text-anchor="middle" class="desc">with real-time SSE</text>
+  <text x="700" y="170" text-anchor="middle" class="file">_index.tsx</text>
 </svg>

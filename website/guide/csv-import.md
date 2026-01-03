@@ -33,6 +33,10 @@ app/
 
 ### Job Definition
 
+Define the import job with validation and import steps. Each step is a checkpoint - if the server crashes, the job resumes from the last completed step.
+
+The job uses `step.progress()` to report real-time progress and `step.log` for structured logging.
+
 ```ts
 // app/jobs/import-csv.ts
 import { defineJob } from '@coji/durably'
@@ -118,6 +122,8 @@ export const importCsvJob = defineJob({
 
 ### Server Setup
 
+Create the Durably instance with libsql dialect and register the job. The `createDurablyHandler` provides HTTP/SSE endpoints for the client.
+
 ```ts
 // app/lib/durably.server.ts
 import { createDurably, createDurablyHandler } from '@coji/durably'
@@ -139,6 +145,8 @@ await durably.init()
 
 ### API Route (Splat)
 
+Use a React Router splat route to expose all Durably endpoints under `/api/durably/*`. This handles trigger, subscribe, and management endpoints.
+
 ```ts
 // app/routes/api.durably.$.ts
 import { durablyHandler } from '~/lib/durably.server'
@@ -155,6 +163,8 @@ export async function action({ request }: Route.ActionArgs) {
 
 ### Type-Safe Client
 
+Create a type-safe client using the server's Durably type. This gives you full TypeScript inference for job inputs and outputs without bundling server code.
+
 ```ts
 // app/lib/durably.client.ts
 import { createDurablyClient } from '@coji/durably-react/client'
@@ -166,6 +176,8 @@ export const durablyClient = createDurablyClient<typeof durably>({
 ```
 
 ### Progress UI
+
+Use the `useRun` hook to subscribe to real-time progress via SSE. The hook returns status flags (`isRunning`, `isCompleted`, `isFailed`) and current progress.
 
 ```tsx
 function ImportProgress({ runId }: { runId: string | null }) {
@@ -192,6 +204,8 @@ function ImportProgress({ runId }: { runId: string | null }) {
 ```
 
 ### Dashboard with Actions
+
+Build a dashboard showing all runs with retry, cancel, and delete actions. The `useRuns` hook provides paginated run history, while `useRunActions` provides mutation functions.
 
 ```tsx
 import { useRuns, useRunActions } from '@coji/durably-react/client'
