@@ -7,7 +7,6 @@
  * Demonstrates typed useRuns with generic type parameter for multi-job dashboards.
  */
 
-import type { Run } from '@coji/durably'
 import { type TypedRun, useDurably, useRuns } from '@coji/durably-react'
 import { useState } from 'react'
 import type {
@@ -32,7 +31,7 @@ export function Dashboard() {
       pageSize: 6,
     })
 
-  const [selectedRun, setSelectedRun] = useState<Run | null>(null)
+  const [selectedRun, setSelectedRun] = useState<DashboardRun | null>(null)
   const [steps, setSteps] = useState<
     { index: number; name: string; status: string }[]
   >([])
@@ -41,7 +40,7 @@ export function Dashboard() {
     if (!durably) return
     const run = await durably.getRun(runId)
     if (run) {
-      setSelectedRun(run)
+      setSelectedRun(run as DashboardRun)
       const stepsData = await durably.storage.getSteps(runId)
       setSteps(
         stepsData.map((s, i) => ({ index: i, name: s.name, status: s.status })),

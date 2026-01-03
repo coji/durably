@@ -29,7 +29,9 @@ export interface UseRunsOptions {
 
 export interface UseRunsResult<
   TInput extends Record<string, unknown> = Record<string, unknown>,
-  TOutput extends Record<string, unknown> | undefined = Record<string, unknown>,
+  TOutput extends Record<string, unknown> | undefined =
+    | Record<string, unknown>
+    | undefined,
 > {
   /**
    * List of runs for the current page
