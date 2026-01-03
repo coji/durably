@@ -145,8 +145,15 @@ if (run?.status === 'completed') {
   console.log(run.output.syncedCount)
 }
 
-// Via durably instance (cross-job)
+// Via durably instance (untyped)
 const run = await durably.getRun(runId)
+
+// Via durably instance (typed with generic parameter)
+type MyRun = Run & {
+  payload: { userId: string }
+  output: { count: number } | null
+}
+const typedRun = await durably.getRun<MyRun>(runId)
 ```
 
 ### Query Runs
@@ -162,6 +169,13 @@ const runs = await durably.getRuns({
   limit: 10,
   offset: 0,
 })
+
+// Typed getRuns with generic parameter
+type MyRun = Run & {
+  payload: { userId: string }
+  output: { count: number } | null
+}
+const typedRuns = await durably.getRuns<MyRun>({ jobName: 'my-job' })
 ```
 
 ### Retry Failed Runs
