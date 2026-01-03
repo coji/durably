@@ -136,22 +136,11 @@ export function useJob<
     autoResumeCallbacks,
   )
 
-  // Handle initialRunId - set it and fetch current state
+  // Handle initialRunId - set it to start tracking
   useEffect(() => {
     if (!durably || !options?.initialRunId) return
 
-    const jobHandle = jobHandleRef.current
-    if (!jobHandle) return
-
     subscription.setCurrentRunId(options.initialRunId)
-
-    // Fetch initial state for the run
-    jobHandle.getRun(options.initialRunId).then((run) => {
-      if (run) {
-        // State will be updated via subscription events or we could
-        // dispatch initial state here if needed
-      }
-    })
   }, [durably, options?.initialRunId, subscription.setCurrentRunId])
 
   const trigger = useCallback(
