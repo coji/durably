@@ -35,9 +35,9 @@ export function Dashboard() {
 
   const showDetails = async (runId: string) => {
     if (!durably) return
-    const run = await durably.getRun(runId)
+    const run = await durably.getRun<DashboardRun>(runId)
     if (run) {
-      setSelectedRun(run as DashboardRun)
+      setSelectedRun(run)
       const stepsData = await durably.storage.getSteps(runId)
       setSteps(
         stepsData.map((s, i) => ({ index: i, name: s.name, status: s.status })),

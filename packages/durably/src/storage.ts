@@ -117,8 +117,8 @@ export interface Storage {
   batchCreateRuns(inputs: CreateRunInput[]): Promise<Run[]>
   updateRun(runId: string, data: UpdateRunInput): Promise<void>
   deleteRun(runId: string): Promise<void>
-  getRun(runId: string): Promise<Run | null>
-  getRuns(filter?: RunFilter): Promise<Run[]>
+  getRun<T extends Run = Run>(runId: string): Promise<T | null>
+  getRuns<T extends Run = Run>(filter?: RunFilter): Promise<T[]>
   getNextPendingRun(excludeConcurrencyKeys: string[]): Promise<Run | null>
 
   // Step operations
@@ -317,7 +317,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       await db.deleteFrom('durably_runs').where('id', '=', runId).execute()
     },
 
-    async getRun(runId: string): Promise<Run | null> {
+    async getRun<T extends Run = Run>(runId: string): Promise<T | null> {
       const row = await db
         .selectFrom('durably_runs')
         .leftJoin('durably_steps', 'durably_runs.id', 'durably_steps.run_id')
@@ -329,10 +329,10 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         .groupBy('durably_runs.id')
         .executeTakeFirst()
 
-      return row ? rowToRun(row) : null
+      return row ? (rowToRun(row) as T) : null
     },
 
-    async getRuns(filter?: RunFilter): Promise<Run[]> {
+    async getRuns<T extends Run = Run>(filter?: RunFilter): Promise<T[]> {
       let query = db
         .selectFrom('durably_runs')
         .leftJoin('durably_steps', 'durably_runs.id', 'durably_steps.run_id')
@@ -363,7 +363,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       }
 
       const rows = await query.execute()
-      return rows.map(rowToRun)
+      return rows.map(rowToRun) as T[]
     },
 
     async getNextPendingRun(

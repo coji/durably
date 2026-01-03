@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+#### @coji/durably
+
+- **Generic type parameter for `getRun<T>()` and `getRuns<T>()`**: Type-safe run retrieval
+  ```ts
+  // Untyped (returns Run)
+  const run = await durably.getRun(runId)
+
+  // Typed (returns custom type)
+  type MyRun = Run & { payload: { userId: string }; output: { count: number } | null }
+  const typedRun = await durably.getRun<MyRun>(runId)
+  ```
+
 #### @coji/durably-react
 
 - **Generic type support for `useRuns` hook**: Multiple ways to get type-safe run access

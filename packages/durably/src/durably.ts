@@ -176,14 +176,32 @@ export interface Durably<
   deleteRun(runId: string): Promise<void>
 
   /**
-   * Get a run by ID (returns unknown output type)
+   * Get a run by ID
+   * @example
+   * ```ts
+   * // Untyped (returns Run)
+   * const run = await durably.getRun(runId)
+   *
+   * // Typed (returns custom type)
+   * type MyRun = Run & { payload: { userId: string }; output: { count: number } | null }
+   * const typedRun = await durably.getRun<MyRun>(runId)
+   * ```
    */
-  getRun(runId: string): Promise<Run | null>
+  getRun<T extends Run = Run>(runId: string): Promise<T | null>
 
   /**
    * Get runs with optional filtering
+   * @example
+   * ```ts
+   * // Untyped (returns Run[])
+   * const runs = await durably.getRuns({ status: 'completed' })
+   *
+   * // Typed (returns custom type[])
+   * type MyRun = Run & { payload: { userId: string }; output: { count: number } | null }
+   * const typedRuns = await durably.getRuns<MyRun>({ jobName: 'my-job' })
+   * ```
    */
-  getRuns(filter?: RunFilter): Promise<Run[]>
+  getRuns<T extends Run = Run>(filter?: RunFilter): Promise<T[]>
 
   /**
    * Register a plugin
