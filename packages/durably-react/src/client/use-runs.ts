@@ -1,37 +1,14 @@
 import type { JobDefinition } from '@coji/durably'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Progress, RunStatus } from '../types'
+import {
+  type Progress,
+  type RunStatus,
+  type TypedClientRun,
+  isJobDefinition,
+} from '../types'
 
-/**
- * Run type for client mode (matches server response)
- */
-export interface ClientRun {
-  id: string
-  jobName: string
-  status: RunStatus
-  input: unknown
-  output: unknown | null
-  error: string | null
-  currentStepIndex: number
-  stepCount: number
-  progress: Progress | null
-  createdAt: string
-  startedAt: string | null
-  completedAt: string | null
-}
-
-/**
- * A typed version of ClientRun with generic input/output types.
- */
-export type TypedClientRun<
-  TInput extends Record<string, unknown> = Record<string, unknown>,
-  TOutput extends Record<string, unknown> | undefined =
-    | Record<string, unknown>
-    | undefined,
-> = Omit<ClientRun, 'input' | 'output'> & {
-  input: TInput
-  output: TOutput | null
-}
+// Re-export types for convenience
+export type { ClientRun, TypedClientRun } from '../types'
 
 /**
  * SSE notification event from /runs/subscribe
@@ -206,15 +183,14 @@ export function useRuns<
     | UseRunsClientOptions,
   optionsArg?: Omit<UseRunsClientOptions, 'jobName'>,
 ): UseRunsClientResult<TInput, TOutput> {
-  // Determine if first argument is a JobDefinition
-  const isJobDefinition =
-    'name' in jobDefinitionOrOptions && 'run' in jobDefinitionOrOptions
+  // Determine if first argument is a JobDefinition using type guard
+  const isJob = isJobDefinition(jobDefinitionOrOptions)
 
-  const jobName = isJobDefinition
+  const jobName = isJob
     ? jobDefinitionOrOptions.name
     : (jobDefinitionOrOptions as UseRunsClientOptions).jobName
 
-  const options = isJobDefinition
+  const options = isJob
     ? (optionsArg as Omit<UseRunsClientOptions, 'jobName'>)
     : (jobDefinitionOrOptions as UseRunsClientOptions)
 

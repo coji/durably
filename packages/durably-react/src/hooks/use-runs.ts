@@ -1,19 +1,10 @@
-import type { JobDefinition, Run } from '@coji/durably'
+import type { JobDefinition } from '@coji/durably'
 import { useCallback, useEffect, useState } from 'react'
 import { useDurably } from '../context'
+import { type TypedRun, isJobDefinition } from '../types'
 
-/**
- * A typed version of Run with generic input/output types.
- */
-export type TypedRun<
-  TInput extends Record<string, unknown> = Record<string, unknown>,
-  TOutput extends Record<string, unknown> | undefined =
-    | Record<string, unknown>
-    | undefined,
-> = Omit<Run, 'payload' | 'output'> & {
-  payload: TInput
-  output: TOutput | null
-}
+// Re-export TypedRun for convenience
+export type { TypedRun } from '../types'
 
 export interface UseRunsOptions {
   /**
@@ -145,17 +136,14 @@ export function useRuns<
 ): UseRunsResult<TInput, TOutput> {
   const { durably } = useDurably()
 
-  // Determine if first argument is a JobDefinition
-  const isJobDefinition =
-    jobDefinitionOrOptions &&
-    'name' in jobDefinitionOrOptions &&
-    'run' in jobDefinitionOrOptions
+  // Determine if first argument is a JobDefinition using type guard
+  const isJob = isJobDefinition(jobDefinitionOrOptions)
 
-  const jobName = isJobDefinition
+  const jobName = isJob
     ? jobDefinitionOrOptions.name
     : (jobDefinitionOrOptions as UseRunsOptions | undefined)?.jobName
 
-  const options = isJobDefinition
+  const options = isJob
     ? optionsArg
     : (jobDefinitionOrOptions as UseRunsOptions | undefined)
 

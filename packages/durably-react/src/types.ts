@@ -1,6 +1,6 @@
 // Shared type definitions for @coji/durably-react
 
-import type { JobDefinition } from '@coji/durably'
+import type { JobDefinition, Run } from '@coji/durably'
 
 // Type inference utilities for extracting Input/Output types from JobDefinition
 export type InferInput<T> =
@@ -101,3 +101,72 @@ export type DurablyEvent =
       message: string
       data: unknown
     }
+
+// =============================================================================
+// Typed Run types for useRuns hooks
+// =============================================================================
+
+/**
+ * A typed version of Run with generic payload/output types.
+ * Used by browser hooks (direct durably access).
+ */
+export type TypedRun<
+  TInput extends Record<string, unknown> = Record<string, unknown>,
+  TOutput extends Record<string, unknown> | undefined =
+    | Record<string, unknown>
+    | undefined,
+> = Omit<Run, 'payload' | 'output'> & {
+  payload: TInput
+  output: TOutput | null
+}
+
+/**
+ * Run type for client mode (matches server response).
+ * Used by client hooks (HTTP/SSE connection).
+ */
+export interface ClientRun {
+  id: string
+  jobName: string
+  status: RunStatus
+  input: unknown
+  output: unknown | null
+  error: string | null
+  currentStepIndex: number
+  stepCount: number
+  progress: Progress | null
+  createdAt: string
+  startedAt: string | null
+  completedAt: string | null
+}
+
+/**
+ * A typed version of ClientRun with generic input/output types.
+ * Used by client hooks (HTTP/SSE connection).
+ */
+export type TypedClientRun<
+  TInput extends Record<string, unknown> = Record<string, unknown>,
+  TOutput extends Record<string, unknown> | undefined =
+    | Record<string, unknown>
+    | undefined,
+> = Omit<ClientRun, 'input' | 'output'> & {
+  input: TInput
+  output: TOutput | null
+}
+
+/**
+ * Type guard to check if an object is a JobDefinition.
+ * Used to distinguish between JobDefinition and options objects in overloaded functions.
+ */
+export function isJobDefinition<
+  TName extends string = string,
+  TInput extends Record<string, unknown> = Record<string, unknown>,
+  TOutput extends Record<string, unknown> | undefined = undefined,
+>(obj: unknown): obj is JobDefinition<TName, TInput, TOutput> {
+  return (
+    typeof obj === 'object' &&
+    obj !== null &&
+    'name' in obj &&
+    'run' in obj &&
+    typeof (obj as { run: unknown }).run === 'function'
+  )
+}
