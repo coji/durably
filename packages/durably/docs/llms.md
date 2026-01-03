@@ -149,7 +149,10 @@ if (run?.status === 'completed') {
 const run = await durably.getRun(runId)
 
 // Via durably instance (typed with generic parameter)
-type MyRun = Run & { payload: { userId: string }; output: { count: number } | null }
+type MyRun = Run & {
+  payload: { userId: string }
+  output: { count: number } | null
+}
 const typedRun = await durably.getRun<MyRun>(runId)
 ```
 
@@ -168,7 +171,10 @@ const runs = await durably.getRuns({
 })
 
 // Typed getRuns with generic parameter
-type MyRun = Run & { payload: { userId: string }; output: { count: number } | null }
+type MyRun = Run & {
+  payload: { userId: string }
+  output: { count: number } | null
+}
 const typedRuns = await durably.getRuns<MyRun>({ jobName: 'my-job' })
 ```
 
