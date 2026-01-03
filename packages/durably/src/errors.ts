@@ -9,3 +9,10 @@ export class CancelledError extends Error {
     this.name = 'CancelledError'
   }
 }
+
+/**
+ * Extract error message from unknown error
+ */
+export function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}

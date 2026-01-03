@@ -1,5 +1,5 @@
 import { createStepContext } from './context'
-import { CancelledError } from './errors'
+import { CancelledError, getErrorMessage } from './errors'
 import type { EventEmitter } from './events'
 import type { JobRegistry } from './job'
 import type { Storage } from './storage'
@@ -77,13 +77,6 @@ export function createWorker(
         heartbeatAt: new Date().toISOString(),
       })
     }
-  }
-
-  /**
-   * Extract error message from unknown error
-   */
-  function getErrorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error)
   }
 
   /**
