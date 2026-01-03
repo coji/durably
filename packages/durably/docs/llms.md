@@ -10,10 +10,10 @@ Durably is a minimal workflow engine that persists step results to SQLite. If a 
 
 ```bash
 # Node.js with libsql (recommended)
-npm install @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
+pnpm add @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
 
 # Browser with SQLocal
-npm install @coji/durably kysely zod sqlocal
+pnpm add @coji/durably kysely zod sqlocal
 ```
 
 ## Core Concepts
@@ -257,7 +257,7 @@ while (true) {
 Create HTTP handlers for client/server architecture using Web Standard Request/Response:
 
 ```ts
-import { createDurablyHandler } from '@coji/durably/server'
+import { createDurablyHandler } from '@coji/durably'
 
 const handler = createDurablyHandler(durably)
 
@@ -314,7 +314,7 @@ interface TriggerResponse {
 ### Log Persistence
 
 ```ts
-import { withLogPersistence } from '@coji/durably/plugins'
+import { withLogPersistence } from '@coji/durably'
 
 durably.use(withLogPersistence())
 ```
