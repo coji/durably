@@ -1,38 +1,17 @@
-import type { z, ZodError } from 'zod'
+import type { z } from 'zod'
 import type { JobDefinition } from './define-job'
 import type { EventEmitter } from './events'
 import type { Run, Storage } from './storage'
 
 /**
- * Result of input validation
- */
-export type ValidationResult<T> =
-  | { success: true; data: T }
-  | { success: false; error: ZodError }
-
-/**
- * Validate job input against schema
- */
-export function validateJobInput<T>(
-  schema: z.ZodType<T>,
-  input: unknown,
-): ValidationResult<T> {
-  const result = schema.safeParse(input)
-  if (result.success) {
-    return { success: true, data: result.data }
-  }
-  return { success: false, error: result.error }
-}
-
-/**
  * Validate job input and throw on failure
  */
-export function validateJobInputOrThrow<T>(
+function validateJobInputOrThrow<T>(
   schema: z.ZodType<T>,
   input: unknown,
   context?: string,
 ): T {
-  const result = validateJobInput(schema, input)
+  const result = schema.safeParse(input)
   if (!result.success) {
     const prefix = context ? `${context}: ` : ''
     throw new Error(`${prefix}Invalid input: ${result.error.message}`)

@@ -11,7 +11,7 @@ export { getErrorMessage }
 /**
  * JSON response headers
  */
-export const JSON_HEADERS = {
+const JSON_HEADERS = {
   'Content-Type': 'application/json',
 } as const
 
@@ -40,21 +40,6 @@ export function errorResponse(
  */
 export function successResponse(): Response {
   return jsonResponse({ success: true })
-}
-
-/**
- * Wrap an async handler with try-catch error handling
- */
-export async function withErrorHandling<T>(
-  handler: () => Promise<T>,
-  errorHandler: (error: unknown) => Response = (error) =>
-    errorResponse(getErrorMessage(error), 500),
-): Promise<T | Response> {
-  try {
-    return await handler()
-  } catch (error) {
-    return errorHandler(error)
-  }
 }
 
 /**

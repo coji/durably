@@ -3,10 +3,12 @@
  * Extracted to eliminate duplication between subscribe and runsSubscribe handlers.
  */
 
+import type { Unsubscribe } from './events'
+
 /**
  * SSE response headers
  */
-export const SSE_HEADERS = {
+const SSE_HEADERS = {
   'Content-Type': 'text/event-stream',
   'Cache-Control': 'no-cache',
   Connection: 'keep-alive',
@@ -15,21 +17,21 @@ export const SSE_HEADERS = {
 /**
  * Encode data as SSE format: `data: ${json}\n\n`
  */
-export function formatSSE(data: unknown): string {
+function formatSSE(data: unknown): string {
   return `data: ${JSON.stringify(data)}\n\n`
 }
 
 /**
- * Create a TextEncoder for SSE streams (shared instance pattern)
+ * Create a TextEncoder for SSE streams
  */
-export function createSSEEncoder(): TextEncoder {
+function createSSEEncoder(): TextEncoder {
   return new TextEncoder()
 }
 
 /**
  * Encode and format data for SSE streaming
  */
-export function encodeSSE(encoder: TextEncoder, data: unknown): Uint8Array {
+function encodeSSE(encoder: TextEncoder, data: unknown): Uint8Array {
   return encoder.encode(formatSSE(data))
 }
 
@@ -78,11 +80,6 @@ export interface SSEStreamController {
   close: () => void
   readonly closed: boolean
 }
-
-/**
- * Cleanup function type for unsubscribing
- */
-export type Unsubscribe = () => void
 
 /**
  * Create an SSE stream from event subscriptions.
