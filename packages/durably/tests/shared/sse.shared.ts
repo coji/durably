@@ -21,7 +21,10 @@ export function createSSETests(): void {
 
     describe('createSSEStreamFromReader', () => {
       it('transforms stream data to SSE format', async () => {
-        const data = [{ type: 'test', value: 1 }, { type: 'test', value: 2 }]
+        const data = [
+          { type: 'test', value: 1 },
+          { type: 'test', value: 2 },
+        ]
         const readable = new ReadableStream({
           start(controller) {
             for (const item of data) {
@@ -169,10 +172,12 @@ export function createSSETests(): void {
         expect(done).toBe(true)
 
         // Controller should show closed state
-        expect(capturedController?.closed).toBe(true)
+        expect(capturedController!.closed).toBe(true)
 
         // Enqueue after close should be ignored (no error)
-        expect(() => capturedController?.enqueue({ ignored: true })).not.toThrow()
+        expect(() =>
+          capturedController?.enqueue({ ignored: true }),
+        ).not.toThrow()
       })
     })
   })
