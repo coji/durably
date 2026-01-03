@@ -31,6 +31,7 @@ export type {
 export { useRuns } from './use-runs'
 export type {
   ClientRun,
+  TypedClientRun,
   UseRunsClientOptions,
   UseRunsClientResult,
 } from './use-runs'

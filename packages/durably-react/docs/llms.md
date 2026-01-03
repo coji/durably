@@ -261,28 +261,42 @@ function LogViewer({ runId }: { runId: string | null }) {
 
 ### useRuns
 
-List runs with filtering and real-time updates:
+List runs with filtering, pagination, and real-time updates:
 
 ```tsx
-import { useRuns } from '@coji/durably-react'
+import { useRuns, TypedRun } from '@coji/durably-react'
+import { defineJob } from '@coji/durably'
+
+// Option 1: Generic type parameter (dashboard with multiple job types)
+type ImportRun = TypedRun<{ file: string }, { count: number }>
+type SyncRun = TypedRun<{ userId: string }, { synced: boolean }>
+type DashboardRun = ImportRun | SyncRun
 
 function Dashboard() {
-  const { runs, isLoading, refresh } = useRuns({
-    jobName: 'my-job', // Optional: filter by job
-    status: 'running', // Optional: filter by status
-    limit: 10, // Optional: maximum runs
-  })
+  const { runs } = useRuns<DashboardRun>({ pageSize: 10 })
+  // runs are typed as DashboardRun[]
+  // Use run.jobName to narrow the type
+}
 
-  return (
-    <div>
-      <button onClick={refresh}>Refresh</button>
-      {runs.map((run) => (
-        <div key={run.id}>
-          {run.jobName}: {run.status}
-        </div>
-      ))}
-    </div>
-  )
+// Option 2: JobDefinition (single job, auto-filters by jobName)
+const myJob = defineJob({
+  name: 'my-job',
+  input: z.object({ value: z.string() }),
+  output: z.object({ result: z.number() }),
+  run: async (step, payload) => {
+    /* ... */
+  },
+})
+
+function SingleJobDashboard() {
+  const { runs } = useRuns(myJob, { status: 'completed', pageSize: 10 })
+  // runs[0].output is typed as { result: number } | null
+}
+
+// Option 3: Untyped (simple cases)
+function UntypedDashboard() {
+  const { runs } = useRuns({ jobName: 'my-job', pageSize: 10 })
+  // runs[0].output is unknown
 }
 ```
 
@@ -421,40 +435,42 @@ function Component({ runId }: { runId: string }) {
 List runs with pagination and real-time updates:
 
 ```tsx
-import { useRuns } from '@coji/durably-react/client'
+import { useRuns, TypedClientRun } from '@coji/durably-react/client'
+import { defineJob } from '@coji/durably'
+
+// Option 1: Generic type parameter (dashboard with multiple job types)
+type ImportRun = TypedClientRun<{ file: string }, { count: number }>
+type SyncRun = TypedClientRun<{ userId: string }, { synced: boolean }>
+type DashboardRun = ImportRun | SyncRun
 
 function Dashboard() {
-  const {
-    runs,
-    page,
-    hasMore,
-    isLoading,
-    nextPage,
-    prevPage,
-    goToPage,
-    refresh,
-  } = useRuns({
-    api: '/api/durably',
-    jobName: 'sync-data', // Optional: filter by job
-    status: 'running', // Optional: filter by status
-    pageSize: 20, // Optional: items per page
-  })
+  const { runs } = useRuns<DashboardRun>({ api: '/api/durably', pageSize: 10 })
+  // runs are typed as DashboardRun[]
+}
 
-  return (
-    <div>
-      {runs.map((run) => (
-        <div key={run.id}>
-          {run.jobName}: {run.status}
-        </div>
-      ))}
-      <button onClick={prevPage} disabled={page === 0}>
-        Prev
-      </button>
-      <button onClick={nextPage} disabled={!hasMore}>
-        Next
-      </button>
-    </div>
-  )
+// Option 2: JobDefinition (single job, auto-filters by jobName)
+const syncDataJob = defineJob({
+  name: 'sync-data',
+  input: z.object({ userId: z.string() }),
+  output: z.object({ count: z.number() }),
+  run: async (step, payload) => {
+    /* ... */
+  },
+})
+
+function SingleJobDashboard() {
+  const { runs } = useRuns(syncDataJob, {
+    api: '/api/durably',
+    status: 'completed',
+    pageSize: 20,
+  })
+  // runs[0].output is typed as { count: number } | null
+}
+
+// Option 3: Untyped (simple cases)
+function UntypedDashboard() {
+  const { runs } = useRuns({ api: '/api/durably', jobName: 'sync-data' })
+  // runs[0].output is unknown
 }
 ```
 
@@ -546,6 +562,24 @@ interface LogEntry {
   message: string
   data: unknown
   timestamp: string
+}
+
+// Browser hooks: TypedRun with generic input/output
+type TypedRun<
+  TInput extends Record<string, unknown> = Record<string, unknown>,
+  TOutput extends Record<string, unknown> | undefined = Record<string, unknown>,
+> = Omit<Run, 'payload' | 'output'> & {
+  payload: TInput
+  output: TOutput | null
+}
+
+// Client hooks: TypedClientRun with generic input/output
+type TypedClientRun<
+  TInput extends Record<string, unknown> = Record<string, unknown>,
+  TOutput extends Record<string, unknown> | undefined = Record<string, unknown>,
+> = Omit<ClientRun, 'input' | 'output'> & {
+  input: TInput
+  output: TOutput | null
 }
 ```
 

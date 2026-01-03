@@ -3,15 +3,35 @@
  *
  * Displays run history with real-time updates via SSE and pagination.
  * First page auto-subscribes to SSE for instant updates.
+ *
+ * Demonstrates typed useRuns with generic type parameter for multi-job dashboards.
  */
 
 import type { RunRecord, StepRecord } from '@coji/durably-react/client'
-import { useRunActions, useRuns } from '@coji/durably-react/client'
+import {
+  type TypedClientRun,
+  useRunActions,
+  useRuns,
+} from '@coji/durably-react/client'
 import { useState } from 'react'
+import type {
+  DataSyncInput,
+  DataSyncOutput,
+  ImportCsvInput,
+  ImportCsvOutput,
+  ProcessImageInput,
+  ProcessImageOutput,
+} from '~/jobs'
+
+/** Union type for all job runs in this dashboard */
+type DashboardRun =
+  | TypedClientRun<DataSyncInput, DataSyncOutput>
+  | TypedClientRun<ImportCsvInput, ImportCsvOutput>
+  | TypedClientRun<ProcessImageInput, ProcessImageOutput>
 
 export function Dashboard() {
   const { runs, isLoading, error, page, hasMore, nextPage, prevPage, refresh } =
-    useRuns({
+    useRuns<DashboardRun>({
       api: '/api/durably',
       pageSize: 6,
     })

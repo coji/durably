@@ -239,51 +239,125 @@ function LogViewer({ runId }: { runId: string | null }) {
 
 ## useRuns
 
-List runs with optional filtering and real-time updates.
+List runs with optional filtering, pagination, and real-time updates.
 
 The hook automatically subscribes to Durably events and refreshes the list when runs change. It listens to:
 - `run:trigger`, `run:start`, `run:complete`, `run:fail`, `run:cancel`, `run:retry` - refresh list
 - `run:progress` - update progress in place
 - `step:start`, `step:complete` - refresh for step count updates
 
+### Generic type parameter (dashboard with multiple job types)
+
+Use a type parameter to specify the run type for dashboards with multiple job types:
+
+```tsx
+import { useRuns, TypedRun } from '@coji/durably-react'
+
+// Define your run types
+type ImportRun = TypedRun<{ file: string }, { count: number }>
+type SyncRun = TypedRun<{ userId: string }, { synced: boolean }>
+type DashboardRun = ImportRun | SyncRun
+
+function Dashboard() {
+  const { runs } = useRuns<DashboardRun>({ pageSize: 10 })
+
+  return (
+    <ul>
+      {runs.map(run => (
+        <li key={run.id}>
+          {run.jobName}: {run.status}
+          {/* Use jobName to narrow the type */}
+          {run.jobName === 'import-csv' && run.output?.count}
+        </li>
+      ))}
+    </ul>
+  )
+}
+```
+
+### With JobDefinition (single job, auto-filters by jobName)
+
+Pass a `JobDefinition` to get typed runs and auto-filter by job name:
+
+```tsx
+import { defineJob } from '@coji/durably'
+import { useRuns } from '@coji/durably-react'
+
+const myJob = defineJob({
+  name: 'my-job',
+  input: z.object({ value: z.string() }),
+  output: z.object({ result: z.number() }),
+  run: async (step, payload) => { /* ... */ },
+})
+
+function RunList() {
+  const { runs } = useRuns(myJob, { status: 'completed', pageSize: 10 })
+
+  return (
+    <ul>
+      {runs.map(run => (
+        <li key={run.id}>
+          {/* run.output is typed as { result: number } | null */}
+          Result: {run.output?.result}
+        </li>
+      ))}
+    </ul>
+  )
+}
+```
+
+### Without type parameter (untyped)
+
 ```tsx
 import { useRuns } from '@coji/durably-react'
 
 function RunList() {
-  const { runs, isLoading, refresh } = useRuns({
-    jobName: 'my-job',
-    status: 'completed',
-    limit: 10,
-  })
+  const { runs } = useRuns({ jobName: 'my-job', pageSize: 10 })
 
   return (
-    <div>
-      <button onClick={refresh}>Refresh</button>
-      <ul>
-        {runs.map(run => (
-          <li key={run.id}>
-            {run.jobName}: {run.status}
-            {run.progress && ` (${run.progress.current}/${run.progress.total})`}
-          </li>
-        ))}
-      </ul>
-    </div>
+    <ul>
+      {runs.map(run => (
+        <li key={run.id}>
+          {/* run.output is unknown */}
+          {run.jobName}: {run.status}
+        </li>
+      ))}
+    </ul>
   )
 }
+```
+
+### Signatures
+
+```ts
+// With type parameter (dashboard)
+useRuns<TRun>(options?)
+
+// With JobDefinition (single job, auto-filters)
+useRuns(jobDefinition, options?)
+
+// Without type parameter (untyped)
+useRuns(options?)
 ```
 
 ### Options
 
 | Option | Type | Description |
 |--------|------|-------------|
-| `jobName` | `string` | Filter by job name |
+| `jobName` | `string` | Filter by job name (only for untyped usage) |
 | `status` | `RunStatus` | Filter by status |
-| `limit` | `number` | Maximum number of runs to return |
+| `pageSize` | `number` | Number of runs per page (default: 10) |
+| `realtime` | `boolean` | Subscribe to real-time updates (default: true) |
 
 ### Return Type
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `runs` | `Run[]` | List of runs |
+| `runs` | `TypedRun<TInput, TOutput>[]` | List of runs (typed when using JobDefinition) |
+| `page` | `number` | Current page (0-indexed) |
+| `hasMore` | `boolean` | Whether more pages exist |
 | `isLoading` | `boolean` | Loading state |
-| `refresh` | `() => void` | Manually refresh the list |
+| `nextPage` | `() => void` | Go to next page |
+| `prevPage` | `() => void` | Go to previous page |
+| `goToPage` | `(page: number) => void` | Go to specific page |
+| `refresh` | `() => Promise<void>` | Manually refresh the list |

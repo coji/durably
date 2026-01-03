@@ -3,16 +3,29 @@
  *
  * Displays run history with real-time updates and pagination.
  * Uses browser-only mode hooks for direct durably access.
+ *
+ * Demonstrates typed useRuns with generic type parameter for multi-job dashboards.
  */
 
 import type { Run } from '@coji/durably'
-import { useDurably, useRuns } from '@coji/durably-react'
+import { type TypedRun, useDurably, useRuns } from '@coji/durably-react'
 import { useState } from 'react'
+import type {
+  DataSyncInput,
+  DataSyncOutput,
+  ProcessImageInput,
+  ProcessImageOutput,
+} from '../jobs'
+
+/** Union type for all job runs in this dashboard */
+type DashboardRun =
+  | TypedRun<DataSyncInput, DataSyncOutput>
+  | TypedRun<ProcessImageInput, ProcessImageOutput>
 
 export function Dashboard() {
   const { durably } = useDurably()
   const { runs, page, hasMore, isLoading, refresh, nextPage, prevPage } =
-    useRuns({
+    useRuns<DashboardRun>({
       pageSize: 6,
     })
 

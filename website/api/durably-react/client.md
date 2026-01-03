@@ -214,46 +214,98 @@ The first page (page 0) automatically subscribes to SSE for real-time updates. I
 
 Other pages are static and require manual refresh.
 
+### Generic type parameter (dashboard with multiple job types)
+
+Use a type parameter to specify the run type for dashboards with multiple job types:
+
+```tsx
+import { useRuns, TypedClientRun } from '@coji/durably-react/client'
+
+// Define your run types
+type ImportRun = TypedClientRun<{ file: string }, { count: number }>
+type SyncRun = TypedClientRun<{ userId: string }, { synced: boolean }>
+type DashboardRun = ImportRun | SyncRun
+
+function Dashboard() {
+  const { runs } = useRuns<DashboardRun>({ api: '/api/durably', pageSize: 10 })
+
+  return (
+    <ul>
+      {runs.map(run => (
+        <li key={run.id}>
+          {run.jobName}: {run.status}
+          {/* Use jobName to narrow the type */}
+          {run.jobName === 'import-csv' && run.output?.count}
+        </li>
+      ))}
+    </ul>
+  )
+}
+```
+
+### With JobDefinition (single job, auto-filters by jobName)
+
+Pass a `JobDefinition` to get typed runs and auto-filter by job name:
+
+```tsx
+import { defineJob } from '@coji/durably'
+import { useRuns } from '@coji/durably-react/client'
+
+const myJob = defineJob({
+  name: 'my-job',
+  input: z.object({ value: z.string() }),
+  output: z.object({ result: z.number() }),
+  run: async (step, payload) => { /* ... */ },
+})
+
+function RunList() {
+  const { runs } = useRuns(myJob, { api: '/api/durably', status: 'completed' })
+
+  return (
+    <ul>
+      {runs.map(run => (
+        <li key={run.id}>
+          {/* run.output is typed as { result: number } | null */}
+          Result: {run.output?.result}
+        </li>
+      ))}
+    </ul>
+  )
+}
+```
+
+### Without type parameter (untyped)
+
 ```tsx
 import { useRuns } from '@coji/durably-react/client'
 
-function Dashboard() {
-  const {
-    runs,
-    isLoading,
-    error,
-    page,
-    hasMore,
-    nextPage,
-    prevPage,
-    goToPage,
-    refresh,
-  } = useRuns({
-    api: '/api/durably',
-    jobName: 'sync-data',  // Optional filter
-    status: 'completed',   // Optional filter
-    pageSize: 10,
-  })
+function RunList() {
+  const { runs } = useRuns({ api: '/api/durably', jobName: 'my-job', pageSize: 10 })
 
   return (
-    <div>
-      <ul>
-        {runs.map((run) => (
-          <li key={run.id}>
-            {run.jobName}: {run.status}
-            {run.progress && ` (${run.progress.current}/${run.progress.total})`}
-          </li>
-        ))}
-      </ul>
-      <div>
-        <button onClick={prevPage} disabled={page === 0}>Prev</button>
-        <span>Page {page + 1}</span>
-        <button onClick={nextPage} disabled={!hasMore}>Next</button>
-        <button onClick={refresh}>Refresh</button>
-      </div>
-    </div>
+    <ul>
+      {runs.map(run => (
+        <li key={run.id}>
+          {/* run.output is unknown */}
+          {run.jobName}: {run.status}
+        </li>
+      ))}
+    </ul>
   )
 }
+```
+
+### Signatures
+
+```ts
+// With type parameter (dashboard)
+useRuns<TRun>(options)
+
+// With JobDefinition (single job, auto-filters)
+useRuns(jobDefinition, options)
+
+// Without type parameter (untyped)
+useRuns(options)
 ```
 
 ### Options
@@ -261,7 +313,7 @@ function Dashboard() {
 | Option | Type | Description |
 |--------|------|-------------|
 | `api` | `string` | API base path |
-| `jobName` | `string` | Filter by job name |
+| `jobName` | `string` | Filter by job name (only for untyped usage) |
 | `status` | `RunStatus` | Filter by status |
 | `pageSize` | `number` | Number of runs per page |
 
@@ -269,7 +321,7 @@ function Dashboard() {
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `runs` | `RunRecord[]` | List of runs |
+| `runs` | `TypedClientRun<TInput, TOutput>[]` | List of runs (typed when using JobDefinition) |
 | `isLoading` | `boolean` | Loading state |
 | `error` | `string \| null` | Error message |
 | `page` | `number` | Current page (0-indexed) |
