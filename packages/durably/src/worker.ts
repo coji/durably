@@ -1,3 +1,4 @@
+import { prettifyError } from 'zod'
 import { createStepContext } from './context'
 import { CancelledError, getErrorMessage } from './errors'
 import type { EventEmitter } from './events'
@@ -190,7 +191,7 @@ export function createWorker(
       if (job.outputSchema) {
         const parseResult = job.outputSchema.safeParse(output)
         if (!parseResult.success) {
-          throw new Error(`Invalid output: ${parseResult.error.message}`)
+          throw new Error(`Invalid output: ${prettifyError(parseResult.error)}`)
         }
       }
 
