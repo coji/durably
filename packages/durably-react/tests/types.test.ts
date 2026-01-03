@@ -10,14 +10,14 @@
 import { defineJob } from '@coji/durably'
 import { describe, expectTypeOf, it } from 'vitest'
 import { z } from 'zod'
-import type { UseJobResult } from '../src/hooks/use-job'
-import type { UseJobLogsResult } from '../src/hooks/use-job-logs'
-import type { UseJobRunResult } from '../src/hooks/use-job-run'
-import type { TypedRun, UseRunsResult } from '../src/hooks/use-runs'
 import type {
   TypedClientRun,
   UseRunsClientResult,
 } from '../src/client/use-runs'
+import type { UseJobResult } from '../src/hooks/use-job'
+import type { UseJobLogsResult } from '../src/hooks/use-job-logs'
+import type { UseJobRunResult } from '../src/hooks/use-job-run'
+import type { TypedRun, UseRunsResult } from '../src/hooks/use-runs'
 
 // Test job definitions
 const typedJob = defineJob({
@@ -213,7 +213,10 @@ describe('Type inference', () => {
     })
 
     it('UseRunsClientResult with generic type has typed runs', () => {
-      type Result = UseRunsClientResult<{ taskId: string }, { success: boolean }>
+      type Result = UseRunsClientResult<
+        { taskId: string },
+        { success: boolean }
+      >
 
       expectTypeOf<Result['runs']>().toBeArray()
       expectTypeOf<Result['runs'][0]['input']>().toEqualTypeOf<{
@@ -225,7 +228,10 @@ describe('Type inference', () => {
     })
 
     it('UseRunsClientResult has pagination and error', () => {
-      type Result = UseRunsClientResult<{ taskId: string }, { success: boolean }>
+      type Result = UseRunsClientResult<
+        { taskId: string },
+        { success: boolean }
+      >
 
       expectTypeOf<Result['page']>().toEqualTypeOf<number>()
       expectTypeOf<Result['hasMore']>().toEqualTypeOf<boolean>()
