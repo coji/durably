@@ -8,12 +8,12 @@ export default defineConfig({
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/durably/logo.svg' }],
     ['meta', { property: 'og:title', content: 'Durably' }],
-    ['meta', { property: 'og:description', content: 'Resumable jobs with just SQLite. No Redis required.' }],
+    ['meta', { property: 'og:description', content: 'Just SQLite. No Redis required.' }],
     ['meta', { property: 'og:image', content: 'https://coji.github.io/durably/og-image.png' }],
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
     ['meta', { name: 'twitter:title', content: 'Durably' }],
-    ['meta', { name: 'twitter:description', content: 'Resumable jobs with just SQLite. No Redis required.' }],
+    ['meta', { name: 'twitter:description', content: 'Just SQLite. No Redis required.' }],
     ['meta', { name: 'twitter:image', content: 'https://coji.github.io/durably/og-image.png' }],
   ],
 

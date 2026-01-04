@@ -69,7 +69,7 @@ async function generateOgImage() {
                 color: brandColor,
                 marginBottom: '24px',
               },
-              children: 'Step-oriented Batch Execution',
+              children: 'Resumable Batch Execution',
             },
           },
           {
@@ -82,7 +82,7 @@ async function generateOgImage() {
                 maxWidth: '800px',
                 lineHeight: 1.4,
               },
-              children: 'Resumable jobs with just SQLite. No Redis required.',
+              children: 'Just SQLite. No Redis required.',
             },
           },
           {
