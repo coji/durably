@@ -69,7 +69,7 @@ async function generateOgImage() {
                 color: brandColor,
                 marginBottom: '24px',
               },
-              children: 'Resumable Batch Execution',
+              children: 'Step-oriented Batch Execution',
             },
           },
           {
