@@ -26,6 +26,12 @@ async function generateOgImage() {
     ),
   ])
 
+  // VitePress default theme colors
+  const brandColor = '#646cff' // VitePress brand purple
+  const bgColor = '#1b1b1f' // VitePress dark bg
+  const textColor = 'rgba(255, 255, 255, 0.87)'
+  const mutedColor = 'rgba(235, 235, 245, 0.6)'
+
   const svg = await satori(
     {
       type: 'div',
@@ -37,9 +43,7 @@ async function generateOgImage() {
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          backgroundColor: '#0f172a',
-          backgroundImage:
-            'radial-gradient(circle at 25% 25%, #1e293b 0%, transparent 50%), radial-gradient(circle at 75% 75%, #1e3a5f 0%, transparent 50%)',
+          backgroundColor: bgColor,
           padding: '60px',
         },
         children: [
@@ -47,34 +51,23 @@ async function generateOgImage() {
             type: 'div',
             props: {
               style: {
-                display: 'flex',
-                alignItems: 'center',
-                marginBottom: '20px',
+                fontSize: '72px',
+                fontWeight: 700,
+                color: textColor,
+                letterSpacing: '-1px',
+                marginBottom: '16px',
               },
-              children: [
-                {
-                  type: 'div',
-                  props: {
-                    style: {
-                      fontSize: '80px',
-                      fontWeight: 700,
-                      color: '#ffffff',
-                      letterSpacing: '-2px',
-                    },
-                    children: 'Durably',
-                  },
-                },
-              ],
+              children: 'Durably',
             },
           },
           {
             type: 'div',
             props: {
               style: {
-                fontSize: '32px',
+                fontSize: '36px',
                 fontWeight: 600,
-                color: '#94a3b8',
-                marginBottom: '40px',
+                color: brandColor,
+                marginBottom: '24px',
               },
               children: 'Resumable Batch Execution',
             },
@@ -84,9 +77,10 @@ async function generateOgImage() {
             props: {
               style: {
                 fontSize: '28px',
-                color: '#60a5fa',
+                color: mutedColor,
                 textAlign: 'center',
-                maxWidth: '900px',
+                maxWidth: '800px',
+                lineHeight: 1.4,
               },
               children: 'Resumable jobs with just SQLite. No Redis required.',
             },
@@ -96,8 +90,8 @@ async function generateOgImage() {
             props: {
               style: {
                 display: 'flex',
-                marginTop: '50px',
-                gap: '40px',
+                marginTop: '48px',
+                gap: '48px',
               },
               children: [
                 {
@@ -105,11 +99,33 @@ async function generateOgImage() {
                   props: {
                     style: {
                       display: 'flex',
+                      flexDirection: 'column',
                       alignItems: 'center',
-                      color: '#e2e8f0',
-                      fontSize: '22px',
+                      gap: '8px',
                     },
-                    children: '🚀 Zero Infrastructure',
+                    children: [
+                      {
+                        type: 'div',
+                        props: {
+                          style: {
+                            fontSize: '20px',
+                            fontWeight: 600,
+                            color: textColor,
+                          },
+                          children: 'Zero Infrastructure',
+                        },
+                      },
+                      {
+                        type: 'div',
+                        props: {
+                          style: {
+                            fontSize: '14px',
+                            color: mutedColor,
+                          },
+                          children: 'SQLite only',
+                        },
+                      },
+                    ],
                   },
                 },
                 {
@@ -117,11 +133,33 @@ async function generateOgImage() {
                   props: {
                     style: {
                       display: 'flex',
+                      flexDirection: 'column',
                       alignItems: 'center',
-                      color: '#e2e8f0',
-                      fontSize: '22px',
+                      gap: '8px',
                     },
-                    children: '🔄 Resumable',
+                    children: [
+                      {
+                        type: 'div',
+                        props: {
+                          style: {
+                            fontSize: '20px',
+                            fontWeight: 600,
+                            color: textColor,
+                          },
+                          children: 'Resumable Steps',
+                        },
+                      },
+                      {
+                        type: 'div',
+                        props: {
+                          style: {
+                            fontSize: '14px',
+                            color: mutedColor,
+                          },
+                          children: 'Auto-saved progress',
+                        },
+                      },
+                    ],
                   },
                 },
                 {
@@ -129,11 +167,33 @@ async function generateOgImage() {
                   props: {
                     style: {
                       display: 'flex',
+                      flexDirection: 'column',
                       alignItems: 'center',
-                      color: '#e2e8f0',
-                      fontSize: '22px',
+                      gap: '8px',
                     },
-                    children: '🌐 Browser + Server',
+                    children: [
+                      {
+                        type: 'div',
+                        props: {
+                          style: {
+                            fontSize: '20px',
+                            fontWeight: 600,
+                            color: textColor,
+                          },
+                          children: 'Browser + Server',
+                        },
+                      },
+                      {
+                        type: 'div',
+                        props: {
+                          style: {
+                            fontSize: '14px',
+                            color: mutedColor,
+                          },
+                          children: 'Same API everywhere',
+                        },
+                      },
+                    ],
                   },
                 },
               ],
