@@ -9,6 +9,8 @@
     "preview": "vitepress preview"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "2.6.2",
+    "satori": "0.18.3",
     "vitepress": "^1.6.4"
   }
 }
