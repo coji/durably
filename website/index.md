@@ -3,7 +3,7 @@ layout: home
 
 hero:
   name: Durably
-  text: Resumable Batch Execution
+  text: Step-oriented Batch Execution
   tagline: Resumable jobs with just SQLite. No Redis required.
   actions:
     - theme: brand
