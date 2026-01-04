@@ -5,7 +5,17 @@ export default defineConfig({
   description: 'Step-oriented resumable batch execution for Node.js and browsers',
   base: '/durably/',
 
-  head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/durably/logo.svg' }]],
+  head: [
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/durably/logo.svg' }],
+    ['meta', { property: 'og:title', content: 'Durably' }],
+    ['meta', { property: 'og:description', content: 'Just SQLite. No Redis required.' }],
+    ['meta', { property: 'og:image', content: 'https://coji.github.io/durably/og-image.png' }],
+    ['meta', { property: 'og:type', content: 'website' }],
+    ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
+    ['meta', { name: 'twitter:title', content: 'Durably' }],
+    ['meta', { name: 'twitter:description', content: 'Just SQLite. No Redis required.' }],
+    ['meta', { name: 'twitter:image', content: 'https://coji.github.io/durably/og-image.png' }],
+  ],
 
   themeConfig: {
     logo: '/logo.svg',

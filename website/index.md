@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Durably
   text: Resumable Batch Execution
-  tagline: Step-oriented batch processing for Node.js and browsers using SQLite
+  tagline: Just SQLite. No Redis required.
   actions:
     - theme: brand
       text: Get Started
@@ -17,16 +17,16 @@ hero:
       link: https://github.com/coji/durably
 
 features:
+  - icon: 🚀
+    title: Zero Infrastructure
+    details: SQLite only. No Redis, no Postgres, no config files. Just npm install and go.
   - icon: 🔄
-    title: Resumable Execution
-    details: Each step's result is persisted to SQLite. If interrupted, jobs resume from where they left off.
+    title: Resumable Steps
+    details: Each step auto-saves to SQLite. Interrupted jobs resume exactly where they left off.
   - icon: 🌐
-    title: Cross-Platform
-    details: Same API works in Node.js (Turso/libsql, better-sqlite3) and browsers (SQLite WASM with OPFS).
-  - icon: 🛡️
-    title: Type-Safe
-    details: Full TypeScript support with Zod schema validation for inputs and outputs.
-  - icon: 📦
-    title: Minimal Dependencies
-    details: Just Kysely and Zod as peer dependencies. No heavy frameworks required.
+    title: Browser + Server
+    details: Same API for Node.js and browsers. Use OPFS for offline-capable browser apps.
+  - icon: ⚡
+    title: React Ready
+    details: Built-in hooks with real-time updates via SSE. Build progress UIs in minutes.
 ---
