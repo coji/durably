@@ -59,7 +59,7 @@
     }
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.10",
+    "@biomejs/biome": "^2.3.11",
     "@coji/durably": "workspace:*",
     "@testing-library/react": "^16.3.1",
     "@types/react": "^19.2.7",
@@ -77,6 +77,6 @@
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^4.0.16",
-    "zod": "^4.3.4"
+    "zod": "^4.3.5"
   }
 }
