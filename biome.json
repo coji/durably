@@ -1,31 +1,31 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.3.10/schema.json",
-  "root": true,
-  "files": {
-    "includes": ["**"]
-  },
-  "assist": { "actions": { "source": { "organizeImports": "off" } } },
-  "vcs": {
-    "enabled": true,
-    "clientKind": "git",
-    "useIgnoreFile": true
-  },
-  "linter": {
-    "enabled": true,
-    "rules": {
-      "recommended": true
-    }
-  },
-  "overrides": [
-    {
-      "includes": ["**/tests/**"],
-      "linter": {
-        "rules": {
-          "style": {
-            "noNonNullAssertion": "off"
-          }
-        }
-      }
-    }
-  ]
+	"$schema": "https://biomejs.dev/schemas/2.3.11/schema.json",
+	"root": true,
+	"files": {
+		"includes": ["**"]
+	},
+	"assist": { "actions": { "source": { "organizeImports": "off" } } },
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"useIgnoreFile": true
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"recommended": true
+		}
+	},
+	"overrides": [
+		{
+			"includes": ["**/tests/**"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noNonNullAssertion": "off"
+					}
+				}
+			}
+		}
+	]
 }
