@@ -523,10 +523,11 @@ describe('useJob (client)', () => {
         }),
       )
 
-      // Should fetch runs with status=running
+      // Should fetch runs with status=running (with AbortController signal)
       await waitFor(() => {
         expect(fetchMock).toHaveBeenCalledWith(
           expect.stringContaining('/api/durably/runs?'),
+          expect.objectContaining({ signal: expect.any(AbortSignal) }),
         )
       })
 
@@ -565,6 +566,7 @@ describe('useJob (client)', () => {
     })
 
     it('does not fetch runs when autoResume: false', async () => {
+      vi.useFakeTimers()
       const fetchMock = vi.fn()
       globalThis.fetch = fetchMock
 
@@ -576,13 +578,17 @@ describe('useJob (client)', () => {
         }),
       )
 
-      // Wait a bit to ensure no fetch happens
-      await new Promise((r) => setTimeout(r, 50))
+      // Advance time to ensure no fetch happens
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100)
+      })
 
       expect(fetchMock).not.toHaveBeenCalled()
+      vi.useRealTimers()
     })
 
     it('skips autoResume when initialRunId is provided', async () => {
+      vi.useFakeTimers()
       const fetchMock = vi.fn()
       globalThis.fetch = fetchMock
 
@@ -594,14 +600,17 @@ describe('useJob (client)', () => {
         }),
       )
 
-      // Wait a bit to ensure no fetch happens
-      await new Promise((r) => setTimeout(r, 50))
+      // Advance time to ensure no fetch happens
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100)
+      })
 
       // Should not fetch runs because initialRunId is provided
       expect(fetchMock).not.toHaveBeenCalled()
 
       // Should use the provided initialRunId
       expect(result.current.currentRunId).toBe('explicit-run-id')
+      vi.useRealTimers()
     })
   })
 
@@ -691,7 +700,8 @@ describe('useJob (client)', () => {
         expect(result.current.currentRunId).toBe('current-run-id')
       })
 
-      // Simulate a new run being triggered
+      // Simulate a new run being triggered via run-level subscription (not job-level)
+      // When followLatest is false, there's no job-level SSE subscription
       act(() => {
         mockEventSource.emit({
           type: 'run:trigger',
@@ -700,10 +710,8 @@ describe('useJob (client)', () => {
         })
       })
 
-      // Wait a bit to ensure state doesn't change
-      await new Promise((r) => setTimeout(r, 50))
-
-      // Should still be on the original run
+      // The run-level event should not change the currentRunId
+      // because followLatest: false means no job-level SSE subscription
       expect(result.current.currentRunId).toBe('current-run-id')
     })
   })

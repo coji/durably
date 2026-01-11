@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { LogEntry, Progress, RunStatus } from '../types'
 import { useSSESubscription } from './use-sse-subscription'
 
@@ -107,12 +107,17 @@ export function useJob<
   )
   const [isPending, setIsPending] = useState(false)
 
+  // Track if user has triggered a run (to prevent autoResume from overwriting)
+  const hasUserTriggered = useRef(false)
+
   const subscription = useSSESubscription<TOutput>(api, currentRunId)
 
   // Auto-resume: fetch running/pending job on mount
   useEffect(() => {
     if (!autoResume) return
     if (initialRunId) return // Skip if initialRunId is provided
+
+    const abortController = new AbortController()
 
     const findActiveRun = async () => {
       // Try running first
@@ -121,10 +126,14 @@ export function useJob<
         status: 'running',
         limit: '1',
       })
-      const runningRes = await fetch(`${api}/runs?${runningParams}`)
+      const runningRes = await fetch(`${api}/runs?${runningParams}`, {
+        signal: abortController.signal,
+      })
       if (runningRes.ok) {
         const runs = (await runningRes.json()) as Array<{ id: string }>
         if (runs.length > 0) {
+          // Don't overwrite if user already triggered a run
+          if (hasUserTriggered.current) return
           setCurrentRunId(runs[0].id)
           return
         }
@@ -136,16 +145,29 @@ export function useJob<
         status: 'pending',
         limit: '1',
       })
-      const pendingRes = await fetch(`${api}/runs?${pendingParams}`)
+      const pendingRes = await fetch(`${api}/runs?${pendingParams}`, {
+        signal: abortController.signal,
+      })
       if (pendingRes.ok) {
         const runs = (await pendingRes.json()) as Array<{ id: string }>
         if (runs.length > 0) {
+          // Don't overwrite if user already triggered a run
+          if (hasUserTriggered.current) return
           setCurrentRunId(runs[0].id)
         }
       }
     }
 
-    findActiveRun()
+    findActiveRun().catch((err) => {
+      // Ignore abort errors
+      if (err.name !== 'AbortError') {
+        console.error('autoResume error:', err)
+      }
+    })
+
+    return () => {
+      abortController.abort()
+    }
   }, [api, jobName, autoResume, initialRunId])
 
   // Follow latest: subscribe to job-level SSE for run:trigger/run:start events
@@ -172,6 +194,11 @@ export function useJob<
       }
     }
 
+    eventSource.onerror = () => {
+      // SSE connection error - could reconnect or log for debugging
+      // No need to surface error to user as this is a background subscription
+    }
+
     return () => {
       eventSource.close()
     }
@@ -179,6 +206,9 @@ export function useJob<
 
   const trigger = useCallback(
     async (input: TInput): Promise<{ runId: string }> => {
+      // Mark that user has triggered (prevents autoResume from overwriting)
+      hasUserTriggered.current = true
+
       // Reset state
       subscription.reset()
       setIsPending(true)
