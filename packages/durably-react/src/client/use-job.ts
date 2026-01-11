@@ -16,6 +16,16 @@ export interface UseJobClientOptions {
    * When provided, the hook will immediately start subscribing to this run
    */
   initialRunId?: string
+  /**
+   * Automatically resume tracking a running/pending job on mount
+   * @default true
+   */
+  autoResume?: boolean
+  /**
+   * Automatically switch to tracking the latest triggered job
+   * @default true
+   */
+  followLatest?: boolean
 }
 
 export interface UseJobClientResult<TInput, TOutput> {
@@ -84,7 +94,13 @@ export function useJob<
   TInput extends Record<string, unknown> = Record<string, unknown>,
   TOutput extends Record<string, unknown> = Record<string, unknown>,
 >(options: UseJobClientOptions): UseJobClientResult<TInput, TOutput> {
-  const { api, jobName, initialRunId } = options
+  const {
+    api,
+    jobName,
+    initialRunId,
+    autoResume = true,
+    followLatest = true,
+  } = options
 
   const [currentRunId, setCurrentRunId] = useState<string | null>(
     initialRunId ?? null,
@@ -92,6 +108,74 @@ export function useJob<
   const [isPending, setIsPending] = useState(false)
 
   const subscription = useSSESubscription<TOutput>(api, currentRunId)
+
+  // Auto-resume: fetch running/pending job on mount
+  useEffect(() => {
+    if (!autoResume) return
+    if (initialRunId) return // Skip if initialRunId is provided
+
+    const findActiveRun = async () => {
+      // Try running first
+      const runningParams = new URLSearchParams({
+        jobName,
+        status: 'running',
+        limit: '1',
+      })
+      const runningRes = await fetch(`${api}/runs?${runningParams}`)
+      if (runningRes.ok) {
+        const runs = (await runningRes.json()) as Array<{ id: string }>
+        if (runs.length > 0) {
+          setCurrentRunId(runs[0].id)
+          return
+        }
+      }
+
+      // Try pending
+      const pendingParams = new URLSearchParams({
+        jobName,
+        status: 'pending',
+        limit: '1',
+      })
+      const pendingRes = await fetch(`${api}/runs?${pendingParams}`)
+      if (pendingRes.ok) {
+        const runs = (await pendingRes.json()) as Array<{ id: string }>
+        if (runs.length > 0) {
+          setCurrentRunId(runs[0].id)
+        }
+      }
+    }
+
+    findActiveRun()
+  }, [api, jobName, autoResume, initialRunId])
+
+  // Follow latest: subscribe to job-level SSE for run:trigger/run:start events
+  useEffect(() => {
+    if (!followLatest) return
+
+    const params = new URLSearchParams({ jobName })
+    const eventSource = new EventSource(`${api}/runs/subscribe?${params}`)
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as {
+          type: string
+          runId?: string
+        }
+        if (
+          (data.type === 'run:trigger' || data.type === 'run:start') &&
+          data.runId
+        ) {
+          setCurrentRunId(data.runId)
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    }
+
+    return () => {
+      eventSource.close()
+    }
+  }, [api, jobName, followLatest])
 
   const trigger = useCallback(
     async (input: TInput): Promise<{ runId: string }> => {
