@@ -122,6 +122,8 @@ function Component() {
     api: '/api/durably',
     jobName: 'sync-data',
     initialRunId: undefined,  // Optional: resume existing run
+    autoResume: true,         // Auto-resume running/pending jobs on mount
+    followLatest: true,       // Switch to tracking new runs via SSE
   })
 
   const handleClick = async () => {
@@ -135,11 +137,13 @@ function Component() {
 
 ### Options
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `api` | `string` | API base path (e.g., `/api/durably`) |
-| `jobName` | `string` | Name of the job to trigger |
-| `initialRunId` | `string` | Resume subscription to an existing run |
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `api` | `string` | - | API base path (e.g., `/api/durably`) |
+| `jobName` | `string` | - | Name of the job to trigger |
+| `initialRunId` | `string` | - | Resume subscription to an existing run |
+| `autoResume` | `boolean` | `true` | Auto-resume running/pending jobs on mount |
+| `followLatest` | `boolean` | `true` | Switch to tracking new runs via SSE |
 
 ---
 

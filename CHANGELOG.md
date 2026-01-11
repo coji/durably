@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-01-11
+
+### Added
+
+#### @coji/durably-react
+
+- **`autoResume` and `followLatest` options for client-mode `useJob`**: Match browser-mode API
+  - `autoResume` (default: `true`): Auto-resume running/pending jobs on mount
+  - `followLatest` (default: `true`): Switch to tracking new runs via SSE
+  ```tsx
+  const { trigger, status } = useJob({
+    api: '/api/durably',
+    jobName: 'my-job',
+    autoResume: true,   // Auto-resume existing jobs
+    followLatest: true, // Track new runs from other tabs
+  })
+  ```
+
 ## [0.7.0] - 2026-01-03
 
 ### Added

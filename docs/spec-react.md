@@ -529,11 +529,13 @@ const { retry, cancel, deleteRun, getRun, getSteps, isLoading, error } = useRunA
 
 **useJob オプション**:
 
-| オプション | 型 | 必須 | 説明 |
-|------------|------|------|------|
-| `api` | `string` | Yes | API エンドポイント |
-| `jobName` | `string` | Yes | ジョブ名 |
-| `initialRunId` | `string` | - | 初期購読 Run ID（再接続用） |
+| オプション | 型 | 必須 | デフォルト | 説明 |
+|------------|------|------|------------|------|
+| `api` | `string` | Yes | - | API エンドポイント |
+| `jobName` | `string` | Yes | - | ジョブ名 |
+| `initialRunId` | `string` | - | - | 初期購読 Run ID（再接続用） |
+| `autoResume` | `boolean` | - | `true` | pending/running の Run を自動再開 |
+| `followLatest` | `boolean` | - | `true` | 新しい Run 開始時に自動切替 |
 
 **useJobRun オプション**:
 

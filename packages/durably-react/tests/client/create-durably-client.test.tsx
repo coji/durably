@@ -59,9 +59,19 @@ describe('createDurablyClient', () => {
   })
 
   it('maps property name to jobName in trigger', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ runId: 'test-run-id' }),
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      // Handle autoResume fetch for runs
+      if (url.includes('/runs?')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([]),
+        })
+      }
+      // Handle trigger
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ runId: 'test-run-id' }),
+      })
     })
     globalThis.fetch = fetchMock
 
@@ -83,9 +93,19 @@ describe('createDurablyClient', () => {
   })
 
   it('different properties map to different job names', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ runId: 'run-1' }),
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      // Handle autoResume fetch for runs
+      if (url.includes('/runs?')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve([]),
+        })
+      }
+      // Handle trigger
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ runId: 'run-1' }),
+      })
     })
     globalThis.fetch = fetchMock
 
@@ -95,7 +115,7 @@ describe('createDurablyClient', () => {
     const { result: importResult } = renderHook(() => client.importCsv.useJob())
     await importResult.current.trigger({ filename: 'test.csv' })
 
-    expect(fetchMock).toHaveBeenLastCalledWith(
+    expect(fetchMock).toHaveBeenCalledWith(
       '/api/durably/trigger',
       expect.objectContaining({
         body: expect.stringContaining('"jobName":"importCsv"'),
@@ -106,7 +126,7 @@ describe('createDurablyClient', () => {
     const { result: syncResult } = renderHook(() => client.syncUsers.useJob())
     await syncResult.current.trigger({ orgId: 'org-123' })
 
-    expect(fetchMock).toHaveBeenLastCalledWith(
+    expect(fetchMock).toHaveBeenCalledWith(
       '/api/durably/trigger',
       expect.objectContaining({
         body: expect.stringContaining('"jobName":"syncUsers"'),

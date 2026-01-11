@@ -80,6 +80,8 @@ function MyComponent() {
   >({
     api: '/api/durably',
     jobName: 'my-job',
+    autoResume: true, // Auto-resume running/pending jobs on mount (default)
+    followLatest: true, // Switch to tracking new runs via SSE (default)
   })
 
   return (

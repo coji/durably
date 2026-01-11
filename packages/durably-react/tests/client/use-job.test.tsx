@@ -38,7 +38,12 @@ describe('useJob (client)', () => {
     globalThis.fetch = fetchMock
 
     const { result } = renderHook(() =>
-      useJob({ api: '/api/durably', jobName: 'test-job' }),
+      useJob({
+        api: '/api/durably',
+        jobName: 'test-job',
+        autoResume: false,
+        followLatest: false,
+      }),
     )
 
     const { runId } = await result.current.trigger({ input: 'test' })
@@ -61,7 +66,12 @@ describe('useJob (client)', () => {
     globalThis.fetch = fetchMock
 
     const { result } = renderHook(() =>
-      useJob({ api: '/api/durably', jobName: 'test-job' }),
+      useJob({
+        api: '/api/durably',
+        jobName: 'test-job',
+        autoResume: false,
+        followLatest: false,
+      }),
     )
 
     await result.current.trigger({ input: 'test' })
@@ -92,6 +102,8 @@ describe('useJob (client)', () => {
       useJob<{ input: string }, { result: string }>({
         api: '/api/durably',
         jobName: 'test-job',
+        autoResume: false,
+        followLatest: false,
       }),
     )
 
@@ -124,7 +136,12 @@ describe('useJob (client)', () => {
     globalThis.fetch = fetchMock
 
     const { result } = renderHook(() =>
-      useJob({ api: '/api/durably', jobName: 'test-job' }),
+      useJob({
+        api: '/api/durably',
+        jobName: 'test-job',
+        autoResume: false,
+        followLatest: false,
+      }),
     )
 
     await result.current.trigger({ input: 'test' })
@@ -156,7 +173,12 @@ describe('useJob (client)', () => {
     globalThis.fetch = fetchMock
 
     const { result } = renderHook(() =>
-      useJob({ api: '/api/durably', jobName: 'test-job' }),
+      useJob({
+        api: '/api/durably',
+        jobName: 'test-job',
+        autoResume: false,
+        followLatest: false,
+      }),
     )
 
     await result.current.trigger({ input: 'test' })
@@ -186,7 +208,12 @@ describe('useJob (client)', () => {
     globalThis.fetch = fetchMock
 
     const { result } = renderHook(() =>
-      useJob({ api: '/api/durably', jobName: 'test-job' }),
+      useJob({
+        api: '/api/durably',
+        jobName: 'test-job',
+        autoResume: false,
+        followLatest: false,
+      }),
     )
 
     await result.current.trigger({ input: 'test' })
@@ -219,7 +246,12 @@ describe('useJob (client)', () => {
     globalThis.fetch = fetchMock
 
     const { result } = renderHook(() =>
-      useJob({ api: '/api/durably', jobName: 'test-job' }),
+      useJob({
+        api: '/api/durably',
+        jobName: 'test-job',
+        autoResume: false,
+        followLatest: false,
+      }),
     )
 
     await result.current.trigger({ input: 'test' })
@@ -245,7 +277,12 @@ describe('useJob (client)', () => {
     globalThis.fetch = fetchMock
 
     const { result } = renderHook(() =>
-      useJob({ api: '/api/durably', jobName: 'test-job' }),
+      useJob({
+        api: '/api/durably',
+        jobName: 'test-job',
+        autoResume: false,
+        followLatest: false,
+      }),
     )
 
     await result.current.trigger({ input: 'test' })
@@ -283,7 +320,12 @@ describe('useJob (client)', () => {
     globalThis.fetch = fetchMock
 
     const { result } = renderHook(() =>
-      useJob({ api: '/api/durably', jobName: 'test-job' }),
+      useJob({
+        api: '/api/durably',
+        jobName: 'test-job',
+        autoResume: false,
+        followLatest: false,
+      }),
     )
 
     expect(result.current.currentRunId).toBeNull()
@@ -304,7 +346,12 @@ describe('useJob (client)', () => {
     globalThis.fetch = fetchMock
 
     const { result } = renderHook(() =>
-      useJob({ api: '/api/durably', jobName: 'unknown-job' }),
+      useJob({
+        api: '/api/durably',
+        jobName: 'unknown-job',
+        autoResume: false,
+        followLatest: false,
+      }),
     )
 
     await expect(result.current.trigger({ input: 'test' })).rejects.toThrow(
@@ -321,7 +368,12 @@ describe('useJob (client)', () => {
     globalThis.fetch = fetchMock
 
     const { result } = renderHook(() =>
-      useJob({ api: '/api/durably', jobName: 'test-job' }),
+      useJob({
+        api: '/api/durably',
+        jobName: 'test-job',
+        autoResume: false,
+        followLatest: false,
+      }),
     )
 
     await expect(result.current.trigger({ input: 'test' })).rejects.toThrow(
@@ -343,6 +395,7 @@ describe('useJob (client)', () => {
           api: '/api/durably',
           jobName: 'test-job',
           initialRunId: 'existing-run-id',
+          followLatest: false,
         }),
       )
 
@@ -358,6 +411,7 @@ describe('useJob (client)', () => {
           api: '/api/durably',
           jobName: 'test-job',
           initialRunId: 'existing-run-id',
+          followLatest: false,
         }),
       )
 
@@ -378,6 +432,7 @@ describe('useJob (client)', () => {
           api: '/api/durably',
           jobName: 'test-job',
           initialRunId: 'existing-run-id',
+          followLatest: false,
         }),
       )
 
@@ -429,6 +484,7 @@ describe('useJob (client)', () => {
           api: '/api/durably',
           jobName: 'test-job',
           initialRunId: 'existing-run-id',
+          followLatest: false,
         }),
       )
 
@@ -447,6 +503,216 @@ describe('useJob (client)', () => {
           method: 'POST',
         }),
       )
+    })
+  })
+
+  describe('autoResume', () => {
+    it('fetches running job on mount and subscribes (autoResume: true by default)', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve([{ id: 'running-job-id', status: 'running' }]),
+      })
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          followLatest: false,
+        }),
+      )
+
+      // Should fetch runs with status=running (with AbortController signal)
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          expect.stringContaining('/api/durably/runs?'),
+          expect.objectContaining({ signal: expect.any(AbortSignal) }),
+        )
+      })
+
+      // Should set currentRunId to the running job
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe('running-job-id')
+      })
+    })
+
+    it('fetches pending job if no running job found', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve([]), // No running jobs
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve([{ id: 'pending-job-id', status: 'pending' }]),
+        })
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          followLatest: false,
+        }),
+      )
+
+      // Should set currentRunId to the pending job
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe('pending-job-id')
+      })
+    })
+
+    it('does not fetch runs when autoResume: false', async () => {
+      vi.useFakeTimers()
+      const fetchMock = vi.fn()
+      globalThis.fetch = fetchMock
+
+      renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          autoResume: false,
+        }),
+      )
+
+      // Advance time to ensure no fetch happens
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100)
+      })
+
+      expect(fetchMock).not.toHaveBeenCalled()
+      vi.useRealTimers()
+    })
+
+    it('skips autoResume when initialRunId is provided', async () => {
+      vi.useFakeTimers()
+      const fetchMock = vi.fn()
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          initialRunId: 'explicit-run-id',
+        }),
+      )
+
+      // Advance time to ensure no fetch happens
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100)
+      })
+
+      // Should not fetch runs because initialRunId is provided
+      expect(fetchMock).not.toHaveBeenCalled()
+
+      // Should use the provided initialRunId
+      expect(result.current.currentRunId).toBe('explicit-run-id')
+      vi.useRealTimers()
+    })
+  })
+
+  describe('followLatest', () => {
+    it('switches to new run on run:trigger event (followLatest: true by default)', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([]), // No existing runs
+      })
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+        }),
+      )
+
+      // Wait for job-level SSE to be created
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      // Simulate a new run being triggered (from another tab/client)
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:trigger',
+          runId: 'new-run-from-elsewhere',
+          jobName: 'test-job',
+        })
+      })
+
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe('new-run-from-elsewhere')
+      })
+    })
+
+    it('switches to new run on run:start event', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([]),
+      })
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+        }),
+      )
+
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:start',
+          runId: 'started-run-id',
+          jobName: 'test-job',
+        })
+      })
+
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe('started-run-id')
+      })
+    })
+
+    it('does not switch to new run when followLatest: false', async () => {
+      const fetchMock = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve([{ id: 'current-run-id', status: 'running' }]),
+      })
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          followLatest: false,
+        }),
+      )
+
+      // Wait for autoResume to set currentRunId
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe('current-run-id')
+      })
+
+      // Simulate a new run being triggered via run-level subscription (not job-level)
+      // When followLatest is false, there's no job-level SSE subscription
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:trigger',
+          runId: 'new-run-id',
+          jobName: 'test-job',
+        })
+      })
+
+      // The run-level event should not change the currentRunId
+      // because followLatest: false means no job-level SSE subscription
+      expect(result.current.currentRunId).toBe('current-run-id')
     })
   })
 })
