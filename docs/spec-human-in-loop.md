@@ -56,7 +56,7 @@ await durably.resume(token, { approve: true, note: "OK" });
 
 ### 2) 状態遷移
 
-```
+```text
 pending -> running -> waiting_human -> running -> completed
                            |                |
                            |----> failed ---|
