@@ -1,4 +1,4 @@
-# Tasks: Streaming v2 Implementation
+# Tasks: Streaming v2 実装
 
 ## Phase A: step.stream() 基本実装
 

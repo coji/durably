@@ -1,38 +1,38 @@
-# Tasks: Job Definition Auto-Versioning
+# Tasks: Job Definition 自動バージョニング実装
 
-## 1. Hash Generation
+## 1. Hash 生成
 
-- [ ] 1.1 Decide hash algorithm (SHA-256 recommended)
-- [ ] 1.2 Define what to include in hash (name + input/output JSON Schema)
-- [ ] 1.3 Implement `computeJobHash()` function
-- [ ] 1.4 Ensure hash stability (order-independent)
+- [ ] 1.1 ハッシュアルゴリズムを決定（SHA-256 推奨）
+- [ ] 1.2 ハッシュに含める内容を定義（name + input/output JSON Schema）
+- [ ] 1.3 `computeJobHash()` 関数を実装
+- [ ] 1.4 ハッシュの安定性を確保（順序非依存）
 
-## 2. Schema Changes
+## 2. スキーマ変更
 
-- [ ] 2.1 Add `job_hash` column to `runs` table
-- [ ] 2.2 Add migration for `job_hash`
-- [ ] 2.3 Update `Run` interface
+- [ ] 2.1 `runs` テーブルに `job_hash` カラムを追加
+- [ ] 2.2 `job_hash` のマイグレーションを追加
+- [ ] 2.3 `Run` インターフェースを更新
 
-## 3. Storage Integration
+## 3. Storage 統合
 
-- [ ] 3.1 Store `job_hash` at trigger time
-- [ ] 3.2 Add `validateJobHash()` to storage
+- [ ] 3.1 trigger 時に `job_hash` を保存
+- [ ] 3.2 Storage に `validateJobHash()` を追加
 
-## 4. Validation Logic
+## 4. 検証ロジック
 
-- [ ] 4.1 Add hash check to `retry()`
-- [ ] 4.2 Add hash check to `resume()` (HITL integration)
-- [ ] 4.3 Implement `allowIncompatible` option
-- [ ] 4.4 Return appropriate error codes
+- [ ] 4.1 `retry()` にハッシュチェックを追加
+- [ ] 4.2 `resume()` にハッシュチェックを追加（HITL 統合）
+- [ ] 4.3 `allowIncompatible` オプションを実装
+- [ ] 4.4 適切なエラーコードを返す
 
-## 5. Testing
+## 5. テスト
 
-- [ ] 5.1 Test hash stability across restarts
-- [ ] 5.2 Test mismatch detection
-- [ ] 5.3 Test `allowIncompatible` bypass
+- [ ] 5.1 再起動後のハッシュ安定性テスト
+- [ ] 5.2 不一致検出テスト
+- [ ] 5.3 `allowIncompatible` バイパステスト
 
-## Open Questions (to resolve before implementation)
+## Open Questions（実装前に解決が必要）
 
-- [ ] How to hash the `run` function? (string serialization? manual tag? skip it?)
-- [ ] How to serialize Zod schemas stably?
-- [ ] Should we hash only schemas or include function body?
+- [ ] `run` 関数をどうハッシュする？（文字列シリアライズ？手動タグ？スキップ？）
+- [ ] Zod スキーマを安定してシリアライズする方法は？
+- [ ] スキーマのみハッシュする？関数本体も含める？

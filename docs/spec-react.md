@@ -527,6 +527,76 @@ const { retry, cancel, deleteRun, getRun, getSteps, isLoading, error } = useRunA
 })
 ```
 
+#### HITL（Human-in-the-Loop）
+
+HITL は **単一フック** で完結させる。低レベルの `useWaitingRuns` / `useResume` は持たない。
+
+```tsx
+import { useHumanInbox } from '@coji/durably-react/client'
+
+const {
+  runs,
+  isLoading,
+  reload,
+  approve,
+  reject,
+  edit,
+} = useHumanInbox({
+  api: '/api/durably',
+})
+
+await approve(runId, { note: 'OK' })
+await reject(runId, { note: '差し戻し' })
+await edit(runId, { patch: { ... } })
+```
+
+**戻り値**:
+
+| プロパティ | 型 | 説明 |
+|-----------|-----|------|
+| `runs` | `WaitingRun[]` | `waiting_human` の一覧 |
+| `isLoading` | `boolean` | 読み込み中 |
+| `reload()` | `() => Promise<void>` | 再取得 |
+| `approve(id, payload?)` | `Promise<void>` | `decision=approved` で再開 |
+| `reject(id, payload?)` | `Promise<void>` | `decision=rejected` で再開 |
+| `edit(id, payload)` | `Promise<void>` | `decision=edited` で再開 |
+
+**`WaitingRun` の最小形**
+
+| フィールド | 型 | 説明 |
+|------------|-----|------|
+| `id` | `string` | Run ID |
+| `wait_summary` | `string` | 人に見せる要約 |
+| `wait_deadline_at` | `string \| null` | 期限 |
+
+**内部動作**
+- `GET /api/durably/runs?status=waiting_human&includeToken=true` を使用
+- `POST /api/durably/resume` を使用
+- `approve/reject/edit` は `decision` を自動付与する
+
+---
+
+#### HITL（ブラウザ完結モード）
+
+ブラウザ完結でも同じ `useHumanInbox()` を使える。API ではなくローカル Durably を直接叩く。
+
+```tsx
+import { useHumanInbox } from '@coji/durably-react'
+
+const {
+  runs,
+  isLoading,
+  reload,
+  approve,
+  reject,
+  edit,
+} = useHumanInbox()
+```
+
+**内部動作**
+- `durably.getRuns({ status: 'waiting_human' })` を使用
+- `durably.resume(token, payload)` を使用
+
 **useJob オプション**:
 
 | オプション | 型 | 必須 | デフォルト | 説明 |

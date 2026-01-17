@@ -1,21 +1,21 @@
-# Change: PostgreSQL Support
+# Change: PostgreSQL サポート
 
 ## Why
 
-SQLite works well for single-process deployments, but production environments often require PostgreSQL for multi-worker scaling and better operational tooling. Adding PostgreSQL dialect support enables horizontal scaling with proper run claiming and concurrency key protection.
+SQLite は単一プロセスのデプロイには適しているが、本番環境ではマルチワーカースケーリングと運用ツーリングのために PostgreSQL が必要になることが多い。PostgreSQL dialect サポートを追加することで、適切な Run claiming と concurrency key 保護による水平スケーリングが可能になる。
 
 ## What Changes
 
-- Add PostgreSQL dialect support via Kysely
-- Implement atomic Run claiming with `FOR UPDATE SKIP LOCKED`
-- Add `durably_concurrency_locks` table for concurrency key protection
-- Ensure SQLite behavior remains unchanged
+- Kysely 経由で PostgreSQL dialect サポートを追加
+- `FOR UPDATE SKIP LOCKED` でアトミックな Run claiming を実装
+- concurrency key 保護のための `durably_concurrency_locks` テーブルを追加
+- SQLite の動作は変更なし
 
 ## Impact
 
 - Affected specs: `core`
 - Affected code:
-  - `packages/durably/src/storage.ts` - PG-specific claiming logic
-  - `packages/durably/src/schema.ts` - concurrency_locks table
-  - `packages/durably/src/migrations.ts` - PG migrations
-  - New: `packages/durably/src/pg-storage.ts` (optional separate file)
+  - `packages/durably/src/storage.ts` - PG 固有の claiming ロジック
+  - `packages/durably/src/schema.ts` - concurrency_locks テーブル
+  - `packages/durably/src/migrations.ts` - PG マイグレーション
+  - 新規: `packages/durably/src/pg-storage.ts`（オプション、別ファイル）

@@ -128,6 +128,7 @@ CREATE INDEX idx_events_run_sequence ON events(run_id, sequence);
 
 **永続化するイベント**:
 - `run:start`, `run:complete`, `run:fail`
+- `run:wait_human`, `run:resume`
 - `step:start`, `step:complete`, `step:fail`
 - `run:progress`
 - `log:write`
@@ -150,6 +151,13 @@ const stream = durably.subscribe(runId, { resumeFrom: lastSequence })
 1. クライアントが `resumeFrom: lastSequence` で接続
 2. サーバーは `sequence > lastSequence` のイベントを DB から取得して送信
 3. 以降はリアルタイムでイベントを配信
+
+---
+
+## HITL との統合方針
+
+- Phase A: 既存 SSE のみで `run:wait_human` / `run:resume` を配信
+- Phase B: イベント永続化が入った時点で再接続にも対応
 
 ### 4. チェックポイント（長時間実行対応）
 
@@ -214,6 +222,8 @@ type DurablyEvent =
   | RunStartEvent
   | RunCompleteEvent
   | RunFailEvent
+  | RunWaitHumanEvent
+  | RunResumeEvent
   | RunProgressEvent
   | StepStartEvent
   | StepCompleteEvent
@@ -229,6 +239,13 @@ interface StreamEvent extends BaseEvent {
   data: unknown  // emit() に渡されたデータ
 }
 ```
+
+### HITL イベント（補足）
+
+- `run:wait_human`
+  - `summary`, `deadline` を含める
+- `run:resume`
+  - `decision` を含める
 
 ### subscribe() の拡張
 

@@ -1,15 +1,15 @@
-# Change: Streaming v2 - AI Agent Workflow Extensions
+# Change: Streaming v2 - AI Agent ワークフロー拡張
 
 ## Why
 
-AI Agent workflows require real-time token streaming, event persistence for reconnection, and checkpointing for long-running operations. Current `subscribe()` only provides in-memory event streaming without persistence.
+AI Agent ワークフローでは、リアルタイムのトークンストリーミング、再接続のためのイベント永続化、長時間実行のチェックポイントが必要。現在の `subscribe()` はメモリ上のイベントストリーミングのみで永続化されない。
 
 ## What Changes
 
-- `step.stream()` API for token-level streaming output
-- Event persistence to database for reconnection support
-- `resumeFrom` option for `subscribe()` to replay missed events
-- `checkpoint()` API for long-running step recovery (Phase C)
+- `step.stream()` API: トークンレベルのストリーミング出力
+- イベント永続化: 再接続サポートのため DB に保存
+- `resumeFrom` オプション: `subscribe()` で見逃したイベントを再生
+- `checkpoint()` API: 長時間ステップの復旧（Phase C）
 
 ## Impact
 
