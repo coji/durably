@@ -532,70 +532,82 @@ const { retry, cancel, deleteRun, getRun, getSteps, isLoading, error } = useRunA
 HITL は **単一フック** で完結させる。低レベルの `useWaitingRuns` / `useResume` は持たない。
 
 ```tsx
-import { useHumanInbox } from '@coji/durably-react/client'
+import { useHumanWaits } from '@coji/durably-react/client'
 
 const {
-  runs,
+  waits,
   isLoading,
   reload,
-  approve,
-  reject,
-  edit,
-} = useHumanInbox({
+  respond,
+} = useHumanWaits({
   api: '/api/durably',
 })
 
-await approve(runId, { note: 'OK' })
-await reject(runId, { note: '差し戻し' })
-await edit(runId, { patch: { ... } })
+await respond(runId, { decision: 'approved', note: 'OK' })
 ```
 
 **戻り値**:
 
 | プロパティ | 型 | 説明 |
 |-----------|-----|------|
-| `runs` | `WaitingRun[]` | `waiting_human` の一覧 |
+| `waits` | `WaitingRun[]` | `waiting_human` の一覧 |
 | `isLoading` | `boolean` | 読み込み中 |
 | `reload()` | `() => Promise<void>` | 再取得 |
-| `approve(id, payload?)` | `Promise<void>` | `decision=approved` で再開 |
-| `reject(id, payload?)` | `Promise<void>` | `decision=rejected` で再開 |
-| `edit(id, payload)` | `Promise<void>` | `decision=edited` で再開 |
+| `respond(id, payload)` | `Promise<void>` | 任意の payload で再開 |
 
 **`WaitingRun` の最小形**
 
 | フィールド | 型 | 説明 |
 |------------|-----|------|
 | `id` | `string` | Run ID |
-| `wait_summary` | `string` | 人に見せる要約 |
+| `wait_message` | `string` | 人に見せる文 |
+| `wait_schema` | `string \| null` | 入力スキーマ（任意） |
 | `wait_deadline_at` | `string \| null` | 期限 |
 
+**`useHumanWaits` の型定義（提案）**
+
+```ts
+type HumanDecision = 'approved' | 'rejected' | 'edited'
+
+type HumanPayload = {
+  decision: HumanDecision
+  note?: string
+  // 任意拡張
+  [key: string]: unknown
+}
+
+type UseHumanWaitsResult = {
+  waits: WaitingRun[]
+  isLoading: boolean
+  reload: () => Promise<void>
+  respond: (runId: string, payload: HumanPayload) => Promise<void>
+}
+```
+
 **内部動作**
-- `GET /api/durably/runs?status=waiting_human&includeToken=true` を使用
-- `POST /api/durably/resume` を使用
-- `approve/reject/edit` は `decision` を自動付与する
+- `GET /api/durably/runs?status=waiting_human` を使用
+- `POST /api/durably/resume` を使用（`runId` で再開）
 
 ---
 
 #### HITL（ブラウザ完結モード）
 
-ブラウザ完結でも同じ `useHumanInbox()` を使える。API ではなくローカル Durably を直接叩く。
+ブラウザ完結でも同じ `useHumanWaits()` を使える。API ではなくローカル Durably を直接叩く。
 
 ```tsx
-import { useHumanInbox } from '@coji/durably-react'
+import { useHumanWaits } from '@coji/durably-react'
 
 const {
-  runs,
+  waits,
   isLoading,
   reload,
-  approve,
-  reject,
-  edit,
-} = useHumanInbox()
+  respond,
+} = useHumanWaits()
 ```
 
 **内部動作**
 - `durably.getRuns({ status: 'waiting_human' })` を使用
-- `durably.resume(token, payload)` を使用
+- `durably.resume(runId, payload)` を使用
 
 **useJob オプション**:
 
@@ -653,7 +665,7 @@ const {
 interface RunRecord {
   id: string
   jobName: string
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  status: 'pending' | 'running' | 'waiting_human' | 'completed' | 'failed' | 'cancelled'
   payload: unknown
   output: unknown | null
   error: string | null
@@ -712,7 +724,7 @@ const { trigger, status } = processTaskHooks.useJob()
 
 ```ts
 // 共通
-type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+type RunStatus = 'pending' | 'running' | 'waiting_human' | 'completed' | 'failed' | 'cancelled'
 
 interface Progress {
   current: number

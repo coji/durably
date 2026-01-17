@@ -2,8 +2,8 @@
 
 ## 1. DB スキーマ拡張
 
-- [ ] 1.1 `RunsTable` に `wait_*` フィールドを追加 (`schema.ts`)
-- [ ] 1.2 `StepsTable` に `step_type`, `human_payload`, `human_decision` を追加
+- [ ] 1.1 `RunsTable` に `wait_message`, `wait_schema`, `wait_deadline_at` を追加 (`schema.ts`)
+- [ ] 1.2 `StepsTable` に `step_type`, `human_payload` を追加
 - [ ] 1.3 マイグレーション version 2 を追加 (`migrations.ts`)
 - [ ] 1.4 `Run` インターフェースに wait 関連フィールドを追加 (`storage.ts`)
 
@@ -22,14 +22,14 @@
 
 ## 4. Storage 拡張
 
-- [ ] 4.1 `getRunByToken()` メソッドを追加
+- [ ] 4.1 `getWaitingRun(runId)` メソッドを追加
 - [ ] 4.2 `getExpiredHumanWaitRuns()` メソッドを追加
 - [ ] 4.3 resume 時の楽観的更新クエリを実装
 
 ## 5. HTTP API 拡張
 
 - [ ] 5.1 `POST /resume` ハンドラを追加 (`server.ts`)
-- [ ] 5.2 `GET /runs` に `includeToken` オプションを追加
+- [ ] 5.2 `GET /runs?status=waiting_human` で `wait_*` を返す
 - [ ] 5.3 エラーレスポンス (404, 409, 410) を実装
 
 ## 6. イベント追加
@@ -49,3 +49,4 @@
 
 - [ ] 8.1 `packages/durably/docs/llms.md` を更新
 - [ ] 8.2 README に HITL セクションを追加
+- [ ] 8.3 HITL の Security Considerations を明記（認可・検証・監査）

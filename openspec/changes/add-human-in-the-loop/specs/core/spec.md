@@ -1,21 +1,22 @@
-# Core: HITL Extension
+# Core: HITL Extension (Simple)
 
 ## ADDED Requirements
 
 ### Requirement: Human-in-the-Loop Wait
 
-The system SHALL allow Steps to wait for human approval, modification, or rejection.
+The system SHALL allow Steps to wait for human input in the simplest possible form.
 
 - The system MUST provide `ctx.human(options)` to transition Run to `waiting_human` state
-- The `summary` parameter MUST specify a human-readable description
+- The `message` parameter MUST specify the human-readable request text
 - The `schema` parameter MAY specify the expected input format (optional)
 - The `timeoutMs` parameter SHALL specify the wait deadline (default 24 hours)
+- The system MUST persist `wait_message`, `wait_schema`, and `wait_deadline_at` on the Run
 
-#### Scenario: Wait for human approval
+#### Scenario: Wait for human input
 
-- **WHEN** `const decision = await ctx.human({ summary: "Please confirm" })` is called
+- **WHEN** `const decision = await ctx.human({ message: "Please confirm" })` is called
 - **THEN** Run transitions to `waiting_human` state
-- **AND** `wait_token` is generated
+- **AND** `wait_message` is stored on the Run
 - **AND** `run:wait_human` event is emitted
 
 #### Scenario: Human wait with timeout
@@ -29,32 +30,35 @@ The system SHALL allow Steps to wait for human approval, modification, or reject
 
 ### Requirement: Resume from Human Wait
 
-The system SHALL allow external callers to resume a `waiting_human` Run.
+The system SHALL allow external callers to resume a `waiting_human` Run by `runId`.
 
-- The system MUST provide `durably.resume(token, payload)`
-- The `payload` SHALL include the human decision (approved/rejected/edited)
-- The token MUST be single-use; reuse SHALL return `409 Conflict`
+- The system MUST provide `durably.resume(runId, payload)`
+- The `payload` SHALL include the human input
+- The `payload` SHOULD include `decision` (`approved` | `rejected` | `edited`) as a common convention
+- The system MUST reject resuming a Run that is not in `waiting_human` state
+ - The system MUST return `404` when `runId` does not exist
+ - The system MUST return `410` when `wait_deadline_at` has expired
 
-#### Scenario: Resume with approval
+#### Scenario: Resume with input
 
-- **GIVEN** Run is in `waiting_human` state with `wait_token`
-- **WHEN** `durably.resume(token, { decision: 'approved' })` is called
+- **GIVEN** Run is in `waiting_human` state
+- **WHEN** `durably.resume(runId, { decision: 'approved' })` is called
 - **THEN** Run transitions back to `running` state
 - **AND** `ctx.human()` returns the payload and continues
 - **AND** `run:resume` event is emitted
 
-#### Scenario: Resume with invalid token
+#### Scenario: Resume invalid state
 
-- **WHEN** `resume()` is called with non-existent token
-- **THEN** error is raised (HTTP 404)
-
-#### Scenario: Resume already used token
-
-- **GIVEN** token has already been used
-- **WHEN** `resume()` is called with the same token again
+- **GIVEN** Run is not in `waiting_human` state
+- **WHEN** `resume()` is called
 - **THEN** error is raised (HTTP 409)
 
-#### Scenario: Resume expired token
+#### Scenario: Resume invalid runId
+
+- **WHEN** `resume()` is called with non-existent `runId`
+- **THEN** error is raised (HTTP 404)
+
+#### Scenario: Resume expired runId
 
 - **GIVEN** `wait_deadline_at` has passed
 - **WHEN** `resume()` is called
@@ -88,20 +92,14 @@ The system SHALL provide HTTP API to resume `waiting_human` Runs.
 #### Scenario: POST /resume success
 
 - **GIVEN** Run is in `waiting_human` state
-- **WHEN** `POST /resume` is called with `{ token, payload }`
+- **WHEN** `POST /resume` is called with `{ runId, payload }`
 - **THEN** `200 OK` with `{ runId, success: true }` is returned
 
-#### Scenario: GET /runs with includeToken
+#### Scenario: GET /runs for waiting_human
 
 - **GIVEN** Run is in `waiting_human` state
-- **WHEN** `GET /runs?status=waiting_human&includeToken=true` is called
-- **THEN** response includes `wait_token`
-
-#### Scenario: GET /runs without includeToken
-
-- **GIVEN** Run is in `waiting_human` state
-- **WHEN** `GET /runs?status=waiting_human` is called (without includeToken)
-- **THEN** response does NOT include `wait_token`
+- **WHEN** `GET /runs?status=waiting_human` is called
+- **THEN** response includes `wait_message`, `wait_schema`, and `wait_deadline_at`
 
 ---
 
