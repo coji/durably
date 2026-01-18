@@ -107,6 +107,7 @@ function Component() {
     isPending,
     isCompleted,
     isFailed,
+    isCancelled,
     currentRunId,
     reset,
   } = useJob(myJob)
@@ -153,6 +154,7 @@ interface UseJobResult<TInput, TOutput> {
   isPending: boolean
   isCompleted: boolean
   isFailed: boolean
+  isCancelled: boolean
   currentRunId: string | null
   reset: () => void
 }
@@ -178,6 +180,7 @@ function RunMonitor({ runId }: { runId: string | null }) {
     isRunning,
     isCompleted,
     isFailed,
+    isCancelled,
   } = useJobRun<{ result: number }>({ runId })
 
   if (!runId) return <div>No run selected</div>

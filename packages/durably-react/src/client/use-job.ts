@@ -77,6 +77,10 @@ export interface UseJobClientResult<TInput, TOutput> {
    */
   isFailed: boolean
   /**
+   * Whether the run was cancelled
+   */
+  isCancelled: boolean
+  /**
    * Current run ID
    */
   currentRunId: string | null
@@ -285,6 +289,7 @@ export function useJob<
     isPending: effectiveStatus === 'pending',
     isCompleted: effectiveStatus === 'completed',
     isFailed: effectiveStatus === 'failed',
+    isCancelled: effectiveStatus === 'cancelled',
     currentRunId,
     reset,
   }

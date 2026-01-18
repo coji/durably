@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-01-18
+
+### Added
+
+#### @coji/durably-react
+
+- **`isCancelled` state boolean for client-mode `useJob`**: Now consistent with browser-mode API
+  - Previously missing from client-mode hook, causing inconsistency between modes
+
 ## [0.8.0] - 2026-01-11
 
 ### Added
