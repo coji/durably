@@ -37,16 +37,21 @@
 - [ ] 6.1 `run:wait_human` イベントを追加 (`events.ts`)
 - [ ] 6.2 `run:resume` イベントを追加
 
-## 7. テスト
+## 7. React
 
-- [ ] 7.1 `ctx.human()` の基本動作テスト
-- [ ] 7.2 `resume()` の成功・失敗テスト
-- [ ] 7.3 replay 時の挙動テスト
-- [ ] 7.4 期限切れ Run の回収テスト
-- [ ] 7.5 HTTP API テスト
+- [ ] 7.1 `useHumanWaits` フックを追加（browser/client 両対応）
+- [ ] 7.2 WaitingRun の型と返却フィールドを追加
 
-## 8. ドキュメント
+## 8. テスト
 
-- [ ] 8.1 `packages/durably/docs/llms.md` を更新
-- [ ] 8.2 README に HITL セクションを追加
-- [ ] 8.3 HITL の Security Considerations を明記（認可・検証・監査）
+- [ ] 8.1 `ctx.human()` の基本動作テスト
+- [ ] 8.2 `resume()` の成功・失敗テスト
+- [ ] 8.3 replay 時の挙動テスト
+- [ ] 8.4 期限切れ Run の回収テスト
+- [ ] 8.5 HTTP API テスト
+
+## 9. ドキュメント
+
+- [ ] 9.1 `packages/durably/docs/llms.md` を更新
+- [ ] 9.2 README に HITL セクションを追加
+- [ ] 9.3 HITL の Security Considerations を明記（認可・検証・監査）
