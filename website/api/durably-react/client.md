@@ -103,7 +103,6 @@ import { useJob } from '@coji/durably-react/client'
 
 function Component() {
   const {
-    isReady,
     trigger,
     triggerAndWait,
     status,
@@ -112,7 +111,10 @@ function Component() {
     logs,
     progress,
     isRunning,
+    isPending,
     isCompleted,
+    isFailed,
+    isCancelled,
     currentRunId,
     reset,
   } = useJob<

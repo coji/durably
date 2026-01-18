@@ -370,7 +370,10 @@ function Component() {
     logs,
     progress,
     isRunning,
+    isPending,
     isCompleted,
+    isFailed,
+    isCancelled,
     currentRunId,
     reset,
   } = useJob<

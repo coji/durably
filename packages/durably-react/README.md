@@ -74,10 +74,16 @@ For full-stack apps, use hooks from `@coji/durably-react/client`:
 import { useJob } from '@coji/durably-react/client'
 
 function MyComponent() {
-  const { trigger, status, output, isRunning } = useJob<
-    { id: string },
-    { result: number }
-  >({
+  const {
+    trigger,
+    status,
+    output,
+    isRunning,
+    isPending,
+    isCompleted,
+    isFailed,
+    isCancelled,
+  } = useJob<{ id: string }, { result: number }>({
     api: '/api/durably',
     jobName: 'my-job',
     autoResume: true, // Auto-resume running/pending jobs on mount (default)

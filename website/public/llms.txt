@@ -819,7 +819,10 @@ function Component() {
     logs,
     progress,
     isRunning,
+    isPending,
     isCompleted,
+    isFailed,
+    isCancelled,
     currentRunId,
     reset,
   } = useJob<
@@ -829,6 +832,8 @@ function Component() {
     api: '/api/durably',
     jobName: 'sync-data',
     initialRunId: undefined, // Optional: resume existing run
+    autoResume: true, // Auto-resume pending/running jobs on mount (default: true)
+    followLatest: true, // Switch to tracking new runs (default: true)
   })
 
   const handleClick = async () => {
@@ -839,6 +844,22 @@ function Component() {
   return <button onClick={handleClick}>Sync</button>
 }
 ```
+
+**Options:**
+
+```ts
+interface UseJobClientOptions {
+  api: string // API endpoint URL (e.g., '/api/durably')
+  jobName: string // Job name to trigger
+  initialRunId?: string // Initial Run ID to subscribe to
+  autoResume?: boolean // Auto-resume pending/running jobs on mount (default: true)
+  followLatest?: boolean // Switch to tracking new runs via SSE (default: true)
+}
+```
+
+The `autoResume` option automatically fetches running/pending jobs on mount and subscribes to them. This is useful for SSR applications where users may refresh the page while a job is running.
+
+The `followLatest` option subscribes to job-level SSE events and automatically switches to tracking the latest triggered job. This enables real-time updates when jobs are triggered from other tabs or clients.
 
 ### Client useJobRun
 

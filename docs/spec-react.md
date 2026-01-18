@@ -303,6 +303,7 @@ const {
   isPending,
   isCompleted,
   isFailed,
+  isCancelled,
   currentRunId,
   reset,
 } = useJob(jobDefinition, options?)
@@ -331,6 +332,7 @@ const {
 | `isPending` | `boolean` | 待機中 |
 | `isCompleted` | `boolean` | 完了 |
 | `isFailed` | `boolean` | 失敗 |
+| `isCancelled` | `boolean` | キャンセル |
 | `currentRunId` | `string \| null` | 現在の Run ID |
 | `reset` | `() => void` | 状態リセット |
 
@@ -496,6 +498,7 @@ const {
   isPending,
   isCompleted,
   isFailed,
+  isCancelled,
   currentRunId,
   reset,
 } = useJob({
