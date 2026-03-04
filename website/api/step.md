@@ -11,14 +11,14 @@ Creates a resumable step.
 ```ts
 const result = await step.run<T>(
   name: string,
-  fn: () => Promise<T>
+  fn: (signal: AbortSignal) => Promise<T>
 ): Promise<T>
 ```
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `name` | `string` | Unique step name within the job |
-| `fn` | `() => Promise<T>` | Async function to execute |
+| Parameter | Type                                  | Description                                                                                     |
+| --------- | ------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `name`    | `string`                              | Unique step name within the job                                                                 |
+| `fn`      | `(signal: AbortSignal) => Promise<T>` | Async function to execute. Receives an `AbortSignal` that is aborted when the run is cancelled. |
 
 **Returns**: The result of `fn`, either freshly computed or retrieved from cache.
 
@@ -30,14 +30,32 @@ const result = await step.run<T>(
 ```ts
 // First run: API is called, result cached
 const users = await step.run('fetch-users', async () => {
-  return await api.fetchUsers()  // Called
+  return await api.fetchUsers() // Called
 })
 
 // On resume: Returns cached result
 const users = await step.run('fetch-users', async () => {
-  return await api.fetchUsers()  // NOT called
+  return await api.fetchUsers() // NOT called
 })
 ```
+
+#### Cooperative Cancellation
+
+The `signal` parameter enables cooperative cancellation of long-running steps. When a run is cancelled via `durably.cancel(runId)`, the signal is aborted, allowing the step callback to break out of work early.
+
+```ts
+await step.run('fetch-all-pages', async (signal) => {
+  const results = []
+  for (let page = 1; page <= totalPages; page++) {
+    if (signal.aborted) break // Stop early on cancellation
+    const data = await fetch(`${baseUrl}?page=${page}`, { signal })
+    results.push(data)
+  }
+  return results
+})
+```
+
+The signal is compatible with `fetch()` and other APIs that accept `AbortSignal`. Existing callbacks that don't use the signal parameter continue to work unchanged.
 
 ### `log`
 
@@ -49,10 +67,10 @@ step.log.warn(message: string, data?: Record<string, unknown>): void
 step.log.error(message: string, data?: Record<string, unknown>): void
 ```
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `message` | `string` | Log message |
-| `data` | `object` | Optional structured data |
+| Parameter | Type     | Description              |
+| --------- | -------- | ------------------------ |
+| `message` | `string` | Log message              |
+| `data`    | `object` | Optional structured data |
 
 ```ts
 step.log.info('Processing started')
@@ -68,10 +86,10 @@ Reports progress for the current run.
 step.progress(current: number, total: number, message?: string): void
 ```
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `current` | `number` | Current progress value |
-| `total` | `number` | Total progress value |
+| Parameter | Type     | Description               |
+| --------- | -------- | ------------------------- |
+| `current` | `number` | Current progress value    |
+| `total`   | `number` | Total progress value      |
 | `message` | `string` | Optional progress message |
 
 ```ts

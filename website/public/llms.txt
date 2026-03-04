@@ -117,11 +117,11 @@ The `step` object provides these methods:
 
 ### step.run(name, fn)
 
-Executes a step and persists its result. On resume, returns cached result without re-executing.
+Executes a step and persists its result. On resume, returns cached result without re-executing. The callback receives an `AbortSignal` that is aborted when the run is cancelled, enabling cooperative cancellation of long-running steps.
 
 ```ts
-const result = await step.run('step-name', async () => {
-  return await someAsyncOperation()
+const result = await step.run('step-name', async (signal) => {
+  return await someAsyncOperation({ signal })
 })
 ```
 
@@ -426,9 +426,10 @@ interface JobDefinition<TName, TInput, TOutput> {
   run: (step: StepContext, payload: TInput) => Promise<TOutput>
 }
 
+// AbortSignal is aborted when the run is cancelled
 interface StepContext {
   runId: string
-  run<T>(name: string, fn: () => T | Promise<T>): Promise<T>
+  run<T>(name: string, fn: (signal: AbortSignal) => T | Promise<T>): Promise<T>
   progress(current: number, total?: number, message?: string): void
   log: {
     info(message: string, data?: unknown): void

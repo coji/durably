@@ -19,6 +19,7 @@ export type {
   ErrorHandler,
   EventType,
   LogWriteEvent,
+  RunCancelEvent,
   RunCompleteEvent,
   RunDeleteEvent,
   RunFailEvent,
