@@ -209,9 +209,9 @@ describe('React StrictMode', () => {
                 name: 'strict-mode-test',
                 input: z.object({ value: z.string() }),
                 output: z.object({ processed: z.string() }),
-                run: async (_context, payload) => {
+                run: async (_context, input) => {
                   executionCount++
-                  return { processed: payload.value.toUpperCase() }
+                  return { processed: input.value.toUpperCase() }
                 },
               }),
             })

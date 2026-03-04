@@ -61,7 +61,7 @@ export function createDurablyTests(createDialect: () => Dialect) {
       // Can use storage directly
       const run = await durably.storage.createRun({
         jobName: 'test-job',
-        payload: { test: true },
+        input: { test: true },
       })
 
       expect(run.id).toBeDefined()

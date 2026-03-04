@@ -386,7 +386,7 @@ export function createServerTests(createDialect: () => Dialect) {
 
         expect(response.status).toBe(200)
         expect(body.id).toBe(run.id)
-        expect(body.payload).toEqual({ value: 42 })
+        expect(body.input).toEqual({ value: 42 })
       })
 
       it('returns 400 when runId is missing', async () => {

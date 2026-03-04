@@ -33,7 +33,7 @@ describe('Core Extensions', () => {
       name: 'test-job-getjob',
       input: z.object({ value: z.number() }),
       output: z.object({ result: z.number() }),
-      run: async (_ctx, payload) => ({ result: payload.value * 2 }),
+      run: async (_ctx, input) => ({ result: input.value * 2 }),
     })
 
     it('returns registered job by name', () => {
@@ -65,9 +65,9 @@ describe('Core Extensions', () => {
       name: 'test-job-subscribe',
       input: z.object({ input: z.string() }),
       output: z.object({ result: z.string() }),
-      run: async (ctx, payload) => {
+      run: async (ctx, input) => {
         await ctx.run('step1', () => 'done')
-        return { result: `processed: ${payload.input}` }
+        return { result: `processed: ${input.input}` }
       },
     })
 
@@ -174,7 +174,7 @@ describe('Core Extensions', () => {
       name: 'test-job-handler',
       input: z.object({ value: z.number() }),
       output: z.object({ result: z.number() }),
-      run: async (_ctx, payload) => ({ result: payload.value * 2 }),
+      run: async (_ctx, input) => ({ result: input.value * 2 }),
     })
 
     beforeEach(() => {

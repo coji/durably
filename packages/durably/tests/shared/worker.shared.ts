@@ -135,24 +135,24 @@ export function createWorkerTests(createDialect: () => Dialect) {
     })
 
     describe('Job execution', () => {
-      it('passes payload to job function', async () => {
-        let receivedPayload: unknown
+      it('passes input to job function', async () => {
+        let receivedInput: unknown
 
-        const payloadTestDef = defineJob({
-          name: 'payload-test',
+        const inputTestDef = defineJob({
+          name: 'input-test',
           input: z.object({ value: z.string() }),
-          run: async (_step, payload) => {
-            receivedPayload = payload
+          run: async (_step, input) => {
+            receivedInput = input
           },
         })
-        const d = durably.register({ job: payloadTestDef })
+        const d = durably.register({ job: inputTestDef })
 
         await d.jobs.job.trigger({ value: 'hello' })
         d.start()
 
         await vi.waitFor(
           async () => {
-            expect(receivedPayload).toEqual({ value: 'hello' })
+            expect(receivedInput).toEqual({ value: 'hello' })
           },
           { timeout: 1000 },
         )
@@ -186,8 +186,8 @@ export function createWorkerTests(createDialect: () => Dialect) {
         const sequentialTestDef = defineJob({
           name: 'sequential-test',
           input: z.object({ n: z.number() }),
-          run: async (_step, payload) => {
-            order.push(payload.n)
+          run: async (_step, input) => {
+            order.push(input.n)
             await new Promise((r) => setTimeout(r, 20))
           },
         })

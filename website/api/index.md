@@ -28,10 +28,10 @@ const importCsvJob = defineJob({
   name: 'import-csv',
   input: z.object({ filename: z.string() }),
   output: z.object({ count: z.number() }),
-  run: async (step, payload) => {
+  run: async (step, input) => {
     // Step 1: Parse file (cached on resume)
     const rows = await step.run('parse', async () => {
-      return parseCSV(payload.filename)
+      return parseCSV(input.filename)
     })
 
     // Step 2: Import each row

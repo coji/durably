@@ -56,35 +56,39 @@ interface LogEntry {
 | `data`      | `unknown`                     | Optional structured data  |
 | `timestamp` | `string`                      | ISO timestamp             |
 
-## RunRecord
+## ClientRun
 
 ```ts
-interface RunRecord {
+interface ClientRun {
   id: string
   jobName: string
   status: RunStatus
-  payload: unknown
+  input: unknown
   output: unknown
   error: string | null
   progress: Progress | null
   labels: Record<string, string>
+  startedAt: string | null
+  completedAt: string | null
   createdAt: string
   updatedAt: string
 }
 ```
 
-| Property    | Type                     | Description                  |
-| ----------- | ------------------------ | ---------------------------- |
-| `id`        | `string`                 | Unique run ID                |
-| `jobName`   | `string`                 | Name of the job              |
-| `status`    | `RunStatus`              | Current status               |
-| `payload`   | `unknown`                | Input payload                |
-| `output`    | `unknown`                | Job output (when completed)  |
-| `error`     | `string \| null`         | Error message (when failed)  |
-| `progress`  | `Progress \| null`       | Current progress             |
-| `labels`    | `Record<string, string>` | Labels set at trigger time   |
-| `createdAt` | `string`                 | ISO timestamp of creation    |
-| `updatedAt` | `string`                 | ISO timestamp of last update |
+| Property      | Type                     | Description                  |
+| ------------- | ------------------------ | ---------------------------- |
+| `id`          | `string`                 | Unique run ID                |
+| `jobName`     | `string`                 | Name of the job              |
+| `status`      | `RunStatus`              | Current status               |
+| `input`       | `unknown`                | Input data                   |
+| `output`      | `unknown`                | Job output (when completed)  |
+| `error`       | `string \| null`         | Error message (when failed)  |
+| `progress`    | `Progress \| null`       | Current progress             |
+| `labels`      | `Record<string, string>` | Labels set at trigger time   |
+| `startedAt`   | `string \| null`         | ISO timestamp of start       |
+| `completedAt` | `string \| null`         | ISO timestamp of completion  |
+| `createdAt`   | `string`                 | ISO timestamp of creation    |
+| `updatedAt`   | `string`                 | ISO timestamp of last update |
 
 ## StepRecord
 

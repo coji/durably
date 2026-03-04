@@ -116,13 +116,13 @@ import { defineJob } from '@coji/durably'
 const processOrderJob = defineJob({
   name: 'process-order',
   input: z.object({ orderId: z.string() }),
-  run: async (step, payload) => {
-    step.log.info('Starting order processing', { orderId: payload.orderId })
+  run: async (step, input) => {
+    step.log.info('Starting order processing', { orderId: input.orderId })
 
     // Step 1
     const order = await step.run('fetch-order', async () => {
       step.log.info('Fetching order from API')
-      return await api.getOrder(payload.orderId)
+      return await api.getOrder(input.orderId)
     })
 
     // Step 2

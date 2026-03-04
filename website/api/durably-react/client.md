@@ -264,7 +264,7 @@ const myJob = defineJob({
   name: 'my-job',
   input: z.object({ value: z.string() }),
   output: z.object({ result: z.number() }),
-  run: async (step, payload) => {
+  run: async (step, input) => {
     /* ... */
   },
 })
@@ -398,7 +398,7 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
 | `retry`     | `(runId: string) => Promise<void>`         | Retry a failed run   |
 | `cancel`    | `(runId: string) => Promise<void>`         | Cancel a running job |
 | `deleteRun` | `(runId: string) => Promise<void>`         | Delete a run         |
-| `getRun`    | `(runId: string) => Promise<RunRecord>`    | Get run details      |
+| `getRun`    | `(runId: string) => Promise<ClientRun>`    | Get run details      |
 | `getSteps`  | `(runId: string) => Promise<StepRecord[]>` | Get step details     |
 | `isLoading` | `boolean`                                  | Loading state        |
 | `error`     | `string \| null`                           | Error message        |

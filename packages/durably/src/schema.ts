@@ -5,7 +5,7 @@
 export interface RunsTable {
   id: string
   job_name: string
-  payload: string // JSON
+  input: string // JSON
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   idempotency_key: string | null
   concurrency_key: string | null
@@ -15,6 +15,8 @@ export interface RunsTable {
   error: string | null
   labels: string // JSON: Record<string, string>
   heartbeat_at: string // ISO8601
+  started_at: string | null // ISO8601
+  completed_at: string | null // ISO8601
   created_at: string // ISO8601
   updated_at: string // ISO8601
 }

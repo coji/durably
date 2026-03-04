@@ -14,7 +14,7 @@ export interface RunTriggerEvent extends BaseEvent {
   type: 'run:trigger'
   runId: string
   jobName: string
-  payload: unknown
+  input: unknown
   labels: Record<string, string>
 }
 
@@ -25,7 +25,7 @@ export interface RunStartEvent extends BaseEvent {
   type: 'run:start'
   runId: string
   jobName: string
-  payload: unknown
+  input: unknown
   labels: Record<string, string>
 }
 

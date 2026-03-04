@@ -133,7 +133,7 @@ const run = await durably.getRun(runId)
 
 // Typed (returns custom type)
 type MyRun = Run & {
-  payload: { userId: string }
+  input: { userId: string }
   output: { count: number } | null
 }
 const typedRun = await durably.getRun<MyRun>(runId)
@@ -158,7 +158,7 @@ Gets runs with optional filtering and pagination. Supports generic type paramete
 ```ts
 // Typed getRuns
 type MyRun = Run & {
-  payload: { userId: string }
+  input: { userId: string }
   output: { count: number } | null
 }
 const runs = await durably.getRuns<MyRun>({ jobName: 'my-job' })
@@ -207,7 +207,7 @@ import { z } from 'zod'
 const myJobDef = defineJob({
   name: 'my-job',
   input: z.object({ id: z.string() }),
-  run: async (step, payload) => {
+  run: async (step, input) => {
     // ...
   },
 })

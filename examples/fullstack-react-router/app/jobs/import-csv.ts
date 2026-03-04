@@ -31,19 +31,19 @@ export const importCsvJob = defineJob({
     rows: z.array(csvRowSchema),
   }),
   output: outputSchema,
-  run: async (step, payload) => {
+  run: async (step, input) => {
     step.log.info(
-      `Starting import of ${payload.filename} (${payload.rows.length} rows)`,
+      `Starting import of ${input.filename} (${input.rows.length} rows)`,
     )
 
     // Step 1: Validate all rows
     const validRows = await step.run('validate', async () => {
-      const valid: typeof payload.rows = []
-      const invalid: { row: (typeof payload.rows)[0]; reason: string }[] = []
+      const valid: typeof input.rows = []
+      const invalid: { row: (typeof input.rows)[0]; reason: string }[] = []
 
-      for (let i = 0; i < payload.rows.length; i++) {
-        const row = payload.rows[i]
-        step.progress(i + 1, payload.rows.length, `Validating ${row.name}...`)
+      for (let i = 0; i < input.rows.length; i++) {
+        const row = input.rows[i]
+        step.progress(i + 1, input.rows.length, `Validating ${row.name}...`)
         await delay(50)
 
         if (row.amount < 0) {

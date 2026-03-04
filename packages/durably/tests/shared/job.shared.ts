@@ -21,7 +21,7 @@ export function createJobTests(createDialect: () => Dialect) {
         name: 'test-job',
         input: z.object({ value: z.number() }),
         output: z.object({ result: z.number() }),
-        run: async (_step, _payload) => {
+        run: async (_step, _input) => {
           return { result: 42 }
         },
       })
@@ -145,11 +145,11 @@ export function createJobTests(createDialect: () => Dialect) {
           optional: z.boolean().optional(),
         }),
         output: z.object({ success: z.boolean() }),
-        run: async (_step, payload) => {
+        run: async (_step, input) => {
           // Type inference test - this should compile
-          const _name: string = payload.name
-          const _count: number = payload.count
-          const _optional: boolean | undefined = payload.optional
+          const _name: string = input.name
+          const _count: number = input.count
+          const _optional: boolean | undefined = input.optional
           return { success: true }
         },
       })
@@ -167,7 +167,7 @@ export function createJobTests(createDialect: () => Dialect) {
       const noOutputJobDef = defineJob({
         name: 'no-output-job',
         input: z.object({ value: z.string() }),
-        run: async (_step, _payload) => {
+        run: async (_step, _input) => {
           // No return value
         },
       })

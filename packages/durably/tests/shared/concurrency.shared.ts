@@ -26,12 +26,12 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
       const concurrencyTestDef = defineJob({
         name: 'concurrency-test',
         input: z.object({ id: z.string() }),
-        run: async (step, payload) => {
-          executionOrder.push(`start-${payload.id}`)
+        run: async (step, input) => {
+          executionOrder.push(`start-${input.id}`)
           await step.run('work', async () => {
             await new Promise((r) => setTimeout(r, 100))
           })
-          executionOrder.push(`end-${payload.id}`)
+          executionOrder.push(`end-${input.id}`)
         },
       })
       const d = durably.register({ job: concurrencyTestDef })
@@ -61,8 +61,8 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
       const differentKeysTestDef = defineJob({
         name: 'different-keys-test',
         input: z.object({ id: z.string() }),
-        run: async (step, payload) => {
-          startTimes[payload.id] = Date.now()
+        run: async (step, input) => {
+          startTimes[input.id] = Date.now()
           await step.run('work', async () => {
             await new Promise((r) => setTimeout(r, 100))
           })
@@ -96,8 +96,8 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
       const noKeyTestDef = defineJob({
         name: 'no-key-test',
         input: z.object({ id: z.string() }),
-        run: async (step, payload) => {
-          executionOrder.push(payload.id)
+        run: async (step, input) => {
+          executionOrder.push(input.id)
           await step.run('work', async () => {
             await new Promise((r) => setTimeout(r, 50))
           })

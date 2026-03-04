@@ -9,7 +9,7 @@ interface Migration {
   up: (db: Kysely<Database>) => Promise<void>
 }
 
-export const LATEST_SCHEMA_VERSION = 2
+export const LATEST_SCHEMA_VERSION = 3
 
 const migrations: Migration[] = [
   {
@@ -119,6 +119,27 @@ const migrations: Migration[] = [
       await db.schema
         .alterTable('durably_runs')
         .addColumn('labels', 'text', (col) => col.notNull().defaultTo('{}'))
+        .execute()
+    },
+  },
+  {
+    version: 3,
+    up: async (db) => {
+      // Rename payload column to input
+      await db.schema
+        .alterTable('durably_runs')
+        .renameColumn('payload', 'input')
+        .execute()
+
+      // Add started_at and completed_at columns
+      await db.schema
+        .alterTable('durably_runs')
+        .addColumn('started_at', 'text')
+        .execute()
+
+      await db.schema
+        .alterTable('durably_runs')
+        .addColumn('completed_at', 'text')
         .execute()
     },
   },

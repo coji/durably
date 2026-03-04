@@ -46,10 +46,10 @@ const syncUsersJob = defineJob({
   name: 'sync-users',
   input: z.object({ orgId: z.string() }),
   output: z.object({ syncedCount: z.number() }),
-  run: async (step, payload) => {
+  run: async (step, input) => {
     // Step 1: Fetch users (result is persisted)
     const users = await step.run('fetch-users', async () => {
-      return await api.fetchUsers(payload.orgId)
+      return await api.fetchUsers(input.orgId)
     })
 
     // Step 2: Save to database
@@ -159,7 +159,7 @@ const run = await durably.getRun(runId)
 
 // Via durably instance (typed with generic parameter)
 type MyRun = Run & {
-  payload: { userId: string }
+  input: { userId: string }
   output: { count: number } | null
 }
 const typedRun = await durably.getRun<MyRun>(runId)
@@ -191,7 +191,7 @@ const orgRuns = await durably.getRuns({
 
 // Typed getRuns with generic parameter
 type MyRun = Run & {
-  payload: { userId: string }
+  input: { userId: string }
   output: { count: number } | null
 }
 const typedRuns = await durably.getRuns<MyRun>({ jobName: 'my-job' })
@@ -423,7 +423,7 @@ interface JobDefinition<TName, TInput, TOutput> {
   name: TName
   input: ZodType<TInput>
   output?: ZodType<TOutput>
-  run: (step: StepContext, payload: TInput) => Promise<TOutput>
+  run: (step: StepContext, input: TInput) => Promise<TOutput>
 }
 
 // AbortSignal is aborted when the run is cancelled
@@ -442,11 +442,13 @@ interface Run<TOutput = unknown> {
   id: string
   jobName: string
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
-  payload: unknown
+  input: unknown
   labels: Record<string, string>
   output?: TOutput
   error?: string
   progress?: { current: number; total?: number; message?: string }
+  startedAt: string | null
+  completedAt: string | null
   createdAt: string
   updatedAt: string
 }

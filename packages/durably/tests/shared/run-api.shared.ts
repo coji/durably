@@ -36,7 +36,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
         expect(fetched).not.toBeNull()
         expect(fetched?.id).toBe(run.id)
         expect(fetched?.jobName).toBe('get-run-test')
-        expect(fetched?.payload).toEqual({ value: 42 })
+        expect(fetched?.input).toEqual({ value: 42 })
         expect(fetched?.status).toBe('pending')
       })
 
@@ -170,9 +170,9 @@ export function createRunApiTests(createDialect: () => Dialect) {
         const runs = await d.getRuns()
 
         // Most recent first
-        expect((runs[0].payload as { order: number }).order).toBe(3)
-        expect((runs[1].payload as { order: number }).order).toBe(2)
-        expect((runs[2].payload as { order: number }).order).toBe(1)
+        expect((runs[0].input as { order: number }).order).toBe(3)
+        expect((runs[1].input as { order: number }).order).toBe(2)
+        expect((runs[2].input as { order: number }).order).toBe(1)
       })
 
       it('supports limit option', async () => {
@@ -197,9 +197,9 @@ export function createRunApiTests(createDialect: () => Dialect) {
         expect(limited).toHaveLength(3)
 
         // Should get most recent (5, 4, 3 since sorted by created_at desc)
-        expect((limited[0].payload as { order: number }).order).toBe(5)
-        expect((limited[1].payload as { order: number }).order).toBe(4)
-        expect((limited[2].payload as { order: number }).order).toBe(3)
+        expect((limited[0].input as { order: number }).order).toBe(5)
+        expect((limited[1].input as { order: number }).order).toBe(4)
+        expect((limited[2].input as { order: number }).order).toBe(3)
       })
 
       it('supports offset option', async () => {
@@ -224,9 +224,9 @@ export function createRunApiTests(createDialect: () => Dialect) {
         expect(offset).toHaveLength(3)
 
         // Should skip first 2 (5, 4) and get (3, 2, 1)
-        expect((offset[0].payload as { order: number }).order).toBe(3)
-        expect((offset[1].payload as { order: number }).order).toBe(2)
-        expect((offset[2].payload as { order: number }).order).toBe(1)
+        expect((offset[0].input as { order: number }).order).toBe(3)
+        expect((offset[1].input as { order: number }).order).toBe(2)
+        expect((offset[2].input as { order: number }).order).toBe(1)
       })
 
       it('supports limit and offset together for pagination', async () => {
@@ -251,9 +251,9 @@ export function createRunApiTests(createDialect: () => Dialect) {
           offset: 0,
         })
         expect(page1).toHaveLength(3)
-        expect((page1[0].payload as { order: number }).order).toBe(10)
-        expect((page1[1].payload as { order: number }).order).toBe(9)
-        expect((page1[2].payload as { order: number }).order).toBe(8)
+        expect((page1[0].input as { order: number }).order).toBe(10)
+        expect((page1[1].input as { order: number }).order).toBe(9)
+        expect((page1[2].input as { order: number }).order).toBe(8)
 
         // Page 2: next 3 items
         const page2 = await d.getRuns({
@@ -262,9 +262,9 @@ export function createRunApiTests(createDialect: () => Dialect) {
           offset: 3,
         })
         expect(page2).toHaveLength(3)
-        expect((page2[0].payload as { order: number }).order).toBe(7)
-        expect((page2[1].payload as { order: number }).order).toBe(6)
-        expect((page2[2].payload as { order: number }).order).toBe(5)
+        expect((page2[0].input as { order: number }).order).toBe(7)
+        expect((page2[1].input as { order: number }).order).toBe(6)
+        expect((page2[2].input as { order: number }).order).toBe(5)
 
         // Page 4: last page with only 1 item
         const page4 = await d.getRuns({
@@ -273,7 +273,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
           offset: 9,
         })
         expect(page4).toHaveLength(1)
-        expect((page4[0].payload as { order: number }).order).toBe(1)
+        expect((page4[0].input as { order: number }).order).toBe(1)
       })
 
       it('combines pagination with other filters', async () => {
@@ -299,8 +299,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
 
         expect(filtered).toHaveLength(2)
         // Should skip first (6) and get next 2 (5, 4)
-        expect((filtered[0].payload as { order: number }).order).toBe(5)
-        expect((filtered[1].payload as { order: number }).order).toBe(4)
+        expect((filtered[0].input as { order: number }).order).toBe(5)
+        expect((filtered[1].input as { order: number }).order).toBe(4)
       })
 
       it('returns empty array when offset exceeds total', async () => {
@@ -330,11 +330,11 @@ export function createRunApiTests(createDialect: () => Dialect) {
             name: 'trigger-and-wait-success',
             input: z.object({ value: z.number() }),
             output: z.object({ result: z.number() }),
-            run: async (step, payload) => {
+            run: async (step, input) => {
               await step.run('compute', async () => {
                 await new Promise((r) => setTimeout(r, 50))
               })
-              return { result: payload.value * 2 }
+              return { result: input.value * 2 }
             },
           }),
         })

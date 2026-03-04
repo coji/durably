@@ -9,7 +9,7 @@ const ulid = monotonicFactory()
  */
 export interface CreateRunInput {
   jobName: string
-  payload: unknown
+  input: unknown
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: Record<string, string>
@@ -21,7 +21,7 @@ export interface CreateRunInput {
 export interface Run {
   id: string
   jobName: string
-  payload: unknown
+  input: unknown
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   idempotencyKey: string | null
   concurrencyKey: string | null
@@ -32,6 +32,8 @@ export interface Run {
   error: string | null
   labels: Record<string, string>
   heartbeatAt: string
+  startedAt: string | null
+  completedAt: string | null
   createdAt: string
   updatedAt: string
 }
@@ -46,6 +48,8 @@ export interface UpdateRunInput {
   output?: unknown
   error?: string | null
   heartbeatAt?: string
+  startedAt?: string
+  completedAt?: string
 }
 
 /**
@@ -161,7 +165,7 @@ function rowToRun(
   return {
     id: row.id,
     jobName: row.job_name,
-    payload: JSON.parse(row.payload),
+    input: JSON.parse(row.input),
     status: row.status,
     idempotencyKey: row.idempotency_key,
     concurrencyKey: row.concurrency_key,
@@ -172,6 +176,8 @@ function rowToRun(
     error: row.error,
     labels: JSON.parse(row.labels),
     heartbeatAt: row.heartbeat_at,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -237,7 +243,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       const run: Database['durably_runs'] = {
         id,
         job_name: input.jobName,
-        payload: JSON.stringify(input.payload),
+        input: JSON.stringify(input.input),
         status: 'pending',
         idempotency_key: input.idempotencyKey ?? null,
         concurrency_key: input.concurrencyKey ?? null,
@@ -247,6 +253,8 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         error: null,
         labels: JSON.stringify(input.labels ?? {}),
         heartbeat_at: now,
+        started_at: null,
+        completed_at: null,
         created_at: now,
         updated_at: now,
       }
@@ -292,7 +300,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
           runs.push({
             id,
             job_name: input.jobName,
-            payload: JSON.stringify(input.payload),
+            input: JSON.stringify(input.input),
             status: 'pending',
             idempotency_key: input.idempotencyKey ?? null,
             concurrency_key: input.concurrencyKey ?? null,
@@ -302,6 +310,8 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
             error: null,
             labels: JSON.stringify(input.labels ?? {}),
             heartbeat_at: now,
+            started_at: null,
+            completed_at: null,
             created_at: now,
             updated_at: now,
           })
@@ -333,6 +343,9 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       if (data.error !== undefined) updates.error = data.error
       if (data.heartbeatAt !== undefined)
         updates.heartbeat_at = data.heartbeatAt
+      if (data.startedAt !== undefined) updates.started_at = data.startedAt
+      if (data.completedAt !== undefined)
+        updates.completed_at = data.completedAt
 
       await db
         .updateTable('durably_runs')
