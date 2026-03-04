@@ -230,8 +230,8 @@ export function createWorker(
       )
       .map((r) => r.concurrencyKey)
 
-    // Get next pending run
-    const run = await storage.getNextPendingRun(excludeConcurrencyKeys)
+    // Atomically claim next pending run (SELECT + UPDATE in one statement)
+    const run = await storage.claimNextPendingRun(excludeConcurrencyKeys)
     if (!run) {
       return false
     }
@@ -246,14 +246,6 @@ export function createWorker(
       })
       return true
     }
-
-    // Transition to running
-    const now = new Date().toISOString()
-    await storage.updateRun(run.id, {
-      status: 'running',
-      heartbeatAt: now,
-      startedAt: now,
-    })
 
     await executeRun(run, job)
 
