@@ -183,7 +183,7 @@ const orgRuns = await durably.getRuns({
 
 Labels are immutable key-value pairs (`Record<string, string>`) set at trigger time. All run-scoped events include labels, enabling SSE filtering:
 
-```
+```http
 GET /runs/subscribe?label.organizationId=org_123
 ```
 

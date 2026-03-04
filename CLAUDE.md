@@ -63,3 +63,4 @@ pnpm lint:fix      # Fix lint issues
 ## Skills
 
 - **release-check** - Pre-release integrity check for API changes and spec updates (`.claude/skills/release-check/`)
+- **doc-check** - Documentation update checklist after API changes (`.claude/skills/doc-check/`)

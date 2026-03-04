@@ -29,6 +29,23 @@ type DashboardRun =
   | TypedClientRun<ImportCsvInput, ImportCsvOutput>
   | TypedClientRun<ProcessImageInput, ProcessImageOutput>
 
+function LabelChips({ labels }: { labels: Record<string, string> }) {
+  const entries = Object.entries(labels)
+  if (entries.length === 0) return <span className="text-gray-400">-</span>
+  return (
+    <div className="flex flex-wrap gap-1">
+      {entries.map(([k, v]) => (
+        <span
+          key={k}
+          className="inline-block rounded bg-purple-100 px-1.5 py-0.5 text-xs text-purple-700"
+        >
+          {k}={v}
+        </span>
+      ))}
+    </div>
+  )
+}
+
 export function Dashboard() {
   const { runs, isLoading, error, page, hasMore, nextPage, prevPage, refresh } =
     useRuns<DashboardRun>({
@@ -154,20 +171,7 @@ export function Dashboard() {
                       </span>
                     </td>
                     <td className="px-2 py-2">
-                      {Object.keys(run.labels).length > 0 ? (
-                        <div className="flex flex-wrap gap-1">
-                          {Object.entries(run.labels).map(([k, v]) => (
-                            <span
-                              key={k}
-                              className="inline-block rounded bg-purple-100 px-1.5 py-0.5 text-xs text-purple-700"
-                            >
-                              {k}={v}
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="text-gray-400">-</span>
-                      )}
+                      <LabelChips labels={run.labels} />
                     </td>
                     <td className="px-2 py-2">
                       {run.stepCount > 0 ? (
@@ -312,15 +316,8 @@ export function Dashboard() {
                 {Object.keys(selectedRun.labels).length > 0 && (
                   <div>
                     <span className="font-medium text-gray-600">Labels:</span>
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {Object.entries(selectedRun.labels).map(([k, v]) => (
-                        <span
-                          key={k}
-                          className="inline-block rounded bg-purple-100 px-2 py-0.5 text-xs text-purple-700"
-                        >
-                          {k}={v}
-                        </span>
-                      ))}
+                    <div className="mt-1">
+                      <LabelChips labels={selectedRun.labels} />
                     </div>
                   </div>
                 )}

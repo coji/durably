@@ -9,6 +9,8 @@ interface Migration {
   up: (db: Kysely<Database>) => Promise<void>
 }
 
+export const LATEST_SCHEMA_VERSION = 2
+
 const migrations: Migration[] = [
   {
     version: 1,

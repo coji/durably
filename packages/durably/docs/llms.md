@@ -313,7 +313,7 @@ app.delete('/api/durably/run', (req) => handler.delete(req))
 
 **Label filtering via query params:**
 
-```
+```http
 GET /runs?label.organizationId=org_123
 GET /runs/subscribe?label.organizationId=org_123&label.env=prod
 ```

@@ -381,7 +381,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         validateLabels(filter.labels)
         for (const [key, value] of Object.entries(filter.labels)) {
           query = query.where(
-            sql`json_extract(durably_runs.labels, ${`$.${key}`})`,
+            sql`json_extract(durably_runs.labels, ${`$."${key}"`})`,
             '=',
             value,
           )

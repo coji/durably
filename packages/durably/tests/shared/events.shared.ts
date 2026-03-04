@@ -34,6 +34,7 @@ export function createEventsTests(createDialect: () => Dialect) {
           runId: 'run_1',
           jobName: 'test-job',
           payload: { foo: 'bar' },
+          labels: {},
         }),
       )
     })
