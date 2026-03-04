@@ -217,7 +217,7 @@ List and paginate job runs with real-time updates on the first page.
 
 The first page (page 0) automatically subscribes to SSE for real-time updates. It listens to:
 
-- `run:trigger`, `run:start`, `run:complete`, `run:fail`, `run:cancel`, `run:retry` - refresh list
+- `run:trigger`, `run:start`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`, `run:retry` - refresh list
 - `run:progress` - update progress in place
 - `step:start`, `step:complete`, `step:fail` - refresh for step updates
 

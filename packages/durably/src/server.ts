@@ -440,6 +440,17 @@ export function createDurablyHandler(
             }
           }),
 
+          durably.on('run:delete', (event) => {
+            if (matchesFilter(event.jobName, event.labels)) {
+              ctrl.enqueue({
+                type: 'run:delete',
+                runId: event.runId,
+                jobName: event.jobName,
+                labels: event.labels,
+              })
+            }
+          }),
+
           durably.on('run:retry', (event) => {
             if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({

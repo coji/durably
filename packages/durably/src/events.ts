@@ -64,6 +64,16 @@ export interface RunCancelEvent extends BaseEvent {
 }
 
 /**
+ * Run delete event (emitted when a run is deleted)
+ */
+export interface RunDeleteEvent extends BaseEvent {
+  type: 'run:delete'
+  runId: string
+  jobName: string
+  labels: Record<string, string>
+}
+
+/**
  * Run retry event (emitted when a failed run is retried)
  */
 export interface RunRetryEvent extends BaseEvent {
@@ -154,6 +164,7 @@ export type DurablyEvent =
   | RunCompleteEvent
   | RunFailEvent
   | RunCancelEvent
+  | RunDeleteEvent
   | RunRetryEvent
   | RunProgressEvent
   | StepStartEvent
@@ -192,6 +203,7 @@ export type AnyEventInput =
   | EventInput<'run:complete'>
   | EventInput<'run:fail'>
   | EventInput<'run:cancel'>
+  | EventInput<'run:delete'>
   | EventInput<'run:retry'>
   | EventInput<'run:progress'>
   | EventInput<'step:start'>

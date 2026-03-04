@@ -21,6 +21,7 @@ type RunUpdateEvent =
         | 'run:complete'
         | 'run:fail'
         | 'run:cancel'
+        | 'run:delete'
         | 'run:retry'
       runId: string
       jobName: string
@@ -296,6 +297,7 @@ export function useRuns<
           data.type === 'run:complete' ||
           data.type === 'run:fail' ||
           data.type === 'run:cancel' ||
+          data.type === 'run:delete' ||
           data.type === 'run:retry'
         ) {
           refresh()

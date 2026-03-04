@@ -173,6 +173,28 @@ export function createEventsTests(createDialect: () => Dialect) {
       expect(completeListener).toHaveBeenCalledTimes(0)
     })
 
+    it('emits run:delete event with correct fields', () => {
+      const listener = vi.fn()
+      durably.on('run:delete', listener)
+
+      durably.emit({
+        type: 'run:delete',
+        runId: 'run_1',
+        jobName: 'test-job',
+        labels: { env: 'test' },
+      })
+
+      expect(listener).toHaveBeenCalledTimes(1)
+      expect(listener).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'run:delete',
+          runId: 'run_1',
+          jobName: 'test-job',
+          labels: { env: 'test' },
+        }),
+      )
+    })
+
     it('calls onError handler when listener throws', () => {
       const errorHandler = vi.fn()
       const failingListener = vi.fn(() => {
