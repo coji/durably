@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 # 同じブランチ/PRの古いワークフローをキャンセル
