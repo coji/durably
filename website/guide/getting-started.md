@@ -27,25 +27,31 @@ export const importCsvJob = defineJob({
   name: 'import-csv',
   input: z.object({
     filename: z.string(),
-    rows: z.array(z.object({
-      name: z.string(),
-      email: z.string(),
-    })),
+    rows: z.array(
+      z.object({
+        name: z.string(),
+        email: z.string(),
+      }),
+    ),
   }),
   output: z.object({ imported: z.number() }),
-  run: async (step, payload) => {
-    step.log.info(`Starting import of ${payload.filename}`)
+  run: async (step, input) => {
+    step.log.info(`Starting import of ${input.filename}`)
 
     // Step 1: Validate
     const validRows = await step.run('validate', async () => {
       step.progress(1, 3, 'Validating...')
-      return payload.rows.filter(row => row.email.includes('@'))
+      return input.rows.filter((row) => row.email.includes('@'))
     })
 
     // Step 2: Import
     await step.run('import', async () => {
       for (let i = 0; i < validRows.length; i++) {
-        step.progress(i + 1, validRows.length, `Importing ${validRows[i].name}...`)
+        step.progress(
+          i + 1,
+          validRows.length,
+          `Importing ${validRows[i].name}...`,
+        )
         // await db.insert('users', validRows[i])
       }
     })
@@ -132,10 +138,13 @@ export async function action({ request }: Route.ActionArgs) {
   const formData = await request.formData()
   const file = formData.get('file') as File
   const text = await file.text()
-  const rows = text.split('\n').slice(1).map(line => {
-    const [name, email] = line.split(',')
-    return { name, email }
-  })
+  const rows = text
+    .split('\n')
+    .slice(1)
+    .map((line) => {
+      const [name, email] = line.split(',')
+      return { name, email }
+    })
   const run = await durably.jobs.importCsv.trigger({
     filename: file.name,
     rows,
@@ -158,7 +167,9 @@ export default function Home({ actionData }: Route.ComponentProps) {
       </Form>
 
       {progress && (
-        <p>Progress: {progress.current}/{progress.total} - {progress.message}</p>
+        <p>
+          Progress: {progress.current}/{progress.total} - {progress.message}
+        </p>
       )}
       {isCompleted && <p>Done! Imported {output?.imported} rows</p>}
     </div>
@@ -171,6 +182,7 @@ export default function Home({ actionData }: Route.ComponentProps) {
 ## Try It
 
 1. Create `test.csv`:
+
    ```csv
    name,email
    Alice,alice@example.com

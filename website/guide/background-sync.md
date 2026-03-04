@@ -59,7 +59,7 @@ export const processImageJob = defineJob({
   name: 'process-image',
   input: z.object({ filename: z.string() }),
   output: z.object({ url: z.string() }),
-  run: async (step, payload) => {
+  run: async (step, input) => {
     // Step 1: Download
     const data = await step.run('download', async () => {
       await delay(500)
@@ -75,7 +75,7 @@ export const processImageJob = defineJob({
     // Step 3: Upload
     const uploaded = await step.run('upload', async () => {
       await delay(500)
-      return { url: `https://cdn.example.com/${payload.filename}` }
+      return { url: `https://cdn.example.com/${input.filename}` }
     })
 
     return { url: uploaded.url }
@@ -143,7 +143,9 @@ durably.on('step:complete', (event) => {
 })
 
 durably.on('run:complete', (event) => {
-  console.log(`[run:complete] output=${JSON.stringify(event.output)} duration=${event.duration}ms`)
+  console.log(
+    `[run:complete] output=${JSON.stringify(event.output)} duration=${event.duration}ms`,
+  )
 })
 
 durably.on('run:fail', (event) => {
@@ -179,20 +181,22 @@ Build command-line tools with real-time progress output using the `run:progress`
 import { program } from 'commander'
 import { durably } from './lib/durably'
 
-program
-  .command('process <filename>')
-  .action(async (filename) => {
-    await durably.init()
+program.command('process <filename>').action(async (filename) => {
+  await durably.init()
 
-    durably.on('run:progress', ({ progress }) => {
-      process.stdout.write(`\r${progress.current}/${progress.total} - ${progress.message}`)
-    })
-
-    const { output } = await durably.jobs.processImage.triggerAndWait({ filename })
-    console.log(`\nDone: ${output.url}`)
-
-    await durably.stop()
+  durably.on('run:progress', ({ progress }) => {
+    process.stdout.write(
+      `\r${progress.current}/${progress.total} - ${progress.message}`,
+    )
   })
+
+  const { output } = await durably.jobs.processImage.triggerAndWait({
+    filename,
+  })
+  console.log(`\nDone: ${output.url}`)
+
+  await durably.stop()
+})
 
 program.parse()
 ```
@@ -204,7 +208,7 @@ Prevent duplicate runs with idempotency keys. If a run with the same key already
 ```ts
 await durably.jobs.processImage.trigger(
   { filename: 'photo.jpg' },
-  { idempotencyKey: `process-${new Date().toISOString().slice(0, 10)}` }
+  { idempotencyKey: `process-${new Date().toISOString().slice(0, 10)}` },
 )
 // Same key = returns existing run instead of creating new one
 ```
@@ -216,7 +220,7 @@ Limit concurrent jobs with concurrency keys. Only one job with the same key can 
 ```ts
 await durably.jobs.processImage.trigger(
   { filename: 'photo.jpg' },
-  { concurrencyKey: 'image-processing' }
+  { concurrencyKey: 'image-processing' },
 )
 // Only one job with this key runs at a time
 ```

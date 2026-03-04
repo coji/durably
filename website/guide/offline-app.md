@@ -73,15 +73,15 @@ export const dataSyncJob = defineJob({
   name: 'data-sync',
   input: z.object({ userId: z.string() }),
   output: z.object({ synced: z.number(), failed: z.number() }),
-  run: async (step, payload) => {
-    step.log.info(`Starting sync for user: ${payload.userId}`)
+  run: async (step, input) => {
+    step.log.info(`Starting sync for user: ${input.userId}`)
 
     const items = await step.run('fetch-local', async () => {
       step.progress(1, 4, 'Fetching local data...')
       await delay(300)
       return Array.from({ length: 10 }, (_, i) => ({
         id: `item-${i}`,
-        data: `Data for ${payload.userId}`,
+        data: `Data for ${input.userId}`,
       }))
     })
 
@@ -128,9 +128,9 @@ import { sqlocal } from './database'
 
 const durably = createDurably({
   dialect: sqlocal.dialect,
-  pollingInterval: 100,    // Check for pending jobs every 100ms
-  heartbeatInterval: 500,  // Send heartbeat every 500ms
-  staleThreshold: 3000,    // Mark job as stale after 3s without heartbeat
+  pollingInterval: 100, // Check for pending jobs every 100ms
+  heartbeatInterval: 500, // Send heartbeat every 500ms
+  staleThreshold: 3000, // Mark job as stale after 3s without heartbeat
 }).register({
   dataSync: dataSyncJob,
 })
@@ -163,8 +163,10 @@ function SyncButton() {
     setRunId(run.id)
   }
 
-  const { status, progress, output, isRunning, isCompleted, error } =
-    useJob(dataSyncJob, { initialRunId: runId ?? undefined })
+  const { status, progress, output, isRunning, isCompleted, error } = useJob(
+    dataSyncJob,
+    { initialRunId: runId ?? undefined },
+  )
 
   return (
     <div>
@@ -172,8 +174,16 @@ function SyncButton() {
         {isRunning ? 'Syncing...' : 'Sync Data'}
       </button>
 
-      {progress && <p>{progress.current}/{progress.total} - {progress.message}</p>}
-      {isCompleted && <p>Synced {output?.synced}, failed {output?.failed}</p>}
+      {progress && (
+        <p>
+          {progress.current}/{progress.total} - {progress.message}
+        </p>
+      )}
+      {isCompleted && (
+        <p>
+          Synced {output?.synced}, failed {output?.failed}
+        </p>
+      )}
       {error && <p>Error: {error}</p>}
     </div>
   )
@@ -203,13 +213,13 @@ const { trigger, ... } = useJob(dataSyncJob, {
 
 ## Available Hooks
 
-| Hook | Description |
-|------|-------------|
-| `useJob(jobDef)` | Trigger and monitor a job |
-| `useJobRun({ runId })` | Subscribe to an existing run |
-| `useJobLogs({ runId })` | Subscribe to logs |
-| `useRuns()` | List runs with pagination |
-| `useDurably()` | Access Durably instance |
+| Hook                    | Description                  |
+| ----------------------- | ---------------------------- |
+| `useJob(jobDef)`        | Trigger and monitor a job    |
+| `useJobRun({ runId })`  | Subscribe to an existing run |
+| `useJobLogs({ runId })` | Subscribe to logs            |
+| `useRuns()`             | List runs with pagination    |
+| `useDurably()`          | Access Durably instance      |
 
 ## Limitations
 

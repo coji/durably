@@ -11,7 +11,7 @@ const myJob = defineJob({
   name: 'my-job',
   input: z.object({ id: z.string() }),
   output: z.object({ result: z.string() }),
-  run: async (step, payload) => {
+  run: async (step, input) => {
     // Job implementation
     return { result: 'done' }
   },
@@ -23,7 +23,7 @@ const { myJob: job } = durably.register({ myJob })
 | Option   | Required | Description                 |
 | -------- | -------- | --------------------------- |
 | `name`   | Yes      | Unique job identifier       |
-| `input`  | Yes      | Zod schema for payload      |
+| `input`  | Yes      | Zod schema for input        |
 | `output` | No       | Zod schema for return value |
 | `run`    | Yes      | The job function            |
 
