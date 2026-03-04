@@ -335,24 +335,89 @@ export function createStorageTests(createDialect: () => Dialect) {
         })
       })
 
-      it('gets next pending run respecting concurrency keys', async () => {
-        // Create runs with different concurrency keys
+      it('claims next pending run atomically', async () => {
+        const created = await durably.storage.createRun({
+          jobName: 'test-job',
+          input: { x: 1 },
+        })
+
+        const claimed = await durably.storage.claimNextPendingRun([])
+
+        expect(claimed).not.toBeNull()
+        expect(claimed!.id).toBe(created.id)
+        expect(claimed!.status).toBe('running')
+        expect(claimed!.startedAt).not.toBeNull()
+        expect(claimed!.stepCount).toBe(0)
+
+        // Verify run is now running in DB
+        const run = await durably.storage.getRun(created.id)
+        expect(run!.status).toBe('running')
+      })
+
+      it('claimNextPendingRun returns null when no pending runs', async () => {
+        const result = await durably.storage.claimNextPendingRun([])
+        expect(result).toBeNull()
+      })
+
+      it('claimNextPendingRun respects concurrency key exclusion', async () => {
         await durably.storage.createRun({
           jobName: 'job',
           input: {},
           concurrencyKey: 'key-a',
         })
-        await durably.storage.createRun({
+        const run2 = await durably.storage.createRun({
           jobName: 'job',
           input: {},
           concurrencyKey: 'key-b',
         })
 
-        // Get next pending run, excluding key-a
-        const run = await durably.storage.getNextPendingRun(['key-a'])
+        const claimed = await durably.storage.claimNextPendingRun(['key-a'])
 
-        expect(run).not.toBeNull()
-        expect(run!.concurrencyKey).toBe('key-b')
+        expect(claimed).not.toBeNull()
+        expect(claimed!.id).toBe(run2.id)
+        expect(claimed!.concurrencyKey).toBe('key-b')
+        expect(claimed!.status).toBe('running')
+      })
+
+      it('claimNextPendingRun skips runs with null concurrency key when not excluded', async () => {
+        const run1 = await durably.storage.createRun({
+          jobName: 'job',
+          input: {},
+        })
+        await durably.storage.createRun({
+          jobName: 'job',
+          input: {},
+          concurrencyKey: 'key-a',
+        })
+
+        // Excluding key-a should still return the run without a concurrency key
+        const claimed = await durably.storage.claimNextPendingRun(['key-a'])
+
+        expect(claimed).not.toBeNull()
+        expect(claimed!.id).toBe(run1.id)
+      })
+
+      it('claimNextPendingRun preserves started_at on re-claim of recovered run', async () => {
+        // Create and claim a run
+        const created = await durably.storage.createRun({
+          jobName: 'test-job',
+          input: {},
+        })
+        const firstClaim = await durably.storage.claimNextPendingRun([])
+        expect(firstClaim).not.toBeNull()
+        const originalStartedAt = firstClaim!.startedAt
+
+        // Simulate stale run recovery: reset to pending
+        await durably.storage.updateRun(created.id, { status: 'pending' })
+
+        // Re-claim the run
+        const secondClaim = await durably.storage.claimNextPendingRun([])
+
+        expect(secondClaim).not.toBeNull()
+        expect(secondClaim!.id).toBe(created.id)
+        expect(secondClaim!.status).toBe('running')
+        // started_at should be preserved from the first claim
+        expect(secondClaim!.startedAt).toBe(originalStartedAt)
       })
     })
 

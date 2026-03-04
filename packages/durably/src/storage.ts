@@ -151,7 +151,7 @@ export interface Storage {
   deleteRun(runId: string): Promise<void>
   getRun<T extends Run = Run>(runId: string): Promise<T | null>
   getRuns<T extends Run = Run>(filter?: RunFilter): Promise<T[]>
-  getNextPendingRun(excludeConcurrencyKeys: string[]): Promise<Run | null>
+  claimNextPendingRun(excludeConcurrencyKeys: string[]): Promise<Run | null>
 
   // Step operations
   createStep(input: CreateStepInput): Promise<Step>
@@ -443,37 +443,44 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       return rows.map(rowToRun) as T[]
     },
 
-    async getNextPendingRun(
+    async claimNextPendingRun(
       excludeConcurrencyKeys: string[],
     ): Promise<Run | null> {
-      let query = db
+      const now = new Date().toISOString()
+
+      let subquery = db
         .selectFrom('durably_runs')
-        .leftJoin('durably_steps', 'durably_runs.id', 'durably_steps.run_id')
-        .selectAll('durably_runs')
-        .select((eb) =>
-          eb.fn.count<number>('durably_steps.id').as('step_count'),
-        )
-        .where('durably_runs.status', '=', 'pending')
-        .groupBy('durably_runs.id')
-        .orderBy('durably_runs.created_at', 'asc')
-        .orderBy('durably_runs.id', 'asc')
+        .select('id')
+        .where('status', '=', 'pending')
+        .orderBy('created_at', 'asc')
+        .orderBy('id', 'asc')
         .limit(1)
 
       if (excludeConcurrencyKeys.length > 0) {
-        query = query.where((eb) =>
+        subquery = subquery.where((eb) =>
           eb.or([
-            eb('durably_runs.concurrency_key', 'is', null),
-            eb(
-              'durably_runs.concurrency_key',
-              'not in',
-              excludeConcurrencyKeys,
-            ),
+            eb('concurrency_key', 'is', null),
+            eb('concurrency_key', 'not in', excludeConcurrencyKeys),
           ]),
         )
       }
 
-      const row = await query.executeTakeFirst()
-      return row ? rowToRun(row) : null
+      const row = await db
+        .updateTable('durably_runs')
+        .set({
+          status: 'running',
+          heartbeat_at: now,
+          started_at: sql`COALESCE(started_at, ${now})`,
+          updated_at: now,
+        })
+        .where('id', '=', (eb) =>
+          eb.selectFrom(subquery.as('sub')).select('id'),
+        )
+        .returningAll()
+        .executeTakeFirst()
+
+      if (!row) return null
+      return rowToRun({ ...row, step_count: 0 })
     },
 
     async createStep(input: CreateStepInput): Promise<Step> {
