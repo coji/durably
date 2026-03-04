@@ -282,6 +282,38 @@ export function createStorageTests(createDialect: () => Dialect) {
         expect(runs).toHaveLength(2)
       })
 
+      it('rejects invalid label keys', async () => {
+        await expect(
+          durably.storage.createRun({
+            jobName: 'test-job',
+            payload: {},
+            labels: { 'valid-key': 'ok', 'invalid key': 'bad' },
+          }),
+        ).rejects.toThrow('Invalid label key')
+      })
+
+      it('rejects label keys with special characters', async () => {
+        await expect(
+          durably.storage.createRun({
+            jobName: 'test-job',
+            payload: {},
+            labels: { 'key"injection': 'bad' },
+          }),
+        ).rejects.toThrow('Invalid label key')
+      })
+
+      it('allows Kubernetes-style label keys', async () => {
+        const run = await durably.storage.createRun({
+          jobName: 'test-job',
+          payload: {},
+          labels: { 'app.kubernetes.io/name': 'my-app', env: 'prod' },
+        })
+        expect(run.labels).toEqual({
+          'app.kubernetes.io/name': 'my-app',
+          env: 'prod',
+        })
+      })
+
       it('gets next pending run respecting concurrency keys', async () => {
         // Create runs with different concurrency keys
         await durably.storage.createRun({

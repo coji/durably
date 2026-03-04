@@ -137,6 +137,22 @@ export interface Storage {
 /**
  * Convert database row to Run object
  */
+/**
+ * Validate label keys: alphanumeric, dash, underscore, dot, slash only
+ */
+const LABEL_KEY_PATTERN = /^[a-zA-Z0-9\-_./]+$/
+
+function validateLabels(labels: Record<string, string> | undefined): void {
+  if (!labels) return
+  for (const key of Object.keys(labels)) {
+    if (!LABEL_KEY_PATTERN.test(key)) {
+      throw new Error(
+        `Invalid label key "${key}": must contain only alphanumeric characters, dashes, underscores, dots, and slashes`,
+      )
+    }
+  }
+}
+
 function rowToRun(
   row: Database['durably_runs'] & { step_count?: number | bigint | null },
 ): Run {
@@ -213,6 +229,8 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         }
       }
 
+      validateLabels(input.labels)
+
       const id = ulid()
       const run: Database['durably_runs'] = {
         id,
@@ -245,6 +263,11 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       return await db.transaction().execute(async (trx) => {
         const now = new Date().toISOString()
         const runs: Database['durably_runs'][] = []
+
+        // Validate all labels upfront
+        for (const input of inputs) {
+          validateLabels(input.labels)
+        }
 
         // Process inputs - check idempotency keys and create run objects
         for (const input of inputs) {
@@ -355,6 +378,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         query = query.where('durably_runs.job_name', '=', filter.jobName)
       }
       if (filter?.labels) {
+        validateLabels(filter.labels)
         for (const [key, value] of Object.entries(filter.labels)) {
           query = query.where(
             sql`json_extract(durably_runs.labels, ${`$.${key}`})`,
