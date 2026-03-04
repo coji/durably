@@ -467,14 +467,17 @@ export function createStepTests(createDialect: () => Dialect) {
         proceedResolve = resolve
       })
 
+      let step1SignalAborted = false
+
       const signalBoundaryTestDef = defineJob({
         name: 'signal-boundary-test',
         input: z.object({}),
         run: async (step) => {
-          await step.run('step1', async () => {
+          await step.run('step1', async (signal) => {
             step1StartedResolve()
             // Wait until we are told to proceed (after cancel is issued)
             await proceedPromise
+            step1SignalAborted = signal.aborted
             return 'done'
           })
 
@@ -510,6 +513,8 @@ export function createStepTests(createDialect: () => Dialect) {
 
       // step2 callback should never have been called
       expect(step2Called).toBe(false)
+      // signal should have been aborted during step1
+      expect(step1SignalAborted).toBe(true)
     })
   })
 }

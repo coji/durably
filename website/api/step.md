@@ -48,7 +48,7 @@ await step.run('fetch-all-pages', async (signal) => {
   const results = []
   for (let page = 1; page <= totalPages; page++) {
     if (signal.aborted) break // Stop early on cancellation
-    const data = await fetch(url, { signal }) // Also aborts fetch
+    const data = await fetch(`${baseUrl}?page=${page}`, { signal })
     results.push(data)
   }
   return results
