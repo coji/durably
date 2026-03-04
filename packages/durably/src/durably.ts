@@ -430,6 +430,7 @@ function createDurablyInstance<
         type: 'run:retry',
         runId,
         jobName: run.jobName,
+        labels: run.labels,
       })
     },
 
@@ -456,6 +457,7 @@ function createDurablyInstance<
         type: 'run:cancel',
         runId,
         jobName: run.jobName,
+        labels: run.labels,
       })
     },
 

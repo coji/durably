@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely'
+import { type Kysely, sql } from 'kysely'
 import { ulid } from 'ulidx'
 import type { Database } from './schema'
 
@@ -10,6 +10,7 @@ export interface CreateRunInput {
   payload: unknown
   idempotencyKey?: string
   concurrencyKey?: string
+  labels?: Record<string, string>
 }
 
 /**
@@ -27,6 +28,7 @@ export interface Run {
   progress: { current: number; total?: number; message?: string } | null
   output: unknown | null
   error: string | null
+  labels: Record<string, string>
   heartbeatAt: string
   createdAt: string
   updatedAt: string
@@ -50,6 +52,7 @@ export interface UpdateRunInput {
 export interface RunFilter {
   status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   jobName?: string
+  labels?: Record<string, string>
   /** Maximum number of runs to return */
   limit?: number
   /** Number of runs to skip (for pagination) */
@@ -149,6 +152,7 @@ function rowToRun(
     progress: row.progress ? JSON.parse(row.progress) : null,
     output: row.output ? JSON.parse(row.output) : null,
     error: row.error,
+    labels: JSON.parse(row.labels),
     heartbeatAt: row.heartbeat_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -221,6 +225,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         progress: null,
         output: null,
         error: null,
+        labels: JSON.stringify(input.labels ?? {}),
         heartbeat_at: now,
         created_at: now,
         updated_at: now,
@@ -270,6 +275,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
             progress: null,
             output: null,
             error: null,
+            labels: JSON.stringify(input.labels ?? {}),
             heartbeat_at: now,
             created_at: now,
             updated_at: now,
@@ -347,6 +353,15 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       }
       if (filter?.jobName) {
         query = query.where('durably_runs.job_name', '=', filter.jobName)
+      }
+      if (filter?.labels) {
+        for (const [key, value] of Object.entries(filter.labels)) {
+          query = query.where(
+            sql`json_extract(durably_runs.labels, ${`$.${key}`})`,
+            '=',
+            value,
+          )
+        }
       }
 
       query = query.orderBy('durably_runs.created_at', 'desc')

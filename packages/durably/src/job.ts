@@ -62,6 +62,7 @@ export type JobFunction<TInput, TOutput> = (
 export interface TriggerOptions {
   idempotencyKey?: string
   concurrencyKey?: string
+  labels?: Record<string, string>
   /** Timeout in milliseconds for triggerAndWait() */
   timeout?: number
 }
@@ -72,6 +73,7 @@ export interface TriggerOptions {
 export interface RunFilter {
   status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   jobName?: string
+  labels?: Record<string, string>
   /** Maximum number of runs to return */
   limit?: number
   /** Number of runs to skip (for pagination) */
@@ -233,6 +235,7 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
         payload: validatedInput,
         idempotencyKey: options?.idempotencyKey,
         concurrencyKey: options?.concurrencyKey,
+        labels: options?.labels,
       })
 
       // Emit run:trigger event
@@ -241,6 +244,7 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
         runId: run.id,
         jobName: jobDef.name,
         payload: validatedInput,
+        labels: run.labels,
       })
 
       return run as TypedRun<TOutput>
@@ -351,6 +355,7 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
           payload: v.payload,
           idempotencyKey: v.options?.idempotencyKey,
           concurrencyKey: v.options?.concurrencyKey,
+          labels: v.options?.labels,
         })),
       )
 
@@ -361,6 +366,7 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
           runId: runs[i].id,
           jobName: jobDef.name,
           payload: validated[i].payload,
+          labels: runs[i].labels,
         })
       }
 

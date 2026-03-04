@@ -24,6 +24,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         runId: 'run_1',
         jobName: 'test-job',
         payload: { foo: 'bar' },
+        labels: {},
       })
 
       expect(listener).toHaveBeenCalledTimes(1)
@@ -47,6 +48,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         runId: 'run_1',
         jobName: 'test-job',
         payload: {},
+        labels: {},
       })
 
       durably.emit({
@@ -55,6 +57,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         jobName: 'test-job',
         output: { result: 42 },
         duration: 100,
+        labels: {},
       })
 
       expect(events[0].sequence).toBe(1)
@@ -70,6 +73,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         runId: 'run_1',
         jobName: 'test-job',
         payload: {},
+        labels: {},
       })
 
       expect(events[0].timestamp).toBeDefined()
@@ -91,6 +95,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         runId: 'run_1',
         jobName: 'test-job',
         payload: {},
+        labels: {},
       })
 
       expect(listener1).toHaveBeenCalledTimes(1)
@@ -113,6 +118,7 @@ export function createEventsTests(createDialect: () => Dialect) {
           runId: 'run_1',
           jobName: 'test-job',
           payload: {},
+          labels: {},
         })
       }).not.toThrow()
 
@@ -129,6 +135,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         runId: 'run_1',
         jobName: 'test-job',
         payload: {},
+        labels: {},
       })
 
       expect(listener).toHaveBeenCalledTimes(1)
@@ -140,6 +147,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         runId: 'run_2',
         jobName: 'test-job',
         payload: {},
+        labels: {},
       })
 
       expect(listener).toHaveBeenCalledTimes(1) // Still 1, not called again
@@ -157,6 +165,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         runId: 'run_1',
         jobName: 'test-job',
         payload: {},
+        labels: {},
       })
 
       expect(startListener).toHaveBeenCalledTimes(1)
@@ -177,6 +186,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         runId: 'run_1',
         jobName: 'test-job',
         payload: {},
+        labels: {},
       })
 
       expect(failingListener).toHaveBeenCalledTimes(1)

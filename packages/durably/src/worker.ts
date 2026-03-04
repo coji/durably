@@ -91,7 +91,7 @@ export function createWorker(
   ): Promise<void> {
     // Check if run was cancelled during execution - don't overwrite cancelled status
     const currentRun = await storage.getRun(runId)
-    if (currentRun?.status === 'cancelled') {
+    if (!currentRun || currentRun.status === 'cancelled') {
       return
     }
 
@@ -106,6 +106,7 @@ export function createWorker(
       jobName,
       output,
       duration: Date.now() - startTime,
+      labels: currentRun.labels,
     })
   }
 
@@ -125,7 +126,7 @@ export function createWorker(
 
     // Check if run was cancelled during execution - don't overwrite cancelled status
     const currentRun = await storage.getRun(runId)
-    if (currentRun?.status === 'cancelled') {
+    if (!currentRun || currentRun.status === 'cancelled') {
       return
     }
 
@@ -146,6 +147,7 @@ export function createWorker(
       jobName,
       error: errorMessage,
       failedStepName: failedStep?.name ?? 'unknown',
+      labels: currentRun.labels,
     })
   }
 
@@ -178,6 +180,7 @@ export function createWorker(
       runId: run.id,
       jobName: run.jobName,
       payload: run.payload,
+      labels: run.labels,
     })
 
     const startTime = Date.now()

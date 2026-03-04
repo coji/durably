@@ -13,6 +13,7 @@ export interface RunsTable {
   progress: string | null // JSON: { current, total, message }
   output: string | null // JSON
   error: string | null
+  labels: string // JSON: Record<string, string>
   heartbeat_at: string // ISO8601
   created_at: string // ISO8601
   updated_at: string // ISO8601

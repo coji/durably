@@ -68,7 +68,7 @@ export function createMigrateTests(createDialect: () => Dialect) {
       `.execute(durably.db)
 
       expect(result.rows).toHaveLength(1)
-      expect(result.rows[0].version).toBe(1)
+      expect(result.rows[0].version).toBe(2)
     })
 
     it('is idempotent (can be called multiple times safely)', async () => {
@@ -82,8 +82,8 @@ export function createMigrateTests(createDialect: () => Dialect) {
         SELECT version FROM durably_schema_versions
       `.execute(durably.db)
 
-      // Should only have one version record
-      expect(result.rows).toHaveLength(1)
+      // Should have version records for each migration
+      expect(result.rows).toHaveLength(2)
     })
   })
 }

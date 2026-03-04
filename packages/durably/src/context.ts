@@ -48,6 +48,7 @@ export function createStepContext(
         jobName,
         stepName: name,
         stepIndex,
+        labels: run.labels,
       })
 
       try {
@@ -77,6 +78,7 @@ export function createStepContext(
           stepIndex: stepIndex - 1,
           output: result,
           duration: Date.now() - startTime,
+          labels: run.labels,
         })
 
         return result
@@ -102,6 +104,7 @@ export function createStepContext(
           stepName: name,
           stepIndex,
           error: errorMessage,
+          labels: run.labels,
         })
 
         throw error
@@ -121,6 +124,7 @@ export function createStepContext(
         runId: run.id,
         jobName,
         progress: progressData,
+        labels: run.labels,
       })
     },
 

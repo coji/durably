@@ -22,6 +22,7 @@ export interface TriggerRequest {
   input: Record<string, unknown>
   idempotencyKey?: string
   concurrencyKey?: string
+  labels?: Record<string, string>
 }
 
 /**
@@ -37,6 +38,7 @@ export interface TriggerResponse {
 export interface RunsRequest {
   jobName?: string
   status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  labels?: Record<string, string>
   limit?: number
   offset?: number
 }
@@ -159,6 +161,34 @@ export interface CreateDurablyHandlerOptions {
 }
 
 /**
+ * Parse label.* query params into a Record<string, string>
+ */
+function parseLabelsFromParams(
+  searchParams: URLSearchParams,
+): Record<string, string> | undefined {
+  const labels: Record<string, string> = {}
+  for (const [key, value] of searchParams.entries()) {
+    if (key.startsWith('label.')) {
+      labels[key.slice(6)] = value
+    }
+  }
+  return Object.keys(labels).length > 0 ? labels : undefined
+}
+
+/**
+ * Check if event labels match filter labels (all filter labels must match)
+ */
+function matchesLabels(
+  eventLabels: Record<string, string>,
+  filterLabels: Record<string, string>,
+): boolean {
+  for (const [key, value] of Object.entries(filterLabels)) {
+    if (eventLabels[key] !== value) return false
+  }
+  return true
+}
+
+/**
  * Create HTTP handlers for Durably
  * Uses Web Standard Request/Response for framework-agnostic usage
  */
@@ -217,6 +247,7 @@ export function createDurablyHandler(
         const run = await job.trigger(body.input ?? {}, {
           idempotencyKey: body.idempotencyKey,
           concurrencyKey: body.concurrencyKey,
+          labels: body.labels,
         })
 
         const response: TriggerResponse = { runId: run.id }
@@ -246,10 +277,12 @@ export function createDurablyHandler(
         const status = url.searchParams.get('status') as RunsRequest['status']
         const limit = url.searchParams.get('limit')
         const offset = url.searchParams.get('offset')
+        const labels = parseLabelsFromParams(url.searchParams)
 
         const runs = await durably.getRuns({
           jobName,
           status,
+          labels,
           limit: limit ? Number.parseInt(limit, 10) : undefined,
           offset: offset ? Number.parseInt(offset, 10) : undefined,
         })
@@ -337,110 +370,127 @@ export function createDurablyHandler(
     runsSubscribe(request: Request): Response {
       const url = new URL(request.url)
       const jobNameFilter = url.searchParams.get('jobName')
+      const labelsFilter = parseLabelsFromParams(url.searchParams)
 
-      // Helper to check job name filter
-      const matchesFilter = (jobName: string) =>
-        !jobNameFilter || jobName === jobNameFilter
+      // Helper to check job name and labels filter
+      const matchesFilter = (
+        jobName: string,
+        labels?: Record<string, string>,
+      ) => {
+        if (jobNameFilter && jobName !== jobNameFilter) return false
+        if (labelsFilter && (!labels || !matchesLabels(labels, labelsFilter)))
+          return false
+        return true
+      }
 
       const sseStream = createSSEStreamFromSubscriptions(
         (ctrl: SSEStreamController) => [
           durably.on('run:trigger', (event) => {
-            if (matchesFilter(event.jobName)) {
+            if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({
                 type: 'run:trigger',
                 runId: event.runId,
                 jobName: event.jobName,
+                labels: event.labels,
               })
             }
           }),
 
           durably.on('run:start', (event) => {
-            if (matchesFilter(event.jobName)) {
+            if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({
                 type: 'run:start',
                 runId: event.runId,
                 jobName: event.jobName,
+                labels: event.labels,
               })
             }
           }),
 
           durably.on('run:complete', (event) => {
-            if (matchesFilter(event.jobName)) {
+            if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({
                 type: 'run:complete',
                 runId: event.runId,
                 jobName: event.jobName,
+                labels: event.labels,
               })
             }
           }),
 
           durably.on('run:fail', (event) => {
-            if (matchesFilter(event.jobName)) {
+            if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({
                 type: 'run:fail',
                 runId: event.runId,
                 jobName: event.jobName,
+                labels: event.labels,
               })
             }
           }),
 
           durably.on('run:cancel', (event) => {
-            if (matchesFilter(event.jobName)) {
+            if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({
                 type: 'run:cancel',
                 runId: event.runId,
                 jobName: event.jobName,
+                labels: event.labels,
               })
             }
           }),
 
           durably.on('run:retry', (event) => {
-            if (matchesFilter(event.jobName)) {
+            if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({
                 type: 'run:retry',
                 runId: event.runId,
                 jobName: event.jobName,
+                labels: event.labels,
               })
             }
           }),
 
           durably.on('run:progress', (event) => {
-            if (matchesFilter(event.jobName)) {
+            if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({
                 type: 'run:progress',
                 runId: event.runId,
                 jobName: event.jobName,
                 progress: event.progress,
+                labels: event.labels,
               })
             }
           }),
 
           durably.on('step:start', (event) => {
-            if (matchesFilter(event.jobName)) {
+            if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({
                 type: 'step:start',
                 runId: event.runId,
                 jobName: event.jobName,
                 stepName: event.stepName,
                 stepIndex: event.stepIndex,
+                labels: event.labels,
               })
             }
           }),
 
           durably.on('step:complete', (event) => {
-            if (matchesFilter(event.jobName)) {
+            if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({
                 type: 'step:complete',
                 runId: event.runId,
                 jobName: event.jobName,
                 stepName: event.stepName,
                 stepIndex: event.stepIndex,
+                labels: event.labels,
               })
             }
           }),
 
           durably.on('step:fail', (event) => {
-            if (matchesFilter(event.jobName)) {
+            if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({
                 type: 'step:fail',
                 runId: event.runId,
@@ -448,14 +498,15 @@ export function createDurablyHandler(
                 stepName: event.stepName,
                 stepIndex: event.stepIndex,
                 error: event.error,
+                labels: event.labels,
               })
             }
           }),
 
           durably.on('log:write', (event) => {
-            // log:write doesn't have jobName, so we can't filter by it
+            // log:write doesn't have jobName or labels, so we can't filter by it
             // Send all logs when no filter, or skip if filter is set
-            if (!jobNameFilter) {
+            if (!jobNameFilter && !labelsFilter) {
               ctrl.enqueue({
                 type: 'log:write',
                 runId: event.runId,

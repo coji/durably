@@ -110,6 +110,16 @@ const migrations: Migration[] = [
         .execute()
     },
   },
+  {
+    version: 2,
+    up: async (db) => {
+      // Add labels column to runs table
+      await db.schema
+        .alterTable('durably_runs')
+        .addColumn('labels', 'text', (col) => col.notNull().defaultTo('{}'))
+        .execute()
+    },
+  },
 ]
 
 /**
