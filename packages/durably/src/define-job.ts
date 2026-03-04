@@ -6,7 +6,7 @@ import type { StepContext } from './job'
  */
 export type JobRunFunction<TInput, TOutput> = (
   step: StepContext,
-  payload: TInput,
+  input: TInput,
 ) => Promise<TOutput>
 
 /**
@@ -69,8 +69,8 @@ export interface DefineJobConfig<
  *   name: 'sync-users',
  *   input: z.object({ orgId: z.string() }),
  *   output: z.object({ syncedCount: z.number() }),
- *   run: async (step, payload) => {
- *     const users = await step.run('fetch-users', () => fetchUsers(payload.orgId))
+ *   run: async (step, input) => {
+ *     const users = await step.run('fetch-users', () => fetchUsers(input.orgId))
  *     return { syncedCount: users.length }
  *   },
  * })

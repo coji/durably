@@ -1,23 +1,5 @@
 import { useCallback, useState } from 'react'
-
-/**
- * Run record returned from the server API
- */
-export interface RunRecord {
-  id: string
-  jobName: string
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
-  payload: unknown
-  output: unknown | null
-  error: string | null
-  progress: { current: number; total?: number; message?: string } | null
-  currentStepIndex: number
-  stepCount: number
-  labels: Record<string, string>
-  createdAt: string
-  startedAt: string | null
-  completedAt: string | null
-}
+import type { ClientRun } from '../types'
 
 /**
  * Step record returned from the server API
@@ -51,7 +33,7 @@ export interface UseRunActionsClientResult {
   /**
    * Get a single run by ID
    */
-  getRun: (runId: string) => Promise<RunRecord | null>
+  getRun: (runId: string) => Promise<ClientRun | null>
   /**
    * Get steps for a run
    */
@@ -199,7 +181,7 @@ export function useRunActions(
   )
 
   const getRun = useCallback(
-    async (runId: string): Promise<RunRecord | null> => {
+    async (runId: string): Promise<ClientRun | null> => {
       setIsLoading(true)
       setError(null)
 
@@ -224,7 +206,7 @@ export function useRunActions(
           throw new Error(errorMessage)
         }
 
-        return (await response.json()) as RunRecord
+        return (await response.json()) as ClientRun
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error'
         setError(message)

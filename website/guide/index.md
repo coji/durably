@@ -18,9 +18,9 @@ Durably saves each step's result to SQLite. On resume, completed steps return ca
 ```ts
 const job = defineJob({
   name: 'import-csv',
-  run: async (step, payload) => {
+  run: async (step, input) => {
     // Step 1: Parse (cached after first run)
-    const rows = await step.run('parse', () => parseCSV(payload.file))
+    const rows = await step.run('parse', () => parseCSV(input.file))
 
     // Step 2: Import each row
     for (const [i, row] of rows.entries()) {
@@ -37,10 +37,10 @@ If the process crashes after importing 500 of 1000 rows, restart picks up at row
 
 ## Where It Runs
 
-| Environment | Storage | Use Case |
-|-------------|---------|----------|
+| Environment | Storage                        | Use Case               |
+| ----------- | ------------------------------ | ---------------------- |
 | **Node.js** | @libsql/client, better-sqlite3 | Server-side batch jobs |
-| **Browser** | SQLite WASM + OPFS | Offline-capable apps |
+| **Browser** | SQLite WASM + OPFS             | Offline-capable apps   |
 
 Same job definition works in both environments.
 

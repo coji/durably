@@ -33,7 +33,7 @@ describe('Core Extensions', () => {
       name: 'test-job-getjob',
       input: z.object({ value: z.number() }),
       output: z.object({ result: z.number() }),
-      run: async (_ctx, payload) => ({ result: payload.value * 2 }),
+      run: async (_ctx, input) => ({ result: input.value * 2 }),
     })
 
     it('returns registered job by name', () => {
@@ -63,11 +63,11 @@ describe('Core Extensions', () => {
   describe('subscribe', () => {
     const testJobDef = defineJob({
       name: 'test-job-subscribe',
-      input: z.object({ input: z.string() }),
+      input: z.object({ message: z.string() }),
       output: z.object({ result: z.string() }),
-      run: async (ctx, payload) => {
+      run: async (ctx, input) => {
         await ctx.run('step1', () => 'done')
-        return { result: `processed: ${payload.input}` }
+        return { result: `processed: ${input.message}` }
       },
     })
 
@@ -76,7 +76,7 @@ describe('Core Extensions', () => {
       durably.start()
 
       const job = durably.getJob('test-job-subscribe')!
-      const run = await job.trigger({ input: 'test' })
+      const run = await job.trigger({ message: 'test' })
 
       const stream = durably.subscribe(run.id)
       const reader = stream.getReader()
@@ -96,7 +96,7 @@ describe('Core Extensions', () => {
       durably.start()
 
       const job = durably.getJob('test-job-subscribe')!
-      const run = await job.trigger({ input: 'test' })
+      const run = await job.trigger({ message: 'test' })
 
       const stream = durably.subscribe(run.id)
       const reader = stream.getReader()
@@ -116,7 +116,7 @@ describe('Core Extensions', () => {
       durably.start()
 
       const job = durably.getJob('test-job-subscribe')!
-      const run = await job.trigger({ input: 'test' })
+      const run = await job.trigger({ message: 'test' })
 
       const stream = durably.subscribe(run.id)
       const reader = stream.getReader()
@@ -135,7 +135,7 @@ describe('Core Extensions', () => {
     it('cleans up event listeners when stream is cancelled', async () => {
       const longRunningJob = defineJob({
         name: 'long-running-subscribe',
-        input: z.object({ input: z.string() }),
+        input: z.object({ message: z.string() }),
         run: async (ctx) => {
           await ctx.run('wait', async () => {
             await new Promise((resolve) => setTimeout(resolve, 10000))
@@ -147,7 +147,7 @@ describe('Core Extensions', () => {
       durably.start()
 
       const job = durably.getJob('long-running-subscribe')!
-      const run = await job.trigger({ input: 'test' })
+      const run = await job.trigger({ message: 'test' })
 
       const stream = durably.subscribe(run.id)
       const reader = stream.getReader()
@@ -174,7 +174,7 @@ describe('Core Extensions', () => {
       name: 'test-job-handler',
       input: z.object({ value: z.number() }),
       output: z.object({ result: z.number() }),
-      run: async (_ctx, payload) => ({ result: payload.value * 2 }),
+      run: async (_ctx, input) => ({ result: input.value * 2 }),
     })
 
     beforeEach(() => {

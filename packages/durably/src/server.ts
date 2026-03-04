@@ -13,6 +13,7 @@ import {
   createSSEStreamFromSubscriptions,
   type SSEStreamController,
 } from './sse'
+import { toClientRun } from './storage'
 
 /**
  * Request body for triggering a job
@@ -287,7 +288,7 @@ export function createDurablyHandler(
           offset: offset ? Number.parseInt(offset, 10) : undefined,
         })
 
-        return jsonResponse(runs)
+        return jsonResponse(runs.map(toClientRun))
       } catch (error) {
         return errorResponse(getErrorMessage(error), 500)
       }
@@ -305,7 +306,7 @@ export function createDurablyHandler(
           return errorResponse('Run not found', 404)
         }
 
-        return jsonResponse(run)
+        return jsonResponse(toClientRun(run))
       } catch (error) {
         return errorResponse(getErrorMessage(error), 500)
       }

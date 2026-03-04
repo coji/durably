@@ -24,7 +24,7 @@ const typedJob = defineJob({
   name: 'typed-job',
   input: z.object({ taskId: z.string() }),
   output: z.object({ success: z.boolean() }),
-  run: async (_ctx, payload) => ({ success: payload.taskId.length > 0 }),
+  run: async (_ctx, input) => ({ success: input.taskId.length > 0 }),
 })
 
 const voidOutputJob = defineJob({
@@ -140,10 +140,10 @@ describe('Type inference', () => {
   })
 
   describe('useRuns (browser)', () => {
-    it('TypedRun has correct payload and output types', () => {
+    it('TypedRun has correct input and output types', () => {
       type TestRun = TypedRun<{ taskId: string }, { success: boolean }>
 
-      expectTypeOf<TestRun['payload']>().toEqualTypeOf<{ taskId: string }>()
+      expectTypeOf<TestRun['input']>().toEqualTypeOf<{ taskId: string }>()
       expectTypeOf<TestRun['output']>().toEqualTypeOf<{
         success: boolean
       } | null>()
@@ -158,7 +158,7 @@ describe('Type inference', () => {
       type Result = UseRunsResult<{ taskId: string }, { success: boolean }>
 
       expectTypeOf<Result['runs']>().toBeArray()
-      expectTypeOf<Result['runs'][0]['payload']>().toEqualTypeOf<{
+      expectTypeOf<Result['runs'][0]['input']>().toEqualTypeOf<{
         taskId: string
       }>()
       expectTypeOf<Result['runs'][0]['output']>().toEqualTypeOf<{
@@ -189,7 +189,7 @@ describe('Type inference', () => {
       >
 
       // runs array should accept either type
-      expectTypeOf<Result['runs'][0]['payload']>().toEqualTypeOf<
+      expectTypeOf<Result['runs'][0]['input']>().toEqualTypeOf<
         { file: string } | { userId: string }
       >()
     })

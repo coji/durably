@@ -7,7 +7,7 @@
  * Demonstrates typed useRuns with generic type parameter for multi-job dashboards.
  */
 
-import type { RunRecord, StepRecord } from '@coji/durably-react/client'
+import type { ClientRun, StepRecord } from '@coji/durably-react/client'
 import {
   type TypedClientRun,
   useRunActions,
@@ -64,7 +64,7 @@ export function Dashboard() {
     api: '/api/durably',
   })
 
-  const [selectedRun, setSelectedRun] = useState<RunRecord | null>(null)
+  const [selectedRun, setSelectedRun] = useState<ClientRun | null>(null)
   const [steps, setSteps] = useState<StepRecord[]>([])
 
   const handleCancel = async (runId: string) => {
@@ -354,9 +354,9 @@ export function Dashboard() {
                 )}
 
                 <div>
-                  <span className="font-medium text-gray-600">Payload:</span>
+                  <span className="font-medium text-gray-600">Input:</span>
                   <pre className="mt-1 overflow-auto rounded border bg-gray-50 p-3 text-xs">
-                    {JSON.stringify(selectedRun.payload, null, 2)}
+                    {JSON.stringify(selectedRun.input, null, 2)}
                   </pre>
                 </div>
 

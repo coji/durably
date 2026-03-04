@@ -11,7 +11,7 @@ const jobDef = defineJob<TName, TInput, TOutput>({
   name: TName,
   input: z.ZodType<TInput>,
   output?: z.ZodType<TOutput>,
-  run: (step: StepContext, payload: TInput) => Promise<TOutput>
+  run: (step: StepContext, input: TInput) => Promise<TOutput>
 })
 ```
 
@@ -22,23 +22,23 @@ interface DefineJobConfig<TName, TInput, TOutput> {
   name: TName
   input: z.ZodType<TInput>
   output?: z.ZodType<TOutput>
-  run: (step: StepContext, payload: TInput) => Promise<TOutput>
+  run: (step: StepContext, input: TInput) => Promise<TOutput>
 }
 ```
 
-| Option | Type | Required | Description |
-|--------|------|----------|-------------|
-| `name` | `string` | Yes | Unique identifier for the job |
-| `input` | `ZodSchema` | Yes | Zod schema for validating job input |
-| `output` | `ZodSchema` | No | Zod schema for validating job output |
-| `run` | `Function` | Yes | The job's run function |
+| Option   | Type        | Required | Description                          |
+| -------- | ----------- | -------- | ------------------------------------ |
+| `name`   | `string`    | Yes      | Unique identifier for the job        |
+| `input`  | `ZodSchema` | Yes      | Zod schema for validating job input  |
+| `output` | `ZodSchema` | No       | Zod schema for validating job output |
+| `run`    | `Function`  | Yes      | The job's run function               |
 
 ## Run Function
 
 The run function receives:
 
 - `step`: The [Step](/api/step) object for creating steps and logging
-- `payload`: The validated input payload
+- `input`: The validated input
 
 ## Returns
 
@@ -79,15 +79,15 @@ Triggers a new job run.
 interface TriggerOptions {
   idempotencyKey?: string
   concurrencyKey?: string
-  timeout?: number  // For triggerAndWait only
+  timeout?: number // For triggerAndWait only
 }
 ```
 
-| Option | Description |
-|--------|-------------|
+| Option           | Description                               |
+| ---------------- | ----------------------------------------- |
 | `idempotencyKey` | Prevents duplicate runs with the same key |
-| `concurrencyKey` | Groups jobs for concurrency control |
-| `timeout` | Timeout in ms for `triggerAndWait()` |
+| `concurrencyKey` | Groups jobs for concurrency control       |
+| `timeout`        | Timeout in ms for `triggerAndWait()`      |
 
 ### `triggerAndWait()`
 
@@ -107,7 +107,7 @@ console.log('Completed:', output)
 // With timeout
 const { output } = await job.triggerAndWait(
   { orgId: 'org_123' },
-  { timeout: 30000 }  // 30 seconds
+  { timeout: 30000 }, // 30 seconds
 )
 ```
 
@@ -169,9 +169,9 @@ const syncUsersJob = defineJob({
     syncedCount: z.number(),
     errors: z.array(z.string()),
   }),
-  run: async (step, payload) => {
+  run: async (step, input) => {
     const users = await step.run('fetch-users', async () => {
-      return await api.fetchUsers(payload.orgId)
+      return await api.fetchUsers(input.orgId)
     })
 
     const errors: string[] = []
@@ -203,7 +203,7 @@ await syncUsers.trigger({ orgId: 'org_123' })
 // With idempotency
 await syncUsers.trigger(
   { orgId: 'org_123' },
-  { idempotencyKey: 'sync-org_123-2024-01-01' }
+  { idempotencyKey: 'sync-org_123-2024-01-01' },
 )
 ```
 
@@ -216,9 +216,9 @@ const exampleJob = defineJob({
   name: 'example',
   input: z.object({ id: z.string() }),
   output: z.object({ result: z.number() }),
-  run: async (step, payload) => {
-    // payload is typed as { id: string }
-    return { result: 42 }  // Must match output schema
+  run: async (step, input) => {
+    // input is typed as { id: string }
+    return { result: 42 } // Must match output schema
   },
 })
 
@@ -227,8 +227,8 @@ const { job } = durably.register({
 })
 
 // trigger() is typed
-await job.trigger({ id: 'abc' })  // OK
-await job.trigger({ wrong: 1 })   // Type error
+await job.trigger({ id: 'abc' }) // OK
+await job.trigger({ wrong: 1 }) // Type error
 ```
 
 ## Idempotent Registration

@@ -53,7 +53,7 @@ export interface StepContext {
  */
 export type JobFunction<TInput, TOutput> = (
   step: StepContext,
-  payload: TInput,
+  input: TInput,
 ) => Promise<TOutput>
 
 /**
@@ -232,7 +232,7 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
       // Create the run
       const run = await storage.createRun({
         jobName: jobDef.name,
-        payload: validatedInput,
+        input: validatedInput,
         idempotencyKey: options?.idempotencyKey,
         concurrencyKey: options?.concurrencyKey,
         labels: options?.labels,
@@ -243,7 +243,7 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
         type: 'run:trigger',
         runId: run.id,
         jobName: jobDef.name,
-        payload: validatedInput,
+        input: validatedInput,
         labels: run.labels,
       })
 
@@ -335,7 +335,7 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
       })
 
       // Validate all inputs first (before creating any runs)
-      const validated: { payload: unknown; options?: TriggerOptions }[] = []
+      const validated: { input: unknown; options?: TriggerOptions }[] = []
       for (let i = 0; i < normalized.length; i++) {
         const validatedInput = validateJobInputOrThrow(
           inputSchema,
@@ -343,7 +343,7 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
           `at index ${i}`,
         )
         validated.push({
-          payload: validatedInput,
+          input: validatedInput,
           options: normalized[i].options,
         })
       }
@@ -352,7 +352,7 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
       const runs = await storage.batchCreateRuns(
         validated.map((v) => ({
           jobName: jobDef.name,
-          payload: v.payload,
+          input: v.input,
           idempotencyKey: v.options?.idempotencyKey,
           concurrencyKey: v.options?.concurrencyKey,
           labels: v.options?.labels,
@@ -365,7 +365,7 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
           type: 'run:trigger',
           runId: runs[i].id,
           jobName: jobDef.name,
-          payload: validated[i].payload,
+          input: validated[i].input,
           labels: runs[i].labels,
         })
       }

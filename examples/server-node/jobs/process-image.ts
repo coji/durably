@@ -13,7 +13,7 @@ export const processImageJob = defineJob({
   name: 'process-image',
   input: z.object({ filename: z.string() }),
   output: z.object({ url: z.string() }),
-  run: async (step, payload) => {
+  run: async (step, input) => {
     // Step 1: Download
     const data = await step.run('download', async () => {
       await delay(500)
@@ -29,7 +29,7 @@ export const processImageJob = defineJob({
     // Step 3: Upload
     const uploaded = await step.run('upload', async () => {
       await delay(500)
-      return { url: `https://cdn.example.com/${payload.filename}` }
+      return { url: `https://cdn.example.com/${input.filename}` }
     })
 
     return { url: uploaded.url }

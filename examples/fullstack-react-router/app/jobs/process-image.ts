@@ -13,8 +13,8 @@ export const processImageJob = defineJob({
   name: 'process-image',
   input: z.object({ filename: z.string(), width: z.number() }),
   output: z.object({ url: z.string(), size: z.number() }),
-  run: async (step, payload) => {
-    step.log.info(`Starting image processing: ${payload.filename}`)
+  run: async (step, input) => {
+    step.log.info(`Starting image processing: ${input.filename}`)
 
     // Download original image
     const fileSize = await step.run('download', async () => {
@@ -29,7 +29,7 @@ export const processImageJob = defineJob({
     const resizedSize = await step.run('resize', async () => {
       step.progress(2, 3, 'Resizing...')
       await delay(600)
-      return Math.floor(fileSize * (payload.width / 1920))
+      return Math.floor(fileSize * (input.width / 1920))
     })
 
     step.log.info(`Resized to: ${resizedSize} bytes`)
@@ -38,7 +38,7 @@ export const processImageJob = defineJob({
     const url = await step.run('upload', async () => {
       step.progress(3, 3, 'Uploading...')
       await delay(400)
-      return `https://cdn.example.com/${payload.width}/${payload.filename}`
+      return `https://cdn.example.com/${input.width}/${input.filename}`
     })
 
     step.log.info(`Uploaded to: ${url}`)

@@ -22,7 +22,7 @@ durably.on('run:trigger', (event) => {
   //   type: 'run:trigger',
   //   runId: string,
   //   jobName: string,
-  //   payload: unknown,
+  //   input: unknown,
   //   labels: Record<string, string>,
   //   timestamp: string,
   //   sequence: number
@@ -40,7 +40,7 @@ durably.on('run:start', (event) => {
   //   type: 'run:start',
   //   runId: string,
   //   jobName: string,
-  //   payload: unknown,
+  //   input: unknown,
   //   labels: Record<string, string>,
   //   timestamp: string,
   //   sequence: number

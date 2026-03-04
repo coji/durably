@@ -203,8 +203,8 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           job: defineJob({
             name: 'retry-test',
             input: z.object({ shouldFail: z.boolean() }),
-            run: async (_step, payload) => {
-              if (payload.shouldFail) {
+            run: async (_step, input) => {
+              if (input.shouldFail) {
                 throw new Error('Intentional failure')
               }
             },

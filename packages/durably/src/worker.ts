@@ -98,6 +98,7 @@ export function createWorker(
     await storage.updateRun(runId, {
       status: 'completed',
       output,
+      completedAt: new Date().toISOString(),
     })
 
     eventEmitter.emit({
@@ -139,6 +140,7 @@ export function createWorker(
     await storage.updateRun(runId, {
       status: 'failed',
       error: errorMessage,
+      completedAt: new Date().toISOString(),
     })
 
     eventEmitter.emit({
@@ -179,7 +181,7 @@ export function createWorker(
       type: 'run:start',
       runId: run.id,
       jobName: run.jobName,
-      payload: run.payload,
+      input: run.input,
       labels: run.labels,
     })
 
@@ -194,7 +196,7 @@ export function createWorker(
 
     try {
       // Execute job with step context
-      const output = await job.fn(step, run.payload)
+      const output = await job.fn(step, run.input)
 
       // Validate output if schema exists
       if (job.outputSchema) {
@@ -246,9 +248,11 @@ export function createWorker(
     }
 
     // Transition to running
+    const now = new Date().toISOString()
     await storage.updateRun(run.id, {
       status: 'running',
-      heartbeatAt: new Date().toISOString(),
+      heartbeatAt: now,
+      startedAt: now,
     })
 
     await executeRun(run, job)

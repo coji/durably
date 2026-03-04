@@ -13,15 +13,15 @@ export const dataSyncJob = defineJob({
   name: 'data-sync',
   input: z.object({ userId: z.string() }),
   output: z.object({ synced: z.number(), failed: z.number() }),
-  run: async (step, payload) => {
-    step.log.info(`Starting sync for user: ${payload.userId}`)
+  run: async (step, input) => {
+    step.log.info(`Starting sync for user: ${input.userId}`)
 
     const items = await step.run('fetch-local', async () => {
       step.progress(1, 4, 'Fetching local data...')
       await delay(300)
       return Array.from({ length: 10 }, (_, i) => ({
         id: `item-${i}`,
-        data: `Data for ${payload.userId}`,
+        data: `Data for ${input.userId}`,
       }))
     })
 

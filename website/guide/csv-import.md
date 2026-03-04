@@ -63,17 +63,19 @@ export const importCsvJob = defineJob({
     rows: z.array(csvRowSchema),
   }),
   output: outputSchema,
-  run: async (step, payload) => {
-    step.log.info(`Starting import of ${payload.filename} (${payload.rows.length} rows)`)
+  run: async (step, input) => {
+    step.log.info(
+      `Starting import of ${input.filename} (${input.rows.length} rows)`,
+    )
 
     // Step 1: Validate all rows
     const validRows = await step.run('validate', async () => {
-      const valid: typeof payload.rows = []
-      const invalid: { row: (typeof payload.rows)[0]; reason: string }[] = []
+      const valid: typeof input.rows = []
+      const invalid: { row: (typeof input.rows)[0]; reason: string }[] = []
 
-      for (let i = 0; i < payload.rows.length; i++) {
-        const row = payload.rows[i]
-        step.progress(i + 1, payload.rows.length, `Validating ${row.name}...`)
+      for (let i = 0; i < input.rows.length; i++) {
+        const row = input.rows[i]
+        step.progress(i + 1, input.rows.length, `Validating ${row.name}...`)
         await delay(50)
 
         if (row.amount < 0) {
@@ -84,7 +86,9 @@ export const importCsvJob = defineJob({
         }
       }
 
-      step.log.info(`Validation complete: ${valid.length} valid, ${invalid.length} invalid`)
+      step.log.info(
+        `Validation complete: ${valid.length} valid, ${invalid.length} invalid`,
+      )
       return { valid, invalidCount: invalid.length }
     })
 
@@ -195,7 +199,9 @@ function ImportProgress({ runId }: { runId: string | null }) {
         </>
       )}
       {isCompleted && (
-        <p>Imported {output?.imported}, failed {output?.failed}</p>
+        <p>
+          Imported {output?.imported}, failed {output?.failed}
+        </p>
       )}
       {isFailed && <p>Error: {error}</p>}
     </div>
@@ -216,18 +222,28 @@ function Dashboard() {
 
   return (
     <table>
-      {runs.map(run => (
+      {runs.map((run) => (
         <tr key={run.id}>
           <td>{run.jobName}</td>
           <td>{run.status}</td>
           <td>
             {run.status === 'failed' && (
-              <button onClick={() => { retry(run.id); refresh() }}>
+              <button
+                onClick={() => {
+                  retry(run.id)
+                  refresh()
+                }}
+              >
                 Retry
               </button>
             )}
             {run.status === 'running' && (
-              <button onClick={() => { cancel(run.id); refresh() }}>
+              <button
+                onClick={() => {
+                  cancel(run.id)
+                  refresh()
+                }}
+              >
                 Cancel
               </button>
             )}

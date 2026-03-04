@@ -1,6 +1,6 @@
 // Shared type definitions for @coji/durably-react
 
-import type { JobDefinition, Run } from '@coji/durably'
+import type { ClientRun, JobDefinition, Run } from '@coji/durably'
 
 // Type inference utilities for extracting Input/Output types from JobDefinition
 export type InferInput<T> =
@@ -61,7 +61,7 @@ export interface SubscriptionState<TOutput = unknown> {
 
 // SSE event types (sent from server)
 export type DurablyEvent =
-  | { type: 'run:start'; runId: string; jobName: string; payload: unknown }
+  | { type: 'run:start'; runId: string; jobName: string; input: unknown }
   | {
       type: 'run:complete'
       runId: string
@@ -107,7 +107,7 @@ export type DurablyEvent =
 // =============================================================================
 
 /**
- * A typed version of Run with generic payload/output types.
+ * A typed version of Run with generic input/output types.
  * Used by browser hooks (direct durably access).
  */
 export type TypedRun<
@@ -115,30 +115,13 @@ export type TypedRun<
   TOutput extends Record<string, unknown> | undefined =
     | Record<string, unknown>
     | undefined,
-> = Omit<Run, 'payload' | 'output'> & {
-  payload: TInput
+> = Omit<Run, 'input' | 'output'> & {
+  input: TInput
   output: TOutput | null
 }
 
-/**
- * Run type for client mode (matches server response).
- * Used by client hooks (HTTP/SSE connection).
- */
-export interface ClientRun {
-  id: string
-  jobName: string
-  status: RunStatus
-  input: unknown
-  output: unknown | null
-  error: string | null
-  currentStepIndex: number
-  stepCount: number
-  labels: Record<string, string>
-  progress: Progress | null
-  createdAt: string
-  startedAt: string | null
-  completedAt: string | null
-}
+// ClientRun is imported from '@coji/durably' and re-exported for consumers.
+export type { ClientRun } from '@coji/durably'
 
 /**
  * A typed version of ClientRun with generic input/output types.

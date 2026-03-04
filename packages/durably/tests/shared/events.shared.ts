@@ -23,7 +23,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         type: 'run:start',
         runId: 'run_1',
         jobName: 'test-job',
-        payload: { foo: 'bar' },
+        input: { foo: 'bar' },
         labels: {},
       })
 
@@ -33,7 +33,7 @@ export function createEventsTests(createDialect: () => Dialect) {
           type: 'run:start',
           runId: 'run_1',
           jobName: 'test-job',
-          payload: { foo: 'bar' },
+          input: { foo: 'bar' },
           labels: {},
         }),
       )
@@ -48,7 +48,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         type: 'run:start',
         runId: 'run_1',
         jobName: 'test-job',
-        payload: {},
+        input: {},
         labels: {},
       })
 
@@ -73,7 +73,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         type: 'run:start',
         runId: 'run_1',
         jobName: 'test-job',
-        payload: {},
+        input: {},
         labels: {},
       })
 
@@ -95,7 +95,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         type: 'run:start',
         runId: 'run_1',
         jobName: 'test-job',
-        payload: {},
+        input: {},
         labels: {},
       })
 
@@ -118,7 +118,7 @@ export function createEventsTests(createDialect: () => Dialect) {
           type: 'run:start',
           runId: 'run_1',
           jobName: 'test-job',
-          payload: {},
+          input: {},
           labels: {},
         })
       }).not.toThrow()
@@ -135,7 +135,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         type: 'run:start',
         runId: 'run_1',
         jobName: 'test-job',
-        payload: {},
+        input: {},
         labels: {},
       })
 
@@ -147,7 +147,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         type: 'run:start',
         runId: 'run_2',
         jobName: 'test-job',
-        payload: {},
+        input: {},
         labels: {},
       })
 
@@ -165,7 +165,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         type: 'run:start',
         runId: 'run_1',
         jobName: 'test-job',
-        payload: {},
+        input: {},
         labels: {},
       })
 
@@ -208,7 +208,7 @@ export function createEventsTests(createDialect: () => Dialect) {
         type: 'run:start',
         runId: 'run_1',
         jobName: 'test-job',
-        payload: {},
+        input: {},
         labels: {},
       })
 

@@ -133,7 +133,7 @@ const run = await durably.getRun(runId)
 
 // Typed (returns custom type)
 type MyRun = Run & {
-  payload: { userId: string }
+  input: { userId: string }
   output: { count: number } | null
 }
 const typedRun = await durably.getRun<MyRun>(runId)
@@ -158,11 +158,57 @@ Gets runs with optional filtering and pagination. Supports generic type paramete
 ```ts
 // Typed getRuns
 type MyRun = Run & {
-  payload: { userId: string }
+  input: { userId: string }
   output: { count: number } | null
 }
 const runs = await durably.getRuns<MyRun>({ jobName: 'my-job' })
 ```
+
+### `Run` Type
+
+The `Run` object returned by `getRun()` and `getRuns()`:
+
+```ts
+interface Run {
+  id: string
+  jobName: string
+  input: unknown
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  idempotencyKey: string | null
+  concurrencyKey: string | null
+  currentStepIndex: number
+  stepCount: number
+  progress: { current: number; total?: number; message?: string } | null
+  output: unknown | null
+  error: string | null
+  labels: Record<string, string>
+  heartbeatAt: string
+  startedAt: string | null
+  completedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+```
+
+| Field              | Type                                                               | Description                                    |
+| ------------------ | ------------------------------------------------------------------ | ---------------------------------------------- |
+| `id`               | `string`                                                           | Unique run ID                                  |
+| `jobName`          | `string`                                                           | Name of the job                                |
+| `input`            | `unknown`                                                          | Input payload passed to the job                |
+| `status`           | `'pending' \| 'running' \| 'completed' \| 'failed' \| 'cancelled'` | Current run status                             |
+| `idempotencyKey`   | `string \| null`                                                   | Deduplication key                              |
+| `concurrencyKey`   | `string \| null`                                                   | Concurrency group key                          |
+| `currentStepIndex` | `number`                                                           | Index of the current step being executed       |
+| `stepCount`        | `number`                                                           | Total number of completed steps                |
+| `progress`         | `{ current: number; total?: number; message?: string } \| null`    | Latest progress report                         |
+| `output`           | `unknown \| null`                                                  | Return value of the job (when completed)       |
+| `error`            | `string \| null`                                                   | Error message (when failed)                    |
+| `labels`           | `Record<string, string>`                                           | Arbitrary key/value labels for filtering       |
+| `heartbeatAt`      | `string`                                                           | ISO timestamp of the last heartbeat            |
+| `startedAt`        | `string \| null`                                                   | ISO timestamp when the run started             |
+| `completedAt`      | `string \| null`                                                   | ISO timestamp when the run completed or failed |
+| `createdAt`        | `string`                                                           | ISO timestamp when the run was created         |
+| `updatedAt`        | `string`                                                           | ISO timestamp of the last update               |
 
 ### `getJob()`
 
@@ -207,7 +253,7 @@ import { z } from 'zod'
 const myJobDef = defineJob({
   name: 'my-job',
   input: z.object({ id: z.string() }),
-  run: async (step, payload) => {
+  run: async (step, input) => {
     // ...
   },
 })

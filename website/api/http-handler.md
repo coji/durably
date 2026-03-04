@@ -85,6 +85,17 @@ app.use('/api/durably', async (req, res, next) => {
 app.all('/api/durably/*', (c) => handler.handle(c.req.raw, '/api/durably'))
 ```
 
+## Response Shape
+
+The `/runs` and `/run` endpoints return `ClientRun` objects — a subset of the full `Run` type with internal fields (`heartbeatAt`, `idempotencyKey`, `concurrencyKey`, `updatedAt`) stripped. Use `toClientRun()` to apply the same projection in custom code:
+
+```ts
+import { toClientRun } from '@coji/durably'
+
+const run = await durably.getRun(runId)
+const clientRun = toClientRun(run) // strips internal fields
+```
+
 ## Endpoints
 
 The handler provides these endpoints:

@@ -110,8 +110,8 @@ const myJob = defineJob({
   name: 'my-job',
   input: z.object({ value: z.string() }),
   output: z.object({ result: z.number() }),
-  run: async (step, payload) => {
-    const data = await step.run('process', () => process(payload.value))
+  run: async (step, input) => {
+    const data = await step.run('process', () => process(input.value))
     return { result: data.length }
   },
 })
@@ -292,7 +292,7 @@ const myJob = defineJob({
   name: 'my-job',
   input: z.object({ value: z.string() }),
   output: z.object({ result: z.number() }),
-  run: async (step, payload) => {
+  run: async (step, input) => {
     /* ... */
   },
 })
@@ -489,7 +489,7 @@ const syncDataJob = defineJob({
   name: 'sync-data',
   input: z.object({ userId: z.string() }),
   output: z.object({ count: z.number() }),
-  run: async (step, payload) => {
+  run: async (step, input) => {
     /* ... */
   },
 })
@@ -614,10 +614,12 @@ interface LogEntry {
 type TypedRun<
   TInput extends Record<string, unknown> = Record<string, unknown>,
   TOutput extends Record<string, unknown> | undefined = Record<string, unknown>,
-> = Omit<Run, 'payload' | 'output'> & {
-  payload: TInput
+> = Omit<Run, 'input' | 'output'> & {
+  input: TInput
   output: TOutput | null
 }
+
+// ClientRun is re-exported from @coji/durably (excludes heartbeatAt, idempotencyKey, concurrencyKey, updatedAt)
 
 // Client hooks: TypedClientRun with generic input/output
 type TypedClientRun<

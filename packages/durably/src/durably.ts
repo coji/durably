@@ -183,7 +183,7 @@ export interface Durably<
    * const run = await durably.getRun(runId)
    *
    * // Typed (returns custom type)
-   * type MyRun = Run & { payload: { userId: string }; output: { count: number } | null }
+   * type MyRun = Run & { input: { userId: string }; output: { count: number } | null }
    * const typedRun = await durably.getRun<MyRun>(runId)
    * ```
    */
@@ -197,7 +197,7 @@ export interface Durably<
    * const runs = await durably.getRuns({ status: 'completed' })
    *
    * // Typed (returns custom type[])
-   * type MyRun = Run & { payload: { userId: string }; output: { count: number } | null }
+   * type MyRun = Run & { input: { userId: string }; output: { count: number } | null }
    * const typedRuns = await durably.getRuns<MyRun>({ jobName: 'my-job' })
    * ```
    */

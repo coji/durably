@@ -28,10 +28,10 @@ const importCsvJob = defineJob({
   name: 'import-csv',
   input: z.object({ filename: z.string() }),
   output: z.object({ count: z.number() }),
-  run: async (step, payload) => {
+  run: async (step, input) => {
     // Step 1: Parse file (cached on resume)
     const rows = await step.run('parse', async () => {
-      return parseCSV(payload.filename)
+      return parseCSV(input.filename)
     })
 
     // Step 2: Import each row
@@ -239,6 +239,7 @@ function ImportButton() {
 
 ```ts
 import type {
+  ClientRun,
   Durably,
   DurablyOptions,
   JobDefinition,
@@ -250,4 +251,28 @@ import type {
   DurablyEvent,
   EventType,
 } from '@coji/durably'
+import { toClientRun } from '@coji/durably'
 ```
+
+### `Run` Type
+
+Key fields on the `Run` object returned by `getRun()` and `getRuns()`:
+
+| Field         | Type                                                               | Description                                    |
+| ------------- | ------------------------------------------------------------------ | ---------------------------------------------- |
+| `id`          | `string`                                                           | Unique run ID                                  |
+| `jobName`     | `string`                                                           | Name of the job                                |
+| `input`       | `unknown`                                                          | Input payload passed to the job                |
+| `status`      | `'pending' \| 'running' \| 'completed' \| 'failed' \| 'cancelled'` | Current run status                             |
+| `output`      | `unknown \| null`                                                  | Return value of the job (when completed)       |
+| `error`       | `string \| null`                                                   | Error message (when failed)                    |
+| `progress`    | `{ current: number; total?: number; message?: string } \| null`    | Latest progress report                         |
+| `labels`      | `Record<string, string>`                                           | Arbitrary key/value labels for filtering       |
+| `startedAt`   | `string \| null`                                                   | ISO timestamp when the run started             |
+| `completedAt` | `string \| null`                                                   | ISO timestamp when the run completed or failed |
+| `createdAt`   | `string`                                                           | ISO timestamp when the run was created         |
+| `updatedAt`   | `string`                                                           | ISO timestamp of the last update               |
+
+HTTP endpoints (`/runs`, `/run`) return `ClientRun` — the same fields minus `idempotencyKey`, `concurrencyKey`, `heartbeatAt`, and `updatedAt`. Use `toClientRun(run)` to apply the same projection in custom code.
+
+**See:** [createDurably - Run Type](/api/create-durably#run-type) for the full field list.

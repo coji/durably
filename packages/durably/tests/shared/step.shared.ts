@@ -118,7 +118,7 @@ export function createStepTests(createDialect: () => Dialect) {
       const stepResumeTestDef = defineJob({
         name: 'step-resume-test',
         input: z.object({ shouldFail: z.boolean() }),
-        run: async (step, payload) => {
+        run: async (step, input) => {
           await step.run('step1', () => {
             step1Calls++
             return 'step1-result'
@@ -126,7 +126,7 @@ export function createStepTests(createDialect: () => Dialect) {
 
           await step.run('step2', () => {
             step2Calls++
-            if (payload.shouldFail && step2Calls === 1) {
+            if (input.shouldFail && step2Calls === 1) {
               throw new Error('Intentional failure')
             }
             return 'step2-result'

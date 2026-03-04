@@ -94,8 +94,8 @@ const myJob = defineJob({
   name: 'my-job',
   input: z.object({ value: z.string() }),
   output: z.object({ result: z.number() }),
-  run: async (step, payload) => {
-    const data = await step.run('process', () => process(payload.value))
+  run: async (step, input) => {
+    const data = await step.run('process', () => process(input.value))
     return { result: data.length }
   },
 })
@@ -302,7 +302,7 @@ const myJob = defineJob({
   name: 'my-job',
   input: z.object({ value: z.string() }),
   output: z.object({ result: z.number() }),
-  run: async (step, payload) => {
+  run: async (step, input) => {
     /* ... */
   },
 })

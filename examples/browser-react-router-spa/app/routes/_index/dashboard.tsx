@@ -341,9 +341,9 @@ export function Dashboard() {
                 )}
 
                 <div>
-                  <span className="font-medium text-gray-600">Payload:</span>
+                  <span className="font-medium text-gray-600">Input:</span>
                   <pre className="mt-1 overflow-auto rounded border bg-gray-50 p-3 text-xs">
-                    {JSON.stringify(selectedRun.payload, null, 2)}
+                    {JSON.stringify(selectedRun.input, null, 2)}
                   </pre>
                 </div>
 
