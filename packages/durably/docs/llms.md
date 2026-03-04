@@ -100,6 +100,12 @@ await syncUsers.trigger(
 
 // With concurrency key (serializes execution)
 await syncUsers.trigger({ orgId: 'org_123' }, { concurrencyKey: 'org_123' })
+
+// With labels (for filtering/multi-tenancy)
+await syncUsers.trigger(
+  { orgId: 'org_123' },
+  { labels: { organizationId: 'org_123', env: 'prod' } },
+)
 ```
 
 ## Step Context API
@@ -168,6 +174,11 @@ const runs = await durably.getRuns({
   status: 'completed',
   limit: 10,
   offset: 0,
+})
+
+// Filter by labels (multi-tenancy)
+const orgRuns = await durably.getRuns({
+  labels: { organizationId: 'org_123' },
 })
 
 // Typed getRuns with generic parameter
@@ -292,6 +303,13 @@ app.post('/api/durably/cancel', (req) => handler.cancel(req))
 app.delete('/api/durably/run', (req) => handler.delete(req))
 ```
 
+**Label filtering via query params:**
+
+```
+GET /runs?label.organizationId=org_123
+GET /runs/subscribe?label.organizationId=org_123&label.env=prod
+```
+
 **Handler Interface:**
 
 ```ts
@@ -316,6 +334,7 @@ interface TriggerRequest {
   input: Record<string, unknown>
   idempotencyKey?: string
   concurrencyKey?: string
+  labels?: Record<string, string>
 }
 
 interface TriggerResponse {
@@ -414,6 +433,7 @@ interface Run<TOutput = unknown> {
   jobName: string
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   payload: unknown
+  labels: Record<string, string>
   output?: TOutput
   error?: string
   progress?: { current: number; total?: number; message?: string }
@@ -436,7 +456,16 @@ interface JobHandle<TName, TInput, TOutput> {
 interface TriggerOptions {
   idempotencyKey?: string
   concurrencyKey?: string
+  labels?: Record<string, string>
   timeout?: number
+}
+
+interface RunFilter {
+  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  jobName?: string
+  labels?: Record<string, string>
+  limit?: number
+  offset?: number
 }
 ```
 

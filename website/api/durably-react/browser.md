@@ -3,7 +3,14 @@
 Run Durably entirely in the browser using SQLite WASM with OPFS persistence. Jobs execute client-side with data stored in the browser's Origin Private File System.
 
 ```tsx
-import { DurablyProvider, useDurably, useJob, useJobRun, useJobLogs, useRuns } from '@coji/durably-react'
+import {
+  DurablyProvider,
+  useDurably,
+  useJob,
+  useJobRun,
+  useJobLogs,
+  useRuns,
+} from '@coji/durably-react'
 ```
 
 ## DurablyProvider
@@ -37,12 +44,12 @@ function App() {
 
 ### Props
 
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `durably` | `Durably \| Promise<Durably>` | required | Durably instance or Promise |
-| `autoStart` | `boolean` | `true` | Auto-start worker on mount |
-| `onReady` | `(durably: Durably) => void` | - | Callback when ready |
-| `fallback` | `ReactNode` | - | Loading fallback (wraps in Suspense) |
+| Prop        | Type                          | Default  | Description                          |
+| ----------- | ----------------------------- | -------- | ------------------------------------ |
+| `durably`   | `Durably \| Promise<Durably>` | required | Durably instance or Promise          |
+| `autoStart` | `boolean`                     | `true`   | Auto-start worker on mount           |
+| `onReady`   | `(durably: Durably) => void`  | -        | Callback when ready                  |
+| `fallback`  | `ReactNode`                   | -        | Loading fallback (wraps in Suspense) |
 
 ---
 
@@ -66,11 +73,11 @@ function Component() {
 
 ### Return Type
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `durably` | `Durably \| null` | The Durably instance |
-| `isReady` | `boolean` | Whether Durably is initialized |
-| `error` | `Error \| null` | Initialization error |
+| Property  | Type              | Description                    |
+| --------- | ----------------- | ------------------------------ |
+| `durably` | `Durably \| null` | The Durably instance           |
+| `isReady` | `boolean`         | Whether Durably is initialized |
+| `error`   | `Error \| null`   | Initialization error           |
 
 ---
 
@@ -123,7 +130,11 @@ function Component() {
         Run
       </button>
       <p>Status: {status}</p>
-      {progress && <p>Progress: {progress.current}/{progress.total}</p>}
+      {progress && (
+        <p>
+          Progress: {progress.current}/{progress.total}
+        </p>
+      )}
       {isCompleted && <p>Result: {output?.result}</p>}
       {isFailed && <p>Error: {error}</p>}
       <button onClick={reset}>Reset</button>
@@ -134,8 +145,8 @@ function Component() {
 
 ### Options
 
-| Option | Type | Description |
-|--------|------|-------------|
+| Option         | Type     | Description                            |
+| -------------- | -------- | -------------------------------------- |
 | `initialRunId` | `string` | Resume subscription to an existing run |
 
 ### Return Type
@@ -196,8 +207,8 @@ function RunMonitor({ runId }: { runId: string | null }) {
 
 ### Options
 
-| Option | Type | Description |
-|--------|------|-------------|
+| Option  | Type             | Description                |
+| ------- | ---------------- | -------------------------- |
 | `runId` | `string \| null` | The run ID to subscribe to |
 
 ---
@@ -233,10 +244,10 @@ function LogViewer({ runId }: { runId: string | null }) {
 
 ### Options
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `runId` | `string \| null` | The run ID to subscribe to |
-| `maxLogs` | `number` | Maximum number of logs to keep |
+| Option    | Type             | Description                    |
+| --------- | ---------------- | ------------------------------ |
+| `runId`   | `string \| null` | The run ID to subscribe to     |
+| `maxLogs` | `number`         | Maximum number of logs to keep |
 
 ---
 
@@ -245,6 +256,7 @@ function LogViewer({ runId }: { runId: string | null }) {
 List runs with optional filtering, pagination, and real-time updates.
 
 The hook automatically subscribes to Durably events and refreshes the list when runs change. It listens to:
+
 - `run:trigger`, `run:start`, `run:complete`, `run:fail`, `run:cancel`, `run:retry` - refresh list
 - `run:progress` - update progress in place
 - `step:start`, `step:complete` - refresh for step count updates
@@ -266,7 +278,7 @@ function Dashboard() {
 
   return (
     <ul>
-      {runs.map(run => (
+      {runs.map((run) => (
         <li key={run.id}>
           {run.jobName}: {run.status}
           {/* Use jobName to narrow the type */}
@@ -290,7 +302,9 @@ const myJob = defineJob({
   name: 'my-job',
   input: z.object({ value: z.string() }),
   output: z.object({ result: z.number() }),
-  run: async (step, payload) => { /* ... */ },
+  run: async (step, payload) => {
+    /* ... */
+  },
 })
 
 function RunList() {
@@ -298,7 +312,7 @@ function RunList() {
 
   return (
     <ul>
-      {runs.map(run => (
+      {runs.map((run) => (
         <li key={run.id}>
           {/* run.output is typed as { result: number } | null */}
           Result: {run.output?.result}
@@ -319,7 +333,7 @@ function RunList() {
 
   return (
     <ul>
-      {runs.map(run => (
+      {runs.map((run) => (
         <li key={run.id}>
           {/* run.output is unknown */}
           {run.jobName}: {run.status}
@@ -345,22 +359,23 @@ useRuns(options?)
 
 ### Options
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `jobName` | `string` | Filter by job name (only for untyped usage) |
-| `status` | `RunStatus` | Filter by status |
-| `pageSize` | `number` | Number of runs per page (default: 10) |
-| `realtime` | `boolean` | Subscribe to real-time updates (default: true) |
+| Option     | Type                     | Description                                    |
+| ---------- | ------------------------ | ---------------------------------------------- |
+| `jobName`  | `string`                 | Filter by job name (only for untyped usage)    |
+| `status`   | `RunStatus`              | Filter by status                               |
+| `labels`   | `Record<string, string>` | Filter by labels                               |
+| `pageSize` | `number`                 | Number of runs per page (default: 10)          |
+| `realtime` | `boolean`                | Subscribe to real-time updates (default: true) |
 
 ### Return Type
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `runs` | `TypedRun<TInput, TOutput>[]` | List of runs (typed when using JobDefinition) |
-| `page` | `number` | Current page (0-indexed) |
-| `hasMore` | `boolean` | Whether more pages exist |
-| `isLoading` | `boolean` | Loading state |
-| `nextPage` | `() => void` | Go to next page |
-| `prevPage` | `() => void` | Go to previous page |
-| `goToPage` | `(page: number) => void` | Go to specific page |
-| `refresh` | `() => Promise<void>` | Manually refresh the list |
+| Property    | Type                          | Description                                   |
+| ----------- | ----------------------------- | --------------------------------------------- |
+| `runs`      | `TypedRun<TInput, TOutput>[]` | List of runs (typed when using JobDefinition) |
+| `page`      | `number`                      | Current page (0-indexed)                      |
+| `hasMore`   | `boolean`                     | Whether more pages exist                      |
+| `isLoading` | `boolean`                     | Loading state                                 |
+| `nextPage`  | `() => void`                  | Go to next page                               |
+| `prevPage`  | `() => void`                  | Go to previous page                           |
+| `goToPage`  | `(page: number) => void`      | Go to specific page                           |
+| `refresh`   | `() => Promise<void>`         | Manually refresh the list                     |

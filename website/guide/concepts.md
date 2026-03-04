@@ -20,12 +20,12 @@ const myJob = defineJob({
 const { myJob: job } = durably.register({ myJob })
 ```
 
-| Option | Required | Description |
-|--------|----------|-------------|
-| `name` | Yes | Unique job identifier |
-| `input` | Yes | Zod schema for payload |
-| `output` | No | Zod schema for return value |
-| `run` | Yes | The job function |
+| Option   | Required | Description                 |
+| -------- | -------- | --------------------------- |
+| `name`   | Yes      | Unique job identifier       |
+| `input`  | Yes      | Zod schema for payload      |
+| `output` | No       | Zod schema for return value |
+| `run`    | Yes      | The job function            |
 
 ### Job Lifecycle
 
@@ -37,7 +37,7 @@ Steps are checkpoints created with `step.run()`:
 
 ```ts
 const result = await step.run('step-name', async () => {
-  return someValue  // Persisted to SQLite
+  return someValue // Persisted to SQLite
 })
 ```
 
@@ -53,7 +53,7 @@ await step.run('update-profile', () => updateProfile())
 
 // Bad - duplicate names
 await step.run('step', () => doA())
-await step.run('step', () => doB())  // Returns cached result from doA!
+await step.run('step', () => doB()) // Returns cached result from doA!
 ```
 
 ### Break Large Operations into Steps
@@ -85,12 +85,12 @@ for (let i = 0; i < rows.length; i += 100) {
 
 ```ts
 // First run
-const data = await step.run('fetch', () => api.fetch())  // Runs, saves
-await step.run('process', () => process(data))           // Crashes!
+const data = await step.run('fetch', () => api.fetch()) // Runs, saves
+await step.run('process', () => process(data)) // Crashes!
 
 // After restart
-const data = await step.run('fetch', () => api.fetch())  // Returns cached
-await step.run('process', () => process(data))           // Runs
+const data = await step.run('fetch', () => api.fetch()) // Returns cached
+await step.run('process', () => process(data)) // Runs
 ```
 
 ### Heartbeat Mechanism
@@ -100,8 +100,8 @@ Running jobs send heartbeats to indicate they're alive:
 ```ts
 createDurably({
   dialect,
-  heartbeatInterval: 5000,   // Send heartbeat every 5s
-  staleThreshold: 30000,     // Mark stale after 30s without heartbeat
+  heartbeatInterval: 5000, // Send heartbeat every 5s
+  staleThreshold: 30000, // Mark stale after 30s without heartbeat
 })
 ```
 
@@ -120,7 +120,7 @@ await step.run('charge', () =>
   stripe.charges.create({
     amount: 1000,
     idempotency_key: `order_${orderId}`,
-  })
+  }),
 )
 ```
 
@@ -131,9 +131,12 @@ await step.run('charge', () =>
 Prevent duplicate runs:
 
 ```ts
-await job.trigger({ id: '123' }, {
-  idempotencyKey: 'request-abc'
-})
+await job.trigger(
+  { id: '123' },
+  {
+    idempotencyKey: 'request-abc',
+  },
+)
 // Same key returns existing run
 ```
 
@@ -142,10 +145,37 @@ await job.trigger({ id: '123' }, {
 Limit concurrent execution:
 
 ```ts
-await job.trigger({ userId: '123' }, {
-  concurrencyKey: 'user_123'
-})
+await job.trigger(
+  { userId: '123' },
+  {
+    concurrencyKey: 'user_123',
+  },
+)
 // Only one job per key runs at a time
+```
+
+### Labels
+
+Attach metadata for filtering (e.g., multi-tenancy):
+
+```ts
+await job.trigger(
+  { userId: '123' },
+  {
+    labels: { organizationId: 'org_123', env: 'prod' },
+  },
+)
+
+// Filter runs by labels
+const runs = await durably.getRuns({
+  labels: { organizationId: 'org_123' },
+})
+```
+
+Labels are immutable key-value pairs (`Record<string, string>`) set at trigger time. All run-scoped events include labels, enabling SSE filtering:
+
+```
+GET /runs/subscribe?label.organizationId=org_123
 ```
 
 ## Events

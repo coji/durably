@@ -89,17 +89,17 @@ app.all('/api/durably/*', (c) => handler.handle(c.req.raw, '/api/durably'))
 
 The handler provides these endpoints:
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/trigger` | Trigger a job |
-| `GET` | `/subscribe?runId=xxx` | SSE stream for run events |
-| `GET` | `/runs` | List runs with filtering |
-| `GET` | `/run?runId=xxx` | Get single run |
-| `GET` | `/steps?runId=xxx` | Get steps for a run |
-| `GET` | `/runs/subscribe` | SSE stream for run list updates |
-| `POST` | `/retry?runId=xxx` | Retry a failed run |
-| `POST` | `/cancel?runId=xxx` | Cancel a running job |
-| `DELETE` | `/run?runId=xxx` | Delete a run |
+| Method   | Path                   | Description                     |
+| -------- | ---------------------- | ------------------------------- |
+| `POST`   | `/trigger`             | Trigger a job                   |
+| `GET`    | `/subscribe?runId=xxx` | SSE stream for run events       |
+| `GET`    | `/runs`                | List runs with filtering        |
+| `GET`    | `/run?runId=xxx`       | Get single run                  |
+| `GET`    | `/steps?runId=xxx`     | Get steps for a run             |
+| `GET`    | `/runs/subscribe`      | SSE stream for run list updates |
+| `POST`   | `/retry?runId=xxx`     | Retry a failed run              |
+| `POST`   | `/cancel?runId=xxx`    | Cancel a running job            |
+| `DELETE` | `/run?runId=xxx`       | Delete a run                    |
 
 ## Trigger Request
 
@@ -109,7 +109,8 @@ The handler provides these endpoints:
   "jobName": "import-csv",
   "input": { "filename": "data.csv" },
   "idempotencyKey": "unique-key",   // optional
-  "concurrencyKey": "user-123"      // optional
+  "concurrencyKey": "user-123",     // optional
+  "labels": { "organizationId": "org_123" }  // optional
 }
 
 // Response
@@ -138,7 +139,7 @@ The stream closes automatically when the run completes or fails.
 ## List Runs
 
 ```ts
-// GET /api/durably/runs?jobName=import-csv&status=completed&limit=10&offset=0
+// GET /api/durably/runs?jobName=import-csv&status=completed&label.organizationId=org_123&limit=10&offset=0
 
 // Response
 {

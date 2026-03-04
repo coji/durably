@@ -23,6 +23,7 @@ durably.on('run:trigger', (event) => {
   //   runId: string,
   //   jobName: string,
   //   payload: unknown,
+  //   labels: Record<string, string>,
   //   timestamp: string,
   //   sequence: number
   // }
@@ -40,6 +41,7 @@ durably.on('run:start', (event) => {
   //   runId: string,
   //   jobName: string,
   //   payload: unknown,
+  //   labels: Record<string, string>,
   //   timestamp: string,
   //   sequence: number
   // }
@@ -58,6 +60,7 @@ durably.on('run:complete', (event) => {
   //   jobName: string,
   //   output: unknown,
   //   duration: number,
+  //   labels: Record<string, string>,
   //   timestamp: string,
   //   sequence: number
   // }
@@ -76,6 +79,7 @@ durably.on('run:fail', (event) => {
   //   jobName: string,
   //   error: string,
   //   failedStepName: string,
+  //   labels: Record<string, string>,
   //   timestamp: string,
   //   sequence: number
   // }
@@ -93,6 +97,7 @@ durably.on('run:progress', (event) => {
   //   runId: string,
   //   jobName: string,
   //   progress: { current: number, total?: number, message?: string },
+  //   labels: Record<string, string>,
   //   timestamp: string,
   //   sequence: number
   // }
@@ -109,6 +114,7 @@ durably.on('run:cancel', (event) => {
   //   type: 'run:cancel',
   //   runId: string,
   //   jobName: string,
+  //   labels: Record<string, string>,
   //   timestamp: string,
   //   sequence: number
   // }
@@ -125,6 +131,7 @@ durably.on('run:retry', (event) => {
   //   type: 'run:retry',
   //   runId: string,
   //   jobName: string,
+  //   labels: Record<string, string>,
   //   timestamp: string,
   //   sequence: number
   // }
@@ -145,6 +152,7 @@ durably.on('step:start', (event) => {
   //   jobName: string,
   //   stepName: string,
   //   stepIndex: number,
+  //   labels: Record<string, string>,
   //   timestamp: string,
   //   sequence: number
   // }
@@ -165,6 +173,7 @@ durably.on('step:complete', (event) => {
   //   stepIndex: number,
   //   output: unknown,
   //   duration: number,
+  //   labels: Record<string, string>,
   //   timestamp: string,
   //   sequence: number
   // }
@@ -184,6 +193,7 @@ durably.on('step:fail', (event) => {
   //   stepName: string,
   //   stepIndex: number,
   //   error: string,
+  //   labels: Record<string, string>,
   //   timestamp: string,
   //   sequence: number
   // }

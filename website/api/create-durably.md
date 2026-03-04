@@ -19,12 +19,12 @@ interface DurablyOptions {
 }
 ```
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `dialect` | `Dialect` | required | Kysely SQLite dialect |
-| `pollingInterval` | `number` | `1000` | How often to check for pending jobs (ms) |
-| `heartbeatInterval` | `number` | `5000` | How often to update heartbeat (ms) |
-| `staleThreshold` | `number` | `30000` | Time until a job is considered stale (ms) |
+| Option              | Type      | Default  | Description                               |
+| ------------------- | --------- | -------- | ----------------------------------------- |
+| `dialect`           | `Dialect` | required | Kysely SQLite dialect                     |
+| `pollingInterval`   | `number`  | `1000`   | How often to check for pending jobs (ms)  |
+| `heartbeatInterval` | `number`  | `5000`   | How often to update heartbeat (ms)        |
+| `staleThreshold`    | `number`  | `30000`  | Time until a job is considered stale (ms) |
 
 ## Returns
 
@@ -132,7 +132,10 @@ Gets a single run by ID. Supports generic type parameter for type-safe access.
 const run = await durably.getRun(runId)
 
 // Typed (returns custom type)
-type MyRun = Run & { payload: { userId: string }; output: { count: number } | null }
+type MyRun = Run & {
+  payload: { userId: string }
+  output: { count: number } | null
+}
 const typedRun = await durably.getRun<MyRun>(runId)
 ```
 
@@ -144,6 +147,7 @@ await durably.getRuns<T extends Run = Run>(filter?: RunFilter): Promise<T[]>
 interface RunFilter {
   jobName?: string
   status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  labels?: Record<string, string>
   limit?: number
   offset?: number
 }
@@ -153,7 +157,10 @@ Gets runs with optional filtering and pagination. Supports generic type paramete
 
 ```ts
 // Typed getRuns
-type MyRun = Run & { payload: { userId: string }; output: { count: number } | null }
+type MyRun = Run & {
+  payload: { userId: string }
+  output: { count: number } | null
+}
 const runs = await durably.getRuns<MyRun>({ jobName: 'my-job' })
 ```
 

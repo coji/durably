@@ -118,14 +118,14 @@ function Component() {
     currentRunId,
     reset,
   } = useJob<
-    { userId: string },  // Input type
-    { count: number }    // Output type
+    { userId: string }, // Input type
+    { count: number } // Output type
   >({
     api: '/api/durably',
     jobName: 'sync-data',
-    initialRunId: undefined,  // Optional: resume existing run
-    autoResume: true,         // Auto-resume running/pending jobs on mount
-    followLatest: true,       // Switch to tracking new runs via SSE
+    initialRunId: undefined, // Optional: resume existing run
+    autoResume: true, // Auto-resume running/pending jobs on mount
+    followLatest: true, // Switch to tracking new runs via SSE
   })
 
   const handleClick = async () => {
@@ -139,13 +139,13 @@ function Component() {
 
 ### Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `api` | `string` | - | API base path (e.g., `/api/durably`) |
-| `jobName` | `string` | - | Name of the job to trigger |
-| `initialRunId` | `string` | - | Resume subscription to an existing run |
-| `autoResume` | `boolean` | `true` | Auto-resume running/pending jobs on mount |
-| `followLatest` | `boolean` | `true` | Switch to tracking new runs via SSE |
+| Option         | Type      | Default | Description                               |
+| -------------- | --------- | ------- | ----------------------------------------- |
+| `api`          | `string`  | -       | API base path (e.g., `/api/durably`)      |
+| `jobName`      | `string`  | -       | Name of the job to trigger                |
+| `initialRunId` | `string`  | -       | Resume subscription to an existing run    |
+| `autoResume`   | `boolean` | `true`  | Auto-resume running/pending jobs on mount |
+| `followLatest` | `boolean` | `true`  | Switch to tracking new runs via SSE       |
 
 ---
 
@@ -157,7 +157,9 @@ Subscribe to an existing run via SSE.
 import { useJobRun } from '@coji/durably-react/client'
 
 function Component({ runId }: { runId: string }) {
-  const { status, output, error, progress, logs } = useJobRun<{ count: number }>({
+  const { status, output, error, progress, logs } = useJobRun<{
+    count: number
+  }>({
     api: '/api/durably',
     runId,
   })
@@ -168,9 +170,9 @@ function Component({ runId }: { runId: string }) {
 
 ### Options
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `api` | `string` | API base path |
+| Option  | Type     | Description                |
+| ------- | -------- | -------------------------- |
+| `api`   | `string` | API base path              |
 | `runId` | `string` | The run ID to subscribe to |
 
 ---
@@ -201,10 +203,10 @@ function Component({ runId }: { runId: string }) {
 
 ### Options
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `api` | `string` | API base path |
-| `runId` | `string` | The run ID to subscribe to |
+| Option    | Type     | Description                    |
+| --------- | -------- | ------------------------------ |
+| `api`     | `string` | API base path                  |
+| `runId`   | `string` | The run ID to subscribe to     |
 | `maxLogs` | `number` | Maximum number of logs to keep |
 
 ---
@@ -214,6 +216,7 @@ function Component({ runId }: { runId: string }) {
 List and paginate job runs with real-time updates on the first page.
 
 The first page (page 0) automatically subscribes to SSE for real-time updates. It listens to:
+
 - `run:trigger`, `run:start`, `run:complete`, `run:fail`, `run:cancel`, `run:retry` - refresh list
 - `run:progress` - update progress in place
 - `step:start`, `step:complete`, `step:fail` - refresh for step updates
@@ -237,7 +240,7 @@ function Dashboard() {
 
   return (
     <ul>
-      {runs.map(run => (
+      {runs.map((run) => (
         <li key={run.id}>
           {run.jobName}: {run.status}
           {/* Use jobName to narrow the type */}
@@ -261,7 +264,9 @@ const myJob = defineJob({
   name: 'my-job',
   input: z.object({ value: z.string() }),
   output: z.object({ result: z.number() }),
-  run: async (step, payload) => { /* ... */ },
+  run: async (step, payload) => {
+    /* ... */
+  },
 })
 
 function RunList() {
@@ -269,7 +274,7 @@ function RunList() {
 
   return (
     <ul>
-      {runs.map(run => (
+      {runs.map((run) => (
         <li key={run.id}>
           {/* run.output is typed as { result: number } | null */}
           Result: {run.output?.result}
@@ -286,11 +291,15 @@ function RunList() {
 import { useRuns } from '@coji/durably-react/client'
 
 function RunList() {
-  const { runs } = useRuns({ api: '/api/durably', jobName: 'my-job', pageSize: 10 })
+  const { runs } = useRuns({
+    api: '/api/durably',
+    jobName: 'my-job',
+    pageSize: 10,
+  })
 
   return (
     <ul>
-      {runs.map(run => (
+      {runs.map((run) => (
         <li key={run.id}>
           {/* run.output is unknown */}
           {run.jobName}: {run.status}
@@ -316,26 +325,27 @@ useRuns(options)
 
 ### Options
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `api` | `string` | API base path |
-| `jobName` | `string` | Filter by job name (only for untyped usage) |
-| `status` | `RunStatus` | Filter by status |
-| `pageSize` | `number` | Number of runs per page |
+| Option     | Type                     | Description                                 |
+| ---------- | ------------------------ | ------------------------------------------- |
+| `api`      | `string`                 | API base path                               |
+| `jobName`  | `string`                 | Filter by job name (only for untyped usage) |
+| `status`   | `RunStatus`              | Filter by status                            |
+| `labels`   | `Record<string, string>` | Filter by labels                            |
+| `pageSize` | `number`                 | Number of runs per page                     |
 
 ### Return Type
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `runs` | `TypedClientRun<TInput, TOutput>[]` | List of runs (typed when using JobDefinition) |
-| `isLoading` | `boolean` | Loading state |
-| `error` | `string \| null` | Error message |
-| `page` | `number` | Current page (0-indexed) |
-| `hasMore` | `boolean` | Whether more pages exist |
-| `nextPage` | `() => void` | Go to next page |
-| `prevPage` | `() => void` | Go to previous page |
-| `goToPage` | `(page: number) => void` | Go to specific page |
-| `refresh` | `() => void` | Refresh current page |
+| Property    | Type                                | Description                                   |
+| ----------- | ----------------------------------- | --------------------------------------------- |
+| `runs`      | `TypedClientRun<TInput, TOutput>[]` | List of runs (typed when using JobDefinition) |
+| `isLoading` | `boolean`                           | Loading state                                 |
+| `error`     | `string \| null`                    | Error message                                 |
+| `page`      | `number`                            | Current page (0-indexed)                      |
+| `hasMore`   | `boolean`                           | Whether more pages exist                      |
+| `nextPage`  | `() => void`                        | Go to next page                               |
+| `prevPage`  | `() => void`                        | Go to previous page                           |
+| `goToPage`  | `(page: number) => void`            | Go to specific page                           |
+| `refresh`   | `() => void`                        | Refresh current page                          |
 
 ---
 
@@ -347,15 +357,8 @@ Perform actions on runs (retry, cancel, delete).
 import { useRunActions } from '@coji/durably-react/client'
 
 function RunActions({ runId, status }: { runId: string; status: string }) {
-  const {
-    retry,
-    cancel,
-    deleteRun,
-    getRun,
-    getSteps,
-    isLoading,
-    error,
-  } = useRunActions({ api: '/api/durably' })
+  const { retry, cancel, deleteRun, getRun, getSteps, isLoading, error } =
+    useRunActions({ api: '/api/durably' })
 
   return (
     <div>
@@ -369,7 +372,9 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
           Cancel
         </button>
       )}
-      {(status === 'completed' || status === 'failed' || status === 'cancelled') && (
+      {(status === 'completed' ||
+        status === 'failed' ||
+        status === 'cancelled') && (
         <button onClick={() => deleteRun(runId)} disabled={isLoading}>
           Delete
         </button>
@@ -382,18 +387,18 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
 
 ### Options
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `api` | `string` | API base path |
+| Option | Type     | Description   |
+| ------ | -------- | ------------- |
+| `api`  | `string` | API base path |
 
 ### Return Type
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `retry` | `(runId: string) => Promise<void>` | Retry a failed run |
-| `cancel` | `(runId: string) => Promise<void>` | Cancel a running job |
-| `deleteRun` | `(runId: string) => Promise<void>` | Delete a run |
-| `getRun` | `(runId: string) => Promise<RunRecord>` | Get run details |
-| `getSteps` | `(runId: string) => Promise<StepRecord[]>` | Get step details |
-| `isLoading` | `boolean` | Loading state |
-| `error` | `string \| null` | Error message |
+| Property    | Type                                       | Description          |
+| ----------- | ------------------------------------------ | -------------------- |
+| `retry`     | `(runId: string) => Promise<void>`         | Retry a failed run   |
+| `cancel`    | `(runId: string) => Promise<void>`         | Cancel a running job |
+| `deleteRun` | `(runId: string) => Promise<void>`         | Delete a run         |
+| `getRun`    | `(runId: string) => Promise<RunRecord>`    | Get run details      |
+| `getSteps`  | `(runId: string) => Promise<StepRecord[]>` | Get step details     |
+| `isLoading` | `boolean`                                  | Loading state        |
+| `error`     | `string \| null`                           | Error message        |
