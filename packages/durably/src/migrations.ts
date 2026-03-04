@@ -9,7 +9,7 @@ interface Migration {
   up: (db: Kysely<Database>) => Promise<void>
 }
 
-export const LATEST_SCHEMA_VERSION = 3
+export const LATEST_SCHEMA_VERSION = 1
 
 const migrations: Migration[] = [
   {
@@ -21,10 +21,11 @@ const migrations: Migration[] = [
         .ifNotExists()
         .addColumn('id', 'text', (col) => col.primaryKey())
         .addColumn('job_name', 'text', (col) => col.notNull())
-        .addColumn('payload', 'text', (col) => col.notNull())
+        .addColumn('input', 'text', (col) => col.notNull())
         .addColumn('status', 'text', (col) => col.notNull())
         .addColumn('idempotency_key', 'text')
         .addColumn('concurrency_key', 'text')
+        .addColumn('labels', 'text', (col) => col.notNull().defaultTo('{}'))
         .addColumn('current_step_index', 'integer', (col) =>
           col.notNull().defaultTo(0),
         )
@@ -32,6 +33,8 @@ const migrations: Migration[] = [
         .addColumn('output', 'text')
         .addColumn('error', 'text')
         .addColumn('heartbeat_at', 'text', (col) => col.notNull())
+        .addColumn('started_at', 'text')
+        .addColumn('completed_at', 'text')
         .addColumn('created_at', 'text', (col) => col.notNull())
         .addColumn('updated_at', 'text', (col) => col.notNull())
         .execute()
@@ -112,37 +115,6 @@ const migrations: Migration[] = [
         .execute()
     },
   },
-  {
-    version: 2,
-    up: async (db) => {
-      // Add labels column to runs table
-      await db.schema
-        .alterTable('durably_runs')
-        .addColumn('labels', 'text', (col) => col.notNull().defaultTo('{}'))
-        .execute()
-    },
-  },
-  {
-    version: 3,
-    up: async (db) => {
-      // Rename payload column to input
-      await db.schema
-        .alterTable('durably_runs')
-        .renameColumn('payload', 'input')
-        .execute()
-
-      // Add started_at and completed_at columns
-      await db.schema
-        .alterTable('durably_runs')
-        .addColumn('started_at', 'text')
-        .execute()
-
-      await db.schema
-        .alterTable('durably_runs')
-        .addColumn('completed_at', 'text')
-        .execute()
-    },
-  },
 ]
 
 /**
@@ -172,15 +144,17 @@ export async function runMigrations(db: Kysely<Database>): Promise<void> {
 
   for (const migration of migrations) {
     if (migration.version > currentVersion) {
-      await migration.up(db)
+      await db.transaction().execute(async (trx) => {
+        await migration.up(trx)
 
-      await db
-        .insertInto('durably_schema_versions')
-        .values({
-          version: migration.version,
-          applied_at: new Date().toISOString(),
-        })
-        .execute()
+        await trx
+          .insertInto('durably_schema_versions')
+          .values({
+            version: migration.version,
+            applied_at: new Date().toISOString(),
+          })
+          .execute()
+      })
     }
   }
 }
