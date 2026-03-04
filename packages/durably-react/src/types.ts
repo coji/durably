@@ -1,6 +1,6 @@
 // Shared type definitions for @coji/durably-react
 
-import type { JobDefinition, Run } from '@coji/durably'
+import type { ClientRun, JobDefinition, Run } from '@coji/durably'
 
 // Type inference utilities for extracting Input/Output types from JobDefinition
 export type InferInput<T> =
@@ -120,26 +120,8 @@ export type TypedRun<
   output: TOutput | null
 }
 
-/**
- * Run type for client mode (matches server response).
- * Derived from core Run, excluding internal fields not needed by clients.
- */
-export type ClientRun = Pick<
-  Run,
-  | 'id'
-  | 'jobName'
-  | 'status'
-  | 'input'
-  | 'output'
-  | 'error'
-  | 'currentStepIndex'
-  | 'stepCount'
-  | 'labels'
-  | 'progress'
-  | 'startedAt'
-  | 'completedAt'
-  | 'createdAt'
->
+// ClientRun is imported from '@coji/durably' and re-exported for consumers.
+export type { ClientRun } from '@coji/durably'
 
 /**
  * A typed version of ClientRun with generic input/output types.

@@ -277,6 +277,35 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(body).toHaveLength(2)
       })
 
+      it('excludes internal fields from response', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'client-run-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        await d.jobs.job.trigger({})
+
+        const request = new Request('http://localhost/api/durably/runs', {
+          method: 'GET',
+        })
+
+        const response = await handler.runs(request)
+        const body = await response.json()
+
+        expect(body).toHaveLength(1)
+        expect(body[0]).not.toHaveProperty('heartbeatAt')
+        expect(body[0]).not.toHaveProperty('idempotencyKey')
+        expect(body[0]).not.toHaveProperty('concurrencyKey')
+        expect(body[0]).not.toHaveProperty('updatedAt')
+        // Should still have client-facing fields
+        expect(body[0]).toHaveProperty('id')
+        expect(body[0]).toHaveProperty('jobName')
+        expect(body[0]).toHaveProperty('status')
+        expect(body[0]).toHaveProperty('createdAt')
+      })
+
       it('filters by jobName', async () => {
         const d1 = durably.register({
           job1: defineJob({
@@ -387,6 +416,31 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(response.status).toBe(200)
         expect(body.id).toBe(run.id)
         expect(body.input).toEqual({ value: 42 })
+      })
+
+      it('excludes internal fields from response', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'single-client-run-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        const run = await d.jobs.job.trigger({})
+
+        const request = new Request(
+          `http://localhost/api/durably/run?runId=${run.id}`,
+          { method: 'GET' },
+        )
+
+        const response = await handler.run(request)
+        const body = await response.json()
+
+        expect(response.status).toBe(200)
+        expect(body).not.toHaveProperty('heartbeatAt')
+        expect(body).not.toHaveProperty('idempotencyKey')
+        expect(body).not.toHaveProperty('concurrencyKey')
+        expect(body).not.toHaveProperty('updatedAt')
       })
 
       it('returns 400 when runId is missing', async () => {

@@ -118,6 +118,29 @@ export interface Log {
 }
 
 /**
+ * A client-safe subset of Run, excluding internal fields like
+ * heartbeatAt, idempotencyKey, concurrencyKey, and updatedAt.
+ */
+export type ClientRun = Omit<
+  Run,
+  'idempotencyKey' | 'concurrencyKey' | 'heartbeatAt' | 'updatedAt'
+>
+
+/**
+ * Project a full Run to a ClientRun by stripping internal fields.
+ */
+export function toClientRun(run: Run): ClientRun {
+  const {
+    idempotencyKey,
+    concurrencyKey,
+    heartbeatAt,
+    updatedAt,
+    ...clientRun
+  } = run
+  return clientRun
+}
+
+/**
  * Storage interface for database operations
  */
 export interface Storage {

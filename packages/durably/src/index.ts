@@ -44,7 +44,8 @@ export type {
 } from './schema'
 
 // Storage types
-export type { Log, Run, RunFilter, Step } from './storage'
+export { toClientRun } from './storage'
+export type { ClientRun, Log, Run, RunFilter, Step } from './storage'
 
 // Errors
 export { CancelledError } from './errors'
