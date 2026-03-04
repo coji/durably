@@ -11,19 +11,31 @@ export function createStepContext(
   jobName: string,
   storage: Storage,
   eventEmitter: EventEmitter,
-): StepContext {
+): { step: StepContext; dispose: () => void } {
   let stepIndex = run.currentStepIndex
   let currentStepName: string | null = null
 
-  return {
+  const controller = new AbortController()
+
+  const unsubscribe = eventEmitter.on('run:cancel', (event) => {
+    if (event.runId === run.id) {
+      controller.abort()
+    }
+  })
+
+  const step: StepContext = {
     get runId(): string {
       return run.id
     },
 
-    async run<T>(name: string, fn: () => T | Promise<T>): Promise<T> {
+    async run<T>(
+      name: string,
+      fn: (signal: AbortSignal) => T | Promise<T>,
+    ): Promise<T> {
       // Check if run was cancelled before executing this step
       const currentRun = await storage.getRun(run.id)
       if (currentRun?.status === 'cancelled') {
+        controller.abort()
         throw new CancelledError(run.id)
       }
 
@@ -52,8 +64,8 @@ export function createStepContext(
       })
 
       try {
-        // Execute the step
-        const result = await fn()
+        // Execute the step with the abort signal
+        const result = await fn(controller.signal)
 
         // Save step result
         await storage.createStep({
@@ -169,4 +181,6 @@ export function createStepContext(
       },
     },
   }
+
+  return { step, dispose: unsubscribe }
 }

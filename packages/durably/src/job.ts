@@ -31,7 +31,7 @@ export interface StepContext {
   /**
    * Execute a step with automatic persistence and replay
    */
-  run<T>(name: string, fn: () => T | Promise<T>): Promise<T>
+  run<T>(name: string, fn: (signal: AbortSignal) => T | Promise<T>): Promise<T>
 
   /**
    * Report progress for the current run

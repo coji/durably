@@ -185,9 +185,15 @@ export function createWorker(
 
     const startTime = Date.now()
 
+    const { step, dispose } = createStepContext(
+      run,
+      run.jobName,
+      storage,
+      eventEmitter,
+    )
+
     try {
-      // Create step context and execute job
-      const step = createStepContext(run, run.jobName, storage, eventEmitter)
+      // Execute job with step context
       const output = await job.fn(step, run.payload)
 
       // Validate output if schema exists
@@ -202,6 +208,7 @@ export function createWorker(
     } catch (error) {
       await handleRunFailure(run.id, run.jobName, error)
     } finally {
+      dispose()
       // Stop heartbeat interval
       if (heartbeatInterval) {
         clearInterval(heartbeatInterval)

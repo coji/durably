@@ -374,5 +374,142 @@ export function createStepTests(createDialect: () => Dialect) {
         progress: { current: 3, total: 3, message: 'Complete' },
       })
     })
+
+    it('passes AbortSignal to step callback that starts as not aborted', async () => {
+      let receivedSignal: AbortSignal | null = null
+
+      const signalTestDef = defineJob({
+        name: 'signal-test',
+        input: z.object({}),
+        output: z.object({ aborted: z.boolean() }),
+        run: async (step) => {
+          const aborted = await step.run('check-signal', (signal) => {
+            receivedSignal = signal
+            return signal.aborted
+          })
+          return { aborted }
+        },
+      })
+      const d = durably.register({ job: signalTestDef })
+
+      const run = await d.jobs.job.trigger({})
+      d.start()
+
+      await vi.waitFor(
+        async () => {
+          const updated = await d.jobs.job.getRun(run.id)
+          expect(updated?.status).toBe('completed')
+          expect(updated?.output).toEqual({ aborted: false })
+        },
+        { timeout: 1000 },
+      )
+
+      expect(receivedSignal).toBeInstanceOf(AbortSignal)
+      expect(receivedSignal!.aborted).toBe(false)
+    })
+
+    it('aborts signal when run is cancelled during a long-running step', async () => {
+      let signalAbortedDuringStep = false
+      let stepStartedResolve: () => void
+      const stepStartedPromise = new Promise<void>((resolve) => {
+        stepStartedResolve = resolve
+      })
+
+      const signalCancelTestDef = defineJob({
+        name: 'signal-cancel-test',
+        input: z.object({}),
+        run: async (step) => {
+          await step.run('long-step', async (signal) => {
+            stepStartedResolve()
+            // Simulate long-running work that checks signal
+            await new Promise<void>((resolve) => {
+              const check = () => {
+                if (signal.aborted) {
+                  signalAbortedDuringStep = true
+                  resolve()
+                  return
+                }
+                setTimeout(check, 10)
+              }
+              check()
+            })
+          })
+        },
+      })
+      const d = durably.register({ job: signalCancelTestDef })
+
+      const run = await d.jobs.job.trigger({})
+      d.start()
+
+      // Wait for step to actually start executing
+      await stepStartedPromise
+
+      // Cancel the run while step is executing
+      await d.cancel(run.id)
+
+      // Wait for the signal to be aborted inside the step
+      await vi.waitFor(
+        () => {
+          expect(signalAbortedDuringStep).toBe(true)
+        },
+        { timeout: 2000 },
+      )
+    })
+
+    it('signal is aborted when cancellation is detected at step boundary', async () => {
+      let step2Called = false
+      let step1StartedResolve: () => void
+      const step1StartedPromise = new Promise<void>((resolve) => {
+        step1StartedResolve = resolve
+      })
+      let proceedResolve!: () => void
+      const proceedPromise = new Promise<void>((resolve) => {
+        proceedResolve = resolve
+      })
+
+      const signalBoundaryTestDef = defineJob({
+        name: 'signal-boundary-test',
+        input: z.object({}),
+        run: async (step) => {
+          await step.run('step1', async () => {
+            step1StartedResolve()
+            // Wait until we are told to proceed (after cancel is issued)
+            await proceedPromise
+            return 'done'
+          })
+
+          // This step should not execute because cancellation is detected
+          await step.run('step2', () => {
+            step2Called = true
+            return 'should-not-reach'
+          })
+        },
+      })
+      const d = durably.register({ job: signalBoundaryTestDef })
+
+      const run = await d.jobs.job.trigger({})
+      d.start()
+
+      // Wait for step1 to start
+      await step1StartedPromise
+
+      // Cancel the run while step1 is still executing
+      await d.cancel(run.id)
+
+      // Now let step1 complete - the next step boundary check should detect cancellation
+      proceedResolve()
+
+      // Wait for the run to settle
+      await vi.waitFor(
+        async () => {
+          const updated = await d.jobs.job.getRun(run.id)
+          expect(updated?.status).toBe('cancelled')
+        },
+        { timeout: 2000 },
+      )
+
+      // step2 callback should never have been called
+      expect(step2Called).toBe(false)
+    })
   })
 }
