@@ -226,6 +226,7 @@ durably.on('run:start', (e) => console.log('Started:', e.runId))
 durably.on('run:complete', (e) => console.log('Done:', e.output))
 durably.on('run:fail', (e) => console.error('Failed:', e.error))
 durably.on('run:cancel', (e) => console.log('Cancelled:', e.runId))
+durably.on('run:delete', (e) => console.log('Deleted:', e.runId))
 durably.on('run:retry', (e) => console.log('Retried:', e.runId))
 durably.on('run:progress', (e) =>
   console.log('Progress:', e.progress.current, '/', e.progress.total),

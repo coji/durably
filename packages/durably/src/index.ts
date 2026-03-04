@@ -20,6 +20,7 @@ export type {
   EventType,
   LogWriteEvent,
   RunCompleteEvent,
+  RunDeleteEvent,
   RunFailEvent,
   RunProgressEvent,
   RunStartEvent,

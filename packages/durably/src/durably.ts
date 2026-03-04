@@ -337,6 +337,15 @@ function createDurablyInstance<
             }
           })
 
+          const unsubscribeDelete = eventEmitter.on('run:delete', (event) => {
+            if (!closed && event.runId === runId) {
+              controller.enqueue(event)
+              closed = true
+              cleanup?.()
+              controller.close()
+            }
+          })
+
           const unsubscribeRetry = eventEmitter.on('run:retry', (event) => {
             if (!closed && event.runId === runId) {
               controller.enqueue(event)
@@ -388,6 +397,7 @@ function createDurablyInstance<
             unsubscribeComplete()
             unsubscribeFail()
             unsubscribeCancel()
+            unsubscribeDelete()
             unsubscribeRetry()
             unsubscribeProgress()
             unsubscribeStepStart()
@@ -473,6 +483,14 @@ function createDurablyInstance<
         throw new Error(`Cannot delete running run: ${runId}`)
       }
       await storage.deleteRun(runId)
+
+      // Emit run:delete event
+      eventEmitter.emit({
+        type: 'run:delete',
+        runId,
+        jobName: run.jobName,
+        labels: run.labels,
+      })
     },
 
     async migrate(): Promise<void> {

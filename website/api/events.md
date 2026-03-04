@@ -121,6 +121,23 @@ durably.on('run:cancel', (event) => {
 })
 ```
 
+#### `run:delete`
+
+Fired when a run is deleted via `deleteRun()` API.
+
+```ts
+durably.on('run:delete', (event) => {
+  // event: {
+  //   type: 'run:delete',
+  //   runId: string,
+  //   jobName: string,
+  //   labels: Record<string, string>,
+  //   timestamp: string,
+  //   sequence: number
+  // }
+})
+```
+
 #### `run:retry`
 
 Fired when a failed or cancelled run is retried via `retry()` API.

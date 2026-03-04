@@ -257,7 +257,7 @@ List runs with optional filtering, pagination, and real-time updates.
 
 The hook automatically subscribes to Durably events and refreshes the list when runs change. It listens to:
 
-- `run:trigger`, `run:start`, `run:complete`, `run:fail`, `run:cancel`, `run:retry` - refresh list
+- `run:trigger`, `run:start`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`, `run:retry` - refresh list
 - `run:progress` - update progress in place
 - `step:start`, `step:complete` - refresh for step count updates
 
