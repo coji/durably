@@ -8,13 +8,13 @@ Common types used across both Browser-Complete and Server-Connected modes.
 type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
 ```
 
-| Status | Description |
-|--------|-------------|
-| `pending` | Job is queued, waiting to be picked up by worker |
-| `running` | Job is currently executing |
-| `completed` | Job finished successfully |
-| `failed` | Job encountered an error |
-| `cancelled` | Job was cancelled before completion |
+| Status      | Description                                      |
+| ----------- | ------------------------------------------------ |
+| `pending`   | Job is queued, waiting to be picked up by worker |
+| `running`   | Job is currently executing                       |
+| `completed` | Job finished successfully                        |
+| `failed`    | Job encountered an error                         |
+| `cancelled` | Job was cancelled before completion              |
 
 ## Progress
 
@@ -26,10 +26,10 @@ interface Progress {
 }
 ```
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `current` | `number` | Current progress value |
-| `total` | `number \| undefined` | Total expected value |
+| Property  | Type                  | Description                     |
+| --------- | --------------------- | ------------------------------- |
+| `current` | `number`              | Current progress value          |
+| `total`   | `number \| undefined` | Total expected value            |
 | `message` | `string \| undefined` | Human-readable progress message |
 
 ## LogEntry
@@ -46,15 +46,15 @@ interface LogEntry {
 }
 ```
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `id` | `string` | Unique log entry ID |
-| `runId` | `string` | Associated run ID |
-| `stepName` | `string \| null` | Step that created the log |
-| `level` | `'info' \| 'warn' \| 'error'` | Log severity |
-| `message` | `string` | Log message |
-| `data` | `unknown` | Optional structured data |
-| `timestamp` | `string` | ISO timestamp |
+| Property    | Type                          | Description               |
+| ----------- | ----------------------------- | ------------------------- |
+| `id`        | `string`                      | Unique log entry ID       |
+| `runId`     | `string`                      | Associated run ID         |
+| `stepName`  | `string \| null`              | Step that created the log |
+| `level`     | `'info' \| 'warn' \| 'error'` | Log severity              |
+| `message`   | `string`                      | Log message               |
+| `data`      | `unknown`                     | Optional structured data  |
+| `timestamp` | `string`                      | ISO timestamp             |
 
 ## RunRecord
 
@@ -67,22 +67,24 @@ interface RunRecord {
   output: unknown
   error: string | null
   progress: Progress | null
+  labels: Record<string, string>
   createdAt: string
   updatedAt: string
 }
 ```
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `id` | `string` | Unique run ID |
-| `jobName` | `string` | Name of the job |
-| `status` | `RunStatus` | Current status |
-| `payload` | `unknown` | Input payload |
-| `output` | `unknown` | Job output (when completed) |
-| `error` | `string \| null` | Error message (when failed) |
-| `progress` | `Progress \| null` | Current progress |
-| `createdAt` | `string` | ISO timestamp of creation |
-| `updatedAt` | `string` | ISO timestamp of last update |
+| Property    | Type                     | Description                  |
+| ----------- | ------------------------ | ---------------------------- |
+| `id`        | `string`                 | Unique run ID                |
+| `jobName`   | `string`                 | Name of the job              |
+| `status`    | `RunStatus`              | Current status               |
+| `payload`   | `unknown`                | Input payload                |
+| `output`    | `unknown`                | Job output (when completed)  |
+| `error`     | `string \| null`         | Error message (when failed)  |
+| `progress`  | `Progress \| null`       | Current progress             |
+| `labels`    | `Record<string, string>` | Labels set at trigger time   |
+| `createdAt` | `string`                 | ISO timestamp of creation    |
+| `updatedAt` | `string`                 | ISO timestamp of last update |
 
 ## StepRecord
 
@@ -97,11 +99,11 @@ interface StepRecord {
 }
 ```
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `name` | `string` | Step name |
-| `status` | `'completed' \| 'failed'` | Step result |
-| `output` | `unknown` | Step return value |
-| `error` | `string \| null` | Error message (when failed) |
-| `startedAt` | `string` | ISO timestamp of start |
-| `completedAt` | `string \| null` | ISO timestamp of completion |
+| Property      | Type                      | Description                 |
+| ------------- | ------------------------- | --------------------------- |
+| `name`        | `string`                  | Step name                   |
+| `status`      | `'completed' \| 'failed'` | Step result                 |
+| `output`      | `unknown`                 | Step return value           |
+| `error`       | `string \| null`          | Error message (when failed) |
+| `startedAt`   | `string`                  | ISO timestamp of start      |
+| `completedAt` | `string \| null`          | ISO timestamp of completion |

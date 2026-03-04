@@ -15,6 +15,7 @@ export interface RunTriggerEvent extends BaseEvent {
   runId: string
   jobName: string
   payload: unknown
+  labels: Record<string, string>
 }
 
 /**
@@ -25,6 +26,7 @@ export interface RunStartEvent extends BaseEvent {
   runId: string
   jobName: string
   payload: unknown
+  labels: Record<string, string>
 }
 
 /**
@@ -36,6 +38,7 @@ export interface RunCompleteEvent extends BaseEvent {
   jobName: string
   output: unknown
   duration: number
+  labels: Record<string, string>
 }
 
 /**
@@ -47,6 +50,7 @@ export interface RunFailEvent extends BaseEvent {
   jobName: string
   error: string
   failedStepName: string
+  labels: Record<string, string>
 }
 
 /**
@@ -56,6 +60,7 @@ export interface RunCancelEvent extends BaseEvent {
   type: 'run:cancel'
   runId: string
   jobName: string
+  labels: Record<string, string>
 }
 
 /**
@@ -65,6 +70,7 @@ export interface RunRetryEvent extends BaseEvent {
   type: 'run:retry'
   runId: string
   jobName: string
+  labels: Record<string, string>
 }
 
 /**
@@ -75,6 +81,7 @@ export interface RunProgressEvent extends BaseEvent {
   runId: string
   jobName: string
   progress: { current: number; total?: number; message?: string }
+  labels: Record<string, string>
 }
 
 /**
@@ -86,6 +93,7 @@ export interface StepStartEvent extends BaseEvent {
   jobName: string
   stepName: string
   stepIndex: number
+  labels: Record<string, string>
 }
 
 /**
@@ -99,6 +107,7 @@ export interface StepCompleteEvent extends BaseEvent {
   stepIndex: number
   output: unknown
   duration: number
+  labels: Record<string, string>
 }
 
 /**
@@ -111,6 +120,7 @@ export interface StepFailEvent extends BaseEvent {
   stepName: string
   stepIndex: number
   error: string
+  labels: Record<string, string>
 }
 
 /**

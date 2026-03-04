@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely'
+import { type Kysely, sql } from 'kysely'
 import { ulid } from 'ulidx'
 import type { Database } from './schema'
 
@@ -10,6 +10,7 @@ export interface CreateRunInput {
   payload: unknown
   idempotencyKey?: string
   concurrencyKey?: string
+  labels?: Record<string, string>
 }
 
 /**
@@ -27,6 +28,7 @@ export interface Run {
   progress: { current: number; total?: number; message?: string } | null
   output: unknown | null
   error: string | null
+  labels: Record<string, string>
   heartbeatAt: string
   createdAt: string
   updatedAt: string
@@ -50,6 +52,7 @@ export interface UpdateRunInput {
 export interface RunFilter {
   status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   jobName?: string
+  labels?: Record<string, string>
   /** Maximum number of runs to return */
   limit?: number
   /** Number of runs to skip (for pagination) */
@@ -134,6 +137,22 @@ export interface Storage {
 /**
  * Convert database row to Run object
  */
+/**
+ * Validate label keys: alphanumeric, dash, underscore, dot, slash only
+ */
+const LABEL_KEY_PATTERN = /^[a-zA-Z0-9\-_./]+$/
+
+function validateLabels(labels: Record<string, string> | undefined): void {
+  if (!labels) return
+  for (const key of Object.keys(labels)) {
+    if (!LABEL_KEY_PATTERN.test(key)) {
+      throw new Error(
+        `Invalid label key "${key}": must contain only alphanumeric characters, dashes, underscores, dots, and slashes`,
+      )
+    }
+  }
+}
+
 function rowToRun(
   row: Database['durably_runs'] & { step_count?: number | bigint | null },
 ): Run {
@@ -149,6 +168,7 @@ function rowToRun(
     progress: row.progress ? JSON.parse(row.progress) : null,
     output: row.output ? JSON.parse(row.output) : null,
     error: row.error,
+    labels: JSON.parse(row.labels),
     heartbeatAt: row.heartbeat_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -209,6 +229,8 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         }
       }
 
+      validateLabels(input.labels)
+
       const id = ulid()
       const run: Database['durably_runs'] = {
         id,
@@ -221,6 +243,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         progress: null,
         output: null,
         error: null,
+        labels: JSON.stringify(input.labels ?? {}),
         heartbeat_at: now,
         created_at: now,
         updated_at: now,
@@ -240,6 +263,11 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       return await db.transaction().execute(async (trx) => {
         const now = new Date().toISOString()
         const runs: Database['durably_runs'][] = []
+
+        // Validate all labels upfront
+        for (const input of inputs) {
+          validateLabels(input.labels)
+        }
 
         // Process inputs - check idempotency keys and create run objects
         for (const input of inputs) {
@@ -270,6 +298,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
             progress: null,
             output: null,
             error: null,
+            labels: JSON.stringify(input.labels ?? {}),
             heartbeat_at: now,
             created_at: now,
             updated_at: now,
@@ -347,6 +376,16 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       }
       if (filter?.jobName) {
         query = query.where('durably_runs.job_name', '=', filter.jobName)
+      }
+      if (filter?.labels) {
+        validateLabels(filter.labels)
+        for (const [key, value] of Object.entries(filter.labels)) {
+          query = query.where(
+            sql`json_extract(durably_runs.labels, ${`$."${key}"`})`,
+            '=',
+            value,
+          )
+        }
       }
 
       query = query.orderBy('durably_runs.created_at', 'desc')

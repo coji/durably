@@ -62,14 +62,14 @@ const dialect = new LibsqlDialect({ client })
 
 const durably = createDurably({
   dialect,
-  pollingInterval: 1000,    // Check for jobs every 1s
-  heartbeatInterval: 5000,  // Heartbeat every 5s
-  staleThreshold: 30000,    // Stale after 30s
+  pollingInterval: 1000, // Check for jobs every 1s
+  heartbeatInterval: 5000, // Heartbeat every 5s
+  staleThreshold: 30000, // Stale after 30s
 }).register({
   importCsv: importCsvJob,
 })
 
-await durably.init()  // Migrate DB + start worker
+await durably.init() // Migrate DB + start worker
 ```
 
 **See:** [createDurably](/api/create-durably)
@@ -83,7 +83,7 @@ console.log('Started:', run.id)
 
 // Wait for completion
 const { id, output } = await durably.jobs.importCsv.triggerAndWait({
-  filename: 'data.csv'
+  filename: 'data.csv',
 })
 console.log('Done:', output.count)
 
@@ -91,9 +91,10 @@ console.log('Done:', output.count)
 await durably.jobs.importCsv.trigger(
   { filename: 'data.csv' },
   {
-    idempotencyKey: 'import-2024-01-01',  // Prevent duplicates
-    concurrencyKey: 'csv-imports',         // Limit concurrency
-  }
+    idempotencyKey: 'import-2024-01-01', // Prevent duplicates
+    concurrencyKey: 'csv-imports', // Limit concurrency
+    labels: { organizationId: 'org_123' }, // For filtering
+  },
 )
 ```
 
@@ -103,7 +104,9 @@ await durably.jobs.importCsv.trigger(
 durably.on('run:start', (e) => console.log(`Started: ${e.jobName}`))
 durably.on('run:complete', (e) => console.log(`Done in ${e.duration}ms`))
 durably.on('run:fail', (e) => console.error(`Failed: ${e.error}`))
-durably.on('run:progress', (e) => console.log(`${e.progress.current}/${e.progress.total}`))
+durably.on('run:progress', (e) =>
+  console.log(`${e.progress.current}/${e.progress.total}`),
+)
 ```
 
 **See:** [Events](/api/events)
@@ -151,10 +154,17 @@ function ImportButton() {
 
   return (
     <div>
-      <button onClick={() => trigger({ filename: 'data.csv' })} disabled={isRunning}>
+      <button
+        onClick={() => trigger({ filename: 'data.csv' })}
+        disabled={isRunning}
+      >
         Import
       </button>
-      {progress && <p>{progress.current}/{progress.total}</p>}
+      {progress && (
+        <p>
+          {progress.current}/{progress.total}
+        </p>
+      )}
       {isCompleted && <p>Imported {output?.count} rows</p>}
     </div>
   )
@@ -190,49 +200,54 @@ function ImportButton() {
 
 ### Core (@coji/durably)
 
-| Export | Description |
-|--------|-------------|
-| `createDurably(options)` | Create instance with SQLite dialect |
-| `defineJob(config)` | Define a job with typed schema |
-| `createDurablyHandler(durably)` | Create HTTP/SSE handler |
+| Export                          | Description                         |
+| ------------------------------- | ----------------------------------- |
+| `createDurably(options)`        | Create instance with SQLite dialect |
+| `defineJob(config)`             | Define a job with typed schema      |
+| `createDurablyHandler(durably)` | Create HTTP/SSE handler             |
 
 ### Instance Methods
 
-| Method | Description |
-|--------|-------------|
-| `init()` | Migrate database and start worker |
-| `register(jobs)` | Register job definitions |
-| `on(event, handler)` | Subscribe to events |
-| `stop()` | Stop worker gracefully |
-| `retry(runId)` | Retry failed run |
-| `cancel(runId)` | Cancel running job |
+| Method               | Description                       |
+| -------------------- | --------------------------------- |
+| `init()`             | Migrate database and start worker |
+| `register(jobs)`     | Register job definitions          |
+| `on(event, handler)` | Subscribe to events               |
+| `stop()`             | Stop worker gracefully            |
+| `retry(runId)`       | Retry failed run                  |
+| `cancel(runId)`      | Cancel running job                |
 
 ### Step Context
 
-| Method | Description |
-|--------|-------------|
-| `step.run(name, fn)` | Create resumable checkpoint |
-| `step.progress(current, total, msg)` | Report progress |
-| `step.log.info/warn/error(msg)` | Write structured logs |
+| Method                               | Description                 |
+| ------------------------------------ | --------------------------- |
+| `step.run(name, fn)`                 | Create resumable checkpoint |
+| `step.progress(current, total, msg)` | Report progress             |
+| `step.log.info/warn/error(msg)`      | Write structured logs       |
 
 ### React Hooks (@coji/durably-react)
 
-| Hook | Mode | Description |
-|------|------|-------------|
-| `useJob` | Both | Trigger and monitor jobs |
-| `useJobRun` | Both | Subscribe to existing run |
-| `useRuns` | Both | List runs with pagination |
-| `useRunActions` | Server | Retry, cancel, delete runs |
-| `useDurably` | Browser | Access Durably instance |
+| Hook            | Mode    | Description                |
+| --------------- | ------- | -------------------------- |
+| `useJob`        | Both    | Trigger and monitor jobs   |
+| `useJobRun`     | Both    | Subscribe to existing run  |
+| `useRuns`       | Both    | List runs with pagination  |
+| `useRunActions` | Server  | Retry, cancel, delete runs |
+| `useDurably`    | Browser | Access Durably instance    |
 
 ## Type Exports
 
 ```ts
 import type {
-  Durably, DurablyOptions,
-  JobDefinition, JobHandle,
-  StepContext, Run, RunStatus,
+  Durably,
+  DurablyOptions,
+  JobDefinition,
+  JobHandle,
+  StepContext,
+  Run,
+  RunStatus,
   TriggerOptions,
-  DurablyEvent, EventType,
+  DurablyEvent,
+  EventType,
 } from '@coji/durably'
 ```

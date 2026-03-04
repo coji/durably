@@ -1,5 +1,5 @@
 import type { JobDefinition } from '@coji/durably'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   type Progress,
   type RunStatus,
@@ -63,6 +63,10 @@ export interface UseRunsClientOptions {
    * Filter by status
    */
   status?: RunStatus
+  /**
+   * Filter by labels (all specified labels must match)
+   */
+  labels?: Record<string, string>
   /**
    * Number of runs per page
    * @default 10
@@ -196,7 +200,15 @@ export function useRuns<
     ? (optionsArg as Omit<UseRunsClientOptions, 'jobName'>)
     : (jobDefinitionOrOptions as UseRunsClientOptions)
 
-  const { api, status, pageSize = 10 } = options
+  const { api, status, labels, pageSize = 10 } = options
+
+  // Stabilize labels reference to prevent infinite re-renders
+  const labelsKey = labels ? JSON.stringify(labels) : undefined
+  const stableLabels = useMemo(
+    () =>
+      labelsKey ? (JSON.parse(labelsKey) as Record<string, string>) : undefined,
+    [labelsKey],
+  )
 
   const [runs, setRuns] = useState<TypedClientRun<TInput, TOutput>[]>([])
   const [page, setPage] = useState(0)
@@ -215,6 +227,7 @@ export function useRuns<
       const params = new URLSearchParams()
       if (jobName) params.set('jobName', jobName)
       if (status) params.set('status', status)
+      appendLabelsToParams(params, stableLabels)
       params.set('limit', String(pageSize + 1))
       params.set('offset', String(page * pageSize))
 
@@ -240,7 +253,7 @@ export function useRuns<
         setIsLoading(false)
       }
     }
-  }, [api, jobName, status, pageSize, page])
+  }, [api, jobName, status, stableLabels, pageSize, page])
 
   // Initial fetch
   useEffect(() => {
@@ -267,6 +280,7 @@ export function useRuns<
     // Build SSE URL
     const params = new URLSearchParams()
     if (jobName) params.set('jobName', jobName)
+    appendLabelsToParams(params, stableLabels)
     const sseUrl = `${api}/runs/subscribe${params.toString() ? `?${params.toString()}` : ''}`
 
     const eventSource = new EventSource(sseUrl)
@@ -322,7 +336,7 @@ export function useRuns<
       eventSource.close()
       eventSourceRef.current = null
     }
-  }, [api, jobName, page, refresh])
+  }, [api, jobName, stableLabels, page, refresh])
 
   const nextPage = useCallback(() => {
     if (hasMore) {
@@ -348,5 +362,15 @@ export function useRuns<
     prevPage,
     goToPage,
     refresh,
+  }
+}
+
+function appendLabelsToParams(
+  params: URLSearchParams,
+  labels: Record<string, string> | undefined,
+) {
+  if (!labels) return
+  for (const [key, value] of Object.entries(labels)) {
+    params.set(`label.${key}`, value)
   }
 }

@@ -1,5 +1,5 @@
 import type { JobDefinition } from '@coji/durably'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useDurably } from '../context'
 import { type TypedRun, isJobDefinition } from '../types'
 
@@ -15,6 +15,10 @@ export interface UseRunsOptions {
    * Filter by status
    */
   status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  /**
+   * Filter by labels (all specified labels must match)
+   */
+  labels?: Record<string, string>
   /**
    * Number of runs per page
    * @default 10
@@ -153,6 +157,14 @@ export function useRuns<
   const realtime = options?.realtime ?? true
   const status = options?.status
 
+  // Stabilize labels reference to prevent infinite re-renders
+  const labelsKey = options?.labels ? JSON.stringify(options.labels) : undefined
+  const labels = useMemo(
+    () =>
+      labelsKey ? (JSON.parse(labelsKey) as Record<string, string>) : undefined,
+    [labelsKey],
+  )
+
   const [runs, setRuns] = useState<TypedRun<TInput, TOutput>[]>([])
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(false)
@@ -166,6 +178,7 @@ export function useRuns<
       const data = await durably.getRuns({
         jobName,
         status,
+        labels,
         limit: pageSize + 1,
         offset: page * pageSize,
       })
@@ -174,7 +187,7 @@ export function useRuns<
     } finally {
       setIsLoading(false)
     }
-  }, [durably, jobName, status, pageSize, page])
+  }, [durably, jobName, status, labels, pageSize, page])
 
   // Initial fetch and subscribe to events
   useEffect(() => {

@@ -32,12 +32,10 @@ Verify package integrity for API changes and spec updates.
 ### Core
 
 - [ ] `packages/durably/docs/llms.md` - LLM docs (bundled in npm)
-- [ ] `docs/spec.md` - Core specification
 
 ### React
 
 - [ ] `packages/durably-react/docs/llms.md` - LLM docs (bundled in npm)
-- [ ] `docs/spec-react.md` - React specification
 - [ ] `website/api/durably-react/index.md` - Overview
 - [ ] `website/api/durably-react/browser.md` - Browser hooks
 - [ ] `website/api/durably-react/client.md` - Client hooks
@@ -95,12 +93,13 @@ Check `git status` for uncommitted changes.
 
 When React hooks should provide the same API in both Browser and Client modes:
 
-| File                  | Mode          |
-| --------------------- | ------------- |
-| `hooks/use-job.ts`    | Browser mode  |
-| `client/use-job.ts`   | Client mode   |
+| File                | Mode         |
+| ------------------- | ------------ |
+| `hooks/use-job.ts`  | Browser mode |
+| `client/use-job.ts` | Client mode  |
 
 Ensure consistency in:
+
 - Interface definitions
 - Return values
 - Options
@@ -108,6 +107,7 @@ Ensure consistency in:
 ### Code Examples in Documentation
 
 Verify code examples in docs match actual API:
+
 - Return value properties
 - Option parameters
 - Type definitions
@@ -125,5 +125,6 @@ pnpm typecheck  # Includes all examples
 ```
 
 Key components to check:
+
 - `dashboard.tsx` - useRuns, useRunActions
 - `*-progress.tsx` - useJob return values (status booleans)

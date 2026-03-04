@@ -9,6 +9,8 @@ interface Migration {
   up: (db: Kysely<Database>) => Promise<void>
 }
 
+export const LATEST_SCHEMA_VERSION = 2
+
 const migrations: Migration[] = [
   {
     version: 1,
@@ -107,6 +109,16 @@ const migrations: Migration[] = [
         .ifNotExists()
         .addColumn('version', 'integer', (col) => col.primaryKey())
         .addColumn('applied_at', 'text', (col) => col.notNull())
+        .execute()
+    },
+  },
+  {
+    version: 2,
+    up: async (db) => {
+      // Add labels column to runs table
+      await db.schema
+        .alterTable('durably_runs')
+        .addColumn('labels', 'text', (col) => col.notNull().defaultTo('{}'))
         .execute()
     },
   },

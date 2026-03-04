@@ -191,6 +191,150 @@ export function createStorageTests(createDialect: () => Dialect) {
         expect(completedRuns).toHaveLength(1)
       })
 
+      it('creates a run with labels', async () => {
+        const run = await durably.storage.createRun({
+          jobName: 'test-job',
+          payload: {},
+          labels: { organizationId: 'org_123', env: 'prod' },
+        })
+
+        expect(run.labels).toEqual({ organizationId: 'org_123', env: 'prod' })
+
+        // Verify labels persist on getRun
+        const fetched = await durably.storage.getRun(run.id)
+        expect(fetched!.labels).toEqual({
+          organizationId: 'org_123',
+          env: 'prod',
+        })
+      })
+
+      it('defaults labels to empty object', async () => {
+        const run = await durably.storage.createRun({
+          jobName: 'test-job',
+          payload: {},
+        })
+
+        expect(run.labels).toEqual({})
+      })
+
+      it('filters runs by single label', async () => {
+        await durably.storage.createRun({
+          jobName: 'test-job',
+          payload: {},
+          labels: { organizationId: 'org_1' },
+        })
+        await durably.storage.createRun({
+          jobName: 'test-job',
+          payload: {},
+          labels: { organizationId: 'org_2' },
+        })
+        await durably.storage.createRun({
+          jobName: 'test-job',
+          payload: {},
+        })
+
+        const runs = await durably.storage.getRuns({
+          labels: { organizationId: 'org_1' },
+        })
+        expect(runs).toHaveLength(1)
+        expect(runs[0].labels).toEqual({ organizationId: 'org_1' })
+      })
+
+      it('filters runs by multiple labels (AND)', async () => {
+        await durably.storage.createRun({
+          jobName: 'test-job',
+          payload: {},
+          labels: { organizationId: 'org_1', env: 'prod' },
+        })
+        await durably.storage.createRun({
+          jobName: 'test-job',
+          payload: {},
+          labels: { organizationId: 'org_1', env: 'staging' },
+        })
+        await durably.storage.createRun({
+          jobName: 'test-job',
+          payload: {},
+          labels: { organizationId: 'org_2', env: 'prod' },
+        })
+
+        const runs = await durably.storage.getRuns({
+          labels: { organizationId: 'org_1', env: 'prod' },
+        })
+        expect(runs).toHaveLength(1)
+        expect(runs[0].labels).toEqual({
+          organizationId: 'org_1',
+          env: 'prod',
+        })
+      })
+
+      it('returns all runs when labels filter is not specified', async () => {
+        await durably.storage.createRun({
+          jobName: 'test-job',
+          payload: {},
+          labels: { organizationId: 'org_1' },
+        })
+        await durably.storage.createRun({
+          jobName: 'test-job',
+          payload: {},
+        })
+
+        const runs = await durably.storage.getRuns()
+        expect(runs).toHaveLength(2)
+      })
+
+      it('rejects invalid label keys', async () => {
+        await expect(
+          durably.storage.createRun({
+            jobName: 'test-job',
+            payload: {},
+            labels: { 'valid-key': 'ok', 'invalid key': 'bad' },
+          }),
+        ).rejects.toThrow('Invalid label key')
+      })
+
+      it('rejects label keys with special characters', async () => {
+        await expect(
+          durably.storage.createRun({
+            jobName: 'test-job',
+            payload: {},
+            labels: { 'key"injection': 'bad' },
+          }),
+        ).rejects.toThrow('Invalid label key')
+      })
+
+      it('allows Kubernetes-style label keys', async () => {
+        const run = await durably.storage.createRun({
+          jobName: 'test-job',
+          payload: {},
+          labels: { 'app.kubernetes.io/name': 'my-app', env: 'prod' },
+        })
+        expect(run.labels).toEqual({
+          'app.kubernetes.io/name': 'my-app',
+          env: 'prod',
+        })
+      })
+
+      it('filters runs by dotted label keys', async () => {
+        await durably.storage.createRun({
+          jobName: 'test-job',
+          payload: {},
+          labels: { 'app.kubernetes.io/name': 'my-app' },
+        })
+        await durably.storage.createRun({
+          jobName: 'test-job',
+          payload: {},
+          labels: { 'app.kubernetes.io/name': 'other-app' },
+        })
+
+        const runs = await durably.storage.getRuns({
+          labels: { 'app.kubernetes.io/name': 'my-app' },
+        })
+        expect(runs).toHaveLength(1)
+        expect(runs[0].labels).toEqual({
+          'app.kubernetes.io/name': 'my-app',
+        })
+      })
+
       it('gets next pending run respecting concurrency keys', async () => {
         // Create runs with different concurrency keys
         await durably.storage.createRun({
