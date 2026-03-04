@@ -515,12 +515,12 @@ export function createDurablyHandler(
           }),
 
           durably.on('log:write', (event) => {
-            // log:write doesn't have jobName or labels, so we can't filter by it
-            // Send all logs when no filter, or skip if filter is set
-            if (!jobNameFilter && !labelsFilter) {
+            if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({
                 type: 'log:write',
                 runId: event.runId,
+                jobName: event.jobName,
+                labels: event.labels,
                 stepName: event.stepName,
                 level: event.level,
                 message: event.message,

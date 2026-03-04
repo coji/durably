@@ -133,6 +133,8 @@ export function createStepContext(
         eventEmitter.emit({
           type: 'log:write',
           runId: run.id,
+          jobName,
+          labels: run.labels,
           stepName: currentStepName,
           level: 'info',
           message,
@@ -144,6 +146,8 @@ export function createStepContext(
         eventEmitter.emit({
           type: 'log:write',
           runId: run.id,
+          jobName,
+          labels: run.labels,
           stepName: currentStepName,
           level: 'warn',
           message,
@@ -155,6 +159,8 @@ export function createStepContext(
         eventEmitter.emit({
           type: 'log:write',
           runId: run.id,
+          jobName,
+          labels: run.labels,
           stepName: currentStepName,
           level: 'error',
           message,

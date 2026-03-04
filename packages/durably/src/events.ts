@@ -139,6 +139,8 @@ export interface StepFailEvent extends BaseEvent {
 export interface LogWriteEvent extends BaseEvent {
   type: 'log:write'
   runId: string
+  jobName: string
+  labels: Record<string, string>
   stepName: string | null
   level: 'info' | 'warn' | 'error'
   message: string

@@ -228,6 +228,8 @@ durably.on('log:write', (event) => {
   // event: {
   //   type: 'log:write',
   //   runId: string,
+  //   jobName: string,
+  //   labels: Record<string, string>,
   //   stepName: string | null,
   //   level: 'info' | 'warn' | 'error',
   //   message: string,
