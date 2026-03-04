@@ -1,6 +1,8 @@
 import { type Kysely, sql } from 'kysely'
-import { ulid } from 'ulidx'
+import { monotonicFactory } from 'ulidx'
 import type { Database } from './schema'
+
+const ulid = monotonicFactory()
 
 /**
  * Run data for creating a new run

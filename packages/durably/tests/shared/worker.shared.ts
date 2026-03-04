@@ -193,11 +193,8 @@ export function createWorkerTests(createDialect: () => Dialect) {
         })
         const d = durably.register({ job: sequentialTestDef })
 
-        // Small delays ensure distinct ULID timestamps for deterministic ordering
         await d.jobs.job.trigger({ n: 1 })
-        await new Promise((r) => setTimeout(r, 2))
         await d.jobs.job.trigger({ n: 2 })
-        await new Promise((r) => setTimeout(r, 2))
         await d.jobs.job.trigger({ n: 3 })
 
         d.start()
