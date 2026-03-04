@@ -32,10 +32,21 @@ export function createStepContext(
       name: string,
       fn: (signal: AbortSignal) => T | Promise<T>,
     ): Promise<T> {
-      // Check if run was cancelled before executing this step
+      // Fast path: check in-memory signal first (set by run:cancel event)
+      if (controller.signal.aborted) {
+        throw new CancelledError(run.id)
+      }
+
+      // Slow path: DB check for cases where event wasn't received
+      // (e.g., run cancelled while worker was down, then resumed)
       const currentRun = await storage.getRun(run.id)
       if (currentRun?.status === 'cancelled') {
         controller.abort()
+        throw new CancelledError(run.id)
+      }
+
+      // Check cancellation before replaying cached steps
+      if (controller.signal.aborted) {
         throw new CancelledError(run.id)
       }
 
