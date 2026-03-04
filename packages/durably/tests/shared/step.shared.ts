@@ -410,7 +410,7 @@ export function createStepTests(createDialect: () => Dialect) {
 
     it('aborts signal when run is cancelled during a long-running step', async () => {
       let signalAbortedDuringStep = false
-      let stepStartedResolve: () => void
+      let stepStartedResolve!: () => void
       const stepStartedPromise = new Promise<void>((resolve) => {
         stepStartedResolve = resolve
       })
@@ -458,7 +458,7 @@ export function createStepTests(createDialect: () => Dialect) {
 
     it('signal is aborted when cancellation is detected at step boundary', async () => {
       let step2Called = false
-      let step1StartedResolve: () => void
+      let step1StartedResolve!: () => void
       const step1StartedPromise = new Promise<void>((resolve) => {
         step1StartedResolve = resolve
       })
