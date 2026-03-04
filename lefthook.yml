@@ -1,0 +1,6 @@
+pre-commit:
+  parallel: true
+  jobs:
+    - name: prettier
+      glob: '*.{js,ts,jsx,tsx,json,css,md,yml,yaml}'
+      run: npx prettier --experimental-cli --write {staged_files} && git add {staged_files}
