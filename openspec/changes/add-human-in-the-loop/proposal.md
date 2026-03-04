@@ -16,7 +16,7 @@ AI エージェントワークフローにおいて、処理の途中で人間�
 
 ## Impact
 
-- Affected specs: `core`
+- Affected specs: `core`, `react`
 - Affected code:
   - `packages/durably/src/context.ts` - `ctx.human()` 追加
   - `packages/durably/src/durably.ts` - `resume()` 追加
@@ -26,4 +26,4 @@ AI エージェントワークフローにおいて、処理の途中で人間�
   - `packages/durably/src/worker.ts` - `WaitHumanSignal` ハンドリング
   - `packages/durably/src/migrations.ts` - version 2 マイグレーション
   - `packages/durably-react/*` - HITL React フックと型の更新
-  - `docs/spec-human-in-loop.md`, `docs/spec-react.md` - 仕様更新
+  - OpenSpec `specs/` および `changes/` の仕様更新

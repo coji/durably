@@ -88,6 +88,7 @@ The system SHALL provide HTTP API to resume `waiting_human` Runs.
 
 - The system MUST provide `POST /resume` endpoint
 - On success, the system SHALL return `{ runId, success: true }`
+- The system MUST support filtering `waiting_human` runs by job name via `GET /runs?status=waiting_human&jobName=...`
 
 #### Scenario: POST /resume success
 
@@ -100,6 +101,12 @@ The system SHALL provide HTTP API to resume `waiting_human` Runs.
 - **GIVEN** Run is in `waiting_human` state
 - **WHEN** `GET /runs?status=waiting_human` is called
 - **THEN** response includes `wait_message`, `wait_schema`, and `wait_deadline_at`
+
+#### Scenario: GET /runs filtered by job name
+
+- **GIVEN** multiple Runs in `waiting_human` state across different jobs
+- **WHEN** `GET /runs?status=waiting_human&jobName=import-csv` is called
+- **THEN** only Runs matching `jobName=import-csv` are returned
 
 ---
 
