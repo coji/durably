@@ -396,6 +396,29 @@ export function createStorageTests(createDialect: () => Dialect) {
         expect(claimed).not.toBeNull()
         expect(claimed!.id).toBe(run1.id)
       })
+
+      it('claimNextPendingRun preserves started_at on re-claim of recovered run', async () => {
+        // Create and claim a run
+        const created = await durably.storage.createRun({
+          jobName: 'test-job',
+          input: {},
+        })
+        const firstClaim = await durably.storage.claimNextPendingRun([])
+        expect(firstClaim).not.toBeNull()
+        const originalStartedAt = firstClaim!.startedAt
+
+        // Simulate stale run recovery: reset to pending
+        await durably.storage.updateRun(created.id, { status: 'pending' })
+
+        // Re-claim the run
+        const secondClaim = await durably.storage.claimNextPendingRun([])
+
+        expect(secondClaim).not.toBeNull()
+        expect(secondClaim!.id).toBe(created.id)
+        expect(secondClaim!.status).toBe('running')
+        // started_at should be preserved from the first claim
+        expect(secondClaim!.startedAt).toBe(originalStartedAt)
+      })
     })
 
     describe('Step operations', () => {

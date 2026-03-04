@@ -470,7 +470,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         .set({
           status: 'running',
           heartbeat_at: now,
-          started_at: now,
+          started_at: sql`COALESCE(started_at, ${now})`,
           updated_at: now,
         })
         .where('id', '=', (eb) =>
