@@ -319,6 +319,15 @@ GET /runs?label.organizationId=org_123
 GET /runs/subscribe?label.organizationId=org_123&label.env=prod
 ```
 
+**Response Shape:** The `/runs` and `/run` endpoints return `ClientRun` objects (internal fields like `heartbeatAt`, `idempotencyKey`, `concurrencyKey`, `updatedAt` are stripped). Use `toClientRun()` to apply the same projection in custom code:
+
+```ts
+import { toClientRun } from '@coji/durably'
+
+const run = await durably.getRun(runId)
+const clientRun = toClientRun(run) // strips internal fields
+```
+
 **Handler Interface:**
 
 ```ts
@@ -1108,6 +1117,8 @@ type TypedRun<
   input: TInput
   output: TOutput | null
 }
+
+// ClientRun is re-exported from @coji/durably (excludes heartbeatAt, idempotencyKey, concurrencyKey, updatedAt)
 
 // Client hooks: TypedClientRun with generic input/output
 type TypedClientRun<

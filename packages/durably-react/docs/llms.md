@@ -619,6 +619,8 @@ type TypedRun<
   output: TOutput | null
 }
 
+// ClientRun is re-exported from @coji/durably (excludes heartbeatAt, idempotencyKey, concurrencyKey, updatedAt)
+
 // Client hooks: TypedClientRun with generic input/output
 type TypedClientRun<
   TInput extends Record<string, unknown> = Record<string, unknown>,

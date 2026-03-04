@@ -239,6 +239,7 @@ function ImportButton() {
 
 ```ts
 import type {
+  ClientRun,
   Durably,
   DurablyOptions,
   JobDefinition,
@@ -250,6 +251,7 @@ import type {
   DurablyEvent,
   EventType,
 } from '@coji/durably'
+import { toClientRun } from '@coji/durably'
 ```
 
 ### `Run` Type
@@ -270,5 +272,7 @@ Key fields on the `Run` object returned by `getRun()` and `getRuns()`:
 | `completedAt` | `string \| null`                                                   | ISO timestamp when the run completed or failed |
 | `createdAt`   | `string`                                                           | ISO timestamp when the run was created         |
 | `updatedAt`   | `string`                                                           | ISO timestamp of the last update               |
+
+HTTP endpoints (`/runs`, `/run`) return `ClientRun` — the same fields minus `idempotencyKey`, `concurrencyKey`, `heartbeatAt`, and `updatedAt`. Use `toClientRun(run)` to apply the same projection in custom code.
 
 **See:** [createDurably - Run Type](/api/create-durably#run-type) for the full field list.
