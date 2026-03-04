@@ -68,7 +68,7 @@ export function createMigrateTests(createDialect: () => Dialect) {
       `.execute(durably.db)
 
       expect(result.rows).toHaveLength(1)
-      expect(result.rows[0].version).toBe(3)
+      expect(result.rows[0].version).toBe(1)
     })
 
     it('is idempotent (can be called multiple times safely)', async () => {
@@ -83,7 +83,7 @@ export function createMigrateTests(createDialect: () => Dialect) {
       `.execute(durably.db)
 
       // Should have version records for each migration
-      expect(result.rows).toHaveLength(3)
+      expect(result.rows).toHaveLength(1)
     })
   })
 }
