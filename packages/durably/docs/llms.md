@@ -101,7 +101,10 @@ await syncUsers.trigger(
 // With concurrency key (serializes execution)
 await syncUsers.trigger({ orgId: 'org_123' }, { concurrencyKey: 'org_123' })
 
-// With labels (for filtering/multi-tenancy)
+// With labels (for filtering)
+await syncUsers.trigger({ orgId: 'org_123' }, { labels: { source: 'browser' } })
+
+// Labels for multi-tenancy
 await syncUsers.trigger(
   { orgId: 'org_123' },
   { labels: { organizationId: 'org_123', env: 'prod' } },
@@ -174,6 +177,11 @@ const runs = await durably.getRuns({
   status: 'completed',
   limit: 10,
   offset: 0,
+})
+
+// Filter by labels
+const browserRuns = await durably.getRuns({
+  labels: { source: 'browser' },
 })
 
 // Filter by labels (multi-tenancy)

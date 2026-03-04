@@ -133,6 +133,7 @@ export interface ClientRun {
   error: string | null
   currentStepIndex: number
   stepCount: number
+  labels: Record<string, string>
   progress: Progress | null
   createdAt: string
   startedAt: string | null

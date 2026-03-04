@@ -144,6 +144,15 @@ function Component() {
     console.log('Started:', runId)
   }
 
+  // Trigger with labels (for filtering)
+  const handleClickWithLabels = async () => {
+    const { runId } = await trigger(
+      { value: 'test' },
+      { labels: { source: 'browser' } },
+    )
+    console.log('Started:', runId)
+  }
+
   // Or trigger and wait for result
   const handleSync = async () => {
     const { runId, output } = await triggerAndWait({ value: 'test' })
@@ -297,6 +306,12 @@ function SingleJobDashboard() {
 function UntypedDashboard() {
   const { runs } = useRuns({ jobName: 'my-job', pageSize: 10 })
   // runs[0].output is unknown
+}
+
+// Filter by labels
+function FilteredDashboard() {
+  const { runs } = useRuns({ labels: { source: 'browser' }, pageSize: 10 })
+  // runs[0].labels is Record<string, string>
 }
 ```
 
@@ -492,6 +507,16 @@ function SingleJobDashboard() {
 function UntypedDashboard() {
   const { runs } = useRuns({ api: '/api/durably', jobName: 'sync-data' })
   // runs[0].output is unknown
+}
+
+// Filter by labels
+function FilteredDashboard() {
+  const { runs } = useRuns({
+    api: '/api/durably',
+    labels: { source: 'browser' },
+    pageSize: 10,
+  })
+  // runs[0].labels is Record<string, string>
 }
 ```
 

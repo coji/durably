@@ -156,18 +156,27 @@ await job.trigger(
 
 ### Labels
 
-Attach metadata for filtering (e.g., multi-tenancy):
+Attach metadata for filtering:
+
+```ts
+// Simple labels
+await job.trigger({ userId: '123' }, { labels: { source: 'browser' } })
+
+// Filter runs by labels
+const runs = await durably.getRuns({
+  labels: { source: 'browser' },
+})
+```
+
+Labels are also useful for multi-tenancy:
 
 ```ts
 await job.trigger(
   { userId: '123' },
-  {
-    labels: { organizationId: 'org_123', env: 'prod' },
-  },
+  { labels: { organizationId: 'org_123', env: 'prod' } },
 )
 
-// Filter runs by labels
-const runs = await durably.getRuns({
+const orgRuns = await durably.getRuns({
   labels: { organizationId: 'org_123' },
 })
 ```

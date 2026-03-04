@@ -13,6 +13,7 @@ export interface RunRecord {
   progress: { current: number; total?: number; message?: string } | null
   currentStepIndex: number
   stepCount: number
+  labels: Record<string, string>
   createdAt: string
   startedAt: string | null
   completedAt: string | null
