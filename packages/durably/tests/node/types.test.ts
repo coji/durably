@@ -7,7 +7,15 @@
 
 import { describe, expectTypeOf, it } from 'vitest'
 import { z } from 'zod'
-import { defineJob } from '../../src'
+import {
+  createDurably,
+  defineJob,
+  type Durably,
+  type JobHandle,
+  type Run,
+  type RunFilter,
+  type TriggerOptions,
+} from '../../src'
 
 describe('Type inference', () => {
   describe('defineJob with branded types', () => {
@@ -62,6 +70,70 @@ describe('Type inference', () => {
 
       // Verify the job definition itself has correct types
       expectTypeOf(job.name).toEqualTypeOf<'branded-helpers'>()
+    })
+  })
+
+  describe('type-safe labels', () => {
+    type Labels = { organizationId: string; env: string }
+
+    it('TriggerOptions accepts typed labels', () => {
+      expectTypeOf<TriggerOptions<Labels>>().toMatchTypeOf<{
+        labels?: Labels
+      }>()
+    })
+
+    it('Run has typed labels', () => {
+      expectTypeOf<Run<Labels>>().toMatchTypeOf<{
+        labels: Labels
+      }>()
+    })
+
+    it('RunFilter accepts partial labels', () => {
+      expectTypeOf<RunFilter<Labels>>().toMatchTypeOf<{
+        labels?: { organizationId?: string; env?: string }
+      }>()
+    })
+
+    it('Durably.getRun returns Run with typed labels', () => {
+      type D = Durably<Record<string, never>, Labels>
+      expectTypeOf<
+        D['getRun']
+      >().returns.resolves.toMatchTypeOf<Run<Labels> | null>()
+    })
+
+    it('Durably.getRuns accepts RunFilter with typed labels', () => {
+      type D = Durably<Record<string, never>, Labels>
+      expectTypeOf<D['getRuns']>()
+        .parameter(0)
+        .toMatchTypeOf<RunFilter<Labels> | undefined>()
+    })
+
+    it('defaults to Record<string, string> without labels schema', () => {
+      expectTypeOf<Run>().toMatchTypeOf<Run<Record<string, string>>>()
+      expectTypeOf<RunFilter>().toMatchTypeOf<
+        RunFilter<Record<string, string>>
+      >()
+    })
+
+    it('JobHandle trigger accepts typed labels', () => {
+      type Handle = JobHandle<'test', { id: string }, void, Labels>
+      expectTypeOf<Handle['trigger']>()
+        .parameter(1)
+        .toMatchTypeOf<TriggerOptions<Labels> | undefined>()
+    })
+
+    it('createDurably infers labels type from schema', () => {
+      const labelsSchema = z.object({
+        organizationId: z.string(),
+        env: z.string(),
+      })
+
+      // When labels schema is provided, the return type should have Labels
+      const fn = (opts: { dialect: never; labels: typeof labelsSchema }) =>
+        createDurably(opts)
+      expectTypeOf(fn).returns.toMatchTypeOf<
+        Durably<Record<string, never>, Labels>
+      >()
     })
   })
 })

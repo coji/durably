@@ -62,16 +62,20 @@ export type JobFunction<TInput, TOutput> = (
 /**
  * Trigger options for trigger() and batchTrigger()
  */
-export interface TriggerOptions {
+export interface TriggerOptions<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   idempotencyKey?: string
   concurrencyKey?: string
-  labels?: Record<string, string>
+  labels?: TLabels
 }
 
 /**
  * Options for triggerAndWait() (extends TriggerOptions with wait-specific options)
  */
-export interface TriggerAndWaitOptions extends TriggerOptions {
+export interface TriggerAndWaitOptions<
+  TLabels extends Record<string, string> = Record<string, string>,
+> extends TriggerOptions<TLabels> {
   /** Timeout in milliseconds */
   timeout?: number
   /** Called when step.progress() is invoked during execution */
@@ -83,16 +87,20 @@ export interface TriggerAndWaitOptions extends TriggerOptions {
 /**
  * Typed run with output type
  */
-export interface TypedRun<TOutput> extends Omit<Run, 'output'> {
+export interface TypedRun<
+  TOutput,
+  TLabels extends Record<string, string> = Record<string, string>,
+> extends Omit<Run<TLabels>, 'output'> {
   output: TOutput | null
 }
 
 /**
  * Batch trigger input - either just the input or input with options
  */
-export type BatchTriggerInput<TInput> =
-  | TInput
-  | { input: TInput; options?: TriggerOptions }
+export type BatchTriggerInput<
+  TInput,
+  TLabels extends Record<string, string> = Record<string, string>,
+> = TInput | { input: TInput; options?: TriggerOptions<TLabels> }
 
 /**
  * Result of triggerAndWait
@@ -105,13 +113,21 @@ export interface TriggerAndWaitResult<TOutput> {
 /**
  * Job handle returned by defineJob
  */
-export interface JobHandle<TName extends string, TInput, TOutput> {
+export interface JobHandle<
+  TName extends string,
+  TInput,
+  TOutput,
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   readonly name: TName
 
   /**
    * Trigger a new run
    */
-  trigger(input: TInput, options?: TriggerOptions): Promise<TypedRun<TOutput>>
+  trigger(
+    input: TInput,
+    options?: TriggerOptions<TLabels>,
+  ): Promise<TypedRun<TOutput, TLabels>>
 
   /**
    * Trigger a new run and wait for completion
@@ -119,7 +135,7 @@ export interface JobHandle<TName extends string, TInput, TOutput> {
    */
   triggerAndWait(
     input: TInput,
-    options?: TriggerAndWaitOptions,
+    options?: TriggerAndWaitOptions<TLabels>,
   ): Promise<TriggerAndWaitResult<TOutput>>
 
   /**
@@ -127,18 +143,20 @@ export interface JobHandle<TName extends string, TInput, TOutput> {
    * All inputs are validated before any runs are created
    */
   batchTrigger(
-    inputs: BatchTriggerInput<TInput>[],
-  ): Promise<TypedRun<TOutput>[]>
+    inputs: BatchTriggerInput<TInput, TLabels>[],
+  ): Promise<TypedRun<TOutput, TLabels>[]>
 
   /**
    * Get a run by ID
    */
-  getRun(id: string): Promise<TypedRun<TOutput> | null>
+  getRun(id: string): Promise<TypedRun<TOutput, TLabels> | null>
 
   /**
    * Get runs with optional filter
    */
-  getRuns(filter?: Omit<RunFilter, 'jobName'>): Promise<TypedRun<TOutput>[]>
+  getRuns(
+    filter?: Omit<RunFilter<TLabels>, 'jobName'>,
+  ): Promise<TypedRun<TOutput, TLabels>[]>
 }
 
 /**
@@ -148,9 +166,11 @@ export interface RegisteredJob<TInput, TOutput> {
   name: string
   inputSchema: z.ZodType
   outputSchema: z.ZodType | undefined
+  labelsSchema: z.ZodType | undefined
   fn: JobFunction<TInput, TOutput>
   jobDef: JobDefinition<string, TInput, TOutput>
-  handle: JobHandle<string, TInput, TOutput>
+  // biome-ignore lint/suspicious/noExplicitAny: handle may have any labels type
+  handle: JobHandle<string, TInput, TOutput, any>
 }
 
 /**
@@ -197,18 +217,24 @@ export function createJobRegistry(): JobRegistry {
 /**
  * Create a job handle from a JobDefinition
  */
-export function createJobHandle<TName extends string, TInput, TOutput>(
+export function createJobHandle<
+  TName extends string,
+  TInput,
+  TOutput,
+  TLabels extends Record<string, string> = Record<string, string>,
+>(
   jobDef: JobDefinition<TName, TInput, TOutput>,
   storage: Storage,
   eventEmitter: EventEmitter,
   registry: JobRegistry,
-): JobHandle<TName, TInput, TOutput> {
+  labelsSchema?: z.ZodType<TLabels>,
+): JobHandle<TName, TInput, TOutput, TLabels> {
   // Check if same JobDefinition is already registered (idempotent)
   const existingJob = registry.get(jobDef.name)
   if (existingJob) {
     // If same JobDefinition (same reference), return existing handle
     if (existingJob.jobDef === jobDef) {
-      return existingJob.handle as JobHandle<TName, TInput, TOutput>
+      return existingJob.handle as JobHandle<TName, TInput, TOutput, TLabels>
     }
     // Different JobDefinition with same name - error
     throw new Error(
@@ -219,15 +245,20 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
   const inputSchema = jobDef.input as z.ZodType<TInput>
   const outputSchema = jobDef.output as z.ZodType<TOutput> | undefined
 
-  const handle: JobHandle<TName, TInput, TOutput> = {
+  const handle: JobHandle<TName, TInput, TOutput, TLabels> = {
     name: jobDef.name,
 
     async trigger(
       input: TInput,
-      options?: TriggerOptions,
-    ): Promise<TypedRun<TOutput>> {
+      options?: TriggerOptions<TLabels>,
+    ): Promise<TypedRun<TOutput, TLabels>> {
       // Validate input
       const validatedInput = validateJobInputOrThrow(inputSchema, input)
+
+      // Validate labels if schema provided
+      if (labelsSchema && options?.labels) {
+        validateJobInputOrThrow(labelsSchema, options.labels, 'labels')
+      }
 
       // Create the run
       const run = await storage.createRun({
@@ -247,12 +278,12 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
         labels: run.labels,
       })
 
-      return run as TypedRun<TOutput>
+      return run as TypedRun<TOutput, TLabels>
     },
 
     async triggerAndWait(
       input: TInput,
-      options?: TriggerAndWaitOptions,
+      options?: TriggerAndWaitOptions<TLabels>,
     ): Promise<TriggerAndWaitResult<TOutput>> {
       // Trigger the run
       const run = await this.trigger(input, options)
@@ -357,8 +388,8 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
     },
 
     async batchTrigger(
-      inputs: (TInput | { input: TInput; options?: TriggerOptions })[],
-    ): Promise<TypedRun<TOutput>[]> {
+      inputs: (TInput | { input: TInput; options?: TriggerOptions<TLabels> })[],
+    ): Promise<TypedRun<TOutput, TLabels>[]> {
       if (inputs.length === 0) {
         return []
       }
@@ -366,19 +397,29 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
       // Normalize inputs to { input, options } format
       const normalized = inputs.map((item) => {
         if (item && typeof item === 'object' && 'input' in item) {
-          return item as { input: TInput; options?: TriggerOptions }
+          return item as { input: TInput; options?: TriggerOptions<TLabels> }
         }
         return { input: item as TInput, options: undefined }
       })
 
-      // Validate all inputs first (before creating any runs)
-      const validated: { input: unknown; options?: TriggerOptions }[] = []
+      // Validate all inputs and labels first (before creating any runs)
+      const validated: {
+        input: unknown
+        options?: TriggerOptions<TLabels>
+      }[] = []
       for (let i = 0; i < normalized.length; i++) {
         const validatedInput = validateJobInputOrThrow(
           inputSchema,
           normalized[i].input,
           `at index ${i}`,
         )
+        if (labelsSchema && normalized[i].options?.labels) {
+          validateJobInputOrThrow(
+            labelsSchema,
+            normalized[i].options?.labels,
+            `labels at index ${i}`,
+          )
+        }
         validated.push({
           input: validatedInput,
           options: normalized[i].options,
@@ -407,25 +448,25 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
         })
       }
 
-      return runs as TypedRun<TOutput>[]
+      return runs as TypedRun<TOutput, TLabels>[]
     },
 
-    async getRun(id: string): Promise<TypedRun<TOutput> | null> {
+    async getRun(id: string): Promise<TypedRun<TOutput, TLabels> | null> {
       const run = await storage.getRun(id)
       if (!run || run.jobName !== jobDef.name) {
         return null
       }
-      return run as TypedRun<TOutput>
+      return run as TypedRun<TOutput, TLabels>
     },
 
     async getRuns(
-      filter?: Omit<RunFilter, 'jobName'>,
-    ): Promise<TypedRun<TOutput>[]> {
+      filter?: Omit<RunFilter<TLabels>, 'jobName'>,
+    ): Promise<TypedRun<TOutput, TLabels>[]> {
       const runs = await storage.getRuns({
         ...filter,
         jobName: jobDef.name,
       })
-      return runs as TypedRun<TOutput>[]
+      return runs as TypedRun<TOutput, TLabels>[]
     },
   }
 
@@ -434,9 +475,10 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
     name: jobDef.name,
     inputSchema,
     outputSchema,
+    labelsSchema,
     fn: jobDef.run as JobFunction<unknown, unknown>,
     jobDef: jobDef as JobDefinition<string, TInput, TOutput>,
-    handle: handle as JobHandle<string, TInput, TOutput>,
+    handle,
   })
 
   return handle

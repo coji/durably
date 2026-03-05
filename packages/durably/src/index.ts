@@ -42,6 +42,7 @@ export type {
   StepContext,
   TriggerAndWaitOptions,
   TriggerAndWaitResult,
+  TriggerOptions,
 } from './job'
 
 // Schema types (for advanced users)

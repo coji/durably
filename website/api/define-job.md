@@ -76,25 +76,36 @@ Triggers a new job run.
 #### Trigger Options
 
 ```ts
-interface TriggerOptions {
+interface TriggerOptions<TLabels = Record<string, string>> {
   idempotencyKey?: string
   concurrencyKey?: string
-  timeout?: number // For triggerAndWait only
+  labels?: TLabels
+}
+
+interface TriggerAndWaitOptions<
+  TLabels = Record<string, string>,
+> extends TriggerOptions<TLabels> {
+  timeout?: number
+  onProgress?: (progress: ProgressData) => void | Promise<void>
+  onLog?: (log: LogData) => void | Promise<void>
 }
 ```
 
-| Option           | Description                               |
-| ---------------- | ----------------------------------------- |
-| `idempotencyKey` | Prevents duplicate runs with the same key |
-| `concurrencyKey` | Groups jobs for concurrency control       |
-| `timeout`        | Timeout in ms for `triggerAndWait()`      |
+| Option           | Description                                                     |
+| ---------------- | --------------------------------------------------------------- |
+| `idempotencyKey` | Prevents duplicate runs with the same key                       |
+| `concurrencyKey` | Groups jobs for concurrency control                             |
+| `labels`         | Key/value labels for filtering (type-safe when schema provided) |
+| `timeout`        | Timeout in ms (`triggerAndWait` only)                           |
+| `onProgress`     | Progress callback (`triggerAndWait` only)                       |
+| `onLog`          | Log callback (`triggerAndWait` only)                            |
 
 ### `triggerAndWait()`
 
 ```ts
 await job.triggerAndWait(
   input: TInput,
-  options?: TriggerOptions
+  options?: TriggerAndWaitOptions
 ): Promise<{ id: string; output: TOutput }>
 ```
 

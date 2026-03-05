@@ -7,18 +7,22 @@ const ulid = monotonicFactory()
 /**
  * Run data for creating a new run
  */
-export interface CreateRunInput {
+export interface CreateRunInput<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   jobName: string
   input: unknown
   idempotencyKey?: string
   concurrencyKey?: string
-  labels?: Record<string, string>
+  labels?: TLabels
 }
 
 /**
  * Run data returned from storage
  */
-export interface Run {
+export interface Run<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   id: string
   jobName: string
   input: unknown
@@ -30,7 +34,7 @@ export interface Run {
   progress: { current: number; total?: number; message?: string } | null
   output: unknown | null
   error: string | null
-  labels: Record<string, string>
+  labels: TLabels
   heartbeatAt: string
   startedAt: string | null
   completedAt: string | null
@@ -55,11 +59,14 @@ export interface UpdateRunInput {
 /**
  * Run filter options
  */
-export interface RunFilter {
+export interface RunFilter<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   /** Filter by job name(s). Pass a string for one, or an array for multiple (OR). */
   jobName?: string | string[]
-  labels?: Record<string, string>
+  /** Filter by labels (all specified labels must match) */
+  labels?: { [K in keyof TLabels]?: TLabels[K] }
   /** Maximum number of runs to return */
   limit?: number
   /** Number of runs to skip (for pagination) */
@@ -122,15 +129,19 @@ export interface Log {
  * A client-safe subset of Run, excluding internal fields like
  * heartbeatAt, idempotencyKey, concurrencyKey, and updatedAt.
  */
-export type ClientRun = Omit<
-  Run,
+export type ClientRun<
+  TLabels extends Record<string, string> = Record<string, string>,
+> = Omit<
+  Run<TLabels>,
   'idempotencyKey' | 'concurrencyKey' | 'heartbeatAt' | 'updatedAt'
 >
 
 /**
  * Project a full Run to a ClientRun by stripping internal fields.
  */
-export function toClientRun(run: Run): ClientRun {
+export function toClientRun<
+  TLabels extends Record<string, string> = Record<string, string>,
+>(run: Run<TLabels>): ClientRun<TLabels> {
   const {
     idempotencyKey,
     concurrencyKey,
@@ -423,8 +434,10 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         }
       }
       if (filter?.labels) {
-        validateLabels(filter.labels)
-        for (const [key, value] of Object.entries(filter.labels)) {
+        const labels = filter.labels as Record<string, string>
+        validateLabels(labels)
+        for (const [key, value] of Object.entries(labels)) {
+          if (value === undefined) continue
           query = query.where(
             sql`json_extract(durably_runs.labels, ${`$."${key}"`})`,
             '=',
