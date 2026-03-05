@@ -59,7 +59,9 @@ export interface SubscriptionState<TOutput = unknown> {
   progress: Progress | null
 }
 
-// SSE event types (sent from server)
+// SSE event types (sent from server).
+// Note: Unlike core DurablyEvent, these omit timestamp/sequence because
+// the SSE handler in server.ts sends only the fields needed by the UI.
 export type DurablyEvent =
   | { type: 'run:start'; runId: string; jobName: string; input: unknown }
   | {
@@ -107,6 +109,8 @@ export type DurablyEvent =
       type: 'log:write'
       runId: string
       jobName: string
+      stepName: string | null
+      labels: Record<string, string>
       level: 'info' | 'warn' | 'error'
       message: string
       data: unknown

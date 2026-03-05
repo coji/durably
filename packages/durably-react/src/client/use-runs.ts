@@ -82,6 +82,11 @@ export interface UseRunsClientOptions {
    * @default 10
    */
   pageSize?: number
+  /**
+   * Subscribe to real-time updates via SSE (first page only)
+   * @default true
+   */
+  realtime?: boolean
 }
 
 export interface UseRunsClientResult<
@@ -210,7 +215,7 @@ export function useRuns<
     ? (optionsArg as Omit<UseRunsClientOptions, 'jobName'>)
     : (jobDefinitionOrOptions as UseRunsClientOptions)
 
-  const { api, status, labels, pageSize = 10 } = options
+  const { api, status, labels, pageSize = 10, realtime = true } = options
 
   // Stabilize labels reference to prevent infinite re-renders
   const labelsKey = labels ? JSON.stringify(labels) : undefined
@@ -275,10 +280,10 @@ export function useRuns<
     }
   }, [refresh])
 
-  // SSE subscription for first page only
+  // SSE subscription for first page only (when realtime is enabled)
   useEffect(() => {
-    // Only subscribe to SSE on first page
-    if (page !== 0) {
+    // Only subscribe to SSE on first page with realtime enabled
+    if (!realtime || page !== 0) {
       // Clean up any existing connection when navigating away from first page
       if (eventSourceRef.current) {
         eventSourceRef.current.close()
@@ -351,7 +356,7 @@ export function useRuns<
       eventSource.close()
       eventSourceRef.current = null
     }
-  }, [api, jobName, stableLabels, page, refresh])
+  }, [api, jobName, stableLabels, page, realtime, refresh])
 
   const nextPage = useCallback(() => {
     if (hasMore) {
