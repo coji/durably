@@ -1,7 +1,10 @@
 import { type z, prettifyError } from 'zod'
 import type { JobDefinition } from './define-job'
-import type { EventEmitter } from './events'
-import type { Run, Storage } from './storage'
+import type { EventEmitter, LogData, ProgressData } from './events'
+import type { Run, RunFilter, Storage } from './storage'
+
+// eslint-disable-next-line @typescript-eslint/no-empty-function
+const noop = () => {}
 
 /**
  * Validate job input and throw on failure
@@ -57,27 +60,24 @@ export type JobFunction<TInput, TOutput> = (
 ) => Promise<TOutput>
 
 /**
- * Trigger options
+ * Trigger options for trigger() and batchTrigger()
  */
 export interface TriggerOptions {
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: Record<string, string>
-  /** Timeout in milliseconds for triggerAndWait() */
-  timeout?: number
 }
 
 /**
- * Run filter options
+ * Options for triggerAndWait() (extends TriggerOptions with wait-specific options)
  */
-export interface RunFilter {
-  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
-  jobName?: string
-  labels?: Record<string, string>
-  /** Maximum number of runs to return */
-  limit?: number
-  /** Number of runs to skip (for pagination) */
-  offset?: number
+export interface TriggerAndWaitOptions extends TriggerOptions {
+  /** Timeout in milliseconds */
+  timeout?: number
+  /** Called when step.progress() is invoked during execution */
+  onProgress?: (progress: ProgressData) => void | Promise<void>
+  /** Called when step.log is invoked during execution */
+  onLog?: (log: LogData) => void | Promise<void>
 }
 
 /**
@@ -119,7 +119,7 @@ export interface JobHandle<TName extends string, TInput, TOutput> {
    */
   triggerAndWait(
     input: TInput,
-    options?: TriggerOptions,
+    options?: TriggerAndWaitOptions,
   ): Promise<TriggerAndWaitResult<TOutput>>
 
   /**
@@ -252,7 +252,7 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
 
     async triggerAndWait(
       input: TInput,
-      options?: TriggerOptions,
+      options?: TriggerAndWaitOptions,
     ): Promise<TriggerAndWaitResult<TOutput>> {
       // Trigger the run
       const run = await this.trigger(input, options)
@@ -262,48 +262,85 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
         let timeoutId: ReturnType<typeof setTimeout> | undefined
         let resolved = false
 
+        const unsubscribes: (() => void)[] = []
+
         const cleanup = () => {
           if (resolved) return
           resolved = true
-          unsubscribeComplete()
-          unsubscribeFail()
+          for (const unsub of unsubscribes) unsub()
           if (timeoutId) {
             clearTimeout(timeoutId)
           }
         }
 
-        const unsubscribeComplete = eventEmitter.on('run:complete', (event) => {
-          if (event.runId === run.id && !resolved) {
-            cleanup()
-            resolve({
-              id: run.id,
-              output: event.output as TOutput,
-            })
-          }
-        })
+        unsubscribes.push(
+          eventEmitter.on('run:complete', (event) => {
+            if (event.runId === run.id && !resolved) {
+              cleanup()
+              resolve({
+                id: run.id,
+                output: event.output as TOutput,
+              })
+            }
+          }),
+        )
 
-        const unsubscribeFail = eventEmitter.on('run:fail', (event) => {
-          if (event.runId === run.id && !resolved) {
-            cleanup()
-            reject(new Error(event.error))
-          }
-        })
+        unsubscribes.push(
+          eventEmitter.on('run:fail', (event) => {
+            if (event.runId === run.id && !resolved) {
+              cleanup()
+              reject(new Error(event.error))
+            }
+          }),
+        )
+
+        if (options?.onProgress) {
+          const onProgress = options.onProgress
+          unsubscribes.push(
+            eventEmitter.on('run:progress', (event) => {
+              if (event.runId === run.id && !resolved) {
+                void Promise.resolve(onProgress(event.progress)).catch(noop)
+              }
+            }),
+          )
+        }
+
+        if (options?.onLog) {
+          const onLog = options.onLog
+          unsubscribes.push(
+            eventEmitter.on('log:write', (event) => {
+              if (event.runId === run.id && !resolved) {
+                const { level, message, data, stepName } = event
+                void Promise.resolve(
+                  onLog({ level, message, data, stepName }),
+                ).catch(noop)
+              }
+            }),
+          )
+        }
 
         // Check current status after subscribing (race condition mitigation)
         // If the run completed before we subscribed, we need to handle it
-        storage.getRun(run.id).then((currentRun) => {
-          if (resolved || !currentRun) return
-          if (currentRun.status === 'completed') {
+        storage
+          .getRun(run.id)
+          .then((currentRun) => {
+            if (resolved || !currentRun) return
+            if (currentRun.status === 'completed') {
+              cleanup()
+              resolve({
+                id: run.id,
+                output: currentRun.output as TOutput,
+              })
+            } else if (currentRun.status === 'failed') {
+              cleanup()
+              reject(new Error(currentRun.error || 'Run failed'))
+            }
+          })
+          .catch((error) => {
+            if (resolved) return
             cleanup()
-            resolve({
-              id: run.id,
-              output: currentRun.output as TOutput,
-            })
-          } else if (currentRun.status === 'failed') {
-            cleanup()
-            reject(new Error(currentRun.error || 'Run failed'))
-          }
-        })
+            reject(error instanceof Error ? error : new Error(String(error)))
+          })
 
         // Set timeout if specified
         if (options?.timeout !== undefined) {

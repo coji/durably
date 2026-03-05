@@ -18,7 +18,9 @@ export type {
   DurablyEvent,
   ErrorHandler,
   EventType,
+  LogData,
   LogWriteEvent,
+  ProgressData,
   RunCancelEvent,
   RunCompleteEvent,
   RunDeleteEvent,
@@ -35,7 +37,12 @@ export type {
 } from './events'
 
 // Job types
-export type { JobHandle, StepContext, TriggerAndWaitResult } from './job'
+export type {
+  JobHandle,
+  StepContext,
+  TriggerAndWaitOptions,
+  TriggerAndWaitResult,
+} from './job'
 
 // Schema types (for advanced users)
 export type {
