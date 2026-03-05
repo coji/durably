@@ -3,6 +3,9 @@ import type { JobDefinition } from './define-job'
 import type { EventEmitter, LogData, ProgressData } from './events'
 import type { Run, RunFilter, Storage } from './storage'
 
+// eslint-disable-next-line @typescript-eslint/no-empty-function
+const noop = () => {}
+
 /**
  * Validate job input and throw on failure
  */
@@ -72,9 +75,9 @@ export interface TriggerAndWaitOptions extends TriggerOptions {
   /** Timeout in milliseconds */
   timeout?: number
   /** Called when step.progress() is invoked during execution */
-  onProgress?: (progress: ProgressData) => void
+  onProgress?: (progress: ProgressData) => void | Promise<void>
   /** Called when step.log is invoked during execution */
-  onLog?: (log: LogData) => void
+  onLog?: (log: LogData) => void | Promise<void>
 }
 
 /**
@@ -296,7 +299,7 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
           unsubscribes.push(
             eventEmitter.on('run:progress', (event) => {
               if (event.runId === run.id && !resolved) {
-                onProgress(event.progress)
+                void Promise.resolve(onProgress(event.progress)).catch(noop)
               }
             }),
           )
@@ -308,7 +311,9 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
             eventEmitter.on('log:write', (event) => {
               if (event.runId === run.id && !resolved) {
                 const { level, message, data, stepName } = event
-                onLog({ level, message, data, stepName })
+                void Promise.resolve(
+                  onLog({ level, message, data, stepName }),
+                ).catch(noop)
               }
             }),
           )
