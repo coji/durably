@@ -248,6 +248,9 @@ import type {
   Run,
   RunStatus,
   TriggerOptions,
+  TriggerAndWaitOptions,
+  ProgressData,
+  LogData,
   DurablyEvent,
   EventType,
 } from '@coji/durably'
