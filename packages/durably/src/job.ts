@@ -1,7 +1,7 @@
 import { type z, prettifyError } from 'zod'
 import type { JobDefinition } from './define-job'
 import type { EventEmitter, LogData, ProgressData } from './events'
-import type { Run, Storage } from './storage'
+import type { Run, RunFilter, Storage } from './storage'
 
 /**
  * Validate job input and throw on failure
@@ -75,19 +75,6 @@ export interface TriggerAndWaitOptions extends TriggerOptions {
   onProgress?: (progress: ProgressData) => void
   /** Called when step.log is invoked during execution */
   onLog?: (log: LogData) => void
-}
-
-/**
- * Run filter options
- */
-export interface RunFilter {
-  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
-  jobName?: string
-  labels?: Record<string, string>
-  /** Maximum number of runs to return */
-  limit?: number
-  /** Number of runs to skip (for pagination) */
-  offset?: number
 }
 
 /**
