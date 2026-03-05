@@ -160,6 +160,14 @@ export function useRuns<
   const realtime = options?.realtime ?? true
   const status = options?.status
 
+  // Stabilize jobName reference to prevent re-fetch loops with array literals
+  const jobNameKey = jobName ? JSON.stringify(jobName) : undefined
+  const stableJobName = useMemo(
+    () =>
+      jobNameKey ? (JSON.parse(jobNameKey) as string | string[]) : undefined,
+    [jobNameKey],
+  )
+
   // Stabilize labels reference to prevent infinite re-renders
   const labelsKey = options?.labels ? JSON.stringify(options.labels) : undefined
   const labels = useMemo(
@@ -179,7 +187,7 @@ export function useRuns<
     setIsLoading(true)
     try {
       const data = await durably.getRuns({
-        jobName,
+        jobName: stableJobName,
         status,
         labels,
         limit: pageSize + 1,
@@ -190,7 +198,7 @@ export function useRuns<
     } finally {
       setIsLoading(false)
     }
-  }, [durably, jobName, status, labels, pageSize, page])
+  }, [durably, stableJobName, status, labels, pageSize, page])
 
   // Initial fetch and subscribe to events
   useEffect(() => {

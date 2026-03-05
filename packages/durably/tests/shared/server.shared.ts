@@ -981,6 +981,66 @@ export function createServerTests(createDialect: () => Dialect) {
           expect(allEvents).not.toContain('filter-subscribe-2')
         }
       })
+
+      it('filters by multiple jobName params', async () => {
+        const d1 = durably.register({
+          job1: defineJob({
+            name: 'multi-subscribe-1',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        const d2 = d1.register({
+          job2: defineJob({
+            name: 'multi-subscribe-2',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        const d3 = d2.register({
+          job3: defineJob({
+            name: 'multi-subscribe-3',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        // Subscribe to job1 and job3 only
+        const request = new Request(
+          'http://localhost/api/durably/runs/subscribe?jobName=multi-subscribe-1&jobName=multi-subscribe-3',
+          { method: 'GET' },
+        )
+
+        const response = handler.runsSubscribe(request)
+        const reader = response.body!.getReader()
+        const decoder = new TextDecoder()
+
+        // Trigger all three jobs
+        await d3.jobs.job1.trigger({})
+        await d3.jobs.job2.trigger({})
+        await d3.jobs.job3.trigger({})
+
+        const events: string[] = []
+        const readEvents = async () => {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            events.push(decoder.decode(value))
+            if (events.length >= 2) break
+          }
+        }
+
+        await Promise.race([
+          readEvents(),
+          new Promise((r) => setTimeout(r, 1000)),
+        ])
+
+        // Should receive events for job1 and job3, but not job2
+        const allEvents = events.join('')
+        if (allEvents.includes('jobName')) {
+          expect(allEvents).not.toContain('multi-subscribe-2')
+        }
+      })
     })
   })
 }
