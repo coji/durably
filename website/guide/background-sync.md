@@ -142,6 +142,10 @@ durably.on('step:complete', (event) => {
   console.log(`[step:complete] ${event.stepName}`)
 })
 
+durably.on('step:cancel', (event) => {
+  console.log(`[step:cancel] ${event.stepName}`)
+})
+
 durably.on('run:complete', (event) => {
   console.log(
     `[run:complete] output=${JSON.stringify(event.output)} duration=${event.duration}ms`,
