@@ -130,6 +130,9 @@ export function createStepContext(
           labels: run.labels,
         })
 
+        if (isCancelled) {
+          throw new CancelledError(run.id)
+        }
         throw error
       } finally {
         // Clear current step after execution

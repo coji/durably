@@ -99,6 +99,7 @@ export type DurablyEvent =
       jobName: string
       stepName: string
       stepIndex: number
+      labels: Record<string, string>
     }
   | {
       type: 'log:write'

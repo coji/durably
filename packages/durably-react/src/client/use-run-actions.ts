@@ -6,7 +6,7 @@ import type { ClientRun } from '../types'
  */
 export interface StepRecord {
   name: string
-  status: 'completed' | 'failed'
+  status: 'completed' | 'failed' | 'cancelled'
   output: unknown
 }
 

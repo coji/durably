@@ -310,6 +310,7 @@ type DurablyEvent =
   | StepStartEvent
   | StepCompleteEvent
   | StepFailEvent
+  | StepCancelEvent
   | LogWriteEvent
   | WorkerErrorEvent
 ```
