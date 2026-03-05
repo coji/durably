@@ -226,14 +226,10 @@ export function useRuns<
   )
 
   // Stabilize jobName reference to prevent infinite re-renders with array literals
-  const jobNameKey = Array.isArray(jobName) ? jobName.join('\0') : jobName
+  const jobNameKey = jobName ? JSON.stringify(jobName) : undefined
   const stableJobName = useMemo(
     () =>
-      jobNameKey === undefined
-        ? undefined
-        : jobNameKey.includes('\0')
-          ? jobNameKey.split('\0')
-          : jobNameKey,
+      jobNameKey ? (JSON.parse(jobNameKey) as string | string[]) : undefined,
     [jobNameKey],
   )
 
