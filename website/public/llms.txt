@@ -236,6 +236,7 @@ durably.on('run:progress', (e) =>
 durably.on('step:start', (e) => console.log('Step:', e.stepName))
 durably.on('step:complete', (e) => console.log('Step done:', e.stepName))
 durably.on('step:fail', (e) => console.error('Step failed:', e.stepName))
+durably.on('step:cancel', (e) => console.log('Step cancelled:', e.stepName))
 
 // Log events
 durably.on('log:write', (e) => console.log(`[${e.level}]`, e.message))

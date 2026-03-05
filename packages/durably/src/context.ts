@@ -106,7 +106,7 @@ export function createStepContext(
 
         return result
       } catch (error) {
-        // Save failed step
+        const isCancelled = controller.signal.aborted
         const errorMessage =
           error instanceof Error ? error.message : String(error)
 
@@ -114,21 +114,33 @@ export function createStepContext(
           runId: run.id,
           name,
           index: stepIndex,
-          status: 'failed',
+          status: isCancelled ? 'cancelled' : 'failed',
           error: errorMessage,
           startedAt,
         })
 
-        // Emit step:fail event
-        eventEmitter.emit({
-          type: 'step:fail',
-          runId: run.id,
-          jobName,
-          stepName: name,
-          stepIndex,
-          error: errorMessage,
-          labels: run.labels,
-        })
+        if (isCancelled) {
+          // Emit step:cancel event
+          eventEmitter.emit({
+            type: 'step:cancel',
+            runId: run.id,
+            jobName,
+            stepName: name,
+            stepIndex,
+            labels: run.labels,
+          })
+        } else {
+          // Emit step:fail event
+          eventEmitter.emit({
+            type: 'step:fail',
+            runId: run.id,
+            jobName,
+            stepName: name,
+            stepIndex,
+            error: errorMessage,
+            labels: run.labels,
+          })
+        }
 
         throw error
       } finally {

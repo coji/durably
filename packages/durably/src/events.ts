@@ -133,6 +133,15 @@ export interface StepFailEvent extends BaseEvent {
   labels: Record<string, string>
 }
 
+export interface StepCancelEvent extends BaseEvent {
+  type: 'step:cancel'
+  runId: string
+  jobName: string
+  stepName: string
+  stepIndex: number
+  labels: Record<string, string>
+}
+
 /**
  * Log write event
  */
@@ -172,6 +181,7 @@ export type DurablyEvent =
   | StepStartEvent
   | StepCompleteEvent
   | StepFailEvent
+  | StepCancelEvent
   | LogWriteEvent
   | WorkerErrorEvent
 
@@ -211,6 +221,7 @@ export type AnyEventInput =
   | EventInput<'step:start'>
   | EventInput<'step:complete'>
   | EventInput<'step:fail'>
+  | EventInput<'step:cancel'>
   | EventInput<'log:write'>
   | EventInput<'worker:error'>
 

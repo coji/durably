@@ -217,6 +217,25 @@ durably.on('step:fail', (event) => {
 })
 ```
 
+#### `step:cancel`
+
+Fired when a step is cancelled (run was cancelled while step was executing).
+
+```ts
+durably.on('step:cancel', (event) => {
+  // event: {
+  //   type: 'step:cancel',
+  //   runId: string,
+  //   jobName: string,
+  //   stepName: string,
+  //   stepIndex: number,
+  //   labels: Record<string, string>,
+  //   timestamp: string,
+  //   sequence: number
+  // }
+})
+```
+
 ### Log Events
 
 #### `log:write`

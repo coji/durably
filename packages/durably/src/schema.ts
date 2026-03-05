@@ -26,7 +26,7 @@ export interface StepsTable {
   run_id: string
   name: string
   index: number
-  status: 'completed' | 'failed'
+  status: 'completed' | 'failed' | 'cancelled'
   output: string | null // JSON
   error: string | null
   started_at: string // ISO8601

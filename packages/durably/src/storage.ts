@@ -72,7 +72,7 @@ export interface CreateStepInput {
   runId: string
   name: string
   index: number
-  status: 'completed' | 'failed'
+  status: 'completed' | 'failed' | 'cancelled'
   output?: unknown
   error?: string
   startedAt: string // ISO8601 timestamp when step execution started
@@ -86,7 +86,7 @@ export interface Step {
   runId: string
   name: string
   index: number
-  status: 'completed' | 'failed'
+  status: 'completed' | 'failed' | 'cancelled'
   output: unknown | null
   error: string | null
   startedAt: string
