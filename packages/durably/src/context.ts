@@ -119,28 +119,16 @@ export function createStepContext(
           startedAt,
         })
 
-        if (isCancelled) {
-          // Emit step:cancel event
-          eventEmitter.emit({
-            type: 'step:cancel',
-            runId: run.id,
-            jobName,
-            stepName: name,
-            stepIndex,
-            labels: run.labels,
-          })
-        } else {
-          // Emit step:fail event
-          eventEmitter.emit({
-            type: 'step:fail',
-            runId: run.id,
-            jobName,
-            stepName: name,
-            stepIndex,
-            error: errorMessage,
-            labels: run.labels,
-          })
-        }
+        eventEmitter.emit({
+          ...(isCancelled
+            ? { type: 'step:cancel' as const }
+            : { type: 'step:fail' as const, error: errorMessage }),
+          runId: run.id,
+          jobName,
+          stepName: name,
+          stepIndex,
+          labels: run.labels,
+        })
 
         throw error
       } finally {
