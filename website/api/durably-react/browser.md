@@ -358,7 +358,7 @@ useRuns(options?)
 
 | Option     | Type                     | Description                                    |
 | ---------- | ------------------------ | ---------------------------------------------- |
-| `jobName`  | `string`                 | Filter by job name (only for untyped usage)    |
+| `jobName`  | `string \| string[]`     | Filter by job name(s) (only for untyped usage) |
 | `status`   | `RunStatus`              | Filter by status                               |
 | `labels`   | `Record<string, string>` | Filter by labels                               |
 | `pageSize` | `number`                 | Number of runs per page (default: 10)          |

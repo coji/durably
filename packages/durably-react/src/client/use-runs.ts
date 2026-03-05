@@ -225,6 +225,18 @@ export function useRuns<
     [labelsKey],
   )
 
+  // Stabilize jobName reference to prevent infinite re-renders with array literals
+  const jobNameKey = Array.isArray(jobName) ? jobName.join('\0') : jobName
+  const stableJobName = useMemo(
+    () =>
+      jobNameKey === undefined
+        ? undefined
+        : jobNameKey.includes('\0')
+          ? jobNameKey.split('\0')
+          : jobNameKey,
+    [jobNameKey],
+  )
+
   const [runs, setRuns] = useState<TypedClientRun<TInput, TOutput>[]>([])
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(false)
@@ -240,11 +252,7 @@ export function useRuns<
 
     try {
       const params = new URLSearchParams()
-      if (jobName) {
-        for (const name of Array.isArray(jobName) ? jobName : [jobName]) {
-          params.append('jobName', name)
-        }
-      }
+      appendJobNameToParams(params, stableJobName)
       if (status) params.set('status', status)
       appendLabelsToParams(params, stableLabels)
       params.set('limit', String(pageSize + 1))
@@ -272,7 +280,7 @@ export function useRuns<
         setIsLoading(false)
       }
     }
-  }, [api, jobName, status, stableLabels, pageSize, page])
+  }, [api, stableJobName, status, stableLabels, pageSize, page])
 
   // Initial fetch
   useEffect(() => {
@@ -298,11 +306,7 @@ export function useRuns<
 
     // Build SSE URL
     const params = new URLSearchParams()
-    if (jobName) {
-      for (const name of Array.isArray(jobName) ? jobName : [jobName]) {
-        params.append('jobName', name)
-      }
-    }
+    appendJobNameToParams(params, stableJobName)
     appendLabelsToParams(params, stableLabels)
     const sseUrl = `${api}/runs/subscribe${params.toString() ? `?${params.toString()}` : ''}`
 
@@ -364,7 +368,7 @@ export function useRuns<
       eventSource.close()
       eventSourceRef.current = null
     }
-  }, [api, jobName, stableLabels, page, realtime, refresh])
+  }, [api, stableJobName, stableLabels, page, realtime, refresh])
 
   const nextPage = useCallback(() => {
     if (hasMore) {
@@ -390,6 +394,16 @@ export function useRuns<
     prevPage,
     goToPage,
     refresh,
+  }
+}
+
+function appendJobNameToParams(
+  params: URLSearchParams,
+  jobName: string | string[] | undefined,
+) {
+  if (!jobName) return
+  for (const name of Array.isArray(jobName) ? jobName : [jobName]) {
+    params.append('jobName', name)
   }
 }
 

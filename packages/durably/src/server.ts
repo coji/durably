@@ -38,7 +38,7 @@ export interface TriggerResponse {
  * Request query params for listing runs
  */
 export interface RunsRequest {
-  jobName?: string
+  jobName?: string | string[]
   status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   labels?: Record<string, string>
   limit?: number
@@ -291,12 +291,7 @@ export function createDurablyHandler(
       try {
         const url = new URL(request.url)
         const jobNames = url.searchParams.getAll('jobName')
-        const jobName =
-          jobNames.length === 0
-            ? undefined
-            : jobNames.length === 1
-              ? jobNames[0]
-              : jobNames
+        const jobName = jobNames.length > 0 ? jobNames : undefined
         const status = url.searchParams.get('status') as RunsRequest['status']
         const limit = url.searchParams.get('limit')
         const offset = url.searchParams.get('offset')
