@@ -173,7 +173,7 @@ const failedRuns = await durably.getRuns({ status: 'failed' })
 
 // Filter by job name with pagination
 const runs = await durably.getRuns({
-  jobName: 'sync-users',
+  jobName: 'sync-users', // also accepts string[] for multiple jobs
   status: 'completed',
   limit: 10,
   offset: 0,
@@ -504,7 +504,7 @@ interface LogData {
 
 interface RunFilter {
   status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
-  jobName?: string
+  jobName?: string | string[]
   labels?: Record<string, string>
   limit?: number
   offset?: number

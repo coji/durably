@@ -145,7 +145,7 @@ const typedRun = await durably.getRun<MyRun>(runId)
 await durably.getRuns<T extends Run = Run>(filter?: RunFilter): Promise<T[]>
 
 interface RunFilter {
-  jobName?: string
+  jobName?: string | string[]  // single or multiple job names
   status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   labels?: Record<string, string>
   limit?: number
@@ -156,6 +156,12 @@ interface RunFilter {
 Gets runs with optional filtering and pagination. Supports generic type parameter.
 
 ```ts
+// Filter by multiple job names
+const runs = await durably.getRuns({
+  jobName: ['sync-users', 'import-data'],
+  status: 'completed',
+})
+
 // Typed getRuns
 type MyRun = Run & {
   input: { userId: string }
