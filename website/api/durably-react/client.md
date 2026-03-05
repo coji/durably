@@ -17,6 +17,9 @@ import {
 
 Create a type-safe client for all registered jobs. This is the recommended way to use server-connected mode.
 
+> [!WARNING]
+> `createDurablyClient` is **not compatible with SSR** (e.g., React Router with `ssr: true`). It returns a `Proxy` object that loses its trap when processed through Vite's SSR module loader. For SSR apps, use `useJob` and `useRuns` hooks directly with the `api` option instead. See the [fullstack-react-router example](https://github.com/coji/durably/tree/main/examples/fullstack-react-router) for the correct pattern.
+
 ### Server Setup
 
 ```ts

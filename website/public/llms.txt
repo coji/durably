@@ -821,7 +821,9 @@ Import from `@coji/durably-react/client` for server-connected mode.
 
 ### createDurablyClient
 
-Create a type-safe client for all registered jobs (recommended):
+Create a type-safe client for all registered jobs (recommended).
+
+**Not compatible with SSR** (e.g., React Router with `ssr: true`). The Proxy object loses its trap through Vite's SSR module loader. For SSR apps, use `useJob`/`useRuns` hooks directly with the `api` option.
 
 ```tsx
 // Server: register jobs (app/lib/durably.server.ts)
