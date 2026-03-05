@@ -158,6 +158,8 @@ The stream closes automatically when the run completes or fails.
 
 ```ts
 // GET /api/durably/runs?jobName=import-csv&status=completed&label.organizationId=org_123&limit=10&offset=0
+// Multiple jobName params filter by any of them:
+// GET /api/durably/runs?jobName=import-csv&jobName=sync-users
 // Multiple label params use AND logic:
 // GET /api/durably/runs?label.env=prod&label.region=us-east
 

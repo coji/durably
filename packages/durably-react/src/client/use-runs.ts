@@ -66,9 +66,9 @@ export interface UseRunsClientOptions {
    */
   api: string
   /**
-   * Filter by job name
+   * Filter by job name(s). Pass a string for one, or an array for multiple.
    */
-  jobName?: string
+  jobName?: string | string[]
   /**
    * Filter by status
    */
@@ -225,6 +225,14 @@ export function useRuns<
     [labelsKey],
   )
 
+  // Stabilize jobName reference to prevent infinite re-renders with array literals
+  const jobNameKey = jobName ? JSON.stringify(jobName) : undefined
+  const stableJobName = useMemo(
+    () =>
+      jobNameKey ? (JSON.parse(jobNameKey) as string | string[]) : undefined,
+    [jobNameKey],
+  )
+
   const [runs, setRuns] = useState<TypedClientRun<TInput, TOutput>[]>([])
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(false)
@@ -240,7 +248,7 @@ export function useRuns<
 
     try {
       const params = new URLSearchParams()
-      if (jobName) params.set('jobName', jobName)
+      appendJobNameToParams(params, stableJobName)
       if (status) params.set('status', status)
       appendLabelsToParams(params, stableLabels)
       params.set('limit', String(pageSize + 1))
@@ -268,7 +276,7 @@ export function useRuns<
         setIsLoading(false)
       }
     }
-  }, [api, jobName, status, stableLabels, pageSize, page])
+  }, [api, stableJobName, status, stableLabels, pageSize, page])
 
   // Initial fetch
   useEffect(() => {
@@ -294,7 +302,7 @@ export function useRuns<
 
     // Build SSE URL
     const params = new URLSearchParams()
-    if (jobName) params.set('jobName', jobName)
+    appendJobNameToParams(params, stableJobName)
     appendLabelsToParams(params, stableLabels)
     const sseUrl = `${api}/runs/subscribe${params.toString() ? `?${params.toString()}` : ''}`
 
@@ -356,7 +364,7 @@ export function useRuns<
       eventSource.close()
       eventSourceRef.current = null
     }
-  }, [api, jobName, stableLabels, page, realtime, refresh])
+  }, [api, stableJobName, stableLabels, page, realtime, refresh])
 
   const nextPage = useCallback(() => {
     if (hasMore) {
@@ -382,6 +390,16 @@ export function useRuns<
     prevPage,
     goToPage,
     refresh,
+  }
+}
+
+function appendJobNameToParams(
+  params: URLSearchParams,
+  jobName: string | string[] | undefined,
+) {
+  if (!jobName) return
+  for (const name of Array.isArray(jobName) ? jobName : [jobName]) {
+    params.append('jobName', name)
   }
 }
 

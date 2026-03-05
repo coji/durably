@@ -38,7 +38,7 @@ export interface TriggerResponse {
  * Request query params for listing runs
  */
 export interface RunsRequest {
-  jobName?: string
+  jobName?: string | string[]
   status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   labels?: Record<string, string>
   limit?: number
@@ -290,7 +290,8 @@ export function createDurablyHandler(
     async runs(request: Request): Promise<Response> {
       try {
         const url = new URL(request.url)
-        const jobName = url.searchParams.get('jobName') ?? undefined
+        const jobNames = url.searchParams.getAll('jobName')
+        const jobName = jobNames.length > 0 ? jobNames : undefined
         const status = url.searchParams.get('status') as RunsRequest['status']
         const limit = url.searchParams.get('limit')
         const offset = url.searchParams.get('offset')
@@ -386,7 +387,7 @@ export function createDurablyHandler(
 
     runsSubscribe(request: Request): Response {
       const url = new URL(request.url)
-      const jobNameFilter = url.searchParams.get('jobName')
+      const jobNameFilter = url.searchParams.getAll('jobName')
       const labelsFilter = parseLabelsFromParams(url.searchParams)
 
       // Helper to check job name and labels filter
@@ -394,7 +395,8 @@ export function createDurablyHandler(
         jobName: string,
         labels?: Record<string, string>,
       ) => {
-        if (jobNameFilter && jobName !== jobNameFilter) return false
+        if (jobNameFilter.length > 0 && !jobNameFilter.includes(jobName))
+          return false
         if (labelsFilter && (!labels || !matchesLabels(labels, labelsFilter)))
           return false
         return true
