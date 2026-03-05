@@ -3,6 +3,9 @@ import { useDurably } from '../context'
 import type { LogEntry, Progress, RunStatus } from '../types'
 import { useRunSubscription } from './use-run-subscription'
 
+// Note: Unlike UseJobRunClientOptions (client mode), this interface intentionally
+// omits onStart/onComplete/onFail callbacks. In browser mode, use durably.on()
+// directly for event callbacks.
 export interface UseJobRunOptions {
   /**
    * The run ID to subscribe to

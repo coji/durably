@@ -31,6 +31,9 @@ export interface UseRunsOptions {
   realtime?: boolean
 }
 
+// Note: Unlike UseRunsClientResult (client mode), this interface intentionally
+// omits `error` because browser mode operates on a local SQLite database
+// where network errors don't occur.
 export interface UseRunsResult<
   TInput extends Record<string, unknown> = Record<string, unknown>,
   TOutput extends Record<string, unknown> | undefined =

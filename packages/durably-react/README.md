@@ -28,7 +28,7 @@ import { z } from 'zod'
 const myJob = defineJob({
   name: 'my-job',
   input: z.object({ id: z.string() }),
-  run: async (step, payload) => {
+  run: async (step, input) => {
     await step.run('step-1', async () => {
       /* ... */
     })
