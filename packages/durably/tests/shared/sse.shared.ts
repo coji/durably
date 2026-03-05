@@ -386,6 +386,54 @@ export function createSSETests(): void {
           vi.useRealTimers()
         }
       })
+
+      it('flushes pending progress and cleans up state on terminal events', () => {
+        vi.useFakeTimers()
+        try {
+          const inner = createMockController()
+          const { controller } = createThrottledSSEController(inner, 100)
+
+          // Leading edge: immediate
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r1',
+            progress: { current: 1, total: 10 },
+          })
+          // Buffered (within throttle window)
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r1',
+            progress: { current: 9, total: 10 },
+          })
+          expect(inner.events).toHaveLength(1)
+
+          // Terminal event should flush the pending progress, then pass through
+          controller.enqueue({
+            type: 'run:complete',
+            runId: 'r1',
+          })
+
+          expect(inner.events).toHaveLength(3)
+          expect(inner.events[1]).toMatchObject({
+            type: 'run:progress',
+            progress: { current: 9, total: 10 },
+          })
+          expect(inner.events[2]).toEqual({
+            type: 'run:complete',
+            runId: 'r1',
+          })
+
+          // Throttle state should be cleaned up — next progress is a new leading edge
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r1',
+            progress: { current: 1, total: 5 },
+          })
+          expect(inner.events).toHaveLength(4)
+        } finally {
+          vi.useRealTimers()
+        }
+      })
     })
   })
 }

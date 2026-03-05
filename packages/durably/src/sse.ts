@@ -221,12 +221,13 @@ export function createThrottledSSEController(
 
       const event = data as { type?: string; runId?: string }
 
-      // Clean up throttle state for terminal run events
+      // Flush and clean up throttle state for terminal run events
       if (event.runId && TERMINAL_EVENT_TYPES.has(event.type ?? '')) {
         lastSent.delete(event.runId)
         const entry = pending.get(event.runId)
         if (entry) {
           clearTimeout(entry.timer)
+          if (!inner.closed) inner.enqueue(entry.data)
           pending.delete(event.runId)
         }
       }
