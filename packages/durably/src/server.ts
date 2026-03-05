@@ -9,8 +9,9 @@ import {
 } from './http'
 import {
   createSSEResponse,
-  createSSEStreamFromReader,
   createSSEStreamFromSubscriptions,
+  createThrottledSSEController,
+  createThrottledSSEStreamFromReader,
   type SSEStreamController,
 } from './sse'
 import { toClientRun } from './storage'
@@ -159,6 +160,18 @@ export interface CreateDurablyHandlerOptions {
    * ```
    */
   onRequest?: () => Promise<void> | void
+
+  /**
+   * Throttle interval in milliseconds for SSE progress events.
+   * When set, `run:progress` events are debounced per run so the client
+   * receives at most one progress update per throttle window.
+   * The first and last progress events are always delivered.
+   * Non-progress events are never throttled.
+   *
+   * Set to 0 to disable throttling.
+   * @default 100
+   */
+  sseThrottleMs?: number
 }
 
 /**
@@ -197,6 +210,8 @@ export function createDurablyHandler(
   durably: Durably,
   options?: CreateDurablyHandlerOptions,
 ): DurablyHandler {
+  const throttleMs = options?.sseThrottleMs ?? 100
+
   const handler: DurablyHandler = {
     async handle(request: Request, basePath: string): Promise<Response> {
       // Run onRequest hook if provided
@@ -264,8 +279,9 @@ export function createDurablyHandler(
       if (runId instanceof Response) return runId
 
       const stream = durably.subscribe(runId)
-      const sseStream = createSSEStreamFromReader(
+      const sseStream = createThrottledSSEStreamFromReader(
         stream.getReader() as ReadableStreamDefaultReader<AnyEventInput>,
+        throttleMs,
       )
 
       return createSSEResponse(sseStream)
@@ -385,164 +401,173 @@ export function createDurablyHandler(
       }
 
       const sseStream = createSSEStreamFromSubscriptions(
-        (ctrl: SSEStreamController) => [
-          durably.on('run:trigger', (event) => {
-            if (matchesFilter(event.jobName, event.labels)) {
-              ctrl.enqueue({
-                type: 'run:trigger',
-                runId: event.runId,
-                jobName: event.jobName,
-                labels: event.labels,
-              })
-            }
-          }),
+        (innerCtrl: SSEStreamController) => {
+          const { controller: ctrl, dispose } = createThrottledSSEController(
+            innerCtrl,
+            throttleMs,
+          )
 
-          durably.on('run:start', (event) => {
-            if (matchesFilter(event.jobName, event.labels)) {
-              ctrl.enqueue({
-                type: 'run:start',
-                runId: event.runId,
-                jobName: event.jobName,
-                labels: event.labels,
-              })
-            }
-          }),
+          const unsubscribes = [
+            durably.on('run:trigger', (event) => {
+              if (matchesFilter(event.jobName, event.labels)) {
+                ctrl.enqueue({
+                  type: 'run:trigger',
+                  runId: event.runId,
+                  jobName: event.jobName,
+                  labels: event.labels,
+                })
+              }
+            }),
 
-          durably.on('run:complete', (event) => {
-            if (matchesFilter(event.jobName, event.labels)) {
-              ctrl.enqueue({
-                type: 'run:complete',
-                runId: event.runId,
-                jobName: event.jobName,
-                labels: event.labels,
-              })
-            }
-          }),
+            durably.on('run:start', (event) => {
+              if (matchesFilter(event.jobName, event.labels)) {
+                ctrl.enqueue({
+                  type: 'run:start',
+                  runId: event.runId,
+                  jobName: event.jobName,
+                  labels: event.labels,
+                })
+              }
+            }),
 
-          durably.on('run:fail', (event) => {
-            if (matchesFilter(event.jobName, event.labels)) {
-              ctrl.enqueue({
-                type: 'run:fail',
-                runId: event.runId,
-                jobName: event.jobName,
-                labels: event.labels,
-              })
-            }
-          }),
+            durably.on('run:complete', (event) => {
+              if (matchesFilter(event.jobName, event.labels)) {
+                ctrl.enqueue({
+                  type: 'run:complete',
+                  runId: event.runId,
+                  jobName: event.jobName,
+                  labels: event.labels,
+                })
+              }
+            }),
 
-          durably.on('run:cancel', (event) => {
-            if (matchesFilter(event.jobName, event.labels)) {
-              ctrl.enqueue({
-                type: 'run:cancel',
-                runId: event.runId,
-                jobName: event.jobName,
-                labels: event.labels,
-              })
-            }
-          }),
+            durably.on('run:fail', (event) => {
+              if (matchesFilter(event.jobName, event.labels)) {
+                ctrl.enqueue({
+                  type: 'run:fail',
+                  runId: event.runId,
+                  jobName: event.jobName,
+                  labels: event.labels,
+                })
+              }
+            }),
 
-          durably.on('run:delete', (event) => {
-            if (matchesFilter(event.jobName, event.labels)) {
-              ctrl.enqueue({
-                type: 'run:delete',
-                runId: event.runId,
-                jobName: event.jobName,
-                labels: event.labels,
-              })
-            }
-          }),
+            durably.on('run:cancel', (event) => {
+              if (matchesFilter(event.jobName, event.labels)) {
+                ctrl.enqueue({
+                  type: 'run:cancel',
+                  runId: event.runId,
+                  jobName: event.jobName,
+                  labels: event.labels,
+                })
+              }
+            }),
 
-          durably.on('run:retry', (event) => {
-            if (matchesFilter(event.jobName, event.labels)) {
-              ctrl.enqueue({
-                type: 'run:retry',
-                runId: event.runId,
-                jobName: event.jobName,
-                labels: event.labels,
-              })
-            }
-          }),
+            durably.on('run:delete', (event) => {
+              if (matchesFilter(event.jobName, event.labels)) {
+                ctrl.enqueue({
+                  type: 'run:delete',
+                  runId: event.runId,
+                  jobName: event.jobName,
+                  labels: event.labels,
+                })
+              }
+            }),
 
-          durably.on('run:progress', (event) => {
-            if (matchesFilter(event.jobName, event.labels)) {
-              ctrl.enqueue({
-                type: 'run:progress',
-                runId: event.runId,
-                jobName: event.jobName,
-                progress: event.progress,
-                labels: event.labels,
-              })
-            }
-          }),
+            durably.on('run:retry', (event) => {
+              if (matchesFilter(event.jobName, event.labels)) {
+                ctrl.enqueue({
+                  type: 'run:retry',
+                  runId: event.runId,
+                  jobName: event.jobName,
+                  labels: event.labels,
+                })
+              }
+            }),
 
-          durably.on('step:start', (event) => {
-            if (matchesFilter(event.jobName, event.labels)) {
-              ctrl.enqueue({
-                type: 'step:start',
-                runId: event.runId,
-                jobName: event.jobName,
-                stepName: event.stepName,
-                stepIndex: event.stepIndex,
-                labels: event.labels,
-              })
-            }
-          }),
+            durably.on('run:progress', (event) => {
+              if (matchesFilter(event.jobName, event.labels)) {
+                ctrl.enqueue({
+                  type: 'run:progress',
+                  runId: event.runId,
+                  jobName: event.jobName,
+                  progress: event.progress,
+                  labels: event.labels,
+                })
+              }
+            }),
 
-          durably.on('step:complete', (event) => {
-            if (matchesFilter(event.jobName, event.labels)) {
-              ctrl.enqueue({
-                type: 'step:complete',
-                runId: event.runId,
-                jobName: event.jobName,
-                stepName: event.stepName,
-                stepIndex: event.stepIndex,
-                labels: event.labels,
-              })
-            }
-          }),
+            durably.on('step:start', (event) => {
+              if (matchesFilter(event.jobName, event.labels)) {
+                ctrl.enqueue({
+                  type: 'step:start',
+                  runId: event.runId,
+                  jobName: event.jobName,
+                  stepName: event.stepName,
+                  stepIndex: event.stepIndex,
+                  labels: event.labels,
+                })
+              }
+            }),
 
-          durably.on('step:fail', (event) => {
-            if (matchesFilter(event.jobName, event.labels)) {
-              ctrl.enqueue({
-                type: 'step:fail',
-                runId: event.runId,
-                jobName: event.jobName,
-                stepName: event.stepName,
-                stepIndex: event.stepIndex,
-                error: event.error,
-                labels: event.labels,
-              })
-            }
-          }),
+            durably.on('step:complete', (event) => {
+              if (matchesFilter(event.jobName, event.labels)) {
+                ctrl.enqueue({
+                  type: 'step:complete',
+                  runId: event.runId,
+                  jobName: event.jobName,
+                  stepName: event.stepName,
+                  stepIndex: event.stepIndex,
+                  labels: event.labels,
+                })
+              }
+            }),
 
-          durably.on('step:cancel', (event) => {
-            if (matchesFilter(event.jobName, event.labels)) {
-              ctrl.enqueue({
-                type: 'step:cancel',
-                runId: event.runId,
-                jobName: event.jobName,
-                stepName: event.stepName,
-                stepIndex: event.stepIndex,
-                labels: event.labels,
-              })
-            }
-          }),
+            durably.on('step:fail', (event) => {
+              if (matchesFilter(event.jobName, event.labels)) {
+                ctrl.enqueue({
+                  type: 'step:fail',
+                  runId: event.runId,
+                  jobName: event.jobName,
+                  stepName: event.stepName,
+                  stepIndex: event.stepIndex,
+                  error: event.error,
+                  labels: event.labels,
+                })
+              }
+            }),
 
-          durably.on('log:write', (event) => {
-            if (matchesFilter(event.jobName, event.labels)) {
-              ctrl.enqueue({
-                type: 'log:write',
-                runId: event.runId,
-                jobName: event.jobName,
-                labels: event.labels,
-                stepName: event.stepName,
-                level: event.level,
-                message: event.message,
-                data: event.data,
-              })
-            }
-          }),
-        ],
+            durably.on('step:cancel', (event) => {
+              if (matchesFilter(event.jobName, event.labels)) {
+                ctrl.enqueue({
+                  type: 'step:cancel',
+                  runId: event.runId,
+                  jobName: event.jobName,
+                  stepName: event.stepName,
+                  stepIndex: event.stepIndex,
+                  labels: event.labels,
+                })
+              }
+            }),
+
+            durably.on('log:write', (event) => {
+              if (matchesFilter(event.jobName, event.labels)) {
+                ctrl.enqueue({
+                  type: 'log:write',
+                  runId: event.runId,
+                  jobName: event.jobName,
+                  labels: event.labels,
+                  stepName: event.stepName,
+                  level: event.level,
+                  message: event.message,
+                  data: event.data,
+                })
+              }
+            }),
+          ]
+
+          return [...unsubscribes, dispose]
+        },
       )
 
       return createSSEResponse(sseStream)
