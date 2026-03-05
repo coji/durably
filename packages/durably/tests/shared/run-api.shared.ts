@@ -421,6 +421,92 @@ export function createRunApiTests(createDialect: () => Dialect) {
           d.jobs.job.triggerAndWait({}, { timeout: 100 }),
         ).rejects.toThrow('timeout')
       })
+
+      it('calls onProgress callback with progress data', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'progress-callback-test',
+            input: z.object({}),
+            run: async (step) => {
+              step.progress(1, 3, 'Step 1')
+              await step.run('s1', () => 'done')
+              step.progress(2, 3, 'Step 2')
+              await step.run('s2', () => 'done')
+              step.progress(3, 3, 'Done')
+            },
+          }),
+        })
+
+        d.start()
+
+        const progressUpdates: Array<{
+          current: number
+          total?: number
+          message?: string
+        }> = []
+
+        await d.jobs.job.triggerAndWait(
+          {},
+          {
+            onProgress: (progress) => {
+              progressUpdates.push(progress)
+            },
+          },
+        )
+
+        expect(progressUpdates).toHaveLength(3)
+        expect(progressUpdates[0]).toEqual({
+          current: 1,
+          total: 3,
+          message: 'Step 1',
+        })
+        expect(progressUpdates[2]).toEqual({
+          current: 3,
+          total: 3,
+          message: 'Done',
+        })
+      })
+
+      it('calls onLog callback with log data', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'log-callback-test',
+            input: z.object({}),
+            run: async (step) => {
+              step.log.info('Starting')
+              await step.run('s1', () => 'done')
+              step.log.warn('Almost done')
+              step.log.error('Something went wrong', { code: 42 })
+            },
+          }),
+        })
+
+        d.start()
+
+        const logs: Array<{
+          level: string
+          message: string
+          data?: unknown
+        }> = []
+
+        await d.jobs.job.triggerAndWait(
+          {},
+          {
+            onLog: (log) => {
+              logs.push(log)
+            },
+          },
+        )
+
+        expect(logs).toHaveLength(3)
+        expect(logs[0]).toMatchObject({ level: 'info', message: 'Starting' })
+        expect(logs[1]).toMatchObject({ level: 'warn', message: 'Almost done' })
+        expect(logs[2]).toMatchObject({
+          level: 'error',
+          message: 'Something went wrong',
+          data: { code: 42 },
+        })
+      })
     })
 
     describe('step.progress()', () => {

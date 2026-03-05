@@ -59,12 +59,35 @@ export type JobFunction<TInput, TOutput> = (
 /**
  * Trigger options
  */
+/**
+ * Progress data reported by step.progress()
+ */
+export interface ProgressData {
+  current: number
+  total?: number
+  message?: string
+}
+
+/**
+ * Log entry reported by step.log
+ */
+export interface LogData {
+  level: 'info' | 'warn' | 'error'
+  message: string
+  data?: unknown
+  stepName?: string | null
+}
+
 export interface TriggerOptions {
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: Record<string, string>
   /** Timeout in milliseconds for triggerAndWait() */
   timeout?: number
+  /** Called when step.progress() is invoked during triggerAndWait() */
+  onProgress?: (progress: ProgressData) => void
+  /** Called when step.log is invoked during triggerAndWait() */
+  onLog?: (log: LogData) => void
 }
 
 /**
@@ -262,32 +285,64 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
         let timeoutId: ReturnType<typeof setTimeout> | undefined
         let resolved = false
 
+        const unsubscribes: (() => void)[] = []
+
         const cleanup = () => {
           if (resolved) return
           resolved = true
-          unsubscribeComplete()
-          unsubscribeFail()
+          for (const unsub of unsubscribes) unsub()
           if (timeoutId) {
             clearTimeout(timeoutId)
           }
         }
 
-        const unsubscribeComplete = eventEmitter.on('run:complete', (event) => {
-          if (event.runId === run.id && !resolved) {
-            cleanup()
-            resolve({
-              id: run.id,
-              output: event.output as TOutput,
-            })
-          }
-        })
+        unsubscribes.push(
+          eventEmitter.on('run:complete', (event) => {
+            if (event.runId === run.id && !resolved) {
+              cleanup()
+              resolve({
+                id: run.id,
+                output: event.output as TOutput,
+              })
+            }
+          }),
+        )
 
-        const unsubscribeFail = eventEmitter.on('run:fail', (event) => {
-          if (event.runId === run.id && !resolved) {
-            cleanup()
-            reject(new Error(event.error))
-          }
-        })
+        unsubscribes.push(
+          eventEmitter.on('run:fail', (event) => {
+            if (event.runId === run.id && !resolved) {
+              cleanup()
+              reject(new Error(event.error))
+            }
+          }),
+        )
+
+        if (options?.onProgress) {
+          const onProgress = options.onProgress
+          unsubscribes.push(
+            eventEmitter.on('run:progress', (event) => {
+              if (event.runId === run.id && !resolved) {
+                onProgress(event.progress)
+              }
+            }),
+          )
+        }
+
+        if (options?.onLog) {
+          const onLog = options.onLog
+          unsubscribes.push(
+            eventEmitter.on('log:write', (event) => {
+              if (event.runId === run.id && !resolved) {
+                onLog({
+                  level: event.level,
+                  message: event.message,
+                  data: event.data,
+                  stepName: event.stepName,
+                })
+              }
+            }),
+          )
+        }
 
         // Check current status after subscribing (race condition mitigation)
         // If the run completed before we subscribed, we need to handle it
