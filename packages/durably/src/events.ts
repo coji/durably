@@ -164,14 +164,12 @@ export interface LogData {
 /**
  * Log write event
  */
-export interface LogWriteEvent extends BaseEvent {
+export interface LogWriteEvent extends BaseEvent, LogData {
   type: 'log:write'
   runId: string
   jobName: string
   labels: Record<string, string>
   stepName: string | null
-  level: 'info' | 'warn' | 'error'
-  message: string
   data: unknown
 }
 

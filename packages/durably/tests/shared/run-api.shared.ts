@@ -1,7 +1,13 @@
 import type { Dialect } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { createDurably, defineJob, type Durably } from '../../src'
+import {
+  createDurably,
+  defineJob,
+  type Durably,
+  type LogData,
+  type ProgressData,
+} from '../../src'
 
 export function createRunApiTests(createDialect: () => Dialect) {
   describe('Run API', () => {
@@ -439,11 +445,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
 
         d.start()
 
-        const progressUpdates: Array<{
-          current: number
-          total?: number
-          message?: string
-        }> = []
+        const progressUpdates: ProgressData[] = []
 
         await d.jobs.job.triggerAndWait(
           {},
@@ -483,11 +485,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
 
         d.start()
 
-        const logs: Array<{
-          level: string
-          message: string
-          data?: unknown
-        }> = []
+        const logs: LogData[] = []
 
         await d.jobs.job.triggerAndWait(
           {},

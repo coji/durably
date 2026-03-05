@@ -57,17 +57,23 @@ export type JobFunction<TInput, TOutput> = (
 ) => Promise<TOutput>
 
 /**
- * Trigger options
+ * Trigger options for trigger() and batchTrigger()
  */
 export interface TriggerOptions {
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: Record<string, string>
-  /** Timeout in milliseconds for triggerAndWait() */
+}
+
+/**
+ * Options for triggerAndWait() (extends TriggerOptions with wait-specific options)
+ */
+export interface TriggerAndWaitOptions extends TriggerOptions {
+  /** Timeout in milliseconds */
   timeout?: number
-  /** Called when step.progress() is invoked during triggerAndWait() */
+  /** Called when step.progress() is invoked during execution */
   onProgress?: (progress: ProgressData) => void
-  /** Called when step.log is invoked during triggerAndWait() */
+  /** Called when step.log is invoked during execution */
   onLog?: (log: LogData) => void
 }
 
@@ -123,7 +129,7 @@ export interface JobHandle<TName extends string, TInput, TOutput> {
    */
   triggerAndWait(
     input: TInput,
-    options?: TriggerOptions,
+    options?: TriggerAndWaitOptions,
   ): Promise<TriggerAndWaitResult<TOutput>>
 
   /**
@@ -256,7 +262,7 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
 
     async triggerAndWait(
       input: TInput,
-      options?: TriggerOptions,
+      options?: TriggerAndWaitOptions,
     ): Promise<TriggerAndWaitResult<TOutput>> {
       // Trigger the run
       const run = await this.trigger(input, options)
@@ -314,12 +320,8 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
           unsubscribes.push(
             eventEmitter.on('log:write', (event) => {
               if (event.runId === run.id && !resolved) {
-                onLog({
-                  level: event.level,
-                  message: event.message,
-                  data: event.data,
-                  stepName: event.stepName,
-                })
+                const { level, message, data, stepName } = event
+                onLog({ level, message, data, stepName })
               }
             }),
           )
