@@ -66,9 +66,9 @@ export interface UseRunsClientOptions {
    */
   api: string
   /**
-   * Filter by job name
+   * Filter by job name(s). Pass a string for one, or an array for multiple.
    */
-  jobName?: string
+  jobName?: string | string[]
   /**
    * Filter by status
    */
@@ -240,7 +240,11 @@ export function useRuns<
 
     try {
       const params = new URLSearchParams()
-      if (jobName) params.set('jobName', jobName)
+      if (jobName) {
+        for (const name of Array.isArray(jobName) ? jobName : [jobName]) {
+          params.append('jobName', name)
+        }
+      }
       if (status) params.set('status', status)
       appendLabelsToParams(params, stableLabels)
       params.set('limit', String(pageSize + 1))
@@ -294,7 +298,11 @@ export function useRuns<
 
     // Build SSE URL
     const params = new URLSearchParams()
-    if (jobName) params.set('jobName', jobName)
+    if (jobName) {
+      for (const name of Array.isArray(jobName) ? jobName : [jobName]) {
+        params.append('jobName', name)
+      }
+    }
     appendLabelsToParams(params, stableLabels)
     const sseUrl = `${api}/runs/subscribe${params.toString() ? `?${params.toString()}` : ''}`
 

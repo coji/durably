@@ -8,9 +8,9 @@ export type { TypedRun } from '../types'
 
 export interface UseRunsOptions {
   /**
-   * Filter by job name
+   * Filter by job name(s). Pass a string for one, or an array for multiple.
    */
-  jobName?: string
+  jobName?: string | string[]
   /**
    * Filter by status
    */

@@ -336,6 +336,43 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(body[0].jobName).toBe('filter-job-1')
       })
 
+      it('filters by multiple jobName params', async () => {
+        const d2 = durably.register({
+          job1: defineJob({
+            name: 'multi-filter-1',
+            input: z.object({}),
+            run: async () => {},
+          }),
+          job2: defineJob({
+            name: 'multi-filter-2',
+            input: z.object({}),
+            run: async () => {},
+          }),
+          job3: defineJob({
+            name: 'multi-filter-3',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        await d2.jobs.job1.trigger({})
+        await d2.jobs.job2.trigger({})
+        await d2.jobs.job3.trigger({})
+
+        const request = new Request(
+          'http://localhost/api/durably/runs?jobName=multi-filter-1&jobName=multi-filter-3',
+          { method: 'GET' },
+        )
+
+        const response = await handler.runs(request)
+        const body = await response.json()
+
+        expect(body).toHaveLength(2)
+        expect(body.map((r: { jobName: string }) => r.jobName).sort()).toEqual([
+          'multi-filter-1',
+          'multi-filter-3',
+        ])
+      })
+
       it('filters by status', async () => {
         const d = durably.register({
           job: defineJob({
