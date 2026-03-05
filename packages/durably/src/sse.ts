@@ -219,10 +219,13 @@ export function createThrottledSSEController(
     enqueue(data: unknown) {
       if (inner.closed) return
 
-      const event = data as { type?: string; runId?: string }
+      const event =
+        typeof data === 'object' && data !== null
+          ? (data as { type?: string; runId?: string })
+          : null
 
       // Flush and clean up throttle state for terminal run events
-      if (event.runId && TERMINAL_EVENT_TYPES.has(event.type ?? '')) {
+      if (event?.runId && TERMINAL_EVENT_TYPES.has(event.type ?? '')) {
         lastSent.delete(event.runId)
         const entry = pending.get(event.runId)
         if (entry) {
@@ -232,7 +235,7 @@ export function createThrottledSSEController(
         }
       }
 
-      if (event.type !== 'run:progress' || !event.runId) {
+      if (event?.type !== 'run:progress' || !event?.runId) {
         inner.enqueue(data)
         return
       }
@@ -260,16 +263,17 @@ export function createThrottledSSEController(
         clearTimeout(existing.timer)
       }
 
-      const timer = setTimeout(
-        () => {
-          pending.delete(runId)
-          if (!inner.closed) {
-            lastSent.set(runId, Date.now())
-            inner.enqueue(data)
-          }
-        },
-        throttleMs - (now - last),
-      )
+      const delay = Math.max(0, throttleMs - (now - last))
+      const timer = setTimeout(() => {
+        const current = pending.get(runId)
+        if (!current || current.timer !== timer) return
+
+        pending.delete(runId)
+        if (!inner.closed) {
+          lastSent.set(runId, Date.now())
+          inner.enqueue(current.data)
+        }
+      }, delay)
 
       pending.set(runId, { data, timer })
     },
