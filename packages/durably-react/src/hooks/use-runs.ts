@@ -208,6 +208,7 @@ export function useRuns<
       durably.on('run:progress', refresh),
       durably.on('step:start', refresh),
       durably.on('step:complete', refresh),
+      durably.on('step:fail', refresh),
       durably.on('step:cancel', refresh),
     ]
 

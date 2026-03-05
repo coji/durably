@@ -41,6 +41,7 @@ type RunUpdateEvent =
       stepName: string
       stepIndex: number
       error: string
+      labels: Record<string, string>
     }
   | {
       type: 'step:cancel'
@@ -48,6 +49,7 @@ type RunUpdateEvent =
       jobName: string
       stepName: string
       stepIndex: number
+      labels: Record<string, string>
     }
   | {
       type: 'log:write'
