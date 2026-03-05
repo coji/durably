@@ -470,7 +470,7 @@ interface JobHandle<TName, TInput, TOutput> {
   trigger(input: TInput, options?: TriggerOptions): Promise<Run<TOutput>>
   triggerAndWait(
     input: TInput,
-    options?: TriggerOptions,
+    options?: TriggerAndWaitOptions,
   ): Promise<{ id: string; output: TOutput }>
   batchTrigger(inputs: BatchTriggerInput<TInput>[]): Promise<Run<TOutput>[]>
   getRun(id: string): Promise<Run<TOutput> | null>
@@ -481,7 +481,25 @@ interface TriggerOptions {
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: Record<string, string>
+}
+
+interface TriggerAndWaitOptions extends TriggerOptions {
   timeout?: number
+  onProgress?: (progress: ProgressData) => void | Promise<void>
+  onLog?: (log: LogData) => void | Promise<void>
+}
+
+interface ProgressData {
+  current: number
+  total?: number
+  message?: string
+}
+
+interface LogData {
+  level: 'info' | 'warn' | 'error'
+  message: string
+  data?: unknown
+  stepName?: string | null
 }
 
 interface RunFilter {

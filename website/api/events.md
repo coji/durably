@@ -313,7 +313,25 @@ type DurablyEvent =
   | StepCancelEvent
   | LogWriteEvent
   | WorkerErrorEvent
+
+// Shared data types used by events and callbacks
+interface ProgressData {
+  current: number
+  total?: number
+  message?: string
+}
+
+interface LogData {
+  level: 'info' | 'warn' | 'error'
+  message: string
+  data?: unknown
+  stepName?: string | null
+}
 ```
+
+`RunProgressEvent` contains a `progress: ProgressData` field. `LogWriteEvent` extends `LogData` with additional event fields (`runId`, `jobName`, `labels`, etc.).
+
+Both `ProgressData` and `LogData` are also used as callback parameter types in [`TriggerAndWaitOptions`](/api/create-durably#triggerandwait).
 
 ## Example
 
