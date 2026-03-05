@@ -163,7 +163,7 @@ export interface CreateDurablyHandlerOptions {
 
   /**
    * Throttle interval in milliseconds for SSE progress events.
-   * When set, `run:progress` events are debounced per run so the client
+   * When set, `run:progress` events are throttled per run so the client
    * receives at most one progress update per throttle window.
    * The first and last progress events are always delivered.
    * Non-progress events are never throttled.
