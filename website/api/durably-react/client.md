@@ -328,13 +328,14 @@ useRuns(options)
 
 ### Options
 
-| Option     | Type                     | Description                                 |
-| ---------- | ------------------------ | ------------------------------------------- |
-| `api`      | `string`                 | API base path                               |
-| `jobName`  | `string`                 | Filter by job name (only for untyped usage) |
-| `status`   | `RunStatus`              | Filter by status                            |
-| `labels`   | `Record<string, string>` | Filter by labels                            |
-| `pageSize` | `number`                 | Number of runs per page                     |
+| Option     | Type                     | Description                                            |
+| ---------- | ------------------------ | ------------------------------------------------------ |
+| `api`      | `string`                 | API base path                                          |
+| `jobName`  | `string`                 | Filter by job name (only for untyped usage)            |
+| `status`   | `RunStatus`              | Filter by status                                       |
+| `labels`   | `Record<string, string>` | Filter by labels                                       |
+| `pageSize` | `number`                 | Number of runs per page                                |
+| `realtime` | `boolean`                | Subscribe to SSE updates on first page (default: true) |
 
 ### Return Type
 
