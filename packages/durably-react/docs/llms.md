@@ -334,7 +334,9 @@ export const durably = createDurably({ dialect }).register({
   syncUsers: syncUsersJob,
 })
 
-export const durablyHandler = createDurablyHandler(durably)
+export const durablyHandler = createDurablyHandler(durably, {
+  sseThrottleMs: 100, // default: throttle progress SSE events (0 to disable)
+})
 
 await durably.init()
 
@@ -574,7 +576,9 @@ export const durably = createDurably({ dialect }).register({
   syncData: syncDataJob,
 })
 
-export const durablyHandler = createDurablyHandler(durably)
+export const durablyHandler = createDurablyHandler(durably, {
+  sseThrottleMs: 100, // default: throttle progress SSE events (0 to disable)
+})
 
 await durably.init()
 

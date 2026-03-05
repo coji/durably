@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-03-05
+
+### Added
+
+#### @coji/durably
+
+- **SSE throttling for `step.progress()`**: Add `sseThrottleMs` option to `createDurablyHandler()` (default: 100ms) that throttles `run:progress` SSE events per run. First and last progress events are always delivered immediately. Non-progress events are never throttled. Set to `0` to disable
+  ```ts
+  const handler = createDurablyHandler(durably, {
+    sseThrottleMs: 100, // default
+  })
+  ```
+- **Export `CreateDurablyHandlerOptions` type** for typed handler configuration
+
 ## [0.9.0] - 2026-03-05
 
 ### Breaking Changes
