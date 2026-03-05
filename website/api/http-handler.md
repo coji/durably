@@ -23,6 +23,13 @@ const handler = createDurablyHandler(durably, {
 interface CreateDurablyHandlerOptions {
   /** Called before handling each request */
   onRequest?: () => Promise<void> | void
+
+  /**
+   * Throttle interval (ms) for SSE progress events.
+   * First and last progress events are always delivered immediately.
+   * Set to 0 to disable. Default: 100
+   */
+  sseThrottleMs?: number
 }
 ```
 

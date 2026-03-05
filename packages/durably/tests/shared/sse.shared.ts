@@ -3,6 +3,8 @@ import {
   createSSEResponse,
   createSSEStreamFromReader,
   createSSEStreamFromSubscriptions,
+  createThrottledSSEController,
+  type SSEStreamController,
 } from '../../src/sse'
 
 export function createSSETests(): void {
@@ -178,6 +180,259 @@ export function createSSETests(): void {
         expect(() =>
           capturedController?.enqueue({ ignored: true }),
         ).not.toThrow()
+      })
+    })
+
+    describe('createThrottledSSEController', () => {
+      function createMockController(): SSEStreamController & {
+        events: unknown[]
+      } {
+        const events: unknown[] = []
+        return {
+          events,
+          enqueue: (data: unknown) => events.push(data),
+          close: vi.fn(),
+          get closed() {
+            return false
+          },
+        }
+      }
+
+      it('passes through non-progress events immediately', () => {
+        const inner = createMockController()
+        const { controller } = createThrottledSSEController(inner, 100)
+
+        controller.enqueue({ type: 'run:start', runId: 'r1' })
+        controller.enqueue({ type: 'step:complete', runId: 'r1' })
+
+        expect(inner.events).toHaveLength(2)
+        expect(inner.events[0]).toEqual({ type: 'run:start', runId: 'r1' })
+        expect(inner.events[1]).toEqual({
+          type: 'step:complete',
+          runId: 'r1',
+        })
+      })
+
+      it('sends first progress event immediately (leading edge)', () => {
+        const inner = createMockController()
+        const { controller } = createThrottledSSEController(inner, 100)
+
+        controller.enqueue({
+          type: 'run:progress',
+          runId: 'r1',
+          progress: { current: 1, total: 10 },
+        })
+
+        expect(inner.events).toHaveLength(1)
+        expect(inner.events[0]).toMatchObject({
+          type: 'run:progress',
+          progress: { current: 1, total: 10 },
+        })
+      })
+
+      it('throttles rapid progress events and delivers the latest', async () => {
+        vi.useFakeTimers()
+        try {
+          const inner = createMockController()
+          const { controller } = createThrottledSSEController(inner, 100)
+
+          // First event: immediate (leading edge)
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r1',
+            progress: { current: 1, total: 10 },
+          })
+          expect(inner.events).toHaveLength(1)
+
+          // Rapid-fire events within the throttle window
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r1',
+            progress: { current: 2, total: 10 },
+          })
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r1',
+            progress: { current: 3, total: 10 },
+          })
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r1',
+            progress: { current: 4, total: 10 },
+          })
+
+          // Only the first event should have been delivered
+          expect(inner.events).toHaveLength(1)
+
+          // After throttle window, the latest (4/10) should be flushed
+          vi.advanceTimersByTime(100)
+
+          expect(inner.events).toHaveLength(2)
+          expect(inner.events[1]).toMatchObject({
+            type: 'run:progress',
+            progress: { current: 4, total: 10 },
+          })
+        } finally {
+          vi.useRealTimers()
+        }
+      })
+
+      it('throttles per-run independently', async () => {
+        vi.useFakeTimers()
+        try {
+          const inner = createMockController()
+          const { controller } = createThrottledSSEController(inner, 100)
+
+          // First events for two different runs: both immediate
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r1',
+            progress: { current: 1, total: 5 },
+          })
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r2',
+            progress: { current: 1, total: 3 },
+          })
+          expect(inner.events).toHaveLength(2)
+
+          // Second events for both within window
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r1',
+            progress: { current: 2, total: 5 },
+          })
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r2',
+            progress: { current: 2, total: 3 },
+          })
+          expect(inner.events).toHaveLength(2)
+
+          vi.advanceTimersByTime(100)
+
+          expect(inner.events).toHaveLength(4)
+        } finally {
+          vi.useRealTimers()
+        }
+      })
+
+      it('flushes pending events on close', () => {
+        vi.useFakeTimers()
+        try {
+          const inner = createMockController()
+          const { controller } = createThrottledSSEController(inner, 100)
+
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r1',
+            progress: { current: 1, total: 10 },
+          })
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r1',
+            progress: { current: 5, total: 10 },
+          })
+
+          expect(inner.events).toHaveLength(1)
+
+          // Close should flush the pending event
+          controller.close()
+
+          expect(inner.events).toHaveLength(2)
+          expect(inner.events[1]).toMatchObject({
+            type: 'run:progress',
+            progress: { current: 5, total: 10 },
+          })
+          expect(inner.close).toHaveBeenCalled()
+        } finally {
+          vi.useRealTimers()
+        }
+      })
+
+      it('returns passthrough controller when throttleMs is 0', () => {
+        const inner = createMockController()
+        const { controller } = createThrottledSSEController(inner, 0)
+
+        // Should be the same controller (no wrapping)
+        expect(controller).toBe(inner)
+      })
+
+      it('allows next leading-edge event after throttle window expires', () => {
+        vi.useFakeTimers()
+        try {
+          const inner = createMockController()
+          const { controller } = createThrottledSSEController(inner, 100)
+
+          // First: immediate
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r1',
+            progress: { current: 1, total: 10 },
+          })
+          expect(inner.events).toHaveLength(1)
+
+          // Wait for throttle window to pass
+          vi.advanceTimersByTime(100)
+
+          // Next event should also be immediate (new leading edge)
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r1',
+            progress: { current: 5, total: 10 },
+          })
+          expect(inner.events).toHaveLength(2)
+        } finally {
+          vi.useRealTimers()
+        }
+      })
+
+      it('flushes pending progress and cleans up state on terminal events', () => {
+        vi.useFakeTimers()
+        try {
+          const inner = createMockController()
+          const { controller } = createThrottledSSEController(inner, 100)
+
+          // Leading edge: immediate
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r1',
+            progress: { current: 1, total: 10 },
+          })
+          // Buffered (within throttle window)
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r1',
+            progress: { current: 9, total: 10 },
+          })
+          expect(inner.events).toHaveLength(1)
+
+          // Terminal event should flush the pending progress, then pass through
+          controller.enqueue({
+            type: 'run:complete',
+            runId: 'r1',
+          })
+
+          expect(inner.events).toHaveLength(3)
+          expect(inner.events[1]).toMatchObject({
+            type: 'run:progress',
+            progress: { current: 9, total: 10 },
+          })
+          expect(inner.events[2]).toEqual({
+            type: 'run:complete',
+            runId: 'r1',
+          })
+
+          // Throttle state should be cleaned up — next progress is a new leading edge
+          controller.enqueue({
+            type: 'run:progress',
+            runId: 'r1',
+            progress: { current: 1, total: 5 },
+          })
+          expect(inner.events).toHaveLength(4)
+        } finally {
+          vi.useRealTimers()
+        }
       })
     })
   })

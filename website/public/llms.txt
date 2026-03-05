@@ -127,7 +127,7 @@ const result = await step.run('step-name', async (signal) => {
 
 ### step.progress(current, total?, message?)
 
-Updates progress information for the run.
+Updates progress information for the run. Call freely in loops — SSE delivery is throttled by `sseThrottleMs` (default 100ms) so clients receive smooth updates without flooding.
 
 ```ts
 step.progress(50, 100, 'Processing items...')
@@ -294,7 +294,9 @@ Create HTTP handlers for client/server architecture using Web Standard Request/R
 ```ts
 import { createDurablyHandler } from '@coji/durably'
 
-const handler = createDurablyHandler(durably)
+const handler = createDurablyHandler(durably, {
+  sseThrottleMs: 100, // default: throttle progress SSE events (0 to disable)
+})
 
 // Use the unified handle() method with automatic routing
 app.all('/api/durably/*', async (req) => {
