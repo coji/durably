@@ -515,6 +515,19 @@ export function createDurablyHandler(
             }
           }),
 
+          durably.on('step:cancel', (event) => {
+            if (matchesFilter(event.jobName, event.labels)) {
+              ctrl.enqueue({
+                type: 'step:cancel',
+                runId: event.runId,
+                jobName: event.jobName,
+                stepName: event.stepName,
+                stepIndex: event.stepIndex,
+                labels: event.labels,
+              })
+            }
+          }),
+
           durably.on('log:write', (event) => {
             if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({

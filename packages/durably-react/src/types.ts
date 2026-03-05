@@ -94,6 +94,14 @@ export type DurablyEvent =
       output: unknown
     }
   | {
+      type: 'step:cancel'
+      runId: string
+      jobName: string
+      stepName: string
+      stepIndex: number
+      labels: Record<string, string>
+    }
+  | {
       type: 'log:write'
       runId: string
       jobName: string

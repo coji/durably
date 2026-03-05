@@ -43,6 +43,13 @@ type RunUpdateEvent =
       error: string
     }
   | {
+      type: 'step:cancel'
+      runId: string
+      jobName: string
+      stepName: string
+      stepIndex: number
+    }
+  | {
       type: 'log:write'
       runId: string
       stepName: string | null
@@ -321,7 +328,11 @@ export function useRuns<
           )
         }
         // On step start or fail, refresh to get latest state
-        if (data.type === 'step:start' || data.type === 'step:fail') {
+        if (
+          data.type === 'step:start' ||
+          data.type === 'step:fail' ||
+          data.type === 'step:cancel'
+        ) {
           refresh()
         }
         // log:write is handled by useJobLogs, not useRuns

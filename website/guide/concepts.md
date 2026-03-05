@@ -198,6 +198,8 @@ durably.on('run:complete', ({ runId, output }) => { ... })
 durably.on('run:fail', ({ runId, error }) => { ... })
 durably.on('step:start', ({ runId, stepName }) => { ... })
 durably.on('step:complete', ({ runId, stepName, output }) => { ... })
+durably.on('step:fail', ({ runId, stepName, error }) => { ... })
+durably.on('step:cancel', ({ runId, stepName }) => { ... })
 ```
 
 See [Events API](/api/events) for the full list.

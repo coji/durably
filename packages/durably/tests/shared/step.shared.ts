@@ -6,7 +6,9 @@ import {
   defineJob,
   type Durably,
   type RunProgressEvent,
+  type StepCancelEvent,
   type StepCompleteEvent,
+  type StepFailEvent,
 } from '../../src'
 
 export function createStepTests(createDialect: () => Dialect) {
@@ -454,6 +456,86 @@ export function createStepTests(createDialect: () => Dialect) {
         },
         { timeout: 2000 },
       )
+    })
+
+    it('emits step:cancel event when step is cancelled', async () => {
+      const cancelEvents: StepCancelEvent[] = []
+      const failEvents: StepFailEvent[] = []
+      let stepStartedResolve!: () => void
+      const stepStartedPromise = new Promise<void>((resolve) => {
+        stepStartedResolve = resolve
+      })
+
+      const stepCancelEventDef = defineJob({
+        name: 'step-cancel-event-test',
+        input: z.object({}),
+        run: async (step) => {
+          await step.run('cancellable-step', async (signal) => {
+            stepStartedResolve()
+            await new Promise<void>((_resolve, reject) => {
+              signal.addEventListener('abort', () => {
+                reject(
+                  new DOMException('The operation was aborted.', 'AbortError'),
+                )
+              })
+            })
+          })
+        },
+      })
+      const d = durably.register({ job: stepCancelEventDef })
+
+      d.on('step:cancel', (event) => cancelEvents.push(event))
+      d.on('step:fail', (event) => failEvents.push(event))
+
+      const run = await d.jobs.job.trigger({})
+      d.start()
+
+      await stepStartedPromise
+      await d.cancel(run.id)
+
+      await vi.waitFor(
+        () => {
+          expect(cancelEvents).toHaveLength(1)
+        },
+        { timeout: 2000 },
+      )
+
+      expect(cancelEvents[0].stepName).toBe('cancellable-step')
+      expect(cancelEvents[0].runId).toBe(run.id)
+      expect(failEvents).toHaveLength(0)
+    })
+
+    it('emits step:fail event for non-cancellation errors', async () => {
+      const cancelEvents: StepCancelEvent[] = []
+      const failEvents: StepFailEvent[] = []
+
+      const stepFailEventDef = defineJob({
+        name: 'step-fail-event-test',
+        input: z.object({}),
+        run: async (step) => {
+          await step.run('failing-step', async () => {
+            throw new Error('intentional error')
+          })
+        },
+      })
+      const d = durably.register({ job: stepFailEventDef })
+
+      d.on('step:cancel', (event) => cancelEvents.push(event))
+      d.on('step:fail', (event) => failEvents.push(event))
+
+      await d.jobs.job.trigger({})
+      d.start()
+
+      await vi.waitFor(
+        () => {
+          expect(failEvents).toHaveLength(1)
+        },
+        { timeout: 2000 },
+      )
+
+      expect(failEvents[0].stepName).toBe('failing-step')
+      expect(failEvents[0].error).toBe('intentional error')
+      expect(cancelEvents).toHaveLength(0)
     })
 
     it('signal is aborted when cancellation is detected at step boundary', async () => {
