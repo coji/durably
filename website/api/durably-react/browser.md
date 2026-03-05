@@ -102,7 +102,6 @@ const myJob = defineJob({
 
 function Component() {
   const {
-    isReady,
     trigger,
     triggerAndWait,
     status,
@@ -126,7 +125,7 @@ function Component() {
 
   return (
     <div>
-      <button onClick={handleClick} disabled={!isReady || isRunning}>
+      <button onClick={handleClick} disabled={isRunning}>
         Run
       </button>
       <p>Status: {status}</p>
@@ -153,7 +152,6 @@ function Component() {
 
 ```ts
 interface UseJobResult<TInput, TOutput> {
-  isReady: boolean
   trigger: (input: TInput) => Promise<{ runId: string }>
   triggerAndWait: (input: TInput) => Promise<{ runId: string; output: TOutput }>
   status: RunStatus | null
@@ -182,7 +180,6 @@ import { useJobRun } from '@coji/durably-react'
 
 function RunMonitor({ runId }: { runId: string | null }) {
   const {
-    isReady,
     status,
     output,
     error,
@@ -221,7 +218,7 @@ Subscribe to logs from a run.
 import { useJobLogs } from '@coji/durably-react'
 
 function LogViewer({ runId }: { runId: string | null }) {
-  const { isReady, logs, clearLogs } = useJobLogs({
+  const { logs, clearLogs } = useJobLogs({
     runId,
     maxLogs: 100,
   })

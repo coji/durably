@@ -219,11 +219,11 @@ function ImportButton() {
 
 ### Step Context
 
-| Method                               | Description                                                                               |
-| ------------------------------------ | ----------------------------------------------------------------------------------------- |
-| `step.run(name, fn)`                 | Create resumable checkpoint. `fn` receives an `AbortSignal` for cooperative cancellation. |
-| `step.progress(current, total, msg)` | Report progress                                                                           |
-| `step.log.info/warn/error(msg)`      | Write structured logs                                                                     |
+| Method                                 | Description                                                                               |
+| -------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `step.run(name, fn)`                   | Create resumable checkpoint. `fn` receives an `AbortSignal` for cooperative cancellation. |
+| `step.progress(current, total?, msg?)` | Report progress                                                                           |
+| `step.log.info/warn/error(msg)`        | Write structured logs                                                                     |
 
 ### React Hooks (@coji/durably-react)
 

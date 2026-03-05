@@ -83,14 +83,14 @@ step.log.error('Failed to fetch', { error: err.message })
 Reports progress for the current run.
 
 ```ts
-step.progress(current: number, total: number, message?: string): void
+step.progress(current: number, total?: number, message?: string): void
 ```
 
-| Parameter | Type     | Description               |
-| --------- | -------- | ------------------------- |
-| `current` | `number` | Current progress value    |
-| `total`   | `number` | Total progress value      |
-| `message` | `string` | Optional progress message |
+| Parameter | Type     | Description                     |
+| --------- | -------- | ------------------------------- |
+| `current` | `number` | Current progress value          |
+| `total`   | `number` | Total progress value (optional) |
+| `message` | `string` | Optional progress message       |
 
 ```ts
 step.progress(0, 100, 'Starting...')
