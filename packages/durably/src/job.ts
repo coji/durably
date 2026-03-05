@@ -1,6 +1,6 @@
 import { type z, prettifyError } from 'zod'
 import type { JobDefinition } from './define-job'
-import type { EventEmitter } from './events'
+import type { EventEmitter, LogData, ProgressData } from './events'
 import type { Run, Storage } from './storage'
 
 /**
@@ -59,25 +59,6 @@ export type JobFunction<TInput, TOutput> = (
 /**
  * Trigger options
  */
-/**
- * Progress data reported by step.progress()
- */
-export interface ProgressData {
-  current: number
-  total?: number
-  message?: string
-}
-
-/**
- * Log entry reported by step.log
- */
-export interface LogData {
-  level: 'info' | 'warn' | 'error'
-  message: string
-  data?: unknown
-  stepName?: string | null
-}
-
 export interface TriggerOptions {
   idempotencyKey?: string
   concurrencyKey?: string
@@ -346,19 +327,26 @@ export function createJobHandle<TName extends string, TInput, TOutput>(
 
         // Check current status after subscribing (race condition mitigation)
         // If the run completed before we subscribed, we need to handle it
-        storage.getRun(run.id).then((currentRun) => {
-          if (resolved || !currentRun) return
-          if (currentRun.status === 'completed') {
+        storage
+          .getRun(run.id)
+          .then((currentRun) => {
+            if (resolved || !currentRun) return
+            if (currentRun.status === 'completed') {
+              cleanup()
+              resolve({
+                id: run.id,
+                output: currentRun.output as TOutput,
+              })
+            } else if (currentRun.status === 'failed') {
+              cleanup()
+              reject(new Error(currentRun.error || 'Run failed'))
+            }
+          })
+          .catch((error) => {
+            if (resolved) return
             cleanup()
-            resolve({
-              id: run.id,
-              output: currentRun.output as TOutput,
-            })
-          } else if (currentRun.status === 'failed') {
-            cleanup()
-            reject(new Error(currentRun.error || 'Run failed'))
-          }
-        })
+            reject(error instanceof Error ? error : new Error(String(error)))
+          })
 
         // Set timeout if specified
         if (options?.timeout !== undefined) {

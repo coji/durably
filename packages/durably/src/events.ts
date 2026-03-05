@@ -84,13 +84,22 @@ export interface RunRetryEvent extends BaseEvent {
 }
 
 /**
+ * Progress data reported by step.progress()
+ */
+export interface ProgressData {
+  current: number
+  total?: number
+  message?: string
+}
+
+/**
  * Run progress event
  */
 export interface RunProgressEvent extends BaseEvent {
   type: 'run:progress'
   runId: string
   jobName: string
-  progress: { current: number; total?: number; message?: string }
+  progress: ProgressData
   labels: Record<string, string>
 }
 
@@ -140,6 +149,16 @@ export interface StepCancelEvent extends BaseEvent {
   stepName: string
   stepIndex: number
   labels: Record<string, string>
+}
+
+/**
+ * Log data reported by step.log
+ */
+export interface LogData {
+  level: 'info' | 'warn' | 'error'
+  message: string
+  data?: unknown
+  stepName?: string | null
 }
 
 /**
