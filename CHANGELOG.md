@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-03-05
+
+### Breaking Changes
+
+#### @coji/durably
+
+- **Rename `payload` to `input`**: Job run function parameter and `Run.payload` field renamed to `input` for clarity
+  - `run: async (step, payload) => {}` → `run: async (step, input) => {}`
+  - `Run.payload` → `Run.input`
+- **Add `startedAt`/`completedAt` to Run type**: New timestamp fields on Run objects
+- **Unify `ClientRun` type**: Server responses now strip internal fields, returning `ClientRun` consistently
+
+### Added
+
+#### @coji/durably
+
+- **Kubernetes-style labels for run filtering**: Add labels to runs via `trigger()` and filter with `getRuns({ labels })`. Labels are validated and stored as JSON in SQLite
+- **AbortSignal in `step.run()` for cooperative cancellation**: Step functions receive a signal for graceful abort handling
+  ```ts
+  await step.run('fetch-data', async (signal) => {
+    const res = await fetch(url, { signal })
+    return res.json()
+  })
+  ```
+- **`step:cancel` event**: Cancelled steps emit `step:cancel` instead of `step:fail`, with `cancelled` step status in the database
+- **`run:delete` event**: Fires when a run is deleted, enabling auto-refresh in React hooks
+- **Label key validation**: Prevents json_extract injection issues
+
+#### @coji/durably-react
+
+- **`realtime` option for client-mode `useRuns`**: Control SSE subscription (default: `true`), matching browser-mode API
+- **`run:delete` and `run:trigger` in `DurablyEvent` type**: Complete SSE event type coverage
+- **`step:cancel` event handling**: Both browser and client mode hooks refresh on step cancellation
+
+### Fixed
+
+#### @coji/durably
+
+- **Worker run claim TOCTOU race condition**: Atomic claim with `UPDATE ... WHERE status = 'pending'`
+- **Preserve `started_at` on stale run re-claim**: No longer overwrites original start timestamp
+- **Deterministic run ordering**: Use monotonic ULID for consistent trigger order
+- **Include `jobName` and `labels` in `log:write` events**: Enables proper SSE filtering
+- **Export `RunTriggerEvent` and `RunRetryEvent`**: Previously missing from package exports
+
+#### @coji/durably-react
+
+- **Initialize `isLoading` as `true` in `useRuns`**: Prevents flash of empty state
+- **Add `step:fail` refresh in browser-mode `useRuns`**: Previously missing, causing stale UI
+- **Add `labels` to `step:fail` and `step:cancel` in client-mode events**: Match server SSE payload
+- **Add `stepName` and `labels` to `log:write` DurablyEvent type**: Match core event fields
+
+### Changed
+
+#### @coji/durably
+
+- **Consolidate migrations v1-v3 into single v1**: Simpler for new installations
+- **Optimize step boundary cancellation check**: In-memory signal instead of DB query
+
+### Documentation
+
+- Add SSR incompatibility warning for `createDurablyClient`
+- Fix `step.progress()` `total` parameter documented as required (actually optional)
+- Remove non-existent `isReady` from `useJob`/`useJobRun`/`useJobLogs` docs
+- Add `step:cancel` to all example apps and guides
+- Update all examples for `payload` → `input` rename
+
 ## [0.8.1] - 2026-01-18
 
 ### Added
