@@ -99,7 +99,7 @@ interface ClientRun {
 ```ts
 interface StepRecord {
   name: string
-  status: 'completed' | 'failed'
+  status: 'completed' | 'failed' | 'cancelled'
   output: unknown
   error: string | null
   startedAt: string
@@ -107,11 +107,11 @@ interface StepRecord {
 }
 ```
 
-| Property      | Type                      | Description                 |
-| ------------- | ------------------------- | --------------------------- |
-| `name`        | `string`                  | Step name                   |
-| `status`      | `'completed' \| 'failed'` | Step result                 |
-| `output`      | `unknown`                 | Step return value           |
-| `error`       | `string \| null`          | Error message (when failed) |
-| `startedAt`   | `string`                  | ISO timestamp of start      |
-| `completedAt` | `string \| null`          | ISO timestamp of completion |
+| Property      | Type                                     | Description                 |
+| ------------- | ---------------------------------------- | --------------------------- |
+| `name`        | `string`                                 | Step name                   |
+| `status`      | `'completed' \| 'failed' \| 'cancelled'` | Step result                 |
+| `output`      | `unknown`                                | Step return value           |
+| `error`       | `string \| null`                         | Error message (when failed) |
+| `startedAt`   | `string`                                 | ISO timestamp of start      |
+| `completedAt` | `string \| null`                         | ISO timestamp of completion |
