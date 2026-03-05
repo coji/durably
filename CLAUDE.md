@@ -51,6 +51,11 @@ Four tables: `durably_runs`, `durably_steps`, `durably_logs`, `durably_schema_ve
 - Background tab interruptions handled via heartbeat recovery
 - Requires Secure Context (HTTPS/localhost) for OPFS
 
+## Git Workflow
+
+- **main ブランチへの直接コミット・push は禁止。** 必ず feature ブランチを切って PR を作成すること。
+- リリース準備（version bump, changelog）も PR 経由で行う。
+
 ## Development Commands
 
 ```bash
