@@ -192,10 +192,12 @@ GET /runs/subscribe?label.organizationId=org_123
 Monitor job execution:
 
 ```ts
+durably.on('run:trigger', ({ runId, jobName }) => { ... })
 durably.on('run:start', ({ runId, jobName }) => { ... })
 durably.on('run:progress', ({ runId, progress }) => { ... })
 durably.on('run:complete', ({ runId, output }) => { ... })
 durably.on('run:fail', ({ runId, error }) => { ... })
+durably.on('run:cancel', ({ runId, jobName }) => { ... })
 durably.on('step:start', ({ runId, stepName }) => { ... })
 durably.on('step:complete', ({ runId, stepName, output }) => { ... })
 durably.on('step:fail', ({ runId, stepName, error }) => { ... })
