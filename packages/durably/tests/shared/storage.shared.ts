@@ -191,6 +191,26 @@ export function createStorageTests(createDialect: () => Dialect) {
         expect(completedRuns).toHaveLength(1)
       })
 
+      it('filters runs by multiple job names', async () => {
+        await durably.storage.createRun({ jobName: 'job-a', input: {} })
+        await durably.storage.createRun({ jobName: 'job-b', input: {} })
+        await durably.storage.createRun({ jobName: 'job-c', input: {} })
+
+        const runs = await durably.storage.getRuns({
+          jobName: ['job-a', 'job-c'],
+        })
+        expect(runs).toHaveLength(2)
+        expect(runs.map((r) => r.jobName).sort()).toEqual(['job-a', 'job-c'])
+      })
+
+      it('ignores empty jobName array', async () => {
+        await durably.storage.createRun({ jobName: 'job-a', input: {} })
+        await durably.storage.createRun({ jobName: 'job-b', input: {} })
+
+        const runs = await durably.storage.getRuns({ jobName: [] })
+        expect(runs).toHaveLength(2)
+      })
+
       it('creates a run with labels', async () => {
         const run = await durably.storage.createRun({
           jobName: 'test-job',

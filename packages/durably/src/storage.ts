@@ -57,7 +57,8 @@ export interface UpdateRunInput {
  */
 export interface RunFilter {
   status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
-  jobName?: string
+  /** Filter by job name(s). Pass a string for one, or an array for multiple (OR). */
+  jobName?: string | string[]
   labels?: Record<string, string>
   /** Maximum number of runs to return */
   limit?: number
@@ -413,7 +414,13 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         query = query.where('durably_runs.status', '=', filter.status)
       }
       if (filter?.jobName) {
-        query = query.where('durably_runs.job_name', '=', filter.jobName)
+        if (Array.isArray(filter.jobName)) {
+          if (filter.jobName.length > 0) {
+            query = query.where('durably_runs.job_name', 'in', filter.jobName)
+          }
+        } else {
+          query = query.where('durably_runs.job_name', '=', filter.jobName)
+        }
       }
       if (filter?.labels) {
         validateLabels(filter.labels)
