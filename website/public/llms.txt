@@ -299,23 +299,57 @@ import { createDurablyHandler } from '@coji/durably'
 
 const handler = createDurablyHandler(durably, {
   sseThrottleMs: 100, // default: throttle progress SSE events (0 to disable)
+  onRequest: async () => {
+    // Called before each request (after auth) — useful for lazy init
+    await durably.init()
+  },
 })
 
-// Use the unified handle() method with automatic routing
+// Use the handle() method with automatic routing
 app.all('/api/durably/*', async (req) => {
   return await handler.handle(req, '/api/durably')
 })
+```
 
-// Or use individual endpoints
-app.post('/api/durably/trigger', (req) => handler.trigger(req))
-app.get('/api/durably/subscribe', (req) => handler.subscribe(req))
-app.get('/api/durably/runs', (req) => handler.runs(req))
-app.get('/api/durably/run', (req) => handler.run(req))
-app.get('/api/durably/steps', (req) => handler.steps(req))
-app.get('/api/durably/runs/subscribe', (req) => handler.runsSubscribe(req))
-app.post('/api/durably/retry', (req) => handler.retry(req))
-app.post('/api/durably/cancel', (req) => handler.cancel(req))
-app.delete('/api/durably/run', (req) => handler.delete(req))
+**With auth middleware (multi-tenant):**
+
+```ts
+const handler = createDurablyHandler(durably, {
+  auth: {
+    // Required: authenticate every request. Throw Response to reject.
+    authenticate: async (request) => {
+      const session = await requireUser(request)
+      const orgs = await getUserOrganizations(session.user.id)
+      return { orgIds: new Set(orgs.map((o) => o.id)) }
+    },
+
+    // Guard before trigger (called after body validation + job resolution)
+    onTrigger: async (ctx, { jobName, input, labels }) => {
+      if (!ctx.orgIds.has(labels?.organizationId)) {
+        throw new Response('Forbidden', { status: 403 })
+      }
+    },
+
+    // Guard before run-level operations (read, subscribe, steps, retry, cancel, delete)
+    onRunAccess: async (ctx, run, { operation }) => {
+      if (!ctx.orgIds.has(run.labels.organizationId)) {
+        throw new Response('Forbidden', { status: 403 })
+      }
+    },
+
+    // Scope runs list queries (GET /runs)
+    scopeRuns: async (ctx, filter) => ({
+      ...filter,
+      labels: { ...filter.labels, organizationId: ctx.currentOrgId },
+    }),
+
+    // Scope runs subscribe stream (GET /runs/subscribe). Falls back to scopeRuns if not set.
+    scopeRunsSubscribe: async (ctx, filter) => ({
+      ...filter,
+      labels: { ...filter.labels, organizationId: ctx.currentOrgId },
+    }),
+  },
+})
 ```
 
 **Label filtering via query params:**
@@ -338,27 +372,52 @@ const clientRun = toClientRun(run) // strips internal fields
 
 ```ts
 interface DurablyHandler {
-  // Unified routing handler
   handle(request: Request, basePath: string): Promise<Response>
-
-  // Individual endpoints
-  trigger(request: Request): Promise<Response> // POST /trigger
-  subscribe(request: Request): Response // GET /subscribe?runId=xxx (SSE)
-  runs(request: Request): Promise<Response> // GET /runs
-  run(request: Request): Promise<Response> // GET /run?runId=xxx
-  steps(request: Request): Promise<Response> // GET /steps?runId=xxx
-  runsSubscribe(request: Request): Response // GET /runs/subscribe (SSE)
-  retry(request: Request): Promise<Response> // POST /retry?runId=xxx
-  cancel(request: Request): Promise<Response> // POST /cancel?runId=xxx
-  delete(request: Request): Promise<Response> // DELETE /run?runId=xxx
 }
 
-interface TriggerRequest {
+interface CreateDurablyHandlerOptions<TContext, TLabels> {
+  onRequest?: () => Promise<void> | void
+  sseThrottleMs?: number // default: 100
+  auth?: AuthConfig<TContext, TLabels>
+}
+
+interface AuthConfig<TContext, TLabels> {
+  authenticate: (request: Request) => Promise<TContext> | TContext
+  onTrigger?: (
+    ctx: TContext,
+    trigger: TriggerRequest<TLabels>,
+  ) => Promise<void> | void
+  onRunAccess?: (
+    ctx: TContext,
+    run: Run<TLabels>,
+    info: { operation: RunOperation },
+  ) => Promise<void> | void
+  scopeRuns?: (
+    ctx: TContext,
+    filter: RunFilter<TLabels>,
+  ) => RunFilter<TLabels> | Promise<RunFilter<TLabels>>
+  scopeRunsSubscribe?: (
+    ctx: TContext,
+    filter: RunsSubscribeFilter<TLabels>,
+  ) => RunsSubscribeFilter<TLabels> | Promise<RunsSubscribeFilter<TLabels>>
+}
+
+type RunOperation =
+  | 'read'
+  | 'subscribe'
+  | 'steps'
+  | 'retry'
+  | 'cancel'
+  | 'delete'
+
+// RunsSubscribeFilter is Pick<RunFilter, 'jobName' | 'labels'>
+
+interface TriggerRequest<TLabels> {
   jobName: string
-  input: Record<string, unknown>
+  input: unknown
   idempotencyKey?: string
   concurrencyKey?: string
-  labels?: Record<string, string>
+  labels?: TLabels
 }
 
 interface TriggerResponse {
