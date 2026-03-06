@@ -7,11 +7,10 @@ export { createDurablyHooks } from './create-durably-hooks'
 export type {
   CreateDurablyHooksOptions,
   DurablyHooks,
-  JobHooks,
 } from './create-durably-hooks'
 
 export { createJobHooks } from './create-job-hooks'
-export type { CreateJobHooksOptions } from './create-job-hooks'
+export type { CreateJobHooksOptions, JobHooks } from './create-job-hooks'
 
 export { useJob } from './use-job'
 export type { UseJobClientOptions, UseJobClientResult } from './use-job'

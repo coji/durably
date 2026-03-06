@@ -9,14 +9,10 @@ export { createDurablyHooks } from './client/create-durably-hooks'
 export type {
   CreateDurablyHooksOptions,
   DurablyHooks,
-  JobHooks,
 } from './client/create-durably-hooks'
 
 export { createJobHooks } from './client/create-job-hooks'
-export type {
-  CreateJobHooksOptions,
-  JobHooks as SingleJobHooks,
-} from './client/create-job-hooks'
+export type { CreateJobHooksOptions, JobHooks } from './client/create-job-hooks'
 
 // Direct hooks
 export { useJob } from './client/use-job'

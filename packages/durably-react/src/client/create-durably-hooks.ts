@@ -1,30 +1,5 @@
 import type { InferInput, InferOutput } from '../types'
-import { useJob, type UseJobClientResult } from './use-job'
-import { useJobLogs, type UseJobLogsClientResult } from './use-job-logs'
-import { useJobRun, type UseJobRunClientResult } from './use-job-run'
-
-/**
- * Type-safe hooks for a specific job
- */
-export interface JobHooks<TInput, TOutput> {
-  /**
-   * Hook for triggering and monitoring the job
-   */
-  useJob: () => UseJobClientResult<TInput, TOutput>
-
-  /**
-   * Hook for subscribing to an existing run by ID
-   */
-  useRun: (runId: string | null) => UseJobRunClientResult<TOutput>
-
-  /**
-   * Hook for subscribing to logs from a run
-   */
-  useLogs: (
-    runId: string | null,
-    options?: { maxLogs?: number },
-  ) => UseJobLogsClientResult
-}
+import { createJobHooks, type JobHooks } from './create-job-hooks'
 
 /**
  * Options for createDurablyHooks
@@ -58,7 +33,7 @@ export type DurablyHooks<TJobs extends Record<string, unknown>> = {
  * // Client: create typed hooks
  * // app/lib/durably.hooks.ts
  * import type { durably } from '~/lib/durably.server'
- * import { createDurablyHooks } from '@coji/durably-react/fullstack'
+ * import { createDurablyHooks } from '@coji/durably-react'
  *
  * export const durably = createDurablyHooks<typeof durably>({
  *   api: '/api/durably',
@@ -80,23 +55,18 @@ export function createDurablyHooks<TJobs extends Record<string, unknown>>(
   options: CreateDurablyHooksOptions,
 ): DurablyHooks<TJobs> {
   const { api } = options
+  const cache = new Map<string, JobHooks<unknown, unknown>>()
 
-  // Create a proxy that generates job hooks on demand
+  // Create a proxy that generates and caches job hooks on demand
   return new Proxy({} as DurablyHooks<TJobs>, {
-    get(_target, jobKey: string) {
-      return {
-        useJob: () => {
-          return useJob({ api, jobName: jobKey })
-        },
-
-        useRun: (runId: string | null) => {
-          return useJobRun({ api, runId })
-        },
-
-        useLogs: (runId: string | null, logsOptions?: { maxLogs?: number }) => {
-          return useJobLogs({ api, runId, maxLogs: logsOptions?.maxLogs })
-        },
+    get(_target, jobKey) {
+      if (typeof jobKey !== 'string') return undefined
+      let hooks = cache.get(jobKey)
+      if (!hooks) {
+        hooks = createJobHooks({ api, jobName: jobKey })
+        cache.set(jobKey, hooks)
       }
+      return hooks
     },
   })
 }
