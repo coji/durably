@@ -59,7 +59,7 @@
     }
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.5",
+    "@biomejs/biome": "^2.4.6",
     "@coji/durably": "workspace:*",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^19.2.14",
