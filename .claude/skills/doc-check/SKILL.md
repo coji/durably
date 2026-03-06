@@ -97,7 +97,8 @@ Code examples embedded in prose. API changes silently break copy-paste.
 | `website/guide/fullstack-mode.md` | Fullstack mode tutorial               |
 | `website/guide/spa-mode.md`       | SPA mode tutorial                     |
 | `website/guide/error-handling.md` | Error handling patterns               |
-| `website/guide/auth.md`           | Auth & multi-tenant patterns          |
+| `website/guide/auth.md`           | Authentication patterns               |
+| `website/guide/multi-tenant.md`   | Multi-tenant isolation patterns       |
 | `website/guide/deployment.md`     | Deployment guide with mode comparison |
 
 ### Tier 6: Sidebar config

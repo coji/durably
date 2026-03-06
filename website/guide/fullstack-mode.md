@@ -267,5 +267,5 @@ Stop the server mid-import and restart — it picks up right where it left off:
 ## Next Steps
 
 - **[SPA Mode](/guide/spa-mode)** — Run entirely in the browser without a server
-- **[Auth & Multi-Tenant](/guide/auth)** — Protect endpoints and isolate tenant data
+- **[Authentication](/guide/auth)** — Protect your endpoints
 - **[API Reference](/api/durably-react/fullstack)** — All fullstack hooks and options

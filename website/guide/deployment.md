@@ -168,4 +168,4 @@ See [SPA Mode guide](/guide/spa-mode).
 
 - **[Quick Start](/guide/quick-start)** — Try Durably in 2 minutes
 - **[Error Handling](/guide/error-handling)** — Handle failures gracefully
-- **[Auth & Multi-Tenant](/guide/auth)** — Protect your endpoints
+- **[Authentication](/guide/auth)** — Protect your endpoints

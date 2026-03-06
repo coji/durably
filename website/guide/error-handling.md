@@ -198,6 +198,6 @@ durably.on('step:fail', ({ runId, stepName, error }) => {
 
 ## Next Steps
 
-- **[Auth & Multi-Tenant](/guide/auth)** — Protect endpoints and isolate data
+- **[Authentication](/guide/auth)** — Protect your endpoints
 - **[Deployment Guide](/guide/deployment)** — Choose the right mode for your app
 - **[Events Reference](/api/events)** — All event types

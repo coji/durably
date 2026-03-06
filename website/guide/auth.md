@@ -1,42 +1,126 @@
-# Auth & Multi-Tenant
+# Authentication
 
-Protect Durably endpoints and isolate data per tenant. Built into `createDurablyHandler` — no extra middleware needed.
+Protect Durably API endpoints with built-in auth middleware. No extra packages needed — `createDurablyHandler` handles everything.
 
-## Overview
+## How It Works
 
-The auth system has four hooks:
-
-| Hook           | Purpose                                 |
-| -------------- | --------------------------------------- |
-| `authenticate` | Validate every request (required)       |
-| `onTrigger`    | Guard before creating a run             |
-| `onRunAccess`  | Guard before reading/retrying/canceling |
-| `scopeRuns`    | Filter run listings to current tenant   |
-
-All hooks receive a typed context from `authenticate`.
-
-## Basic Auth
-
-Authenticate requests and attach context:
+Add `auth.authenticate` to your handler. It runs on every request before any processing:
 
 ```ts
-// app/lib/durably.server.ts
-import { createDurably, createDurablyHandler } from '@coji/durably'
-import { importCsvJob } from '~/jobs/import-csv'
-
-const durably = createDurably({
-  dialect,
-  jobs: { importCsv: importCsvJob },
-})
-
-export const durablyHandler = createDurablyHandler(durably, {
+const handler = createDurablyHandler(durably, {
   auth: {
     authenticate: async (request) => {
+      // Validate the request — throw Response to reject
       const session = await getSession(request)
       if (!session) {
         throw new Response('Unauthorized', { status: 401 })
       }
-      return { userId: session.userId, role: session.role }
+      // Return value becomes the typed context for other hooks
+      return { userId: session.userId }
+    },
+  },
+})
+```
+
+That's it. Every request to `/api/durably/*` now requires authentication.
+
+## Rejecting Requests
+
+Auth hooks reject by throwing a `Response`. This is framework-agnostic:
+
+```ts
+// 401 — not authenticated
+throw new Response('Unauthorized', { status: 401 })
+
+// 403 — authenticated but not allowed
+throw new Response('Forbidden', { status: 403 })
+```
+
+## Guarding Operations
+
+Beyond authentication, you can guard specific operations:
+
+```ts
+auth: {
+  authenticate: async (request) => {
+    const session = await getSession(request)
+    if (!session) throw new Response('Unauthorized', { status: 401 })
+    return { userId: session.userId, role: session.role }
+  },
+
+  // Guard before creating a run
+  onTrigger: async (ctx, { jobName }) => {
+    if (ctx.role !== 'admin') {
+      throw new Response('Forbidden', { status: 403 })
+    }
+  },
+
+  // Guard before read/retry/cancel/delete
+  onRunAccess: async (ctx, run, { operation }) => {
+    // Everyone can read, only admins can mutate
+    const writeOps = ['retry', 'cancel', 'delete']
+    if (writeOps.includes(operation) && ctx.role !== 'admin') {
+      throw new Response('Forbidden', { status: 403 })
+    }
+  },
+}
+```
+
+### Available Operations
+
+`onRunAccess` receives the operation type:
+
+| Operation   | Endpoint         |
+| ----------- | ---------------- |
+| `read`      | `GET /run`       |
+| `subscribe` | `GET /subscribe` |
+| `steps`     | `GET /steps`     |
+| `retry`     | `POST /retry`    |
+| `cancel`    | `POST /cancel`   |
+| `delete`    | `DELETE /run`    |
+
+## Execution Order
+
+1. **`authenticate(request)`** — fail fast, before anything else
+2. **`onRequest()`** — lazy init (migrations, etc.)
+3. **Validate request** — parse body/params
+4. **Auth hook** — `onTrigger`, `onRunAccess`, or `scopeRuns`
+5. **Execute operation**
+
+## Type-Safe Context
+
+`TContext` is inferred from `authenticate`'s return type. All hooks get the same typed context — no manual type annotations needed:
+
+```ts
+auth: {
+  authenticate: async (request) => {
+    // Return type becomes TContext
+    return { userId: 'u_123', role: 'admin' as const }
+  },
+  onTrigger: async (ctx) => {
+    ctx.userId // string
+    ctx.role   // 'admin'
+  },
+}
+```
+
+## Framework Examples
+
+### React Router / Remix
+
+```ts
+// app/lib/durably.server.ts
+import { createDurably, createDurablyHandler } from '@coji/durably'
+import { getSession } from '~/lib/session.server'
+
+const durably = createDurably({ dialect, jobs: { importCsv: importCsvJob } })
+
+export const durablyHandler = createDurablyHandler(durably, {
+  auth: {
+    authenticate: async (request) => {
+      const session = await getSession(request.headers.get('Cookie'))
+      if (!session.userId) throw new Response('Unauthorized', { status: 401 })
+      return { userId: session.userId }
     },
   },
 })
@@ -44,140 +128,87 @@ export const durablyHandler = createDurablyHandler(durably, {
 await durably.init()
 ```
 
-Now every request to `/api/durably/*` must pass authentication. Throw a `Response` to reject.
+```ts
+// app/routes/api.durably.$.ts
+import { durablyHandler } from '~/lib/durably.server'
+import type { Route } from './+types/api.durably.$'
 
-## Multi-Tenant Isolation
+export async function loader({ request }: Route.LoaderArgs) {
+  return durablyHandler.handle(request, '/api/durably')
+}
 
-Use labels to tag runs by organization, then scope all queries:
+export async function action({ request }: Route.ActionArgs) {
+  return durablyHandler.handle(request, '/api/durably')
+}
+```
+
+### Next.js
 
 ```ts
+// lib/durably.ts
+import { createDurably, createDurablyHandler } from '@coji/durably'
+import { auth } from '@/lib/auth'
+
+const durably = createDurably({ dialect, jobs: { importCsv: importCsvJob } })
+
 export const durablyHandler = createDurablyHandler(durably, {
   auth: {
     authenticate: async (request) => {
-      const session = await getSession(request)
-      if (!session) throw new Response('Unauthorized', { status: 401 })
-      const orgId = await resolveOrg(request, session.userId)
-      return { userId: session.userId, orgId }
+      const session = await auth()
+      if (!session?.user) throw new Response('Unauthorized', { status: 401 })
+      return { userId: session.user.id }
     },
-
-    // Ensure triggered runs belong to the user's org
-    onTrigger: async (ctx, { labels }) => {
-      if (labels?.organizationId !== ctx.orgId) {
-        throw new Response('Forbidden', { status: 403 })
-      }
-    },
-
-    // Ensure users can only access their org's runs
-    onRunAccess: async (ctx, run) => {
-      if (run.labels.organizationId !== ctx.orgId) {
-        throw new Response('Forbidden', { status: 403 })
-      }
-    },
-
-    // Auto-filter run listings to current org
-    scopeRuns: async (ctx, filter) => ({
-      ...filter,
-      labels: { ...filter.labels, organizationId: ctx.orgId },
-    }),
   },
 })
+
+await durably.init()
 ```
 
-### Triggering with Labels
-
-On the client, include the org label when triggering:
-
 ```ts
-const run = await durably.jobs.importCsv.trigger(
-  { filename: 'data.csv', rows },
-  { labels: { organizationId: currentOrgId } },
-)
-```
+// app/api/durably/[...path]/route.ts
+import { durablyHandler } from '@/lib/durably'
 
-Or enforce it server-side in `onTrigger` by modifying the trigger request.
+export async function GET(request: Request) {
+  return durablyHandler.handle(request, '/api/durably')
+}
 
-## Role-Based Access
+export async function POST(request: Request) {
+  return durablyHandler.handle(request, '/api/durably')
+}
 
-Restrict operations based on user roles:
-
-```ts
-auth: {
-  authenticate: async (request) => {
-    const session = await getSession(request)
-    if (!session) throw new Response('Unauthorized', { status: 401 })
-    return { userId: session.userId, role: session.role, orgId: session.orgId }
-  },
-
-  // Only admins can trigger jobs
-  onTrigger: async (ctx) => {
-    if (ctx.role !== 'admin') {
-      throw new Response('Forbidden', { status: 403 })
-    }
-  },
-
-  // Viewers can read, only admins can retry/cancel/delete
-  onRunAccess: async (ctx, run, { operation }) => {
-    if (run.labels.organizationId !== ctx.orgId) {
-      throw new Response('Forbidden', { status: 403 })
-    }
-    const writeOps = ['retry', 'cancel', 'delete']
-    if (writeOps.includes(operation) && ctx.role !== 'admin') {
-      throw new Response('Forbidden', { status: 403 })
-    }
-  },
-
-  scopeRuns: async (ctx, filter) => ({
-    ...filter,
-    labels: { ...filter.labels, organizationId: ctx.orgId },
-  }),
+export async function DELETE(request: Request) {
+  return durablyHandler.handle(request, '/api/durably')
 }
 ```
 
-## Execution Order
-
-Understanding when each hook runs:
-
-1. **`authenticate(request)`** — first, fail fast
-2. **`onRequest()`** — lazy init (migrations, etc.)
-3. **Validate request** — parse body/params
-4. **Auth hook** — `onTrigger`, `onRunAccess`, or `scopeRuns`
-5. **Execute operation**
-
-## SSE Scoping
-
-SSE subscriptions are also scoped. `scopeRunsSubscribe` controls what events a client receives on the `/runs/subscribe` endpoint. Falls back to `scopeRuns` if not set.
+### Hono
 
 ```ts
-auth: {
-  // ... authenticate, scopeRuns, etc.
+import { Hono } from 'hono'
+import { createDurably, createDurablyHandler } from '@coji/durably'
 
-  // Custom SSE scoping (optional — defaults to scopeRuns)
-  scopeRunsSubscribe: async (ctx, filter) => ({
-    ...filter,
-    labels: { ...filter.labels, organizationId: ctx.orgId },
-  }),
-}
-```
+const durably = createDurably({ dialect, jobs: { importCsv: importCsvJob } })
 
-## Type Safety
-
-`TContext` is inferred from `authenticate`'s return type. All hooks get the same typed context:
-
-```ts
-// ctx is typed as { userId: string; orgId: string; role: 'admin' | 'viewer' }
-auth: {
-  authenticate: async (request) => {
-    return { userId: '...', orgId: '...', role: 'admin' as const }
+const handler = createDurablyHandler(durably, {
+  auth: {
+    authenticate: async (request) => {
+      const apiKey = request.headers.get('X-API-Key')
+      if (apiKey !== process.env.API_KEY) {
+        throw new Response('Unauthorized', { status: 401 })
+      }
+      return { apiKey }
+    },
   },
-  onTrigger: async (ctx, trigger) => {
-    ctx.orgId   // string — fully typed
-    ctx.role    // 'admin' | 'viewer' — fully typed
-  },
-}
+})
+
+await durably.init()
+
+const app = new Hono()
+app.all('/api/durably/*', (c) => handler.handle(c.req.raw, '/api/durably'))
 ```
 
 ## Next Steps
 
-- **[Deployment Guide](/guide/deployment)** — Choose the right mode for your app
-- **[HTTP Handler Reference](/api/http-handler)** — Full endpoint and auth config docs
+- **[Multi-Tenant](/guide/multi-tenant)** — Isolate data per organization with labels and scoped queries
+- **[HTTP Handler Reference](/api/http-handler)** — Full auth config and endpoint docs
 - **[Error Handling](/guide/error-handling)** — Handle failures gracefully

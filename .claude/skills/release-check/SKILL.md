@@ -106,6 +106,7 @@ Code examples embedded in prose. API changes silently break copy-paste.
 - [ ] `website/guide/spa-mode.md`
 - [ ] `website/guide/error-handling.md`
 - [ ] `website/guide/auth.md`
+- [ ] `website/guide/multi-tenant.md`
 - [ ] `website/guide/deployment.md`
 
 ### Sidebar config
