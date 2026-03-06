@@ -7,6 +7,8 @@ allowed-tools:
   - Glob
   - Bash(pnpm:*)
   - Bash(git:*)
+  - Bash(gh:*)
+  - Bash(grep:*)
   - Bash(./*)
 ---
 
@@ -27,10 +29,23 @@ Fix every `[STALE]` hit before proceeding.
 
 ## Phase 2: Understand the Scope
 
+Compare against the **last release tag**, not `main`:
+
 ```bash
-git diff main --stat
-git log --oneline main..HEAD
+# Find latest release tag
+gh release list --limit 1
+git log --oneline v0.10.0..HEAD   # replace with actual tag
+
+# What changed since last release
+git diff v0.10.0 --stat
 ```
+
+Classify each PR/commit:
+
+- **feat** (new feature) → minor bump
+- **fix** (bug fix) → patch bump
+- **feat** with breaking changes → minor bump (pre-1.0)
+- **docs/chore** only → no version bump needed
 
 ## Phase 3: Implementation
 
@@ -54,10 +69,25 @@ New types/hooks must be exported or users can't import them.
 
 ## Phase 4: Version
 
-- [ ] `packages/durably/package.json`
-- [ ] `packages/durably-react/package.json`
+### Determine version
 
-Check peer dependency ranges too.
+Both packages share the same version. Use semver:
+
+```bash
+grep '"version"' packages/durably/package.json packages/durably-react/package.json
+```
+
+- **Patch** (0.10.x): bug fixes only
+- **Minor** (0.x.0): new features, non-breaking changes, or breaking changes pre-1.0
+- **Major** (x.0.0): breaking changes post-1.0
+
+### Check peer dependencies
+
+```bash
+grep -A2 '"peerDependencies"' packages/durably-react/package.json
+```
+
+Ensure `@coji/durably` peer dep range covers the new version.
 
 ## Phase 5: Documentation
 
@@ -141,9 +171,53 @@ Check for:
 
 Verify new features/changes have test coverage.
 
-## Phase 8: Changelog
+## Phase 8: Changelog & Release Notes
 
-- [ ] `CHANGELOG.md` — add version section
+### CHANGELOG.md
+
+Write a changelog entry in the repo root. Group by package and category:
+
+```markdown
+# Changelog
+
+## v0.X.0
+
+### @coji/durably
+
+#### Added
+
+- Feature description (#PR)
+
+#### Changed
+
+- Breaking change description (#PR)
+
+### @coji/durably-react
+
+#### Added
+
+- Feature description (#PR)
+
+#### Changed
+
+- Breaking change description (#PR)
+```
+
+Conventions:
+
+- One entry per user-facing change (not per commit)
+- Include PR number for traceability
+- Mark breaking changes clearly: **Breaking:**
+- `docs:` and `chore:` commits don't need changelog entries
+
+### Check previous releases
+
+```bash
+gh release list --limit 5
+gh release view <tag>
+```
+
+Compare with the new changelog to make sure nothing is missing.
 
 ## Phase 9: Validate
 
@@ -156,13 +230,22 @@ pnpm validate
 
 Check `git status` for uncommitted changes.
 
-## Phase 10: Final Check
+## Phase 10: Version Bump
+
+Bump version in both packages (must stay in sync):
+
+- `packages/durably/package.json`
+- `packages/durably-react/package.json`
+
+Commit as: `chore: bump version to 0.X.0`
+
+## Phase 11: Final Check
 
 ```bash
 .claude/skills/doc-check/scripts/find-stale.sh
 ```
 
-Must be clean before release.
+Must be clean before release. After this, the release PR is ready to merge.
 
 ---
 
