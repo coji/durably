@@ -24,6 +24,7 @@ pnpm add @coji/durably kysely zod sqlocal
 import { createDurably } from '@coji/durably'
 import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { createClient } from '@libsql/client'
+import { z } from 'zod'
 
 const client = createClient({ url: 'file:local.db' })
 const dialect = new LibsqlDialect({ client })
@@ -468,14 +469,19 @@ interface Run<TLabels extends Record<string, string> = Record<string, string>> {
   updatedAt: string
 }
 
-interface TypedRun<TOutput, TLabels = Record<string, string>> extends Omit<
-  Run<TLabels>,
-  'output'
-> {
+interface TypedRun<
+  TOutput,
+  TLabels extends Record<string, string> = Record<string, string>,
+> extends Omit<Run<TLabels>, 'output'> {
   output: TOutput | null
 }
 
-interface JobHandle<TName, TInput, TOutput, TLabels = Record<string, string>> {
+interface JobHandle<
+  TName extends string,
+  TInput,
+  TOutput,
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   name: TName
   trigger(
     input: TInput,
@@ -494,14 +500,16 @@ interface JobHandle<TName, TInput, TOutput, TLabels = Record<string, string>> {
   ): Promise<TypedRun<TOutput, TLabels>[]>
 }
 
-interface TriggerOptions<TLabels = Record<string, string>> {
+interface TriggerOptions<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: TLabels
 }
 
 interface TriggerAndWaitOptions<
-  TLabels = Record<string, string>,
+  TLabels extends Record<string, string> = Record<string, string>,
 > extends TriggerOptions<TLabels> {
   timeout?: number
   onProgress?: (progress: ProgressData) => void | Promise<void>
@@ -521,7 +529,9 @@ interface LogData {
   stepName?: string | null
 }
 
-interface RunFilter<TLabels = Record<string, string>> {
+interface RunFilter<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   jobName?: string | string[]
   labels?: Partial<TLabels>
