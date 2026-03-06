@@ -31,12 +31,9 @@ export type RunOperation =
 /**
  * Subscription filter — only fields that SSE subscriptions actually support.
  */
-export interface RunsSubscribeFilter<
+export type RunsSubscribeFilter<
   TLabels extends Record<string, string> = Record<string, string>,
-> {
-  jobName?: string | string[]
-  labels?: { [K in keyof TLabels]?: TLabels[K] }
-}
+> = Pick<RunFilter<TLabels>, 'jobName' | 'labels'>
 
 /**
  * Request body for triggering a job
@@ -146,13 +143,15 @@ export interface CreateDurablyHandlerOptions<
 /**
  * Valid status values for runs
  */
-const VALID_STATUSES = new Set([
+const VALID_STATUSES = [
   'pending',
   'running',
   'completed',
   'failed',
   'cancelled',
-])
+] as const satisfies readonly RunFilter['status'][]
+
+const VALID_STATUSES_SET: ReadonlySet<string> = new Set(VALID_STATUSES)
 
 /**
  * Parse label.* query params into a Record<string, string>
@@ -181,9 +180,9 @@ function parseRunFilter(url: URL): RunFilter | Response {
   const labels = parseLabelsFromParams(url.searchParams)
 
   // Validate status
-  if (statusParam && !VALID_STATUSES.has(statusParam)) {
+  if (statusParam && !VALID_STATUSES_SET.has(statusParam)) {
     return errorResponse(
-      `Invalid status: ${statusParam}. Must be one of: ${[...VALID_STATUSES].join(', ')}`,
+      `Invalid status: ${statusParam}. Must be one of: ${VALID_STATUSES.join(', ')}`,
       400,
     )
   }
@@ -259,13 +258,48 @@ export function createDurablyHandler<
   const throttleMs = options?.sseThrottleMs ?? 100
   const auth = options?.auth
 
+  // --- Shared helpers ---
+
+  /** Wrap handler with try/catch that re-throws Response and catches everything else as 500 */
+  async function withErrorHandling(
+    fn: () => Promise<Response>,
+  ): Promise<Response> {
+    try {
+      return await fn()
+    } catch (error) {
+      if (error instanceof Response) throw error
+      return errorResponse(getErrorMessage(error), 500)
+    }
+  }
+
+  /** Fetch run, check auth, return run or error Response */
+  async function requireRunAccess(
+    url: URL,
+    ctx: TContext | undefined,
+    operation: RunOperation,
+  ): Promise<{ run: Run<TLabels>; runId: string } | Response> {
+    const runId = getRequiredQueryParam(url, 'runId')
+    if (runId instanceof Response) return runId
+
+    const run = await durably.getRun(runId)
+    if (!run) return errorResponse('Run not found', 404)
+
+    if (auth?.onRunAccess && ctx !== undefined) {
+      await auth.onRunAccess(ctx as TContext, run as Run<TLabels>, {
+        operation,
+      })
+    }
+
+    return { run: run as Run<TLabels>, runId }
+  }
+
   // --- Private endpoint handlers (closure-scoped, not exposed on returned object) ---
 
   async function handleTrigger(
     request: Request,
     ctx: TContext | undefined,
   ): Promise<Response> {
-    try {
+    return withErrorHandling(async () => {
       const body = (await request.json()) as TriggerRequest<TLabels>
 
       if (!body.jobName) {
@@ -293,39 +327,17 @@ export function createDurablyHandler<
 
       const response: TriggerResponse = { runId: run.id }
       return jsonResponse(response)
-    } catch (error) {
-      if (error instanceof Response) throw error
-      return errorResponse(getErrorMessage(error), 500)
-    }
+    })
   }
 
-  function handleSubscribe(
-    request: Request,
+  async function handleSubscribe(
+    url: URL,
     ctx: TContext | undefined,
-  ): Response | Promise<Response> {
-    const url = new URL(request.url)
-    const runId = getRequiredQueryParam(url, 'runId')
-    if (runId instanceof Response) return runId
+  ): Promise<Response> {
+    const result = await requireRunAccess(url, ctx, 'subscribe')
+    if (result instanceof Response) return result
 
-    // Auth hook: onRunAccess for subscribe
-    if (auth?.onRunAccess && ctx !== undefined) {
-      return (async () => {
-        const run = await durably.getRun(runId)
-        if (!run) return errorResponse('Run not found', 404)
-        await auth.onRunAccess!(ctx as TContext, run as Run<TLabels>, {
-          operation: 'subscribe',
-        })
-
-        const stream = durably.subscribe(runId)
-        const sseStream = createThrottledSSEStreamFromReader(
-          stream.getReader() as ReadableStreamDefaultReader<AnyEventInput>,
-          throttleMs,
-        )
-        return createSSEResponse(sseStream)
-      })()
-    }
-
-    const stream = durably.subscribe(runId)
+    const stream = durably.subscribe(result.runId)
     const sseStream = createThrottledSSEStreamFromReader(
       stream.getReader() as ReadableStreamDefaultReader<AnyEventInput>,
       throttleMs,
@@ -334,11 +346,10 @@ export function createDurablyHandler<
   }
 
   async function handleRuns(
-    request: Request,
+    url: URL,
     ctx: TContext | undefined,
   ): Promise<Response> {
-    try {
-      const url = new URL(request.url)
+    return withErrorHandling(async () => {
       const filterOrError = parseRunFilter(url)
       if (filterOrError instanceof Response) return filterOrError
 
@@ -351,176 +362,100 @@ export function createDurablyHandler<
 
       const runs = await durably.getRuns(filter)
       return jsonResponse(runs.map(toClientRun))
-    } catch (error) {
-      if (error instanceof Response) throw error
-      return errorResponse(getErrorMessage(error), 500)
-    }
+    })
   }
 
   async function handleRun(
-    request: Request,
+    url: URL,
     ctx: TContext | undefined,
   ): Promise<Response> {
-    try {
-      const url = new URL(request.url)
-      const runId = getRequiredQueryParam(url, 'runId')
-      if (runId instanceof Response) return runId
+    return withErrorHandling(async () => {
+      const result = await requireRunAccess(url, ctx, 'read')
+      if (result instanceof Response) return result
 
-      const run = await durably.getRun(runId)
-      if (!run) return errorResponse('Run not found', 404)
-
-      // Auth hook: onRunAccess
-      if (auth?.onRunAccess && ctx !== undefined) {
-        await auth.onRunAccess(ctx as TContext, run as Run<TLabels>, {
-          operation: 'read',
-        })
-      }
-
-      return jsonResponse(toClientRun(run))
-    } catch (error) {
-      if (error instanceof Response) throw error
-      return errorResponse(getErrorMessage(error), 500)
-    }
+      return jsonResponse(toClientRun(result.run))
+    })
   }
 
   async function handleSteps(
-    request: Request,
+    url: URL,
     ctx: TContext | undefined,
   ): Promise<Response> {
-    try {
-      const url = new URL(request.url)
-      const runId = getRequiredQueryParam(url, 'runId')
-      if (runId instanceof Response) return runId
+    return withErrorHandling(async () => {
+      const result = await requireRunAccess(url, ctx, 'steps')
+      if (result instanceof Response) return result
 
-      // Auth hook: onRunAccess
-      if (auth?.onRunAccess && ctx !== undefined) {
-        const run = await durably.getRun(runId)
-        if (!run) return errorResponse('Run not found', 404)
-        await auth.onRunAccess(ctx as TContext, run as Run<TLabels>, {
-          operation: 'steps',
-        })
-      }
-
-      const steps = await durably.storage.getSteps(runId)
+      const steps = await durably.storage.getSteps(result.runId)
       return jsonResponse(steps)
-    } catch (error) {
-      if (error instanceof Response) throw error
-      return errorResponse(getErrorMessage(error), 500)
-    }
+    })
   }
 
   async function handleRetry(
-    request: Request,
+    url: URL,
     ctx: TContext | undefined,
   ): Promise<Response> {
-    try {
-      const url = new URL(request.url)
-      const runId = getRequiredQueryParam(url, 'runId')
-      if (runId instanceof Response) return runId
+    return withErrorHandling(async () => {
+      const result = await requireRunAccess(url, ctx, 'retry')
+      if (result instanceof Response) return result
 
-      // Auth hook: onRunAccess
-      if (auth?.onRunAccess && ctx !== undefined) {
-        const run = await durably.getRun(runId)
-        if (!run) return errorResponse('Run not found', 404)
-        await auth.onRunAccess(ctx as TContext, run as Run<TLabels>, {
-          operation: 'retry',
-        })
-      }
-
-      await durably.retry(runId)
+      await durably.retry(result.runId)
       return successResponse()
-    } catch (error) {
-      if (error instanceof Response) throw error
-      return errorResponse(getErrorMessage(error), 500)
-    }
+    })
   }
 
   async function handleCancel(
-    request: Request,
+    url: URL,
     ctx: TContext | undefined,
   ): Promise<Response> {
-    try {
-      const url = new URL(request.url)
-      const runId = getRequiredQueryParam(url, 'runId')
-      if (runId instanceof Response) return runId
+    return withErrorHandling(async () => {
+      const result = await requireRunAccess(url, ctx, 'cancel')
+      if (result instanceof Response) return result
 
-      // Auth hook: onRunAccess
-      if (auth?.onRunAccess && ctx !== undefined) {
-        const run = await durably.getRun(runId)
-        if (!run) return errorResponse('Run not found', 404)
-        await auth.onRunAccess(ctx as TContext, run as Run<TLabels>, {
-          operation: 'cancel',
-        })
-      }
-
-      await durably.cancel(runId)
+      await durably.cancel(result.runId)
       return successResponse()
-    } catch (error) {
-      if (error instanceof Response) throw error
-      return errorResponse(getErrorMessage(error), 500)
-    }
+    })
   }
 
   async function handleDelete(
-    request: Request,
+    url: URL,
     ctx: TContext | undefined,
   ): Promise<Response> {
-    try {
-      const url = new URL(request.url)
-      const runId = getRequiredQueryParam(url, 'runId')
-      if (runId instanceof Response) return runId
+    return withErrorHandling(async () => {
+      const result = await requireRunAccess(url, ctx, 'delete')
+      if (result instanceof Response) return result
 
-      // Auth hook: onRunAccess
-      if (auth?.onRunAccess && ctx !== undefined) {
-        const run = await durably.getRun(runId)
-        if (!run) return errorResponse('Run not found', 404)
-        await auth.onRunAccess(ctx as TContext, run as Run<TLabels>, {
-          operation: 'delete',
-        })
-      }
-
-      await durably.deleteRun(runId)
+      await durably.deleteRun(result.runId)
       return successResponse()
-    } catch (error) {
-      if (error instanceof Response) throw error
-      return errorResponse(getErrorMessage(error), 500)
-    }
+    })
   }
 
-  function handleRunsSubscribe(
-    request: Request,
+  async function handleRunsSubscribe(
+    url: URL,
     ctx: TContext | undefined,
-  ): Response | Promise<Response> {
-    const url = new URL(request.url)
+  ): Promise<Response> {
+    let filter: RunsSubscribeFilter<TLabels>
 
-    // Auth hook: scopeRunsSubscribe or fallback to scopeRuns
-    if (ctx !== undefined && (auth?.scopeRunsSubscribe || auth?.scopeRuns)) {
-      return (async () => {
-        let filter: RunsSubscribeFilter<TLabels>
-
-        if (auth?.scopeRunsSubscribe) {
-          const parsed = parseRunsSubscribeFilter(
-            url,
-          ) as RunsSubscribeFilter<TLabels>
-          filter = await auth.scopeRunsSubscribe(ctx as TContext, parsed)
-        } else if (auth?.scopeRuns) {
-          // Fallback: use scopeRuns, then extract only jobName + labels
-          const parsed = parseRunFilter(url)
-          if (parsed instanceof Response) return parsed
-          const scoped = await auth.scopeRuns(
-            ctx as TContext,
-            parsed as RunFilter<TLabels>,
-          )
-          filter = { jobName: scoped.jobName, labels: scoped.labels }
-        } else {
-          filter = parseRunsSubscribeFilter(url) as RunsSubscribeFilter<TLabels>
-        }
-
-        return createRunsSSEStream(filter)
-      })()
+    if (ctx !== undefined && auth?.scopeRunsSubscribe) {
+      const parsed = parseRunsSubscribeFilter(
+        url,
+      ) as RunsSubscribeFilter<TLabels>
+      filter = await auth.scopeRunsSubscribe(ctx as TContext, parsed)
+    } else if (ctx !== undefined && auth?.scopeRuns) {
+      // Fallback: use scopeRuns with subscribe-compatible filter
+      const parsed = parseRunsSubscribeFilter(
+        url,
+      ) as RunsSubscribeFilter<TLabels>
+      const scoped = await auth.scopeRuns(
+        ctx as TContext,
+        {
+          ...parsed,
+        } as RunFilter<TLabels>,
+      )
+      filter = { jobName: scoped.jobName, labels: scoped.labels }
+    } else {
+      filter = parseRunsSubscribeFilter(url) as RunsSubscribeFilter<TLabels>
     }
 
-    const filter = parseRunsSubscribeFilter(url)
     return createRunsSSEStream(filter)
   }
 
@@ -743,24 +678,24 @@ export function createDurablyHandler<
 
         // GET routes
         if (method === 'GET') {
-          if (path === '/subscribe') return await handleSubscribe(request, ctx)
-          if (path === '/runs') return await handleRuns(request, ctx)
-          if (path === '/run') return await handleRun(request, ctx)
-          if (path === '/steps') return await handleSteps(request, ctx)
+          if (path === '/subscribe') return await handleSubscribe(url, ctx)
+          if (path === '/runs') return await handleRuns(url, ctx)
+          if (path === '/run') return await handleRun(url, ctx)
+          if (path === '/steps') return await handleSteps(url, ctx)
           if (path === '/runs/subscribe')
-            return await handleRunsSubscribe(request, ctx)
+            return await handleRunsSubscribe(url, ctx)
         }
 
         // POST routes
         if (method === 'POST') {
           if (path === '/trigger') return await handleTrigger(request, ctx)
-          if (path === '/retry') return await handleRetry(request, ctx)
-          if (path === '/cancel') return await handleCancel(request, ctx)
+          if (path === '/retry') return await handleRetry(url, ctx)
+          if (path === '/cancel') return await handleCancel(url, ctx)
         }
 
         // DELETE routes
         if (method === 'DELETE') {
-          if (path === '/run') return await handleDelete(request, ctx)
+          if (path === '/run') return await handleDelete(url, ctx)
         }
 
         return new Response('Not Found', { status: 404 })

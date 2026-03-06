@@ -228,8 +228,11 @@ describe('Core Extensions', () => {
     it('subscribe returns SSE stream', async () => {
       const handler = createDurablyHandler(durably)
 
+      const job = durably.getJob('test-job-handler')!
+      const run = await job.trigger({ value: 5 })
+
       const request = new Request(
-        'http://localhost/api/subscribe?runId=test-run-id',
+        `http://localhost/api/subscribe?runId=${run.id}`,
         { method: 'GET' },
       )
       const response = await handler.handle(request, '/api')
