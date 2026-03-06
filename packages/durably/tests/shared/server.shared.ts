@@ -1303,6 +1303,13 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(authHandler.handle).toBeDefined()
         expect(Object.keys(authHandler)).toEqual(['handle'])
       })
+
+      it('throws if auth is provided without authenticate', () => {
+        expect(() =>
+          // biome-ignore lint/suspicious/noExplicitAny: testing runtime validation
+          createDurablyHandler(durably, { auth: {} as any }),
+        ).toThrow('auth.authenticate is required')
+      })
     })
   })
 }

@@ -313,7 +313,7 @@ Auth hooks are grouped under `auth: { authenticate, onTrigger?, onRunAccess?, sc
 
 - Makes `authenticate` structurally required when any auth is configured
 - Clearly separates auth config from infrastructure config
-- No runtime validation needed — the type system enforces the constraint
+- Runtime validation also throws if `auth` is provided without `authenticate` (catches `as any` or JS usage)
 
 ### 3. `TLabels` flows from the Durably instance
 
@@ -364,9 +364,9 @@ List and subscribe have different filter capabilities:
 
 Individual handler methods are closure-scoped functions, not properties on the returned object. This ensures auth cannot be bypassed in JavaScript or via TypeScript escape hatches.
 
-### 10. `onTrigger` reads body via clone
+### 10. `onTrigger` receives parsed body
 
-Since `onTrigger` needs to inspect the request body before `trigger()` reads it, we use `request.clone().json()`.
+`handleTrigger` parses the request body once via `request.json()` and passes the parsed object to `onTrigger`. No cloning or second read is needed.
 
 ## Endpoint Classification
 

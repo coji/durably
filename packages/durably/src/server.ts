@@ -258,6 +258,13 @@ export function createDurablyHandler<
   const throttleMs = options?.sseThrottleMs ?? 100
   const auth = options?.auth
 
+  // Validate: auth requires authenticate
+  if (auth && !auth.authenticate) {
+    throw new Error(
+      'createDurablyHandler: auth.authenticate is required when auth is provided',
+    )
+  }
+
   // --- Shared helpers ---
 
   /** Wrap handler with try/catch that re-throws Response and catches everything else as 500 */

@@ -375,13 +375,19 @@ interface DurablyHandler {
   handle(request: Request, basePath: string): Promise<Response>
 }
 
-interface CreateDurablyHandlerOptions<TContext, TLabels> {
+interface CreateDurablyHandlerOptions<
+  TContext = undefined,
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   onRequest?: () => Promise<void> | void
   sseThrottleMs?: number // default: 100
   auth?: AuthConfig<TContext, TLabels>
 }
 
-interface AuthConfig<TContext, TLabels> {
+interface AuthConfig<
+  TContext,
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   authenticate: (request: Request) => Promise<TContext> | TContext
   onTrigger?: (
     ctx: TContext,
