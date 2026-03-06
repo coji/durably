@@ -468,6 +468,13 @@ interface Run<TLabels extends Record<string, string> = Record<string, string>> {
   updatedAt: string
 }
 
+interface TypedRun<TOutput, TLabels = Record<string, string>> extends Omit<
+  Run<TLabels>,
+  'output'
+> {
+  output: TOutput | null
+}
+
 interface JobHandle<TName, TInput, TOutput, TLabels = Record<string, string>> {
   name: TName
   trigger(

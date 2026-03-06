@@ -507,6 +507,101 @@ export function createRunApiTests(createDialect: () => Dialect) {
       })
     })
 
+    describe('labels schema validation', () => {
+      it('rejects invalid labels on trigger()', async () => {
+        const d = createDurably({
+          dialect: createDialect(),
+          pollingInterval: 50,
+          labels: z.object({
+            organizationId: z.string(),
+            env: z.string(),
+          }),
+        })
+        await d.migrate()
+
+        const registered = d.register({
+          job: defineJob({
+            name: 'labels-validation-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        await expect(
+          registered.jobs.job.trigger(
+            {},
+            // @ts-expect-error -- missing 'env'
+            { labels: { organizationId: 'org_1' } },
+          ),
+        ).rejects.toThrow('labels')
+
+        await d.db.destroy()
+      })
+
+      it('rejects invalid labels on batchTrigger()', async () => {
+        const d = createDurably({
+          dialect: createDialect(),
+          pollingInterval: 50,
+          labels: z.object({
+            organizationId: z.string(),
+            env: z.string(),
+          }),
+        })
+        await d.migrate()
+
+        const registered = d.register({
+          job: defineJob({
+            name: 'labels-batch-validation-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        await expect(
+          registered.jobs.job.batchTrigger([
+            {
+              input: {},
+              // @ts-expect-error -- missing 'env'
+              options: { labels: { organizationId: 'org_1' } },
+            },
+          ]),
+        ).rejects.toThrow('labels')
+
+        await d.db.destroy()
+      })
+
+      it('accepts valid labels on trigger()', async () => {
+        const d = createDurably({
+          dialect: createDialect(),
+          pollingInterval: 50,
+          labels: z.object({
+            organizationId: z.string(),
+            env: z.string(),
+          }),
+        })
+        await d.migrate()
+
+        const registered = d.register({
+          job: defineJob({
+            name: 'labels-valid-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        const run = await registered.jobs.job.trigger(
+          {},
+          { labels: { organizationId: 'org_1', env: 'prod' } },
+        )
+        expect(run.labels).toEqual({
+          organizationId: 'org_1',
+          env: 'prod',
+        })
+
+        await d.db.destroy()
+      })
+    })
+
     describe('step.progress()', () => {
       it('saves progress with current value', async () => {
         const d = durably.register({
