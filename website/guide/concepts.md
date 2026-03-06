@@ -1,73 +1,77 @@
 # Core Concepts
 
-Deep dive into Durably's architecture and behavior.
+Four things to understand: **Jobs**, **Steps**, **Runs**, and **Resumability**.
 
 ## Jobs
 
-Jobs are defined with `defineJob()` and registered via the `jobs` option:
+A job is a function with a name and typed input/output. Define it once, run it anywhere.
 
 ```ts
-const myJob = defineJob({
-  name: 'my-job',
-  input: z.object({ id: z.string() }),
-  output: z.object({ result: z.string() }),
-  run: async (step, input) => {
-    // Job implementation
-    return { result: 'done' }
-  },
-})
+import { defineJob } from '@coji/durably'
+import { z } from 'zod'
 
-const durably = createDurably({
-  dialect,
-  jobs: { myJob },
+const importJob = defineJob({
+  name: 'import-csv',
+  input: z.object({ filename: z.string() }),
+  output: z.object({ count: z.number() }),
+  run: async (step, input) => {
+    // ... steps go here
+    return { count: 42 }
+  },
 })
 ```
 
-| Option   | Required | Description                 |
-| -------- | -------- | --------------------------- |
-| `name`   | Yes      | Unique job identifier       |
-| `input`  | Yes      | Zod schema for input        |
-| `output` | No       | Zod schema for return value |
-| `run`    | Yes      | The job function            |
+Register jobs when creating the Durably instance:
 
-### Job Lifecycle
+```ts
+const durably = createDurably({
+  dialect,
+  jobs: { importCsv: importJob },
+})
+```
 
-![Job Lifecycle](/images/job-lifecycle.svg)
+The key in `jobs` (e.g. `importCsv`) becomes the accessor: `durably.jobs.importCsv.trigger(...)`.
 
 ## Steps
 
-Steps are checkpoints created with `step.run()`:
+Steps are checkpoints inside a job. Each `step.run()` persists its return value to SQLite.
 
 ```ts
-const result = await step.run('step-name', async () => {
-  return someValue // Persisted to SQLite
-})
+run: async (step, input) => {
+  const data = await step.run('fetch', () => fetchData())
+  const result = await step.run('process', () => transform(data))
+  return result
+}
 ```
 
-**First run:** Executes function, persists result.
-**Subsequent runs:** Returns cached result instantly.
+**First execution:** runs the function, saves the result.
+**After restart:** returns the cached result instantly, skips the function.
 
 ### Step Names Must Be Unique
 
-```ts
-// Good
-await step.run('fetch-user', () => fetchUser())
-await step.run('update-profile', () => updateProfile())
+Each step needs a unique name within a job run. Duplicate names return the cached result of the first one.
 
-// Bad - duplicate names
-await step.run('step', () => doA())
-await step.run('step', () => doB()) // Returns cached result from doA!
+```ts
+// Good: unique names
+await step.run('fetch-users', () => fetchUsers())
+await step.run('fetch-orders', () => fetchOrders())
+
+// Bad: same name returns cached result of first call
+await step.run('fetch', () => fetchUsers())
+await step.run('fetch', () => fetchOrders()) // Returns users, not orders!
 ```
 
-### Break Large Operations into Steps
+### Keep Steps Small
+
+One big step = lose everything on crash. Many small steps = resume from the last checkpoint.
 
 ```ts
-// Bad - crash loses all progress
+// Bad: crash loses all progress
 await step.run('import-all', async () => {
   for (const row of rows) await db.insert(row)
 })
 
-// Good - checkpoint per batch
+// Good: checkpoint per batch
 for (let i = 0; i < rows.length; i += 100) {
   await step.run(`batch-${i}`, async () => {
     for (const row of rows.slice(i, i + 100)) {
@@ -77,48 +81,98 @@ for (let i = 0; i < rows.length; i += 100) {
 }
 ```
 
+### Progress & Logging
+
+Report progress and write structured logs from inside steps:
+
+```ts
+await step.run('import', async () => {
+  for (let i = 0; i < rows.length; i++) {
+    await db.insert(rows[i])
+    step.progress(i + 1, rows.length, `Importing row ${i + 1}...`)
+    step.log.info(`Imported: ${rows[i].name}`)
+  }
+})
+```
+
+## Runs
+
+A run is one execution of a job. Trigger a run, and it goes through this lifecycle:
+
+```
+pending → running → completed
+                  → failed
+                  → cancelled
+```
+
+```ts
+// Trigger: creates a run in "pending" state
+const { id } = await durably.jobs.importCsv.trigger({ filename: 'data.csv' })
+
+// The worker picks it up → "running"
+// Steps execute one by one
+// On success → "completed" with output
+// On error → "failed" with error message
+```
+
+### Trigger Options
+
+```ts
+await durably.jobs.importCsv.trigger(
+  { filename: 'data.csv' },
+  {
+    // Prevent duplicates: same key = same run
+    idempotencyKey: 'import-2024-01-01',
+
+    // Only one job per key runs at a time
+    concurrencyKey: 'csv-imports',
+
+    // Metadata for filtering and multi-tenancy
+    labels: { organizationId: 'org_123' },
+  },
+)
+```
+
 ## Resumability
 
-### How It Works
+This is Durably's core feature. Here's exactly how it works:
 
 1. Each `step.run()` saves its result to SQLite
-2. If process crashes, restart picks up the job
-3. Completed steps return cached results
-4. Execution continues from next incomplete step
+2. Running jobs send heartbeats to prove they're alive
+3. If a job's heartbeat stops (crash, tab close, restart), it's marked **stale**
+4. The worker picks it up again as **pending**
+5. On re-execution, completed steps return cached results
+6. Execution continues from the next incomplete step
 
 ```ts
 // First run
-const data = await step.run('fetch', () => api.fetch()) // Runs, saves
-await step.run('process', () => process(data)) // Crashes!
+const data = await step.run('fetch', () => api.fetch()) // Runs, saves result
+await step.run('process', () => process(data)) // Crashes here!
 
-// After restart
-const data = await step.run('fetch', () => api.fetch()) // Returns cached
-await step.run('process', () => process(data)) // Runs
+// After restart — same job resumes
+const data = await step.run('fetch', () => api.fetch()) // Returns cached result
+await step.run('process', () => process(data)) // Runs fresh
 ```
 
-### Heartbeat Mechanism
-
-Running jobs send heartbeats to indicate they're alive:
+### Heartbeat Configuration
 
 ```ts
 createDurably({
   dialect,
-  heartbeatInterval: 5000, // Send heartbeat every 5s
-  staleThreshold: 30000, // Mark stale after 30s without heartbeat
+  heartbeatInterval: 5000, // Send heartbeat every 5s (default)
+  staleThreshold: 30000, // Mark stale after 30s without heartbeat (default)
 })
 ```
 
-When a job's heartbeat expires, it's reset to `pending` and picked up again.
+### Design for Idempotency
 
-### Idempotency
-
-Steps may re-run on failure. Design for safe retries:
+Steps may re-execute on failure boundaries. Design for safe retries:
 
 ```ts
-// Good: Upsert instead of insert
+// Good: upsert instead of insert
 await step.run('save', () => db.upsert(user))
 
-// Good: Idempotency key with external APIs
+// Good: idempotency key with external APIs
 await step.run('charge', () =>
   stripe.charges.create({
     amount: 1000,
@@ -127,84 +181,25 @@ await step.run('charge', () =>
 )
 ```
 
-## Trigger Options
-
-### Idempotency Key
-
-Prevent duplicate runs:
-
-```ts
-await job.trigger(
-  { id: '123' },
-  {
-    idempotencyKey: 'request-abc',
-  },
-)
-// Same key returns existing run
-```
-
-### Concurrency Key
-
-Limit concurrent execution:
-
-```ts
-await job.trigger(
-  { userId: '123' },
-  {
-    concurrencyKey: 'user_123',
-  },
-)
-// Only one job per key runs at a time
-```
-
-### Labels
-
-Attach metadata for filtering:
-
-```ts
-// Simple labels
-await job.trigger({ userId: '123' }, { labels: { source: 'browser' } })
-
-// Filter runs by labels
-const runs = await durably.getRuns({
-  labels: { source: 'browser' },
-})
-```
-
-Labels are also useful for multi-tenancy:
-
-```ts
-await job.trigger(
-  { userId: '123' },
-  { labels: { organizationId: 'org_123', env: 'prod' } },
-)
-
-const orgRuns = await durably.getRuns({
-  labels: { organizationId: 'org_123' },
-})
-```
-
-Labels are immutable key-value pairs (`Record<string, string>`) set at trigger time. All run-scoped events include labels, enabling SSE filtering:
-
-```http
-GET /runs/subscribe?label.organizationId=org_123
-```
-
 ## Events
 
-Monitor job execution:
+Monitor everything with the event system:
 
 ```ts
-durably.on('run:trigger', ({ runId, jobName }) => { ... })
-durably.on('run:start', ({ runId, jobName }) => { ... })
-durably.on('run:progress', ({ runId, progress }) => { ... })
-durably.on('run:complete', ({ runId, output }) => { ... })
-durably.on('run:fail', ({ runId, error }) => { ... })
-durably.on('run:cancel', ({ runId, jobName }) => { ... })
-durably.on('step:start', ({ runId, stepName }) => { ... })
-durably.on('step:complete', ({ runId, stepName, output }) => { ... })
-durably.on('step:fail', ({ runId, stepName, error }) => { ... })
-durably.on('step:cancel', ({ runId, stepName }) => { ... })
+durably.on('run:start', ({ runId, jobName }) =>
+  console.log(`Started: ${jobName}`),
+)
+durably.on('run:complete', ({ runId, output }) => console.log('Done:', output))
+durably.on('run:fail', ({ runId, error }) => console.log('Failed:', error))
+durably.on('run:progress', ({ progress }) =>
+  console.log(`${progress.current}/${progress.total}`),
+)
 ```
 
 See [Events API](/api/events) for the full list.
+
+## Next Steps
+
+- **[Server Mode](/guide/server-mode)** — Batch processing, cron, CLI tools
+- **[Fullstack Mode](/guide/fullstack-mode)** — React UI with real-time progress
+- **[SPA Mode](/guide/spa-mode)** — Run entirely in the browser
