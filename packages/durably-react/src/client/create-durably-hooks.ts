@@ -70,14 +70,3 @@ export function createDurablyHooks<TJobs extends Record<string, unknown>>(
     },
   })
 }
-
-// Backward compatibility re-exports
-/** @deprecated Use `createDurablyHooks` instead */
-export const createDurablyClient = createDurablyHooks
-/** @deprecated Use `CreateDurablyHooksOptions` instead */
-export type CreateDurablyClientOptions = CreateDurablyHooksOptions
-/** @deprecated Use `DurablyHooks` instead */
-export type DurablyClient<TJobs extends Record<string, unknown>> =
-  DurablyHooks<TJobs>
-/** @deprecated Use `JobHooks` instead */
-export type JobClient<TInput, TOutput> = JobHooks<TInput, TOutput>

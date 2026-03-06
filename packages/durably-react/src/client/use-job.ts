@@ -113,6 +113,7 @@ export function useJob<
 
   // Track if user has triggered a run (to prevent autoResume from overwriting)
   const hasUserTriggered = useRef(false)
+  const waitIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const subscription = useSSESubscription<TOutput>(api, currentRunId)
 
@@ -242,23 +243,42 @@ export function useJob<
       const { runId } = await trigger(input)
 
       return new Promise((resolve, reject) => {
+        // Clear any previous wait interval
+        if (waitIntervalRef.current) {
+          clearInterval(waitIntervalRef.current)
+        }
+
         const checkInterval = setInterval(() => {
           const sub = subscriptionRef.current
           if (sub.status === 'completed' && sub.output) {
             clearInterval(checkInterval)
+            waitIntervalRef.current = null
             resolve({ runId, output: sub.output })
           } else if (sub.status === 'failed') {
             clearInterval(checkInterval)
+            waitIntervalRef.current = null
             reject(new Error(sub.error ?? 'Job failed'))
           } else if (sub.status === 'cancelled') {
             clearInterval(checkInterval)
+            waitIntervalRef.current = null
             reject(new Error('Job cancelled'))
           }
         }, 50)
+
+        waitIntervalRef.current = checkInterval
       })
     },
     [trigger],
   )
+
+  // Clean up wait interval on unmount
+  useEffect(() => {
+    return () => {
+      if (waitIntervalRef.current) {
+        clearInterval(waitIntervalRef.current)
+      }
+    }
+  }, [])
 
   const reset = useCallback(() => {
     subscription.reset()

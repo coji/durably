@@ -1,6 +1,6 @@
 # Type Definitions
 
-Common types used across both Browser-Complete and Server-Connected modes.
+Common types used across both SPA and Fullstack modes.
 
 ## RunStatus
 
