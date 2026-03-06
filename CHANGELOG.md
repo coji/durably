@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-03-07
+
+### Breaking Changes
+
+#### @coji/durably
+
+- **Type-safe labels via `TLabels` generic**: `createDurably()` now accepts a `labels` Zod schema. `TLabels` is inferred and flows through `trigger()`, `getRuns()`, `Run`, and all auth hooks. Existing code without labels is unaffected (#75)
+- **Auth middleware for `createDurablyHandler`**: New `auth` option with `authenticate`, `onTrigger`, `onRunAccess`, `scopeRuns`, and `scopeRunsSubscribe` hooks. `TContext` is inferred from `authenticate` return type (#76)
+
+#### @coji/durably-react
+
+- **Redesign: `createDurably` proxy pattern**: New recommended API replaces direct hook imports for fullstack mode. Import from `@coji/durably-react` (root) instead of `@coji/durably-react/client` (#82)
+  ```ts
+  import { createDurably } from '@coji/durably-react'
+  import type { durably } from './durably.server'
+
+  const durablyClient = createDurably<typeof durably>({ api: '/api/durably' })
+
+  // Per-job hooks
+  durablyClient.importCsv.useRun(runId)
+
+  // Cross-job hooks
+  durablyClient.useRuns({ pageSize: 10 })
+  durablyClient.useRunActions()
+  ```
+
+### Added
+
+#### @coji/durably
+
+- **`onProgress` and `onLog` callbacks for `triggerAndWait()`**: Monitor job progress inline without subscribing to events (#71)
+  ```ts
+  const { output } = await job.triggerAndWait(input, {
+    onProgress: (p) => console.log(`${p.current}/${p.total}`),
+    onLog: (log) => console.log(log.message),
+  })
+  ```
+- **`jobName` array filter in `getRuns()`**: Filter by multiple job names with `getRuns({ jobName: ['job-a', 'job-b'] })` (#73)
+- **Multiple `jobName` filter in HTTP handler**: `GET /runs?jobName=a&jobName=b` (#74)
+
+#### @coji/durably-react
+
+- **`jobName` array filter in `useRuns()`**: Pass `jobName: string[]` to filter by multiple jobs in both fullstack and SPA modes (#74)
+- **`DurablyClient` type**: Intersection of per-job `JobHooks` and cross-job utilities (`useRuns`, `useRunActions`) (#82)
+
+### Fixed
+
+#### @coji/durably-react
+
+- **Stabilize `jobName` in browser `useRuns`**: Prevent unnecessary re-renders when `jobName` array reference changes (#74)
+
+### Documentation
+
+- Overhaul guide documentation for beginners: Quick Start, Server/Fullstack/SPA Mode tutorials, Error Handling, Auth, Multi-Tenant, and Deployment guides (#83)
+
 ## [0.10.0] - 2026-03-05
 
 ### Added
