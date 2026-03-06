@@ -5,7 +5,7 @@
  */
 
 import { useActionData } from 'react-router'
-import { durably } from '~/lib/durably.hooks'
+import { durably } from '~/lib/durably'
 import type { action } from '../_index'
 import { RunProgress } from './run-progress'
 

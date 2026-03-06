@@ -17,7 +17,7 @@ import type {
   ProcessImageInput,
   ProcessImageOutput,
 } from '~/jobs'
-import { durably } from '~/lib/durably.hooks'
+import { durably } from '~/lib/durably'
 
 /** Union type for all job runs in this dashboard */
 type DashboardRun =
