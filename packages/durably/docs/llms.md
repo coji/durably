@@ -319,20 +319,20 @@ const handler = createDurablyHandler(durably, {
     // Required: authenticate every request. Throw Response to reject.
     authenticate: async (request) => {
       const session = await requireUser(request)
-      const orgs = await getUserOrganizations(session.user.id)
-      return { orgIds: new Set(orgs.map((o) => o.id)) }
+      const orgId = await resolveCurrentOrgId(request, session.user.id)
+      return { orgId }
     },
 
     // Guard before trigger (called after body validation + job resolution)
     onTrigger: async (ctx, { jobName, input, labels }) => {
-      if (!ctx.orgIds.has(labels?.organizationId)) {
+      if (labels?.organizationId !== ctx.orgId) {
         throw new Response('Forbidden', { status: 403 })
       }
     },
 
     // Guard before run-level operations (read, subscribe, steps, retry, cancel, delete)
     onRunAccess: async (ctx, run, { operation }) => {
-      if (!ctx.orgIds.has(run.labels.organizationId)) {
+      if (run.labels.organizationId !== ctx.orgId) {
         throw new Response('Forbidden', { status: 403 })
       }
     },
@@ -340,13 +340,13 @@ const handler = createDurablyHandler(durably, {
     // Scope runs list queries (GET /runs)
     scopeRuns: async (ctx, filter) => ({
       ...filter,
-      labels: { ...filter.labels, organizationId: ctx.currentOrgId },
+      labels: { ...filter.labels, organizationId: ctx.orgId },
     }),
 
     // Scope runs subscribe stream (GET /runs/subscribe). Falls back to scopeRuns if not set.
     scopeRunsSubscribe: async (ctx, filter) => ({
       ...filter,
-      labels: { ...filter.labels, organizationId: ctx.currentOrgId },
+      labels: { ...filter.labels, organizationId: ctx.orgId },
     }),
   },
 })

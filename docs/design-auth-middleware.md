@@ -260,7 +260,7 @@ For users who need raw access without auth (e.g., internal tooling), they create
 
 ## Execution Flow
 
-```
+```text
 handle(request, basePath)
   |
   +-- auth.authenticate(request)   // authenticate FIRST -> TContext (fail fast)
