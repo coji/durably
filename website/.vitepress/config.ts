@@ -124,8 +124,16 @@ export default defineConfig({
                 { text: 'stop', link: '/api/create-durably#stop' },
                 { text: 'retry / cancel', link: '/api/create-durably#retry' },
                 {
+                  text: 'deleteRun',
+                  link: '/api/create-durably#deleterun',
+                },
+                {
                   text: 'getRun / getRuns',
                   link: '/api/create-durably#getrun',
+                },
+                {
+                  text: 'subscribe',
+                  link: '/api/create-durably#subscribe',
                 },
               ],
             },
@@ -164,8 +172,8 @@ export default defineConfig({
                   link: '/api/http-handler#sse-event-stream',
                 },
                 {
-                  text: 'Security',
-                  link: '/api/http-handler#security-considerations',
+                  text: 'Auth Middleware',
+                  link: '/api/http-handler#auth-middleware',
                 },
               ],
             },
