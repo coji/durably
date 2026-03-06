@@ -12,106 +12,128 @@ allowed-tools:
 
 # Documentation Update Checklist
 
-After any API change, verify all documentation is in sync. This checklist is ordered by priority.
+After any API change, verify ALL documentation is in sync.
 
-## How to Use
+## Step 1: Identify What Changed
 
-1. Identify what changed (new field, new method, changed signature, etc.)
-2. Walk through each section below
-3. Check only items relevant to the change scope (core, react, or both)
-4. Mark items as done or N/A
+Run `git diff --name-only main` (or check the current branch's changes) to understand the scope.
 
-## 1. Package LLM Docs (bundled in npm)
+## Step 2: Grep for Old Patterns
 
-These are the primary references for AI coding agents.
-
-- [ ] `packages/durably/docs/llms.md` — Core API docs
-- [ ] `packages/durably-react/docs/llms.md` — React hooks docs
-
-## 2. Website API Reference
-
-### Core API
-
-| File                            | Content                                                |
-| ------------------------------- | ------------------------------------------------------ |
-| `website/api/index.md`          | Quick reference / cheat sheet (covers ALL APIs)        |
-| `website/api/create-durably.md` | `createDurably()`, instance methods, types             |
-| `website/api/define-job.md`     | `defineJob()`, job config                              |
-| `website/api/step.md`           | Step context (`step.run`, `step.progress`, `step.log`) |
-| `website/api/events.md`         | Event types and their fields                           |
-| `website/api/http-handler.md`   | `createDurablyHandler()`, request/response types       |
-
-### React API
-
-| File                                     | Content                               |
-| ---------------------------------------- | ------------------------------------- |
-| `website/api/durably-react/index.md`     | React hooks overview                  |
-| `website/api/durably-react/spa.md`       | SPA hooks (`useJob`, `useRuns`, etc.) |
-| `website/api/durably-react/fullstack.md` | Fullstack hooks (server-connected)    |
-| `website/api/durably-react/types.md`     | Shared type definitions               |
-
-### Guides (check if examples use changed API)
-
-| File                               | Content                   |
-| ---------------------------------- | ------------------------- |
-| `website/guide/concepts.md`        | Core concepts explanation |
-| `website/guide/getting-started.md` | Getting started tutorial  |
-| `website/guide/csv-import.md`      | CSV import example        |
-| `website/guide/background-sync.md` | Background sync example   |
-| `website/guide/offline-app.md`     | Offline app example       |
-
-### Example Apps
-
-Grep for the changed symbol name in `examples/` to find usage. Each example demonstrates a different deployment pattern:
-
-| Directory                         | Pattern                        | Key files                                                           |
-| --------------------------------- | ------------------------------ | ------------------------------------------------------------------- |
-| `examples/server-node`            | Node.js server (core API only) | `jobs/*.ts`, `lib/durably.ts`, `basic.ts`                           |
-| `examples/spa-vite-react`         | SPA mode (Vite + React)        | `src/jobs/*.ts`, `src/lib/durably.ts`, `src/components/*.tsx`       |
-| `examples/spa-react-router`       | SPA mode (React Router)        | `app/jobs/*.ts`, `app/lib/durably.ts`, `app/routes/**/*.tsx`        |
-| `examples/fullstack-react-router` | Fullstack (React Router + SSE) | `app/jobs/*.ts`, `app/lib/durably.server.ts`, `app/routes/**/*.tsx` |
-
-## 3. Generated Files
-
-These are derived from package docs and must be regenerated:
+This is the most important step. Run grep across the ENTIRE repo for old API patterns that need updating:
 
 ```bash
-pnpm --filter durably-website generate:llms
+# Example patterns to search for (adapt to the specific change):
+grep -rn 'oldMethodName\|oldImportPath\|oldOptionName' \
+  --include='*.md' --include='*.ts' --include='*.tsx' \
+  packages/ website/ examples/ README.md CLAUDE.md .claude/
 ```
 
-- [ ] `website/public/llms.txt` — Concatenation of core + react `llms.md`
+**Every hit must be reviewed.** This catches documentation, examples, skills, and config files.
 
-## 4. Scope Guide
+Common patterns to check:
 
-Use this table to quickly determine which docs to check based on what changed:
+- Old method/function names
+- Old import paths (`@coji/durably-react/client` → `@coji/durably-react`)
+- Old API patterns (`.register()` chain vs `jobs:` option)
+- Old file paths in examples (`durably.hooks.ts` → `durably.ts`)
+- Old directory names (`browser-*` → `spa-*`)
 
-| Change Type                      | Docs to Check                                                                             |
-| -------------------------------- | ----------------------------------------------------------------------------------------- |
-| New field on `Run` / `RunFilter` | llms.md (core), create-durably.md, index.md, http-handler.md, react spa.md + fullstack.md |
-| New event field                  | llms.md (core), events.md, index.md                                                       |
-| New step method                  | llms.md (core), step.md, index.md                                                         |
-| New trigger option               | llms.md (core), index.md, http-handler.md, create-durably.md                              |
-| React hook change                | llms.md (react), spa.md, fullstack.md, index.md (react section)                           |
-| HTTP handler change              | llms.md (core), http-handler.md, fullstack.md                                             |
-| New config option                | llms.md (core), create-durably.md, index.md                                               |
-| Job/step API change              | All example apps (`examples/`)                                                            |
-| Event type change                | `examples/fullstack-react-router` (SSE), `examples/spa-*` (direct events)                 |
-| React hook change                | `examples/spa-vite-react`, `examples/spa-react-router`, `examples/fullstack-react-router` |
+## Step 3: Check All Documentation Files
 
-## 5. Common Oversights
+### Tier 1: Package Docs (bundled in npm — highest priority)
 
-- **`website/api/index.md`** is a cheat sheet — it duplicates key info from other pages and is easy to forget
-- **Event field additions** must be added to every event type comment block in `events.md`
-- **Browser and Client mode** hooks often have parallel options tables — update both
-- **Type definitions** in `website/api/durably-react/types.md` may need new type exports
-- **`website/public/llms.txt`** is generated — don't edit directly, regenerate instead
-- **Code examples** in guides may use the changed API — grep for the symbol name in `website/guide/`
-- **Example apps** in `examples/` are working apps that use the public API — grep for the changed symbol in all 4 examples
+- [ ] `packages/durably/docs/llms.md`
+- [ ] `packages/durably-react/docs/llms.md`
 
-## 6. Verification
+### Tier 2: README files
+
+- [ ] `README.md` (root)
+- [ ] `packages/durably/README.md`
+- [ ] `packages/durably-react/README.md`
+
+### Tier 3: Agent/AI config
+
+- [ ] `CLAUDE.md`
+- [ ] `.claude/skills/doc-check/SKILL.md` (this file — update tables if files change)
+- [ ] `.claude/skills/release-check/SKILL.md`
+
+### Tier 4: Website API Reference
+
+| File                                     | Content                                          |
+| ---------------------------------------- | ------------------------------------------------ |
+| `website/api/index.md`                   | Quick reference / cheat sheet (covers ALL APIs)  |
+| `website/api/create-durably.md`          | `createDurably()`, instance methods, types       |
+| `website/api/define-job.md`              | `defineJob()`, job config, trigger methods       |
+| `website/api/step.md`                    | Step context (`step.run`, `step.progress`, etc.) |
+| `website/api/events.md`                  | Event types and their fields                     |
+| `website/api/http-handler.md`            | `createDurablyHandler()`, auth middleware        |
+| `website/api/durably-react/index.md`     | React hooks overview + quick examples            |
+| `website/api/durably-react/fullstack.md` | Fullstack hooks (server-connected)               |
+| `website/api/durably-react/spa.md`       | SPA hooks (`useJob`, `useRuns`, etc.)            |
+| `website/api/durably-react/types.md`     | Shared type definitions                          |
+
+### Tier 5: Website Guides
+
+| File                               | Content                  |
+| ---------------------------------- | ------------------------ |
+| `website/guide/concepts.md`        | Core concepts            |
+| `website/guide/getting-started.md` | Getting started tutorial |
+| `website/guide/csv-import.md`      | CSV import example       |
+| `website/guide/background-sync.md` | Background sync example  |
+| `website/guide/offline-app.md`     | Offline app example      |
+
+### Tier 6: Website Config
+
+- [ ] `website/.vitepress/config.ts` — Sidebar links, menu text, anchor targets
+
+### Tier 7: Example Apps
+
+Grep for the changed symbol in all examples:
+
+| Directory                         | Pattern        | Key files                                                           |
+| --------------------------------- | -------------- | ------------------------------------------------------------------- |
+| `examples/server-node`            | Server mode    | `jobs/*.ts`, `lib/durably.ts`, `basic.ts`                           |
+| `examples/spa-vite-react`         | SPA mode       | `src/jobs/*.ts`, `src/lib/durably.ts`, `src/components/*.tsx`       |
+| `examples/spa-react-router`       | SPA mode       | `app/jobs/*.ts`, `app/lib/durably.ts`, `app/routes/**/*.tsx`        |
+| `examples/fullstack-react-router` | Fullstack mode | `app/jobs/*.ts`, `app/lib/durably.server.ts`, `app/routes/**/*.tsx` |
+
+## Step 4: Regenerate & Validate
 
 ```bash
 pnpm format:fix
-pnpm --filter durably-website generate:llms
-pnpm validate
+pnpm --filter durably-website generate:llms   # Regenerate website/public/llms.txt
+pnpm validate                                  # format, lint, typecheck, test
 ```
+
+## Step 5: Final Grep
+
+Run the same grep from Step 2 again to confirm nothing was missed.
+
+## Scope Guide
+
+Quick lookup for which docs to check based on change type:
+
+| Change Type         | Docs to Check                                                                             |
+| ------------------- | ----------------------------------------------------------------------------------------- |
+| New field on `Run`  | llms.md (core), create-durably.md, index.md, http-handler.md, react fullstack.md + spa.md |
+| New event field     | llms.md (core), events.md, index.md                                                       |
+| New step method     | llms.md (core), step.md, index.md                                                         |
+| New trigger option  | llms.md (core), index.md, http-handler.md, create-durably.md                              |
+| React hook change   | llms.md (react), fullstack.md, spa.md, react index.md                                     |
+| HTTP handler change | llms.md (core), http-handler.md, fullstack.md                                             |
+| New config option   | llms.md (core), create-durably.md, index.md, CLAUDE.md                                    |
+| Import path change  | ALL files (grep is the only reliable way)                                                 |
+| API naming change   | ALL files (grep is the only reliable way)                                                 |
+| Example dir rename  | skills, doc-check, release-check, website config                                          |
+| Sidebar structure   | `website/.vitepress/config.ts`                                                            |
+
+## Common Oversights
+
+- **`website/api/index.md`** is a cheat sheet — duplicates key info, easy to forget
+- **`CLAUDE.md`** describes core concepts — update when APIs change
+- **Skills files** reference file paths and patterns — update when structure changes
+- **Sidebar anchors** must match actual heading text (VitePress slugifies headings)
+- **`website/public/llms.txt`** is generated — never edit directly, always regenerate
+- **`init()` is the recommended method** — don't use `migrate()` + `start()` in examples
+- **`jobs: {}` option is preferred** over `.register()` chain in examples and guides
