@@ -3,7 +3,7 @@
 Connect to a Durably server via HTTP/SSE for real-time job monitoring. Jobs run on the server with updates streamed to the client.
 
 ```tsx
-import { useJob, useRuns, useRunActions } from '@coji/durably-react'
+import { createDurably } from '@coji/durably-react'
 ```
 
 ## Server Setup
@@ -29,8 +29,7 @@ export const durably = createDurably({
 
 export const durablyHandler = createDurablyHandler(durably)
 
-await durably.migrate()
-durably.start()
+await durably.init()
 ```
 
 ```ts
@@ -47,9 +46,87 @@ export async function action({ request }: Route.ActionArgs) {
 }
 ```
 
+## createDurably
+
+Create a type-safe client with a Proxy — autocomplete for job names, inferred input/output types, and built-in cross-job hooks.
+
+```ts
+// app/lib/durably.ts
+import { createDurably } from '@coji/durably-react'
+import type { durably } from './durably.server'
+
+export const durably = createDurably<typeof durably>({
+  api: '/api/durably',
+})
+```
+
+### Per-job hooks
+
+Each registered job gets `useJob`, `useRun`, and `useLogs` hooks with full type inference:
+
+```tsx
+// Trigger and monitor a job
+function CsvImporter() {
+  const { trigger, status, output, isRunning } = durably.importCsv.useJob()
+
+  return (
+    <button onClick={() => trigger({ rows: [...] })} disabled={isRunning}>
+      Import
+    </button>
+  )
+}
+
+// Subscribe to an existing run
+function RunViewer({ runId }: { runId: string }) {
+  const { status, output, progress } = durably.importCsv.useRun(runId)
+  return <div>Status: {status}</div>
+}
+
+// Subscribe to logs
+function LogViewer({ runId }: { runId: string }) {
+  const { logs } = durably.importCsv.useLogs(runId)
+  return <pre>{logs.map(l => l.message).join('\n')}</pre>
+}
+```
+
+### Cross-job hooks
+
+`useRuns` and `useRunActions` are built into the client — no need to import separately:
+
+```tsx
+function Dashboard() {
+  const { runs, nextPage, hasMore } = durably.useRuns({ pageSize: 10 })
+  const { retry, cancel, deleteRun } = durably.useRunActions()
+
+  return (
+    <table>
+      <tbody>
+        {runs.map((run) => (
+          <tr key={run.id}>
+            <td>{run.jobName}</td>
+            <td>{run.status}</td>
+            <td>
+              {run.status === 'failed' && (
+                <button onClick={() => retry(run.id)}>Retry</button>
+              )}
+              {run.status === 'running' && (
+                <button onClick={() => cancel(run.id)}>Cancel</button>
+              )}
+              <button onClick={() => deleteRun(run.id)}>Delete</button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+```
+
+---
+
 ## Hooks directly
 
-Pass `api` and `jobName` to each hook. Works with any setup, including SSR.
+Alternatively, pass `api` and `jobName` to each hook. Works with any setup, including SSR.
 
 ```tsx
 import { useJob } from '@coji/durably-react'
@@ -71,44 +148,6 @@ function CsvImporter() {
       Import
     </button>
   )
-}
-```
-
-## createDurably
-
-Wraps hooks with a type-safe Proxy — autocomplete for job names, inferred input/output types.
-
-```ts
-// app/lib/durably.ts
-import { createDurably } from '@coji/durably-react'
-import type { durably } from './durably.server'
-
-export const durably = createDurably<typeof durably>({
-  api: '/api/durably',
-})
-```
-
-```tsx
-function CsvImporter() {
-  const { trigger, status, output, isRunning } = durably.importCsv.useJob()
-
-  return (
-    <button onClick={() => trigger({ rows: [...] })} disabled={isRunning}>
-      Import
-    </button>
-  )
-}
-
-// Subscribe to an existing run
-function RunViewer({ runId }: { runId: string }) {
-  const { status, output, progress } = durably.importCsv.useRun(runId)
-  return <div>Status: {status}</div>
-}
-
-// Subscribe to logs
-function LogViewer({ runId }: { runId: string }) {
-  const { logs } = durably.importCsv.useLogs(runId)
-  return <pre>{logs.map(l => l.message).join('\n')}</pre>
 }
 ```
 

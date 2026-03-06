@@ -73,8 +73,9 @@ import { importCsvJob } from '~/jobs/import-csv'
 const client = createClient({ url: 'file:local.db' })
 const dialect = new LibsqlDialect({ client })
 
-export const durably = createDurably({ dialect }).register({
-  importCsv: importCsvJob,
+export const durably = createDurably({
+  dialect,
+  jobs: { importCsv: importCsvJob },
 })
 
 export const durablyHandler = createDurablyHandler(durably)

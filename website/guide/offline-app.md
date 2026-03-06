@@ -131,8 +131,7 @@ const durably = createDurably({
   pollingInterval: 100, // Check for pending jobs every 100ms
   heartbeatInterval: 500, // Send heartbeat every 500ms
   staleThreshold: 3000, // Mark job as stale after 3s without heartbeat
-}).register({
-  dataSync: dataSyncJob,
+  jobs: { dataSync: dataSyncJob },
 })
 
 await durably.init()

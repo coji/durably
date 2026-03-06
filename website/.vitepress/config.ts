@@ -65,8 +65,8 @@ export default defineConfig({
         {
           text: 'Use Cases',
           items: [
-            { text: 'CSV Import (Full-Stack)', link: '/guide/csv-import' },
-            { text: 'Offline App (Browser)', link: '/guide/offline-app' },
+            { text: 'CSV Import (Fullstack)', link: '/guide/csv-import' },
+            { text: 'Offline App (SPA)', link: '/guide/offline-app' },
             {
               text: 'Background Sync (Server)',
               link: '/guide/background-sync',
@@ -208,6 +208,10 @@ export default defineConfig({
                 {
                   text: 'createDurably',
                   link: '/api/durably-react/fullstack#createdurably',
+                },
+                {
+                  text: 'Hooks directly',
+                  link: '/api/durably-react/fullstack#hooks-directly',
                 },
                 { text: 'useJob', link: '/api/durably-react/fullstack#usejob' },
                 {

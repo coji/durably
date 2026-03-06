@@ -4,7 +4,7 @@ Deep dive into Durably's architecture and behavior.
 
 ## Jobs
 
-Jobs are defined with `defineJob()` and registered with `durably.register()`:
+Jobs are defined with `defineJob()` and registered via the `jobs` option:
 
 ```ts
 const myJob = defineJob({
@@ -17,7 +17,10 @@ const myJob = defineJob({
   },
 })
 
-const { myJob: job } = durably.register({ myJob })
+const durably = createDurably({
+  dialect,
+  jobs: { myJob },
+})
 ```
 
 | Option   | Required | Description                 |

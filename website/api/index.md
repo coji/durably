@@ -66,8 +66,7 @@ const durably = createDurably({
   heartbeatInterval: 5000, // Heartbeat every 5s
   staleThreshold: 30000, // Stale after 30s
   // labels: z.object({ ... }),  // Optional: type-safe labels
-}).register({
-  importCsv: importCsvJob,
+  jobs: { importCsv: importCsvJob },
 })
 
 await durably.init() // Migrate DB + start worker

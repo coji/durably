@@ -27,11 +27,12 @@ const sqlocal = new SQLocalKysely('app.sqlite3')
 const durably = createDurably({
   dialect: sqlocal.dialect,
   pollingInterval: 100,
-}).register({
-  myJob: myJobDef,
+  jobs: {
+    myJob: myJobDef,
+  },
 })
 
-await durably.migrate()
+await durably.init()
 
 function App() {
   return (

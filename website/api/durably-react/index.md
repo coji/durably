@@ -202,11 +202,10 @@ function JobRunner() {
 
 ```tsx
 function Dashboard() {
-  const { runs, page, hasMore, nextPage, prevPage } = useRuns({
-    api: '/api/durably',
+  const { runs, page, hasMore, nextPage, prevPage } = durably.useRuns({
     pageSize: 10,
   })
-  const { retry, cancel, deleteRun } = useRunActions({ api: '/api/durably' })
+  const { retry, cancel, deleteRun } = durably.useRunActions()
 
   return (
     <table>
