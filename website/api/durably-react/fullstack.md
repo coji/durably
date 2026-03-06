@@ -122,6 +122,10 @@ function Dashboard() {
 }
 ```
 
+::: tip Reserved keys
+`useRuns` and `useRunActions` are reserved names on the proxy. Do not register jobs with these names — the built-in hooks take precedence.
+:::
+
 ---
 
 ## Hooks directly

@@ -99,7 +99,8 @@ export function createDurably<T>(
   const { api } = options
   const cache = new Map<string, unknown>()
 
-  // Built-in cross-job hooks (keyed by reserved names)
+  // Built-in cross-job hooks. These names are reserved and cannot be used as job names.
+  // If a job is registered with one of these names, the built-in hook takes precedence.
   const builtins: Record<string, unknown> = {
     useRuns: (opts?: Omit<UseRunsClientOptions, 'api'>) =>
       useRuns({ api, ...opts }),

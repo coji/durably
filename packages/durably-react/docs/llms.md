@@ -79,7 +79,15 @@ function LogViewer({ runId }: { runId: string }) {
   const { logs } = durably.importCsv.useLogs(runId)
   return <pre>{logs.map(l => l.message).join('\n')}</pre>
 }
+
+// Cross-job hooks (built into the proxy)
+function Dashboard() {
+  const { runs } = durably.useRuns({ pageSize: 10 })
+  const { retry, cancel } = durably.useRunActions()
+}
 ```
+
+Note: `useRuns` and `useRunActions` are reserved keys on the proxy. Do not register jobs with these names.
 
 ### Fullstack useJob
 
@@ -199,6 +207,7 @@ interface UseRunsClientOptions {
 ```tsx
 import { useRuns, TypedClientRun } from '@coji/durably-react'
 import { defineJob } from '@coji/durably'
+import { z } from 'zod'
 
 // Option 1: Generic type parameter (dashboard with multiple job types)
 type ImportRun = TypedClientRun<{ file: string }, { count: number }>
@@ -523,6 +532,7 @@ List runs with filtering, pagination, and real-time updates:
 ```tsx
 import { useRuns, TypedRun } from '@coji/durably-react/spa'
 import { defineJob } from '@coji/durably'
+import { z } from 'zod'
 
 // Option 1: Generic type parameter (dashboard with multiple job types)
 type ImportRun = TypedRun<{ file: string }, { count: number }>
