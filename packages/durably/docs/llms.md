@@ -461,17 +461,15 @@ const durably = createDurably({
   pollingInterval: 100,
   heartbeatInterval: 500,
   staleThreshold: 3000,
-})
-
-// Same API as Node.js
-const { myJob } = durably.register({
-  myJob: defineJob({
-    name: 'my-job',
-    input: z.object({}),
-    run: async (step) => {
-      /* ... */
-    },
-  }),
+  jobs: {
+    myJob: defineJob({
+      name: 'my-job',
+      input: z.object({}),
+      run: async (step) => {
+        /* ... */
+      },
+    }),
+  },
 })
 
 // Initialize (same as Node.js)
