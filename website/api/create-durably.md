@@ -5,26 +5,32 @@ Creates a new Durably instance.
 ## Signature
 
 ```ts
-function createDurably(options: DurablyOptions): Durably
+function createDurably<TLabels>(
+  options: DurablyOptions<TLabels>,
+): Durably<{}, TLabels>
 ```
 
 ## Options
 
 ```ts
-interface DurablyOptions {
+interface DurablyOptions<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   dialect: Dialect
   pollingInterval?: number
   heartbeatInterval?: number
   staleThreshold?: number
+  labels?: z.ZodType<TLabels>
 }
 ```
 
-| Option              | Type      | Default  | Description                               |
-| ------------------- | --------- | -------- | ----------------------------------------- |
-| `dialect`           | `Dialect` | required | Kysely SQLite dialect                     |
-| `pollingInterval`   | `number`  | `1000`   | How often to check for pending jobs (ms)  |
-| `heartbeatInterval` | `number`  | `5000`   | How often to update heartbeat (ms)        |
-| `staleThreshold`    | `number`  | `30000`  | Time until a job is considered stale (ms) |
+| Option              | Type        | Default  | Description                                                                           |
+| ------------------- | ----------- | -------- | ------------------------------------------------------------------------------------- |
+| `dialect`           | `Dialect`   | required | Kysely SQLite dialect                                                                 |
+| `pollingInterval`   | `number`    | `1000`   | How often to check for pending jobs (ms)                                              |
+| `heartbeatInterval` | `number`    | `5000`   | How often to update heartbeat (ms)                                                    |
+| `staleThreshold`    | `number`    | `30000`  | Time until a job is considered stale (ms)                                             |
+| `labels`            | `z.ZodType` | —        | Zod schema for labels. Enables type-safe labels and runtime validation on `trigger()` |
 
 ## Returns
 
@@ -122,7 +128,7 @@ Deletes a run and its associated steps and logs.
 ### `getRun()`
 
 ```ts
-await durably.getRun<T extends Run = Run>(runId: string): Promise<T | null>
+await durably.getRun<T extends Run<TLabels> = Run<TLabels>>(runId: string): Promise<T | null>
 ```
 
 Gets a single run by ID. Supports generic type parameter for type-safe access.
@@ -142,12 +148,12 @@ const typedRun = await durably.getRun<MyRun>(runId)
 ### `getRuns()`
 
 ```ts
-await durably.getRuns<T extends Run = Run>(filter?: RunFilter): Promise<T[]>
+await durably.getRuns<T extends Run<TLabels> = Run<TLabels>>(filter?: RunFilter<TLabels>): Promise<T[]>
 
-interface RunFilter {
+interface RunFilter<TLabels extends Record<string, string> = Record<string, string>> {
   jobName?: string | string[]  // single or multiple job names
   status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
-  labels?: Record<string, string>
+  labels?: Partial<TLabels>    // filter by labels (all specified must match)
   limit?: number
   offset?: number
 }
@@ -175,7 +181,7 @@ const runs = await durably.getRuns<MyRun>({ jobName: 'my-job' })
 The `Run` object returned by `getRun()` and `getRuns()`:
 
 ```ts
-interface Run {
+interface Run<TLabels extends Record<string, string> = Record<string, string>> {
   id: string
   jobName: string
   input: unknown
@@ -187,7 +193,7 @@ interface Run {
   progress: { current: number; total?: number; message?: string } | null
   output: unknown | null
   error: string | null
-  labels: Record<string, string>
+  labels: TLabels
   heartbeatAt: string
   startedAt: string | null
   completedAt: string | null
@@ -196,25 +202,25 @@ interface Run {
 }
 ```
 
-| Field              | Type                                                               | Description                                    |
-| ------------------ | ------------------------------------------------------------------ | ---------------------------------------------- |
-| `id`               | `string`                                                           | Unique run ID                                  |
-| `jobName`          | `string`                                                           | Name of the job                                |
-| `input`            | `unknown`                                                          | Input payload passed to the job                |
-| `status`           | `'pending' \| 'running' \| 'completed' \| 'failed' \| 'cancelled'` | Current run status                             |
-| `idempotencyKey`   | `string \| null`                                                   | Deduplication key                              |
-| `concurrencyKey`   | `string \| null`                                                   | Concurrency group key                          |
-| `currentStepIndex` | `number`                                                           | Index of the current step being executed       |
-| `stepCount`        | `number`                                                           | Total number of completed steps                |
-| `progress`         | `{ current: number; total?: number; message?: string } \| null`    | Latest progress report                         |
-| `output`           | `unknown \| null`                                                  | Return value of the job (when completed)       |
-| `error`            | `string \| null`                                                   | Error message (when failed)                    |
-| `labels`           | `Record<string, string>`                                           | Arbitrary key/value labels for filtering       |
-| `heartbeatAt`      | `string`                                                           | ISO timestamp of the last heartbeat            |
-| `startedAt`        | `string \| null`                                                   | ISO timestamp when the run started             |
-| `completedAt`      | `string \| null`                                                   | ISO timestamp when the run completed or failed |
-| `createdAt`        | `string`                                                           | ISO timestamp when the run was created         |
-| `updatedAt`        | `string`                                                           | ISO timestamp of the last update               |
+| Field              | Type                                                               | Description                                                     |
+| ------------------ | ------------------------------------------------------------------ | --------------------------------------------------------------- |
+| `id`               | `string`                                                           | Unique run ID                                                   |
+| `jobName`          | `string`                                                           | Name of the job                                                 |
+| `input`            | `unknown`                                                          | Input payload passed to the job                                 |
+| `status`           | `'pending' \| 'running' \| 'completed' \| 'failed' \| 'cancelled'` | Current run status                                              |
+| `idempotencyKey`   | `string \| null`                                                   | Deduplication key                                               |
+| `concurrencyKey`   | `string \| null`                                                   | Concurrency group key                                           |
+| `currentStepIndex` | `number`                                                           | Index of the current step being executed                        |
+| `stepCount`        | `number`                                                           | Total number of completed steps                                 |
+| `progress`         | `{ current: number; total?: number; message?: string } \| null`    | Latest progress report                                          |
+| `output`           | `unknown \| null`                                                  | Return value of the job (when completed)                        |
+| `error`            | `string \| null`                                                   | Error message (when failed)                                     |
+| `labels`           | `TLabels` (defaults to `Record<string, string>`)                   | Key/value labels for filtering (type-safe when schema provided) |
+| `heartbeatAt`      | `string`                                                           | ISO timestamp of the last heartbeat                             |
+| `startedAt`        | `string \| null`                                                   | ISO timestamp when the run started                              |
+| `completedAt`      | `string \| null`                                                   | ISO timestamp when the run completed or failed                  |
+| `createdAt`        | `string`                                                           | ISO timestamp when the run was created                          |
+| `updatedAt`        | `string`                                                           | ISO timestamp of the last update                                |
 
 ### `getJob()`
 

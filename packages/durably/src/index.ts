@@ -38,10 +38,12 @@ export type {
 
 // Job types
 export type {
+  BatchTriggerInput,
   JobHandle,
   StepContext,
   TriggerAndWaitOptions,
   TriggerAndWaitResult,
+  TriggerOptions,
 } from './job'
 
 // Schema types (for advanced users)

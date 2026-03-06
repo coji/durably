@@ -1,5 +1,6 @@
 import type { Dialect } from 'kysely'
 import { Kysely } from 'kysely'
+import type { z } from 'zod'
 import type { JobDefinition } from './define-job'
 import {
   type AnyEventInput,
@@ -30,11 +31,19 @@ import { type Worker, createWorker } from './worker'
 /**
  * Options for creating a Durably instance
  */
-export interface DurablyOptions {
+export interface DurablyOptions<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   dialect: Dialect
   pollingInterval?: number
   heartbeatInterval?: number
   staleThreshold?: number
+  /**
+   * Zod schema for labels. When provided:
+   * - Labels are type-checked at compile time
+   * - Labels are validated at runtime on trigger()
+   */
+  labels?: z.ZodType<TLabels>
 }
 
 /**
@@ -52,7 +61,7 @@ const DEFAULTS = {
 export interface DurablyPlugin {
   name: string
   // biome-ignore lint/suspicious/noExplicitAny: plugin needs to accept any Durably instance
-  install(durably: Durably<any>): void
+  install(durably: Durably<any, any>): void
 }
 
 /**
@@ -60,13 +69,14 @@ export interface DurablyPlugin {
  */
 type TransformToHandles<
   TJobs extends Record<string, JobDefinition<string, unknown, unknown>>,
+  TLabels extends Record<string, string> = Record<string, string>,
 > = {
   [K in keyof TJobs]: TJobs[K] extends JobDefinition<
     infer TName,
     infer TInput,
     infer TOutput
   >
-    ? JobHandle<TName & string, TInput, TOutput>
+    ? JobHandle<TName & string, TInput, TOutput, TLabels>
     : never
 }
 
@@ -74,10 +84,11 @@ type TransformToHandles<
  * Durably instance with type-safe jobs
  */
 export interface Durably<
-  TJobs extends Record<string, JobHandle<string, unknown, unknown>> = Record<
+  TJobs extends Record<
     string,
-    never
-  >,
+    JobHandle<string, unknown, unknown, Record<string, string>>
+  > = Record<string, never>,
+  TLabels extends Record<string, string> = Record<string, string>,
 > {
   /**
    * Registered job handles (type-safe)
@@ -145,7 +156,7 @@ export interface Durably<
   // biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
   register<TNewJobs extends Record<string, JobDefinition<string, any, any>>>(
     jobDefs: TNewJobs,
-  ): Durably<TJobs & TransformToHandles<TNewJobs>>
+  ): Durably<TJobs & TransformToHandles<TNewJobs, TLabels>, TLabels>
 
   /**
    * Start the worker polling loop
@@ -187,7 +198,9 @@ export interface Durably<
    * const typedRun = await durably.getRun<MyRun>(runId)
    * ```
    */
-  getRun<T extends Run = Run>(runId: string): Promise<T | null>
+  getRun<T extends Run<TLabels> = Run<TLabels>>(
+    runId: string,
+  ): Promise<T | null>
 
   /**
    * Get runs with optional filtering
@@ -201,7 +214,9 @@ export interface Durably<
    * const typedRuns = await durably.getRuns<MyRun>({ jobName: 'my-job' })
    * ```
    */
-  getRuns<T extends Run = Run>(filter?: RunFilter): Promise<T[]>
+  getRuns<T extends Run<TLabels> = Run<TLabels>>(
+    filter?: RunFilter<TLabels>,
+  ): Promise<T[]>
 
   /**
    * Register a plugin
@@ -214,7 +229,7 @@ export interface Durably<
    */
   getJob<TName extends string = string>(
     name: TName,
-  ): JobHandle<TName, Record<string, unknown>, unknown> | undefined
+  ): JobHandle<TName, Record<string, unknown>, unknown, TLabels> | undefined
 
   /**
    * Subscribe to events for a specific run
@@ -232,6 +247,7 @@ interface DurablyState {
   eventEmitter: EventEmitter
   jobRegistry: JobRegistry
   worker: Worker
+  labelsSchema: z.ZodType | undefined
   migrating: Promise<void> | null
   migrated: boolean
 }
@@ -240,11 +256,15 @@ interface DurablyState {
  * Create a Durably instance implementation
  */
 function createDurablyInstance<
-  TJobs extends Record<string, JobHandle<string, unknown, unknown>>,
->(state: DurablyState, jobs: TJobs): Durably<TJobs> {
+  TJobs extends Record<
+    string,
+    JobHandle<string, unknown, unknown, Record<string, string>>
+  >,
+  TLabels extends Record<string, string> = Record<string, string>,
+>(state: DurablyState, jobs: TJobs): Durably<TJobs, TLabels> {
   const { db, storage, eventEmitter, jobRegistry, worker } = state
 
-  const durably: Durably<TJobs> = {
+  const durably: Durably<TJobs, TLabels> = {
     db,
     storage,
     jobs,
@@ -257,8 +277,8 @@ function createDurablyInstance<
     // biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
     register<TNewJobs extends Record<string, JobDefinition<string, any, any>>>(
       jobDefs: TNewJobs,
-    ): Durably<TJobs & TransformToHandles<TNewJobs>> {
-      const newHandles = {} as TransformToHandles<TNewJobs>
+    ): Durably<TJobs & TransformToHandles<TNewJobs, TLabels>, TLabels> {
+      const newHandles = {} as TransformToHandles<TNewJobs, TLabels>
 
       for (const key of Object.keys(jobDefs) as (keyof TNewJobs)[]) {
         const jobDef = jobDefs[key]
@@ -267,14 +287,21 @@ function createDurablyInstance<
           storage,
           eventEmitter,
           jobRegistry,
+          state.labelsSchema as z.ZodType<TLabels> | undefined,
         )
-        newHandles[key] = handle as TransformToHandles<TNewJobs>[typeof key]
+        newHandles[key] = handle as TransformToHandles<
+          TNewJobs,
+          TLabels
+        >[typeof key]
       }
 
       // Create new instance with merged jobs
       const mergedJobs = { ...jobs, ...newHandles } as TJobs &
-        TransformToHandles<TNewJobs>
-      return createDurablyInstance(state, mergedJobs)
+        TransformToHandles<TNewJobs, TLabels>
+      return createDurablyInstance<typeof mergedJobs, TLabels>(
+        state,
+        mergedJobs,
+      )
     },
 
     getRun: storage.getRun,
@@ -286,7 +313,7 @@ function createDurablyInstance<
 
     getJob<TName extends string = string>(
       name: TName,
-    ): JobHandle<TName, Record<string, unknown>, unknown> | undefined {
+    ): JobHandle<TName, Record<string, unknown>, unknown, TLabels> | undefined {
       const registeredJob = jobRegistry.get(name)
       if (!registeredJob) {
         return undefined
@@ -294,7 +321,8 @@ function createDurablyInstance<
       return registeredJob.handle as JobHandle<
         TName,
         Record<string, unknown>,
-        unknown
+        unknown,
+        TLabels
       >
     },
 
@@ -525,9 +553,9 @@ function createDurablyInstance<
 /**
  * Create a Durably instance
  */
-export function createDurably(
-  options: DurablyOptions,
-): Durably<Record<string, never>> {
+export function createDurably<
+  TLabels extends Record<string, string> = Record<string, string>,
+>(options: DurablyOptions<TLabels>): Durably<Record<string, never>, TLabels> {
   const config = {
     pollingInterval: options.pollingInterval ?? DEFAULTS.pollingInterval,
     heartbeatInterval: options.heartbeatInterval ?? DEFAULTS.heartbeatInterval,
@@ -546,9 +574,10 @@ export function createDurably(
     eventEmitter,
     jobRegistry,
     worker,
+    labelsSchema: options.labels,
     migrating: null,
     migrated: false,
   }
 
-  return createDurablyInstance(state, {})
+  return createDurablyInstance<Record<string, never>, TLabels>(state, {})
 }

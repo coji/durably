@@ -24,6 +24,7 @@ pnpm add @coji/durably kysely zod sqlocal
 import { createDurably } from '@coji/durably'
 import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { createClient } from '@libsql/client'
+import { z } from 'zod'
 
 const client = createClient({ url: 'file:local.db' })
 const dialect = new LibsqlDialect({ client })
@@ -33,6 +34,8 @@ const durably = createDurably({
   pollingInterval: 1000, // Job polling interval (ms)
   heartbeatInterval: 5000, // Heartbeat update interval (ms)
   staleThreshold: 30000, // When to consider a job abandoned (ms)
+  // Optional: type-safe labels with Zod schema
+  // labels: z.object({ organizationId: z.string(), env: z.string() }),
 })
 ```
 
@@ -450,40 +453,64 @@ interface StepContext {
   }
 }
 
-interface Run<TOutput = unknown> {
+// TLabels defaults to Record<string, string> when no labels schema is provided
+interface Run<TLabels extends Record<string, string> = Record<string, string>> {
   id: string
   jobName: string
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   input: unknown
-  labels: Record<string, string>
-  output?: TOutput
-  error?: string
-  progress?: { current: number; total?: number; message?: string }
+  labels: TLabels
+  output: unknown | null
+  error: string | null
+  progress: { current: number; total?: number; message?: string } | null
   startedAt: string | null
   completedAt: string | null
   createdAt: string
   updatedAt: string
 }
 
-interface JobHandle<TName, TInput, TOutput> {
+interface TypedRun<
+  TOutput,
+  TLabels extends Record<string, string> = Record<string, string>,
+> extends Omit<Run<TLabels>, 'output'> {
+  output: TOutput | null
+}
+
+interface JobHandle<
+  TName extends string,
+  TInput,
+  TOutput,
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   name: TName
-  trigger(input: TInput, options?: TriggerOptions): Promise<Run<TOutput>>
+  trigger(
+    input: TInput,
+    options?: TriggerOptions<TLabels>,
+  ): Promise<TypedRun<TOutput, TLabels>>
   triggerAndWait(
     input: TInput,
-    options?: TriggerAndWaitOptions,
+    options?: TriggerAndWaitOptions<TLabels>,
   ): Promise<{ id: string; output: TOutput }>
-  batchTrigger(inputs: BatchTriggerInput<TInput>[]): Promise<Run<TOutput>[]>
-  getRun(id: string): Promise<Run<TOutput> | null>
-  getRuns(filter?: RunFilter): Promise<Run<TOutput>[]>
+  batchTrigger(
+    inputs: BatchTriggerInput<TInput, TLabels>[],
+  ): Promise<TypedRun<TOutput, TLabels>[]>
+  getRun(id: string): Promise<TypedRun<TOutput, TLabels> | null>
+  getRuns(
+    filter?: Omit<RunFilter<TLabels>, 'jobName'>,
+  ): Promise<TypedRun<TOutput, TLabels>[]>
 }
 
-interface TriggerOptions {
+interface TriggerOptions<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   idempotencyKey?: string
   concurrencyKey?: string
-  labels?: Record<string, string>
+  labels?: TLabels
 }
 
-interface TriggerAndWaitOptions extends TriggerOptions {
+interface TriggerAndWaitOptions<
+  TLabels extends Record<string, string> = Record<string, string>,
+> extends TriggerOptions<TLabels> {
   timeout?: number
   onProgress?: (progress: ProgressData) => void | Promise<void>
   onLog?: (log: LogData) => void | Promise<void>
@@ -502,10 +529,12 @@ interface LogData {
   stepName?: string | null
 }
 
-interface RunFilter {
+interface RunFilter<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   jobName?: string | string[]
-  labels?: Record<string, string>
+  labels?: Partial<TLabels>
   limit?: number
   offset?: number
 }
