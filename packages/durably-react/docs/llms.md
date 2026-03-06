@@ -10,29 +10,295 @@
 
 `@coji/durably-react` provides React hooks for triggering and monitoring Durably jobs. It supports two modes:
 
-1. **Browser Hooks**: Run Durably entirely in the browser with SQLite WASM (OPFS)
-2. **Server Hooks**: Connect to a remote Durably server via HTTP/SSE
+1. **Fullstack Hooks** (default): Connect to a remote Durably server via HTTP/SSE
+2. **SPA Hooks**: Run Durably entirely in the browser with SQLite WASM (OPFS)
 
 ## Installation
 
 ```bash
-# Browser mode - runs Durably in the browser
-pnpm add @coji/durably-react @coji/durably kysely zod sqlocal
-
-# Server mode - connects to Durably server
+# Fullstack mode - connects to Durably server
 pnpm add @coji/durably-react
+
+# SPA mode - runs Durably in the browser
+pnpm add @coji/durably-react @coji/durably kysely zod sqlocal
 ```
 
-## Browser Hooks
+## Fullstack Hooks
 
-Import from `@coji/durably-react` for browser-complete mode.
+Import from `@coji/durably-react` (root) for server-connected mode.
+
+### createDurably
+
+Create a type-safe hooks factory for all registered jobs.
+
+```tsx
+// Server: register jobs (app/lib/durably.server.ts)
+import { createDurably, createDurablyHandler } from '@coji/durably'
+
+export const durably = createDurably({
+  dialect,
+  jobs: {
+    importCsv: importCsvJob,
+    syncUsers: syncUsersJob,
+  },
+})
+
+export const durablyHandler = createDurablyHandler(durably, {
+  sseThrottleMs: 100, // default: throttle progress SSE events (0 to disable)
+})
+
+await durably.init()
+
+// Client: create typed hooks (app/lib/durably.ts)
+import type { durably } from '~/lib/durably.server'
+import { createDurably } from '@coji/durably-react'
+
+export const durably = createDurably<typeof durably>({
+  api: '/api/durably',
+})
+
+// In your component - fully type-safe with autocomplete
+function CsvImporter() {
+  const { trigger, output, isRunning } = durably.importCsv.useJob()
+
+  return (
+    <button onClick={() => trigger({ rows: [...] })} disabled={isRunning}>
+      Import
+    </button>
+  )
+}
+
+// Subscribe to an existing run
+function RunViewer({ runId }: { runId: string }) {
+  const { status, output, progress } = durably.importCsv.useRun(runId)
+  return <div>Status: {status}</div>
+}
+
+// Subscribe to logs
+function LogViewer({ runId }: { runId: string }) {
+  const { logs } = durably.importCsv.useLogs(runId)
+  return <pre>{logs.map(l => l.message).join('\n')}</pre>
+}
+
+// Cross-job hooks (built into the proxy)
+function Dashboard() {
+  const { runs } = durably.useRuns({ pageSize: 10 })
+  const { retry, cancel } = durably.useRunActions()
+}
+```
+
+Note: `useRuns` and `useRunActions` are reserved keys on the proxy. Do not register jobs with these names.
+
+### Fullstack useJob
+
+Direct hook when not using `createDurably`:
+
+```tsx
+import { useJob } from '@coji/durably-react'
+
+function Component() {
+  const {
+    trigger,
+    triggerAndWait,
+    status,
+    output,
+    error,
+    logs,
+    progress,
+    isRunning,
+    isPending,
+    isCompleted,
+    isFailed,
+    isCancelled,
+    currentRunId,
+    reset,
+  } = useJob<
+    { userId: string }, // Input type
+    { count: number } // Output type
+  >({
+    api: '/api/durably',
+    jobName: 'sync-data',
+    initialRunId: undefined, // Optional: resume existing run
+    autoResume: true, // Auto-resume pending/running jobs on mount (default: true)
+    followLatest: true, // Switch to tracking new runs (default: true)
+  })
+
+  const handleClick = async () => {
+    const { runId } = await trigger({ userId: 'user_123' })
+    console.log('Started:', runId)
+  }
+
+  return <button onClick={handleClick}>Sync</button>
+}
+```
+
+**Options:**
+
+```ts
+interface UseJobClientOptions {
+  api: string // API endpoint URL (e.g., '/api/durably')
+  jobName: string // Job name to trigger
+  initialRunId?: string // Initial Run ID to subscribe to
+  autoResume?: boolean // Auto-resume pending/running jobs on mount (default: true)
+  followLatest?: boolean // Switch to tracking new runs via SSE (default: true)
+}
+```
+
+The `autoResume` option automatically fetches running/pending jobs on mount and subscribes to them. This is useful for SSR applications where users may refresh the page while a job is running.
+
+The `followLatest` option subscribes to job-level SSE events and automatically switches to tracking the latest triggered job. This enables real-time updates when jobs are triggered from other tabs or clients.
+
+### Fullstack useJobRun
+
+```tsx
+import { useJobRun } from '@coji/durably-react'
+
+function Component({ runId }: { runId: string }) {
+  const { status, output, error, progress, logs } = useJobRun<{
+    count: number
+  }>({
+    api: '/api/durably',
+    runId,
+  })
+
+  return <div>Status: {status}</div>
+}
+```
+
+### Fullstack useJobLogs
+
+```tsx
+import { useJobLogs } from '@coji/durably-react'
+
+function Component({ runId }: { runId: string }) {
+  const { logs, clearLogs } = useJobLogs({
+    api: '/api/durably',
+    runId,
+    maxLogs: 50,
+  })
+
+  return (
+    <ul>
+      {logs.map((log) => (
+        <li key={log.id}>{log.message}</li>
+      ))}
+    </ul>
+  )
+}
+```
+
+### Fullstack useRuns
+
+List runs with pagination and real-time updates.
+
+**Options:**
+
+```ts
+interface UseRunsClientOptions {
+  api: string // API endpoint URL (e.g., '/api/durably')
+  jobName?: string | string[] // Filter by job name(s)
+  status?: RunStatus // Filter by status
+  labels?: Record<string, string> // Filter by labels (all must match)
+  pageSize?: number // Runs per page (default: 10)
+  realtime?: boolean // Subscribe to real-time updates via SSE (default: true)
+}
+```
+
+```tsx
+import { useRuns, TypedClientRun } from '@coji/durably-react'
+import { defineJob } from '@coji/durably'
+import { z } from 'zod'
+
+// Option 1: Generic type parameter (dashboard with multiple job types)
+type ImportRun = TypedClientRun<{ file: string }, { count: number }>
+type SyncRun = TypedClientRun<{ userId: string }, { synced: boolean }>
+type DashboardRun = ImportRun | SyncRun
+
+function Dashboard() {
+  const { runs } = useRuns<DashboardRun>({ api: '/api/durably', pageSize: 10 })
+  // runs are typed as DashboardRun[]
+}
+
+// Option 2: JobDefinition (single job, auto-filters by jobName)
+const syncDataJob = defineJob({
+  name: 'sync-data',
+  input: z.object({ userId: z.string() }),
+  output: z.object({ count: z.number() }),
+  run: async (step, input) => {
+    /* ... */
+  },
+})
+
+function SingleJobDashboard() {
+  const { runs } = useRuns(syncDataJob, {
+    api: '/api/durably',
+    status: 'completed',
+    pageSize: 20,
+  })
+  // runs[0].output is typed as { count: number } | null
+}
+
+// Option 3: Untyped (simple cases)
+function UntypedDashboard() {
+  const { runs } = useRuns({ api: '/api/durably', jobName: 'sync-data' })
+  // runs[0].output is unknown
+}
+
+// Filter by labels
+function FilteredDashboard() {
+  const { runs } = useRuns({
+    api: '/api/durably',
+    labels: { source: 'browser' },
+    pageSize: 10,
+  })
+  // runs[0].labels is Record<string, string>
+}
+```
+
+### Fullstack useRunActions
+
+Actions for runs (retry, cancel, delete):
+
+```tsx
+import { useRunActions } from '@coji/durably-react'
+
+function RunActions({ runId, status }: { runId: string; status: string }) {
+  const { retry, cancel, deleteRun, getRun, getSteps, isLoading, error } =
+    useRunActions({
+      api: '/api/durably',
+    })
+
+  return (
+    <div>
+      {(status === 'failed' || status === 'cancelled') && (
+        <button onClick={() => retry(runId)} disabled={isLoading}>
+          Retry
+        </button>
+      )}
+      {(status === 'pending' || status === 'running') && (
+        <button onClick={() => cancel(runId)} disabled={isLoading}>
+          Cancel
+        </button>
+      )}
+      <button onClick={() => deleteRun(runId)} disabled={isLoading}>
+        Delete
+      </button>
+      {error && <span>{error}</span>}
+    </div>
+  )
+}
+```
+
+## SPA Hooks
+
+Import from `@coji/durably-react/spa` for browser-complete mode.
 
 ### DurablyProvider
 
 Wraps your app and provides the Durably instance to all hooks:
 
 ```tsx
-import { DurablyProvider } from '@coji/durably-react'
+import { DurablyProvider } from '@coji/durably-react/spa'
 import { createDurably } from '@coji/durably'
 import { SQLocalKysely } from 'sqlocal/kysely'
 
@@ -77,7 +343,7 @@ function AppAlt() {
 Access the Durably instance directly:
 
 ```tsx
-import { useDurably } from '@coji/durably-react'
+import { useDurably } from '@coji/durably-react/spa'
 
 function Component() {
   const { durably } = useDurably()
@@ -103,7 +369,7 @@ Trigger and monitor a job:
 
 ```tsx
 import { defineJob } from '@coji/durably'
-import { useJob } from '@coji/durably-react'
+import { useJob } from '@coji/durably-react/spa'
 import { z } from 'zod'
 
 const myJob = defineJob({
@@ -141,15 +407,6 @@ function Component() {
   // Trigger job
   const handleClick = async () => {
     const { runId } = await trigger({ value: 'test' })
-    console.log('Started:', runId)
-  }
-
-  // Trigger with labels (for filtering)
-  const handleClickWithLabels = async () => {
-    const { runId } = await trigger(
-      { value: 'test' },
-      { labels: { source: 'browser' } },
-    )
     console.log('Started:', runId)
   }
 
@@ -214,7 +471,7 @@ interface UseJobResult<TInput, TOutput> {
 Subscribe to an existing run by ID:
 
 ```tsx
-import { useJobRun } from '@coji/durably-react'
+import { useJobRun } from '@coji/durably-react/spa'
 
 function RunMonitor({ runId }: { runId: string | null }) {
   const {
@@ -244,7 +501,7 @@ function RunMonitor({ runId }: { runId: string | null }) {
 Subscribe to logs from a run:
 
 ```tsx
-import { useJobLogs } from '@coji/durably-react'
+import { useJobLogs } from '@coji/durably-react/spa'
 
 function LogViewer({ runId }: { runId: string | null }) {
   const { logs, clearLogs } = useJobLogs({
@@ -273,8 +530,9 @@ function LogViewer({ runId }: { runId: string | null }) {
 List runs with filtering, pagination, and real-time updates:
 
 ```tsx
-import { useRuns, TypedRun } from '@coji/durably-react'
+import { useRuns, TypedRun } from '@coji/durably-react/spa'
 import { defineJob } from '@coji/durably'
+import { z } from 'zod'
 
 // Option 1: Generic type parameter (dashboard with multiple job types)
 type ImportRun = TypedRun<{ file: string }, { count: number }>
@@ -315,249 +573,6 @@ function FilteredDashboard() {
 }
 ```
 
-## Server Hooks
-
-Import from `@coji/durably-react/client` for server-connected mode.
-
-### createDurablyClient
-
-Create a type-safe client for all registered jobs. Recommended for SPA (non-SSR) apps.
-
-Not compatible with SSR. For SSR apps, use `useJob`/`useRuns` hooks directly with the `api` option.
-
-```tsx
-// Server: register jobs (app/lib/durably.server.ts)
-import { createDurably, createDurablyHandler } from '@coji/durably'
-
-export const durably = createDurably({ dialect }).register({
-  importCsv: importCsvJob,
-  syncUsers: syncUsersJob,
-})
-
-export const durablyHandler = createDurablyHandler(durably, {
-  sseThrottleMs: 100, // default: throttle progress SSE events (0 to disable)
-})
-
-await durably.init()
-
-// Client: create typed client (app/lib/durably.client.ts)
-import type { durably } from '~/lib/durably.server'
-import { createDurablyClient } from '@coji/durably-react/client'
-
-export const durablyClient = createDurablyClient<typeof durably>({
-  api: '/api/durably',
-})
-
-// In your component - fully type-safe with autocomplete
-function CsvImporter() {
-  const { trigger, output, isRunning } = durablyClient.importCsv.useJob()
-
-  return (
-    <button onClick={() => trigger({ rows: [...] })} disabled={isRunning}>
-      Import
-    </button>
-  )
-}
-
-// Subscribe to an existing run
-function RunViewer({ runId }: { runId: string }) {
-  const { status, output, progress } = durablyClient.importCsv.useRun(runId)
-  return <div>Status: {status}</div>
-}
-
-// Subscribe to logs
-function LogViewer({ runId }: { runId: string }) {
-  const { logs } = durablyClient.importCsv.useLogs(runId)
-  return <pre>{logs.map(l => l.message).join('\n')}</pre>
-}
-```
-
-### Client useJob
-
-Direct hook when not using `createDurablyClient`:
-
-```tsx
-import { useJob } from '@coji/durably-react/client'
-
-function Component() {
-  const {
-    trigger,
-    triggerAndWait,
-    status,
-    output,
-    error,
-    logs,
-    progress,
-    isRunning,
-    isPending,
-    isCompleted,
-    isFailed,
-    isCancelled,
-    currentRunId,
-    reset,
-  } = useJob<
-    { userId: string }, // Input type
-    { count: number } // Output type
-  >({
-    api: '/api/durably',
-    jobName: 'sync-data',
-    initialRunId: undefined, // Optional: resume existing run
-    autoResume: true, // Auto-resume pending/running jobs on mount (default: true)
-    followLatest: true, // Switch to tracking new runs (default: true)
-  })
-
-  const handleClick = async () => {
-    const { runId } = await trigger({ userId: 'user_123' })
-    console.log('Started:', runId)
-  }
-
-  return <button onClick={handleClick}>Sync</button>
-}
-```
-
-**Options:**
-
-```ts
-interface UseJobClientOptions {
-  api: string // API endpoint URL (e.g., '/api/durably')
-  jobName: string // Job name to trigger
-  initialRunId?: string // Initial Run ID to subscribe to
-  autoResume?: boolean // Auto-resume pending/running jobs on mount (default: true)
-  followLatest?: boolean // Switch to tracking new runs via SSE (default: true)
-}
-```
-
-The `autoResume` option automatically fetches running/pending jobs on mount and subscribes to them. This is useful for SSR applications where users may refresh the page while a job is running.
-
-The `followLatest` option subscribes to job-level SSE events and automatically switches to tracking the latest triggered job. This enables real-time updates when jobs are triggered from other tabs or clients.
-
-### Client useJobRun
-
-```tsx
-import { useJobRun } from '@coji/durably-react/client'
-
-function Component({ runId }: { runId: string }) {
-  const { status, output, error, progress, logs } = useJobRun<{
-    count: number
-  }>({
-    api: '/api/durably',
-    runId,
-  })
-
-  return <div>Status: {status}</div>
-}
-```
-
-### Client useJobLogs
-
-```tsx
-import { useJobLogs } from '@coji/durably-react/client'
-
-function Component({ runId }: { runId: string }) {
-  const { logs, clearLogs } = useJobLogs({
-    api: '/api/durably',
-    runId,
-    maxLogs: 50,
-  })
-
-  return (
-    <ul>
-      {logs.map((log) => (
-        <li key={log.id}>{log.message}</li>
-      ))}
-    </ul>
-  )
-}
-```
-
-### Client useRuns
-
-List runs with pagination and real-time updates:
-
-```tsx
-import { useRuns, TypedClientRun } from '@coji/durably-react/client'
-import { defineJob } from '@coji/durably'
-
-// Option 1: Generic type parameter (dashboard with multiple job types)
-type ImportRun = TypedClientRun<{ file: string }, { count: number }>
-type SyncRun = TypedClientRun<{ userId: string }, { synced: boolean }>
-type DashboardRun = ImportRun | SyncRun
-
-function Dashboard() {
-  const { runs } = useRuns<DashboardRun>({ api: '/api/durably', pageSize: 10 })
-  // runs are typed as DashboardRun[]
-}
-
-// Option 2: JobDefinition (single job, auto-filters by jobName)
-const syncDataJob = defineJob({
-  name: 'sync-data',
-  input: z.object({ userId: z.string() }),
-  output: z.object({ count: z.number() }),
-  run: async (step, input) => {
-    /* ... */
-  },
-})
-
-function SingleJobDashboard() {
-  const { runs } = useRuns(syncDataJob, {
-    api: '/api/durably',
-    status: 'completed',
-    pageSize: 20,
-  })
-  // runs[0].output is typed as { count: number } | null
-}
-
-// Option 3: Untyped (simple cases)
-function UntypedDashboard() {
-  const { runs } = useRuns({ api: '/api/durably', jobName: 'sync-data' })
-  // runs[0].output is unknown
-}
-
-// Filter by labels
-function FilteredDashboard() {
-  const { runs } = useRuns({
-    api: '/api/durably',
-    labels: { source: 'browser' },
-    pageSize: 10,
-  })
-  // runs[0].labels is Record<string, string>
-}
-```
-
-### Client useRunActions
-
-Actions for runs (retry, cancel, delete):
-
-```tsx
-import { useRunActions } from '@coji/durably-react/client'
-
-function RunActions({ runId, status }: { runId: string; status: string }) {
-  const { retry, cancel, deleteRun, getRun, getSteps, isLoading, error } =
-    useRunActions({
-      api: '/api/durably',
-    })
-
-  return (
-    <div>
-      {(status === 'failed' || status === 'cancelled') && (
-        <button onClick={() => retry(runId)} disabled={isLoading}>
-          Retry
-        </button>
-      )}
-      {(status === 'pending' || status === 'running') && (
-        <button onClick={() => cancel(runId)} disabled={isLoading}>
-          Cancel
-        </button>
-      )}
-      <button onClick={() => deleteRun(runId)} disabled={isLoading}>
-        Delete
-      </button>
-      {error && <span>{error}</span>}
-    </div>
-  )
-}
-```
-
 ## Server Handler Setup
 
 On your server, use `createDurablyHandler`:
@@ -572,8 +587,11 @@ import { createClient } from '@libsql/client'
 const client = createClient({ url: 'file:local.db' })
 const dialect = new LibsqlDialect({ client })
 
-export const durably = createDurably({ dialect }).register({
-  syncData: syncDataJob,
+export const durably = createDurably({
+  dialect,
+  jobs: {
+    syncData: syncDataJob,
+  },
 })
 
 export const durablyHandler = createDurablyHandler(durably, {
@@ -616,7 +634,7 @@ interface LogEntry {
   timestamp: string
 }
 
-// Browser hooks: TypedRun with generic input/output
+// SPA hooks: TypedRun with generic input/output
 type TypedRun<
   TInput extends Record<string, unknown> = Record<string, unknown>,
   TOutput extends Record<string, unknown> | undefined = Record<string, unknown>,
@@ -627,7 +645,7 @@ type TypedRun<
 
 // ClientRun is re-exported from @coji/durably (excludes heartbeatAt, idempotencyKey, concurrencyKey, updatedAt)
 
-// Client hooks: TypedClientRun with generic input/output
+// Fullstack hooks: TypedClientRun with generic input/output
 type TypedClientRun<
   TInput extends Record<string, unknown> = Record<string, unknown>,
   TOutput extends Record<string, unknown> | undefined = Record<string, unknown>,

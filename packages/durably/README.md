@@ -30,7 +30,7 @@ const myJob = defineJob({
   },
 })
 
-const durably = createDurably({ dialect }).register({ myJob })
+const durably = createDurably({ dialect, jobs: { myJob } })
 
 await durably.init() // migrate + start
 await durably.jobs.myJob.trigger({ id: '123' })

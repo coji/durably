@@ -98,8 +98,7 @@ export const durably = createDurably({
   pollingInterval: 100,
   heartbeatInterval: 500,
   staleThreshold: 3000,
-}).register({
-  processImage: processImageJob,
+  jobs: { processImage: processImageJob },
 })
 ```
 

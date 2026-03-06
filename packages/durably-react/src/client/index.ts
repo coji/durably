@@ -1,14 +1,10 @@
 /**
- * Server-connected (client mode) exports
- * Use these when connecting to a remote Durably server via HTTP/SSE
+ * Internal client hooks module
+ * Public API is exported via root (index.ts) for fullstack mode
  */
 
-export { createDurablyClient } from './create-durably-client'
-export type {
-  CreateDurablyClientOptions,
-  DurablyClient,
-  JobClient,
-} from './create-durably-client'
+export { createDurably } from './create-durably'
+export type { CreateDurablyOptions, DurablyClient } from './create-durably'
 
 export { createJobHooks } from './create-job-hooks'
 export type { CreateJobHooksOptions, JobHooks } from './create-job-hooks'

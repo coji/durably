@@ -1,130 +1,183 @@
 ---
 name: release-check
-description: Pre-release integrity check. Verify package consistency for API changes and spec updates. Use for release check, version update, documentation consistency, pre-release verification.
+description: Pre-release integrity check. Catches stale docs, broken examples, missing exports, and version mismatches before publishing. Run before bumping versions or creating release PRs. Use for release check, version bump, pre-release, publish prep.
 allowed-tools:
   - Read
   - Grep
   - Glob
   - Bash(pnpm:*)
   - Bash(git:*)
+  - Bash(./*)
 ---
 
 # Release Check
 
-Verify package integrity for API changes and spec updates.
+Pre-release integrity check. Doc drift after API changes is the #1 source of follow-up PRs.
+This skill catches everything before it ships.
 
-## 1. Implementation
+## Phase 1: Automated Detection
+
+Run doc-check's stale pattern script first:
+
+```bash
+.claude/skills/doc-check/scripts/find-stale.sh
+```
+
+Fix every `[STALE]` hit before proceeding.
+
+## Phase 2: Understand the Scope
+
+```bash
+git diff main --stat
+git log --oneline main..HEAD
+```
+
+## Phase 3: Implementation
+
+### Packages
 
 - [ ] **@coji/durably** (`packages/durably/src/`)
 - [ ] **@coji/durably-react** (`packages/durably-react/src/`)
-  - [ ] Browser hooks (`hooks/`)
-  - [ ] Client hooks (`client/`)
-  - [ ] Shared utilities (`shared/`)
-  - [ ] Type definitions (`types.ts`)
+  - [ ] SPA hooks (`hooks/`) — runs directly in browser
+  - [ ] Fullstack hooks (`client/`) — connects to server via HTTP/SSE
+  - [ ] Shared (`shared/`) — logic used by both modes
+  - [ ] Types (`types.ts`) — public type definitions
+  - [ ] Exports (`index.ts`, `spa.ts`) — are new types/hooks exported?
 
-## 2. Version Update
+### Export completeness
 
-- [ ] `packages/durably/package.json` - version
-- [ ] `packages/durably-react/package.json` - version
+New types/hooks must be exported or users can't import them.
 
-## 3. Documentation
+- `packages/durably-react/src/index.ts` (fullstack)
+- `packages/durably-react/src/spa.ts` (SPA)
+- `packages/durably/src/index.ts` (core)
 
-### Core
+## Phase 4: Version
 
-- [ ] `packages/durably/docs/llms.md` - LLM docs (bundled in npm)
+- [ ] `packages/durably/package.json`
+- [ ] `packages/durably-react/package.json`
 
-### React
+Check peer dependency ranges too.
 
-- [ ] `packages/durably-react/docs/llms.md` - LLM docs (bundled in npm)
-- [ ] `website/api/durably-react/index.md` - Overview
-- [ ] `website/api/durably-react/browser.md` - Browser hooks
-- [ ] `website/api/durably-react/client.md` - Client hooks
-- [ ] `website/api/durably-react/types.md` - Type definitions
+## Phase 5: Documentation
 
-### Website
+Doc drift is the most common post-release issue. Check everything.
 
-- [ ] `website/public/llms.txt` - Core + React llms.md concatenated (`pnpm --filter durably-website generate:llms`)
+### Package docs (bundled in npm)
 
-## 4. README
+AI agents read these from `node_modules`. Stale info = wrong generated code.
 
+- [ ] `packages/durably/docs/llms.md`
+- [ ] `packages/durably-react/docs/llms.md`
+
+### READMEs
+
+- [ ] `README.md` (root)
 - [ ] `packages/durably/README.md`
 - [ ] `packages/durably-react/README.md`
 
-## 5. Examples
+### AI agent config
 
-- [ ] `examples/browser-vite-react/` - Browser mode example
-- [ ] `examples/browser-react-router-spa/` - Browser mode with React Router
-- [ ] `examples/fullstack-react-router/` - Client mode (server-connected)
-- [ ] `examples/server-node/` - Node.js server example
+- [ ] `CLAUDE.md` — core concepts, defaults, design decisions
+- [ ] `.claude/skills/doc-check/SKILL.md` — file paths, pattern tables
+- [ ] `.claude/skills/release-check/SKILL.md` — this file
 
-## 6. Tests
+### Website API Reference
 
-### Core (`packages/durably/tests/`)
+- [ ] `website/api/index.md` — cheat sheet (duplicates info, easy to miss)
+- [ ] `website/api/create-durably.md`
+- [ ] `website/api/define-job.md`
+- [ ] `website/api/step.md`
+- [ ] `website/api/events.md`
+- [ ] `website/api/http-handler.md`
+- [ ] `website/api/durably-react/index.md`
+- [ ] `website/api/durably-react/fullstack.md`
+- [ ] `website/api/durably-react/spa.md`
+- [ ] `website/api/durably-react/types.md`
 
-- [ ] `node/` - Node.js tests
-- [ ] `browser/` - Browser tests
+### Guides
 
-### React (`packages/durably-react/tests/`)
+Code examples embedded in prose. API changes silently break copy-paste.
 
-- [ ] `types.test.ts` - Type tests
+- [ ] `website/guide/concepts.md`
+- [ ] `website/guide/getting-started.md`
+- [ ] `website/guide/csv-import.md`
+- [ ] `website/guide/background-sync.md`
+- [ ] `website/guide/offline-app.md`
 
-Verify new features/changes are covered by tests.
+### Sidebar config
 
-## 7. Changelog
+- [ ] `website/.vitepress/config.ts` — links, menu text, anchors
 
-- [ ] `CHANGELOG.md` - Add version section
+### Generated files
 
-## 8. Validation
+- [ ] `website/public/llms.txt` — regenerate: `pnpm --filter durably-website generate:llms`
+
+## Phase 6: Examples
+
+All examples must compile and use current API patterns.
+
+- [ ] `examples/server-node/`
+- [ ] `examples/spa-vite-react/`
+- [ ] `examples/spa-react-router/`
+- [ ] `examples/fullstack-react-router/`
+
+Check for:
+
+- `jobs: {}` option (not `.register()` chain)
+- `await durably.init()` (not `migrate()` + `start()`)
+- Current import paths
+
+## Phase 7: Tests
+
+- [ ] `packages/durably/tests/`
+- [ ] `packages/durably-react/tests/`
+  - [ ] `browser/` — SPA hook tests
+  - [ ] `client/` — Fullstack hook tests
+
+Verify new features/changes have test coverage.
+
+## Phase 8: Changelog
+
+- [ ] `CHANGELOG.md` — add version section
+
+## Phase 9: Validate
 
 ```bash
-pnpm format:fix  # Fix formatting first (Claude-written code often has format errors)
-pnpm lint:fix    # Fix lint issues
-pnpm --filter durably-website generate:llms  # Regenerate website/public/llms.txt
-pnpm validate    # Run format, lint, typecheck, test
+pnpm format:fix
+pnpm lint:fix
+pnpm --filter durably-website generate:llms
+pnpm validate
 ```
 
 Check `git status` for uncommitted changes.
 
----
-
-## Common Oversights
-
-### Browser/Client Mode Consistency
-
-When React hooks should provide the same API in both Browser and Client modes:
-
-| File                | Mode         |
-| ------------------- | ------------ |
-| `hooks/use-job.ts`  | Browser mode |
-| `client/use-job.ts` | Client mode  |
-
-Ensure consistency in:
-
-- Interface definitions
-- Return values
-- Options
-
-### Code Examples in Documentation
-
-Verify code examples in docs match actual API:
-
-- Return value properties
-- Option parameters
-- Type definitions
-
-### Type Exports
-
-Check if new types are exported in `index.ts` / `client.ts`.
-
-### Examples Consistency
-
-If examples use new API, verify no type errors or runtime errors:
+## Phase 10: Final Check
 
 ```bash
-pnpm typecheck  # Includes all examples
+.claude/skills/doc-check/scripts/find-stale.sh
 ```
 
-Key components to check:
+Must be clean before release.
 
-- `dashboard.tsx` - useRuns, useRunActions
-- `*-progress.tsx` - useJob return values (status booleans)
+---
+
+## SPA/Fullstack Consistency
+
+Hooks in both modes should have consistent interfaces, return values, and options:
+
+| SPA                 | Fullstack            |
+| ------------------- | -------------------- |
+| `hooks/use-job.ts`  | `client/use-job.ts`  |
+| `hooks/use-runs.ts` | `client/use-runs.ts` |
+
+## Preferred Patterns
+
+| Pattern            | Preferred                          | Avoid                            |
+| ------------------ | ---------------------------------- | -------------------------------- |
+| Job registration   | `createDurably({ jobs: {} })`      | `.register()` chain              |
+| Initialization     | `await durably.init()`             | `migrate()` + `start()` separate |
+| Fullstack client   | `createDurably<typeof server>({})` | raw `useJob({ api, jobName })`   |
+| Cross-job hooks    | `durably.useRuns()`                | `useRuns({ api })`               |
+| Import (fullstack) | `from '@coji/durably-react'`       |                                  |
+| Import (SPA)       | `from '@coji/durably-react/spa'`   |                                  |

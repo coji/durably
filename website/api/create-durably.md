@@ -5,9 +5,15 @@ Creates a new Durably instance.
 ## Signature
 
 ```ts
+// Without jobs (use .register() later)
 function createDurably<TLabels>(
   options: DurablyOptions<TLabels>,
 ): Durably<{}, TLabels>
+
+// With jobs (1-step initialization)
+function createDurably<TLabels, TJobs>(
+  options: DurablyOptions<TLabels, TJobs> & { jobs: TJobs },
+): Durably<TransformToHandles<TJobs, TLabels>, TLabels>
 ```
 
 ## Options
@@ -15,12 +21,14 @@ function createDurably<TLabels>(
 ```ts
 interface DurablyOptions<
   TLabels extends Record<string, string> = Record<string, string>,
+  TJobs extends Record<string, JobDefinition> = Record<string, never>,
 > {
   dialect: Dialect
   pollingInterval?: number
   heartbeatInterval?: number
   staleThreshold?: number
   labels?: z.ZodType<TLabels>
+  jobs?: TJobs
 }
 ```
 
@@ -31,6 +39,7 @@ interface DurablyOptions<
 | `heartbeatInterval` | `number`    | `5000`   | How often to update heartbeat (ms)                                                    |
 | `staleThreshold`    | `number`    | `30000`  | Time until a job is considered stale (ms)                                             |
 | `labels`            | `z.ZodType` | —        | Zod schema for labels. Enables type-safe labels and runtime validation on `trigger()` |
+| `jobs`              | `TJobs`     | —        | Job definitions to register. Shorthand for calling `.register()` after creation       |
 
 ## Returns
 
@@ -77,6 +86,18 @@ durably.register<TJobs extends Record<string, JobDefinition>>(
 ```
 
 Registers one or more job definitions and returns an object of job handles. Also populates `durably.jobs` with the same handles for type-safe access.
+
+::: tip
+You can also pass `jobs` directly to `createDurably()` as a shorthand:
+
+```ts
+const durably = createDurably({
+  dialect,
+  jobs: { syncUsers: syncUsersJob, processImage: processImageJob },
+})
+```
+
+:::
 
 ```ts
 const { syncUsers, processImage } = durably.register({

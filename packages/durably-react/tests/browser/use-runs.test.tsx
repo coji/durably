@@ -9,7 +9,7 @@ import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { DurablyProvider, useRuns } from '../../src'
+import { DurablyProvider, useRuns } from '../../src/spa'
 import { createTestDurably } from '../helpers/create-test-durably'
 
 // Test job definition

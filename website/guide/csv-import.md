@@ -23,7 +23,7 @@ app/
 │   └── import-csv.ts          # Job definition
 ├── lib/
 │   ├── durably.server.ts      # Durably instance
-│   └── durably.client.ts      # Type-safe hooks
+│   └── durably.ts      # Type-safe hooks
 ├── routes/
 │   ├── api.durably.$.ts       # Splat route for all API
 │   └── _index.tsx             # UI
@@ -138,8 +138,9 @@ import { importCsvJob } from '~/jobs/import-csv'
 const client = createClient({ url: 'file:local.db' })
 const dialect = new LibsqlDialect({ client })
 
-export const durably = createDurably({ dialect }).register({
-  importCsv: importCsvJob,
+export const durably = createDurably({
+  dialect,
+  jobs: { importCsv: importCsvJob },
 })
 
 export const durablyHandler = createDurablyHandler(durably)
@@ -170,11 +171,11 @@ export async function action({ request }: Route.ActionArgs) {
 Create a type-safe client using the server's Durably type. This gives you full TypeScript inference for job inputs and outputs without bundling server code.
 
 ```ts
-// app/lib/durably.client.ts
-import { createDurablyClient } from '@coji/durably-react/client'
+// app/lib/durably.ts
+import { createDurably } from '@coji/durably-react'
 import type { durably } from './durably.server'
 
-export const durablyClient = createDurablyClient<typeof durably>({
+export const durablyClient = createDurably<typeof durably>({
   api: '/api/durably',
 })
 ```
@@ -214,7 +215,7 @@ function ImportProgress({ runId }: { runId: string | null }) {
 Build a dashboard showing all runs with retry, cancel, and delete actions. The `useRuns` hook provides paginated run history, while `useRunActions` provides mutation functions.
 
 ```tsx
-import { useRuns, useRunActions } from '@coji/durably-react/client'
+import { useRuns, useRunActions } from '@coji/durably-react'
 
 function Dashboard() {
   const { runs, refresh } = useRuns({ api: '/api/durably' })

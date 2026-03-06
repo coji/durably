@@ -113,8 +113,13 @@ export function useJob<
 
   // Track if user has triggered a run (to prevent autoResume from overwriting)
   const hasUserTriggered = useRef(false)
+  const waitIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const subscription = useSSESubscription<TOutput>(api, currentRunId)
+
+  // Keep a ref to the latest subscription state for use in triggerAndWait
+  const subscriptionRef = useRef(subscription)
+  subscriptionRef.current = subscription
 
   // Auto-resume: fetch running/pending job on mount
   useEffect(() => {
@@ -124,39 +129,33 @@ export function useJob<
     const abortController = new AbortController()
 
     const findActiveRun = async () => {
-      // Try running first
-      const runningParams = new URLSearchParams({
-        jobName,
-        status: 'running',
-        limit: '1',
-      })
-      const runningRes = await fetch(`${api}/runs?${runningParams}`, {
-        signal: abortController.signal,
-      })
+      // Fetch running and pending in parallel
+      const signal = abortController.signal
+      const [runningRes, pendingRes] = await Promise.all([
+        fetch(
+          `${api}/runs?${new URLSearchParams({ jobName, status: 'running', limit: '1' })}`,
+          { signal },
+        ),
+        fetch(
+          `${api}/runs?${new URLSearchParams({ jobName, status: 'pending', limit: '1' })}`,
+          { signal },
+        ),
+      ])
+
+      if (hasUserTriggered.current) return
+
+      // Prefer running over pending
       if (runningRes.ok) {
         const runs = (await runningRes.json()) as Array<{ id: string }>
         if (runs.length > 0) {
-          // Don't overwrite if user already triggered a run
-          if (hasUserTriggered.current) return
           setCurrentRunId(runs[0].id)
           return
         }
       }
 
-      // Try pending
-      const pendingParams = new URLSearchParams({
-        jobName,
-        status: 'pending',
-        limit: '1',
-      })
-      const pendingRes = await fetch(`${api}/runs?${pendingParams}`, {
-        signal: abortController.signal,
-      })
       if (pendingRes.ok) {
         const runs = (await pendingRes.json()) as Array<{ id: string }>
         if (runs.length > 0) {
-          // Don't overwrite if user already triggered a run
-          if (hasUserTriggered.current) return
           setCurrentRunId(runs[0].id)
         }
       }
@@ -244,22 +243,42 @@ export function useJob<
       const { runId } = await trigger(input)
 
       return new Promise((resolve, reject) => {
+        // Clear any previous wait interval
+        if (waitIntervalRef.current) {
+          clearInterval(waitIntervalRef.current)
+        }
+
         const checkInterval = setInterval(() => {
-          if (subscription.status === 'completed' && subscription.output) {
+          const sub = subscriptionRef.current
+          if (sub.status === 'completed' && sub.output) {
             clearInterval(checkInterval)
-            resolve({ runId, output: subscription.output })
-          } else if (subscription.status === 'failed') {
+            waitIntervalRef.current = null
+            resolve({ runId, output: sub.output })
+          } else if (sub.status === 'failed') {
             clearInterval(checkInterval)
-            reject(new Error(subscription.error ?? 'Job failed'))
-          } else if (subscription.status === 'cancelled') {
+            waitIntervalRef.current = null
+            reject(new Error(sub.error ?? 'Job failed'))
+          } else if (sub.status === 'cancelled') {
             clearInterval(checkInterval)
+            waitIntervalRef.current = null
             reject(new Error('Job cancelled'))
           }
         }, 50)
+
+        waitIntervalRef.current = checkInterval
       })
     },
-    [trigger, subscription.status, subscription.output, subscription.error],
+    [trigger],
   )
+
+  // Clean up wait interval on unmount
+  useEffect(() => {
+    return () => {
+      if (waitIntervalRef.current) {
+        clearInterval(waitIntervalRef.current)
+      }
+    }
+  }, [])
 
   const reset = useCallback(() => {
     subscription.reset()

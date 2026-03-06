@@ -1,0 +1,36 @@
+{
+  "name": "example-spa-vite-react",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "format": "prettier --experimental-cli --check .",
+    "format:fix": "prettier --experimental-cli --write ."
+  },
+  "dependencies": {
+    "@coji/durably": "workspace:*",
+    "@coji/durably-react": "workspace:*",
+    "kysely": "^0.28.11",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "sqlocal": "^0.17.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.5",
+    "@tailwindcss/vite": "^4.2.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.4",
+    "prettier": "^3.8.1",
+    "prettier-plugin-organize-imports": "^4.3.0",
+    "tailwindcss": "^4.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
+  }
+}

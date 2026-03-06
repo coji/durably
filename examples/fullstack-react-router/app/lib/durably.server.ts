@@ -13,13 +13,14 @@ import { createDurably, createDurablyHandler } from '@coji/durably'
 import { dataSyncJob, importCsvJob, processImageJob } from '~/jobs'
 import { dialect } from './database.server'
 
-// Create Durably instance with registered jobs
+// Create Durably instance with jobs
 export const durably = createDurably({
   dialect,
-}).register({
-  processImage: processImageJob,
-  dataSync: dataSyncJob,
-  importCsv: importCsvJob,
+  jobs: {
+    processImage: processImageJob,
+    dataSync: dataSyncJob,
+    importCsv: importCsvJob,
+  },
 })
 
 // HTTP handler for SSE streaming

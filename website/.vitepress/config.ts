@@ -2,19 +2,44 @@ import { defineConfig } from 'vitepress'
 
 export default defineConfig({
   title: 'Durably',
-  description: 'Step-oriented resumable batch execution for Node.js and browsers',
+  description:
+    'Step-oriented resumable batch execution for Node.js and browsers',
   base: '/durably/',
 
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/durably/logo.svg' }],
     ['meta', { property: 'og:title', content: 'Durably' }],
-    ['meta', { property: 'og:description', content: 'Just SQLite. No Redis required.' }],
-    ['meta', { property: 'og:image', content: 'https://coji.github.io/durably/og-image.png' }],
+    [
+      'meta',
+      {
+        property: 'og:description',
+        content: 'Just SQLite. No Redis required.',
+      },
+    ],
+    [
+      'meta',
+      {
+        property: 'og:image',
+        content: 'https://coji.github.io/durably/og-image.png',
+      },
+    ],
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
     ['meta', { name: 'twitter:title', content: 'Durably' }],
-    ['meta', { name: 'twitter:description', content: 'Just SQLite. No Redis required.' }],
-    ['meta', { name: 'twitter:image', content: 'https://coji.github.io/durably/og-image.png' }],
+    [
+      'meta',
+      {
+        name: 'twitter:description',
+        content: 'Just SQLite. No Redis required.',
+      },
+    ],
+    [
+      'meta',
+      {
+        name: 'twitter:image',
+        content: 'https://coji.github.io/durably/og-image.png',
+      },
+    ],
   ],
 
   themeConfig: {
@@ -40,18 +65,19 @@ export default defineConfig({
         {
           text: 'Use Cases',
           items: [
-            { text: 'CSV Import (Full-Stack)', link: '/guide/csv-import' },
-            { text: 'Offline App (Browser)', link: '/guide/offline-app' },
-            { text: 'Background Sync (Server)', link: '/guide/background-sync' },
+            { text: 'CSV Import (Fullstack)', link: '/guide/csv-import' },
+            {
+              text: 'Background Sync (Server)',
+              link: '/guide/background-sync',
+            },
+            { text: 'Offline App (SPA)', link: '/guide/offline-app' },
           ],
         },
       ],
       '/api/': [
         {
           text: 'Getting Started',
-          items: [
-            { text: 'Quick Reference', link: '/api/' },
-          ],
+          items: [{ text: 'Quick Reference', link: '/api/' }],
         },
         {
           text: 'Job Definition',
@@ -62,7 +88,10 @@ export default defineConfig({
               collapsed: false,
               items: [
                 { text: 'trigger', link: '/api/define-job#trigger' },
-                { text: 'triggerAndWait', link: '/api/define-job#triggerandwait' },
+                {
+                  text: 'triggerAndWait',
+                  link: '/api/define-job#triggerandwait',
+                },
                 { text: 'batchTrigger', link: '/api/define-job#batchtrigger' },
               ],
             },
@@ -86,12 +115,26 @@ export default defineConfig({
               link: '/api/create-durably',
               collapsed: false,
               items: [
-                { text: 'init / migrate / start', link: '/api/create-durably#init' },
+                {
+                  text: 'init / migrate / start',
+                  link: '/api/create-durably#init',
+                },
                 { text: 'register', link: '/api/create-durably#register' },
                 { text: 'on (events)', link: '/api/create-durably#on' },
                 { text: 'stop', link: '/api/create-durably#stop' },
                 { text: 'retry / cancel', link: '/api/create-durably#retry' },
-                { text: 'getRun / getRuns', link: '/api/create-durably#getrun' },
+                {
+                  text: 'deleteRun',
+                  link: '/api/create-durably#deleterun',
+                },
+                {
+                  text: 'getRun / getRuns',
+                  link: '/api/create-durably#getrun',
+                },
+                {
+                  text: 'subscribe',
+                  link: '/api/create-durably#subscribe',
+                },
               ],
             },
             {
@@ -115,11 +158,23 @@ export default defineConfig({
               link: '/api/http-handler',
               collapsed: false,
               items: [
-                { text: 'createDurablyHandler', link: '/api/http-handler#createdurablyhandler' },
-                { text: 'Framework Integration', link: '/api/http-handler#framework-integration' },
+                {
+                  text: 'createDurablyHandler',
+                  link: '/api/http-handler#createdurablyhandler',
+                },
+                {
+                  text: 'Framework Integration',
+                  link: '/api/http-handler#framework-integration',
+                },
                 { text: 'Endpoints', link: '/api/http-handler#endpoints' },
-                { text: 'SSE Events', link: '/api/http-handler#sse-event-stream' },
-                { text: 'Security', link: '/api/http-handler#security-considerations' },
+                {
+                  text: 'SSE Events',
+                  link: '/api/http-handler#sse-event-stream',
+                },
+                {
+                  text: 'Auth Middleware',
+                  link: '/api/http-handler#auth-middleware',
+                },
               ],
             },
           ],
@@ -129,29 +184,60 @@ export default defineConfig({
           items: [
             { text: 'Overview', link: '/api/durably-react/' },
             {
-              text: 'Browser Hooks',
-              link: '/api/durably-react/browser',
+              text: 'Fullstack Hooks',
+              link: '/api/durably-react/fullstack',
               collapsed: false,
               items: [
-                { text: 'DurablyProvider', link: '/api/durably-react/browser#durablyprovider' },
-                { text: 'useDurably', link: '/api/durably-react/browser#usedurably' },
-                { text: 'useJob', link: '/api/durably-react/browser#usejob' },
-                { text: 'useJobRun', link: '/api/durably-react/browser#usejobrun' },
-                { text: 'useJobLogs', link: '/api/durably-react/browser#usejoblogs' },
-                { text: 'useRuns', link: '/api/durably-react/browser#useruns' },
+                {
+                  text: 'createDurably',
+                  link: '/api/durably-react/fullstack#createdurably',
+                },
+                {
+                  text: 'Hooks directly',
+                  link: '/api/durably-react/fullstack#hooks-directly',
+                },
+                { text: 'useJob', link: '/api/durably-react/fullstack#usejob' },
+                {
+                  text: 'useJobRun',
+                  link: '/api/durably-react/fullstack#usejobrun',
+                },
+                {
+                  text: 'useJobLogs',
+                  link: '/api/durably-react/fullstack#usejoblogs',
+                },
+                {
+                  text: 'useRuns',
+                  link: '/api/durably-react/fullstack#useruns',
+                },
+                {
+                  text: 'useRunActions',
+                  link: '/api/durably-react/fullstack#userunactions',
+                },
               ],
             },
             {
-              text: 'Server Hooks',
-              link: '/api/durably-react/client',
+              text: 'SPA Hooks',
+              link: '/api/durably-react/spa',
               collapsed: false,
               items: [
-                { text: 'createDurablyClient', link: '/api/durably-react/client#createdurablyclient' },
-                { text: 'useJob', link: '/api/durably-react/client#usejob' },
-                { text: 'useJobRun', link: '/api/durably-react/client#usejobrun' },
-                { text: 'useJobLogs', link: '/api/durably-react/client#usejoblogs' },
-                { text: 'useRuns', link: '/api/durably-react/client#useruns' },
-                { text: 'useRunActions', link: '/api/durably-react/client#userunactions' },
+                {
+                  text: 'DurablyProvider',
+                  link: '/api/durably-react/spa#durablyprovider',
+                },
+                {
+                  text: 'useDurably',
+                  link: '/api/durably-react/spa#usedurably',
+                },
+                { text: 'useJob', link: '/api/durably-react/spa#usejob' },
+                {
+                  text: 'useJobRun',
+                  link: '/api/durably-react/spa#usejobrun',
+                },
+                {
+                  text: 'useJobLogs',
+                  link: '/api/durably-react/spa#usejoblogs',
+                },
+                { text: 'useRuns', link: '/api/durably-react/spa#useruns' },
               ],
             },
             { text: 'Type Definitions', link: '/api/durably-react/types' },
