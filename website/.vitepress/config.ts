@@ -66,11 +66,11 @@ export default defineConfig({
           text: 'Use Cases',
           items: [
             { text: 'CSV Import (Fullstack)', link: '/guide/csv-import' },
-            { text: 'Offline App (SPA)', link: '/guide/offline-app' },
             {
               text: 'Background Sync (Server)',
               link: '/guide/background-sync',
             },
+            { text: 'Offline App (SPA)', link: '/guide/offline-app' },
           ],
         },
       ],
@@ -176,31 +176,6 @@ export default defineConfig({
           items: [
             { text: 'Overview', link: '/api/durably-react/' },
             {
-              text: 'SPA Hooks',
-              link: '/api/durably-react/spa',
-              collapsed: false,
-              items: [
-                {
-                  text: 'DurablyProvider',
-                  link: '/api/durably-react/spa#durablyprovider',
-                },
-                {
-                  text: 'useDurably',
-                  link: '/api/durably-react/spa#usedurably',
-                },
-                { text: 'useJob', link: '/api/durably-react/spa#usejob' },
-                {
-                  text: 'useJobRun',
-                  link: '/api/durably-react/spa#usejobrun',
-                },
-                {
-                  text: 'useJobLogs',
-                  link: '/api/durably-react/spa#usejoblogs',
-                },
-                { text: 'useRuns', link: '/api/durably-react/spa#useruns' },
-              ],
-            },
-            {
               text: 'Fullstack Hooks',
               link: '/api/durably-react/fullstack',
               collapsed: false,
@@ -230,6 +205,31 @@ export default defineConfig({
                   text: 'useRunActions',
                   link: '/api/durably-react/fullstack#userunactions',
                 },
+              ],
+            },
+            {
+              text: 'SPA Hooks',
+              link: '/api/durably-react/spa',
+              collapsed: false,
+              items: [
+                {
+                  text: 'DurablyProvider',
+                  link: '/api/durably-react/spa#durablyprovider',
+                },
+                {
+                  text: 'useDurably',
+                  link: '/api/durably-react/spa#usedurably',
+                },
+                { text: 'useJob', link: '/api/durably-react/spa#usejob' },
+                {
+                  text: 'useJobRun',
+                  link: '/api/durably-react/spa#usejobrun',
+                },
+                {
+                  text: 'useJobLogs',
+                  link: '/api/durably-react/spa#usejoblogs',
+                },
+                { text: 'useRuns', link: '/api/durably-react/spa#useruns' },
               ],
             },
             { text: 'Type Definitions', link: '/api/durably-react/types' },
