@@ -184,7 +184,7 @@ describe('Core Extensions', () => {
     it('trigger returns runId', async () => {
       const handler = createDurablyHandler(durably)
 
-      const request = new Request('http://localhost/api', {
+      const request = new Request('http://localhost/api/trigger', {
         method: 'POST',
         body: JSON.stringify({
           jobName: 'test-job-handler',
@@ -192,7 +192,7 @@ describe('Core Extensions', () => {
         }),
       })
 
-      const response = await handler.trigger(request)
+      const response = await handler.handle(request, '/api')
       const body = (await response.json()) as { runId: string }
 
       expect(response.status).toBe(200)
@@ -202,12 +202,12 @@ describe('Core Extensions', () => {
     it('trigger returns 404 for unknown job', async () => {
       const handler = createDurablyHandler(durably)
 
-      const request = new Request('http://localhost/api', {
+      const request = new Request('http://localhost/api/trigger', {
         method: 'POST',
         body: JSON.stringify({ jobName: 'unknown-job', input: {} }),
       })
 
-      const response = await handler.trigger(request)
+      const response = await handler.handle(request, '/api')
 
       expect(response.status).toBe(404)
     })
@@ -215,30 +215,35 @@ describe('Core Extensions', () => {
     it('trigger returns 400 for missing jobName', async () => {
       const handler = createDurablyHandler(durably)
 
-      const request = new Request('http://localhost/api', {
+      const request = new Request('http://localhost/api/trigger', {
         method: 'POST',
         body: JSON.stringify({ input: {} }),
       })
 
-      const response = await handler.trigger(request)
+      const response = await handler.handle(request, '/api')
 
       expect(response.status).toBe(400)
     })
 
-    it('subscribe returns SSE stream', () => {
+    it('subscribe returns SSE stream', async () => {
       const handler = createDurablyHandler(durably)
 
-      const request = new Request('http://localhost/api?runId=test-run-id')
-      const response = handler.subscribe(request)
+      const request = new Request(
+        'http://localhost/api/subscribe?runId=test-run-id',
+        { method: 'GET' },
+      )
+      const response = await handler.handle(request, '/api')
 
       expect(response.headers.get('Content-Type')).toBe('text/event-stream')
     })
 
-    it('subscribe returns 400 for missing runId', () => {
+    it('subscribe returns 400 for missing runId', async () => {
       const handler = createDurablyHandler(durably)
 
-      const request = new Request('http://localhost/api')
-      const response = handler.subscribe(request)
+      const request = new Request('http://localhost/api/subscribe', {
+        method: 'GET',
+      })
+      const response = await handler.handle(request, '/api')
 
       expect(response.status).toBe(400)
     })
