@@ -240,22 +240,30 @@ function ImportButton() {
 
 ```ts
 import type {
+  AuthConfig,
   ClientRun,
   Durably,
   DurablyOptions,
+  DurablyHandler,
+  CreateDurablyHandlerOptions,
   JobDefinition,
   JobHandle,
   StepContext,
   Run,
+  RunFilter,
+  RunOperation,
+  RunsSubscribeFilter,
   RunStatus,
   TriggerOptions,
   TriggerAndWaitOptions,
+  TriggerRequest,
+  TriggerResponse,
   ProgressData,
   LogData,
   DurablyEvent,
   EventType,
 } from '@coji/durably'
-import { toClientRun } from '@coji/durably'
+import { createDurablyHandler, toClientRun } from '@coji/durably'
 ```
 
 ### `Run` Type

@@ -20,8 +20,8 @@ const handler = createDurablyHandler(durably, {
 ### Options
 
 ```ts
-interface CreateDurablyHandlerOptions {
-  /** Called before handling each request */
+interface CreateDurablyHandlerOptions<TContext, TLabels> {
+  /** Called before handling each request (after authentication) */
   onRequest?: () => Promise<void> | void
 
   /**
@@ -30,6 +30,9 @@ interface CreateDurablyHandlerOptions {
    * Set to 0 to disable. Default: 100
    */
   sseThrottleMs?: number
+
+  /** Auth middleware. When set, authenticate is required and applies to ALL endpoints. */
+  auth?: AuthConfig<TContext, TLabels>
 }
 ```
 
@@ -181,42 +184,126 @@ The stream closes automatically when the run completes or fails.
 }
 ```
 
-## Individual Handlers
+## Auth Middleware
 
-For custom routing, access individual handlers directly:
+Built-in auth middleware for multi-tenant apps. When `auth` is configured, `authenticate` is called on every request before any processing.
 
 ```ts
-const handler = createDurablyHandler(durably)
+const handler = createDurablyHandler(durably, {
+  auth: {
+    // Required: authenticate every request. Return context or throw Response to reject.
+    authenticate: async (request) => {
+      const session = await requireUser(request)
+      const orgId = await resolveCurrentOrgId(request, session.user.id)
+      return { orgId }
+    },
 
-// Use specific handlers
-app.post('/jobs/trigger', (req) => handler.trigger(req))
-app.get('/jobs/subscribe', (req) => handler.subscribe(req))
-app.get('/jobs/runs', (req) => handler.runs(req))
-app.get('/jobs/run', (req) => handler.run(req))
-app.get('/jobs/steps', (req) => handler.steps(req))
-app.post('/jobs/retry', (req) => handler.retry(req))
-app.post('/jobs/cancel', (req) => handler.cancel(req))
-app.delete('/jobs/run', (req) => handler.delete(req))
-app.get('/jobs/runs/subscribe', (req) => handler.runsSubscribe(req))
+    // Guard before trigger (called AFTER body validation and job resolution)
+    onTrigger: async (ctx, { jobName, input, labels }) => {
+      if (labels?.organizationId !== ctx.orgId) {
+        throw new Response('Forbidden', { status: 403 })
+      }
+    },
+
+    // Guard before run-level operations
+    onRunAccess: async (ctx, run, { operation }) => {
+      if (run.labels.organizationId !== ctx.orgId) {
+        throw new Response('Forbidden', { status: 403 })
+      }
+    },
+
+    // Scope runs list queries (GET /runs)
+    scopeRuns: async (ctx, filter) => ({
+      ...filter,
+      labels: { ...filter.labels, organizationId: ctx.orgId },
+    }),
+
+    // Scope runs subscribe stream (GET /runs/subscribe)
+    // Falls back to scopeRuns if not set
+    scopeRunsSubscribe: async (ctx, filter) => ({
+      ...filter,
+      labels: { ...filter.labels, organizationId: ctx.orgId },
+    }),
+  },
+})
 ```
 
-## Security Considerations
-
-The handler exposes all registered jobs and run data. In production:
-
-1. **Authentication**: Add middleware to verify requests before reaching the handler
-2. **Authorization**: Check user permissions for specific jobs or runs
-3. **Rate Limiting**: Protect against abuse
+### AuthConfig
 
 ```ts
-// Example with authentication middleware
-export async function action({ request }: Route.ActionArgs) {
-  const user = await getUser(request)
-  if (!user) {
-    return new Response('Unauthorized', { status: 401 })
-  }
+interface AuthConfig<TContext, TLabels> {
+  /** Authenticate every request. Return context or throw Response to reject. */
+  authenticate: (request: Request) => Promise<TContext> | TContext
 
-  // Add user context to the request if needed
-  return durablyHandler.handle(request, '/api/durably')
+  /** Guard before trigger. Called after body validation and job resolution. */
+  onTrigger?: (
+    ctx: TContext,
+    trigger: TriggerRequest<TLabels>,
+  ) => Promise<void> | void
+
+  /** Guard before run-level operations. Run is pre-fetched. */
+  onRunAccess?: (
+    ctx: TContext,
+    run: Run<TLabels>,
+    info: { operation: RunOperation },
+  ) => Promise<void> | void
+
+  /** Scope runs list queries (GET /runs). */
+  scopeRuns?: (
+    ctx: TContext,
+    filter: RunFilter<TLabels>,
+  ) => RunFilter<TLabels> | Promise<RunFilter<TLabels>>
+
+  /** Scope runs subscribe stream. Falls back to scopeRuns if not set. */
+  scopeRunsSubscribe?: (
+    ctx: TContext,
+    filter: RunsSubscribeFilter<TLabels>,
+  ) => RunsSubscribeFilter<TLabels> | Promise<RunsSubscribeFilter<TLabels>>
+}
+
+type RunOperation =
+  | 'read'
+  | 'subscribe'
+  | 'steps'
+  | 'retry'
+  | 'cancel'
+  | 'delete'
+```
+
+### Execution Order
+
+1. `authenticate(request)` — fail fast before anything else
+2. `onRequest()` — lazy init (migrations, worker start)
+3. Validate request (parse body/params)
+4. Auth hook (`onTrigger`, `onRunAccess`, `scopeRuns`, or `scopeRunsSubscribe`)
+5. Execute operation
+
+### Rejecting Requests
+
+Auth hooks reject requests by throwing a `Response`:
+
+```ts
+throw new Response('Forbidden', { status: 403 })
+```
+
+This pattern is framework-agnostic and works with React Router, Next.js, Hono, etc.
+
+### TContext Generic
+
+`TContext` is automatically inferred from the return type of `authenticate`. All other hooks receive the same typed context:
+
+```ts
+// TContext is inferred as { orgIds: Set<string> }
+auth: {
+  authenticate: async (request) => {
+    return { orgIds: new Set(['org_1', 'org_2']) }
+  },
+  onTrigger: async (ctx, trigger) => {
+    ctx.orgIds // Set<string> — fully typed
+  },
 }
 ```
+
+### TLabels Generic
+
+`TLabels` is inferred from the `Durably` instance when a labels schema is provided via `createDurably({ labels: z.object({...}) })`. This provides type-safe labels throughout auth hooks.

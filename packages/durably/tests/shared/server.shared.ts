@@ -156,7 +156,7 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(response.status).toBe(404)
       })
 
-      it('calls onRequest hook before handling', async () => {
+      it('calls onRequest hook after authentication', async () => {
         const onRequest = vi.fn()
         const handlerWithHook = createDurablyHandler(durably, { onRequest })
 
@@ -169,7 +169,7 @@ export function createServerTests(createDialect: () => Dialect) {
       })
     })
 
-    describe('trigger()', () => {
+    describe('trigger', () => {
       it('triggers a job and returns runId', async () => {
         durably.register({
           job: defineJob({
@@ -188,7 +188,7 @@ export function createServerTests(createDialect: () => Dialect) {
           }),
         })
 
-        const response = await handler.trigger(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(response.status).toBe(200)
@@ -202,7 +202,7 @@ export function createServerTests(createDialect: () => Dialect) {
           body: JSON.stringify({ input: {} }),
         })
 
-        const response = await handler.trigger(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(response.status).toBe(400)
@@ -216,7 +216,7 @@ export function createServerTests(createDialect: () => Dialect) {
           body: JSON.stringify({ jobName: 'non-existent', input: {} }),
         })
 
-        const response = await handler.trigger(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(response.status).toBe(404)
@@ -243,7 +243,7 @@ export function createServerTests(createDialect: () => Dialect) {
           }),
         })
 
-        const response = await handler.trigger(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(response.status).toBe(200)
@@ -254,7 +254,7 @@ export function createServerTests(createDialect: () => Dialect) {
       })
     })
 
-    describe('runs()', () => {
+    describe('runs', () => {
       it('returns all runs', async () => {
         const d = durably.register({
           job: defineJob({
@@ -270,7 +270,7 @@ export function createServerTests(createDialect: () => Dialect) {
           method: 'GET',
         })
 
-        const response = await handler.runs(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(response.status).toBe(200)
@@ -291,7 +291,7 @@ export function createServerTests(createDialect: () => Dialect) {
           method: 'GET',
         })
 
-        const response = await handler.runs(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(body).toHaveLength(1)
@@ -299,7 +299,6 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(body[0]).not.toHaveProperty('idempotencyKey')
         expect(body[0]).not.toHaveProperty('concurrencyKey')
         expect(body[0]).not.toHaveProperty('updatedAt')
-        // Should still have client-facing fields
         expect(body[0]).toHaveProperty('id')
         expect(body[0]).toHaveProperty('jobName')
         expect(body[0]).toHaveProperty('status')
@@ -329,7 +328,7 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'GET' },
         )
 
-        const response = await handler.runs(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(body).toHaveLength(1)
@@ -363,7 +362,7 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'GET' },
         )
 
-        const response = await handler.runs(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(body).toHaveLength(2)
@@ -398,7 +397,7 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'GET' },
         )
 
-        const response = await handler.runs(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         for (const run of body) {
@@ -424,14 +423,14 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'GET' },
         )
 
-        const response = await handler.runs(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(body).toHaveLength(2)
       })
     })
 
-    describe('run()', () => {
+    describe('run', () => {
       it('returns a single run', async () => {
         const d = durably.register({
           job: defineJob({
@@ -447,7 +446,7 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'GET' },
         )
 
-        const response = await handler.run(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(response.status).toBe(200)
@@ -470,7 +469,7 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'GET' },
         )
 
-        const response = await handler.run(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(response.status).toBe(200)
@@ -485,7 +484,7 @@ export function createServerTests(createDialect: () => Dialect) {
           method: 'GET',
         })
 
-        const response = await handler.run(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(response.status).toBe(400)
@@ -498,7 +497,7 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'GET' },
         )
 
-        const response = await handler.run(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(response.status).toBe(404)
@@ -506,7 +505,7 @@ export function createServerTests(createDialect: () => Dialect) {
       })
     })
 
-    describe('retry()', () => {
+    describe('retry', () => {
       it('retries a failed run', async () => {
         const d = durably.register({
           job: defineJob({
@@ -533,7 +532,7 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'POST' },
         )
 
-        const response = await handler.retry(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(response.status).toBe(200)
@@ -548,7 +547,7 @@ export function createServerTests(createDialect: () => Dialect) {
           method: 'POST',
         })
 
-        const response = await handler.retry(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(response.status).toBe(400)
@@ -570,12 +569,12 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'POST' },
         )
 
-        const response = await handler.retry(request)
+        const response = await handler.handle(request, '/api/durably')
         expect(response.status).toBe(500)
       })
     })
 
-    describe('cancel()', () => {
+    describe('cancel', () => {
       it('cancels a pending run', async () => {
         const d = durably.register({
           job: defineJob({
@@ -591,7 +590,7 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'POST' },
         )
 
-        const response = await handler.cancel(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(response.status).toBe(200)
@@ -606,7 +605,7 @@ export function createServerTests(createDialect: () => Dialect) {
           method: 'POST',
         })
 
-        const response = await handler.cancel(request)
+        const response = await handler.handle(request, '/api/durably')
         const body = await response.json()
 
         expect(response.status).toBe(400)
@@ -637,12 +636,12 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'POST' },
         )
 
-        const response = await handler.cancel(request)
+        const response = await handler.handle(request, '/api/durably')
         expect(response.status).toBe(500)
       })
     })
 
-    describe('subscribe()', () => {
+    describe('subscribe', () => {
       it('returns SSE stream', async () => {
         const d = durably.register({
           job: defineJob({
@@ -658,7 +657,7 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'GET' },
         )
 
-        const response = handler.subscribe(request)
+        const response = await handler.handle(request, '/api/durably')
 
         expect(response.status).toBe(200)
         expect(response.headers.get('Content-Type')).toBe('text/event-stream')
@@ -682,7 +681,7 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'GET' },
         )
 
-        const response = handler.subscribe(request)
+        const response = await handler.handle(request, '/api/durably')
         const reader = response.body!.getReader()
         const decoder = new TextDecoder()
 
@@ -703,36 +702,23 @@ export function createServerTests(createDialect: () => Dialect) {
           new Promise((r) => setTimeout(r, 1000)),
         ])
 
-        // Should have received some events
         expect(events.length).toBeGreaterThan(0)
         const allEvents = events.join('')
         expect(allEvents).toContain('data:')
       })
 
-      it('returns 400 when runId is missing', () => {
+      it('returns 400 when runId is missing', async () => {
         const request = new Request('http://localhost/api/durably/subscribe', {
           method: 'GET',
         })
 
-        const response = handler.subscribe(request)
+        const response = await handler.handle(request, '/api/durably')
         expect(response.status).toBe(400)
       })
     })
 
-    describe('runsSubscribe()', () => {
-      it('returns SSE stream for run updates', () => {
-        const request = new Request(
-          'http://localhost/api/durably/runs/subscribe',
-          { method: 'GET' },
-        )
-
-        const response = handler.runsSubscribe(request)
-
-        expect(response.status).toBe(200)
-        expect(response.headers.get('Content-Type')).toBe('text/event-stream')
-      })
-
-      it('routes to runsSubscribe via handle()', async () => {
+    describe('runsSubscribe', () => {
+      it('returns SSE stream for run updates', async () => {
         const request = new Request(
           'http://localhost/api/durably/runs/subscribe',
           { method: 'GET' },
@@ -758,7 +744,7 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'GET' },
         )
 
-        const response = handler.runsSubscribe(request)
+        const response = await handler.handle(request, '/api/durably')
         const reader = response.body!.getReader()
         const decoder = new TextDecoder()
 
@@ -768,12 +754,10 @@ export function createServerTests(createDialect: () => Dialect) {
             const { done, value } = await reader.read()
             if (done) break
             events.push(decoder.decode(value))
-            // Stop after receiving the trigger event
             if (events.some((e) => e.includes('run:trigger'))) break
           }
         })()
 
-        // Trigger the job (don't start worker yet)
         await d.jobs.job.trigger({})
 
         await Promise.race([
@@ -781,7 +765,6 @@ export function createServerTests(createDialect: () => Dialect) {
           new Promise((r) => setTimeout(r, 500)),
         ])
 
-        // Should have received run:trigger event immediately
         const allEvents = events.join('')
         expect(allEvents).toContain('run:trigger')
       })
@@ -800,7 +783,7 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'GET' },
         )
 
-        const response = handler.runsSubscribe(request)
+        const response = await handler.handle(request, '/api/durably')
         const reader = response.body!.getReader()
         const decoder = new TextDecoder()
 
@@ -810,12 +793,10 @@ export function createServerTests(createDialect: () => Dialect) {
             const { done, value } = await reader.read()
             if (done) break
             events.push(decoder.decode(value))
-            // Stop after receiving the cancel event
             if (events.some((e) => e.includes('run:cancel'))) break
           }
         })()
 
-        // Trigger and then cancel the job
         const run = await d.jobs.job.trigger({})
         await d.cancel(run.id)
 
@@ -824,7 +805,6 @@ export function createServerTests(createDialect: () => Dialect) {
           new Promise((r) => setTimeout(r, 500)),
         ])
 
-        // Should have received run:cancel event
         const allEvents = events.join('')
         expect(allEvents).toContain('run:cancel')
       })
@@ -840,11 +820,9 @@ export function createServerTests(createDialect: () => Dialect) {
           }),
         })
 
-        // First, trigger and let it fail
         const run = await d.jobs.job.trigger({})
         d.start()
 
-        // Wait for the job to fail
         await new Promise((r) => setTimeout(r, 200))
 
         const request = new Request(
@@ -852,7 +830,7 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'GET' },
         )
 
-        const response = handler.runsSubscribe(request)
+        const response = await handler.handle(request, '/api/durably')
         const reader = response.body!.getReader()
         const decoder = new TextDecoder()
 
@@ -862,12 +840,10 @@ export function createServerTests(createDialect: () => Dialect) {
             const { done, value } = await reader.read()
             if (done) break
             events.push(decoder.decode(value))
-            // Stop after receiving the retry event
             if (events.some((e) => e.includes('run:retry'))) break
           }
         })()
 
-        // Retry the failed job
         await d.retry(run.id)
 
         await Promise.race([
@@ -875,7 +851,6 @@ export function createServerTests(createDialect: () => Dialect) {
           new Promise((r) => setTimeout(r, 500)),
         ])
 
-        // Should have received run:retry event
         const allEvents = events.join('')
         expect(allEvents).toContain('run:retry')
       })
@@ -897,11 +872,10 @@ export function createServerTests(createDialect: () => Dialect) {
           { method: 'GET' },
         )
 
-        const response = handler.runsSubscribe(request)
+        const response = await handler.handle(request, '/api/durably')
         const reader = response.body!.getReader()
         const decoder = new TextDecoder()
 
-        // Trigger a job to generate events
         await d.jobs.job.trigger({})
         d.start()
 
@@ -911,7 +885,6 @@ export function createServerTests(createDialect: () => Dialect) {
             const { done, value } = await reader.read()
             if (done) break
             events.push(decoder.decode(value))
-            // Stop after receiving some events
             if (events.length >= 3) break
           }
         }
@@ -921,7 +894,6 @@ export function createServerTests(createDialect: () => Dialect) {
           new Promise((r) => setTimeout(r, 1000)),
         ])
 
-        // Should have received run:trigger, run:start and run:complete events
         expect(events.length).toBeGreaterThan(0)
         const allEvents = events.join('')
         expect(allEvents).toContain('data:')
@@ -944,17 +916,15 @@ export function createServerTests(createDialect: () => Dialect) {
           }),
         })
 
-        // Subscribe only to job1
         const request = new Request(
           'http://localhost/api/durably/runs/subscribe?jobName=filter-subscribe-1',
           { method: 'GET' },
         )
 
-        const response = handler.runsSubscribe(request)
+        const response = await handler.handle(request, '/api/durably')
         const reader = response.body!.getReader()
         const decoder = new TextDecoder()
 
-        // Trigger both jobs
         await d2.jobs.job1.trigger({})
         await d2.jobs.job2.trigger({})
         d2.start()
@@ -974,7 +944,6 @@ export function createServerTests(createDialect: () => Dialect) {
           new Promise((r) => setTimeout(r, 1000)),
         ])
 
-        // All events should be for filter-subscribe-1 only
         const allEvents = events.join('')
         if (allEvents.includes('jobName')) {
           expect(allEvents).toContain('filter-subscribe-1')
@@ -1005,17 +974,15 @@ export function createServerTests(createDialect: () => Dialect) {
           }),
         })
 
-        // Subscribe to job1 and job3 only
         const request = new Request(
           'http://localhost/api/durably/runs/subscribe?jobName=multi-subscribe-1&jobName=multi-subscribe-3',
           { method: 'GET' },
         )
 
-        const response = handler.runsSubscribe(request)
+        const response = await handler.handle(request, '/api/durably')
         const reader = response.body!.getReader()
         const decoder = new TextDecoder()
 
-        // Trigger all three jobs
         await d3.jobs.job1.trigger({})
         await d3.jobs.job2.trigger({})
         await d3.jobs.job3.trigger({})
@@ -1035,11 +1002,313 @@ export function createServerTests(createDialect: () => Dialect) {
           new Promise((r) => setTimeout(r, 1000)),
         ])
 
-        // Should receive events for job1 and job3, but not job2
         const allEvents = events.join('')
         if (allEvents.includes('jobName')) {
           expect(allEvents).not.toContain('multi-subscribe-2')
         }
+      })
+    })
+
+    describe('auth middleware', () => {
+      it('calls authenticate before onRequest', async () => {
+        const callOrder: string[] = []
+        const authHandler = createDurablyHandler(durably, {
+          onRequest: () => {
+            callOrder.push('onRequest')
+          },
+          auth: {
+            authenticate: () => {
+              callOrder.push('authenticate')
+              return { userId: 'user-1' }
+            },
+          },
+        })
+
+        const request = new Request('http://localhost/api/durably/runs', {
+          method: 'GET',
+        })
+        await authHandler.handle(request, '/api/durably')
+
+        expect(callOrder).toEqual(['authenticate', 'onRequest'])
+      })
+
+      it('rejects unauthenticated requests without calling onRequest', async () => {
+        const onRequest = vi.fn()
+        const authHandler = createDurablyHandler(durably, {
+          onRequest,
+          auth: {
+            authenticate: () => {
+              throw new Response('Unauthorized', { status: 401 })
+            },
+          },
+        })
+
+        const request = new Request('http://localhost/api/durably/runs', {
+          method: 'GET',
+        })
+        const response = await authHandler.handle(request, '/api/durably')
+
+        expect(response.status).toBe(401)
+        expect(onRequest).not.toHaveBeenCalled()
+      })
+
+      it('passes context to onTrigger', async () => {
+        durably.register({
+          job: defineJob({
+            name: 'auth-trigger-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        const onTrigger = vi.fn()
+        const authHandler = createDurablyHandler(durably, {
+          auth: {
+            authenticate: () => ({ userId: 'user-1' }),
+            onTrigger,
+          },
+        })
+
+        const request = new Request('http://localhost/api/durably/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobName: 'auth-trigger-test',
+            input: {},
+          }),
+        })
+
+        await authHandler.handle(request, '/api/durably')
+
+        expect(onTrigger).toHaveBeenCalledWith(
+          { userId: 'user-1' },
+          expect.objectContaining({ jobName: 'auth-trigger-test' }),
+        )
+      })
+
+      it('onTrigger runs after validation (missing jobName returns 400)', async () => {
+        const onTrigger = vi.fn()
+        const authHandler = createDurablyHandler(durably, {
+          auth: {
+            authenticate: () => ({ userId: 'user-1' }),
+            onTrigger,
+          },
+        })
+
+        const request = new Request('http://localhost/api/durably/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input: {} }),
+        })
+
+        const response = await authHandler.handle(request, '/api/durably')
+
+        expect(response.status).toBe(400)
+        expect(onTrigger).not.toHaveBeenCalled()
+      })
+
+      it('onTrigger runs after validation (unknown job returns 404)', async () => {
+        const onTrigger = vi.fn()
+        const authHandler = createDurablyHandler(durably, {
+          auth: {
+            authenticate: () => ({ userId: 'user-1' }),
+            onTrigger,
+          },
+        })
+
+        const request = new Request('http://localhost/api/durably/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jobName: 'nonexistent', input: {} }),
+        })
+
+        const response = await authHandler.handle(request, '/api/durably')
+
+        expect(response.status).toBe(404)
+        expect(onTrigger).not.toHaveBeenCalled()
+      })
+
+      it('onTrigger can reject with thrown Response', async () => {
+        durably.register({
+          job: defineJob({
+            name: 'auth-reject-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        const authHandler = createDurablyHandler(durably, {
+          auth: {
+            authenticate: () => ({ userId: 'user-1' }),
+            onTrigger: () => {
+              throw new Response('Forbidden', { status: 403 })
+            },
+          },
+        })
+
+        const request = new Request('http://localhost/api/durably/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobName: 'auth-reject-test',
+            input: {},
+          }),
+        })
+
+        const response = await authHandler.handle(request, '/api/durably')
+        expect(response.status).toBe(403)
+      })
+
+      it('onRunAccess receives run and operation type', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'auth-run-access-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        const run = await d.jobs.job.trigger({})
+
+        const onRunAccess = vi.fn()
+        const authHandler = createDurablyHandler(durably, {
+          auth: {
+            authenticate: () => ({ userId: 'user-1' }),
+            onRunAccess,
+          },
+        })
+
+        const request = new Request(
+          `http://localhost/api/durably/run?runId=${run.id}`,
+          { method: 'GET' },
+        )
+
+        await authHandler.handle(request, '/api/durably')
+
+        expect(onRunAccess).toHaveBeenCalledWith(
+          { userId: 'user-1' },
+          expect.objectContaining({ id: run.id }),
+          { operation: 'read' },
+        )
+      })
+
+      it('onRunAccess receives correct operation for each endpoint', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'auth-ops-test',
+            input: z.object({}),
+            run: async () => {
+              throw new Error('fail')
+            },
+          }),
+        })
+        const run = await d.jobs.job.trigger({})
+        d.start()
+
+        await vi.waitFor(
+          async () => {
+            const updated = await d.getRun(run.id)
+            expect(updated?.status).toBe('failed')
+          },
+          { timeout: 1000 },
+        )
+
+        const operations: string[] = []
+        const authHandler = createDurablyHandler(durably, {
+          auth: {
+            authenticate: () => ({ userId: 'user-1' }),
+            onRunAccess: (_ctx, _run, { operation }) => {
+              operations.push(operation)
+            },
+          },
+        })
+
+        // retry
+        await authHandler.handle(
+          new Request(`http://localhost/api/durably/retry?runId=${run.id}`, {
+            method: 'POST',
+          }),
+          '/api/durably',
+        )
+
+        expect(operations).toContain('retry')
+      })
+
+      it('onRunAccess can reject with thrown Response', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'auth-run-reject-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        const run = await d.jobs.job.trigger({})
+
+        const authHandler = createDurablyHandler(durably, {
+          auth: {
+            authenticate: () => ({ userId: 'user-1' }),
+            onRunAccess: () => {
+              throw new Response('Not Found', { status: 404 })
+            },
+          },
+        })
+
+        const request = new Request(
+          `http://localhost/api/durably/run?runId=${run.id}`,
+          { method: 'GET' },
+        )
+
+        const response = await authHandler.handle(request, '/api/durably')
+        expect(response.status).toBe(404)
+      })
+
+      it('scopeRuns transforms filter', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'auth-scope-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        await d.jobs.job.trigger({}, { labels: { tenant: 'org-1' } })
+        await d.jobs.job.trigger({}, { labels: { tenant: 'org-2' } })
+
+        const authHandler = createDurablyHandler(durably, {
+          auth: {
+            authenticate: () => ({ tenantId: 'org-1' }),
+            scopeRuns: (ctx, filter) => ({
+              ...filter,
+              labels: { ...filter.labels, tenant: ctx.tenantId },
+            }),
+          },
+        })
+
+        const request = new Request('http://localhost/api/durably/runs', {
+          method: 'GET',
+        })
+
+        const response = await authHandler.handle(request, '/api/durably')
+        const body = await response.json()
+
+        expect(body).toHaveLength(1)
+        expect(body[0].labels.tenant).toBe('org-1')
+      })
+
+      it('only exposes handle() method', () => {
+        const authHandler = createDurablyHandler(durably, {
+          auth: {
+            authenticate: () => ({ userId: 'user-1' }),
+          },
+        })
+
+        expect(authHandler.handle).toBeDefined()
+        expect(Object.keys(authHandler)).toEqual(['handle'])
+      })
+
+      it('throws if auth is provided without authenticate', () => {
+        expect(() =>
+          // biome-ignore lint/suspicious/noExplicitAny: testing runtime validation
+          createDurablyHandler(durably, { auth: {} as any }),
+        ).toThrow('auth.authenticate is required')
       })
     })
   })

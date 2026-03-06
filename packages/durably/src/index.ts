@@ -65,8 +65,11 @@ export { CancelledError } from './errors'
 // Server
 export { createDurablyHandler } from './server'
 export type {
+  AuthConfig,
   CreateDurablyHandlerOptions,
   DurablyHandler,
+  RunOperation,
+  RunsSubscribeFilter,
   TriggerRequest,
   TriggerResponse,
 } from './server'
