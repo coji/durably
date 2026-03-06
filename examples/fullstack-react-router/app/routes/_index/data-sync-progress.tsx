@@ -1,11 +1,11 @@
 /**
  * Data Sync Progress Component
  *
- * Displays progress for the data sync job using useJobRun.
+ * Displays progress for the data sync job using the typed Durably client.
  */
 
-import { useJobRun } from '@coji/durably-react'
 import { useActionData } from 'react-router'
+import { durably } from '~/lib/durably.hooks'
 import type { action } from '../_index'
 import { RunProgress } from './run-progress'
 
@@ -23,10 +23,7 @@ export function DataSyncProgress() {
     isCompleted,
     isFailed,
     isCancelled,
-  } = useJobRun({
-    api: '/api/durably',
-    runId,
-  })
+  } = durably.dataSync.useRun(runId)
 
   return (
     <RunProgress

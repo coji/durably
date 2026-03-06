@@ -109,12 +109,12 @@ export async function action({ request }: Route.ActionArgs) {
 Create a type-safe client using the server's Durably type. This gives you full type inference for job inputs and outputs.
 
 ```ts
-// app/lib/durably.client.ts
-import { createDurablyHooks } from '@coji/durably-react'
+// app/lib/durably.ts
+import { createDurably } from '@coji/durably-react'
 // Type-only import: no server code is bundled, just TypeScript types
 import type { durably } from './durably.server'
 
-export const durablyClient = createDurablyHooks<typeof durably>({
+export const durablyClient = createDurably<typeof durably>({
   api: '/api/durably',
 })
 ```
@@ -130,7 +130,7 @@ Build the UI with real-time progress updates.
 // app/routes/_index.tsx
 import { Form } from 'react-router'
 import { durably } from '~/lib/durably.server'
-import { durablyClient } from '~/lib/durably.client'
+import { durablyClient } from '~/lib/durably'
 import type { Route } from './+types/_index'
 
 // Server: trigger job on form submit

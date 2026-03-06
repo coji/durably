@@ -1,5 +1,5 @@
 /**
- * createDurablyHooks Tests
+ * createDurably Tests
  *
  * Test the type-safe client factory.
  * Note: Hook behavior (SSE subscription, logs, etc.) is tested in the individual hook tests.
@@ -8,7 +8,7 @@
 
 import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createDurablyHooks } from '../../src/client/create-durably-hooks'
+import { createDurably } from '../../src/client/create-durably'
 import {
   createMockEventSource,
   type MockEventSourceConstructor,
@@ -29,7 +29,7 @@ type MockJobs = {
   }
 }
 
-describe('createDurablyHooks', () => {
+describe('createDurably', () => {
   let mockEventSource: MockEventSourceConstructor
   let originalEventSource: typeof EventSource
   let originalFetch: typeof fetch
@@ -48,7 +48,7 @@ describe('createDurablyHooks', () => {
   })
 
   it('creates a client with job accessors via proxy', () => {
-    const client = createDurablyHooks<MockJobs>({ api: '/api/durably' })
+    const client = createDurably<MockJobs>({ api: '/api/durably' })
 
     // Verify the proxy creates job clients on access
     expect(client.importCsv).toBeDefined()
@@ -75,7 +75,7 @@ describe('createDurablyHooks', () => {
     })
     globalThis.fetch = fetchMock
 
-    const client = createDurablyHooks<MockJobs>({ api: '/api/durably' })
+    const client = createDurably<MockJobs>({ api: '/api/durably' })
 
     const { result } = renderHook(() => client.importCsv.useJob())
     await result.current.trigger({ filename: 'data.csv' })
@@ -109,7 +109,7 @@ describe('createDurablyHooks', () => {
     })
     globalThis.fetch = fetchMock
 
-    const client = createDurablyHooks<MockJobs>({ api: '/api/durably' })
+    const client = createDurably<MockJobs>({ api: '/api/durably' })
 
     // Trigger via importCsv
     const { result: importResult } = renderHook(() => client.importCsv.useJob())
@@ -135,7 +135,7 @@ describe('createDurablyHooks', () => {
   })
 
   it('useRun returns a hook function', () => {
-    const client = createDurablyHooks<MockJobs>({ api: '/api/durably' })
+    const client = createDurably<MockJobs>({ api: '/api/durably' })
 
     const { result } = renderHook(() => client.importCsv.useRun(null))
 
@@ -144,7 +144,7 @@ describe('createDurablyHooks', () => {
   })
 
   it('useLogs returns a hook function', () => {
-    const client = createDurablyHooks<MockJobs>({ api: '/api/durably' })
+    const client = createDurably<MockJobs>({ api: '/api/durably' })
 
     const { result } = renderHook(() => client.importCsv.useLogs(null))
 

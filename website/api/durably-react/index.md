@@ -26,10 +26,10 @@ Durably React provides two modes for different architectures:
 - Need persistent storage across devices
 
 ```tsx
-import { createDurablyHooks } from '@coji/durably-react'
+import { createDurably } from '@coji/durably-react'
 ```
 
-[Fullstack Hooks Reference →](./client)
+[Fullstack Hooks Reference →](./fullstack)
 
 ### Choose SPA Hooks when:
 
@@ -42,7 +42,7 @@ import { createDurablyHooks } from '@coji/durably-react'
 import { DurablyProvider, useJob } from '@coji/durably-react/spa'
 ```
 
-[SPA Hooks Reference →](./browser)
+[SPA Hooks Reference →](./spa)
 
 ## Installation
 
@@ -62,10 +62,10 @@ Jobs run on the server, with real-time updates via SSE.
 
 ```tsx
 // 1. Create type-safe hooks (client-side file)
-import { createDurablyHooks } from '@coji/durably-react'
+import { createDurably } from '@coji/durably-react'
 import type { durably } from './durably.server'
 
-export const durably = createDurablyHooks<typeof durably>({
+export const durably = createDurably<typeof durably>({
   api: '/api/durably',
 })
 

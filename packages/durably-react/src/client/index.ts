@@ -3,11 +3,8 @@
  * Public API is exported via root (index.ts) for fullstack mode
  */
 
-export { createDurablyHooks } from './create-durably-hooks'
-export type {
-  CreateDurablyHooksOptions,
-  DurablyHooks,
-} from './create-durably-hooks'
+export { createDurably } from './create-durably'
+export type { CreateDurablyOptions, DurablyClient } from './create-durably'
 
 export { createJobHooks } from './create-job-hooks'
 export type { CreateJobHooksOptions, JobHooks } from './create-job-hooks'

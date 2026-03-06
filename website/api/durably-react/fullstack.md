@@ -47,11 +47,9 @@ export async function action({ request }: Route.ActionArgs) {
 }
 ```
 
-## Two Ways to Use
+## Hooks directly
 
-### 1. Hooks directly (works everywhere, including SSR)
-
-Pass `api` and `jobName` to each hook. Works with any setup.
+Pass `api` and `jobName` to each hook. Works with any setup, including SSR.
 
 ```tsx
 import { useJob } from '@coji/durably-react'
@@ -76,16 +74,16 @@ function CsvImporter() {
 }
 ```
 
-### 2. createDurablyHooks (type-safe)
+## createDurably
 
 Wraps hooks with a type-safe Proxy — autocomplete for job names, inferred input/output types.
 
 ```ts
-// app/lib/durably.client.ts
-import { createDurablyHooks } from '@coji/durably-react'
+// app/lib/durably.ts
+import { createDurably } from '@coji/durably-react'
 import type { durably } from './durably.server'
 
-export const durably = createDurablyHooks<typeof durably>({
+export const durably = createDurably<typeof durably>({
   api: '/api/durably',
 })
 ```

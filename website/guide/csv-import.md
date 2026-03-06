@@ -23,7 +23,7 @@ app/
 │   └── import-csv.ts          # Job definition
 ├── lib/
 │   ├── durably.server.ts      # Durably instance
-│   └── durably.client.ts      # Type-safe hooks
+│   └── durably.ts      # Type-safe hooks
 ├── routes/
 │   ├── api.durably.$.ts       # Splat route for all API
 │   └── _index.tsx             # UI
@@ -170,11 +170,11 @@ export async function action({ request }: Route.ActionArgs) {
 Create a type-safe client using the server's Durably type. This gives you full TypeScript inference for job inputs and outputs without bundling server code.
 
 ```ts
-// app/lib/durably.client.ts
-import { createDurablyHooks } from '@coji/durably-react'
+// app/lib/durably.ts
+import { createDurably } from '@coji/durably-react'
 import type { durably } from './durably.server'
 
-export const durablyClient = createDurablyHooks<typeof durably>({
+export const durablyClient = createDurably<typeof durably>({
   api: '/api/durably',
 })
 ```

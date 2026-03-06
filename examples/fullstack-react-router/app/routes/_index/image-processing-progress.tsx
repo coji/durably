@@ -1,11 +1,11 @@
 /**
  * Image Processing Progress Component
  *
- * Displays progress for the image processing job using useJobRun.
+ * Displays progress for the image processing job using the typed Durably client.
  */
 
-import { useJobRun } from '@coji/durably-react'
 import { useActionData } from 'react-router'
+import { durably } from '~/lib/durably.hooks'
 import type { action } from '../_index'
 import { RunProgress } from './run-progress'
 
@@ -23,10 +23,7 @@ export function ImageProcessingProgress() {
     isCompleted,
     isFailed,
     isCancelled,
-  } = useJobRun({
-    api: '/api/durably',
-    runId,
-  })
+  } = durably.processImage.useRun(runId)
 
   return (
     <RunProgress

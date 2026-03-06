@@ -177,51 +177,54 @@ export default defineConfig({
             { text: 'Overview', link: '/api/durably-react/' },
             {
               text: 'SPA Hooks',
-              link: '/api/durably-react/browser',
+              link: '/api/durably-react/spa',
               collapsed: false,
               items: [
                 {
                   text: 'DurablyProvider',
-                  link: '/api/durably-react/browser#durablyprovider',
+                  link: '/api/durably-react/spa#durablyprovider',
                 },
                 {
                   text: 'useDurably',
-                  link: '/api/durably-react/browser#usedurably',
+                  link: '/api/durably-react/spa#usedurably',
                 },
-                { text: 'useJob', link: '/api/durably-react/browser#usejob' },
+                { text: 'useJob', link: '/api/durably-react/spa#usejob' },
                 {
                   text: 'useJobRun',
-                  link: '/api/durably-react/browser#usejobrun',
+                  link: '/api/durably-react/spa#usejobrun',
                 },
                 {
                   text: 'useJobLogs',
-                  link: '/api/durably-react/browser#usejoblogs',
+                  link: '/api/durably-react/spa#usejoblogs',
                 },
-                { text: 'useRuns', link: '/api/durably-react/browser#useruns' },
+                { text: 'useRuns', link: '/api/durably-react/spa#useruns' },
               ],
             },
             {
               text: 'Fullstack Hooks',
-              link: '/api/durably-react/client',
+              link: '/api/durably-react/fullstack',
               collapsed: false,
               items: [
                 {
-                  text: 'createDurablyHooks',
-                  link: '/api/durably-react/client#createdurablyhooks',
+                  text: 'createDurably',
+                  link: '/api/durably-react/fullstack#createdurably',
                 },
-                { text: 'useJob', link: '/api/durably-react/client#usejob' },
+                { text: 'useJob', link: '/api/durably-react/fullstack#usejob' },
                 {
                   text: 'useJobRun',
-                  link: '/api/durably-react/client#usejobrun',
+                  link: '/api/durably-react/fullstack#usejobrun',
                 },
                 {
                   text: 'useJobLogs',
-                  link: '/api/durably-react/client#usejoblogs',
+                  link: '/api/durably-react/fullstack#usejoblogs',
                 },
-                { text: 'useRuns', link: '/api/durably-react/client#useruns' },
+                {
+                  text: 'useRuns',
+                  link: '/api/durably-react/fullstack#useruns',
+                },
                 {
                   text: 'useRunActions',
-                  link: '/api/durably-react/client#userunactions',
+                  link: '/api/durably-react/fullstack#userunactions',
                 },
               ],
             },

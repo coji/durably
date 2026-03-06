@@ -4,12 +4,12 @@
 // For SPA/offline mode (browser-only with OPFS), use:
 //   @coji/durably-react/spa
 
-// Type-safe hooks factory
-export { createDurablyHooks } from './client/create-durably-hooks'
+// Type-safe client factory
+export { createDurably } from './client/create-durably'
 export type {
-  CreateDurablyHooksOptions,
-  DurablyHooks,
-} from './client/create-durably-hooks'
+  CreateDurablyOptions,
+  DurablyClient,
+} from './client/create-durably'
 
 export { createJobHooks } from './client/create-job-hooks'
 export type { CreateJobHooksOptions, JobHooks } from './client/create-job-hooks'

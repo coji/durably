@@ -141,10 +141,10 @@ Connect to a Durably server via HTTP/SSE.
 
 ```tsx
 // 1. Create type-safe hooks
-import { createDurablyHooks } from '@coji/durably-react'
+import { createDurably } from '@coji/durably-react'
 import type { durably } from './durably.server'
 
-const durably = createDurablyHooks<typeof durably>({
+const durably = createDurably<typeof durably>({
   api: '/api/durably',
 })
 
@@ -195,7 +195,7 @@ function ImportButton() {
 }
 ```
 
-**See:** [React Hooks Overview](/api/durably-react/) | [SPA Hooks](/api/durably-react/browser) | [Fullstack Hooks](/api/durably-react/client)
+**See:** [React Hooks Overview](/api/durably-react/) | [SPA Hooks](/api/durably-react/spa) | [Fullstack Hooks](/api/durably-react/fullstack)
 
 ## API at a Glance
 

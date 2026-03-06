@@ -647,7 +647,7 @@ pnpm add @coji/durably-react @coji/durably kysely zod sqlocal
 
 Import from `@coji/durably-react` (root) for server-connected mode.
 
-### createDurablyHooks
+### createDurably
 
 Create a type-safe hooks factory for all registered jobs.
 
@@ -669,11 +669,11 @@ export const durablyHandler = createDurablyHandler(durably, {
 
 await durably.init()
 
-// Client: create typed hooks (app/lib/durably.client.ts)
+// Client: create typed hooks (app/lib/durably.ts)
 import type { durably } from '~/lib/durably.server'
-import { createDurablyHooks } from '@coji/durably-react'
+import { createDurably } from '@coji/durably-react'
 
-export const durably = createDurablyHooks<typeof durably>({
+export const durably = createDurably<typeof durably>({
   api: '/api/durably',
 })
 
@@ -703,7 +703,7 @@ function LogViewer({ runId }: { runId: string }) {
 
 ### Fullstack useJob
 
-Direct hook when not using `createDurablyHooks`:
+Direct hook when not using `createDurably`:
 
 ```tsx
 import { useJob } from '@coji/durably-react'

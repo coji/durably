@@ -37,8 +37,8 @@ Verify package integrity for API changes and spec updates.
 
 - [ ] `packages/durably-react/docs/llms.md` - LLM docs (bundled in npm)
 - [ ] `website/api/durably-react/index.md` - Overview
-- [ ] `website/api/durably-react/browser.md` - Browser hooks
-- [ ] `website/api/durably-react/client.md` - Client hooks
+- [ ] `website/api/durably-react/spa.md` - SPA hooks
+- [ ] `website/api/durably-react/fullstack.md` - Fullstack hooks
 - [ ] `website/api/durably-react/types.md` - Type definitions
 
 ### Website

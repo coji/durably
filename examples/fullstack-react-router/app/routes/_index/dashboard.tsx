@@ -7,12 +7,7 @@
  * Demonstrates typed useRuns with generic type parameter for multi-job dashboards.
  */
 
-import type { ClientRun, StepRecord } from '@coji/durably-react'
-import {
-  type TypedClientRun,
-  useRunActions,
-  useRuns,
-} from '@coji/durably-react'
+import type { ClientRun, StepRecord, TypedClientRun } from '@coji/durably-react'
 import { useState } from 'react'
 import type {
   DataSyncInput,
@@ -22,6 +17,7 @@ import type {
   ProcessImageInput,
   ProcessImageOutput,
 } from '~/jobs'
+import { durably } from '~/lib/durably.hooks'
 
 /** Union type for all job runs in this dashboard */
 type DashboardRun =
@@ -48,8 +44,7 @@ function LabelChips({ labels }: { labels: Record<string, string> }) {
 
 export function Dashboard() {
   const { runs, isLoading, error, page, hasMore, nextPage, prevPage, refresh } =
-    useRuns<DashboardRun>({
-      api: '/api/durably',
+    durably.useRuns<DashboardRun>({
       pageSize: 6,
     })
 
@@ -60,9 +55,7 @@ export function Dashboard() {
     getRun,
     getSteps,
     isLoading: isActioning,
-  } = useRunActions({
-    api: '/api/durably',
-  })
+  } = durably.useRunActions()
 
   const [selectedRun, setSelectedRun] = useState<ClientRun | null>(null)
   const [steps, setSteps] = useState<StepRecord[]>([])

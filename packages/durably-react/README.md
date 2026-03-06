@@ -19,11 +19,11 @@ npm install @coji/durably-react @coji/durably kysely zod sqlocal
 ## Quick Start (Fullstack Mode)
 
 ```tsx
-import { createDurablyHooks } from '@coji/durably-react'
+import { createDurably } from '@coji/durably-react'
 import type { durably } from './durably.server'
 
 // Create type-safe hooks from server's Durably type
-export const durably = createDurablyHooks<typeof durably>({
+export const durably = createDurably<typeof durably>({
   api: '/api/durably',
 })
 
@@ -92,8 +92,8 @@ function MyComponent() {
 
 For full documentation, visit [coji.github.io/durably](https://coji.github.io/durably/).
 
-- [SPA Hooks](https://coji.github.io/durably/api/durably-react/browser) - Browser mode with OPFS
-- [Fullstack Hooks](https://coji.github.io/durably/api/durably-react/client) - Server-connected mode
+- [SPA Hooks](https://coji.github.io/durably/api/durably-react/spa) - Browser mode with OPFS
+- [Fullstack Hooks](https://coji.github.io/durably/api/durably-react/fullstack) - Server-connected mode
 
 ## License
 
