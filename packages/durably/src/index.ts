@@ -38,6 +38,7 @@ export type {
 
 // Job types
 export type {
+  BatchTriggerInput,
   JobHandle,
   StepContext,
   TriggerAndWaitOptions,
