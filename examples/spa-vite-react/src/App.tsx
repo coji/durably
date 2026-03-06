@@ -8,7 +8,7 @@
  * - Tailwind CSS for styling
  */
 
-import { DurablyProvider } from '@coji/durably-react'
+import { DurablyProvider } from '@coji/durably-react/spa'
 import { useState } from 'react'
 import {
   Dashboard,

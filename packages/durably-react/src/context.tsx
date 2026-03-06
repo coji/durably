@@ -1,8 +1,11 @@
 import type { Durably } from '@coji/durably'
 import { Suspense, createContext, use, useContext, type ReactNode } from 'react'
 
+// biome-ignore lint/suspicious/noExplicitAny: Durably context accepts any job/label configuration
+type AnyDurably = Durably<any, any>
+
 interface DurablyContextValue {
-  durably: Durably
+  durably: AnyDurably
 }
 
 const DurablyContext = createContext<DurablyContextValue | null>(null)
@@ -28,7 +31,7 @@ export interface DurablyProviderProps {
    *   <App />
    * </DurablyProvider>
    */
-  durably: Durably | Promise<Durably>
+  durably: AnyDurably | Promise<AnyDurably>
   /**
    * Fallback to show while waiting for the Durably Promise to resolve.
    * This wraps the provider content in a Suspense boundary automatically.

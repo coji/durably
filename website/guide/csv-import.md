@@ -171,10 +171,10 @@ Create a type-safe client using the server's Durably type. This gives you full T
 
 ```ts
 // app/lib/durably.client.ts
-import { createDurablyClient } from '@coji/durably-react/client'
+import { createDurablyHooks } from '@coji/durably-react'
 import type { durably } from './durably.server'
 
-export const durablyClient = createDurablyClient<typeof durably>({
+export const durablyClient = createDurablyHooks<typeof durably>({
   api: '/api/durably',
 })
 ```
@@ -214,7 +214,7 @@ function ImportProgress({ runId }: { runId: string | null }) {
 Build a dashboard showing all runs with retry, cancel, and delete actions. The `useRuns` hook provides paginated run history, while `useRunActions` provides mutation functions.
 
 ```tsx
-import { useRuns, useRunActions } from '@coji/durably-react/client'
+import { useRuns, useRunActions } from '@coji/durably-react'
 
 function Dashboard() {
   const { runs, refresh } = useRuns({ api: '/api/durably' })

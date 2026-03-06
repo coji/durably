@@ -1,18 +1,18 @@
 /**
- * Data Sync Progress Component
+ * Image Processing Progress Component
  *
- * Displays progress for the data sync job using initialRunId.
+ * Displays progress for the image processing job using initialRunId.
  */
 
-import { useJob } from '@coji/durably-react'
+import { useJob } from '@coji/durably-react/spa'
 import { useActionData } from 'react-router'
-import { dataSyncJob } from '~/jobs'
+import { processImageJob } from '~/jobs'
 import type { clientAction } from '../_index'
 import { RunProgress } from './run-progress'
 
-export function DataSyncProgress() {
+export function ImageProcessingProgress() {
   const actionData = useActionData<typeof clientAction>()
-  const runId = actionData?.intent === 'sync' ? actionData.runId : undefined
+  const runId = actionData?.intent === 'image' ? actionData.runId : undefined
 
   const {
     progress,
@@ -24,7 +24,7 @@ export function DataSyncProgress() {
     isCompleted,
     isFailed,
     isCancelled,
-  } = useJob(dataSyncJob, { initialRunId: runId })
+  } = useJob(processImageJob, { initialRunId: runId })
 
   return (
     <RunProgress

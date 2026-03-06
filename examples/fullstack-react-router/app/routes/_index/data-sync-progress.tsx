@@ -4,7 +4,7 @@
  * Displays progress for the data sync job using useJobRun.
  */
 
-import { useJobRun } from '@coji/durably-react/client'
+import { useJobRun } from '@coji/durably-react'
 import { useActionData } from 'react-router'
 import type { action } from '../_index'
 import { RunProgress } from './run-progress'

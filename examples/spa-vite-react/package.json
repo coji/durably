@@ -1,5 +1,5 @@
 {
-  "name": "example-browser-vite-react",
+  "name": "example-spa-vite-react",
   "private": true,
   "type": "module",
   "scripts": {

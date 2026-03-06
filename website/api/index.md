@@ -135,23 +135,23 @@ export async function action({ request }) {
 
 ## React Hooks
 
-### Server-Connected (Full-Stack)
+### Fullstack Mode
 
 Connect to a Durably server via HTTP/SSE.
 
 ```tsx
-// 1. Create type-safe client
-import { createDurablyClient } from '@coji/durably-react/client'
+// 1. Create type-safe hooks
+import { createDurablyHooks } from '@coji/durably-react'
 import type { durably } from './durably.server'
 
-const durablyClient = createDurablyClient<typeof durably>({
+const durably = createDurablyHooks<typeof durably>({
   api: '/api/durably',
 })
 
 // 2. Use in components
 function ImportButton() {
   const { trigger, progress, isRunning, isCompleted, output } =
-    durablyClient.importCsv.useJob()
+    durably.importCsv.useJob()
 
   return (
     <div>
@@ -172,12 +172,12 @@ function ImportButton() {
 }
 ```
 
-### Browser-Only (Offline)
+### SPA Mode (Offline)
 
 Run Durably entirely in the browser with OPFS persistence.
 
 ```tsx
-import { DurablyProvider, useJob } from '@coji/durably-react'
+import { DurablyProvider, useJob } from '@coji/durably-react/spa'
 import { durably } from './durably'
 import { importCsvJob } from './jobs'
 
@@ -195,7 +195,7 @@ function ImportButton() {
 }
 ```
 
-**See:** [React Hooks Overview](/api/durably-react/) | [Browser Hooks](/api/durably-react/browser) | [Server Hooks](/api/durably-react/client)
+**See:** [React Hooks Overview](/api/durably-react/) | [SPA Hooks](/api/durably-react/browser) | [Fullstack Hooks](/api/durably-react/client)
 
 ## API at a Glance
 
@@ -228,13 +228,13 @@ function ImportButton() {
 
 ### React Hooks (@coji/durably-react)
 
-| Hook            | Mode    | Description                |
-| --------------- | ------- | -------------------------- |
-| `useJob`        | Both    | Trigger and monitor jobs   |
-| `useJobRun`     | Both    | Subscribe to existing run  |
-| `useRuns`       | Both    | List runs with pagination  |
-| `useRunActions` | Server  | Retry, cancel, delete runs |
-| `useDurably`    | Browser | Access Durably instance    |
+| Hook            | Mode      | Description                |
+| --------------- | --------- | -------------------------- |
+| `useJob`        | Both      | Trigger and monitor jobs   |
+| `useJobRun`     | Both      | Subscribe to existing run  |
+| `useRuns`       | Both      | List runs with pagination  |
+| `useRunActions` | Fullstack | Retry, cancel, delete runs |
+| `useDurably`    | SPA       | Access Durably instance    |
 
 ## Type Exports
 

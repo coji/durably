@@ -52,9 +52,9 @@ Verify package integrity for API changes and spec updates.
 
 ## 5. Examples
 
-- [ ] `examples/browser-vite-react/` - Browser mode example
-- [ ] `examples/browser-react-router-spa/` - Browser mode with React Router
-- [ ] `examples/fullstack-react-router/` - Client mode (server-connected)
+- [ ] `examples/spa-vite-react/` - SPA mode example
+- [ ] `examples/spa-react-router/` - SPA mode with React Router
+- [ ] `examples/fullstack-react-router/` - Fullstack mode (server-connected)
 - [ ] `examples/server-node/` - Node.js server example
 
 ## 6. Tests
@@ -89,14 +89,14 @@ Check `git status` for uncommitted changes.
 
 ## Common Oversights
 
-### Browser/Client Mode Consistency
+### SPA/Fullstack Mode Consistency
 
-When React hooks should provide the same API in both Browser and Client modes:
+When React hooks should provide the same API in both SPA and Fullstack modes:
 
-| File                | Mode         |
-| ------------------- | ------------ |
-| `hooks/use-job.ts`  | Browser mode |
-| `client/use-job.ts` | Client mode  |
+| File                | Mode           |
+| ------------------- | -------------- |
+| `hooks/use-job.ts`  | SPA mode       |
+| `client/use-job.ts` | Fullstack mode |
 
 Ensure consistency in:
 
@@ -114,7 +114,7 @@ Verify code examples in docs match actual API:
 
 ### Type Exports
 
-Check if new types are exported in `index.ts` / `client.ts`.
+Check if new types are exported in `index.ts` / `spa.ts`.
 
 ### Examples Consistency
 

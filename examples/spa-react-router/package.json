@@ -1,5 +1,5 @@
 {
-  "name": "example-browser-react-router-spa",
+  "name": "example-spa-react-router",
   "private": true,
   "type": "module",
   "scripts": {

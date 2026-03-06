@@ -48,7 +48,7 @@ export interface JobHooks<TInput, TOutput> {
  * ```tsx
  * // Import job type from server (type-only import is safe)
  * import type { importCsvJob } from '~/lib/durably.server'
- * import { createJobHooks } from '@coji/durably-react/client'
+ * import { createJobHooks } from '@coji/durably-react'
  *
  * const importCsv = createJobHooks<typeof importCsvJob>({
  *   api: '/api/durably',

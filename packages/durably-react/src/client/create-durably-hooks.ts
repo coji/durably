@@ -6,7 +6,7 @@ import { useJobRun, type UseJobRunClientResult } from './use-job-run'
 /**
  * Type-safe hooks for a specific job
  */
-export interface JobClient<TInput, TOutput> {
+export interface JobHooks<TInput, TOutput> {
   /**
    * Hook for triggering and monitoring the job
    */
@@ -27,9 +27,9 @@ export interface JobClient<TInput, TOutput> {
 }
 
 /**
- * Options for createDurablyClient
+ * Options for createDurablyHooks
  */
-export interface CreateDurablyClientOptions {
+export interface CreateDurablyHooksOptions {
   /**
    * API endpoint URL (e.g., '/api/durably')
    */
@@ -37,30 +37,30 @@ export interface CreateDurablyClientOptions {
 }
 
 /**
- * A type-safe client with hooks for each registered job
+ * A type-safe hooks collection for each registered job
  */
-export type DurablyClient<TJobs extends Record<string, unknown>> = {
-  [K in keyof TJobs]: JobClient<InferInput<TJobs[K]>, InferOutput<TJobs[K]>>
+export type DurablyHooks<TJobs extends Record<string, unknown>> = {
+  [K in keyof TJobs]: JobHooks<InferInput<TJobs[K]>, InferOutput<TJobs[K]>>
 }
 
 /**
- * Create a type-safe Durably client with hooks for all registered jobs.
+ * Create type-safe hooks for all registered jobs.
  *
  * @example
  * ```tsx
  * // Server: register jobs
  * // app/lib/durably.server.ts
- * export const jobs = durably.register({
- *   importCsv: importCsvJob,
- *   syncUsers: syncUsersJob,
+ * export const durably = createDurably({
+ *   dialect,
+ *   jobs: { importCsv: importCsvJob, syncUsers: syncUsersJob },
  * })
  *
- * // Client: create typed client
- * // app/lib/durably.client.ts
- * import type { jobs } from '~/lib/durably.server'
- * import { createDurablyClient } from '@coji/durably-react/client'
+ * // Client: create typed hooks
+ * // app/lib/durably.hooks.ts
+ * import type { durably } from '~/lib/durably.server'
+ * import { createDurablyHooks } from '@coji/durably-react/fullstack'
  *
- * export const durably = createDurablyClient<typeof jobs>({
+ * export const durably = createDurablyHooks<typeof durably>({
  *   api: '/api/durably',
  * })
  *
@@ -76,13 +76,13 @@ export type DurablyClient<TJobs extends Record<string, unknown>> = {
  * }
  * ```
  */
-export function createDurablyClient<TJobs extends Record<string, unknown>>(
-  options: CreateDurablyClientOptions,
-): DurablyClient<TJobs> {
+export function createDurablyHooks<TJobs extends Record<string, unknown>>(
+  options: CreateDurablyHooksOptions,
+): DurablyHooks<TJobs> {
   const { api } = options
 
-  // Create a proxy that generates job clients on demand
-  return new Proxy({} as DurablyClient<TJobs>, {
+  // Create a proxy that generates job hooks on demand
+  return new Proxy({} as DurablyHooks<TJobs>, {
     get(_target, jobKey: string) {
       return {
         useJob: () => {
@@ -100,3 +100,14 @@ export function createDurablyClient<TJobs extends Record<string, unknown>>(
     },
   })
 }
+
+// Backward compatibility re-exports
+/** @deprecated Use `createDurablyHooks` instead */
+export const createDurablyClient = createDurablyHooks
+/** @deprecated Use `CreateDurablyHooksOptions` instead */
+export type CreateDurablyClientOptions = CreateDurablyHooksOptions
+/** @deprecated Use `DurablyHooks` instead */
+export type DurablyClient<TJobs extends Record<string, unknown>> =
+  DurablyHooks<TJobs>
+/** @deprecated Use `JobHooks` instead */
+export type JobClient<TInput, TOutput> = JobHooks<TInput, TOutput>

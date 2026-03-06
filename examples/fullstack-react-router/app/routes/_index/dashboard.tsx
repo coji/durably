@@ -7,12 +7,12 @@
  * Demonstrates typed useRuns with generic type parameter for multi-job dashboards.
  */
 
-import type { ClientRun, StepRecord } from '@coji/durably-react/client'
+import type { ClientRun, StepRecord } from '@coji/durably-react'
 import {
   type TypedClientRun,
   useRunActions,
   useRuns,
-} from '@coji/durably-react/client'
+} from '@coji/durably-react'
 import { useState } from 'react'
 import type {
   DataSyncInput,

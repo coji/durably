@@ -10,7 +10,7 @@ import type { ReactNode } from 'react'
 import { useState } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { DurablyProvider, useDurably, useJobLogs } from '../../src'
+import { DurablyProvider, useDurably, useJobLogs } from '../../src/spa'
 import { createTestDurably } from '../helpers/create-test-durably'
 
 // Test job that generates logs with delay to ensure we can subscribe

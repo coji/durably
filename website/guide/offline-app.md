@@ -2,7 +2,7 @@
 
 Run Durably entirely in the browser. Jobs execute locally using SQLite WASM with OPFS persistence. Works offline, survives tab closes.
 
-**Example code:** [browser-vite-react](https://github.com/coji/durably/tree/main/examples/browser-vite-react)
+**Example code:** [spa-vite-react](https://github.com/coji/durably/tree/main/examples/spa-vite-react)
 
 ## When to Use
 
@@ -148,8 +148,8 @@ Use `useJob` to trigger jobs and subscribe to their progress. The hook returns t
 
 ```tsx
 // App.tsx
-import { DurablyProvider, useDurably } from '@coji/durably-react'
-import { useJob } from '@coji/durably-react'
+import { DurablyProvider, useDurably } from '@coji/durably-react/spa'
+import { useJob } from '@coji/durably-react/spa'
 import { useState } from 'react'
 import { durably } from './lib/durably'
 import { dataSyncJob } from './jobs/data-sync'

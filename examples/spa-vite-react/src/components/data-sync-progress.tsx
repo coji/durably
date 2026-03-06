@@ -1,20 +1,18 @@
 /**
- * Image Processing Progress Component
+ * Data Sync Progress Component
  *
- * Displays progress for the image processing job.
+ * Displays progress for the data sync job.
  */
 
-import { useJob } from '@coji/durably-react'
-import { processImageJob } from '../jobs'
+import { useJob } from '@coji/durably-react/spa'
+import { dataSyncJob } from '../jobs'
 import { RunProgress } from './run-progress'
 
-interface ImageProcessingProgressProps {
+interface DataSyncProgressProps {
   runId?: string
 }
 
-export function ImageProcessingProgress({
-  runId,
-}: ImageProcessingProgressProps) {
+export function DataSyncProgress({ runId }: DataSyncProgressProps) {
   const {
     progress,
     output,
@@ -25,7 +23,7 @@ export function ImageProcessingProgress({
     isCompleted,
     isFailed,
     isCancelled,
-  } = useJob(processImageJob, { initialRunId: runId })
+  } = useJob(dataSyncJob, { initialRunId: runId })
 
   return (
     <RunProgress

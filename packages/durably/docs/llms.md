@@ -29,6 +29,7 @@ import { z } from 'zod'
 const client = createClient({ url: 'file:local.db' })
 const dialect = new LibsqlDialect({ client })
 
+// Option 1: With jobs (1-step initialization, returns typed instance)
 const durably = createDurably({
   dialect,
   pollingInterval: 1000, // Job polling interval (ms)
@@ -36,6 +37,16 @@ const durably = createDurably({
   staleThreshold: 30000, // When to consider a job abandoned (ms)
   // Optional: type-safe labels with Zod schema
   // labels: z.object({ organizationId: z.string(), env: z.string() }),
+  jobs: {
+    syncUsers: syncUsersJob,
+  },
+})
+// durably.jobs.syncUsers is immediately available and type-safe
+
+// Option 2: Without jobs (register later)
+const durably = createDurably({ dialect })
+const { syncUsers } = durably.register({
+  syncUsers: syncUsersJob,
 })
 ```
 
@@ -62,11 +73,6 @@ const syncUsersJob = defineJob({
 
     return { syncedCount: users.length }
   },
-})
-
-// Register jobs with durably instance
-const { syncUsers } = durably.register({
-  syncUsers: syncUsersJob,
 })
 ```
 

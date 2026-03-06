@@ -8,7 +8,7 @@ import type { Durably } from '@coji/durably'
 import { render, renderHook, waitFor } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
-import { DurablyProvider, useDurably } from '../../src'
+import { DurablyProvider, useDurably } from '../../src/spa'
 import { createTestDurably } from '../helpers/create-test-durably'
 
 describe('DurablyProvider', () => {

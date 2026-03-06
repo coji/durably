@@ -1,4 +1,4 @@
-# Browser Hooks
+# SPA Hooks
 
 Run Durably entirely in the browser using SQLite WASM with OPFS persistence. Jobs execute client-side with data stored in the browser's Origin Private File System.
 
@@ -10,7 +10,7 @@ import {
   useJobRun,
   useJobLogs,
   useRuns,
-} from '@coji/durably-react'
+} from '@coji/durably-react/spa'
 ```
 
 ## DurablyProvider
@@ -18,7 +18,7 @@ import {
 Wraps your app and initializes Durably with a browser SQLite database.
 
 ```tsx
-import { DurablyProvider } from '@coji/durably-react'
+import { DurablyProvider } from '@coji/durably-react/spa'
 import { createDurably } from '@coji/durably'
 import { SQLocalKysely } from 'sqlocal/kysely'
 
@@ -58,7 +58,7 @@ function App() {
 Access the Durably instance directly.
 
 ```tsx
-import { useDurably } from '@coji/durably-react'
+import { useDurably } from '@coji/durably-react/spa'
 
 function Component() {
   const { durably, isReady, error } = useDurably()
@@ -87,7 +87,7 @@ Trigger and monitor a job. Pass a `JobDefinition` to get type-safe input/output.
 
 ```tsx
 import { defineJob } from '@coji/durably'
-import { useJob } from '@coji/durably-react'
+import { useJob } from '@coji/durably-react/spa'
 import { z } from 'zod'
 
 const myJob = defineJob({
@@ -176,7 +176,7 @@ interface UseJobResult<TInput, TOutput> {
 Subscribe to an existing run by ID.
 
 ```tsx
-import { useJobRun } from '@coji/durably-react'
+import { useJobRun } from '@coji/durably-react/spa'
 
 function RunMonitor({ runId }: { runId: string | null }) {
   const {
@@ -215,7 +215,7 @@ function RunMonitor({ runId }: { runId: string | null }) {
 Subscribe to logs from a run.
 
 ```tsx
-import { useJobLogs } from '@coji/durably-react'
+import { useJobLogs } from '@coji/durably-react/spa'
 
 function LogViewer({ runId }: { runId: string | null }) {
   const { logs, clearLogs } = useJobLogs({
@@ -263,7 +263,7 @@ The hook automatically subscribes to Durably events and refreshes the list when 
 Use a type parameter to specify the run type for dashboards with multiple job types:
 
 ```tsx
-import { useRuns, TypedRun } from '@coji/durably-react'
+import { useRuns, TypedRun } from '@coji/durably-react/spa'
 
 // Define your run types
 type ImportRun = TypedRun<{ file: string }, { count: number }>
@@ -293,7 +293,7 @@ Pass a `JobDefinition` to get typed runs and auto-filter by job name:
 
 ```tsx
 import { defineJob } from '@coji/durably'
-import { useRuns } from '@coji/durably-react'
+import { useRuns } from '@coji/durably-react/spa'
 
 const myJob = defineJob({
   name: 'my-job',
@@ -323,7 +323,7 @@ function RunList() {
 ### Without type parameter (untyped)
 
 ```tsx
-import { useRuns } from '@coji/durably-react'
+import { useRuns } from '@coji/durably-react/spa'
 
 function RunList() {
   const { runs } = useRuns({ jobName: 'my-job', pageSize: 10 })

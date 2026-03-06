@@ -33,6 +33,11 @@ import { type Worker, createWorker } from './worker'
  */
 export interface DurablyOptions<
   TLabels extends Record<string, string> = Record<string, string>,
+  // biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
+  TJobs extends Record<string, JobDefinition<string, any, any>> = Record<
+    string,
+    never
+  >,
 > {
   dialect: Dialect
   pollingInterval?: number
@@ -44,6 +49,17 @@ export interface DurablyOptions<
    * - Labels are validated at runtime on trigger()
    */
   labels?: z.ZodType<TLabels>
+  /**
+   * Job definitions to register. Shorthand for calling .register() after creation.
+   * @example
+   * ```ts
+   * const durably = createDurably({
+   *   dialect,
+   *   jobs: { importCsv: importCsvJob, syncUsers: syncUsersJob },
+   * })
+   * ```
+   */
+  jobs?: TJobs
 }
 
 /**
@@ -553,9 +569,36 @@ function createDurablyInstance<
 /**
  * Create a Durably instance
  */
+// Overload: with jobs
 export function createDurably<
   TLabels extends Record<string, string> = Record<string, string>,
->(options: DurablyOptions<TLabels>): Durably<Record<string, never>, TLabels> {
+  // biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
+  TJobs extends Record<string, JobDefinition<string, any, any>> = Record<
+    string,
+    never
+  >,
+>(
+  options: DurablyOptions<TLabels, TJobs> & { jobs: TJobs },
+): Durably<TransformToHandles<TJobs, TLabels>, TLabels>
+
+// Overload: without jobs
+export function createDurably<
+  TLabels extends Record<string, string> = Record<string, string>,
+>(options: DurablyOptions<TLabels>): Durably<Record<string, never>, TLabels>
+
+// Implementation
+export function createDurably<
+  TLabels extends Record<string, string> = Record<string, string>,
+  // biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
+  TJobs extends Record<string, JobDefinition<string, any, any>> = Record<
+    string,
+    never
+  >,
+>(
+  options: DurablyOptions<TLabels, TJobs>,
+):
+  | Durably<TransformToHandles<TJobs, TLabels>, TLabels>
+  | Durably<Record<string, never>, TLabels> {
   const config = {
     pollingInterval: options.pollingInterval ?? DEFAULTS.pollingInterval,
     heartbeatInterval: options.heartbeatInterval ?? DEFAULTS.heartbeatInterval,
@@ -579,5 +622,14 @@ export function createDurably<
     migrated: false,
   }
 
-  return createDurablyInstance<Record<string, never>, TLabels>(state, {})
+  const instance = createDurablyInstance<Record<string, never>, TLabels>(
+    state,
+    {},
+  )
+
+  if (options.jobs) {
+    return instance.register(options.jobs)
+  }
+
+  return instance
 }

@@ -7,7 +7,7 @@
  * Demonstrates typed useRuns with generic type parameter for multi-job dashboards.
  */
 
-import { type TypedRun, useDurably, useRuns } from '@coji/durably-react'
+import { type TypedRun, useDurably, useRuns } from '@coji/durably-react/spa'
 import { useState } from 'react'
 import type {
   DataSyncInput,

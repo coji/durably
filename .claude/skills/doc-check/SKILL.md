@@ -64,12 +64,12 @@ These are the primary references for AI coding agents.
 
 Grep for the changed symbol name in `examples/` to find usage. Each example demonstrates a different deployment pattern:
 
-| Directory                           | Pattern                        | Key files                                                           |
-| ----------------------------------- | ------------------------------ | ------------------------------------------------------------------- |
-| `examples/server-node`              | Node.js server (core API only) | `jobs/*.ts`, `lib/durably.ts`, `basic.ts`                           |
-| `examples/browser-vite-react`       | Browser SPA (Vite + React)     | `src/jobs/*.ts`, `src/lib/durably.ts`, `src/components/*.tsx`       |
-| `examples/browser-react-router-spa` | Browser SPA (React Router)     | `app/jobs/*.ts`, `app/lib/durably.ts`, `app/routes/**/*.tsx`        |
-| `examples/fullstack-react-router`   | Fullstack (React Router + SSE) | `app/jobs/*.ts`, `app/lib/durably.server.ts`, `app/routes/**/*.tsx` |
+| Directory                         | Pattern                        | Key files                                                           |
+| --------------------------------- | ------------------------------ | ------------------------------------------------------------------- |
+| `examples/server-node`            | Node.js server (core API only) | `jobs/*.ts`, `lib/durably.ts`, `basic.ts`                           |
+| `examples/spa-vite-react`         | SPA mode (Vite + React)        | `src/jobs/*.ts`, `src/lib/durably.ts`, `src/components/*.tsx`       |
+| `examples/spa-react-router`       | SPA mode (React Router)        | `app/jobs/*.ts`, `app/lib/durably.ts`, `app/routes/**/*.tsx`        |
+| `examples/fullstack-react-router` | Fullstack (React Router + SSE) | `app/jobs/*.ts`, `app/lib/durably.server.ts`, `app/routes/**/*.tsx` |
 
 ## 3. Generated Files
 
@@ -85,18 +85,18 @@ pnpm --filter durably-website generate:llms
 
 Use this table to quickly determine which docs to check based on what changed:
 
-| Change Type                      | Docs to Check                                                                                         |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| New field on `Run` / `RunFilter` | llms.md (core), create-durably.md, index.md, http-handler.md, react browser.md + client.md            |
-| New event field                  | llms.md (core), events.md, index.md                                                                   |
-| New step method                  | llms.md (core), step.md, index.md                                                                     |
-| New trigger option               | llms.md (core), index.md, http-handler.md, create-durably.md                                          |
-| React hook change                | llms.md (react), browser.md, client.md, index.md (react section)                                      |
-| HTTP handler change              | llms.md (core), http-handler.md, client.md                                                            |
-| New config option                | llms.md (core), create-durably.md, index.md                                                           |
-| Job/step API change              | All example apps (`examples/`)                                                                        |
-| Event type change                | `examples/fullstack-react-router` (SSE), `examples/browser-*` (direct events)                         |
-| React hook change                | `examples/browser-vite-react`, `examples/browser-react-router-spa`, `examples/fullstack-react-router` |
+| Change Type                      | Docs to Check                                                                              |
+| -------------------------------- | ------------------------------------------------------------------------------------------ |
+| New field on `Run` / `RunFilter` | llms.md (core), create-durably.md, index.md, http-handler.md, react browser.md + client.md |
+| New event field                  | llms.md (core), events.md, index.md                                                        |
+| New step method                  | llms.md (core), step.md, index.md                                                          |
+| New trigger option               | llms.md (core), index.md, http-handler.md, create-durably.md                               |
+| React hook change                | llms.md (react), browser.md, client.md, index.md (react section)                           |
+| HTTP handler change              | llms.md (core), http-handler.md, client.md                                                 |
+| New config option                | llms.md (core), create-durably.md, index.md                                                |
+| Job/step API change              | All example apps (`examples/`)                                                             |
+| Event type change                | `examples/fullstack-react-router` (SSE), `examples/spa-*` (direct events)                  |
+| React hook change                | `examples/spa-vite-react`, `examples/spa-react-router`, `examples/fullstack-react-router`  |
 
 ## 5. Common Oversights
 

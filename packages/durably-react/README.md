@@ -9,19 +9,42 @@ React bindings for [Durably](https://github.com/coji/durably) - step-oriented re
 ## Installation
 
 ```bash
-# Browser mode (with SQLocal)
-npm install @coji/durably-react @coji/durably kysely zod sqlocal
-
-# Server-connected mode (client only)
+# Fullstack mode (connects to Durably server)
 npm install @coji/durably-react
+
+# SPA mode (runs Durably in the browser with SQLocal)
+npm install @coji/durably-react @coji/durably kysely zod sqlocal
 ```
 
-## Quick Start
+## Quick Start (Fullstack Mode)
 
 ```tsx
-import { Suspense } from 'react'
+import { createDurablyHooks } from '@coji/durably-react'
+import type { durably } from './durably.server'
+
+// Create type-safe hooks from server's Durably type
+export const durably = createDurablyHooks<typeof durably>({
+  api: '/api/durably',
+})
+
+function MyComponent() {
+  const { trigger, isRunning, isCompleted, output } = durably.myJob.useJob()
+
+  return (
+    <button onClick={() => trigger({ id: '123' })} disabled={isRunning}>
+      Run
+    </button>
+  )
+}
+```
+
+## SPA Mode
+
+For browser-only apps, import from `@coji/durably-react/spa`:
+
+```tsx
 import { createDurably, defineJob } from '@coji/durably'
-import { DurablyProvider, useJob } from '@coji/durably-react'
+import { DurablyProvider, useJob } from '@coji/durably-react/spa'
 import { SQLocalKysely } from 'sqlocal/kysely'
 import { z } from 'zod'
 
@@ -38,8 +61,9 @@ const myJob = defineJob({
 // Initialize Durably
 async function initDurably() {
   const sqlocal = new SQLocalKysely('app.sqlite3')
-  const durably = createDurably({ dialect: sqlocal.dialect }).register({
-    myJob,
+  const durably = createDurably({
+    dialect: sqlocal.dialect,
+    jobs: { myJob },
   })
   await durably.init() // migrate + start
   return durably
@@ -48,11 +72,9 @@ const durablyPromise = initDurably()
 
 function App() {
   return (
-    <Suspense fallback={<div>Loading...</div>}>
-      <DurablyProvider durably={durablyPromise}>
-        <MyComponent />
-      </DurablyProvider>
-    </Suspense>
+    <DurablyProvider durably={durablyPromise} fallback={<div>Loading...</div>}>
+      <MyComponent />
+    </DurablyProvider>
   )
 }
 
@@ -66,44 +88,12 @@ function MyComponent() {
 }
 ```
 
-## Server-Connected Mode
-
-For full-stack apps, use hooks from `@coji/durably-react/client`:
-
-```tsx
-import { useJob } from '@coji/durably-react/client'
-
-function MyComponent() {
-  const {
-    trigger,
-    status,
-    output,
-    isRunning,
-    isPending,
-    isCompleted,
-    isFailed,
-    isCancelled,
-  } = useJob<{ id: string }, { result: number }>({
-    api: '/api/durably',
-    jobName: 'my-job',
-    autoResume: true, // Auto-resume running/pending jobs on mount (default)
-    followLatest: true, // Switch to tracking new runs via SSE (default)
-  })
-
-  return (
-    <button onClick={() => trigger({ id: '123' })} disabled={isRunning}>
-      Run
-    </button>
-  )
-}
-```
-
 ## Documentation
 
 For full documentation, visit [coji.github.io/durably](https://coji.github.io/durably/).
 
-- [React Guide](https://coji.github.io/durably/guide/react) - Browser mode with hooks
-- [Full-Stack Guide](https://coji.github.io/durably/guide/full-stack) - Server-connected mode
+- [SPA Hooks](https://coji.github.io/durably/api/durably-react/browser) - Browser mode with OPFS
+- [Fullstack Hooks](https://coji.github.io/durably/api/durably-react/client) - Server-connected mode
 
 ## License
 

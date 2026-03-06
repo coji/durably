@@ -110,11 +110,11 @@ Create a type-safe client using the server's Durably type. This gives you full t
 
 ```ts
 // app/lib/durably.client.ts
-import { createDurablyClient } from '@coji/durably-react/client'
+import { createDurablyHooks } from '@coji/durably-react'
 // Type-only import: no server code is bundled, just TypeScript types
 import type { durably } from './durably.server'
 
-export const durablyClient = createDurablyClient<typeof durably>({
+export const durablyClient = createDurablyHooks<typeof durably>({
   api: '/api/durably',
 })
 ```

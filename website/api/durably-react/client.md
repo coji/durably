@@ -1,9 +1,9 @@
-# Server Hooks
+# Fullstack Hooks
 
 Connect to a Durably server via HTTP/SSE for real-time job monitoring. Jobs run on the server with updates streamed to the client.
 
 ```tsx
-import { useJob, useRuns, useRunActions } from '@coji/durably-react/client'
+import { useJob, useRuns, useRunActions } from '@coji/durably-react'
 ```
 
 ## Server Setup
@@ -19,9 +19,12 @@ import { createClient } from '@libsql/client'
 const client = createClient({ url: 'file:local.db' })
 const dialect = new LibsqlDialect({ client })
 
-export const durably = createDurably({ dialect }).register({
-  importCsv: importCsvJob,
-  syncUsers: syncUsersJob,
+export const durably = createDurably({
+  dialect,
+  jobs: {
+    importCsv: importCsvJob,
+    syncUsers: syncUsersJob,
+  },
 })
 
 export const durablyHandler = createDurablyHandler(durably)
@@ -51,7 +54,7 @@ export async function action({ request }: Route.ActionArgs) {
 Pass `api` and `jobName` to each hook. Works with any setup.
 
 ```tsx
-import { useJob } from '@coji/durably-react/client'
+import { useJob } from '@coji/durably-react'
 
 function CsvImporter() {
   const { trigger, status, output, isRunning } = useJob<
@@ -73,26 +76,23 @@ function CsvImporter() {
 }
 ```
 
-### 2. createDurablyClient (SPA only, type-safe)
+### 2. createDurablyHooks (type-safe)
 
 Wraps hooks with a type-safe Proxy — autocomplete for job names, inferred input/output types.
 
-> [!NOTE]
-> Not compatible with SSR. For SSR apps (e.g., React Router with `ssr: true`), use hooks directly instead. See the [fullstack-react-router example](https://github.com/coji/durably/tree/main/examples/fullstack-react-router).
-
 ```ts
 // app/lib/durably.client.ts
-import { createDurablyClient } from '@coji/durably-react/client'
+import { createDurablyHooks } from '@coji/durably-react'
 import type { durably } from './durably.server'
 
-export const durablyClient = createDurablyClient<typeof durably>({
+export const durably = createDurablyHooks<typeof durably>({
   api: '/api/durably',
 })
 ```
 
 ```tsx
 function CsvImporter() {
-  const { trigger, status, output, isRunning } = durablyClient.importCsv.useJob()
+  const { trigger, status, output, isRunning } = durably.importCsv.useJob()
 
   return (
     <button onClick={() => trigger({ rows: [...] })} disabled={isRunning}>
@@ -103,13 +103,13 @@ function CsvImporter() {
 
 // Subscribe to an existing run
 function RunViewer({ runId }: { runId: string }) {
-  const { status, output, progress } = durablyClient.importCsv.useRun(runId)
+  const { status, output, progress } = durably.importCsv.useRun(runId)
   return <div>Status: {status}</div>
 }
 
 // Subscribe to logs
 function LogViewer({ runId }: { runId: string }) {
-  const { logs } = durablyClient.importCsv.useLogs(runId)
+  const { logs } = durably.importCsv.useLogs(runId)
   return <pre>{logs.map(l => l.message).join('\n')}</pre>
 }
 ```
@@ -121,7 +121,7 @@ function LogViewer({ runId }: { runId: string }) {
 Trigger and monitor a job.
 
 ```tsx
-import { useJob } from '@coji/durably-react/client'
+import { useJob } from '@coji/durably-react'
 
 function Component() {
   const {
@@ -176,7 +176,7 @@ function Component() {
 Subscribe to an existing run via SSE.
 
 ```tsx
-import { useJobRun } from '@coji/durably-react/client'
+import { useJobRun } from '@coji/durably-react'
 
 function Component({ runId }: { runId: string }) {
   const { status, output, error, progress, logs } = useJobRun<{
@@ -204,7 +204,7 @@ function Component({ runId }: { runId: string }) {
 Subscribe to logs from a run via SSE.
 
 ```tsx
-import { useJobLogs } from '@coji/durably-react/client'
+import { useJobLogs } from '@coji/durably-react'
 
 function Component({ runId }: { runId: string }) {
   const { logs, clearLogs } = useJobLogs({
@@ -250,7 +250,7 @@ Other pages are static and require manual refresh.
 Use a type parameter to specify the run type for dashboards with multiple job types:
 
 ```tsx
-import { useRuns, TypedClientRun } from '@coji/durably-react/client'
+import { useRuns, TypedClientRun } from '@coji/durably-react'
 
 // Define your run types
 type ImportRun = TypedClientRun<{ file: string }, { count: number }>
@@ -280,7 +280,7 @@ Pass a `JobDefinition` to get typed runs and auto-filter by job name:
 
 ```tsx
 import { defineJob } from '@coji/durably'
-import { useRuns } from '@coji/durably-react/client'
+import { useRuns } from '@coji/durably-react'
 
 const myJob = defineJob({
   name: 'my-job',
@@ -310,7 +310,7 @@ function RunList() {
 ### Without type parameter (untyped)
 
 ```tsx
-import { useRuns } from '@coji/durably-react/client'
+import { useRuns } from '@coji/durably-react'
 
 function RunList() {
   const { runs } = useRuns({
@@ -377,7 +377,7 @@ useRuns(options)
 Perform actions on runs (retry, cancel, delete).
 
 ```tsx
-import { useRunActions } from '@coji/durably-react/client'
+import { useRunActions } from '@coji/durably-react'
 
 function RunActions({ runId, status }: { runId: string; status: string }) {
   const { retry, cancel, deleteRun, getRun, getSteps, isLoading, error } =
