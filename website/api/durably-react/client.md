@@ -3,24 +3,12 @@
 Connect to a Durably server via HTTP/SSE for real-time job monitoring. Jobs run on the server with updates streamed to the client.
 
 ```tsx
-import {
-  createDurablyClient,
-  useJob,
-  useJobRun,
-  useJobLogs,
-  useRuns,
-  useRunActions,
-} from '@coji/durably-react/client'
+import { useJob, useRuns, useRunActions } from '@coji/durably-react/client'
 ```
 
-## createDurablyClient
+## Server Setup
 
-Create a type-safe client for all registered jobs. This is the recommended way to use server-connected mode.
-
-> [!WARNING]
-> `createDurablyClient` is **not compatible with SSR** (e.g., React Router with `ssr: true`). It returns a `Proxy` object that loses its trap when processed through Vite's SSR module loader. For SSR apps, use `useJob` and `useRuns` hooks directly with the `api` option instead. See the [fullstack-react-router example](https://github.com/coji/durably/tree/main/examples/fullstack-react-router) for the correct pattern.
-
-### Server Setup
+All approaches below require a Durably server with HTTP handler:
 
 ```ts
 // app/lib/durably.server.ts
@@ -56,7 +44,41 @@ export async function action({ request }: Route.ActionArgs) {
 }
 ```
 
-### Client Setup
+## Two Ways to Use
+
+### 1. Hooks directly (works everywhere, including SSR)
+
+Pass `api` and `jobName` to each hook. Works with any setup.
+
+```tsx
+import { useJob } from '@coji/durably-react/client'
+
+function CsvImporter() {
+  const { trigger, status, output, isRunning } = useJob<
+    { filename: string },
+    { count: number }
+  >({
+    api: '/api/durably',
+    jobName: 'import-csv',
+  })
+
+  return (
+    <button
+      onClick={() => trigger({ filename: 'data.csv' })}
+      disabled={isRunning}
+    >
+      Import
+    </button>
+  )
+}
+```
+
+### 2. createDurablyClient (SPA only, type-safe)
+
+Wraps hooks with a type-safe Proxy — autocomplete for job names, inferred input/output types.
+
+> [!NOTE]
+> Not compatible with SSR. For SSR apps (e.g., React Router with `ssr: true`), use hooks directly instead. See the [fullstack-react-router example](https://github.com/coji/durably/tree/main/examples/fullstack-react-router).
 
 ```ts
 // app/lib/durably.client.ts
@@ -68,10 +90,7 @@ export const durablyClient = createDurablyClient<typeof durably>({
 })
 ```
 
-### Usage
-
 ```tsx
-// Fully type-safe!
 function CsvImporter() {
   const { trigger, status, output, isRunning } = durablyClient.importCsv.useJob()
 
@@ -99,7 +118,7 @@ function LogViewer({ runId }: { runId: string }) {
 
 ## useJob
 
-Direct hook for triggering jobs when not using `createDurablyClient`.
+Trigger and monitor a job.
 
 ```tsx
 import { useJob } from '@coji/durably-react/client'
