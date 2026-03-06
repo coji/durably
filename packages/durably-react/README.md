@@ -92,7 +92,7 @@ function MyComponent() {
 
 For full documentation, visit [coji.github.io/durably](https://coji.github.io/durably/).
 
-- [SPA Hooks](https://coji.github.io/durably/api/durably-react/spa) - Browser mode with OPFS
+- [SPA Hooks](https://coji.github.io/durably/api/durably-react/spa) - SPA mode with OPFS
 - [Fullstack Hooks](https://coji.github.io/durably/api/durably-react/fullstack) - Server-connected mode
 
 ## License
