@@ -60,7 +60,7 @@
     "ulidx": "^2.4.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.5",
+    "@biomejs/biome": "^2.4.6",
     "@libsql/client": "^0.17.0",
     "@libsql/kysely-libsql": "^0.4.1",
     "@testing-library/react": "^16.3.2",
