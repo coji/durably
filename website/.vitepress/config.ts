@@ -58,19 +58,27 @@ export default defineConfig({
           text: 'Introduction',
           items: [
             { text: 'What is Durably?', link: '/guide/' },
-            { text: 'Getting Started', link: '/guide/getting-started' },
+            { text: 'Quick Start', link: '/guide/quick-start' },
             { text: 'Core Concepts', link: '/guide/concepts' },
           ],
         },
         {
-          text: 'Use Cases',
+          text: 'Tutorials',
           items: [
-            { text: 'CSV Import (Fullstack)', link: '/guide/csv-import' },
+            { text: 'Server Mode', link: '/guide/server-mode' },
+            { text: 'Fullstack Mode', link: '/guide/fullstack-mode' },
+            { text: 'SPA Mode', link: '/guide/spa-mode' },
+          ],
+        },
+        {
+          text: 'Patterns',
+          items: [
             {
-              text: 'Background Sync (Server)',
-              link: '/guide/background-sync',
+              text: 'Error Handling & Retry',
+              link: '/guide/error-handling',
             },
-            { text: 'Offline App (SPA)', link: '/guide/offline-app' },
+            { text: 'Auth & Multi-Tenant', link: '/guide/auth' },
+            { text: 'Deployment Guide', link: '/guide/deployment' },
           ],
         },
       ],

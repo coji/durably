@@ -8,7 +8,7 @@ hero:
   actions:
     - theme: brand
       text: Get Started
-      link: /guide/getting-started
+      link: /guide/quick-start
     - theme: alt
       text: Live Demo
       link: https://durably-demo.vercel.app

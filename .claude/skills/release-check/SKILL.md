@@ -99,11 +99,14 @@ AI agents read these from `node_modules`. Stale info = wrong generated code.
 
 Code examples embedded in prose. API changes silently break copy-paste.
 
+- [ ] `website/guide/quick-start.md`
 - [ ] `website/guide/concepts.md`
-- [ ] `website/guide/getting-started.md`
-- [ ] `website/guide/csv-import.md`
-- [ ] `website/guide/background-sync.md`
-- [ ] `website/guide/offline-app.md`
+- [ ] `website/guide/server-mode.md`
+- [ ] `website/guide/fullstack-mode.md`
+- [ ] `website/guide/spa-mode.md`
+- [ ] `website/guide/error-handling.md`
+- [ ] `website/guide/auth.md`
+- [ ] `website/guide/deployment.md`
 
 ### Sidebar config
 

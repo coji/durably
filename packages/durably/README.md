@@ -12,7 +12,7 @@ Step-oriented resumable batch execution for Node.js and browsers using SQLite.
 npm install @coji/durably kysely zod better-sqlite3
 ```
 
-See the [Getting Started Guide](https://coji.github.io/durably/guide/getting-started) for other SQLite backends (libsql, SQLocal for browsers).
+See the [Quick Start](https://coji.github.io/durably/guide/quick-start) for other SQLite backends (libsql, SQLocal for browsers).
 
 ## Quick Start
 

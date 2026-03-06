@@ -6,9 +6,9 @@ Step-oriented resumable batch execution for Node.js and browsers using SQLite.
 
 ## Packages
 
-| Package | Description |
-|---------|-------------|
-| [@coji/durably](./packages/durably) | Core library - job definitions, steps, and persistence |
+| Package                                         | Description                                               |
+| ----------------------------------------------- | --------------------------------------------------------- |
+| [@coji/durably](./packages/durably)             | Core library - job definitions, steps, and persistence    |
 | [@coji/durably-react](./packages/durably-react) | React bindings - hooks for triggering and monitoring jobs |
 
 ## Features
@@ -22,7 +22,7 @@ Step-oriented resumable batch execution for Node.js and browsers using SQLite.
 
 ## Quick Start
 
-See the [Getting Started Guide](https://coji.github.io/durably/guide/getting-started) for installation and usage instructions.
+See the [Quick Start](https://coji.github.io/durably/guide/quick-start) for installation and usage instructions.
 
 ## License
 

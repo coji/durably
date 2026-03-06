@@ -13,8 +13,6 @@ Long-running tasks fail. Networks drop, servers restart, browsers close. Traditi
 
 Durably saves each step's result to SQLite. On resume, completed steps return cached results instantly.
 
-![Resumability](/images/resumability.svg)
-
 ```ts
 const job = defineJob({
   name: 'import-csv',
@@ -35,15 +33,16 @@ const job = defineJob({
 
 If the process crashes after importing 500 of 1000 rows, restart picks up at row 501.
 
-## Where It Runs
+## Three Ways to Run
 
-| Environment | Storage                        | Use Case               |
-| ----------- | ------------------------------ | ---------------------- |
-| **Node.js** | @libsql/client, better-sqlite3 | Server-side batch jobs |
-| **Browser** | SQLite WASM + OPFS             | Offline-capable apps   |
+| Mode          | Storage                        | Use Case                             |
+| ------------- | ------------------------------ | ------------------------------------ |
+| **Server**    | @libsql/client, better-sqlite3 | Cron jobs, data pipelines, CLI tools |
+| **Fullstack** | Server DB + SSE to browser     | Web apps with real-time progress UI  |
+| **SPA**       | SQLite WASM + OPFS             | Offline-capable, local-first apps    |
 
-Same job definition works in both environments.
+Same job definition works in all three modes.
 
 ## Next Step
 
-**[Getting Started →](/guide/getting-started)** — Build a CSV importer with progress UI in 5 minutes.
+**[Quick Start](/guide/quick-start)** — Run your first resumable job in under 2 minutes.

@@ -89,13 +89,16 @@ Users look these up when coding. Stale examples cause confusion.
 
 Code examples embedded in prose. API changes silently break copy-paste.
 
-| File                               | Why it needs checking               |
-| ---------------------------------- | ----------------------------------- |
-| `website/guide/concepts.md`        | Core concept explanations with code |
-| `website/guide/getting-started.md` | First code users copy-paste         |
-| `website/guide/csv-import.md`      | Complete fullstack example          |
-| `website/guide/background-sync.md` | Server mode example                 |
-| `website/guide/offline-app.md`     | SPA mode example                    |
+| File                              | Why it needs checking                 |
+| --------------------------------- | ------------------------------------- |
+| `website/guide/quick-start.md`    | First code users copy-paste           |
+| `website/guide/concepts.md`       | Core concept explanations with code   |
+| `website/guide/server-mode.md`    | Server mode tutorial                  |
+| `website/guide/fullstack-mode.md` | Fullstack mode tutorial               |
+| `website/guide/spa-mode.md`       | SPA mode tutorial                     |
+| `website/guide/error-handling.md` | Error handling patterns               |
+| `website/guide/auth.md`           | Auth & multi-tenant patterns          |
+| `website/guide/deployment.md`     | Deployment guide with mode comparison |
 
 ### Tier 6: Sidebar config
 
