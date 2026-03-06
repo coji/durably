@@ -347,107 +347,39 @@ function createDurablyInstance<
       let closed = false
       let cleanup: (() => void) | null = null
 
+      // Events that close the stream after enqueuing
+      const closeEvents = new Set<EventType>(['run:complete', 'run:delete'])
+      // All event types to subscribe to for a run
+      const subscribedEvents: EventType[] = [
+        'run:start',
+        'run:complete',
+        'run:fail',
+        'run:cancel',
+        'run:delete',
+        'run:retry',
+        'run:progress',
+        'step:start',
+        'step:complete',
+        'step:fail',
+        'log:write',
+      ]
+
       return new ReadableStream<DurablyEvent>({
         start: (controller) => {
-          const unsubscribeStart = eventEmitter.on('run:start', (event) => {
-            if (!closed && event.runId === runId) {
+          const unsubscribes = subscribedEvents.map((type) =>
+            eventEmitter.on(type, (event) => {
+              if (closed || event.runId !== runId) return
               controller.enqueue(event)
-            }
-          })
-
-          const unsubscribeComplete = eventEmitter.on(
-            'run:complete',
-            (event) => {
-              if (!closed && event.runId === runId) {
-                controller.enqueue(event)
+              if (closeEvents.has(type)) {
                 closed = true
                 cleanup?.()
                 controller.close()
               }
-            },
+            }),
           )
 
-          const unsubscribeFail = eventEmitter.on('run:fail', (event) => {
-            if (!closed && event.runId === runId) {
-              controller.enqueue(event)
-              // Don't close stream on fail - retry is possible
-            }
-          })
-
-          const unsubscribeCancel = eventEmitter.on('run:cancel', (event) => {
-            if (!closed && event.runId === runId) {
-              controller.enqueue(event)
-              // Don't close stream on cancel - retry is possible
-            }
-          })
-
-          const unsubscribeDelete = eventEmitter.on('run:delete', (event) => {
-            if (!closed && event.runId === runId) {
-              controller.enqueue(event)
-              closed = true
-              cleanup?.()
-              controller.close()
-            }
-          })
-
-          const unsubscribeRetry = eventEmitter.on('run:retry', (event) => {
-            if (!closed && event.runId === runId) {
-              controller.enqueue(event)
-            }
-          })
-
-          const unsubscribeProgress = eventEmitter.on(
-            'run:progress',
-            (event) => {
-              if (!closed && event.runId === runId) {
-                controller.enqueue(event)
-              }
-            },
-          )
-
-          const unsubscribeStepStart = eventEmitter.on(
-            'step:start',
-            (event) => {
-              if (!closed && event.runId === runId) {
-                controller.enqueue(event)
-              }
-            },
-          )
-
-          const unsubscribeStepComplete = eventEmitter.on(
-            'step:complete',
-            (event) => {
-              if (!closed && event.runId === runId) {
-                controller.enqueue(event)
-              }
-            },
-          )
-
-          const unsubscribeStepFail = eventEmitter.on('step:fail', (event) => {
-            if (!closed && event.runId === runId) {
-              controller.enqueue(event)
-            }
-          })
-
-          const unsubscribeLog = eventEmitter.on('log:write', (event) => {
-            if (!closed && event.runId === runId) {
-              controller.enqueue(event)
-            }
-          })
-
-          // Assign cleanup function to outer scope for cancel handler
           cleanup = () => {
-            unsubscribeStart()
-            unsubscribeComplete()
-            unsubscribeFail()
-            unsubscribeCancel()
-            unsubscribeDelete()
-            unsubscribeRetry()
-            unsubscribeProgress()
-            unsubscribeStepStart()
-            unsubscribeStepComplete()
-            unsubscribeStepFail()
-            unsubscribeLog()
+            for (const unsub of unsubscribes) unsub()
           }
         },
         cancel: () => {
