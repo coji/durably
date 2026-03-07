@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-03-07
+
+### Breaking Changes
+
+#### @coji/durably
+
+- **Rename `retry()` to `retrigger()`**: Creates a fresh run (new ID) with the same input instead of resetting the original run. Returns `Promise<Run>` instead of `Promise<void>` (#91)
+  ```diff
+  - await durably.retry(runId)
+  + const newRun = await durably.retrigger(runId)
+  ```
+- **Remove `run:retry` event and `RunRetryEvent` type**: Since `retrigger()` creates a fresh run (not a mutation of the original), it emits `run:trigger` with the new run's ID. Consumers should listen for `run:trigger` and use `event.runId` to track the retriggered execution (#91)
+- **`cleanupSteps` enabled by default**: Step output data is automatically deleted from `durably_steps` when runs reach terminal state (completed/failed/cancelled). Set `cleanupSteps: false` to preserve step data (#91)
+- **HTTP endpoint rename**: `POST /retry` → `POST /retrigger`, returns `{ success: true, runId: string }` (#91)
+
+#### @coji/durably-react
+
+- **`useRunActions().retrigger()` returns new run ID**: `retrigger(runId)` now returns `Promise<string>` (the new run's ID) instead of `Promise<void>` (#91)
+
+### Added
+
+#### @coji/durably
+
+- **`cleanupSteps` option**: Control automatic step data cleanup. Default `true`. Set to `false` if you need step data for debugging or auditing (#91)
+- **`deleteSteps()` on Storage**: New internal method for step cleanup (#91)
+- **`jobRegistry` check in `retrigger()`**: Throws `"Unknown job"` immediately if the job is no longer registered, instead of creating an orphaned run (#91)
+
+### Internal
+
+- Extract `getRunOrThrow()` helper in `durably.ts` to deduplicate run lookup pattern (#92)
+- Extract `executeAction()` helper in `useRunActions.ts` to deduplicate fetch boilerplate (#92)
+
 ## [0.11.0] - 2026-03-07
 
 ### Breaking Changes
