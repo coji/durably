@@ -1,10 +1,42 @@
 # Design: Runtime Rearchitecture
 
+## What Durably Does
+
+Durably is a job runtime for Node.js and browsers. You define a job as a sequence of steps. Each step's result is saved to the database. If a worker crashes mid-job, another worker picks up where it left off—no work is lost. The database, not the process, is the source of truth.
+
+### Why Durably
+
+If your app has background work that must finish even when processes restart—sending emails after signup, syncing data on a schedule, running multi-step AI pipelines—you need something that remembers where it left off.
+
+BullMQ and similar job queues solve dispatch and retry well, but they rely on Redis and a long-running worker. Cloudflare Workflows solves durability natively, but locks you into one platform. Durably sits between these: it gives you resumable, checkpointed execution backed by an ordinary database (SQLite or PostgreSQL), and runs the same way on Vercel, Cloudflare, AWS, or your laptop.
+
+### When Not to Use Durably
+
+- **Simple one-shot tasks** that can just retry on failure—a plain queue is simpler.
+- **Cloudflare-only projects** where Cloudflare Workflows already covers your needs.
+- **Sub-millisecond scheduling**—Durably optimizes for correctness, not for real-time dispatch.
+
 ## Goal
 
 Durably should be a simple and reliable job runtime centered on the database.
 
-The core runtime must satisfy these properties:
+### Recommended Starting Path
+
+For a solo developer trying Durably with minimal cost and setup:
+
+| Priority            | Stack                        | When to choose                                                                     |
+| ------------------- | ---------------------------- | ---------------------------------------------------------------------------------- |
+| **First choice**    | `Vercel + Turso`             | Web-first projects, free tier friendly, SQLite-shaped data without a resident file |
+| **Second choice**   | `Cloudflare Workers + Turso` | Edge deployment, event-driven execution                                            |
+| **Production path** | `Vercel + PostgreSQL`        | Clearest database semantics, natural upgrade from Turso                            |
+| **Production path** | `Fly.io + PostgreSQL`        | Resident workers, long-running processes                                           |
+
+> **Cloudflare note:** If your project is Cloudflare-only, evaluate [Cloudflare Workflows](https://developers.cloudflare.com/workflows/) first—it solves a similar problem with less setup. Durably is the better choice when you want the same execution model across Vercel, Cloudflare, AWS, and local development.
+
+For deployment-oriented runtime compositions across resident workers and serverless platforms, see `deployment-models.md`.
+For storage-oriented fit and tradeoffs across different databases, see `database-runtime-fit.md`.
+
+### Core Properties
 
 - Job execution is resumable from persisted checkpoints.
 - Multiple workers must not execute the same claimed run concurrently.
@@ -39,6 +71,8 @@ The main point is scope control. The core value of Durably is durable, resumable
 The central object is a run.
 
 A run is a single execution of a job with input, status, checkpoints, and lease state.
+
+> **Key term — lease:** A lease is a temporary execution right. It records which worker currently owns a run and when that right expires. If the worker crashes or the lease expires, another worker can safely take over.
 
 ```ts
 type RunStatus = 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
@@ -83,11 +117,11 @@ Triggering a job creates a `pending` run.
 
 The enqueue operation may apply idempotency rules, but those rules must be enforced by the store contract, not by best-effort preflight reads in application code.
 
-### 2. Claim
+### 2. Acquire a Run (Claim)
 
 A worker never reads a pending run and then updates it later.
 
-Instead, it performs one atomic claim operation:
+Instead, it performs one atomic operation to acquire exclusive execution rights:
 
 - select one claimable run
 - set `status = leased`
@@ -97,9 +131,9 @@ Instead, it performs one atomic claim operation:
 
 If two workers race, only one may receive the lease.
 
-### 3. Renew
+### 3. Extend Execution Time (Lease Renewal)
 
-While executing, the worker periodically renews the lease.
+While executing, the worker periodically extends its lease.
 
 Renewal succeeds only if:
 
@@ -114,13 +148,33 @@ Completion and failure are ownership-sensitive writes.
 
 The runtime must only transition a run from `leased` to `completed` or `failed` if the current worker still owns the lease.
 
-### 5. Reclaim
+### 5. Recover Abandoned Runs (Reclaim)
 
-If `leaseExpiresAt` is in the past, the run is no longer owned.
+If `leaseExpiresAt` is in the past, the run is no longer owned by anyone.
 
-Another worker may reclaim it and continue execution from persisted checkpoints.
+Another worker can pick it up and continue execution from persisted checkpoints.
 
-Reclaim is not a special recovery mode. It is part of normal claim semantics.
+This is not a special recovery mode—it is part of the normal acquisition flow.
+
+### Smallest Useful Setup
+
+To make this concrete, here is the minimal shape of a Durably app on Vercel + Turso:
+
+```ts
+// 1. Define a job
+const sendWelcome = defineJob('send-welcome', async (step, payload) => {
+  const user = await step.run('fetch-user', () => db.getUser(payload.userId))
+  await step.run('send-email', () => email.send(user.email, 'Welcome!'))
+})
+
+// 2. Enqueue from an API route
+await durably.trigger('send-welcome', { userId: 'abc' })
+
+// 3. Process runs (called by Vercel Cron or after enqueue)
+await durably.processOne()
+```
+
+No Redis. No long-running worker. The database holds all state—if `processOne()` is interrupted between steps, the next invocation resumes from the last completed step.
 
 ## Checkpoint Model
 
@@ -285,21 +339,21 @@ They should depend on runtime interfaces and event streams, not on Kysely or wor
 
 Two concurrency concerns must be handled explicitly.
 
-### Claim exclusivity
+### Only one worker executes a run at a time
 
 At most one worker may hold the active lease for a run at a given time.
 
-This must be guaranteed by the queue store's claim and renew operations.
+This must be guaranteed by the queue store's acquire and renew operations.
 
-### Concurrency keys
+### Preventing parallel runs of the same kind
 
 Some jobs should not run simultaneously even if they are different runs.
 
-This belongs in claim semantics. The queue store should be able to exclude or serialize runs that share a `concurrencyKey`.
+This belongs in the acquisition logic. The queue store should be able to exclude or serialize runs that share a `concurrencyKey`.
 
-This constraint should be enforced at claim time, not by in-memory coordination.
+This constraint should be enforced at acquisition time, not by in-memory coordination.
 
-## Idempotency Semantics
+## Preventing Duplicate Runs (Idempotency)
 
 Idempotency is a storage guarantee, not a userland optimization.
 
@@ -419,17 +473,19 @@ The target system is a lease-based runtime with persisted checkpoints.
 
 Its core guarantees are:
 
-- atomic claim
-- resumable execution
-- safe lease expiry and reclamation
-- execution-model independence
-- storage-adapter portability
+- atomic run acquisition
+- resumable execution from checkpoints
+- safe lease expiry and automatic recovery
+- execution-model independence (daemon and serverless)
+- storage-adapter portability (SQLite, PostgreSQL, libSQL, …)
 
 That is the architectural center of gravity. Everything else, including worker loops, HTTP handlers, and React bindings, should sit on top of that model instead of defining it.
 
 ## Phase 2: Ambient Agent Extension
 
 Ambient agents are a valid target for this runtime, but they should be modeled as an extension layer or separate package built on top of the core runtime.
+
+For a more concrete product image of ambient agents and representative application domains, see `ambient-agent-concepts.md`.
 
 A plausible package boundary is:
 
