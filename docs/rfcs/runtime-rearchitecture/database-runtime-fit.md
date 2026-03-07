@@ -20,6 +20,11 @@ That means the database is not just a persistence layer. It is responsible for p
 
 A database is a good fit only if it can support the required semantics without fragile application-level workarounds.
 
+Phase 1 exploration also clarified a migration constraint:
+
+- if the runtime model changes materially, clean-break schema migrations are acceptable
+- database fit should be judged on whether the new lease model can be expressed cleanly, not on whether every legacy column can be preserved cheaply
+
 ## Required Storage Semantics
 
 Any first-class database target must support these semantics clearly and defensibly.
@@ -107,6 +112,15 @@ PostgreSQL is the clearest first-class fit.
 - append-heavy event and checkpoint writes are natural
 - multi-worker and multi-process coordination is a normal use case
 
+### Exploration Result
+
+Phase 1 adapter exploration confirmed an important detail:
+
+- a generic SQLite-shaped `UPDATE ... WHERE id = (subquery)` claim pattern was not sufficient on PostgreSQL under concurrent claim attempts
+- PostgreSQL required a dedicated claim path based on row locking semantics such as `FOR UPDATE SKIP LOCKED`
+
+This matters because it means PostgreSQL should not be treated as "just another SQL backend" behind one generic claim query shape.
+
 ### Best Fit Profile
 
 - multi-worker deployments
@@ -154,6 +168,20 @@ SQLite is a strong fit for single-node or tightly-contained deployments, but its
 - distributed ownership across machines is not the default assumption
 - deployment patterns that hide the file behind replication or proxy layers may change practical semantics
 
+### Exploration Result
+
+Phase 1 adapter exploration against local SQLite passed the current semantics and stress suites:
+
+- single-winner claim
+- stale renew rejection
+- stale completion rejection after reclaim
+- reclaim preserving `startedAt`
+
+That reinforces the current positioning: SQLite is a strong semantic fit for single-node execution, even if it should not be generalized into the distributed reference model.
+
+Phase 1 also confirmed that destructive rebuild migrations are viable here.
+The old `heartbeat_at` column could be removed by rebuilding the runs table without weakening the lease-based model.
+
 ### Conclusion
 
 SQLite should remain a first-class target for local and single-node execution, but it should not be used as the mental model for all deployments.
@@ -173,6 +201,16 @@ libSQL is promising because it preserves much of the SQLite programming model wh
 - Durably depends on lease claim semantics more than on SQL syntax compatibility
 - remote or replicated execution characteristics matter more than surface compatibility
 - the exact guarantees around write serialization, visibility, and failure recovery must be validated through adapter-level tests
+
+### Exploration Result
+
+Phase 1 adapter exploration against libSQL passed the current semantics and stress suites used for local SQLite and PostgreSQL comparison.
+
+That is encouraging, but it should still be interpreted carefully:
+
+- no semantic failure has been reproduced in the current adapter tests
+- this is not the same as proving libSQL is interchangeable with PostgreSQL as a semantic reference backend
+- support language should remain "validated by adapter tests" rather than "assumed equivalent to SQLite"
 
 ### Best Fit Profile
 
@@ -234,6 +272,13 @@ The important questions are:
 
 Durably should optimize for semantic portability, not superficial API similarity.
 
+One practical consequence from exploration is:
+
+- PostgreSQL may need a different claim implementation than SQLite-like backends
+- browser-local SQLite-shaped runtimes may support the basic lease contract while still having weaker multi-runtime reclaim behavior
+
+Semantic portability does not mean one SQL statement fits every backend.
+
 ## Recommended Support Tiers
 
 The following tiering is a reasonable starting point.
@@ -254,6 +299,11 @@ These are the clearest semantic anchors:
 - Cloudflare D1
 
 These should be supported only if adapter tests demonstrate that claim, renew, complete, and reclaim semantics remain defensible.
+
+For browser-local SQLite-shaped runtimes such as SQLocal, the support story should be even narrower:
+
+- basic single-runtime lease semantics can be supported
+- multi-runtime reclaim semantics should be treated as caveated until validated more strongly
 
 ### Not a First-Class Promise
 

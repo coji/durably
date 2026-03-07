@@ -65,7 +65,7 @@ Japanese translations live under `ja/`.
 ### 1. Core
 
 - [core-runtime.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/core-runtime.md)
-  The main RFC. Defines the core runtime model, queue store, checkpoint store, and phase split.
+  The main RFC. Defines the core runtime model, with `processOne()` as the center of the portable contract, plus the queue store, checkpoint store, and phase split.
 
 ### 2. Deployment
 
@@ -78,7 +78,7 @@ Japanese translations live under `ja/`.
 - [database-runtime-fit.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/database-runtime-fit.md)
   Choosing a database — which databases are good semantic fits for the runtime.
 - [database-claim-patterns.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/database-claim-patterns.md)
-  Implementing an adapter — how each backend acquires runs and manages execution rights.
+  Implementing an adapter — how each backend implements internal claim paths and lease ownership semantics behind the runtime contract.
 - [database-adapter-sketches.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/database-adapter-sketches.md)
   Concrete PostgreSQL and SQLite query sketches.
 

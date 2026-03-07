@@ -1,7 +1,10 @@
 import type { Dialect } from 'kysely'
 import { Kysely } from 'kysely'
+import { monotonicFactory } from 'ulidx'
 import type { z } from 'zod'
+import { createStepContext } from './context'
 import type { JobDefinition } from './define-job'
+import { CancelledError, LeaseLostError } from './errors'
 import {
   type AnyEventInput,
   type DurablyEvent,
@@ -21,6 +24,9 @@ import {
 import { runMigrations } from './migrations'
 import type { Database } from './schema'
 import {
+  type CheckpointStore,
+  type DatabaseBackend,
+  type QueueStore,
   type Run,
   type RunFilter,
   type Storage,
@@ -40,10 +46,19 @@ export interface DurablyOptions<
   >,
 > {
   dialect: Dialect
+  /**
+   * Browser-local singleton key used to detect multiple runtimes against the same local database in one tab.
+   * When omitted, Durably will use browser-local dialect metadata if available.
+   */
+  singletonKey?: string
   pollingInterval?: number
+  pollingIntervalMs?: number
   heartbeatInterval?: number
+  leaseRenewIntervalMs?: number
   staleThreshold?: number
+  leaseMs?: number
   cleanupSteps?: boolean
+  preserveSteps?: boolean
   /**
    * Zod schema for labels. When provided:
    * - Labels are type-checked at compile time
@@ -67,11 +82,91 @@ export interface DurablyOptions<
  * Default configuration values
  */
 const DEFAULTS = {
-  pollingInterval: 1000,
-  heartbeatInterval: 5000,
-  staleThreshold: 30000,
-  cleanupSteps: true,
+  pollingIntervalMs: 1000,
+  leaseRenewIntervalMs: 5000,
+  leaseMs: 30000,
+  preserveSteps: true,
 } as const
+
+const ulid = monotonicFactory()
+const BROWSER_SINGLETON_REGISTRY_KEY = '__durablyBrowserSingletonRegistry'
+const BROWSER_LOCAL_DIALECT_KEY = '__durablyBrowserLocalKey'
+
+function defaultWorkerId(): string {
+  return `worker_${ulid()}`
+}
+
+function detectBackend(dialect: Dialect): DatabaseBackend {
+  return dialect.constructor.name === 'PostgresDialect' ? 'postgres' : 'generic'
+}
+
+function isBrowserLikeEnvironment(): boolean {
+  return (
+    typeof globalThis.window !== 'undefined' ||
+    typeof globalThis.document !== 'undefined'
+  )
+}
+
+function getBrowserSingletonKey(
+  dialect: Dialect,
+  explicitKey?: string,
+): string | null {
+  if (!isBrowserLikeEnvironment()) {
+    return null
+  }
+
+  if (explicitKey) {
+    return explicitKey
+  }
+
+  const taggedDialect = dialect as Dialect & {
+    [BROWSER_LOCAL_DIALECT_KEY]?: unknown
+  }
+  const taggedKey = taggedDialect[BROWSER_LOCAL_DIALECT_KEY]
+  return typeof taggedKey === 'string' ? taggedKey : null
+}
+
+function registerBrowserSingletonWarning(singletonKey: string): () => void {
+  type Registry = Map<string, Set<string>>
+  const globalRegistry = globalThis as typeof globalThis & {
+    [BROWSER_SINGLETON_REGISTRY_KEY]?: Registry
+  }
+  const registry =
+    globalRegistry[BROWSER_SINGLETON_REGISTRY_KEY] ??
+    new Map<string, Set<string>>()
+  globalRegistry[BROWSER_SINGLETON_REGISTRY_KEY] = registry
+
+  const instanceId = ulid()
+  const instances = registry.get(singletonKey) ?? new Set<string>()
+  const hadExistingInstance = instances.size > 0
+  instances.add(instanceId)
+  registry.set(singletonKey, instances)
+
+  if (
+    hadExistingInstance &&
+    (typeof process === 'undefined' || process.env.NODE_ENV !== 'production')
+  ) {
+    console.warn(
+      `[durably] Multiple runtimes were created for browser-local store "${singletonKey}" in one tab. Prefer a single shared instance per tab.`,
+    )
+  }
+
+  let released = false
+  return () => {
+    if (released) {
+      return
+    }
+    released = true
+    const activeInstances = registry.get(singletonKey)
+    if (!activeInstances) {
+      return
+    }
+    activeInstances.delete(instanceId)
+    if (activeInstances.size === 0) {
+      registry.delete(singletonKey)
+    }
+  }
+}
 
 /**
  * Plugin interface for extending Durably
@@ -140,7 +235,15 @@ export interface Durably<
   /**
    * Storage layer for database operations
    */
-  readonly storage: Storage
+  readonly storage: Storage<TLabels>
+
+  /**
+   * Runtime store split by responsibility.
+   */
+  readonly store: {
+    queue: QueueStore<TLabels>
+    checkpoint: CheckpointStore
+  }
 
   /**
    * Register an event listener
@@ -177,9 +280,22 @@ export interface Durably<
   ): Durably<TJobs & TransformToHandles<TNewJobs, TLabels>, TLabels>
 
   /**
+   * Process a single claimable run.
+   */
+  processOne(options?: { workerId?: string }): Promise<boolean>
+
+  /**
+   * Process runs until the queue appears idle.
+   */
+  processUntilIdle(options?: {
+    workerId?: string
+    maxRuns?: number
+  }): Promise<number>
+
+  /**
    * Start the worker polling loop
    */
-  start(): void
+  start(options?: { workerId?: string }): void
 
   /**
    * Stop the worker after current run completes
@@ -259,16 +375,21 @@ export interface Durably<
 /**
  * Internal state shared across Durably instances
  */
-interface DurablyState {
+interface DurablyState<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   db: Kysely<Database>
-  storage: Storage
+  storage: Storage<TLabels>
   eventEmitter: EventEmitter
   jobRegistry: JobRegistry
   worker: Worker
   labelsSchema: z.ZodType | undefined
-  cleanupSteps: boolean
+  preserveSteps: boolean
   migrating: Promise<void> | null
   migrated: boolean
+  leaseMs: number
+  leaseRenewIntervalMs: number
+  releaseBrowserSingleton: () => void
 }
 
 /**
@@ -280,26 +401,210 @@ function createDurablyInstance<
     JobHandle<string, unknown, unknown, Record<string, string>>
   >,
   TLabels extends Record<string, string> = Record<string, string>,
->(state: DurablyState, jobs: TJobs): Durably<TJobs, TLabels> {
-  const { db, storage, eventEmitter, jobRegistry, worker } = state
+>(state: DurablyState<TLabels>, jobs: TJobs): Durably<TJobs, TLabels> {
+  const {
+    db,
+    storage,
+    eventEmitter,
+    jobRegistry,
+    worker,
+    releaseBrowserSingleton,
+  } = state
+  const queue = storage.queue
+  const checkpoint = storage.checkpoint
 
   async function getRunOrThrow(runId: string): Promise<Run<TLabels>> {
-    const run = await storage.getRun(runId)
+    const run = await queue.getRun(runId)
     if (!run) {
       throw new Error(`Run not found: ${runId}`)
     }
     return run as Run<TLabels>
   }
 
+  async function executeRun(
+    run: Run<TLabels>,
+    workerId: string,
+  ): Promise<void> {
+    const job = jobRegistry.get(run.jobName)
+    if (!job) {
+      await queue.failRun(
+        run.id,
+        workerId,
+        `Unknown job: ${run.jobName}`,
+        new Date().toISOString(),
+      )
+      return
+    }
+
+    const { step, abortLeaseOwnership, dispose } = createStepContext(
+      run,
+      run.jobName,
+      workerId,
+      storage,
+      eventEmitter,
+    )
+    let leaseDeadlineTimer: ReturnType<typeof setTimeout> | null = null
+
+    const scheduleLeaseDeadline = (leaseExpiresAt: string | null) => {
+      if (leaseDeadlineTimer) {
+        clearTimeout(leaseDeadlineTimer)
+        leaseDeadlineTimer = null
+      }
+
+      if (!leaseExpiresAt) {
+        return
+      }
+
+      const delay = Math.max(0, Date.parse(leaseExpiresAt) - Date.now())
+      leaseDeadlineTimer = setTimeout(() => {
+        abortLeaseOwnership()
+      }, delay)
+    }
+
+    scheduleLeaseDeadline(run.leaseExpiresAt)
+
+    const leaseTimer = setInterval(() => {
+      const now = new Date().toISOString()
+      queue
+        .renewLease(run.id, workerId, now, state.leaseMs)
+        .then((renewed) => {
+          if (!renewed) {
+            abortLeaseOwnership()
+            eventEmitter.emit({
+              type: 'worker:error',
+              error: `Lease renewal lost ownership for run ${run.id}`,
+              context: 'lease-renewal',
+              runId: run.id,
+            })
+            return
+          }
+
+          const renewedLeaseExpiresAt = new Date(
+            Date.now() + state.leaseMs,
+          ).toISOString()
+
+          scheduleLeaseDeadline(renewedLeaseExpiresAt)
+
+          eventEmitter.emit({
+            type: 'run:lease-renewed',
+            runId: run.id,
+            jobName: run.jobName,
+            leaseOwner: workerId,
+            leaseExpiresAt: renewedLeaseExpiresAt,
+            labels: run.labels,
+          })
+        })
+        .catch((error) => {
+          eventEmitter.emit({
+            type: 'worker:error',
+            error: error instanceof Error ? error.message : String(error),
+            context: 'lease-renewal',
+            runId: run.id,
+          })
+        })
+    }, state.leaseRenewIntervalMs)
+
+    const started = Date.now()
+
+    try {
+      eventEmitter.emit({
+        type: 'run:leased',
+        runId: run.id,
+        jobName: run.jobName,
+        input: run.input,
+        leaseOwner: workerId,
+        leaseExpiresAt: run.leaseExpiresAt ?? new Date().toISOString(),
+        labels: run.labels,
+      })
+      eventEmitter.emit({
+        type: 'run:start',
+        runId: run.id,
+        jobName: run.jobName,
+        input: run.input,
+        leaseOwner: workerId,
+        leaseExpiresAt: run.leaseExpiresAt ?? new Date().toISOString(),
+        labels: run.labels,
+      })
+
+      const output = await job.fn(step, run.input)
+
+      if (job.outputSchema) {
+        const parseResult = job.outputSchema.safeParse(output)
+        if (!parseResult.success) {
+          throw new Error(`Invalid output: ${parseResult.error.message}`)
+        }
+      }
+
+      const completedAt = new Date().toISOString()
+      const completed = await queue.completeRun(
+        run.id,
+        workerId,
+        output,
+        completedAt,
+      )
+
+      if (completed) {
+        eventEmitter.emit({
+          type: 'run:complete',
+          runId: run.id,
+          jobName: run.jobName,
+          output,
+          duration: Date.now() - started,
+          labels: run.labels,
+        })
+      }
+    } catch (error) {
+      if (error instanceof LeaseLostError || error instanceof CancelledError) {
+        return
+      }
+
+      const errorMessage =
+        error instanceof Error ? error.message : String(error)
+      const completedAt = new Date().toISOString()
+      const failed = await queue.failRun(
+        run.id,
+        workerId,
+        errorMessage,
+        completedAt,
+      )
+
+      if (failed) {
+        const steps = await checkpoint.getSteps(run.id)
+        const failedStep = steps.find((entry) => entry.status === 'failed')
+        eventEmitter.emit({
+          type: 'run:fail',
+          runId: run.id,
+          jobName: run.jobName,
+          error: errorMessage,
+          failedStepName: failedStep?.name ?? 'unknown',
+          labels: run.labels,
+        })
+      }
+    } finally {
+      clearInterval(leaseTimer)
+      if (leaseDeadlineTimer) {
+        clearTimeout(leaseDeadlineTimer)
+      }
+      dispose()
+      if (!state.preserveSteps) {
+        await checkpoint.deleteSteps(run.id)
+      }
+    }
+  }
+
   const durably: Durably<TJobs, TLabels> = {
     db,
     storage,
+    store: storage,
     jobs,
     on: eventEmitter.on,
     emit: eventEmitter.emit,
     onError: eventEmitter.onError,
     start: worker.start,
-    stop: worker.stop,
+    async stop(): Promise<void> {
+      releaseBrowserSingleton()
+      await worker.stop()
+    },
 
     // biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
     register<TNewJobs extends Record<string, JobDefinition<string, any, any>>>(
@@ -331,8 +636,8 @@ function createDurablyInstance<
       )
     },
 
-    getRun: storage.getRun,
-    getRuns: storage.getRuns,
+    getRun: queue.getRun,
+    getRuns: queue.getRuns,
 
     use(plugin: DurablyPlugin): void {
       plugin.install(durably)
@@ -362,7 +667,7 @@ function createDurablyInstance<
       const closeEvents = new Set<EventType>(['run:complete', 'run:delete'])
       // All event types to subscribe to for a run
       const subscribedEvents: EventType[] = [
-        'run:start',
+        'run:leased',
         'run:complete',
         'run:fail',
         'run:cancel',
@@ -407,14 +712,14 @@ function createDurablyInstance<
       if (run.status === 'pending') {
         throw new Error(`Cannot retrigger pending run: ${runId}`)
       }
-      if (run.status === 'running') {
-        throw new Error(`Cannot retrigger running run: ${runId}`)
+      if (run.status === 'leased') {
+        throw new Error(`Cannot retrigger leased run: ${runId}`)
       }
       if (!jobRegistry.get(run.jobName)) {
         throw new Error(`Unknown job: ${run.jobName}`)
       }
 
-      const nextRun = await storage.createRun({
+      const nextRun = await queue.enqueue({
         jobName: run.jobName,
         input: run.input,
         concurrencyKey: run.concurrencyKey ?? undefined,
@@ -444,14 +749,11 @@ function createDurablyInstance<
         throw new Error(`Cannot cancel already cancelled run: ${runId}`)
       }
       const wasPending = run.status === 'pending'
-      await storage.updateRun(runId, {
-        status: 'cancelled',
-        completedAt: new Date().toISOString(),
-      })
+      await queue.cancelRun(runId, new Date().toISOString())
 
       // For pending runs, no worker will clean up steps, so do it here
-      if (wasPending && state.cleanupSteps) {
-        await storage.deleteSteps(runId)
+      if (wasPending && !state.preserveSteps) {
+        await checkpoint.deleteSteps(runId)
       }
 
       // Emit run:cancel event
@@ -468,10 +770,11 @@ function createDurablyInstance<
       if (run.status === 'pending') {
         throw new Error(`Cannot delete pending run: ${runId}`)
       }
-      if (run.status === 'running') {
-        throw new Error(`Cannot delete running run: ${runId}`)
+      if (run.status === 'leased') {
+        throw new Error(`Cannot delete leased run: ${runId}`)
       }
-      await storage.deleteRun(runId)
+      await checkpoint.deleteSteps(runId)
+      await queue.deleteRun(runId)
 
       // Emit run:delete event
       eventEmitter.emit({
@@ -480,6 +783,52 @@ function createDurablyInstance<
         jobName: run.jobName,
         labels: run.labels,
       })
+    },
+
+    async processOne(options?: { workerId?: string }): Promise<boolean> {
+      const workerId = options?.workerId ?? defaultWorkerId()
+      const now = new Date().toISOString()
+
+      await queue.releaseExpiredLeases(now)
+
+      const leasedRuns = await queue.getRuns({ status: 'leased' })
+      const excludeConcurrencyKeys = leasedRuns
+        .filter(
+          (entry): entry is Run<TLabels> & { concurrencyKey: string } =>
+            entry.concurrencyKey !== null &&
+            entry.leaseExpiresAt !== null &&
+            entry.leaseExpiresAt > now,
+        )
+        .map((entry) => entry.concurrencyKey)
+
+      const run = await queue.claimNext(workerId, now, state.leaseMs, {
+        excludeConcurrencyKeys,
+      })
+      if (!run) {
+        return false
+      }
+
+      await executeRun(run, workerId)
+      return true
+    },
+
+    async processUntilIdle(options?: {
+      workerId?: string
+      maxRuns?: number
+    }): Promise<number> {
+      const workerId = options?.workerId ?? defaultWorkerId()
+      const maxRuns = options?.maxRuns ?? Number.POSITIVE_INFINITY
+      let processed = 0
+
+      while (processed < maxRuns) {
+        const didProcess = await this.processOne({ workerId })
+        if (!didProcess) {
+          break
+        }
+        processed++
+      }
+
+      return processed
     },
 
     async migrate(): Promise<void> {
@@ -545,34 +894,76 @@ export function createDurably<
   | Durably<TransformToHandles<TJobs, TLabels>, TLabels>
   | Durably<Record<string, never>, TLabels> {
   const config = {
-    pollingInterval: options.pollingInterval ?? DEFAULTS.pollingInterval,
-    heartbeatInterval: options.heartbeatInterval ?? DEFAULTS.heartbeatInterval,
-    staleThreshold: options.staleThreshold ?? DEFAULTS.staleThreshold,
-    cleanupSteps: options.cleanupSteps ?? DEFAULTS.cleanupSteps,
+    pollingIntervalMs:
+      options.pollingIntervalMs ??
+      options.pollingInterval ??
+      DEFAULTS.pollingIntervalMs,
+    leaseRenewIntervalMs:
+      options.leaseRenewIntervalMs ??
+      options.heartbeatInterval ??
+      DEFAULTS.leaseRenewIntervalMs,
+    leaseMs: options.leaseMs ?? options.staleThreshold ?? DEFAULTS.leaseMs,
+    preserveSteps:
+      options.preserveSteps ??
+      (options.cleanupSteps !== undefined
+        ? !options.cleanupSteps
+        : undefined) ??
+      DEFAULTS.preserveSteps,
   }
 
   const db = new Kysely<Database>({ dialect: options.dialect })
-  const storage = createKyselyStorage(db)
+  const singletonKey = getBrowserSingletonKey(
+    options.dialect,
+    options.singletonKey,
+  )
+  const releaseBrowserSingleton =
+    singletonKey !== null
+      ? registerBrowserSingletonWarning(singletonKey)
+      : () => {}
+  const storage = createKyselyStorage(
+    db,
+    detectBackend(options.dialect),
+  ) as Storage<TLabels>
+  const originalDestroy = db.destroy.bind(db)
+  db.destroy = (async () => {
+    releaseBrowserSingleton()
+    return originalDestroy()
+  }) as typeof db.destroy
   const eventEmitter = createEventEmitter()
   const jobRegistry = createJobRegistry()
-  const worker = createWorker(config, storage, eventEmitter, jobRegistry)
+  let processOneImpl:
+    | ((options?: { workerId?: string }) => Promise<boolean>)
+    | null = null
+  const worker = createWorker(
+    { pollingIntervalMs: config.pollingIntervalMs },
+    (runtimeOptions) => {
+      if (!processOneImpl) {
+        throw new Error('Durably runtime is not initialized')
+      }
+      return processOneImpl(runtimeOptions)
+    },
+  )
 
-  const state: DurablyState = {
+  const state: DurablyState<TLabels> = {
     db,
     storage,
     eventEmitter,
     jobRegistry,
     worker,
     labelsSchema: options.labels,
-    cleanupSteps: config.cleanupSteps,
+    preserveSteps: config.preserveSteps,
     migrating: null,
     migrated: false,
+    leaseMs: config.leaseMs,
+    leaseRenewIntervalMs: config.leaseRenewIntervalMs,
+    releaseBrowserSingleton,
   }
 
   const instance = createDurablyInstance<Record<string, never>, TLabels>(
     state,
     {},
   )
+  processOneImpl = instance.processOne
 
   if (options.jobs) {
     return instance.register(options.jobs)

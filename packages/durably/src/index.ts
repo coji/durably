@@ -25,6 +25,8 @@ export type {
   RunCompleteEvent,
   RunDeleteEvent,
   RunFailEvent,
+  RunLeaseRenewedEvent,
+  RunLeasedEvent,
   RunProgressEvent,
   RunStartEvent,
   RunTriggerEvent,
@@ -56,10 +58,20 @@ export type {
 
 // Storage types
 export { toClientRun } from './storage'
-export type { ClientRun, Log, Run, RunFilter, Step } from './storage'
+export type {
+  CheckpointStore,
+  ClientRun,
+  Log,
+  QueueStore,
+  Run,
+  RunFilter,
+  RunStatus,
+  Step,
+  Storage,
+} from './storage'
 
 // Errors
-export { CancelledError } from './errors'
+export { CancelledError, LeaseLostError } from './errors'
 
 // Server
 export { createDurablyHandler } from './server'

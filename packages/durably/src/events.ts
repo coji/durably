@@ -19,13 +19,37 @@ export interface RunTriggerEvent extends BaseEvent {
 }
 
 /**
- * Run start event
+ * Run leased event
+ */
+export interface RunLeasedEvent extends BaseEvent {
+  type: 'run:leased'
+  runId: string
+  jobName: string
+  input: unknown
+  leaseOwner: string
+  leaseExpiresAt: string
+  labels: Record<string, string>
+}
+
+/**
+ * Deprecated compatibility alias for run:leased.
  */
 export interface RunStartEvent extends BaseEvent {
   type: 'run:start'
   runId: string
   jobName: string
   input: unknown
+  leaseOwner?: string
+  leaseExpiresAt?: string
+  labels: Record<string, string>
+}
+
+export interface RunLeaseRenewedEvent extends BaseEvent {
+  type: 'run:lease-renewed'
+  runId: string
+  jobName: string
+  leaseOwner: string
+  leaseExpiresAt: string
   labels: Record<string, string>
 }
 
@@ -178,7 +202,9 @@ export interface WorkerErrorEvent extends BaseEvent {
  */
 export type DurablyEvent =
   | RunTriggerEvent
+  | RunLeasedEvent
   | RunStartEvent
+  | RunLeaseRenewedEvent
   | RunCompleteEvent
   | RunFailEvent
   | RunCancelEvent
@@ -217,7 +243,9 @@ export type EventInput<T extends EventType> = Omit<
  */
 export type AnyEventInput =
   | EventInput<'run:trigger'>
+  | EventInput<'run:leased'>
   | EventInput<'run:start'>
+  | EventInput<'run:lease-renewed'>
   | EventInput<'run:complete'>
   | EventInput<'run:fail'>
   | EventInput<'run:cancel'>

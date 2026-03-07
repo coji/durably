@@ -2,7 +2,7 @@
 
 ## Goal
 
-This document describes concrete implementation patterns for lease claim and related mutations across different database adapters.
+This document describes concrete implementation patterns for the adapter-internal lease claim path and related mutations across different database adapters.
 
 For more concrete PostgreSQL and SQLite query sketches, see `database-adapter-sketches.md`.
 
@@ -16,7 +16,7 @@ Its purpose is to clarify:
 
 ## Scope
 
-The focus is on four storage operations:
+The focus is on four adapter operations:
 
 - `claimNext()`
 - `renewLease()`
@@ -24,6 +24,11 @@ The focus is on four storage operations:
 - idempotent `enqueue()`
 
 Checkpoint and event persistence matter too, but the highest-risk adapter logic is usually in claim and lease ownership.
+
+This document is for adapter implementors.
+It does not define the primary runtime contract exposed to application code.
+At the runtime level, the portability target is `processOne()` and the lease semantics around it.
+`claimNext()` exists here as an internal building block whose exact shape may vary by backend.
 
 ## Shared Rule
 
@@ -70,6 +75,27 @@ In practice this usually means a pattern based on:
 - guarded update inside the same transaction
 
 This works well because PostgreSQL gives a clear row-locking model for concurrent workers.
+
+#### Exploration Note
+
+This is not just a stylistic preference.
+
+During Phase 1 adapter exploration, PostgreSQL was able to produce double winners when it was forced through a generic SQLite-shaped conditional update path.
+
+That means:
+
+- PostgreSQL needs a dedicated claim strategy
+- "generic SQL claim" should not be treated as a first-class portability goal
+- PostgreSQL correctness should be argued from row locking semantics, not from hoping a subquery update races safely
+
+Phase 1 also showed a second boundary:
+
+- even when runtime-level `processOne()` semantics are defensible, a raw portable `QueueStore.claimNext()` primitive may still be too weak a portability target
+
+That reinforces the intended layering:
+
+- `processOne()` is the core runtime contract
+- `claimNext()` is adapter machinery used to implement it
 
 ### `renewLease()`
 
@@ -141,6 +167,15 @@ SQLite correctness is easier to defend than SQLite scale.
 
 The adapter is viable, but should be framed as strongest in single-machine or tightly-controlled write environments.
 
+#### Exploration Note
+
+The current local SQLite exploration passed the same basic claim and reclaim tests that were used for PostgreSQL and libSQL comparison.
+
+That supports the current stance:
+
+- SQLite can be a strong semantic target
+- but it should be presented as a single-node semantic anchor, not as the universal concurrency model
+
 ## libSQL Patterns
 
 libSQL should begin from the SQLite query shape, but should not be assumed equivalent in practice.
@@ -175,6 +210,18 @@ These should remain guarded updates exactly as with SQLite and PostgreSQL:
 Surface compatibility is not enough.
 
 If concurrency behavior differs meaningfully from local SQLite assumptions, the adapter must document that difference and may need stricter support boundaries.
+
+#### Exploration Note
+
+The current libSQL exploration passed the shared semantics and stress suites used in Phase 1.
+
+That is a positive signal, but it should still be interpreted as:
+
+- "no failure reproduced in current adapter tests"
+
+not:
+
+- "proven equivalent to PostgreSQL under all claim and reclaim conditions"
 
 ## Cloudflare D1 Patterns
 
@@ -219,6 +266,12 @@ That is acceptable if it preserves the same semantics:
 - predictable reclaim after expiry
 
 The exact SQL shape may vary. The semantic contract may not.
+
+However, Phase 1 exploration showed a hard boundary:
+
+- this generic shape should not be assumed safe on PostgreSQL
+
+If a backend cannot defend exclusivity with that shape under contention, it needs a backend-specific claim path.
 
 ## Reclaim Semantics
 

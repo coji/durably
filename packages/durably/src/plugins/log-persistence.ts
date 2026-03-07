@@ -8,7 +8,7 @@ export function withLogPersistence(): DurablyPlugin {
     name: 'log-persistence',
     install(durably) {
       durably.on('log:write', async (event) => {
-        await durably.storage.createLog({
+        await durably.storage.checkpoint.createLog({
           runId: event.runId,
           stepName: event.stepName,
           level: event.level,

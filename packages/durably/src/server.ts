@@ -146,10 +146,11 @@ export interface CreateDurablyHandlerOptions<
 const VALID_STATUSES = [
   'pending',
   'running',
+  'leased',
   'completed',
   'failed',
   'cancelled',
-] as const satisfies readonly RunFilter['status'][]
+] as const
 
 const VALID_STATUSES_SET: ReadonlySet<string> = new Set(VALID_STATUSES)
 
@@ -210,7 +211,10 @@ function parseRunFilter(url: URL): RunFilter | Response {
 
   return {
     jobName: jobNames.length > 0 ? jobNames : undefined,
-    status: statusParam as RunFilter['status'],
+    status:
+      statusParam === 'running'
+        ? ('leased' as RunFilter['status'])
+        : (statusParam as RunFilter['status']),
     labels,
     limit,
     offset,

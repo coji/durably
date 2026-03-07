@@ -32,6 +32,21 @@ export interface StepContext {
   readonly runId: string
 
   /**
+   * AbortSignal for cooperative cancellation or lease-loss handling.
+   */
+  readonly signal: AbortSignal
+
+  /**
+   * Whether this execution should stop cooperatively.
+   */
+  isAborted(): boolean
+
+  /**
+   * Throw if execution has been cancelled or lease ownership was lost.
+   */
+  throwIfAborted(): void
+
+  /**
    * Execute a step with automatic persistence and replay
    */
   run<T>(name: string, fn: (signal: AbortSignal) => T | Promise<T>): Promise<T>
@@ -261,7 +276,7 @@ export function createJobHandle<
       }
 
       // Create the run
-      const run = await storage.createRun({
+      const run = await storage.queue.enqueue({
         jobName: jobDef.name,
         input: validatedInput,
         idempotencyKey: options?.idempotencyKey,
@@ -352,7 +367,7 @@ export function createJobHandle<
 
         // Check current status after subscribing (race condition mitigation)
         // If the run completed before we subscribed, we need to handle it
-        storage
+        storage.queue
           .getRun(run.id)
           .then((currentRun) => {
             if (resolved || !currentRun) return
@@ -427,7 +442,7 @@ export function createJobHandle<
       }
 
       // Create all runs
-      const runs = await storage.batchCreateRuns(
+      const runs = await storage.queue.enqueueMany(
         validated.map((v) => ({
           jobName: jobDef.name,
           input: v.input,
@@ -452,7 +467,7 @@ export function createJobHandle<
     },
 
     async getRun(id: string): Promise<TypedRun<TOutput, TLabels> | null> {
-      const run = await storage.getRun(id)
+      const run = await storage.queue.getRun(id)
       if (!run || run.jobName !== jobDef.name) {
         return null
       }
@@ -462,7 +477,7 @@ export function createJobHandle<
     async getRuns(
       filter?: Omit<RunFilter<TLabels>, 'jobName'>,
     ): Promise<TypedRun<TOutput, TLabels>[]> {
-      const runs = await storage.getRuns({
+      const runs = await storage.queue.getRuns({
         ...filter,
         jobName: jobDef.name,
       })

@@ -2,6 +2,7 @@ import type { Dialect } from 'kysely'
 import { sql } from 'kysely'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createDurably, type Durably } from '../../src'
+import { LATEST_SCHEMA_VERSION } from '../../src/migrations'
 
 export function createMigrateTests(createDialect: () => Dialect) {
   describe('migrate()', () => {
@@ -68,7 +69,19 @@ export function createMigrateTests(createDialect: () => Dialect) {
       `.execute(durably.db)
 
       expect(result.rows).toHaveLength(1)
-      expect(result.rows[0].version).toBe(1)
+      expect(result.rows[0].version).toBe(LATEST_SCHEMA_VERSION)
+    })
+
+    it('creates durably_runs without heartbeat_at', async () => {
+      durably = createDurably({ dialect: createDialect() })
+      await durably.migrate()
+
+      const result = await sql<{ name: string }>`
+        PRAGMA table_info('durably_runs')
+      `.execute(durably.db)
+
+      const columnNames = result.rows.map((row) => row.name)
+      expect(columnNames).not.toContain('heartbeat_at')
     })
 
     it('is idempotent (can be called multiple times safely)', async () => {
@@ -82,8 +95,7 @@ export function createMigrateTests(createDialect: () => Dialect) {
         SELECT version FROM durably_schema_versions
       `.execute(durably.db)
 
-      // Should have version records for each migration
-      expect(result.rows).toHaveLength(1)
+      expect(result.rows).toHaveLength(LATEST_SCHEMA_VERSION)
     })
   })
 }

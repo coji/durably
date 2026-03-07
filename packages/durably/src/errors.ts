@@ -11,6 +11,16 @@ export class CancelledError extends Error {
 }
 
 /**
+ * Error thrown when a worker loses lease ownership during execution.
+ */
+export class LeaseLostError extends Error {
+  constructor(runId: string) {
+    super(`Lease ownership was lost: ${runId}`)
+    this.name = 'LeaseLostError'
+  }
+}
+
+/**
  * Extract error message from unknown error
  */
 export function getErrorMessage(error: unknown): string {

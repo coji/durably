@@ -4,6 +4,13 @@ import type { Database } from './schema'
 
 const ulid = monotonicFactory()
 
+export type RunStatus =
+  | 'pending'
+  | 'leased'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
 /**
  * Run data for creating a new run
  */
@@ -26,7 +33,7 @@ export interface Run<
   id: string
   jobName: string
   input: unknown
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  status: RunStatus
   idempotencyKey: string | null
   concurrencyKey: string | null
   currentStepIndex: number
@@ -35,6 +42,11 @@ export interface Run<
   output: unknown | null
   error: string | null
   labels: TLabels
+  leaseOwner: string | null
+  leaseExpiresAt: string | null
+  /**
+   * Deprecated compatibility alias for legacy heartbeat-based runtime.
+   */
   heartbeatAt: string
   startedAt: string | null
   completedAt: string | null
@@ -43,26 +55,12 @@ export interface Run<
 }
 
 /**
- * Run update data
- */
-export interface UpdateRunInput {
-  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
-  currentStepIndex?: number
-  progress?: { current: number; total?: number; message?: string } | null
-  output?: unknown
-  error?: string | null
-  heartbeatAt?: string
-  startedAt?: string
-  completedAt?: string
-}
-
-/**
  * Run filter options
  */
 export interface RunFilter<
   TLabels extends Record<string, string> = Record<string, string>,
 > {
-  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  status?: RunStatus
   /** Filter by job name(s). Pass a string for one, or an array for multiple (OR). */
   jobName?: string | string[]
   /** Filter by labels (all specified labels must match) */
@@ -125,15 +123,125 @@ export interface Log {
   createdAt: string
 }
 
+export interface ProgressData {
+  current: number
+  total?: number
+  message?: string
+}
+
+export interface ClaimOptions {
+  excludeConcurrencyKeys?: string[]
+}
+
+export type DatabaseBackend = 'generic' | 'postgres'
+
+export interface QueueStore<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
+  enqueue(input: CreateRunInput<TLabels>): Promise<Run<TLabels>>
+  enqueueMany(inputs: CreateRunInput<TLabels>[]): Promise<Run<TLabels>[]>
+  getRun<T extends Run<TLabels> = Run<TLabels>>(
+    runId: string,
+  ): Promise<T | null>
+  getRuns<T extends Run<TLabels> = Run<TLabels>>(
+    filter?: RunFilter<TLabels>,
+  ): Promise<T[]>
+  claimNext(
+    workerId: string,
+    now: string,
+    leaseMs: number,
+    options?: ClaimOptions,
+  ): Promise<Run<TLabels> | null>
+  renewLease(
+    runId: string,
+    workerId: string,
+    now: string,
+    leaseMs: number,
+  ): Promise<boolean>
+  releaseExpiredLeases(now: string): Promise<number>
+  completeRun(
+    runId: string,
+    workerId: string,
+    output: unknown,
+    completedAt: string,
+  ): Promise<boolean>
+  failRun(
+    runId: string,
+    workerId: string,
+    error: string,
+    completedAt: string,
+  ): Promise<boolean>
+  cancelRun(runId: string, now: string): Promise<void>
+  deleteRun(runId: string): Promise<void>
+}
+
+export interface CheckpointStore {
+  createStep(input: CreateStepInput): Promise<Step>
+  deleteSteps(runId: string): Promise<void>
+  getSteps(runId: string): Promise<Step[]>
+  getCompletedStep(runId: string, name: string): Promise<Step | null>
+  createLog(input: CreateLogInput): Promise<Log>
+  getLogs(runId: string): Promise<Log[]>
+  advanceRunStepIndex(runId: string, stepIndex: number): Promise<void>
+  updateProgress(runId: string, progress: ProgressData | null): Promise<void>
+}
+
+/**
+ * Combined storage surface used by the runtime.
+ */
+export interface Storage<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
+  queue: QueueStore<TLabels>
+  checkpoint: CheckpointStore
+  createRun(input: CreateRunInput<TLabels>): Promise<Run<TLabels>>
+  batchCreateRuns(inputs: CreateRunInput<TLabels>[]): Promise<Run<TLabels>[]>
+  getRun<T extends Run<TLabels> = Run<TLabels>>(
+    runId: string,
+  ): Promise<T | null>
+  getRuns<T extends Run<TLabels> = Run<TLabels>>(
+    filter?: RunFilter<TLabels>,
+  ): Promise<T[]>
+  claimNextPendingRun(
+    excludeConcurrencyKeys: string[],
+  ): Promise<Run<TLabels> | null>
+  updateRun(
+    runId: string,
+    data: {
+      status?: RunStatus | 'running'
+      currentStepIndex?: number
+      progress?: ProgressData | null
+      output?: unknown
+      error?: string | null
+      heartbeatAt?: string
+      leaseOwner?: string | null
+      leaseExpiresAt?: string | null
+      startedAt?: string
+      completedAt?: string
+    },
+  ): Promise<void>
+  deleteRun(runId: string): Promise<void>
+  createStep(input: CreateStepInput): Promise<Step>
+  deleteSteps(runId: string): Promise<void>
+  getSteps(runId: string): Promise<Step[]>
+  getCompletedStep(runId: string, name: string): Promise<Step | null>
+  createLog(input: CreateLogInput): Promise<Log>
+  getLogs(runId: string): Promise<Log[]>
+}
+
 /**
  * A client-safe subset of Run, excluding internal fields like
- * heartbeatAt, idempotencyKey, concurrencyKey, and updatedAt.
+ * leaseOwner, leaseExpiresAt, idempotencyKey, concurrencyKey, and updatedAt.
  */
 export type ClientRun<
   TLabels extends Record<string, string> = Record<string, string>,
 > = Omit<
   Run<TLabels>,
-  'idempotencyKey' | 'concurrencyKey' | 'heartbeatAt' | 'updatedAt'
+  | 'idempotencyKey'
+  | 'concurrencyKey'
+  | 'leaseOwner'
+  | 'leaseExpiresAt'
+  | 'updatedAt'
 >
 
 /**
@@ -145,40 +253,14 @@ export function toClientRun<
   const {
     idempotencyKey,
     concurrencyKey,
-    heartbeatAt,
+    leaseOwner,
+    leaseExpiresAt,
     updatedAt,
     ...clientRun
   } = run
   return clientRun
 }
 
-/**
- * Storage interface for database operations
- */
-export interface Storage {
-  // Run operations
-  createRun(input: CreateRunInput): Promise<Run>
-  batchCreateRuns(inputs: CreateRunInput[]): Promise<Run[]>
-  updateRun(runId: string, data: UpdateRunInput): Promise<void>
-  deleteRun(runId: string): Promise<void>
-  getRun<T extends Run = Run>(runId: string): Promise<T | null>
-  getRuns<T extends Run = Run>(filter?: RunFilter): Promise<T[]>
-  claimNextPendingRun(excludeConcurrencyKeys: string[]): Promise<Run | null>
-
-  // Step operations
-  createStep(input: CreateStepInput): Promise<Step>
-  deleteSteps(runId: string): Promise<void>
-  getSteps(runId: string): Promise<Step[]>
-  getCompletedStep(runId: string, name: string): Promise<Step | null>
-
-  // Log operations
-  createLog(input: CreateLogInput): Promise<Log>
-  getLogs(runId: string): Promise<Log[]>
-}
-
-/**
- * Convert database row to Run object
- */
 /**
  * Validate label keys: alphanumeric, dash, underscore, dot, slash only
  */
@@ -211,7 +293,9 @@ function rowToRun(
     output: row.output ? JSON.parse(row.output) : null,
     error: row.error,
     labels: JSON.parse(row.labels),
-    heartbeatAt: row.heartbeat_at,
+    leaseOwner: row.lease_owner,
+    leaseExpiresAt: row.lease_expires_at,
+    heartbeatAt: row.lease_expires_at ?? row.updated_at,
     startedAt: row.started_at,
     completedAt: row.completed_at,
     createdAt: row.created_at,
@@ -252,11 +336,14 @@ function rowToLog(row: Database['durably_logs']): Log {
 }
 
 /**
- * Create a Kysely-based Storage implementation
+ * Create a Kysely-based QueueStore implementation
  */
-export function createKyselyStorage(db: Kysely<Database>): Storage {
+export function createKyselyQueueStore(
+  db: Kysely<Database>,
+  backend: DatabaseBackend = 'generic',
+): QueueStore<Record<string, string>> {
   return {
-    async createRun(input: CreateRunInput): Promise<Run> {
+    async enqueue(input: CreateRunInput): Promise<Run> {
       const now = new Date().toISOString()
 
       // Check for existing run with same idempotency key
@@ -288,7 +375,8 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
         output: null,
         error: null,
         labels: JSON.stringify(input.labels ?? {}),
-        heartbeat_at: now,
+        lease_owner: null,
+        lease_expires_at: null,
         started_at: null,
         completed_at: null,
         created_at: now,
@@ -300,7 +388,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       return rowToRun(run)
     },
 
-    async batchCreateRuns(inputs: CreateRunInput[]): Promise<Run[]> {
+    async enqueueMany(inputs: CreateRunInput[]): Promise<Run[]> {
       if (inputs.length === 0) {
         return []
       }
@@ -345,7 +433,8 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
             output: null,
             error: null,
             labels: JSON.stringify(input.labels ?? {}),
-            heartbeat_at: now,
+            lease_owner: null,
+            lease_expires_at: null,
             started_at: null,
             completed_at: null,
             created_at: now,
@@ -361,40 +450,6 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
 
         return runs.map(rowToRun)
       })
-    },
-
-    async updateRun(runId: string, data: UpdateRunInput): Promise<void> {
-      const now = new Date().toISOString()
-      const updates: Partial<Database['durably_runs']> = {
-        updated_at: now,
-      }
-
-      if (data.status !== undefined) updates.status = data.status
-      if (data.currentStepIndex !== undefined)
-        updates.current_step_index = data.currentStepIndex
-      if (data.progress !== undefined)
-        updates.progress = data.progress ? JSON.stringify(data.progress) : null
-      if (data.output !== undefined)
-        updates.output = JSON.stringify(data.output)
-      if (data.error !== undefined) updates.error = data.error
-      if (data.heartbeatAt !== undefined)
-        updates.heartbeat_at = data.heartbeatAt
-      if (data.startedAt !== undefined) updates.started_at = data.startedAt
-      if (data.completedAt !== undefined)
-        updates.completed_at = data.completedAt
-
-      await db
-        .updateTable('durably_runs')
-        .set(updates)
-        .where('id', '=', runId)
-        .execute()
-    },
-
-    async deleteRun(runId: string): Promise<void> {
-      // Delete in order: logs -> steps -> run (due to foreign key constraints)
-      await db.deleteFrom('durably_logs').where('run_id', '=', runId).execute()
-      await db.deleteFrom('durably_steps').where('run_id', '=', runId).execute()
-      await db.deleteFrom('durably_runs').where('id', '=', runId).execute()
     },
 
     async getRun<T extends Run = Run>(runId: string): Promise<T | null> {
@@ -464,15 +519,98 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       return rows.map(rowToRun) as T[]
     },
 
-    async claimNextPendingRun(
-      excludeConcurrencyKeys: string[],
+    async claimNext(
+      workerId: string,
+      now: string,
+      leaseMs: number,
+      options?: ClaimOptions,
     ): Promise<Run | null> {
-      const now = new Date().toISOString()
+      const leaseExpiresAt = new Date(Date.parse(now) + leaseMs).toISOString()
+      const excludeConcurrencyKeys = options?.excludeConcurrencyKeys ?? []
+      const activeLeaseGuard = sql<boolean>`
+        (
+          concurrency_key IS NULL
+          OR NOT EXISTS (
+            SELECT 1
+            FROM durably_runs AS active
+            WHERE active.concurrency_key = durably_runs.concurrency_key
+              AND active.id <> durably_runs.id
+              AND active.status = 'leased'
+              AND active.lease_expires_at IS NOT NULL
+              AND active.lease_expires_at > ${now}
+          )
+        )
+      `
+
+      if (backend === 'postgres') {
+        return await db.transaction().execute(async (trx) => {
+          const concurrencyCondition =
+            excludeConcurrencyKeys.length > 0
+              ? sql`
+                  AND (
+                    concurrency_key IS NULL
+                    OR concurrency_key NOT IN (${sql.join(excludeConcurrencyKeys)})
+                  )
+                `
+              : sql``
+
+          const result = await sql<Database['durably_runs']>`
+            WITH claimable AS MATERIALIZED (
+              SELECT DISTINCT ON (COALESCE(concurrency_key, id))
+                id,
+                created_at
+              FROM durably_runs
+              WHERE
+                (
+                  status = 'pending'
+                  OR (status = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ${now})
+                )
+                AND ${activeLeaseGuard}
+                ${concurrencyCondition}
+              ORDER BY
+                COALESCE(concurrency_key, id) ASC,
+                created_at ASC,
+                id ASC
+            ),
+            candidate AS (
+              SELECT id
+              FROM durably_runs
+              INNER JOIN claimable USING (id)
+              ORDER BY durably_runs.created_at ASC, durably_runs.id ASC
+              FOR UPDATE SKIP LOCKED
+              LIMIT 1
+            )
+            UPDATE durably_runs
+            SET
+              status = 'leased',
+              lease_owner = ${workerId},
+              lease_expires_at = ${leaseExpiresAt},
+              started_at = COALESCE(started_at, ${now}),
+              updated_at = ${now}
+            WHERE id = (SELECT id FROM candidate)
+            RETURNING *
+          `.execute(trx)
+
+          const row = result.rows[0]
+          if (!row) return null
+          return rowToRun({ ...row, step_count: 0 })
+        })
+      }
 
       let subquery = db
         .selectFrom('durably_runs')
-        .select('id')
-        .where('status', '=', 'pending')
+        .select('durably_runs.id')
+        .where((eb) =>
+          eb.or([
+            eb('status', '=', 'pending'),
+            eb.and([
+              eb('status', '=', 'leased'),
+              eb('lease_expires_at', 'is not', null),
+              eb('lease_expires_at', '<=', now),
+            ]),
+          ]),
+        )
+        .where(activeLeaseGuard)
         .orderBy('created_at', 'asc')
         .orderBy('id', 'asc')
         .limit(1)
@@ -489,8 +627,9 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       const row = await db
         .updateTable('durably_runs')
         .set({
-          status: 'running',
-          heartbeat_at: now,
+          status: 'leased',
+          lease_owner: workerId,
+          lease_expires_at: leaseExpiresAt,
           started_at: sql`COALESCE(started_at, ${now})`,
           updated_at: now,
         })
@@ -504,6 +643,117 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       return rowToRun({ ...row, step_count: 0 })
     },
 
+    async renewLease(
+      runId: string,
+      workerId: string,
+      now: string,
+      leaseMs: number,
+    ): Promise<boolean> {
+      const leaseExpiresAt = new Date(Date.parse(now) + leaseMs).toISOString()
+      const result = await db
+        .updateTable('durably_runs')
+        .set({
+          lease_expires_at: leaseExpiresAt,
+          updated_at: now,
+        })
+        .where('id', '=', runId)
+        .where('status', '=', 'leased')
+        .where('lease_owner', '=', workerId)
+        .executeTakeFirst()
+
+      return Number(result.numUpdatedRows) > 0
+    },
+
+    async releaseExpiredLeases(now: string): Promise<number> {
+      const result = await db
+        .updateTable('durably_runs')
+        .set({
+          status: 'pending',
+          lease_owner: null,
+          lease_expires_at: null,
+          updated_at: now,
+        })
+        .where('status', '=', 'leased')
+        .where('lease_expires_at', 'is not', null)
+        .where('lease_expires_at', '<=', now)
+        .executeTakeFirst()
+
+      return Number(result.numUpdatedRows)
+    },
+
+    async completeRun(
+      runId: string,
+      workerId: string,
+      output: unknown,
+      completedAt: string,
+    ): Promise<boolean> {
+      const result = await db
+        .updateTable('durably_runs')
+        .set({
+          status: 'completed',
+          output: JSON.stringify(output),
+          error: null,
+          lease_owner: null,
+          lease_expires_at: null,
+          completed_at: completedAt,
+          updated_at: completedAt,
+        })
+        .where('id', '=', runId)
+        .where('status', '=', 'leased')
+        .where('lease_owner', '=', workerId)
+        .executeTakeFirst()
+
+      return Number(result.numUpdatedRows) > 0
+    },
+
+    async failRun(
+      runId: string,
+      workerId: string,
+      error: string,
+      completedAt: string,
+    ): Promise<boolean> {
+      const result = await db
+        .updateTable('durably_runs')
+        .set({
+          status: 'failed',
+          error,
+          lease_owner: null,
+          lease_expires_at: null,
+          completed_at: completedAt,
+          updated_at: completedAt,
+        })
+        .where('id', '=', runId)
+        .where('status', '=', 'leased')
+        .where('lease_owner', '=', workerId)
+        .executeTakeFirst()
+
+      return Number(result.numUpdatedRows) > 0
+    },
+
+    async cancelRun(runId: string, now: string): Promise<void> {
+      await db
+        .updateTable('durably_runs')
+        .set({
+          status: 'cancelled',
+          lease_owner: null,
+          lease_expires_at: null,
+          completed_at: now,
+          updated_at: now,
+        })
+        .where('id', '=', runId)
+        .execute()
+    },
+
+    async deleteRun(runId: string): Promise<void> {
+      await db.deleteFrom('durably_runs').where('id', '=', runId).execute()
+    },
+  }
+}
+
+export function createKyselyCheckpointStore(
+  db: Kysely<Database>,
+): CheckpointStore {
+  return {
     async createStep(input: CreateStepInput): Promise<Step> {
       const completedAt = new Date().toISOString()
       const id = ulid()
@@ -528,6 +778,7 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
 
     async deleteSteps(runId: string): Promise<void> {
       await db.deleteFrom('durably_steps').where('run_id', '=', runId).execute()
+      await db.deleteFrom('durably_logs').where('run_id', '=', runId).execute()
     },
 
     async getSteps(runId: string): Promise<Step[]> {
@@ -582,5 +833,93 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
 
       return rows.map(rowToLog)
     },
+
+    async advanceRunStepIndex(runId: string, stepIndex: number): Promise<void> {
+      await db
+        .updateTable('durably_runs')
+        .set({
+          current_step_index: stepIndex,
+          updated_at: new Date().toISOString(),
+        })
+        .where('id', '=', runId)
+        .execute()
+    },
+
+    async updateProgress(
+      runId: string,
+      progress: ProgressData | null,
+    ): Promise<void> {
+      await db
+        .updateTable('durably_runs')
+        .set({
+          progress: progress ? JSON.stringify(progress) : null,
+          updated_at: new Date().toISOString(),
+        })
+        .where('id', '=', runId)
+        .execute()
+    },
+  }
+}
+
+export function createKyselyStorage(
+  db: Kysely<Database>,
+  backend: DatabaseBackend = 'generic',
+): Storage<Record<string, string>> {
+  const queue = createKyselyQueueStore(db, backend)
+  const checkpoint = createKyselyCheckpointStore(db)
+
+  return {
+    queue,
+    checkpoint,
+    createRun: queue.enqueue,
+    batchCreateRuns: queue.enqueueMany,
+    getRun: queue.getRun,
+    getRuns: queue.getRuns,
+    claimNextPendingRun(excludeConcurrencyKeys: string[]) {
+      return queue.claimNext('legacy-claim', new Date().toISOString(), 30_000, {
+        excludeConcurrencyKeys,
+      })
+    },
+    async updateRun(runId, data) {
+      const now = new Date().toISOString()
+      const status = data.status === 'running' ? 'leased' : data.status
+
+      await db
+        .updateTable('durably_runs')
+        .set({
+          status,
+          current_step_index: data.currentStepIndex,
+          progress:
+            data.progress !== undefined
+              ? data.progress
+                ? JSON.stringify(data.progress)
+                : null
+              : undefined,
+          output:
+            data.output !== undefined ? JSON.stringify(data.output) : undefined,
+          error: data.error,
+          lease_owner:
+            data.leaseOwner !== undefined ? data.leaseOwner : undefined,
+          lease_expires_at:
+            data.leaseExpiresAt !== undefined
+              ? data.leaseExpiresAt
+              : data.heartbeatAt,
+          started_at: data.startedAt,
+          completed_at: data.completedAt,
+          updated_at: now,
+        })
+        .where('id', '=', runId)
+        .execute()
+    },
+    async deleteRun(runId: string) {
+      await checkpoint.deleteSteps(runId)
+      await queue.deleteRun(runId)
+    },
+    createStep: checkpoint.createStep,
+    deleteSteps: checkpoint.deleteSteps,
+    getSteps: checkpoint.getSteps,
+    getCompletedStep: checkpoint.getCompletedStep,
+    createLog: checkpoint.createLog,
+    getLogs: checkpoint.getLogs,
   }
 }

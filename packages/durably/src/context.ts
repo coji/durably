@@ -1,4 +1,4 @@
-import { CancelledError } from './errors'
+import { CancelledError, LeaseLostError } from './errors'
 import type { EventEmitter } from './events'
 import type { StepContext } from './job'
 import type { Run, Storage } from './storage'
@@ -9,13 +9,36 @@ import type { Run, Storage } from './storage'
 export function createStepContext(
   run: Run,
   jobName: string,
+  workerId: string,
   storage: Storage,
   eventEmitter: EventEmitter,
-): { step: StepContext; dispose: () => void } {
+): {
+  step: StepContext
+  abortLeaseOwnership(): void
+  dispose: () => void
+} {
   let stepIndex = run.currentStepIndex
   let currentStepName: string | null = null
 
   const controller = new AbortController()
+
+  function abortForLeaseLoss() {
+    if (!controller.signal.aborted) {
+      controller.abort('lease-lost')
+    }
+  }
+
+  function throwIfAborted(): void {
+    if (!controller.signal.aborted) {
+      return
+    }
+
+    if (controller.signal.reason === 'lease-lost') {
+      throw new LeaseLostError(run.id)
+    }
+
+    throw new CancelledError(run.id)
+  }
 
   const unsubscribe = eventEmitter.on('run:cancel', (event) => {
     if (event.runId === run.id) {
@@ -28,30 +51,52 @@ export function createStepContext(
       return run.id
     },
 
+    get signal(): AbortSignal {
+      return controller.signal
+    },
+
+    isAborted(): boolean {
+      return controller.signal.aborted
+    },
+
+    throwIfAborted(): void {
+      throwIfAborted()
+    },
+
     async run<T>(
       name: string,
       fn: (signal: AbortSignal) => T | Promise<T>,
     ): Promise<T> {
       // Fast path: check in-memory signal first (set by run:cancel event)
-      if (controller.signal.aborted) {
-        throw new CancelledError(run.id)
-      }
+      throwIfAborted()
 
       // Slow path: DB check for cases where event wasn't received
       // (e.g., run cancelled while worker was down, then resumed)
-      const currentRun = await storage.getRun(run.id)
+      const currentRun = await storage.queue.getRun(run.id)
       if (currentRun?.status === 'cancelled') {
         controller.abort()
-        throw new CancelledError(run.id)
+        throwIfAborted()
+      }
+
+      if (
+        currentRun &&
+        ((currentRun.status === 'leased' &&
+          currentRun.leaseOwner !== workerId) ||
+          currentRun.status === 'completed' ||
+          currentRun.status === 'failed')
+      ) {
+        abortForLeaseLoss()
+        throwIfAborted()
       }
 
       // Check cancellation before replaying cached steps
-      if (controller.signal.aborted) {
-        throw new CancelledError(run.id)
-      }
+      throwIfAborted()
 
       // Check if step was already completed
-      const existingStep = await storage.getCompletedStep(run.id, name)
+      const existingStep = await storage.checkpoint.getCompletedStep(
+        run.id,
+        name,
+      )
       if (existingStep) {
         stepIndex++
         return existingStep.output as T
@@ -77,9 +122,10 @@ export function createStepContext(
       try {
         // Execute the step with the abort signal
         const result = await fn(controller.signal)
+        throwIfAborted()
 
         // Save step result
-        await storage.createStep({
+        await storage.checkpoint.createStep({
           runId: run.id,
           name,
           index: stepIndex,
@@ -90,7 +136,7 @@ export function createStepContext(
 
         // Update run's current step index
         stepIndex++
-        await storage.updateRun(run.id, { currentStepIndex: stepIndex })
+        await storage.checkpoint.advanceRunStepIndex(run.id, stepIndex)
 
         // Emit step:complete event
         eventEmitter.emit({
@@ -110,7 +156,7 @@ export function createStepContext(
         const errorMessage =
           error instanceof Error ? error.message : String(error)
 
-        await storage.createStep({
+        await storage.checkpoint.createStep({
           runId: run.id,
           name,
           index: stepIndex,
@@ -131,7 +177,7 @@ export function createStepContext(
         })
 
         if (isCancelled) {
-          throw new CancelledError(run.id)
+          throwIfAborted()
         }
         throw error
       } finally {
@@ -143,7 +189,7 @@ export function createStepContext(
     progress(current: number, total?: number, message?: string): void {
       const progressData = { current, total, message }
       // Fire and forget - don't await
-      storage.updateRun(run.id, { progress: progressData })
+      storage.checkpoint.updateProgress(run.id, progressData)
       // Emit progress event
       eventEmitter.emit({
         type: 'run:progress',
@@ -196,5 +242,9 @@ export function createStepContext(
     },
   }
 
-  return { step, dispose: unsubscribe }
+  return {
+    step,
+    abortLeaseOwnership: abortForLeaseLoss,
+    dispose: unsubscribe,
+  }
 }

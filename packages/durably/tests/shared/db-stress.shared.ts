@@ -1,0 +1,109 @@
+import type { Dialect } from 'kysely'
+import { randomUUID } from 'node:crypto'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { createDurably, type Durably } from '../../src'
+
+interface SharedDialectResource {
+  createDialect(): Dialect
+  setup?(): Promise<void> | void
+  cleanup?(): Promise<void> | void
+}
+
+export function createDbStressTests(
+  label: string,
+  createResource: () => SharedDialectResource,
+) {
+  describe(`${label} queue stress`, () => {
+    let resource: SharedDialectResource
+    let runtimes: Array<Durably<any, any>>
+
+    beforeEach(async () => {
+      resource = createResource()
+      await resource.setup?.()
+      runtimes = Array.from({ length: 4 }, () =>
+        createDurably({ dialect: resource.createDialect() }),
+      )
+
+      await runtimes[0].migrate()
+      await runtimes[0].db.deleteFrom('durably_logs').execute()
+      await runtimes[0].db.deleteFrom('durably_steps').execute()
+      await runtimes[0].db.deleteFrom('durably_runs').execute()
+    })
+
+    afterEach(async () => {
+      if (runtimes) {
+        await Promise.all(runtimes.map((runtime) => runtime.db.destroy()))
+      }
+      await resource.cleanup?.()
+    })
+
+    it('keeps claim single-winner across separate runtime instances', async () => {
+      for (let attempt = 0; attempt < 25; attempt++) {
+        await runtimes[0].db.deleteFrom('durably_logs').execute()
+        await runtimes[0].db.deleteFrom('durably_steps').execute()
+        await runtimes[0].db.deleteFrom('durably_runs').execute()
+
+        const created = await runtimes[0].storage.queue.enqueue({
+          jobName: 'stress-job',
+          input: { attempt, nonce: randomUUID() },
+        })
+
+        const now = new Date().toISOString()
+        const results = await Promise.all(
+          runtimes.map((runtime, index) =>
+            runtime.storage.queue.claimNext(`worker-${index}`, now, 30_000),
+          ),
+        )
+
+        const winners = results.filter((run) => run !== null)
+        expect(winners).toHaveLength(1)
+        expect(winners[0]?.id).toBe(created.id)
+      }
+    })
+
+    it('rejects stale completion after another runtime reclaims the lease', async () => {
+      const created = await runtimes[0].storage.queue.enqueue({
+        jobName: 'stress-reclaim',
+        input: { nonce: randomUUID() },
+      })
+
+      const firstClaim = await runtimes[0].storage.queue.claimNext(
+        'worker-a',
+        new Date().toISOString(),
+        30_000,
+      )
+      expect(firstClaim?.id).toBe(created.id)
+
+      await runtimes[1].storage.updateRun(created.id, {
+        status: 'leased',
+        leaseOwner: 'worker-a',
+        leaseExpiresAt: new Date(Date.now() - 60_000).toISOString(),
+      })
+
+      const reclaimed = await runtimes[2].storage.queue.claimNext(
+        'worker-b',
+        new Date().toISOString(),
+        30_000,
+      )
+
+      expect(reclaimed?.id).toBe(created.id)
+      expect(reclaimed?.leaseOwner).toBe('worker-b')
+
+      const staleComplete = await runtimes[3].storage.queue.completeRun(
+        created.id,
+        'worker-a',
+        { ok: false },
+        new Date().toISOString(),
+      )
+      const currentComplete = await runtimes[2].storage.queue.completeRun(
+        created.id,
+        'worker-b',
+        { ok: true },
+        new Date().toISOString(),
+      )
+
+      expect(staleComplete).toBe(false)
+      expect(currentComplete).toBe(true)
+    })
+  })
+}

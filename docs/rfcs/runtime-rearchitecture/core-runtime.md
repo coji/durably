@@ -131,6 +131,10 @@ Instead, it performs one atomic operation to acquire exclusive execution rights:
 
 If two workers race, only one may receive the lease.
 
+This is a runtime invariant, not a promise that every backend exposes the same first-class queue primitive.
+What must be portable is the behavior of `processOne()`: one invocation may safely acquire, execute, renew, and complete at most one run.
+The internal claim operation that supports that behavior may differ across adapters.
+
 ### 3. Extend Execution Time (Lease Renewal)
 
 While executing, the worker periodically extends its lease.
@@ -141,6 +145,19 @@ Renewal succeeds only if:
 - the lease is still owned by that worker
 
 This prevents a stale worker from extending or completing a run that has already been reclaimed elsewhere.
+
+Phase 1 exploration suggests one additional runtime behavior is worth standardizing:
+
+- lease loss should trigger best-effort cooperative stop inside the current invocation
+
+That means:
+
+- a lease deadline or failed renewal should abort the runtime's in-memory execution context
+- later step boundaries should refuse to begin new work once ownership is gone
+- long-running async work may observe an `AbortSignal` and stop early
+
+This is not hard preemption of arbitrary user code.
+It is a best-effort runtime contract that reduces stale work while still relying on ownership-sensitive writes for correctness.
 
 ### 4. Complete or Fail
 
@@ -207,6 +224,16 @@ Checkpoint deletion must not be part of the default execution path.
 
 The default behavior should preserve step history because resumability and auditability depend on it. Retention and cleanup should be handled explicitly, for example by a maintenance job or time-based policy.
 
+### Migration Stance
+
+Phase 1 exploration also clarified the migration direction:
+
+- clean-break schema changes are acceptable
+- compatibility columns should not be retained indefinitely just to ease transition
+
+In particular, the old `heartbeat_at` column was removable through a destructive rebuild migration without weakening the lease-based runtime model.
+That supports a cleaner Phase 1 schema even if the migration itself is invasive.
+
 ## Architectural Split
 
 The current implementation mixes runtime semantics, polling behavior, and Kysely-backed persistence too closely.
@@ -251,9 +278,17 @@ interface DurablyRuntime<TJobs, TLabels = Record<string, string>> {
 
 `processOne()` is the key addition. It allows one-shot execution in cron jobs, HTTP handlers, queue-triggered functions, and serverless platforms without requiring a resident polling loop.
 
+It is also the main portability target of the runtime.
+Phase 1 exploration showed that a low-level `claimNext()` operation can carry backend-specific locking and visibility assumptions, especially on PostgreSQL.
+The design should therefore treat `processOne()` as the first-class contract and `claimNext()` as an adapter-facing building block.
+
+`processUntilIdle({ maxRuns })` is the natural bounded companion for short-lived deployments.
+Phase 1 exploration validated it as a good "drain up to N runs, then return" primitive for cron-driven and queue-triggered serverless slices.
+
 ### Queue Store
 
 The queue store owns run lifecycle and lease semantics.
+It is an adapter contract, not the primary public surface of the runtime.
 
 ```ts
 interface QueueStore<TLabels = Record<string, string>> {
@@ -298,7 +333,13 @@ interface QueueStore<TLabels = Record<string, string>> {
 }
 ```
 
-This contract defines semantics, not SQL shape. Implementations may use SQLite, libSQL, PostgreSQL, or another backend as long as they preserve the same guarantees.
+This contract defines adapter semantics, not SQL shape. Implementations may use SQLite, libSQL, PostgreSQL, or another backend as long as they preserve the runtime guarantees required by `processOne()`.
+
+In particular:
+
+- Durably does not need one portable `claimNext()` implementation across backends
+- adapters may use different claim strategies to uphold the same runtime behavior
+- if a backend can only defend correctness through a more specialized internal claim path, that is acceptable
 
 ### Checkpoint Store
 
@@ -352,6 +393,7 @@ Some jobs should not run simultaneously even if they are different runs.
 This belongs in the acquisition logic. The queue store should be able to exclude or serialize runs that share a `concurrencyKey`.
 
 This constraint should be enforced at acquisition time, not by in-memory coordination.
+Runtime-side preflight reads may help performance, but they are not sufficient as the primary guarantee.
 
 ## Preventing Duplicate Runs (Idempotency)
 
@@ -382,6 +424,12 @@ The design response is:
 - reclaim expired runs automatically through claim semantics
 
 Failure handling is not an add-on. It is the core execution model.
+
+One important boundary from exploration should be explicit:
+
+- the runtime can protect final persisted state with ownership-sensitive writes
+- best-effort cooperative stop can reduce stale execution after lease loss
+- hard interruption of arbitrary synchronous user code is not a realistic goal
 
 ## Storage Independence
 
@@ -449,8 +497,8 @@ This design deliberately changes several assumptions.
 
 1. `running` becomes `leased`.
 2. Heartbeat becomes explicit lease renewal.
-3. Claim and reclaim become storage-level semantics.
-4. `processOne()` becomes a first-class runtime API.
+3. Claim and reclaim become adapter-level semantics in support of runtime execution.
+4. `processOne()` becomes the first-class runtime API.
 5. Long-running polling becomes an optional loop, not the core model.
 6. Storage is injected as adapters instead of being created from a dialect inside the runtime.
 7. Step cleanup is no longer a default execution behavior.
@@ -480,6 +528,13 @@ Its core guarantees are:
 - storage-adapter portability (SQLite, PostgreSQL, libSQL, …)
 
 That is the architectural center of gravity. Everything else, including worker loops, HTTP handlers, and React bindings, should sit on top of that model instead of defining it.
+
+One practical boundary from Phase 1 exploration is worth making explicit:
+
+- portability does not mean every backend shares one claim implementation
+- portability is centered on `processOne()` semantics, not on exposing one universal `claimNext()` primitive
+- PostgreSQL may require a stricter claim path than SQLite-like backends
+- browser-local runtimes may support the core lease model while still recommending one active runtime per tab
 
 ## Phase 2: Ambient Agent Extension
 
