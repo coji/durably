@@ -96,8 +96,3 @@ Japanese translations live under `ja/`.
 - [ja/database-claim-patterns-ja.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/ja/database-claim-patterns-ja.md)
 - [ja/database-adapter-sketches-ja.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/ja/database-adapter-sketches-ja.md)
 - [ja/ambient-agent-concepts-ja.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/ja/ambient-agent-concepts-ja.md)
-
-## Non-RFC Document
-
-- [design-auth-middleware.md](/Users/coji/progs/oss/durably/docs/design-auth-middleware.md)
-  Separate design work, not part of this runtime rearchitecture RFC set.
