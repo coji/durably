@@ -405,6 +405,9 @@ function createDurablyInstance<
       if (run.status === 'running') {
         throw new Error(`Cannot retrigger running run: ${runId}`)
       }
+      if (!jobRegistry.get(run.jobName)) {
+        throw new Error(`Unknown job: ${run.jobName}`)
+      }
 
       const nextRun = await storage.createRun({
         jobName: run.jobName,

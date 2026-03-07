@@ -539,8 +539,13 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(body.success).toBe(true)
         expect(body.runId).not.toBe(run.id)
 
-        const updated = await d.getRun(body.runId)
-        expect(updated?.status).toBe('pending')
+        await vi.waitFor(
+          async () => {
+            const updated = await d.getRun(body.runId)
+            expect(updated?.status).toBe('failed')
+          },
+          { timeout: 1000 },
+        )
       })
 
       it('returns 400 when runId is missing', async () => {

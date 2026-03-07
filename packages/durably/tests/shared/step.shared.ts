@@ -108,11 +108,10 @@ export function createStepTests(createDialect: () => Dialect) {
           async () => {
             const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('completed')
+            expect(await d.storage.getSteps(run.id)).toHaveLength(0)
           },
           { timeout: 1000 },
         )
-
-        expect(await d.storage.getSteps(run.id)).toHaveLength(0)
       } finally {
         await cleanupDurably.stop()
         await cleanupDurably.db.destroy()

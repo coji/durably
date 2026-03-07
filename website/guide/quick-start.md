@@ -103,7 +103,7 @@ const riskyJob = defineJob({
 ```
 
 1. Run with the error uncommented — step 1 succeeds, step 2 fails
-2. Comment out the error, retrigger the run — a fresh run starts with the same input
+2. Comment out the error, retrigger the run — a fresh run (new ID) starts with the same input
 
 ## Next Steps
 
