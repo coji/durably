@@ -441,7 +441,6 @@ function createDurablyInstance<
         status: 'cancelled',
         completedAt: new Date().toISOString(),
       })
-      await storage.deleteSteps(runId)
 
       // Emit run:cancel event
       eventEmitter.emit({

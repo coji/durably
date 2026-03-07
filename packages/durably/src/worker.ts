@@ -212,12 +212,10 @@ export function createWorker(
       await handleRunFailure(run.id, run.jobName, error)
     } finally {
       if (config.cleanupSteps) {
-        const finalRun = await storage.getRun(run.id)
-        if (
-          finalRun &&
-          ['completed', 'failed', 'cancelled'].includes(finalRun.status)
-        ) {
+        try {
           await storage.deleteSteps(run.id)
+        } catch {
+          // Best-effort cleanup — don't block worker teardown
         }
       }
 
