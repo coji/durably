@@ -12,6 +12,7 @@ export interface WorkerConfig {
   pollingInterval: number
   heartbeatInterval: number
   staleThreshold: number
+  cleanupSteps: boolean
 }
 
 /**
@@ -210,6 +211,16 @@ export function createWorker(
     } catch (error) {
       await handleRunFailure(run.id, run.jobName, error)
     } finally {
+      if (config.cleanupSteps) {
+        const finalRun = await storage.getRun(run.id)
+        if (
+          finalRun &&
+          ['completed', 'failed', 'cancelled'].includes(finalRun.status)
+        ) {
+          await storage.deleteSteps(run.id)
+        }
+      }
+
       dispose()
       // Stop heartbeat interval
       if (heartbeatInterval) {

@@ -197,11 +197,11 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
     })
 
-    describe('retry() API', () => {
-      it('resets failed run to pending', async () => {
+    describe('retrigger() API', () => {
+      it('creates a fresh run from a failed run', async () => {
         const d = durably.register({
           job: defineJob({
-            name: 'retry-test',
+            name: 'retrigger-test',
             input: z.object({ shouldFail: z.boolean() }),
             run: async (_step, input) => {
               if (input.shouldFail) {
@@ -222,18 +222,16 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           { timeout: 1000 },
         )
 
-        // Retry the failed run
-        await d.retry(run.id)
-
-        const retried = await d.jobs.job.getRun(run.id)
-        expect(retried?.status).toBe('pending')
-        expect(retried?.error).toBeNull()
+        const retriggered = await d.retrigger(run.id)
+        expect(retriggered.id).not.toBe(run.id)
+        expect(retriggered.status).toBe('pending')
+        expect(retriggered.input).toEqual({ shouldFail: true })
       })
 
-      it('throws when retrying completed run', async () => {
+      it('creates a fresh run from a completed run', async () => {
         const d = durably.register({
           job: defineJob({
-            name: 'retry-completed-test',
+            name: 'retrigger-completed-test',
             input: z.object({}),
             run: async () => {},
           }),
@@ -250,13 +248,15 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           { timeout: 1000 },
         )
 
-        await expect(d.retry(run.id)).rejects.toThrow(/completed|cannot retry/i)
+        const retriggered = await d.retrigger(run.id)
+        expect(retriggered.id).not.toBe(run.id)
+        expect(retriggered.status).toBe('pending')
       })
 
-      it('throws when retrying pending run', async () => {
+      it('throws when retriggering pending run', async () => {
         const d = durably.register({
           job: defineJob({
-            name: 'retry-pending-test',
+            name: 'retrigger-pending-test',
             input: z.object({}),
             run: async () => {},
           }),
@@ -265,13 +265,15 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         const run = await d.jobs.job.trigger({})
         // Don't start worker - run stays pending
 
-        await expect(d.retry(run.id)).rejects.toThrow(/pending|cannot retry/i)
+        await expect(d.retrigger(run.id)).rejects.toThrow(
+          /pending|cannot retrigger/i,
+        )
       })
 
-      it('throws when retrying running run', async () => {
+      it('throws when retriggering running run', async () => {
         const d = durably.register({
           job: defineJob({
-            name: 'retry-running-test',
+            name: 'retrigger-running-test',
             input: z.object({}),
             run: async (step) => {
               await step.run('long-step', async () => {
@@ -293,7 +295,9 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           { timeout: 500 },
         )
 
-        await expect(d.retry(run.id)).rejects.toThrow(/running|cannot retry/i)
+        await expect(d.retrigger(run.id)).rejects.toThrow(
+          /running|cannot retrigger/i,
+        )
       })
     })
 
@@ -541,9 +545,9 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           { timeout: 1000 },
         )
 
-        // Verify steps and logs exist
+        // Step data is cleaned up once the run reaches a terminal state
         const steps = await d.storage.getSteps(run.id)
-        expect(steps.length).toBeGreaterThan(0)
+        expect(steps).toHaveLength(0)
 
         // Delete the run
         await d.deleteRun(run.id)

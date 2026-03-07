@@ -26,7 +26,6 @@ export type {
   RunDeleteEvent,
   RunFailEvent,
   RunProgressEvent,
-  RunRetryEvent,
   RunStartEvent,
   RunTriggerEvent,
   StepCancelEvent,
