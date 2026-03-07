@@ -1,6 +1,6 @@
 # Fullstack Mode
 
-Server-side jobs with a React UI. Real-time progress via SSE, type-safe hooks, run dashboard with retry/cancel/delete.
+Server-side jobs with a React UI. Real-time progress via SSE, type-safe hooks, run dashboard with retrigger/cancel/delete.
 
 **Example code:** [fullstack-react-router](https://github.com/coji/durably/tree/main/examples/fullstack-react-router)
 
@@ -211,7 +211,7 @@ import { durablyClient } from '~/lib/durably'
 
 function Dashboard() {
   const { runs, hasMore, nextPage } = durablyClient.useRuns({ pageSize: 10 })
-  const { retry, cancel, deleteRun } = durablyClient.useRunActions()
+  const { retrigger, cancel, deleteRun } = durablyClient.useRunActions()
 
   return (
     <table>
@@ -229,7 +229,7 @@ function Dashboard() {
             <td>{run.status}</td>
             <td>
               {run.status === 'failed' && (
-                <button onClick={() => retry(run.id)}>Retry</button>
+                <button onClick={() => retrigger(run.id)}>Retrigger</button>
               )}
               {run.status === 'running' && (
                 <button onClick={() => cancel(run.id)}>Cancel</button>

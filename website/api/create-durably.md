@@ -27,6 +27,7 @@ interface DurablyOptions<
   pollingInterval?: number
   heartbeatInterval?: number
   staleThreshold?: number
+  cleanupSteps?: boolean
   labels?: z.ZodType<TLabels>
   jobs?: TJobs
 }
@@ -39,6 +40,7 @@ interface DurablyOptions<
 | `heartbeatInterval` | `number`    | `5000`   | How often to update heartbeat (ms)                                                    |
 | `staleThreshold`    | `number`    | `30000`  | Time until a job is considered stale (ms)                                             |
 | `labels`            | `z.ZodType` | —        | Zod schema for labels. Enables type-safe labels and runtime validation on `trigger()` |
+| `cleanupSteps`      | `boolean`   | `true`   | Delete step output data when runs reach terminal state (completed/failed/cancelled)   |
 | `jobs`              | `TJobs`     | —        | Job definitions to register. Shorthand for calling `.register()` after creation       |
 
 ## Returns
@@ -122,13 +124,13 @@ durably.on<E extends EventType>(
 
 Subscribes to an event. Returns an unsubscribe function. See [Events](/api/events).
 
-### `retry()`
+### `retrigger()`
 
 ```ts
-await durably.retry(runId: string): Promise<void>
+await durably.retrigger(runId: string): Promise<Run>
 ```
 
-Retries a failed or cancelled run by resetting its status to pending.
+Retriggers a failed or cancelled run by creating a fresh run with the same input, options, and labels. Returns the new `Run` object.
 
 ### `cancel()`
 

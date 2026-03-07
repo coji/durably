@@ -8,7 +8,7 @@ This example demonstrates Durably running entirely in the browser using React Ro
 - **SQLite WASM with OPFS** - Persistent storage in the browser
 - **DurablyProvider** - React context for lifecycle management
 - **Multiple jobs** - Image processing and data sync examples
-- **Run history dashboard** - View, retry, cancel, and delete runs
+- **Run history dashboard** - View, retrigger, cancel, and delete runs
 - **Tailwind CSS** - Modern styling
 
 ## Getting Started
@@ -68,4 +68,4 @@ app/
 1. Run a job and observe the progress
 2. Reload the page during execution - it resumes automatically
 3. Check the dashboard for run history
-4. Try retry/cancel/delete actions
+4. Try retrigger/cancel/delete actions

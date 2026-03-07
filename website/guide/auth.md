@@ -55,10 +55,10 @@ auth: {
     }
   },
 
-  // Guard before read/retry/cancel/delete
+  // Guard before read/retrigger/cancel/delete
   onRunAccess: async (ctx, run, { operation }) => {
     // Everyone can read, only admins can mutate
-    const writeOps = ['retry', 'cancel', 'delete']
+    const writeOps = ['retrigger', 'cancel', 'delete']
     if (writeOps.includes(operation) && ctx.role !== 'admin') {
       throw new Response('Forbidden', { status: 403 })
     }
@@ -70,14 +70,14 @@ auth: {
 
 `onRunAccess` receives the operation type:
 
-| Operation   | Endpoint         |
-| ----------- | ---------------- |
-| `read`      | `GET /run`       |
-| `subscribe` | `GET /subscribe` |
-| `steps`     | `GET /steps`     |
-| `retry`     | `POST /retry`    |
-| `cancel`    | `POST /cancel`   |
-| `delete`    | `DELETE /run`    |
+| Operation   | Endpoint          |
+| ----------- | ----------------- |
+| `read`      | `GET /run`        |
+| `subscribe` | `GET /subscribe`  |
+| `steps`     | `GET /steps`      |
+| `retrigger` | `POST /retrigger` |
+| `cancel`    | `POST /cancel`    |
+| `delete`    | `DELETE /run`     |
 
 ## Execution Order
 
