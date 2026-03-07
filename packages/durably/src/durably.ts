@@ -266,6 +266,7 @@ interface DurablyState {
   jobRegistry: JobRegistry
   worker: Worker
   labelsSchema: z.ZodType | undefined
+  cleanupSteps: boolean
   migrating: Promise<void> | null
   migrated: boolean
 }
@@ -437,10 +438,16 @@ function createDurablyInstance<
       if (run.status === 'cancelled') {
         throw new Error(`Cannot cancel already cancelled run: ${runId}`)
       }
+      const wasPending = run.status === 'pending'
       await storage.updateRun(runId, {
         status: 'cancelled',
         completedAt: new Date().toISOString(),
       })
+
+      // For pending runs, no worker will clean up steps, so do it here
+      if (wasPending && state.cleanupSteps) {
+        await storage.deleteSteps(runId)
+      }
 
       // Emit run:cancel event
       eventEmitter.emit({
@@ -555,6 +562,7 @@ export function createDurably<
     jobRegistry,
     worker,
     labelsSchema: options.labels,
+    cleanupSteps: config.cleanupSteps,
     migrating: null,
     migrated: false,
   }

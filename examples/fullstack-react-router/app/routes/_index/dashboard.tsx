@@ -215,7 +215,7 @@ export function Dashboard() {
                             disabled={isActioning}
                             className="text-xs text-green-600 hover:text-green-800 disabled:cursor-not-allowed disabled:text-gray-400"
                           >
-                            Retry
+                            Retrigger
                           </button>
                         )}
                         {(run.status === 'running' ||
