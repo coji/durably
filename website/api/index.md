@@ -208,14 +208,14 @@ function ImportButton() {
 
 ### Instance Methods
 
-| Method               | Description                       |
-| -------------------- | --------------------------------- |
-| `init()`             | Migrate database and start worker |
-| `register(jobs)`     | Register job definitions          |
-| `on(event, handler)` | Subscribe to events               |
-| `stop()`             | Stop worker gracefully            |
-| `retry(runId)`       | Retry failed run                  |
-| `cancel(runId)`      | Cancel running job                |
+| Method               | Description                            |
+| -------------------- | -------------------------------------- |
+| `init()`             | Migrate database and start worker      |
+| `register(jobs)`     | Register job definitions               |
+| `on(event, handler)` | Subscribe to events                    |
+| `stop()`             | Stop worker gracefully                 |
+| `retrigger(runId)`   | Retrigger failed run (creates new run) |
+| `cancel(runId)`      | Cancel running job                     |
 
 ### Step Context
 
@@ -227,13 +227,13 @@ function ImportButton() {
 
 ### React Hooks (@coji/durably-react)
 
-| Hook            | Mode      | Description                |
-| --------------- | --------- | -------------------------- |
-| `useJob`        | Both      | Trigger and monitor jobs   |
-| `useJobRun`     | Both      | Subscribe to existing run  |
-| `useRuns`       | Both      | List runs with pagination  |
-| `useRunActions` | Fullstack | Retry, cancel, delete runs |
-| `useDurably`    | SPA       | Access Durably instance    |
+| Hook            | Mode      | Description                    |
+| --------------- | --------- | ------------------------------ |
+| `useJob`        | Both      | Trigger and monitor jobs       |
+| `useJobRun`     | Both      | Subscribe to existing run      |
+| `useRuns`       | Both      | List runs with pagination      |
+| `useRunActions` | Fullstack | Retrigger, cancel, delete runs |
+| `useDurably`    | SPA       | Access Durably instance        |
 
 ## Type Exports
 

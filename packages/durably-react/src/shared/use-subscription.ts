@@ -64,7 +64,6 @@ export function useSubscription<TOutput = unknown>(
       switch (event.type) {
         case 'run:start':
         case 'run:cancel':
-        case 'run:retry':
           dispatch({ type: event.type })
           break
         case 'run:complete':

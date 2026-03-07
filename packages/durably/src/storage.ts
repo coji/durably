@@ -167,6 +167,7 @@ export interface Storage {
 
   // Step operations
   createStep(input: CreateStepInput): Promise<Step>
+  deleteSteps(runId: string): Promise<void>
   getSteps(runId: string): Promise<Step[]>
   getCompletedStep(runId: string, name: string): Promise<Step | null>
 
@@ -523,6 +524,10 @@ export function createKyselyStorage(db: Kysely<Database>): Storage {
       await db.insertInto('durably_steps').values(step).execute()
 
       return rowToStep(step)
+    },
+
+    async deleteSteps(runId: string): Promise<void> {
+      await db.deleteFrom('durably_steps').where('run_id', '=', runId).execute()
     },
 
     async getSteps(runId: string): Promise<Step[]> {

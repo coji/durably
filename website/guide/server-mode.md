@@ -190,13 +190,14 @@ await durably.jobs.processImage.trigger(
 
 ## Error Handling
 
-Durably doesn't auto-retry. Check status and retry manually:
+Durably doesn't auto-retry. Check status and retrigger manually:
 
 ```ts
 const run = await durably.getRun(runId)
 
 if (run?.status === 'failed') {
-  await durably.retry(runId)
+  const newRun = await durably.retrigger(runId) // Creates a fresh run
+  console.log(`New run: ${newRun.id}`)
 }
 
 if (run?.status === 'running') {
@@ -204,7 +205,7 @@ if (run?.status === 'running') {
 }
 ```
 
-See [Error Handling & Retry](/guide/error-handling) for more patterns.
+See [Error Handling & Retrigger](/guide/error-handling) for more patterns.
 
 ## Next Steps
 

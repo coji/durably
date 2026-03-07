@@ -43,6 +43,7 @@ export interface DurablyOptions<
   pollingInterval?: number
   heartbeatInterval?: number
   staleThreshold?: number
+  cleanupSteps?: boolean
   /**
    * Zod schema for labels. When provided:
    * - Labels are type-checked at compile time
@@ -69,6 +70,7 @@ const DEFAULTS = {
   pollingInterval: 1000,
   heartbeatInterval: 5000,
   staleThreshold: 30000,
+  cleanupSteps: true,
 } as const
 
 /**
@@ -185,10 +187,10 @@ export interface Durably<
   stop(): Promise<void>
 
   /**
-   * Retry a failed run by resetting it to pending
-   * @throws Error if run is not in failed status
+   * Create a fresh run from a completed, failed, or cancelled run
+   * @throws Error if run is pending, running, or does not exist
    */
-  retry(runId: string): Promise<void>
+  retrigger(runId: string): Promise<Run<TLabels>>
 
   /**
    * Cancel a pending or running run
@@ -264,6 +266,7 @@ interface DurablyState {
   jobRegistry: JobRegistry
   worker: Worker
   labelsSchema: z.ZodType | undefined
+  cleanupSteps: boolean
   migrating: Promise<void> | null
   migrated: boolean
 }
@@ -356,7 +359,6 @@ function createDurablyInstance<
         'run:fail',
         'run:cancel',
         'run:delete',
-        'run:retry',
         'run:progress',
         'step:start',
         'step:complete',
@@ -392,32 +394,37 @@ function createDurablyInstance<
       })
     },
 
-    async retry(runId: string): Promise<void> {
+    async retrigger(runId: string): Promise<Run<TLabels>> {
       const run = await storage.getRun(runId)
       if (!run) {
         throw new Error(`Run not found: ${runId}`)
       }
-      if (run.status === 'completed') {
-        throw new Error(`Cannot retry completed run: ${runId}`)
-      }
       if (run.status === 'pending') {
-        throw new Error(`Cannot retry pending run: ${runId}`)
+        throw new Error(`Cannot retrigger pending run: ${runId}`)
       }
       if (run.status === 'running') {
-        throw new Error(`Cannot retry running run: ${runId}`)
+        throw new Error(`Cannot retrigger running run: ${runId}`)
       }
-      await storage.updateRun(runId, {
-        status: 'pending',
-        error: null,
-      })
+      if (!jobRegistry.get(run.jobName)) {
+        throw new Error(`Unknown job: ${run.jobName}`)
+      }
 
-      // Emit run:retry event
-      eventEmitter.emit({
-        type: 'run:retry',
-        runId,
+      const nextRun = await storage.createRun({
         jobName: run.jobName,
+        input: run.input,
+        concurrencyKey: run.concurrencyKey ?? undefined,
         labels: run.labels,
       })
+
+      eventEmitter.emit({
+        type: 'run:trigger',
+        runId: nextRun.id,
+        jobName: run.jobName,
+        input: run.input,
+        labels: run.labels,
+      })
+
+      return nextRun as Run<TLabels>
     },
 
     async cancel(runId: string): Promise<void> {
@@ -434,9 +441,16 @@ function createDurablyInstance<
       if (run.status === 'cancelled') {
         throw new Error(`Cannot cancel already cancelled run: ${runId}`)
       }
+      const wasPending = run.status === 'pending'
       await storage.updateRun(runId, {
         status: 'cancelled',
+        completedAt: new Date().toISOString(),
       })
+
+      // For pending runs, no worker will clean up steps, so do it here
+      if (wasPending && state.cleanupSteps) {
+        await storage.deleteSteps(runId)
+      }
 
       // Emit run:cancel event
       eventEmitter.emit({
@@ -535,6 +549,7 @@ export function createDurably<
     pollingInterval: options.pollingInterval ?? DEFAULTS.pollingInterval,
     heartbeatInterval: options.heartbeatInterval ?? DEFAULTS.heartbeatInterval,
     staleThreshold: options.staleThreshold ?? DEFAULTS.staleThreshold,
+    cleanupSteps: options.cleanupSteps ?? DEFAULTS.cleanupSteps,
   }
 
   const db = new Kysely<Database>({ dialect: options.dialect })
@@ -550,6 +565,7 @@ export function createDurably<
     jobRegistry,
     worker,
     labelsSchema: options.labels,
+    cleanupSteps: config.cleanupSteps,
     migrating: null,
     migrated: false,
   }

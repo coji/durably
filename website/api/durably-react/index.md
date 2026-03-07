@@ -152,9 +152,9 @@ function ImportButton() {
 
 ### Fullstack Mode Only
 
-| Hook            | Description                |
-| --------------- | -------------------------- |
-| `useRunActions` | Retry, cancel, delete runs |
+| Hook            | Description                    |
+| --------------- | ------------------------------ |
+| `useRunActions` | Retrigger, cancel, delete runs |
 
 ## Common Patterns
 
@@ -205,7 +205,7 @@ function Dashboard() {
   const { runs, page, hasMore, nextPage, prevPage } = durably.useRuns({
     pageSize: 10,
   })
-  const { retry, cancel, deleteRun } = durably.useRunActions()
+  const { retrigger, cancel, deleteRun } = durably.useRunActions()
 
   return (
     <table>
@@ -223,7 +223,7 @@ function Dashboard() {
             <td>{run.status}</td>
             <td>
               {run.status === 'failed' && (
-                <button onClick={() => retry(run.id)}>Retry</button>
+                <button onClick={() => retrigger(run.id)}>Retrigger</button>
               )}
               {run.status === 'running' && (
                 <button onClick={() => cancel(run.id)}>Cancel</button>

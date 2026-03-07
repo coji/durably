@@ -138,23 +138,6 @@ durably.on('run:delete', (event) => {
 })
 ```
 
-#### `run:retry`
-
-Fired when a failed or cancelled run is retried via `retry()` API.
-
-```ts
-durably.on('run:retry', (event) => {
-  // event: {
-  //   type: 'run:retry',
-  //   runId: string,
-  //   jobName: string,
-  //   labels: Record<string, string>,
-  //   timestamp: string,
-  //   sequence: number
-  // }
-})
-```
-
 ### Step Events
 
 #### `step:start`
@@ -305,7 +288,6 @@ type DurablyEvent =
   | RunCompleteEvent
   | RunFailEvent
   | RunCancelEvent
-  | RunRetryEvent
   | RunProgressEvent
   | StepStartEvent
   | StepCompleteEvent

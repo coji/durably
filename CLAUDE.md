@@ -20,7 +20,7 @@ When API changes are made, update `packages/durably/docs/llms.md` to keep it in 
 ## Core Concepts
 
 - **Job**: Defined via `defineJob()` and registered via `jobs` option (or `.register()`), receives a step context and payload
-- **Step**: Created via `step.run()`, each step's success state and return value is persisted
+- **Step**: Created via `step.run()`, each step's success state and return value is persisted (cleaned up on terminal state by default, see `cleanupSteps`)
 - **Run**: A job execution instance, created via `trigger()`, always persisted as `pending` before execution
 - **Worker**: Polls for pending runs and executes them sequentially
 
@@ -28,7 +28,7 @@ When API changes are made, update `packages/durably/docs/llms.md` to keep it in 
 
 - **ESM-only**: This library is ESM-only. CommonJS is not supported. Always use top-level `await` for async initialization (e.g., `await durably.migrate()`). Do not wrap in async IIFE or Promise chains.
 - Single-threaded execution, no parallel run processing in minimal config
-- No automatic retry - failures are immediate and explicit (`retry()` API for manual retry)
+- No automatic retry - failures are immediate and explicit (`retrigger()` creates a fresh run with a new ID and returns it)
 - Dialect injection pattern - Kysely dialect passed to `createDurably()` to abstract SQLite implementations
 - Event system for extensibility (`run:start`, `run:complete`, `run:fail`, `step:*`, `log:write`)
 
@@ -44,6 +44,7 @@ Four tables: `durably_runs`, `durably_steps`, `durably_logs`, `durably_schema_ve
 - `pollingInterval`: 1000ms
 - `heartbeatInterval`: 5000ms
 - `staleThreshold`: 30000ms (for detecting abandoned runs)
+- `cleanupSteps`: true (deletes step output data when runs reach terminal state)
 
 ## Browser Constraints (by design)
 

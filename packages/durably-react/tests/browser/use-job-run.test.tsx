@@ -273,11 +273,11 @@ describe('useJobRun', () => {
       { timeout: 3000 },
     )
 
-    // Stop worker so retry doesn't immediately re-run
+    // Stop worker so retrigger doesn't immediately re-run
     await durably.stop()
 
-    // Retry the run
-    await durably.retry(run.id)
+    const nextRun = await durably.retrigger(run.id)
+    result.current.setRunId(nextRun.id)
 
     await waitFor(
       () => {
@@ -289,14 +289,14 @@ describe('useJobRun', () => {
     )
   })
 
-  it('tracks retry from failed through completion', async () => {
+  it('tracks retrigger from failed through completion', async () => {
     const durably = await createTestDurably({ pollingInterval: 50 })
     instances.push(durably)
 
-    // Job that fails first time, succeeds on retry (use attempt counter via steps)
+    // Job that fails first time, succeeds on retrigger
     let attemptCount = 0
-    const retryableJob = defineJob({
-      name: 'retryable-job',
+    const retriggerableJob = defineJob({
+      name: 'retriggerable-job',
       input: z.object({ input: z.string() }),
       output: z.object({ result: z.string() }),
       run: async (context, payload) => {
@@ -328,7 +328,7 @@ describe('useJobRun', () => {
       wrapper: createWrapper(durably),
     })
 
-    const d = durably.register({ _job: retryableJob })
+    const d = durably.register({ _job: retriggerableJob })
     const run = await d.jobs._job.trigger({ input: 'test' })
     result.current.setRunId(run.id)
 
@@ -340,8 +340,8 @@ describe('useJobRun', () => {
       { timeout: 3000 },
     )
 
-    // Retry the run (worker is still running, will pick it up)
-    await durably.retry(run.id)
+    const nextRun = await durably.retrigger(run.id)
+    result.current.setRunId(nextRun.id)
 
     // Should track through to completion
     await waitFor(
@@ -353,7 +353,7 @@ describe('useJobRun', () => {
     )
   })
 
-  it('tracks retry from cancelled through completion', async () => {
+  it('tracks retrigger from cancelled through completion', async () => {
     const durably = await createTestDurably({
       pollingInterval: 50,
       autoStart: false,
@@ -397,8 +397,8 @@ describe('useJobRun', () => {
       { timeout: 3000 },
     )
 
-    // Retry the run
-    await durably.retry(run.id)
+    const nextRun = await durably.retrigger(run.id)
+    result.current.setRunId(nextRun.id)
 
     // Should see pending
     await waitFor(
@@ -408,7 +408,7 @@ describe('useJobRun', () => {
       { timeout: 3000 },
     )
 
-    // Start the worker to process the retry
+    // Start the worker to process the retriggered run
     durably.start()
 
     // Should track through to completion

@@ -131,7 +131,10 @@ export default defineConfig({
                 { text: 'register', link: '/api/create-durably#register' },
                 { text: 'on (events)', link: '/api/create-durably#on' },
                 { text: 'stop', link: '/api/create-durably#stop' },
-                { text: 'retry / cancel', link: '/api/create-durably#retry' },
+                {
+                  text: 'retrigger / cancel',
+                  link: '/api/create-durably#retrigger',
+                },
                 {
                   text: 'deleteRun',
                   link: '/api/create-durably#deleterun',

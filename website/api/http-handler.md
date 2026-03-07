@@ -110,17 +110,17 @@ const clientRun = toClientRun(run) // strips internal fields
 
 The handler provides these endpoints:
 
-| Method   | Path                   | Description                     |
-| -------- | ---------------------- | ------------------------------- |
-| `POST`   | `/trigger`             | Trigger a job                   |
-| `GET`    | `/subscribe?runId=xxx` | SSE stream for run events       |
-| `GET`    | `/runs`                | List runs with filtering        |
-| `GET`    | `/run?runId=xxx`       | Get single run                  |
-| `GET`    | `/steps?runId=xxx`     | Get steps for a run             |
-| `GET`    | `/runs/subscribe`      | SSE stream for run list updates |
-| `POST`   | `/retry?runId=xxx`     | Retry a failed run              |
-| `POST`   | `/cancel?runId=xxx`    | Cancel a running job            |
-| `DELETE` | `/run?runId=xxx`       | Delete a run                    |
+| Method   | Path                   | Description                              |
+| -------- | ---------------------- | ---------------------------------------- |
+| `POST`   | `/trigger`             | Trigger a job                            |
+| `GET`    | `/subscribe?runId=xxx` | SSE stream for run events                |
+| `GET`    | `/runs`                | List runs with filtering                 |
+| `GET`    | `/run?runId=xxx`       | Get single run                           |
+| `GET`    | `/steps?runId=xxx`     | Get steps for a run                      |
+| `GET`    | `/runs/subscribe`      | SSE stream for run list updates          |
+| `POST`   | `/retrigger?runId=xxx` | Retrigger a failed run (creates new run) |
+| `POST`   | `/cancel?runId=xxx`    | Cancel a running job                     |
+| `DELETE` | `/run?runId=xxx`       | Delete a run                             |
 
 ## Trigger Request
 
@@ -265,7 +265,7 @@ type RunOperation =
   | 'read'
   | 'subscribe'
   | 'steps'
-  | 'retry'
+  | 'retrigger'
   | 'cancel'
   | 'delete'
 ```

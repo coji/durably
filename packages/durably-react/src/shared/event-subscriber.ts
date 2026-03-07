@@ -9,7 +9,6 @@ export type SubscriptionEvent<TOutput = unknown> =
   | { type: 'run:complete'; output: TOutput }
   | { type: 'run:fail'; error: string }
   | { type: 'run:cancel' }
-  | { type: 'run:retry' }
   | { type: 'run:progress'; progress: Progress }
   | {
       type: 'log:write'

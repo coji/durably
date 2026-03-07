@@ -96,7 +96,7 @@ function LogViewer({ runId }: { runId: string }) {
 ```tsx
 function Dashboard() {
   const { runs, nextPage, hasMore } = durably.useRuns({ pageSize: 10 })
-  const { retry, cancel, deleteRun } = durably.useRunActions()
+  const { retrigger, cancel, deleteRun } = durably.useRunActions()
 
   return (
     <table>
@@ -107,7 +107,7 @@ function Dashboard() {
             <td>{run.status}</td>
             <td>
               {run.status === 'failed' && (
-                <button onClick={() => retry(run.id)}>Retry</button>
+                <button onClick={() => retrigger(run.id)}>Retrigger</button>
               )}
               {run.status === 'running' && (
                 <button onClick={() => cancel(run.id)}>Cancel</button>
@@ -280,7 +280,7 @@ List and paginate job runs with real-time updates on the first page.
 
 The first page (page 0) automatically subscribes to SSE for real-time updates. It listens to:
 
-- `run:trigger`, `run:start`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`, `run:retry` - refresh list
+- `run:trigger`, `run:start`, `run:complete`, `run:fail`, `run:cancel`, `run:delete` - refresh list
 - `run:progress` - update progress in place
 - `step:start`, `step:complete`, `step:fail` - refresh for step updates
 
@@ -415,20 +415,20 @@ useRuns(options)
 
 ## useRunActions
 
-Perform actions on runs (retry, cancel, delete).
+Perform actions on runs (retrigger, cancel, delete).
 
 ```tsx
 import { useRunActions } from '@coji/durably-react'
 
 function RunActions({ runId, status }: { runId: string; status: string }) {
-  const { retry, cancel, deleteRun, getRun, getSteps, isLoading, error } =
+  const { retrigger, cancel, deleteRun, getRun, getSteps, isLoading, error } =
     useRunActions({ api: '/api/durably' })
 
   return (
     <div>
       {(status === 'failed' || status === 'cancelled') && (
-        <button onClick={() => retry(runId)} disabled={isLoading}>
-          Retry
+        <button onClick={() => retrigger(runId)} disabled={isLoading}>
+          Retrigger
         </button>
       )}
       {(status === 'pending' || status === 'running') && (
@@ -457,12 +457,12 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
 
 ### Return Type
 
-| Property    | Type                                            | Description          |
-| ----------- | ----------------------------------------------- | -------------------- |
-| `retry`     | `(runId: string) => Promise<void>`              | Retry a failed run   |
-| `cancel`    | `(runId: string) => Promise<void>`              | Cancel a running job |
-| `deleteRun` | `(runId: string) => Promise<void>`              | Delete a run         |
-| `getRun`    | `(runId: string) => Promise<ClientRun \| null>` | Get run details      |
-| `getSteps`  | `(runId: string) => Promise<StepRecord[]>`      | Get step details     |
-| `isLoading` | `boolean`                                       | Loading state        |
-| `error`     | `string \| null`                                | Error message        |
+| Property    | Type                                            | Description                                 |
+| ----------- | ----------------------------------------------- | ------------------------------------------- |
+| `retrigger` | `(runId: string) => Promise<string>`            | Retrigger a failed run (returns new run ID) |
+| `cancel`    | `(runId: string) => Promise<void>`              | Cancel a running job                        |
+| `deleteRun` | `(runId: string) => Promise<void>`              | Delete a run                                |
+| `getRun`    | `(runId: string) => Promise<ClientRun \| null>` | Get run details                             |
+| `getSteps`  | `(runId: string) => Promise<StepRecord[]>`      | Get step details                            |
+| `isLoading` | `boolean`                                       | Loading state                               |
+| `error`     | `string \| null`                                | Error message                               |

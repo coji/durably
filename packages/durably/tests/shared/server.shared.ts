@@ -97,10 +97,10 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(response.status).toBe(200)
       })
 
-      it('routes POST /retry to retry handler', async () => {
+      it('routes POST /retrigger to retrigger handler', async () => {
         const d = durably.register({
           job: defineJob({
-            name: 'retry-route-test',
+            name: 'retrigger-route-test',
             input: z.object({}),
             run: async () => {
               throw new Error('fail')
@@ -120,7 +120,7 @@ export function createServerTests(createDialect: () => Dialect) {
         )
 
         const request = new Request(
-          `http://localhost/api/durably/retry?runId=${run.id}`,
+          `http://localhost/api/durably/retrigger?runId=${run.id}`,
           { method: 'POST' },
         )
         const response = await handler.handle(request, '/api/durably')
@@ -505,11 +505,11 @@ export function createServerTests(createDialect: () => Dialect) {
       })
     })
 
-    describe('retry', () => {
-      it('retries a failed run', async () => {
+    describe('retrigger', () => {
+      it('creates a fresh run from a failed run', async () => {
         const d = durably.register({
           job: defineJob({
-            name: 'retry-test',
+            name: 'retrigger-test',
             input: z.object({}),
             run: async () => {
               throw new Error('fail')
@@ -528,7 +528,7 @@ export function createServerTests(createDialect: () => Dialect) {
         )
 
         const request = new Request(
-          `http://localhost/api/durably/retry?runId=${run.id}`,
+          `http://localhost/api/durably/retrigger?runId=${run.id}`,
           { method: 'POST' },
         )
 
@@ -537,13 +537,19 @@ export function createServerTests(createDialect: () => Dialect) {
 
         expect(response.status).toBe(200)
         expect(body.success).toBe(true)
+        expect(body.runId).not.toBe(run.id)
 
-        const updated = await d.getRun(run.id)
-        expect(updated?.status).toBe('pending')
+        await vi.waitFor(
+          async () => {
+            const updated = await d.getRun(body.runId)
+            expect(updated?.status).toBe('failed')
+          },
+          { timeout: 1000 },
+        )
       })
 
       it('returns 400 when runId is missing', async () => {
-        const request = new Request('http://localhost/api/durably/retry', {
+        const request = new Request('http://localhost/api/durably/retrigger', {
           method: 'POST',
         })
 
@@ -554,10 +560,10 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(body.error).toBe('runId query parameter is required')
       })
 
-      it('returns 500 when retrying non-failed run', async () => {
+      it('returns 500 when retriggering a pending run', async () => {
         const d = durably.register({
           job: defineJob({
-            name: 'retry-pending-test',
+            name: 'retrigger-pending-test',
             input: z.object({}),
             run: async () => {},
           }),
@@ -565,7 +571,7 @@ export function createServerTests(createDialect: () => Dialect) {
         const run = await d.jobs.job.trigger({})
 
         const request = new Request(
-          `http://localhost/api/durably/retry?runId=${run.id}`,
+          `http://localhost/api/durably/retrigger?runId=${run.id}`,
           { method: 'POST' },
         )
 
@@ -809,10 +815,10 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(allEvents).toContain('run:cancel')
       })
 
-      it('streams run:retry when job is retried', async () => {
+      it('streams run:trigger when job is retriggered', async () => {
         const d = durably.register({
           job: defineJob({
-            name: 'runs-subscribe-retry-test',
+            name: 'runs-subscribe-retrigger-test',
             input: z.object({}),
             run: async () => {
               throw new Error('test error')
@@ -840,11 +846,11 @@ export function createServerTests(createDialect: () => Dialect) {
             const { done, value } = await reader.read()
             if (done) break
             events.push(decoder.decode(value))
-            if (events.some((e) => e.includes('run:retry'))) break
+            if (events.some((e) => e.includes('run:trigger'))) break
           }
         })()
 
-        await d.retry(run.id)
+        await d.retrigger(run.id)
 
         await Promise.race([
           readPromise,
@@ -852,7 +858,7 @@ export function createServerTests(createDialect: () => Dialect) {
         ])
 
         const allEvents = events.join('')
-        expect(allEvents).toContain('run:retry')
+        expect(allEvents).toContain('run:trigger')
       })
 
       it('streams run lifecycle events', async () => {
@@ -1222,15 +1228,18 @@ export function createServerTests(createDialect: () => Dialect) {
           },
         })
 
-        // retry
+        // retrigger
         await authHandler.handle(
-          new Request(`http://localhost/api/durably/retry?runId=${run.id}`, {
-            method: 'POST',
-          }),
+          new Request(
+            `http://localhost/api/durably/retrigger?runId=${run.id}`,
+            {
+              method: 'POST',
+            },
+          ),
           '/api/durably',
         )
 
-        expect(operations).toContain('retry')
+        expect(operations).toContain('retrigger')
       })
 
       it('onRunAccess can reject with thrown Response', async () => {

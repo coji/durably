@@ -19,6 +19,7 @@ export function createStepTests(createDialect: () => Dialect) {
       durably = createDurably({
         dialect: createDialect(),
         pollingInterval: 50,
+        cleanupSteps: false,
       })
       await durably.migrate()
     })
@@ -80,6 +81,41 @@ export function createStepTests(createDialect: () => Dialect) {
         },
         { timeout: 1000 },
       )
+    })
+
+    it('deletes persisted steps after terminal runs by default', async () => {
+      const cleanupDurably = createDurably({
+        dialect: createDialect(),
+        pollingInterval: 50,
+      })
+      await cleanupDurably.migrate()
+
+      try {
+        const cleanupTestDef = defineJob({
+          name: 'step-cleanup-test',
+          input: z.object({}),
+          run: async (step) => {
+            await step.run('step1', () => 'result1')
+            await step.run('step2', () => 'result2')
+          },
+        })
+        const d = cleanupDurably.register({ job: cleanupTestDef })
+
+        const run = await d.jobs.job.trigger({})
+        d.start()
+
+        await vi.waitFor(
+          async () => {
+            const updated = await d.jobs.job.getRun(run.id)
+            expect(updated?.status).toBe('completed')
+            expect(await d.storage.getSteps(run.id)).toHaveLength(0)
+          },
+          { timeout: 1000 },
+        )
+      } finally {
+        await cleanupDurably.stop()
+        await cleanupDurably.db.destroy()
+      }
     })
 
     it('transitions run to failed when step throws', async () => {
@@ -152,7 +188,7 @@ export function createStepTests(createDialect: () => Dialect) {
       expect(step1Calls).toBe(1)
       expect(step2Calls).toBe(1)
 
-      // Reset run to pending for retry (simulate retry behavior)
+      // Reset run to pending (simulating internal state rewind)
       await d.storage.updateRun(run1.id, { status: 'pending' })
 
       // Second run - step1 should be skipped

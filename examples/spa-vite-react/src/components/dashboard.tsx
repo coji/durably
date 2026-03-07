@@ -62,9 +62,9 @@ export function Dashboard() {
     }
   }
 
-  const handleRetry = async (runId: string) => {
+  const handleRetrigger = async (runId: string) => {
     if (!durably) return
-    await durably.retry(runId)
+    await durably.retrigger(runId)
     refresh()
   }
 
@@ -205,10 +205,10 @@ export function Dashboard() {
                           run.status === 'cancelled') && (
                           <button
                             type="button"
-                            onClick={() => handleRetry(run.id)}
+                            onClick={() => handleRetrigger(run.id)}
                             className="text-xs text-green-600 hover:text-green-800 disabled:cursor-not-allowed disabled:text-gray-400"
                           >
-                            Retry
+                            Retrigger
                           </button>
                         )}
                         {(run.status === 'running' ||

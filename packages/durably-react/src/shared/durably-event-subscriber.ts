@@ -44,13 +44,6 @@ export function createDurablyEventSubscriber(
       )
 
       unsubscribes.push(
-        durably.on('run:retry', (event) => {
-          if (event.runId !== runId) return
-          onEvent({ type: 'run:retry' })
-        }),
-      )
-
-      unsubscribes.push(
         durably.on('run:progress', (event) => {
           if (event.runId !== runId) return
           onEvent({ type: 'run:progress', progress: event.progress })

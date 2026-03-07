@@ -35,6 +35,7 @@ const durably = createDurably({
   pollingInterval: 1000, // Job polling interval (ms)
   heartbeatInterval: 5000, // Heartbeat update interval (ms)
   staleThreshold: 30000, // When to consider a job abandoned (ms)
+  cleanupSteps: true, // Delete step output data on terminal state (default: true)
   // Optional: type-safe labels with Zod schema
   // labels: z.object({ organizationId: z.string(), env: z.string() }),
   jobs: {
@@ -206,10 +207,12 @@ type MyRun = Run & {
 const typedRuns = await durably.getRuns<MyRun>({ jobName: 'my-job' })
 ```
 
-### Retry Failed Runs
+### Retrigger Failed Runs
 
 ```ts
-await durably.retry(runId)
+// Creates a fresh run (new ID) with the same input/options
+const newRun = await durably.retrigger(runId)
+console.log(newRun.id) // new run ID
 ```
 
 ### Cancel Runs
@@ -236,7 +239,6 @@ durably.on('run:complete', (e) => console.log('Done:', e.output))
 durably.on('run:fail', (e) => console.error('Failed:', e.error))
 durably.on('run:cancel', (e) => console.log('Cancelled:', e.runId))
 durably.on('run:delete', (e) => console.log('Deleted:', e.runId))
-durably.on('run:retry', (e) => console.log('Retried:', e.runId))
 durably.on('run:progress', (e) =>
   console.log('Progress:', e.progress.current, '/', e.progress.total),
 )
@@ -336,7 +338,7 @@ const handler = createDurablyHandler(durably, {
       }
     },
 
-    // Guard before run-level operations (read, subscribe, steps, retry, cancel, delete)
+    // Guard before run-level operations (read, subscribe, steps, retrigger, cancel, delete)
     onRunAccess: async (ctx, run, { operation }) => {
       if (run.labels.organizationId !== ctx.orgId) {
         throw new Response('Forbidden', { status: 403 })
@@ -418,7 +420,7 @@ type RunOperation =
   | 'read'
   | 'subscribe'
   | 'steps'
-  | 'retry'
+  | 'retrigger'
   | 'cancel'
   | 'delete'
 

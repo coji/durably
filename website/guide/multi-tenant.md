@@ -145,7 +145,7 @@ auth: {
       throw new Response('Forbidden', { status: 403 })
     }
     // Role check for mutations
-    const writeOps = ['retry', 'cancel', 'delete']
+    const writeOps = ['retrigger', 'cancel', 'delete']
     if (writeOps.includes(operation) && ctx.role === 'viewer') {
       throw new Response('Forbidden', { status: 403 })
     }

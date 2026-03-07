@@ -24,7 +24,7 @@ export type RunOperation =
   | 'read'
   | 'subscribe'
   | 'steps'
-  | 'retry'
+  | 'retrigger'
   | 'cancel'
   | 'delete'
 
@@ -108,7 +108,7 @@ export interface DurablyHandler {
    * - GET  {basePath}/run?runId=xxx - Get single run
    * - GET  {basePath}/steps?runId=xxx - Get steps
    * - POST {basePath}/trigger - Trigger a job
-   * - POST {basePath}/retry?runId=xxx - Retry a failed run
+   * - POST {basePath}/retrigger?runId=xxx - Create a fresh run from a terminal run
    * - POST {basePath}/cancel?runId=xxx - Cancel a run
    * - DELETE {basePath}/run?runId=xxx - Delete a run
    */
@@ -397,16 +397,16 @@ export function createDurablyHandler<
     })
   }
 
-  async function handleRetry(
+  async function handleRetrigger(
     url: URL,
     ctx: TContext | undefined,
   ): Promise<Response> {
     return withErrorHandling(async () => {
-      const result = await requireRunAccess(url, ctx, 'retry')
+      const result = await requireRunAccess(url, ctx, 'retrigger')
       if (result instanceof Response) return result
 
-      await durably.retry(result.runId)
-      return successResponse()
+      const run = await durably.retrigger(result.runId)
+      return jsonResponse({ success: true, runId: run.id })
     })
   }
 
@@ -563,17 +563,6 @@ export function createDurablyHandler<
             }
           }),
 
-          durably.on('run:retry', (event) => {
-            if (matchesFilter(event.jobName, event.labels)) {
-              ctrl.enqueue({
-                type: 'run:retry',
-                runId: event.runId,
-                jobName: event.jobName,
-                labels: event.labels,
-              })
-            }
-          }),
-
           durably.on('run:progress', (event) => {
             if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({
@@ -696,7 +685,7 @@ export function createDurablyHandler<
         // POST routes
         if (method === 'POST') {
           if (path === '/trigger') return await handleTrigger(request, ctx)
-          if (path === '/retry') return await handleRetry(url, ctx)
+          if (path === '/retrigger') return await handleRetrigger(url, ctx)
           if (path === '/cancel') return await handleCancel(url, ctx)
         }
 

@@ -35,9 +35,6 @@ export function createSSEEventSubscriber(apiBaseUrl: string): EventSubscriber {
             case 'run:cancel':
               onEvent({ type: 'run:cancel' })
               break
-            case 'run:retry':
-              onEvent({ type: 'run:retry' })
-              break
             case 'run:progress':
               onEvent({ type: 'run:progress', progress: data.progress })
               break

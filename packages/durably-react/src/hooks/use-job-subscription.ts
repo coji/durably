@@ -155,13 +155,6 @@ export function useJobSubscription<TOutput = unknown>(
     )
 
     unsubscribes.push(
-      durably.on('run:retry', (event) => {
-        if (event.runId !== currentRunIdRef.current) return
-        dispatch({ type: 'run:retry' })
-      }),
-    )
-
-    unsubscribes.push(
       durably.on('run:progress', (event) => {
         if (event.runId !== currentRunIdRef.current) return
         dispatch({ type: 'run:progress', progress: event.progress })

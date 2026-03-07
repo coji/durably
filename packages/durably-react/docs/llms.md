@@ -83,7 +83,7 @@ function LogViewer({ runId }: { runId: string }) {
 // Cross-job hooks (built into the proxy)
 function Dashboard() {
   const { runs } = durably.useRuns({ pageSize: 10 })
-  const { retry, cancel } = durably.useRunActions()
+  const { retrigger, cancel } = durably.useRunActions()
 }
 ```
 
@@ -257,13 +257,13 @@ function FilteredDashboard() {
 
 ### Fullstack useRunActions
 
-Actions for runs (retry, cancel, delete):
+Actions for runs (retrigger, cancel, delete):
 
 ```tsx
 import { useRunActions } from '@coji/durably-react'
 
 function RunActions({ runId, status }: { runId: string; status: string }) {
-  const { retry, cancel, deleteRun, getRun, getSteps, isLoading, error } =
+  const { retrigger, cancel, deleteRun, getRun, getSteps, isLoading, error } =
     useRunActions({
       api: '/api/durably',
     })
@@ -271,8 +271,8 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
   return (
     <div>
       {(status === 'failed' || status === 'cancelled') && (
-        <button onClick={() => retry(runId)} disabled={isLoading}>
-          Retry
+        <button onClick={() => retrigger(runId)} disabled={isLoading}>
+          Retrigger
         </button>
       )}
       {(status === 'pending' || status === 'running') && (

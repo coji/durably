@@ -1,4 +1,4 @@
-# Error Handling & Retry
+# Error Handling & Retrigger
 
 Durably doesn't auto-retry failures. This is intentional — you decide what to do when something goes wrong.
 
@@ -16,34 +16,42 @@ run: async (step) => {
 }
 ```
 
-After retry, step-1 returns its cached result and step-2 runs again.
+Retriggering creates a fresh new run with the same input — the original run stays as-is and previous steps are not reused.
 
-## Retry Patterns
+## Retrigger Patterns
 
-### Server-Side Retry
+### Server-Side Retrigger
 
 ```ts
-// Check and retry a failed run
+// Check and retrigger a failed run
 const run = await durably.getRun(runId)
 if (run?.status === 'failed') {
-  await durably.retry(runId) // Resets to pending, worker picks it up
+  const newRun = await durably.retrigger(runId) // Creates a fresh run with the same input
+  console.log(`New run: ${newRun.id}`)
 }
 ```
 
-### Fullstack Retry (React)
+### Fullstack Retrigger (React)
 
 ```tsx
 import { durablyClient } from '~/lib/durably'
 
 function FailedRunActions({ runId }: { runId: string }) {
-  const { retry, cancel } = durablyClient.useRunActions()
+  const { retrigger, cancel } = durablyClient.useRunActions()
   const { status, error } = durablyClient.importCsv.useRun(runId)
 
   if (status === 'failed') {
     return (
       <div>
         <p>Failed: {error}</p>
-        <button onClick={() => retry(runId)}>Retry</button>
+        <button
+          onClick={async () => {
+            const newRunId = await retrigger(runId)
+            console.log(`New run: ${newRunId}`)
+          }}
+        >
+          Retrigger
+        </button>
       </div>
     )
   }
@@ -56,9 +64,9 @@ function FailedRunActions({ runId }: { runId: string }) {
 }
 ```
 
-### SPA Retry
+### SPA Retrigger
 
-In SPA mode, trigger the same job again — Durably doesn't expose a direct `retry()` in the browser hooks.
+In SPA mode, trigger the same job again — Durably doesn't expose a direct `retrigger()` in the browser hooks.
 
 ```tsx
 import { useJob } from '@coji/durably-react/spa'
@@ -99,7 +107,7 @@ await step.run('charge', () =>
   }),
 )
 
-// Bad: duplicate insert on retry
+// Bad: duplicate insert on re-execution
 await step.run('save-user', () => db.insert(user))
 ```
 
