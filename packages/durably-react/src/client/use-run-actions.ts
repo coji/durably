@@ -84,17 +84,20 @@ export function useRunActions(
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const retrigger = useCallback(
-    async (runId: string) => {
+  const executeAction = useCallback(
+    async <T>(
+      url: string,
+      actionName: string,
+      init?: RequestInit,
+    ): Promise<T> => {
       setIsLoading(true)
       setError(null)
 
       try {
-        const url = `${api}/retrigger?runId=${encodeURIComponent(runId)}`
-        const response = await fetch(url, { method: 'POST' })
+        const response = await fetch(url, init)
 
         if (!response.ok) {
-          let errorMessage = `Failed to retrigger: ${response.statusText}`
+          let errorMessage = `Failed to ${actionName}: ${response.statusText}`
           try {
             const data = await response.json()
             if (data.error) {
@@ -105,11 +108,8 @@ export function useRunActions(
           }
           throw new Error(errorMessage)
         }
-        const data = (await response.json()) as { runId?: string }
-        if (!data.runId) {
-          throw new Error('Failed to retrigger: missing runId in response')
-        }
-        return data.runId
+
+        return (await response.json()) as T
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error'
         setError(message)
@@ -118,71 +118,43 @@ export function useRunActions(
         setIsLoading(false)
       }
     },
-    [api],
+    [],
+  )
+
+  const retrigger = useCallback(
+    async (runId: string) => {
+      const enc = encodeURIComponent(runId)
+      const data = await executeAction<{ runId?: string }>(
+        `${api}/retrigger?runId=${enc}`,
+        'retrigger',
+        { method: 'POST' },
+      )
+      if (!data.runId) {
+        throw new Error('Failed to retrigger: missing runId in response')
+      }
+      return data.runId
+    },
+    [api, executeAction],
   )
 
   const cancel = useCallback(
     async (runId: string) => {
-      setIsLoading(true)
-      setError(null)
-
-      try {
-        const url = `${api}/cancel?runId=${encodeURIComponent(runId)}`
-        const response = await fetch(url, { method: 'POST' })
-
-        if (!response.ok) {
-          let errorMessage = `Failed to cancel: ${response.statusText}`
-          try {
-            const data = await response.json()
-            if (data.error) {
-              errorMessage = data.error
-            }
-          } catch {
-            // Response is not JSON, use statusText
-          }
-          throw new Error(errorMessage)
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Unknown error'
-        setError(message)
-        throw err
-      } finally {
-        setIsLoading(false)
-      }
+      const enc = encodeURIComponent(runId)
+      await executeAction(`${api}/cancel?runId=${enc}`, 'cancel', {
+        method: 'POST',
+      })
     },
-    [api],
+    [api, executeAction],
   )
 
   const deleteRun = useCallback(
     async (runId: string) => {
-      setIsLoading(true)
-      setError(null)
-
-      try {
-        const url = `${api}/run?runId=${encodeURIComponent(runId)}`
-        const response = await fetch(url, { method: 'DELETE' })
-
-        if (!response.ok) {
-          let errorMessage = `Failed to delete: ${response.statusText}`
-          try {
-            const data = await response.json()
-            if (data.error) {
-              errorMessage = data.error
-            }
-          } catch {
-            // Response is not JSON, use statusText
-          }
-          throw new Error(errorMessage)
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Unknown error'
-        setError(message)
-        throw err
-      } finally {
-        setIsLoading(false)
-      }
+      const enc = encodeURIComponent(runId)
+      await executeAction(`${api}/run?runId=${enc}`, 'delete', {
+        method: 'DELETE',
+      })
     },
-    [api],
+    [api, executeAction],
   )
 
   const getRun = useCallback(
@@ -191,8 +163,8 @@ export function useRunActions(
       setError(null)
 
       try {
-        const url = `${api}/run?runId=${encodeURIComponent(runId)}`
-        const response = await fetch(url)
+        const enc = encodeURIComponent(runId)
+        const response = await fetch(`${api}/run?runId=${enc}`)
 
         if (response.status === 404) {
           return null
@@ -225,36 +197,13 @@ export function useRunActions(
 
   const getSteps = useCallback(
     async (runId: string): Promise<StepRecord[]> => {
-      setIsLoading(true)
-      setError(null)
-
-      try {
-        const url = `${api}/steps?runId=${encodeURIComponent(runId)}`
-        const response = await fetch(url)
-
-        if (!response.ok) {
-          let errorMessage = `Failed to get steps: ${response.statusText}`
-          try {
-            const data = await response.json()
-            if (data.error) {
-              errorMessage = data.error
-            }
-          } catch {
-            // Response is not JSON, use statusText
-          }
-          throw new Error(errorMessage)
-        }
-
-        return (await response.json()) as StepRecord[]
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Unknown error'
-        setError(message)
-        throw err
-      } finally {
-        setIsLoading(false)
-      }
+      const enc = encodeURIComponent(runId)
+      return executeAction<StepRecord[]>(
+        `${api}/steps?runId=${enc}`,
+        'get steps',
+      )
     },
-    [api],
+    [api, executeAction],
   )
 
   return {

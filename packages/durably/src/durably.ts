@@ -283,6 +283,14 @@ function createDurablyInstance<
 >(state: DurablyState, jobs: TJobs): Durably<TJobs, TLabels> {
   const { db, storage, eventEmitter, jobRegistry, worker } = state
 
+  async function getRunOrThrow(runId: string): Promise<Run> {
+    const run = await storage.getRun(runId)
+    if (!run) {
+      throw new Error(`Run not found: ${runId}`)
+    }
+    return run
+  }
+
   const durably: Durably<TJobs, TLabels> = {
     db,
     storage,
@@ -395,10 +403,7 @@ function createDurablyInstance<
     },
 
     async retrigger(runId: string): Promise<Run<TLabels>> {
-      const run = await storage.getRun(runId)
-      if (!run) {
-        throw new Error(`Run not found: ${runId}`)
-      }
+      const run = await getRunOrThrow(runId)
       if (run.status === 'pending') {
         throw new Error(`Cannot retrigger pending run: ${runId}`)
       }
@@ -428,10 +433,7 @@ function createDurablyInstance<
     },
 
     async cancel(runId: string): Promise<void> {
-      const run = await storage.getRun(runId)
-      if (!run) {
-        throw new Error(`Run not found: ${runId}`)
-      }
+      const run = await getRunOrThrow(runId)
       if (run.status === 'completed') {
         throw new Error(`Cannot cancel completed run: ${runId}`)
       }
@@ -462,10 +464,7 @@ function createDurablyInstance<
     },
 
     async deleteRun(runId: string): Promise<void> {
-      const run = await storage.getRun(runId)
-      if (!run) {
-        throw new Error(`Run not found: ${runId}`)
-      }
+      const run = await getRunOrThrow(runId)
       if (run.status === 'pending') {
         throw new Error(`Cannot delete pending run: ${runId}`)
       }
