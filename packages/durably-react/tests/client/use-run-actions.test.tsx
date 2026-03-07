@@ -1,7 +1,7 @@
 /**
  * Client mode useRunActions tests
  *
- * Test retry and cancel actions via fetch
+ * Test retrigger and cancel actions via fetch
  */
 
 import { act, renderHook } from '@testing-library/react'
@@ -20,11 +20,11 @@ describe('useRunActions (client)', () => {
     vi.restoreAllMocks()
   })
 
-  describe('retry', () => {
-    it('calls retry endpoint with runId', async () => {
+  describe('retrigger', () => {
+    it('calls retrigger endpoint with runId and returns new runId', async () => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({ success: true }),
+        json: () => Promise.resolve({ success: true, runId: 'new-run-123' }),
       })
       globalThis.fetch = fetchMock
 
@@ -32,12 +32,14 @@ describe('useRunActions (client)', () => {
         useRunActions({ api: '/api/durably' }),
       )
 
+      let nextRunId: string | undefined
       await act(async () => {
-        await result.current.retry('run-123')
+        nextRunId = await result.current.retrigger('run-123')
       })
 
+      expect(nextRunId).toBe('new-run-123')
       expect(fetchMock).toHaveBeenCalledWith(
-        '/api/durably/retry?runId=run-123',
+        '/api/durably/retrigger?runId=run-123',
         { method: 'POST' },
       )
     })
@@ -45,7 +47,7 @@ describe('useRunActions (client)', () => {
     it('encodes runId in URL', async () => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({ success: true }),
+        json: () => Promise.resolve({ success: true, runId: 'new-run-456' }),
       })
       globalThis.fetch = fetchMock
 
@@ -54,11 +56,11 @@ describe('useRunActions (client)', () => {
       )
 
       await act(async () => {
-        await result.current.retry('run/with/special&chars')
+        await result.current.retrigger('run/with/special&chars')
       })
 
       expect(fetchMock).toHaveBeenCalledWith(
-        '/api/durably/retry?runId=run%2Fwith%2Fspecial%26chars',
+        '/api/durably/retrigger?runId=run%2Fwith%2Fspecial%26chars',
         { method: 'POST' },
       )
     })
@@ -71,7 +73,7 @@ describe('useRunActions (client)', () => {
       const fetchMock = vi.fn().mockImplementation(() =>
         fetchPromise.then(() => ({
           ok: true,
-          json: () => Promise.resolve({ success: true }),
+          json: () => Promise.resolve({ success: true, runId: 'new-run-789' }),
         })),
       )
       globalThis.fetch = fetchMock
@@ -82,16 +84,16 @@ describe('useRunActions (client)', () => {
 
       expect(result.current.isLoading).toBe(false)
 
-      let retryPromise: Promise<void>
+      let retriggerPromise: Promise<string>
       act(() => {
-        retryPromise = result.current.retry('run-123')
+        retriggerPromise = result.current.retrigger('run-123')
       })
 
       expect(result.current.isLoading).toBe(true)
 
       await act(async () => {
         resolvePromise!()
-        await retryPromise
+        await retriggerPromise
       })
 
       expect(result.current.isLoading).toBe(false)
@@ -112,7 +114,7 @@ describe('useRunActions (client)', () => {
       let thrownError: Error | undefined
       await act(async () => {
         try {
-          await result.current.retry('run-123')
+          await result.current.retrigger('run-123')
         } catch (err) {
           thrownError = err as Error
         }
@@ -138,17 +140,17 @@ describe('useRunActions (client)', () => {
       let thrownError: Error | undefined
       await act(async () => {
         try {
-          await result.current.retry('run-123')
+          await result.current.retrigger('run-123')
         } catch (err) {
           thrownError = err as Error
         }
       })
 
       expect(thrownError?.message).toBe(
-        'Failed to retry: Internal Server Error',
+        'Failed to retrigger: Internal Server Error',
       )
       expect(result.current.error).toBe(
-        'Failed to retry: Internal Server Error',
+        'Failed to retrigger: Internal Server Error',
       )
     })
 
@@ -167,17 +169,17 @@ describe('useRunActions (client)', () => {
       let thrownError: Error | undefined
       await act(async () => {
         try {
-          await result.current.retry('run-123')
+          await result.current.retrigger('run-123')
         } catch (err) {
           thrownError = err as Error
         }
       })
 
       expect(thrownError?.message).toBe(
-        'Failed to retry: Internal Server Error',
+        'Failed to retrigger: Internal Server Error',
       )
       expect(result.current.error).toBe(
-        'Failed to retry: Internal Server Error',
+        'Failed to retrigger: Internal Server Error',
       )
     })
 
@@ -191,7 +193,7 @@ describe('useRunActions (client)', () => {
         })
         .mockResolvedValueOnce({
           ok: true,
-          json: () => Promise.resolve({ success: true }),
+          json: () => Promise.resolve({ success: true, runId: 'new-run-999' }),
         })
       globalThis.fetch = fetchMock
 
@@ -202,7 +204,7 @@ describe('useRunActions (client)', () => {
       // First call fails
       await act(async () => {
         try {
-          await result.current.retry('run-123')
+          await result.current.retrigger('run-123')
         } catch {
           // Expected
         }
@@ -212,7 +214,7 @@ describe('useRunActions (client)', () => {
 
       // Second call succeeds
       await act(async () => {
-        await result.current.retry('run-123')
+        await result.current.retrigger('run-123')
       })
 
       expect(result.current.error).toBeNull()
@@ -382,7 +384,7 @@ describe('useRunActions (client)', () => {
   })
 
   describe('shared state', () => {
-    it('shares isLoading between retry and cancel', async () => {
+    it('shares isLoading between retrigger and cancel', async () => {
       let resolvePromise: () => void
       const fetchPromise = new Promise<void>((resolve) => {
         resolvePromise = resolve
@@ -390,7 +392,8 @@ describe('useRunActions (client)', () => {
       const fetchMock = vi.fn().mockImplementation(() =>
         fetchPromise.then(() => ({
           ok: true,
-          json: () => Promise.resolve({ success: true }),
+          json: () =>
+            Promise.resolve({ success: true, runId: 'new-run-shared' }),
         })),
       )
       globalThis.fetch = fetchMock
@@ -399,16 +402,16 @@ describe('useRunActions (client)', () => {
         useRunActions({ api: '/api/durably' }),
       )
 
-      let retryPromise: Promise<void>
+      let retriggerPromise: Promise<string>
       act(() => {
-        retryPromise = result.current.retry('run-123')
+        retriggerPromise = result.current.retrigger('run-123')
       })
 
       expect(result.current.isLoading).toBe(true)
 
       await act(async () => {
         resolvePromise!()
-        await retryPromise
+        await retriggerPromise
       })
 
       expect(result.current.isLoading).toBe(false)

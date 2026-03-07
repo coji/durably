@@ -6,7 +6,7 @@
  * GET  /api/durably/runs - List runs
  * GET  /api/durably/run?runId=xxx - Get single run
  * POST /api/durably/trigger - Trigger a job
- * POST /api/durably/retry?runId=xxx - Retry a failed run
+ * POST /api/durably/retrigger?runId=xxx - Create a fresh run from a terminal run
  * POST /api/durably/cancel?runId=xxx - Cancel a run
  */
 

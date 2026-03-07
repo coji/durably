@@ -130,9 +130,9 @@ describe('useJobRun (client)', () => {
     })
   })
 
-  it('resets status when run is retried', async () => {
+  it('keeps terminal state when a new run is triggered elsewhere', async () => {
     const { result } = renderHook(() =>
-      useJobRun({ api: '/api/durably', runId: 'retry-run' }),
+      useJobRun({ api: '/api/durably', runId: 'failed-run' }),
     )
 
     await waitFor(() => {
@@ -143,7 +143,7 @@ describe('useJobRun (client)', () => {
     act(() => {
       mockEventSource.emit({
         type: 'run:fail',
-        runId: 'retry-run',
+        runId: 'failed-run',
         error: 'Something went wrong',
       })
     })
@@ -153,19 +153,18 @@ describe('useJobRun (client)', () => {
       expect(result.current.error).toBe('Something went wrong')
     })
 
-    // Then retry it
+    // Then trigger a different run for the same job family
     act(() => {
       mockEventSource.emit({
-        type: 'run:retry',
-        runId: 'retry-run',
+        type: 'run:trigger',
+        runId: 'new-run',
+        jobName: 'job',
+        input: {},
       })
     })
 
-    await waitFor(() => {
-      expect(result.current.status).toBe('pending')
-      expect(result.current.error).toBeNull()
-      expect(result.current.isPending).toBe(true)
-    })
+    expect(result.current.status).toBe('failed')
+    expect(result.current.error).toBe('Something went wrong')
   })
 
   it('tracks progress updates', async () => {

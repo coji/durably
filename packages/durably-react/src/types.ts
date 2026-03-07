@@ -75,7 +75,6 @@ export type DurablyEvent =
   | { type: 'run:cancel'; runId: string; jobName: string }
   | { type: 'run:delete'; runId: string; jobName: string }
   | { type: 'run:trigger'; runId: string; jobName: string; input: unknown }
-  | { type: 'run:retry'; runId: string; jobName: string }
   | {
       type: 'run:progress'
       runId: string

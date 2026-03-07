@@ -50,7 +50,7 @@ export function Dashboard() {
 
   const {
     cancel,
-    retry,
+    retrigger,
     deleteRun,
     getRun,
     getSteps,
@@ -65,8 +65,8 @@ export function Dashboard() {
     refresh()
   }
 
-  const handleRetry = async (runId: string) => {
-    await retry(runId)
+  const handleRetrigger = async (runId: string) => {
+    await retrigger(runId)
     refresh()
   }
 
@@ -211,7 +211,7 @@ export function Dashboard() {
                           run.status === 'cancelled') && (
                           <button
                             type="button"
-                            onClick={() => handleRetry(run.id)}
+                            onClick={() => handleRetrigger(run.id)}
                             disabled={isActioning}
                             className="text-xs text-green-600 hover:text-green-800 disabled:cursor-not-allowed disabled:text-gray-400"
                           >

@@ -49,7 +49,7 @@ export type DurablyClient<T> = {
   ) => UseRunsClientResult<TInput, TOutput>
 
   /**
-   * Run actions: retry, cancel, delete, getRun, getSteps (cross-job).
+   * Run actions: retrigger, cancel, delete, getRun, getSteps (cross-job).
    * The `api` option is pre-configured.
    */
   useRunActions: () => UseRunActionsClientResult
@@ -89,7 +89,7 @@ export type DurablyClient<T> = {
  * // Cross-job hooks
  * function Dashboard() {
  *   const { runs, nextPage } = durably.useRuns({ pageSize: 10 })
- *   const { retry, cancel } = durably.useRunActions()
+ *   const { retrigger, cancel } = durably.useRunActions()
  * }
  * ```
  */

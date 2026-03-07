@@ -7,7 +7,6 @@ export type SubscriptionAction<TOutput = unknown> =
   | { type: 'run:complete'; output: TOutput }
   | { type: 'run:fail'; error: string }
   | { type: 'run:cancel' }
-  | { type: 'run:retry' }
   | { type: 'run:progress'; progress: Progress }
   | {
       type: 'log:write'
@@ -50,9 +49,6 @@ export function subscriptionReducer<TOutput = unknown>(
 
     case 'run:cancel':
       return { ...state, status: 'cancelled' }
-
-    case 'run:retry':
-      return { ...state, status: 'pending', error: null }
 
     case 'run:progress':
       return { ...state, progress: action.progress }

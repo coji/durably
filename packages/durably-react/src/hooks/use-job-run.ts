@@ -1,4 +1,3 @@
-import { useEffect, useRef } from 'react'
 import { useDurably } from '../context'
 import type { LogEntry, Progress, RunStatus } from '../types'
 import { useRunSubscription } from './use-run-subscription'
@@ -68,30 +67,19 @@ export function useJobRun<TOutput = unknown>(
 
   const subscription = useRunSubscription<TOutput>(durably, runId)
 
-  // Fetch initial state when runId changes
-  const fetchedRef = useRef<Set<string>>(new Set())
-
-  useEffect(() => {
-    if (!durably || !runId || fetchedRef.current.has(runId)) return
-
-    // Mark as fetched to avoid duplicate fetches
-    fetchedRef.current.add(runId)
-
-    // Try to fetch current run state
-    // Note: We need to use internal APIs or polling here
-    // For now, we rely on event-based updates
-  }, [durably, runId])
+  // If we have a runId but no status yet, treat as pending
+  const effectiveStatus = subscription.status ?? (runId ? 'pending' : null)
 
   return {
-    status: subscription.status,
+    status: effectiveStatus,
     output: subscription.output,
     error: subscription.error,
     logs: subscription.logs,
     progress: subscription.progress,
-    isRunning: subscription.status === 'running',
-    isPending: subscription.status === 'pending',
-    isCompleted: subscription.status === 'completed',
-    isFailed: subscription.status === 'failed',
-    isCancelled: subscription.status === 'cancelled',
+    isRunning: effectiveStatus === 'running',
+    isPending: effectiveStatus === 'pending',
+    isCompleted: effectiveStatus === 'completed',
+    isFailed: effectiveStatus === 'failed',
+    isCancelled: effectiveStatus === 'cancelled',
   }
 }

@@ -19,9 +19,9 @@ export interface UseRunActionsClientOptions {
 
 export interface UseRunActionsClientResult {
   /**
-   * Retry a failed or cancelled run
+   * Create a fresh run from a completed, failed, or cancelled run
    */
-  retry: (runId: string) => Promise<void>
+  retrigger: (runId: string) => Promise<string>
   /**
    * Cancel a pending or running run
    */
@@ -49,20 +49,20 @@ export interface UseRunActionsClientResult {
 }
 
 /**
- * Hook for run actions (retry, cancel) via server API.
+ * Hook for run actions via server API.
  *
  * @example
  * ```tsx
  * function RunActions({ runId, status }: { runId: string; status: string }) {
- *   const { retry, cancel, isLoading, error } = useRunActions({
+ *   const { retrigger, cancel, isLoading, error } = useRunActions({
  *     api: '/api/durably',
  *   })
  *
  *   return (
  *     <div>
  *       {status === 'failed' && (
- *         <button onClick={() => retry(runId)} disabled={isLoading}>
- *           Retry
+ *         <button onClick={() => retrigger(runId)} disabled={isLoading}>
+ *           Run Again
  *         </button>
  *       )}
  *       {(status === 'pending' || status === 'running') && (
@@ -84,17 +84,17 @@ export function useRunActions(
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const retry = useCallback(
+  const retrigger = useCallback(
     async (runId: string) => {
       setIsLoading(true)
       setError(null)
 
       try {
-        const url = `${api}/retry?runId=${encodeURIComponent(runId)}`
+        const url = `${api}/retrigger?runId=${encodeURIComponent(runId)}`
         const response = await fetch(url, { method: 'POST' })
 
         if (!response.ok) {
-          let errorMessage = `Failed to retry: ${response.statusText}`
+          let errorMessage = `Failed to retrigger: ${response.statusText}`
           try {
             const data = await response.json()
             if (data.error) {
@@ -105,6 +105,11 @@ export function useRunActions(
           }
           throw new Error(errorMessage)
         }
+        const data = (await response.json()) as { runId?: string }
+        if (!data.runId) {
+          throw new Error('Failed to retrigger: missing runId in response')
+        }
+        return data.runId
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error'
         setError(message)
@@ -253,7 +258,7 @@ export function useRunActions(
   )
 
   return {
-    retry,
+    retrigger,
     cancel,
     deleteRun,
     getRun,
