@@ -283,12 +283,12 @@ function createDurablyInstance<
 >(state: DurablyState, jobs: TJobs): Durably<TJobs, TLabels> {
   const { db, storage, eventEmitter, jobRegistry, worker } = state
 
-  async function getRunOrThrow(runId: string): Promise<Run> {
+  async function getRunOrThrow(runId: string): Promise<Run<TLabels>> {
     const run = await storage.getRun(runId)
     if (!run) {
       throw new Error(`Run not found: ${runId}`)
     }
-    return run
+    return run as Run<TLabels>
   }
 
   const durably: Durably<TJobs, TLabels> = {

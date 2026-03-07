@@ -130,7 +130,9 @@ export function useRunActions(
         { method: 'POST' },
       )
       if (!data.runId) {
-        throw new Error('Failed to retrigger: missing runId in response')
+        const message = 'Failed to retrigger: missing runId in response'
+        setError(message)
+        throw new Error(message)
       }
       return data.runId
     },
