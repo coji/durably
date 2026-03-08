@@ -71,17 +71,10 @@ pnpm lint:fix      # Fix lint issues
 PostgreSQL tests (`*.postgres.test.ts`) are excluded from `pnpm test` by default.
 
 ```bash
-# Start Postgres
-docker compose -f docker-compose.postgres.yml up -d
-
-# Run Postgres tests only
-pnpm --filter @coji/durably test:node:postgres
-
-# Run all Node tests (SQLite + Postgres)
-pnpm --filter @coji/durably test:node:all
-
-# Stop Postgres
-docker compose -f docker-compose.postgres.yml down
+pnpm db:up                                      # Start Postgres
+pnpm --filter @coji/durably test:node:postgres   # Run Postgres tests only
+pnpm --filter @coji/durably test:node:all        # Run all Node tests (SQLite + Postgres)
+pnpm db:down                                     # Stop Postgres
 ```
 
 ## Skills
