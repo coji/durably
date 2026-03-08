@@ -173,12 +173,20 @@ Additional `concurrencyKey` exploration:
 
 - the runtime-level guarantee now holds in end-to-end tests: two separate runtimes did not execute same-key runs concurrently
 - sequential guard behavior also holds: once one same-key run is leased, a later same-key run stays blocked while keyless work can still be claimed
-- however, low-level direct `claimNext()` races across multiple PostgreSQL clients are still not fully stable when tested in isolation
+- low-level direct `claimNext()` races across multiple PostgreSQL clients now pass after introducing advisory-lock serialization
+
+The initial implementation used a `WITH ... AS MATERIALIZED` CTE with `FOR UPDATE SKIP LOCKED`, which failed under contention because:
+
+- PostgreSQL CTE snapshots are independent, so the `MATERIALIZED` CTE could return the same rows to concurrent transactions
+- even after flattening to a subquery, `FOR UPDATE SKIP LOCKED` alone was insufficient for concurrency-key safety: two workers could lock different rows sharing the same key, and the `NOT EXISTS` guard evaluated against the original READ COMMITTED snapshot, missing uncommitted leases
+
+The fix uses `pg_advisory_xact_lock(hashtext(concurrency_key))` to serialize per concurrency key. After acquiring the advisory lock, a fresh statement re-checks for active leases using a new READ COMMITTED snapshot. This pattern is well-established in PostgreSQL queue implementations (pgBoss, Graphile Worker, etc.).
 
 Implication:
 
-- PostgreSQL still needs more design work if `QueueStore.claimNext()` itself is meant to be a first-class portable primitive for same-key serialization
-- for now, the strongest confirmed guarantee is at the runtime level, not at the raw queue-primitive level
+- `claimNext()` is now a fully correct queue primitive for same-key serialization on PostgreSQL
+- the advisory-lock approach keeps claims non-blocking for rows without concurrency keys
+- PostgreSQL's claim path is meaningfully different from the generic SQLite path, reinforcing the need for adapter-specific implementations
 
 ### libSQL
 

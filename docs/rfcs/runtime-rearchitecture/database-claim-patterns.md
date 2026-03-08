@@ -68,13 +68,25 @@ The desired shape is:
 3. update the same row to `leased`
 4. return the claimed row
 
-In practice this usually means a pattern based on:
+In practice this means a three-step pattern inside a single transaction:
 
-- `FOR UPDATE SKIP LOCKED`
-- ordered selection of one candidate
-- guarded update inside the same transaction
+1. `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1` to find and lock one candidate
+2. if the candidate has a `concurrency_key`, acquire `pg_advisory_xact_lock(hashtext(concurrency_key))` and re-verify no active lease exists for that key (the advisory lock serializes per key; the re-verification uses a fresh READ COMMITTED snapshot)
+3. `UPDATE` the locked row to `leased`
 
-This works well because PostgreSQL gives a clear row-locking model for concurrent workers.
+This works well because:
+
+- `FOR UPDATE SKIP LOCKED` gives non-blocking row-level exclusion for the basic single-row race
+- advisory locks serialize concurrency-key groups without blocking unrelated claims
+- READ COMMITTED snapshot refresh on step 2 ensures the conflict check sees committed state from other transactions
+
+#### Why advisory locks for concurrency keys
+
+`FOR UPDATE SKIP LOCKED` alone is not sufficient for concurrency-key safety.
+
+When two workers concurrently select different rows that share the same `concurrency_key`, each locks its own row. The `NOT EXISTS` guard against active leases runs against the transaction's original snapshot (READ COMMITTED evaluates each statement at statement-start, but does not refresh mid-scan after a `FOR UPDATE` re-check on a different row). This means both workers can pass the guard and claim a same-key run.
+
+`pg_advisory_xact_lock` on the hashed key forces the second worker to wait until the first commits. The follow-up `SELECT 1 ... WHERE status = 'leased'` then runs as a new statement with a fresh snapshot, correctly seeing the first worker's committed lease.
 
 #### Exploration Note
 
@@ -96,6 +108,11 @@ That reinforces the intended layering:
 
 - `processOne()` is the core runtime contract
 - `claimNext()` is adapter machinery used to implement it
+
+Phase 1 additionally resolved the concurrency-key race at the `claimNext()` level:
+
+- direct concurrent claim tests across separate PostgreSQL clients now pass with advisory-lock serialization
+- this promotes `claimNext()` from "runtime-level only" to a fully correct queue primitive for same-key serialization
 
 ### `renewLease()`
 
@@ -270,6 +287,7 @@ The exact SQL shape may vary. The semantic contract may not.
 However, Phase 1 exploration showed a hard boundary:
 
 - this generic shape should not be assumed safe on PostgreSQL
+- concurrency-key serialization may require backend-specific mechanisms (e.g. advisory locks)
 
 If a backend cannot defend exclusivity with that shape under contention, it needs a backend-specific claim path.
 

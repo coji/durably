@@ -554,32 +554,51 @@ export function createKyselyQueueStore(
                 `
               : sql``
 
-          const result = await sql<Database['durably_runs']>`
-            WITH claimable AS MATERIALIZED (
-              SELECT DISTINCT ON (COALESCE(concurrency_key, id))
-                id,
-                created_at
-              FROM durably_runs
-              WHERE
-                (
-                  status = 'pending'
-                  OR (status = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ${now})
-                )
-                AND ${activeLeaseGuard}
-                ${concurrencyCondition}
-              ORDER BY
-                COALESCE(concurrency_key, id) ASC,
-                created_at ASC,
-                id ASC
-            ),
-            candidate AS (
-              SELECT id
-              FROM durably_runs
-              INNER JOIN claimable USING (id)
-              ORDER BY durably_runs.created_at ASC, durably_runs.id ASC
-              FOR UPDATE SKIP LOCKED
-              LIMIT 1
+          // Step 1: Find and lock a candidate row
+          const candidateResult = await sql<{
+            id: string
+            concurrency_key: string | null
+          }>`
+            SELECT id, concurrency_key
+            FROM durably_runs
+            WHERE
+              (
+                status = 'pending'
+                OR (status = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ${now})
+              )
+              AND ${activeLeaseGuard}
+              ${concurrencyCondition}
+            ORDER BY created_at ASC, id ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+          `.execute(trx)
+
+          const candidate = candidateResult.rows[0]
+          if (!candidate) return null
+
+          // Step 2: If the candidate has a concurrency key, serialize via
+          // advisory lock and re-verify with a fresh snapshot (READ COMMITTED
+          // gives each statement its own snapshot).
+          if (candidate.concurrency_key) {
+            await sql`SELECT pg_advisory_xact_lock(hashtext(${candidate.concurrency_key}))`.execute(
+              trx,
             )
+
+            const conflict = await sql`
+              SELECT 1 FROM durably_runs
+              WHERE concurrency_key = ${candidate.concurrency_key}
+                AND id <> ${candidate.id}
+                AND status = 'leased'
+                AND lease_expires_at IS NOT NULL
+                AND lease_expires_at > ${now}
+              LIMIT 1
+            `.execute(trx)
+
+            if (conflict.rows.length > 0) return null
+          }
+
+          // Step 3: Claim the candidate
+          const result = await sql<Database['durably_runs']>`
             UPDATE durably_runs
             SET
               status = 'leased',
@@ -587,7 +606,7 @@ export function createKyselyQueueStore(
               lease_expires_at = ${leaseExpiresAt},
               started_at = COALESCE(started_at, ${now}),
               updated_at = ${now}
-            WHERE id = (SELECT id FROM candidate)
+            WHERE id = ${candidate.id}
             RETURNING *
           `.execute(trx)
 
