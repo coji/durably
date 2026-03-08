@@ -77,23 +77,28 @@ export function createStorageTests(createDialect: () => Dialect) {
           input: {},
         })
 
+        // Claim so we have a valid leaseGeneration
+        const claimed = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+
         // Add 3 steps
-        await durably.storage.createStep({
-          runId: created.id,
+        await durably.storage.persistStep(created.id, gen, {
           name: 'step-1',
           index: 0,
           status: 'completed',
           startedAt: new Date().toISOString(),
         })
-        await durably.storage.createStep({
-          runId: created.id,
+        await durably.storage.persistStep(created.id, gen, {
           name: 'step-2',
           index: 1,
           status: 'completed',
           startedAt: new Date().toISOString(),
         })
-        await durably.storage.createStep({
-          runId: created.id,
+        await durably.storage.persistStep(created.id, gen, {
           name: 'step-3',
           index: 2,
           status: 'completed',
@@ -116,25 +121,36 @@ export function createStorageTests(createDialect: () => Dialect) {
           input: {},
         })
 
-        // Add 2 steps to run1
-        await durably.storage.createStep({
-          runId: run1.id,
+        // Claim run1 and add 2 steps
+        const claimed1 = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen1 = claimed1!.leaseGeneration
+
+        await durably.storage.persistStep(run1.id, gen1, {
           name: 'step-1',
           index: 0,
           status: 'completed',
           startedAt: new Date().toISOString(),
         })
-        await durably.storage.createStep({
-          runId: run1.id,
+        await durably.storage.persistStep(run1.id, gen1, {
           name: 'step-2',
           index: 1,
           status: 'completed',
           startedAt: new Date().toISOString(),
         })
 
-        // Add 1 step to run2
-        await durably.storage.createStep({
-          runId: run2.id,
+        // Claim run2 and add 1 step
+        const claimed2 = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen2 = claimed2!.leaseGeneration
+
+        await durably.storage.persistStep(run2.id, gen2, {
           name: 'step-1',
           index: 0,
           status: 'completed',
@@ -468,14 +484,20 @@ export function createStorageTests(createDialect: () => Dialect) {
     })
 
     describe('Step operations', () => {
-      it('creates a step', async () => {
+      it('persists a step with lease generation guard', async () => {
         const run = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
 
-        await durably.storage.createStep({
-          runId: run.id,
+        const claimed = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+
+        const step = await durably.storage.persistStep(run.id, gen, {
           name: 'step-1',
           index: 0,
           status: 'completed',
@@ -483,10 +505,40 @@ export function createStorageTests(createDialect: () => Dialect) {
           startedAt: new Date().toISOString(),
         })
 
+        expect(step).not.toBeNull()
+
         const steps = await durably.storage.getSteps(run.id)
         expect(steps).toHaveLength(1)
         expect(steps[0].name).toBe('step-1')
         expect(steps[0].output).toEqual({ result: 42 })
+      })
+
+      it('rejects persistStep with wrong lease generation', async () => {
+        const run = await durably.storage.enqueue({
+          jobName: 'test-job',
+          input: {},
+        })
+
+        const claimed = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+
+        // Use wrong generation
+        const step = await durably.storage.persistStep(run.id, gen + 1, {
+          name: 'step-1',
+          index: 0,
+          status: 'completed',
+          output: 'should-not-exist',
+          startedAt: new Date().toISOString(),
+        })
+
+        expect(step).toBeNull()
+
+        const steps = await durably.storage.getSteps(run.id)
+        expect(steps).toHaveLength(0)
       })
 
       it('gets completed step by name', async () => {
@@ -495,8 +547,14 @@ export function createStorageTests(createDialect: () => Dialect) {
           input: {},
         })
 
-        await durably.storage.createStep({
-          runId: run.id,
+        const claimed = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+
+        await durably.storage.persistStep(run.id, gen, {
           name: 'fetch-data',
           index: 0,
           status: 'completed',

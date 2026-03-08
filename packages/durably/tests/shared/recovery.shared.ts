@@ -130,18 +130,24 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
         const run = await d.jobs.job.trigger({})
 
-        // Manually set to leased with an already-expired lease
+        // Claim the run to get a valid leaseGeneration
+        const claimed = await d.storage.claimNext(
+          'worker-1',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+
+        // Manually expire the lease
         const pastTime = new Date(Date.now() - 5000).toISOString()
         await d.storage.updateRun(run.id, {
-          status: 'leased',
-          leaseOwner: 'worker-1',
           leaseExpiresAt: pastTime,
         })
 
         // Attempt to renew — should fail because lease already expired
         const renewed = await d.storage.renewLease(
           run.id,
-          'worker-1',
+          gen,
           new Date().toISOString(),
           30000,
         )
@@ -205,9 +211,16 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         // Create run and simulate partial execution
         const run = await d.jobs.job.trigger({})
 
-        // Manually complete step1
-        await d.storage.createStep({
-          runId: run.id,
+        // Claim the run so we have a valid leaseGeneration
+        const claimed = await d.storage.claimNext(
+          'worker-1',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+
+        // Manually complete step1 via persistStep
+        await d.storage.persistStep(run.id, gen, {
           name: 'step1',
           index: 0,
           status: 'completed',
@@ -215,9 +228,8 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           startedAt: new Date().toISOString(),
         })
 
+        // Expire the lease so it can be reclaimed
         await d.storage.updateRun(run.id, {
-          status: 'leased',
-          currentStepIndex: 1,
           leaseExpiresAt: new Date(Date.now() - 1000).toISOString(),
         })
 
@@ -281,8 +293,8 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
     })
 
-    describe('Step write guard on lease ownership', () => {
-      it('rejects createStep when lease owner has changed', async () => {
+    describe('Step write guard on lease generation', () => {
+      it('rejects persistStep when lease generation does not match', async () => {
         const d = durably.register({
           job: defineJob({
             name: 'step-guard-test',
@@ -293,46 +305,43 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
         const run = await d.jobs.job.trigger({})
 
-        // Simulate: worker-a claims the run
-        await d.storage.updateRun(run.id, {
-          status: 'leased',
-          leaseOwner: 'worker-a',
-          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
-        })
+        // worker-a claims the run (generation increments to 1)
+        const claimA = await d.storage.claimNext(
+          'worker-a',
+          new Date().toISOString(),
+          30_000,
+        )
+        const genA = claimA!.leaseGeneration
 
         // worker-a creates a step (should succeed)
-        const step1 = await d.storage.createStep(
-          {
-            runId: run.id,
-            name: 'guarded-step',
-            index: 0,
-            status: 'completed',
-            output: 'ok',
-            startedAt: new Date().toISOString(),
-          },
-          'worker-a',
-        )
+        const step1 = await d.storage.persistStep(run.id, genA, {
+          name: 'guarded-step',
+          index: 0,
+          status: 'completed',
+          output: 'ok',
+          startedAt: new Date().toISOString(),
+        })
         expect(step1).not.toBeNull()
 
-        // Simulate: lease expires and worker-b reclaims
+        // Expire lease and let worker-b reclaim (generation increments to 2)
         await d.storage.updateRun(run.id, {
-          status: 'leased',
-          leaseOwner: 'worker-b',
-          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+          leaseExpiresAt: new Date(Date.now() - 1000).toISOString(),
         })
-
-        // Stale worker-a tries to create another step (should be rejected)
-        const step2 = await d.storage.createStep(
-          {
-            runId: run.id,
-            name: 'stale-step',
-            index: 1,
-            status: 'completed',
-            output: 'should-not-exist',
-            startedAt: new Date().toISOString(),
-          },
-          'worker-a',
+        const claimB = await d.storage.claimNext(
+          'worker-b',
+          new Date().toISOString(),
+          30_000,
         )
+        expect(claimB).not.toBeNull()
+
+        // Stale worker-a tries to create another step with old generation (should be rejected)
+        const step2 = await d.storage.persistStep(run.id, genA, {
+          name: 'stale-step',
+          index: 1,
+          status: 'completed',
+          output: 'should-not-exist',
+          startedAt: new Date().toISOString(),
+        })
         expect(step2).toBeNull()
 
         // Verify the stale step was NOT written
@@ -341,7 +350,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         expect(steps[0].name).toBe('guarded-step')
       })
 
-      it('rejects advanceRunStepIndex when lease owner has changed', async () => {
+      it('persistStep atomically advances step index for completed steps', async () => {
         const d = durably.register({
           job: defineJob({
             name: 'advance-guard-test',
@@ -352,39 +361,37 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
         const run = await d.jobs.job.trigger({})
 
-        // Simulate: worker-a claims the run
-        await d.storage.updateRun(run.id, {
-          status: 'leased',
-          leaseOwner: 'worker-a',
-          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+        // Claim the run
+        const claimed = await d.storage.claimNext(
+          'worker-a',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+
+        // persistStep with status=completed should advance currentStepIndex
+        await d.storage.persistStep(run.id, gen, {
+          name: 'step-1',
+          index: 0,
+          status: 'completed',
+          output: 'ok',
+          startedAt: new Date().toISOString(),
         })
 
-        // worker-a advances step index (should succeed)
-        const advanced = await d.storage.advanceRunStepIndex(
-          run.id,
-          1,
-          'worker-a',
-        )
-        expect(advanced).toBe(true)
-
-        // Simulate: lease expires and worker-b reclaims
-        await d.storage.updateRun(run.id, {
-          status: 'leased',
-          leaseOwner: 'worker-b',
-          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
-        })
-
-        // Stale worker-a tries to advance (should be rejected)
-        const staleAdvance = await d.storage.advanceRunStepIndex(
-          run.id,
-          2,
-          'worker-a',
-        )
-        expect(staleAdvance).toBe(false)
-
-        // Verify the index was NOT advanced by the stale worker
         const updated = await d.storage.getRun(run.id)
         expect(updated?.currentStepIndex).toBe(1)
+
+        // persistStep with status=failed should NOT advance currentStepIndex
+        await d.storage.persistStep(run.id, gen, {
+          name: 'step-2',
+          index: 1,
+          status: 'failed',
+          error: 'oops',
+          startedAt: new Date().toISOString(),
+        })
+
+        const afterFail = await d.storage.getRun(run.id)
+        expect(afterFail?.currentStepIndex).toBe(1)
       })
     })
 

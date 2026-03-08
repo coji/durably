@@ -9,7 +9,7 @@ import type { Run, Store } from './storage'
 export function createStepContext(
   run: Run,
   jobName: string,
-  workerId: string,
+  leaseGeneration: number,
   storage: Store,
   eventEmitter: EventEmitter,
 ): {
@@ -81,7 +81,7 @@ export function createStepContext(
       if (
         currentRun &&
         ((currentRun.status === 'leased' &&
-          currentRun.leaseOwner !== workerId) ||
+          currentRun.leaseGeneration !== leaseGeneration) ||
           currentRun.status === 'completed' ||
           currentRun.status === 'failed')
       ) {
@@ -121,38 +121,22 @@ export function createStepContext(
         const result = await fn(controller.signal)
         throwIfAborted()
 
-        // Save step result with lease-ownership guard.
-        // If the lease expired and was reclaimed by another worker
-        // between fn() completing and now, this returns null.
-        const savedStep = await storage.createStep(
-          {
-            runId: run.id,
-            name,
-            index: stepIndex,
-            status: 'completed',
-            output: result,
-            startedAt,
-          },
-          workerId,
-        )
+        // Persist step result atomically with lease generation guard.
+        // If the lease was reclaimed by another worker, this returns null.
+        const savedStep = await storage.persistStep(run.id, leaseGeneration, {
+          name,
+          index: stepIndex,
+          status: 'completed',
+          output: result,
+          startedAt,
+        })
 
         if (!savedStep) {
           abortForLeaseLoss()
           throwIfAborted()
         }
 
-        // Update run's current step index (also guarded by lease ownership)
         stepIndex++
-        const advanced = await storage.advanceRunStepIndex(
-          run.id,
-          stepIndex,
-          workerId,
-        )
-
-        if (!advanced) {
-          abortForLeaseLoss()
-          throwIfAborted()
-        }
 
         // Emit step:complete event
         eventEmitter.emit({
@@ -185,20 +169,17 @@ export function createStepContext(
         const isCancelled = controller.signal.aborted
         const errorMessage = getErrorMessage(error)
 
-        // For cancellation: skip ownership guard — cancelled runs are
-        // terminal and won't be reclaimed by another worker.
-        // For normal errors: use the guard to prevent stale writes.
-        const savedStep = await storage.createStep(
-          {
-            runId: run.id,
-            name,
-            index: stepIndex,
-            status: isCancelled ? 'cancelled' : 'failed',
-            error: errorMessage,
-            startedAt,
-          },
-          isCancelled ? undefined : workerId,
-        )
+        // Persist failed/cancelled step record with generation guard.
+        // For cancellation: the generation still matches (cancelRun doesn't
+        // change it), so the guard passes. For normal errors: the guard
+        // prevents stale writes if the lease was reclaimed.
+        const savedStep = await storage.persistStep(run.id, leaseGeneration, {
+          name,
+          index: stepIndex,
+          status: isCancelled ? 'cancelled' : 'failed',
+          error: errorMessage,
+          startedAt,
+        })
 
         if (!savedStep) {
           // Lease was lost during this window

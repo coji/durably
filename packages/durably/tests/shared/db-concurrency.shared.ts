@@ -90,7 +90,7 @@ export function createDbConcurrencyTests(
           for (const winner of winners) {
             await runtimes[0].storage.completeRun(
               winner!.id,
-              winner!.leaseOwner!,
+              winner!.leaseGeneration,
               { attempt, completed: true },
               new Date().toISOString(),
             )
@@ -109,7 +109,7 @@ export function createDbConcurrencyTests(
             drained.push(next.id)
             await runtimes[0].storage.completeRun(
               next.id,
-              next.leaseOwner!,
+              next.leaseGeneration,
               { attempt, drained: true },
               new Date().toISOString(),
             )

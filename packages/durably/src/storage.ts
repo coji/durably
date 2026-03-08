@@ -44,6 +44,7 @@ export interface Run<
   labels: TLabels
   leaseOwner: string | null
   leaseExpiresAt: string | null
+  leaseGeneration: number
   startedAt: string | null
   completedAt: string | null
   createdAt: string
@@ -68,10 +69,9 @@ export interface RunFilter<
 }
 
 /**
- * Step data for creating a new step
+ * Step data for persisting a step checkpoint
  */
 export interface CreateStepInput {
-  runId: string
   name: string
   index: number
   status: 'completed' | 'failed' | 'cancelled'
@@ -164,7 +164,7 @@ export interface Store<
   updateRun(runId: string, data: UpdateRunData): Promise<void>
   deleteRun(runId: string): Promise<void>
 
-  // Lease management
+  // Lease management (all lease-holder writes guarded by leaseGeneration)
   claimNext(
     workerId: string,
     now: string,
@@ -173,20 +173,20 @@ export interface Store<
   ): Promise<Run<TLabels> | null>
   renewLease(
     runId: string,
-    workerId: string,
+    leaseGeneration: number,
     now: string,
     leaseMs: number,
   ): Promise<boolean>
   releaseExpiredLeases(now: string): Promise<number>
   completeRun(
     runId: string,
-    workerId: string,
+    leaseGeneration: number,
     output: unknown,
     completedAt: string,
   ): Promise<boolean>
   failRun(
     runId: string,
-    workerId: string,
+    leaseGeneration: number,
     error: string,
     completedAt: string,
   ): Promise<boolean>
@@ -194,24 +194,19 @@ export interface Store<
 
   // Steps (checkpoints)
   /**
-   * Create a step record. When workerId is provided, the insert is guarded
-   * by a lease-ownership check (status='leased' AND lease_owner=workerId).
-   * Returns null if the ownership check fails (lease was lost).
+   * Atomically persist a step checkpoint, guarded by lease generation.
+   * Inserts the step record and advances currentStepIndex (for completed
+   * steps only) in a single transaction. Returns null if the generation
+   * does not match (lease was lost).
    */
-  createStep(input: CreateStepInput, workerId?: string): Promise<Step | null>
+  persistStep(
+    runId: string,
+    leaseGeneration: number,
+    input: CreateStepInput,
+  ): Promise<Step | null>
   getSteps(runId: string): Promise<Step[]>
   getCompletedStep(runId: string, name: string): Promise<Step | null>
   deleteSteps(runId: string): Promise<void>
-  /**
-   * Advance the run's current step index. When workerId is provided, the
-   * update is guarded by a lease-ownership check. Returns false if the
-   * guard fails (lease was lost). Without workerId, always returns true.
-   */
-  advanceRunStepIndex(
-    runId: string,
-    stepIndex: number,
-    workerId?: string,
-  ): Promise<boolean>
 
   // Progress
   updateProgress(runId: string, progress: ProgressData | null): Promise<void>
@@ -233,6 +228,7 @@ export type ClientRun<
   | 'concurrencyKey'
   | 'leaseOwner'
   | 'leaseExpiresAt'
+  | 'leaseGeneration'
   | 'updatedAt'
 >
 
@@ -247,6 +243,7 @@ export function toClientRun<
     concurrencyKey,
     leaseOwner,
     leaseExpiresAt,
+    leaseGeneration,
     updatedAt,
     ...clientRun
   } = run
@@ -287,6 +284,7 @@ function rowToRun(
     labels: JSON.parse(row.labels),
     leaseOwner: row.lease_owner,
     leaseExpiresAt: row.lease_expires_at,
+    leaseGeneration: row.lease_generation,
     startedAt: row.started_at,
     completedAt: row.completed_at,
     createdAt: row.created_at,
@@ -368,6 +366,7 @@ export function createKyselyStore(
         labels: JSON.stringify(input.labels ?? {}),
         lease_owner: null,
         lease_expires_at: null,
+        lease_generation: 0,
         started_at: null,
         completed_at: null,
         created_at: now,
@@ -426,6 +425,7 @@ export function createKyselyStore(
             labels: JSON.stringify(input.labels ?? {}),
             lease_owner: null,
             lease_expires_at: null,
+            lease_generation: 0,
             started_at: null,
             completed_at: null,
             created_at: now,
@@ -645,13 +645,14 @@ export function createKyselyStore(
               }
             }
 
-            // Step 3: Claim the candidate
+            // Step 3: Claim the candidate (increment lease_generation)
             const result = await sql<Database['durably_runs']>`
               UPDATE durably_runs
               SET
                 status = 'leased',
                 lease_owner = ${workerId},
                 lease_expires_at = ${leaseExpiresAt},
+                lease_generation = lease_generation + 1,
                 started_at = COALESCE(started_at, ${now}),
                 updated_at = ${now}
               WHERE id = ${candidate.id}
@@ -698,6 +699,7 @@ export function createKyselyStore(
           status: 'leased',
           lease_owner: workerId,
           lease_expires_at: leaseExpiresAt,
+          lease_generation: sql`lease_generation + 1`,
           started_at: sql`COALESCE(started_at, ${now})`,
           updated_at: now,
         })
@@ -713,7 +715,7 @@ export function createKyselyStore(
 
     async renewLease(
       runId: string,
-      workerId: string,
+      leaseGeneration: number,
       now: string,
       leaseMs: number,
     ): Promise<boolean> {
@@ -726,7 +728,7 @@ export function createKyselyStore(
         })
         .where('id', '=', runId)
         .where('status', '=', 'leased')
-        .where('lease_owner', '=', workerId)
+        .where('lease_generation', '=', leaseGeneration)
         .where('lease_expires_at', '>', now)
         .executeTakeFirst()
 
@@ -752,7 +754,7 @@ export function createKyselyStore(
 
     async completeRun(
       runId: string,
-      workerId: string,
+      leaseGeneration: number,
       output: unknown,
       completedAt: string,
     ): Promise<boolean> {
@@ -769,7 +771,7 @@ export function createKyselyStore(
         })
         .where('id', '=', runId)
         .where('status', '=', 'leased')
-        .where('lease_owner', '=', workerId)
+        .where('lease_generation', '=', leaseGeneration)
         .executeTakeFirst()
 
       return Number(result.numUpdatedRows) > 0
@@ -777,7 +779,7 @@ export function createKyselyStore(
 
     async failRun(
       runId: string,
-      workerId: string,
+      leaseGeneration: number,
       error: string,
       completedAt: string,
     ): Promise<boolean> {
@@ -793,7 +795,7 @@ export function createKyselyStore(
         })
         .where('id', '=', runId)
         .where('status', '=', 'leased')
-        .where('lease_owner', '=', workerId)
+        .where('lease_generation', '=', leaseGeneration)
         .executeTakeFirst()
 
       return Number(result.numUpdatedRows) > 0
@@ -816,46 +818,55 @@ export function createKyselyStore(
       return Number(result.numUpdatedRows) > 0
     },
 
-    async createStep(
+    async persistStep(
+      runId: string,
+      leaseGeneration: number,
       input: CreateStepInput,
-      workerId?: string,
     ): Promise<Step | null> {
       const completedAt = new Date().toISOString()
       const id = ulid()
+      const outputJson =
+        input.output !== undefined ? JSON.stringify(input.output) : null
+      const errorValue = input.error ?? null
 
-      const step: Database['durably_steps'] = {
-        id,
-        run_id: input.runId,
-        name: input.name,
-        index: input.index,
-        status: input.status,
-        output:
-          input.output !== undefined ? JSON.stringify(input.output) : null,
-        error: input.error ?? null,
-        started_at: input.startedAt,
-        completed_at: completedAt,
-      }
+      return await db.transaction().execute(async (trx) => {
+        // Atomic INSERT...SELECT: the step is only inserted if the
+        // lease generation matches. Single statement, no TOCTOU.
+        const insertResult = await sql`
+          INSERT INTO durably_steps (id, run_id, name, "index", status, output, error, started_at, completed_at)
+          SELECT ${id}, ${runId}, ${input.name}, ${input.index}, ${input.status},
+                 ${outputJson}, ${errorValue}, ${input.startedAt}, ${completedAt}
+          FROM durably_runs
+          WHERE id = ${runId} AND lease_generation = ${leaseGeneration}
+        `.execute(trx)
 
-      if (workerId) {
-        // Guarded: verify lease ownership in a transaction
-        return await db.transaction().execute(async (trx) => {
-          const run = await trx
-            .selectFrom('durably_runs')
-            .select(['id'])
-            .where('id', '=', input.runId)
-            .where('status', '=', 'leased')
-            .where('lease_owner', '=', workerId)
-            .executeTakeFirst()
+        if (Number(insertResult.numAffectedRows) === 0) return null
 
-          if (!run) return null
+        // Advance step index for completed steps only
+        if (input.status === 'completed') {
+          await trx
+            .updateTable('durably_runs')
+            .set({
+              current_step_index: input.index + 1,
+              updated_at: completedAt,
+            })
+            .where('id', '=', runId)
+            .where('lease_generation', '=', leaseGeneration)
+            .execute()
+        }
 
-          await trx.insertInto('durably_steps').values(step).execute()
-          return rowToStep(step)
-        })
-      }
-
-      await db.insertInto('durably_steps').values(step).execute()
-      return rowToStep(step)
+        return {
+          id,
+          runId,
+          name: input.name,
+          index: input.index,
+          status: input.status,
+          output: input.output !== undefined ? input.output : null,
+          error: errorValue,
+          startedAt: input.startedAt,
+          completedAt,
+        } as Step
+      })
     },
 
     async deleteSteps(runId: string): Promise<void> {
@@ -884,29 +895,6 @@ export function createKyselyStore(
         .executeTakeFirst()
 
       return row ? rowToStep(row) : null
-    },
-
-    async advanceRunStepIndex(
-      runId: string,
-      stepIndex: number,
-      workerId?: string,
-    ): Promise<boolean> {
-      let query = db
-        .updateTable('durably_runs')
-        .set({
-          current_step_index: stepIndex,
-          updated_at: new Date().toISOString(),
-        })
-        .where('id', '=', runId)
-
-      if (workerId) {
-        query = query
-          .where('status', '=', 'leased')
-          .where('lease_owner', '=', workerId)
-      }
-
-      const result = await query.executeTakeFirst()
-      return Number(result.numUpdatedRows) > 0
     },
 
     async updateProgress(

@@ -73,10 +73,10 @@ export function createDbStressTests(
         30_000,
       )
       expect(firstClaim?.id).toBe(created.id)
+      const firstGen = firstClaim!.leaseGeneration
 
+      // Expire the lease so it can be reclaimed
       await runtimes[1].storage.updateRun(created.id, {
-        status: 'leased',
-        leaseOwner: 'worker-a',
         leaseExpiresAt: new Date(Date.now() - 60_000).toISOString(),
       })
 
@@ -88,16 +88,19 @@ export function createDbStressTests(
 
       expect(reclaimed?.id).toBe(created.id)
       expect(reclaimed?.leaseOwner).toBe('worker-b')
+      const secondGen = reclaimed!.leaseGeneration
 
+      // Stale worker tries to complete with old generation — should be rejected
       const staleComplete = await runtimes[3].storage.completeRun(
         created.id,
-        'worker-a',
+        firstGen,
         { ok: false },
         new Date().toISOString(),
       )
+      // Current owner completes with correct generation — should succeed
       const currentComplete = await runtimes[2].storage.completeRun(
         created.id,
-        'worker-b',
+        secondGen,
         { ok: true },
         new Date().toISOString(),
       )

@@ -16,6 +16,7 @@ export interface RunsTable {
   labels: string // JSON: Record<string, string>
   lease_owner: string | null
   lease_expires_at: string | null // ISO8601
+  lease_generation: number
   started_at: string | null // ISO8601
   completed_at: string | null // ISO8601
   created_at: string // ISO8601

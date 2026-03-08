@@ -413,7 +413,7 @@ function createDurablyInstance<
     if (!job) {
       await storage.failRun(
         run.id,
-        workerId,
+        run.leaseGeneration,
         `Unknown job: ${run.jobName}`,
         new Date().toISOString(),
       )
@@ -423,7 +423,7 @@ function createDurablyInstance<
     const { step, abortLeaseOwnership, dispose } = createStepContext(
       run,
       run.jobName,
-      workerId,
+      run.leaseGeneration,
       storage,
       eventEmitter,
     )
@@ -450,7 +450,7 @@ function createDurablyInstance<
     const leaseTimer = setInterval(() => {
       const now = new Date().toISOString()
       storage
-        .renewLease(run.id, workerId, now, state.leaseMs)
+        .renewLease(run.id, run.leaseGeneration, now, state.leaseMs)
         .then((renewed) => {
           if (!renewed) {
             abortLeaseOwnership()
@@ -513,7 +513,7 @@ function createDurablyInstance<
       const completedAt = new Date().toISOString()
       const completed = await storage.completeRun(
         run.id,
-        workerId,
+        run.leaseGeneration,
         output,
         completedAt,
       )
@@ -538,7 +538,7 @@ function createDurablyInstance<
       const completedAt = new Date().toISOString()
       const failed = await storage.failRun(
         run.id,
-        workerId,
+        run.leaseGeneration,
         errorMessage,
         completedAt,
       )

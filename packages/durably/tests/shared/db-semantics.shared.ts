@@ -67,7 +67,7 @@ export function createDbSemanticsTests(
       expect(winners[0]?.status).toBe('leased')
     })
 
-    it('rejects lease renewal from a stale owner', async () => {
+    it('rejects lease renewal with wrong generation', async () => {
       const created = await durably.storage.enqueue({
         jobName: 'job',
         input: {},
@@ -76,10 +76,12 @@ export function createDbSemanticsTests(
       const claimed = await durably.storage.claimNext('worker-a', now, 30_000)
 
       expect(claimed?.id).toBe(created.id)
+      const gen = claimed!.leaseGeneration
 
+      // Wrong generation should be rejected
       const renewed = await durably.storage.renewLease(
         created.id,
-        'worker-b',
+        gen + 1,
         new Date().toISOString(),
         30_000,
       )
@@ -92,12 +94,19 @@ export function createDbSemanticsTests(
         jobName: 'job',
         input: {},
       })
-      const expiredAt = new Date(Date.now() - 60_000).toISOString()
 
+      // First claim
+      const firstClaim = await durably.storage.claimNext(
+        'worker-a',
+        new Date().toISOString(),
+        30_000,
+      )
+      expect(firstClaim?.id).toBe(created.id)
+      const firstGen = firstClaim!.leaseGeneration
+
+      // Expire lease so it can be reclaimed
       await durably.storage.updateRun(created.id, {
-        status: 'leased',
-        leaseOwner: 'worker-a',
-        leaseExpiresAt: expiredAt,
+        leaseExpiresAt: new Date(Date.now() - 60_000).toISOString(),
       })
 
       const reclaimed = await durably.storage.claimNext(
@@ -108,19 +117,22 @@ export function createDbSemanticsTests(
 
       expect(reclaimed?.id).toBe(created.id)
       expect(reclaimed?.leaseOwner).toBe('worker-b')
+      const secondGen = reclaimed!.leaseGeneration
 
+      // Stale worker tries with old generation — rejected
       const staleCompletion = await durably.storage.completeRun(
         created.id,
-        'worker-a',
+        firstGen,
         { ok: false },
         new Date().toISOString(),
       )
 
       expect(staleCompletion).toBe(false)
 
+      // Current owner completes with correct generation — succeeds
       const winningCompletion = await durably.storage.completeRun(
         created.id,
-        'worker-b',
+        secondGen,
         { ok: true },
         new Date().toISOString(),
       )

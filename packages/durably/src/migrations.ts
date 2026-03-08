@@ -9,7 +9,7 @@ interface Migration {
   up: (db: Kysely<Database>) => Promise<void>
 }
 
-export const LATEST_SCHEMA_VERSION = 3
+export const LATEST_SCHEMA_VERSION = 4
 
 const migrations: Migration[] = [
   {
@@ -263,6 +263,27 @@ const migrations: Migration[] = [
         .on('durably_runs')
         .columns(['status', 'lease_expires_at'])
         .execute()
+    },
+  },
+  {
+    version: 4,
+    up: async (db) => {
+      // Add lease_generation fencing token column
+      await db.schema
+        .alterTable('durably_runs')
+        .addColumn('lease_generation', 'integer', (col) =>
+          col.notNull().defaultTo(0),
+        )
+        .execute()
+
+      // Partial unique index: completed steps must be unique per (run_id, name).
+      // This guarantees deterministic replay — getCompletedStep(runId, name)
+      // returns at most one row. Failed/cancelled steps are not constrained
+      // so retries within the same run can re-execute a previously failed step.
+      await sql`
+        CREATE UNIQUE INDEX idx_durably_steps_completed_unique
+        ON durably_steps(run_id, name) WHERE status = 'completed'
+      `.execute(db)
     },
   },
 ]
