@@ -39,6 +39,7 @@ describe('libsql write contention', () => {
       job: defineJob({
         name: 'slow-job',
         input: z.object({ i: z.number() }),
+        output: z.object({ done: z.number() }),
         run: async (step, input) => {
           await step.run('work', async () => {
             await new Promise((r) => setTimeout(r, 50))
@@ -75,6 +76,7 @@ describe('libsql write contention', () => {
       job: defineJob({
         name: 'slow-job-batch',
         input: z.object({ i: z.number() }),
+        output: z.object({ done: z.number() }),
         run: async (step, input) => {
           await step.run('work', async () => {
             await new Promise((r) => setTimeout(r, 50))
@@ -109,6 +111,7 @@ describe('libsql write contention', () => {
       job: defineJob({
         name: 'delete-test-job',
         input: z.object({ i: z.number() }),
+        output: z.object({ done: z.number() }),
         run: async (step, input) => {
           await step.run('work', async () => {
             await new Promise((r) => setTimeout(r, 50))
@@ -176,6 +179,7 @@ describe('libsql write contention', () => {
       job: defineJob({
         name: 'concurrent-enqueue-job',
         input: z.object({ i: z.number() }),
+        output: z.object({ done: z.number() }),
         run: async (step, input) => {
           await step.run('work', async () => {
             await new Promise((r) => setTimeout(r, 20))

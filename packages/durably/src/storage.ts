@@ -331,10 +331,36 @@ function rowToLog(row: Database['durably_logs']): Log {
 /**
  * Create a Kysely-based Store implementation
  */
+/**
+ * Simple async mutex for serializing write operations.
+ * Prevents SQLITE_BUSY errors with libsql, which opens separate
+ * connections for transactions causing write/write conflicts.
+ */
+function createWriteMutex() {
+  let queue: Promise<void> = Promise.resolve()
+
+  return async function withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+    let release: () => void
+    const next = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const prev = queue
+    queue = next
+    await prev
+    try {
+      return await fn()
+    } finally {
+      release!()
+    }
+  }
+}
+
 export function createKyselyStore(
   db: Kysely<Database>,
   backend: DatabaseBackend = 'generic',
 ): Store<Record<string, string>> {
+  const withWriteLock = createWriteMutex()
+
   async function insertLabelRows(
     executor: Kysely<Database>,
     runId: string,
@@ -376,7 +402,7 @@ export function createKyselyStore(
     return Number(result.numUpdatedRows) > 0
   }
 
-  return {
+  const store: Store<Record<string, string>> = {
     async enqueue(input: CreateRunInput): Promise<Run> {
       const now = new Date().toISOString()
 
@@ -428,7 +454,6 @@ export function createKyselyStore(
       if (inputs.length === 0) {
         return []
       }
-
       // Use transaction to ensure atomicity of idempotency checks and inserts
       return await db.transaction().execute(async (trx) => {
         const now = new Date().toISOString()
@@ -988,4 +1013,34 @@ export function createKyselyStore(
       return rows.map(rowToLog)
     },
   }
+
+  // Wrap all mutating methods with write lock to prevent SQLITE_BUSY.
+  // libsql opens separate connections for transactions, so concurrent
+  // writes from the same Kysely instance can conflict. The mutex
+  // serializes writes within a single process. Reads are not locked.
+  const mutatingKeys = [
+    'enqueue',
+    'enqueueMany',
+    'updateRun',
+    'deleteRun',
+    'claimNext',
+    'renewLease',
+    'releaseExpiredLeases',
+    'completeRun',
+    'failRun',
+    'cancelRun',
+    'persistStep',
+    'deleteSteps',
+    'updateProgress',
+    'createLog',
+  ] as const
+
+  for (const key of mutatingKeys) {
+    const original = store[key] as (...args: unknown[]) => Promise<unknown>
+    ;(store as unknown as Record<string, unknown>)[key] = (
+      ...args: unknown[]
+    ): Promise<unknown> => withWriteLock(() => original.apply(store, args))
+  }
+
+  return store
 }
