@@ -34,7 +34,7 @@ When API changes are made, update `packages/durably/docs/llms.md` to keep it in 
 
 ## Database Schema
 
-Four tables: `durably_runs`, `durably_steps`, `durably_logs`, `durably_schema_versions`. Key fields:
+Five tables: `durably_runs`, `durably_run_labels`, `durably_steps`, `durably_logs`, `durably_schema_versions`. Key fields:
 
 - Runs have: `status` (pending/leased/completed/failed/cancelled), `idempotency_key`, `concurrency_key`, `lease_owner`, `lease_expires_at`, `lease_generation` (fencing token)
 - Steps have: `status` (completed/failed/cancelled), `output` (JSON), indexed by `run_id` and `index`; completed steps have a partial unique index on `(run_id, name)`

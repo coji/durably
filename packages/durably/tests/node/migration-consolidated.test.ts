@@ -38,7 +38,7 @@ describe('migration consolidated schema', () => {
       SELECT version FROM durably_schema_versions ORDER BY version DESC LIMIT 1
     `.execute(durably.db)
     expect(versions.rows[0]?.version).toBe(LATEST_SCHEMA_VERSION)
-    expect(LATEST_SCHEMA_VERSION).toBe(1)
+    expect(LATEST_SCHEMA_VERSION).toBe(2)
   })
 
   it('creates all expected indexes', async () => {
@@ -65,6 +65,10 @@ describe('migration consolidated schema', () => {
     // Steps indexes
     expect(indexNames).toContain('idx_durably_steps_run_index')
     expect(indexNames).toContain('idx_durably_steps_completed_unique')
+
+    // Labels indexes
+    expect(indexNames).toContain('idx_durably_run_labels_pk')
+    expect(indexNames).toContain('idx_durably_run_labels_key_value')
 
     // Logs indexes
     expect(indexNames).toContain('idx_durably_logs_run_created')

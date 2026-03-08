@@ -406,6 +406,21 @@ export function createKyselyStore(
 
       await db.insertInto('durably_runs').values(run).execute()
 
+      // Insert normalized labels for indexed filtering
+      const labelEntries = Object.entries(input.labels ?? {})
+      if (labelEntries.length > 0) {
+        await db
+          .insertInto('durably_run_labels')
+          .values(
+            labelEntries.map(([key, value]) => ({
+              run_id: id,
+              key,
+              value,
+            })),
+          )
+          .execute()
+      }
+
       return rowToRun(run)
     },
 
@@ -468,6 +483,21 @@ export function createKyselyStore(
         const newRuns = runs.filter((r) => r.created_at === now)
         if (newRuns.length > 0) {
           await trx.insertInto('durably_runs').values(newRuns).execute()
+
+          // Insert normalized labels for indexed filtering
+          const labelRows: { run_id: string; key: string; value: string }[] = []
+          for (const run of newRuns) {
+            const labels = JSON.parse(run.labels) as Record<string, string>
+            for (const [key, value] of Object.entries(labels)) {
+              labelRows.push({ run_id: run.id, key, value })
+            }
+          }
+          if (labelRows.length > 0) {
+            await trx
+              .insertInto('durably_run_labels')
+              .values(labelRows)
+              .execute()
+          }
         }
 
         return runs.map(rowToRun)
@@ -516,15 +546,16 @@ export function createKyselyStore(
         validateLabels(labels)
         for (const [key, value] of Object.entries(labels)) {
           if (value === undefined) continue
-          if (backend === 'postgres') {
-            query = query.where(sql`durably_runs.labels ->> ${key}`, '=', value)
-          } else {
-            query = query.where(
-              sql`json_extract(durably_runs.labels, ${`$."${key}"`})`,
-              '=',
-              value,
-            )
-          }
+          query = query.where((eb) =>
+            eb.exists(
+              eb
+                .selectFrom('durably_run_labels')
+                .select(sql.lit(1).as('one'))
+                .whereRef('durably_run_labels.run_id', '=', 'durably_runs.id')
+                .where('durably_run_labels.key', '=', key)
+                .where('durably_run_labels.value', '=', value),
+            ),
+          )
         }
       }
 
@@ -583,6 +614,10 @@ export function createKyselyStore(
           .execute()
         await trx
           .deleteFrom('durably_logs')
+          .where('run_id', '=', runId)
+          .execute()
+        await trx
+          .deleteFrom('durably_run_labels')
           .where('run_id', '=', runId)
           .execute()
         await trx.deleteFrom('durably_runs').where('id', '=', runId).execute()

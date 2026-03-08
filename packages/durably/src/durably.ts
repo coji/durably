@@ -375,6 +375,7 @@ interface DurablyState<
   migrated: boolean
   leaseMs: number
   leaseRenewIntervalMs: number
+  backend: DatabaseBackend
   releaseBrowserSingleton: () => void
 }
 
@@ -834,7 +835,7 @@ function createDurablyInstance<
         return state.migrating
       }
 
-      state.migrating = runMigrations(db)
+      state.migrating = runMigrations(db, state.backend)
         .then(() => {
           state.migrated = true
         })
@@ -904,10 +905,8 @@ export function createDurably<
     singletonKey !== null
       ? registerBrowserSingletonWarning(singletonKey)
       : () => {}
-  const storage = createKyselyStore(
-    db,
-    detectBackend(options.dialect),
-  ) as Store<TLabels>
+  const backend = detectBackend(options.dialect)
+  const storage = createKyselyStore(db, backend) as Store<TLabels>
   const originalDestroy = db.destroy.bind(db)
   db.destroy = (async () => {
     releaseBrowserSingleton()
@@ -940,6 +939,7 @@ export function createDurably<
     migrated: false,
     leaseMs: config.leaseMs,
     leaseRenewIntervalMs: config.leaseRenewIntervalMs,
+    backend,
     releaseBrowserSingleton,
   }
 

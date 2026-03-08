@@ -1,15 +1,16 @@
 import { type Kysely, sql } from 'kysely'
 import type { Database } from './schema'
+import type { DatabaseBackend } from './storage'
 
 /**
  * Migration definitions
  */
 interface Migration {
   version: number
-  up: (db: Kysely<Database>) => Promise<void>
+  up: (db: Kysely<Database>, backend: DatabaseBackend) => Promise<void>
 }
 
-export const LATEST_SCHEMA_VERSION = 1
+export const LATEST_SCHEMA_VERSION = 2
 
 const migrations: Migration[] = [
   {
@@ -142,6 +143,51 @@ const migrations: Migration[] = [
         .execute()
     },
   },
+  {
+    version: 2,
+    up: async (db, backend) => {
+      // Create normalized labels table for indexed label filtering
+      await db.schema
+        .createTable('durably_run_labels')
+        .ifNotExists()
+        .addColumn('run_id', 'text', (col) => col.notNull())
+        .addColumn('key', 'text', (col) => col.notNull())
+        .addColumn('value', 'text', (col) => col.notNull())
+        .execute()
+
+      await db.schema
+        .createIndex('idx_durably_run_labels_pk')
+        .ifNotExists()
+        .on('durably_run_labels')
+        .columns(['run_id', 'key'])
+        .unique()
+        .execute()
+
+      await db.schema
+        .createIndex('idx_durably_run_labels_key_value')
+        .ifNotExists()
+        .on('durably_run_labels')
+        .columns(['key', 'value'])
+        .execute()
+
+      // Backfill from existing runs' labels JSON
+      if (backend === 'postgres') {
+        await sql`
+          INSERT INTO durably_run_labels (run_id, key, value)
+          SELECT id, kv.key, kv.value
+          FROM durably_runs, jsonb_each_text(durably_runs.labels::jsonb) AS kv
+          WHERE durably_runs.labels <> '{}'
+        `.execute(db)
+      } else {
+        await sql`
+          INSERT INTO durably_run_labels (run_id, key, value)
+          SELECT durably_runs.id, je.key, je.value
+          FROM durably_runs, json_each(durably_runs.labels) AS je
+          WHERE durably_runs.labels <> '{}'
+        `.execute(db)
+      }
+    },
+  },
 ]
 
 /**
@@ -166,13 +212,16 @@ async function getCurrentVersion(db: Kysely<Database>): Promise<number> {
 /**
  * Run pending migrations
  */
-export async function runMigrations(db: Kysely<Database>): Promise<void> {
+export async function runMigrations(
+  db: Kysely<Database>,
+  backend: DatabaseBackend = 'generic',
+): Promise<void> {
   const currentVersion = await getCurrentVersion(db)
 
   for (const migration of migrations) {
     if (migration.version > currentVersion) {
       await db.transaction().execute(async (trx) => {
-        await migration.up(trx)
+        await migration.up(trx, backend)
 
         await trx
           .insertInto('durably_schema_versions')
