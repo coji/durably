@@ -128,12 +128,16 @@ const migrations: Migration[] = [
         .addColumn('lease_expires_at', 'text')
         .execute()
 
+      // Legacy 'running' rows become 'leased' with an already-expired lease.
+      // The next releaseExpiredLeases() call will reset them to 'pending'
+      // so they can be properly re-claimed.
+      const expired = new Date(0).toISOString()
       await db
         .updateTable('durably_runs')
         .set({
           status: 'leased',
           lease_owner: 'migration:v2',
-          lease_expires_at: null,
+          lease_expires_at: expired,
         })
         .where('status', '=', 'running' as never)
         .execute()
