@@ -1,7 +1,7 @@
 import { CancelledError, getErrorMessage, LeaseLostError } from './errors'
 import type { EventEmitter } from './events'
 import type { StepContext } from './job'
-import type { Run, Storage } from './storage'
+import type { Run, Store } from './storage'
 
 /**
  * Create a step context for executing a run
@@ -10,7 +10,7 @@ export function createStepContext(
   run: Run,
   jobName: string,
   workerId: string,
-  storage: Storage,
+  storage: Store,
   eventEmitter: EventEmitter,
 ): {
   step: StepContext
@@ -72,7 +72,7 @@ export function createStepContext(
 
       // Slow path: DB check for cases where event wasn't received
       // (e.g., run cancelled while worker was down, then resumed)
-      const currentRun = await storage.queue.getRun(run.id)
+      const currentRun = await storage.getRun(run.id)
       if (currentRun?.status === 'cancelled') {
         controller.abort()
         throwIfAborted()
@@ -93,10 +93,7 @@ export function createStepContext(
       throwIfAborted()
 
       // Check if step was already completed
-      const existingStep = await storage.checkpoint.getCompletedStep(
-        run.id,
-        name,
-      )
+      const existingStep = await storage.getCompletedStep(run.id, name)
       if (existingStep) {
         stepIndex++
         return existingStep.output as T
@@ -125,7 +122,7 @@ export function createStepContext(
         throwIfAborted()
 
         // Save step result
-        await storage.checkpoint.createStep({
+        await storage.createStep({
           runId: run.id,
           name,
           index: stepIndex,
@@ -136,7 +133,7 @@ export function createStepContext(
 
         // Update run's current step index
         stepIndex++
-        await storage.checkpoint.advanceRunStepIndex(run.id, stepIndex)
+        await storage.advanceRunStepIndex(run.id, stepIndex)
 
         // Emit step:complete event
         eventEmitter.emit({
@@ -155,7 +152,7 @@ export function createStepContext(
         const isCancelled = controller.signal.aborted
         const errorMessage = getErrorMessage(error)
 
-        await storage.checkpoint.createStep({
+        await storage.createStep({
           runId: run.id,
           name,
           index: stepIndex,
@@ -188,7 +185,7 @@ export function createStepContext(
     progress(current: number, total?: number, message?: string): void {
       const progressData = { current, total, message }
       // Fire and forget - don't await
-      storage.checkpoint.updateProgress(run.id, progressData)
+      storage.updateProgress(run.id, progressData)
       // Emit progress event
       eventEmitter.emit({
         type: 'run:progress',

@@ -27,8 +27,8 @@ import {
   type DatabaseBackend,
   type Run,
   type RunFilter,
-  type Storage,
-  createKyselyStorage,
+  type Store,
+  createKyselyStore,
 } from './storage'
 import { type Worker, createWorker } from './worker'
 
@@ -229,7 +229,7 @@ export interface Durably<
   /**
    * Storage layer for database operations
    */
-  readonly storage: Storage<TLabels>
+  readonly storage: Store<TLabels>
 
   /**
    * Register an event listener
@@ -365,7 +365,7 @@ interface DurablyState<
   TLabels extends Record<string, string> = Record<string, string>,
 > {
   db: Kysely<Database>
-  storage: Storage<TLabels>
+  storage: Store<TLabels>
   eventEmitter: EventEmitter
   jobRegistry: JobRegistry
   worker: Worker
@@ -396,11 +396,9 @@ function createDurablyInstance<
     worker,
     releaseBrowserSingleton,
   } = state
-  const queue = storage.queue
-  const checkpoint = storage.checkpoint
 
   async function getRunOrThrow(runId: string): Promise<Run<TLabels>> {
-    const run = await queue.getRun(runId)
+    const run = await storage.getRun(runId)
     if (!run) {
       throw new Error(`Run not found: ${runId}`)
     }
@@ -413,7 +411,7 @@ function createDurablyInstance<
   ): Promise<void> {
     const job = jobRegistry.get(run.jobName)
     if (!job) {
-      await queue.failRun(
+      await storage.failRun(
         run.id,
         workerId,
         `Unknown job: ${run.jobName}`,
@@ -451,7 +449,7 @@ function createDurablyInstance<
 
     const leaseTimer = setInterval(() => {
       const now = new Date().toISOString()
-      queue
+      storage
         .renewLease(run.id, workerId, now, state.leaseMs)
         .then((renewed) => {
           if (!renewed) {
@@ -513,7 +511,7 @@ function createDurablyInstance<
       }
 
       const completedAt = new Date().toISOString()
-      const completed = await queue.completeRun(
+      const completed = await storage.completeRun(
         run.id,
         workerId,
         output,
@@ -538,7 +536,7 @@ function createDurablyInstance<
 
       const errorMessage = getErrorMessage(error)
       const completedAt = new Date().toISOString()
-      const failed = await queue.failRun(
+      const failed = await storage.failRun(
         run.id,
         workerId,
         errorMessage,
@@ -547,7 +545,7 @@ function createDurablyInstance<
 
       if (failed) {
         reachedTerminalState = true
-        const steps = await checkpoint.getSteps(run.id)
+        const steps = await storage.getSteps(run.id)
         const failedStep = steps.find((entry) => entry.status === 'failed')
         eventEmitter.emit({
           type: 'run:fail',
@@ -565,7 +563,7 @@ function createDurablyInstance<
       }
       dispose()
       if (!state.preserveSteps && reachedTerminalState) {
-        await checkpoint.deleteSteps(run.id)
+        await storage.deleteSteps(run.id)
       }
     }
   }
@@ -613,8 +611,8 @@ function createDurablyInstance<
       )
     },
 
-    getRun: queue.getRun,
-    getRuns: queue.getRuns,
+    getRun: storage.getRun.bind(storage),
+    getRuns: storage.getRuns.bind(storage),
 
     use(plugin: DurablyPlugin): void {
       plugin.install(durably)
@@ -696,7 +694,7 @@ function createDurablyInstance<
         throw new Error(`Unknown job: ${run.jobName}`)
       }
 
-      const nextRun = await queue.enqueue({
+      const nextRun = await storage.enqueue({
         jobName: run.jobName,
         input: run.input,
         concurrencyKey: run.concurrencyKey ?? undefined,
@@ -726,7 +724,7 @@ function createDurablyInstance<
         throw new Error(`Cannot cancel already cancelled run: ${runId}`)
       }
       const wasPending = run.status === 'pending'
-      const cancelled = await queue.cancelRun(runId, new Date().toISOString())
+      const cancelled = await storage.cancelRun(runId, new Date().toISOString())
 
       if (!cancelled) {
         // Run transitioned to a terminal state between the check and the update
@@ -738,7 +736,7 @@ function createDurablyInstance<
 
       // For pending runs, no worker will clean up steps, so do it here
       if (wasPending && !state.preserveSteps) {
-        await checkpoint.deleteSteps(runId)
+        await storage.deleteSteps(runId)
       }
 
       // Emit run:cancel event
@@ -773,9 +771,9 @@ function createDurablyInstance<
       const workerId = options?.workerId ?? defaultWorkerId()
       const now = new Date().toISOString()
 
-      await queue.releaseExpiredLeases(now)
+      await storage.releaseExpiredLeases(now)
 
-      const leasedRuns = await queue.getRuns({ status: 'leased' })
+      const leasedRuns = await storage.getRuns({ status: 'leased' })
       const excludeConcurrencyKeys = leasedRuns
         .filter(
           (entry): entry is Run<TLabels> & { concurrencyKey: string } =>
@@ -785,7 +783,7 @@ function createDurablyInstance<
         )
         .map((entry) => entry.concurrencyKey)
 
-      const run = await queue.claimNext(workerId, now, state.leaseMs, {
+      const run = await storage.claimNext(workerId, now, state.leaseMs, {
         excludeConcurrencyKeys,
       })
       if (!run) {
@@ -894,10 +892,10 @@ export function createDurably<
     singletonKey !== null
       ? registerBrowserSingletonWarning(singletonKey)
       : () => {}
-  const storage = createKyselyStorage(
+  const storage = createKyselyStore(
     db,
     detectBackend(options.dialect),
-  ) as Storage<TLabels>
+  ) as Store<TLabels>
   const originalDestroy = db.destroy.bind(db)
   db.destroy = (async () => {
     releaseBrowserSingleton()

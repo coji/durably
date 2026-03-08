@@ -52,17 +52,17 @@ export function createDbConcurrencyTests(
           await runtimes[0].db.deleteFrom('durably_steps').execute()
           await runtimes[0].db.deleteFrom('durably_runs').execute()
 
-          await runtimes[0].storage.queue.enqueue({
+          await runtimes[0].storage.enqueue({
             jobName: 'same-key-a',
             input: { attempt, ordinal: 1 },
             concurrencyKey: 'group-1',
           })
-          await runtimes[0].storage.queue.enqueue({
+          await runtimes[0].storage.enqueue({
             jobName: 'same-key-b',
             input: { attempt, ordinal: 2 },
             concurrencyKey: 'group-1',
           })
-          await runtimes[0].storage.queue.enqueue({
+          await runtimes[0].storage.enqueue({
             jobName: 'other-key',
             input: { attempt, ordinal: 3 },
             concurrencyKey: 'group-2',
@@ -71,7 +71,7 @@ export function createDbConcurrencyTests(
           const now = new Date().toISOString()
           const results = await Promise.all(
             runtimes.map((runtime, index) =>
-              runtime.storage.queue.claimNext(`worker-${index}`, now, 30_000),
+              runtime.storage.claimNext(`worker-${index}`, now, 30_000),
             ),
           )
 
@@ -88,7 +88,7 @@ export function createDbConcurrencyTests(
           expect(claimedKeys.has('group-1')).toBe(true)
 
           for (const winner of winners) {
-            await runtimes[0].storage.queue.completeRun(
+            await runtimes[0].storage.completeRun(
               winner!.id,
               winner!.leaseOwner!,
               { attempt, completed: true },
@@ -98,7 +98,7 @@ export function createDbConcurrencyTests(
 
           const drained: string[] = []
           while (true) {
-            const next = await runtimes[0].storage.queue.claimNext(
+            const next = await runtimes[0].storage.claimNext(
               'drain-worker',
               new Date().toISOString(),
               30_000,
@@ -107,7 +107,7 @@ export function createDbConcurrencyTests(
               break
             }
             drained.push(next.id)
-            await runtimes[0].storage.queue.completeRun(
+            await runtimes[0].storage.completeRun(
               next.id,
               next.leaseOwner!,
               { attempt, drained: true },
@@ -121,34 +121,34 @@ export function createDbConcurrencyTests(
     )
 
     it('does not lease a later same-key run while an active lease exists', async () => {
-      const first = await runtimes[0].storage.queue.enqueue({
+      const first = await runtimes[0].storage.enqueue({
         jobName: 'same-key-1',
         input: { ordinal: 1 },
         concurrencyKey: 'group-1',
       })
-      await runtimes[0].storage.queue.enqueue({
+      await runtimes[0].storage.enqueue({
         jobName: 'same-key-2',
         input: { ordinal: 2 },
         concurrencyKey: 'group-1',
       })
-      const keyless = await runtimes[0].storage.queue.enqueue({
+      const keyless = await runtimes[0].storage.enqueue({
         jobName: 'keyless',
         input: { ordinal: 3 },
       })
 
-      const firstClaim = await runtimes[0].storage.queue.claimNext(
+      const firstClaim = await runtimes[0].storage.claimNext(
         'worker-a',
         new Date().toISOString(),
         30_000,
       )
       expect(firstClaim?.id).toBe(first.id)
 
-      const secondClaim = await runtimes[1].storage.queue.claimNext(
+      const secondClaim = await runtimes[1].storage.claimNext(
         'worker-b',
         new Date().toISOString(),
         30_000,
       )
-      const thirdClaim = await runtimes[2].storage.queue.claimNext(
+      const thirdClaim = await runtimes[2].storage.claimNext(
         'worker-c',
         new Date().toISOString(),
         30_000,
@@ -159,18 +159,18 @@ export function createDbConcurrencyTests(
     })
 
     it('reclaims the expired lease before leasing another run with the same key', async () => {
-      const first = await runtimes[0].storage.queue.enqueue({
+      const first = await runtimes[0].storage.enqueue({
         jobName: 'reclaim-first',
         input: { ordinal: 1 },
         concurrencyKey: 'group-1',
       })
-      await runtimes[0].storage.queue.enqueue({
+      await runtimes[0].storage.enqueue({
         jobName: 'reclaim-second',
         input: { ordinal: 2 },
         concurrencyKey: 'group-1',
       })
 
-      const firstClaim = await runtimes[0].storage.queue.claimNext(
+      const firstClaim = await runtimes[0].storage.claimNext(
         'worker-a',
         new Date().toISOString(),
         30_000,
@@ -183,12 +183,12 @@ export function createDbConcurrencyTests(
         leaseExpiresAt: new Date(Date.now() - 60_000).toISOString(),
       })
 
-      const reclaimed = await runtimes[2].storage.queue.claimNext(
+      const reclaimed = await runtimes[2].storage.claimNext(
         'worker-b',
         new Date().toISOString(),
         30_000,
       )
-      const stillBlocked = await runtimes[3].storage.queue.claimNext(
+      const stillBlocked = await runtimes[3].storage.claimNext(
         'worker-c',
         new Date().toISOString(),
         30_000,

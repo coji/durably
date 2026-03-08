@@ -60,7 +60,7 @@ describe('Phase 1 exploration', () => {
     await durably.migrate()
     const run = await durably.jobs.job.trigger({})
 
-    const claimed = await durably.storage.queue.claimNext(
+    const claimed = await durably.storage.claimNext(
       'stale-worker',
       new Date().toISOString(),
       5,

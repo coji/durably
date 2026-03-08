@@ -128,7 +128,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         })
 
         // Attempt to renew — should fail because lease already expired
-        const renewed = await d.storage.queue.renewLease(
+        const renewed = await d.storage.renewLease(
           run.id,
           'worker-1',
           new Date().toISOString(),
@@ -521,7 +521,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
         // Directly call cancelRun on queue store — bypasses the status pre-check
         // to verify the SQL-level guard works
-        const cancelled = await d.storage.queue.cancelRun(
+        const cancelled = await d.storage.cancelRun(
           run.id,
           new Date().toISOString(),
         )

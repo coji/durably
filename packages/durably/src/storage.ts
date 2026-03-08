@@ -131,9 +131,28 @@ export interface ClaimOptions {
 
 export type DatabaseBackend = 'generic' | 'postgres'
 
-export interface QueueStore<
+/**
+ * Data for updating a run
+ */
+export interface UpdateRunData {
+  status?: RunStatus
+  currentStepIndex?: number
+  progress?: ProgressData | null
+  output?: unknown
+  error?: string | null
+  leaseOwner?: string | null
+  leaseExpiresAt?: string | null
+  startedAt?: string
+  completedAt?: string
+}
+
+/**
+ * Unified storage interface used by the runtime.
+ */
+export interface Store<
   TLabels extends Record<string, string> = Record<string, string>,
 > {
+  // Run lifecycle
   enqueue(input: CreateRunInput<TLabels>): Promise<Run<TLabels>>
   enqueueMany(inputs: CreateRunInput<TLabels>[]): Promise<Run<TLabels>[]>
   getRun<T extends Run<TLabels> = Run<TLabels>>(
@@ -142,6 +161,10 @@ export interface QueueStore<
   getRuns<T extends Run<TLabels> = Run<TLabels>>(
     filter?: RunFilter<TLabels>,
   ): Promise<T[]>
+  updateRun(runId: string, data: UpdateRunData): Promise<void>
+  deleteRun(runId: string): Promise<void>
+
+  // Lease management
   claimNext(
     workerId: string,
     now: string,
@@ -168,58 +191,18 @@ export interface QueueStore<
     completedAt: string,
   ): Promise<boolean>
   cancelRun(runId: string, now: string): Promise<boolean>
-  deleteRun(runId: string): Promise<void>
-}
 
-export interface CheckpointStore {
+  // Steps (checkpoints)
   createStep(input: CreateStepInput): Promise<Step>
-  deleteSteps(runId: string): Promise<void>
   getSteps(runId: string): Promise<Step[]>
   getCompletedStep(runId: string, name: string): Promise<Step | null>
-  createLog(input: CreateLogInput): Promise<Log>
-  getLogs(runId: string): Promise<Log[]>
+  deleteSteps(runId: string): Promise<void>
   advanceRunStepIndex(runId: string, stepIndex: number): Promise<void>
-  updateProgress(runId: string, progress: ProgressData | null): Promise<void>
-}
 
-/**
- * Combined storage surface used by the runtime.
- */
-export interface Storage<
-  TLabels extends Record<string, string> = Record<string, string>,
-> {
-  queue: QueueStore<TLabels>
-  checkpoint: CheckpointStore
-  createRun(input: CreateRunInput<TLabels>): Promise<Run<TLabels>>
-  batchCreateRuns(inputs: CreateRunInput<TLabels>[]): Promise<Run<TLabels>[]>
-  getRun<T extends Run<TLabels> = Run<TLabels>>(
-    runId: string,
-  ): Promise<T | null>
-  getRuns<T extends Run<TLabels> = Run<TLabels>>(
-    filter?: RunFilter<TLabels>,
-  ): Promise<T[]>
-  claimNextPendingRun(
-    excludeConcurrencyKeys: string[],
-  ): Promise<Run<TLabels> | null>
-  updateRun(
-    runId: string,
-    data: {
-      status?: RunStatus
-      currentStepIndex?: number
-      progress?: ProgressData | null
-      output?: unknown
-      error?: string | null
-      leaseOwner?: string | null
-      leaseExpiresAt?: string | null
-      startedAt?: string
-      completedAt?: string
-    },
-  ): Promise<void>
-  deleteRun(runId: string): Promise<void>
-  createStep(input: CreateStepInput): Promise<Step>
-  deleteSteps(runId: string): Promise<void>
-  getSteps(runId: string): Promise<Step[]>
-  getCompletedStep(runId: string, name: string): Promise<Step | null>
+  // Progress
+  updateProgress(runId: string, progress: ProgressData | null): Promise<void>
+
+  // Logs
   createLog(input: CreateLogInput): Promise<Log>
   getLogs(runId: string): Promise<Log[]>
 }
@@ -330,12 +313,12 @@ function rowToLog(row: Database['durably_logs']): Log {
 }
 
 /**
- * Create a Kysely-based QueueStore implementation
+ * Create a Kysely-based Store implementation
  */
-export function createKyselyQueueStore(
+export function createKyselyStore(
   db: Kysely<Database>,
   backend: DatabaseBackend = 'generic',
-): QueueStore<Record<string, string>> {
+): Store<Record<string, string>> {
   return {
     async enqueue(input: CreateRunInput): Promise<Run> {
       const now = new Date().toISOString()
@@ -515,6 +498,50 @@ export function createKyselyQueueStore(
 
       const rows = await query.execute()
       return rows.map(rowToRun) as T[]
+    },
+
+    async updateRun(runId, data) {
+      const now = new Date().toISOString()
+      const status = data.status
+
+      await db
+        .updateTable('durably_runs')
+        .set({
+          status,
+          current_step_index: data.currentStepIndex,
+          progress:
+            data.progress !== undefined
+              ? data.progress
+                ? JSON.stringify(data.progress)
+                : null
+              : undefined,
+          output:
+            data.output !== undefined ? JSON.stringify(data.output) : undefined,
+          error: data.error,
+          lease_owner:
+            data.leaseOwner !== undefined ? data.leaseOwner : undefined,
+          lease_expires_at:
+            data.leaseExpiresAt !== undefined ? data.leaseExpiresAt : undefined,
+          started_at: data.startedAt,
+          completed_at: data.completedAt,
+          updated_at: now,
+        })
+        .where('id', '=', runId)
+        .execute()
+    },
+
+    async deleteRun(runId: string) {
+      await db.transaction().execute(async (trx) => {
+        await trx
+          .deleteFrom('durably_steps')
+          .where('run_id', '=', runId)
+          .execute()
+        await trx
+          .deleteFrom('durably_logs')
+          .where('run_id', '=', runId)
+          .execute()
+        await trx.deleteFrom('durably_runs').where('id', '=', runId).execute()
+      })
     },
 
     async claimNext(
@@ -775,16 +802,6 @@ export function createKyselyQueueStore(
       return Number(result.numUpdatedRows) > 0
     },
 
-    async deleteRun(runId: string): Promise<void> {
-      await db.deleteFrom('durably_runs').where('id', '=', runId).execute()
-    },
-  }
-}
-
-export function createKyselyCheckpointStore(
-  db: Kysely<Database>,
-): CheckpointStore {
-  return {
     async createStep(input: CreateStepInput): Promise<Step> {
       const completedAt = new Date().toISOString()
       const id = ulid()
@@ -835,6 +852,31 @@ export function createKyselyCheckpointStore(
       return row ? rowToStep(row) : null
     },
 
+    async advanceRunStepIndex(runId: string, stepIndex: number): Promise<void> {
+      await db
+        .updateTable('durably_runs')
+        .set({
+          current_step_index: stepIndex,
+          updated_at: new Date().toISOString(),
+        })
+        .where('id', '=', runId)
+        .execute()
+    },
+
+    async updateProgress(
+      runId: string,
+      progress: ProgressData | null,
+    ): Promise<void> {
+      await db
+        .updateTable('durably_runs')
+        .set({
+          progress: progress ? JSON.stringify(progress) : null,
+          updated_at: new Date().toISOString(),
+        })
+        .where('id', '=', runId)
+        .execute()
+    },
+
     async createLog(input: CreateLogInput): Promise<Log> {
       const now = new Date().toISOString()
       const id = ulid()
@@ -864,91 +906,5 @@ export function createKyselyCheckpointStore(
 
       return rows.map(rowToLog)
     },
-
-    async advanceRunStepIndex(runId: string, stepIndex: number): Promise<void> {
-      await db
-        .updateTable('durably_runs')
-        .set({
-          current_step_index: stepIndex,
-          updated_at: new Date().toISOString(),
-        })
-        .where('id', '=', runId)
-        .execute()
-    },
-
-    async updateProgress(
-      runId: string,
-      progress: ProgressData | null,
-    ): Promise<void> {
-      await db
-        .updateTable('durably_runs')
-        .set({
-          progress: progress ? JSON.stringify(progress) : null,
-          updated_at: new Date().toISOString(),
-        })
-        .where('id', '=', runId)
-        .execute()
-    },
-  }
-}
-
-export function createKyselyStorage(
-  db: Kysely<Database>,
-  backend: DatabaseBackend = 'generic',
-): Storage<Record<string, string>> {
-  const queue = createKyselyQueueStore(db, backend)
-  const checkpoint = createKyselyCheckpointStore(db)
-
-  return {
-    queue,
-    checkpoint,
-    createRun: queue.enqueue,
-    batchCreateRuns: queue.enqueueMany,
-    getRun: queue.getRun,
-    getRuns: queue.getRuns,
-    claimNextPendingRun(excludeConcurrencyKeys: string[]) {
-      return queue.claimNext('legacy-claim', new Date().toISOString(), 30_000, {
-        excludeConcurrencyKeys,
-      })
-    },
-    async updateRun(runId, data) {
-      const now = new Date().toISOString()
-      const status = data.status
-
-      await db
-        .updateTable('durably_runs')
-        .set({
-          status,
-          current_step_index: data.currentStepIndex,
-          progress:
-            data.progress !== undefined
-              ? data.progress
-                ? JSON.stringify(data.progress)
-                : null
-              : undefined,
-          output:
-            data.output !== undefined ? JSON.stringify(data.output) : undefined,
-          error: data.error,
-          lease_owner:
-            data.leaseOwner !== undefined ? data.leaseOwner : undefined,
-          lease_expires_at:
-            data.leaseExpiresAt !== undefined ? data.leaseExpiresAt : undefined,
-          started_at: data.startedAt,
-          completed_at: data.completedAt,
-          updated_at: now,
-        })
-        .where('id', '=', runId)
-        .execute()
-    },
-    async deleteRun(runId: string) {
-      await checkpoint.deleteSteps(runId)
-      await queue.deleteRun(runId)
-    },
-    createStep: checkpoint.createStep,
-    deleteSteps: checkpoint.deleteSteps,
-    getSteps: checkpoint.getSteps,
-    getCompletedStep: checkpoint.getCompletedStep,
-    createLog: checkpoint.createLog,
-    getLogs: checkpoint.getLogs,
   }
 }

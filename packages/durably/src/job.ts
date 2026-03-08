@@ -1,7 +1,7 @@
 import { type z, prettifyError } from 'zod'
 import type { JobDefinition } from './define-job'
 import type { EventEmitter, LogData, ProgressData } from './events'
-import type { Run, RunFilter, Storage } from './storage'
+import type { Run, RunFilter, Store } from './storage'
 
 // eslint-disable-next-line @typescript-eslint/no-empty-function
 const noop = () => {}
@@ -239,7 +239,7 @@ export function createJobHandle<
   TLabels extends Record<string, string> = Record<string, string>,
 >(
   jobDef: JobDefinition<TName, TInput, TOutput>,
-  storage: Storage,
+  storage: Store,
   eventEmitter: EventEmitter,
   registry: JobRegistry,
   labelsSchema?: z.ZodType<TLabels>,
@@ -276,7 +276,7 @@ export function createJobHandle<
       }
 
       // Create the run
-      const run = await storage.queue.enqueue({
+      const run = await storage.enqueue({
         jobName: jobDef.name,
         input: validatedInput,
         idempotencyKey: options?.idempotencyKey,
@@ -367,7 +367,7 @@ export function createJobHandle<
 
         // Check current status after subscribing (race condition mitigation)
         // If the run completed before we subscribed, we need to handle it
-        storage.queue
+        storage
           .getRun(run.id)
           .then((currentRun) => {
             if (resolved || !currentRun) return
@@ -442,7 +442,7 @@ export function createJobHandle<
       }
 
       // Create all runs
-      const runs = await storage.queue.enqueueMany(
+      const runs = await storage.enqueueMany(
         validated.map((v) => ({
           jobName: jobDef.name,
           input: v.input,
@@ -467,7 +467,7 @@ export function createJobHandle<
     },
 
     async getRun(id: string): Promise<TypedRun<TOutput, TLabels> | null> {
-      const run = await storage.queue.getRun(id)
+      const run = await storage.getRun(id)
       if (!run || run.jobName !== jobDef.name) {
         return null
       }
@@ -477,7 +477,7 @@ export function createJobHandle<
     async getRuns(
       filter?: Omit<RunFilter<TLabels>, 'jobName'>,
     ): Promise<TypedRun<TOutput, TLabels>[]> {
-      const runs = await storage.queue.getRuns({
+      const runs = await storage.getRuns({
         ...filter,
         jobName: jobDef.name,
       })

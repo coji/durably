@@ -34,13 +34,13 @@ export function createDbSemanticsTests(
     })
 
     it('enforces idempotent enqueue at storage level', async () => {
-      const first = await durably.storage.queue.enqueue({
+      const first = await durably.storage.enqueue({
         jobName: 'job',
         input: { n: 1 },
         idempotencyKey: 'same-key',
       })
 
-      const second = await durably.storage.queue.enqueue({
+      const second = await durably.storage.enqueue({
         jobName: 'job',
         input: { n: 2 },
         idempotencyKey: 'same-key',
@@ -51,15 +51,15 @@ export function createDbSemanticsTests(
     })
 
     it('allows only one claimant to win the same run', async () => {
-      await durably.storage.queue.enqueue({
+      await durably.storage.enqueue({
         jobName: 'job',
         input: { value: 1 },
       })
 
       const now = new Date().toISOString()
       const [first, second] = await Promise.all([
-        durably.storage.queue.claimNext('worker-a', now, 30_000),
-        durably.storage.queue.claimNext('worker-b', now, 30_000),
+        durably.storage.claimNext('worker-a', now, 30_000),
+        durably.storage.claimNext('worker-b', now, 30_000),
       ])
 
       const winners = [first, second].filter((run) => run !== null)
@@ -68,20 +68,16 @@ export function createDbSemanticsTests(
     })
 
     it('rejects lease renewal from a stale owner', async () => {
-      const created = await durably.storage.queue.enqueue({
+      const created = await durably.storage.enqueue({
         jobName: 'job',
         input: {},
       })
       const now = new Date().toISOString()
-      const claimed = await durably.storage.queue.claimNext(
-        'worker-a',
-        now,
-        30_000,
-      )
+      const claimed = await durably.storage.claimNext('worker-a', now, 30_000)
 
       expect(claimed?.id).toBe(created.id)
 
-      const renewed = await durably.storage.queue.renewLease(
+      const renewed = await durably.storage.renewLease(
         created.id,
         'worker-b',
         new Date().toISOString(),
@@ -92,7 +88,7 @@ export function createDbSemanticsTests(
     })
 
     it('rejects completion from a stale owner after reclaim', async () => {
-      const created = await durably.storage.queue.enqueue({
+      const created = await durably.storage.enqueue({
         jobName: 'job',
         input: {},
       })
@@ -104,7 +100,7 @@ export function createDbSemanticsTests(
         leaseExpiresAt: expiredAt,
       })
 
-      const reclaimed = await durably.storage.queue.claimNext(
+      const reclaimed = await durably.storage.claimNext(
         'worker-b',
         new Date().toISOString(),
         30_000,
@@ -113,7 +109,7 @@ export function createDbSemanticsTests(
       expect(reclaimed?.id).toBe(created.id)
       expect(reclaimed?.leaseOwner).toBe('worker-b')
 
-      const staleCompletion = await durably.storage.queue.completeRun(
+      const staleCompletion = await durably.storage.completeRun(
         created.id,
         'worker-a',
         { ok: false },
@@ -122,7 +118,7 @@ export function createDbSemanticsTests(
 
       expect(staleCompletion).toBe(false)
 
-      const winningCompletion = await durably.storage.queue.completeRun(
+      const winningCompletion = await durably.storage.completeRun(
         created.id,
         'worker-b',
         { ok: true },
@@ -133,11 +129,11 @@ export function createDbSemanticsTests(
     })
 
     it('reclaims an expired leased run and preserves startedAt', async () => {
-      const created = await durably.storage.queue.enqueue({
+      const created = await durably.storage.enqueue({
         jobName: 'job',
         input: {},
       })
-      const firstClaim = await durably.storage.queue.claimNext(
+      const firstClaim = await durably.storage.claimNext(
         'worker-a',
         new Date().toISOString(),
         30_000,
@@ -153,7 +149,7 @@ export function createDbSemanticsTests(
         leaseExpiresAt: new Date(Date.now() - 60_000).toISOString(),
       })
 
-      const reclaimed = await durably.storage.queue.claimNext(
+      const reclaimed = await durably.storage.claimNext(
         'worker-b',
         new Date().toISOString(),
         30_000,

@@ -56,17 +56,16 @@ export type {
 } from './schema'
 
 // Storage types
-export { toClientRun } from './storage'
+export { createKyselyStore, toClientRun } from './storage'
 export type {
-  CheckpointStore,
   ClientRun,
   Log,
-  QueueStore,
   Run,
   RunFilter,
   RunStatus,
   Step,
-  Storage,
+  Store,
+  UpdateRunData,
 } from './storage'
 
 // Errors

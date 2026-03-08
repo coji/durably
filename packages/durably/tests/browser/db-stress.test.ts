@@ -31,7 +31,7 @@ describe('sqlocal queue stress', () => {
       await runtimes[0].db.deleteFrom('durably_steps').execute()
       await runtimes[0].db.deleteFrom('durably_runs').execute()
 
-      const created = await runtimes[0].storage.queue.enqueue({
+      const created = await runtimes[0].storage.enqueue({
         jobName: 'stress-job',
         input: { attempt, nonce: nonce() },
       })
@@ -39,7 +39,7 @@ describe('sqlocal queue stress', () => {
       const now = new Date().toISOString()
       const results = await Promise.all(
         runtimes.map((runtime, index) =>
-          runtime.storage.queue.claimNext(`worker-${index}`, now, 30_000),
+          runtime.storage.claimNext(`worker-${index}`, now, 30_000),
         ),
       )
 

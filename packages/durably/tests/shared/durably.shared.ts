@@ -59,7 +59,7 @@ export function createDurablyTests(createDialect: () => Dialect) {
       await durably.migrate()
 
       // Can use storage directly
-      const run = await durably.storage.createRun({
+      const run = await durably.storage.enqueue({
         jobName: 'test-job',
         input: { test: true },
       })

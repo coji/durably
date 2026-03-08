@@ -43,7 +43,7 @@ export function createDbStressTests(
         await runtimes[0].db.deleteFrom('durably_steps').execute()
         await runtimes[0].db.deleteFrom('durably_runs').execute()
 
-        const created = await runtimes[0].storage.queue.enqueue({
+        const created = await runtimes[0].storage.enqueue({
           jobName: 'stress-job',
           input: { attempt, nonce: randomUUID() },
         })
@@ -51,7 +51,7 @@ export function createDbStressTests(
         const now = new Date().toISOString()
         const results = await Promise.all(
           runtimes.map((runtime, index) =>
-            runtime.storage.queue.claimNext(`worker-${index}`, now, 30_000),
+            runtime.storage.claimNext(`worker-${index}`, now, 30_000),
           ),
         )
 
@@ -62,12 +62,12 @@ export function createDbStressTests(
     })
 
     it('rejects stale completion after another runtime reclaims the lease', async () => {
-      const created = await runtimes[0].storage.queue.enqueue({
+      const created = await runtimes[0].storage.enqueue({
         jobName: 'stress-reclaim',
         input: { nonce: randomUUID() },
       })
 
-      const firstClaim = await runtimes[0].storage.queue.claimNext(
+      const firstClaim = await runtimes[0].storage.claimNext(
         'worker-a',
         new Date().toISOString(),
         30_000,
@@ -80,7 +80,7 @@ export function createDbStressTests(
         leaseExpiresAt: new Date(Date.now() - 60_000).toISOString(),
       })
 
-      const reclaimed = await runtimes[2].storage.queue.claimNext(
+      const reclaimed = await runtimes[2].storage.claimNext(
         'worker-b',
         new Date().toISOString(),
         30_000,
@@ -89,13 +89,13 @@ export function createDbStressTests(
       expect(reclaimed?.id).toBe(created.id)
       expect(reclaimed?.leaseOwner).toBe('worker-b')
 
-      const staleComplete = await runtimes[3].storage.queue.completeRun(
+      const staleComplete = await runtimes[3].storage.completeRun(
         created.id,
         'worker-a',
         { ok: false },
         new Date().toISOString(),
       )
-      const currentComplete = await runtimes[2].storage.queue.completeRun(
+      const currentComplete = await runtimes[2].storage.completeRun(
         created.id,
         'worker-b',
         { ok: true },
