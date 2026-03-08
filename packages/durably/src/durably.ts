@@ -491,6 +491,7 @@ function createDurablyInstance<
     }, state.leaseRenewIntervalMs)
 
     const started = Date.now()
+    let reachedTerminalState = false
 
     try {
       eventEmitter.emit({
@@ -520,6 +521,7 @@ function createDurablyInstance<
       )
 
       if (completed) {
+        reachedTerminalState = true
         eventEmitter.emit({
           type: 'run:complete',
           runId: run.id,
@@ -544,6 +546,7 @@ function createDurablyInstance<
       )
 
       if (failed) {
+        reachedTerminalState = true
         const steps = await checkpoint.getSteps(run.id)
         const failedStep = steps.find((entry) => entry.status === 'failed')
         eventEmitter.emit({
@@ -561,7 +564,7 @@ function createDurablyInstance<
         clearTimeout(leaseDeadlineTimer)
       }
       dispose()
-      if (!state.preserveSteps) {
+      if (!state.preserveSteps && reachedTerminalState) {
         await checkpoint.deleteSteps(run.id)
       }
     }

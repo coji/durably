@@ -197,6 +197,50 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
     })
 
+    describe('Step preservation on lease loss', () => {
+      it('preserves steps when lease is lost mid-execution', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'lease-loss-steps-test',
+            input: z.object({}),
+            run: async (step) => {
+              await step.run('step1', () => 'result-1')
+              await step.run('step2', async () => {
+                // Simulate long step during which lease expires
+                await new Promise((r) => setTimeout(r, 500))
+                return 'result-2'
+              })
+            },
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+        d.start()
+
+        // Wait until leased and step1 completes
+        await vi.waitFor(
+          async () => {
+            const updated = await d.jobs.job.getRun(run.id)
+            expect(updated?.status).toBe('leased')
+          },
+          { timeout: 500 },
+        )
+
+        // Expire the lease to simulate lease loss
+        await d.storage.updateRun(run.id, {
+          leaseExpiresAt: new Date(Date.now() - 1000).toISOString(),
+        })
+
+        // Wait for worker to detect lease loss
+        await new Promise((r) => setTimeout(r, 400))
+
+        // Steps from before lease loss should still exist
+        const steps = await d.storage.getSteps(run.id)
+        expect(steps.length).toBeGreaterThanOrEqual(1)
+        expect(steps.find((s) => s.name === 'step1')?.output).toBe('result-1')
+      })
+    })
+
     describe('retrigger() API', () => {
       it('creates a fresh run from a failed run', async () => {
         const d = durably.register({
