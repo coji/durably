@@ -80,6 +80,30 @@ const migrations: Migration[] = [
         .columns(['job_name', 'created_at'])
         .execute()
 
+      // Create normalized labels table for indexed label filtering
+      await db.schema
+        .createTable('durably_run_labels')
+        .ifNotExists()
+        .addColumn('run_id', 'text', (col) => col.notNull())
+        .addColumn('key', 'text', (col) => col.notNull())
+        .addColumn('value', 'text', (col) => col.notNull())
+        .execute()
+
+      await db.schema
+        .createIndex('idx_durably_run_labels_pk')
+        .ifNotExists()
+        .on('durably_run_labels')
+        .columns(['run_id', 'key'])
+        .unique()
+        .execute()
+
+      await db.schema
+        .createIndex('idx_durably_run_labels_key_value')
+        .ifNotExists()
+        .on('durably_run_labels')
+        .columns(['key', 'value'])
+        .execute()
+
       // Create steps table
       await db.schema
         .createTable('durably_steps')

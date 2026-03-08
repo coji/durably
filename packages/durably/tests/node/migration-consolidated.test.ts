@@ -66,6 +66,10 @@ describe('migration consolidated schema', () => {
     expect(indexNames).toContain('idx_durably_steps_run_index')
     expect(indexNames).toContain('idx_durably_steps_completed_unique')
 
+    // Labels indexes
+    expect(indexNames).toContain('idx_durably_run_labels_pk')
+    expect(indexNames).toContain('idx_durably_run_labels_key_value')
+
     // Logs indexes
     expect(indexNames).toContain('idx_durably_logs_run_created')
   })

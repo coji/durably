@@ -45,6 +45,12 @@ export interface LogsTable {
   created_at: string // ISO8601
 }
 
+export interface RunLabelsTable {
+  run_id: string
+  key: string
+  value: string
+}
+
 export interface SchemaVersionsTable {
   version: number
   applied_at: string // ISO8601
@@ -52,6 +58,7 @@ export interface SchemaVersionsTable {
 
 export interface Database {
   durably_runs: RunsTable
+  durably_run_labels: RunLabelsTable
   durably_steps: StepsTable
   durably_logs: LogsTable
   durably_schema_versions: SchemaVersionsTable
