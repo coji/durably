@@ -12,6 +12,8 @@ import { useState } from 'react'
 import type {
   DataSyncInput,
   DataSyncOutput,
+  GenerateReportInput,
+  GenerateReportOutput,
   ImportCsvInput,
   ImportCsvOutput,
   ProcessImageInput,
@@ -22,6 +24,7 @@ import { durably } from '~/lib/durably'
 /** Union type for all job runs in this dashboard */
 type DashboardRun =
   | TypedClientRun<DataSyncInput, DataSyncOutput>
+  | TypedClientRun<GenerateReportInput, GenerateReportOutput>
   | TypedClientRun<ImportCsvInput, ImportCsvOutput>
   | TypedClientRun<ProcessImageInput, ProcessImageOutput>
 
