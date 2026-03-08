@@ -477,20 +477,9 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        // Create a run with valid input, then process it
+        // Create a run, then simulate schema evolution by overwriting
+        // the stored input with data incompatible with the current schema
         const run = await d.jobs.job.trigger({ name: 'Alice', age: 30 })
-        d.start()
-
-        await vi.waitFor(
-          async () => {
-            const updated = await d.jobs.job.getRun(run.id)
-            expect(updated?.status).toBe('completed')
-          },
-          { timeout: 1000 },
-        )
-
-        // Simulate schema evolution: overwrite the run's input with incompatible data
-        // by directly inserting a run with old-format input via storage
         await d.db
           .updateTable('durably_runs')
           .set({ input: JSON.stringify({ name: 'Alice' }), status: 'failed' })
