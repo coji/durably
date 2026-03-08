@@ -238,13 +238,12 @@ That supports a cleaner Phase 1 schema even if the migration itself is invasive.
 
 The current implementation mixes runtime semantics, polling behavior, and Kysely-backed persistence too closely.
 
-The target architecture separates them into five layers:
+The target architecture separates them into four layers:
 
 1. Runtime
-2. Queue store
-3. Checkpoint store
-4. Worker loop
-5. Transport and UI integrations
+2. Store
+3. Worker loop
+4. Transport and UI integrations
 
 ### Runtime
 
@@ -285,53 +284,75 @@ The design should therefore treat `processOne()` as the first-class contract and
 `processUntilIdle({ maxRuns })` is the natural bounded companion for short-lived deployments.
 Phase 1 exploration validated it as a good "drain up to N runs, then return" primitive for cron-driven and queue-triggered serverless slices.
 
-### Queue Store
+### Store
 
-The queue store owns run lifecycle and lease semantics.
+The store owns all persistence: run lifecycle, lease semantics, step checkpoints, progress, and logs.
 It is an adapter contract, not the primary public surface of the runtime.
 
 ```ts
-interface QueueStore<TLabels = Record<string, string>> {
-  enqueue(input: EnqueueRunInput<TLabels>): Promise<RunRecord<TLabels>>
-  enqueueMany(inputs: EnqueueRunInput<TLabels>[]): Promise<RunRecord<TLabels>[]>
+interface Store<TLabels = Record<string, string>> {
+  // Run lifecycle
+  enqueue(input: CreateRunInput<TLabels>): Promise<Run<TLabels>>
+  enqueueMany(inputs: CreateRunInput<TLabels>[]): Promise<Run<TLabels>[]>
+  getRun(runId: string): Promise<Run<TLabels> | null>
+  getRuns(filter?: RunFilter<TLabels>): Promise<Run<TLabels>[]>
+  updateRun(runId: string, data: UpdateRunData): Promise<void>
+  deleteRun(runId: string): Promise<void>
 
-  getRun(runId: string): Promise<RunRecord<TLabels> | null>
-  listRuns(filter?: RunFilter<TLabels>): Promise<RunRecord<TLabels>[]>
-
+  // Lease management
   claimNext(
     workerId: string,
     now: string,
     leaseMs: number,
-    options?: { excludeConcurrencyKeys?: string[] },
-  ): Promise<RunRecord<TLabels> | null>
-
+    options?: ClaimOptions,
+  ): Promise<Run<TLabels> | null>
   renewLease(
     runId: string,
     workerId: string,
     now: string,
     leaseMs: number,
   ): Promise<boolean>
-
   releaseExpiredLeases(now: string): Promise<number>
-
   completeRun(
     runId: string,
     workerId: string,
     output: unknown,
     completedAt: string,
   ): Promise<boolean>
-
   failRun(
     runId: string,
     workerId: string,
     error: string,
     completedAt: string,
   ): Promise<boolean>
+  cancelRun(runId: string, now: string): Promise<boolean>
 
-  cancelRun(runId: string, now: string): Promise<void>
-  deleteRun(runId: string): Promise<void>
+  // Steps (checkpoints)
+  createStep(input: CreateStepInput): Promise<Step>
+  getSteps(runId: string): Promise<Step[]>
+  getCompletedStep(runId: string, name: string): Promise<Step | null>
+  deleteSteps(runId: string): Promise<void>
+  advanceRunStepIndex(runId: string, stepIndex: number): Promise<void>
+
+  // Progress & logs
+  updateProgress(runId: string, progress: ProgressData | null): Promise<void>
+  createLog(input: CreateLogInput): Promise<Log>
+  getLogs(runId: string): Promise<Log[]>
 }
 ```
+
+> **Design Decision — Why a unified Store instead of QueueStore + CheckpointStore:**
+>
+> The original RFC proposed splitting persistence into a `QueueStore` (run lifecycle and leases) and a `CheckpointStore` (steps, progress, logs). The rationale was that these concerns evolve independently.
+>
+> Implementation showed that the split was a leaky abstraction:
+>
+> - `CheckpointStore` wrote to the `durably_runs` table (`advanceRunStepIndex`, `updateProgress`) — the boundary between the two stores was already broken at the data level.
+> - Cross-store transactions were impossible. Operations like `deleteRun` need atomic cleanup of steps, logs, and the run row — something that cannot be coordinated across two independent store interfaces.
+> - The `Storage` facade that wrapped both stores ended up bypassing them for `updateRun` and `deleteRun`, defeating the purpose of the abstraction.
+> - Backend-specific behavior (e.g., SQLite vs PostgreSQL claim strategies) is a concern within a single store implementation, not a reason to split interfaces.
+>
+> A single `Store` interface is simpler, enables atomic cross-concern operations, and honestly reflects the data model where runs, steps, and logs are tightly coupled.
 
 This contract defines adapter semantics, not SQL shape. Implementations may use SQLite, libSQL, PostgreSQL, or another backend as long as they preserve the runtime guarantees required by `processOne()`.
 
@@ -340,27 +361,6 @@ In particular:
 - Durably does not need one portable `claimNext()` implementation across backends
 - adapters may use different claim strategies to uphold the same runtime behavior
 - if a backend can only defend correctness through a more specialized internal claim path, that is acceptable
-
-### Checkpoint Store
-
-The checkpoint store owns step persistence, progress, and logs.
-
-```ts
-interface CheckpointStore {
-  saveStep(input: SaveStepInput): Promise<void>
-  getCompletedStep(runId: string, stepName: string): Promise<StepRecord | null>
-  listSteps(runId: string): Promise<StepRecord[]>
-
-  updateProgress(runId: string, progress: Progress): Promise<void>
-
-  appendLog(input: CreateLogInput): Promise<void>
-  getLogs(runId: string): Promise<LogRecord[]>
-
-  clearCheckpoints?(runId: string): Promise<void>
-}
-```
-
-This split is intentional. Lease ownership and checkpoint persistence evolve for different reasons and should not be coupled by one oversized storage interface.
 
 ### Worker Loop
 
@@ -384,13 +384,13 @@ Two concurrency concerns must be handled explicitly.
 
 At most one worker may hold the active lease for a run at a given time.
 
-This must be guaranteed by the queue store's acquire and renew operations.
+This must be guaranteed by the store's acquire and renew operations.
 
 ### Preventing parallel runs of the same kind
 
 Some jobs should not run simultaneously even if they are different runs.
 
-This belongs in the acquisition logic. The queue store should be able to exclude or serialize runs that share a `concurrencyKey`.
+This belongs in the acquisition logic. The store should be able to exclude or serialize runs that share a `concurrencyKey`.
 
 This constraint should be enforced at acquisition time, not by in-memory coordination.
 Runtime-side preflight reads may help performance, but they are not sufficient as the primary guarantee.
@@ -441,10 +441,7 @@ The public constructor should accept storage adapters directly.
 
 ```ts
 interface DurablyOptions<TLabels, TJobs> {
-  store: {
-    queue: QueueStore<TLabels>
-    checkpoint: CheckpointStore
-  }
+  store: Store<TLabels>
   migrations?: MigrationDriver
   jobs?: TJobs
   labels?: z.ZodType<TLabels>

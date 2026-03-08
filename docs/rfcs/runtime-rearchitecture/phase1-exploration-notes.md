@@ -41,17 +41,13 @@ That likely means the final design should pick one:
 - keep `claimNext()` as the only reclaim path for a tighter contract
 - keep `releaseExpiredLeases()` only if external maintenance tooling needs it
 
-### 4. `currentStepIndex` and `progress` do not sit cleanly in `QueueStore`
+### 4. `currentStepIndex` and `progress` do not sit cleanly in `QueueStore` — resolved
+
+> **Resolved:** This tension was one of the signals that led to unifying `QueueStore` and `CheckpointStore` into a single `Store` interface. With a unified store, `currentStepIndex` and `progress` are simply part of the store's run management — no awkward cross-store boundary needed.
 
 Once queue semantics are lease-focused, step progress and checkpoint advancement feel misplaced there.
 
-In the exploratory implementation, `CheckpointStore` owns:
-
-- step persistence
-- progress persistence
-- advancing `currentStepIndex`
-
-This suggests the RFC should describe `currentStepIndex` as checkpoint-owned runtime state even if it remains physically stored on the run row.
+In the exploratory implementation, `CheckpointStore` wrote to the `durably_runs` table for `advanceRunStepIndex` and `updateProgress`, breaking the intended boundary between the two stores. Combined with the impossibility of cross-store transactions (needed for atomic `deleteRun` cleanup) and the `Storage` facade bypassing both stores, the split was reversed in favor of a single `Store` interface.
 
 ### 5. `concurrencyKey` safety has to live in `claimNext()`, not only in runtime pre-scan
 
@@ -127,7 +123,7 @@ Implemented and smoke-tested:
 
 - `leased` run status
 - `lease_owner` / `lease_expires_at`
-- `QueueStore` / `CheckpointStore` split
+- unified `Store` interface
 - `processOne()` / `processUntilIdle()`
 - reclaiming expired leases
 

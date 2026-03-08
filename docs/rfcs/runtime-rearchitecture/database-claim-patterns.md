@@ -102,7 +102,7 @@ That means:
 
 Phase 1 also showed a second boundary:
 
-- even when runtime-level `processOne()` semantics are defensible, a raw portable `QueueStore.claimNext()` primitive may still be too weak a portability target
+- even when runtime-level `processOne()` semantics are defensible, a raw portable `Store.claimNext()` primitive may still be too weak a portability target
 
 That reinforces the intended layering:
 
