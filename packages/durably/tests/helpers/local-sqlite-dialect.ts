@@ -10,6 +10,7 @@ export function createLocalSqliteDialect(filename?: string) {
 
   const sqlite = new Database(dbFile)
   sqlite.pragma('journal_mode = WAL')
+  sqlite.pragma('busy_timeout = 5000')
 
   return new SqliteDialect({
     database: sqlite,

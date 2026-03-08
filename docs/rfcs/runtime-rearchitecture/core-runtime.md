@@ -220,9 +220,7 @@ interface StepRecord {
 
 ### Checkpoint Retention
 
-Checkpoint deletion must not be part of the default execution path.
-
-The default behavior should preserve step history because resumability and auditability depend on it. Retention and cleanup should be handled explicitly, for example by a maintenance job or time-based policy.
+The current implementation deletes step output data by default when runs reach terminal state (`preserveSteps: false`). Setting `preserveSteps: true` retains step history for auditing and debugging. Future work may add time-based policies or maintenance jobs for cleanup.
 
 ### Migration Stance
 

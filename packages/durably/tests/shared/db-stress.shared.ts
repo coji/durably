@@ -15,7 +15,7 @@ export function createDbStressTests(
 ) {
   describe(`${label} queue stress`, () => {
     let resource: SharedDialectResource
-    let runtimes: Array<Durably<any, any>>
+    let runtimes: Array<Durably<any, any>> = []
 
     beforeEach(async () => {
       resource = createResource()

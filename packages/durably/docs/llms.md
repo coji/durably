@@ -35,7 +35,7 @@ const durably = createDurably({
   pollingIntervalMs: 1000, // Job polling interval (ms)
   leaseRenewIntervalMs: 5000, // Lease renewal interval (ms)
   leaseMs: 30000, // Lease duration (ms); expired leases are reclaimed
-  preserveSteps: false, // Keep step output data on terminal state (default: false)
+  preserveSteps: false, // Set to true to keep step output data after terminal state (default: false = cleanup)
   // Optional: type-safe labels with Zod schema
   // labels: z.object({ organizationId: z.string(), env: z.string() }),
   jobs: {
