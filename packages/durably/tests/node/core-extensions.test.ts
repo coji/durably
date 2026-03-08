@@ -20,7 +20,7 @@ describe('Core Extensions', () => {
 
   beforeEach(async () => {
     const dialect = createNodeDialect()
-    durably = createDurably({ dialect, pollingInterval: 50 })
+    durably = createDurably({ dialect, pollingIntervalMs: 50 })
     await durably.migrate()
   })
 

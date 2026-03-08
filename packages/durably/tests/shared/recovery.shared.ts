@@ -10,9 +10,9 @@ export function createRecoveryTests(createDialect: () => Dialect) {
     beforeEach(async () => {
       durably = createDurably({
         dialect: createDialect(),
-        pollingInterval: 50,
-        heartbeatInterval: 100,
-        staleThreshold: 300,
+        pollingIntervalMs: 50,
+        leaseRenewIntervalMs: 100,
+        leaseMs: 300,
       })
       await durably.migrate()
     })
@@ -65,9 +65,9 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         // Create with longer lease renewal interval
         const customDurably = createDurably({
           dialect: createDialect(),
-          pollingInterval: 50,
-          heartbeatInterval: 200,
-          staleThreshold: 1000,
+          pollingIntervalMs: 50,
+          leaseRenewIntervalMs: 200,
+          leaseMs: 1000,
         })
         await customDurably.migrate()
 
@@ -523,42 +523,54 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
     describe('deleteRun() API', () => {
       it('deletes completed run with its steps and logs', async () => {
-        const d = durably.register({
-          job: defineJob({
-            name: 'delete-completed-test',
-            input: z.object({}),
-            run: async (step) => {
-              step.log.info('test log')
-              await step.run('step1', () => 'done')
-            },
-          }),
+        const preserveDurably = createDurably({
+          dialect: createDialect(),
+          pollingIntervalMs: 50,
+          preserveSteps: true,
         })
+        await preserveDurably.migrate()
 
-        const run = await d.jobs.job.trigger({})
-        d.start()
+        try {
+          const d = preserveDurably.register({
+            job: defineJob({
+              name: 'delete-completed-test',
+              input: z.object({}),
+              run: async (step) => {
+                step.log.info('test log')
+                await step.run('step1', () => 'done')
+              },
+            }),
+          })
 
-        await vi.waitFor(
-          async () => {
-            const updated = await d.jobs.job.getRun(run.id)
-            expect(updated?.status).toBe('completed')
-          },
-          { timeout: 1000 },
-        )
+          const run = await d.jobs.job.trigger({})
+          d.start()
 
-        // Steps are preserved by default (preserveSteps: true)
-        const steps = await d.storage.getSteps(run.id)
-        expect(steps).toHaveLength(1)
+          await vi.waitFor(
+            async () => {
+              const updated = await d.jobs.job.getRun(run.id)
+              expect(updated?.status).toBe('completed')
+            },
+            { timeout: 1000 },
+          )
 
-        // Delete the run
-        await d.deleteRun(run.id)
+          // Steps are preserved (preserveSteps: true)
+          const steps = await d.storage.getSteps(run.id)
+          expect(steps).toHaveLength(1)
 
-        // Run should be gone
-        const deleted = await d.jobs.job.getRun(run.id)
-        expect(deleted).toBeNull()
+          // Delete the run
+          await d.deleteRun(run.id)
 
-        // Steps should also be deleted
-        const deletedSteps = await d.storage.getSteps(run.id)
-        expect(deletedSteps.length).toBe(0)
+          // Run should be gone
+          const deleted = await d.jobs.job.getRun(run.id)
+          expect(deleted).toBeNull()
+
+          // Steps should also be deleted
+          const deletedSteps = await d.storage.getSteps(run.id)
+          expect(deletedSteps.length).toBe(0)
+        } finally {
+          await preserveDurably.stop()
+          await preserveDurably.db.destroy()
+        }
       })
 
       it('deletes failed run', async () => {

@@ -10,7 +10,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
     beforeEach(async () => {
       durably = createDurably({
         dialect: createDialect(),
-        pollingInterval: 50, // Fast polling for tests
+        pollingIntervalMs: 50, // Fast polling for tests
       })
       await durably.migrate()
     })

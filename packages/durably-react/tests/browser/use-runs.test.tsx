@@ -46,7 +46,7 @@ describe('useRuns', () => {
   }
 
   it('returns empty runs initially', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useRuns(), {
@@ -59,7 +59,7 @@ describe('useRuns', () => {
   })
 
   it('lists runs after job execution', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useRuns(), {
@@ -79,7 +79,7 @@ describe('useRuns', () => {
   })
 
   it('filters by jobName', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const otherJob = defineJob({
@@ -108,7 +108,7 @@ describe('useRuns', () => {
   })
 
   it('filters by status', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useRuns({ status: 'completed' }), {
@@ -139,7 +139,7 @@ describe('useRuns', () => {
   })
 
   it('supports pagination', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useRuns({ pageSize: 2 }), {
@@ -176,7 +176,7 @@ describe('useRuns', () => {
   })
 
   it('goToPage navigates directly', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useRuns({ pageSize: 1 }), {
@@ -202,7 +202,7 @@ describe('useRuns', () => {
   })
 
   it('refresh reloads data', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useRuns(), {
@@ -225,7 +225,7 @@ describe('useRuns', () => {
   })
 
   it('updates in real-time by default', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useRuns(), {
@@ -245,7 +245,7 @@ describe('useRuns', () => {
   })
 
   it('disables real-time updates when realtime=false', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useRuns({ realtime: false }), {

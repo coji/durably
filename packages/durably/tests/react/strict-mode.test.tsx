@@ -195,7 +195,7 @@ describe('React StrictMode', () => {
         cleanedUp.current = false
         const instance = createDurably({
           dialect: createBrowserDialect(),
-          pollingInterval: 50,
+          pollingIntervalMs: 50,
         })
         instances.push(instance)
 
@@ -279,7 +279,7 @@ describe('React StrictMode', () => {
         cleanedUp.current = false
         const instance = createDurably({
           dialect: createBrowserDialect(),
-          pollingInterval: 50,
+          pollingIntervalMs: 50,
         })
         instances.push(instance)
 

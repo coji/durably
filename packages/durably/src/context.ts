@@ -1,4 +1,4 @@
-import { CancelledError, LeaseLostError } from './errors'
+import { CancelledError, getErrorMessage, LeaseLostError } from './errors'
 import type { EventEmitter } from './events'
 import type { StepContext } from './job'
 import type { Run, Storage } from './storage'
@@ -153,8 +153,7 @@ export function createStepContext(
         return result
       } catch (error) {
         const isCancelled = controller.signal.aborted
-        const errorMessage =
-          error instanceof Error ? error.message : String(error)
+        const errorMessage = getErrorMessage(error)
 
         await storage.checkpoint.createStep({
           runId: run.id,

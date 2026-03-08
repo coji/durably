@@ -11,9 +11,9 @@ import { dialect } from './database'
 // Create durably instance with jobs
 export const durably = createDurably({
   dialect,
-  pollingInterval: 100,
-  heartbeatInterval: 500,
-  staleThreshold: 3000,
+  pollingIntervalMs: 100,
+  leaseRenewIntervalMs: 500,
+  leaseMs: 3000,
   jobs: {
     processImage: processImageJob,
   },

@@ -32,9 +32,9 @@ export function createDurablyTests(createDialect: () => Dialect) {
     it('accepts custom configuration values', () => {
       durably = createDurably({
         dialect: createDialect(),
-        pollingInterval: 2000,
-        heartbeatInterval: 10000,
-        staleThreshold: 60000,
+        pollingIntervalMs: 2000,
+        leaseRenewIntervalMs: 10000,
+        leaseMs: 60000,
       })
 
       // Custom values should be applied internally

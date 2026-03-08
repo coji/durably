@@ -253,9 +253,7 @@ export function toClientRun<
     updatedAt,
     ...clientRun
   } = run
-  return {
-    ...clientRun,
-  }
+  return clientRun
 }
 
 /**

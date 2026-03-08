@@ -26,7 +26,7 @@ const sqlocal = new SQLocalKysely('app.sqlite3')
 
 const durably = createDurably({
   dialect: sqlocal.dialect,
-  pollingInterval: 100,
+  pollingIntervalMs: 100,
   jobs: {
     myJob: myJobDef,
   },

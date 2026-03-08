@@ -62,9 +62,9 @@ const dialect = new LibsqlDialect({ client })
 
 const durably = createDurably({
   dialect,
-  pollingInterval: 1000, // Check for jobs every 1s
-  leaseInterval: 5000, // Lease renewal every 5s
-  staleThreshold: 30000, // Stale after 30s
+  pollingIntervalMs: 1000, // Check for jobs every 1s
+  leaseRenewIntervalMs: 5000, // Lease renewal every 5s
+  leaseMs: 30000, // Lease duration (stale after 30s)
   // labels: z.object({ ... }),  // Optional: type-safe labels
   jobs: { importCsv: importCsvJob },
 })

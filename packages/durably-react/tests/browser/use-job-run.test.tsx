@@ -73,7 +73,7 @@ describe('useJobRun', () => {
   }
 
   it('subscribes to run by id', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     // Use a combined hook that triggers then subscribes
@@ -111,7 +111,7 @@ describe('useJobRun', () => {
   })
 
   it('handles null runId', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useJobRun({ runId: null }), {
@@ -125,7 +125,7 @@ describe('useJobRun', () => {
   })
 
   it('provides output when run completes', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     function useTriggerAndSubscribe() {
@@ -159,7 +159,7 @@ describe('useJobRun', () => {
   })
 
   it('provides error when run fails', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     function useTriggerAndSubscribe() {
@@ -196,7 +196,7 @@ describe('useJobRun', () => {
 
   it('updates status when run is cancelled', async () => {
     const durably = await createTestDurably({
-      pollingInterval: 50,
+      pollingIntervalMs: 50,
       autoStart: false,
     })
     instances.push(durably)
@@ -240,7 +240,7 @@ describe('useJobRun', () => {
   })
 
   it('resets status when run is retried', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     function useTriggerAndSubscribe() {
@@ -290,7 +290,7 @@ describe('useJobRun', () => {
   })
 
   it('tracks retrigger from failed through completion', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     // Job that fails first time, succeeds on retrigger
@@ -355,7 +355,7 @@ describe('useJobRun', () => {
 
   it('tracks retrigger from cancelled through completion', async () => {
     const durably = await createTestDurably({
-      pollingInterval: 50,
+      pollingIntervalMs: 50,
       autoStart: false,
     })
     instances.push(durably)
@@ -422,7 +422,7 @@ describe('useJobRun', () => {
   })
 
   it('tracks progress updates', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     function useTriggerAndSubscribe() {
@@ -461,7 +461,7 @@ describe('useJobRun', () => {
   })
 
   it('provides boolean helpers', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     function useTriggerAndSubscribe() {

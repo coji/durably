@@ -159,8 +159,8 @@ await step.run('process', () => process(data)) // Runs fresh
 ```ts
 createDurably({
   dialect,
-  leaseInterval: 5000, // Renew lease every 5s (default)
-  staleThreshold: 30000, // Mark stale after 30s without lease renewal (default)
+  leaseRenewIntervalMs: 5000, // Renew lease every 5s (default)
+  leaseMs: 30000, // Lease duration — stale after 30s without renewal (default)
 })
 ```
 

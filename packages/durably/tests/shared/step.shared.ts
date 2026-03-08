@@ -18,8 +18,8 @@ export function createStepTests(createDialect: () => Dialect) {
     beforeEach(async () => {
       durably = createDurably({
         dialect: createDialect(),
-        pollingInterval: 50,
-        cleanupSteps: false,
+        pollingIntervalMs: 50,
+        preserveSteps: true,
       })
       await durably.migrate()
     })
@@ -83,23 +83,23 @@ export function createStepTests(createDialect: () => Dialect) {
       )
     })
 
-    it('preserves steps after terminal runs by default', async () => {
+    it('deletes steps after terminal runs by default', async () => {
       const defaultDurably = createDurably({
         dialect: createDialect(),
-        pollingInterval: 50,
+        pollingIntervalMs: 50,
       })
       await defaultDurably.migrate()
 
       try {
-        const preserveTestDef = defineJob({
-          name: 'step-preserve-default-test',
+        const cleanupTestDef = defineJob({
+          name: 'step-cleanup-default-test',
           input: z.object({}),
           run: async (step) => {
             await step.run('step1', () => 'result1')
             await step.run('step2', () => 'result2')
           },
         })
-        const d = defaultDurably.register({ job: preserveTestDef })
+        const d = defaultDurably.register({ job: cleanupTestDef })
 
         const run = await d.jobs.job.trigger({})
         d.start()
@@ -108,7 +108,7 @@ export function createStepTests(createDialect: () => Dialect) {
           async () => {
             const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('completed')
-            expect(await d.storage.getSteps(run.id)).toHaveLength(2)
+            expect(await d.storage.getSteps(run.id)).toHaveLength(0)
           },
           { timeout: 1000 },
         )
@@ -118,11 +118,11 @@ export function createStepTests(createDialect: () => Dialect) {
       }
     })
 
-    it('deletes persisted steps after terminal runs when cleanupSteps is true', async () => {
+    it('deletes persisted steps after terminal runs when preserveSteps is false', async () => {
       const cleanupDurably = createDurably({
         dialect: createDialect(),
-        pollingInterval: 50,
-        cleanupSteps: true,
+        pollingIntervalMs: 50,
+        preserveSteps: false,
       })
       await cleanupDurably.migrate()
 

@@ -50,7 +50,7 @@ describe('useJobLogs', () => {
   }
 
   it('collects logs for run', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     function useTriggerAndSubscribe() {
@@ -91,7 +91,7 @@ describe('useJobLogs', () => {
   })
 
   it('handles null runId', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useJobLogs({ runId: null }), {
@@ -103,7 +103,7 @@ describe('useJobLogs', () => {
   })
 
   it('respects maxLogs limit', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     function useTriggerAndSubscribe() {
@@ -137,7 +137,7 @@ describe('useJobLogs', () => {
   })
 
   it('clears logs on clearLogs call', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     function useTriggerAndSubscribe() {

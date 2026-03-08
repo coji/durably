@@ -118,7 +118,7 @@ import { sqlocal } from './database'
 
 const durably = createDurably({
   dialect: sqlocal.dialect,
-  pollingInterval: 100,
+  pollingIntervalMs: 100,
   jobs: { dataSync: dataSyncJob },
 })
 

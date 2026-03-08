@@ -145,12 +145,11 @@ export interface CreateDurablyHandlerOptions<
  */
 const VALID_STATUSES = [
   'pending',
-  'running',
   'leased',
   'completed',
   'failed',
   'cancelled',
-] as const
+] as const satisfies readonly RunFilter['status'][]
 
 const VALID_STATUSES_SET: ReadonlySet<string> = new Set(VALID_STATUSES)
 

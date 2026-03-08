@@ -32,10 +32,10 @@ const dialect = new LibsqlDialect({ client })
 // Option 1: With jobs (1-step initialization, returns typed instance)
 const durably = createDurably({
   dialect,
-  pollingInterval: 1000, // Job polling interval (ms)
-  leaseInterval: 5000, // Lease renewal interval (ms)
-  staleThreshold: 30000, // When to consider a lease expired (ms)
-  preserveSteps: true, // Keep step output data on terminal state (default: true)
+  pollingIntervalMs: 1000, // Job polling interval (ms)
+  leaseRenewIntervalMs: 5000, // Lease renewal interval (ms)
+  leaseMs: 30000, // Lease duration (ms); expired leases are reclaimed
+  preserveSteps: false, // Keep step output data on terminal state (default: false)
   // Optional: type-safe labels with Zod schema
   // labels: z.object({ organizationId: z.string(), env: z.string() }),
   jobs: {
@@ -460,9 +460,9 @@ const { dialect } = new SQLocalKysely('app.sqlite3')
 
 const durably = createDurably({
   dialect,
-  pollingInterval: 100,
-  leaseInterval: 500,
-  staleThreshold: 3000,
+  pollingIntervalMs: 100,
+  leaseRenewIntervalMs: 500,
+  leaseMs: 3000,
   jobs: {
     myJob: defineJob({
       name: 'my-job',

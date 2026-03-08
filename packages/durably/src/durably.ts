@@ -4,7 +4,7 @@ import { monotonicFactory } from 'ulidx'
 import type { z } from 'zod'
 import { createStepContext } from './context'
 import type { JobDefinition } from './define-job'
-import { CancelledError, LeaseLostError } from './errors'
+import { CancelledError, getErrorMessage, LeaseLostError } from './errors'
 import {
   type AnyEventInput,
   type DurablyEvent,
@@ -24,9 +24,7 @@ import {
 import { runMigrations } from './migrations'
 import type { Database } from './schema'
 import {
-  type CheckpointStore,
   type DatabaseBackend,
-  type QueueStore,
   type Run,
   type RunFilter,
   type Storage,
@@ -51,13 +49,9 @@ export interface DurablyOptions<
    * When omitted, Durably will use browser-local dialect metadata if available.
    */
   singletonKey?: string
-  pollingInterval?: number
   pollingIntervalMs?: number
-  heartbeatInterval?: number
   leaseRenewIntervalMs?: number
-  staleThreshold?: number
   leaseMs?: number
-  cleanupSteps?: boolean
   preserveSteps?: boolean
   /**
    * Zod schema for labels. When provided:
@@ -85,7 +79,7 @@ const DEFAULTS = {
   pollingIntervalMs: 1000,
   leaseRenewIntervalMs: 5000,
   leaseMs: 30000,
-  preserveSteps: true,
+  preserveSteps: false,
 } as const
 
 const ulid = monotonicFactory()
@@ -236,14 +230,6 @@ export interface Durably<
    * Storage layer for database operations
    */
   readonly storage: Storage<TLabels>
-
-  /**
-   * Runtime store split by responsibility.
-   */
-  readonly store: {
-    queue: QueueStore<TLabels>
-    checkpoint: CheckpointStore
-  }
 
   /**
    * Register an event listener
@@ -497,7 +483,7 @@ function createDurablyInstance<
         .catch((error) => {
           eventEmitter.emit({
             type: 'worker:error',
-            error: error instanceof Error ? error.message : String(error),
+            error: getErrorMessage(error),
             context: 'lease-renewal',
             runId: run.id,
           })
@@ -548,8 +534,7 @@ function createDurablyInstance<
         return
       }
 
-      const errorMessage =
-        error instanceof Error ? error.message : String(error)
+      const errorMessage = getErrorMessage(error)
       const completedAt = new Date().toISOString()
       const failed = await queue.failRun(
         run.id,
@@ -585,7 +570,6 @@ function createDurablyInstance<
   const durably: Durably<TJobs, TLabels> = {
     db,
     storage,
-    store: storage,
     jobs,
     on: eventEmitter.on,
     emit: eventEmitter.emit,
@@ -763,8 +747,7 @@ function createDurablyInstance<
       if (run.status === 'leased') {
         throw new Error(`Cannot delete leased run: ${runId}`)
       }
-      await checkpoint.deleteSteps(runId)
-      await queue.deleteRun(runId)
+      await storage.deleteRun(runId)
 
       // Emit run:delete event
       eventEmitter.emit({
@@ -884,21 +867,11 @@ export function createDurably<
   | Durably<TransformToHandles<TJobs, TLabels>, TLabels>
   | Durably<Record<string, never>, TLabels> {
   const config = {
-    pollingIntervalMs:
-      options.pollingIntervalMs ??
-      options.pollingInterval ??
-      DEFAULTS.pollingIntervalMs,
+    pollingIntervalMs: options.pollingIntervalMs ?? DEFAULTS.pollingIntervalMs,
     leaseRenewIntervalMs:
-      options.leaseRenewIntervalMs ??
-      options.heartbeatInterval ??
-      DEFAULTS.leaseRenewIntervalMs,
-    leaseMs: options.leaseMs ?? options.staleThreshold ?? DEFAULTS.leaseMs,
-    preserveSteps:
-      options.preserveSteps ??
-      (options.cleanupSteps !== undefined
-        ? !options.cleanupSteps
-        : undefined) ??
-      DEFAULTS.preserveSteps,
+      options.leaseRenewIntervalMs ?? DEFAULTS.leaseRenewIntervalMs,
+    leaseMs: options.leaseMs ?? DEFAULTS.leaseMs,
+    preserveSteps: options.preserveSteps ?? DEFAULTS.preserveSteps,
   }
 
   const db = new Kysely<Database>({ dialect: options.dialect })

@@ -24,24 +24,24 @@ interface DurablyOptions<
   TJobs extends Record<string, JobDefinition> = Record<string, never>,
 > {
   dialect: Dialect
-  pollingInterval?: number
-  leaseInterval?: number
-  staleThreshold?: number
-  cleanupSteps?: boolean
+  pollingIntervalMs?: number
+  leaseRenewIntervalMs?: number
+  leaseMs?: number
+  preserveSteps?: boolean
   labels?: z.ZodType<TLabels>
   jobs?: TJobs
 }
 ```
 
-| Option            | Type        | Default  | Description                                                                           |
-| ----------------- | ----------- | -------- | ------------------------------------------------------------------------------------- |
-| `dialect`         | `Dialect`   | required | Kysely SQLite dialect                                                                 |
-| `pollingInterval` | `number`    | `1000`   | How often to check for pending jobs (ms)                                              |
-| `leaseInterval`   | `number`    | `5000`   | How often to renew the lease (ms)                                                     |
-| `staleThreshold`  | `number`    | `30000`  | Time until a job is considered stale (ms)                                             |
-| `labels`          | `z.ZodType` | —        | Zod schema for labels. Enables type-safe labels and runtime validation on `trigger()` |
-| `cleanupSteps`    | `boolean`   | `true`   | Delete step output data when runs reach terminal state (completed/failed/cancelled)   |
-| `jobs`            | `TJobs`     | —        | Job definitions to register. Shorthand for calling `.register()` after creation       |
+| Option                 | Type        | Default  | Description                                                                           |
+| ---------------------- | ----------- | -------- | ------------------------------------------------------------------------------------- |
+| `dialect`              | `Dialect`   | required | Kysely SQLite dialect                                                                 |
+| `pollingIntervalMs`    | `number`    | `1000`   | How often to check for pending jobs (ms)                                              |
+| `leaseRenewIntervalMs` | `number`    | `5000`   | How often to renew the lease (ms)                                                     |
+| `leaseMs`              | `number`    | `30000`  | Lease duration — time until a job is considered stale (ms)                            |
+| `labels`               | `z.ZodType` | —        | Zod schema for labels. Enables type-safe labels and runtime validation on `trigger()` |
+| `preserveSteps`        | `boolean`   | `false`  | Keep step output data when runs reach terminal state (completed/failed/cancelled)     |
+| `jobs`                 | `TJobs`     | —        | Job definitions to register. Shorthand for calling `.register()` after creation       |
 
 ## Returns
 
@@ -273,9 +273,9 @@ const dialect = new LibsqlDialect({ client })
 
 const durably = createDurably({
   dialect,
-  pollingInterval: 1000,
-  leaseInterval: 5000,
-  staleThreshold: 30000,
+  pollingIntervalMs: 1000,
+  leaseRenewIntervalMs: 5000,
+  leaseMs: 30000,
 })
 
 // Initialize (migrate + start)

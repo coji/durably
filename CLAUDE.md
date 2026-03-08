@@ -36,15 +36,15 @@ When API changes are made, update `packages/durably/docs/llms.md` to keep it in 
 
 Four tables: `durably_runs`, `durably_steps`, `durably_logs`, `durably_schema_versions`. Key fields:
 
-- Runs have: `status` (pending/running/completed/failed/cancelled), `idempotency_key`, `concurrency_key`, `heartbeat_at`
+- Runs have: `status` (pending/leased/completed/failed/cancelled), `idempotency_key`, `concurrency_key`, `lease_owner`, `lease_expires_at`
 - Steps have: `status` (completed/failed), `output` (JSON), indexed by `run_id` and `index`
 
 ## Configuration Defaults
 
-- `pollingInterval`: 1000ms
-- `heartbeatInterval`: 5000ms
-- `staleThreshold`: 30000ms (for detecting abandoned runs)
-- `cleanupSteps`: true (deletes step output data when runs reach terminal state)
+- `pollingIntervalMs`: 1000ms
+- `leaseRenewIntervalMs`: 5000ms
+- `leaseMs`: 30000ms (lease duration; expired leases are reclaimed)
+- `preserveSteps`: false (deletes step output data when runs reach terminal state)
 
 ## Browser Constraints (by design)
 
