@@ -1,4 +1,4 @@
-import { type Kysely, sql } from 'kysely'
+import { type Kysely, type SqlBool, sql } from 'kysely'
 import { monotonicFactory } from 'ulidx'
 import type { Database } from './schema'
 
@@ -329,12 +329,52 @@ function rowToLog(row: Database['durably_logs']): Log {
 }
 
 /**
+ * Simple async mutex for serializing write operations.
+ * Prevents SQLITE_BUSY errors with libsql, which opens separate
+ * connections for transactions causing write/write conflicts.
+ */
+function createWriteMutex() {
+  let queue: Promise<void> = Promise.resolve()
+
+  return async function withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+    let release: () => void
+    const next = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const prev = queue
+    queue = next
+    await prev
+    try {
+      return await fn()
+    } finally {
+      release!()
+    }
+  }
+}
+
+/**
  * Create a Kysely-based Store implementation
  */
 export function createKyselyStore(
   db: Kysely<Database>,
   backend: DatabaseBackend = 'generic',
 ): Store<Record<string, string>> {
+  const withWriteLock = createWriteMutex()
+
+  async function insertLabelRows(
+    executor: Kysely<Database>,
+    runId: string,
+    labels: Record<string, string> | undefined,
+  ): Promise<void> {
+    const entries = Object.entries(labels ?? {})
+    if (entries.length > 0) {
+      await executor
+        .insertInto('durably_run_labels')
+        .values(entries.map(([key, value]) => ({ run_id: runId, key, value })))
+        .execute()
+    }
+  }
+
   async function terminateRun(
     runId: string,
     leaseGeneration: number,
@@ -362,7 +402,7 @@ export function createKyselyStore(
     return Number(result.numUpdatedRows) > 0
   }
 
-  return {
+  const store: Store<Record<string, string>> = {
     async enqueue(input: CreateRunInput): Promise<Run> {
       const now = new Date().toISOString()
 
@@ -404,7 +444,11 @@ export function createKyselyStore(
         updated_at: now,
       }
 
-      await db.insertInto('durably_runs').values(run).execute()
+      // Use transaction to ensure run + label rows are atomic
+      await db.transaction().execute(async (trx) => {
+        await trx.insertInto('durably_runs').values(run).execute()
+        await insertLabelRows(trx, id, input.labels)
+      })
 
       return rowToRun(run)
     },
@@ -413,7 +457,6 @@ export function createKyselyStore(
       if (inputs.length === 0) {
         return []
       }
-
       // Use transaction to ensure atomicity of idempotency checks and inserts
       return await db.transaction().execute(async (trx) => {
         const now = new Date().toISOString()
@@ -425,6 +468,11 @@ export function createKyselyStore(
         }
 
         // Process inputs - check idempotency keys and create run objects
+        const allLabelRows: Array<{
+          run_id: string
+          key: string
+          value: string
+        }> = []
         for (const input of inputs) {
           // Check for existing run with same idempotency key
           if (input.idempotencyKey) {
@@ -442,6 +490,11 @@ export function createKyselyStore(
           }
 
           const id = ulid()
+          if (input.labels) {
+            for (const [key, value] of Object.entries(input.labels)) {
+              allLabelRows.push({ run_id: id, key, value })
+            }
+          }
           runs.push({
             id,
             job_name: input.jobName,
@@ -468,6 +521,14 @@ export function createKyselyStore(
         const newRuns = runs.filter((r) => r.created_at === now)
         if (newRuns.length > 0) {
           await trx.insertInto('durably_runs').values(newRuns).execute()
+
+          // Insert normalized labels for indexed filtering (single batch)
+          if (allLabelRows.length > 0) {
+            await trx
+              .insertInto('durably_run_labels')
+              .values(allLabelRows)
+              .execute()
+          }
         }
 
         return runs.map(rowToRun)
@@ -516,15 +577,25 @@ export function createKyselyStore(
         validateLabels(labels)
         for (const [key, value] of Object.entries(labels)) {
           if (value === undefined) continue
-          if (backend === 'postgres') {
-            query = query.where(sql`durably_runs.labels ->> ${key}`, '=', value)
-          } else {
-            query = query.where(
-              sql`json_extract(durably_runs.labels, ${`$."${key}"`})`,
-              '=',
-              value,
-            )
-          }
+          // Use indexed label table with JSON fallback for atomicity safety:
+          // if label rows haven't been written yet, fall back to JSON column
+          const jsonFallback =
+            backend === 'postgres'
+              ? sql<SqlBool>`durably_runs.labels ->> ${key} = ${value}`
+              : sql<SqlBool>`json_extract(durably_runs.labels, ${`$.${key}`}) = ${value}`
+          query = query.where((eb) =>
+            eb.or([
+              eb.exists(
+                eb
+                  .selectFrom('durably_run_labels')
+                  .select(sql.lit(1).as('one'))
+                  .whereRef('durably_run_labels.run_id', '=', 'durably_runs.id')
+                  .where('durably_run_labels.key', '=', key)
+                  .where('durably_run_labels.value', '=', value),
+              ),
+              jsonFallback,
+            ]),
+          )
         }
       }
 
@@ -583,6 +654,10 @@ export function createKyselyStore(
           .execute()
         await trx
           .deleteFrom('durably_logs')
+          .where('run_id', '=', runId)
+          .execute()
+        await trx
+          .deleteFrom('durably_run_labels')
           .where('run_id', '=', runId)
           .execute()
         await trx.deleteFrom('durably_runs').where('id', '=', runId).execute()
@@ -950,4 +1025,34 @@ export function createKyselyStore(
       return rows.map(rowToLog)
     },
   }
+
+  // Wrap all mutating methods with write lock to prevent SQLITE_BUSY.
+  // libsql opens separate connections for transactions, so concurrent
+  // writes from the same Kysely instance can conflict. The mutex
+  // serializes writes within a single process. Reads are not locked.
+  const mutatingKeys = [
+    'enqueue',
+    'enqueueMany',
+    'updateRun',
+    'deleteRun',
+    'claimNext',
+    'renewLease',
+    'releaseExpiredLeases',
+    'completeRun',
+    'failRun',
+    'cancelRun',
+    'persistStep',
+    'deleteSteps',
+    'updateProgress',
+    'createLog',
+  ] as const
+
+  for (const key of mutatingKeys) {
+    const original = store[key] as (...args: unknown[]) => Promise<unknown>
+    ;(store as unknown as Record<string, unknown>)[key] = (
+      ...args: unknown[]
+    ): Promise<unknown> => withWriteLock(() => original.apply(store, args))
+  }
+
+  return store
 }

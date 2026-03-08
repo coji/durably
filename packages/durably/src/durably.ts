@@ -904,10 +904,8 @@ export function createDurably<
     singletonKey !== null
       ? registerBrowserSingletonWarning(singletonKey)
       : () => {}
-  const storage = createKyselyStore(
-    db,
-    detectBackend(options.dialect),
-  ) as Store<TLabels>
+  const backend = detectBackend(options.dialect)
+  const storage = createKyselyStore(db, backend) as Store<TLabels>
   const originalDestroy = db.destroy.bind(db)
   db.destroy = (async () => {
     releaseBrowserSingleton()
