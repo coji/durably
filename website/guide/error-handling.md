@@ -178,7 +178,7 @@ This is useful for:
 
 ## Cancellation
 
-Cancel a running job. The current step finishes, then the job stops.
+Cancel a leased job. The current step finishes, then the job stops.
 
 ```ts
 // Server-side

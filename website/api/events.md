@@ -248,14 +248,14 @@ durably.on('log:write', (event) => {
 
 #### `worker:error`
 
-Fired when an internal worker error occurs (e.g., heartbeat failure).
+Fired when an internal worker error occurs (e.g., lease renewal failure).
 
 ```ts
 durably.on('worker:error', (event) => {
   // event: {
   //   type: 'worker:error',
   //   error: string,
-  //   context: string,  // e.g., 'heartbeat'
+  //   context: string,  // e.g., 'lease-renewal'
   //   runId?: string,
   //   timestamp: string,
   //   sequence: number

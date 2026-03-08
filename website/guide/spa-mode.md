@@ -219,7 +219,7 @@ SPA hooks use the Durably instance directly (via `DurablyProvider`). Fullstack h
 
 Browsers suspend inactive tabs. Durably handles this automatically:
 
-1. Tab goes inactive → heartbeat stops → job marked stale
+1. Tab goes inactive → lease renewal stops → lease expires
 2. Tab becomes active → worker restarts → job resumes from last checkpoint
 
 ## Next Steps
