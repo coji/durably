@@ -329,9 +329,6 @@ function rowToLog(row: Database['durably_logs']): Log {
 }
 
 /**
- * Create a Kysely-based Store implementation
- */
-/**
  * Simple async mutex for serializing write operations.
  * Prevents SQLITE_BUSY errors with libsql, which opens separate
  * connections for transactions causing write/write conflicts.
@@ -355,6 +352,9 @@ function createWriteMutex() {
   }
 }
 
+/**
+ * Create a Kysely-based Store implementation
+ */
 export function createKyselyStore(
   db: Kysely<Database>,
   backend: DatabaseBackend = 'generic',
@@ -444,8 +444,11 @@ export function createKyselyStore(
         updated_at: now,
       }
 
-      await db.insertInto('durably_runs').values(run).execute()
-      await insertLabelRows(db, id, input.labels)
+      // Use transaction to ensure run + label rows are atomic
+      await db.transaction().execute(async (trx) => {
+        await trx.insertInto('durably_runs').values(run).execute()
+        await insertLabelRows(trx, id, input.labels)
+      })
 
       return rowToRun(run)
     },
@@ -465,7 +468,11 @@ export function createKyselyStore(
         }
 
         // Process inputs - check idempotency keys and create run objects
-        const newRunLabels = new Map<string, Record<string, string>>()
+        const allLabelRows: Array<{
+          run_id: string
+          key: string
+          value: string
+        }> = []
         for (const input of inputs) {
           // Check for existing run with same idempotency key
           if (input.idempotencyKey) {
@@ -483,8 +490,10 @@ export function createKyselyStore(
           }
 
           const id = ulid()
-          if (input.labels && Object.keys(input.labels).length > 0) {
-            newRunLabels.set(id, input.labels)
+          if (input.labels) {
+            for (const [key, value] of Object.entries(input.labels)) {
+              allLabelRows.push({ run_id: id, key, value })
+            }
           }
           runs.push({
             id,
@@ -513,9 +522,12 @@ export function createKyselyStore(
         if (newRuns.length > 0) {
           await trx.insertInto('durably_runs').values(newRuns).execute()
 
-          // Insert normalized labels for indexed filtering
-          for (const [runId, labels] of newRunLabels) {
-            await insertLabelRows(trx, runId, labels)
+          // Insert normalized labels for indexed filtering (single batch)
+          if (allLabelRows.length > 0) {
+            await trx
+              .insertInto('durably_run_labels')
+              .values(allLabelRows)
+              .execute()
           }
         }
 
