@@ -72,7 +72,7 @@ export function createMigrateTests(createDialect: () => Dialect) {
       expect(result.rows[0].version).toBe(LATEST_SCHEMA_VERSION)
     })
 
-    it('creates durably_runs without heartbeat_at', async () => {
+    it('creates durably_runs with lease columns', async () => {
       durably = createDurably({ dialect: createDialect() })
       await durably.migrate()
 
@@ -81,7 +81,9 @@ export function createMigrateTests(createDialect: () => Dialect) {
       `.execute(durably.db)
 
       const columnNames = result.rows.map((row) => row.name)
-      expect(columnNames).not.toContain('heartbeat_at')
+      expect(columnNames).toContain('lease_owner')
+      expect(columnNames).toContain('lease_expires_at')
+      expect(columnNames).toContain('lease_generation')
     })
 
     it('is idempotent (can be called multiple times safely)', async () => {
