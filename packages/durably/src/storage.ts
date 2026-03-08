@@ -193,11 +193,25 @@ export interface Store<
   cancelRun(runId: string, now: string): Promise<boolean>
 
   // Steps (checkpoints)
-  createStep(input: CreateStepInput): Promise<Step>
+  /**
+   * Create a step record. When workerId is provided, the insert is guarded
+   * by a lease-ownership check (status='leased' AND lease_owner=workerId).
+   * Returns null if the ownership check fails (lease was lost).
+   */
+  createStep(input: CreateStepInput, workerId?: string): Promise<Step | null>
   getSteps(runId: string): Promise<Step[]>
   getCompletedStep(runId: string, name: string): Promise<Step | null>
   deleteSteps(runId: string): Promise<void>
-  advanceRunStepIndex(runId: string, stepIndex: number): Promise<void>
+  /**
+   * Advance the run's current step index. When workerId is provided, the
+   * update is guarded by a lease-ownership check. Returns false if the
+   * guard fails (lease was lost). Without workerId, always returns true.
+   */
+  advanceRunStepIndex(
+    runId: string,
+    stepIndex: number,
+    workerId?: string,
+  ): Promise<boolean>
 
   // Progress
   updateProgress(runId: string, progress: ProgressData | null): Promise<void>
@@ -802,7 +816,10 @@ export function createKyselyStore(
       return Number(result.numUpdatedRows) > 0
     },
 
-    async createStep(input: CreateStepInput): Promise<Step> {
+    async createStep(
+      input: CreateStepInput,
+      workerId?: string,
+    ): Promise<Step | null> {
       const completedAt = new Date().toISOString()
       const id = ulid()
 
@@ -819,8 +836,25 @@ export function createKyselyStore(
         completed_at: completedAt,
       }
 
-      await db.insertInto('durably_steps').values(step).execute()
+      if (workerId) {
+        // Guarded: verify lease ownership in a transaction
+        return await db.transaction().execute(async (trx) => {
+          const run = await trx
+            .selectFrom('durably_runs')
+            .select(['id'])
+            .where('id', '=', input.runId)
+            .where('status', '=', 'leased')
+            .where('lease_owner', '=', workerId)
+            .executeTakeFirst()
 
+          if (!run) return null
+
+          await trx.insertInto('durably_steps').values(step).execute()
+          return rowToStep(step)
+        })
+      }
+
+      await db.insertInto('durably_steps').values(step).execute()
       return rowToStep(step)
     },
 
@@ -852,15 +886,27 @@ export function createKyselyStore(
       return row ? rowToStep(row) : null
     },
 
-    async advanceRunStepIndex(runId: string, stepIndex: number): Promise<void> {
-      await db
+    async advanceRunStepIndex(
+      runId: string,
+      stepIndex: number,
+      workerId?: string,
+    ): Promise<boolean> {
+      let query = db
         .updateTable('durably_runs')
         .set({
           current_step_index: stepIndex,
           updated_at: new Date().toISOString(),
         })
         .where('id', '=', runId)
-        .execute()
+
+      if (workerId) {
+        query = query
+          .where('status', '=', 'leased')
+          .where('lease_owner', '=', workerId)
+      }
+
+      const result = await query.executeTakeFirst()
+      return Number(result.numUpdatedRows) > 0
     },
 
     async updateProgress(

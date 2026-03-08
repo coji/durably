@@ -281,6 +281,113 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
     })
 
+    describe('Step write guard on lease ownership', () => {
+      it('rejects createStep when lease owner has changed', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'step-guard-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+
+        // Simulate: worker-a claims the run
+        await d.storage.updateRun(run.id, {
+          status: 'leased',
+          leaseOwner: 'worker-a',
+          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+        })
+
+        // worker-a creates a step (should succeed)
+        const step1 = await d.storage.createStep(
+          {
+            runId: run.id,
+            name: 'guarded-step',
+            index: 0,
+            status: 'completed',
+            output: 'ok',
+            startedAt: new Date().toISOString(),
+          },
+          'worker-a',
+        )
+        expect(step1).not.toBeNull()
+
+        // Simulate: lease expires and worker-b reclaims
+        await d.storage.updateRun(run.id, {
+          status: 'leased',
+          leaseOwner: 'worker-b',
+          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+        })
+
+        // Stale worker-a tries to create another step (should be rejected)
+        const step2 = await d.storage.createStep(
+          {
+            runId: run.id,
+            name: 'stale-step',
+            index: 1,
+            status: 'completed',
+            output: 'should-not-exist',
+            startedAt: new Date().toISOString(),
+          },
+          'worker-a',
+        )
+        expect(step2).toBeNull()
+
+        // Verify the stale step was NOT written
+        const steps = await d.storage.getSteps(run.id)
+        expect(steps).toHaveLength(1)
+        expect(steps[0].name).toBe('guarded-step')
+      })
+
+      it('rejects advanceRunStepIndex when lease owner has changed', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'advance-guard-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+
+        // Simulate: worker-a claims the run
+        await d.storage.updateRun(run.id, {
+          status: 'leased',
+          leaseOwner: 'worker-a',
+          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+        })
+
+        // worker-a advances step index (should succeed)
+        const advanced = await d.storage.advanceRunStepIndex(
+          run.id,
+          1,
+          'worker-a',
+        )
+        expect(advanced).toBe(true)
+
+        // Simulate: lease expires and worker-b reclaims
+        await d.storage.updateRun(run.id, {
+          status: 'leased',
+          leaseOwner: 'worker-b',
+          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+        })
+
+        // Stale worker-a tries to advance (should be rejected)
+        const staleAdvance = await d.storage.advanceRunStepIndex(
+          run.id,
+          2,
+          'worker-a',
+        )
+        expect(staleAdvance).toBe(false)
+
+        // Verify the index was NOT advanced by the stale worker
+        const updated = await d.storage.getRun(run.id)
+        expect(updated?.currentStepIndex).toBe(1)
+      })
+    })
+
     describe('retrigger() API', () => {
       it('creates a fresh run from a failed run', async () => {
         const d = durably.register({

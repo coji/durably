@@ -121,19 +121,38 @@ export function createStepContext(
         const result = await fn(controller.signal)
         throwIfAborted()
 
-        // Save step result
-        await storage.createStep({
-          runId: run.id,
-          name,
-          index: stepIndex,
-          status: 'completed',
-          output: result,
-          startedAt,
-        })
+        // Save step result with lease-ownership guard.
+        // If the lease expired and was reclaimed by another worker
+        // between fn() completing and now, this returns null.
+        const savedStep = await storage.createStep(
+          {
+            runId: run.id,
+            name,
+            index: stepIndex,
+            status: 'completed',
+            output: result,
+            startedAt,
+          },
+          workerId,
+        )
 
-        // Update run's current step index
+        if (!savedStep) {
+          abortForLeaseLoss()
+          throwIfAborted()
+        }
+
+        // Update run's current step index (also guarded by lease ownership)
         stepIndex++
-        await storage.advanceRunStepIndex(run.id, stepIndex)
+        const advanced = await storage.advanceRunStepIndex(
+          run.id,
+          stepIndex,
+          workerId,
+        )
+
+        if (!advanced) {
+          abortForLeaseLoss()
+          throwIfAborted()
+        }
 
         // Emit step:complete event
         eventEmitter.emit({
@@ -149,17 +168,43 @@ export function createStepContext(
 
         return result
       } catch (error) {
+        // If lease was already lost, don't attempt to write step data —
+        // we no longer own this run and must not pollute the new owner's state.
+        if (error instanceof LeaseLostError) {
+          throw error
+        }
+
+        // Check if signal was aborted due to lease loss (not cancellation).
+        // fn() may have thrown a different error while the lease was lost.
+        const isLeaseLost =
+          controller.signal.aborted && controller.signal.reason === 'lease-lost'
+        if (isLeaseLost) {
+          throw new LeaseLostError(run.id)
+        }
+
         const isCancelled = controller.signal.aborted
         const errorMessage = getErrorMessage(error)
 
-        await storage.createStep({
-          runId: run.id,
-          name,
-          index: stepIndex,
-          status: isCancelled ? 'cancelled' : 'failed',
-          error: errorMessage,
-          startedAt,
-        })
+        // For cancellation: skip ownership guard — cancelled runs are
+        // terminal and won't be reclaimed by another worker.
+        // For normal errors: use the guard to prevent stale writes.
+        const savedStep = await storage.createStep(
+          {
+            runId: run.id,
+            name,
+            index: stepIndex,
+            status: isCancelled ? 'cancelled' : 'failed',
+            error: errorMessage,
+            startedAt,
+          },
+          isCancelled ? undefined : workerId,
+        )
+
+        if (!savedStep) {
+          // Lease was lost during this window
+          abortForLeaseLoss()
+          throw new LeaseLostError(run.id)
+        }
 
         eventEmitter.emit({
           ...(isCancelled
