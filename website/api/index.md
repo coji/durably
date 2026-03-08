@@ -208,14 +208,14 @@ function ImportButton() {
 
 ### Instance Methods
 
-| Method               | Description                            |
-| -------------------- | -------------------------------------- |
-| `init()`             | Migrate database and start worker      |
-| `register(jobs)`     | Register job definitions               |
-| `on(event, handler)` | Subscribe to events                    |
-| `stop()`             | Stop worker gracefully                 |
-| `retrigger(runId)`   | Retrigger failed run (creates new run) |
-| `cancel(runId)`      | Cancel leased job                      |
+| Method               | Description                                                   |
+| -------------------- | ------------------------------------------------------------- |
+| `init()`             | Migrate database and start worker                             |
+| `register(jobs)`     | Register job definitions                                      |
+| `on(event, handler)` | Subscribe to events                                           |
+| `stop()`             | Stop worker gracefully                                        |
+| `retrigger(runId)`   | Retrigger failed run (validates input against current schema) |
+| `cancel(runId)`      | Cancel leased job                                             |
 
 ### Step Context
 

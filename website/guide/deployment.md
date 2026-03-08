@@ -147,6 +147,48 @@ See [SPA Mode guide](/guide/spa-mode).
   }
   ```
 
+## Job Versioning and Deploys
+
+When you deploy updated job definitions, in-flight runs may be affected. Durably matches steps by **name** (not index), which makes most changes safe.
+
+### Safe Changes (no special handling)
+
+| Change            | What happens                                                 |
+| ----------------- | ------------------------------------------------------------ |
+| Add new steps     | New step has no cached data, runs normally                   |
+| Change step logic | Completed steps return cached output, new steps run new code |
+| Reorder steps     | Name-based matching, order doesn't matter                    |
+| Delete steps      | Old step data is ignored                                     |
+
+### Risky Changes (be careful)
+
+| Change                  | Risk                                               | Mitigation                                                                |
+| ----------------------- | -------------------------------------------------- | ------------------------------------------------------------------------- |
+| Rename a step           | Old cached output doesn't match — step re-executes | Safe if the step is idempotent                                            |
+| Change step output type | Old cached output returned with wrong type         | Rename the step so it re-executes                                         |
+| Change input schema     | Pending runs have old-format input                 | `retrigger()` validates against current schema and throws if incompatible |
+
+### Breaking Changes (cancel first)
+
+For these, cancel running/pending runs before deploying:
+
+```ts
+// Cancel all runs for a job before deploy
+const runs = await durably.jobs.myJob.getRuns({ status: 'pending' })
+for (const run of runs) {
+  await durably.cancel(run.id)
+}
+```
+
+- **Renaming a job** — old runs reference the former name and become orphaned
+- **Fundamental logic rewrite** — in-flight runs may produce incorrect results
+
+### General Guidance
+
+- **Steps should be idempotent** — re-execution after deploy is always safe if steps don't have side effects beyond their return value
+- **Same approach as Cloudflare Workflows** — no version pinning or managed infrastructure required
+- Durably uses `retrigger()` (not retry) to re-run failed jobs. `retrigger()` validates the input against the current schema, so stale runs with incompatible input are caught early
+
 ## Migrating Between Modes
 
 ### Server → Fullstack
