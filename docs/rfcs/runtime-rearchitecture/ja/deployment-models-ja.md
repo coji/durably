@@ -1,311 +1,301 @@
-# 設計: デプロイ先ごとのランタイム構成
+# デプロイモデル
 
-## 目標
+## 目的
 
-本ドキュメントでは、Durably のランタイムを異なるデプロイ先でどのように構成するかを整理する。
+このドキュメントでは、Durably のランタイムを異なるデプロイ先でどのように構成するかを整理します。
 
-主に扱うのは次の点となる:
+主に扱うのは以下の点です。
 
 - 各プラットフォームに存在するコンポーネント
-- ジョブをどのように trigger するか
-- 短命な invocation をまたいで、どのように execution を継続するか
+- ジョブをどのようにトリガーするか
+- 短命な呼び出しをまたいで、どのように実行を継続するか
 
-ストレージ契約やコアランタイムの意味論はここでは扱わない。それらは `core-runtime.md` に委ねる。
+ストレージ契約やコアランタイムのセマンティクスはここでは扱いません。それらは `core-runtime.md` を参照してください。
 
-## 推奨される入口
+## 推奨する導入パス
 
-DX と低摩擦な導入を重視するなら、推奨される入口は次の2つになる:
+DX と低摩擦な導入を重視するなら、推奨する入口は以下の2つです。
 
 1. `Vercel + Turso`
 2. `Cloudflare Workers + Turso`
 
-これらだけが成立する構成というわけではない。個人開発者が無料または低コストで始めやすく、自前の worker infrastructure を持たずに試せる入口として、この2つを優先している。
+これらだけが成立する構成というわけではありません。個人開発者が無料または低コストで始めやすく、自前のワーカーインフラを持たずに試せる入口として、この2つを優先しています。
 
-同時に、実運用寄りの構成として次の2つも強く意識しておきたい:
+同時に、本番寄りの構成として以下も意識しておきたいです。
 
 - `Vercel + PostgreSQL`
 - `Fly.io + PostgreSQL`
 
-これらは本番向けの構成として重要であり、Durably の位置づけを考えるうえでも見落とすべきではない。
-
 ### なぜ `Vercel + Turso` が先か
 
 - Web 中心のホスティングとして馴染みやすい
-- HTTP 中心のデプロイの流れが分かりやすい
-- side project や solo-built SaaS と相性がよい
-- Turso によって、常駐する file-based SQLite を要求せずに SQLite 風のデータモデルを保てる
+- HTTP 中心のデプロイの流れがわかりやすい
+- 個人プロジェクトやソロ SaaS と相性がよい
+- Turso により、常駐ファイルベース SQLite を要求せずに SQLite 風のデータモデルを保てる
 
 ### なぜ `Cloudflare Workers + Turso` が次点か
 
-- edge と event-driven execution に強い
-- ingress と short-lived execution の分離がきれいに保てる
-- database を platform runtime の外に置くことで portability を確保しやすい
+- Edge とイベント駆動の実行に強い
+- ingress と短命な実行の分離がきれいに保てる
+- データベースをプラットフォームランタイムの外に置くことでポータビリティを確保しやすい
 
-### 実運用寄りの構成として意識すべきもの
+### 本番寄りの構成
 
 `Vercel + PostgreSQL`
 
 - Web 中心のホスティングモデルを維持できる
-- セマンティクスがもっとも明快な DB を採用できる
-- `Vercel + Turso` が小さすぎる、あるいは caveat が気になってきた段階で自然な移行先となる
+- セマンティクスが最も明快なデータベースを採用できる
+- `Vercel + Turso` が小さすぎる、あるいは注意点が気になってきた段階で自然な移行先になる
 
 `Fly.io + PostgreSQL`
 
-- resident worker との相性がよい
-- 長時間稼働プロセスを受け入れられるなら実行の流れが単純になる
+- 常駐ワーカーとの相性がよい
+- 長時間稼働プロセスを許容できるなら実行の流れが単純になる
 - PostgreSQL を軸にした明快なセマンティクスを維持できる
 
 ### Cloudflare に関する重要な注意
 
-Cloudflare Workflows は durable execution の platform-native な代替としてかなり強力な存在だ。
+Cloudflare Workflows は durable execution のプラットフォームネイティブな代替としてかなり強力です。
 
-したがって、推奨の仕方は次のように整理するのがよい:
+推奨の仕方は以下のように整理するのが適切です。
 
-- portability や database-centered runtime model が重要なら Durably を使う
-- Cloudflare 専用でよく、最も単純な platform-native durable execution が欲しいなら Cloudflare Workflows をまず評価する
-
-Durably としては、この重なりを隠さず正直に位置づけるべきだろう。
+- ポータビリティやデータベース中心のランタイムモデルが重要なら Durably を使う
+- Cloudflare 専用でよく、最もシンプルなプラットフォームネイティブ durable execution が欲しいなら Cloudflare Workflows をまず評価する
 
 ## コア原則
 
-Durably は、1回のプロセス invocation を execution の単位として扱わない。
+Durably は、1回のプロセス呼び出しを実行の単位として扱いません。
 
-代わりに次のように考える:
+代わりに以下のように考えます。
 
-- `Run` が永続的な実行単位となる
-- invocation は一時的な計算スライスに過ぎない
-- database が source of truth になる
-- 意味のある境界はすべて checkpoint 可能にする必要がある
-- correctness が常駐プロセスに依存しないこと
+- `Run` が永続的な実行単位になる
+- 呼び出しは一時的な計算スライスに過ぎない
+- データベースが唯一の信頼源になる
+- 意味のある境界はすべてチェックポイント可能にする必要がある
+- 正しさが常駐プロセスに依存しないこと
 
-この原則によって、常駐 worker 型と serverless 型のどちらも実現可能になる。
+この原則によって、常駐ワーカー型とサーバーレス型のどちらも実現可能になります。
 
-## Trigger の種類
+## トリガーの種類
 
-プラットフォームをまたいで考えると、trigger は次の4つの役割に分けると扱いやすい:
+プラットフォームをまたいで考えると、トリガーは4つの役割に分けられます。
 
-1. `Ingress`: `enqueue()` を呼んで run を作る
-2. `Kick`: enqueue の直後にできるだけ早く処理を始める
-3. `Sweep`: backlog や期限切れ lease を定期的に回収する
-4. `Resume`: 後続の invocation で処理を再開する
+1. **Ingress**: `enqueue()` を呼んで run を作る
+2. **Kick**: エンキュー直後にできるだけ早く処理を始める
+3. **Sweep**: バックログや期限切れリースを定期的に回収する
+4. **Resume**: 後続の呼び出しで処理を再開する
 
-多くのデプロイ構成では、これらは別々のプラットフォーム機能によって実装される。
+多くのデプロイ構成では、これらは別々のプラットフォーム機能で実装されます。
 
 ## 共通するランタイムの形
 
-デプロイ先に関わらず、目指す形は共通している:
+デプロイ先に関わらず、目指す形は共通しています。
 
-- API や webhook handler が `enqueue()` を呼ぶ
-- 短命な worker が `processOne()` または `processUntilIdle()` を呼ぶ
-- step 境界で checkpoint を保存する
-- event stream は、出力を届ける前または届けるのと同時に保存する
-- 後続の invocation が期限切れの work を reclaim して継続できる
+- API や webhook ハンドラが `enqueue()` を呼ぶ
+- 短命なワーカーが `processOne()` または `processUntilIdle()` を呼ぶ
+- ステップ境界でチェックポイントを保存する
+- イベントストリームは、出力を届ける前または同時に保存する
+- 後続の呼び出しが期限切れの作業を reclaim して継続できる
 
-## モデル1: 常駐 Worker / 常時稼働サーバ
+## モデル1: 常駐ワーカー
 
-最も単純なデプロイモデルとなる。
+最もシンプルなデプロイモデルです。
 
 ### 構成
 
-- application server
-- 常駐 worker loop
-- database
+- アプリケーションサーバ
+- 常駐ワーカーループ
+- データベース
 
-### Trigger Flow
+### トリガーフロー
 
-- HTTP または webhook handler が `enqueue()` を呼ぶ
-- worker loop が claim 可能な run を poll する、または待ち受ける
-- worker が execution 中に lease を renew する
-- worker が run を complete または fail する
+- HTTP または webhook ハンドラが `enqueue()` を呼ぶ
+- ワーカーループが claim 可能な run をポーリングする
+- ワーカーが実行中にリースを更新する
+- ワーカーが run を complete または fail する
 
 ### 運用イメージ
 
-- VM、container、ECS、Fly.io machine、Kubernetes worker に適している
-- lease renew を素直に実装できる
-- scheduling overhead が小さい
-- 長い外部呼び出しや高スループットの drain に向いている
+- VM、コンテナ、ECS、Fly.io machine、Kubernetes ワーカーに適している
+- リース更新を素直に実装できる
+- スケジューリングのオーバーヘッドが小さい
+- 長い外部呼び出しや高スループットのドレインに向いている
 
 ### メンタルモデル
 
-worker は runtime の便利なラッパーであり、runtime そのものではない。
+ワーカーはランタイムの便利なラッパーであり、ランタイムそのものではありません。
 
 ## モデル2: Vercel
 
-Vercel は ingress と short worker の環境として扱うのが自然だ。
+Vercel は ingress と短命ワーカーの環境として扱うのが自然です。
 
 ### 構成
 
 - API / webhook ingress 用の Vercel HTTP Functions
 - 定期回収用の Vercel Cron
-- 外部 database
-- 負荷時に wake-up を速めるための任意の外部 queue
+- 外部データベース
+- 負荷時に起動を速めるための任意の外部キュー
 
-### Trigger Flow
+### トリガーフロー
 
 1. ユーザー操作または webhook が Vercel Function を呼ぶ
-2. handler が `enqueue()` を呼ぶ
-3. handler は best-effort で `processOne()` を試してもよい
-4. Vercel Cron が定期的に worker endpoint を叩く
-5. その endpoint が `processUntilIdle({ maxRuns })` を呼ぶ
-6. 未完了の work は後続 invocation が再開する
+2. ハンドラが `enqueue()` を呼ぶ
+3. ハンドラはベストエフォートで `processOne()` を試してもよい
+4. Vercel Cron が定期的にワーカーエンドポイントを叩く
+5. そのエンドポイントが `processUntilIdle({ maxRuns })` を呼ぶ
+6. 未完了の作業は後続の呼び出しが再開する
 
 ### 向いている用途
 
-- 小規模から中規模の workload
+- 小規模から中規模のワークロード
 - HTTP ingress が中心のプロダクト
-- durability を保ったうえで eventual progress を許容できるケース
-- 個人開発者が最初に試す low-cost な入口
+- 永続性を保ったうえで段階的な進行を許容できる場合
+- 個人開発者が最初に試す低コストな入口
 
 ### 重要な制約
 
-function 内の background continuation に correctness を依存させないこと。
+関数内のバックグラウンド継続に正しさを依存させないことです。
 
-安全な設計は次のようになる:
+安全な設計は以下の通りです。
 
 - 状態を頻繁に保存する
-- step を短く保つ
-- step 間で function が停止しうる前提で設計する
+- ステップを短く保つ
+- ステップ間で関数が停止しうる前提で設計する
 
 ### 実践的な変種
 
-より高い即時性や大きな backlog が必要な場合:
+より高い即時性や大きなバックログが必要な場合:
 
 - ingress は Vercel のままにする
-- 外部 queue を追加する
-- queue message は wake-up signal として使う
+- 外部キューを追加する
+- キューメッセージは起動シグナルとして使う
 
-queue を source of truth にすべきではない。source of truth は常にデータベース上の run record にある。
+キューを信頼源にすべきではありません。信頼源は常にデータベース上の run レコードです。
 
 ## モデル3: Netlify
 
-Netlify は同期 ingress と background processing を素直に分離しやすい構成だ。
+Netlify は同期 ingress とバックグラウンド処理を素直に分離しやすい構成です。
 
 ### 構成
 
 - ingress 用の Netlify Functions
 - より長い処理用の Netlify Background Functions
 - sweep 用の Scheduled Functions
-- 外部 database
+- 外部データベース
 
-### Trigger Flow
+### トリガーフロー
 
-1. ユーザー操作または webhook が通常 Function に入る
-2. handler が `enqueue()` を呼ぶ
-3. handler が background function を起動する
-4. background function が `processUntilIdle({ maxRuns })` を呼ぶ
-5. Scheduled Functions が backlog と期限切れ lease を回収する
+1. ユーザー操作または webhook が通常の Function に入る
+2. ハンドラが `enqueue()` を呼ぶ
+3. ハンドラがバックグラウンド関数を起動する
+4. バックグラウンド関数が `processUntilIdle({ maxRuns })` を呼ぶ
+5. Scheduled Functions がバックログと期限切れリースを回収する
 
 ### 向いている用途
 
-- 多数の外部コンポーネントを足さずに hosted serverless を使いたいプロダクト
-- 同期処理と非同期処理の handoff を明示したい workload
+- 多数の外部コンポーネントを足さずにホスト型サーバーレスを使いたいプロダクト
+- 同期処理と非同期処理の引き継ぎを明示したいワークロード
 
 ### 重要な制約
 
-background execution も一時的な compute に過ぎず、durable な ownership ではない。
-
-実行権限は常にデータベース上の lease にある。
+バックグラウンド実行も一時的な計算に過ぎず、永続的な所有権ではありません。実行権限は常にデータベース上のリースにあります。
 
 ## モデル4: Cloudflare Workers
 
-Cloudflare は Queues と Cron Triggers を組み合わせることで、最もきれいに serverless 適合する。
+Cloudflare は Queues と Cron Triggers を組み合わせることで、最もきれいにサーバーレスに適合します。
 
 ### 構成
 
-- ingress 用の Workers HTTP handlers
-- wake-up と deferred processing 用の Cloudflare Queues
-- processing 用の Queue consumers
+- ingress 用の Workers HTTP ハンドラ
+- 起動と遅延処理用の Cloudflare Queues
+- 処理用のキューコンシューマ
 - sweep 用の Cron Triggers
-- 外部 durable database
+- 外部永続データベース
 
-### Trigger Flow
+### トリガーフロー
 
 1. HTTP ingress が `enqueue()` を呼ぶ
-2. handler が wake-up message を queue に push する
-3. queue consumer が `processOne()` または `processUntilIdle({ maxRuns })` を呼ぶ
-4. Cron Triggers が stale または missed な work を回収する
-5. 後続 consumer が未完了 run を reclaim して継続する
+2. ハンドラが起動メッセージをキューに push する
+3. キューコンシューマが `processOne()` または `processUntilIdle({ maxRuns })` を呼ぶ
+4. Cron Triggers が取りこぼしや失効した作業を回収する
+5. 後続コンシューマが未完了 run を reclaim して継続する
 
 ### 向いている用途
 
-- event-driven system
-- queue ベースの wake-up に自然に乗る workload
-- ingress と execution を強く分離したいアプリケーション
-- Vercel とは別の edge-first な入口を求める開発者
+- イベント駆動システム
+- キューベースの起動に自然に乗るワークロード
+- ingress と実行を強く分離したいアプリケーション
+- Vercel とは別の Edge ファーストな入口を求める開発者
 
 ### 重要な制約
 
-queue message は wake-up signal として扱うものであり、durable な job state ではない。
-
-連続性の境界は常に database に置く必要がある。
+キューメッセージは起動シグナルとして扱うものであり、永続的なジョブ状態ではありません。連続性の境界は常にデータベースに置く必要があります。
 
 ## モデル5: AWS Lambda
 
-AWS Lambda は最も明示的な queue-driven serverless モデルだ。
+AWS Lambda は最も明示的なキュー駆動サーバーレスモデルです。
 
 ### 構成
 
-- ingress 用の API Gateway または webhook endpoint
-- handler と worker のための Lambda functions
-- wake-up と retry 用の SQS
+- ingress 用の API Gateway または webhook エンドポイント
+- ハンドラとワーカーの Lambda 関数
+- 起動とリトライ用の SQS
 - sweep 用の EventBridge Scheduler
-- 外部 durable database
-- 任意の DLQ と alarm
+- 外部永続データベース
+- 任意の DLQ とアラーム
 
-### Trigger Flow
+### トリガーフロー
 
 1. HTTP または webhook ingress が Lambda に到達する
-2. handler が `enqueue()` を呼ぶ
-3. handler が wake-up message を SQS に送る
-4. SQS trigger の Lambda が `processOne()` または `processUntilIdle({ maxRuns })` を呼ぶ
-5. EventBridge が定期的に sweep job を実行する
-6. 後続 Lambda invocation が未完了 run を reclaim して継続する
+2. ハンドラが `enqueue()` を呼ぶ
+3. ハンドラが起動メッセージを SQS に送る
+4. SQS トリガーの Lambda が `processOne()` または `processUntilIdle({ maxRuns })` を呼ぶ
+5. EventBridge が定期的に sweep ジョブを実行する
+6. 後続の Lambda 呼び出しが未完了 run を reclaim して継続する
 
 ### 向いている用途
 
 - 運用上の責務分離を明確にしたいシステム
-- retry、queueing、alarm、DLQ の成熟したパターンを活用したい workload
-- より高い規模の background execution
+- リトライ、キューイング、アラーム、DLQ の成熟したパターンを活用したいワークロード
+- より大規模なバックグラウンド実行
 
 ### 重要な制約
 
-execution ownership の source of truth は SQS delivery ではない。
-
-lease ownership は常に database 上の run record に帰属する。
+実行所有権の信頼源は SQS の配信ではありません。リース所有権は常にデータベース上の run レコードに帰属します。
 
 ## どのモデルを選ぶか
 
-大まかなヒューリスティックは次の通り:
+大まかな指針は以下の通りです。
 
 - 個人開発者や小さな新規プロジェクトのデフォルト推奨は `Vercel + Turso`
-- Web 中心でより本番寄りの DB 構成を求めるなら `Vercel + PostgreSQL` を強く意識する
-- resident worker を許容でき、runtime の単純さを優先するなら `Fly.io + PostgreSQL` を強く意識する
-- 長時間稼働プロセスを持てて、最も単純な execution model を望むなら常駐 worker を選ぶ
-- ingress-first なプロダクト開発を優先するなら Vercel が向いている
-- hosted な同期/非同期分離をシンプルに得たいなら Netlify が候補になる
-- queue-driven で edge 寄りの event handling が自然で、platform lock-in を許容できるなら Cloudflare を選ぶ
-- queueing と scheduling を含む最も明示的な serverless 運用モデルを望むなら AWS Lambda が適している
+- Web 中心でより本番寄りの DB 構成を求めるなら `Vercel + PostgreSQL`
+- 常駐ワーカーを許容でき、ランタイムのシンプルさを優先するなら `Fly.io + PostgreSQL`
+- 長時間稼働プロセスを持てて、最もシンプルな実行モデルを望むなら常駐ワーカー
+- ingress ファーストなプロダクト開発を優先するなら Vercel
+- ホスト型の同期 / 非同期分離をシンプルに得たいなら Netlify
+- キュー駆動で Edge 寄りのイベント処理が自然で、プラットフォームロックインを許容できるなら Cloudflare
+- キューイングとスケジューリングを含む最も明示的なサーバーレス運用モデルを望むなら AWS Lambda
 
-別のヒューリスティックとして:
+補足:
 
-- すでに Cloudflare に強く寄っていて runtime portability が重要でないなら、Durably を選ぶ前に Cloudflare Workflows を評価すべきだろう
+- すでに Cloudflare に強く寄っていてランタイムのポータビリティが重要でないなら、Durably を選ぶ前に Cloudflare Workflows を評価すべき
 
 ## どのプラットフォームでも守るべき設計ルール
 
-次のルールはプラットフォームに関係なく維持する:
+以下のルールはプラットフォームに関係なく維持します。
 
-- `enqueue()` は durable であり、idempotency を意識する
-- `claimNext()` は atomic に動作する
-- completion と failure は lease owner に依存する
-- 長いタスクはすべて checkpoint 可能な step に分割する
-- streaming output は保存済み event から recover できる
-- correctness が polling loop、単一マシン、in-memory state に依存しないこと
+- `enqueue()` は永続的であり、冪等性を意識する
+- `claimNext()` はアトミックに動作する
+- 完了と失敗はリース所有者に依存する
+- 長いタスクはすべてチェックポイント可能なステップに分割する
+- ストリーミング出力は保存済みイベントから回復できる
+- 正しさがポーリングループ、単一マシン、インメモリ状態に依存しないこと
 
-## Durably が first-class に支えるべき物語
+## Durably がファーストクラスに支えるべきストーリー
 
-Durably は次の2つのランタイム物語を明示的に first-class support する:
+Durably は以下の2つのランタイムストーリーを明示的にファーストクラスサポートします。
 
-1. 常駐 worker デプロイ
-2. `processOne()` を中心とする短命 invocation デプロイ
+1. 常駐ワーカーデプロイ
+2. `processOne()` を中心とする短命呼び出しデプロイ
 
-それ以外は、この2つの形を土台とした platform adapter として文書化するのがよい。
+それ以外は、この2つの形を土台としたプラットフォーム adapter として文書化するのが適切です。

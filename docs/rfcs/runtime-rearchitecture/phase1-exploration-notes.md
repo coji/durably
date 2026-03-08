@@ -184,6 +184,11 @@ The fix uses `pg_advisory_xact_lock(hashtext(concurrency_key))` to serialize per
 
 When a concurrency-key conflict is detected after advisory lock re-verification, the claim loop excludes that key and retries within the same transaction, so unrelated pending work is still reachable. Only when no further candidates remain does the claim return null.
 
+Follow-up verification:
+
+- the PostgreSQL concurrency regression suite now passes with the retry loop in place
+- same-key contention no longer causes `claimNext()` to report idle while unrelated claimable work still exists
+
 Implication:
 
 - `claimNext()` now correctly enforces same-key serialization on PostgreSQL

@@ -121,6 +121,9 @@ Phase 1 adapter exploration confirmed an important detail:
 
 This matters because it means PostgreSQL should not be treated as "just another SQL backend" behind one generic claim query shape.
 
+Phase 1 also clarified that `FOR UPDATE SKIP LOCKED` alone was not enough for `concurrencyKey` safety.
+The PostgreSQL-specific path needed per-key advisory-lock serialization plus an in-transaction retry loop so that same-key conflicts did not suppress unrelated claimable work.
+
 ### Best Fit Profile
 
 - multi-worker deployments
