@@ -38,7 +38,7 @@ describe('migration consolidated schema', () => {
       SELECT version FROM durably_schema_versions ORDER BY version DESC LIMIT 1
     `.execute(durably.db)
     expect(versions.rows[0]?.version).toBe(LATEST_SCHEMA_VERSION)
-    expect(LATEST_SCHEMA_VERSION).toBe(2)
+    expect(LATEST_SCHEMA_VERSION).toBe(1)
   })
 
   it('creates all expected indexes', async () => {

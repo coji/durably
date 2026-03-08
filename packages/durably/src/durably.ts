@@ -375,7 +375,6 @@ interface DurablyState<
   migrated: boolean
   leaseMs: number
   leaseRenewIntervalMs: number
-  backend: DatabaseBackend
   releaseBrowserSingleton: () => void
 }
 
@@ -835,7 +834,7 @@ function createDurablyInstance<
         return state.migrating
       }
 
-      state.migrating = runMigrations(db, state.backend)
+      state.migrating = runMigrations(db)
         .then(() => {
           state.migrated = true
         })
@@ -939,7 +938,6 @@ export function createDurably<
     migrated: false,
     leaseMs: config.leaseMs,
     leaseRenewIntervalMs: config.leaseRenewIntervalMs,
-    backend,
     releaseBrowserSingleton,
   }
 
