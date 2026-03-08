@@ -726,7 +726,7 @@ function createDurablyInstance<
         type: 'run:trigger',
         runId: nextRun.id,
         jobName: run.jobName,
-        input: run.input,
+        input: validatedInput,
         labels: run.labels,
       })
 

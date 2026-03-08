@@ -170,12 +170,13 @@ When you deploy updated job definitions, in-flight runs may be affected. Durably
 
 ### Breaking Changes (cancel first)
 
-For these, cancel running/pending runs before deploying:
+For these, cancel pending and leased runs before deploying:
 
 ```ts
-// Cancel all runs for a job before deploy
-const runs = await durably.jobs.myJob.getRuns({ status: 'pending' })
-for (const run of runs) {
+// Cancel all pending and leased runs for a job before deploy
+const pending = await durably.jobs.myJob.getRuns({ status: 'pending' })
+const leased = await durably.jobs.myJob.getRuns({ status: 'leased' })
+for (const run of [...pending, ...leased]) {
   await durably.cancel(run.id)
 }
 ```
@@ -186,7 +187,7 @@ for (const run of runs) {
 ### General Guidance
 
 - **Steps should be idempotent** — re-execution after deploy is always safe if steps don't have side effects beyond their return value
-- **Same approach as Cloudflare Workflows** — no version pinning or managed infrastructure required
+- **No version pinning** — Durably does not pin runs to a specific code version. New code applies to all in-flight runs on the next step execution
 - Durably uses `retrigger()` (not retry) to re-run failed jobs. `retrigger()` validates the input against the current schema, so stale runs with incompatible input are caught early
 
 ## Migrating Between Modes
