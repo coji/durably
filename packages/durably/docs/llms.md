@@ -210,7 +210,9 @@ const typedRuns = await durably.getRuns<MyRun>({ jobName: 'my-job' })
 ### Retrigger Failed Runs
 
 ```ts
-// Creates a fresh run (new ID) with the same input/options
+// Creates a fresh run (new ID) with the same input and labels
+// Input is validated against the current job schema — throws if incompatible
+// Note: idempotencyKey is not carried forward
 const newRun = await durably.retrigger(runId)
 console.log(newRun.id) // new run ID
 ```

@@ -26,7 +26,7 @@ Retriggering creates a fresh new run with the same input — the original run st
 // Check and retrigger a failed run
 const run = await durably.getRun(runId)
 if (run?.status === 'failed') {
-  const newRun = await durably.retrigger(runId) // Creates a fresh run with the same input
+  const newRun = await durably.retrigger(runId) // Validates input against current schema, creates fresh run
   console.log(`New run: ${newRun.id}`)
 }
 ```

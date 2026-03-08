@@ -468,6 +468,27 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         )
       })
 
+      it('throws when input does not match current schema', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'retrigger-schema-test',
+            input: z.object({ name: z.string(), age: z.number() }),
+            run: async () => {},
+          }),
+        })
+
+        // Create a run, then simulate schema evolution by overwriting
+        // the stored input with data incompatible with the current schema
+        const run = await d.jobs.job.trigger({ name: 'Alice', age: 30 })
+        await d.db
+          .updateTable('durably_runs')
+          .set({ input: JSON.stringify({ name: 'Alice' }), status: 'failed' })
+          .where('id', '=', run.id)
+          .execute()
+
+        await expect(d.retrigger(run.id)).rejects.toThrow(/Cannot retrigger/)
+      })
+
       it('throws when retriggering leased run', async () => {
         const d = durably.register({
           job: defineJob({

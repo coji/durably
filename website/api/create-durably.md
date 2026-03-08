@@ -130,7 +130,7 @@ Subscribes to an event. Returns an unsubscribe function. See [Events](/api/event
 await durably.retrigger(runId: string): Promise<Run>
 ```
 
-Retriggers a failed or cancelled run by creating a fresh run with the same input, options, and labels. Returns the new `Run` object.
+Retriggers a completed, failed, or cancelled run by creating a fresh run with the same input and labels (idempotency key is not carried forward). Returns the new `Run` object. Throws if the original input doesn't match the current job's input schema.
 
 ### `cancel()`
 
