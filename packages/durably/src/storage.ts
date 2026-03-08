@@ -488,11 +488,15 @@ export function createKyselyQueueStore(
         validateLabels(labels)
         for (const [key, value] of Object.entries(labels)) {
           if (value === undefined) continue
-          query = query.where(
-            sql`json_extract(durably_runs.labels, ${`$."${key}"`})`,
-            '=',
-            value,
-          )
+          if (backend === 'postgres') {
+            query = query.where(sql`durably_runs.labels ->> ${key}`, '=', value)
+          } else {
+            query = query.where(
+              sql`json_extract(durably_runs.labels, ${`$."${key}"`})`,
+              '=',
+              value,
+            )
+          }
         }
       }
 
