@@ -726,7 +726,15 @@ function createDurablyInstance<
         throw new Error(`Cannot cancel already cancelled run: ${runId}`)
       }
       const wasPending = run.status === 'pending'
-      await queue.cancelRun(runId, new Date().toISOString())
+      const cancelled = await queue.cancelRun(runId, new Date().toISOString())
+
+      if (!cancelled) {
+        // Run transitioned to a terminal state between the check and the update
+        const current = await getRunOrThrow(runId)
+        throw new Error(
+          `Cannot cancel run ${runId}: status changed to ${current.status}`,
+        )
+      }
 
       // For pending runs, no worker will clean up steps, so do it here
       if (wasPending && !state.preserveSteps) {

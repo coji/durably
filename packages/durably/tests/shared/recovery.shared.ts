@@ -470,6 +470,39 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         )
       })
 
+      it('throws when run completes between check and cancel', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'cancel-race-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+        d.start()
+
+        await vi.waitFor(
+          async () => {
+            const updated = await d.jobs.job.getRun(run.id)
+            expect(updated?.status).toBe('completed')
+          },
+          { timeout: 1000 },
+        )
+
+        // Directly call cancelRun on queue store — bypasses the status pre-check
+        // to verify the SQL-level guard works
+        const cancelled = await d.storage.queue.cancelRun(
+          run.id,
+          new Date().toISOString(),
+        )
+        expect(cancelled).toBe(false)
+
+        // Run should still be completed, not overwritten
+        const finalRun = await d.jobs.job.getRun(run.id)
+        expect(finalRun?.status).toBe('completed')
+      })
+
       it('stops execution before next step when cancelled during run', async () => {
         let step1Executed = false
         let step2Executed = false

@@ -167,7 +167,7 @@ export interface QueueStore<
     error: string,
     completedAt: string,
   ): Promise<boolean>
-  cancelRun(runId: string, now: string): Promise<void>
+  cancelRun(runId: string, now: string): Promise<boolean>
   deleteRun(runId: string): Promise<void>
 }
 
@@ -753,8 +753,8 @@ export function createKyselyQueueStore(
       return Number(result.numUpdatedRows) > 0
     },
 
-    async cancelRun(runId: string, now: string): Promise<void> {
-      await db
+    async cancelRun(runId: string, now: string): Promise<boolean> {
+      const result = await db
         .updateTable('durably_runs')
         .set({
           status: 'cancelled',
@@ -764,7 +764,10 @@ export function createKyselyQueueStore(
           updated_at: now,
         })
         .where('id', '=', runId)
-        .execute()
+        .where('status', 'in', ['pending', 'leased'])
+        .executeTakeFirst()
+
+      return Number(result.numUpdatedRows) > 0
     },
 
     async deleteRun(runId: string): Promise<void> {
