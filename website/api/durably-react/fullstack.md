@@ -67,10 +67,10 @@ Each registered job gets `useJob`, `useRun`, and `useLogs` hooks with full type 
 ```tsx
 // Trigger and monitor a job
 function CsvImporter() {
-  const { trigger, status, output, isRunning } = durably.importCsv.useJob()
+  const { trigger, status, output, isLeased } = durably.importCsv.useJob()
 
   return (
-    <button onClick={() => trigger({ rows: [...] })} disabled={isRunning}>
+    <button onClick={() => trigger({ rows: [...] })} disabled={isLeased}>
       Import
     </button>
   )
@@ -109,7 +109,7 @@ function Dashboard() {
               {run.status === 'failed' && (
                 <button onClick={() => retrigger(run.id)}>Retrigger</button>
               )}
-              {run.status === 'running' && (
+              {run.status === 'leased' && (
                 <button onClick={() => cancel(run.id)}>Cancel</button>
               )}
               <button onClick={() => deleteRun(run.id)}>Delete</button>
@@ -136,7 +136,7 @@ Alternatively, pass `api` and `jobName` to each hook. Works with any setup, incl
 import { useJob } from '@coji/durably-react'
 
 function CsvImporter() {
-  const { trigger, status, output, isRunning } = useJob<
+  const { trigger, status, output, isLeased } = useJob<
     { filename: string },
     { count: number }
   >({
@@ -147,7 +147,7 @@ function CsvImporter() {
   return (
     <button
       onClick={() => trigger({ filename: 'data.csv' })}
-      disabled={isRunning}
+      disabled={isLeased}
     >
       Import
     </button>
@@ -173,7 +173,7 @@ function Component() {
     error,
     logs,
     progress,
-    isRunning,
+    isLeased,
     isPending,
     isCompleted,
     isFailed,
@@ -187,7 +187,7 @@ function Component() {
     api: '/api/durably',
     jobName: 'sync-data',
     initialRunId: undefined, // Optional: resume existing run
-    autoResume: true, // Auto-resume running/pending jobs on mount
+    autoResume: true, // Auto-resume leased/pending jobs on mount
     followLatest: true, // Switch to tracking new runs via SSE
   })
 
@@ -202,13 +202,13 @@ function Component() {
 
 ### Options
 
-| Option         | Type      | Default | Description                               |
-| -------------- | --------- | ------- | ----------------------------------------- |
-| `api`          | `string`  | -       | API base path (e.g., `/api/durably`)      |
-| `jobName`      | `string`  | -       | Name of the job to trigger                |
-| `initialRunId` | `string`  | -       | Resume subscription to an existing run    |
-| `autoResume`   | `boolean` | `true`  | Auto-resume running/pending jobs on mount |
-| `followLatest` | `boolean` | `true`  | Switch to tracking new runs via SSE       |
+| Option         | Type      | Default | Description                              |
+| -------------- | --------- | ------- | ---------------------------------------- |
+| `api`          | `string`  | -       | API base path (e.g., `/api/durably`)     |
+| `jobName`      | `string`  | -       | Name of the job to trigger               |
+| `initialRunId` | `string`  | -       | Resume subscription to an existing run   |
+| `autoResume`   | `boolean` | `true`  | Auto-resume leased/pending jobs on mount |
+| `followLatest` | `boolean` | `true`  | Switch to tracking new runs via SSE      |
 
 ---
 
@@ -280,7 +280,7 @@ List and paginate job runs with real-time updates on the first page.
 
 The first page (page 0) automatically subscribes to SSE for real-time updates. It listens to:
 
-- `run:trigger`, `run:start`, `run:complete`, `run:fail`, `run:cancel`, `run:delete` - refresh list
+- `run:trigger`, `run:leased`, `run:complete`, `run:fail`, `run:cancel`, `run:delete` - refresh list
 - `run:progress` - update progress in place
 - `step:start`, `step:complete`, `step:fail` - refresh for step updates
 
@@ -431,7 +431,7 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
           Retrigger
         </button>
       )}
-      {(status === 'pending' || status === 'running') && (
+      {(status === 'pending' || status === 'leased') && (
         <button onClick={() => cancel(runId)} disabled={isLoading}>
           Cancel
         </button>
@@ -460,7 +460,7 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
 | Property    | Type                                            | Description                                 |
 | ----------- | ----------------------------------------------- | ------------------------------------------- |
 | `retrigger` | `(runId: string) => Promise<string>`            | Retrigger a failed run (returns new run ID) |
-| `cancel`    | `(runId: string) => Promise<void>`              | Cancel a running job                        |
+| `cancel`    | `(runId: string) => Promise<void>`              | Cancel a leased job                         |
 | `deleteRun` | `(runId: string) => Promise<void>`              | Delete a run                                |
 | `getRun`    | `(runId: string) => Promise<ClientRun \| null>` | Get run details                             |
 | `getSteps`  | `(runId: string) => Promise<StepRecord[]>`      | Get step details                            |

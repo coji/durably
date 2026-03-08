@@ -56,7 +56,7 @@ function FailedRunActions({ runId }: { runId: string }) {
     )
   }
 
-  if (status === 'running') {
+  if (status === 'leased') {
     return <button onClick={() => cancel(runId)}>Cancel</button>
   }
 

@@ -120,7 +120,7 @@ await durably.db.destroy()
 Subscribe to events for logging, metrics, or debugging:
 
 ```ts
-durably.on('run:start', (e) => console.log(`[start] ${e.jobName}`))
+durably.on('run:leased', (e) => console.log(`[leased] ${e.jobName}`))
 durably.on('step:complete', (e) => console.log(`[step] ${e.stepName}`))
 durably.on('run:complete', (e) =>
   console.log(`[done] ${JSON.stringify(e.output)}`),
@@ -200,7 +200,7 @@ if (run?.status === 'failed') {
   console.log(`New run: ${newRun.id}`)
 }
 
-if (run?.status === 'running') {
+if (run?.status === 'leased') {
   await durably.cancel(runId)
 }
 ```

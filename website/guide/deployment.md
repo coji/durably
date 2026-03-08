@@ -55,7 +55,7 @@ No HTTP handler, no React — just `@coji/durably`. See [Server Mode guide](/gui
   createDurably({
     dialect,
     pollingInterval: 1000, // default, good for production
-    heartbeatInterval: 5000, // default
+    leaseInterval: 5000, // default
     staleThreshold: 30000, // default
   })
   ```
@@ -128,7 +128,7 @@ See [SPA Mode guide](/guide/spa-mode).
   createDurably({
     dialect: sqlocal.dialect,
     pollingInterval: 100,
-    heartbeatInterval: 500,
+    leaseInterval: 500,
     staleThreshold: 3000,
   })
   ```

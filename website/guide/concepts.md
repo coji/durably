@@ -100,7 +100,7 @@ await step.run('import', async () => {
 A run is one execution of a job. Trigger a run, and it goes through this lifecycle:
 
 ```
-pending → running → completed
+pending → leased → completed
                   → failed
                   → cancelled
 ```
@@ -109,7 +109,7 @@ pending → running → completed
 // Trigger: creates a run in "pending" state
 const { id } = await durably.jobs.importCsv.trigger({ filename: 'data.csv' })
 
-// The worker picks it up → "running"
+// The worker picks it up → "leased"
 // Steps execute one by one
 // On success → "completed" with output
 // On error → "failed" with error message
@@ -138,8 +138,8 @@ await durably.jobs.importCsv.trigger(
 This is Durably's core feature. Here's exactly how it works:
 
 1. Each `step.run()` saves its result to SQLite
-2. Running jobs send heartbeats to prove they're alive
-3. If a job's heartbeat stops (crash, tab close, restart), it's marked **stale**
+2. Leased jobs renew their lease to prove they're alive
+3. If a job's lease expires (crash, tab close, restart), it's marked **stale**
 4. The worker picks it up again as **pending**
 5. On re-execution, completed steps return cached results
 6. Execution continues from the next incomplete step
@@ -154,13 +154,13 @@ const data = await step.run('fetch', () => api.fetch()) // Returns cached result
 await step.run('process', () => process(data)) // Runs fresh
 ```
 
-### Heartbeat Configuration
+### Lease Configuration
 
 ```ts
 createDurably({
   dialect,
-  heartbeatInterval: 5000, // Send heartbeat every 5s (default)
-  staleThreshold: 30000, // Mark stale after 30s without heartbeat (default)
+  leaseInterval: 5000, // Renew lease every 5s (default)
+  staleThreshold: 30000, // Mark stale after 30s without lease renewal (default)
 })
 ```
 
@@ -186,8 +186,8 @@ await step.run('charge', () =>
 Monitor everything with the event system:
 
 ```ts
-durably.on('run:start', ({ runId, jobName }) =>
-  console.log(`Started: ${jobName}`),
+durably.on('run:leased', ({ runId, jobName }) =>
+  console.log(`Leased: ${jobName}`),
 )
 durably.on('run:complete', ({ runId, output }) => console.log('Done:', output))
 durably.on('run:fail', ({ runId, error }) => console.log('Failed:', error))

@@ -603,7 +603,7 @@ interface LogData {
 interface RunFilter<
   TLabels extends Record<string, string> = Record<string, string>,
 > {
-  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  status?: 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
   jobName?: string | string[]
   labels?: Partial<TLabels>
   limit?: number

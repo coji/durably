@@ -5,13 +5,13 @@ Common types used across both SPA and Fullstack modes.
 ## RunStatus
 
 ```ts
-type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+type RunStatus = 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
 ```
 
 | Status      | Description                                      |
 | ----------- | ------------------------------------------------ |
 | `pending`   | Job is queued, waiting to be picked up by worker |
-| `running`   | Job is currently executing                       |
+| `leased`    | Job is currently executing                       |
 | `completed` | Job finished successfully                        |
 | `failed`    | Job encountered an error                         |
 | `cancelled` | Job was cancelled before completion              |
@@ -58,7 +58,7 @@ interface LogEntry {
 
 ## ClientRun
 
-A subset of the core `Run` type returned by HTTP endpoints. Internal fields (`heartbeatAt`, `idempotencyKey`, `concurrencyKey`, `updatedAt`) are excluded.
+A subset of the core `Run` type returned by HTTP endpoints. Internal fields (`leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `updatedAt`) are excluded.
 
 ```ts
 interface ClientRun {

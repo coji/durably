@@ -97,7 +97,7 @@ app.all('/api/durably/*', (c) => handler.handle(c.req.raw, '/api/durably'))
 
 ## Response Shape
 
-The `/runs` and `/run` endpoints return `ClientRun` objects — a subset of the full `Run` type with internal fields (`heartbeatAt`, `idempotencyKey`, `concurrencyKey`, `updatedAt`) stripped. Use `toClientRun()` to apply the same projection in custom code:
+The `/runs` and `/run` endpoints return `ClientRun` objects — a subset of the full `Run` type with internal fields (`leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `updatedAt`) stripped. Use `toClientRun()` to apply the same projection in custom code:
 
 ```ts
 import { toClientRun } from '@coji/durably'
@@ -119,7 +119,7 @@ The handler provides these endpoints:
 | `GET`    | `/steps?runId=xxx`     | Get steps for a run                      |
 | `GET`    | `/runs/subscribe`      | SSE stream for run list updates          |
 | `POST`   | `/retrigger?runId=xxx` | Retrigger a failed run (creates new run) |
-| `POST`   | `/cancel?runId=xxx`    | Cancel a running job                     |
+| `POST`   | `/cancel?runId=xxx`    | Cancel a leased job                      |
 | `DELETE` | `/run?runId=xxx`       | Delete a run                             |
 
 ## Trigger Request
@@ -146,7 +146,7 @@ The `/subscribe` endpoint returns Server-Sent Events for real-time updates.
 // GET /api/durably/subscribe?runId=run_abc123
 
 // Events:
-data: {"type":"run:start","runId":"run_abc123","jobName":"import-csv",...}
+data: {"type":"run:leased","runId":"run_abc123","jobName":"import-csv",...}
 
 data: {"type":"run:progress","runId":"run_abc123","progress":{"current":1,"total":10},...}
 

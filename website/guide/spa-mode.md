@@ -143,7 +143,7 @@ function SyncButton() {
     status,
     progress,
     output,
-    isRunning,
+    isLeased,
     isCompleted,
     isFailed,
     error,
@@ -153,12 +153,12 @@ function SyncButton() {
     <div>
       <button
         onClick={() => trigger({ userId: 'user_123' })}
-        disabled={isRunning}
+        disabled={isLeased}
       >
-        {isRunning ? 'Syncing...' : 'Sync Data'}
+        {isLeased ? 'Syncing...' : 'Sync Data'}
       </button>
 
-      {isRunning && progress && (
+      {isLeased && progress && (
         <div>
           <progress value={progress.current} max={progress.total} />
           <p>{progress.message}</p>
