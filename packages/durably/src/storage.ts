@@ -1,4 +1,4 @@
-import { type Kysely, sql } from 'kysely'
+import { type Kysely, type SqlBool, sql } from 'kysely'
 import { monotonicFactory } from 'ulidx'
 import type { Database } from './schema'
 
@@ -335,6 +335,20 @@ export function createKyselyStore(
   db: Kysely<Database>,
   backend: DatabaseBackend = 'generic',
 ): Store<Record<string, string>> {
+  async function insertLabelRows(
+    executor: Kysely<Database>,
+    runId: string,
+    labels: Record<string, string> | undefined,
+  ): Promise<void> {
+    const entries = Object.entries(labels ?? {})
+    if (entries.length > 0) {
+      await executor
+        .insertInto('durably_run_labels')
+        .values(entries.map(([key, value]) => ({ run_id: runId, key, value })))
+        .execute()
+    }
+  }
+
   async function terminateRun(
     runId: string,
     leaseGeneration: number,
@@ -405,21 +419,7 @@ export function createKyselyStore(
       }
 
       await db.insertInto('durably_runs').values(run).execute()
-
-      // Insert normalized labels for indexed filtering
-      const labelEntries = Object.entries(input.labels ?? {})
-      if (labelEntries.length > 0) {
-        await db
-          .insertInto('durably_run_labels')
-          .values(
-            labelEntries.map(([key, value]) => ({
-              run_id: id,
-              key,
-              value,
-            })),
-          )
-          .execute()
-      }
+      await insertLabelRows(db, id, input.labels)
 
       return rowToRun(run)
     },
@@ -440,6 +440,7 @@ export function createKyselyStore(
         }
 
         // Process inputs - check idempotency keys and create run objects
+        const newRunLabels = new Map<string, Record<string, string>>()
         for (const input of inputs) {
           // Check for existing run with same idempotency key
           if (input.idempotencyKey) {
@@ -457,6 +458,9 @@ export function createKyselyStore(
           }
 
           const id = ulid()
+          if (input.labels && Object.keys(input.labels).length > 0) {
+            newRunLabels.set(id, input.labels)
+          }
           runs.push({
             id,
             job_name: input.jobName,
@@ -485,18 +489,8 @@ export function createKyselyStore(
           await trx.insertInto('durably_runs').values(newRuns).execute()
 
           // Insert normalized labels for indexed filtering
-          const labelRows: { run_id: string; key: string; value: string }[] = []
-          for (const run of newRuns) {
-            const labels = JSON.parse(run.labels) as Record<string, string>
-            for (const [key, value] of Object.entries(labels)) {
-              labelRows.push({ run_id: run.id, key, value })
-            }
-          }
-          if (labelRows.length > 0) {
-            await trx
-              .insertInto('durably_run_labels')
-              .values(labelRows)
-              .execute()
+          for (const [runId, labels] of newRunLabels) {
+            await insertLabelRows(trx, runId, labels)
           }
         }
 
@@ -546,15 +540,24 @@ export function createKyselyStore(
         validateLabels(labels)
         for (const [key, value] of Object.entries(labels)) {
           if (value === undefined) continue
+          // Use indexed label table with JSON fallback for atomicity safety:
+          // if label rows haven't been written yet, fall back to JSON column
+          const jsonFallback =
+            backend === 'postgres'
+              ? sql<SqlBool>`durably_runs.labels ->> ${key} = ${value}`
+              : sql<SqlBool>`json_extract(durably_runs.labels, ${`$.${key}`}) = ${value}`
           query = query.where((eb) =>
-            eb.exists(
-              eb
-                .selectFrom('durably_run_labels')
-                .select(sql.lit(1).as('one'))
-                .whereRef('durably_run_labels.run_id', '=', 'durably_runs.id')
-                .where('durably_run_labels.key', '=', key)
-                .where('durably_run_labels.value', '=', value),
-            ),
+            eb.or([
+              eb.exists(
+                eb
+                  .selectFrom('durably_run_labels')
+                  .select(sql.lit(1).as('one'))
+                  .whereRef('durably_run_labels.run_id', '=', 'durably_runs.id')
+                  .where('durably_run_labels.key', '=', key)
+                  .where('durably_run_labels.value', '=', value),
+              ),
+              jsonFallback,
+            ]),
           )
         }
       }
