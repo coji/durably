@@ -23,9 +23,9 @@
   "scripts": {
     "build": "tsup",
     "test": "pnpm test:node && pnpm test:react && pnpm test:browser",
-    "test:node": "vitest run --config vitest.config.ts",
-    "test:db:node": "vitest run tests/node/db-*.test.ts --config vitest.config.ts",
-    "test:postgres": "vitest run tests/node/db-semantics.postgres.test.ts --config vitest.config.ts",
+    "test:node": "vitest run --config vitest.config.ts --exclude 'tests/node/**/*.postgres.test.ts'",
+    "test:node:postgres": "vitest run --config vitest.config.ts postgres",
+    "test:node:all": "vitest run --config vitest.config.ts",
     "test:react": "vitest run --config vitest.react.config.ts",
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "typecheck": "tsc --noEmit",

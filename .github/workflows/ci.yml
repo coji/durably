@@ -70,8 +70,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Test (Node.js)
-        run: pnpm test:node
+      - name: Test (Node.js + PostgreSQL)
+        run: pnpm --filter @coji/durably test:node:all
 
   test-browser:
     runs-on: ubuntu-latest

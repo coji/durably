@@ -49,7 +49,7 @@ Four tables: `durably_runs`, `durably_steps`, `durably_logs`, `durably_schema_ve
 ## Browser Constraints (by design)
 
 - Single tab usage assumed (OPFS exclusivity)
-- Background tab interruptions handled via heartbeat recovery
+- Background tab interruptions handled via lease expiry recovery
 - Requires Secure Context (HTTPS/localhost) for OPFS
 
 ## Git Workflow
@@ -61,9 +61,27 @@ Four tables: `durably_runs`, `durably_steps`, `durably_logs`, `durably_schema_ve
 
 ```bash
 pnpm validate      # Format check, lint, typecheck, tests
-pnpm test          # Run all tests
+pnpm test          # Run all tests (SQLite only, no Docker needed)
 pnpm format        # Fix formatting
 pnpm lint:fix      # Fix lint issues
+```
+
+### PostgreSQL Tests
+
+PostgreSQL tests (`*.postgres.test.ts`) are excluded from `pnpm test` by default.
+
+```bash
+# Start Postgres
+docker compose -f docker-compose.postgres.yml up -d
+
+# Run Postgres tests only
+pnpm --filter @coji/durably test:node:postgres
+
+# Run all Node tests (SQLite + Postgres)
+pnpm --filter @coji/durably test:node:all
+
+# Stop Postgres
+docker compose -f docker-compose.postgres.yml down
 ```
 
 ## Skills
