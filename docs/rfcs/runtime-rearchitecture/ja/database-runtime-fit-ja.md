@@ -1,274 +1,253 @@
-# 設計: データベースごとのランタイム適合性
+# データベースごとのランタイム適合性
 
-## 目標
+## 目的
 
-本ドキュメントでは、各データベースが Durably のランタイムモデルにどの程度適合するかを評価する。
+このドキュメントでは、各データベースが Durably のランタイムモデルにどの程度適合するかを評価します。
 
-データベースごとの具体的な claim および lease mutation の実装パターンについては `database-claim-patterns-ja.md` を参照のこと。
+データベースごとの claim / lease mutation の具体的な実装パターンは `database-claim-patterns-ja.md` を参照してください。
 
-中心となる問いはひとつ:
+中心的な問いはひとつです。
 
-そのデータベースは、Durably が求める execution semantics を維持できるか。
+**そのデータベースは、Durably が求める実行セマンティクスを維持できるか。**
 
-ここで問われているのは主に correctness であり、単純な性能比較ではない。
+ここで問われているのは主に正しさであり、単純な性能比較ではありません。
 
 ## なぜ重要なのか
 
-Durably は、database を中心に据えた lease ベースの checkpoint 付きランタイムだ。
+Durably はデータベースを中心に据えた、リースベース・チェックポイント付きのランタイムです。
 
-したがって database は単なる永続化レイヤーではなく、execution authority（実行権限）と resumability（再開可能性）を保持する役割を持つ。
-
-脆いアプリケーション層での場当たり的な回避策に頼らずに必要な semantics を支えられるデータベースだけが、良い適合先となる。
+データベースは単なる永続化レイヤーではなく、実行権限と再開可能性を保持する役割を担います。場当たり的なアプリケーション層の回避策に頼らず、必要なセマンティクスを支えられるデータベースだけが良い適合先になります。
 
 ## 必要なストレージセマンティクス
 
-first-class な対応先であるためには、以下の semantics を明確かつ防御可能な形で満たす必要がある。
+ファーストクラスの対応先であるためには、以下のセマンティクスを明確かつ防御可能な形で満たす必要があります。
 
-### 1. ランをアトミックに取得できること
+### 1. run をアトミックに取得できること
 
-store は次の操作を1つの atomic operation として行えなければならない:
+ストアは以下の操作を1つのアトミック操作として行えなければなりません。
 
 - 取得可能な run を1つ選ぶ
-- それを `leased`（実行中）に遷移させる
+- それを `leased` に遷移させる
 - `leaseOwner` と `leaseExpiresAt` を設定する
-- 複数の worker が競合しても、勝者は1つだけであること
+- 複数のワーカーが競合しても、勝者は1つだけであること
 
 ### 2. 現在の所有者だけが run を変更できること
 
-store が run を renew・complete・fail できるのは、次の条件を満たす場合に限られる:
+ストアが run を renew・complete・fail できるのは、以下の条件を満たす場合に限ります。
 
 - run がまだ leased 状態にある
-- リクエストしている worker がその lease を引き続き所有している
+- リクエストしているワーカーがそのリースを所有している
 
-リースが切れた worker が、別の worker に引き継がれた run を renew したり complete したりできてはならない。
+リースが切れたワーカーが、別のワーカーに引き継がれた run を renew・complete できてはなりません。
 
-### 3. 放棄されたランを安全に回収できること
+### 3. 放棄された run を安全に回収できること
 
-store は lease expiry 後の回収を通常の取得フローの一部として扱える必要がある。
-
-つまり、以下のような状況の後でも後続 worker が安全に処理を継続できなくてはならない:
-
-- crash
-- restart
-- timeout
-- network loss
+ストアはリース期限切れ後の回収を、通常の取得フローの一部として扱える必要があります。クラッシュ、再起動、タイムアウト、ネットワーク切断の後でも、後続ワーカーが安全に処理を継続できなければなりません。
 
 ### 4. ステップの結果を永続的に保存できること
 
-store は completed step を十分に durable な形で保存し、再実行時に次のことを可能にする必要がある:
+ストアは完了したステップを十分に永続的な形で保存し、再実行時に以下を可能にする必要があります。
 
-- 完了済みの step を検出する
-- 以前の output を返す
-- 完了済み work の再実行を回避する
+- 完了済みステップを検出する
+- 以前の出力を返す
+- 完了済みの作業を再実行しない
 
-### 5. 重複ランをストレージレベルで防止できること
+### 5. 重複 run をストレージレベルで防止できること
 
-idempotency key をサポートするなら、storage constraint か conflict-aware write によって強制しなければならない。
-
-read-then-insert の race に頼るだけでは不十分だ。
+冪等キーをサポートするなら、ストレージ制約か conflict-aware write で強制しなければなりません。read-then-insert の競合に頼るだけでは不十分です。
 
 ### 6. ログとイベントを効率よく追記できること
 
-store は以下を手軽に append できることが望ましい:
-
-- log
-- progress update
-- durable な event stream entry
-
-これらすべてに global order が求められるわけではないが、信頼性と query 可能性は確保する必要がある。
+ストアはログ、進捗更新、永続イベントストリームを手軽に追記できることが望ましいです。すべてにグローバル順序が求められるわけではありませんが、信頼性とクエリ可能性は確保する必要があります。
 
 ### 7. トランザクションの挙動が予測可能であること
 
-store は、取得の競合や条件付き書き込みについて推論できるだけの明確な transaction / isolation behavior を提供しなければならない。
-
-semantics が不透明だったり予想外に弱かったりすると、adapter の正しさを裏付けるのが困難になる。
+ストアは、取得の競合や条件付き書き込みについて推論できるだけの明確なトランザクション / 分離レベルの挙動を提供しなければなりません。セマンティクスが不透明だったり予想外に弱い場合、adapter の正しさを裏付けるのが困難になります。
 
 ## 評価軸
 
-設計上、各 database は次の観点で判断するのが適切だ:
+各データベースは以下の観点で判断します。
 
-- claim correctness
-- multi-worker safety
-- serverless からの接続適性
-- checkpoint / event の write-path cost
-- 運用の単純さ
-- environment をまたいだ semantics の移植性
+- claim の正しさ
+- マルチワーカーの安全性
+- サーバーレスからの接続適性
+- チェックポイント / イベントの書き込みコスト
+- 運用のシンプルさ
+- 環境をまたいだセマンティクスの移植性
 
 ## PostgreSQL
 
-PostgreSQL は最も明快な first-class fit と言える。
+PostgreSQL は最も明快なファーストクラスの適合先です。
 
 ### 適合する理由
 
-- atomic claim のパターンが広く理解されている
-- conditional update や ownership-sensitive completion を素直に書ける
-- transaction と row-level locking の semantics が成熟している
-- idempotency constraint を自然に表現できる
+- アトミック claim のパターンが広く理解されている
+- 条件付き更新や所有権チェック付き completion を素直に書ける
+- トランザクションと行ロックのセマンティクスが成熟している
+- 冪等制約を自然に表現できる
 - イベントやチェックポイントの大量追記に向いている
-- multi-worker / multi-process coordination がごく普通の用途として成り立つ
+- マルチワーカー / マルチプロセスの協調が普通の用途として成り立つ
 
-### 最も向いている形
+### 最も向いている用途
 
-- multi-worker deployment
-- 外部 database を使う serverless platform
-- より高い write concurrency が求められるシステム
-- semantic ambiguity を最小化したいケース
+- マルチワーカーデプロイ
+- 外部データベースを使うサーバーレスプラットフォーム
+- 高い書き込み並行性が求められるシステム
+- セマンティクスの曖昧さを最小化したい場合
 
 ### 主なトレードオフ
 
-embedded SQLite と比べると運用負荷が大きい。
+組み込み SQLite と比べると運用負荷が大きくなります。
 
 ### 結論
 
-PostgreSQL は primary target として位置づけるべきであり、storage semantics の reference model としても最有力候補となる。
+PostgreSQL はプライマリターゲットとして位置づけるべきであり、ストレージセマンティクスの基準モデルとしても最有力です。
 
 ### DX に関する注記
 
-PostgreSQL は semantics の基準として最も堅いが、`Vercel + Turso` を最初の体験として想定する場合、個人開発者にとって最良のオンボーディング体験になるとは限らない。
-
-一方、`Vercel + PostgreSQL` や `Fly.io + PostgreSQL` といった本番向けの構成では極めて重要な target だ。
+PostgreSQL はセマンティクスの基準として最も堅いですが、`Vercel + Turso` を最初の体験として想定する場合、個人開発者にとって最良のオンボーディング体験になるとは限りません。一方、`Vercel + PostgreSQL` や `Fly.io + PostgreSQL` といった本番向け構成では極めて重要なターゲットです。
 
 ## SQLite
 
-SQLite は single-node もしくは閉じた deployment に強く適合するが、その境界は明示しておくべきだ。
+SQLite はシングルノードまたは閉じたデプロイに強く適合しますが、その境界は明示しておくべきです。
 
 ### 適合する理由
 
-- transaction が堅牢で理解しやすい
-- atomic claim を実装可能
-- checkpoint persistence がシンプル
-- embedded / single-machine 用途での local durability に優れる
-- operational overhead が小さい
+- トランザクションが堅牢で理解しやすい
+- アトミック claim を実装可能
+- チェックポイントの永続化がシンプル
+- 組み込み / シングルマシン用途での永続性に優れる
+- 運用コストが小さい
 
-### 特に向いている場面
+### 最も向いている用途
 
-- local development
-- single-tenant deployment
-- desktop や edge 近傍のアプリケーション
-- single-machine worker
+- ローカル開発
+- シングルテナントデプロイ
+- デスクトップやエッジ近傍のアプリケーション
+- シングルマシンワーカー
 
 ### 主な制約
 
-- write concurrency は PostgreSQL に比べて限定的
-- multi-writer scaling は自然な形とは言いがたい
-- machine をまたぐ distributed ownership は想定されていない
-- file を replication や proxy 層の背後に配置する deployment では、実質的な semantics が変わるおそれがある
+- 書き込み並行性は PostgreSQL に比べて限定的
+- マルチライターのスケーリングは自然な形とは言いがたい
+- マシンをまたぐ分散所有権は想定されていない
+- ファイルをレプリケーションやプロキシ層の背後に置くデプロイでは、実質的なセマンティクスが変わるおそれがある
 
 ### 結論
 
-SQLite は local および single-node execution の first-class target であり続けるべきだが、あらゆる deployment のメンタルモデルとして用いるべきではない。
+SQLite はローカルおよびシングルノード実行のファーストクラスターゲットであり続けるべきですが、あらゆるデプロイのメンタルモデルとして用いるべきではありません。
 
 ## libSQL
 
-libSQL は、SQLite の開発体験を保ちつつ remote deployment を可能にする点で有望だ。
+libSQL は SQLite の開発体験を保ちつつリモートデプロイを可能にする点で有望です。
 
 ### 適合しうる理由
 
 - 馴染みのある SQLite 互換モデル
-- file-based SQLite より serverless からの接続が容易
-- hosted access を伴う SQLite ergonomics を求めるプロダクトに向いている
+- ファイルベースの SQLite よりサーバーレスからの接続が容易
+- ホストアクセス付きの SQLite 的な使い勝手を求めるプロダクトに向いている
 
 ### 注意が必要な理由
 
-- Durably が依存するのは SQL syntax compatibility よりも lease claim semantics のほう
-- 表面的な互換性より、remote / replicated 環境での execution characteristics が重要になる
-- write serialization、visibility、failure recovery に関する正確な保証は adapter-level test で検証しなければならない
+- Durably が依存するのは SQL 構文の互換性よりもリース claim セマンティクス
+- 表面的な互換性より、リモート / レプリケーション環境での実行特性が重要
+- 書き込み直列化、可視性、障害回復に関する正確な保証は adapter レベルのテストで検証する必要がある
 
-### 最も向いている形
+### 最も向いている用途
 
 - SQLite 風の開発体験を求めるプロダクト
-- serverless 環境で外部 DB を必要とする deployment
-- semantic validation が完了している中程度の workload
-- `Vercel + Turso` や `Cloudflare Workers + Turso` のような摩擦の少ない導入経路
+- サーバーレス環境で外部 DB を必要とするデプロイ
+- セマンティクス検証が完了している中程度のワークロード
+- `Vercel + Turso` や `Cloudflare Workers + Turso` のような低摩擦な導入経路
 
 ### 結論
 
-libSQL は plausible target ではあるものの、local SQLite と同等と見なすべきではない。adapter test と運用実績で裏付けが取れるまでは「注意付きで support する」カテゴリに位置づけるのが妥当だ。
+libSQL は有望なターゲットですが、ローカル SQLite と同等と見なすべきではありません。adapter テストと運用実績で裏付けが取れるまでは「注意付きサポート」に位置づけるのが妥当です。
 
 ### DX に関する注記
 
-セマンティクス上の注意点はあるものの、libSQL は SQLite に近いメンタルモデルを維持できるため、個人開発者向けの serverless-friendly な入口としてはかなり有力な選択肢となる。
+セマンティクス上の注意点はあるものの、libSQL は SQLite に近いメンタルモデルを維持できるため、個人開発者向けのサーバーレスフレンドリーな入口としてはかなり有力な選択肢です。
 
 ## Cloudflare D1
 
-D1 は platform-specific target として有用な可能性があるが、慎重なアプローチが求められる。
+D1 はプラットフォーム固有のターゲットとして有用な可能性がありますが、慎重なアプローチが求められます。
 
 ### 魅力がある理由
 
-- Cloudflare hosted application と自然に噛み合う
-- Worker ベースのシステムでは deployment story がシンプル
+- Cloudflare ホスティングアプリケーションと自然に噛み合う
+- Worker ベースのシステムではデプロイが単純
 - SQLite 風のモデルを備えている
 
 ### リスクがある理由
 
-- Durably は claim exclusivity と ownership-sensitive update に高い確信を必要とする
-- platform-specific な database behavior は、一般的な PostgreSQL semantics より論じにくい場合がある
-- runtime model が contention、retry、reclaim 下での予測可能な振る舞いに依存している
+- Durably は claim の排他性と所有権チェック付き更新に高い確信を必要とする
+- プラットフォーム固有のデータベース挙動は、一般的な PostgreSQL セマンティクスより論じにくい場合がある
+- ランタイムモデルが競合・リトライ・reclaim 下での予測可能な振る舞いに依存している
 
-### 最も向いている形
+### 最も向いている用途
 
 - Cloudflare 固有のアプリケーション
-- 低〜中程度の contention workload
-- D1 固有の制約を許容でき、十分なテストが行えるケース
+- 低〜中程度の競合ワークロード
+- D1 固有の制約を許容でき、十分なテストが行える場合
 
 ### 結論
 
-D1 は universal reference model というよりも platform adapter target として扱うのが適切だ。成立しうる可能性はあるが、primary ではなく caveated category からのスタートが望ましい。
+D1 は普遍的な基準モデルではなく、プラットフォーム adapter ターゲットとして扱うのが適切です。成立しうる可能性はありますが、プライマリではなく注意付きカテゴリからのスタートが望ましいです。
 
-## 何が Syntax Compatibility より重要か
+## SQL 構文の互換性より重要なこと
 
-2つの database が似た SQL syntax を備えていても、Durably にとっては意味のある違いが生じうる。
+2つのデータベースが似た SQL 構文を備えていても、Durably にとっては意味のある違いが生じえます。
 
-重要なのは以下ではない:
+重要なのは以下では**ありません**。
 
-- SQLite syntax を話せるかどうか
-- JSON column を扱えるかどうか
-- `returning` に対応しているかどうか
+- SQLite の構文を話せるかどうか
+- JSON カラムを扱えるかどうか
+- `RETURNING` に対応しているかどうか
 
-重要なのはこちらだ:
+重要なのは以下です。
 
-- ランの取得を真に exclusive にできるか
-- 期限切れの worker を確実に reject できるか
+- run の取得を本当に排他的にできるか
+- 期限切れのワーカーを確実に拒否できるか
 - リース期限と回収を明快に推論できるか
-- checkpoint と event を fragile な coordination なしに頻繁に書き込めるか
+- チェックポイントとイベントを脆い協調なしに頻繁に書き込めるか
 
-Durably が最適化すべきは superficial な API similarity ではなく、セマンティクスのポータビリティのほうだ。
+Durably が最適化すべきは表面的な API の類似性ではなく、セマンティクスのポータビリティです。
 
-## 推奨される Support Tier
+## 推奨サポート階層
 
-出発点としては、以下の tiering が妥当と考えられる。
+出発点としては、以下の階層が妥当です。
 
-### Primary Targets
+### プライマリターゲット
 
 - PostgreSQL
 - SQLite
 
-この2つが最も明快なセマンティクスの基準となる:
+この2つが最も明快なセマンティクスの基準になります。
 
-- PostgreSQL — distributed / serverless-connected deployment の基準
-- SQLite — embedded / single-node deployment の基準
+- PostgreSQL — 分散 / サーバーレス接続デプロイの基準
+- SQLite — 組み込み / シングルノードデプロイの基準
 
-### Caveat 付きの Plausible Targets
+### 注意付きの有望ターゲット
 
 - libSQL
 - Cloudflare D1
 
-adapter test によって claim・renew・complete・reclaim の semantics が防御可能だと示された場合にのみ support すべきだ。
+adapter テストによって claim・renew・complete・reclaim のセマンティクスが防御可能だと示された場合にのみサポートすべきです。
 
-### First-Class Promise にすべきでないもの
+### ファーストクラスにすべきでないもの
 
-transaction や conditional write の振る舞いを Durably の lease semantics に明確に写像できない database は、基本的な persistence が動作するとしても first-class として提示すべきではない。
+トランザクションや条件付き書き込みの挙動を Durably のリースセマンティクスに明確に写像できないデータベースは、基本的な永続化が動作するとしてもファーストクラスとして提示すべきではありません。
 
-## Adapter 設計への含意
+## Adapter 設計への示唆
 
-Durably は database support を「SQL が使えればどこでも動く」という形で提示すべきではない。
+Durably はデータベースサポートを「SQL が使えればどこでも動く」という形で提示すべきではありません。
 
-各 adapter は、以下を守れるかどうかで評価する:
+各 adapter は、以下を守れるかどうかで評価します。
 
-- atomic claim
-- lease owner に依存した mutation
-- durable checkpoint
-- reliable な idempotency
-- predictable な reclaim
+- アトミック claim
+- リース所有者に依存した mutation
+- 永続的なチェックポイント
+- 信頼性のある冪等性
+- 予測可能な reclaim
 
-これこそが本当の compatibility contract だ。
+これが本当の互換性契約です。

@@ -25,8 +25,9 @@ export type {
   RunCompleteEvent,
   RunDeleteEvent,
   RunFailEvent,
+  RunLeaseRenewedEvent,
+  RunLeasedEvent,
   RunProgressEvent,
-  RunStartEvent,
   RunTriggerEvent,
   StepCancelEvent,
   StepCompleteEvent,
@@ -55,11 +56,20 @@ export type {
 } from './schema'
 
 // Storage types
-export { toClientRun } from './storage'
-export type { ClientRun, Log, Run, RunFilter, Step } from './storage'
+export { createKyselyStore, toClientRun } from './storage'
+export type {
+  ClientRun,
+  Log,
+  Run,
+  RunFilter,
+  RunStatus,
+  Step,
+  Store,
+  UpdateRunData,
+} from './storage'
 
 // Errors
-export { CancelledError } from './errors'
+export { CancelledError, LeaseLostError } from './errors'
 
 // Server
 export { createDurablyHandler } from './server'

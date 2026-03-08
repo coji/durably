@@ -10,7 +10,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
     beforeEach(async () => {
       durably = createDurably({
         dialect: createDialect(),
-        pollingInterval: 50, // Fast polling for tests
+        pollingIntervalMs: 50, // Fast polling for tests
       })
       await durably.migrate()
     })
@@ -80,10 +80,10 @@ export function createWorkerTests(createDialect: () => Dialect) {
     })
 
     describe('Run state transitions', () => {
-      it('transitions pending run to running then completed', async () => {
+      it('transitions pending run to leased then completed', async () => {
         const states: string[] = []
 
-        durably.on('run:start', () => states.push('running'))
+        durably.on('run:leased', () => states.push('leased'))
         durably.on('run:complete', () => states.push('completed'))
 
         const stateTestDef = defineJob({
@@ -107,7 +107,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
           { timeout: 1000 },
         )
 
-        expect(states).toEqual(['running', 'completed'])
+        expect(states).toEqual(['leased', 'completed'])
       })
 
       it('transitions to failed when job throws', async () => {

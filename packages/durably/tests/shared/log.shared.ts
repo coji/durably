@@ -15,7 +15,7 @@ export function createLogTests(createDialect: () => Dialect) {
     beforeEach(async () => {
       durably = createDurably({
         dialect: createDialect(),
-        pollingInterval: 50,
+        pollingIntervalMs: 50,
       })
       await durably.migrate()
     })

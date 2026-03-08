@@ -8,8 +8,8 @@
 import { durably } from './lib/durably'
 
 // Subscribe to events
-durably.on('run:start', (event) => {
-  console.log(`[run:start] ${event.jobName}`)
+durably.on('run:leased', (event) => {
+  console.log(`[run:leased] ${event.jobName}`)
 })
 
 durably.on('step:complete', (event) => {
@@ -49,7 +49,7 @@ async function main() {
   const runs = await durably.storage.getRuns()
   console.log(`\nDatabase Stats:`)
   console.log(`  Pending: ${runs.filter((r) => r.status === 'pending').length}`)
-  console.log(`  Running: ${runs.filter((r) => r.status === 'running').length}`)
+  console.log(`  Leased: ${runs.filter((r) => r.status === 'leased').length}`)
   console.log(
     `  Completed: ${runs.filter((r) => r.status === 'completed').length}`,
   )

@@ -12,7 +12,7 @@ interface RunProgressProps {
   error: string | null
   logs: LogEntry[]
   isPending: boolean
-  isRunning: boolean
+  isLeased: boolean
   isCompleted: boolean
   isFailed: boolean
   isCancelled: boolean
@@ -24,13 +24,13 @@ export function RunProgress({
   error,
   logs,
   isPending,
-  isRunning,
+  isLeased,
   isCompleted,
   isFailed,
   isCancelled,
 }: RunProgressProps) {
   // Don't render anything if no activity
-  if (!isPending && !isRunning && !isCompleted && !isFailed && !isCancelled) {
+  if (!isPending && !isLeased && !isCompleted && !isFailed && !isCancelled) {
     return null
   }
 
@@ -44,7 +44,7 @@ export function RunProgress({
       )}
 
       {/* Progress Display */}
-      {isRunning && progress && (
+      {isLeased && progress && (
         <section className="rounded-lg border border-blue-200 bg-blue-50 p-4">
           <div className="mb-2 flex justify-between text-sm text-blue-800">
             <span>Progress</span>

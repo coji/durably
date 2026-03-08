@@ -42,6 +42,21 @@ jobs:
   test-node:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: durably
+          POSTGRES_USER: durably
+          POSTGRES_PASSWORD: durably
+        ports:
+          - '55432:5432'
+        options: >-
+          --health-cmd "pg_isready -U durably -d durably"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 20
+
     steps:
       - uses: actions/checkout@v6
 
@@ -55,8 +70,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Test (Node.js)
-        run: pnpm test:node
+      - name: Test (Node.js + PostgreSQL)
+        run: pnpm --filter @coji/durably test:node:all
 
   test-browser:
     runs-on: ubuntu-latest

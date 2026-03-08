@@ -1,4 +1,3 @@
-import { DurablyProvider } from '@coji/durably-react/spa'
 import {
   isRouteErrorResponse,
   Links,
@@ -9,7 +8,6 @@ import {
 } from 'react-router'
 import type { Route } from './+types/root'
 import './app.css'
-import { durably } from './lib/durably'
 
 export function links() {
   return [
@@ -45,11 +43,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  return (
-    <DurablyProvider durably={durably}>
-      <Outlet />
-    </DurablyProvider>
-  )
+  return <Outlet />
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {

@@ -59,10 +59,10 @@ export const durably = createDurably<typeof durably>({
 
 // In your component - fully type-safe with autocomplete
 function CsvImporter() {
-  const { trigger, output, isRunning } = durably.importCsv.useJob()
+  const { trigger, output, isLeased } = durably.importCsv.useJob()
 
   return (
-    <button onClick={() => trigger({ rows: [...] })} disabled={isRunning}>
+    <button onClick={() => trigger({ rows: [...] })} disabled={isLeased}>
       Import
     </button>
   )
@@ -105,7 +105,7 @@ function Component() {
     error,
     logs,
     progress,
-    isRunning,
+    isLeased,
     isPending,
     isCompleted,
     isFailed,
@@ -119,7 +119,7 @@ function Component() {
     api: '/api/durably',
     jobName: 'sync-data',
     initialRunId: undefined, // Optional: resume existing run
-    autoResume: true, // Auto-resume pending/running jobs on mount (default: true)
+    autoResume: true, // Auto-resume pending/leased jobs on mount (default: true)
     followLatest: true, // Switch to tracking new runs (default: true)
   })
 
@@ -139,12 +139,12 @@ interface UseJobClientOptions {
   api: string // API endpoint URL (e.g., '/api/durably')
   jobName: string // Job name to trigger
   initialRunId?: string // Initial Run ID to subscribe to
-  autoResume?: boolean // Auto-resume pending/running jobs on mount (default: true)
+  autoResume?: boolean // Auto-resume pending/leased jobs on mount (default: true)
   followLatest?: boolean // Switch to tracking new runs via SSE (default: true)
 }
 ```
 
-The `autoResume` option automatically fetches running/pending jobs on mount and subscribes to them. This is useful for SSR applications where users may refresh the page while a job is running.
+The `autoResume` option automatically fetches leased/pending jobs on mount and subscribes to them. This is useful for SSR applications where users may refresh the page while a job is leased.
 
 The `followLatest` option subscribes to job-level SSE events and automatically switches to tracking the latest triggered job. This enables real-time updates when jobs are triggered from other tabs or clients.
 
@@ -275,7 +275,7 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
           Retrigger
         </button>
       )}
-      {(status === 'pending' || status === 'running') && (
+      {(status === 'pending' || status === 'leased') && (
         <button onClick={() => cancel(runId)} disabled={isLoading}>
           Cancel
         </button>
@@ -391,7 +391,7 @@ function Component() {
     error,
     logs,
     progress,
-    isRunning,
+    isLeased,
     isPending,
     isCompleted,
     isFailed,
@@ -400,7 +400,7 @@ function Component() {
     reset,
   } = useJob(myJob, {
     initialRunId: undefined,
-    autoResume: true, // Auto-resume pending/running jobs (default: true)
+    autoResume: true, // Auto-resume pending/leased jobs (default: true)
     followLatest: true, // Switch to tracking new runs (default: true)
   })
 
@@ -418,7 +418,7 @@ function Component() {
 
   return (
     <div>
-      <button onClick={handleClick} disabled={isRunning}>
+      <button onClick={handleClick} disabled={isLeased}>
         Run
       </button>
       <p>Status: {status}</p>
@@ -440,7 +440,7 @@ function Component() {
 ```ts
 interface UseJobOptions {
   initialRunId?: string // Initial Run ID to subscribe to
-  autoResume?: boolean // Auto-resume pending/running jobs (default: true)
+  autoResume?: boolean // Auto-resume pending/leased jobs (default: true)
   followLatest?: boolean // Switch to tracking new runs (default: true)
 }
 ```
@@ -451,12 +451,12 @@ interface UseJobOptions {
 interface UseJobResult<TInput, TOutput> {
   trigger: (input: TInput) => Promise<{ runId: string }>
   triggerAndWait: (input: TInput) => Promise<{ runId: string; output: TOutput }>
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | null
+  status: 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled' | null
   output: TOutput | null
   error: string | null
   logs: LogEntry[]
   progress: Progress | null
-  isRunning: boolean
+  isLeased: boolean
   isPending: boolean
   isCompleted: boolean
   isFailed: boolean
@@ -480,7 +480,7 @@ function RunMonitor({ runId }: { runId: string | null }) {
     error,
     progress,
     logs,
-    isRunning,
+    isLeased,
     isCompleted,
     isFailed,
   } = useJobRun<{ result: number }>({ runId })
@@ -616,7 +616,7 @@ export async function action({ request }: Route.ActionArgs) {
 ## Type Definitions
 
 ```ts
-type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+type RunStatus = 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
 
 interface Progress {
   current: number
@@ -643,7 +643,7 @@ type TypedRun<
   output: TOutput | null
 }
 
-// ClientRun is re-exported from @coji/durably (excludes heartbeatAt, idempotencyKey, concurrencyKey, updatedAt)
+// ClientRun is re-exported from @coji/durably (excludes idempotencyKey, concurrencyKey, leaseOwner, leaseExpiresAt, updatedAt)
 
 // Fullstack hooks: TypedClientRun with generic input/output
 type TypedClientRun<
@@ -661,11 +661,11 @@ type TypedClientRun<
 
 ```tsx
 function Component() {
-  const { isRunning, trigger } = useJob(myJob)
+  const { isLeased, trigger } = useJob(myJob)
 
   return (
-    <button onClick={() => trigger({ value: 'test' })} disabled={isRunning}>
-      {isRunning ? 'Processing...' : 'Start'}
+    <button onClick={() => trigger({ value: 'test' })} disabled={isLeased}>
+      {isLeased ? 'Processing...' : 'Start'}
     </button>
   )
 }
@@ -702,12 +702,12 @@ function Component() {
 
 ```tsx
 function Component() {
-  const { trigger, progress, isRunning } = useJob(progressJob)
+  const { trigger, progress, isLeased } = useJob(progressJob)
 
   return (
     <div>
       <button onClick={() => trigger({})}>Start</button>
-      {isRunning && progress && (
+      {isLeased && progress && (
         <div>
           <progress value={progress.current} max={progress.total} />
           <p>{progress.message}</p>

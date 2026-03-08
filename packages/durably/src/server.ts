@@ -145,7 +145,7 @@ export interface CreateDurablyHandlerOptions<
  */
 const VALID_STATUSES = [
   'pending',
-  'running',
+  'leased',
   'completed',
   'failed',
   'cancelled',
@@ -508,10 +508,10 @@ export function createDurablyHandler<
             }
           }),
 
-          durably.on('run:start', (event) => {
+          durably.on('run:leased', (event) => {
             if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({
-                type: 'run:start',
+                type: 'run:leased',
                 runId: event.runId,
                 jobName: event.jobName,
                 labels: event.labels,

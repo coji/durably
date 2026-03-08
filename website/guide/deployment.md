@@ -54,9 +54,9 @@ No HTTP handler, no React — just `@coji/durably`. See [Server Mode guide](/gui
   ```ts
   createDurably({
     dialect,
-    pollingInterval: 1000, // default, good for production
-    heartbeatInterval: 5000, // default
-    staleThreshold: 30000, // default
+    pollingIntervalMs: 1000, // default, good for production
+    leaseRenewIntervalMs: 5000, // default
+    leaseMs: 30000, // default
   })
   ```
 - Use `concurrencyKey` to prevent parallel runs of the same job
@@ -127,9 +127,9 @@ See [SPA Mode guide](/guide/spa-mode).
   ```ts
   createDurably({
     dialect: sqlocal.dialect,
-    pollingInterval: 100,
-    heartbeatInterval: 500,
-    staleThreshold: 3000,
+    pollingIntervalMs: 100,
+    leaseRenewIntervalMs: 500,
+    leaseMs: 3000,
   })
   ```
 - For Vercel/Netlify, add headers via config:

@@ -1,24 +1,24 @@
-# 設計: データベースアダプタのスケッチ
+# データベース adapter の SQL スケッチ
 
-## 目標
+## 目的
 
-本ドキュメントでは、最も重要な 2 つの database target について具体的な adapter sketch を示す。
+このドキュメントでは、最も重要な2つのデータベースターゲットについて具体的な adapter スケッチを示します。
 
 - PostgreSQL
 - SQLite
 
-これらは最終的な migration や本番用 query builder ではない。意図する semantics を十分に具体化し、実装作業における未知数を減らすことが目的となる。
+これらは最終的なマイグレーションや本番用クエリビルダではありません。意図するセマンティクスを十分に具体化し、実装時の未知数を減らすことが目的です。
 
-## スコープ
+## 対象
 
-主に扱う操作は以下のとおり。
+主に扱う操作は以下です。
 
 - `enqueue()`
 - `claimNext()`
 - `renewLease()`
 - `completeRun()` / `failRun()`
 
-例では、概念的に次のような `runs` table を前提とする。
+例では概念的に以下のような `runs` テーブルを前提とします。
 
 ```sql
 id
@@ -37,25 +37,25 @@ output
 error
 ```
 
-正確な schema は実装によって異なってよい。重要なのは guarded mutation の形状を共有することにある。
+正確なスキーマは実装によって異なっても構いません。重要なのは guarded mutation の形状を共有することです。
 
 ## 共通前提
 
-adapter sketch では以下を前提としている。
+adapter スケッチでは以下を前提としています。
 
 - `status` は `pending`, `leased`, `completed`, `failed`, `cancelled` のいずれか
 - reclaim 可能な run は `pending`、または期限切れの `leased`
 - `started_at` は最初の claim 成功時にのみ設定する
-- `completed_at` は completion または failure の際に設定する
+- `completed_at` は完了または失敗の際に設定する
 - `updated_at` はすべての mutation で更新する
 
 ## PostgreSQL のスケッチ
 
-PostgreSQL がセマンティクスの reference model となる。
+PostgreSQL がセマンティクスの基準モデルです。
 
-### Idempotent な `enqueue()`
+### 冪等な `enqueue()`
 
-`idempotency_key` が存在する場合にのみ適用される unique index を使う。
+`idempotency_key` が存在する場合にのみ適用される unique index を使います。
 
 ```sql
 CREATE UNIQUE INDEX runs_job_idempotency_key_unique
@@ -63,7 +63,7 @@ ON runs (job_name, idempotency_key)
 WHERE idempotency_key IS NOT NULL;
 ```
 
-insert は conflict handling 付きで行う。
+insert は conflict handling 付きで行います。
 
 ```sql
 INSERT INTO runs (
@@ -84,14 +84,14 @@ WHERE idempotency_key IS NOT NULL
 DO NOTHING;
 ```
 
-その後の処理は次のとおり。
+その後の処理は以下の通りです。
 
-- insert が成功した場合は、新しい row を返す
-- insert が skip された場合は、既存 row を fetch して返す
+- insert が成功した場合は新しい行を返す
+- insert がスキップされた場合は既存行を fetch して返す
 
 ### `claimNext()`
 
-望ましい形は、transaction と `FOR UPDATE SKIP LOCKED` を組み合わせたものになる。
+トランザクションと `FOR UPDATE SKIP LOCKED` を組み合わせた形が望ましいです。
 
 ```sql
 BEGIN;
@@ -125,15 +125,15 @@ RETURNING *;
 COMMIT;
 ```
 
-この形がもたらす性質は以下のとおり。
+この形がもたらす性質は以下の通りです。
 
-- 高々 1 つの worker だけが candidate row を lock・update できる
-- 期限切れの leased run も同じ path で reclaim される
+- 高々1つのワーカーだけが候補行をロック・更新できる
+- 期限切れの leased run も同じパスで reclaim される
 - reclaim 時でも `started_at` は保持される
 
 ### `renewLease()`
 
-guarded update を使う。
+guarded update を使います。
 
 ```sql
 UPDATE runs
@@ -147,10 +147,10 @@ WHERE
   AND lease_expires_at >= $2;
 ```
 
-結果の解釈は次のとおり。
+結果の解釈は以下の通りです。
 
-- 更新件数が `= 1` なら成功
-- 更新件数が `= 0` なら、その worker はすでに lease owner ではない
+- 更新件数 = 1 なら成功
+- 更新件数 = 0 なら、そのワーカーはすでにリース所有者ではない
 
 ### `completeRun()`
 
@@ -188,9 +188,9 @@ WHERE
   AND lease_owner = $2;
 ```
 
-### 任意だが有用な Index
+### 有用なインデックス
 
-典型的な supporting index を以下に示す。
+典型的なサポートインデックスは以下です。
 
 ```sql
 CREATE INDEX runs_claim_idx
@@ -203,11 +203,11 @@ WHERE concurrency_key IS NOT NULL;
 
 ## SQLite のスケッチ
 
-SQLite では concurrency shape が異なるが、同じ振る舞いの contract を維持する必要がある。
+SQLite では同時実行の形状が異なりますが、同じ振る舞い契約を維持する必要があります。
 
-### Idempotent な `enqueue()`
+### 冪等な `enqueue()`
 
-unique index を使う。
+unique index を使います。
 
 ```sql
 CREATE UNIQUE INDEX runs_job_idempotency_key_unique
@@ -215,7 +215,7 @@ ON runs (job_name, idempotency_key)
 WHERE idempotency_key IS NOT NULL;
 ```
 
-insert は conflict handling 付きで行う。
+insert は conflict handling 付きで行います。
 
 ```sql
 INSERT INTO runs (
@@ -232,16 +232,14 @@ VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
 ON CONFLICT(job_name, idempotency_key) DO NOTHING;
 ```
 
-その後の処理は次のとおり。
+その後の処理は以下の通りです。
 
-- changes count が `1` なら新しい row を返す
-- それ以外なら既存 row を fetch する
+- changes count が 1 なら新しい行を返す
+- それ以外なら既存行を fetch する
 
 ### `claimNext()`
 
-SQLite では write transaction を使う。
-
-有力な形のひとつを以下に示す。
+SQLite では write トランザクションを使います。
 
 ```sql
 BEGIN IMMEDIATE;
@@ -261,7 +259,7 @@ ORDER BY created_at ASC
 LIMIT 1;
 ```
 
-続けて、同じ transaction 内で次を実行する。
+続けて、同じトランザクション内で以下を実行します。
 
 ```sql
 UPDATE runs
@@ -276,15 +274,15 @@ WHERE id = ?;
 COMMIT;
 ```
 
-この形の意味合いは以下のとおり。
+この形の意味は以下の通りです。
 
 - `BEGIN IMMEDIATE` により、早い段階で write-intent を確保する
-- write serialization が、2 つの writer が同じ mutation path を同時に通ることを防ぐ
-- correctness は row-level lock ではなく transaction に依存する
+- 書き込み直列化が、2つのライターが同じ mutation パスを同時に通ることを防ぐ
+- 正しさは行ロックではなくトランザクションに依存する
 
-### Candidate Update への追加 Guard
+### 候補 UPDATE への追加ガード
 
-adapter がさらに防御的にしたい場合は、update 側にも eligibility condition を繰り返すことができる。
+adapter がさらに防御的にしたい場合は、UPDATE 側にも適格条件を繰り返せます。
 
 ```sql
 UPDATE runs
@@ -302,7 +300,7 @@ WHERE
   );
 ```
 
-これは transaction の代替にはならないが、mutation 自体をより self-defending にする効果がある。
+これはトランザクションの代替にはなりませんが、mutation 自体をより自己防衛的にする効果があります。
 
 ### `renewLease()`
 
@@ -318,7 +316,7 @@ WHERE
   AND lease_expires_at >= ?;
 ```
 
-成功は `changes() = 1` で判定する。
+成功は `changes() = 1` で判定します。
 
 ### `completeRun()`
 
@@ -358,37 +356,35 @@ WHERE
 
 ### 実践上のメモ
 
-SQLite adapter では、cleverness よりも correctness を優先したい。
+SQLite adapter では、巧妙さよりも正しさを優先したいです。複雑で推論しにくいパターンを採るより、トランザクションによる直列化でシンプルに claim パスを構成する方が望ましいです。
 
-複雑で推論しにくい pattern を採るよりも、transaction による直列化で単純に claim path を構成するほうが望ましい。
+## concurrency key に関する注記
 
-## Concurrency Key に関する注記
+上記のスケッチでは `excludeConcurrencyKeys` を概念的に示していますが、実装の詳細は変わりえます。
 
-上記の sketch では `excludeConcurrencyKeys` を概念的に示しているが、実装の詳細は変わりうる。
+重要なセマンティクスルールはひとつだけです。ランタイムが除外したい有効な run の `concurrency_key` と衝突する run は claim してはなりません。
 
-重要な semantic rule はひとつだけ。runtime が除外したい active run の `concurrency_key` と衝突する run は claim してはならない、ということだ。
+そのロジックをインラインで表現しにくい場合は、以下の2段階に分けても構いません。
 
-その logic を inline で表現しにくい場合は、次の 2 段階に分けてもよい。
+- 有効な concurrency key を取得するクエリ
+- それらを除外する guarded claim クエリ
 
-- active な concurrency key を取得する query
-- それらを除外する guarded claim query
+ただし、最終的な claim が正しさを保つことが前提です。
 
-ただし、最終的な claim が correctness を保つことが前提となる。
+## ステップ / イベント書き込み
 
-## Step / Event 書き込み
+このスケッチは claim とリース処理に焦点を当てていますが、チェックポイントとイベントの永続化にも同じ規律が求められます。
 
-この sketch は claim と lease handling に焦点を当てているが、checkpoint と event persistence にも同じ規律が求められる。
+- 追記書き込みは永続的でなければならない
+- read-after-write の可視性は予測可能でなければならない
+- ステップの完了はクラッシュ・reclaim 後も安全に再読できなければならない
 
-- append write は durable でなければならない
-- read-after-write visibility は予測可能でなければならない
-- step completion は crash・reclaim 後も安全に再読できなければならない
+## 次のステップ
 
-## 次の一歩
+次に作成する実装寄りのドキュメントでは、おそらく以下を定義することになります。
 
-次に作成する implementation-oriented なドキュメントでは、おそらく以下を定義することになる。
+- 新しいランタイムにおける `runs` テーブルの正確なスキーマ
+- 必須インデックス
+- すべてのバックエンドが通過すべき adapter テストフィクスチャ
 
-- 新しい runtime における `runs` table の正確な schema
-- 必須 index
-- すべての backend が通過すべき adapter test fixture
-
-ここまで進めば、この sketch はより直接的な実装計画へと変わる。
+ここまで進めば、このスケッチはより直接的な実装計画へと変わります。

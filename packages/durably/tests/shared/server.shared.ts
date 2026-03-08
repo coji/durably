@@ -17,7 +17,7 @@ export function createServerTests(createDialect: () => Dialect) {
     beforeEach(async () => {
       durably = createDurably({
         dialect: createDialect(),
-        pollingInterval: 50,
+        pollingIntervalMs: 50,
       })
       await durably.migrate()
       handler = createDurablyHandler(durably)
@@ -295,10 +295,12 @@ export function createServerTests(createDialect: () => Dialect) {
         const body = await response.json()
 
         expect(body).toHaveLength(1)
-        expect(body[0]).not.toHaveProperty('heartbeatAt')
         expect(body[0]).not.toHaveProperty('idempotencyKey')
         expect(body[0]).not.toHaveProperty('concurrencyKey')
+        expect(body[0]).not.toHaveProperty('leaseOwner')
+        expect(body[0]).not.toHaveProperty('leaseExpiresAt')
         expect(body[0]).not.toHaveProperty('updatedAt')
+        expect(body[0]).not.toHaveProperty('heartbeatAt')
         expect(body[0]).toHaveProperty('id')
         expect(body[0]).toHaveProperty('jobName')
         expect(body[0]).toHaveProperty('status')
@@ -405,6 +407,16 @@ export function createServerTests(createDialect: () => Dialect) {
         }
       })
 
+      it('rejects invalid status values', async () => {
+        const request = new Request(
+          'http://localhost/api/durably/runs?status=running',
+          { method: 'GET' },
+        )
+
+        const response = await handler.handle(request, '/api/durably')
+        expect(response.status).toBe(400)
+      })
+
       it('supports limit and offset', async () => {
         const d = durably.register({
           job: defineJob({
@@ -473,10 +485,12 @@ export function createServerTests(createDialect: () => Dialect) {
         const body = await response.json()
 
         expect(response.status).toBe(200)
-        expect(body).not.toHaveProperty('heartbeatAt')
         expect(body).not.toHaveProperty('idempotencyKey')
         expect(body).not.toHaveProperty('concurrencyKey')
+        expect(body).not.toHaveProperty('leaseOwner')
+        expect(body).not.toHaveProperty('leaseExpiresAt')
         expect(body).not.toHaveProperty('updatedAt')
+        expect(body).not.toHaveProperty('heartbeatAt')
       })
 
       it('returns 400 when runId is missing', async () => {

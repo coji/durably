@@ -195,7 +195,7 @@ describe('React StrictMode', () => {
         cleanedUp.current = false
         const instance = createDurably({
           dialect: createBrowserDialect(),
-          pollingInterval: 50,
+          pollingIntervalMs: 50,
         })
         instances.push(instance)
 
@@ -279,12 +279,12 @@ describe('React StrictMode', () => {
         cleanedUp.current = false
         const instance = createDurably({
           dialect: createBrowserDialect(),
-          pollingInterval: 50,
+          pollingIntervalMs: 50,
         })
         instances.push(instance)
 
-        const unsubscribe = instance.on('run:start', () => {
-          events.push('run:start')
+        const unsubscribe = instance.on('run:leased', () => {
+          events.push('run:leased')
         })
 
         instance.migrate().then(() => {

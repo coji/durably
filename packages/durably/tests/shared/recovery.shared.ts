@@ -10,9 +10,9 @@ export function createRecoveryTests(createDialect: () => Dialect) {
     beforeEach(async () => {
       durably = createDurably({
         dialect: createDialect(),
-        pollingInterval: 50,
-        heartbeatInterval: 100,
-        staleThreshold: 300,
+        pollingIntervalMs: 50,
+        leaseRenewIntervalMs: 100,
+        leaseMs: 300,
       })
       await durably.migrate()
     })
@@ -22,15 +22,15 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       await durably.db.destroy()
     })
 
-    describe('Heartbeat', () => {
-      it('updates heartbeat_at periodically for running runs', async () => {
+    describe('Lease Renewal', () => {
+      it('renews lease periodically for leased runs', async () => {
         const d = durably.register({
           job: defineJob({
-            name: 'heartbeat-test',
+            name: 'lease-renewal-test',
             input: z.object({}),
             run: async (step) => {
               await step.run('long-step', async () => {
-                // Run long enough to see heartbeat updates
+                // Run long enough to see lease renewals
                 await new Promise((r) => setTimeout(r, 250))
               })
             },
@@ -38,17 +38,28 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         })
 
         const run = await d.jobs.job.trigger({})
-        const initialHeartbeat = run.heartbeatAt
+        expect(run.leaseExpiresAt).toBeNull() // pending run has no lease
 
         d.start()
 
-        // Wait a bit then check heartbeat was updated
+        // Wait for run to be claimed, then record initial lease
+        let initialLeaseExpiresAt: string | null = null
+        await vi.waitFor(
+          async () => {
+            const claimed = await d.jobs.job.getRun(run.id)
+            expect(claimed?.status).toBe('leased')
+            initialLeaseExpiresAt = claimed!.leaseExpiresAt
+          },
+          { timeout: 500 },
+        )
+
+        // Wait a bit for lease renewal to happen
         await new Promise((r) => setTimeout(r, 200))
 
         const midRun = await d.jobs.job.getRun(run.id)
-        expect(midRun?.status).toBe('running')
-        expect(new Date(midRun!.heartbeatAt).getTime()).toBeGreaterThan(
-          new Date(initialHeartbeat).getTime(),
+        expect(midRun?.status).toBe('leased')
+        expect(new Date(midRun!.leaseExpiresAt!).getTime()).toBeGreaterThan(
+          new Date(initialLeaseExpiresAt!).getTime(),
         )
 
         // Wait for completion
@@ -61,13 +72,13 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         )
       })
 
-      it('respects custom heartbeat interval', async () => {
-        // Create with longer heartbeat interval
+      it('respects custom lease renewal interval', async () => {
+        // Create with longer lease renewal interval
         const customDurably = createDurably({
           dialect: createDialect(),
-          pollingInterval: 50,
-          heartbeatInterval: 200,
-          staleThreshold: 1000,
+          pollingIntervalMs: 50,
+          leaseRenewIntervalMs: 200,
+          leaseMs: 1000,
         })
         await customDurably.migrate()
 
@@ -75,14 +86,14 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
         const d = customDurably.register({
           job: defineJob({
-            name: 'custom-heartbeat-test',
+            name: 'custom-lease-renewal-test',
             input: z.object({}),
             run: async (step) => {
               await step.run('step', async () => {
-                // Record heartbeat timestamps during execution
+                // Record lease expiry timestamps during execution
                 for (let i = 0; i < 3; i++) {
                   const run = await customDurably.storage.getRun(step.runId)
-                  if (run) timestamps.push(run.heartbeatAt)
+                  if (run) timestamps.push(run.leaseExpiresAt ?? '')
                   await new Promise((r) => setTimeout(r, 100))
                 }
               })
@@ -107,10 +118,45 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         // Should have recorded multiple timestamps
         expect(timestamps.length).toBeGreaterThan(0)
       })
+
+      it('rejects renewal after lease has expired', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'expired-renewal-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+
+        // Claim the run to get a valid leaseGeneration
+        const claimed = await d.storage.claimNext(
+          'worker-1',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+
+        // Manually expire the lease
+        const pastTime = new Date(Date.now() - 5000).toISOString()
+        await d.storage.updateRun(run.id, {
+          leaseExpiresAt: pastTime,
+        })
+
+        // Attempt to renew — should fail because lease already expired
+        const renewed = await d.storage.renewLease(
+          run.id,
+          gen,
+          new Date().toISOString(),
+          30000,
+        )
+        expect(renewed).toBe(false)
+      })
     })
 
     describe('Stale Run Recovery', () => {
-      it('recovers stale running runs to pending', async () => {
+      it('recovers stale leased runs to pending', async () => {
         const d = durably.register({
           job: defineJob({
             name: 'stale-recovery-test',
@@ -119,13 +165,13 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           }),
         })
 
-        // Create a run and manually set it to running with old heartbeat
+        // Create a run and manually set it to leased with expired lease
         const run = await d.jobs.job.trigger({})
         const oldTime = new Date(Date.now() - 1000).toISOString() // 1 second ago
 
         await d.storage.updateRun(run.id, {
-          status: 'running',
-          heartbeatAt: oldTime,
+          status: 'leased',
+          leaseExpiresAt: oldTime,
         })
 
         // Start worker - should recover the stale run
@@ -165,9 +211,16 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         // Create run and simulate partial execution
         const run = await d.jobs.job.trigger({})
 
-        // Manually complete step1
-        await d.storage.createStep({
-          runId: run.id,
+        // Claim the run so we have a valid leaseGeneration
+        const claimed = await d.storage.claimNext(
+          'worker-1',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+
+        // Manually complete step1 via persistStep
+        await d.storage.persistStep(run.id, gen, {
           name: 'step1',
           index: 0,
           status: 'completed',
@@ -175,10 +228,9 @@ export function createRecoveryTests(createDialect: () => Dialect) {
           startedAt: new Date().toISOString(),
         })
 
+        // Expire the lease so it can be reclaimed
         await d.storage.updateRun(run.id, {
-          status: 'running',
-          currentStepIndex: 1,
-          heartbeatAt: new Date(Date.now() - 1000).toISOString(),
+          leaseExpiresAt: new Date(Date.now() - 1000).toISOString(),
         })
 
         d.start()
@@ -194,6 +246,152 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         // step1 was skipped, step2 was executed
         expect(step1Calls).toBe(0)
         expect(step2Calls).toBe(1)
+      })
+    })
+
+    describe('Step preservation on lease loss', () => {
+      it('preserves steps when lease is lost mid-execution', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'lease-loss-steps-test',
+            input: z.object({}),
+            run: async (step) => {
+              await step.run('step1', () => 'result-1')
+              await step.run('step2', async () => {
+                // Simulate long step during which lease expires
+                await new Promise((r) => setTimeout(r, 500))
+                return 'result-2'
+              })
+            },
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+        d.start()
+
+        // Wait until leased and step1 completes
+        await vi.waitFor(
+          async () => {
+            const updated = await d.jobs.job.getRun(run.id)
+            expect(updated?.status).toBe('leased')
+          },
+          { timeout: 500 },
+        )
+
+        // Expire the lease to simulate lease loss
+        await d.storage.updateRun(run.id, {
+          leaseExpiresAt: new Date(Date.now() - 1000).toISOString(),
+        })
+
+        // Wait for worker to detect lease loss
+        await new Promise((r) => setTimeout(r, 400))
+
+        // Steps from before lease loss should still exist
+        const steps = await d.storage.getSteps(run.id)
+        expect(steps.length).toBeGreaterThanOrEqual(1)
+        expect(steps.find((s) => s.name === 'step1')?.output).toBe('result-1')
+      })
+    })
+
+    describe('Step write guard on lease generation', () => {
+      it('rejects persistStep when lease generation does not match', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'step-guard-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+
+        // worker-a claims the run (generation increments to 1)
+        const claimA = await d.storage.claimNext(
+          'worker-a',
+          new Date().toISOString(),
+          30_000,
+        )
+        const genA = claimA!.leaseGeneration
+
+        // worker-a creates a step (should succeed)
+        const step1 = await d.storage.persistStep(run.id, genA, {
+          name: 'guarded-step',
+          index: 0,
+          status: 'completed',
+          output: 'ok',
+          startedAt: new Date().toISOString(),
+        })
+        expect(step1).not.toBeNull()
+
+        // Expire lease and let worker-b reclaim (generation increments to 2)
+        await d.storage.updateRun(run.id, {
+          leaseExpiresAt: new Date(Date.now() - 1000).toISOString(),
+        })
+        const claimB = await d.storage.claimNext(
+          'worker-b',
+          new Date().toISOString(),
+          30_000,
+        )
+        expect(claimB).not.toBeNull()
+
+        // Stale worker-a tries to create another step with old generation (should be rejected)
+        const step2 = await d.storage.persistStep(run.id, genA, {
+          name: 'stale-step',
+          index: 1,
+          status: 'completed',
+          output: 'should-not-exist',
+          startedAt: new Date().toISOString(),
+        })
+        expect(step2).toBeNull()
+
+        // Verify the stale step was NOT written
+        const steps = await d.storage.getSteps(run.id)
+        expect(steps).toHaveLength(1)
+        expect(steps[0].name).toBe('guarded-step')
+      })
+
+      it('persistStep atomically advances step index for completed steps', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'advance-guard-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+
+        // Claim the run
+        const claimed = await d.storage.claimNext(
+          'worker-a',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+
+        // persistStep with status=completed should advance currentStepIndex
+        await d.storage.persistStep(run.id, gen, {
+          name: 'step-1',
+          index: 0,
+          status: 'completed',
+          output: 'ok',
+          startedAt: new Date().toISOString(),
+        })
+
+        const updated = await d.storage.getRun(run.id)
+        expect(updated?.currentStepIndex).toBe(1)
+
+        // persistStep with status=failed should NOT advance currentStepIndex
+        await d.storage.persistStep(run.id, gen, {
+          name: 'step-2',
+          index: 1,
+          status: 'failed',
+          error: 'oops',
+          startedAt: new Date().toISOString(),
+        })
+
+        const afterFail = await d.storage.getRun(run.id)
+        expect(afterFail?.currentStepIndex).toBe(1)
       })
     })
 
@@ -270,7 +468,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         )
       })
 
-      it('throws when retriggering running run', async () => {
+      it('throws when retriggering leased run', async () => {
         const d = durably.register({
           job: defineJob({
             name: 'retrigger-running-test',
@@ -290,13 +488,13 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         await vi.waitFor(
           async () => {
             const updated = await d.jobs.job.getRun(run.id)
-            expect(updated?.status).toBe('running')
+            expect(updated?.status).toBe('leased')
           },
           { timeout: 500 },
         )
 
         await expect(d.retrigger(run.id)).rejects.toThrow(
-          /running|cannot retrigger/i,
+          /leased|running|cannot retrigger/i,
         )
       })
     })
@@ -320,7 +518,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         expect(cancelled?.status).toBe('cancelled')
       })
 
-      it('cancels running run immediately', async () => {
+      it('cancels leased run immediately', async () => {
         const d = durably.register({
           job: defineJob({
             name: 'cancel-running-test',
@@ -341,7 +539,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         await vi.waitFor(
           async () => {
             const updated = await d.jobs.job.getRun(run.id)
-            expect(updated?.status).toBe('running')
+            expect(updated?.status).toBe('leased')
           },
           { timeout: 500 },
         )
@@ -426,6 +624,39 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         )
       })
 
+      it('throws when run completes between check and cancel', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'cancel-race-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+        d.start()
+
+        await vi.waitFor(
+          async () => {
+            const updated = await d.jobs.job.getRun(run.id)
+            expect(updated?.status).toBe('completed')
+          },
+          { timeout: 1000 },
+        )
+
+        // Directly call cancelRun on queue store — bypasses the status pre-check
+        // to verify the SQL-level guard works
+        const cancelled = await d.storage.cancelRun(
+          run.id,
+          new Date().toISOString(),
+        )
+        expect(cancelled).toBe(false)
+
+        // Run should still be completed, not overwritten
+        const finalRun = await d.jobs.job.getRun(run.id)
+        expect(finalRun?.status).toBe('completed')
+      })
+
       it('stops execution before next step when cancelled during run', async () => {
         let step1Executed = false
         let step2Executed = false
@@ -461,7 +692,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         await vi.waitFor(
           async () => {
             const updated = await d.jobs.job.getRun(run.id)
-            expect(updated?.status).toBe('running')
+            expect(updated?.status).toBe('leased')
           },
           { timeout: 500 },
         )
@@ -504,7 +735,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         await vi.waitFor(
           async () => {
             const updated = await d.jobs.job.getRun(run.id)
-            expect(updated?.status).toBe('running')
+            expect(updated?.status).toBe('leased')
           },
           { timeout: 500 },
         )
@@ -523,42 +754,54 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
     describe('deleteRun() API', () => {
       it('deletes completed run with its steps and logs', async () => {
-        const d = durably.register({
-          job: defineJob({
-            name: 'delete-completed-test',
-            input: z.object({}),
-            run: async (step) => {
-              step.log.info('test log')
-              await step.run('step1', () => 'done')
-            },
-          }),
+        const preserveDurably = createDurably({
+          dialect: createDialect(),
+          pollingIntervalMs: 50,
+          preserveSteps: true,
         })
+        await preserveDurably.migrate()
 
-        const run = await d.jobs.job.trigger({})
-        d.start()
+        try {
+          const d = preserveDurably.register({
+            job: defineJob({
+              name: 'delete-completed-test',
+              input: z.object({}),
+              run: async (step) => {
+                step.log.info('test log')
+                await step.run('step1', () => 'done')
+              },
+            }),
+          })
 
-        await vi.waitFor(
-          async () => {
-            const updated = await d.jobs.job.getRun(run.id)
-            expect(updated?.status).toBe('completed')
-          },
-          { timeout: 1000 },
-        )
+          const run = await d.jobs.job.trigger({})
+          d.start()
 
-        // Step data is cleaned up once the run reaches a terminal state
-        const steps = await d.storage.getSteps(run.id)
-        expect(steps).toHaveLength(0)
+          await vi.waitFor(
+            async () => {
+              const updated = await d.jobs.job.getRun(run.id)
+              expect(updated?.status).toBe('completed')
+            },
+            { timeout: 1000 },
+          )
 
-        // Delete the run
-        await d.deleteRun(run.id)
+          // Steps are preserved (preserveSteps: true)
+          const steps = await d.storage.getSteps(run.id)
+          expect(steps).toHaveLength(1)
 
-        // Run should be gone
-        const deleted = await d.jobs.job.getRun(run.id)
-        expect(deleted).toBeNull()
+          // Delete the run
+          await d.deleteRun(run.id)
 
-        // Steps should also be deleted
-        const deletedSteps = await d.storage.getSteps(run.id)
-        expect(deletedSteps.length).toBe(0)
+          // Run should be gone
+          const deleted = await d.jobs.job.getRun(run.id)
+          expect(deleted).toBeNull()
+
+          // Steps should also be deleted
+          const deletedSteps = await d.storage.getSteps(run.id)
+          expect(deletedSteps.length).toBe(0)
+        } finally {
+          await preserveDurably.stop()
+          await preserveDurably.db.destroy()
+        }
       })
 
       it('deletes failed run', async () => {
@@ -624,7 +867,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         )
       })
 
-      it('throws when deleting running run', async () => {
+      it('throws when deleting leased run', async () => {
         const d = durably.register({
           job: defineJob({
             name: 'delete-running-test',
@@ -643,13 +886,13 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         await vi.waitFor(
           async () => {
             const updated = await d.jobs.job.getRun(run.id)
-            expect(updated?.status).toBe('running')
+            expect(updated?.status).toBe('leased')
           },
           { timeout: 500 },
         )
 
         await expect(d.deleteRun(run.id)).rejects.toThrow(
-          /running|cannot delete/i,
+          /leased|running|cannot delete/i,
         )
       })
 

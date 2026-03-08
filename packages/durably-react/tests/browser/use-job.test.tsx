@@ -91,7 +91,7 @@ describe('useJob', () => {
   }
 
   it('returns trigger function that executes job', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useJob(testJob), {
@@ -105,7 +105,7 @@ describe('useJob', () => {
   })
 
   it('updates status from pending to running to completed', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useJob(testJob), {
@@ -129,7 +129,7 @@ describe('useJob', () => {
   })
 
   it('provides output when completed', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useJob(testJob), {
@@ -144,7 +144,7 @@ describe('useJob', () => {
   })
 
   it('provides error when failed', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useJob(failingJob), {
@@ -160,7 +160,7 @@ describe('useJob', () => {
   })
 
   it('updates progress during execution', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useJob(progressJob), {
@@ -181,7 +181,7 @@ describe('useJob', () => {
   })
 
   it('collects logs during execution', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useJob(loggingJob), {
@@ -201,14 +201,14 @@ describe('useJob', () => {
   })
 
   it('provides boolean helpers', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useJob(testJob), {
       wrapper: createWrapper(durably),
     })
 
-    expect(result.current.isRunning).toBe(false)
+    expect(result.current.isLeased).toBe(false)
     expect(result.current.isPending).toBe(false)
     expect(result.current.isCompleted).toBe(false)
     expect(result.current.isFailed).toBe(false)
@@ -219,7 +219,7 @@ describe('useJob', () => {
     await waitFor(() => {
       expect(
         result.current.isPending ||
-          result.current.isRunning ||
+          result.current.isLeased ||
           result.current.isCompleted,
       ).toBe(true)
     })
@@ -229,13 +229,13 @@ describe('useJob', () => {
       expect(result.current.isCompleted).toBe(true)
     })
 
-    expect(result.current.isRunning).toBe(false)
+    expect(result.current.isLeased).toBe(false)
     expect(result.current.isPending).toBe(false)
     expect(result.current.isFailed).toBe(false)
   })
 
   it('triggerAndWait resolves with output', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useJob(testJob), {
@@ -251,7 +251,7 @@ describe('useJob', () => {
   })
 
   it('triggerAndWait rejects on failure', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useJob(failingJob), {
@@ -264,7 +264,7 @@ describe('useJob', () => {
   })
 
   it('reset clears all state', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useJob(testJob), {
@@ -285,7 +285,7 @@ describe('useJob', () => {
   })
 
   it('sets initialRunId as currentRunId', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const fakeRunId = 'test-run-123'
@@ -300,7 +300,7 @@ describe('useJob', () => {
   })
 
   it('unsubscribes on unmount', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result, unmount } = renderHook(() => useJob(testJob), {
@@ -318,7 +318,7 @@ describe('useJob', () => {
 
   describe('followLatest option', () => {
     it('switches to latest running job by default (followLatest: true)', async () => {
-      const durably = await createTestDurably({ pollingInterval: 50 })
+      const durably = await createTestDurably({ pollingIntervalMs: 50 })
       instances.push(durably)
 
       const slowJob = defineJob({
@@ -354,11 +354,11 @@ describe('useJob', () => {
     })
 
     it('stays on current run when followLatest: false and external run starts', async () => {
-      const durably = await createTestDurably({ pollingInterval: 50 })
+      const durably = await createTestDurably({ pollingIntervalMs: 50 })
       instances.push(durably)
 
       // This test verifies that followLatest: false keeps tracking the current run
-      // even when run:start events fire (from the worker starting jobs)
+      // even when run:leased events fire (from the worker starting jobs)
       const slowJob = defineJob({
         name: 'slow-job-no-follow',
         input: z.object({ id: z.number() }),
@@ -379,9 +379,9 @@ describe('useJob', () => {
       // Trigger first job
       const { runId: firstRunId } = await result.current.trigger({ id: 1 })
 
-      // Wait for it to start running (status becomes 'running')
+      // Wait for it to be leased (status becomes 'leased')
       await waitFor(() => {
-        expect(result.current.status).toBe('running')
+        expect(result.current.status).toBe('leased')
         expect(result.current.currentRunId).toBe(firstRunId)
       })
 
@@ -401,7 +401,7 @@ describe('useJob', () => {
   })
 
   it('triggerAndWait rejects on cancelled', async () => {
-    const durably = await createTestDurably({ pollingInterval: 50 })
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)
 
     const { result } = renderHook(() => useJob(longRunningJob), {
@@ -414,7 +414,7 @@ describe('useJob', () => {
     // Wait for the job to start running
     await waitFor(() => {
       expect(result.current.currentRunId).not.toBeNull()
-      expect(result.current.status).toBe('running')
+      expect(result.current.status).toBe('leased')
     })
 
     // Cancel the job

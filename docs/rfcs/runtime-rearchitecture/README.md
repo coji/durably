@@ -64,35 +64,35 @@ Japanese translations live under `ja/`.
 
 ### 1. Core
 
-- [core-runtime.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/core-runtime.md)
-  The main RFC. Defines the core runtime model, queue store, checkpoint store, and phase split.
+- [core-runtime.md](./core-runtime.md)
+  The main RFC. Defines the core runtime model, with `processOne()` as the center of the portable contract, plus the unified store interface and phase split.
 
 ### 2. Deployment
 
-- [deployment-models.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/deployment-models.md)
+- [deployment-models.md](./deployment-models.md)
   How the runtime composes across resident workers and serverless platforms.
   Start here if you want the practical recommendation behind `Vercel + Turso` and `Cloudflare Workers + Turso`.
 
 ### 3. Database (adapter implementors)
 
-- [database-runtime-fit.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/database-runtime-fit.md)
+- [database-runtime-fit.md](./database-runtime-fit.md)
   Choosing a database — which databases are good semantic fits for the runtime.
-- [database-claim-patterns.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/database-claim-patterns.md)
-  Implementing an adapter — how each backend acquires runs and manages execution rights.
-- [database-adapter-sketches.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/database-adapter-sketches.md)
+- [database-claim-patterns.md](./database-claim-patterns.md)
+  Implementing an adapter — how each backend implements internal claim paths and lease ownership semantics behind the runtime contract.
+- [database-adapter-sketches.md](./database-adapter-sketches.md)
   Concrete PostgreSQL and SQLite query sketches.
 
 ### 4. Future Direction (optional — skip if you just want to use Durably)
 
-- [ambient-agent-concepts.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/ambient-agent-concepts.md)
+- [ambient-agent-concepts.md](./ambient-agent-concepts.md)
   Product-level interpretation of ambient agents as an extension on top of the runtime. This is Phase 2 thinking and not required for understanding the core runtime.
 
 ## Japanese
 
-- [ja/README.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/ja/README.md)
-- [ja/core-runtime.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/ja/core-runtime.md)
-- [ja/deployment-models-ja.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/ja/deployment-models-ja.md)
-- [ja/database-runtime-fit-ja.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/ja/database-runtime-fit-ja.md)
-- [ja/database-claim-patterns-ja.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/ja/database-claim-patterns-ja.md)
-- [ja/database-adapter-sketches-ja.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/ja/database-adapter-sketches-ja.md)
-- [ja/ambient-agent-concepts-ja.md](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/ja/ambient-agent-concepts-ja.md)
+- [ja/README.md](./ja/README.md)
+- [ja/core-runtime.md](./ja/core-runtime.md)
+- [ja/deployment-models-ja.md](./ja/deployment-models-ja.md)
+- [ja/database-runtime-fit-ja.md](./ja/database-runtime-fit-ja.md)
+- [ja/database-claim-patterns-ja.md](./ja/database-claim-patterns-ja.md)
+- [ja/database-adapter-sketches-ja.md](./ja/database-adapter-sketches-ja.md)
+- [ja/ambient-agent-concepts-ja.md](./ja/ambient-agent-concepts-ja.md)

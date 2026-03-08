@@ -56,7 +56,7 @@ function FailedRunActions({ runId }: { runId: string }) {
     )
   }
 
-  if (status === 'running') {
+  if (status === 'leased') {
     return <button onClick={() => cancel(runId)}>Cancel</button>
   }
 
@@ -178,7 +178,7 @@ This is useful for:
 
 ## Cancellation
 
-Cancel a running job. The current step finishes, then the job stops.
+Cancel a pending or leased run. If leased, the current step finishes, then the run stops.
 
 ```ts
 // Server-side

@@ -24,24 +24,24 @@ interface DurablyOptions<
   TJobs extends Record<string, JobDefinition> = Record<string, never>,
 > {
   dialect: Dialect
-  pollingInterval?: number
-  heartbeatInterval?: number
-  staleThreshold?: number
-  cleanupSteps?: boolean
+  pollingIntervalMs?: number
+  leaseRenewIntervalMs?: number
+  leaseMs?: number
+  preserveSteps?: boolean
   labels?: z.ZodType<TLabels>
   jobs?: TJobs
 }
 ```
 
-| Option              | Type        | Default  | Description                                                                           |
-| ------------------- | ----------- | -------- | ------------------------------------------------------------------------------------- |
-| `dialect`           | `Dialect`   | required | Kysely SQLite dialect                                                                 |
-| `pollingInterval`   | `number`    | `1000`   | How often to check for pending jobs (ms)                                              |
-| `heartbeatInterval` | `number`    | `5000`   | How often to update heartbeat (ms)                                                    |
-| `staleThreshold`    | `number`    | `30000`  | Time until a job is considered stale (ms)                                             |
-| `labels`            | `z.ZodType` | —        | Zod schema for labels. Enables type-safe labels and runtime validation on `trigger()` |
-| `cleanupSteps`      | `boolean`   | `true`   | Delete step output data when runs reach terminal state (completed/failed/cancelled)   |
-| `jobs`              | `TJobs`     | —        | Job definitions to register. Shorthand for calling `.register()` after creation       |
+| Option                 | Type        | Default  | Description                                                                           |
+| ---------------------- | ----------- | -------- | ------------------------------------------------------------------------------------- |
+| `dialect`              | `Dialect`   | required | Kysely dialect (SQLite, libSQL, or PostgreSQL)                                        |
+| `pollingIntervalMs`    | `number`    | `1000`   | How often to check for pending jobs (ms)                                              |
+| `leaseRenewIntervalMs` | `number`    | `5000`   | How often to renew the lease (ms)                                                     |
+| `leaseMs`              | `number`    | `30000`  | Lease duration — time until a job is considered stale (ms)                            |
+| `labels`               | `z.ZodType` | —        | Zod schema for labels. Enables type-safe labels and runtime validation on `trigger()` |
+| `preserveSteps`        | `boolean`   | `false`  | Keep step output data when runs reach terminal state (completed/failed/cancelled)     |
+| `jobs`                 | `TJobs`     | —        | Job definitions to register. Shorthand for calling `.register()` after creation       |
 
 ## Returns
 
@@ -138,7 +138,7 @@ Retriggers a failed or cancelled run by creating a fresh run with the same input
 await durably.cancel(runId: string): Promise<void>
 ```
 
-Cancels a pending or running run.
+Cancels a pending or leased run.
 
 ### `deleteRun()`
 
@@ -175,7 +175,7 @@ await durably.getRuns<T extends Run<TLabels> = Run<TLabels>>(filter?: RunFilter<
 
 interface RunFilter<TLabels extends Record<string, string> = Record<string, string>> {
   jobName?: string | string[]  // single or multiple job names
-  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  status?: 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
   labels?: Partial<TLabels>    // filter by labels (all specified must match)
   limit?: number
   offset?: number
@@ -208,7 +208,7 @@ interface Run<TLabels extends Record<string, string> = Record<string, string>> {
   id: string
   jobName: string
   input: unknown
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  status: 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
   idempotencyKey: string | null
   concurrencyKey: string | null
   currentStepIndex: number
@@ -217,7 +217,8 @@ interface Run<TLabels extends Record<string, string> = Record<string, string>> {
   output: unknown | null
   error: string | null
   labels: TLabels
-  heartbeatAt: string
+  leaseOwner: string | null
+  leaseExpiresAt: string | null
   startedAt: string | null
   completedAt: string | null
   createdAt: string
@@ -225,25 +226,26 @@ interface Run<TLabels extends Record<string, string> = Record<string, string>> {
 }
 ```
 
-| Field              | Type                                                               | Description                                                     |
-| ------------------ | ------------------------------------------------------------------ | --------------------------------------------------------------- |
-| `id`               | `string`                                                           | Unique run ID                                                   |
-| `jobName`          | `string`                                                           | Name of the job                                                 |
-| `input`            | `unknown`                                                          | Input payload passed to the job                                 |
-| `status`           | `'pending' \| 'running' \| 'completed' \| 'failed' \| 'cancelled'` | Current run status                                              |
-| `idempotencyKey`   | `string \| null`                                                   | Deduplication key                                               |
-| `concurrencyKey`   | `string \| null`                                                   | Concurrency group key                                           |
-| `currentStepIndex` | `number`                                                           | Index of the current step being executed                        |
-| `stepCount`        | `number`                                                           | Total number of completed steps                                 |
-| `progress`         | `{ current: number; total?: number; message?: string } \| null`    | Latest progress report                                          |
-| `output`           | `unknown \| null`                                                  | Return value of the job (when completed)                        |
-| `error`            | `string \| null`                                                   | Error message (when failed)                                     |
-| `labels`           | `TLabels` (defaults to `Record<string, string>`)                   | Key/value labels for filtering (type-safe when schema provided) |
-| `heartbeatAt`      | `string`                                                           | ISO timestamp of the last heartbeat                             |
-| `startedAt`        | `string \| null`                                                   | ISO timestamp when the run started                              |
-| `completedAt`      | `string \| null`                                                   | ISO timestamp when the run completed or failed                  |
-| `createdAt`        | `string`                                                           | ISO timestamp when the run was created                          |
-| `updatedAt`        | `string`                                                           | ISO timestamp of the last update                                |
+| Field              | Type                                                              | Description                                                     |
+| ------------------ | ----------------------------------------------------------------- | --------------------------------------------------------------- |
+| `id`               | `string`                                                          | Unique run ID                                                   |
+| `jobName`          | `string`                                                          | Name of the job                                                 |
+| `input`            | `unknown`                                                         | Input payload passed to the job                                 |
+| `status`           | `'pending' \| 'leased' \| 'completed' \| 'failed' \| 'cancelled'` | Current run status                                              |
+| `idempotencyKey`   | `string \| null`                                                  | Deduplication key                                               |
+| `concurrencyKey`   | `string \| null`                                                  | Concurrency group key                                           |
+| `currentStepIndex` | `number`                                                          | Index of the current step being executed                        |
+| `stepCount`        | `number`                                                          | Total number of completed steps                                 |
+| `progress`         | `{ current: number; total?: number; message?: string } \| null`   | Latest progress report                                          |
+| `output`           | `unknown \| null`                                                 | Return value of the job (when completed)                        |
+| `error`            | `string \| null`                                                  | Error message (when failed)                                     |
+| `labels`           | `TLabels` (defaults to `Record<string, string>`)                  | Key/value labels for filtering (type-safe when schema provided) |
+| `leaseOwner`       | `string \| null`                                                  | Worker ID that holds the lease (`null` when not leased)         |
+| `leaseExpiresAt`   | `string \| null`                                                  | ISO timestamp when the lease expires (`null` when not leased)   |
+| `startedAt`        | `string \| null`                                                  | ISO timestamp when the run started                              |
+| `completedAt`      | `string \| null`                                                  | ISO timestamp when the run completed or failed                  |
+| `createdAt`        | `string`                                                          | ISO timestamp when the run was created                          |
+| `updatedAt`        | `string`                                                          | ISO timestamp of the last update                                |
 
 ### `getJob()`
 
@@ -273,9 +275,9 @@ const dialect = new LibsqlDialect({ client })
 
 const durably = createDurably({
   dialect,
-  pollingInterval: 1000,
-  heartbeatInterval: 5000,
-  staleThreshold: 30000,
+  pollingIntervalMs: 1000,
+  leaseRenewIntervalMs: 5000,
+  leaseMs: 30000,
 })
 
 // Initialize (migrate + start)

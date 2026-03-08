@@ -17,7 +17,7 @@ export function createStorageTests(createDialect: () => Dialect) {
 
     describe('Run operations', () => {
       it('creates a run', async () => {
-        const run = await durably.storage.createRun({
+        const run = await durably.storage.enqueue({
           jobName: 'test-job',
           input: { foo: 'bar' },
         })
@@ -29,13 +29,13 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('creates a run with idempotency key', async () => {
-        const run1 = await durably.storage.createRun({
+        const run1 = await durably.storage.enqueue({
           jobName: 'test-job',
           input: { foo: 'bar' },
           idempotencyKey: 'key-1',
         })
 
-        const run2 = await durably.storage.createRun({
+        const run2 = await durably.storage.enqueue({
           jobName: 'test-job',
           input: { foo: 'baz' },
           idempotencyKey: 'key-1',
@@ -47,7 +47,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('gets a run by id', async () => {
-        const created = await durably.storage.createRun({
+        const created = await durably.storage.enqueue({
           jobName: 'test-job',
           input: { foo: 'bar' },
         })
@@ -60,7 +60,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('returns stepCount as 0 for new run', async () => {
-        const created = await durably.storage.createRun({
+        const created = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
@@ -72,28 +72,33 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('returns stepCount reflecting completed steps', async () => {
-        const created = await durably.storage.createRun({
+        const created = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
 
+        // Claim so we have a valid leaseGeneration
+        const claimed = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+
         // Add 3 steps
-        await durably.storage.createStep({
-          runId: created.id,
+        await durably.storage.persistStep(created.id, gen, {
           name: 'step-1',
           index: 0,
           status: 'completed',
           startedAt: new Date().toISOString(),
         })
-        await durably.storage.createStep({
-          runId: created.id,
+        await durably.storage.persistStep(created.id, gen, {
           name: 'step-2',
           index: 1,
           status: 'completed',
           startedAt: new Date().toISOString(),
         })
-        await durably.storage.createStep({
-          runId: created.id,
+        await durably.storage.persistStep(created.id, gen, {
           name: 'step-3',
           index: 2,
           status: 'completed',
@@ -107,34 +112,45 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('returns stepCount in getRuns', async () => {
-        const run1 = await durably.storage.createRun({
+        const run1 = await durably.storage.enqueue({
           jobName: 'job-a',
           input: {},
         })
-        const run2 = await durably.storage.createRun({
+        const run2 = await durably.storage.enqueue({
           jobName: 'job-b',
           input: {},
         })
 
-        // Add 2 steps to run1
-        await durably.storage.createStep({
-          runId: run1.id,
+        // Claim run1 and add 2 steps
+        const claimed1 = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen1 = claimed1!.leaseGeneration
+
+        await durably.storage.persistStep(run1.id, gen1, {
           name: 'step-1',
           index: 0,
           status: 'completed',
           startedAt: new Date().toISOString(),
         })
-        await durably.storage.createStep({
-          runId: run1.id,
+        await durably.storage.persistStep(run1.id, gen1, {
           name: 'step-2',
           index: 1,
           status: 'completed',
           startedAt: new Date().toISOString(),
         })
 
-        // Add 1 step to run2
-        await durably.storage.createStep({
-          runId: run2.id,
+        // Claim run2 and add 1 step
+        const claimed2 = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen2 = claimed2!.leaseGeneration
+
+        await durably.storage.persistStep(run2.id, gen2, {
           name: 'step-1',
           index: 0,
           status: 'completed',
@@ -157,23 +173,23 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('updates a run', async () => {
-        const created = await durably.storage.createRun({
+        const created = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
 
         await durably.storage.updateRun(created.id, {
-          status: 'running',
+          status: 'leased',
         })
 
         const run = await durably.storage.getRun(created.id)
-        expect(run!.status).toBe('running')
+        expect(run!.status).toBe('leased')
       })
 
       it('gets runs with filter', async () => {
-        await durably.storage.createRun({ jobName: 'job-a', input: {} })
-        await durably.storage.createRun({ jobName: 'job-b', input: {} })
-        const run3 = await durably.storage.createRun({
+        await durably.storage.enqueue({ jobName: 'job-a', input: {} })
+        await durably.storage.enqueue({ jobName: 'job-b', input: {} })
+        const run3 = await durably.storage.enqueue({
           jobName: 'job-a',
           input: {},
         })
@@ -192,9 +208,9 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('filters runs by multiple job names', async () => {
-        await durably.storage.createRun({ jobName: 'job-a', input: {} })
-        await durably.storage.createRun({ jobName: 'job-b', input: {} })
-        await durably.storage.createRun({ jobName: 'job-c', input: {} })
+        await durably.storage.enqueue({ jobName: 'job-a', input: {} })
+        await durably.storage.enqueue({ jobName: 'job-b', input: {} })
+        await durably.storage.enqueue({ jobName: 'job-c', input: {} })
 
         const runs = await durably.storage.getRuns({
           jobName: ['job-a', 'job-c'],
@@ -204,15 +220,15 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('ignores empty jobName array', async () => {
-        await durably.storage.createRun({ jobName: 'job-a', input: {} })
-        await durably.storage.createRun({ jobName: 'job-b', input: {} })
+        await durably.storage.enqueue({ jobName: 'job-a', input: {} })
+        await durably.storage.enqueue({ jobName: 'job-b', input: {} })
 
         const runs = await durably.storage.getRuns({ jobName: [] })
         expect(runs).toHaveLength(2)
       })
 
       it('creates a run with labels', async () => {
-        const run = await durably.storage.createRun({
+        const run = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
           labels: { organizationId: 'org_123', env: 'prod' },
@@ -229,7 +245,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('defaults labels to empty object', async () => {
-        const run = await durably.storage.createRun({
+        const run = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
@@ -238,17 +254,17 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('filters runs by single label', async () => {
-        await durably.storage.createRun({
+        await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
           labels: { organizationId: 'org_1' },
         })
-        await durably.storage.createRun({
+        await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
           labels: { organizationId: 'org_2' },
         })
-        await durably.storage.createRun({
+        await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
@@ -261,17 +277,17 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('filters runs by multiple labels (AND)', async () => {
-        await durably.storage.createRun({
+        await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
           labels: { organizationId: 'org_1', env: 'prod' },
         })
-        await durably.storage.createRun({
+        await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
           labels: { organizationId: 'org_1', env: 'staging' },
         })
-        await durably.storage.createRun({
+        await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
           labels: { organizationId: 'org_2', env: 'prod' },
@@ -288,12 +304,12 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('returns all runs when labels filter is not specified', async () => {
-        await durably.storage.createRun({
+        await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
           labels: { organizationId: 'org_1' },
         })
-        await durably.storage.createRun({
+        await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
@@ -304,7 +320,7 @@ export function createStorageTests(createDialect: () => Dialect) {
 
       it('rejects invalid label keys', async () => {
         await expect(
-          durably.storage.createRun({
+          durably.storage.enqueue({
             jobName: 'test-job',
             input: {},
             labels: { 'valid-key': 'ok', 'invalid key': 'bad' },
@@ -314,7 +330,7 @@ export function createStorageTests(createDialect: () => Dialect) {
 
       it('rejects label keys with special characters', async () => {
         await expect(
-          durably.storage.createRun({
+          durably.storage.enqueue({
             jobName: 'test-job',
             input: {},
             labels: { 'key"injection': 'bad' },
@@ -323,7 +339,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('allows Kubernetes-style label keys', async () => {
-        const run = await durably.storage.createRun({
+        const run = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
           labels: { 'app.kubernetes.io/name': 'my-app', env: 'prod' },
@@ -335,12 +351,12 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('filters runs by dotted label keys', async () => {
-        await durably.storage.createRun({
+        await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
           labels: { 'app.kubernetes.io/name': 'my-app' },
         })
-        await durably.storage.createRun({
+        await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
           labels: { 'app.kubernetes.io/name': 'other-app' },
@@ -356,74 +372,96 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('claims next pending run atomically', async () => {
-        const created = await durably.storage.createRun({
+        const created = await durably.storage.enqueue({
           jobName: 'test-job',
           input: { x: 1 },
         })
 
-        const claimed = await durably.storage.claimNextPendingRun([])
+        const claimed = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+        )
 
         expect(claimed).not.toBeNull()
         expect(claimed!.id).toBe(created.id)
-        expect(claimed!.status).toBe('running')
+        expect(claimed!.status).toBe('leased')
         expect(claimed!.startedAt).not.toBeNull()
         expect(claimed!.stepCount).toBe(0)
 
-        // Verify run is now running in DB
+        // Verify run is now leased in DB
         const run = await durably.storage.getRun(created.id)
-        expect(run!.status).toBe('running')
+        expect(run!.status).toBe('leased')
       })
 
-      it('claimNextPendingRun returns null when no pending runs', async () => {
-        const result = await durably.storage.claimNextPendingRun([])
+      it('claimNext returns null when no pending runs', async () => {
+        const result = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+        )
         expect(result).toBeNull()
       })
 
-      it('claimNextPendingRun respects concurrency key exclusion', async () => {
-        await durably.storage.createRun({
+      it('claimNext respects concurrency key exclusion', async () => {
+        await durably.storage.enqueue({
           jobName: 'job',
           input: {},
           concurrencyKey: 'key-a',
         })
-        const run2 = await durably.storage.createRun({
+        const run2 = await durably.storage.enqueue({
           jobName: 'job',
           input: {},
           concurrencyKey: 'key-b',
         })
 
-        const claimed = await durably.storage.claimNextPendingRun(['key-a'])
+        const claimed = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+          { excludeConcurrencyKeys: ['key-a'] },
+        )
 
         expect(claimed).not.toBeNull()
         expect(claimed!.id).toBe(run2.id)
         expect(claimed!.concurrencyKey).toBe('key-b')
-        expect(claimed!.status).toBe('running')
+        expect(claimed!.status).toBe('leased')
       })
 
-      it('claimNextPendingRun skips runs with null concurrency key when not excluded', async () => {
-        const run1 = await durably.storage.createRun({
+      it('claimNext skips runs with null concurrency key when not excluded', async () => {
+        const run1 = await durably.storage.enqueue({
           jobName: 'job',
           input: {},
         })
-        await durably.storage.createRun({
+        await durably.storage.enqueue({
           jobName: 'job',
           input: {},
           concurrencyKey: 'key-a',
         })
 
         // Excluding key-a should still return the run without a concurrency key
-        const claimed = await durably.storage.claimNextPendingRun(['key-a'])
+        const claimed = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+          { excludeConcurrencyKeys: ['key-a'] },
+        )
 
         expect(claimed).not.toBeNull()
         expect(claimed!.id).toBe(run1.id)
       })
 
-      it('claimNextPendingRun preserves started_at on re-claim of recovered run', async () => {
+      it('claimNext preserves started_at on re-claim of recovered run', async () => {
         // Create and claim a run
-        const created = await durably.storage.createRun({
+        const created = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
-        const firstClaim = await durably.storage.claimNextPendingRun([])
+        const firstClaim = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+        )
         expect(firstClaim).not.toBeNull()
         const originalStartedAt = firstClaim!.startedAt
 
@@ -431,25 +469,35 @@ export function createStorageTests(createDialect: () => Dialect) {
         await durably.storage.updateRun(created.id, { status: 'pending' })
 
         // Re-claim the run
-        const secondClaim = await durably.storage.claimNextPendingRun([])
+        const secondClaim = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+        )
 
         expect(secondClaim).not.toBeNull()
         expect(secondClaim!.id).toBe(created.id)
-        expect(secondClaim!.status).toBe('running')
+        expect(secondClaim!.status).toBe('leased')
         // started_at should be preserved from the first claim
         expect(secondClaim!.startedAt).toBe(originalStartedAt)
       })
     })
 
     describe('Step operations', () => {
-      it('creates a step', async () => {
-        const run = await durably.storage.createRun({
+      it('persists a step with lease generation guard', async () => {
+        const run = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
 
-        await durably.storage.createStep({
-          runId: run.id,
+        const claimed = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+
+        const step = await durably.storage.persistStep(run.id, gen, {
           name: 'step-1',
           index: 0,
           status: 'completed',
@@ -457,20 +505,56 @@ export function createStorageTests(createDialect: () => Dialect) {
           startedAt: new Date().toISOString(),
         })
 
+        expect(step).not.toBeNull()
+
         const steps = await durably.storage.getSteps(run.id)
         expect(steps).toHaveLength(1)
         expect(steps[0].name).toBe('step-1')
         expect(steps[0].output).toEqual({ result: 42 })
       })
 
-      it('gets completed step by name', async () => {
-        const run = await durably.storage.createRun({
+      it('rejects persistStep with wrong lease generation', async () => {
+        const run = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
 
-        await durably.storage.createStep({
-          runId: run.id,
+        const claimed = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+
+        // Use wrong generation
+        const step = await durably.storage.persistStep(run.id, gen + 1, {
+          name: 'step-1',
+          index: 0,
+          status: 'completed',
+          output: 'should-not-exist',
+          startedAt: new Date().toISOString(),
+        })
+
+        expect(step).toBeNull()
+
+        const steps = await durably.storage.getSteps(run.id)
+        expect(steps).toHaveLength(0)
+      })
+
+      it('gets completed step by name', async () => {
+        const run = await durably.storage.enqueue({
+          jobName: 'test-job',
+          input: {},
+        })
+
+        const claimed = await durably.storage.claimNext(
+          'test-worker',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+
+        await durably.storage.persistStep(run.id, gen, {
           name: 'fetch-data',
           index: 0,
           status: 'completed',
@@ -487,7 +571,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('returns null for non-existent step', async () => {
-        const run = await durably.storage.createRun({
+        const run = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })

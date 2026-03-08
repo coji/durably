@@ -62,9 +62,9 @@ const dialect = new LibsqlDialect({ client })
 
 const durably = createDurably({
   dialect,
-  pollingInterval: 1000, // Check for jobs every 1s
-  heartbeatInterval: 5000, // Heartbeat every 5s
-  staleThreshold: 30000, // Stale after 30s
+  pollingIntervalMs: 1000, // Check for jobs every 1s
+  leaseRenewIntervalMs: 5000, // Lease renewal every 5s
+  leaseMs: 30000, // Lease duration (stale after 30s)
   // labels: z.object({ ... }),  // Optional: type-safe labels
   jobs: { importCsv: importCsvJob },
 })
@@ -101,7 +101,7 @@ await durably.jobs.importCsv.trigger(
 ## Monitor Events
 
 ```ts
-durably.on('run:start', (e) => console.log(`Started: ${e.jobName}`))
+durably.on('run:leased', (e) => console.log(`Leased: ${e.jobName}`))
 durably.on('run:complete', (e) => console.log(`Done in ${e.duration}ms`))
 durably.on('run:fail', (e) => console.error(`Failed: ${e.error}`))
 durably.on('run:progress', (e) =>
@@ -149,14 +149,14 @@ const durably = createDurably<typeof durably>({
 
 // 2. Use in components
 function ImportButton() {
-  const { trigger, progress, isRunning, isCompleted, output } =
+  const { trigger, progress, isLeased, isCompleted, output } =
     durably.importCsv.useJob()
 
   return (
     <div>
       <button
         onClick={() => trigger({ filename: 'data.csv' })}
-        disabled={isRunning}
+        disabled={isLeased}
       >
         Import
       </button>
@@ -189,7 +189,7 @@ function App() {
 }
 
 function ImportButton() {
-  const { trigger, progress, isRunning } = useJob(importCsvJob)
+  const { trigger, progress, isLeased } = useJob(importCsvJob)
   // ...
 }
 ```
@@ -215,7 +215,7 @@ function ImportButton() {
 | `on(event, handler)` | Subscribe to events                    |
 | `stop()`             | Stop worker gracefully                 |
 | `retrigger(runId)`   | Retrigger failed run (creates new run) |
-| `cancel(runId)`      | Cancel running job                     |
+| `cancel(runId)`      | Cancel leased job                      |
 
 ### Step Context
 
@@ -269,21 +269,23 @@ import { createDurablyHandler, toClientRun } from '@coji/durably'
 
 Key fields on the `Run` object returned by `getRun()` and `getRuns()`:
 
-| Field         | Type                                                               | Description                                                     |
-| ------------- | ------------------------------------------------------------------ | --------------------------------------------------------------- |
-| `id`          | `string`                                                           | Unique run ID                                                   |
-| `jobName`     | `string`                                                           | Name of the job                                                 |
-| `input`       | `unknown`                                                          | Input payload passed to the job                                 |
-| `status`      | `'pending' \| 'running' \| 'completed' \| 'failed' \| 'cancelled'` | Current run status                                              |
-| `output`      | `unknown \| null`                                                  | Return value of the job (when completed)                        |
-| `error`       | `string \| null`                                                   | Error message (when failed)                                     |
-| `progress`    | `{ current: number; total?: number; message?: string } \| null`    | Latest progress report                                          |
-| `labels`      | `TLabels` (defaults to `Record<string, string>`)                   | Key/value labels for filtering (type-safe when schema provided) |
-| `startedAt`   | `string \| null`                                                   | ISO timestamp when the run started                              |
-| `completedAt` | `string \| null`                                                   | ISO timestamp when the run completed or failed                  |
-| `createdAt`   | `string`                                                           | ISO timestamp when the run was created                          |
-| `updatedAt`   | `string`                                                           | ISO timestamp of the last update                                |
+| Field            | Type                                                              | Description                                                     |
+| ---------------- | ----------------------------------------------------------------- | --------------------------------------------------------------- |
+| `id`             | `string`                                                          | Unique run ID                                                   |
+| `jobName`        | `string`                                                          | Name of the job                                                 |
+| `input`          | `unknown`                                                         | Input payload passed to the job                                 |
+| `status`         | `'pending' \| 'leased' \| 'completed' \| 'failed' \| 'cancelled'` | Current run status                                              |
+| `output`         | `unknown \| null`                                                 | Return value of the job (when completed)                        |
+| `error`          | `string \| null`                                                  | Error message (when failed)                                     |
+| `progress`       | `{ current: number; total?: number; message?: string } \| null`   | Latest progress report                                          |
+| `labels`         | `TLabels` (defaults to `Record<string, string>`)                  | Key/value labels for filtering (type-safe when schema provided) |
+| `leaseOwner`     | `string \| null`                                                  | Worker ID that holds the lease (`null` when not leased)         |
+| `leaseExpiresAt` | `string \| null`                                                  | ISO timestamp when the lease expires (`null` when not leased)   |
+| `startedAt`      | `string \| null`                                                  | ISO timestamp when the run started                              |
+| `completedAt`    | `string \| null`                                                  | ISO timestamp when the run completed or failed                  |
+| `createdAt`      | `string`                                                          | ISO timestamp when the run was created                          |
+| `updatedAt`      | `string`                                                          | ISO timestamp of the last update                                |
 
-HTTP endpoints (`/runs`, `/run`) return `ClientRun` — the same fields minus `idempotencyKey`, `concurrencyKey`, `heartbeatAt`, and `updatedAt`. Use `toClientRun(run)` to apply the same projection in custom code.
+HTTP endpoints (`/runs`, `/run`) return `ClientRun` — the same fields minus `leaseOwner`, `idempotencyKey`, `concurrencyKey`, `leaseExpiresAt`, and `updatedAt`. Use `toClientRun(run)` to apply the same projection in custom code.
 
 **See:** [createDurably - Run Type](/api/create-durably#run-type) for the full field list.

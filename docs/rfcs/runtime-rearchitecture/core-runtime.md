@@ -89,6 +89,7 @@ interface RunRecord<TLabels = Record<string, string>> {
 
   leaseOwner: string | null
   leaseExpiresAt: string | null
+  leaseGeneration: number
 
   currentStepIndex: number
   progress: { current: number; total?: number; message?: string } | null
@@ -102,6 +103,8 @@ interface RunRecord<TLabels = Record<string, string>> {
   updatedAt: string
 }
 ```
+
+> **Key term — lease generation (fencing token):** `leaseGeneration` is a monotonically increasing counter incremented each time a run is claimed. All writes by a lease holder are guarded by the generation number, not by `workerId`. This structurally prevents a stale worker from writing data after its lease has expired and been reclaimed—even if it reuses the same `workerId`. `leaseOwner` remains as human-readable metadata for debugging and logging.
 
 ### Why `leased` instead of `running`
 
@@ -127,26 +130,39 @@ Instead, it performs one atomic operation to acquire exclusive execution rights:
 - set `status = leased`
 - set `leaseOwner`
 - set `leaseExpiresAt`
+- increment `leaseGeneration`
 - set `startedAt` if this is the first claim
 
-If two workers race, only one may receive the lease.
+If two workers race, only one may receive the lease. The incremented `leaseGeneration` becomes the fencing token for all subsequent writes by the winning worker.
+
+This is a runtime invariant, not a promise that every backend exposes the same first-class queue primitive.
+What must be portable is the behavior of `processOne()`: one invocation may safely acquire, execute, renew, and complete at most one run.
+The internal claim operation that supports that behavior may differ across adapters.
 
 ### 3. Extend Execution Time (Lease Renewal)
 
 While executing, the worker periodically extends its lease.
 
-Renewal succeeds only if:
+Renewal succeeds only if the `leaseGeneration` matches the current value in the database. This prevents a stale worker from extending a run that has already been reclaimed.
 
-- the run is still leased
-- the lease is still owned by that worker
+Phase 1 exploration suggests one additional runtime behavior is worth standardizing:
 
-This prevents a stale worker from extending or completing a run that has already been reclaimed elsewhere.
+- lease loss should trigger best-effort cooperative stop inside the current invocation
+
+That means:
+
+- a lease deadline or failed renewal should abort the runtime's in-memory execution context
+- later step boundaries should refuse to begin new work once ownership is gone
+- long-running async work may observe an `AbortSignal` and stop early
+
+This is not hard preemption of arbitrary user code.
+It is a best-effort runtime contract that reduces stale work while still relying on generation-guarded writes for correctness.
 
 ### 4. Complete or Fail
 
-Completion and failure are ownership-sensitive writes.
+Completion and failure are generation-guarded writes.
 
-The runtime must only transition a run from `leased` to `completed` or `failed` if the current worker still owns the lease.
+The runtime must only transition a run from `leased` to `completed` or `failed` if the `leaseGeneration` matches. This is the same guard used for step persistence and lease renewal.
 
 ### 5. Recover Abandoned Runs (Reclaim)
 
@@ -201,23 +217,59 @@ interface StepRecord {
 }
 ```
 
+### Atomic Step Persistence
+
+Step persistence must be a single atomic operation that:
+
+1. Verifies lease ownership via `leaseGeneration`
+2. Inserts the step record
+3. Advances the run's `currentStepIndex` (for completed steps only)
+
+This operation is called `persistStep`. It replaces the previous two-step sequence of `createStep` + `advanceRunStepIndex`, which had a TOCTOU window and required separate ownership guards that were easy to forget.
+
+The implementation uses `INSERT...SELECT` so that the ownership check and the insert are a single SQL statement (no read-then-write race), wrapped in a transaction with the index advance.
+
+### Completed Step Uniqueness
+
+The database enforces a partial unique constraint on `(run_id, name)` for completed steps:
+
+```sql
+CREATE UNIQUE INDEX idx_durably_steps_completed_unique
+ON durably_steps(run_id, name) WHERE status = 'completed';
+```
+
+This guarantees that `getCompletedStep(runId, name)` returns at most one row, making replay deterministic at the database level. Failed or cancelled step records are not constrained—a step that failed on one attempt may succeed on a retry within the same run.
+
+### Side Effect Boundaries
+
+The runtime guarantees at-most-once step _persistence_ but at-least-once step _execution_. If a worker completes `fn()` but loses its lease before persisting the result, another worker will re-execute the step from scratch.
+
+This means step functions with external side effects (API calls, emails, webhooks) should be designed for idempotency. The runtime does not and cannot protect against duplicate side effects—that responsibility belongs to the step implementation, typically through idempotency keys at the downstream API level.
+
 ### Checkpoint Retention
 
-Checkpoint deletion must not be part of the default execution path.
+The current implementation deletes step output data by default when runs reach terminal state (`preserveSteps: false`). Setting `preserveSteps: true` retains step history for auditing and debugging. Future work may add time-based policies or maintenance jobs for cleanup.
 
-The default behavior should preserve step history because resumability and auditability depend on it. Retention and cleanup should be handled explicitly, for example by a maintenance job or time-based policy.
+### Migration Stance
+
+Phase 1 exploration also clarified the migration direction:
+
+- clean-break schema changes are acceptable
+- compatibility columns should not be retained indefinitely just to ease transition
+
+In particular, the old `heartbeat_at` column was removable through a destructive rebuild migration without weakening the lease-based runtime model.
+That supports a cleaner Phase 1 schema even if the migration itself is invasive.
 
 ## Architectural Split
 
 The current implementation mixes runtime semantics, polling behavior, and Kysely-backed persistence too closely.
 
-The target architecture separates them into five layers:
+The target architecture separates them into four layers:
 
 1. Runtime
-2. Queue store
-3. Checkpoint store
-4. Worker loop
-5. Transport and UI integrations
+2. Store
+3. Worker loop
+4. Transport and UI integrations
 
 ### Runtime
 
@@ -251,75 +303,102 @@ interface DurablyRuntime<TJobs, TLabels = Record<string, string>> {
 
 `processOne()` is the key addition. It allows one-shot execution in cron jobs, HTTP handlers, queue-triggered functions, and serverless platforms without requiring a resident polling loop.
 
-### Queue Store
+It is also the main portability target of the runtime.
+Phase 1 exploration showed that a low-level `claimNext()` operation can carry backend-specific locking and visibility assumptions, especially on PostgreSQL.
+The design should therefore treat `processOne()` as the first-class contract and `claimNext()` as an adapter-facing building block.
 
-The queue store owns run lifecycle and lease semantics.
+`processUntilIdle({ maxRuns })` is the natural bounded companion for short-lived deployments.
+Phase 1 exploration validated it as a good "drain up to N runs, then return" primitive for cron-driven and queue-triggered serverless slices.
+
+### Store
+
+The store owns all persistence: run lifecycle, lease semantics, step checkpoints, progress, and logs.
+It is an adapter contract, not the primary public surface of the runtime.
 
 ```ts
-interface QueueStore<TLabels = Record<string, string>> {
-  enqueue(input: EnqueueRunInput<TLabels>): Promise<RunRecord<TLabels>>
-  enqueueMany(inputs: EnqueueRunInput<TLabels>[]): Promise<RunRecord<TLabels>[]>
+interface Store<TLabels = Record<string, string>> {
+  // Run lifecycle
+  enqueue(input: CreateRunInput<TLabels>): Promise<Run<TLabels>>
+  enqueueMany(inputs: CreateRunInput<TLabels>[]): Promise<Run<TLabels>[]>
+  getRun(runId: string): Promise<Run<TLabels> | null>
+  getRuns(filter?: RunFilter<TLabels>): Promise<Run<TLabels>[]>
+  updateRun(runId: string, data: UpdateRunData): Promise<void>
+  deleteRun(runId: string): Promise<void>
 
-  getRun(runId: string): Promise<RunRecord<TLabels> | null>
-  listRuns(filter?: RunFilter<TLabels>): Promise<RunRecord<TLabels>[]>
-
+  // Lease management (all guarded by leaseGeneration)
   claimNext(
     workerId: string,
     now: string,
     leaseMs: number,
-    options?: { excludeConcurrencyKeys?: string[] },
-  ): Promise<RunRecord<TLabels> | null>
-
+    options?: ClaimOptions,
+  ): Promise<Run<TLabels> | null>
   renewLease(
     runId: string,
-    workerId: string,
+    leaseGeneration: number,
     now: string,
     leaseMs: number,
   ): Promise<boolean>
-
   releaseExpiredLeases(now: string): Promise<number>
-
   completeRun(
     runId: string,
-    workerId: string,
+    leaseGeneration: number,
     output: unknown,
     completedAt: string,
   ): Promise<boolean>
-
   failRun(
     runId: string,
-    workerId: string,
+    leaseGeneration: number,
     error: string,
     completedAt: string,
   ): Promise<boolean>
+  cancelRun(runId: string, now: string): Promise<boolean>
 
-  cancelRun(runId: string, now: string): Promise<void>
-  deleteRun(runId: string): Promise<void>
+  // Steps (checkpoints)
+  persistStep(
+    runId: string,
+    leaseGeneration: number,
+    input: CreateStepInput,
+  ): Promise<Step | null>
+  getSteps(runId: string): Promise<Step[]>
+  getCompletedStep(runId: string, name: string): Promise<Step | null>
+  deleteSteps(runId: string): Promise<void>
+
+  // Progress & logs
+  updateProgress(runId: string, progress: ProgressData | null): Promise<void>
+  createLog(input: CreateLogInput): Promise<Log>
+  getLogs(runId: string): Promise<Log[]>
 }
 ```
 
-This contract defines semantics, not SQL shape. Implementations may use SQLite, libSQL, PostgreSQL, or another backend as long as they preserve the same guarantees.
+> **Design Decision — Why `leaseGeneration` instead of `workerId` for guards:**
+>
+> The original design used `workerId` in WHERE clauses to verify lease ownership. This had two weaknesses:
+>
+> - A `workerId` can be reused after process restart, making a stale owner indistinguishable from the current owner.
+> - Guards were applied per-method. Forgetting a guard on any write operation (as happened with `createStep` and `advanceRunStepIndex`) created a silent race condition.
+>
+> `leaseGeneration` is a monotonic counter incremented on each claim. It is unforgeable and cannot collide across lease cycles. All lease-holder writes—step persistence, run completion, run failure, lease renewal—use the same `WHERE lease_generation = ?` guard. The guard is structural: a new store method that writes run state must accept `leaseGeneration` to be expressible in the interface at all.
 
-### Checkpoint Store
+> **Design Decision — Why a unified Store instead of QueueStore + CheckpointStore:**
+>
+> The original RFC proposed splitting persistence into a `QueueStore` (run lifecycle and leases) and a `CheckpointStore` (steps, progress, logs). The rationale was that these concerns evolve independently.
+>
+> Implementation showed that the split was a leaky abstraction:
+>
+> - `CheckpointStore` wrote to the `durably_runs` table (`advanceRunStepIndex`, `updateProgress`) — the boundary between the two stores was already broken at the data level.
+> - Cross-store transactions were impossible. Operations like `deleteRun` need atomic cleanup of steps, logs, and the run row — something that cannot be coordinated across two independent store interfaces.
+> - The `Storage` facade that wrapped both stores ended up bypassing them for `updateRun` and `deleteRun`, defeating the purpose of the abstraction.
+> - Backend-specific behavior (e.g., SQLite vs PostgreSQL claim strategies) is a concern within a single store implementation, not a reason to split interfaces.
+>
+> A single `Store` interface is simpler, enables atomic cross-concern operations, and honestly reflects the data model where runs, steps, and logs are tightly coupled.
 
-The checkpoint store owns step persistence, progress, and logs.
+This contract defines adapter semantics, not SQL shape. Implementations may use SQLite, libSQL, PostgreSQL, or another backend as long as they preserve the runtime guarantees required by `processOne()`.
 
-```ts
-interface CheckpointStore {
-  saveStep(input: SaveStepInput): Promise<void>
-  getCompletedStep(runId: string, stepName: string): Promise<StepRecord | null>
-  listSteps(runId: string): Promise<StepRecord[]>
+In particular:
 
-  updateProgress(runId: string, progress: Progress): Promise<void>
-
-  appendLog(input: CreateLogInput): Promise<void>
-  getLogs(runId: string): Promise<LogRecord[]>
-
-  clearCheckpoints?(runId: string): Promise<void>
-}
-```
-
-This split is intentional. Lease ownership and checkpoint persistence evolve for different reasons and should not be coupled by one oversized storage interface.
+- Durably does not need one portable `claimNext()` implementation across backends
+- adapters may use different claim strategies to uphold the same runtime behavior
+- if a backend can only defend correctness through a more specialized internal claim path, that is acceptable
 
 ### Worker Loop
 
@@ -343,15 +422,16 @@ Two concurrency concerns must be handled explicitly.
 
 At most one worker may hold the active lease for a run at a given time.
 
-This must be guaranteed by the queue store's acquire and renew operations.
+This must be guaranteed by the store's acquire and renew operations.
 
 ### Preventing parallel runs of the same kind
 
 Some jobs should not run simultaneously even if they are different runs.
 
-This belongs in the acquisition logic. The queue store should be able to exclude or serialize runs that share a `concurrencyKey`.
+This belongs in the acquisition logic. The store should be able to exclude or serialize runs that share a `concurrencyKey`.
 
 This constraint should be enforced at acquisition time, not by in-memory coordination.
+Runtime-side preflight reads may help performance, but they are not sufficient as the primary guarantee.
 
 ## Preventing Duplicate Runs (Idempotency)
 
@@ -377,11 +457,18 @@ The runtime assumes all of the following can happen:
 The design response is:
 
 - persist step checkpoints
-- bind lease mutation to `workerId`
-- reject stale completions and renewals
-- reclaim expired runs automatically through claim semantics
+- guard all lease-holder writes with `leaseGeneration` (fencing token)
+- reject stale completions, step writes, and renewals via generation mismatch
+- reclaim expired runs automatically through claim semantics (which increments the generation)
 
 Failure handling is not an add-on. It is the core execution model.
+
+One important boundary from exploration should be explicit:
+
+- the runtime can protect persisted state with generation-guarded writes—this is the correctness guarantee
+- best-effort cooperative stop (AbortSignal, lease deadline timer) can reduce stale execution after lease loss—this is an optimization
+- hard interruption of arbitrary synchronous user code is not a realistic goal
+- external side effects of `fn()` cannot be protected by any lease mechanism—step idempotency is the user's responsibility
 
 ## Storage Independence
 
@@ -393,10 +480,7 @@ The public constructor should accept storage adapters directly.
 
 ```ts
 interface DurablyOptions<TLabels, TJobs> {
-  store: {
-    queue: QueueStore<TLabels>
-    checkpoint: CheckpointStore
-  }
+  store: Store<TLabels>
   migrations?: MigrationDriver
   jobs?: TJobs
   labels?: z.ZodType<TLabels>
@@ -449,12 +533,14 @@ This design deliberately changes several assumptions.
 
 1. `running` becomes `leased`.
 2. Heartbeat becomes explicit lease renewal.
-3. Claim and reclaim become storage-level semantics.
-4. `processOne()` becomes a first-class runtime API.
+3. Claim and reclaim become adapter-level semantics in support of runtime execution.
+4. `processOne()` becomes the first-class runtime API.
 5. Long-running polling becomes an optional loop, not the core model.
 6. Storage is injected as adapters instead of being created from a dialect inside the runtime.
 7. Step cleanup is no longer a default execution behavior.
-8. Ownership-sensitive writes require `workerId`.
+8. `leaseGeneration` (fencing token) replaces `workerId` as the guard for all lease-holder writes.
+9. Step persistence becomes a single atomic operation (`persistStep`) instead of separate `createStep` + `advanceRunStepIndex`.
+10. Completed steps are enforced unique per `(runId, name)` at the database level.
 
 ## Non-Goals
 
@@ -480,6 +566,13 @@ Its core guarantees are:
 - storage-adapter portability (SQLite, PostgreSQL, libSQL, …)
 
 That is the architectural center of gravity. Everything else, including worker loops, HTTP handlers, and React bindings, should sit on top of that model instead of defining it.
+
+One practical boundary from Phase 1 exploration is worth making explicit:
+
+- portability does not mean every backend shares one claim implementation
+- portability is centered on `processOne()` semantics, not on exposing one universal `claimNext()` primitive
+- PostgreSQL may require a stricter claim path than SQLite-like backends
+- browser-local runtimes may support the core lease model while still recommending one active runtime per tab
 
 ## Phase 2: Ambient Agent Extension
 

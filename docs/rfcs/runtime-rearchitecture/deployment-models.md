@@ -101,6 +101,18 @@ Regardless of deployment target, the desired shape is:
 - event streams are persisted before or as output is delivered
 - later invocations can reclaim expired work and continue
 
+For short-lived deployments, `processUntilIdle({ maxRuns })` should be treated as a bounded batch slice, not as an attempt to fully drain the system in one invocation.
+Phase 1 exploration validated this as a good contract for cron-driven and queue-triggered workloads:
+
+- process up to a requested cap
+- return quickly when nothing is claimable
+- leave the rest of the backlog for later invocations
+
+For browser-local runtimes, there should be an explicit narrower stance:
+
+- prefer one active Durably runtime per tab
+- treat multi-tab or multi-runtime reclaim as a caveated behavior, not the strongest guarantee
+
 ## Model 1: Resident Worker / Always-On Server
 
 This is the simplest deployment model.
@@ -165,6 +177,8 @@ The safe design is:
 - persist state often
 - keep steps short
 - assume the function may stop between steps
+
+`processUntilIdle({ maxRuns })` should therefore be configured as a bounded sweep, not as an unbounded drain.
 
 ### Practical Variant
 
@@ -273,6 +287,48 @@ SQS delivery is not the source of truth for execution ownership.
 
 Lease ownership still belongs to the run record in the database.
 
+## Browser-Local Mode
+
+Browser-local mode is different from serverless or resident-worker deployments because the runtime may be duplicated by tab lifecycle, remounts, or multiple in-page initializations.
+
+### Composition
+
+- browser UI
+- browser-local database runtime such as SQLocal / OPFS-backed SQLite (requires Secure Context — HTTPS or localhost)
+- one preferred active Durably runtime per tab
+
+### Recommended Use
+
+- local-first applications
+- offline-capable user workflows
+- apps where resumability matters within one browser environment
+
+### Recommended Constraint
+
+Durably should recommend a single active runtime per tab.
+
+In practical terms:
+
+- create one Durably instance and share it through application context
+- avoid constructing multiple independent runtimes against the same browser-local database inside one tab
+- treat multi-tab coordination as an advanced case, not as the default contract
+
+Phase 1 exploration also showed that a lightweight per-tab registry is enough to warn when the same browser-local store is initialized by multiple Durably runtimes in one tab.
+That warning should be treated as a first-line developer experience guardrail, not as a hard correctness mechanism.
+
+### Exploration Note
+
+Phase 1 browser exploration produced this shape:
+
+- basic lease semantics were viable
+- multi-runtime single-winner claim could be reproduced
+- multi-runtime reclaim after lease expiry was not yet reliable enough to present as a strong guarantee
+
+That means browser-local mode should be documented honestly:
+
+- strong as a single-runtime-per-tab local execution model
+- caveated as a multi-runtime reclaim model
+
 ## Choosing a Platform Model
 
 A rough heuristic is:
@@ -295,7 +351,7 @@ Another heuristic is:
 These rules should not change across platforms:
 
 - `enqueue()` is durable and idempotency-aware
-- `claimNext()` is atomic
+- one `processOne()` invocation safely acquires at most one run and never shares active authority for that run
 - completion and failure are lease-owner-sensitive
 - every long task is broken into checkpointable steps
 - streaming output is recoverable from persisted events

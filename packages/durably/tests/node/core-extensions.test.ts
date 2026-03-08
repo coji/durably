@@ -20,7 +20,7 @@ describe('Core Extensions', () => {
 
   beforeEach(async () => {
     const dialect = createNodeDialect()
-    durably = createDurably({ dialect, pollingInterval: 50 })
+    durably = createDurably({ dialect, pollingIntervalMs: 50 })
     await durably.migrate()
   })
 
@@ -91,7 +91,7 @@ describe('Core Extensions', () => {
       expect(events.some((e) => e.type === 'run:complete')).toBe(true)
     })
 
-    it('emits run:start event', async () => {
+    it('emits run:leased event', async () => {
       durably.register({ testJob: testJobDef })
       durably.start()
 
@@ -108,7 +108,7 @@ describe('Core Extensions', () => {
         events.push(value)
       }
 
-      expect(events.some((e) => e.type === 'run:start')).toBe(true)
+      expect(events.some((e) => e.type === 'run:leased')).toBe(true)
     })
 
     it('emits step events', async () => {
@@ -152,9 +152,9 @@ describe('Core Extensions', () => {
       const stream = durably.subscribe(run.id)
       const reader = stream.getReader()
 
-      // Read one event (run:start)
+      // Read one event (run:leased)
       const { value } = await reader.read()
-      expect(value?.type).toBe('run:start')
+      expect(value?.type).toBe('run:leased')
 
       // Cancel the stream before the job completes
       await reader.cancel()

@@ -50,12 +50,12 @@ export function useAutoResume<
     let cancelled = false
 
     const findActiveRun = async () => {
-      // First check for running runs
-      const runningRuns = await jobHandle.getRuns({ status: 'running' })
+      // First check for leased runs
+      const leasedRuns = await jobHandle.getRuns({ status: 'leased' })
       if (cancelled) return
 
-      if (runningRuns.length > 0) {
-        const run = runningRuns[0]
+      if (leasedRuns.length > 0) {
+        const run = leasedRuns[0]
         callbacks.onRunFound(run.id, run.status as RunStatus)
         return
       }

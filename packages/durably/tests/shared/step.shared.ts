@@ -18,8 +18,8 @@ export function createStepTests(createDialect: () => Dialect) {
     beforeEach(async () => {
       durably = createDurably({
         dialect: createDialect(),
-        pollingInterval: 50,
-        cleanupSteps: false,
+        pollingIntervalMs: 50,
+        preserveSteps: true,
       })
       await durably.migrate()
     })
@@ -83,10 +83,46 @@ export function createStepTests(createDialect: () => Dialect) {
       )
     })
 
-    it('deletes persisted steps after terminal runs by default', async () => {
+    it('deletes steps after terminal runs by default', async () => {
+      const defaultDurably = createDurably({
+        dialect: createDialect(),
+        pollingIntervalMs: 50,
+      })
+      await defaultDurably.migrate()
+
+      try {
+        const cleanupTestDef = defineJob({
+          name: 'step-cleanup-default-test',
+          input: z.object({}),
+          run: async (step) => {
+            await step.run('step1', () => 'result1')
+            await step.run('step2', () => 'result2')
+          },
+        })
+        const d = defaultDurably.register({ job: cleanupTestDef })
+
+        const run = await d.jobs.job.trigger({})
+        d.start()
+
+        await vi.waitFor(
+          async () => {
+            const updated = await d.jobs.job.getRun(run.id)
+            expect(updated?.status).toBe('completed')
+            expect(await d.storage.getSteps(run.id)).toHaveLength(0)
+          },
+          { timeout: 1000 },
+        )
+      } finally {
+        await defaultDurably.stop()
+        await defaultDurably.db.destroy()
+      }
+    })
+
+    it('deletes persisted steps after terminal runs when preserveSteps is false', async () => {
       const cleanupDurably = createDurably({
         dialect: createDialect(),
-        pollingInterval: 50,
+        pollingIntervalMs: 50,
+        preserveSteps: false,
       })
       await cleanupDurably.migrate()
 

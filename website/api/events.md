@@ -30,17 +30,19 @@ durably.on('run:trigger', (event) => {
 })
 ```
 
-#### `run:start`
+#### `run:leased`
 
-Fired when a run begins execution.
+Fired when a run acquires a lease and begins execution.
 
 ```ts
-durably.on('run:start', (event) => {
+durably.on('run:leased', (event) => {
   // event: {
-  //   type: 'run:start',
+  //   type: 'run:leased',
   //   runId: string,
   //   jobName: string,
   //   input: unknown,
+  //   leaseOwner: string,
+  //   leaseExpiresAt: string,
   //   labels: Record<string, string>,
   //   timestamp: string,
   //   sequence: number
@@ -246,14 +248,14 @@ durably.on('log:write', (event) => {
 
 #### `worker:error`
 
-Fired when an internal worker error occurs (e.g., heartbeat failure).
+Fired when an internal worker error occurs (e.g., lease renewal failure).
 
 ```ts
 durably.on('worker:error', (event) => {
   // event: {
   //   type: 'worker:error',
   //   error: string,
-  //   context: string,  // e.g., 'heartbeat'
+  //   context: string,  // e.g., 'lease-renewal'
   //   runId?: string,
   //   timestamp: string,
   //   sequence: number
@@ -284,7 +286,7 @@ interface BaseEvent {
 
 type DurablyEvent =
   | RunTriggerEvent
-  | RunStartEvent
+  | RunLeasedEvent
   | RunCompleteEvent
   | RunFailEvent
   | RunCancelEvent
@@ -321,8 +323,8 @@ Both `ProgressData` and `LogData` are also used as callback parameter types in [
 const durably = createDurably({ dialect })
 
 // Log all events
-durably.on('run:start', (e) => {
-  console.log(`[${e.jobName}] Run started: ${e.runId}`)
+durably.on('run:leased', (e) => {
+  console.log(`[${e.jobName}] Run leased: ${e.runId}`)
 })
 
 durably.on('run:complete', (e) => {

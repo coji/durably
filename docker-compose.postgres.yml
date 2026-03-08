@@ -1,0 +1,17 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: durably-postgres
+    environment:
+      POSTGRES_DB: durably
+      POSTGRES_USER: durably
+      POSTGRES_PASSWORD: durably
+    ports:
+      - '55432:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U durably -d durably']
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    tmpfs:
+      - /var/lib/postgresql/data

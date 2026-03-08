@@ -202,11 +202,11 @@ export function createSSETests(): void {
         const inner = createMockController()
         const { controller } = createThrottledSSEController(inner, 100)
 
-        controller.enqueue({ type: 'run:start', runId: 'r1' })
+        controller.enqueue({ type: 'run:leased', runId: 'r1' })
         controller.enqueue({ type: 'step:complete', runId: 'r1' })
 
         expect(inner.events).toHaveLength(2)
-        expect(inner.events[0]).toEqual({ type: 'run:start', runId: 'r1' })
+        expect(inner.events[0]).toEqual({ type: 'run:leased', runId: 'r1' })
         expect(inner.events[1]).toEqual({
           type: 'step:complete',
           runId: 'r1',

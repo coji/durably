@@ -118,7 +118,7 @@ import { sqlocal } from './database'
 
 const durably = createDurably({
   dialect: sqlocal.dialect,
-  pollingInterval: 100,
+  pollingIntervalMs: 100,
   jobs: { dataSync: dataSyncJob },
 })
 
@@ -143,7 +143,7 @@ function SyncButton() {
     status,
     progress,
     output,
-    isRunning,
+    isLeased,
     isCompleted,
     isFailed,
     error,
@@ -153,12 +153,12 @@ function SyncButton() {
     <div>
       <button
         onClick={() => trigger({ userId: 'user_123' })}
-        disabled={isRunning}
+        disabled={isLeased}
       >
-        {isRunning ? 'Syncing...' : 'Sync Data'}
+        {isLeased ? 'Syncing...' : 'Sync Data'}
       </button>
 
-      {isRunning && progress && (
+      {isLeased && progress && (
         <div>
           <progress value={progress.current} max={progress.total} />
           <p>{progress.message}</p>
@@ -219,7 +219,7 @@ SPA hooks use the Durably instance directly (via `DurablyProvider`). Fullstack h
 
 Browsers suspend inactive tabs. Durably handles this automatically:
 
-1. Tab goes inactive → heartbeat stops → job marked stale
+1. Tab goes inactive → lease renewal stops → lease expires
 2. Tab becomes active → worker restarts → job resumes from last checkpoint
 
 ## Next Steps

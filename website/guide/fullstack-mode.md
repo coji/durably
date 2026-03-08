@@ -177,19 +177,19 @@ export async function action({ request }: Route.ActionArgs) {
 
 // Client component: subscribe to real-time progress
 export default function Home({ actionData }: Route.ComponentProps) {
-  const { progress, output, isRunning, isCompleted, isFailed, error } =
+  const { progress, output, isLeased, isCompleted, isFailed, error } =
     durablyClient.importCsv.useRun(actionData?.runId ?? null)
 
   return (
     <div>
       <Form method="post" encType="multipart/form-data">
         <input type="file" name="file" accept=".csv" />
-        <button disabled={isRunning}>
-          {isRunning ? 'Importing...' : 'Import CSV'}
+        <button disabled={isLeased}>
+          {isLeased ? 'Importing...' : 'Import CSV'}
         </button>
       </Form>
 
-      {isRunning && progress && (
+      {isLeased && progress && (
         <div>
           <progress value={progress.current} max={progress.total} />
           <p>{progress.message}</p>
@@ -231,7 +231,7 @@ function Dashboard() {
               {run.status === 'failed' && (
                 <button onClick={() => retrigger(run.id)}>Retrigger</button>
               )}
-              {run.status === 'running' && (
+              {run.status === 'leased' && (
                 <button onClick={() => cancel(run.id)}>Cancel</button>
               )}
               <button onClick={() => deleteRun(run.id)}>Delete</button>
@@ -259,7 +259,7 @@ The first page automatically subscribes to SSE for real-time updates — new run
 
 Stop the server mid-import and restart — it picks up right where it left off:
 
-1. `durably.init()` detects the stale run (heartbeat expired)
+1. `durably.init()` detects the stale run (lease expired)
 2. Resets it to `pending`
 3. Worker re-executes; completed steps return cached results
 4. Import continues from the next incomplete step

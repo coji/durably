@@ -187,7 +187,7 @@ describe('useRuns (client)', () => {
     expect(mockEventSource.instances[0].url).toContain('jobName=my-job')
   })
 
-  it('refreshes on run:start event', async () => {
+  it('refreshes on run:leased event', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve([]),
@@ -204,7 +204,7 @@ describe('useRuns (client)', () => {
 
     act(() => {
       mockEventSource.emit({
-        type: 'run:start',
+        type: 'run:leased',
         runId: 'new-run',
         jobName: 'test-job',
       })
@@ -273,8 +273,8 @@ describe('useRuns (client)', () => {
 
   it('updates progress in place on run:progress event', async () => {
     const mockRuns = [
-      createMockRun({ id: 'run-1', status: 'running' }),
-      createMockRun({ id: 'run-2', status: 'running' }),
+      createMockRun({ id: 'run-1', status: 'leased' }),
+      createMockRun({ id: 'run-2', status: 'leased' }),
     ]
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

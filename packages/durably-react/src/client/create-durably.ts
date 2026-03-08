@@ -82,7 +82,7 @@ export type DurablyClient<T> = {
  *
  * // In your component — fully type-safe with autocomplete
  * function CsvImporter() {
- *   const { trigger, output, isRunning } = durably.importCsv.useJob()
+ *   const { trigger, output, isLeased } = durably.importCsv.useJob()
  *   return <button onClick={() => trigger({ rows: [...] })}>Import</button>
  * }
  *

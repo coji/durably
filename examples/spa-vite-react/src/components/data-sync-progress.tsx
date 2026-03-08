@@ -19,7 +19,7 @@ export function DataSyncProgress({ runId }: DataSyncProgressProps) {
     error,
     logs,
     isPending,
-    isRunning,
+    isLeased,
     isCompleted,
     isFailed,
     isCancelled,
@@ -32,7 +32,7 @@ export function DataSyncProgress({ runId }: DataSyncProgressProps) {
       error={error}
       logs={logs}
       isPending={isPending}
-      isRunning={isRunning}
+      isLeased={isLeased}
       isCompleted={isCompleted}
       isFailed={isFailed}
       isCancelled={isCancelled}

@@ -71,14 +71,14 @@ export const durably = createDurably<typeof durably>({
 
 // 2. Use in components
 function ImportButton() {
-  const { trigger, progress, isRunning, isCompleted, output } =
+  const { trigger, progress, isLeased, isCompleted, output } =
     durably.importCsv.useJob()
 
   return (
     <div>
       <button
         onClick={() => trigger({ filename: 'data.csv' })}
-        disabled={isRunning}
+        disabled={isLeased}
       >
         Import
       </button>
@@ -111,14 +111,14 @@ function App() {
 }
 
 function ImportButton() {
-  const { trigger, progress, isRunning, isCompleted, output } =
+  const { trigger, progress, isLeased, isCompleted, output } =
     useJob(importCsvJob)
 
   return (
     <div>
       <button
         onClick={() => trigger({ filename: 'data.csv' })}
-        disabled={isRunning}
+        disabled={isLeased}
       >
         Import
       </button>
@@ -162,9 +162,9 @@ function ImportButton() {
 
 ```tsx
 function ProgressBar({ runId }: { runId: string }) {
-  const { progress, isRunning } = useJobRun({ runId })
+  const { progress, isLeased } = useJobRun({ runId })
 
-  if (!isRunning || !progress) return null
+  if (!isLeased || !progress) return null
 
   const percent = Math.round((progress.current / progress.total) * 100)
 
@@ -225,7 +225,7 @@ function Dashboard() {
               {run.status === 'failed' && (
                 <button onClick={() => retrigger(run.id)}>Retrigger</button>
               )}
-              {run.status === 'running' && (
+              {run.status === 'leased' && (
                 <button onClick={() => cancel(run.id)}>Cancel</button>
               )}
               <button onClick={() => deleteRun(run.id)}>Delete</button>

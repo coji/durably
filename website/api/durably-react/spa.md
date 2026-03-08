@@ -26,7 +26,7 @@ const sqlocal = new SQLocalKysely('app.sqlite3')
 
 const durably = createDurably({
   dialect: sqlocal.dialect,
-  pollingInterval: 100,
+  pollingIntervalMs: 100,
   jobs: {
     myJob: myJobDef,
   },
@@ -110,7 +110,7 @@ function Component() {
     error,
     logs,
     progress,
-    isRunning,
+    isLeased,
     isPending,
     isCompleted,
     isFailed,
@@ -126,7 +126,7 @@ function Component() {
 
   return (
     <div>
-      <button onClick={handleClick} disabled={isRunning}>
+      <button onClick={handleClick} disabled={isLeased}>
         Run
       </button>
       <p>Status: {status}</p>
@@ -160,7 +160,7 @@ interface UseJobResult<TInput, TOutput> {
   error: string | null
   logs: LogEntry[]
   progress: Progress | null
-  isRunning: boolean
+  isLeased: boolean
   isPending: boolean
   isCompleted: boolean
   isFailed: boolean
@@ -186,7 +186,7 @@ function RunMonitor({ runId }: { runId: string | null }) {
     error,
     progress,
     logs,
-    isRunning,
+    isLeased,
     isCompleted,
     isFailed,
     isCancelled,
@@ -255,7 +255,7 @@ List runs with optional filtering, pagination, and real-time updates.
 
 The hook automatically subscribes to Durably events and refreshes the list when runs change. It listens to:
 
-- `run:trigger`, `run:start`, `run:complete`, `run:fail`, `run:cancel`, `run:delete` - refresh list
+- `run:trigger`, `run:leased`, `run:complete`, `run:fail`, `run:cancel`, `run:delete` - refresh list
 - `run:progress` - update progress in place
 - `step:start`, `step:complete` - refresh for step count updates
 

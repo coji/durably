@@ -5,7 +5,7 @@ import type { Progress } from '../types'
  * This abstraction allows hooks to work with either event source.
  */
 export type SubscriptionEvent<TOutput = unknown> =
-  | { type: 'run:start' }
+  | { type: 'run:leased' }
   | { type: 'run:complete'; output: TOutput }
   | { type: 'run:fail'; error: string }
   | { type: 'run:cancel' }

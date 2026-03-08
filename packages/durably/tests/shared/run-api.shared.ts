@@ -16,7 +16,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
     beforeEach(async () => {
       durably = createDurably({
         dialect: createDialect(),
-        pollingInterval: 50,
+        pollingIntervalMs: 50,
       })
       await durably.migrate()
     })
@@ -511,7 +511,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
       it('rejects invalid labels on trigger()', async () => {
         const d = createDurably({
           dialect: createDialect(),
-          pollingInterval: 50,
+          pollingIntervalMs: 50,
           labels: z.object({
             organizationId: z.string(),
             env: z.string(),
@@ -541,7 +541,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
       it('rejects invalid labels on batchTrigger()', async () => {
         const d = createDurably({
           dialect: createDialect(),
-          pollingInterval: 50,
+          pollingIntervalMs: 50,
           labels: z.object({
             organizationId: z.string(),
             env: z.string(),
@@ -573,7 +573,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
       it('accepts valid labels on trigger()', async () => {
         const d = createDurably({
           dialect: createDialect(),
-          pollingInterval: 50,
+          pollingIntervalMs: 50,
           labels: z.object({
             organizationId: z.string(),
             env: z.string(),

@@ -34,9 +34,9 @@ export interface UseJobRunResult<TOutput = unknown> {
    */
   progress: Progress | null
   /**
-   * Whether a run is currently running
+   * Whether a run is currently leased (being executed by a worker)
    */
-  isRunning: boolean
+  isLeased: boolean
   /**
    * Whether a run is pending
    */
@@ -76,7 +76,7 @@ export function useJobRun<TOutput = unknown>(
     error: subscription.error,
     logs: subscription.logs,
     progress: subscription.progress,
-    isRunning: effectiveStatus === 'running',
+    isLeased: effectiveStatus === 'leased',
     isPending: effectiveStatus === 'pending',
     isCompleted: effectiveStatus === 'completed',
     isFailed: effectiveStatus === 'failed',

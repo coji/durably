@@ -20,7 +20,7 @@ When API changes are made, update `packages/durably/docs/llms.md` to keep it in 
 ## Core Concepts
 
 - **Job**: Defined via `defineJob()` and registered via `jobs` option (or `.register()`), receives a step context and payload
-- **Step**: Created via `step.run()`, each step's success state and return value is persisted (cleaned up on terminal state by default, see `cleanupSteps`)
+- **Step**: Created via `step.run()`, each step's success state and return value is persisted (cleaned up on terminal state by default, see `preserveSteps`)
 - **Run**: A job execution instance, created via `trigger()`, always persisted as `pending` before execution
 - **Worker**: Polls for pending runs and executes them sequentially
 
@@ -30,26 +30,26 @@ When API changes are made, update `packages/durably/docs/llms.md` to keep it in 
 - Single-threaded execution, no parallel run processing in minimal config
 - No automatic retry - failures are immediate and explicit (`retrigger()` creates a fresh run with a new ID and returns it)
 - Dialect injection pattern - Kysely dialect passed to `createDurably()` to abstract SQLite implementations
-- Event system for extensibility (`run:start`, `run:complete`, `run:fail`, `step:*`, `log:write`)
+- Event system for extensibility (`run:leased`, `run:complete`, `run:fail`, `step:*`, `log:write`)
 
 ## Database Schema
 
 Four tables: `durably_runs`, `durably_steps`, `durably_logs`, `durably_schema_versions`. Key fields:
 
-- Runs have: `status` (pending/running/completed/failed/cancelled), `idempotency_key`, `concurrency_key`, `heartbeat_at`
-- Steps have: `status` (completed/failed), `output` (JSON), indexed by `run_id` and `index`
+- Runs have: `status` (pending/leased/completed/failed/cancelled), `idempotency_key`, `concurrency_key`, `lease_owner`, `lease_expires_at`, `lease_generation` (fencing token)
+- Steps have: `status` (completed/failed/cancelled), `output` (JSON), indexed by `run_id` and `index`; completed steps have a partial unique index on `(run_id, name)`
 
 ## Configuration Defaults
 
-- `pollingInterval`: 1000ms
-- `heartbeatInterval`: 5000ms
-- `staleThreshold`: 30000ms (for detecting abandoned runs)
-- `cleanupSteps`: true (deletes step output data when runs reach terminal state)
+- `pollingIntervalMs`: 1000ms
+- `leaseRenewIntervalMs`: 5000ms
+- `leaseMs`: 30000ms (lease duration; expired leases are reclaimed)
+- `preserveSteps`: false (deletes step output data when runs reach terminal state)
 
 ## Browser Constraints (by design)
 
 - Single tab usage assumed (OPFS exclusivity)
-- Background tab interruptions handled via heartbeat recovery
+- Background tab interruptions handled via lease expiry recovery
 - Requires Secure Context (HTTPS/localhost) for OPFS
 
 ## Git Workflow
@@ -61,9 +61,20 @@ Four tables: `durably_runs`, `durably_steps`, `durably_logs`, `durably_schema_ve
 
 ```bash
 pnpm validate      # Format check, lint, typecheck, tests
-pnpm test          # Run all tests
+pnpm test          # Run all tests (SQLite only, no Docker needed)
 pnpm format        # Fix formatting
 pnpm lint:fix      # Fix lint issues
+```
+
+### PostgreSQL Tests
+
+PostgreSQL tests (`*.postgres.test.ts`) are excluded from `pnpm test` by default.
+
+```bash
+pnpm db:up                                      # Start Postgres
+pnpm --filter @coji/durably test:node:postgres   # Run Postgres tests only
+pnpm --filter @coji/durably test:node:all        # Run all Node tests (SQLite + Postgres)
+pnpm db:down                                     # Stop Postgres
 ```
 
 ## Skills

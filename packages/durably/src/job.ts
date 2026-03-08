@@ -1,7 +1,7 @@
 import { type z, prettifyError } from 'zod'
 import type { JobDefinition } from './define-job'
 import type { EventEmitter, LogData, ProgressData } from './events'
-import type { Run, RunFilter, Storage } from './storage'
+import type { Run, RunFilter, Store } from './storage'
 
 // eslint-disable-next-line @typescript-eslint/no-empty-function
 const noop = () => {}
@@ -30,6 +30,21 @@ export interface StepContext {
    * The ID of the current run
    */
   readonly runId: string
+
+  /**
+   * AbortSignal for cooperative cancellation or lease-loss handling.
+   */
+  readonly signal: AbortSignal
+
+  /**
+   * Whether this execution should stop cooperatively.
+   */
+  isAborted(): boolean
+
+  /**
+   * Throw if execution has been cancelled or lease ownership was lost.
+   */
+  throwIfAborted(): void
 
   /**
    * Execute a step with automatic persistence and replay
@@ -224,7 +239,7 @@ export function createJobHandle<
   TLabels extends Record<string, string> = Record<string, string>,
 >(
   jobDef: JobDefinition<TName, TInput, TOutput>,
-  storage: Storage,
+  storage: Store,
   eventEmitter: EventEmitter,
   registry: JobRegistry,
   labelsSchema?: z.ZodType<TLabels>,
@@ -261,7 +276,7 @@ export function createJobHandle<
       }
 
       // Create the run
-      const run = await storage.createRun({
+      const run = await storage.enqueue({
         jobName: jobDef.name,
         input: validatedInput,
         idempotencyKey: options?.idempotencyKey,
@@ -427,7 +442,7 @@ export function createJobHandle<
       }
 
       // Create all runs
-      const runs = await storage.batchCreateRuns(
+      const runs = await storage.enqueueMany(
         validated.map((v) => ({
           jobName: jobDef.name,
           input: v.input,

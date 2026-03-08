@@ -10,3 +10,9 @@ export function createNodeDialect() {
     url: `file:${tempFile}`,
   })
 }
+
+export function createNodeDialectForFile(filePath: string) {
+  return new LibsqlDialect({
+    url: `file:${filePath}`,
+  })
+}
