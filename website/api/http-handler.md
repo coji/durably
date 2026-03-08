@@ -119,7 +119,7 @@ The handler provides these endpoints:
 | `GET`    | `/steps?runId=xxx`     | Get steps for a run                      |
 | `GET`    | `/runs/subscribe`      | SSE stream for run list updates          |
 | `POST`   | `/retrigger?runId=xxx` | Retrigger a failed run (creates new run) |
-| `POST`   | `/cancel?runId=xxx`    | Cancel a leased job                      |
+| `POST`   | `/cancel?runId=xxx`    | Cancel a pending or leased run           |
 | `DELETE` | `/run?runId=xxx`       | Delete a run                             |
 
 ## Trigger Request

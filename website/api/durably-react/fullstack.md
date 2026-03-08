@@ -460,7 +460,7 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
 | Property    | Type                                            | Description                                 |
 | ----------- | ----------------------------------------------- | ------------------------------------------- |
 | `retrigger` | `(runId: string) => Promise<string>`            | Retrigger a failed run (returns new run ID) |
-| `cancel`    | `(runId: string) => Promise<void>`              | Cancel a leased job                         |
+| `cancel`    | `(runId: string) => Promise<void>`              | Cancel a pending or leased run              |
 | `deleteRun` | `(runId: string) => Promise<void>`              | Delete a run                                |
 | `getRun`    | `(runId: string) => Promise<ClientRun \| null>` | Get run details                             |
 | `getSteps`  | `(runId: string) => Promise<StepRecord[]>`      | Get step details                            |
