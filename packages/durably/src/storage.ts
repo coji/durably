@@ -209,7 +209,11 @@ export interface Store<
   deleteSteps(runId: string): Promise<void>
 
   // Progress
-  updateProgress(runId: string, progress: ProgressData | null): Promise<void>
+  updateProgress(
+    runId: string,
+    leaseGeneration: number,
+    progress: ProgressData | null,
+  ): Promise<void>
 
   // Logs
   createLog(input: CreateLogInput): Promise<Log>
@@ -902,6 +906,7 @@ export function createKyselyStore(
 
     async updateProgress(
       runId: string,
+      leaseGeneration: number,
       progress: ProgressData | null,
     ): Promise<void> {
       await db
@@ -911,6 +916,7 @@ export function createKyselyStore(
           updated_at: new Date().toISOString(),
         })
         .where('id', '=', runId)
+        .where('lease_generation', '=', leaseGeneration)
         .execute()
     },
 

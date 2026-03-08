@@ -528,6 +528,12 @@ function createDurablyInstance<
           duration: Date.now() - started,
           labels: run.labels,
         })
+      } else {
+        eventEmitter.emit({
+          type: 'worker:error',
+          error: `Lease lost before completing run ${run.id}`,
+          context: 'run-completion',
+        })
       }
     } catch (error) {
       if (error instanceof LeaseLostError || error instanceof CancelledError) {
@@ -554,6 +560,12 @@ function createDurablyInstance<
           error: errorMessage,
           failedStepName: failedStep?.name ?? 'unknown',
           labels: run.labels,
+        })
+      } else {
+        eventEmitter.emit({
+          type: 'worker:error',
+          error: `Lease lost before recording failure for run ${run.id}`,
+          context: 'run-failure',
         })
       }
     } finally {
