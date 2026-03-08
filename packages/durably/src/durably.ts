@@ -464,7 +464,7 @@ function createDurablyInstance<
           }
 
           const renewedLeaseExpiresAt = new Date(
-            Date.now() + state.leaseMs,
+            Date.parse(now) + state.leaseMs,
           ).toISOString()
 
           scheduleLeaseDeadline(renewedLeaseExpiresAt)
