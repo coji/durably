@@ -32,8 +32,8 @@ export function createPluginTests(createDialect: () => Dialect) {
         const plugin: DurablyPlugin = {
           name: 'test-plugin',
           install(durably) {
-            durably.on('run:start', () => {
-              events.push('run:start')
+            durably.on('run:leased', () => {
+              events.push('run:leased')
             })
           },
         }
@@ -55,7 +55,7 @@ export function createPluginTests(createDialect: () => Dialect) {
 
         await vi.waitFor(
           async () => {
-            expect(events).toContain('run:start')
+            expect(events).toContain('run:leased')
           },
           { timeout: 1000 },
         )
@@ -67,14 +67,14 @@ export function createPluginTests(createDialect: () => Dialect) {
         const plugin1: DurablyPlugin = {
           name: 'plugin-1',
           install(durably) {
-            durably.on('run:start', () => events.push('plugin1'))
+            durably.on('run:leased', () => events.push('plugin1'))
           },
         }
 
         const plugin2: DurablyPlugin = {
           name: 'plugin-2',
           install(durably) {
-            durably.on('run:start', () => events.push('plugin2'))
+            durably.on('run:leased', () => events.push('plugin2'))
           },
         }
 

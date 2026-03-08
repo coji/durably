@@ -30,7 +30,7 @@ When API changes are made, update `packages/durably/docs/llms.md` to keep it in 
 - Single-threaded execution, no parallel run processing in minimal config
 - No automatic retry - failures are immediate and explicit (`retrigger()` creates a fresh run with a new ID and returns it)
 - Dialect injection pattern - Kysely dialect passed to `createDurably()` to abstract SQLite implementations
-- Event system for extensibility (`run:start`, `run:complete`, `run:fail`, `step:*`, `log:write`)
+- Event system for extensibility (`run:leased`, `run:complete`, `run:fail`, `step:*`, `log:write`)
 
 ## Database Schema
 

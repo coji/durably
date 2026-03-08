@@ -8,8 +8,8 @@
 import { durably } from './lib/durably'
 
 // Subscribe to events
-durably.on('run:start', (event) => {
-  console.log(`[run:start] ${event.jobName}`)
+durably.on('run:leased', (event) => {
+  console.log(`[run:leased] ${event.jobName}`)
 })
 
 durably.on('step:complete', (event) => {

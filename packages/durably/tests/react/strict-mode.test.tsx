@@ -283,8 +283,8 @@ describe('React StrictMode', () => {
         })
         instances.push(instance)
 
-        const unsubscribe = instance.on('run:start', () => {
-          events.push('run:start')
+        const unsubscribe = instance.on('run:leased', () => {
+          events.push('run:leased')
         })
 
         instance.migrate().then(() => {

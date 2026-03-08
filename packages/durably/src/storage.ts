@@ -44,10 +44,6 @@ export interface Run<
   labels: TLabels
   leaseOwner: string | null
   leaseExpiresAt: string | null
-  /**
-   * Deprecated compatibility alias for legacy heartbeat-based runtime.
-   */
-  heartbeatAt: string
   startedAt: string | null
   completedAt: string | null
   createdAt: string
@@ -213,7 +209,6 @@ export interface Storage<
       progress?: ProgressData | null
       output?: unknown
       error?: string | null
-      heartbeatAt?: string
       leaseOwner?: string | null
       leaseExpiresAt?: string | null
       startedAt?: string
@@ -297,7 +292,6 @@ function rowToRun(
     labels: JSON.parse(row.labels),
     leaseOwner: row.lease_owner,
     leaseExpiresAt: row.lease_expires_at,
-    heartbeatAt: row.lease_expires_at ?? row.updated_at,
     startedAt: row.started_at,
     completedAt: row.completed_at,
     createdAt: row.created_at,
@@ -932,9 +926,7 @@ export function createKyselyStorage(
           lease_owner:
             data.leaseOwner !== undefined ? data.leaseOwner : undefined,
           lease_expires_at:
-            data.leaseExpiresAt !== undefined
-              ? data.leaseExpiresAt
-              : data.heartbeatAt,
+            data.leaseExpiresAt !== undefined ? data.leaseExpiresAt : undefined,
           started_at: data.startedAt,
           completed_at: data.completedAt,
           updated_at: now,

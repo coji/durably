@@ -91,7 +91,7 @@ describe('Core Extensions', () => {
       expect(events.some((e) => e.type === 'run:complete')).toBe(true)
     })
 
-    it('emits run:start event', async () => {
+    it('emits run:leased event', async () => {
       durably.register({ testJob: testJobDef })
       durably.start()
 

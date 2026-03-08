@@ -516,16 +516,6 @@ function createDurablyInstance<
         leaseExpiresAt: run.leaseExpiresAt ?? new Date().toISOString(),
         labels: run.labels,
       })
-      eventEmitter.emit({
-        type: 'run:start',
-        runId: run.id,
-        jobName: run.jobName,
-        input: run.input,
-        leaseOwner: workerId,
-        leaseExpiresAt: run.leaseExpiresAt ?? new Date().toISOString(),
-        labels: run.labels,
-      })
-
       const output = await job.fn(step, run.input)
 
       if (job.outputSchema) {

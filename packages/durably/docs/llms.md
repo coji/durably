@@ -33,9 +33,9 @@ const dialect = new LibsqlDialect({ client })
 const durably = createDurably({
   dialect,
   pollingInterval: 1000, // Job polling interval (ms)
-  heartbeatInterval: 5000, // Heartbeat update interval (ms)
-  staleThreshold: 30000, // When to consider a job abandoned (ms)
-  cleanupSteps: true, // Delete step output data on terminal state (default: true)
+  leaseInterval: 5000, // Lease renewal interval (ms)
+  staleThreshold: 30000, // When to consider a lease expired (ms)
+  preserveSteps: true, // Keep step output data on terminal state (default: true)
   // Optional: type-safe labels with Zod schema
   // labels: z.object({ organizationId: z.string(), env: z.string() }),
   jobs: {
@@ -234,7 +234,7 @@ Subscribe to job execution events:
 ```ts
 // Run lifecycle events
 durably.on('run:trigger', (e) => console.log('Triggered:', e.runId))
-durably.on('run:start', (e) => console.log('Started:', e.runId))
+durably.on('run:leased', (e) => console.log('Leased:', e.runId))
 durably.on('run:complete', (e) => console.log('Done:', e.output))
 durably.on('run:fail', (e) => console.error('Failed:', e.error))
 durably.on('run:cancel', (e) => console.log('Cancelled:', e.runId))
@@ -279,8 +279,8 @@ while (true) {
   if (done) break
 
   switch (value.type) {
-    case 'run:start':
-      console.log('Started')
+    case 'run:leased':
+      console.log('Leased')
       break
     case 'run:complete':
       console.log('Completed:', value.output)
@@ -367,7 +367,7 @@ GET /runs?label.organizationId=org_123
 GET /runs/subscribe?label.organizationId=org_123&label.env=prod
 ```
 
-**Response Shape:** The `/runs` and `/run` endpoints return `ClientRun` objects (internal fields like `heartbeatAt`, `idempotencyKey`, `concurrencyKey`, `updatedAt` are stripped). Use `toClientRun()` to apply the same projection in custom code:
+**Response Shape:** The `/runs` and `/run` endpoints return `ClientRun` objects (internal fields like `leaseOwner`, `leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `updatedAt` are stripped). Use `toClientRun()` to apply the same projection in custom code:
 
 ```ts
 import { toClientRun } from '@coji/durably'
@@ -461,7 +461,7 @@ const { dialect } = new SQLocalKysely('app.sqlite3')
 const durably = createDurably({
   dialect,
   pollingInterval: 100,
-  heartbeatInterval: 500,
+  leaseInterval: 500,
   staleThreshold: 3000,
   jobs: {
     myJob: defineJob({
@@ -481,13 +481,13 @@ await durably.init()
 ## Run Lifecycle
 
 ```text
-trigger() → pending → running → completed
-                  ↘           ↗
+trigger() → pending → leased → completed
+                  ↘          ↗
                     → failed
 ```
 
 - **pending**: Waiting for worker to pick up
-- **running**: Worker is executing steps
+- **leased**: Worker has acquired a lease and is executing steps
 - **completed**: All steps finished successfully
 - **failed**: A step threw an error
 - **cancelled**: Manually cancelled via `cancel()`
@@ -528,7 +528,7 @@ interface StepContext {
 interface Run<TLabels extends Record<string, string> = Record<string, string>> {
   id: string
   jobName: string
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  status: 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
   input: unknown
   labels: TLabels
   output: unknown | null

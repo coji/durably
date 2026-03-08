@@ -81,7 +81,7 @@ describe('useJob (client)', () => {
       expect(mockEventSource.instances.length).toBeGreaterThan(0)
     })
 
-    // Emit run:start event
+    // Emit run:leased event
     act(() => {
       mockEventSource.emit({ type: 'run:leased', runId: 'sse-run-id' })
     })

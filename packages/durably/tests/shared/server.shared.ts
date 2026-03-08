@@ -300,7 +300,7 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(body[0]).not.toHaveProperty('leaseOwner')
         expect(body[0]).not.toHaveProperty('leaseExpiresAt')
         expect(body[0]).not.toHaveProperty('updatedAt')
-        expect(body[0]).toHaveProperty('heartbeatAt')
+        expect(body[0]).not.toHaveProperty('heartbeatAt')
         expect(body[0]).toHaveProperty('id')
         expect(body[0]).toHaveProperty('jobName')
         expect(body[0]).toHaveProperty('status')
@@ -480,7 +480,7 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(body).not.toHaveProperty('leaseOwner')
         expect(body).not.toHaveProperty('leaseExpiresAt')
         expect(body).not.toHaveProperty('updatedAt')
-        expect(body).toHaveProperty('heartbeatAt')
+        expect(body).not.toHaveProperty('heartbeatAt')
       })
 
       it('returns 400 when runId is missing', async () => {
