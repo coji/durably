@@ -544,75 +544,85 @@ export function createKyselyQueueStore(
 
       if (backend === 'postgres') {
         return await db.transaction().execute(async (trx) => {
-          const concurrencyCondition =
-            excludeConcurrencyKeys.length > 0
-              ? sql`
-                  AND (
-                    concurrency_key IS NULL
-                    OR concurrency_key NOT IN (${sql.join(excludeConcurrencyKeys)})
-                  )
-                `
-              : sql``
+          const skipKeys = [...excludeConcurrencyKeys]
 
-          // Step 1: Find and lock a candidate row
-          const candidateResult = await sql<{
-            id: string
-            concurrency_key: string | null
-          }>`
-            SELECT id, concurrency_key
-            FROM durably_runs
-            WHERE
-              (
-                status = 'pending'
-                OR (status = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ${now})
-              )
-              AND ${activeLeaseGuard}
-              ${concurrencyCondition}
-            ORDER BY created_at ASC, id ASC
-            FOR UPDATE SKIP LOCKED
-            LIMIT 1
-          `.execute(trx)
+          // Loop: on concurrency-key conflict, exclude that key and retry
+          // to find the next eligible candidate in the same transaction.
+          for (;;) {
+            const concurrencyCondition =
+              skipKeys.length > 0
+                ? sql`
+                    AND (
+                      concurrency_key IS NULL
+                      OR concurrency_key NOT IN (${sql.join(skipKeys)})
+                    )
+                  `
+                : sql``
 
-          const candidate = candidateResult.rows[0]
-          if (!candidate) return null
-
-          // Step 2: If the candidate has a concurrency key, serialize via
-          // advisory lock and re-verify with a fresh snapshot (READ COMMITTED
-          // gives each statement its own snapshot).
-          if (candidate.concurrency_key) {
-            await sql`SELECT pg_advisory_xact_lock(hashtext(${candidate.concurrency_key}))`.execute(
-              trx,
-            )
-
-            const conflict = await sql`
-              SELECT 1 FROM durably_runs
-              WHERE concurrency_key = ${candidate.concurrency_key}
-                AND id <> ${candidate.id}
-                AND status = 'leased'
-                AND lease_expires_at IS NOT NULL
-                AND lease_expires_at > ${now}
+            // Step 1: Find and lock a candidate row
+            const candidateResult = await sql<{
+              id: string
+              concurrency_key: string | null
+            }>`
+              SELECT id, concurrency_key
+              FROM durably_runs
+              WHERE
+                (
+                  status = 'pending'
+                  OR (status = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ${now})
+                )
+                AND ${activeLeaseGuard}
+                ${concurrencyCondition}
+              ORDER BY created_at ASC, id ASC
+              FOR UPDATE SKIP LOCKED
               LIMIT 1
             `.execute(trx)
 
-            if (conflict.rows.length > 0) return null
+            const candidate = candidateResult.rows[0]
+            if (!candidate) return null
+
+            // Step 2: If the candidate has a concurrency key, serialize via
+            // advisory lock and re-verify with a fresh snapshot (READ COMMITTED
+            // gives each statement its own snapshot).
+            if (candidate.concurrency_key) {
+              await sql`SELECT pg_advisory_xact_lock(hashtext(${candidate.concurrency_key}))`.execute(
+                trx,
+              )
+
+              const conflict = await sql`
+                SELECT 1 FROM durably_runs
+                WHERE concurrency_key = ${candidate.concurrency_key}
+                  AND id <> ${candidate.id}
+                  AND status = 'leased'
+                  AND lease_expires_at IS NOT NULL
+                  AND lease_expires_at > ${now}
+                LIMIT 1
+              `.execute(trx)
+
+              if (conflict.rows.length > 0) {
+                // Key is occupied — exclude it and try the next candidate
+                skipKeys.push(candidate.concurrency_key)
+                continue
+              }
+            }
+
+            // Step 3: Claim the candidate
+            const result = await sql<Database['durably_runs']>`
+              UPDATE durably_runs
+              SET
+                status = 'leased',
+                lease_owner = ${workerId},
+                lease_expires_at = ${leaseExpiresAt},
+                started_at = COALESCE(started_at, ${now}),
+                updated_at = ${now}
+              WHERE id = ${candidate.id}
+              RETURNING *
+            `.execute(trx)
+
+            const row = result.rows[0]
+            if (!row) return null
+            return rowToRun({ ...row, step_count: 0 })
           }
-
-          // Step 3: Claim the candidate
-          const result = await sql<Database['durably_runs']>`
-            UPDATE durably_runs
-            SET
-              status = 'leased',
-              lease_owner = ${workerId},
-              lease_expires_at = ${leaseExpiresAt},
-              started_at = COALESCE(started_at, ${now}),
-              updated_at = ${now}
-            WHERE id = ${candidate.id}
-            RETURNING *
-          `.execute(trx)
-
-          const row = result.rows[0]
-          if (!row) return null
-          return rowToRun({ ...row, step_count: 0 })
         })
       }
 

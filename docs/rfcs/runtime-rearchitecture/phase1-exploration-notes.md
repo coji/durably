@@ -182,10 +182,13 @@ The initial implementation used a `WITH ... AS MATERIALIZED` CTE with `FOR UPDAT
 
 The fix uses `pg_advisory_xact_lock(hashtext(concurrency_key))` to serialize per concurrency key. After acquiring the advisory lock, a fresh statement re-checks for active leases using a new READ COMMITTED snapshot. This pattern is well-established in PostgreSQL queue implementations (pgBoss, Graphile Worker, etc.).
 
+When a concurrency-key conflict is detected after advisory lock re-verification, the claim loop excludes that key and retries within the same transaction, so unrelated pending work is still reachable. Only when no further candidates remain does the claim return null.
+
 Implication:
 
-- `claimNext()` is now a fully correct queue primitive for same-key serialization on PostgreSQL
+- `claimNext()` now correctly enforces same-key serialization on PostgreSQL
 - the advisory-lock approach keeps claims non-blocking for rows without concurrency keys
+- concurrency-key conflicts do not suppress unrelated claims — the retry loop ensures other eligible work is still found
 - PostgreSQL's claim path is meaningfully different from the generic SQLite path, reinforcing the need for adapter-specific implementations
 
 ### libSQL

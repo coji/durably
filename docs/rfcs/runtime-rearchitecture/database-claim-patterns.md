@@ -112,7 +112,7 @@ That reinforces the intended layering:
 Phase 1 additionally resolved the concurrency-key race at the `claimNext()` level:
 
 - direct concurrent claim tests across separate PostgreSQL clients now pass with advisory-lock serialization
-- this promotes `claimNext()` from "runtime-level only" to a fully correct queue primitive for same-key serialization
+- when a concurrency-key conflict is detected after advisory lock re-verification, the claim loop excludes that key and retries within the same transaction, so unrelated pending work is still reachable
 
 ### `renewLease()`
 
