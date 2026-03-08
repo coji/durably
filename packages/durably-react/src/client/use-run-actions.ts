@@ -23,7 +23,7 @@ export interface UseRunActionsClientResult {
    */
   retrigger: (runId: string) => Promise<string>
   /**
-   * Cancel a pending or running run
+   * Cancel a pending or leased run
    */
   cancel: (runId: string) => Promise<void>
   /**
@@ -65,7 +65,7 @@ export interface UseRunActionsClientResult {
  *           Run Again
  *         </button>
  *       )}
- *       {(status === 'pending' || status === 'running') && (
+ *       {(status === 'pending' || status === 'leased') && (
  *         <button onClick={() => cancel(runId)} disabled={isLoading}>
  *           Cancel
  *         </button>

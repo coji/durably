@@ -208,7 +208,7 @@ export interface Storage<
   updateRun(
     runId: string,
     data: {
-      status?: RunStatus | 'running'
+      status?: RunStatus
       currentStepIndex?: number
       progress?: ProgressData | null
       output?: unknown
@@ -258,7 +258,9 @@ export function toClientRun<
     updatedAt,
     ...clientRun
   } = run
-  return clientRun
+  return {
+    ...clientRun,
+  }
 }
 
 /**
@@ -911,7 +913,7 @@ export function createKyselyStorage(
     },
     async updateRun(runId, data) {
       const now = new Date().toISOString()
-      const status = data.status === 'running' ? 'leased' : data.status
+      const status = data.status
 
       await db
         .updateTable('durably_runs')

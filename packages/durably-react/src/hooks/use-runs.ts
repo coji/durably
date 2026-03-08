@@ -14,7 +14,7 @@ export interface UseRunsOptions {
   /**
    * Filter by status
    */
-  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  status?: 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
   /**
    * Filter by labels (all specified labels must match)
    */
@@ -41,7 +41,7 @@ export interface UseRunsResult<
     | undefined,
 > {
   /**
-   * List of runs for the current page
+   * List of runs for the current page.
    */
   runs: TypedRun<TInput, TOutput>[]
   /**
@@ -210,7 +210,7 @@ export function useRuns<
 
     const unsubscribes = [
       durably.on('run:trigger', refresh),
-      durably.on('run:start', refresh),
+      durably.on('run:leased', refresh),
       durably.on('run:complete', refresh),
       durably.on('run:fail', refresh),
       durably.on('run:cancel', refresh),

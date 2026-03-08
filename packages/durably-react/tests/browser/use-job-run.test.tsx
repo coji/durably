@@ -492,7 +492,7 @@ describe('useJobRun', () => {
       { timeout: 3000 },
     )
 
-    expect(result.current.isRunning).toBe(false)
+    expect(result.current.isLeased).toBe(false)
     expect(result.current.isPending).toBe(false)
     expect(result.current.isFailed).toBe(false)
   })

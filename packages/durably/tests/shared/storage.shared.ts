@@ -163,11 +163,11 @@ export function createStorageTests(createDialect: () => Dialect) {
         })
 
         await durably.storage.updateRun(created.id, {
-          status: 'running',
+          status: 'leased',
         })
 
         const run = await durably.storage.getRun(created.id)
-        expect(run!.status).toBe('running')
+        expect(run!.status).toBe('leased')
       })
 
       it('gets runs with filter', async () => {
@@ -365,13 +365,13 @@ export function createStorageTests(createDialect: () => Dialect) {
 
         expect(claimed).not.toBeNull()
         expect(claimed!.id).toBe(created.id)
-        expect(claimed!.status).toBe('running')
+        expect(claimed!.status).toBe('leased')
         expect(claimed!.startedAt).not.toBeNull()
         expect(claimed!.stepCount).toBe(0)
 
-        // Verify run is now running in DB
+        // Verify run is now leased in DB
         const run = await durably.storage.getRun(created.id)
-        expect(run!.status).toBe('running')
+        expect(run!.status).toBe('leased')
       })
 
       it('claimNextPendingRun returns null when no pending runs', async () => {
@@ -396,7 +396,7 @@ export function createStorageTests(createDialect: () => Dialect) {
         expect(claimed).not.toBeNull()
         expect(claimed!.id).toBe(run2.id)
         expect(claimed!.concurrencyKey).toBe('key-b')
-        expect(claimed!.status).toBe('running')
+        expect(claimed!.status).toBe('leased')
       })
 
       it('claimNextPendingRun skips runs with null concurrency key when not excluded', async () => {
@@ -435,7 +435,7 @@ export function createStorageTests(createDialect: () => Dialect) {
 
         expect(secondClaim).not.toBeNull()
         expect(secondClaim!.id).toBe(created.id)
-        expect(secondClaim!.status).toBe('running')
+        expect(secondClaim!.status).toBe('leased')
         // started_at should be preserved from the first claim
         expect(secondClaim!.startedAt).toBe(originalStartedAt)
       })

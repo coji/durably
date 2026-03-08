@@ -211,7 +211,7 @@ export function Dashboard() {
                             Retrigger
                           </button>
                         )}
-                        {(run.status === 'running' ||
+                        {(run.status === 'leased' ||
                           run.status === 'pending') && (
                           <button
                             type="button"
@@ -221,7 +221,7 @@ export function Dashboard() {
                             Cancel
                           </button>
                         )}
-                        {run.status !== 'running' &&
+                        {run.status !== 'leased' &&
                           run.status !== 'pending' && (
                             <button
                               type="button"

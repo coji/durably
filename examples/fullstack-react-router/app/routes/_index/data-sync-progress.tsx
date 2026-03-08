@@ -19,7 +19,7 @@ export function DataSyncProgress() {
     error,
     logs,
     isPending,
-    isRunning,
+    isLeased,
     isCompleted,
     isFailed,
     isCancelled,
@@ -32,7 +32,7 @@ export function DataSyncProgress() {
       error={error ?? null}
       logs={logs}
       isPending={isPending}
-      isRunning={isRunning}
+      isLeased={isLeased}
       isCompleted={isCompleted}
       isFailed={isFailed}
       isCancelled={isCancelled}

@@ -211,10 +211,7 @@ function parseRunFilter(url: URL): RunFilter | Response {
 
   return {
     jobName: jobNames.length > 0 ? jobNames : undefined,
-    status:
-      statusParam === 'running'
-        ? ('leased' as RunFilter['status'])
-        : (statusParam as RunFilter['status']),
+    status: statusParam as RunFilter['status'],
     labels,
     limit,
     offset,
@@ -512,10 +509,10 @@ export function createDurablyHandler<
             }
           }),
 
-          durably.on('run:start', (event) => {
+          durably.on('run:leased', (event) => {
             if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({
-                type: 'run:start',
+                type: 'run:leased',
                 runId: event.runId,
                 jobName: event.jobName,
                 labels: event.labels,

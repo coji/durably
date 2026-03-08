@@ -57,7 +57,7 @@ export interface JobHooks<TInput, TOutput> {
  *
  * // In your component - fully type-safe
  * function CsvImporter() {
- *   const { trigger, output, progress, isRunning } = importCsv.useJob()
+ *   const { trigger, output, progress, isLeased } = importCsv.useJob()
  *
  *   return (
  *     <button onClick={() => trigger({ rows: [...] })}>

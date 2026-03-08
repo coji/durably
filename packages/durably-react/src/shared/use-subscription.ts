@@ -62,7 +62,7 @@ export function useSubscription<TOutput = unknown>(
       if (runIdRef.current !== runId) return
 
       switch (event.type) {
-        case 'run:start':
+        case 'run:leased':
         case 'run:cancel':
           dispatch({ type: event.type })
           break

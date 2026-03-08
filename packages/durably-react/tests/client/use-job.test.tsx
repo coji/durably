@@ -83,11 +83,11 @@ describe('useJob (client)', () => {
 
     // Emit run:start event
     act(() => {
-      mockEventSource.emit({ type: 'run:start', runId: 'sse-run-id' })
+      mockEventSource.emit({ type: 'run:leased', runId: 'sse-run-id' })
     })
 
     await waitFor(() => {
-      expect(result.current.status).toBe('running')
+      expect(result.current.status).toBe('leased')
     })
   })
 
@@ -507,11 +507,11 @@ describe('useJob (client)', () => {
   })
 
   describe('autoResume', () => {
-    it('fetches running job on mount and subscribes (autoResume: true by default)', async () => {
+    it('fetches leased job on mount and subscribes (autoResume: true by default)', async () => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: true,
         json: () =>
-          Promise.resolve([{ id: 'running-job-id', status: 'running' }]),
+          Promise.resolve([{ id: 'leased-job-id', status: 'leased' }]),
       })
       globalThis.fetch = fetchMock
 
@@ -523,7 +523,7 @@ describe('useJob (client)', () => {
         }),
       )
 
-      // Should fetch runs with status=running (with AbortController signal)
+      // Should fetch runs with status=leased (with AbortController signal)
       await waitFor(() => {
         expect(fetchMock).toHaveBeenCalledWith(
           expect.stringContaining('/api/durably/runs?'),
@@ -531,18 +531,18 @@ describe('useJob (client)', () => {
         )
       })
 
-      // Should set currentRunId to the running job
+      // Should set currentRunId to the leased job
       await waitFor(() => {
-        expect(result.current.currentRunId).toBe('running-job-id')
+        expect(result.current.currentRunId).toBe('leased-job-id')
       })
     })
 
-    it('fetches pending job if no running job found', async () => {
+    it('fetches pending job if no leased job found', async () => {
       const fetchMock = vi
         .fn()
         .mockResolvedValueOnce({
           ok: true,
-          json: () => Promise.resolve([]), // No running jobs
+          json: () => Promise.resolve([]), // No leased jobs
         })
         .mockResolvedValueOnce({
           ok: true,
@@ -648,7 +648,7 @@ describe('useJob (client)', () => {
       })
     })
 
-    it('switches to new run on run:start event', async () => {
+    it('switches to new run on run:leased event', async () => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: true,
         json: () => Promise.resolve([]),
@@ -668,7 +668,7 @@ describe('useJob (client)', () => {
 
       act(() => {
         mockEventSource.emit({
-          type: 'run:start',
+          type: 'run:leased',
           runId: 'started-run-id',
           jobName: 'test-job',
         })
@@ -683,7 +683,7 @@ describe('useJob (client)', () => {
       const fetchMock = vi.fn().mockResolvedValueOnce({
         ok: true,
         json: () =>
-          Promise.resolve([{ id: 'current-run-id', status: 'running' }]),
+          Promise.resolve([{ id: 'current-run-id', status: 'leased' }]),
       })
       globalThis.fetch = fetchMock
 

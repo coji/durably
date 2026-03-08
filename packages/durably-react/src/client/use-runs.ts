@@ -17,7 +17,7 @@ type RunUpdateEvent =
   | {
       type:
         | 'run:trigger'
-        | 'run:start'
+        | 'run:leased'
         | 'run:complete'
         | 'run:fail'
         | 'run:cancel'
@@ -314,7 +314,7 @@ export function useRuns<
         // On run lifecycle events, refresh the list
         if (
           data.type === 'run:trigger' ||
-          data.type === 'run:start' ||
+          data.type === 'run:leased' ||
           data.type === 'run:complete' ||
           data.type === 'run:fail' ||
           data.type === 'run:cancel' ||

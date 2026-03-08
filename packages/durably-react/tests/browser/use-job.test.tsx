@@ -208,7 +208,7 @@ describe('useJob', () => {
       wrapper: createWrapper(durably),
     })
 
-    expect(result.current.isRunning).toBe(false)
+    expect(result.current.isLeased).toBe(false)
     expect(result.current.isPending).toBe(false)
     expect(result.current.isCompleted).toBe(false)
     expect(result.current.isFailed).toBe(false)
@@ -219,7 +219,7 @@ describe('useJob', () => {
     await waitFor(() => {
       expect(
         result.current.isPending ||
-          result.current.isRunning ||
+          result.current.isLeased ||
           result.current.isCompleted,
       ).toBe(true)
     })
@@ -229,7 +229,7 @@ describe('useJob', () => {
       expect(result.current.isCompleted).toBe(true)
     })
 
-    expect(result.current.isRunning).toBe(false)
+    expect(result.current.isLeased).toBe(false)
     expect(result.current.isPending).toBe(false)
     expect(result.current.isFailed).toBe(false)
   })
@@ -358,7 +358,7 @@ describe('useJob', () => {
       instances.push(durably)
 
       // This test verifies that followLatest: false keeps tracking the current run
-      // even when run:start events fire (from the worker starting jobs)
+      // even when run:leased events fire (from the worker starting jobs)
       const slowJob = defineJob({
         name: 'slow-job-no-follow',
         input: z.object({ id: z.number() }),
@@ -379,9 +379,9 @@ describe('useJob', () => {
       // Trigger first job
       const { runId: firstRunId } = await result.current.trigger({ id: 1 })
 
-      // Wait for it to start running (status becomes 'running')
+      // Wait for it to be leased (status becomes 'leased')
       await waitFor(() => {
-        expect(result.current.status).toBe('running')
+        expect(result.current.status).toBe('leased')
         expect(result.current.currentRunId).toBe(firstRunId)
       })
 
@@ -414,7 +414,7 @@ describe('useJob', () => {
     // Wait for the job to start running
     await waitFor(() => {
       expect(result.current.currentRunId).not.toBeNull()
-      expect(result.current.status).toBe('running')
+      expect(result.current.status).toBe('leased')
     })
 
     // Cancel the job

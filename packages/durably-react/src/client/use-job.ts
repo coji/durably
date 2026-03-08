@@ -17,7 +17,7 @@ export interface UseJobClientOptions {
    */
   initialRunId?: string
   /**
-   * Automatically resume tracking a running/pending job on mount
+   * Automatically resume tracking a leased/pending job on mount
    * @default true
    */
   autoResume?: boolean
@@ -63,7 +63,7 @@ export interface UseJobClientResult<TInput, TOutput> {
   /**
    * Whether a run is currently running
    */
-  isRunning: boolean
+  isLeased: boolean
   /**
    * Whether a run is pending
    */
@@ -121,7 +121,7 @@ export function useJob<
   const subscriptionRef = useRef(subscription)
   subscriptionRef.current = subscription
 
-  // Auto-resume: fetch running/pending job on mount
+  // Auto-resume: fetch leased/pending job on mount
   useEffect(() => {
     if (!autoResume) return
     if (initialRunId) return // Skip if initialRunId is provided
@@ -129,11 +129,11 @@ export function useJob<
     const abortController = new AbortController()
 
     const findActiveRun = async () => {
-      // Fetch running and pending in parallel
+      // Fetch leased and pending in parallel
       const signal = abortController.signal
-      const [runningRes, pendingRes] = await Promise.all([
+      const [leasedRes, pendingRes] = await Promise.all([
         fetch(
-          `${api}/runs?${new URLSearchParams({ jobName, status: 'running', limit: '1' })}`,
+          `${api}/runs?${new URLSearchParams({ jobName, status: 'leased', limit: '1' })}`,
           { signal },
         ),
         fetch(
@@ -144,9 +144,9 @@ export function useJob<
 
       if (hasUserTriggered.current) return
 
-      // Prefer running over pending
-      if (runningRes.ok) {
-        const runs = (await runningRes.json()) as Array<{ id: string }>
+      // Prefer leased over pending
+      if (leasedRes.ok) {
+        const runs = (await leasedRes.json()) as Array<{ id: string }>
         if (runs.length > 0) {
           setCurrentRunId(runs[0].id)
           return
@@ -173,7 +173,7 @@ export function useJob<
     }
   }, [api, jobName, autoResume, initialRunId])
 
-  // Follow latest: subscribe to job-level SSE for run:trigger/run:start events
+  // Follow latest: subscribe to job-level SSE for run:trigger/run:leased events
   useEffect(() => {
     if (!followLatest) return
 
@@ -187,7 +187,7 @@ export function useJob<
           runId?: string
         }
         if (
-          (data.type === 'run:trigger' || data.type === 'run:start') &&
+          (data.type === 'run:trigger' || data.type === 'run:leased') &&
           data.runId
         ) {
           setCurrentRunId(data.runId)
@@ -304,7 +304,7 @@ export function useJob<
     error: subscription.error,
     logs: subscription.logs,
     progress: subscription.progress,
-    isRunning: effectiveStatus === 'running',
+    isLeased: effectiveStatus === 'leased',
     isPending: effectiveStatus === 'pending',
     isCompleted: effectiveStatus === 'completed',
     isFailed: effectiveStatus === 'failed',

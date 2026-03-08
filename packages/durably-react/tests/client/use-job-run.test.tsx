@@ -42,12 +42,12 @@ describe('useJobRun (client)', () => {
     )
 
     act(() => {
-      mockEventSource.emit({ type: 'run:start', runId: 'existing-run' })
+      mockEventSource.emit({ type: 'run:leased', runId: 'existing-run' })
     })
 
     await waitFor(() => {
-      expect(result.current.status).toBe('running')
-      expect(result.current.isRunning).toBe(true)
+      expect(result.current.status).toBe('leased')
+      expect(result.current.isLeased).toBe(true)
     })
   })
 
@@ -250,7 +250,7 @@ describe('useJobRun (client)', () => {
     expect(result.current.status).toBe('pending')
 
     act(() => {
-      mockEventSource.emit({ type: 'run:start', runId: 'other-run' })
+      mockEventSource.emit({ type: 'run:leased', runId: 'other-run' })
     })
 
     // Status should remain 'pending' since event is for a different run
@@ -259,7 +259,7 @@ describe('useJobRun (client)', () => {
   })
 
   describe('callbacks', () => {
-    it('fires onStart only once when transitioning from null to pending to running', async () => {
+    it('fires onStart only once when transitioning from null to pending to leased', async () => {
       const onStart = vi.fn()
 
       const { result } = renderHook(() =>
@@ -278,13 +278,13 @@ describe('useJobRun (client)', () => {
         expect(mockEventSource.instances.length).toBeGreaterThan(0)
       })
 
-      // Emit run:start to transition to running
+      // Emit run:leased to transition to leased
       act(() => {
-        mockEventSource.emit({ type: 'run:start', runId: 'callback-run' })
+        mockEventSource.emit({ type: 'run:leased', runId: 'callback-run' })
       })
 
       await waitFor(() => {
-        expect(result.current.status).toBe('running')
+        expect(result.current.status).toBe('leased')
       })
 
       // onStart should NOT have been called again - still just once

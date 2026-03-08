@@ -52,7 +52,7 @@ export interface UseJobRunClientResult<TOutput = unknown> {
   /**
    * Whether a run is currently running
    */
-  isRunning: boolean
+  isLeased: boolean
   /**
    * Whether a run is pending
    */
@@ -88,7 +88,7 @@ export function useJobRun<TOutput = unknown>(
   const isCompleted = effectiveStatus === 'completed'
   const isFailed = effectiveStatus === 'failed'
   const isPending = effectiveStatus === 'pending'
-  const isRunning = effectiveStatus === 'running'
+  const isLeased = effectiveStatus === 'leased'
   const isCancelled = effectiveStatus === 'cancelled'
 
   // Track previous status to detect transitions (use effectiveStatus, not subscription.status)
@@ -101,7 +101,7 @@ export function useJobRun<TOutput = unknown>(
     // Only fire callbacks on status transitions
     if (prevStatus !== effectiveStatus) {
       // Fire onStart when transitioning from null to pending/running
-      if (prevStatus === null && (isPending || isRunning) && onStart) {
+      if (prevStatus === null && (isPending || isLeased) && onStart) {
         onStart()
       }
       if (isCompleted && onComplete) {
@@ -114,7 +114,7 @@ export function useJobRun<TOutput = unknown>(
   }, [
     effectiveStatus,
     isPending,
-    isRunning,
+    isLeased,
     isCompleted,
     isFailed,
     onStart,
@@ -128,7 +128,7 @@ export function useJobRun<TOutput = unknown>(
     error: subscription.error,
     logs: subscription.logs,
     progress: subscription.progress,
-    isRunning,
+    isLeased,
     isPending,
     isCompleted,
     isFailed,

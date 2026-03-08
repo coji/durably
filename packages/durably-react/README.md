@@ -28,10 +28,10 @@ export const durably = createDurably<typeof durably>({
 })
 
 function MyComponent() {
-  const { trigger, isRunning, isCompleted, output } = durably.myJob.useJob()
+  const { trigger, isLeased, isCompleted, output } = durably.myJob.useJob()
 
   return (
-    <button onClick={() => trigger({ id: '123' })} disabled={isRunning}>
+    <button onClick={() => trigger({ id: '123' })} disabled={isLeased}>
       Run
     </button>
   )
@@ -79,9 +79,9 @@ function App() {
 }
 
 function MyComponent() {
-  const { trigger, isRunning, isCompleted } = useJob(myJob)
+  const { trigger, isLeased, isCompleted } = useJob(myJob)
   return (
-    <button onClick={() => trigger({ id: '123' })} disabled={isRunning}>
+    <button onClick={() => trigger({ id: '123' })} disabled={isLeased}>
       Run
     </button>
   )

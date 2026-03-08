@@ -29,7 +29,7 @@ export type InferOutput<T> =
 
 export type RunStatus =
   | 'pending'
-  | 'running'
+  | 'leased'
   | 'completed'
   | 'failed'
   | 'cancelled'
@@ -63,7 +63,7 @@ export interface SubscriptionState<TOutput = unknown> {
 // Note: Unlike core DurablyEvent, these omit timestamp/sequence because
 // the SSE handler in server.ts sends only the fields needed by the UI.
 export type DurablyEvent =
-  | { type: 'run:start'; runId: string; jobName: string; input: unknown }
+  | { type: 'run:leased'; runId: string; jobName: string; input: unknown }
   | {
       type: 'run:complete'
       runId: string

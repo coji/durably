@@ -69,7 +69,7 @@ function jobSubscriptionReducer<TOutput = unknown>(
       return {
         ...initialSubscriptionState,
         currentRunId: action.runId,
-        status: 'running',
+        status: 'leased',
       } as JobSubscriptionState<TOutput>
 
     case 'reset':
@@ -118,7 +118,7 @@ export function useJobSubscription<TOutput = unknown>(
     const unsubscribes: (() => void)[] = []
 
     unsubscribes.push(
-      durably.on('run:start', (event) => {
+      durably.on('run:leased', (event) => {
         if (event.jobName !== jobName) return
 
         if (followLatest) {
@@ -128,7 +128,7 @@ export function useJobSubscription<TOutput = unknown>(
         } else {
           // Only update if this is our current run
           if (event.runId !== currentRunIdRef.current) return
-          dispatch({ type: 'run:start' })
+          dispatch({ type: 'run:leased' })
         }
       }),
     )
