@@ -294,7 +294,7 @@ Browser-local mode is different from serverless or resident-worker deployments b
 ### Composition
 
 - browser UI
-- browser-local database runtime such as SQLocal / OPFS-backed SQLite
+- browser-local database runtime such as SQLocal / OPFS-backed SQLite (requires Secure Context — HTTPS or localhost)
 - one preferred active Durably runtime per tab
 
 ### Recommended Use

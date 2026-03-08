@@ -58,7 +58,7 @@ interface LogEntry {
 
 ## ClientRun
 
-A subset of the core `Run` type returned by HTTP endpoints. Internal fields (`leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `updatedAt`) are excluded.
+A subset of the core `Run` type returned by HTTP endpoints. Internal fields (`leaseOwner`, `leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `updatedAt`) are excluded.
 
 ```ts
 interface ClientRun {

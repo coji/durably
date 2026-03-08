@@ -35,7 +35,7 @@ interface DurablyOptions<
 
 | Option                 | Type        | Default  | Description                                                                           |
 | ---------------------- | ----------- | -------- | ------------------------------------------------------------------------------------- |
-| `dialect`              | `Dialect`   | required | Kysely SQLite dialect                                                                 |
+| `dialect`              | `Dialect`   | required | Kysely dialect (SQLite, libSQL, or PostgreSQL)                                        |
 | `pollingIntervalMs`    | `number`    | `1000`   | How often to check for pending jobs (ms)                                              |
 | `leaseRenewIntervalMs` | `number`    | `5000`   | How often to renew the lease (ms)                                                     |
 | `leaseMs`              | `number`    | `30000`  | Lease duration — time until a job is considered stale (ms)                            |
@@ -217,7 +217,8 @@ interface Run<TLabels extends Record<string, string> = Record<string, string>> {
   output: unknown | null
   error: string | null
   labels: TLabels
-  leaseExpiresAt: string
+  leaseOwner: string | null
+  leaseExpiresAt: string | null
   startedAt: string | null
   completedAt: string | null
   createdAt: string
@@ -239,7 +240,8 @@ interface Run<TLabels extends Record<string, string> = Record<string, string>> {
 | `output`           | `unknown \| null`                                                 | Return value of the job (when completed)                        |
 | `error`            | `string \| null`                                                  | Error message (when failed)                                     |
 | `labels`           | `TLabels` (defaults to `Record<string, string>`)                  | Key/value labels for filtering (type-safe when schema provided) |
-| `leaseExpiresAt`   | `string`                                                          | ISO timestamp when the lease expires                            |
+| `leaseOwner`       | `string \| null`                                                  | Worker ID that holds the lease (`null` when not leased)         |
+| `leaseExpiresAt`   | `string \| null`                                                  | ISO timestamp when the lease expires (`null` when not leased)   |
 | `startedAt`        | `string \| null`                                                  | ISO timestamp when the run started                              |
 | `completedAt`      | `string \| null`                                                  | ISO timestamp when the run completed or failed                  |
 | `createdAt`        | `string`                                                          | ISO timestamp when the run was created                          |

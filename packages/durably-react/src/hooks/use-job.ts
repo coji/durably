@@ -55,7 +55,7 @@ export interface UseJobResult<TInput, TOutput> {
    */
   progress: Progress | null
   /**
-   * Whether a run is currently running
+   * Whether a run is currently leased (being executed by a worker)
    */
   isLeased: boolean
   /**

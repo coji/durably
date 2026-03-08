@@ -70,7 +70,7 @@ function CsvImporter() {
   const { trigger, status, output, isLeased } = durably.importCsv.useJob()
 
   return (
-    <button onClick={() => trigger({ rows: [...] })} disabled={isLeased}>
+    <button onClick={() => trigger({ rows: [] })} disabled={isLeased}>
       Import
     </button>
   )
@@ -85,7 +85,7 @@ function RunViewer({ runId }: { runId: string }) {
 // Subscribe to logs
 function LogViewer({ runId }: { runId: string }) {
   const { logs } = durably.importCsv.useLogs(runId)
-  return <pre>{logs.map(l => l.message).join('\n')}</pre>
+  return <pre>{logs.map((l) => l.message).join('\n')}</pre>
 }
 ```
 
@@ -109,7 +109,7 @@ function Dashboard() {
               {run.status === 'failed' && (
                 <button onClick={() => retrigger(run.id)}>Retrigger</button>
               )}
-              {run.status === 'leased' && (
+              {(run.status === 'pending' || run.status === 'leased') && (
                 <button onClick={() => cancel(run.id)}>Cancel</button>
               )}
               <button onClick={() => deleteRun(run.id)}>Delete</button>

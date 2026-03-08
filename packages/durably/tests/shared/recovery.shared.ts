@@ -38,17 +38,28 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         })
 
         const run = await d.jobs.job.trigger({})
-        const initialLeaseExpiresAt = run.leaseExpiresAt
+        expect(run.leaseExpiresAt).toBeNull() // pending run has no lease
 
         d.start()
 
-        // Wait a bit then check lease was renewed
+        // Wait for run to be claimed, then record initial lease
+        let initialLeaseExpiresAt: string | null = null
+        await vi.waitFor(
+          async () => {
+            const claimed = await d.jobs.job.getRun(run.id)
+            expect(claimed?.status).toBe('leased')
+            initialLeaseExpiresAt = claimed!.leaseExpiresAt
+          },
+          { timeout: 500 },
+        )
+
+        // Wait a bit for lease renewal to happen
         await new Promise((r) => setTimeout(r, 200))
 
         const midRun = await d.jobs.job.getRun(run.id)
         expect(midRun?.status).toBe('leased')
         expect(new Date(midRun!.leaseExpiresAt!).getTime()).toBeGreaterThan(
-          new Date(initialLeaseExpiresAt ?? 0).getTime(),
+          new Date(initialLeaseExpiresAt!).getTime(),
         )
 
         // Wait for completion
