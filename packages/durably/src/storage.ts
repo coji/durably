@@ -331,6 +331,33 @@ export function createKyselyStore(
   db: Kysely<Database>,
   backend: DatabaseBackend = 'generic',
 ): Store<Record<string, string>> {
+  async function terminateRun(
+    runId: string,
+    leaseGeneration: number,
+    completedAt: string,
+    fields: {
+      status: 'completed' | 'failed'
+      output?: string
+      error?: string | null
+    },
+  ): Promise<boolean> {
+    const result = await db
+      .updateTable('durably_runs')
+      .set({
+        ...fields,
+        lease_owner: null,
+        lease_expires_at: null,
+        completed_at: completedAt,
+        updated_at: completedAt,
+      })
+      .where('id', '=', runId)
+      .where('status', '=', 'leased')
+      .where('lease_generation', '=', leaseGeneration)
+      .executeTakeFirst()
+
+    return Number(result.numUpdatedRows) > 0
+  }
+
   return {
     async enqueue(input: CreateRunInput): Promise<Run> {
       const now = new Date().toISOString()
@@ -758,23 +785,11 @@ export function createKyselyStore(
       output: unknown,
       completedAt: string,
     ): Promise<boolean> {
-      const result = await db
-        .updateTable('durably_runs')
-        .set({
-          status: 'completed',
-          output: JSON.stringify(output),
-          error: null,
-          lease_owner: null,
-          lease_expires_at: null,
-          completed_at: completedAt,
-          updated_at: completedAt,
-        })
-        .where('id', '=', runId)
-        .where('status', '=', 'leased')
-        .where('lease_generation', '=', leaseGeneration)
-        .executeTakeFirst()
-
-      return Number(result.numUpdatedRows) > 0
+      return terminateRun(runId, leaseGeneration, completedAt, {
+        status: 'completed',
+        output: JSON.stringify(output),
+        error: null,
+      })
     },
 
     async failRun(
@@ -783,22 +798,10 @@ export function createKyselyStore(
       error: string,
       completedAt: string,
     ): Promise<boolean> {
-      const result = await db
-        .updateTable('durably_runs')
-        .set({
-          status: 'failed',
-          error,
-          lease_owner: null,
-          lease_expires_at: null,
-          completed_at: completedAt,
-          updated_at: completedAt,
-        })
-        .where('id', '=', runId)
-        .where('status', '=', 'leased')
-        .where('lease_generation', '=', leaseGeneration)
-        .executeTakeFirst()
-
-      return Number(result.numUpdatedRows) > 0
+      return terminateRun(runId, leaseGeneration, completedAt, {
+        status: 'failed',
+        error,
+      })
     },
 
     async cancelRun(runId: string, now: string): Promise<boolean> {

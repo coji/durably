@@ -3,6 +3,8 @@ import type { EventEmitter } from './events'
 import type { StepContext } from './job'
 import type { Run, Store } from './storage'
 
+const LEASE_LOST = 'lease-lost'
+
 /**
  * Create a step context for executing a run
  */
@@ -24,7 +26,7 @@ export function createStepContext(
 
   function abortForLeaseLoss() {
     if (!controller.signal.aborted) {
-      controller.abort('lease-lost')
+      controller.abort(LEASE_LOST)
     }
   }
 
@@ -33,7 +35,7 @@ export function createStepContext(
       return
     }
 
-    if (controller.signal.reason === 'lease-lost') {
+    if (controller.signal.reason === LEASE_LOST) {
       throw new LeaseLostError(run.id)
     }
 
@@ -161,7 +163,7 @@ export function createStepContext(
         // Check if signal was aborted due to lease loss (not cancellation).
         // fn() may have thrown a different error while the lease was lost.
         const isLeaseLost =
-          controller.signal.aborted && controller.signal.reason === 'lease-lost'
+          controller.signal.aborted && controller.signal.reason === LEASE_LOST
         if (isLeaseLost) {
           throw new LeaseLostError(run.id)
         }
