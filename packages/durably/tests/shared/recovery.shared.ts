@@ -107,6 +107,35 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         // Should have recorded multiple timestamps
         expect(timestamps.length).toBeGreaterThan(0)
       })
+
+      it('rejects renewal after lease has expired', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'expired-renewal-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+
+        // Manually set to leased with an already-expired lease
+        const pastTime = new Date(Date.now() - 5000).toISOString()
+        await d.storage.updateRun(run.id, {
+          status: 'leased',
+          leaseOwner: 'worker-1',
+          leaseExpiresAt: pastTime,
+        })
+
+        // Attempt to renew — should fail because lease already expired
+        const renewed = await d.storage.queue.renewLease(
+          run.id,
+          'worker-1',
+          new Date().toISOString(),
+          30000,
+        )
+        expect(renewed).toBe(false)
+      })
     })
 
     describe('Stale Run Recovery', () => {

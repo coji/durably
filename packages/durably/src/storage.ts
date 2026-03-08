@@ -682,6 +682,7 @@ export function createKyselyQueueStore(
         .where('id', '=', runId)
         .where('status', '=', 'leased')
         .where('lease_owner', '=', workerId)
+        .where('lease_expires_at', '>', now)
         .executeTakeFirst()
 
       return Number(result.numUpdatedRows) > 0
