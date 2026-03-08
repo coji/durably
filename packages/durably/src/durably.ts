@@ -20,6 +20,7 @@ import {
   type JobRegistry,
   createJobHandle,
   createJobRegistry,
+  validateJobInputOrThrow,
 } from './job'
 import { runMigrations } from './migrations'
 import type { Database } from './schema'
@@ -702,13 +703,21 @@ function createDurablyInstance<
       if (run.status === 'leased') {
         throw new Error(`Cannot retrigger leased run: ${runId}`)
       }
-      if (!jobRegistry.get(run.jobName)) {
+      const job = jobRegistry.get(run.jobName)
+      if (!job) {
         throw new Error(`Unknown job: ${run.jobName}`)
       }
 
+      // Validate original input against current schema
+      const validatedInput = validateJobInputOrThrow(
+        job.inputSchema,
+        run.input,
+        `Cannot retrigger run ${runId}`,
+      )
+
       const nextRun = await storage.enqueue({
         jobName: run.jobName,
-        input: run.input,
+        input: validatedInput,
         concurrencyKey: run.concurrencyKey ?? undefined,
         labels: run.labels,
       })

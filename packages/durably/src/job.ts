@@ -9,7 +9,7 @@ const noop = () => {}
 /**
  * Validate job input and throw on failure
  */
-function validateJobInputOrThrow<T>(
+export function validateJobInputOrThrow<T>(
   schema: z.ZodType<T>,
   input: unknown,
   context?: string,
