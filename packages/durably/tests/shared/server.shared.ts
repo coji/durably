@@ -407,6 +407,16 @@ export function createServerTests(createDialect: () => Dialect) {
         }
       })
 
+      it('rejects invalid status values', async () => {
+        const request = new Request(
+          'http://localhost/api/durably/runs?status=running',
+          { method: 'GET' },
+        )
+
+        const response = await handler.handle(request, '/api/durably')
+        expect(response.status).toBe(400)
+      })
+
       it('supports limit and offset', async () => {
         const d = durably.register({
           job: defineJob({
