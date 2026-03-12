@@ -11,6 +11,9 @@ export type RunStatus =
   | 'failed'
   | 'cancelled'
 
+/** Run statuses that represent terminal (non-active) states */
+const TERMINAL_STATUSES: RunStatus[] = ['completed', 'failed', 'cancelled']
+
 /**
  * Run data for creating a new run
  */
@@ -125,10 +128,6 @@ export interface ProgressData {
   message?: string
 }
 
-export interface ClaimOptions {
-  excludeConcurrencyKeys?: string[]
-}
-
 export type DatabaseBackend = 'generic' | 'postgres'
 
 /**
@@ -169,7 +168,6 @@ export interface Store<
     workerId: string,
     now: string,
     leaseMs: number,
-    options?: ClaimOptions,
   ): Promise<Run<TLabels> | null>
   renewLease(
     runId: string,
@@ -214,6 +212,9 @@ export interface Store<
     leaseGeneration: number,
     progress: ProgressData | null,
   ): Promise<void>
+
+  // Purge
+  purgeRuns(options: { olderThan: string; limit?: number }): Promise<number>
 
   // Logs
   createLog(input: CreateLogInput): Promise<Log>
@@ -360,6 +361,20 @@ export function createKyselyStore(
   backend: DatabaseBackend = 'generic',
 ): Store<Record<string, string>> {
   const withWriteLock = createWriteMutex()
+
+  /** Delete runs and all associated data (steps, logs, labels) in dependency order */
+  async function cascadeDeleteRuns(
+    trx: Kysely<Database>,
+    ids: string[],
+  ): Promise<void> {
+    await trx.deleteFrom('durably_steps').where('run_id', 'in', ids).execute()
+    await trx.deleteFrom('durably_logs').where('run_id', 'in', ids).execute()
+    await trx
+      .deleteFrom('durably_run_labels')
+      .where('run_id', 'in', ids)
+      .execute()
+    await trx.deleteFrom('durably_runs').where('id', 'in', ids).execute()
+  }
 
   async function insertLabelRows(
     executor: Kysely<Database>,
@@ -648,19 +663,31 @@ export function createKyselyStore(
 
     async deleteRun(runId: string) {
       await db.transaction().execute(async (trx) => {
-        await trx
-          .deleteFrom('durably_steps')
-          .where('run_id', '=', runId)
+        await cascadeDeleteRuns(trx, [runId])
+      })
+    },
+
+    async purgeRuns(options: {
+      olderThan: string
+      limit?: number
+    }): Promise<number> {
+      const limit = options.limit ?? 1000
+
+      return await db.transaction().execute(async (trx) => {
+        const rows = await trx
+          .selectFrom('durably_runs')
+          .select('id')
+          .where('status', 'in', TERMINAL_STATUSES)
+          .where('completed_at', '<', options.olderThan)
+          .orderBy('completed_at', 'asc')
+          .limit(limit)
           .execute()
-        await trx
-          .deleteFrom('durably_logs')
-          .where('run_id', '=', runId)
-          .execute()
-        await trx
-          .deleteFrom('durably_run_labels')
-          .where('run_id', '=', runId)
-          .execute()
-        await trx.deleteFrom('durably_runs').where('id', '=', runId).execute()
+
+        if (rows.length === 0) return 0
+
+        const ids = rows.map((r) => r.id)
+        await cascadeDeleteRuns(trx, ids)
+        return ids.length
       })
     },
 
@@ -668,10 +695,8 @@ export function createKyselyStore(
       workerId: string,
       now: string,
       leaseMs: number,
-      options?: ClaimOptions,
     ): Promise<Run | null> {
       const leaseExpiresAt = new Date(Date.parse(now) + leaseMs).toISOString()
-      const excludeConcurrencyKeys = options?.excludeConcurrencyKeys ?? []
       const activeLeaseGuard = sql<boolean>`
         (
           concurrency_key IS NULL
@@ -689,7 +714,7 @@ export function createKyselyStore(
 
       if (backend === 'postgres') {
         return await db.transaction().execute(async (trx) => {
-          const skipKeys = [...excludeConcurrencyKeys]
+          const skipKeys: string[] = []
 
           // Loop: on concurrency-key conflict, exclude that key and retry
           // to find the next eligible candidate in the same transaction.
@@ -789,15 +814,6 @@ export function createKyselyStore(
         .orderBy('created_at', 'asc')
         .orderBy('id', 'asc')
         .limit(1)
-
-      if (excludeConcurrencyKeys.length > 0) {
-        subquery = subquery.where((eb) =>
-          eb.or([
-            eb('concurrency_key', 'is', null),
-            eb('concurrency_key', 'not in', excludeConcurrencyKeys),
-          ]),
-        )
-      }
 
       const row = await db
         .updateTable('durably_runs')
@@ -1035,6 +1051,7 @@ export function createKyselyStore(
     'enqueueMany',
     'updateRun',
     'deleteRun',
+    'purgeRuns',
     'claimNext',
     'renewLease',
     'releaseExpiredLeases',
