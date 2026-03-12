@@ -54,9 +54,12 @@ export function createSSEEventSubscriber(apiBaseUrl: string): EventSubscriber {
         }
       }
 
+      // Let EventSource handle reconnection automatically.
+      // Only close on permanent failures (CLOSED state).
       eventSource.onerror = () => {
-        onEvent({ type: 'connection_error', error: 'Connection failed' })
-        eventSource.close()
+        if (eventSource.readyState === EventSource.CLOSED) {
+          onEvent({ type: 'connection_error', error: 'Connection failed' })
+        }
       }
 
       return () => {
