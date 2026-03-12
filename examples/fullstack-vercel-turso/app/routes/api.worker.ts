@@ -4,13 +4,16 @@
  * Called by Vercel Cron to process pending jobs when no users are connected.
  * Authenticated via CRON_SECRET to prevent unauthorized access.
  *
- * POST /api/worker
+ * Vercel Cron sends GET requests with CRON_SECRET as a Bearer token.
+ * See: https://vercel.com/docs/cron-jobs
+ *
+ * GET /api/worker
  */
 
 import { durably } from '~/lib/durably.server'
 import type { Route } from './+types/api.worker'
 
-export async function action({ request }: Route.ActionArgs) {
+export async function loader({ request }: Route.LoaderArgs) {
   // Verify cron secret
   const authHeader = request.headers.get('authorization')
   const cronSecret = process.env.CRON_SECRET

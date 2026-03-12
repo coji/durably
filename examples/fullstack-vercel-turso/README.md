@@ -1,6 +1,10 @@
 # Fullstack Vercel + Turso Example
 
-Durably fullstack example deployed on Vercel with Turso (libSQL) as the database.
+Durably fullstack demo deployed on Vercel with Turso (libSQL) as the database.
+
+> **Note**: This is a demo app with no authentication on the Durably control plane.
+> For production use, add authentication via `createDurablyHandler({ authenticate })`.
+> See the [auth guide](../../website/guide/auth.md) for details.
 
 ## Architecture
 
@@ -8,7 +12,7 @@ Durably fullstack example deployed on Vercel with Turso (libSQL) as the database
 - **Database**: Turso (remote libSQL) in production, local libsqld via Docker in development
 - **Worker**: Dual-mode
   - **Real-time**: `onRequest` lazily starts the worker — runs during SSE streaming
-  - **Background**: `/api/worker` endpoint called by Vercel Cron every minute
+  - **Background**: `/api/worker` endpoint called by Vercel Cron (requires Pro plan for per-minute schedule)
 
 ## How it works
 
@@ -23,7 +27,7 @@ Worker processes  → steps stream via SSE in real-time
                   ↓
 SSE disconnects   → function terminates, worker stops
                   ↓
-Vercel Cron       → POST /api/worker processes any remaining pending jobs
+Vercel Cron       → GET /api/worker processes any remaining pending jobs
 ```
 
 ## Setup
@@ -70,5 +74,5 @@ The app connects to `http://localhost:8080` — same HTTP protocol as production
 | `app/lib/durably.ts`          | Type-safe client for React components       |
 | `app/routes/api.durably.$.ts` | Durably HTTP/SSE handler (splat route)      |
 | `app/routes/api.worker.ts`    | Background worker endpoint for Vercel Cron  |
-| `vercel.json`                 | Cron schedule (every minute)                |
+| `vercel.json`                 | Cron schedule (per-minute requires Pro)     |
 | `react-router.config.ts`      | Vercel preset configuration                 |

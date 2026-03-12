@@ -77,6 +77,19 @@ pnpm --filter @coji/durably test:node:all        # Run all Node tests (SQLite + 
 pnpm db:down                                     # Stop Postgres
 ```
 
+## Codex CLI for Research & Consultation
+
+When stuck or needing up-to-date information about external services, use Codex CLI (`codex exec`) to consult GPT. Codex can perform web searches, making it especially useful for real-time information like Vercel configuration, latest library APIs, or deployment troubleshooting.
+
+```bash
+codex exec "your question or prompt here"
+```
+
+- Run in the background and check results later for non-blocking workflow
+- Include relevant codebase context in the prompt for better answers
+- Useful for research, design consultation, and debugging — not just search
+- **During `/review` and `/simplify`**: Run `codex exec` in parallel with the review agents to get a second opinion on the diff. Pass the diff content and ask for code quality feedback, potential issues, or improvement suggestions
+
 ## Skills
 
 - **release-check** - Pre-release integrity check for API changes and spec updates (`.claude/skills/release-check/`)

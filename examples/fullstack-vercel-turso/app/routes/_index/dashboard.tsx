@@ -45,6 +45,16 @@ function LabelChips({ labels }: { labels: Record<string, string> }) {
   )
 }
 
+const formatDate = (iso: string) => new Date(iso).toLocaleString()
+
+const statusClasses: Record<string, string> = {
+  pending: 'bg-yellow-100 text-yellow-800',
+  leased: 'bg-blue-100 text-blue-800',
+  completed: 'bg-green-100 text-green-800',
+  failed: 'bg-red-100 text-red-800',
+  cancelled: 'bg-gray-100 text-gray-800',
+}
+
 export function Dashboard() {
   const { runs, isLoading, error, page, hasMore, nextPage, prevPage, refresh } =
     durably.useRuns<DashboardRun>({
@@ -80,22 +90,11 @@ export function Dashboard() {
   }
 
   const showDetails = async (runId: string) => {
-    const run = await getRun(runId)
+    const [run, stepsData] = await Promise.all([getRun(runId), getSteps(runId)])
     if (run) {
       setSelectedRun(run)
-      const stepsData = await getSteps(runId)
       setSteps(stepsData)
     }
-  }
-
-  const formatDate = (iso: string) => new Date(iso).toLocaleString()
-
-  const statusClasses: Record<string, string> = {
-    pending: 'bg-yellow-100 text-yellow-800',
-    leased: 'bg-blue-100 text-blue-800',
-    completed: 'bg-green-100 text-green-800',
-    failed: 'bg-red-100 text-red-800',
-    cancelled: 'bg-gray-100 text-gray-800',
   }
 
   return (
