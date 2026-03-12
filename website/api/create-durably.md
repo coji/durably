@@ -153,8 +153,8 @@ Deletes a run and its associated steps and logs.
 ### `purgeRuns()`
 
 ```ts
-await durably.purgeRuns(options?: {
-  olderThan?: string   // ISO timestamp cutoff (default: now)
+await durably.purgeRuns(options: {
+  olderThan: Date      // cutoff date — runs completed before this are deleted
   limit?: number       // max rows to delete per call (default: 1000)
 }): Promise<number>
 ```
