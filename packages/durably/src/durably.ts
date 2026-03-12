@@ -652,7 +652,12 @@ function createDurablyInstance<
       let cleanup: (() => void) | null = null
 
       // Events that close the stream after enqueuing
-      const closeEvents = new Set<EventType>(['run:complete', 'run:delete'])
+      const closeEvents = new Set<EventType>([
+        'run:complete',
+        'run:fail',
+        'run:cancel',
+        'run:delete',
+      ])
       // All event types to subscribe to for a run
       const subscribedEvents: EventType[] = [
         'run:leased',
@@ -715,7 +720,7 @@ function createDurablyInstance<
                   leaseOwner: run.leaseOwner ?? '',
                   leaseExpiresAt: run.leaseExpiresAt ?? '',
                 })
-                if (run.progress) {
+                if (run.progress != null) {
                   controller.enqueue({
                     ...base,
                     type: 'run:progress',
@@ -747,9 +752,11 @@ function createDurablyInstance<
               }
               // pending: no initial event needed, useJobRun already defaults to pending
             })
-            .catch(() => {
-              // DB read failure is non-fatal — client will still receive
-              // future events via the event listener subscription above
+            .catch((error) => {
+              if (closed) return
+              closed = true
+              cleanup?.()
+              controller.error(error)
             })
         },
         cancel: () => {
