@@ -30,8 +30,8 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             input: z.object({}),
             run: async (step) => {
               await step.run('long-step', async () => {
-                // Run long enough to see lease renewals
-                await new Promise((r) => setTimeout(r, 250))
+                // Run long enough to see lease renewals (must outlast waitFor + 200ms wait)
+                await new Promise((r) => setTimeout(r, 800))
               })
             },
           }),
@@ -68,7 +68,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
-          { timeout: 1000 },
+          { timeout: 2000 },
         )
       })
 
