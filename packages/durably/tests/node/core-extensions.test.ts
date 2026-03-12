@@ -4,7 +4,7 @@
  * Test getJob, subscribe, and createDurablyHandler
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import {
   createDurably,
@@ -130,6 +130,131 @@ describe('Core Extensions', () => {
 
       expect(events.some((e) => e.type === 'step:start')).toBe(true)
       expect(events.some((e) => e.type === 'step:complete')).toBe(true)
+    })
+
+    it('emits initial state when subscribing to already-completed run', async () => {
+      durably.register({ testJob: testJobDef })
+      durably.start()
+
+      const job = durably.getJob('test-job-subscribe')!
+      const run = await job.trigger({ message: 'test' })
+
+      // Wait for the run to complete before subscribing
+      await vi.waitFor(
+        async () => {
+          const r = await durably.getRun(run.id)
+          expect(r?.status).toBe('completed')
+        },
+        { timeout: 5000 },
+      )
+
+      // Subscribe AFTER completion — should get synthetic run:complete and close
+      const stream = durably.subscribe(run.id)
+      const reader = stream.getReader()
+
+      const events: DurablyEvent[] = []
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        events.push(value)
+      }
+
+      expect(events.length).toBe(1)
+      expect(events[0].type).toBe('run:complete')
+    })
+
+    it('emits initial state when subscribing to already-failed run', async () => {
+      const failingJob = defineJob({
+        name: 'failing-job-subscribe',
+        input: z.object({ message: z.string() }),
+        run: async () => {
+          throw new Error('intentional failure')
+        },
+      })
+
+      durably.register({ failingJob })
+      durably.start()
+
+      const job = durably.getJob('failing-job-subscribe')!
+      const run = await job.trigger({ message: 'test' })
+
+      // Wait for the run to fail
+      await vi.waitFor(
+        async () => {
+          const r = await durably.getRun(run.id)
+          expect(r?.status).toBe('failed')
+        },
+        { timeout: 5000 },
+      )
+
+      // Subscribe AFTER failure — should get synthetic run:fail and close
+      const stream = durably.subscribe(run.id)
+      const reader = stream.getReader()
+
+      const events: DurablyEvent[] = []
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        events.push(value)
+      }
+
+      expect(events.length).toBe(1)
+      expect(events[0].type).toBe('run:fail')
+    })
+
+    it('emits initial state when subscribing to cancelled run', async () => {
+      // Cancel a pending run (no need for long-running job)
+      durably.register({ testJob: testJobDef })
+
+      const job = durably.getJob('test-job-subscribe')!
+      const run = await job.trigger({ message: 'test' })
+
+      // Cancel while still pending (before starting worker)
+      await durably.cancel(run.id)
+
+      // Subscribe AFTER cancellation — should get synthetic run:cancel and close
+      const stream = durably.subscribe(run.id)
+      const reader = stream.getReader()
+
+      const events: DurablyEvent[] = []
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        events.push(value)
+      }
+
+      expect(events.length).toBe(1)
+      expect(events[0].type).toBe('run:cancel')
+    })
+
+    it('closes stream on live run:fail event', async () => {
+      const failingJob = defineJob({
+        name: 'live-fail-subscribe',
+        input: z.object({ message: z.string() }),
+        run: async () => {
+          throw new Error('intentional failure')
+        },
+      })
+
+      durably.register({ failingJob })
+      durably.start()
+
+      const job = durably.getJob('live-fail-subscribe')!
+      const run = await job.trigger({ message: 'test' })
+
+      // Subscribe before completion — stream should close after run:fail
+      const stream = durably.subscribe(run.id)
+      const reader = stream.getReader()
+
+      const events: DurablyEvent[] = []
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        events.push(value)
+      }
+
+      expect(events.some((e) => e.type === 'run:fail')).toBe(true)
+      // Stream should have closed (we exited the while loop)
     })
 
     it('cleans up event listeners when stream is cancelled', async () => {

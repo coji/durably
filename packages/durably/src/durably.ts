@@ -652,7 +652,12 @@ function createDurablyInstance<
       let cleanup: (() => void) | null = null
 
       // Events that close the stream after enqueuing
-      const closeEvents = new Set<EventType>(['run:complete', 'run:delete'])
+      const closeEvents = new Set<EventType>([
+        'run:complete',
+        'run:fail',
+        'run:cancel',
+        'run:delete',
+      ])
       // All event types to subscribe to for a run
       const subscribedEvents: EventType[] = [
         'run:leased',
@@ -669,6 +674,7 @@ function createDurablyInstance<
 
       return new ReadableStream<DurablyEvent>({
         start: (controller) => {
+          // Subscribe to future events first (before DB read) to avoid race conditions
           const unsubscribes = subscribedEvents.map((type) =>
             eventEmitter.on(type, (event) => {
               if (closed || event.runId !== runId) return
@@ -684,6 +690,76 @@ function createDurablyInstance<
           cleanup = () => {
             for (const unsub of unsubscribes) unsub()
           }
+
+          const closeStream = () => {
+            closed = true
+            cleanup?.()
+            controller.close()
+          }
+
+          // Send current run state as initial events so clients that connect
+          // after events were emitted still get the correct state (#106)
+          storage
+            .getRun(runId)
+            .then((run) => {
+              if (closed || !run) return
+
+              // Synthetic replay events use sequence=0 and approximate fields
+              // (e.g. duration=0) since exact values aren't persisted in the run record.
+              const base = {
+                runId,
+                jobName: run.jobName,
+                labels: run.labels as Record<string, string>,
+                timestamp: new Date().toISOString(),
+                sequence: 0,
+              }
+
+              if (run.status === 'leased') {
+                controller.enqueue({
+                  ...base,
+                  type: 'run:leased',
+                  input: run.input,
+                  leaseOwner: run.leaseOwner ?? '',
+                  leaseExpiresAt: run.leaseExpiresAt ?? '',
+                })
+                if (run.progress != null) {
+                  controller.enqueue({
+                    ...base,
+                    type: 'run:progress',
+                    progress: run.progress,
+                  })
+                }
+              } else if (run.status === 'completed') {
+                controller.enqueue({
+                  ...base,
+                  type: 'run:complete',
+                  output: run.output,
+                  duration: 0,
+                })
+                closeStream()
+              } else if (run.status === 'failed') {
+                controller.enqueue({
+                  ...base,
+                  type: 'run:fail',
+                  error: run.error ?? 'Unknown error',
+                  failedStepName: '',
+                })
+                closeStream()
+              } else if (run.status === 'cancelled') {
+                controller.enqueue({
+                  ...base,
+                  type: 'run:cancel',
+                })
+                closeStream()
+              }
+              // pending: no initial event needed, useJobRun already defaults to pending
+            })
+            .catch((error) => {
+              if (closed) return
+              closed = true
+              cleanup?.()
+              controller.error(error)
+            })
         },
         cancel: () => {
           // Clean up event listeners when stream is cancelled by consumer

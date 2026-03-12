@@ -79,6 +79,8 @@ export function createMockEventSource(opts?: {
     value: (error: Error) => {
       const latestInstance = instances[instances.length - 1]
       if (latestInstance?.onerror) {
+        // Simulate permanent connection failure (readyState = CLOSED)
+        latestInstance.readyState = 2 // CLOSED
         const errorEvent = new Event('error')
         Object.defineProperty(errorEvent, 'message', { value: error.message })
         latestInstance.onerror(errorEvent)
