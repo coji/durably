@@ -4,15 +4,15 @@ import type { Database } from './schema'
 
 const ulid = monotonicFactory()
 
-/** Run statuses that represent terminal (non-active) states */
-const TERMINAL_STATUSES: RunStatus[] = ['completed', 'failed', 'cancelled']
-
 export type RunStatus =
   | 'pending'
   | 'leased'
   | 'completed'
   | 'failed'
   | 'cancelled'
+
+/** Run statuses that represent terminal (non-active) states */
+const TERMINAL_STATUSES: RunStatus[] = ['completed', 'failed', 'cancelled']
 
 /**
  * Run data for creating a new run

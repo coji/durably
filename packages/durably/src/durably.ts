@@ -917,13 +917,17 @@ function createDurablyInstance<
       // Auto-purge old terminal runs if retainRuns is configured.
       // Fire-and-forget: write lock serializes with other mutations,
       // so purge doesn't block job claiming or lease renewal.
+      // lastPurgeAt starts at 0, so the first cycle purges immediately on startup.
       if (
         state.retainRunsMs !== null &&
         Date.now() - state.lastPurgeAt >= PURGE_INTERVAL_MS
       ) {
-        state.lastPurgeAt = Date.now()
-        const cutoff = new Date(Date.now() - state.retainRunsMs).toISOString()
-        void storage.purgeRuns({ olderThan: cutoff, limit: 100 })
+        const purgeNow = Date.now()
+        state.lastPurgeAt = purgeNow
+        const cutoff = new Date(purgeNow - state.retainRunsMs).toISOString()
+        storage.purgeRuns({ olderThan: cutoff, limit: 100 }).catch(() => {
+          // Purge failure is non-fatal — will retry on next interval
+        })
       }
 
       const leasedRuns = await storage.getRuns({ status: 'leased' })
