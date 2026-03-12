@@ -45,6 +45,7 @@ Five tables: `durably_runs`, `durably_run_labels`, `durably_steps`, `durably_log
 - `leaseRenewIntervalMs`: 5000ms
 - `leaseMs`: 30000ms (lease duration; expired leases are reclaimed)
 - `preserveSteps`: false (deletes step output data when runs reach terminal state)
+- `retainRuns`: undefined (no automatic cleanup; set e.g. `'30d'` to auto-delete terminal runs)
 
 ## Browser Constraints (by design)
 

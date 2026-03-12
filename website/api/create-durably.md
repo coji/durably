@@ -28,6 +28,7 @@ interface DurablyOptions<
   leaseRenewIntervalMs?: number
   leaseMs?: number
   preserveSteps?: boolean
+  retainRuns?: string
   labels?: z.ZodType<TLabels>
   jobs?: TJobs
 }
@@ -41,6 +42,7 @@ interface DurablyOptions<
 | `leaseMs`              | `number`    | `30000`  | Lease duration — time until a job is considered stale (ms)                            |
 | `labels`               | `z.ZodType` | —        | Zod schema for labels. Enables type-safe labels and runtime validation on `trigger()` |
 | `preserveSteps`        | `boolean`   | `false`  | Keep step output data when runs reach terminal state (completed/failed/cancelled)     |
+| `retainRuns`           | `string`    | —        | Auto-delete terminal runs older than this duration (e.g. `'30d'`, `'12h'`, `'90m'`)   |
 | `jobs`                 | `TJobs`     | —        | Job definitions to register. Shorthand for calling `.register()` after creation       |
 
 ## Returns
@@ -147,6 +149,19 @@ await durably.deleteRun(runId: string): Promise<void>
 ```
 
 Deletes a run and its associated steps and logs.
+
+### `purgeRuns()`
+
+```ts
+await durably.purgeRuns(options?: {
+  olderThan?: string   // ISO timestamp cutoff (default: now)
+  limit?: number       // max rows to delete per call (default: 1000)
+}): Promise<number>
+```
+
+Deletes terminal runs (completed, failed, cancelled) older than the cutoff. Returns the number of deleted runs. Associated steps, logs, and labels are cascade-deleted.
+
+For automatic cleanup, use the [`retainRuns`](#options) option instead.
 
 ### `getRun()`
 

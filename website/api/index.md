@@ -65,6 +65,7 @@ const durably = createDurably({
   pollingIntervalMs: 1000, // Check for jobs every 1s
   leaseRenewIntervalMs: 5000, // Lease renewal every 5s
   leaseMs: 30000, // Lease duration (stale after 30s)
+  retainRuns: '30d', // Auto-delete terminal runs older than 30 days
   // labels: z.object({ ... }),  // Optional: type-safe labels
   jobs: { importCsv: importCsvJob },
 })
@@ -208,14 +209,16 @@ function ImportButton() {
 
 ### Instance Methods
 
-| Method               | Description                                                                       |
-| -------------------- | --------------------------------------------------------------------------------- |
-| `init()`             | Migrate database and start worker                                                 |
-| `register(jobs)`     | Register job definitions                                                          |
-| `on(event, handler)` | Subscribe to events                                                               |
-| `stop()`             | Stop worker gracefully                                                            |
-| `retrigger(runId)`   | Retrigger completed/failed/cancelled run (validates input against current schema) |
-| `cancel(runId)`      | Cancel pending or leased run                                                      |
+| Method                | Description                                                                       |
+| --------------------- | --------------------------------------------------------------------------------- |
+| `init()`              | Migrate database and start worker                                                 |
+| `register(jobs)`      | Register job definitions                                                          |
+| `on(event, handler)`  | Subscribe to events                                                               |
+| `stop()`              | Stop worker gracefully                                                            |
+| `retrigger(runId)`    | Retrigger completed/failed/cancelled run (validates input against current schema) |
+| `cancel(runId)`       | Cancel pending or leased run                                                      |
+| `deleteRun(runId)`    | Delete a run and its associated steps, logs, and labels                           |
+| `purgeRuns(options?)` | Delete terminal runs older than a cutoff (for cleanup)                            |
 
 ### Step Context
 
