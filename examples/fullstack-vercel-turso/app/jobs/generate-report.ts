@@ -23,8 +23,7 @@
 
 import { defineJob } from '@coji/durably'
 import { z } from 'zod'
-
-const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
+import { delay } from './delay'
 
 const outputSchema = z.object({
   reportUrl: z.string(),

@@ -85,9 +85,7 @@ export default function Index() {
           <div className="space-y-4">
             {/* Job Selection */}
             <section className="rounded-lg bg-white p-6 shadow">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Run Job</h2>
-              </div>
+              <h2 className="mb-4 text-lg font-semibold">Run Job</h2>
 
               <div className="mb-4 flex border-b border-gray-200">
                 <button

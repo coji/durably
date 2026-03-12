@@ -6,8 +6,7 @@
 
 import { defineJob } from '@coji/durably'
 import { z } from 'zod'
-
-const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
+import { delay } from './delay'
 
 export const dataSyncJob = defineJob({
   name: 'data-sync',

@@ -65,7 +65,6 @@ export function Dashboard() {
     cancel,
     retrigger,
     deleteRun,
-    getRun,
     getSteps,
     isLoading: isActioning,
   } = durably.useRunActions()
@@ -90,9 +89,10 @@ export function Dashboard() {
   }
 
   const showDetails = async (runId: string) => {
-    const [run, stepsData] = await Promise.all([getRun(runId), getSteps(runId)])
+    const run = runs.find((r) => r.id === runId)
     if (run) {
       setSelectedRun(run)
+      const stepsData = await getSteps(runId)
       setSteps(stepsData)
     }
   }

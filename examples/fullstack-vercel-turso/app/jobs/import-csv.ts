@@ -8,8 +8,7 @@
 
 import { defineJob } from '@coji/durably'
 import { z } from 'zod'
-
-const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
+import { delay } from './delay'
 
 const csvRowSchema = z.object({
   id: z.number(),
