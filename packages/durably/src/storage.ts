@@ -4,6 +4,9 @@ import type { Database } from './schema'
 
 const ulid = monotonicFactory()
 
+/** Run statuses that represent terminal (non-active) states */
+const TERMINAL_STATUSES: RunStatus[] = ['completed', 'failed', 'cancelled']
+
 export type RunStatus =
   | 'pending'
   | 'leased'
@@ -364,6 +367,20 @@ export function createKyselyStore(
 ): Store<Record<string, string>> {
   const withWriteLock = createWriteMutex()
 
+  /** Delete runs and all associated data (steps, logs, labels) in dependency order */
+  async function cascadeDeleteRuns(
+    trx: Kysely<Database>,
+    ids: string[],
+  ): Promise<void> {
+    await trx.deleteFrom('durably_steps').where('run_id', 'in', ids).execute()
+    await trx.deleteFrom('durably_logs').where('run_id', 'in', ids).execute()
+    await trx
+      .deleteFrom('durably_run_labels')
+      .where('run_id', 'in', ids)
+      .execute()
+    await trx.deleteFrom('durably_runs').where('id', 'in', ids).execute()
+  }
+
   async function insertLabelRows(
     executor: Kysely<Database>,
     runId: string,
@@ -651,19 +668,7 @@ export function createKyselyStore(
 
     async deleteRun(runId: string) {
       await db.transaction().execute(async (trx) => {
-        await trx
-          .deleteFrom('durably_steps')
-          .where('run_id', '=', runId)
-          .execute()
-        await trx
-          .deleteFrom('durably_logs')
-          .where('run_id', '=', runId)
-          .execute()
-        await trx
-          .deleteFrom('durably_run_labels')
-          .where('run_id', '=', runId)
-          .execute()
-        await trx.deleteFrom('durably_runs').where('id', '=', runId).execute()
+        await cascadeDeleteRuns(trx, [runId])
       })
     },
 
@@ -672,14 +677,12 @@ export function createKyselyStore(
       limit?: number
     }): Promise<number> {
       const limit = options.limit ?? 1000
-      const terminalStatuses: RunStatus[] = ['completed', 'failed', 'cancelled']
 
       return await db.transaction().execute(async (trx) => {
-        // Find IDs of terminal runs older than cutoff
         const rows = await trx
           .selectFrom('durably_runs')
           .select('id')
-          .where('status', 'in', terminalStatuses)
+          .where('status', 'in', TERMINAL_STATUSES)
           .where('completed_at', '<', options.olderThan)
           .orderBy('completed_at', 'asc')
           .limit(limit)
@@ -688,22 +691,7 @@ export function createKyselyStore(
         if (rows.length === 0) return 0
 
         const ids = rows.map((r) => r.id)
-
-        // Cascade delete in dependency order
-        await trx
-          .deleteFrom('durably_steps')
-          .where('run_id', 'in', ids)
-          .execute()
-        await trx
-          .deleteFrom('durably_logs')
-          .where('run_id', 'in', ids)
-          .execute()
-        await trx
-          .deleteFrom('durably_run_labels')
-          .where('run_id', 'in', ids)
-          .execute()
-        await trx.deleteFrom('durably_runs').where('id', 'in', ids).execute()
-
+        await cascadeDeleteRuns(trx, ids)
         return ids.length
       })
     },

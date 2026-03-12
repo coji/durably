@@ -106,6 +106,8 @@ function parseDuration(value: string): number {
   return num * multipliers[unit]
 }
 
+const PURGE_INTERVAL_MS = 60_000
+
 const ulid = monotonicFactory()
 const BROWSER_SINGLETON_REGISTRY_KEY = '__durablyBrowserSingletonRegistry'
 const BROWSER_LOCAL_DIALECT_KEY = '__durablyBrowserLocalKey'
@@ -912,15 +914,16 @@ function createDurablyInstance<
 
       await storage.releaseExpiredLeases(now)
 
-      // Auto-purge old terminal runs if retainRuns is configured
-      const PURGE_INTERVAL_MS = 60_000
+      // Auto-purge old terminal runs if retainRuns is configured.
+      // Fire-and-forget: write lock serializes with other mutations,
+      // so purge doesn't block job claiming or lease renewal.
       if (
         state.retainRunsMs !== null &&
         Date.now() - state.lastPurgeAt >= PURGE_INTERVAL_MS
       ) {
         state.lastPurgeAt = Date.now()
         const cutoff = new Date(Date.now() - state.retainRunsMs).toISOString()
-        await storage.purgeRuns({ olderThan: cutoff, limit: 100 })
+        void storage.purgeRuns({ olderThan: cutoff, limit: 100 })
       }
 
       const leasedRuns = await storage.getRuns({ status: 'leased' })
