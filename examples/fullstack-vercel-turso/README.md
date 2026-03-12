@@ -16,7 +16,7 @@ Durably fullstack demo deployed on Vercel with Turso (libSQL) as the database.
 
 ## How it works
 
-```
+```text
 User triggers job → POST /api/durably/trigger
                   ↓
 User subscribes   → GET /api/durably/subscribe?runId=xxx (SSE)

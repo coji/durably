@@ -39,12 +39,12 @@ export const importCsvJob = defineJob({
 
       for (let i = 0; i < input.rows.length; i++) {
         const row = input.rows[i]
-        step.progress(i + 1, input.rows.length, `Validating ${row.name}...`)
+        step.progress(i + 1, input.rows.length, `Validating row ${row.id}...`)
         await delay(50)
 
         if (row.amount < 0) {
           invalid.push({ row, reason: `Invalid amount: ${row.amount}` })
-          step.log.warn(`Validation failed for ${row.name}: negative amount`)
+          step.log.warn(`Validation failed for row ${row.id}: negative amount`)
         } else {
           valid.push(row)
         }
@@ -62,12 +62,16 @@ export const importCsvJob = defineJob({
 
       for (let i = 0; i < validRows.valid.length; i++) {
         const row = validRows.valid[i]
-        step.progress(i + 1, validRows.valid.length, `Importing ${row.name}...`)
+        step.progress(
+          i + 1,
+          validRows.valid.length,
+          `Importing row ${row.id}...`,
+        )
         await delay(80)
 
         // Simulate import
         imported++
-        step.log.info(`Imported: ${row.name} (${row.email}) - $${row.amount}`)
+        step.log.info(`Imported row ${row.id}`)
       }
 
       return { imported }
