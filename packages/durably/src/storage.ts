@@ -128,10 +128,6 @@ export interface ProgressData {
   message?: string
 }
 
-export interface ClaimOptions {
-  excludeConcurrencyKeys?: string[]
-}
-
 export type DatabaseBackend = 'generic' | 'postgres'
 
 /**
@@ -172,7 +168,6 @@ export interface Store<
     workerId: string,
     now: string,
     leaseMs: number,
-    options?: ClaimOptions,
   ): Promise<Run<TLabels> | null>
   renewLease(
     runId: string,
@@ -700,10 +695,8 @@ export function createKyselyStore(
       workerId: string,
       now: string,
       leaseMs: number,
-      options?: ClaimOptions,
     ): Promise<Run | null> {
       const leaseExpiresAt = new Date(Date.parse(now) + leaseMs).toISOString()
-      const excludeConcurrencyKeys = options?.excludeConcurrencyKeys ?? []
       const activeLeaseGuard = sql<boolean>`
         (
           concurrency_key IS NULL
@@ -721,7 +714,7 @@ export function createKyselyStore(
 
       if (backend === 'postgres') {
         return await db.transaction().execute(async (trx) => {
-          const skipKeys = [...excludeConcurrencyKeys]
+          const skipKeys: string[] = []
 
           // Loop: on concurrency-key conflict, exclude that key and retry
           // to find the next eligible candidate in the same transaction.
@@ -821,15 +814,6 @@ export function createKyselyStore(
         .orderBy('created_at', 'asc')
         .orderBy('id', 'asc')
         .limit(1)
-
-      if (excludeConcurrencyKeys.length > 0) {
-        subquery = subquery.where((eb) =>
-          eb.or([
-            eb('concurrency_key', 'is', null),
-            eb('concurrency_key', 'not in', excludeConcurrencyKeys),
-          ]),
-        )
-      }
 
       const row = await db
         .updateTable('durably_runs')

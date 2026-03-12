@@ -930,19 +930,7 @@ function createDurablyInstance<
         })
       }
 
-      const leasedRuns = await storage.getRuns({ status: 'leased' })
-      const excludeConcurrencyKeys = leasedRuns
-        .filter(
-          (entry): entry is Run<TLabels> & { concurrencyKey: string } =>
-            entry.concurrencyKey !== null &&
-            entry.leaseExpiresAt !== null &&
-            entry.leaseExpiresAt > now,
-        )
-        .map((entry) => entry.concurrencyKey)
-
-      const run = await storage.claimNext(workerId, now, state.leaseMs, {
-        excludeConcurrencyKeys,
-      })
+      const run = await storage.claimNext(workerId, now, state.leaseMs)
       if (!run) {
         return false
       }
