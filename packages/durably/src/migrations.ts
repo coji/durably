@@ -9,7 +9,7 @@ interface Migration {
   up: (db: Kysely<Database>) => Promise<void>
 }
 
-export const LATEST_SCHEMA_VERSION = 2
+export const LATEST_SCHEMA_VERSION = 1
 
 const migrations: Migration[] = [
   {
@@ -78,6 +78,13 @@ const migrations: Migration[] = [
         .ifNotExists()
         .on('durably_runs')
         .columns(['job_name', 'created_at'])
+        .execute()
+
+      await db.schema
+        .createIndex('idx_durably_runs_status_completed')
+        .ifNotExists()
+        .on('durably_runs')
+        .columns(['status', 'completed_at'])
         .execute()
 
       // Create normalized labels table for indexed label filtering
@@ -163,18 +170,6 @@ const migrations: Migration[] = [
         .ifNotExists()
         .addColumn('version', 'integer', (col) => col.primaryKey())
         .addColumn('applied_at', 'text', (col) => col.notNull())
-        .execute()
-    },
-  },
-  {
-    version: 2,
-    up: async (db) => {
-      // Index for efficient purge queries (retainRuns feature)
-      await db.schema
-        .createIndex('idx_durably_runs_status_completed')
-        .ifNotExists()
-        .on('durably_runs')
-        .columns(['status', 'completed_at'])
         .execute()
     },
   },
