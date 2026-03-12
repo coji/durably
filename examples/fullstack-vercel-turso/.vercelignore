@@ -1,0 +1,13 @@
+# Exclude sibling examples to prevent @vercel/react-router builder
+# from scanning other React Router apps in the monorepo
+../../examples/fullstack-react-router
+../../examples/spa-vite-react
+../../examples/spa-react-router
+../../examples/server-node
+
+# Exclude non-essential workspace packages
+../../website
+
+# Exclude tests and docs
+../../packages/durably/tests
+../../packages/durably-react/tests

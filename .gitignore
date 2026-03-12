@@ -13,3 +13,5 @@ website/.vitepress/dist/
 
 # test coverage
 coverage
+.vercel
+.env*.local
