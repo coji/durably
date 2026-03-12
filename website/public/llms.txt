@@ -36,6 +36,7 @@ const durably = createDurably({
   leaseRenewIntervalMs: 5000, // Lease renewal interval (ms)
   leaseMs: 30000, // Lease duration (ms); expired leases are reclaimed
   preserveSteps: false, // Set to true to keep step output data after terminal state (default: false = cleanup)
+  retainRuns: '30d', // Auto-delete terminal runs older than 30 days (optional; supports 'd', 'h', 'm' units)
   // Optional: type-safe labels with Zod schema
   // labels: z.object({ organizationId: z.string(), env: z.string() }),
   jobs: {
@@ -228,6 +229,21 @@ await durably.cancel(runId)
 ```ts
 await durably.deleteRun(runId)
 ```
+
+### Purge Old Runs
+
+Batch-delete terminal runs (completed, failed, cancelled) older than a cutoff date.
+Pending and leased runs are never deleted.
+
+```ts
+// Delete terminal runs older than 30 days
+const deleted = await durably.purgeRuns({
+  olderThan: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+  limit: 500, // optional batch size (default: 1000)
+})
+```
+
+For automatic cleanup, use the `retainRuns` option (see Quick Start).
 
 ## Events
 

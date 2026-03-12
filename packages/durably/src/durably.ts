@@ -71,6 +71,12 @@ export interface DurablyOptions<
    * ```
    */
   jobs?: TJobs
+  /**
+   * Auto-delete terminal runs older than the specified duration.
+   * Only runs in terminal states (completed, failed, cancelled) are purged.
+   * @example '30d' (30 days), '24h' (24 hours), '60m' (60 minutes)
+   */
+  retainRuns?: string
 }
 
 /**
@@ -82,6 +88,23 @@ const DEFAULTS = {
   leaseMs: 30000,
   preserveSteps: false,
 } as const
+
+function parseDuration(value: string): number {
+  const match = value.match(/^(\d+)(d|h|m)$/)
+  if (!match) {
+    throw new Error(
+      `Invalid duration format: "${value}". Use e.g. '30d', '24h', '60m'`,
+    )
+  }
+  const num = Number.parseInt(match[1], 10)
+  const unit = match[2]
+  const multipliers: Record<string, number> = {
+    d: 86400000,
+    h: 3600000,
+    m: 60000,
+  }
+  return num * multipliers[unit]
+}
 
 const ulid = monotonicFactory()
 const BROWSER_SINGLETON_REGISTRY_KEY = '__durablyBrowserSingletonRegistry'
@@ -308,6 +331,13 @@ export interface Durably<
   deleteRun(runId: string): Promise<void>
 
   /**
+   * Delete terminal runs older than the specified cutoff.
+   * Only runs in terminal states (completed, failed, cancelled) are purged.
+   * @returns Number of deleted runs
+   */
+  purgeRuns(options: { olderThan: Date; limit?: number }): Promise<number>
+
+  /**
    * Get a run by ID
    * @example
    * ```ts
@@ -376,6 +406,8 @@ interface DurablyState<
   migrated: boolean
   leaseMs: number
   leaseRenewIntervalMs: number
+  retainRunsMs: number | null
+  lastPurgeAt: number
   releaseBrowserSingleton: () => void
 }
 
@@ -864,11 +896,32 @@ function createDurablyInstance<
       })
     },
 
+    async purgeRuns(options: {
+      olderThan: Date
+      limit?: number
+    }): Promise<number> {
+      return storage.purgeRuns({
+        olderThan: options.olderThan.toISOString(),
+        limit: options.limit,
+      })
+    },
+
     async processOne(options?: { workerId?: string }): Promise<boolean> {
       const workerId = options?.workerId ?? defaultWorkerId()
       const now = new Date().toISOString()
 
       await storage.releaseExpiredLeases(now)
+
+      // Auto-purge old terminal runs if retainRuns is configured
+      const PURGE_INTERVAL_MS = 60_000
+      if (
+        state.retainRunsMs !== null &&
+        Date.now() - state.lastPurgeAt >= PURGE_INTERVAL_MS
+      ) {
+        state.lastPurgeAt = Date.now()
+        const cutoff = new Date(Date.now() - state.retainRunsMs).toISOString()
+        await storage.purgeRuns({ olderThan: cutoff, limit: 100 })
+      }
 
       const leasedRuns = await storage.getRuns({ status: 'leased' })
       const excludeConcurrencyKeys = leasedRuns
@@ -978,6 +1031,7 @@ export function createDurably<
       options.leaseRenewIntervalMs ?? DEFAULTS.leaseRenewIntervalMs,
     leaseMs: options.leaseMs ?? DEFAULTS.leaseMs,
     preserveSteps: options.preserveSteps ?? DEFAULTS.preserveSteps,
+    retainRunsMs: options.retainRuns ? parseDuration(options.retainRuns) : null,
   }
 
   const db = new Kysely<Database>({ dialect: options.dialect })
@@ -1023,6 +1077,8 @@ export function createDurably<
     migrated: false,
     leaseMs: config.leaseMs,
     leaseRenewIntervalMs: config.leaseRenewIntervalMs,
+    retainRunsMs: config.retainRunsMs,
+    lastPurgeAt: 0,
     releaseBrowserSingleton,
   }
 

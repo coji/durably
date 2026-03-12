@@ -215,6 +215,9 @@ export interface Store<
     progress: ProgressData | null,
   ): Promise<void>
 
+  // Purge
+  purgeRuns(options: { olderThan: string; limit?: number }): Promise<number>
+
   // Logs
   createLog(input: CreateLogInput): Promise<Log>
   getLogs(runId: string): Promise<Log[]>
@@ -664,6 +667,47 @@ export function createKyselyStore(
       })
     },
 
+    async purgeRuns(options: {
+      olderThan: string
+      limit?: number
+    }): Promise<number> {
+      const limit = options.limit ?? 1000
+      const terminalStatuses: RunStatus[] = ['completed', 'failed', 'cancelled']
+
+      return await db.transaction().execute(async (trx) => {
+        // Find IDs of terminal runs older than cutoff
+        const rows = await trx
+          .selectFrom('durably_runs')
+          .select('id')
+          .where('status', 'in', terminalStatuses)
+          .where('completed_at', '<', options.olderThan)
+          .orderBy('completed_at', 'asc')
+          .limit(limit)
+          .execute()
+
+        if (rows.length === 0) return 0
+
+        const ids = rows.map((r) => r.id)
+
+        // Cascade delete in dependency order
+        await trx
+          .deleteFrom('durably_steps')
+          .where('run_id', 'in', ids)
+          .execute()
+        await trx
+          .deleteFrom('durably_logs')
+          .where('run_id', 'in', ids)
+          .execute()
+        await trx
+          .deleteFrom('durably_run_labels')
+          .where('run_id', 'in', ids)
+          .execute()
+        await trx.deleteFrom('durably_runs').where('id', 'in', ids).execute()
+
+        return ids.length
+      })
+    },
+
     async claimNext(
       workerId: string,
       now: string,
@@ -1035,6 +1079,7 @@ export function createKyselyStore(
     'enqueueMany',
     'updateRun',
     'deleteRun',
+    'purgeRuns',
     'claimNext',
     'renewLease',
     'releaseExpiredLeases',
