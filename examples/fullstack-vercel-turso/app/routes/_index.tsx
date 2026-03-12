@@ -28,6 +28,7 @@ export function meta() {
 
 // Action: Trigger jobs
 export async function action({ request }: Route.ActionArgs) {
+  await durably.init()
   const formData = await request.formData()
   const intent = formData.get('intent') as string
 

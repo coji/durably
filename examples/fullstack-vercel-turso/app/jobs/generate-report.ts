@@ -31,8 +31,6 @@ const outputSchema = z.object({
   generatedAt: z.string(),
 })
 
-export type GenerateReportOutput = z.infer<typeof outputSchema>
-
 export const generateReportJob = defineJob({
   name: 'generate-report',
   input: z.object({

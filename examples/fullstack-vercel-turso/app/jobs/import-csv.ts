@@ -20,9 +20,6 @@ const csvRowSchema = z.object({
 /** Output schema for type inference */
 const outputSchema = z.object({ imported: z.number(), failed: z.number() })
 
-/** Output type for use in components */
-export type ImportCsvOutput = z.infer<typeof outputSchema>
-
 export const importCsvJob = defineJob({
   name: 'import-csv',
   input: z.object({
