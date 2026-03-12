@@ -704,6 +704,8 @@ function createDurablyInstance<
             .then((run) => {
               if (closed || !run) return
 
+              // Synthetic replay events use sequence=0 and approximate fields
+              // (e.g. duration=0) since exact values aren't persisted in the run record.
               const base = {
                 runId,
                 jobName: run.jobName,
