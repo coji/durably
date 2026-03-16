@@ -1,6 +1,6 @@
 # @coji/durably-react
 
-React bindings for [Durably](https://github.com/coji/durably) - step-oriented resumable batch execution.
+React bindings for [Durably](https://github.com/coji/durably) — steps that survive crashes.
 
 **[Documentation](https://coji.github.io/durably/)** | **[GitHub](https://github.com/coji/durably)**
 

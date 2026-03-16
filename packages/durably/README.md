@@ -1,6 +1,6 @@
 # @coji/durably
 
-Step-oriented resumable batch execution for Node.js and browsers using SQLite.
+Steps that survive crashes. SQLite to PostgreSQL.
 
 **[Documentation](https://coji.github.io/durably/)** | **[GitHub](https://github.com/coji/durably)** | **[Live Demo](https://durably-demo.vercel.app)**
 
@@ -9,10 +9,14 @@ Step-oriented resumable batch execution for Node.js and browsers using SQLite.
 ## Installation
 
 ```bash
-npm install @coji/durably kysely zod better-sqlite3
+# libSQL (recommended default)
+npm install @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
+
+# PostgreSQL (multi-worker)
+npm install @coji/durably kysely zod pg
 ```
 
-See the [Quick Start](https://coji.github.io/durably/guide/quick-start) for other SQLite backends (libsql, SQLocal for browsers).
+See [Choosing a Database](https://coji.github.io/durably/guide/databases) for all backends.
 
 ## Quick Start
 
