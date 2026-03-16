@@ -14,10 +14,10 @@ Durably supports multiple database backends through Kysely dialects. This guide 
 
 ### PostgreSQL (Multi-Writer)
 
-- **Serverless**: Varies (Neon: yes, RDS: no)
-- **Setup**: Server required
+- **Serverless**: Yes, depending on provider (Neon, Aurora Serverless, etc.)
+- **Setup**: Managed service or self-hosted
 - **Performance**: Strong under concurrency (advisory locks + `FOR UPDATE SKIP LOCKED`)
-- **Cost**: Self-hosted or managed (Neon, Supabase, RDS)
+- **Cost**: Self-hosted or any managed provider — works with any PostgreSQL-compatible service
 
 ::: warning
 **Local SQLite** (libSQL local, better-sqlite3) is single-writer — multiple workers on the same file will cause lock contention. **Turso remote** accepts multiple connections, but concurrency key enforcement is weaker than PostgreSQL (no advisory locks). For reliable multi-worker setups, use PostgreSQL.
@@ -118,7 +118,7 @@ const dialect = new PostgresDialect({
 
 - Multiple workers can poll and claim jobs safely (advisory locks + fencing tokens)
 - Connection pooling via `pg.Pool`
-- Works with any PostgreSQL provider (Neon, Supabase, RDS, self-hosted)
+- Works with any PostgreSQL-compatible service (Neon, Supabase, RDS, Cloud SQL, self-hosted, etc.)
 
 ## SQLocal (Browser)
 
