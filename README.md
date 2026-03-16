@@ -1,6 +1,6 @@
 # durably
 
-Step-oriented resumable batch execution for Node.js and browsers using SQLite.
+Steps that survive crashes. SQLite to PostgreSQL.
 
 **[Documentation](https://coji.github.io/durably/)** | **[Live Demo](https://durably-demo.vercel.app)**
 
@@ -13,16 +13,21 @@ Step-oriented resumable batch execution for Node.js and browsers using SQLite.
 
 ## Features
 
-- Resumable batch processing with step-level persistence
-- Works in both Node.js and browsers
-- Uses SQLite for state management (better-sqlite3/libsql for Node.js, SQLite WASM for browsers)
-- Minimal dependencies - just Kysely and Zod as peer dependencies
-- Event system for monitoring and extensibility
-- Type-safe input/output with Zod schemas
+- **Resumable** — each step's result is persisted; interrupted jobs resume from the last successful step
+- **Flexible storage** — libSQL/Turso, PostgreSQL, better-sqlite3, or browser OPFS
+- **Browser + server** — same API for Node.js and browsers
+- **Lease-based recovery** — stale workers are automatically reclaimed via fencing tokens
+- **Auto cleanup** — `retainRuns` option purges old completed runs automatically
+- **React hooks** — real-time progress via SSE, fullstack and SPA modes
+- **Type-safe** — Zod schemas for input/output, labels, and auth context
 
 ## Quick Start
 
-See the [Quick Start](https://coji.github.io/durably/guide/quick-start) for installation and usage instructions.
+```bash
+pnpm add @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
+```
+
+See the [Quick Start](https://coji.github.io/durably/guide/quick-start) guide, or [Choosing a Database](https://coji.github.io/durably/guide/databases) for PostgreSQL and other backends.
 
 ## License
 
