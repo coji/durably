@@ -53,6 +53,15 @@ Five tables: `durably_runs`, `durably_run_labels`, `durably_steps`, `durably_log
 - Background tab interruptions handled via lease expiry recovery
 - Requires Secure Context (HTTPS/localhost) for OPFS
 
+## Publishing
+
+```bash
+cd packages/durably && npm publish --access public
+cd packages/durably-react && npm publish --access public
+```
+
+npm 2FA が有効なため、publish ごとにブラウザで OTP 認証が必要。ターミナルから直接実行すること。
+
 ## Git Workflow
 
 - **main ブランチへの直接コミット・push は禁止。** 必ず feature ブランチを切って PR を作成すること。
