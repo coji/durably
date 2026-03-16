@@ -686,10 +686,7 @@ export function createStepTests(createDialect: () => Dialect) {
         input: z.object({}),
         run: async (step) => {
           await step.run('race-step', async () => {
-            // Signal that fn() has completed its work
             stepFnCompletedResolve()
-            // Wait for cancel to happen before returning
-            // This creates the race: fn() done, cancel in progress, persistStep pending
             await cancelDone
             return 'should-not-be-persisted'
           })
@@ -706,16 +703,27 @@ export function createStepTests(createDialect: () => Dialect) {
 
       const run = await d.jobs.raceDef.trigger({})
 
-      // Wait for step fn() to complete its work
       await stepFnCompleted
 
-      // Cancel the run while fn() has completed but persistStep hasn't run yet
-      await d.cancel(run.id)
+      // Cancel via direct DB update to simulate external cancel (no abort signal).
+      // This bypasses the in-process event emitter so throwIfAborted() won't fire,
+      // forcing the test to exercise the DB-level status='leased' guard in persistStep.
+      await d.db
+        .updateTable('durably_runs')
+        .set({
+          status: 'cancelled',
+          lease_owner: null,
+          lease_expires_at: null,
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .where('id', '=', run.id)
+        .execute()
 
-      // Let fn() return — persistStep will now attempt to write
+      // Let fn() return — persistStep will attempt to write but DB guard rejects it
       cancelDoneResolve()
 
-      // Wait for the run to settle
+      // Wait for the worker to finish processing
       await vi.waitFor(
         async () => {
           const r = await d.getRun(run.id)
