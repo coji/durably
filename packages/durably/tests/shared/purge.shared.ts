@@ -234,6 +234,46 @@ export function createPurgeTests(createDialect: () => Dialect) {
         await d.db.destroy()
       })
 
+      it('auto-purges runs with backdated completed_at', async () => {
+        const d = createDurably({
+          dialect: createDialect(),
+          pollingIntervalMs: 50,
+          retainRuns: '1m', // 1 minute retention
+        }).register({ testJob })
+
+        await d.migrate()
+        d.start()
+
+        const run = await d.jobs.testJob.trigger({})
+
+        await vi.waitFor(
+          async () => {
+            const r = await d.getRun(run.id)
+            expect(r?.status).toBe('completed')
+          },
+          { timeout: 5000 },
+        )
+
+        // Backdate completed_at to 2 minutes ago so it's older than retention
+        const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString()
+        await d.db
+          .updateTable('durably_runs')
+          .set({ completed_at: twoMinutesAgo })
+          .where('id', '=', run.id)
+          .execute()
+
+        // Wait for auto-purge to fire during idle polling
+        await vi.waitFor(
+          async () => {
+            expect(await d.getRun(run.id)).toBeNull()
+          },
+          { timeout: 5000 },
+        )
+
+        await d.stop()
+        await d.db.destroy()
+      })
+
       it('throws on invalid retainRuns format', () => {
         expect(() =>
           createDurably({

@@ -36,7 +36,7 @@ const durably = createDurably({
   leaseRenewIntervalMs: 5000, // Lease renewal interval (ms)
   leaseMs: 30000, // Lease duration (ms); expired leases are reclaimed
   preserveSteps: false, // Set to true to keep step output data after terminal state (default: false = cleanup)
-  retainRuns: '30d', // Auto-delete terminal runs older than 30 days (optional; supports 'd', 'h', 'm' units)
+  retainRuns: '30d', // Auto-delete terminal runs older than 30 days (runs during worker polling; supports 'd', 'h', 'm' units)
   // Optional: type-safe labels with Zod schema
   // labels: z.object({ organizationId: z.string(), env: z.string() }),
   jobs: {
@@ -243,7 +243,7 @@ const deleted = await durably.purgeRuns({
 })
 ```
 
-For automatic cleanup, use the `retainRuns` option (see Quick Start).
+For automatic cleanup, use the `retainRuns` option (see Quick Start). Cleanup runs during idle worker polling cycles, at most once per minute, in batches of 100.
 
 ## Events
 

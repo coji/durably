@@ -209,16 +209,16 @@ function ImportButton() {
 
 ### Instance Methods
 
-| Method                | Description                                                                       |
-| --------------------- | --------------------------------------------------------------------------------- |
-| `init()`              | Migrate database and start worker                                                 |
-| `register(jobs)`      | Register job definitions                                                          |
-| `on(event, handler)`  | Subscribe to events                                                               |
-| `stop()`              | Stop worker gracefully                                                            |
-| `retrigger(runId)`    | Retrigger completed/failed/cancelled run (validates input against current schema) |
-| `cancel(runId)`       | Cancel pending or leased run                                                      |
-| `deleteRun(runId)`    | Delete a run and its associated steps, logs, and labels                           |
-| `purgeRuns(options?)` | Delete terminal runs older than a cutoff (for cleanup)                            |
+| Method               | Description                                                                       |
+| -------------------- | --------------------------------------------------------------------------------- |
+| `init()`             | Migrate database and start worker                                                 |
+| `register(jobs)`     | Register job definitions                                                          |
+| `on(event, handler)` | Subscribe to events                                                               |
+| `stop()`             | Stop worker gracefully                                                            |
+| `retrigger(runId)`   | Retrigger completed/failed/cancelled run (validates input against current schema) |
+| `cancel(runId)`      | Cancel pending or leased run                                                      |
+| `deleteRun(runId)`   | Delete a run and its associated steps, logs, and labels                           |
+| `purgeRuns(options)` | Delete terminal runs older than a cutoff (for cleanup)                            |
 
 ### Step Context
 
