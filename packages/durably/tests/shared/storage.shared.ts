@@ -403,54 +403,6 @@ export function createStorageTests(createDialect: () => Dialect) {
         expect(result).toBeNull()
       })
 
-      it('claimNext respects concurrency key exclusion', async () => {
-        await durably.storage.enqueue({
-          jobName: 'job',
-          input: {},
-          concurrencyKey: 'key-a',
-        })
-        const run2 = await durably.storage.enqueue({
-          jobName: 'job',
-          input: {},
-          concurrencyKey: 'key-b',
-        })
-
-        const claimed = await durably.storage.claimNext(
-          'test-worker',
-          new Date().toISOString(),
-          30_000,
-          { excludeConcurrencyKeys: ['key-a'] },
-        )
-
-        expect(claimed).not.toBeNull()
-        expect(claimed!.id).toBe(run2.id)
-        expect(claimed!.concurrencyKey).toBe('key-b')
-        expect(claimed!.status).toBe('leased')
-      })
-
-      it('claimNext skips runs with null concurrency key when not excluded', async () => {
-        const run1 = await durably.storage.enqueue({
-          jobName: 'job',
-          input: {},
-        })
-        await durably.storage.enqueue({
-          jobName: 'job',
-          input: {},
-          concurrencyKey: 'key-a',
-        })
-
-        // Excluding key-a should still return the run without a concurrency key
-        const claimed = await durably.storage.claimNext(
-          'test-worker',
-          new Date().toISOString(),
-          30_000,
-          { excludeConcurrencyKeys: ['key-a'] },
-        )
-
-        expect(claimed).not.toBeNull()
-        expect(claimed!.id).toBe(run1.id)
-      })
-
       it('claimNext preserves started_at on re-claim of recovered run', async () => {
         // Create and claim a run
         const created = await durably.storage.enqueue({

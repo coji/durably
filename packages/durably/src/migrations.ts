@@ -80,6 +80,13 @@ const migrations: Migration[] = [
         .columns(['job_name', 'created_at'])
         .execute()
 
+      await db.schema
+        .createIndex('idx_durably_runs_status_completed')
+        .ifNotExists()
+        .on('durably_runs')
+        .columns(['status', 'completed_at'])
+        .execute()
+
       // Create normalized labels table for indexed label filtering
       await db.schema
         .createTable('durably_run_labels')

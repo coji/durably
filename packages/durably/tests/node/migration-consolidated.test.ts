@@ -61,6 +61,7 @@ describe('migration consolidated schema', () => {
     expect(indexNames).toContain('idx_durably_runs_status_created')
     expect(indexNames).toContain('idx_durably_runs_status_lease_expires')
     expect(indexNames).toContain('idx_durably_runs_job_created')
+    expect(indexNames).toContain('idx_durably_runs_status_completed')
 
     // Steps indexes
     expect(indexNames).toContain('idx_durably_steps_run_index')
