@@ -671,7 +671,7 @@ export function createKyselyStore(
       olderThan: string
       limit?: number
     }): Promise<number> {
-      const limit = options.limit ?? 1000
+      const limit = options.limit ?? 500
 
       return await db.transaction().execute(async (trx) => {
         const rows = await trx

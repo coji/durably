@@ -155,7 +155,7 @@ Deletes a run and its associated steps and logs.
 ```ts
 await durably.purgeRuns(options: {
   olderThan: Date      // cutoff — terminal runs with completedAt before this are deleted
-  limit?: number       // max rows to delete per call (default: 1000)
+  limit?: number       // max rows to delete per call (default: 500)
 }): Promise<number>
 ```
 
