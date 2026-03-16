@@ -275,7 +275,7 @@ For automatic cleanup, use the `retainRuns` option (see Core Concepts). Cleanup 
 
 ## Events
 
-Subscribe to job execution events:
+Subscribe to job execution events. **Listeners run synchronously** in the worker's hot path — keep them fast and non-blocking. Use fire-and-forget (`void asyncFn()`) for expensive work.
 
 ```ts
 // Run lifecycle events
