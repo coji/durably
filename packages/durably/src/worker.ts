@@ -36,7 +36,11 @@ export function createWorker(
     const cycle = (async () => {
       const didProcess = await processOne({ workerId: activeWorkerId })
       if (!didProcess && onIdle && running) {
-        await onIdle()
+        try {
+          await onIdle()
+        } catch {
+          // onIdle errors are non-fatal; allow polling to continue
+        }
       }
     })()
     inFlight = cycle
