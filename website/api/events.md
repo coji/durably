@@ -50,6 +50,25 @@ durably.on('run:leased', (event) => {
 })
 ```
 
+#### `run:lease-renewed`
+
+Fired when a run's lease is renewed during execution.
+
+```ts
+durably.on('run:lease-renewed', (event) => {
+  // event: {
+  //   type: 'run:lease-renewed',
+  //   runId: string,
+  //   jobName: string,
+  //   leaseOwner: string,
+  //   leaseExpiresAt: string,
+  //   labels: Record<string, string>,
+  //   timestamp: string,
+  //   sequence: number
+  // }
+})
+```
+
 #### `run:complete`
 
 Fired when a run completes successfully.
@@ -295,7 +314,7 @@ durably.on('run:complete', (e) => {
 
 ## Error Handling
 
-Exceptions thrown in event listeners are caught and forwarded to the error handler — they do not crash the worker or abort the current run. However, because listeners run synchronously, an exception still interrupts subsequent listeners for the same event. Use `onError` to catch these:
+Exceptions thrown in event listeners are caught and forwarded to the error handler — they do not crash the worker, abort the current run, or interrupt subsequent listeners for the same event. If a listener returns a rejected Promise (async listener), the rejection is also forwarded to `onError`. Use `onError` to catch both:
 
 ```ts
 durably.onError((error, event) => {
@@ -317,6 +336,7 @@ interface BaseEvent {
 type DurablyEvent =
   | RunTriggerEvent
   | RunLeasedEvent
+  | RunLeaseRenewedEvent
   | RunCompleteEvent
   | RunFailEvent
   | RunCancelEvent

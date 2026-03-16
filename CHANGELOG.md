@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-03-16
+
+### Added
+
+#### @coji/durably
+
+- **Export error classes**: `DurablyError`, `NotFoundError`, `ValidationError`, `ConflictError` now exported for programmatic error handling (#129)
+
+### Fixed
+
+#### @coji/durably
+
+- **Prevent completed step from being written to cancelled run** (#128)
+- **Return proper HTTP status codes and stop coercing input** (#129)
+- **Separate maintenance from processOne to fix idle contract**: `processOne()` is now pure claim-execute-return. Lease normalization and auto-purge run only during idle cycles via worker `onIdle` callback (#134)
+- **Catch rejected promises from async event listeners**: Async listener rejections are now forwarded to `onError` instead of being silently dropped. `withLogPersistence()` fixed to use explicit fire-and-forget (#137)
+
+### Performance
+
+#### @coji/durably
+
+- **Skip write mutex for PostgreSQL backend**: PostgreSQL doesn't need the serialization mutex used for SQLite (#130)
+- **Denormalize step_count and remove labels JSON fallback**: Avoids subqueries and JSON parsing in hot paths (#132)
+
+### Internal
+
+- Extract `claim-postgres.ts`, `claim-sqlite.ts`, `transformers.ts` from `storage.ts` for better separation of concerns (#133)
+- Extract `toError()` helper in `errors.ts` to deduplicate error coercion pattern (#137)
+
+### Documentation
+
+- Document synchronous event listener behavior with best practices (#135)
+- Add `run:lease-renewed` event to Events API reference
+- Add error classes to Quick Reference and LLM documentation
+- PostgreSQL example, database comparison guide, expanded LLM docs (#114-#120)
+
 ## [0.13.0] - 2026-03-16
 
 ### Breaking Changes
