@@ -263,9 +263,39 @@ durably.on('worker:error', (event) => {
 })
 ```
 
+## Synchronous Execution
+
+::: warning Listeners run synchronously
+Event listeners are called **synchronously** in the worker's hot path. A slow listener will block job execution and lease renewal until it returns. Keep listeners fast and non-blocking.
+:::
+
+**Do:**
+
+```ts
+// Fast: queue work for later
+durably.on('run:complete', (e) => {
+  void sendToAnalytics(e) // fire-and-forget async
+})
+
+// Fast: simple logging
+durably.on('run:fail', (e) => {
+  console.error(`[${e.jobName}] Failed: ${e.error}`)
+})
+```
+
+**Don't:**
+
+```ts
+// Slow: synchronous heavy computation blocks the worker
+durably.on('run:complete', (e) => {
+  const report = generateExpensiveReport(e) // ❌ blocks polling
+  fs.writeFileSync('report.json', JSON.stringify(report))
+})
+```
+
 ## Error Handling
 
-Exceptions in event listeners don't affect run execution. To catch listener errors:
+Exceptions thrown in event listeners are caught and forwarded to the error handler — they do not crash the worker or abort the current run. However, because listeners run synchronously, an exception still interrupts subsequent listeners for the same event. Use `onError` to catch these:
 
 ```ts
 durably.onError((error, event) => {
