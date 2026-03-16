@@ -670,5 +670,67 @@ export function createStepTests(createDialect: () => Dialect) {
       // signal should have been aborted during step1
       expect(step1SignalAborted).toBe(true)
     })
+
+    it('does not persist completed step after run is cancelled (race condition)', async () => {
+      let stepFnCompletedResolve!: () => void
+      const stepFnCompleted = new Promise<void>((r) => {
+        stepFnCompletedResolve = r
+      })
+      let cancelDoneResolve!: () => void
+      const cancelDone = new Promise<void>((r) => {
+        cancelDoneResolve = r
+      })
+
+      const raceDef = defineJob({
+        name: 'cancel-race-test',
+        input: z.object({}),
+        run: async (step) => {
+          await step.run('race-step', async () => {
+            // Signal that fn() has completed its work
+            stepFnCompletedResolve()
+            // Wait for cancel to happen before returning
+            // This creates the race: fn() done, cancel in progress, persistStep pending
+            await cancelDone
+            return 'should-not-be-persisted'
+          })
+        },
+      })
+
+      const d = createDurably({
+        dialect: createDialect(),
+        pollingIntervalMs: 50,
+        preserveSteps: true,
+      }).register({ raceDef })
+      await d.migrate()
+      d.start()
+
+      const run = await d.jobs.raceDef.trigger({})
+
+      // Wait for step fn() to complete its work
+      await stepFnCompleted
+
+      // Cancel the run while fn() has completed but persistStep hasn't run yet
+      await d.cancel(run.id)
+
+      // Let fn() return — persistStep will now attempt to write
+      cancelDoneResolve()
+
+      // Wait for the run to settle
+      await vi.waitFor(
+        async () => {
+          const r = await d.getRun(run.id)
+          expect(r?.status).toBe('cancelled')
+        },
+        { timeout: 5000 },
+      )
+
+      // The step should NOT have been persisted as 'completed'
+      const steps = await d.storage.getSteps(run.id)
+      const completedSteps = steps.filter((s) => s.status === 'completed')
+      expect(completedSteps).toHaveLength(0)
+
+      await d.stop()
+      await d.db.destroy()
+    })
   })
 }

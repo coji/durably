@@ -123,8 +123,8 @@ export function createStepContext(
         const result = await fn(controller.signal)
         throwIfAborted()
 
-        // Persist step result atomically with lease generation guard.
-        // If the lease was reclaimed by another worker, this returns null.
+        // Persist step result atomically with lease guard (status='leased' + generation).
+        // Returns null if the run was cancelled or the lease was reclaimed.
         const savedStep = await storage.persistStep(run.id, leaseGeneration, {
           name,
           index: stepIndex,
@@ -171,10 +171,9 @@ export function createStepContext(
         const isCancelled = controller.signal.aborted
         const errorMessage = getErrorMessage(error)
 
-        // Persist failed/cancelled step record with generation guard.
-        // For cancellation: the generation still matches (cancelRun doesn't
-        // change it), so the guard passes. For normal errors: the guard
-        // prevents stale writes if the lease was reclaimed.
+        // Persist failed/cancelled step record with lease guard.
+        // The guard checks both status='leased' and lease_generation,
+        // so this returns null if the run was cancelled or the lease was lost.
         const savedStep = await storage.persistStep(run.id, leaseGeneration, {
           name,
           index: stepIndex,
@@ -184,6 +183,19 @@ export function createStepContext(
         })
 
         if (!savedStep) {
+          if (isCancelled) {
+            // Run was cancelled — persistStep correctly refused the write.
+            // Emit the event before throwing so listeners are notified.
+            eventEmitter.emit({
+              type: 'step:cancel',
+              runId: run.id,
+              jobName,
+              stepName: name,
+              stepIndex,
+              labels: run.labels,
+            })
+            throw new CancelledError(run.id)
+          }
           // Lease was lost during this window
           abortForLeaseLoss()
           throw new LeaseLostError(run.id)
