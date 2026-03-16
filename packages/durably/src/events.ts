@@ -320,7 +320,21 @@ export function createEventEmitter(): EventEmitter {
 
       for (const listener of typeListeners) {
         try {
-          listener(fullEvent)
+          const result: unknown = listener(fullEvent)
+          // Catch rejected promises from async listeners (not awaited)
+          if (
+            result != null &&
+            typeof (result as Promise<unknown>).then === 'function'
+          ) {
+            ;(result as Promise<unknown>).catch((error: unknown) => {
+              if (errorHandler) {
+                errorHandler(
+                  error instanceof Error ? error : new Error(String(error)),
+                  fullEvent,
+                )
+              }
+            })
+          }
         } catch (error) {
           if (errorHandler) {
             errorHandler(
