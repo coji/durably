@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Durably
   text: Resumable Batch Execution
-  tagline: Just SQLite. No Redis required.
+  tagline: Step-oriented workflows for Node.js and browsers. SQLite or PostgreSQL.
   actions:
     - theme: brand
       text: Get Started
@@ -17,16 +17,22 @@ hero:
       link: https://github.com/coji/durably
 
 features:
-  - icon: 🚀
-    title: Zero Infrastructure
-    details: SQLite only. No Redis, no Postgres, no config files. Just npm install and go.
   - icon: 🔄
     title: Resumable Steps
-    details: Each step auto-saves to SQLite. Interrupted jobs resume exactly where they left off.
+    details: Each step auto-saves to the database. Interrupted jobs resume exactly where they left off — server restarts, crashes, browser tab closes.
+  - icon: 🗄️
+    title: Flexible Storage
+    details: SQLite, libSQL/Turso, PostgreSQL, or browser OPFS. Pick what fits your deployment — from zero-config local to multi-worker production.
   - icon: 🌐
     title: Browser + Server
-    details: Same API for Node.js and browsers. Use OPFS for offline-capable browser apps.
+    details: Same API for Node.js and browsers. Use OPFS for offline-capable browser apps, or connect to a server via SSE.
   - icon: ⚡
     title: React Ready
-    details: Built-in hooks with real-time updates via SSE. Build progress UIs in minutes.
+    details: Built-in hooks with real-time progress updates via SSE. Fullstack and SPA modes with type-safe APIs.
+  - icon: 🔒
+    title: Lease-Based Recovery
+    details: Workers claim jobs via leases with fencing tokens. Stale leases are automatically reclaimed — no stuck jobs.
+  - icon: 🧹
+    title: Auto Cleanup
+    details: Set retainRuns to automatically purge old completed runs. Or call purgeRuns() for manual batch cleanup.
 ---

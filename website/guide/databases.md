@@ -4,13 +4,23 @@ Durably supports multiple database backends through Kysely dialects. This guide 
 
 ## At a Glance
 
-| Backend                   | Writers       | Serverless | Setup           | Performance                    | Cost                          |
-| ------------------------- | ------------- | ---------- | --------------- | ------------------------------ | ----------------------------- |
-| **libSQL** (local)        | Single        | Limited    | Zero config     | Fast (local file)              | Free                          |
-| **Turso** (remote libSQL) | Single per DB | Yes        | Managed         | Network latency, edge-friendly | Free tier, then pay-as-you-go |
-| **better-sqlite3**        | Single        | No         | Zero config     | Fast (local sync)              | Free                          |
-| **PostgreSQL**            | Multiple      | Varies     | Server required | Strong under concurrency       | Self-hosted or managed        |
-| **SQLocal** (browser)     | Single tab    | N/A        | Zero config     | Browser-local (OPFS)           | Free (client-side)            |
+### SQLite Family (Single-Writer)
+
+| Backend               | Serverless                  | Setup                                  | Performance                      | Cost                                             |
+| --------------------- | --------------------------- | -------------------------------------- | -------------------------------- | ------------------------------------------------ |
+| **libSQL / Turso**    | Local: Limited, Remote: Yes | Zero config (local) / Managed (remote) | Fast local, edge-friendly remote | Free (local) / Free tier + pay-as-you-go (Turso) |
+| **better-sqlite3**    | No                          | Zero config                            | Fast (synchronous)               | Free                                             |
+| **SQLocal** (browser) | N/A                         | Zero config                            | Browser-local (OPFS)             | Free (client-side)                               |
+
+### PostgreSQL (Multi-Writer)
+
+| Backend        | Serverless                  | Setup           | Performance              | Cost                   |
+| -------------- | --------------------------- | --------------- | ------------------------ | ---------------------- |
+| **PostgreSQL** | Varies (Neon: yes, RDS: no) | Server required | Strong under concurrency | Self-hosted or managed |
+
+::: warning
+**Local SQLite** (libSQL local, better-sqlite3) is single-writer — multiple workers on the same file will cause lock contention. **Turso remote** accepts multiple connections, but concurrency key enforcement is weaker than PostgreSQL (no advisory locks). For reliable multi-worker setups, use PostgreSQL.
+:::
 
 ## Decision Flowchart
 
@@ -19,21 +29,23 @@ Running in the browser?
   Yes → SQLocal (only option)
   No ↓
 
-Need multiple workers processing jobs concurrently?
-  Yes → PostgreSQL
+Large volume of jobs, or multiple app servers sharing one DB?
+(e.g. high-traffic API, queue with thousands of jobs/hour)
+  Yes → PostgreSQL (strongest guarantees)
+        Turso also works (weaker concurrency key enforcement)
   No ↓
 
 Deploying to serverless / edge (Vercel, Cloudflare)?
   Yes → Turso (remote libSQL)
   No ↓
 
-Need a lightweight embedded DB?
+Single server or CLI script?
   Yes → libSQL (local) or better-sqlite3
 ```
 
-## libSQL (Local)
+## libSQL / Turso
 
-**Recommended default for Node.js.** Zero-config embedded database that works everywhere.
+**Recommended default.** libSQL works as a local embedded database and as a managed remote database via [Turso](https://turso.tech). Same `LibsqlDialect` for both — just change the URL.
 
 ```bash
 pnpm add @libsql/client @libsql/kysely-libsql
@@ -43,36 +55,21 @@ pnpm add @libsql/client @libsql/kysely-libsql
 import { createClient } from '@libsql/client'
 import { LibsqlDialect } from '@libsql/kysely-libsql'
 
+// Local (single file on disk)
 const client = createClient({ url: 'file:local.db' })
+
+// Turso remote (serverless / edge)
+// const client = createClient({
+//   url: process.env.TURSO_DATABASE_URL!,
+//   authToken: process.env.TURSO_AUTH_TOKEN!,
+// })
+
 const dialect = new LibsqlDialect({ client })
 ```
 
-- Single file on disk
-- No external dependencies
-- Same dialect works with Turso remote (just change the URL)
-
-## Turso (Remote libSQL)
-
-**For serverless and edge deployments.** Managed libSQL database with global replication.
-
-```bash
-pnpm add @libsql/client @libsql/kysely-libsql
-```
-
-```ts
-import { createClient } from '@libsql/client'
-import { LibsqlDialect } from '@libsql/kysely-libsql'
-
-const client = createClient({
-  url: process.env.TURSO_DATABASE_URL!,
-  authToken: process.env.TURSO_AUTH_TOKEN!,
-})
-const dialect = new LibsqlDialect({ client })
-```
-
-- Same `LibsqlDialect` as local — just swap the URL
+- **Local**: Single file, zero config, no external dependencies
+- **Turso**: Managed service with global replication, free tier available
 - Works on Vercel, Cloudflare Workers, Fly.io
-- Free tier available at [turso.tech](https://turso.tech)
 
 ::: tip
 See the [fullstack-vercel-turso example](https://github.com/coji/durably/tree/main/examples/fullstack-vercel-turso) for a complete Vercel + Turso deployment.
@@ -97,11 +94,11 @@ const dialect = new SqliteDialect({
 
 - Synchronous API (slightly faster for small workloads)
 - Good for one-off scripts and CLI tools
-- No Turso remote support (use libSQL if you might need remote later)
+- No remote support (use libSQL if you might need Turso later)
 
 ## PostgreSQL
 
-**For multi-worker production deployments.** The only backend that supports multiple workers processing jobs concurrently from the same database.
+**For multi-worker production deployments.** The recommended backend for running multiple workers concurrently, with advisory locks and `FOR UPDATE SKIP LOCKED` for strong concurrency guarantees.
 
 ```bash
 pnpm add pg
@@ -121,10 +118,6 @@ const dialect = new PostgresDialect({
 - Multiple workers can poll and claim jobs safely (advisory locks + fencing tokens)
 - Connection pooling via `pg.Pool`
 - Works with any PostgreSQL provider (Neon, Supabase, RDS, self-hosted)
-
-::: warning
-SQLite backends (libSQL, better-sqlite3) are single-writer. Running multiple workers against the same SQLite file will cause lock contention. Use PostgreSQL for multi-worker setups.
-:::
 
 ## SQLocal (Browser)
 

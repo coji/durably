@@ -4,7 +4,7 @@
 
 ## Overview
 
-Durably is a minimal workflow engine that persists step results to SQLite or PostgreSQL. If a job is interrupted (server restart, browser tab close, crash), it automatically resumes from the last successful step. Supports libSQL/Turso (single-server, serverless), PostgreSQL (multi-worker), and SQLocal (browser/OPFS).
+Durably is a minimal workflow engine that persists step results to SQLite or PostgreSQL. If a job is interrupted (server restart, browser tab close, crash), it automatically resumes from the last successful step. Supports libSQL/Turso (single-server or serverless), PostgreSQL (recommended for multi-worker), and SQLocal (browser/OPFS).
 
 ## Installation
 
