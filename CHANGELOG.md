@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-03-16
+
+### Breaking Changes
+
+#### @coji/durably
+
+- **Lease-based runtime model**: Complete rewrite of the execution engine. Runs are now claimed via leases with fencing tokens (`lease_generation`), enabling safe recovery from worker crashes. Expired leases are automatically reclaimed (#101)
+- **`preserveSteps` replaces `cleanupSteps`**: Option renamed and default flipped for clarity. `preserveSteps: false` (default) deletes step data on terminal state — same behavior as before (#101)
+- **Labels normalized into indexed table**: `durably_run_labels` replaces JSON-in-column storage for efficient label filtering. Migration is automatic (#103)
+- **`retrigger()` validates input against current schema**: Throws if the original run's input doesn't match the current job's input schema (#104)
+
+### Added
+
+#### @coji/durably
+
+- **`purgeRuns()` API**: Batch-delete terminal runs older than a cutoff date. Cascade-deletes associated steps, logs, and labels (#109)
+  ```ts
+  const deleted = await durably.purgeRuns({
+    olderThan: new Date(Date.now() - 30 * 86400000),
+    limit: 500,
+  })
+  ```
+- **`retainRuns` option**: Auto-delete terminal runs during idle worker polling. Supports `'30d'`, `'24h'`, `'60m'` duration formats (#109)
+  ```ts
+  const durably = createDurably({
+    dialect,
+    retainRuns: '30d',
+  })
+  ```
+- **PostgreSQL support**: Kysely PostgreSQL dialect now supported alongside SQLite/libSQL (#101)
+- **Concurrency key enforcement via SQL**: `activeLeaseGuard` subquery in `claimNext` prevents duplicate leases for the same concurrency key without JS-side filtering (#101)
+
+### Fixed
+
+#### @coji/durably
+
+- **SSE subscribe race condition**: Subscribe to events before reading DB state to prevent missed updates (#108)
+- **SSE reconnection**: Only dispatch error on permanent CLOSED state, not transient disconnects (#108)
+
+### Performance
+
+#### @coji/durably
+
+- **Remove `getRuns({ status: 'leased' })` from polling hot path**: `claimNext`'s SQL subquery already handles concurrency exclusion, eliminating a full table scan + JOIN + JSON parse per poll cycle (#109)
+
+### Documentation
+
+- Deployment guide with mode comparison (#104)
+- `purgeRuns` and `retainRuns` in API reference, llms.md, and CLAUDE.md (#109)
+- Runtime rearchitecture RFC (#97, #99)
+
 ## [0.12.0] - 2026-03-07
 
 ### Breaking Changes
