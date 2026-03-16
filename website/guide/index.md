@@ -11,7 +11,7 @@ Long-running tasks fail. Networks drop, servers restart, browsers close. Traditi
 
 ## The Solution
 
-Durably saves each step's result to SQLite. On resume, completed steps return cached results instantly.
+Durably saves each step's result to the database (SQLite or PostgreSQL). On resume, completed steps return cached results instantly.
 
 ```ts
 const job = defineJob({
@@ -35,13 +35,27 @@ If the process crashes after importing 500 of 1000 rows, restart picks up at row
 
 ## Three Ways to Run
 
-| Mode          | Storage                        | Use Case                             |
-| ------------- | ------------------------------ | ------------------------------------ |
-| **Server**    | @libsql/client, better-sqlite3 | Cron jobs, data pipelines, CLI tools |
-| **Fullstack** | Server DB + SSE to browser     | Web apps with real-time progress UI  |
-| **SPA**       | SQLite WASM + OPFS             | Offline-capable, local-first apps    |
+| Mode          | Storage                            | Use Case                             |
+| ------------- | ---------------------------------- | ------------------------------------ |
+| **Server**    | libSQL, PostgreSQL, better-sqlite3 | Cron jobs, data pipelines, CLI tools |
+| **Fullstack** | Server DB + SSE to browser         | Web apps with real-time progress UI  |
+| **SPA**       | SQLite WASM + OPFS                 | Offline-capable, local-first apps    |
 
 Same job definition works in all three modes.
+
+## When NOT to Use Durably
+
+Durably is great for batch processing with step-level resumability. It's not the right tool for everything:
+
+| If you need...                                                 | Use instead                                            |
+| -------------------------------------------------------------- | ------------------------------------------------------ |
+| **Sub-second job dispatch** (real-time messaging, webhooks)    | BullMQ, SQS, or a message broker                       |
+| **Hundreds of concurrent workers** processing a massive queue  | Temporal, Inngest, or a dedicated workflow engine      |
+| **Simple scheduled tasks** (one cron job, no steps)            | Node.js cron (`node-cron`), OS crontab, or Vercel Cron |
+| **Stream processing** (continuous event ingestion)             | Kafka, Redis Streams                                   |
+| **Long-running single operation** (no natural step boundaries) | A plain async function with retry logic                |
+
+Durably shines when your task has **multiple discrete steps** that are expensive to redo, and you want **automatic resume** without managing infrastructure.
 
 ## Next Step
 
