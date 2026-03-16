@@ -92,6 +92,7 @@ Code examples embedded in prose. API changes silently break copy-paste.
 | File                              | Why it needs checking                 |
 | --------------------------------- | ------------------------------------- |
 | `website/guide/quick-start.md`    | First code users copy-paste           |
+| `website/guide/databases.md`      | Database comparison and setup codes   |
 | `website/guide/concepts.md`       | Core concept explanations with code   |
 | `website/guide/server-mode.md`    | Server mode tutorial                  |
 | `website/guide/fullstack-mode.md` | Fullstack mode tutorial               |
@@ -101,11 +102,11 @@ Code examples embedded in prose. API changes silently break copy-paste.
 | `website/guide/multi-tenant.md`   | Multi-tenant isolation patterns       |
 | `website/guide/deployment.md`     | Deployment guide with mode comparison |
 
-### Tier 6: Sidebar config
+### Tier 6: Sidebar config and meta tags
 
-Menu links and anchors must match actual headings. Mismatches cause 404s.
+Menu links, anchors, and OGP/meta descriptions must stay in sync.
 
-- [ ] `website/.vitepress/config.ts` — VitePress slugifies headings for anchors
+- [ ] `website/.vitepress/config.ts` — sidebar links, `og:description`, `twitter:description`, site `description`
 
 ### Tier 7: Example apps
 

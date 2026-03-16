@@ -3,7 +3,7 @@ import { defineConfig } from 'vitepress'
 export default defineConfig({
   title: 'Durably',
   description:
-    'Step-oriented resumable batch execution for Node.js and browsers',
+    'Steps that survive crashes. Resumable batch execution for Node.js and browsers. SQLite to PostgreSQL.',
   base: '/durably/',
 
   head: [
@@ -13,7 +13,7 @@ export default defineConfig({
       'meta',
       {
         property: 'og:description',
-        content: 'Just SQLite. No Redis required.',
+        content: 'Steps that survive crashes. SQLite to PostgreSQL.',
       },
     ],
     [
@@ -30,7 +30,7 @@ export default defineConfig({
       'meta',
       {
         name: 'twitter:description',
-        content: 'Just SQLite. No Redis required.',
+        content: 'Steps that survive crashes. SQLite to PostgreSQL.',
       },
     ],
     [
