@@ -145,6 +145,14 @@ else
     'No Redis' \
     "Outdated positioning. Update og:description and twitter:description"
 
+  # ── Renamed fields ──
+
+  check_pattern \
+    "Old field name: stepCount (renamed to completedStepCount)" \
+    'stepCount' \
+    "Renamed in v0.14. Use completedStepCount" \
+    "CHANGELOG.md"
+
   # ── Old terminology ──
 
   check_pattern \
