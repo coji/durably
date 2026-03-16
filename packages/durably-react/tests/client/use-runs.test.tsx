@@ -20,7 +20,7 @@ const createMockRun = (overrides: Partial<ClientRun> = {}): ClientRun => ({
   output: null,
   error: null,
   currentStepIndex: 0,
-  stepCount: 0,
+  completedStepCount: 0,
   labels: {},
   progress: null,
   createdAt: '2024-01-01T00:00:00.000Z',

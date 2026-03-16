@@ -1,4 +1,4 @@
-import { type Kysely, type SqlBool, sql } from 'kysely'
+import { type Kysely, sql } from 'kysely'
 import { monotonicFactory } from 'ulidx'
 import type { Database } from './schema'
 
@@ -40,7 +40,7 @@ export interface Run<
   idempotencyKey: string | null
   concurrencyKey: string | null
   currentStepIndex: number
-  stepCount: number
+  completedStepCount: number
   progress: { current: number; total?: number; message?: string } | null
   output: unknown | null
   error: string | null
@@ -271,9 +271,7 @@ function validateLabels(labels: Record<string, string> | undefined): void {
   }
 }
 
-function rowToRun(
-  row: Database['durably_runs'] & { step_count?: number | bigint | null },
-): Run {
+function rowToRun(row: Database['durably_runs']): Run {
   return {
     id: row.id,
     jobName: row.job_name,
@@ -282,7 +280,7 @@ function rowToRun(
     idempotencyKey: row.idempotency_key,
     concurrencyKey: row.concurrency_key,
     currentStepIndex: row.current_step_index,
-    stepCount: Number(row.step_count ?? 0),
+    completedStepCount: row.completed_step_count,
     progress: row.progress ? JSON.parse(row.progress) : null,
     output: row.output ? JSON.parse(row.output) : null,
     error: row.error,
@@ -447,6 +445,7 @@ export function createKyselyStore(
         idempotency_key: input.idempotencyKey ?? null,
         concurrency_key: input.concurrencyKey ?? null,
         current_step_index: 0,
+        completed_step_count: 0,
         progress: null,
         output: null,
         error: null,
@@ -519,6 +518,7 @@ export function createKyselyStore(
             idempotency_key: input.idempotencyKey ?? null,
             concurrency_key: input.concurrencyKey ?? null,
             current_step_index: 0,
+            completed_step_count: 0,
             progress: null,
             output: null,
             error: null,
@@ -554,38 +554,26 @@ export function createKyselyStore(
     async getRun<T extends Run = Run>(runId: string): Promise<T | null> {
       const row = await db
         .selectFrom('durably_runs')
-        .leftJoin('durably_steps', 'durably_runs.id', 'durably_steps.run_id')
-        .selectAll('durably_runs')
-        .select((eb) =>
-          eb.fn.count<number>('durably_steps.id').as('step_count'),
-        )
-        .where('durably_runs.id', '=', runId)
-        .groupBy('durably_runs.id')
+        .selectAll()
+        .where('id', '=', runId)
         .executeTakeFirst()
 
       return row ? (rowToRun(row) as T) : null
     },
 
     async getRuns<T extends Run = Run>(filter?: RunFilter): Promise<T[]> {
-      let query = db
-        .selectFrom('durably_runs')
-        .leftJoin('durably_steps', 'durably_runs.id', 'durably_steps.run_id')
-        .selectAll('durably_runs')
-        .select((eb) =>
-          eb.fn.count<number>('durably_steps.id').as('step_count'),
-        )
-        .groupBy('durably_runs.id')
+      let query = db.selectFrom('durably_runs').selectAll()
 
       if (filter?.status) {
-        query = query.where('durably_runs.status', '=', filter.status)
+        query = query.where('status', '=', filter.status)
       }
       if (filter?.jobName) {
         if (Array.isArray(filter.jobName)) {
           if (filter.jobName.length > 0) {
-            query = query.where('durably_runs.job_name', 'in', filter.jobName)
+            query = query.where('job_name', 'in', filter.jobName)
           }
         } else {
-          query = query.where('durably_runs.job_name', '=', filter.jobName)
+          query = query.where('job_name', '=', filter.jobName)
         }
       }
       if (filter?.labels) {
@@ -593,29 +581,20 @@ export function createKyselyStore(
         validateLabels(labels)
         for (const [key, value] of Object.entries(labels)) {
           if (value === undefined) continue
-          // Use indexed label table with JSON fallback for atomicity safety:
-          // if label rows haven't been written yet, fall back to JSON column
-          const jsonFallback =
-            backend === 'postgres'
-              ? sql<SqlBool>`durably_runs.labels ->> ${key} = ${value}`
-              : sql<SqlBool>`json_extract(durably_runs.labels, ${`$.${key}`}) = ${value}`
           query = query.where((eb) =>
-            eb.or([
-              eb.exists(
-                eb
-                  .selectFrom('durably_run_labels')
-                  .select(sql.lit(1).as('one'))
-                  .whereRef('durably_run_labels.run_id', '=', 'durably_runs.id')
-                  .where('durably_run_labels.key', '=', key)
-                  .where('durably_run_labels.value', '=', value),
-              ),
-              jsonFallback,
-            ]),
+            eb.exists(
+              eb
+                .selectFrom('durably_run_labels')
+                .select(sql.lit(1).as('one'))
+                .whereRef('durably_run_labels.run_id', '=', 'durably_runs.id')
+                .where('durably_run_labels.key', '=', key)
+                .where('durably_run_labels.value', '=', value),
+            ),
           )
         }
       }
 
-      query = query.orderBy('durably_runs.created_at', 'desc')
+      query = query.orderBy('created_at', 'desc')
 
       if (filter?.limit !== undefined) {
         query = query.limit(filter.limit)
@@ -793,7 +772,7 @@ export function createKyselyStore(
 
             const row = result.rows[0]
             if (!row) return null
-            return rowToRun({ ...row, step_count: 0 })
+            return rowToRun(row)
           }
         })
       }
@@ -833,7 +812,7 @@ export function createKyselyStore(
         .executeTakeFirst()
 
       if (!row) return null
-      return rowToRun({ ...row, step_count: 0 })
+      return rowToRun(row)
     },
 
     async renewLease(
@@ -941,12 +920,13 @@ export function createKyselyStore(
 
         if (Number(insertResult.numAffectedRows) === 0) return null
 
-        // Advance step index for completed steps only
+        // Advance step index and increment completed_step_count for completed steps
         if (input.status === 'completed') {
           await trx
             .updateTable('durably_runs')
             .set({
               current_step_index: input.index + 1,
+              completed_step_count: sql`completed_step_count + 1`,
               updated_at: completedAt,
             })
             .where('id', '=', runId)
