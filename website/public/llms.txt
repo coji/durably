@@ -239,11 +239,11 @@ Pending and leased runs are never deleted.
 // Delete terminal runs older than 30 days
 const deleted = await durably.purgeRuns({
   olderThan: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
-  limit: 500, // optional batch size (default: 1000)
+  limit: 500, // optional batch size (default: 500)
 })
 ```
 
-For automatic cleanup, use the `retainRuns` option (see Quick Start). Cleanup runs during idle worker polling cycles, at most once per minute, in batches of 100.
+For automatic cleanup, use the `retainRuns` option (see Core Concepts). Cleanup runs during idle worker polling cycles, at most once per minute, in batches of 100.
 
 ## Events
 

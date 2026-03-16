@@ -926,9 +926,15 @@ function createDurablyInstance<
           const purgeNow = Date.now()
           state.lastPurgeAt = purgeNow
           const cutoff = new Date(purgeNow - state.retainRunsMs).toISOString()
-          storage.purgeRuns({ olderThan: cutoff, limit: 100 }).catch(() => {
-            // Purge failure is non-fatal — will retry on next interval
-          })
+          storage
+            .purgeRuns({ olderThan: cutoff, limit: 100 })
+            .catch((error) => {
+              eventEmitter.emit({
+                type: 'worker:error',
+                error: getErrorMessage(error),
+                context: 'auto-purge',
+              })
+            })
         }
         return false
       }

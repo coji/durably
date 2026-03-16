@@ -155,13 +155,13 @@ Deletes a run and its associated steps and logs.
 ```ts
 await durably.purgeRuns(options: {
   olderThan: Date      // cutoff — terminal runs with completedAt before this are deleted
-  limit?: number       // max rows to delete per call (default: 1000)
+  limit?: number       // max rows to delete per call (default: 500)
 }): Promise<number>
 ```
 
 Deletes terminal runs (completed, failed, cancelled) with `completedAt` older than the cutoff. Returns the number of deleted runs. Associated steps, logs, and labels are cascade-deleted.
 
-For automatic cleanup, use the [`retainRuns`](#options) option instead.
+For automatic cleanup, use the [`retainRuns`](#options) option instead (auto-purge uses a batch size of 100).
 
 ### `getRun()`
 

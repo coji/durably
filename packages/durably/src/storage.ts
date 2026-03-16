@@ -367,6 +367,7 @@ export function createKyselyStore(
     trx: Kysely<Database>,
     ids: string[],
   ): Promise<void> {
+    if (ids.length === 0) return
     await trx.deleteFrom('durably_steps').where('run_id', 'in', ids).execute()
     await trx.deleteFrom('durably_logs').where('run_id', 'in', ids).execute()
     await trx
@@ -671,7 +672,7 @@ export function createKyselyStore(
       olderThan: string
       limit?: number
     }): Promise<number> {
-      const limit = options.limit ?? 1000
+      const limit = options.limit ?? 500
 
       return await db.transaction().execute(async (trx) => {
         const rows = await trx

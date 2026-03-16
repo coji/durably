@@ -242,17 +242,11 @@ export function createPurgeTests(createDialect: () => Dialect) {
         }).register({ testJob })
 
         await d.migrate()
-        d.start()
 
+        // Process the run deterministically without starting the polling loop
         const run = await d.jobs.testJob.trigger({})
-
-        await vi.waitFor(
-          async () => {
-            const r = await d.getRun(run.id)
-            expect(r?.status).toBe('completed')
-          },
-          { timeout: 5000 },
-        )
+        await d.processOne()
+        expect((await d.getRun(run.id))?.status).toBe('completed')
 
         // Backdate completed_at to 2 minutes ago so it's older than retention
         const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString()
@@ -262,15 +256,15 @@ export function createPurgeTests(createDialect: () => Dialect) {
           .where('id', '=', run.id)
           .execute()
 
-        // Wait for auto-purge to fire during idle polling
-        await vi.waitFor(
-          async () => {
-            expect(await d.getRun(run.id)).toBeNull()
-          },
-          { timeout: 5000 },
-        )
+        // processOne returns false (no pending runs) and triggers auto-purge
+        // on the idle path. lastPurgeAt starts at 0 so purge fires immediately.
+        await d.processOne()
 
-        await d.stop()
+        // Auto-purge is fire-and-forget, give it a tick to complete
+        await new Promise((r) => setTimeout(r, 50))
+
+        expect(await d.getRun(run.id)).toBeNull()
+
         await d.db.destroy()
       })
 
