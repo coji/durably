@@ -14,9 +14,10 @@ Durably supports multiple database backends through Kysely dialects. This guide 
 
 ### PostgreSQL (Multi-Writer)
 
-| Backend        | Serverless                  | Setup           | Performance              | Cost                   |
-| -------------- | --------------------------- | --------------- | ------------------------ | ---------------------- |
-| **PostgreSQL** | Varies (Neon: yes, RDS: no) | Server required | Strong under concurrency | Self-hosted or managed |
+- **Serverless**: Varies (Neon: yes, RDS: no)
+- **Setup**: Server required
+- **Performance**: Strong under concurrency (advisory locks + `FOR UPDATE SKIP LOCKED`)
+- **Cost**: Self-hosted or managed (Neon, Supabase, RDS)
 
 ::: warning
 **Local SQLite** (libSQL local, better-sqlite3) is single-writer — multiple workers on the same file will cause lock contention. **Turso remote** accepts multiple connections, but concurrency key enforcement is weaker than PostgreSQL (no advisory locks). For reliable multi-worker setups, use PostgreSQL.

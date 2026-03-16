@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Durably
   text: Resumable Batch Execution
-  tagline: Step-oriented workflows for Node.js and browsers. SQLite or PostgreSQL.
+  tagline: Steps that survive crashes. SQLite to PostgreSQL.
   actions:
     - theme: brand
       text: Get Started
