@@ -4,13 +4,13 @@ Durably supports multiple database backends through Kysely dialects. This guide 
 
 ## At a Glance
 
-| Backend                   | Best for                | Workers  | Setup           |
-| ------------------------- | ----------------------- | -------- | --------------- |
-| **libSQL** (local)        | Single-server Node.js   | 1        | Zero config     |
-| **Turso** (remote libSQL) | Serverless / edge       | 1 per DB | Managed service |
-| **better-sqlite3**        | CLI tools, scripts      | 1        | Zero config     |
-| **PostgreSQL**            | Multi-worker production | Many     | Requires server |
-| **SQLocal**               | Browser-only (OPFS)     | 1 tab    | Zero config     |
+| Backend                   | Writers       | Serverless | Setup           | Performance                    | Cost                          |
+| ------------------------- | ------------- | ---------- | --------------- | ------------------------------ | ----------------------------- |
+| **libSQL** (local)        | Single        | Limited    | Zero config     | Fast (local file)              | Free                          |
+| **Turso** (remote libSQL) | Single per DB | Yes        | Managed         | Network latency, edge-friendly | Free tier, then pay-as-you-go |
+| **better-sqlite3**        | Single        | No         | Zero config     | Fast (local sync)              | Free                          |
+| **PostgreSQL**            | Multiple      | Varies     | Server required | Strong under concurrency       | Self-hosted or managed        |
+| **SQLocal** (browser)     | Single tab    | N/A        | Zero config     | Browser-local (OPFS)           | Free (client-side)            |
 
 ## Decision Flowchart
 
@@ -80,7 +80,7 @@ See the [fullstack-vercel-turso example](https://github.com/coji/durably/tree/ma
 
 ## better-sqlite3
 
-**For CLI tools and scripts.** Lightweight synchronous SQLite with no native dependencies on most platforms.
+**For CLI tools and scripts.** Lightweight synchronous SQLite with prebuilt binaries for most platforms (may require build tools where prebuilds are unavailable).
 
 ```bash
 pnpm add better-sqlite3
