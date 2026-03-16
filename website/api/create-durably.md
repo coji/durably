@@ -161,7 +161,7 @@ await durably.purgeRuns(options: {
 
 Deletes terminal runs (completed, failed, cancelled) with `completedAt` older than the cutoff. Returns the number of deleted runs. Associated steps, logs, and labels are cascade-deleted.
 
-For automatic cleanup, use the [`retainRuns`](#options) option instead.
+For automatic cleanup, use the [`retainRuns`](#options) option instead (auto-purge uses a batch size of 100).
 
 ### `getRun()`
 
