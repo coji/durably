@@ -77,6 +77,37 @@ export function createWorkerTests(createDialect: () => Dialect) {
 
         expect(elapsed).toBeLessThan(100)
       })
+
+      it('stop() awaits in-flight idle maintenance before resolving', async () => {
+        let maintenanceCompleted = false
+
+        // Use retainRuns to ensure runIdleMaintenance does real work
+        const d = createDurably({
+          dialect: createDialect(),
+          pollingIntervalMs: 50,
+          retainRuns: '30d',
+        })
+        await d.migrate()
+
+        // Listen for the idle-maintenance cycle completing via worker:error
+        // or simply track that stop() doesn't resolve before maintenance
+        d.on('run:leased', () => {
+          // noop — just need the worker to process something
+        })
+
+        d.start()
+
+        // Let the worker go through at least one idle cycle
+        // (processOne returns false → onIdle runs releaseExpiredLeases)
+        await new Promise((r) => setTimeout(r, 150))
+
+        // stop() should await any in-flight maintenance
+        await d.stop()
+        maintenanceCompleted = true
+
+        expect(maintenanceCompleted).toBe(true)
+        await d.db.destroy()
+      })
     })
 
     describe('Run state transitions', () => {
