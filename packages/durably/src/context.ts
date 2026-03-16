@@ -42,6 +42,24 @@ export function createStepContext(
     throw new CancelledError(run.id)
   }
 
+  /** When persistStep returns null, check DB to distinguish cancel from lease loss */
+  async function throwForRefusedStep(stepName: string, stepIndex: number) {
+    const latestRun = await storage.getRun(run.id)
+    if (latestRun?.status === 'cancelled') {
+      eventEmitter.emit({
+        type: 'step:cancel',
+        runId: run.id,
+        jobName,
+        stepName,
+        stepIndex,
+        labels: run.labels,
+      })
+      throw new CancelledError(run.id)
+    }
+    abortForLeaseLoss()
+    throw new LeaseLostError(run.id)
+  }
+
   const unsubscribe = eventEmitter.on('run:cancel', (event) => {
     if (event.runId === run.id) {
       controller.abort()
@@ -134,8 +152,7 @@ export function createStepContext(
         })
 
         if (!savedStep) {
-          abortForLeaseLoss()
-          throwIfAborted()
+          await throwForRefusedStep(name, stepIndex)
         }
 
         stepIndex++
@@ -183,22 +200,7 @@ export function createStepContext(
         })
 
         if (!savedStep) {
-          if (isCancelled) {
-            // Run was cancelled — persistStep correctly refused the write.
-            // Emit the event before throwing so listeners are notified.
-            eventEmitter.emit({
-              type: 'step:cancel',
-              runId: run.id,
-              jobName,
-              stepName: name,
-              stepIndex,
-              labels: run.labels,
-            })
-            throw new CancelledError(run.id)
-          }
-          // Lease was lost during this window
-          abortForLeaseLoss()
-          throw new LeaseLostError(run.id)
+          await throwForRefusedStep(name, stepIndex)
         }
 
         // If we reach here, savedStep is truthy — the run is still leased.
