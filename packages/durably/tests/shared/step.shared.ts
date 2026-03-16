@@ -670,5 +670,75 @@ export function createStepTests(createDialect: () => Dialect) {
       // signal should have been aborted during step1
       expect(step1SignalAborted).toBe(true)
     })
+
+    it('does not persist completed step after run is cancelled (race condition)', async () => {
+      let stepFnCompletedResolve!: () => void
+      const stepFnCompleted = new Promise<void>((r) => {
+        stepFnCompletedResolve = r
+      })
+      let cancelDoneResolve!: () => void
+      const cancelDone = new Promise<void>((r) => {
+        cancelDoneResolve = r
+      })
+
+      const raceDef = defineJob({
+        name: 'cancel-race-test',
+        input: z.object({}),
+        run: async (step) => {
+          await step.run('race-step', async () => {
+            stepFnCompletedResolve()
+            await cancelDone
+            return 'should-not-be-persisted'
+          })
+        },
+      })
+
+      const d = createDurably({
+        dialect: createDialect(),
+        pollingIntervalMs: 50,
+        preserveSteps: true,
+      }).register({ raceDef })
+      await d.migrate()
+      d.start()
+
+      const run = await d.jobs.raceDef.trigger({})
+
+      await stepFnCompleted
+
+      // Cancel via direct DB update to simulate external cancel (no abort signal).
+      // This bypasses the in-process event emitter so throwIfAborted() won't fire,
+      // forcing the test to exercise the DB-level status='leased' guard in persistStep.
+      await d.db
+        .updateTable('durably_runs')
+        .set({
+          status: 'cancelled',
+          lease_owner: null,
+          lease_expires_at: null,
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .where('id', '=', run.id)
+        .execute()
+
+      // Let fn() return — persistStep will attempt to write but DB guard rejects it
+      cancelDoneResolve()
+
+      // Wait for the worker to finish processing
+      await vi.waitFor(
+        async () => {
+          const r = await d.getRun(run.id)
+          expect(r?.status).toBe('cancelled')
+        },
+        { timeout: 5000 },
+      )
+
+      // The step should NOT have been persisted as 'completed'
+      const steps = await d.storage.getSteps(run.id)
+      const completedSteps = steps.filter((s) => s.status === 'completed')
+      expect(completedSteps).toHaveLength(0)
+
+      await d.stop()
+      await d.db.destroy()
+    })
   })
 }

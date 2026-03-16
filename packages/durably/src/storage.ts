@@ -936,7 +936,7 @@ export function createKyselyStore(
           SELECT ${id}, ${runId}, ${input.name}, ${input.index}, ${input.status},
                  ${outputJson}, ${errorValue}, ${input.startedAt}, ${completedAt}
           FROM durably_runs
-          WHERE id = ${runId} AND lease_generation = ${leaseGeneration}
+          WHERE id = ${runId} AND status = 'leased' AND lease_generation = ${leaseGeneration}
         `.execute(trx)
 
         if (Number(insertResult.numAffectedRows) === 0) return null
@@ -950,6 +950,7 @@ export function createKyselyStore(
               updated_at: completedAt,
             })
             .where('id', '=', runId)
+            .where('status', '=', 'leased')
             .where('lease_generation', '=', leaseGeneration)
             .execute()
         }
@@ -1008,6 +1009,7 @@ export function createKyselyStore(
           updated_at: new Date().toISOString(),
         })
         .where('id', '=', runId)
+        .where('status', '=', 'leased')
         .where('lease_generation', '=', leaseGeneration)
         .execute()
     },
