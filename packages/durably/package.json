@@ -63,7 +63,7 @@
     "ulidx": "^2.4.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.6",
+    "@biomejs/biome": "^2.4.7",
     "@libsql/client": "^0.17.0",
     "@libsql/kysely-libsql": "^0.4.1",
     "@testing-library/react": "^16.3.2",
@@ -71,11 +71,11 @@
     "@types/pg": "^8.15.6",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.4",
-    "@vitest/browser": "^4.0.18",
-    "@vitest/browser-playwright": "4.0.18",
-    "jsdom": "^28.1.0",
-    "kysely": "^0.28.11",
+    "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/browser": "^4.1.0",
+    "@vitest/browser-playwright": "4.1.0",
+    "jsdom": "^29.0.0",
+    "kysely": "^0.28.12",
     "pg": "^8.16.3",
     "playwright": "^1.58.2",
     "prettier": "^3.8.1",
@@ -85,7 +85,7 @@
     "sqlocal": "^0.17.0",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.18",
+    "vitest": "^4.1.0",
     "zod": "^4.3.6"
   }
 }
