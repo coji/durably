@@ -367,6 +367,7 @@ export function createKyselyStore(
     trx: Kysely<Database>,
     ids: string[],
   ): Promise<void> {
+    if (ids.length === 0) return
     await trx.deleteFrom('durably_steps').where('run_id', 'in', ids).execute()
     await trx.deleteFrom('durably_logs').where('run_id', 'in', ids).execute()
     await trx

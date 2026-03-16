@@ -243,7 +243,7 @@ const deleted = await durably.purgeRuns({
 })
 ```
 
-For automatic cleanup, use the `retainRuns` option (see Quick Start). Cleanup runs during idle worker polling cycles, at most once per minute, in batches of 100.
+For automatic cleanup, use the `retainRuns` option (see Core Concepts). Cleanup runs during idle worker polling cycles, at most once per minute, in batches of 100.
 
 ## Events
 
