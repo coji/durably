@@ -69,7 +69,14 @@ export type {
 } from './storage'
 
 // Errors
-export { CancelledError, LeaseLostError } from './errors'
+export {
+  CancelledError,
+  ConflictError,
+  DurablyError,
+  LeaseLostError,
+  NotFoundError,
+  ValidationError,
+} from './errors'
 
 // Server
 export { createDurablyHandler } from './server'

@@ -1,8 +1,8 @@
 import type { Durably } from './durably'
+import { DurablyError, getErrorMessage } from './errors'
 import type { AnyEventInput } from './events'
 import {
   errorResponse,
-  getErrorMessage,
   getRequiredQueryParam,
   jsonResponse,
   successResponse,
@@ -267,7 +267,7 @@ export function createDurablyHandler<
 
   // --- Shared helpers ---
 
-  /** Wrap handler with try/catch that re-throws Response and catches everything else as 500 */
+  /** Wrap handler with try/catch that maps DurablyError to proper HTTP status */
   async function withErrorHandling(
     fn: () => Promise<Response>,
   ): Promise<Response> {
@@ -275,6 +275,12 @@ export function createDurablyHandler<
       return await fn()
     } catch (error) {
       if (error instanceof Response) throw error
+      if (error instanceof DurablyError) {
+        return errorResponse(
+          error.message,
+          error.statusCode as 400 | 404 | 409 | 500,
+        )
+      }
       return errorResponse(getErrorMessage(error), 500)
     }
   }
@@ -323,14 +329,11 @@ export function createDurablyHandler<
         await auth.onTrigger(ctx as TContext, body)
       }
 
-      const run = await job.trigger(
-        (body.input ?? {}) as Record<string, unknown>,
-        {
-          idempotencyKey: body.idempotencyKey,
-          concurrencyKey: body.concurrencyKey,
-          labels: body.labels,
-        },
-      )
+      const run = await job.trigger(body.input as Record<string, unknown>, {
+        idempotencyKey: body.idempotencyKey,
+        concurrencyKey: body.concurrencyKey,
+        labels: body.labels,
+      })
 
       const response: TriggerResponse = { runId: run.id }
       return jsonResponse(response)

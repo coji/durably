@@ -574,7 +574,7 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(body.error).toBe('runId query parameter is required')
       })
 
-      it('returns 500 when retriggering a pending run', async () => {
+      it('returns 409 when retriggering a pending run', async () => {
         const d = durably.register({
           job: defineJob({
             name: 'retrigger-pending-test',
@@ -590,7 +590,7 @@ export function createServerTests(createDialect: () => Dialect) {
         )
 
         const response = await handler.handle(request, '/api/durably')
-        expect(response.status).toBe(500)
+        expect(response.status).toBe(409)
       })
     })
 
@@ -632,7 +632,7 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(body.error).toBe('runId query parameter is required')
       })
 
-      it('returns 500 when cancelling completed run', async () => {
+      it('returns 409 when cancelling completed run', async () => {
         const d = durably.register({
           job: defineJob({
             name: 'cancel-completed-test',
@@ -657,7 +657,7 @@ export function createServerTests(createDialect: () => Dialect) {
         )
 
         const response = await handler.handle(request, '/api/durably')
-        expect(response.status).toBe(500)
+        expect(response.status).toBe(409)
       })
     })
 

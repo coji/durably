@@ -4,7 +4,13 @@ import { monotonicFactory } from 'ulidx'
 import type { z } from 'zod'
 import { createStepContext } from './context'
 import type { JobDefinition } from './define-job'
-import { CancelledError, getErrorMessage, LeaseLostError } from './errors'
+import {
+  CancelledError,
+  ConflictError,
+  getErrorMessage,
+  LeaseLostError,
+  NotFoundError,
+} from './errors'
 import {
   type AnyEventInput,
   type DurablyEvent,
@@ -435,7 +441,7 @@ function createDurablyInstance<
   async function getRunOrThrow(runId: string): Promise<Run<TLabels>> {
     const run = await storage.getRun(runId)
     if (!run) {
-      throw new Error(`Run not found: ${runId}`)
+      throw new NotFoundError(`Run not found: ${runId}`)
     }
     return run as Run<TLabels>
   }
@@ -808,14 +814,14 @@ function createDurablyInstance<
     async retrigger(runId: string): Promise<Run<TLabels>> {
       const run = await getRunOrThrow(runId)
       if (run.status === 'pending') {
-        throw new Error(`Cannot retrigger pending run: ${runId}`)
+        throw new ConflictError(`Cannot retrigger pending run: ${runId}`)
       }
       if (run.status === 'leased') {
-        throw new Error(`Cannot retrigger leased run: ${runId}`)
+        throw new ConflictError(`Cannot retrigger leased run: ${runId}`)
       }
       const job = jobRegistry.get(run.jobName)
       if (!job) {
-        throw new Error(`Unknown job: ${run.jobName}`)
+        throw new NotFoundError(`Unknown job: ${run.jobName}`)
       }
 
       // Validate original input against current schema
@@ -846,13 +852,13 @@ function createDurablyInstance<
     async cancel(runId: string): Promise<void> {
       const run = await getRunOrThrow(runId)
       if (run.status === 'completed') {
-        throw new Error(`Cannot cancel completed run: ${runId}`)
+        throw new ConflictError(`Cannot cancel completed run: ${runId}`)
       }
       if (run.status === 'failed') {
-        throw new Error(`Cannot cancel failed run: ${runId}`)
+        throw new ConflictError(`Cannot cancel failed run: ${runId}`)
       }
       if (run.status === 'cancelled') {
-        throw new Error(`Cannot cancel already cancelled run: ${runId}`)
+        throw new ConflictError(`Cannot cancel already cancelled run: ${runId}`)
       }
       const wasPending = run.status === 'pending'
       const cancelled = await storage.cancelRun(runId, new Date().toISOString())
@@ -860,7 +866,7 @@ function createDurablyInstance<
       if (!cancelled) {
         // Run transitioned to a terminal state between the check and the update
         const current = await getRunOrThrow(runId)
-        throw new Error(
+        throw new ConflictError(
           `Cannot cancel run ${runId}: status changed to ${current.status}`,
         )
       }
@@ -882,10 +888,10 @@ function createDurablyInstance<
     async deleteRun(runId: string): Promise<void> {
       const run = await getRunOrThrow(runId)
       if (run.status === 'pending') {
-        throw new Error(`Cannot delete pending run: ${runId}`)
+        throw new ConflictError(`Cannot delete pending run: ${runId}`)
       }
       if (run.status === 'leased') {
-        throw new Error(`Cannot delete leased run: ${runId}`)
+        throw new ConflictError(`Cannot delete leased run: ${runId}`)
       }
       await storage.deleteRun(runId)
 

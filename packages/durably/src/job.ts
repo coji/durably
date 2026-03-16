@@ -1,5 +1,6 @@
 import { type z, prettifyError } from 'zod'
 import type { JobDefinition } from './define-job'
+import { ValidationError } from './errors'
 import type { EventEmitter, LogData, ProgressData } from './events'
 import type { Run, RunFilter, Store } from './storage'
 
@@ -17,7 +18,9 @@ export function validateJobInputOrThrow<T>(
   const result = schema.safeParse(input)
   if (!result.success) {
     const prefix = context ? `${context}: ` : ''
-    throw new Error(`${prefix}Invalid input: ${prettifyError(result.error)}`)
+    throw new ValidationError(
+      `${prefix}Invalid input: ${prettifyError(result.error)}`,
+    )
   }
   return result.data
 }
