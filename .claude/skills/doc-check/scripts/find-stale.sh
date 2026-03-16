@@ -133,6 +133,18 @@ else
     "Prefer await durably.init() in guides and examples" \
     "$API_REF_EXCLUDE"
 
+  # ── OGP / meta tags ──
+
+  check_pattern \
+    "OGP/meta still says 'Just SQLite'" \
+    'Just SQLite' \
+    "PostgreSQL is now supported. Update og:description, twitter:description, and site description"
+
+  check_pattern \
+    "OGP/meta still says 'No Redis'" \
+    'No Redis' \
+    "Outdated positioning. Update og:description and twitter:description"
+
   # ── Old terminology ──
 
   check_pattern \
