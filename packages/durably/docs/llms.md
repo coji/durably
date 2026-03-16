@@ -1,18 +1,24 @@
 # Durably - LLM Documentation
 
-> Step-oriented resumable batch execution for Node.js and browsers using SQLite.
+> Step-oriented resumable batch execution for Node.js and browsers using SQLite or PostgreSQL.
 
 ## Overview
 
-Durably is a minimal workflow engine that persists step results to SQLite. If a job is interrupted (server restart, browser tab close, crash), it automatically resumes from the last successful step.
+Durably is a minimal workflow engine that persists step results to SQLite or PostgreSQL. If a job is interrupted (server restart, browser tab close, crash), it automatically resumes from the last successful step. Supports libSQL/Turso (single-server, serverless), PostgreSQL (multi-worker), and SQLocal (browser/OPFS).
 
 ## Installation
 
 ```bash
-# Node.js with libsql (recommended)
+# Node.js with libSQL (recommended for single-server / Turso)
 pnpm add @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
 
-# Browser with SQLocal
+# Node.js with better-sqlite3 (lightweight local alternative)
+pnpm add @coji/durably kysely zod better-sqlite3
+
+# Node.js with PostgreSQL (recommended for multi-worker)
+pnpm add @coji/durably kysely zod pg
+
+# Browser with SQLocal (OPFS-backed)
 pnpm add @coji/durably kysely zod sqlocal
 ```
 
@@ -26,8 +32,30 @@ import { LibsqlDialect } from '@libsql/kysely-libsql'
 import { createClient } from '@libsql/client'
 import { z } from 'zod'
 
+// --- libSQL local (single-server) ---
 const client = createClient({ url: 'file:local.db' })
 const dialect = new LibsqlDialect({ client })
+
+// --- Turso remote (serverless/edge) ---
+// const client = createClient({
+//   url: process.env.TURSO_DATABASE_URL!,
+//   authToken: process.env.TURSO_AUTH_TOKEN!,
+// })
+// const dialect = new LibsqlDialect({ client })
+
+// --- better-sqlite3 (lightweight local) ---
+// import Database from 'better-sqlite3'
+// import { SqliteDialect } from 'kysely'
+// const dialect = new SqliteDialect({
+//   database: new Database('local.db'),
+// })
+
+// --- PostgreSQL (multi-worker) ---
+// import pg from 'pg'
+// import { PostgresDialect } from 'kysely'
+// const dialect = new PostgresDialect({
+//   pool: new pg.Pool({ connectionString: process.env.DATABASE_URL }),
+// })
 
 // Option 1: With jobs (1-step initialization, returns typed instance)
 const durably = createDurably({
