@@ -29,6 +29,7 @@ const migrations: Migration[] = [
         .addColumn('current_step_index', 'integer', (col) =>
           col.notNull().defaultTo(0),
         )
+        .addColumn('step_count', 'integer', (col) => col.notNull().defaultTo(0))
         .addColumn('progress', 'text')
         .addColumn('output', 'text')
         .addColumn('error', 'text')

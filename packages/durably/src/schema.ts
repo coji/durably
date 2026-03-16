@@ -10,6 +10,7 @@ export interface RunsTable {
   idempotency_key: string | null
   concurrency_key: string | null
   current_step_index: number
+  step_count: number
   progress: string | null // JSON: { current, total, message }
   output: string | null // JSON
   error: string | null
