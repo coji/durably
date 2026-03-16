@@ -29,7 +29,7 @@ export function jsonResponse(data: unknown, status = 200): Response {
  */
 export function errorResponse(
   message: string,
-  status: 400 | 404 | 500 = 500,
+  status: 400 | 404 | 409 | 500 = 500,
 ): Response {
   return jsonResponse({ error: message }, status)
 }

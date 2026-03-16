@@ -21,6 +21,43 @@ export class LeaseLostError extends Error {
 }
 
 /**
+ * Base class for errors that map to specific HTTP status codes.
+ * Used by the HTTP handler to return appropriate responses.
+ */
+export class DurablyError extends Error {
+  readonly statusCode: number
+  constructor(message: string, statusCode: number) {
+    super(message)
+    this.name = 'DurablyError'
+    this.statusCode = statusCode
+  }
+}
+
+/** 404 — Resource not found */
+export class NotFoundError extends DurablyError {
+  constructor(message: string) {
+    super(message, 404)
+    this.name = 'NotFoundError'
+  }
+}
+
+/** 400 — Invalid input or request */
+export class ValidationError extends DurablyError {
+  constructor(message: string) {
+    super(message, 400)
+    this.name = 'ValidationError'
+  }
+}
+
+/** 409 — Operation conflicts with current state */
+export class ConflictError extends DurablyError {
+  constructor(message: string) {
+    super(message, 409)
+    this.name = 'ConflictError'
+  }
+}
+
+/**
  * Extract error message from unknown error
  */
 export function getErrorMessage(error: unknown): string {
