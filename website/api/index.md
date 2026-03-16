@@ -265,7 +265,16 @@ import type {
   DurablyEvent,
   EventType,
 } from '@coji/durably'
-import { createDurablyHandler, toClientRun } from '@coji/durably'
+import {
+  createDurablyHandler,
+  toClientRun,
+  DurablyError,
+  NotFoundError,
+  ValidationError,
+  ConflictError,
+  CancelledError,
+  LeaseLostError,
+} from '@coji/durably'
 ```
 
 ### `Run` Type

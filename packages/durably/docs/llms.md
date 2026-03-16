@@ -657,6 +657,23 @@ interface RunFilter<
 }
 ```
 
+## Error Classes
+
+Durably exports typed error classes for programmatic error handling:
+
+```ts
+import {
+  DurablyError, // Base class with statusCode (extends Error)
+  NotFoundError, // 404 — resource not found
+  ValidationError, // 400 — invalid input or request
+  ConflictError, // 409 — operation conflicts with current state
+  CancelledError, // Run was cancelled during execution
+  LeaseLostError, // Worker lost lease ownership
+} from '@coji/durably'
+```
+
+`DurablyError` subclasses (`NotFoundError`, `ValidationError`, `ConflictError`) carry a `statusCode` property and are used by the HTTP handler to return appropriate responses.
+
 ## License
 
 MIT
