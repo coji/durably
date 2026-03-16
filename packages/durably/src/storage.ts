@@ -1045,33 +1045,38 @@ export function createKyselyStore(
     },
   }
 
-  // Wrap all mutating methods with write lock to prevent SQLITE_BUSY.
-  // libsql opens separate connections for transactions, so concurrent
-  // writes from the same Kysely instance can conflict. The mutex
-  // serializes writes within a single process. Reads are not locked.
-  const mutatingKeys = [
-    'enqueue',
-    'enqueueMany',
-    'updateRun',
-    'deleteRun',
-    'purgeRuns',
-    'claimNext',
-    'renewLease',
-    'releaseExpiredLeases',
-    'completeRun',
-    'failRun',
-    'cancelRun',
-    'persistStep',
-    'deleteSteps',
-    'updateProgress',
-    'createLog',
-  ] as const
+  // SQLite/libsql: wrap mutating methods with write lock to prevent SQLITE_BUSY.
+  // libsql opens separate connections for transactions, so concurrent writes
+  // from the same Kysely instance can conflict. The mutex serializes writes
+  // within a single process. Reads are not locked.
+  //
+  // PostgreSQL: skip the mutex entirely. PostgreSQL handles concurrent writes
+  // natively via MVCC, advisory locks, and FOR UPDATE SKIP LOCKED.
+  if (backend !== 'postgres') {
+    const mutatingKeys = [
+      'enqueue',
+      'enqueueMany',
+      'updateRun',
+      'deleteRun',
+      'purgeRuns',
+      'claimNext',
+      'renewLease',
+      'releaseExpiredLeases',
+      'completeRun',
+      'failRun',
+      'cancelRun',
+      'persistStep',
+      'deleteSteps',
+      'updateProgress',
+      'createLog',
+    ] as const
 
-  for (const key of mutatingKeys) {
-    const original = store[key] as (...args: unknown[]) => Promise<unknown>
-    ;(store as unknown as Record<string, unknown>)[key] = (
-      ...args: unknown[]
-    ): Promise<unknown> => withWriteLock(() => original.apply(store, args))
+    for (const key of mutatingKeys) {
+      const original = store[key] as (...args: unknown[]) => Promise<unknown>
+      ;(store as unknown as Record<string, unknown>)[key] = (
+        ...args: unknown[]
+      ): Promise<unknown> => withWriteLock(() => original.apply(store, args))
+    }
   }
 
   return store
