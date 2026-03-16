@@ -243,7 +243,9 @@ export function createPurgeTests(createDialect: () => Dialect) {
 
         await d.migrate()
 
-        // Process the run deterministically without starting the polling loop
+        // Process the run deterministically without starting the polling loop.
+        // Use processOne (not processUntilIdle) so idle maintenance doesn't run yet,
+        // keeping lastPurgeAt at 0 for the purge assertion below.
         const run = await d.jobs.testJob.trigger({})
         await d.processOne()
         expect((await d.getRun(run.id))?.status).toBe('completed')
@@ -256,12 +258,10 @@ export function createPurgeTests(createDialect: () => Dialect) {
           .where('id', '=', run.id)
           .execute()
 
-        // processOne returns false (no pending runs) and triggers auto-purge
-        // on the idle path. lastPurgeAt starts at 0 so purge fires immediately.
-        await d.processOne()
-
-        // Auto-purge is fire-and-forget, give it a tick to complete
-        await new Promise((r) => setTimeout(r, 50))
+        // processUntilIdle runs idle maintenance (including auto-purge) after
+        // draining. lastPurgeAt is still 0 (processOne doesn't run maintenance)
+        // so purge fires immediately.
+        await d.processUntilIdle()
 
         expect(await d.getRun(run.id)).toBeNull()
 

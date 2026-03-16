@@ -415,8 +415,8 @@ interface DurablyState<
   leaseMs: number
   leaseRenewIntervalMs: number
   retainRunsMs: number | null
-  lastPurgeAt: number
   releaseBrowserSingleton: () => void
+  runIdleMaintenance: () => Promise<void>
 }
 
 /**
@@ -918,30 +918,8 @@ function createDurablyInstance<
       const workerId = options?.workerId ?? defaultWorkerId()
       const now = new Date().toISOString()
 
-      await storage.releaseExpiredLeases(now)
-
       const run = await storage.claimNext(workerId, now, state.leaseMs)
       if (!run) {
-        // Auto-purge old terminal runs if retainRuns is configured.
-        // Runs after claimNext so purge never serializes with job claiming.
-        // lastPurgeAt starts at 0, so the first idle cycle purges immediately.
-        if (
-          state.retainRunsMs !== null &&
-          Date.now() - state.lastPurgeAt >= PURGE_INTERVAL_MS
-        ) {
-          const purgeNow = Date.now()
-          state.lastPurgeAt = purgeNow
-          const cutoff = new Date(purgeNow - state.retainRunsMs).toISOString()
-          storage
-            .purgeRuns({ olderThan: cutoff, limit: 100 })
-            .catch((error) => {
-              eventEmitter.emit({
-                type: 'worker:error',
-                error: getErrorMessage(error),
-                context: 'auto-purge',
-              })
-            })
-        }
         return false
       }
 
@@ -957,12 +935,19 @@ function createDurablyInstance<
       const maxRuns = options?.maxRuns ?? Number.POSITIVE_INFINITY
       let processed = 0
 
+      let reachedIdle = false
       while (processed < maxRuns) {
         const didProcess = await this.processOne({ workerId })
         if (!didProcess) {
+          reachedIdle = true
           break
         }
         processed++
+      }
+
+      // Run maintenance only when actually idle, not when maxRuns was hit
+      if (reachedIdle) {
+        await state.runIdleMaintenance()
       }
 
       return processed
@@ -1057,6 +1042,30 @@ export function createDurably<
   }) as typeof db.destroy
   const eventEmitter = createEventEmitter()
   const jobRegistry = createJobRegistry()
+  let lastPurgeAt = 0
+
+  const runIdleMaintenance = async (): Promise<void> => {
+    try {
+      const now = new Date().toISOString()
+      await storage.releaseExpiredLeases(now)
+
+      if (config.retainRunsMs !== null) {
+        const purgeNow = Date.now()
+        if (purgeNow - lastPurgeAt >= PURGE_INTERVAL_MS) {
+          lastPurgeAt = purgeNow
+          const cutoff = new Date(purgeNow - config.retainRunsMs).toISOString()
+          await storage.purgeRuns({ olderThan: cutoff, limit: 100 })
+        }
+      }
+    } catch (error) {
+      eventEmitter.emit({
+        type: 'worker:error',
+        error: getErrorMessage(error),
+        context: 'idle-maintenance',
+      })
+    }
+  }
+
   let processOneImpl:
     | ((options?: { workerId?: string }) => Promise<boolean>)
     | null = null
@@ -1068,6 +1077,7 @@ export function createDurably<
       }
       return processOneImpl(runtimeOptions)
     },
+    runIdleMaintenance,
   )
 
   const state: DurablyState<TLabels> = {
@@ -1083,8 +1093,8 @@ export function createDurably<
     leaseMs: config.leaseMs,
     leaseRenewIntervalMs: config.leaseRenewIntervalMs,
     retainRunsMs: config.retainRunsMs,
-    lastPurgeAt: 0,
     releaseBrowserSingleton,
+    runIdleMaintenance,
   }
 
   const instance = createDurablyInstance<Record<string, never>, TLabels>(

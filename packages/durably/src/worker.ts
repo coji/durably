@@ -20,6 +20,7 @@ export interface Worker {
 export function createWorker(
   config: WorkerConfig,
   processOne: (options?: { workerId?: string }) => Promise<boolean>,
+  onIdle?: () => Promise<void>,
 ): Worker {
   let running = false
   let pollingTimeout: ReturnType<typeof setTimeout> | null = null
@@ -32,9 +33,16 @@ export function createWorker(
       return
     }
 
+    const cycle = (async () => {
+      const didProcess = await processOne({ workerId: activeWorkerId })
+      if (!didProcess && onIdle && running) {
+        await onIdle()
+      }
+    })()
+    inFlight = cycle
+
     try {
-      inFlight = processOne({ workerId: activeWorkerId }).then(() => undefined)
-      await inFlight
+      await cycle
     } finally {
       inFlight = null
     }
