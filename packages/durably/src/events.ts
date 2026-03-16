@@ -1,3 +1,5 @@
+import { toError } from './errors'
+
 /**
  * Base event interface
  */
@@ -318,16 +320,21 @@ export function createEventEmitter(): EventEmitter {
         return
       }
 
+      const reportError = (error: unknown) =>
+        errorHandler?.(toError(error), fullEvent)
+
       for (const listener of typeListeners) {
         try {
-          listener(fullEvent)
-        } catch (error) {
-          if (errorHandler) {
-            errorHandler(
-              error instanceof Error ? error : new Error(String(error)),
-              fullEvent,
-            )
+          const result: unknown = listener(fullEvent)
+          // Catch rejected promises from async listeners (not awaited)
+          if (
+            result != null &&
+            typeof (result as Promise<unknown>).then === 'function'
+          ) {
+            ;(result as Promise<unknown>).catch(reportError)
           }
+        } catch (error) {
+          reportError(error)
           // Continue to next listener regardless of error
         }
       }

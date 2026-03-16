@@ -1,6 +1,6 @@
 import { type z, prettifyError } from 'zod'
 import type { JobDefinition } from './define-job'
-import { ValidationError } from './errors'
+import { toError, ValidationError } from './errors'
 import type { EventEmitter, LogData, ProgressData } from './events'
 import type { Run, RunFilter, Store } from './storage'
 
@@ -388,7 +388,7 @@ export function createJobHandle<
           .catch((error) => {
             if (resolved) return
             cleanup()
-            reject(error instanceof Error ? error : new Error(String(error)))
+            reject(toError(error))
           })
 
         // Set timeout if specified

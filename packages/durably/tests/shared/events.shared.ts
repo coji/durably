@@ -211,6 +211,62 @@ export function createEventsTests(createDialect: () => Dialect) {
       )
     })
 
+    it('forwards rejected promises from async listeners to onError', async () => {
+      const errorHandler = vi.fn()
+      const asyncListener = vi.fn(async () => {
+        throw new Error('Async listener error')
+      })
+
+      durably.onError(errorHandler)
+      durably.on('run:leased', asyncListener)
+
+      durably.emit({
+        type: 'run:leased',
+        runId: 'run_1',
+        jobName: 'test-job',
+        input: {},
+        leaseOwner: 'worker-1',
+        leaseExpiresAt: '2024-01-01T00:00:30.000Z',
+        labels: {},
+      })
+
+      // emit is sync — wait for the microtask to process the rejection
+      await vi.waitFor(() => {
+        expect(errorHandler).toHaveBeenCalledTimes(1)
+      })
+
+      expect(errorHandler).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'Async listener error' }),
+        expect.objectContaining({
+          type: 'run:leased',
+          runId: 'run_1',
+        }),
+      )
+    })
+
+    it('does not await async listeners (emit stays synchronous)', () => {
+      let resolved = false
+      const asyncListener = vi.fn(async () => {
+        await new Promise((r) => setTimeout(r, 100))
+        resolved = true
+      })
+
+      durably.on('run:leased', asyncListener)
+
+      durably.emit({
+        type: 'run:leased',
+        runId: 'run_1',
+        jobName: 'test-job',
+        input: {},
+        leaseOwner: 'worker-1',
+        leaseExpiresAt: '2024-01-01T00:00:30.000Z',
+        labels: {},
+      })
+
+      // emit returns immediately — async work hasn't completed
+      expect(resolved).toBe(false)
+    })
+
     it('calls onError handler when listener throws', () => {
       const errorHandler = vi.fn()
       const failingListener = vi.fn(() => {
