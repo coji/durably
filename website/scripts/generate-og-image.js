@@ -82,7 +82,7 @@ async function generateOgImage() {
                 maxWidth: '800px',
                 lineHeight: 1.4,
               },
-              children: 'Just SQLite. No Redis required.',
+              children: 'Steps that survive crashes. SQLite to PostgreSQL.',
             },
           },
           {
@@ -112,7 +112,7 @@ async function generateOgImage() {
                             fontWeight: 600,
                             color: textColor,
                           },
-                          children: 'Zero Infrastructure',
+                          children: 'Flexible Storage',
                         },
                       },
                       {
@@ -122,7 +122,7 @@ async function generateOgImage() {
                             fontSize: '14px',
                             color: mutedColor,
                           },
-                          children: 'SQLite only',
+                          children: 'SQLite · Turso · PostgreSQL',
                         },
                       },
                     ],

@@ -17,6 +17,17 @@ When API changes are made, update `packages/durably/docs/llms.md` to keep it in 
 - Bundled in the npm package for coding agents to read from `node_modules`
 - Symlinked to `website/public/llms.txt` for web access
 
+### Generated Files
+
+These files are generated from source — never edit directly:
+
+```bash
+pnpm --filter durably-website generate:llms    # website/public/llms.txt ← packages/*/docs/llms.md
+node website/scripts/generate-og-image.js      # website/public/og-image.png
+```
+
+Regenerate the OG image whenever the tagline or feature descriptions change.
+
 ## Core Concepts
 
 - **Job**: Defined via `defineJob()` and registered via `jobs` option (or `.register()`), receives a step context and payload
