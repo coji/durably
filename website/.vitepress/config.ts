@@ -59,6 +59,7 @@ export default defineConfig({
           items: [
             { text: 'What is Durably?', link: '/guide/' },
             { text: 'Quick Start', link: '/guide/quick-start' },
+            { text: 'Choosing a Database', link: '/guide/databases' },
             { text: 'Core Concepts', link: '/guide/concepts' },
           ],
         },
