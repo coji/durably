@@ -167,9 +167,9 @@ export function Dashboard() {
                       <LabelChips labels={run.labels} />
                     </td>
                     <td className="px-2 py-2">
-                      {run.stepCount > 0 ? (
+                      {run.completedStepCount > 0 ? (
                         <span className="text-xs text-gray-600">
-                          {run.stepCount}
+                          {run.completedStepCount}
                         </span>
                       ) : (
                         <span className="text-gray-400">-</span>

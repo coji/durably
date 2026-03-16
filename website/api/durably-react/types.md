@@ -69,7 +69,7 @@ interface ClientRun {
   output: unknown
   error: string | null
   currentStepIndex: number
-  stepCount: number
+  completedStepCount: number
   progress: Progress | null
   labels: Record<string, string>
   startedAt: string | null
@@ -78,21 +78,21 @@ interface ClientRun {
 }
 ```
 
-| Property           | Type                     | Description                     |
-| ------------------ | ------------------------ | ------------------------------- |
-| `id`               | `string`                 | Unique run ID                   |
-| `jobName`          | `string`                 | Name of the job                 |
-| `status`           | `RunStatus`              | Current status                  |
-| `input`            | `unknown`                | Input data                      |
-| `output`           | `unknown`                | Job output (when completed)     |
-| `error`            | `string \| null`         | Error message (when failed)     |
-| `currentStepIndex` | `number`                 | Index of the current step       |
-| `stepCount`        | `number`                 | Total number of completed steps |
-| `progress`         | `Progress \| null`       | Current progress                |
-| `labels`           | `Record<string, string>` | Labels set at trigger time      |
-| `startedAt`        | `string \| null`         | ISO timestamp of start          |
-| `completedAt`      | `string \| null`         | ISO timestamp of completion     |
-| `createdAt`        | `string`                 | ISO timestamp of creation       |
+| Property             | Type                     | Description                     |
+| -------------------- | ------------------------ | ------------------------------- |
+| `id`                 | `string`                 | Unique run ID                   |
+| `jobName`            | `string`                 | Name of the job                 |
+| `status`             | `RunStatus`              | Current status                  |
+| `input`              | `unknown`                | Input data                      |
+| `output`             | `unknown`                | Job output (when completed)     |
+| `error`              | `string \| null`         | Error message (when failed)     |
+| `currentStepIndex`   | `number`                 | Index of the current step       |
+| `completedStepCount` | `number`                 | Total number of completed steps |
+| `progress`           | `Progress \| null`       | Current progress                |
+| `labels`             | `Record<string, string>` | Labels set at trigger time      |
+| `startedAt`          | `string \| null`         | ISO timestamp of start          |
+| `completedAt`        | `string \| null`         | ISO timestamp of completion     |
+| `createdAt`          | `string`                 | ISO timestamp of creation       |
 
 ## StepRecord
 

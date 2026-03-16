@@ -40,7 +40,7 @@ export interface Run<
   idempotencyKey: string | null
   concurrencyKey: string | null
   currentStepIndex: number
-  stepCount: number
+  completedStepCount: number
   progress: { current: number; total?: number; message?: string } | null
   output: unknown | null
   error: string | null
@@ -280,7 +280,7 @@ function rowToRun(row: Database['durably_runs']): Run {
     idempotencyKey: row.idempotency_key,
     concurrencyKey: row.concurrency_key,
     currentStepIndex: row.current_step_index,
-    stepCount: row.step_count,
+    completedStepCount: row.completed_step_count,
     progress: row.progress ? JSON.parse(row.progress) : null,
     output: row.output ? JSON.parse(row.output) : null,
     error: row.error,
@@ -445,7 +445,7 @@ export function createKyselyStore(
         idempotency_key: input.idempotencyKey ?? null,
         concurrency_key: input.concurrencyKey ?? null,
         current_step_index: 0,
-        step_count: 0,
+        completed_step_count: 0,
         progress: null,
         output: null,
         error: null,
@@ -518,7 +518,7 @@ export function createKyselyStore(
             idempotency_key: input.idempotencyKey ?? null,
             concurrency_key: input.concurrencyKey ?? null,
             current_step_index: 0,
-            step_count: 0,
+            completed_step_count: 0,
             progress: null,
             output: null,
             error: null,
@@ -920,13 +920,13 @@ export function createKyselyStore(
 
         if (Number(insertResult.numAffectedRows) === 0) return null
 
-        // Advance step index and increment step_count for completed steps
+        // Advance step index and increment completed_step_count for completed steps
         if (input.status === 'completed') {
           await trx
             .updateTable('durably_runs')
             .set({
               current_step_index: input.index + 1,
-              step_count: sql`step_count + 1`,
+              completed_step_count: sql`completed_step_count + 1`,
               updated_at: completedAt,
             })
             .where('id', '=', runId)

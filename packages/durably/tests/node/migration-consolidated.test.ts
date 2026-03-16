@@ -32,7 +32,7 @@ describe('migration consolidated schema', () => {
     expect(columnNames).toContain('lease_owner')
     expect(columnNames).toContain('lease_expires_at')
     expect(columnNames).toContain('lease_generation')
-    expect(columnNames).toContain('step_count')
+    expect(columnNames).toContain('completed_step_count')
 
     // Verify schema version
     const versions = await sql<{ version: number }>`

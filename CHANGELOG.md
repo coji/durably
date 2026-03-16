@@ -352,7 +352,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   ```
 - **Retry from cancelled state**: `retry()` now works on both `failed` and `cancelled` runs
 - **New events**: `run:trigger`, `run:cancel`, `run:retry` for complete run lifecycle tracking
-- **`stepCount` on `Run` type**: Number of completed steps, available in `getRun()`, `getRuns()`
+- **`completedStepCount` on `Run` type**: Number of completed steps, available in `getRun()`, `getRuns()`
 
 #### @coji/durably/server
 
@@ -373,7 +373,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 #### @coji/durably-react/client
 
 - **`useRunActions` enhancements**: `deleteRun()`, `getRun()`, `getSteps()`
-- **Step progress**: `stepCount` and `currentStepIndex` on `ClientRun` and `RunRecord` types
+- **Step progress**: `completedStepCount` and `currentStepIndex` on `ClientRun` and `RunRecord` types
 - **New type exports**: `RunRecord`, `StepRecord`
 
 ### Changed

@@ -209,7 +209,7 @@ describe('Type inference', () => {
         'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
       >()
       expectTypeOf<TestRun['currentStepIndex']>().toEqualTypeOf<number>()
-      expectTypeOf<TestRun['stepCount']>().toEqualTypeOf<number>()
+      expectTypeOf<TestRun['completedStepCount']>().toEqualTypeOf<number>()
     })
 
     it('UseRunsClientResult with generic type has typed runs', () => {

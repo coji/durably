@@ -59,7 +59,7 @@ export function createStorageTests(createDialect: () => Dialect) {
         expect(run!.jobName).toBe('test-job')
       })
 
-      it('returns stepCount as 0 for new run', async () => {
+      it('returns completedStepCount as 0 for new run', async () => {
         const created = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
@@ -68,10 +68,10 @@ export function createStorageTests(createDialect: () => Dialect) {
         const run = await durably.storage.getRun(created.id)
 
         expect(run).not.toBeNull()
-        expect(run!.stepCount).toBe(0)
+        expect(run!.completedStepCount).toBe(0)
       })
 
-      it('returns stepCount reflecting completed steps', async () => {
+      it('returns completedStepCount reflecting completed steps', async () => {
         const created = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
@@ -108,10 +108,10 @@ export function createStorageTests(createDialect: () => Dialect) {
         const run = await durably.storage.getRun(created.id)
 
         expect(run).not.toBeNull()
-        expect(run!.stepCount).toBe(3)
+        expect(run!.completedStepCount).toBe(3)
       })
 
-      it('returns stepCount in getRuns', async () => {
+      it('returns completedStepCount in getRuns', async () => {
         const run1 = await durably.storage.enqueue({
           jobName: 'job-a',
           input: {},
@@ -163,8 +163,8 @@ export function createStorageTests(createDialect: () => Dialect) {
         const foundRun1 = runs.find((r) => r.id === run1.id)
         const foundRun2 = runs.find((r) => r.id === run2.id)
 
-        expect(foundRun1!.stepCount).toBe(2)
-        expect(foundRun2!.stepCount).toBe(1)
+        expect(foundRun1!.completedStepCount).toBe(2)
+        expect(foundRun2!.completedStepCount).toBe(1)
       })
 
       it('returns null for non-existent run', async () => {
@@ -387,7 +387,7 @@ export function createStorageTests(createDialect: () => Dialect) {
         expect(claimed!.id).toBe(created.id)
         expect(claimed!.status).toBe('leased')
         expect(claimed!.startedAt).not.toBeNull()
-        expect(claimed!.stepCount).toBe(0)
+        expect(claimed!.completedStepCount).toBe(0)
 
         // Verify run is now leased in DB
         const run = await durably.storage.getRun(created.id)
