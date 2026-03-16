@@ -201,10 +201,11 @@ export function createStepContext(
           throw new LeaseLostError(run.id)
         }
 
+        // If we reach here, savedStep is truthy — the run is still leased.
+        // Cancellation is handled above (persistStep returns null for cancelled runs).
         eventEmitter.emit({
-          ...(isCancelled
-            ? { type: 'step:cancel' as const }
-            : { type: 'step:fail' as const, error: errorMessage }),
+          type: 'step:fail',
+          error: errorMessage,
           runId: run.id,
           jobName,
           stepName: name,
@@ -212,9 +213,6 @@ export function createStepContext(
           labels: run.labels,
         })
 
-        if (isCancelled) {
-          throwIfAborted()
-        }
         throw error
       } finally {
         // Clear current step after execution

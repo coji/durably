@@ -950,7 +950,7 @@ export function createKyselyStore(
               updated_at: completedAt,
             })
             .where('id', '=', runId)
-            .where('status', '=', 'leased' as const)
+            .where('status', '=', 'leased')
             .where('lease_generation', '=', leaseGeneration)
             .execute()
         }
@@ -1009,7 +1009,7 @@ export function createKyselyStore(
           updated_at: new Date().toISOString(),
         })
         .where('id', '=', runId)
-        .where('status', '=', 'leased' as const)
+        .where('status', '=', 'leased')
         .where('lease_generation', '=', leaseGeneration)
         .execute()
     },
