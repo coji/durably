@@ -243,7 +243,9 @@ export function createPurgeTests(createDialect: () => Dialect) {
 
         await d.migrate()
 
-        // Process the run deterministically without starting the polling loop
+        // Process the run deterministically without starting the polling loop.
+        // Use processOne (not processUntilIdle) so idle maintenance doesn't
+        // run yet — the first idle maintenance cycle will purge immediately.
         const run = await d.jobs.testJob.trigger({})
         await d.processOne()
         expect((await d.getRun(run.id))?.status).toBe('completed')
@@ -256,14 +258,52 @@ export function createPurgeTests(createDialect: () => Dialect) {
           .where('id', '=', run.id)
           .execute()
 
-        // processOne returns false (no pending runs) and triggers auto-purge
-        // on the idle path. lastPurgeAt starts at 0 so purge fires immediately.
-        await d.processOne()
-
-        // Auto-purge is fire-and-forget, give it a tick to complete
-        await new Promise((r) => setTimeout(r, 50))
+        // processUntilIdle runs idle maintenance (including auto-purge) after
+        // draining. Since no prior idle maintenance has run, purge fires
+        // immediately on the first idle cycle.
+        await d.processUntilIdle()
 
         expect(await d.getRun(run.id)).toBeNull()
+
+        await d.db.destroy()
+      })
+
+      it('does NOT run maintenance when maxRuns is hit with backlog remaining', async () => {
+        const d = createDurably({
+          dialect: createDialect(),
+          pollingIntervalMs: 50,
+          retainRuns: '1m',
+        }).register({ testJob })
+
+        await d.migrate()
+
+        // Create 3 runs
+        const run1 = await d.jobs.testJob.trigger({})
+        await d.jobs.testJob.trigger({})
+        await d.jobs.testJob.trigger({})
+
+        // Process only 1 run (maxRuns hit, not idle)
+        const processed = await d.processUntilIdle({ maxRuns: 1 })
+        expect(processed).toBe(1)
+        expect((await d.getRun(run1.id))?.status).toBe('completed')
+
+        // Backdate the completed run so it would be purged if maintenance ran
+        const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString()
+        await d.db
+          .updateTable('durably_runs')
+          .set({ completed_at: twoMinutesAgo })
+          .where('id', '=', run1.id)
+          .execute()
+
+        // Process 1 more (still not idle — 1 run remains)
+        await d.processUntilIdle({ maxRuns: 1 })
+
+        // Maintenance should NOT have run — the completed run should still exist
+        expect(await d.getRun(run1.id)).not.toBeNull()
+
+        // Now drain fully (reaches idle) — maintenance runs and purges
+        await d.processUntilIdle()
+        expect(await d.getRun(run1.id)).toBeNull()
 
         await d.db.destroy()
       })
