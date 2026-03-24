@@ -1,64 +1,101 @@
-# RFC: coalesce option for trigger (skip mode)
+# RFC: coalesce trigger + concurrencyKey pending limit
 
 Issue: #143
 
 ## Problem
 
-Webhook-driven workloads can trigger many jobs in rapid succession for the same logical entity. Since the job reads latest state from DB at execution time, intermediate triggers are redundant. Without coalescing, N webhook events create N queued runs. With coalesce, they compress to at most 1 pending + 1 running per `concurrencyKey`.
+Webhook-driven workloads can trigger many jobs in rapid succession for the same logical entity. Since the job reads latest state from DB at execution time, intermediate triggers are redundant. Without coalescing, N webhook events create N queued runs — all executing sequentially but wastefully.
 
 ## Scope
 
-**v1 is skip mode only.** A merge mode (`coalesce: fn` that updates pending input) was considered but deferred — it adds input mutation complexity, PostgreSQL `FOR UPDATE` locking, validation concerns, and new event types, none of which are justified by current use cases. Skip mode covers the primary need.
+Two breaking changes in one release (pre-v1, v0.14.0):
 
-## API Design
+1. **concurrencyKey enforces max 1 pending** — partial unique index, ConflictError on violation
+2. **trigger() returns `TriggerResult`** — `TypedRun & { disposition }`, no destructuring needed
+3. **coalesce: 'skip'** — opt-in graceful handling of the pending limit
+
+## Design
+
+### concurrencyKey semantic change
+
+`concurrencyKey` now enforces **at most 1 running + 1 pending** per `(jobName, concurrencyKey)`.
+
+Previously, `concurrencyKey` only serialized execution — unlimited pending runs could accumulate. This changes: attempting to create a 2nd pending run with the same `concurrencyKey` now throws `ConflictError`.
+
+```ts
+await job.trigger(input, { concurrencyKey: 'org:1' }) // OK: creates pending
+await job.trigger(input, { concurrencyKey: 'org:1' }) // ConflictError: pending already exists
+```
+
+This is enforced at the DB level via a partial unique index. No application-level race conditions.
+
+> Runs without `concurrencyKey` are unaffected — they can accumulate freely as before.
+
+### coalesce: 'skip' — graceful skip
+
+`coalesce: 'skip'` opts in to graceful handling: instead of throwing ConflictError, return the existing pending run.
 
 ```ts
 const run = await job.trigger(input, {
-  concurrencyKey: 'process:org1',
+  concurrencyKey: 'org:1',
   coalesce: 'skip',
 })
+if (run.disposition === 'coalesced') {
+  logger.debug(`coalesced into existing run ${run.id}`)
+}
 ```
 
-`coalesce: 'skip'` — if a **pending** run with the same `concurrencyKey` and `jobName` already exists, skip creating a new run and return the existing one.
+### trigger() return type
 
-`trigger()` return type does **not** change. It still returns `TypedRun`. Callers who need to distinguish "created" vs "coalesced" use the new `triggerDetailed()` method (see below).
-
-### `triggerDetailed()` — additive API
+`trigger()` now returns `TriggerResult` — an extension of `TypedRun` with a `disposition` field:
 
 ```ts
-const { run, disposition } = await job.triggerDetailed(input, {
-  concurrencyKey: 'process:org1',
-  coalesce: 'skip',
-})
-// disposition: 'created' | 'idempotent' | 'coalesced'
+type Disposition = 'created' | 'idempotent' | 'coalesced'
+
+type TriggerResult<TOutput, TLabels> = TypedRun<TOutput, TLabels> & {
+  disposition: Disposition
+}
 ```
 
-This is additive — no breaking changes. `trigger()` delegates to `triggerDetailed()` internally and returns only `run`.
+**No destructuring required.** Existing code that treats the return value as a Run continues to work — `run.id`, `run.status`, etc. are all available directly. `disposition` is an additional property on the return value only; it does not exist on the persisted `Run` type.
+
+```ts
+// Works like before (disposition is just there if you want it)
+const run = await job.trigger(input)
+console.log(run.id, run.status)
+
+// Check disposition when needed
+if (run.disposition === 'coalesced') { ... }
+```
+
+This also surfaces idempotency hits: previously `trigger()` with a matching `idempotencyKey` silently returned the existing run. Now it returns `disposition: 'idempotent'`.
+
+> **Migration note**: This is a breaking change, but the TypeScript compiler will flag all call sites where the new `disposition` property conflicts with existing type expectations. Existing code that only reads Run properties works without changes.
 
 ### Behavior matrix
 
-| State                  | No coalesce (default)  | `coalesce: 'skip'`         |
-| ---------------------- | ---------------------- | -------------------------- |
-| No pending, no running | Create new run         | Create new run             |
-| Running, no pending    | Create new pending     | Create new pending         |
-| Pending exists         | Create another pending | **Skip** (return existing) |
-
-At most 2 runs per `concurrencyKey` exist at any time: 1 running + 1 pending.
+| State                  | No coalesce        | `coalesce: 'skip'`         |
+| ---------------------- | ------------------ | -------------------------- |
+| No pending, no running | Create new run     | Create new run             |
+| Running, no pending    | Create new pending | Create new pending         |
+| Pending exists         | **ConflictError**  | **Skip** (return existing) |
 
 ### Why `'skip'` not `true`
 
-Using a string union instead of boolean leaves room for future modes (e.g. `'merge'`) without a breaking API change. This follows patterns in BullMQ (deduplication object), Temporal (WorkflowIdReusePolicy enum), and Inngest (separate debounce/idempotency).
+String union is extensible for future modes (e.g. `'merge'`) without a breaking API change. Follows patterns in BullMQ (deduplication object), Temporal (WorkflowIdReusePolicy enum), and Inngest (separate debounce/idempotency).
 
 ### Events
 
-When coalesced (skip), emit a **`run:coalesced`** event (lightweight, for observability). Do **not** emit `run:trigger` — nothing was created.
+- `disposition: 'created'` → emit `run:trigger` (existing behavior)
+- `disposition: 'coalesced'` → emit `run:coalesced` (new, for observability)
+- `disposition: 'idempotent'` → no event (matches existing behavior; fixing this is out of scope)
 
-> **Note**: The current codebase emits `run:trigger` even on idempotency hits. This is an existing inconsistency that should be addressed separately — coalesce should not inherit it.
+`run:coalesced` carries the **skipped** input (not the existing run's input), enabling audit logging of what was deduplicated.
 
 ### Semantic caveats (must be documented)
 
-- **Input is ignored on coalesce**: The returned run carries the **original** pending input, not the new input passed to `trigger()`. This is by design — skip mode means "don't create, return what's already there." Callers using `triggerAndWait()` with coalesce will wait for the result of the _original_ input.
-- **Labels are ignored on coalesce**: Similarly, the existing run's labels are returned, not the new ones. If label-sensitive routing is needed, don't use coalesce.
+- **Input is ignored on coalesce**: The returned run carries the **original** pending input, not the new input. This is by design — skip mode means "don't create, return what's already there." Callers using `triggerAndWait()` with coalesce will wait for the result of the _original_ input. The caller can detect this via `disposition: 'coalesced'`.
+- **Labels are ignored on coalesce**: Similarly, the existing run's labels are returned. If label-sensitive routing is needed, don't use coalesce.
 
 ## Type Changes
 
@@ -75,15 +112,14 @@ export interface TriggerOptions<
 }
 ```
 
-> `coalesce` requires `concurrencyKey`. Throw a `ValidationError` if `coalesce` is set without `concurrencyKey`.
+> `coalesce` requires `concurrencyKey`. Throw `ValidationError` if `coalesce` is set without `concurrencyKey`.
 
-### `TriggerDetailedResult`
+### `TriggerResult`
 
 ```ts
 type Disposition = 'created' | 'idempotent' | 'coalesced'
 
-interface TriggerDetailedResult<TOutput, TLabels> {
-  run: TypedRun<TOutput, TLabels>
+type TriggerResult<TOutput, TLabels> = TypedRun<TOutput, TLabels> & {
   disposition: Disposition
 }
 ```
@@ -102,11 +138,9 @@ export interface TriggerRequest<TLabels> {
 
 export interface TriggerResponse {
   runId: string
-  disposition: 'created' | 'idempotent' | 'coalesced'
+  disposition: Disposition
 }
 ```
-
-> `TriggerResponse` gains `disposition`. For backward compatibility, `runId` remains the primary field. Clients that don't care about disposition can ignore it.
 
 ## Implementation Plan
 
@@ -114,29 +148,56 @@ export interface TriggerResponse {
 
 **File**: `packages/durably/src/migrations.ts`
 
-Add migration v2 with a partial unique index to guarantee at most 1 pending run per `(job_name, concurrency_key)`:
+Add migration v2:
 
 ```sql
--- SQLite
-CREATE UNIQUE INDEX idx_durably_runs_pending_concurrency
-  ON durably_runs (job_name, concurrency_key)
-  WHERE status = 'pending' AND concurrency_key IS NOT NULL;
-
--- PostgreSQL
 CREATE UNIQUE INDEX idx_durably_runs_pending_concurrency
   ON durably_runs (job_name, concurrency_key)
   WHERE status = 'pending' AND concurrency_key IS NOT NULL;
 ```
 
-This makes coalesce atomic at the DB level — INSERT will fail with a unique constraint violation if a pending run already exists, and we catch the conflict to return the existing run. No application-level race conditions on either SQLite or PostgreSQL.
+Works on both SQLite and PostgreSQL.
 
-> **Important**: This index applies only when `concurrency_key IS NOT NULL`. Runs without a concurrency key are unaffected. Existing data must be checked — if multiple pending runs already share a concurrency key, the migration must resolve them (e.g. cancel duplicates) before creating the index.
+**Existing data handling**: The migration must check for duplicate pending runs before creating the index. If duplicates exist, fail with a descriptive error instructing the user to resolve manually:
+
+```ts
+{
+  version: 2,
+  up: async (db) => {
+    // Check for duplicate pending runs per concurrency key
+    const duplicates = await sql`
+      SELECT job_name, concurrency_key, COUNT(*) as cnt
+      FROM durably_runs
+      WHERE status = 'pending' AND concurrency_key IS NOT NULL
+      GROUP BY job_name, concurrency_key
+      HAVING COUNT(*) > 1
+    `.execute(db)
+
+    if (duplicates.rows.length > 0) {
+      const details = duplicates.rows
+        .map(r => `${r.job_name}:${r.concurrency_key} (${r.cnt} pending)`)
+        .join(', ')
+      throw new Error(
+        `Cannot migrate: duplicate pending runs per concurrency key found: ${details}. ` +
+        `Cancel or complete duplicates before upgrading. ` +
+        `See https://github.com/coji/durably/blob/main/docs/migration-v2.md`
+      )
+    }
+
+    await sql`
+      CREATE UNIQUE INDEX idx_durably_runs_pending_concurrency
+      ON durably_runs (job_name, concurrency_key)
+      WHERE status = 'pending' AND concurrency_key IS NOT NULL
+    `.execute(db)
+  },
+}
+```
 
 ### Step 2: Internal `disposition` in storage layer
 
 **File**: `packages/durably/src/storage.ts`
 
-Change `enqueue()` return type internally to `{ run: Run; disposition: Disposition }`:
+Change `enqueue()` return type to `{ run: Run; disposition: Disposition }`:
 
 ```ts
 type Disposition = 'created' | 'idempotent' | 'coalesced'
@@ -144,71 +205,60 @@ type Disposition = 'created' | 'idempotent' | 'coalesced'
 async enqueue(input: CreateRunInput): Promise<{ run: Run; disposition: Disposition }> {
   // 1. Idempotency check (existing behavior, now returns disposition)
   if (input.idempotencyKey) {
-    const existing = await db
-      .selectFrom('durably_runs').selectAll()
-      .where('job_name', '=', input.jobName)
-      .where('idempotency_key', '=', input.idempotencyKey)
-      .executeTakeFirst()
-    if (existing) {
-      return { run: rowToRun(existing), disposition: 'idempotent' }
-    }
+    const existing = ...
+    if (existing) return { run: rowToRun(existing), disposition: 'idempotent' }
   }
 
-  // 2. Coalesce check
-  if (input.coalesce === 'skip' && input.concurrencyKey) {
-    const pending = await db
-      .selectFrom('durably_runs').selectAll()
-      .where('job_name', '=', input.jobName)
-      .where('concurrency_key', '=', input.concurrencyKey)
-      .where('status', '=', 'pending')
-      .orderBy('created_at', 'asc')  // deterministic: oldest first
-      .limit(1)
-      .executeTakeFirst()
-    if (pending) {
-      return { run: rowToRun(pending), disposition: 'coalesced' }
-    }
-  }
-
-  // 3. INSERT — if coalesce is active, catch unique constraint violation
-  //    (race condition fallback for PostgreSQL concurrent inserts)
+  // 2. INSERT — catch unique constraint violation
   try {
     // ... existing insert path ...
     return { run: newRun, disposition: 'created' }
   } catch (err) {
-    if (input.coalesce === 'skip' && isUniqueViolation(err)) {
-      // Another concurrent trigger won the INSERT — fetch the winner
-      const pending = await db
-        .selectFrom('durably_runs').selectAll()
-        .where('job_name', '=', input.jobName)
-        .where('concurrency_key', '=', input.concurrencyKey!)
-        .where('status', '=', 'pending')
-        .orderBy('created_at', 'asc')
-        .limit(1)
-        .executeTakeFirstOrThrow()
-      return { run: rowToRun(pending), disposition: 'coalesced' }
+    if (isUniqueViolation(err) && input.concurrencyKey) {
+      if (input.coalesce === 'skip') {
+        // Graceful: return existing pending run
+        const pending = await db
+          .selectFrom('durably_runs').selectAll()
+          .where('job_name', '=', input.jobName)
+          .where('concurrency_key', '=', input.concurrencyKey)
+          .where('status', '=', 'pending')
+          .executeTakeFirstOrThrow()
+        return { run: rowToRun(pending), disposition: 'coalesced' }
+      }
+      // No coalesce: explicit error
+      throw new ConflictError(
+        `A pending run already exists for concurrency key "${input.concurrencyKey}" ` +
+        `in job "${input.jobName}". Use coalesce: 'skip' to return the existing run instead.`
+      )
     }
     throw err
   }
 }
 ```
 
-### Step 3: Add `triggerDetailed()` and wire up `trigger()`
+**Key design**: INSERT first, catch conflict. This is the correct pattern — no TOCTOU race, works on both SQLite and PostgreSQL. The partial unique index is the single source of truth.
+
+### Step 3: Change `trigger()` return type
 
 **File**: `packages/durably/src/job.ts`
 
 ```ts
-async triggerDetailed(
+async trigger(
   input: TInput,
   options?: TriggerOptions<TLabels>,
-): Promise<TriggerDetailedResult<TOutput, TLabels>> {
-  // ... existing validation ...
+): Promise<TriggerResult<TOutput, TLabels>> {
+  const validatedInput = validateJobInputOrThrow(inputSchema, input)
+  if (labelsSchema && options?.labels) {
+    validateJobInputOrThrow(labelsSchema, options.labels, 'labels')
+  }
 
   if (options?.coalesce && !options.concurrencyKey) {
     throw new ValidationError('coalesce requires concurrencyKey')
   }
 
   const { run, disposition } = await storage.enqueue({
-    jobName, input: validatedInput,
+    jobName: jobDef.name,
+    input: validatedInput,
     concurrencyKey: options?.concurrencyKey,
     idempotencyKey: options?.idempotencyKey,
     labels: options?.labels,
@@ -217,38 +267,38 @@ async triggerDetailed(
 
   if (disposition === 'created') {
     eventEmitter.emit({
-      type: 'run:trigger', runId: run.id, jobName,
+      type: 'run:trigger', runId: run.id, jobName: jobDef.name,
       input: validatedInput, labels: run.labels,
     })
   } else if (disposition === 'coalesced') {
     eventEmitter.emit({
-      type: 'run:coalesced', runId: run.id, jobName,
+      type: 'run:coalesced', runId: run.id, jobName: jobDef.name,
       input: validatedInput, labels: run.labels,
     })
   }
 
-  return { run: run as TypedRun<TOutput, TLabels>, disposition }
-}
-
-// trigger() delegates — no breaking change
-async trigger(
-  input: TInput,
-  options?: TriggerOptions<TLabels>,
-): Promise<TypedRun<TOutput, TLabels>> {
-  const { run } = await this.triggerDetailed(input, options)
-  return run
+  return Object.assign(run as TypedRun<TOutput, TLabels>, { disposition })
 }
 ```
 
-### Step 4: Wire up HTTP handler
+### Step 4: Update `batchTrigger()` return type
+
+**File**: `packages/durably/src/job.ts`
+
+`batchTrigger()` returns `TriggerResult[]` for consistency. Each item carries its own disposition.
+
+### Step 5: Update `retrigger()`
+
+`retrigger()` returns `TriggerResult` with `disposition: 'created'` (always creates a new run). Note: retrigger with a concurrencyKey that has an existing pending run will now throw ConflictError — document this.
+
+### Step 6: Wire up HTTP handler
 
 **File**: `packages/durably/src/server.ts`
 
 - Add `coalesce` to `TriggerRequest`
-- Call `job.triggerDetailed()` internally
 - Return `disposition` in `TriggerResponse`
 
-### Step 5: Add `run:coalesced` event type
+### Step 7: Add `run:coalesced` event type
 
 **File**: `packages/durably/src/events.ts`
 
@@ -257,83 +307,122 @@ export interface RunCoalescedEvent extends BaseEvent {
   type: 'run:coalesced'
   runId: string // ID of the existing pending run
   jobName: string
-  input: unknown // the new (skipped) input, for logging/audit
+  input: unknown // the new (skipped) input, for audit
   labels: Record<string, string>
 }
 ```
 
-### Step 6: Tests
+### Step 8: Update callers
 
-**File**: `packages/durably/tests/shared/coalesce.shared.ts` (new, shared across dialects)
+Since `trigger()` returns `TriggerResult` (extends `TypedRun`), most existing code works unchanged. Update:
+
+- `triggerAndWait()` — works internally, may expose disposition
+- `durably-react` hooks — `useJob` trigger callback
+- Server handler — done in Step 6
+- Examples — update if they type-check the return
+- Tests — update type assertions, add disposition checks
+
+### Step 9: Tests
+
+**File**: `packages/durably/tests/shared/coalesce.shared.ts` (new)
 
 Test cases:
 
-1. **no pending run** — creates new run, disposition `'created'`
-2. **pending run exists** — returns existing, disposition `'coalesced'`, original input preserved
-3. **running + no pending** — creates new pending (running doesn't count)
-4. **multiple pending (pre-existing before index)** — returns oldest
-5. **concurrent insert race** — two triggers at once, only 1 pending created (partial unique index catches the second)
-6. **validation: coalesce without concurrencyKey** — throws `ValidationError`
-7. **event: `run:coalesced` emitted, `run:trigger` not emitted**
-8. **event: `run:trigger` emitted on normal create**
-9. **idempotency + coalesce** — idempotency takes priority, disposition `'idempotent'`
-10. **labels ignored on coalesce** — existing run's labels returned
-11. **HTTP: `coalesce: 'skip'` in request** — verify response includes `disposition`
-12. **trigger() returns TypedRun** — no breaking change, disposition not exposed
-13. **triggerDetailed() returns disposition** — verify full result shape
-14. **batchTrigger with coalesce** — same concurrencyKey items in batch, first wins
+**concurrencyKey pending limit:**
 
-### Step 7: `batchTrigger` support
+1. **1st trigger** — creates pending, disposition `'created'`
+2. **2nd trigger same key, no coalesce** — throws `ConflictError`
+3. **2nd trigger same key, coalesce: 'skip'** — returns existing, disposition `'coalesced'`
+4. **running + new trigger** — creates pending (only 1 running blocks leasing, not insert)
+5. **running + pending + trigger** — ConflictError (or coalesced with skip)
+6. **different concurrencyKeys** — both create, no conflict
+7. **no concurrencyKey** — unlimited pending, no constraint
 
-Coalesce applies per-item in `batchTrigger()`. Within a single batch, items with the same `concurrencyKey + coalesce: 'skip'` should deduplicate against each other: first item creates, subsequent items coalesce to it. The partial unique index handles this naturally when items are inserted sequentially within the transaction.
+**coalesce behavior:**
 
-### Step 8: Documentation
+8. **coalesced input preserved** — existing run's input returned, not new input
+9. **coalesced labels preserved** — existing run's labels returned
+10. **coalesce without concurrencyKey** — throws `ValidationError`
 
-- Update `packages/durably/docs/llms.md` — add `coalesce` to trigger options, document `triggerDetailed()`, document semantic caveats
+**disposition:**
+
+11. **idempotency hit** — disposition `'idempotent'`
+12. **normal create** — disposition `'created'`
+13. **coalesced** — disposition `'coalesced'`
+
+**events:**
+
+14. **`run:trigger` on create** — emitted
+15. **`run:coalesced` on skip** — emitted with skipped input
+16. **no event on idempotent** — not emitted
+
+**batchTrigger:**
+
+17. **batch with same concurrencyKey + coalesce** — first creates, rest coalesce
+18. **batch with same concurrencyKey, no coalesce** — first creates, rest ConflictError
+
+**migration:**
+
+19. **v2 migration with clean data** — index created successfully
+20. **v2 migration with duplicate pending** — fails with descriptive error
+
+### Step 10: Documentation
+
+- Update `packages/durably/docs/llms.md`:
+  - concurrencyKey now enforces max 1 pending
+  - `coalesce: 'skip'` option
+  - `trigger()` returns `TriggerResult` with `disposition`
+  - ConflictError on duplicate pending
+  - Semantic caveats (input/labels ignored on coalesce)
+- Add `docs/migration-v2.md` — migration guide for the breaking changes
 - Regenerate `website/public/llms.txt`
 
 ## File Change Summary
 
-| File                                               | Change                                                                   |
-| -------------------------------------------------- | ------------------------------------------------------------------------ |
-| `packages/durably/src/migrations.ts`               | Add v2 migration: partial unique index                                   |
-| `packages/durably/src/job.ts`                      | Add `coalesce` to `TriggerOptions`, add `triggerDetailed()`              |
-| `packages/durably/src/storage.ts`                  | Add `disposition` to `enqueue()` return, coalesce logic + conflict catch |
-| `packages/durably/src/events.ts`                   | Add `RunCoalescedEvent` type                                             |
-| `packages/durably/src/server.ts`                   | Add `coalesce` to request, `disposition` to response                     |
-| `packages/durably/src/index.ts`                    | Export `TriggerDetailedResult`, `Disposition`                            |
-| `packages/durably/tests/shared/coalesce.shared.ts` | New: shared test suite                                                   |
-| `packages/durably/tests/node/coalesce.test.ts`     | New: Node.js SQLite runner                                               |
-| `packages/durably/tests/browser/coalesce.test.ts`  | New: Browser WASM runner                                                 |
-| `packages/durably/docs/llms.md`                    | Document coalesce, triggerDetailed, caveats                              |
+| File                                               | Change                                                             |
+| -------------------------------------------------- | ------------------------------------------------------------------ |
+| `packages/durably/src/migrations.ts`               | Add v2 migration: partial unique index + duplicate check           |
+| `packages/durably/src/storage.ts`                  | `enqueue()` returns `{ run, disposition }`, catch unique violation |
+| `packages/durably/src/job.ts`                      | `trigger()` returns `TriggerResult`, add `coalesce` to options     |
+| `packages/durably/src/events.ts`                   | Add `RunCoalescedEvent`                                            |
+| `packages/durably/src/errors.ts`                   | Ensure `ConflictError` handles this case                           |
+| `packages/durably/src/server.ts`                   | Add `coalesce` to request, `disposition` to response               |
+| `packages/durably/src/index.ts`                    | Export `TriggerResult`, `Disposition`                              |
+| `packages/durably-react/src/**`                    | Update for `TriggerResult` return type                             |
+| `packages/durably/tests/shared/coalesce.shared.ts` | New: shared test suite (20 cases)                                  |
+| `packages/durably/tests/node/coalesce.test.ts`     | New: Node.js SQLite runner                                         |
+| `packages/durably/tests/browser/coalesce.test.ts`  | New: Browser WASM runner                                           |
+| `packages/durably/tests/**`                        | Update existing tests for new return type                          |
+| `examples/**`                                      | Update trigger() usage if typed                                    |
+| `packages/durably/docs/llms.md`                    | Document all changes                                               |
+| `docs/migration-v2.md`                             | New: migration guide                                               |
 
 ## Design Decisions
 
-1. **Skip mode only (v1)** — merge mode deferred. Skip is read-only (no input mutation, no `FOR UPDATE`), covers the primary webhook use case, and leaves room to add merge later with real-world feedback.
+1. **concurrencyKey = max 1 pending** — simpler mental model. "At most 1 running + 1 pending" is the natural invariant. The previous "unlimited pending, serialize execution" allowed unbounded queue buildup that was almost always a bug in webhook workloads.
 
-2. **`coalesce: 'skip'` not `true`** — string union is extensible for future modes (`'merge'`, etc.) without breaking the API. Follows patterns in BullMQ, Temporal, and Inngest.
+2. **ConflictError without coalesce** — makes the semantic change visible. Existing code that triggers duplicate pending runs will get an explicit error with a helpful message suggesting `coalesce: 'skip'`. Silent behavior changes are worse than loud errors.
 
-3. **Additive API: `triggerDetailed()` not breaking `trigger()`** — opt-in feature should not break all existing callers. `trigger()` return type is unchanged; `triggerDetailed()` adds disposition info for callers who need it.
+3. **INSERT-first, catch conflict** — no TOCTOU race. The partial unique index is the single source of truth. No SELECT-before-INSERT, no advisory locks, no application-level mutex needed for correctness.
 
-4. **Internal `disposition` model** — `enqueue()` returns `disposition: 'created' | 'idempotent' | 'coalesced'`, unifying the information model across idempotency and coalesce. This also surfaces the existing idempotency hit (which currently has no return signal).
+4. **`TriggerResult = TypedRun & { disposition }`** — no destructuring tax. Existing code that reads Run properties works unchanged. `disposition` is available when needed. The persisted `Run` type stays clean.
 
-5. **Partial unique index for atomicity** — `UNIQUE (job_name, concurrency_key) WHERE status = 'pending' AND concurrency_key IS NOT NULL` guarantees at most 1 pending per concurrency key at the DB level. No application-level race conditions. Works on both SQLite and PostgreSQL.
+5. **`coalesce: 'skip'` string union** — extensible for future modes (`'merge'`, etc.) without breaking the API.
 
-6. **Idempotency takes priority over coalesce** — idempotency check runs first in `enqueue()`. If matched, returns disposition `'idempotent'` regardless of coalesce flag.
+6. **Idempotency takes priority** — idempotency check runs before INSERT, so it's evaluated before the unique index can fire. Disposition `'idempotent'` is returned regardless of coalesce flag.
 
-7. **`run:coalesced` event for observability** — silent coalescing during webhook storms is hard to debug. A lightweight event helps monitoring without confusing run-counting listeners (unlike re-emitting `run:trigger`).
+7. **`run:coalesced` event** — carries the skipped input for audit/observability. Webhook storm visibility is operationally important.
 
-8. **Oldest pending returned** — `ORDER BY created_at ASC` ensures deterministic selection. Unordered `LIMIT 1` is avoided.
+8. **Fail-fast migration** — if existing data has duplicate pending runs per concurrency key, migration v2 fails with a descriptive error. No silent data cleanup in an OSS library.
 
-9. **Input and labels ignored on coalesce** — explicitly documented. The existing pending run is returned as-is. This is inherent to skip mode.
+9. **Breaking change is acceptable** — pre-v1 (v0.14.0). TypeScript compiler flags all affected call sites. Migration guide provided.
 
 ## Future: merge mode
 
-A merge mode that updates the pending run's input could be added later if needed. Key considerations for that future work:
+A merge mode (`coalesce: 'merge'`) that updates the pending run's input could be added later:
 
-- `coalesce: 'merge'` with a merge function in a separate option (e.g. `coalesceMerge: fn`)
+- Merge function in a separate option (e.g. `coalesceMerge: fn`)
 - Requires `updateRunInput()` in storage layer
 - PostgreSQL needs `SELECT ... FOR UPDATE` for atomicity
 - Merged input must be re-validated against job schema
 - `run:coalesced` event would carry the merged input
-- Decision needed on `batchTrigger` interaction within a single batch
