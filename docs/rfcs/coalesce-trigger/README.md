@@ -8,11 +8,11 @@ Webhook-driven workloads can trigger many jobs in rapid succession for the same 
 
 ## Scope
 
-Two breaking changes in one release (pre-v1, v0.14.0):
+Two breaking changes + one new feature in one release (pre-v1, v0.14.0):
 
-1. **concurrencyKey enforces max 1 pending** — partial unique index, ConflictError on violation
-2. **trigger() returns `TriggerResult`** — `TypedRun & { disposition }`, no destructuring needed
-3. **coalesce: 'skip'** — opt-in graceful handling of the pending limit
+1. **concurrencyKey enforces max 1 pending** — partial unique index, ConflictError on violation (breaking)
+2. **trigger() returns `TriggerResult`** — `TypedRun & { disposition }`, no destructuring needed (breaking)
+3. **coalesce: 'skip'** — opt-in graceful handling of the pending limit (new feature, additive)
 
 ## Design
 
@@ -30,6 +30,18 @@ await job.trigger(input, { concurrencyKey: 'org:1' }) // ConflictError: pending 
 This is enforced at the DB level via a partial unique index. No application-level race conditions.
 
 > Runs without `concurrencyKey` are unaffected — they can accumulate freely as before.
+
+### Interaction with `releaseExpiredLeases`
+
+The current `releaseExpiredLeases()` resets expired leased runs back to `status = 'pending'`. With the new partial unique index, this creates a potential conflict:
+
+1. Run A: `pending` → `leased` (index entry removed)
+2. Run B: `trigger()` creates new `pending` with same concurrencyKey (index entry added)
+3. Run A: lease expires → `releaseExpiredLeases` tries to set `status = 'pending'` → **unique index violation!**
+
+**Solution**: `releaseExpiredLeases()` must handle this conflict. When resetting to `pending` hits the unique constraint, the expired run should be set to `failed` (with an appropriate error message like "lease expired, pending run already exists") instead of `pending`. This is actually more correct — the original run lost its lease, and a replacement is already queued.
+
+> `cancelRun()` is unaffected: cancelled runs have `status = 'cancelled'`, which is outside the partial index condition.
 
 ### coalesce: 'skip' — graceful skip
 
@@ -421,10 +433,15 @@ Test cases:
 
 21. **coalesce after worker leases** — pending run gets leased between INSERT failure and follow-up SELECT, still returns the (now leased) run with disposition `'coalesced'`
 
+**releaseExpiredLeases interaction:**
+
+22. **expired lease + existing pending** — lease expires on Run A, Run B is pending with same concurrencyKey → Run A set to `failed` (not pending), no index violation
+23. **expired lease + no pending** — lease expires on Run A, no other pending → Run A reset to `pending` as before
+
 **migration:**
 
-22. **v2 migration with clean data** — index created successfully
-23. **v2 migration with duplicate pending** — fails with descriptive error (shows first N entries)
+24. **v2 migration with clean data** — index created successfully
+25. **v2 migration with duplicate pending** — fails with descriptive error (shows first N entries)
 
 ### Step 10: Documentation
 
@@ -449,7 +466,8 @@ Test cases:
 | `packages/durably/src/server.ts`                   | Add `coalesce` to request, `disposition` to response               |
 | `packages/durably/src/index.ts`                    | Export `TriggerResult`, `Disposition`                              |
 | `packages/durably-react/src/**`                    | Update for `TriggerResult` return type                             |
-| `packages/durably/tests/shared/coalesce.shared.ts` | New: shared test suite (20 cases)                                  |
+| `packages/durably/src/storage.ts`                  | Update `releaseExpiredLeases()` to handle unique index conflict    |
+| `packages/durably/tests/shared/coalesce.shared.ts` | New: shared test suite (25 cases)                                  |
 | `packages/durably/tests/node/coalesce.test.ts`     | New: Node.js SQLite runner                                         |
 | `packages/durably/tests/browser/coalesce.test.ts`  | New: Browser WASM runner                                           |
 | `packages/durably/tests/**`                        | Update existing tests for new return type                          |
@@ -481,9 +499,11 @@ Test cases:
 
 11. **`batchTrigger()` uses sequential enqueue** — bulk INSERT cannot handle per-item coalesce/conflict semantics within the same batch. Sequential enqueue within a transaction is correct and simple.
 
-12. **Fail-fast migration** — if existing data has duplicate pending runs per concurrency key, migration v2 fails with a descriptive error (first N entries shown). No silent data cleanup in an OSS library.
+12. **`releaseExpiredLeases()` fails to `failed` on conflict** — when an expired lease cannot be reset to `pending` because another pending run exists (unique index), the expired run is marked `failed`. This is more correct than the old behavior: the original run lost its lease, and a replacement is already queued.
 
-13. **Breaking change is acceptable** — pre-v1 (v0.14.0). TypeScript compiler flags all affected call sites. Migration guide provided.
+13. **Fail-fast migration** — if existing data has duplicate pending runs per concurrency key, migration v2 fails with a descriptive error (first N entries shown). No silent data cleanup in an OSS library.
+
+14. **Breaking change is acceptable** — pre-v1 (v0.14.0). TypeScript compiler flags all affected call sites. Migration guide provided.
 
 ## Future: merge mode
 
