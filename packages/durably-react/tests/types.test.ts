@@ -178,6 +178,16 @@ describe('Type inference', () => {
       expectTypeOf<Result['refresh']>().toBeFunction()
     })
 
+    it('default type parameters exclude undefined from output', () => {
+      type DefaultRun = TypedRun
+
+      // output should be Record<string, unknown> | null (no undefined)
+      expectTypeOf<DefaultRun['output']>().toEqualTypeOf<Record<
+        string,
+        unknown
+      > | null>()
+    })
+
     it('union types work for multi-job dashboards', () => {
       type ImportRun = TypedRun<{ file: string }, { count: number }>
       type SyncRun = TypedRun<{ userId: string }, { synced: boolean }>
@@ -241,6 +251,16 @@ describe('Type inference', () => {
       expectTypeOf<Result['prevPage']>().toBeFunction()
       expectTypeOf<Result['goToPage']>().toBeFunction()
       expectTypeOf<Result['refresh']>().toBeFunction()
+    })
+
+    it('default type parameters exclude undefined from output', () => {
+      type DefaultRun = TypedClientRun
+
+      // output should be Record<string, unknown> | null (no undefined)
+      expectTypeOf<DefaultRun['output']>().toEqualTypeOf<Record<
+        string,
+        unknown
+      > | null>()
     })
 
     it('union types work for multi-job dashboards', () => {

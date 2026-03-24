@@ -125,9 +125,7 @@ export type DurablyEvent =
  */
 export type TypedRun<
   TInput extends Record<string, unknown> = Record<string, unknown>,
-  TOutput extends Record<string, unknown> | undefined =
-    | Record<string, unknown>
-    | undefined,
+  TOutput extends Record<string, unknown> | undefined = Record<string, unknown>,
 > = Omit<Run, 'input' | 'output'> & {
   input: TInput
   output: TOutput | null
@@ -142,9 +140,7 @@ export type { ClientRun } from '@coji/durably'
  */
 export type TypedClientRun<
   TInput extends Record<string, unknown> = Record<string, unknown>,
-  TOutput extends Record<string, unknown> | undefined =
-    | Record<string, unknown>
-    | undefined,
+  TOutput extends Record<string, unknown> | undefined = Record<string, unknown>,
 > = Omit<ClientRun, 'input' | 'output'> & {
   input: TInput
   output: TOutput | null
