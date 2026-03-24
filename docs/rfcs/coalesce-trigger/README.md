@@ -1,4 +1,4 @@
-# RFC: coalesce option for trigger
+# RFC: coalesce option for trigger (skip mode)
 
 Issue: #143
 
@@ -6,45 +6,34 @@ Issue: #143
 
 Webhook-driven workloads can trigger many jobs in rapid succession for the same logical entity. Since the job reads latest state from DB at execution time, intermediate triggers are redundant. Without coalescing, N webhook events create N queued runs. With coalesce, they compress to at most 1 pending + 1 running per `concurrencyKey`.
 
+## Scope
+
+**v1 is skip mode only.** A merge mode (`coalesce: fn` that updates pending input) was considered but deferred — it adds input mutation complexity, PostgreSQL `FOR UPDATE` locking, validation concerns, and new event types, none of which are justified by current use cases. Skip mode covers the primary need.
+
 ## API Design
 
-### skip mode
-
 ```ts
-const result = await job.trigger(input, {
+const { run, coalesced } = await job.trigger(input, {
   concurrencyKey: 'process:org1',
   coalesce: true,
 })
-// result: TypedRun (existing pending run if coalesced, new run otherwise)
-// result.coalesced: boolean — true if an existing pending run was returned
 ```
 
-`coalesce: true` — if a **pending** run with the same `concurrencyKey` already exists, skip creating a new run and return the existing one.
-
-### merge mode
-
-```ts
-const result = await job.trigger(input, {
-  concurrencyKey: 'process:org1',
-  coalesce: (pendingInput, newInput) => ({
-    organizationId: newInput.organizationId,
-    export: pendingInput.export || newInput.export,
-    triggerClassify: pendingInput.triggerClassify || newInput.triggerClassify,
-  }),
-})
-```
-
-`coalesce: (pendingInput, newInput) => mergedInput` — if a pending run exists, update its input using the merge function and return it. If no pending run exists, create a new one.
+`coalesce: true` — if a **pending** run with the same `concurrencyKey` already exists, skip creating a new run and return the existing one with `coalesced: true`.
 
 ### Behavior matrix
 
-| State                  | `coalesce: true` (skip) | `coalesce: fn` (merge)         |
-| ---------------------- | ----------------------- | ------------------------------ |
-| No pending, no running | Create new run          | Create new run                 |
-| Running, no pending    | Create new pending      | Create new pending             |
-| Pending exists         | **Skip** (return as-is) | **Merge** input, return update |
+| State                  | `coalesce: false` (default) | `coalesce: true`           |
+| ---------------------- | --------------------------- | -------------------------- |
+| No pending, no running | Create new run              | Create new run             |
+| Running, no pending    | Create new pending          | Create new pending         |
+| Pending exists         | Create another pending      | **Skip** (return existing) |
 
 At most 2 runs per `concurrencyKey` exist at any time: 1 running + 1 pending.
+
+### Events
+
+When coalesced (skip), **no `run:trigger` event** is emitted — nothing new happened.
 
 ## Type Changes
 
@@ -58,30 +47,24 @@ export interface TriggerOptions<
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: TLabels
-  coalesce?: boolean | ((pendingInput: TInput, newInput: TInput) => TInput)
+  coalesce?: boolean
 }
 ```
 
-> `coalesce` requires `concurrencyKey`. Throw a validation error if `coalesce` is set without `concurrencyKey`.
+> `coalesce` requires `concurrencyKey`. Throw a `ValidationError` if `coalesce` is set without `concurrencyKey`.
 
-### Return type augmentation
+### Return type change (breaking)
 
-The existing `TypedRun` return type gains a `coalesced` field:
+`trigger()` return type changes from `TypedRun` to `{ run: TypedRun, coalesced: boolean }`:
 
 ```ts
-// Option A: Add to TypedRun directly (simpler)
-export interface TypedRun<TOutput, TLabels> extends Run<TLabels> {
-  output: TOutput | null
-  coalesced?: boolean // true when returned from a coalesced trigger
-}
-
-// Option B: Separate return type (more explicit)
-type TriggerResult<TOutput, TLabels> = TypedRun<TOutput, TLabels> & {
+interface TriggerResult<TOutput, TLabels> {
+  run: TypedRun<TOutput, TLabels>
   coalesced: boolean
 }
 ```
 
-**Recommendation**: Option A. Adding an optional `coalesced` field keeps the return type backward-compatible. It defaults to `undefined` (falsy) for normal triggers.
+`coalesced` lives on the result tuple, not on `Run` itself — Run is a state-machine entity and shouldn't carry creation-context metadata. This is a **breaking change**.
 
 ### `TriggerRequest` / `TriggerResponse` (HTTP API)
 
@@ -93,7 +76,7 @@ export interface TriggerRequest<TLabels> {
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: TLabels
-  coalesce?: boolean // merge mode not supported over HTTP (function not serializable)
+  coalesce?: boolean
 }
 
 // Response: add coalesced field
@@ -103,104 +86,98 @@ export interface TriggerResponse {
 }
 ```
 
-> Merge mode (`coalesce: fn`) is only available in the programmatic API, not HTTP. The HTTP API supports only skip mode (`coalesce: true`).
-
 ## Implementation Plan
 
-### Step 1: Add `updateRunInput()` to storage layer
+### Step 1: Change `trigger()` return type
 
-Currently `input` is immutable after `enqueue()`. Add a method to update it:
+**File**: `packages/durably/src/job.ts`
+
+Change `trigger()` to return `{ run: TypedRun, coalesced: boolean }`. This is breaking — all callers need updating.
+
+Update `retrigger()` similarly if it shares the same return path.
+
+### Step 2: Add coalesce logic to `enqueue()` in storage layer
 
 **File**: `packages/durably/src/storage.ts`
 
+No new method needed. Add an optional `coalesce` flag to `CreateRunInput` and handle it inside `enqueue()`:
+
 ```ts
-async updateRunInput(runId: string, input: unknown): Promise<void> {
-  const now = new Date().toISOString()
-  await db
-    .updateTable('durably_runs')
-    .set({ input: JSON.stringify(input), updated_at: now })
-    .where('id', '=', runId)
-    .where('status', '=', 'pending')  // safety: only pending runs
-    .execute()
+async enqueue(input: CreateRunInput): Promise<{ run: Run; coalesced: boolean }> {
+  // ... existing idempotency check (runs first, takes priority) ...
+
+  if (input.coalesce && input.concurrencyKey) {
+    const pending = await db
+      .selectFrom('durably_runs')
+      .selectAll()
+      .where('job_name', '=', input.jobName)
+      .where('concurrency_key', '=', input.concurrencyKey)
+      .where('status', '=', 'pending')
+      .limit(1)
+      .executeTakeFirst()
+
+    if (pending) {
+      return { run: rowToRun(pending), coalesced: true }
+    }
+  }
+
+  // ... existing insert path ...
+  return { run: newRun, coalesced: false }
 }
 ```
 
-No schema migration needed — `input` column already exists.
+For SQLite this is naturally serialized. For PostgreSQL, the SELECT is read-only within the enqueue transaction — no `FOR UPDATE` needed since we're not modifying the pending row.
 
-### Step 2: Add `enqueueCoalesced()` to storage layer
-
-**File**: `packages/durably/src/storage.ts`
-
-```ts
-async enqueueCoalesced(
-  input: CreateRunInput,
-  coalesce: true | ((pendingInput: unknown, newInput: unknown) => unknown),
-): Promise<{ run: Run; coalesced: boolean }>
-```
-
-Logic (within a transaction for atomicity):
-
-```
-BEGIN TRANSACTION
-1. SELECT * FROM durably_runs
-     WHERE concurrency_key = :key AND status = 'pending' AND job_name = :jobName
-     LIMIT 1
-
-2a. If found AND coalesce === true:
-      return { run: existing, coalesced: true }
-
-2b. If found AND coalesce is function:
-      mergedInput = coalesce(JSON.parse(existing.input), newInput)
-      UPDATE durably_runs SET input = :mergedInput WHERE id = :existingId
-      return { run: updated, coalesced: true }
-
-3.  If not found:
-      INSERT new run (same as normal enqueue)
-      return { run: newRun, coalesced: false }
-COMMIT
-```
-
-SQLite serializes writes so the transaction is naturally atomic. PostgreSQL may need `SELECT ... FOR UPDATE` on the pending row to prevent concurrent merges.
+> **Idempotency interaction**: idempotency check runs first (existing behavior). Coalesce only applies if idempotency doesn't match.
 
 ### Step 3: Wire up `job.trigger()`
 
 **File**: `packages/durably/src/job.ts`
 
-In the `trigger()` method:
-
 ```ts
 async trigger(input: TInput, options?: TriggerOptions<TLabels>) {
   // ... existing validation ...
 
-  if (options?.coalesce) {
-    if (!options.concurrencyKey) {
-      throw new ValidationError('coalesce requires concurrencyKey')
-    }
-    const { run, coalesced } = await storage.enqueueCoalesced(
-      { jobName, input: validatedInput, concurrencyKey: options.concurrencyKey, labels: options.labels },
-      options.coalesce,
-    )
-    if (!coalesced) {
-      eventEmitter.emit({ type: 'run:trigger', runId: run.id, jobName, input: validatedInput, labels: run.labels })
-    }
-    return Object.assign(run as TypedRun<TOutput, TLabels>, { coalesced })
+  if (options?.coalesce && !options.concurrencyKey) {
+    throw new ValidationError('coalesce requires concurrencyKey')
   }
 
-  // ... existing enqueue path (unchanged) ...
+  const { run, coalesced } = await storage.enqueue({
+    jobName, input: validatedInput,
+    concurrencyKey: options?.concurrencyKey,
+    idempotencyKey: options?.idempotencyKey,
+    labels: options?.labels,
+    coalesce: options?.coalesce,
+  })
+
+  if (!coalesced) {
+    eventEmitter.emit({
+      type: 'run:trigger', runId: run.id, jobName,
+      input: validatedInput, labels: run.labels,
+    })
+  }
+
+  return { run: run as TypedRun<TOutput, TLabels>, coalesced }
 }
 ```
-
-> When coalesced (skip or merge), do NOT emit `run:trigger` — no new run was created. For merge mode, consider emitting a new event `run:coalesce` if observability is needed.
 
 ### Step 4: Wire up HTTP handler
 
 **File**: `packages/durably/src/server.ts`
 
-Pass `coalesce` from `TriggerRequest` to `job.trigger()`. Return `coalesced` in response.
+Pass `coalesce` from `TriggerRequest` to `job.trigger()`. Return `coalesced` in `TriggerResponse`.
 
-### Step 5: Add `batchTrigger` support (optional, can defer)
+### Step 5: Update callers for new return type
 
-`batchTrigger()` could accept `coalesce` in per-item options. This is more complex (batch coalescing within the same batch) and can be deferred to a follow-up.
+Since `trigger()` now returns `{ run, coalesced }` instead of `TypedRun`, update:
+
+- `retrigger()` — returns `{ run, coalesced: false }` always
+- `triggerAndWait()` — destructure internally
+- `batchTrigger()` — each item returns `{ run, coalesced }`
+- `durably-react` hooks — `useJob` trigger/triggerAndWait
+- Server handler — already done in Step 4
+- Examples — fullstack-react-router, fullstack-vercel-turso, etc.
+- Tests — all existing trigger tests
 
 ### Step 6: Tests
 
@@ -208,41 +185,51 @@ Pass `coalesce` from `TriggerRequest` to `job.trigger()`. Return `coalesced` in 
 
 Test cases:
 
-1. **skip: no pending run** — creates new run, `coalesced: false`
-2. **skip: pending run exists** — returns existing, `coalesced: true`, input unchanged
-3. **skip: running + no pending** — creates new pending (running doesn't count)
-4. **merge: no pending run** — creates new run, `coalesced: false`
-5. **merge: pending run exists** — updates input, returns same run ID, `coalesced: true`
-6. **merge: running + pending** — merges into the pending one
-7. **merge: verify merged input** — assert merge function output is persisted correctly
-8. **validation: coalesce without concurrencyKey** — throws `ValidationError`
-9. **event: no `run:trigger` on coalesce** — verify event not emitted when coalesced
-10. **HTTP: skip mode over API** — verify `TriggerRequest` with `coalesce: true` works
-11. **HTTP: response includes `coalesced`** — verify `TriggerResponse` shape
+1. **no pending run** — creates new run, `coalesced: false`
+2. **pending run exists** — returns existing, `coalesced: true`, input unchanged
+3. **running + no pending** — creates new pending (running doesn't count)
+4. **multiple pending (pre-existing)** — returns one of them, doesn't create new
+5. **validation: coalesce without concurrencyKey** — throws `ValidationError`
+6. **event: no `run:trigger` on coalesce** — verify event not emitted when coalesced
+7. **idempotency + coalesce** — idempotency takes priority
+8. **HTTP: skip mode over API** — verify request/response shape
+9. **return type** — verify `{ run, coalesced }` structure for both coalesced and non-coalesced
 
 ### Step 7: Documentation
 
-- Update `packages/durably/docs/llms.md` — add coalesce to trigger options reference
+- Update `packages/durably/docs/llms.md` — add `coalesce` to trigger options reference
 - Regenerate `website/public/llms.txt`
 
 ## File Change Summary
 
 | File                                               | Change                                                             |
 | -------------------------------------------------- | ------------------------------------------------------------------ |
-| `packages/durably/src/job.ts`                      | Add `coalesce` to `TriggerOptions`, wire up in `trigger()`         |
-| `packages/durably/src/storage.ts`                  | Add `updateRunInput()`, `enqueueCoalesced()`                       |
-| `packages/durably/src/claim-sqlite.ts`             | No changes needed                                                  |
-| `packages/durably/src/claim-postgres.ts`           | Possibly `FOR UPDATE` in coalesce query                            |
-| `packages/durably/src/server.ts`                   | Add `coalesce` to `TriggerRequest`/`TriggerResponse`, pass through |
-| `packages/durably/src/index.ts`                    | Export new types if any                                            |
+| `packages/durably/src/job.ts`                      | Add `coalesce` to `TriggerOptions`, change `trigger()` return type |
+| `packages/durably/src/storage.ts`                  | Add `coalesce` to `CreateRunInput`, handle in `enqueue()`          |
+| `packages/durably/src/server.ts`                   | Add `coalesce` to `TriggerRequest`/`TriggerResponse`               |
+| `packages/durably/src/index.ts`                    | Export `TriggerResult` type                                        |
+| `packages/durably-react/src/**`                    | Update for new trigger return type                                 |
 | `packages/durably/tests/shared/coalesce.shared.ts` | New: shared test suite                                             |
 | `packages/durably/tests/node/coalesce.test.ts`     | New: Node.js SQLite runner                                         |
 | `packages/durably/tests/browser/coalesce.test.ts`  | New: Browser WASM runner                                           |
+| `packages/durably/tests/**`                        | Update existing tests for new return type                          |
+| `examples/**`                                      | Update for new return type                                         |
 | `packages/durably/docs/llms.md`                    | Document coalesce option                                           |
 
-## Open Questions
+## Design Decisions
 
-1. **Event for merge mode**: Should we emit `run:coalesce` when a merge happens? This would help with observability but adds a new event type.
-2. **`batchTrigger` support**: Defer or include in this PR? Batch + coalesce interaction (multiple items in same batch targeting same concurrencyKey) adds complexity.
-3. **Race condition in PostgreSQL merge mode**: Need `SELECT ... FOR UPDATE` to prevent two concurrent merges from reading the same pending input. SQLite is safe due to write serialization.
-4. **Idempotency key interaction**: If both `idempotencyKey` and `coalesce` are set, which takes priority? Proposed: idempotency check runs first (existing behavior), coalesce only applies if idempotency check doesn't match.
+1. **Skip mode only (v1)** — merge mode deferred. Skip is simpler (read-only check, no input mutation, no `FOR UPDATE`, no new events), covers the primary webhook use case, and leaves room to add merge later with real-world feedback.
+2. **Return `{ run, coalesced }` not `TypedRun & { coalesced }`** — Run is a persistent entity; `coalesced` is transient trigger context. Mixing them pollutes the domain model.
+3. **No `run:trigger` on coalesce** — nothing was created. Emitting would confuse listeners counting new runs.
+4. **Idempotency takes priority over coalesce** — idempotency check runs first in `enqueue()`. If matched, returns existing run regardless of coalesce flag.
+5. **No new storage method** — coalesce logic fits as a conditional branch inside `enqueue()`, keeping the storage API surface small.
+
+## Future: merge mode
+
+A merge mode that updates the pending run's input could be added later if needed. Key considerations for that future work:
+
+- Requires `updateRunInput()` in storage layer
+- PostgreSQL needs `SELECT ... FOR UPDATE` for atomicity
+- Merged input must be re-validated against job schema
+- New `run:input-updated` event needed for observability
+- Decision needed on `batchTrigger` interaction
