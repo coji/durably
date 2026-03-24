@@ -88,7 +88,7 @@ String union is extensible for future modes (e.g. `'merge'`) without a breaking 
 
 - `disposition: 'created'` → emit `run:trigger` (existing behavior)
 - `disposition: 'coalesced'` → emit `run:coalesced` (new, for observability)
-- `disposition: 'idempotent'` → no event (matches existing behavior; fixing this is out of scope)
+- `disposition: 'idempotent'` → no event (**behavior change**: current code emits `run:trigger` even on idempotency hits — this is fixed as part of the disposition model)
 
 `run:coalesced` carries the **skipped** input (not the existing run's input), enabling audit logging of what was deduplicated.
 
@@ -202,6 +202,22 @@ Change `enqueue()` return type to `{ run: Run; disposition: Disposition }`:
 ```ts
 type Disposition = 'created' | 'idempotent' | 'coalesced'
 
+/**
+ * Identify which unique constraint was violated.
+ * Required because both idempotency and pending-concurrency use unique indexes.
+ * Without this, an idempotency race could be misclassified as a concurrency conflict.
+ *
+ * PostgreSQL: SQLSTATE '23505' + constraint/index name
+ * SQLite/libsql: SQLITE_CONSTRAINT_UNIQUE + error message containing index name
+ */
+function parseUniqueViolation(
+  err: unknown,
+): 'idempotency' | 'pending_concurrency' | null {
+  // Implementation varies by driver — detect constraint/index name from error
+  // 'idx_durably_runs_job_idempotency' → 'idempotency'
+  // 'idx_durably_runs_pending_concurrency' → 'pending_concurrency'
+}
+
 async enqueue(input: CreateRunInput): Promise<{ run: Run; disposition: Disposition }> {
   // 1. Idempotency check (existing behavior, now returns disposition)
   if (input.idempotencyKey) {
@@ -214,16 +230,36 @@ async enqueue(input: CreateRunInput): Promise<{ run: Run; disposition: Dispositi
     // ... existing insert path ...
     return { run: newRun, disposition: 'created' }
   } catch (err) {
-    if (isUniqueViolation(err) && input.concurrencyKey) {
+    const violation = parseUniqueViolation(err)
+
+    // Idempotency race: another concurrent trigger inserted with same idempotency key
+    // between our SELECT and INSERT. Re-fetch and return as idempotent.
+    if (violation === 'idempotency' && input.idempotencyKey) {
+      const existing = await db
+        .selectFrom('durably_runs').selectAll()
+        .where('job_name', '=', input.jobName)
+        .where('idempotency_key', '=', input.idempotencyKey)
+        .executeTakeFirstOrThrow()
+      return { run: rowToRun(existing), disposition: 'idempotent' }
+    }
+
+    // Pending concurrency conflict
+    if (violation === 'pending_concurrency' && input.concurrencyKey) {
       if (input.coalesce === 'skip') {
-        // Graceful: return existing pending run
-        const pending = await db
+        // Graceful: return the conflicting run.
+        // Use (job_name, concurrency_key) without status filter — the pending run
+        // may have been leased between our INSERT and this SELECT.
+        // Priority: pending first, then most recently created.
+        const conflicting = await db
           .selectFrom('durably_runs').selectAll()
           .where('job_name', '=', input.jobName)
           .where('concurrency_key', '=', input.concurrencyKey)
-          .where('status', '=', 'pending')
+          .where('status', 'in', ['pending', 'leased'])
+          .orderBy(sql`CASE WHEN status = 'pending' THEN 0 ELSE 1 END`, 'asc')
+          .orderBy('created_at', 'desc')
+          .limit(1)
           .executeTakeFirstOrThrow()
-        return { run: rowToRun(pending), disposition: 'coalesced' }
+        return { run: rowToRun(conflicting), disposition: 'coalesced' }
       }
       // No coalesce: explicit error
       throw new ConflictError(
@@ -231,12 +267,17 @@ async enqueue(input: CreateRunInput): Promise<{ run: Run; disposition: Dispositi
         `in job "${input.jobName}". Use coalesce: 'skip' to return the existing run instead.`
       )
     }
+
     throw err
   }
 }
 ```
 
 **Key design**: INSERT first, catch conflict. This is the correct pattern — no TOCTOU race, works on both SQLite and PostgreSQL. The partial unique index is the single source of truth.
+
+**Constraint identification**: `parseUniqueViolation()` distinguishes between idempotency and pending-concurrency violations by inspecting the constraint/index name in the driver error. This prevents misclassifying an idempotency race as a concurrency conflict.
+
+**Post-conflict SELECT race**: After a pending-concurrency conflict, the follow-up SELECT does NOT filter by `status = 'pending'` alone. The pending run may have been leased by a worker between our INSERT failure and the SELECT. Instead, we query `pending OR leased`, preferring pending.
 
 ### Step 3: Change `trigger()` return type
 
@@ -281,11 +322,21 @@ async trigger(
 }
 ```
 
-### Step 4: Update `batchTrigger()` return type
+### Step 4: Update `batchTrigger()` — sequential enqueue
 
 **File**: `packages/durably/src/job.ts`
 
 `batchTrigger()` returns `TriggerResult[]` for consistency. Each item carries its own disposition.
+
+**Implementation change**: The current `enqueueMany()` uses bulk INSERT, which cannot handle per-item coalesce/conflict semantics. When the same `concurrencyKey` appears multiple times in a batch, a bulk INSERT would fail entirely on the unique constraint.
+
+`batchTrigger()` switches to **sequential `enqueue()` calls** within a single transaction. This naturally handles:
+
+- Same concurrencyKey in batch: first creates, rest coalesce (with `coalesce: 'skip'`) or throw ConflictError
+- Mixed idempotencyKey: each item gets its own disposition
+- Per-item error handling: partial success is possible
+
+> **Performance note**: Sequential enqueue is slower than bulk INSERT for large batches. This is acceptable for pre-v1. If bulk performance becomes critical, a future optimization could pre-deduplicate items by concurrencyKey within the batch before inserting.
 
 ### Step 5: Update `retrigger()`
 
@@ -358,13 +409,22 @@ Test cases:
 
 **batchTrigger:**
 
-17. **batch with same concurrencyKey + coalesce** — first creates, rest coalesce
+17. **batch with same concurrencyKey + coalesce** — first creates, rest coalesce (sequential enqueue)
 18. **batch with same concurrencyKey, no coalesce** — first creates, rest ConflictError
+
+**constraint identification:**
+
+19. **concurrent idempotency race** — two triggers with same idempotencyKey, both pass SELECT, one INSERT wins, other gets disposition `'idempotent'` (not ConflictError)
+20. **concurrent concurrency race** — two triggers with same concurrencyKey + coalesce, both INSERT, one wins, other gets disposition `'coalesced'`
+
+**post-conflict race:**
+
+21. **coalesce after worker leases** — pending run gets leased between INSERT failure and follow-up SELECT, still returns the (now leased) run with disposition `'coalesced'`
 
 **migration:**
 
-19. **v2 migration with clean data** — index created successfully
-20. **v2 migration with duplicate pending** — fails with descriptive error
+22. **v2 migration with clean data** — index created successfully
+23. **v2 migration with duplicate pending** — fails with descriptive error (shows first N entries)
 
 ### Step 10: Documentation
 
@@ -405,17 +465,25 @@ Test cases:
 
 3. **INSERT-first, catch conflict** — no TOCTOU race. The partial unique index is the single source of truth. No SELECT-before-INSERT, no advisory locks, no application-level mutex needed for correctness.
 
-4. **`TriggerResult = TypedRun & { disposition }`** — no destructuring tax. Existing code that reads Run properties works unchanged. `disposition` is available when needed. The persisted `Run` type stays clean.
+4. **`parseUniqueViolation()` distinguishes constraints** — the codebase has two unique indexes (idempotency + pending-concurrency). A generic `isUniqueViolation()` would misclassify idempotency races as concurrency conflicts. The parser inspects the constraint/index name from the driver error.
 
-5. **`coalesce: 'skip'` string union** — extensible for future modes (`'merge'`, etc.) without breaking the API.
+5. **Post-conflict SELECT is status-agnostic** — after a pending-concurrency conflict, the follow-up SELECT queries `pending OR leased` (preferring pending). This handles the race where a worker leases the pending run between our INSERT failure and SELECT.
 
-6. **Idempotency takes priority** — idempotency check runs before INSERT, so it's evaluated before the unique index can fire. Disposition `'idempotent'` is returned regardless of coalesce flag.
+6. **`TriggerResult = TypedRun & { disposition }`** — no destructuring tax. Existing code that reads Run properties works unchanged. `disposition` is available when needed. The persisted `Run` type stays clean.
 
-7. **`run:coalesced` event** — carries the skipped input for audit/observability. Webhook storm visibility is operationally important.
+7. **`coalesce: 'skip'` string union** — extensible for future modes (`'merge'`, etc.) without breaking the API.
 
-8. **Fail-fast migration** — if existing data has duplicate pending runs per concurrency key, migration v2 fails with a descriptive error. No silent data cleanup in an OSS library.
+8. **Idempotency takes priority** — idempotency check runs before INSERT, so it's evaluated before the unique index can fire. Disposition `'idempotent'` is returned regardless of coalesce flag.
 
-9. **Breaking change is acceptable** — pre-v1 (v0.14.0). TypeScript compiler flags all affected call sites. Migration guide provided.
+9. **`run:coalesced` event** — carries the skipped input for audit/observability. Webhook storm visibility is operationally important.
+
+10. **Idempotent stops emitting `run:trigger`** — the current codebase emits `run:trigger` even on idempotency hits. This is fixed: `disposition: 'idempotent'` now emits no event. This is a behavior change, documented in the migration guide.
+
+11. **`batchTrigger()` uses sequential enqueue** — bulk INSERT cannot handle per-item coalesce/conflict semantics within the same batch. Sequential enqueue within a transaction is correct and simple.
+
+12. **Fail-fast migration** — if existing data has duplicate pending runs per concurrency key, migration v2 fails with a descriptive error (first N entries shown). No silent data cleanup in an OSS library.
+
+13. **Breaking change is acceptable** — pre-v1 (v0.14.0). TypeScript compiler flags all affected call sites. Migration guide provided.
 
 ## Future: merge mode
 
