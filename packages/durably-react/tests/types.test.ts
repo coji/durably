@@ -181,7 +181,6 @@ describe('Type inference', () => {
     it('default type parameters exclude undefined from output', () => {
       type DefaultRun = TypedRun
 
-      // output should be Record<string, unknown> | null (no undefined)
       expectTypeOf<DefaultRun['output']>().toEqualTypeOf<Record<
         string,
         unknown
@@ -256,7 +255,6 @@ describe('Type inference', () => {
     it('default type parameters exclude undefined from output', () => {
       type DefaultRun = TypedClientRun
 
-      // output should be Record<string, unknown> | null (no undefined)
       expectTypeOf<DefaultRun['output']>().toEqualTypeOf<Record<
         string,
         unknown
