@@ -39,7 +39,44 @@ The current `releaseExpiredLeases()` resets expired leased runs back to `status 
 2. Run B: `trigger()` creates new `pending` with same concurrencyKey (index entry added)
 3. Run A: lease expires → `releaseExpiredLeases` tries to set `status = 'pending'` → **unique index violation!**
 
-**Solution**: `releaseExpiredLeases()` must handle this conflict. When resetting to `pending` hits the unique constraint, the expired run should be set to `failed` (with an appropriate error message like "lease expired, pending run already exists") instead of `pending`. This is actually more correct — the original run lost its lease, and a replacement is already queued.
+**Solution**: `releaseExpiredLeases()` must switch from a single bulk UPDATE to a **2-phase approach**. A single bulk UPDATE would fail entirely if even one row hits the unique index, preventing all other expired leases from being released.
+
+Phase 1: Identify expired leases that **would conflict** (another pending run exists with the same concurrencyKey) and mark them as `failed` with error "lease expired, pending run already exists".
+
+Phase 2: Reset remaining expired leases to `pending` as before (no conflict possible).
+
+```ts
+async releaseExpiredLeases(now: string): Promise<number> {
+  // Phase 1: fail expired leases that have a pending replacement
+  const conflicting = await db
+    .updateTable('durably_runs')
+    .set({ status: 'failed', error: 'Lease expired; pending run already exists', ... })
+    .where('status', '=', 'leased')
+    .where('lease_expires_at', '<=', now)
+    .where(({ exists, selectFrom }) =>
+      exists(
+        selectFrom('durably_runs as other')
+          .where('other.job_name', '=', sql.ref('durably_runs.job_name'))
+          .where('other.concurrency_key', '=', sql.ref('durably_runs.concurrency_key'))
+          .where('other.status', '=', 'pending')
+          .where('other.id', '<>', sql.ref('durably_runs.id'))
+      )
+    )
+    .executeTakeFirst()
+
+  // Phase 2: reset the rest to pending (safe — no conflicts)
+  const released = await db
+    .updateTable('durably_runs')
+    .set({ status: 'pending', lease_owner: null, lease_expires_at: null, ... })
+    .where('status', '=', 'leased')
+    .where('lease_expires_at', '<=', now)
+    .executeTakeFirst()
+
+  return Number(conflicting.numUpdatedRows) + Number(released.numUpdatedRows)
+}
+```
+
+This is more correct than the old behavior: the original run lost its lease, and a replacement is already queued.
 
 > `cancelRun()` is unaffected: cancelled runs have `status = 'cancelled'`, which is outside the partial index condition.
 
@@ -102,7 +139,7 @@ String union is extensible for future modes (e.g. `'merge'`) without a breaking 
 - `disposition: 'coalesced'` → emit `run:coalesced` (new, for observability)
 - `disposition: 'idempotent'` → no event (**behavior change**: current code emits `run:trigger` even on idempotency hits — this is fixed as part of the disposition model)
 
-`run:coalesced` carries the **skipped** input (not the existing run's input), enabling audit logging of what was deduplicated.
+`run:coalesced` carries both the **skipped input** and **skipped labels** (i.e. what the caller passed, not the existing run's data), enabling complete audit logging of what was deduplicated.
 
 ### Semantic caveats (must be documented)
 
@@ -219,15 +256,21 @@ type Disposition = 'created' | 'idempotent' | 'coalesced'
  * Required because both idempotency and pending-concurrency use unique indexes.
  * Without this, an idempotency race could be misclassified as a concurrency conflict.
  *
- * PostgreSQL: SQLSTATE '23505' + constraint/index name
- * SQLite/libsql: SQLITE_CONSTRAINT_UNIQUE + error message containing index name
+ * PostgreSQL: SQLSTATE '23505' + constraint/index name from error object
+ * SQLite/libsql: SQLITE_CONSTRAINT_UNIQUE + column names in error message
+ *   (SQLite does NOT include index names — only column names like
+ *    "UNIQUE constraint failed: durably_runs.job_name, durably_runs.concurrency_key")
  */
 function parseUniqueViolation(
   err: unknown,
 ): 'idempotency' | 'pending_concurrency' | null {
-  // Implementation varies by driver — detect constraint/index name from error
-  // 'idx_durably_runs_job_idempotency' → 'idempotency'
-  // 'idx_durably_runs_pending_concurrency' → 'pending_concurrency'
+  // PostgreSQL: inspect constraint name from DatabaseError
+  //   'idx_durably_runs_job_idempotency' → 'idempotency'
+  //   'idx_durably_runs_pending_concurrency' → 'pending_concurrency'
+  //
+  // SQLite/libsql: inspect column names in error message
+  //   message contains 'idempotency_key' → 'idempotency'
+  //   message contains 'concurrency_key' (without 'idempotency_key') → 'pending_concurrency'
 }
 
 async enqueue(input: CreateRunInput): Promise<{ run: Run; disposition: Disposition }> {
@@ -259,18 +302,24 @@ async enqueue(input: CreateRunInput): Promise<{ run: Run; disposition: Dispositi
     if (violation === 'pending_concurrency' && input.concurrencyKey) {
       if (input.coalesce === 'skip') {
         // Graceful: return the conflicting run.
-        // Use (job_name, concurrency_key) without status filter — the pending run
-        // may have been leased between our INSERT and this SELECT.
-        // Priority: pending first, then most recently created.
+        // Query ALL non-terminal statuses — the pending run may have progressed
+        // to leased or even completed between our INSERT failure and this SELECT.
+        // Priority: pending > leased > others, then most recently created.
         const conflicting = await db
           .selectFrom('durably_runs').selectAll()
           .where('job_name', '=', input.jobName)
           .where('concurrency_key', '=', input.concurrencyKey)
-          .where('status', 'in', ['pending', 'leased'])
-          .orderBy(sql`CASE WHEN status = 'pending' THEN 0 ELSE 1 END`, 'asc')
+          .where('status', 'not in', ['cancelled'])
+          .orderBy(sql`CASE status WHEN 'pending' THEN 0 WHEN 'leased' THEN 1 ELSE 2 END`, 'asc')
           .orderBy('created_at', 'desc')
           .limit(1)
-          .executeTakeFirstOrThrow()
+          .executeTakeFirst()
+
+        // If the conflicting run has already reached a terminal state and been
+        // cleaned up, retry the INSERT (the index slot is now free).
+        if (!conflicting) {
+          return this.enqueue(input) // retry once — slot freed
+        }
         return { run: rowToRun(conflicting), disposition: 'coalesced' }
       }
       // No coalesce: explicit error
@@ -289,7 +338,7 @@ async enqueue(input: CreateRunInput): Promise<{ run: Run; disposition: Dispositi
 
 **Constraint identification**: `parseUniqueViolation()` distinguishes between idempotency and pending-concurrency violations by inspecting the constraint/index name in the driver error. This prevents misclassifying an idempotency race as a concurrency conflict.
 
-**Post-conflict SELECT race**: After a pending-concurrency conflict, the follow-up SELECT does NOT filter by `status = 'pending'` alone. The pending run may have been leased by a worker between our INSERT failure and the SELECT. Instead, we query `pending OR leased`, preferring pending.
+**Post-conflict SELECT race**: After a pending-concurrency conflict, the follow-up SELECT queries all non-cancelled statuses (not just `pending`). The conflicting run may have progressed to `leased`, `completed`, or `failed` between our INSERT failure and this SELECT. If no run is found at all (extremely rare — the run completed and was purged), we retry the INSERT once since the index slot is now free.
 
 ### Step 3: Change `trigger()` return type
 
@@ -326,7 +375,7 @@ async trigger(
   } else if (disposition === 'coalesced') {
     eventEmitter.emit({
       type: 'run:coalesced', runId: run.id, jobName: jobDef.name,
-      input: validatedInput, labels: run.labels,
+      skippedInput: validatedInput, skippedLabels: options?.labels ?? {},
     })
   }
 
@@ -342,11 +391,15 @@ async trigger(
 
 **Implementation change**: The current `enqueueMany()` uses bulk INSERT, which cannot handle per-item coalesce/conflict semantics. When the same `concurrencyKey` appears multiple times in a batch, a bulk INSERT would fail entirely on the unique constraint.
 
-`batchTrigger()` switches to **sequential `enqueue()` calls** within a single transaction. This naturally handles:
+`batchTrigger()` switches to **sequential `enqueue()` calls** within a single transaction. The batch remains **atomic** — if any item throws (e.g. ConflictError without coalesce), the entire transaction rolls back and no runs are created. This preserves the existing "validate all, then create all" contract.
 
-- Same concurrencyKey in batch: first creates, rest coalesce (with `coalesce: 'skip'`) or throw ConflictError
+With `coalesce: 'skip'`, conflicts within the same batch are absorbed as `disposition: 'coalesced'`, so the batch succeeds. Without coalesce, a ConflictError on any item fails the entire batch.
+
+Sequential enqueue naturally handles:
+
+- Same concurrencyKey in batch: first creates, rest coalesce (with `coalesce: 'skip'`) or entire batch fails with ConflictError
 - Mixed idempotencyKey: each item gets its own disposition
-- Per-item error handling: partial success is possible
+- Atomic semantics: all-or-nothing, no partial success
 
 > **Performance note**: Sequential enqueue is slower than bulk INSERT for large batches. This is acceptable for pre-v1. If bulk performance becomes critical, a future optimization could pre-deduplicate items by concurrencyKey within the batch before inserting.
 
@@ -370,16 +423,18 @@ export interface RunCoalescedEvent extends BaseEvent {
   type: 'run:coalesced'
   runId: string // ID of the existing pending run
   jobName: string
-  input: unknown // the new (skipped) input, for audit
-  labels: Record<string, string>
+  skippedInput: unknown // the new input that was NOT used
+  skippedLabels: Record<string, string> // the new labels that were NOT used
 }
 ```
+
+The event carries the **skipped** input AND labels (not the existing run's), so audit logs can see exactly what was deduplicated. This avoids the inconsistency of mixing new input with old labels.
 
 ### Step 8: Update callers
 
 Since `trigger()` returns `TriggerResult` (extends `TypedRun`), most existing code works unchanged. Update:
 
-- `triggerAndWait()` — works internally, may expose disposition
+- `triggerAndWait()` — add `disposition` to `TriggerAndWaitResult` (currently returns `{ id, output }`, needs `{ id, output, disposition }`)
 - `durably-react` hooks — `useJob` trigger callback
 - Server handler — done in Step 6
 - Examples — update if they type-check the return
@@ -433,15 +488,24 @@ Test cases:
 
 21. **coalesce after worker leases** — pending run gets leased between INSERT failure and follow-up SELECT, still returns the (now leased) run with disposition `'coalesced'`
 
+**triggerAndWait:**
+
+22. **triggerAndWait returns disposition** — verify `{ id, output, disposition }` shape
+23. **triggerAndWait with coalesce** — coalesced run completes, returns original output + disposition `'coalesced'`
+
 **releaseExpiredLeases interaction:**
 
-22. **expired lease + existing pending** — lease expires on Run A, Run B is pending with same concurrencyKey → Run A set to `failed` (not pending), no index violation
-23. **expired lease + no pending** — lease expires on Run A, no other pending → Run A reset to `pending` as before
+24. **expired lease + existing pending** — lease expires on Run A, Run B is pending with same concurrencyKey → Run A set to `failed` (not pending), no index violation
+25. **expired lease + no pending** — lease expires on Run A, no other pending → Run A reset to `pending` as before
+
+**post-conflict edge:**
+
+26. **coalesce after run completes and is purged** — conflicting run completes and is purged between INSERT failure and SELECT → retry INSERT succeeds, disposition `'created'`
 
 **migration:**
 
-24. **v2 migration with clean data** — index created successfully
-25. **v2 migration with duplicate pending** — fails with descriptive error (shows first N entries)
+27. **v2 migration with clean data** — index created successfully
+28. **v2 migration with duplicate pending** — fails with descriptive error (shows first N entries)
 
 ### Step 10: Documentation
 
@@ -467,7 +531,7 @@ Test cases:
 | `packages/durably/src/index.ts`                    | Export `TriggerResult`, `Disposition`                              |
 | `packages/durably-react/src/**`                    | Update for `TriggerResult` return type                             |
 | `packages/durably/src/storage.ts`                  | Update `releaseExpiredLeases()` to handle unique index conflict    |
-| `packages/durably/tests/shared/coalesce.shared.ts` | New: shared test suite (25 cases)                                  |
+| `packages/durably/tests/shared/coalesce.shared.ts` | New: shared test suite (28 cases)                                  |
 | `packages/durably/tests/node/coalesce.test.ts`     | New: Node.js SQLite runner                                         |
 | `packages/durably/tests/browser/coalesce.test.ts`  | New: Browser WASM runner                                           |
 | `packages/durably/tests/**`                        | Update existing tests for new return type                          |
@@ -483,9 +547,9 @@ Test cases:
 
 3. **INSERT-first, catch conflict** — no TOCTOU race. The partial unique index is the single source of truth. No SELECT-before-INSERT, no advisory locks, no application-level mutex needed for correctness.
 
-4. **`parseUniqueViolation()` distinguishes constraints** — the codebase has two unique indexes (idempotency + pending-concurrency). A generic `isUniqueViolation()` would misclassify idempotency races as concurrency conflicts. The parser inspects the constraint/index name from the driver error.
+4. **`parseUniqueViolation()` distinguishes constraints** — the codebase has two unique indexes (idempotency + pending-concurrency). A generic `isUniqueViolation()` would misclassify idempotency races as concurrency conflicts. PostgreSQL: inspect constraint name. SQLite: inspect **column names** in error message (SQLite does not include index names — only `UNIQUE constraint failed: table.column`).
 
-5. **Post-conflict SELECT is status-agnostic** — after a pending-concurrency conflict, the follow-up SELECT queries `pending OR leased` (preferring pending). This handles the race where a worker leases the pending run between our INSERT failure and SELECT.
+5. **Post-conflict SELECT queries all non-cancelled statuses** — after a pending-concurrency conflict, the conflicting run may have progressed to `leased`, `completed`, or `failed`. The SELECT queries all statuses (preferring pending > leased). If nothing is found (run was purged), retry the INSERT once.
 
 6. **`TriggerResult = TypedRun & { disposition }`** — no destructuring tax. Existing code that reads Run properties works unchanged. `disposition` is available when needed. The persisted `Run` type stays clean.
 
@@ -493,13 +557,13 @@ Test cases:
 
 8. **Idempotency takes priority** — idempotency check runs before INSERT, so it's evaluated before the unique index can fire. Disposition `'idempotent'` is returned regardless of coalesce flag.
 
-9. **`run:coalesced` event** — carries the skipped input for audit/observability. Webhook storm visibility is operationally important.
+9. **`run:coalesced` event** — carries both skipped input AND skipped labels (what the caller passed, not the existing run's data). This avoids the inconsistency of mixing new input with old labels. Webhook storm visibility is operationally important.
 
 10. **Idempotent stops emitting `run:trigger`** — the current codebase emits `run:trigger` even on idempotency hits. This is fixed: `disposition: 'idempotent'` now emits no event. This is a behavior change, documented in the migration guide.
 
-11. **`batchTrigger()` uses sequential enqueue** — bulk INSERT cannot handle per-item coalesce/conflict semantics within the same batch. Sequential enqueue within a transaction is correct and simple.
+11. **`batchTrigger()` uses sequential enqueue, stays atomic** — bulk INSERT cannot handle per-item coalesce/conflict semantics. Sequential enqueue within a single transaction preserves all-or-nothing semantics. With `coalesce: 'skip'`, conflicts are absorbed; without coalesce, any ConflictError rolls back the entire batch.
 
-12. **`releaseExpiredLeases()` fails to `failed` on conflict** — when an expired lease cannot be reset to `pending` because another pending run exists (unique index), the expired run is marked `failed`. This is more correct than the old behavior: the original run lost its lease, and a replacement is already queued.
+12. **`releaseExpiredLeases()` uses 2-phase approach** — a single bulk UPDATE would fail entirely if one row hits the unique index. Phase 1: identify conflicting expired leases (another pending run exists) and mark them `failed`. Phase 2: reset the rest to `pending`. This ensures non-conflicting expired leases are always released.
 
 13. **Fail-fast migration** — if existing data has duplicate pending runs per concurrency key, migration v2 fails with a descriptive error (first N entries shown). No silent data cleanup in an OSS library.
 
