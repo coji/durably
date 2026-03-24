@@ -90,9 +90,7 @@ export interface UseRunsClientOptions {
 
 export interface UseRunsClientResult<
   TInput extends Record<string, unknown> = Record<string, unknown>,
-  TOutput extends Record<string, unknown> | undefined =
-    | Record<string, unknown>
-    | undefined,
+  TOutput extends Record<string, unknown> | undefined = Record<string, unknown>,
 > {
   /**
    * List of runs for the current page

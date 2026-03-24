@@ -36,9 +36,7 @@ export interface UseRunsOptions {
 // where network errors don't occur.
 export interface UseRunsResult<
   TInput extends Record<string, unknown> = Record<string, unknown>,
-  TOutput extends Record<string, unknown> | undefined =
-    | Record<string, unknown>
-    | undefined,
+  TOutput extends Record<string, unknown> | undefined = Record<string, unknown>,
 > {
   /**
    * List of runs for the current page.
