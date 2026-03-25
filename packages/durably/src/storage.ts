@@ -726,20 +726,84 @@ export function createKyselyStore(
     },
 
     async releaseExpiredLeases(now: string): Promise<number> {
-      const result = await db
+      // Phase 1: Fail expired leases that have a pending replacement
+      // (resetting to pending would violate the partial unique index)
+      const conflicting = await db
         .updateTable('durably_runs')
         .set({
-          status: 'pending',
+          status: 'failed',
+          error: 'Lease expired; pending run already exists',
           lease_owner: null,
           lease_expires_at: null,
+          completed_at: now,
           updated_at: now,
         })
         .where('status', '=', 'leased')
         .where('lease_expires_at', 'is not', null)
         .where('lease_expires_at', '<=', now)
+        .where(({ exists, selectFrom }) =>
+          exists(
+            selectFrom('durably_runs as other')
+              .select(sql.lit(1).as('one'))
+              .whereRef('other.job_name', '=', 'durably_runs.job_name')
+              .whereRef(
+                'other.concurrency_key',
+                '=',
+                'durably_runs.concurrency_key',
+              )
+              .where('other.status', '=', 'pending')
+              .whereRef('other.id', '<>', 'durably_runs.id'),
+          ),
+        )
         .executeTakeFirst()
 
-      return Number(result.numUpdatedRows)
+      let count = Number(conflicting.numUpdatedRows)
+
+      // Phase 2: Reset remaining expired leases to pending, per-row with
+      // SAVEPOINT to handle concurrent trigger() inserting a pending run
+      const remaining = await db
+        .selectFrom('durably_runs')
+        .select('id')
+        .where('status', '=', 'leased')
+        .where('lease_expires_at', 'is not', null)
+        .where('lease_expires_at', '<=', now)
+        .execute()
+
+      for (const row of remaining) {
+        try {
+          await sql`SAVEPOINT sp_release`.execute(db)
+          await db
+            .updateTable('durably_runs')
+            .set({
+              status: 'pending',
+              lease_owner: null,
+              lease_expires_at: null,
+              updated_at: now,
+            })
+            .where('id', '=', row.id)
+            .execute()
+          await sql`RELEASE SAVEPOINT sp_release`.execute(db)
+          count++
+        } catch {
+          await sql`ROLLBACK TO SAVEPOINT sp_release`.execute(db)
+          // Unique violation — a pending run was inserted concurrently. Fail this lease.
+          await db
+            .updateTable('durably_runs')
+            .set({
+              status: 'failed',
+              error: 'Lease expired; pending run already exists',
+              lease_owner: null,
+              lease_expires_at: null,
+              completed_at: now,
+              updated_at: now,
+            })
+            .where('id', '=', row.id)
+            .execute()
+          count++
+        }
+      }
+
+      return count
     },
 
     async completeRun(
