@@ -302,25 +302,28 @@ async enqueue(input: CreateRunInput): Promise<{ run: Run; disposition: Dispositi
     if (violation === 'pending_concurrency' && input.concurrencyKey) {
       if (input.coalesce === 'skip') {
         // Graceful: return the conflicting run.
-        // Query ALL non-terminal statuses — the pending run may have progressed
-        // to leased or even completed between our INSERT failure and this SELECT.
-        // Priority: pending > leased > others, then most recently created.
+        // Only return pending or leased — if the run has reached a terminal state
+        // (completed/failed), the index slot is free and we should retry INSERT.
         const conflicting = await db
           .selectFrom('durably_runs').selectAll()
           .where('job_name', '=', input.jobName)
           .where('concurrency_key', '=', input.concurrencyKey)
-          .where('status', 'not in', ['cancelled'])
-          .orderBy(sql`CASE status WHEN 'pending' THEN 0 WHEN 'leased' THEN 1 ELSE 2 END`, 'asc')
+          .where('status', 'in', ['pending', 'leased'])
+          .orderBy(sql`CASE status WHEN 'pending' THEN 0 ELSE 1 END`, 'asc')
           .orderBy('created_at', 'desc')
           .limit(1)
           .executeTakeFirst()
 
-        // If the conflicting run has already reached a terminal state and been
-        // cleaned up, retry the INSERT (the index slot is now free).
-        if (!conflicting) {
-          return this.enqueue(input) // retry once — slot freed
+        if (conflicting) {
+          return { run: rowToRun(conflicting), disposition: 'coalesced' }
         }
-        return { run: rowToRun(conflicting), disposition: 'coalesced' }
+
+        // Conflicting run reached terminal state — index slot is free, retry once.
+        if (!input._retried) {
+          return this.enqueue({ ...input, _retried: true })
+        }
+        // Should not happen — but if retry also fails, surface the original error.
+        throw err
       }
       // No coalesce: explicit error
       throw new ConflictError(
@@ -338,7 +341,7 @@ async enqueue(input: CreateRunInput): Promise<{ run: Run; disposition: Dispositi
 
 **Constraint identification**: `parseUniqueViolation()` distinguishes between idempotency and pending-concurrency violations by inspecting the constraint/index name in the driver error. This prevents misclassifying an idempotency race as a concurrency conflict.
 
-**Post-conflict SELECT race**: After a pending-concurrency conflict, the follow-up SELECT queries all non-cancelled statuses (not just `pending`). The conflicting run may have progressed to `leased`, `completed`, or `failed` between our INSERT failure and this SELECT. If no run is found at all (extremely rare — the run completed and was purged), we retry the INSERT once since the index slot is now free.
+**Post-conflict SELECT race**: After a pending-concurrency conflict, the follow-up SELECT queries only `pending` or `leased` statuses. If the conflicting run has already reached a terminal state (completed/failed), it should NOT be returned as coalesced — the index slot is free and we should retry the INSERT. The retry uses a `_retried` flag to prevent infinite recursion (at most 1 retry).
 
 ### Step 3: Change `trigger()` return type
 
@@ -549,7 +552,7 @@ Test cases:
 
 4. **`parseUniqueViolation()` distinguishes constraints** — the codebase has two unique indexes (idempotency + pending-concurrency). A generic `isUniqueViolation()` would misclassify idempotency races as concurrency conflicts. PostgreSQL: inspect constraint name. SQLite: inspect **column names** in error message (SQLite does not include index names — only `UNIQUE constraint failed: table.column`).
 
-5. **Post-conflict SELECT queries all non-cancelled statuses** — after a pending-concurrency conflict, the conflicting run may have progressed to `leased`, `completed`, or `failed`. The SELECT queries all statuses (preferring pending > leased). If nothing is found (run was purged), retry the INSERT once.
+5. **Post-conflict SELECT returns only active runs** — after a pending-concurrency conflict, the SELECT returns only `pending` or `leased` runs. Terminal states (completed/failed) mean the index slot is free — retry the INSERT once (guarded by `_retried` flag to prevent infinite recursion).
 
 6. **`TriggerResult = TypedRun & { disposition }`** — no destructuring tax. Existing code that reads Run properties works unchanged. `disposition` is available when needed. The persisted `Run` type stays clean.
 
