@@ -2,6 +2,7 @@ import { type Kysely, sql } from 'kysely'
 import { monotonicFactory } from 'ulidx'
 import { claimNextPostgres } from './claim-postgres'
 import { claimNextSqlite } from './claim-sqlite'
+import { ConflictError } from './errors'
 import type { Disposition } from './job'
 import type { Database } from './schema'
 import { rowToLog, rowToRun, rowToStep, validateLabels } from './transformers'
@@ -294,8 +295,33 @@ function createWriteMutex() {
 }
 
 /**
- * Create a Kysely-based Store implementation
+ * Identify which unique constraint was violated.
+ * PostgreSQL: constraint name from error object.
+ * SQLite/libsql: column names in error message (index names not included).
  */
+function parseUniqueViolation(
+  err: unknown,
+): 'idempotency' | 'pending_concurrency' | null {
+  if (!(err instanceof Error)) return null
+  const msg = err.message
+
+  // PostgreSQL: error object may have constraint property
+  const pgConstraint = (err as { constraint?: string }).constraint
+  if (pgConstraint) {
+    if (pgConstraint.includes('idempotency')) return 'idempotency'
+    if (pgConstraint.includes('pending_concurrency'))
+      return 'pending_concurrency'
+  }
+
+  // SQLite/libsql: "UNIQUE constraint failed: durably_runs.col1, durably_runs.col2"
+  if (/unique constraint/i.test(msg)) {
+    if (msg.includes('idempotency_key')) return 'idempotency'
+    if (msg.includes('concurrency_key')) return 'pending_concurrency'
+  }
+
+  return null
+}
+
 export function createKyselyStore(
   db: Kysely<Database>,
   backend: DatabaseBackend = 'generic',
@@ -358,147 +384,176 @@ export function createKyselyStore(
     return Number(result.numUpdatedRows) > 0
   }
 
-  const store: Store<Record<string, string>> = {
-    async enqueue(input: CreateRunInput): Promise<EnqueueResult> {
-      const now = new Date().toISOString()
+  function findPendingByConcurrencyKey(
+    queryDb: Kysely<Database>,
+    jobName: string,
+    concurrencyKey: string,
+  ) {
+    return queryDb
+      .selectFrom('durably_runs')
+      .selectAll()
+      .where('job_name', '=', jobName)
+      .where('concurrency_key', '=', concurrencyKey)
+      .where('status', '=', 'pending')
+      .orderBy('created_at', 'asc')
+      .orderBy('id', 'asc')
+      .limit(1)
+      .executeTakeFirst()
+  }
 
-      // Check for existing run with same idempotency key
+  // Core enqueue logic. Accepts an optional transaction for batch atomicity.
+  // When trx is provided, operates within that transaction using SAVEPOINTs.
+  // When trx is omitted, creates its own transaction.
+  async function enqueueInTx(
+    trx: Kysely<Database> | null,
+    input: CreateRunInput,
+    retried = false,
+  ): Promise<EnqueueResult> {
+    const queryDb = trx ?? db
+    const now = new Date().toISOString()
+
+    // Check for existing run with same idempotency key
+    if (input.idempotencyKey) {
+      const existing = await queryDb
+        .selectFrom('durably_runs')
+        .selectAll()
+        .where('job_name', '=', input.jobName)
+        .where('idempotency_key', '=', input.idempotencyKey)
+        .executeTakeFirst()
+
+      if (existing) {
+        return { run: rowToRun(existing), disposition: 'idempotent' }
+      }
+    }
+
+    validateLabels(input.labels)
+
+    const id = ulid()
+    const row: Database['durably_runs'] = {
+      id,
+      job_name: input.jobName,
+      input: JSON.stringify(input.input),
+      status: 'pending',
+      idempotency_key: input.idempotencyKey ?? null,
+      concurrency_key: input.concurrencyKey ?? null,
+      current_step_index: 0,
+      completed_step_count: 0,
+      progress: null,
+      output: null,
+      error: null,
+      labels: JSON.stringify(input.labels ?? {}),
+      lease_owner: null,
+      lease_expires_at: null,
+      lease_generation: 0,
+      started_at: null,
+      completed_at: null,
+      created_at: now,
+      updated_at: now,
+    }
+
+    // INSERT first, catch conflict — no TOCTOU race.
+    // SAVEPOINT is required for PostgreSQL (constraint error aborts transaction)
+    // and for batch mode (multiple items in one transaction).
+    const doInsert = async (insertDb: Kysely<Database>) => {
+      await sql`SAVEPOINT sp_enqueue`.execute(insertDb)
+      try {
+        await insertDb.insertInto('durably_runs').values(row).execute()
+        await insertLabelRows(insertDb, id, input.labels)
+        await sql`RELEASE SAVEPOINT sp_enqueue`.execute(insertDb)
+      } catch (err) {
+        await sql`ROLLBACK TO SAVEPOINT sp_enqueue`.execute(insertDb)
+        throw err
+      }
+    }
+
+    try {
+      if (trx) {
+        await doInsert(trx)
+      } else {
+        await db.transaction().execute(doInsert)
+      }
+      return { run: rowToRun(row), disposition: 'created' }
+    } catch (err) {
+      const violation = parseUniqueViolation(err)
+
+      // A single INSERT can violate both constraints non-deterministically.
+      // Always check idempotency first regardless of which constraint the DB reported.
       if (input.idempotencyKey) {
-        const existing = await db
+        const idempotent = await queryDb
           .selectFrom('durably_runs')
           .selectAll()
           .where('job_name', '=', input.jobName)
           .where('idempotency_key', '=', input.idempotencyKey)
           .executeTakeFirst()
-
-        if (existing) {
-          return { run: rowToRun(existing), disposition: 'idempotent' }
+        if (idempotent) {
+          return { run: rowToRun(idempotent), disposition: 'idempotent' }
         }
       }
 
-      validateLabels(input.labels)
+      // Pending concurrency conflict
+      if (
+        (violation === 'pending_concurrency' || violation === null) &&
+        input.concurrencyKey
+      ) {
+        if (input.coalesce === 'skip') {
+          const pending = await findPendingByConcurrencyKey(
+            queryDb,
+            input.jobName,
+            input.concurrencyKey,
+          )
+          if (pending) {
+            return { run: rowToRun(pending), disposition: 'coalesced' }
+          }
 
-      const id = ulid()
-      const run: Database['durably_runs'] = {
-        id,
-        job_name: input.jobName,
-        input: JSON.stringify(input.input),
-        status: 'pending',
-        idempotency_key: input.idempotencyKey ?? null,
-        concurrency_key: input.concurrencyKey ?? null,
-        current_step_index: 0,
-        completed_step_count: 0,
-        progress: null,
-        output: null,
-        error: null,
-        labels: JSON.stringify(input.labels ?? {}),
-        lease_owner: null,
-        lease_expires_at: null,
-        lease_generation: 0,
-        started_at: null,
-        completed_at: null,
-        created_at: now,
-        updated_at: now,
+          // Pending run was leased between INSERT failure and SELECT — retry once
+          if (!retried) {
+            return enqueueInTx(trx, input, true)
+          }
+
+          // Retry also failed — last chance SELECT
+          const lastChance = await findPendingByConcurrencyKey(
+            queryDb,
+            input.jobName,
+            input.concurrencyKey,
+          )
+          if (lastChance) {
+            return { run: rowToRun(lastChance), disposition: 'coalesced' }
+          }
+
+          throw new ConflictError(
+            `Conflict after retry for concurrency key "${input.concurrencyKey}" ` +
+              `in job "${input.jobName}". Concurrent modification detected.`,
+          )
+        }
+
+        // No coalesce: explicit error
+        throw new ConflictError(
+          `A pending run already exists for concurrency key "${input.concurrencyKey}" ` +
+            `in job "${input.jobName}". Use coalesce: 'skip' to return the existing run instead.`,
+        )
       }
 
-      // Use transaction to ensure run + label rows are atomic
-      await db.transaction().execute(async (trx) => {
-        await trx.insertInto('durably_runs').values(run).execute()
-        await insertLabelRows(trx, id, input.labels)
-      })
+      throw err
+    }
+  }
 
-      return { run: rowToRun(run), disposition: 'created' }
+  const store: Store<Record<string, string>> = {
+    async enqueue(input: CreateRunInput): Promise<EnqueueResult> {
+      return enqueueInTx(null, input)
     },
 
     async enqueueMany(inputs: CreateRunInput[]): Promise<EnqueueResult[]> {
       if (inputs.length === 0) {
         return []
       }
-      // Use transaction to ensure atomicity of idempotency checks and inserts
-      return await db.transaction().execute(async (trx) => {
-        const now = new Date().toISOString()
-        const results: {
-          row: Database['durably_runs']
-          disposition: Disposition
-        }[] = []
-
-        // Validate all labels upfront
+      // Sequential enqueue within a single transaction for atomicity.
+      // ConflictError on any item rolls back the entire batch.
+      return db.transaction().execute(async (trx) => {
+        const results: EnqueueResult[] = []
         for (const input of inputs) {
-          validateLabels(input.labels)
+          results.push(await enqueueInTx(trx, input))
         }
-
-        // Process inputs - check idempotency keys and create run objects
-        const allLabelRows: Array<{
-          run_id: string
-          key: string
-          value: string
-        }> = []
-        for (const input of inputs) {
-          // Check for existing run with same idempotency key
-          if (input.idempotencyKey) {
-            const existing = await trx
-              .selectFrom('durably_runs')
-              .selectAll()
-              .where('job_name', '=', input.jobName)
-              .where('idempotency_key', '=', input.idempotencyKey)
-              .executeTakeFirst()
-
-            if (existing) {
-              results.push({ row: existing, disposition: 'idempotent' })
-              continue
-            }
-          }
-
-          const id = ulid()
-          if (input.labels) {
-            for (const [key, value] of Object.entries(input.labels)) {
-              allLabelRows.push({ run_id: id, key, value })
-            }
-          }
-          const row: Database['durably_runs'] = {
-            id,
-            job_name: input.jobName,
-            input: JSON.stringify(input.input),
-            status: 'pending',
-            idempotency_key: input.idempotencyKey ?? null,
-            concurrency_key: input.concurrencyKey ?? null,
-            current_step_index: 0,
-            completed_step_count: 0,
-            progress: null,
-            output: null,
-            error: null,
-            labels: JSON.stringify(input.labels ?? {}),
-            lease_owner: null,
-            lease_expires_at: null,
-            lease_generation: 0,
-            started_at: null,
-            completed_at: null,
-            created_at: now,
-            updated_at: now,
-          }
-          results.push({ row, disposition: 'created' })
-        }
-
-        // Insert all new runs in a single batch
-        const newRows = results
-          .filter((r) => r.disposition === 'created')
-          .map((r) => r.row)
-        if (newRows.length > 0) {
-          await trx.insertInto('durably_runs').values(newRows).execute()
-
-          // Insert normalized labels for indexed filtering (single batch)
-          if (allLabelRows.length > 0) {
-            await trx
-              .insertInto('durably_run_labels')
-              .values(allLabelRows)
-              .execute()
-          }
-        }
-
-        return results.map((r) => ({
-          run: rowToRun(r.row),
-          disposition: r.disposition,
-        }))
+        return results
       })
     },
 

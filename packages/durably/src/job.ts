@@ -285,6 +285,18 @@ export function createJobHandle<
       input: TInput,
       options?: TriggerOptions<TLabels>,
     ): Promise<TriggerResult<TOutput, TLabels>> {
+      // Validate coalesce option
+      if (options?.coalesce !== undefined) {
+        if (options.coalesce !== 'skip') {
+          throw new ValidationError(
+            `Invalid coalesce value: '${options.coalesce}'. Valid values: 'skip'`,
+          )
+        }
+        if (!options.concurrencyKey) {
+          throw new ValidationError('coalesce requires concurrencyKey')
+        }
+      }
+
       // Validate input
       const validatedInput = validateJobInputOrThrow(inputSchema, input)
 
@@ -311,6 +323,15 @@ export function createJobHandle<
           jobName: jobDef.name,
           input: validatedInput,
           labels: run.labels,
+        })
+      } else if (disposition === 'coalesced') {
+        eventEmitter.emit({
+          type: 'run:coalesced',
+          runId: run.id,
+          jobName: jobDef.name,
+          labels: run.labels,
+          skippedInput: validatedInput,
+          skippedLabels: (options?.labels ?? {}) as Record<string, string>,
         })
       }
 
@@ -440,31 +461,44 @@ export function createJobHandle<
         return { input: item as TInput, options: undefined }
       })
 
-      // Validate all inputs and labels first (before creating any runs)
+      // Validate all inputs, labels, and coalesce options first
       const validated: {
         input: unknown
         options?: TriggerOptions<TLabels>
       }[] = []
       for (let i = 0; i < normalized.length; i++) {
+        const opts = normalized[i].options
+        if (opts?.coalesce !== undefined) {
+          if (opts.coalesce !== 'skip') {
+            throw new ValidationError(
+              `Invalid coalesce value at index ${i}: '${opts.coalesce}'. Valid values: 'skip'`,
+            )
+          }
+          if (!opts.concurrencyKey) {
+            throw new ValidationError(
+              `coalesce requires concurrencyKey at index ${i}`,
+            )
+          }
+        }
         const validatedInput = validateJobInputOrThrow(
           inputSchema,
           normalized[i].input,
           `at index ${i}`,
         )
-        if (labelsSchema && normalized[i].options?.labels) {
+        if (labelsSchema && opts?.labels) {
           validateJobInputOrThrow(
             labelsSchema,
-            normalized[i].options?.labels,
+            opts.labels,
             `labels at index ${i}`,
           )
         }
         validated.push({
           input: validatedInput,
-          options: normalized[i].options,
+          options: opts,
         })
       }
 
-      // Create all runs
+      // Create all runs (sequential enqueue with per-item conflict handling)
       const results = await storage.enqueueMany(
         validated.map((v) => ({
           jobName: jobDef.name,
@@ -472,10 +506,11 @@ export function createJobHandle<
           idempotencyKey: v.options?.idempotencyKey,
           concurrencyKey: v.options?.concurrencyKey,
           labels: v.options?.labels,
+          coalesce: v.options?.coalesce,
         })),
       )
 
-      // Emit run:trigger events for created runs only
+      // Emit events based on disposition
       for (let i = 0; i < results.length; i++) {
         if (results[i].disposition === 'created') {
           eventEmitter.emit({
@@ -484,6 +519,18 @@ export function createJobHandle<
             jobName: jobDef.name,
             input: validated[i].input,
             labels: results[i].run.labels,
+          })
+        } else if (results[i].disposition === 'coalesced') {
+          eventEmitter.emit({
+            type: 'run:coalesced',
+            runId: results[i].run.id,
+            jobName: jobDef.name,
+            labels: results[i].run.labels,
+            skippedInput: validated[i].input,
+            skippedLabels: (validated[i].options?.labels ?? {}) as Record<
+              string,
+              string
+            >,
           })
         }
       }
