@@ -1,6 +1,9 @@
-import { PostgreSqlContainer } from '@testcontainers/postgresql'
+import {
+  PostgreSqlContainer,
+  type StartedPostgreSqlContainer,
+} from '@testcontainers/postgresql'
 
-let container: Awaited<ReturnType<PostgreSqlContainer['start']>> | undefined
+let container: StartedPostgreSqlContainer | undefined
 
 export async function setup() {
   // Skip if a PostgreSQL URL is already provided (e.g., CI with external DB)

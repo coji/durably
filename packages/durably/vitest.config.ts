@@ -4,8 +4,6 @@ export default defineConfig({
   test: {
     include: ['tests/node/**/*.test.ts'],
     globalSetup: ['tests/helpers/postgres-global-setup.ts'],
-    testTimeout: 30000,
-    hookTimeout: 30000,
     coverage: {
       enabled: true,
       provider: 'v8',
