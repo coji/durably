@@ -89,6 +89,28 @@ function RetryableJob() {
 }
 ```
 
+## Handling ConflictError
+
+When using `concurrencyKey`, at most one pending run per key is allowed. A second trigger throws `ConflictError`:
+
+```ts
+import { ConflictError } from '@coji/durably'
+
+try {
+  await job.trigger({ orgId: 'org_123' }, { concurrencyKey: 'org_123' })
+} catch (err) {
+  if (err instanceof ConflictError) {
+    // A pending run already exists for this key.
+    // Use coalesce: 'skip' to return the existing run instead:
+    const run = await job.trigger(
+      { orgId: 'org_123' },
+      { concurrencyKey: 'org_123', coalesce: 'skip' },
+    )
+    // run.disposition === 'coalesced' — the existing pending run was returned
+  }
+}
+```
+
 ## Designing Resilient Steps
 
 ### Make Steps Idempotent

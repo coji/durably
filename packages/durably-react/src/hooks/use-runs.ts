@@ -208,6 +208,7 @@ export function useRuns<
 
     const unsubscribes = [
       durably.on('run:trigger', refresh),
+      durably.on('run:coalesced', refresh),
       durably.on('run:leased', refresh),
       durably.on('run:complete', refresh),
       durably.on('run:fail', refresh),

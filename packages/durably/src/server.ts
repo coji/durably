@@ -7,6 +7,7 @@ import {
   jsonResponse,
   successResponse,
 } from './http'
+import type { Disposition } from './job'
 import {
   createSSEResponse,
   createSSEStreamFromSubscriptions,
@@ -46,6 +47,7 @@ export interface TriggerRequest<
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: TLabels
+  coalesce?: 'skip'
 }
 
 /**
@@ -53,6 +55,7 @@ export interface TriggerRequest<
  */
 export interface TriggerResponse {
   runId: string
+  disposition: Disposition
 }
 
 /**
@@ -333,9 +336,13 @@ export function createDurablyHandler<
         idempotencyKey: body.idempotencyKey,
         concurrencyKey: body.concurrencyKey,
         labels: body.labels,
+        coalesce: body.coalesce,
       })
 
-      const response: TriggerResponse = { runId: run.id }
+      const response: TriggerResponse = {
+        runId: run.id,
+        disposition: run.disposition,
+      }
       return jsonResponse(response)
     })
   }
@@ -507,6 +514,19 @@ export function createDurablyHandler<
                 runId: event.runId,
                 jobName: event.jobName,
                 labels: event.labels,
+              })
+            }
+          }),
+
+          durably.on('run:coalesced', (event) => {
+            if (matchesFilter(event.jobName, event.labels)) {
+              ctrl.enqueue({
+                type: 'run:coalesced',
+                runId: event.runId,
+                jobName: event.jobName,
+                labels: event.labels,
+                skippedInput: event.skippedInput,
+                skippedLabels: event.skippedLabels,
               })
             }
           }),

@@ -36,11 +36,29 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
       })
       const d = durably.register({ job: concurrencyTestDef })
 
-      // Trigger two runs with the same concurrency key
-      await d.jobs.job.trigger({ id: '1' }, { concurrencyKey: 'user-123' })
-      await d.jobs.job.trigger({ id: '2' }, { concurrencyKey: 'user-123' })
-
+      const first = await d.jobs.job.trigger(
+        { id: '1' },
+        { concurrencyKey: 'user-123' },
+      )
       d.start()
+
+      await vi.waitFor(
+        async () => {
+          const run = await d.jobs.job.getRun(first.id)
+          return run?.status === 'leased'
+        },
+        { timeout: 2000 },
+      )
+
+      const second = await d.jobs.job.trigger(
+        { id: '2' },
+        { concurrencyKey: 'user-123' },
+      )
+
+      const firstWhileSecondQueued = await d.jobs.job.getRun(first.id)
+      const secondWhileBlocked = await d.jobs.job.getRun(second.id)
+      expect(firstWhileSecondQueued?.status).toBe('leased')
+      expect(secondWhileBlocked?.status).toBe('pending')
 
       await vi.waitFor(
         async () => {

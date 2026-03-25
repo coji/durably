@@ -21,6 +21,18 @@ export interface RunTriggerEvent extends BaseEvent {
 }
 
 /**
+ * Emitted when a trigger was coalesced onto an existing pending run (same concurrency key).
+ */
+export interface RunCoalescedEvent extends BaseEvent {
+  type: 'run:coalesced'
+  runId: string
+  jobName: string
+  labels: Record<string, string>
+  skippedInput: unknown
+  skippedLabels: Record<string, string>
+}
+
+/**
  * Run leased event
  */
 export interface RunLeasedEvent extends BaseEvent {
@@ -191,6 +203,7 @@ export interface WorkerErrorEvent extends BaseEvent {
  */
 export type DurablyEvent =
   | RunTriggerEvent
+  | RunCoalescedEvent
   | RunLeasedEvent
   | RunLeaseRenewedEvent
   | RunCompleteEvent
@@ -231,6 +244,7 @@ export type EventInput<T extends EventType> = Omit<
  */
 export type AnyEventInput =
   | EventInput<'run:trigger'>
+  | EventInput<'run:coalesced'>
   | EventInput<'run:leased'>
   | EventInput<'run:lease-renewed'>
   | EventInput<'run:complete'>

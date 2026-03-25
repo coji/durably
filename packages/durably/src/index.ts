@@ -22,6 +22,7 @@ export type {
   LogWriteEvent,
   ProgressData,
   RunCancelEvent,
+  RunCoalescedEvent,
   RunCompleteEvent,
   RunDeleteEvent,
   RunFailEvent,
@@ -39,11 +40,13 @@ export type {
 // Job types
 export type {
   BatchTriggerInput,
+  Disposition,
   JobHandle,
   StepContext,
   TriggerAndWaitOptions,
   TriggerAndWaitResult,
   TriggerOptions,
+  TriggerResult,
 } from './job'
 
 // Schema types (for advanced users)
@@ -59,6 +62,7 @@ export type {
 export { createKyselyStore, toClientRun } from './storage'
 export type {
   ClientRun,
+  EnqueueResult,
   Log,
   Run,
   RunFilter,

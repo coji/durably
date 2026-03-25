@@ -2,6 +2,8 @@ import { type Kysely, sql } from 'kysely'
 import { monotonicFactory } from 'ulidx'
 import { claimNextPostgres } from './claim-postgres'
 import { claimNextSqlite } from './claim-sqlite'
+import { ConflictError } from './errors'
+import type { Disposition } from './job'
 import type { Database } from './schema'
 import { rowToLog, rowToRun, rowToStep, validateLabels } from './transformers'
 
@@ -28,6 +30,14 @@ export interface CreateRunInput<
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: TLabels
+  coalesce?: 'skip'
+}
+
+export interface EnqueueResult<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
+  run: Run<TLabels>
+  disposition: Disposition
 }
 
 /**
@@ -155,8 +165,10 @@ export interface Store<
   TLabels extends Record<string, string> = Record<string, string>,
 > {
   // Run lifecycle
-  enqueue(input: CreateRunInput<TLabels>): Promise<Run<TLabels>>
-  enqueueMany(inputs: CreateRunInput<TLabels>[]): Promise<Run<TLabels>[]>
+  enqueue(input: CreateRunInput<TLabels>): Promise<EnqueueResult<TLabels>>
+  enqueueMany(
+    inputs: CreateRunInput<TLabels>[],
+  ): Promise<EnqueueResult<TLabels>[]>
   getRun<T extends Run<TLabels> = Run<TLabels>>(
     runId: string,
   ): Promise<T | null>
@@ -283,8 +295,51 @@ function createWriteMutex() {
 }
 
 /**
- * Create a Kysely-based Store implementation
+ * Check if an error is a unique constraint violation (any kind).
+ * PostgreSQL: SQLSTATE '23505' or constraint name present.
+ * SQLite/libsql: message contains "UNIQUE constraint failed" or similar.
  */
+function isUniqueViolation(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  // PostgreSQL: SQLSTATE 23505 = unique_violation
+  const pgCode = (err as { code?: string }).code
+  if (pgCode === '23505') return true
+  // PostgreSQL: constraint property present
+  if ((err as { constraint?: string }).constraint) return true
+  // SQLite/libsql
+  if (/unique constraint/i.test(err.message)) return true
+  return false
+}
+
+/**
+ * Identify which unique constraint was violated.
+ * Only call after isUniqueViolation() returns true.
+ * PostgreSQL: constraint name from error object.
+ * SQLite/libsql: column names in error message (index names not included).
+ */
+function parseUniqueViolation(
+  err: unknown,
+): 'idempotency' | 'pending_concurrency' | null {
+  if (!(err instanceof Error)) return null
+  const msg = err.message
+
+  // PostgreSQL: error object may have constraint property
+  const pgConstraint = (err as { constraint?: string }).constraint
+  if (pgConstraint) {
+    if (pgConstraint.includes('idempotency')) return 'idempotency'
+    if (pgConstraint.includes('pending_concurrency'))
+      return 'pending_concurrency'
+  }
+
+  // SQLite/libsql: "UNIQUE constraint failed: durably_runs.col1, durably_runs.col2"
+  if (/unique constraint/i.test(msg)) {
+    if (msg.includes('idempotency_key')) return 'idempotency'
+    if (msg.includes('concurrency_key')) return 'pending_concurrency'
+  }
+
+  return null
+}
+
 export function createKyselyStore(
   db: Kysely<Database>,
   backend: DatabaseBackend = 'generic',
@@ -347,138 +402,185 @@ export function createKyselyStore(
     return Number(result.numUpdatedRows) > 0
   }
 
-  const store: Store<Record<string, string>> = {
-    async enqueue(input: CreateRunInput): Promise<Run> {
-      const now = new Date().toISOString()
+  function findPendingByConcurrencyKey(
+    queryDb: Kysely<Database>,
+    jobName: string,
+    concurrencyKey: string,
+  ) {
+    return queryDb
+      .selectFrom('durably_runs')
+      .selectAll()
+      .where('job_name', '=', jobName)
+      .where('concurrency_key', '=', concurrencyKey)
+      .where('status', '=', 'pending')
+      .orderBy('created_at', 'asc')
+      .orderBy('id', 'asc')
+      .limit(1)
+      .executeTakeFirst()
+  }
 
-      // Check for existing run with same idempotency key
+  // Core enqueue logic. Accepts an optional transaction for batch atomicity.
+  // When trx is provided, operates within that transaction using SAVEPOINTs.
+  // When trx is omitted, creates its own transaction.
+  async function enqueueInTx(
+    trx: Kysely<Database> | null,
+    input: CreateRunInput,
+    retried = false,
+  ): Promise<EnqueueResult> {
+    const queryDb = trx ?? db
+    const now = new Date().toISOString()
+
+    // Check for existing run with same idempotency key
+    if (input.idempotencyKey) {
+      const existing = await queryDb
+        .selectFrom('durably_runs')
+        .selectAll()
+        .where('job_name', '=', input.jobName)
+        .where('idempotency_key', '=', input.idempotencyKey)
+        .executeTakeFirst()
+
+      if (existing) {
+        return { run: rowToRun(existing), disposition: 'idempotent' }
+      }
+    }
+
+    validateLabels(input.labels)
+
+    const id = ulid()
+    const row: Database['durably_runs'] = {
+      id,
+      job_name: input.jobName,
+      input: JSON.stringify(input.input),
+      status: 'pending',
+      idempotency_key: input.idempotencyKey ?? null,
+      concurrency_key: input.concurrencyKey ?? null,
+      current_step_index: 0,
+      completed_step_count: 0,
+      progress: null,
+      output: null,
+      error: null,
+      labels: JSON.stringify(input.labels ?? {}),
+      lease_owner: null,
+      lease_expires_at: null,
+      lease_generation: 0,
+      started_at: null,
+      completed_at: null,
+      created_at: now,
+      updated_at: now,
+    }
+
+    // INSERT first, catch conflict — no TOCTOU race.
+    // SAVEPOINT is required for PostgreSQL (constraint error aborts transaction)
+    // and for batch mode (multiple items in one transaction).
+    // Name reuse (sp_enqueue) is safe: each SAVEPOINT is released/rolled back
+    // before the next iteration or recursive retry.
+    const doInsert = async (insertDb: Kysely<Database>) => {
+      await sql`SAVEPOINT sp_enqueue`.execute(insertDb)
+      try {
+        await insertDb.insertInto('durably_runs').values(row).execute()
+        await insertLabelRows(insertDb, id, input.labels)
+        await sql`RELEASE SAVEPOINT sp_enqueue`.execute(insertDb)
+      } catch (err) {
+        await sql`ROLLBACK TO SAVEPOINT sp_enqueue`.execute(insertDb)
+        throw err
+      }
+    }
+
+    try {
+      if (trx) {
+        await doInsert(trx)
+      } else {
+        await db.transaction().execute(doInsert)
+      }
+      return { run: rowToRun(row), disposition: 'created' }
+    } catch (err) {
+      // Only handle unique constraint violations — rethrow connection errors, etc.
+      if (!isUniqueViolation(err)) throw err
+
+      const violation = parseUniqueViolation(err)
+
+      // A single INSERT can violate both constraints non-deterministically.
+      // Always check idempotency first regardless of which constraint the DB reported.
       if (input.idempotencyKey) {
-        const existing = await db
+        const idempotent = await queryDb
           .selectFrom('durably_runs')
           .selectAll()
           .where('job_name', '=', input.jobName)
           .where('idempotency_key', '=', input.idempotencyKey)
           .executeTakeFirst()
-
-        if (existing) {
-          return rowToRun(existing)
+        if (idempotent) {
+          return { run: rowToRun(idempotent), disposition: 'idempotent' }
         }
       }
 
-      validateLabels(input.labels)
+      // Pending concurrency conflict.
+      // violation === null means "confirmed UNIQUE violation but couldn't identify which
+      // constraint" (isUniqueViolation passed above). Safe to treat as pending conflict
+      // when concurrencyKey is present, since the only UNIQUE constraints on this table
+      // are idempotency (checked above) and pending concurrency.
+      if (
+        (violation === 'pending_concurrency' || violation === null) &&
+        input.concurrencyKey
+      ) {
+        if (input.coalesce === 'skip') {
+          const pending = await findPendingByConcurrencyKey(
+            queryDb,
+            input.jobName,
+            input.concurrencyKey,
+          )
+          if (pending) {
+            return { run: rowToRun(pending), disposition: 'coalesced' }
+          }
 
-      const id = ulid()
-      const run: Database['durably_runs'] = {
-        id,
-        job_name: input.jobName,
-        input: JSON.stringify(input.input),
-        status: 'pending',
-        idempotency_key: input.idempotencyKey ?? null,
-        concurrency_key: input.concurrencyKey ?? null,
-        current_step_index: 0,
-        completed_step_count: 0,
-        progress: null,
-        output: null,
-        error: null,
-        labels: JSON.stringify(input.labels ?? {}),
-        lease_owner: null,
-        lease_expires_at: null,
-        lease_generation: 0,
-        started_at: null,
-        completed_at: null,
-        created_at: now,
-        updated_at: now,
+          // Pending run was leased between INSERT failure and SELECT — retry once
+          if (!retried) {
+            return enqueueInTx(trx, input, true)
+          }
+
+          // Retry also failed — last chance SELECT
+          const lastChance = await findPendingByConcurrencyKey(
+            queryDb,
+            input.jobName,
+            input.concurrencyKey,
+          )
+          if (lastChance) {
+            return { run: rowToRun(lastChance), disposition: 'coalesced' }
+          }
+
+          throw new ConflictError(
+            `Conflict after retry for concurrency key "${input.concurrencyKey}" ` +
+              `in job "${input.jobName}". Concurrent modification detected.`,
+          )
+        }
+
+        // No coalesce: explicit error
+        throw new ConflictError(
+          `A pending run already exists for concurrency key "${input.concurrencyKey}" ` +
+            `in job "${input.jobName}". Use coalesce: 'skip' to return the existing run instead.`,
+        )
       }
 
-      // Use transaction to ensure run + label rows are atomic
-      await db.transaction().execute(async (trx) => {
-        await trx.insertInto('durably_runs').values(run).execute()
-        await insertLabelRows(trx, id, input.labels)
-      })
+      throw err
+    }
+  }
 
-      return rowToRun(run)
+  const store: Store<Record<string, string>> = {
+    async enqueue(input: CreateRunInput): Promise<EnqueueResult> {
+      return enqueueInTx(null, input)
     },
 
-    async enqueueMany(inputs: CreateRunInput[]): Promise<Run[]> {
+    async enqueueMany(inputs: CreateRunInput[]): Promise<EnqueueResult[]> {
       if (inputs.length === 0) {
         return []
       }
-      // Use transaction to ensure atomicity of idempotency checks and inserts
-      return await db.transaction().execute(async (trx) => {
-        const now = new Date().toISOString()
-        const runs: Database['durably_runs'][] = []
-
-        // Validate all labels upfront
+      // Sequential enqueue within a single transaction for atomicity.
+      // ConflictError on any item rolls back the entire batch.
+      return db.transaction().execute(async (trx) => {
+        const results: EnqueueResult[] = []
         for (const input of inputs) {
-          validateLabels(input.labels)
+          results.push(await enqueueInTx(trx, input))
         }
-
-        // Process inputs - check idempotency keys and create run objects
-        const allLabelRows: Array<{
-          run_id: string
-          key: string
-          value: string
-        }> = []
-        for (const input of inputs) {
-          // Check for existing run with same idempotency key
-          if (input.idempotencyKey) {
-            const existing = await trx
-              .selectFrom('durably_runs')
-              .selectAll()
-              .where('job_name', '=', input.jobName)
-              .where('idempotency_key', '=', input.idempotencyKey)
-              .executeTakeFirst()
-
-            if (existing) {
-              runs.push(existing)
-              continue
-            }
-          }
-
-          const id = ulid()
-          if (input.labels) {
-            for (const [key, value] of Object.entries(input.labels)) {
-              allLabelRows.push({ run_id: id, key, value })
-            }
-          }
-          runs.push({
-            id,
-            job_name: input.jobName,
-            input: JSON.stringify(input.input),
-            status: 'pending',
-            idempotency_key: input.idempotencyKey ?? null,
-            concurrency_key: input.concurrencyKey ?? null,
-            current_step_index: 0,
-            completed_step_count: 0,
-            progress: null,
-            output: null,
-            error: null,
-            labels: JSON.stringify(input.labels ?? {}),
-            lease_owner: null,
-            lease_expires_at: null,
-            lease_generation: 0,
-            started_at: null,
-            completed_at: null,
-            created_at: now,
-            updated_at: now,
-          })
-        }
-
-        // Insert all new runs in a single batch
-        const newRuns = runs.filter((r) => r.created_at === now)
-        if (newRuns.length > 0) {
-          await trx.insertInto('durably_runs').values(newRuns).execute()
-
-          // Insert normalized labels for indexed filtering (single batch)
-          if (allLabelRows.length > 0) {
-            await trx
-              .insertInto('durably_run_labels')
-              .values(allLabelRows)
-              .execute()
-          }
-        }
-
-        return runs.map(rowToRun)
+        return results
       })
     },
 
@@ -651,20 +753,95 @@ export function createKyselyStore(
     },
 
     async releaseExpiredLeases(now: string): Promise<number> {
-      const result = await db
+      // Phase 1: Fail expired leases that have a pending replacement
+      // (resetting to pending would violate the partial unique index).
+      // Runs without concurrency_key are unaffected: NULL = NULL is false in SQL,
+      // so the EXISTS subquery never matches them.
+      const conflicting = await db
         .updateTable('durably_runs')
         .set({
-          status: 'pending',
+          status: 'failed',
+          error: 'Lease expired; pending run already exists',
           lease_owner: null,
           lease_expires_at: null,
+          completed_at: now,
           updated_at: now,
         })
         .where('status', '=', 'leased')
         .where('lease_expires_at', 'is not', null)
         .where('lease_expires_at', '<=', now)
+        .where(({ exists, selectFrom }) =>
+          exists(
+            selectFrom('durably_runs as other')
+              .select(sql.lit(1).as('one'))
+              .whereRef('other.job_name', '=', 'durably_runs.job_name')
+              .whereRef(
+                'other.concurrency_key',
+                '=',
+                'durably_runs.concurrency_key',
+              )
+              .where('other.status', '=', 'pending')
+              .whereRef('other.id', '<>', 'durably_runs.id'),
+          ),
+        )
         .executeTakeFirst()
 
-      return Number(result.numUpdatedRows)
+      let count = Number(conflicting.numUpdatedRows)
+
+      // Phase 2: Reset remaining expired leases to pending, per-row with
+      // SAVEPOINT to handle concurrent trigger() inserting a pending run.
+      // Wrapped in a transaction — PostgreSQL requires SAVEPOINTs inside a transaction block.
+      const remaining = await db
+        .selectFrom('durably_runs')
+        .select('id')
+        .where('status', '=', 'leased')
+        .where('lease_expires_at', 'is not', null)
+        .where('lease_expires_at', '<=', now)
+        .execute()
+
+      if (remaining.length > 0) {
+        await db.transaction().execute(async (trx) => {
+          for (const row of remaining) {
+            try {
+              await sql`SAVEPOINT sp_release`.execute(trx)
+              const reset = await trx
+                .updateTable('durably_runs')
+                .set({
+                  status: 'pending',
+                  lease_owner: null,
+                  lease_expires_at: null,
+                  updated_at: now,
+                })
+                .where('id', '=', row.id)
+                .where('status', '=', 'leased')
+                .where('lease_expires_at', '<=', now)
+                .executeTakeFirst()
+              await sql`RELEASE SAVEPOINT sp_release`.execute(trx)
+              count += Number(reset.numUpdatedRows)
+            } catch (err) {
+              await sql`ROLLBACK TO SAVEPOINT sp_release`.execute(trx)
+              if (!isUniqueViolation(err)) throw err
+              // Unique violation — a pending run was inserted concurrently. Fail this lease.
+              const failed = await trx
+                .updateTable('durably_runs')
+                .set({
+                  status: 'failed',
+                  error: 'Lease expired; pending run already exists',
+                  lease_owner: null,
+                  lease_expires_at: null,
+                  completed_at: now,
+                  updated_at: now,
+                })
+                .where('id', '=', row.id)
+                .where('status', '=', 'leased')
+                .executeTakeFirst()
+              count += Number(failed.numUpdatedRows)
+            }
+          }
+        })
+      }
+
+      return count
     },
 
     async completeRun(

@@ -1,5 +1,5 @@
 import type { Dialect } from 'kysely'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { createDurably, defineJob, type Durably } from '../../src'
 
@@ -121,7 +121,7 @@ export function createDbConcurrencyTests(
     )
 
     it('does not lease a later same-key run while an active lease exists', async () => {
-      const first = await runtimes[0].storage.enqueue({
+      const { run: first } = await runtimes[0].storage.enqueue({
         jobName: 'same-key-1',
         input: { ordinal: 1 },
         concurrencyKey: 'group-1',
@@ -131,7 +131,7 @@ export function createDbConcurrencyTests(
         input: { ordinal: 2 },
         concurrencyKey: 'group-1',
       })
-      const keyless = await runtimes[0].storage.enqueue({
+      const { run: keyless } = await runtimes[0].storage.enqueue({
         jobName: 'keyless',
         input: { ordinal: 3 },
       })
@@ -159,7 +159,7 @@ export function createDbConcurrencyTests(
     })
 
     it('reclaims the expired lease before leasing another run with the same key', async () => {
-      const first = await runtimes[0].storage.enqueue({
+      const { run: first } = await runtimes[0].storage.enqueue({
         jobName: 'reclaim-first',
         input: { ordinal: 1 },
         concurrencyKey: 'group-1',
@@ -240,24 +240,41 @@ export function createDbConcurrencyTests(
       await runtimeA.db.deleteFrom('durably_steps').execute()
       await runtimeA.db.deleteFrom('durably_runs').execute()
 
-      await runtimeA.jobs.job.trigger(
+      const firstRun = await runtimeA.jobs.job.trigger(
         { id: '1', concurrencyKey: 'group-1' },
         { concurrencyKey: 'group-1' },
       )
-      await runtimeA.jobs.job.trigger(
+
+      const firstProcessing = runtimeA.processOne({ workerId: 'worker-a' })
+
+      await vi.waitFor(
+        async () => {
+          const run = await runtimeA.jobs.job.getRun(firstRun.id)
+          return run?.status === 'leased'
+        },
+        { timeout: 2000 },
+      )
+
+      const secondRun = await runtimeA.jobs.job.trigger(
         { id: '2', concurrencyKey: 'group-1' },
         { concurrencyKey: 'group-1' },
       )
 
-      const firstRound = await Promise.all([
-        runtimeA.processOne({ workerId: 'worker-a' }),
-        runtimeB.processOne({ workerId: 'worker-b' }),
-      ])
+      const firstMid = await runtimeA.jobs.job.getRun(firstRun.id)
+      const secondMid = await runtimeA.jobs.job.getRun(secondRun.id)
+      expect(firstMid?.status).toBe('leased')
+      expect(secondMid?.status).toBe('pending')
+
+      const idleWhileBlocked = await runtimeB.processOne({
+        workerId: 'worker-b',
+      })
+      expect(idleWhileBlocked).toBe(false)
+
+      await firstProcessing
 
       const drained = await runtimeA.processUntilIdle({ workerId: 'worker-a' })
       const runs = await runtimeA.jobs.job.getRuns()
 
-      expect(firstRound.filter(Boolean)).toHaveLength(1)
       expect(drained).toBe(1)
       expect(runs.every((run) => run.status === 'completed')).toBe(true)
       expect(overlapDetected).toBe(false)

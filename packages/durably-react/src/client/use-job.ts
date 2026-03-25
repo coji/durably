@@ -187,7 +187,9 @@ export function useJob<
           runId?: string
         }
         if (
-          (data.type === 'run:trigger' || data.type === 'run:leased') &&
+          (data.type === 'run:trigger' ||
+            data.type === 'run:coalesced' ||
+            data.type === 'run:leased') &&
           data.runId
         ) {
           setCurrentRunId(data.runId)

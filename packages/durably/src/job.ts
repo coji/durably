@@ -78,6 +78,11 @@ export type JobFunction<TInput, TOutput> = (
 ) => Promise<TOutput>
 
 /**
+ * How a trigger was resolved relative to durable storage.
+ */
+export type Disposition = 'created' | 'idempotent' | 'coalesced'
+
+/**
  * Trigger options for trigger() and batchTrigger()
  */
 export interface TriggerOptions<
@@ -86,6 +91,7 @@ export interface TriggerOptions<
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: TLabels
+  coalesce?: 'skip'
 }
 
 /**
@@ -113,6 +119,14 @@ export interface TypedRun<
 }
 
 /**
+ * Result of trigger() / batchTrigger(): the run plus how it was resolved.
+ */
+export type TriggerResult<
+  TOutput,
+  TLabels extends Record<string, string> = Record<string, string>,
+> = TypedRun<TOutput, TLabels> & { disposition: Disposition }
+
+/**
  * Batch trigger input - either just the input or input with options
  */
 export type BatchTriggerInput<
@@ -126,6 +140,7 @@ export type BatchTriggerInput<
 export interface TriggerAndWaitResult<TOutput> {
   id: string
   output: TOutput
+  disposition: Disposition
 }
 
 /**
@@ -145,7 +160,7 @@ export interface JobHandle<
   trigger(
     input: TInput,
     options?: TriggerOptions<TLabels>,
-  ): Promise<TypedRun<TOutput, TLabels>>
+  ): Promise<TriggerResult<TOutput, TLabels>>
 
   /**
    * Trigger a new run and wait for completion
@@ -162,7 +177,7 @@ export interface JobHandle<
    */
   batchTrigger(
     inputs: BatchTriggerInput<TInput, TLabels>[],
-  ): Promise<TypedRun<TOutput, TLabels>[]>
+  ): Promise<TriggerResult<TOutput, TLabels>[]>
 
   /**
    * Get a run by ID
@@ -263,40 +278,86 @@ export function createJobHandle<
   const inputSchema = jobDef.input as z.ZodType<TInput>
   const outputSchema = jobDef.output as z.ZodType<TOutput> | undefined
 
+  function validateCoalesceOption(
+    coalesce: string | undefined,
+    concurrencyKey: string | undefined,
+    context?: string,
+  ) {
+    if (coalesce === undefined) return
+    const suffix = context ? ` ${context}` : ''
+    if (coalesce !== 'skip') {
+      throw new ValidationError(
+        `Invalid coalesce value${suffix}: '${coalesce}'. Valid values: 'skip'`,
+      )
+    }
+    if (!concurrencyKey) {
+      throw new ValidationError(`coalesce requires concurrencyKey${suffix}`)
+    }
+  }
+
+  function emitDispositionEvent(
+    disposition: Disposition,
+    run: Run,
+    input: unknown,
+    labels?: Record<string, string>,
+  ) {
+    if (disposition === 'created') {
+      eventEmitter.emit({
+        type: 'run:trigger',
+        runId: run.id,
+        jobName: jobDef.name,
+        input,
+        labels: run.labels,
+      })
+    } else if (disposition === 'coalesced') {
+      eventEmitter.emit({
+        type: 'run:coalesced',
+        runId: run.id,
+        jobName: jobDef.name,
+        labels: run.labels,
+        skippedInput: input,
+        skippedLabels: labels ?? {},
+      })
+    }
+    // 'idempotent': intentionally no event — the run already exists unchanged
+  }
+
   const handle: JobHandle<TName, TInput, TOutput, TLabels> = {
     name: jobDef.name,
 
     async trigger(
       input: TInput,
       options?: TriggerOptions<TLabels>,
-    ): Promise<TypedRun<TOutput, TLabels>> {
+    ): Promise<TriggerResult<TOutput, TLabels>> {
+      validateCoalesceOption(options?.coalesce, options?.concurrencyKey)
+
       // Validate input
       const validatedInput = validateJobInputOrThrow(inputSchema, input)
 
-      // Validate labels if schema provided
-      if (labelsSchema && options?.labels) {
-        validateJobInputOrThrow(labelsSchema, options.labels, 'labels')
-      }
+      // Validate labels if schema provided (use parsed result for strip/default/coerce)
+      const validatedLabels =
+        labelsSchema && options?.labels
+          ? validateJobInputOrThrow(labelsSchema, options.labels, 'labels')
+          : options?.labels
 
       // Create the run
-      const run = await storage.enqueue({
+      const { run, disposition } = await storage.enqueue({
         jobName: jobDef.name,
         input: validatedInput,
         idempotencyKey: options?.idempotencyKey,
         concurrencyKey: options?.concurrencyKey,
-        labels: options?.labels,
+        labels: validatedLabels,
+        coalesce: options?.coalesce,
       })
 
-      // Emit run:trigger event
-      eventEmitter.emit({
-        type: 'run:trigger',
-        runId: run.id,
-        jobName: jobDef.name,
-        input: validatedInput,
-        labels: run.labels,
-      })
+      emitDispositionEvent(
+        disposition,
+        run,
+        validatedInput,
+        validatedLabels as Record<string, string>,
+      )
 
-      return run as TypedRun<TOutput, TLabels>
+      return { ...run, disposition } as TriggerResult<TOutput, TLabels>
     },
 
     async triggerAndWait(
@@ -329,6 +390,7 @@ export function createJobHandle<
               resolve({
                 id: run.id,
                 output: event.output as TOutput,
+                disposition: run.disposition,
               })
             }
           }),
@@ -379,6 +441,7 @@ export function createJobHandle<
               resolve({
                 id: run.id,
                 output: currentRun.output as TOutput,
+                disposition: run.disposition,
               })
             } else if (currentRun.status === 'failed') {
               cleanup()
@@ -407,7 +470,7 @@ export function createJobHandle<
 
     async batchTrigger(
       inputs: (TInput | { input: TInput; options?: TriggerOptions<TLabels> })[],
-    ): Promise<TypedRun<TOutput, TLabels>[]> {
+    ): Promise<TriggerResult<TOutput, TLabels>[]> {
       if (inputs.length === 0) {
         return []
       }
@@ -420,53 +483,66 @@ export function createJobHandle<
         return { input: item as TInput, options: undefined }
       })
 
-      // Validate all inputs and labels first (before creating any runs)
+      // Validate all inputs, labels, and coalesce options first
       const validated: {
         input: unknown
         options?: TriggerOptions<TLabels>
       }[] = []
       for (let i = 0; i < normalized.length; i++) {
+        const opts = normalized[i].options
+        validateCoalesceOption(
+          opts?.coalesce,
+          opts?.concurrencyKey,
+          `at index ${i}`,
+        )
         const validatedInput = validateJobInputOrThrow(
           inputSchema,
           normalized[i].input,
           `at index ${i}`,
         )
-        if (labelsSchema && normalized[i].options?.labels) {
-          validateJobInputOrThrow(
-            labelsSchema,
-            normalized[i].options?.labels,
-            `labels at index ${i}`,
-          )
-        }
+        const validatedLabels =
+          labelsSchema && opts?.labels
+            ? validateJobInputOrThrow(
+                labelsSchema,
+                opts.labels,
+                `labels at index ${i}`,
+              )
+            : opts?.labels
         validated.push({
           input: validatedInput,
-          options: normalized[i].options,
+          options: opts ? { ...opts, labels: validatedLabels } : opts,
         })
       }
 
-      // Create all runs
-      const runs = await storage.enqueueMany(
+      // Create all runs (sequential enqueue with per-item conflict handling)
+      const results = await storage.enqueueMany(
         validated.map((v) => ({
           jobName: jobDef.name,
           input: v.input,
           idempotencyKey: v.options?.idempotencyKey,
           concurrencyKey: v.options?.concurrencyKey,
           labels: v.options?.labels,
+          coalesce: v.options?.coalesce,
         })),
       )
 
-      // Emit run:trigger events for all created runs
-      for (let i = 0; i < runs.length; i++) {
-        eventEmitter.emit({
-          type: 'run:trigger',
-          runId: runs[i].id,
-          jobName: jobDef.name,
-          input: validated[i].input,
-          labels: runs[i].labels,
-        })
+      // Emit events based on disposition
+      for (let i = 0; i < results.length; i++) {
+        emitDispositionEvent(
+          results[i].disposition,
+          results[i].run,
+          validated[i].input,
+          validated[i].options?.labels as Record<string, string>,
+        )
       }
 
-      return runs as TypedRun<TOutput, TLabels>[]
+      return results.map(
+        (r) =>
+          ({
+            ...r.run,
+            disposition: r.disposition,
+          }) as TriggerResult<TOutput, TLabels>,
+      )
     },
 
     async getRun(id: string): Promise<TypedRun<TOutput, TLabels> | null> {

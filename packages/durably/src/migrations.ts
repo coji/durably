@@ -174,6 +174,13 @@ const migrations: Migration[] = [
         .addColumn('version', 'integer', (col) => col.primaryKey())
         .addColumn('applied_at', 'text', (col) => col.notNull())
         .execute()
+
+      // At most one pending run per (job_name, concurrency_key) when key is set.
+      await sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_durably_runs_pending_concurrency
+        ON durably_runs (job_name, concurrency_key)
+        WHERE status = 'pending' AND concurrency_key IS NOT NULL
+      `.execute(db)
     },
   },
 ]

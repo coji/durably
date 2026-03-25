@@ -43,7 +43,7 @@ export function createDbStressTests(
         await runtimes[0].db.deleteFrom('durably_steps').execute()
         await runtimes[0].db.deleteFrom('durably_runs').execute()
 
-        const created = await runtimes[0].storage.enqueue({
+        const { run: created } = await runtimes[0].storage.enqueue({
           jobName: 'stress-job',
           input: { attempt, nonce: randomUUID() },
         })
@@ -62,7 +62,7 @@ export function createDbStressTests(
     })
 
     it('rejects stale completion after another runtime reclaims the lease', async () => {
-      const created = await runtimes[0].storage.enqueue({
+      const { run: created } = await runtimes[0].storage.enqueue({
         jobName: 'stress-reclaim',
         input: { nonce: randomUUID() },
       })

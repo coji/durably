@@ -17,7 +17,7 @@ export function createStorageTests(createDialect: () => Dialect) {
 
     describe('Run operations', () => {
       it('creates a run', async () => {
-        const run = await durably.storage.enqueue({
+        const { run } = await durably.storage.enqueue({
           jobName: 'test-job',
           input: { foo: 'bar' },
         })
@@ -29,13 +29,13 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('creates a run with idempotency key', async () => {
-        const run1 = await durably.storage.enqueue({
+        const { run: run1 } = await durably.storage.enqueue({
           jobName: 'test-job',
           input: { foo: 'bar' },
           idempotencyKey: 'key-1',
         })
 
-        const run2 = await durably.storage.enqueue({
+        const { run: run2 } = await durably.storage.enqueue({
           jobName: 'test-job',
           input: { foo: 'baz' },
           idempotencyKey: 'key-1',
@@ -47,7 +47,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('gets a run by id', async () => {
-        const created = await durably.storage.enqueue({
+        const { run: created } = await durably.storage.enqueue({
           jobName: 'test-job',
           input: { foo: 'bar' },
         })
@@ -60,7 +60,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('returns completedStepCount as 0 for new run', async () => {
-        const created = await durably.storage.enqueue({
+        const { run: created } = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
@@ -72,7 +72,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('returns completedStepCount reflecting completed steps', async () => {
-        const created = await durably.storage.enqueue({
+        const { run: created } = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
@@ -112,11 +112,11 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('returns completedStepCount in getRuns', async () => {
-        const run1 = await durably.storage.enqueue({
+        const { run: run1 } = await durably.storage.enqueue({
           jobName: 'job-a',
           input: {},
         })
-        const run2 = await durably.storage.enqueue({
+        const { run: run2 } = await durably.storage.enqueue({
           jobName: 'job-b',
           input: {},
         })
@@ -173,7 +173,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('updates a run', async () => {
-        const created = await durably.storage.enqueue({
+        const { run: created } = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
@@ -189,7 +189,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       it('gets runs with filter', async () => {
         await durably.storage.enqueue({ jobName: 'job-a', input: {} })
         await durably.storage.enqueue({ jobName: 'job-b', input: {} })
-        const run3 = await durably.storage.enqueue({
+        const { run: run3 } = await durably.storage.enqueue({
           jobName: 'job-a',
           input: {},
         })
@@ -228,7 +228,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('creates a run with labels', async () => {
-        const run = await durably.storage.enqueue({
+        const { run } = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
           labels: { organizationId: 'org_123', env: 'prod' },
@@ -245,7 +245,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('defaults labels to empty object', async () => {
-        const run = await durably.storage.enqueue({
+        const { run } = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
@@ -339,7 +339,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('allows Kubernetes-style label keys', async () => {
-        const run = await durably.storage.enqueue({
+        const { run } = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
           labels: { 'app.kubernetes.io/name': 'my-app', env: 'prod' },
@@ -372,7 +372,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('claims next pending run atomically', async () => {
-        const created = await durably.storage.enqueue({
+        const { run: created } = await durably.storage.enqueue({
           jobName: 'test-job',
           input: { x: 1 },
         })
@@ -405,7 +405,7 @@ export function createStorageTests(createDialect: () => Dialect) {
 
       it('claimNext preserves started_at on re-claim of recovered run', async () => {
         // Create and claim a run
-        const created = await durably.storage.enqueue({
+        const { run: created } = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
@@ -437,7 +437,7 @@ export function createStorageTests(createDialect: () => Dialect) {
 
     describe('Step operations', () => {
       it('persists a step with lease generation guard', async () => {
-        const run = await durably.storage.enqueue({
+        const { run } = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
@@ -466,7 +466,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('rejects persistStep with wrong lease generation', async () => {
-        const run = await durably.storage.enqueue({
+        const { run } = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
@@ -494,7 +494,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('gets completed step by name', async () => {
-        const run = await durably.storage.enqueue({
+        const { run } = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
@@ -523,7 +523,7 @@ export function createStorageTests(createDialect: () => Dialect) {
       })
 
       it('returns null for non-existent step', async () => {
-        const run = await durably.storage.enqueue({
+        const { run } = await durably.storage.enqueue({
           jobName: 'test-job',
           input: {},
         })
