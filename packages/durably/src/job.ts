@@ -334,10 +334,11 @@ export function createJobHandle<
       // Validate input
       const validatedInput = validateJobInputOrThrow(inputSchema, input)
 
-      // Validate labels if schema provided
-      if (labelsSchema && options?.labels) {
-        validateJobInputOrThrow(labelsSchema, options.labels, 'labels')
-      }
+      // Validate labels if schema provided (use parsed result for strip/default/coerce)
+      const validatedLabels =
+        labelsSchema && options?.labels
+          ? validateJobInputOrThrow(labelsSchema, options.labels, 'labels')
+          : options?.labels
 
       // Create the run
       const { run, disposition } = await storage.enqueue({
@@ -345,7 +346,7 @@ export function createJobHandle<
         input: validatedInput,
         idempotencyKey: options?.idempotencyKey,
         concurrencyKey: options?.concurrencyKey,
-        labels: options?.labels,
+        labels: validatedLabels,
         coalesce: options?.coalesce,
       })
 
@@ -353,7 +354,7 @@ export function createJobHandle<
         disposition,
         run,
         validatedInput,
-        options?.labels as Record<string, string>,
+        validatedLabels as Record<string, string>,
       )
 
       return { ...run, disposition } as TriggerResult<TOutput, TLabels>
@@ -499,16 +500,17 @@ export function createJobHandle<
           normalized[i].input,
           `at index ${i}`,
         )
-        if (labelsSchema && opts?.labels) {
-          validateJobInputOrThrow(
-            labelsSchema,
-            opts.labels,
-            `labels at index ${i}`,
-          )
-        }
+        const validatedLabels =
+          labelsSchema && opts?.labels
+            ? validateJobInputOrThrow(
+                labelsSchema,
+                opts.labels,
+                `labels at index ${i}`,
+              )
+            : opts?.labels
         validated.push({
           input: validatedInput,
-          options: opts,
+          options: opts ? { ...opts, labels: validatedLabels } : opts,
         })
       }
 

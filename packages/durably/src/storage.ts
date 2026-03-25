@@ -513,7 +513,11 @@ export function createKyselyStore(
         }
       }
 
-      // Pending concurrency conflict
+      // Pending concurrency conflict.
+      // violation === null means "confirmed UNIQUE violation but couldn't identify which
+      // constraint" (isUniqueViolation passed above). Safe to treat as pending conflict
+      // when concurrencyKey is present, since the only UNIQUE constraints on this table
+      // are idempotency (checked above) and pending concurrency.
       if (
         (violation === 'pending_concurrency' || violation === null) &&
         input.concurrencyKey

@@ -131,14 +131,20 @@ The handler provides these endpoints:
   "input": { "filename": "data.csv" },
   "idempotencyKey": "unique-key",   // optional
   "concurrencyKey": "user-123",     // optional
-  "coalesce": "skip",               // optional — return existing pending run instead of ConflictError
+  "coalesce": "skip",               // optional — requires concurrencyKey
   "labels": { "organizationId": "org_123" }  // optional
 }
 
 // Response
 { "runId": "run_abc123", "disposition": "created" }
 // disposition: "created" | "idempotent" | "coalesced"
+// When disposition is not "created", runId refers to the existing run.
+// idempotencyKey match returns "idempotent" (takes priority over coalesce).
 ```
+
+::: info SSE behavior
+`run:trigger` is **not** emitted for idempotent or coalesced triggers. A `run:coalesced` event is emitted instead when `coalesce: 'skip'` returns an existing pending run.
+:::
 
 ## SSE Event Stream
 
