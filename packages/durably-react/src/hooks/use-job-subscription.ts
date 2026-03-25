@@ -133,6 +133,17 @@ export function useJobSubscription<TOutput = unknown>(
       }),
     )
 
+    // Coalesced triggers skip run:trigger, so followLatest must react here
+    unsubscribes.push(
+      durably.on('run:coalesced', (event) => {
+        if (event.jobName !== jobName) return
+        if (followLatest) {
+          dispatch({ type: 'switch_to_run', runId: event.runId })
+          currentRunIdRef.current = event.runId
+        }
+      }),
+    )
+
     unsubscribes.push(
       durably.on('run:complete', (event) => {
         if (event.runId !== currentRunIdRef.current) return

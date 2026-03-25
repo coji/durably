@@ -76,6 +76,14 @@ export type DurablyEvent =
   | { type: 'run:delete'; runId: string; jobName: string }
   | { type: 'run:trigger'; runId: string; jobName: string; input: unknown }
   | {
+      type: 'run:coalesced'
+      runId: string
+      jobName: string
+      labels: Record<string, string>
+      skippedInput: unknown
+      skippedLabels: Record<string, string>
+    }
+  | {
       type: 'run:progress'
       runId: string
       jobName: string

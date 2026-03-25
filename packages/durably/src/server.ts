@@ -518,6 +518,19 @@ export function createDurablyHandler<
             }
           }),
 
+          durably.on('run:coalesced', (event) => {
+            if (matchesFilter(event.jobName, event.labels)) {
+              ctrl.enqueue({
+                type: 'run:coalesced',
+                runId: event.runId,
+                jobName: event.jobName,
+                labels: event.labels,
+                skippedInput: event.skippedInput,
+                skippedLabels: event.skippedLabels,
+              })
+            }
+          }),
+
           durably.on('run:leased', (event) => {
             if (matchesFilter(event.jobName, event.labels)) {
               ctrl.enqueue({
