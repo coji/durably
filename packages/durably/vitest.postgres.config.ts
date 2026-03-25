@@ -1,0 +1,17 @@
+import { defineConfig } from 'vitest/config'
+
+export default defineConfig({
+  test: {
+    include: ['tests/node/**/*.postgres.test.ts'],
+    globalSetup: ['tests/helpers/postgres-global-setup.ts'],
+    testTimeout: 30000,
+    hookTimeout: 30000,
+    coverage: {
+      enabled: true,
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      exclude: ['src/**/*.d.ts', 'src/index.ts'],
+      reporter: ['text', 'text-summary'],
+    },
+  },
+})

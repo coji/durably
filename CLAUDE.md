@@ -90,13 +90,14 @@ pnpm lint:fix      # Fix lint issues
 ### PostgreSQL Tests
 
 PostgreSQL tests (`*.postgres.test.ts`) are excluded from `pnpm test` by default.
+They use Testcontainers to automatically start/stop a PostgreSQL container — no manual `docker compose` needed.
 
 ```bash
-pnpm db:up                                      # Start Postgres
-pnpm --filter @coji/durably test:node:postgres   # Run Postgres tests only
+pnpm --filter @coji/durably test:node:postgres   # Run Postgres tests only (auto-starts container)
 pnpm --filter @coji/durably test:node:all        # Run all Node tests (SQLite + Postgres)
-pnpm db:down                                     # Stop Postgres
 ```
+
+To use an external PostgreSQL instance instead of Testcontainers, set `DURABLY_TEST_POSTGRES_URL`.
 
 ## Codex CLI for Research & Consultation
 
