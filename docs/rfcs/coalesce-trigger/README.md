@@ -207,6 +207,8 @@ CREATE UNIQUE INDEX idx_durably_runs_pending_concurrency
 
 Works on both SQLite and PostgreSQL.
 
+> **Why v2, not v1?** The current `LATEST_SCHEMA_VERSION = 1` and v1 migration are already released and applied to existing user databases. New schema changes for existing users must be a new migration version. `LATEST_SCHEMA_VERSION` becomes `2`.
+
 **Existing data handling**: The migration must check for duplicate pending runs before creating the index. If duplicates exist, fail with a descriptive error instructing the user to resolve manually:
 
 ```ts
@@ -311,6 +313,7 @@ async enqueue(input: CreateRunInput): Promise<{ run: Run; disposition: Dispositi
           .where('status', 'in', ['pending', 'leased'])
           .orderBy(sql`CASE status WHEN 'pending' THEN 0 ELSE 1 END`, 'asc')
           .orderBy('created_at', 'desc')
+          .orderBy('id', 'desc')
           .limit(1)
           .executeTakeFirst()
 
@@ -337,7 +340,23 @@ async enqueue(input: CreateRunInput): Promise<{ run: Run; disposition: Dispositi
 }
 ```
 
-**Key design**: INSERT first, catch conflict. This is the correct pattern — no TOCTOU race, works on both SQLite and PostgreSQL. The partial unique index is the single source of truth.
+**Key design**: INSERT first, catch conflict. This is the correct pattern — no TOCTOU race. The partial unique index is the single source of truth.
+
+**PostgreSQL SAVEPOINT requirement**: In PostgreSQL, a UNIQUE constraint violation aborts the current transaction — subsequent statements fail with "current transaction is aborted". To allow the catch-and-recover logic (follow-up SELECT, retry INSERT), the INSERT must be wrapped in a SAVEPOINT:
+
+```ts
+await sql`SAVEPOINT sp_enqueue`.execute(db)
+try {
+  // ... INSERT ...
+  await sql`RELEASE SAVEPOINT sp_enqueue`.execute(db)
+  return { run: newRun, disposition: 'created' }
+} catch (err) {
+  await sql`ROLLBACK TO SAVEPOINT sp_enqueue`.execute(db)
+  // ... catch logic (SELECT, retry) works because savepoint was rolled back ...
+}
+```
+
+SQLite does not have this limitation — errors do not abort the transaction. The SAVEPOINT is harmless on SQLite (it's a no-op in terms of behavior) but required for PostgreSQL correctness. The implementation should always use SAVEPOINT regardless of dialect for simplicity.
 
 **Constraint identification**: `parseUniqueViolation()` distinguishes between idempotency and pending-concurrency violations by inspecting the constraint/index name in the driver error. This prevents misclassifying an idempotency race as a concurrency conflict.
 
@@ -392,13 +411,13 @@ async trigger(
 
 `batchTrigger()` returns `TriggerResult[]` for consistency. Each item carries its own disposition.
 
+**Contract** (implementation-independent): `batchTrigger()` processes items **sequentially in order**. Each item receives a per-item `disposition`. Items with the same `concurrencyKey` and `coalesce: 'skip'` deduplicate to the first item in the batch. This contract holds regardless of future implementation changes (bulk insert, parallelization, etc.).
+
 **Implementation change**: The current `enqueueMany()` uses bulk INSERT, which cannot handle per-item coalesce/conflict semantics. When the same `concurrencyKey` appears multiple times in a batch, a bulk INSERT would fail entirely on the unique constraint.
 
-`batchTrigger()` switches to **sequential `enqueue()` calls** within a single transaction. The batch remains **atomic** — if any item throws (e.g. ConflictError without coalesce), the entire transaction rolls back and no runs are created. This preserves the existing "validate all, then create all" contract.
+`batchTrigger()` switches to **sequential `enqueue()` calls** within a single transaction. Each `enqueue()` call uses a SAVEPOINT (required for PostgreSQL — see Step 2). The batch remains **atomic** — if any item throws (e.g. ConflictError without coalesce), the entire transaction rolls back and no runs are created. This preserves the existing "validate all, then create all" contract.
 
-With `coalesce: 'skip'`, conflicts within the same batch are absorbed as `disposition: 'coalesced'`, so the batch succeeds. Without coalesce, a ConflictError on any item fails the entire batch.
-
-Sequential enqueue naturally handles:
+With `coalesce: 'skip'`, conflicts within the same batch are absorbed as `disposition: 'coalesced'` (the SAVEPOINT rolls back the failed INSERT, and the catch logic returns the existing run). Without coalesce, a ConflictError on any item fails the entire batch.
 
 - Same concurrencyKey in batch: first creates, rest coalesce (with `coalesce: 'skip'`) or entire batch fails with ConflictError
 - Mixed idempotencyKey: each item gets its own disposition
@@ -552,7 +571,7 @@ Test cases:
 
 4. **`parseUniqueViolation()` distinguishes constraints** — the codebase has two unique indexes (idempotency + pending-concurrency). A generic `isUniqueViolation()` would misclassify idempotency races as concurrency conflicts. PostgreSQL: inspect constraint name. SQLite: inspect **column names** in error message (SQLite does not include index names — only `UNIQUE constraint failed: table.column`).
 
-5. **Post-conflict SELECT returns only active runs** — after a pending-concurrency conflict, the SELECT returns only `pending` or `leased` runs. Terminal states (completed/failed) mean the index slot is free — retry the INSERT once (guarded by `_retried` flag to prevent infinite recursion).
+5. **Post-conflict SELECT returns only active runs** — after a pending-concurrency conflict, the SELECT returns only `pending` or `leased` runs (with `id` as tie-breaker for deterministic ordering). Terminal states (completed/failed) mean the index slot is free — retry the INSERT once (guarded by `_retried` flag to prevent infinite recursion).
 
 6. **`TriggerResult = TypedRun & { disposition }`** — no destructuring tax. Existing code that reads Run properties works unchanged. `disposition` is available when needed. The persisted `Run` type stays clean.
 
@@ -564,13 +583,15 @@ Test cases:
 
 10. **Idempotent stops emitting `run:trigger`** — the current codebase emits `run:trigger` even on idempotency hits. This is fixed: `disposition: 'idempotent'` now emits no event. This is a behavior change, documented in the migration guide.
 
-11. **`batchTrigger()` uses sequential enqueue, stays atomic** — bulk INSERT cannot handle per-item coalesce/conflict semantics. Sequential enqueue within a single transaction preserves all-or-nothing semantics. With `coalesce: 'skip'`, conflicts are absorbed; without coalesce, any ConflictError rolls back the entire batch.
+11. **SAVEPOINT wraps each INSERT** — PostgreSQL aborts the entire transaction after a UNIQUE violation. SAVEPOINT/ROLLBACK TO SAVEPOINT allows catch-and-recover within the same transaction. Harmless on SQLite. Used in both `enqueue()` and `batchTrigger()`.
 
-12. **`releaseExpiredLeases()` uses 2-phase approach** — a single bulk UPDATE would fail entirely if one row hits the unique index. Phase 1: identify conflicting expired leases (another pending run exists) and mark them `failed`. Phase 2: reset the rest to `pending`. This ensures non-conflicting expired leases are always released.
+12. **`batchTrigger()` uses sequential enqueue, stays atomic** — bulk INSERT cannot handle per-item coalesce/conflict semantics. Sequential enqueue (each with its own SAVEPOINT) within a single transaction preserves all-or-nothing semantics. With `coalesce: 'skip'`, conflicts are absorbed; without coalesce, any ConflictError rolls back the entire batch. The sequential processing order is a **contract**, not an implementation detail.
 
-13. **Fail-fast migration** — if existing data has duplicate pending runs per concurrency key, migration v2 fails with a descriptive error (first N entries shown). No silent data cleanup in an OSS library.
+13. **`releaseExpiredLeases()` uses 2-phase approach** — a single bulk UPDATE would fail entirely if one row hits the unique index. Phase 1: identify conflicting expired leases (another pending run exists) and mark them `failed`. Phase 2: reset the rest to `pending`. This ensures non-conflicting expired leases are always released.
 
-14. **Breaking change is acceptable** — pre-v1 (v0.14.0). TypeScript compiler flags all affected call sites. Migration guide provided.
+14. **Fail-fast migration** — if existing data has duplicate pending runs per concurrency key, migration v2 fails with a descriptive error (first N entries shown). No silent data cleanup in an OSS library.
+
+15. **Breaking change is acceptable** — pre-v1 (v0.14.0). TypeScript compiler flags all affected call sites. Migration guide provided.
 
 ## Future: merge mode
 
