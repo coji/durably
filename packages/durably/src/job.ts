@@ -319,6 +319,7 @@ export function createJobHandle<
         skippedLabels: labels ?? {},
       })
     }
+    // 'idempotent': intentionally no event — the run already exists unchanged
   }
 
   const handle: JobHandle<TName, TInput, TOutput, TLabels> = {

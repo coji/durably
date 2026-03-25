@@ -410,5 +410,74 @@ export function createCoalesceTests(createDialect: () => Dialect) {
         expect(updated?.status).toBe('pending')
       })
     })
+
+    // ─── retrigger interaction ────────────────────────────────────
+
+    describe('retrigger interaction', () => {
+      it('throws ConflictError when retriggering with pending same-key run', async () => {
+        // Create and complete run A
+        const runA = await d.jobs.job.trigger(
+          { value: 'a' },
+          { concurrencyKey: 'key-1' },
+        )
+        durably.start()
+        await vi.waitFor(
+          async () => {
+            const r = await d.jobs.job.getRun(runA.id)
+            expect(r?.status).toBe('completed')
+          },
+          { timeout: 5000 },
+        )
+        await durably.stop()
+
+        // Create pending run B with same key
+        await d.jobs.job.trigger({ value: 'b' }, { concurrencyKey: 'key-1' })
+
+        // Retrigger A — should fail because B is pending with same key
+        await expect(durably.retrigger(runA.id)).rejects.toThrow(ConflictError)
+      })
+    })
+
+    // ─── edge cases ───────────────────────────────────────────────
+
+    describe('edge cases', () => {
+      it('handles batch with mixed coalesce and non-coalesce for different keys', async () => {
+        const results = await d.jobs.job.batchTrigger([
+          {
+            input: { value: 'a' },
+            options: { concurrencyKey: 'key-1', coalesce: 'skip' },
+          },
+          {
+            input: { value: 'b' },
+            options: { concurrencyKey: 'key-2' },
+          },
+          {
+            input: { value: 'c' },
+            options: { concurrencyKey: 'key-1', coalesce: 'skip' },
+          },
+        ])
+        expect(results).toHaveLength(3)
+        expect(results[0].disposition).toBe('created')
+        expect(results[1].disposition).toBe('created')
+        expect(results[2].disposition).toBe('coalesced')
+        expect(results[2].id).toBe(results[0].id)
+      })
+
+      it('prioritizes idempotencyKey over concurrencyKey conflict', async () => {
+        // Create run with both keys
+        const first = await d.jobs.job.trigger(
+          { value: 'a' },
+          { concurrencyKey: 'key-1', idempotencyKey: 'idem-1' },
+        )
+
+        // Same idempotencyKey + same concurrencyKey — should be idempotent, not conflict
+        const second = await d.jobs.job.trigger(
+          { value: 'b' },
+          { concurrencyKey: 'key-1', idempotencyKey: 'idem-1' },
+        )
+        expect(second.disposition).toBe('idempotent')
+        expect(second.id).toBe(first.id)
+      })
+    })
   })
 }

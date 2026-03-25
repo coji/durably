@@ -454,6 +454,8 @@ export function createKyselyStore(
     // INSERT first, catch conflict — no TOCTOU race.
     // SAVEPOINT is required for PostgreSQL (constraint error aborts transaction)
     // and for batch mode (multiple items in one transaction).
+    // Name reuse (sp_enqueue) is safe: each SAVEPOINT is released/rolled back
+    // before the next iteration or recursive retry.
     const doInsert = async (insertDb: Kysely<Database>) => {
       await sql`SAVEPOINT sp_enqueue`.execute(insertDb)
       try {
@@ -727,7 +729,9 @@ export function createKyselyStore(
 
     async releaseExpiredLeases(now: string): Promise<number> {
       // Phase 1: Fail expired leases that have a pending replacement
-      // (resetting to pending would violate the partial unique index)
+      // (resetting to pending would violate the partial unique index).
+      // Runs without concurrency_key are unaffected: NULL = NULL is false in SQL,
+      // so the EXISTS subquery never matches them.
       const conflicting = await db
         .updateTable('durably_runs')
         .set({
@@ -760,7 +764,8 @@ export function createKyselyStore(
       let count = Number(conflicting.numUpdatedRows)
 
       // Phase 2: Reset remaining expired leases to pending, per-row with
-      // SAVEPOINT to handle concurrent trigger() inserting a pending run
+      // SAVEPOINT to handle concurrent trigger() inserting a pending run.
+      // Wrapped in a transaction — PostgreSQL requires SAVEPOINTs inside a transaction block.
       const remaining = await db
         .selectFrom('durably_runs')
         .select('id')
@@ -769,38 +774,42 @@ export function createKyselyStore(
         .where('lease_expires_at', '<=', now)
         .execute()
 
-      for (const row of remaining) {
-        try {
-          await sql`SAVEPOINT sp_release`.execute(db)
-          await db
-            .updateTable('durably_runs')
-            .set({
-              status: 'pending',
-              lease_owner: null,
-              lease_expires_at: null,
-              updated_at: now,
-            })
-            .where('id', '=', row.id)
-            .execute()
-          await sql`RELEASE SAVEPOINT sp_release`.execute(db)
-          count++
-        } catch {
-          await sql`ROLLBACK TO SAVEPOINT sp_release`.execute(db)
-          // Unique violation — a pending run was inserted concurrently. Fail this lease.
-          await db
-            .updateTable('durably_runs')
-            .set({
-              status: 'failed',
-              error: 'Lease expired; pending run already exists',
-              lease_owner: null,
-              lease_expires_at: null,
-              completed_at: now,
-              updated_at: now,
-            })
-            .where('id', '=', row.id)
-            .execute()
-          count++
-        }
+      if (remaining.length > 0) {
+        await db.transaction().execute(async (trx) => {
+          for (const row of remaining) {
+            try {
+              await sql`SAVEPOINT sp_release`.execute(trx)
+              await trx
+                .updateTable('durably_runs')
+                .set({
+                  status: 'pending',
+                  lease_owner: null,
+                  lease_expires_at: null,
+                  updated_at: now,
+                })
+                .where('id', '=', row.id)
+                .execute()
+              await sql`RELEASE SAVEPOINT sp_release`.execute(trx)
+              count++
+            } catch {
+              await sql`ROLLBACK TO SAVEPOINT sp_release`.execute(trx)
+              // Unique violation — a pending run was inserted concurrently. Fail this lease.
+              await trx
+                .updateTable('durably_runs')
+                .set({
+                  status: 'failed',
+                  error: 'Lease expired; pending run already exists',
+                  lease_owner: null,
+                  lease_expires_at: null,
+                  completed_at: now,
+                  updated_at: now,
+                })
+                .where('id', '=', row.id)
+                .execute()
+              count++
+            }
+          }
+        })
       }
 
       return count
