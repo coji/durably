@@ -197,52 +197,18 @@ export interface TriggerResponse {
 
 **File**: `packages/durably/src/migrations.ts`
 
-Add migration v2:
+Add the partial unique index to the existing **v1 migration** (not a new v2). Since the only production user is upflow and it's pre-v1, we consolidate into v1 and have upflow recreate their database.
 
 ```sql
+-- Added to the end of migration v1
 CREATE UNIQUE INDEX idx_durably_runs_pending_concurrency
   ON durably_runs (job_name, concurrency_key)
   WHERE status = 'pending' AND concurrency_key IS NOT NULL;
 ```
 
-Works on both SQLite and PostgreSQL.
+Works on both SQLite and PostgreSQL. `LATEST_SCHEMA_VERSION` stays at `1`.
 
-> **Why v2, not v1?** The current `LATEST_SCHEMA_VERSION = 1` and v1 migration are already released and applied to existing user databases. New schema changes for existing users must be a new migration version. `LATEST_SCHEMA_VERSION` becomes `2`.
-
-**Existing data handling**: The migration must check for duplicate pending runs before creating the index. If duplicates exist, fail with a descriptive error instructing the user to resolve manually:
-
-```ts
-{
-  version: 2,
-  up: async (db) => {
-    // Check for duplicate pending runs per concurrency key
-    const duplicates = await sql`
-      SELECT job_name, concurrency_key, COUNT(*) as cnt
-      FROM durably_runs
-      WHERE status = 'pending' AND concurrency_key IS NOT NULL
-      GROUP BY job_name, concurrency_key
-      HAVING COUNT(*) > 1
-    `.execute(db)
-
-    if (duplicates.rows.length > 0) {
-      const details = duplicates.rows
-        .map(r => `${r.job_name}:${r.concurrency_key} (${r.cnt} pending)`)
-        .join(', ')
-      throw new Error(
-        `Cannot migrate: duplicate pending runs per concurrency key found: ${details}. ` +
-        `Cancel or complete duplicates before upgrading. ` +
-        `See https://github.com/coji/durably/blob/main/docs/migration-v2.md`
-      )
-    }
-
-    await sql`
-      CREATE UNIQUE INDEX idx_durably_runs_pending_concurrency
-      ON durably_runs (job_name, concurrency_key)
-      WHERE status = 'pending' AND concurrency_key IS NOT NULL
-    `.execute(db)
-  },
-}
-```
+> **Why v1 consolidation?** The only production user (upflow) will recreate their database. No incremental migration is needed. This keeps the migration system simple — a single v1 that creates the full schema.
 
 ### Step 2: Internal `disposition` in storage layer
 
@@ -304,24 +270,23 @@ async enqueue(input: CreateRunInput): Promise<{ run: Run; disposition: Dispositi
     if (violation === 'pending_concurrency' && input.concurrencyKey) {
       if (input.coalesce === 'skip') {
         // Graceful: return the conflicting run.
-        // Only return pending or leased — if the run has reached a terminal state
-        // (completed/failed), the index slot is free and we should retry INSERT.
-        const conflicting = await db
+        // Only return pending — not leased (could be an expired orphan).
+        const pending = await db
           .selectFrom('durably_runs').selectAll()
           .where('job_name', '=', input.jobName)
           .where('concurrency_key', '=', input.concurrencyKey)
-          .where('status', 'in', ['pending', 'leased'])
-          .orderBy(sql`CASE status WHEN 'pending' THEN 0 ELSE 1 END`, 'asc')
-          .orderBy('created_at', 'desc')
-          .orderBy('id', 'desc')
+          .where('status', '=', 'pending')
+          .orderBy('created_at', 'asc')
+          .orderBy('id', 'asc')
           .limit(1)
           .executeTakeFirst()
 
-        if (conflicting) {
-          return { run: rowToRun(conflicting), disposition: 'coalesced' }
+        if (pending) {
+          return { run: rowToRun(pending), disposition: 'coalesced' }
         }
 
-        // Conflicting run reached terminal state — index slot is free, retry once.
+        // Pending run was leased or completed between INSERT failure and SELECT.
+        // Index slot may be free — retry once.
         if (!input._retried) {
           return this.enqueue({ ...input, _retried: true })
         }
@@ -360,7 +325,7 @@ SQLite does not have this limitation — errors do not abort the transaction. Th
 
 **Constraint identification**: `parseUniqueViolation()` distinguishes between idempotency and pending-concurrency violations by inspecting the constraint/index name in the driver error. This prevents misclassifying an idempotency race as a concurrency conflict.
 
-**Post-conflict SELECT race**: After a pending-concurrency conflict, the follow-up SELECT queries only `pending` or `leased` statuses. If the conflicting run has already reached a terminal state (completed/failed), it should NOT be returned as coalesced — the index slot is free and we should retry the INSERT. The retry uses a `_retried` flag to prevent infinite recursion (at most 1 retry).
+**Post-conflict SELECT race**: After a pending-concurrency conflict, the follow-up SELECT queries only `status = 'pending'`. Leased runs are excluded — they could be expired orphans awaiting `releaseExpiredLeases`. If no pending run is found (it was leased or completed between our INSERT failure and SELECT), retry the INSERT once. The retry uses a `_retried` flag to prevent infinite recursion.
 
 ### Step 3: Change `trigger()` return type
 
@@ -376,8 +341,13 @@ async trigger(
     validateJobInputOrThrow(labelsSchema, options.labels, 'labels')
   }
 
-  if (options?.coalesce && !options.concurrencyKey) {
-    throw new ValidationError('coalesce requires concurrencyKey')
+  if (options?.coalesce) {
+    if (options.coalesce !== 'skip') {
+      throw new ValidationError(`Invalid coalesce value: '${options.coalesce}'. Valid values: 'skip'`)
+    }
+    if (!options.concurrencyKey) {
+      throw new ValidationError('coalesce requires concurrencyKey')
+    }
   }
 
   const { run, disposition } = await storage.enqueue({
@@ -419,6 +389,7 @@ async trigger(
 
 With `coalesce: 'skip'`, conflicts within the same batch are absorbed as `disposition: 'coalesced'` (the SAVEPOINT rolls back the failed INSERT, and the catch logic returns the existing run). Without coalesce, a ConflictError on any item fails the entire batch.
 
+- Per-item validation: `coalesce` value validated (`'skip'` only), `concurrencyKey` required if `coalesce` set — same rules as `trigger()`
 - Same concurrencyKey in batch: first creates, rest coalesce (with `coalesce: 'skip'`) or entire batch fails with ConflictError
 - Mixed idempotencyKey: each item gets its own disposition
 - Atomic semantics: all-or-nothing, no partial success
@@ -452,6 +423,12 @@ export interface RunCoalescedEvent extends BaseEvent {
 
 The event carries the **skipped** input AND labels (not the existing run's), so audit logs can see exactly what was deduplicated. This avoids the inconsistency of mixing new input with old labels.
 
+**SSE/React integration**: `run:coalesced` must also be wired into the event delivery chain:
+
+- **server.ts SSE handler**: Add `run:coalesced` to the event types forwarded via SSE. The event needs a `labels` field (use the **existing run's labels**, not skippedLabels) for SSE label-scoped filtering to work. The SSE payload is a simplified projection — it doesn't need `skippedInput`/`skippedLabels`.
+- **durably-react types.ts**: Add `run:coalesced` to the `DurablyEvent` union type so client-side hooks can receive and filter on it.
+- **use-runs.ts (client)**: Include `run:coalesced` in the event types that trigger a refresh.
+
 ### Step 8: Update callers
 
 Since `trigger()` returns `TriggerResult` (extends `TypedRun`), most existing code works unchanged. Update:
@@ -459,6 +436,7 @@ Since `trigger()` returns `TriggerResult` (extends `TypedRun`), most existing co
 - `triggerAndWait()` — add `disposition` to `TriggerAndWaitResult` (currently returns `{ id, output }`, needs `{ id, output, disposition }`)
 - `durably-react` hooks — `useJob` trigger callback
 - Server handler — done in Step 6
+- SSE/React event types — done in Step 7
 - Examples — update if they type-check the return
 - Tests — update type assertions, add disposition checks
 
@@ -508,7 +486,7 @@ Test cases:
 
 **post-conflict race:**
 
-21. **coalesce after worker leases** — pending run gets leased between INSERT failure and follow-up SELECT, still returns the (now leased) run with disposition `'coalesced'`
+21. **coalesce after worker leases** — pending run gets leased between INSERT failure and follow-up SELECT → retry INSERT
 
 **triggerAndWait:**
 
@@ -524,10 +502,10 @@ Test cases:
 
 26. **coalesce after run completes and is purged** — conflicting run completes and is purged between INSERT failure and SELECT → retry INSERT succeeds, disposition `'created'`
 
-**migration:**
+**validation:**
 
-27. **v2 migration with clean data** — index created successfully
-28. **v2 migration with duplicate pending** — fails with descriptive error (shows first N entries)
+27. **coalesce: 'invalid'** — throws `ValidationError`
+28. **batchTrigger per-item coalesce validation** — invalid coalesce value in any item throws `ValidationError`, batch rolls back
 
 ### Step 10: Documentation
 
@@ -537,14 +515,13 @@ Test cases:
   - `trigger()` returns `TriggerResult` with `disposition`
   - ConflictError on duplicate pending
   - Semantic caveats (input/labels ignored on coalesce)
-- Add `docs/migration-v2.md` — migration guide for the breaking changes
 - Regenerate `website/public/llms.txt`
 
 ## File Change Summary
 
 | File                                               | Change                                                             |
 | -------------------------------------------------- | ------------------------------------------------------------------ |
-| `packages/durably/src/migrations.ts`               | Add v2 migration: partial unique index + duplicate check           |
+| `packages/durably/src/migrations.ts`               | Add partial unique index to v1 migration                           |
 | `packages/durably/src/storage.ts`                  | `enqueue()` returns `{ run, disposition }`, catch unique violation |
 | `packages/durably/src/job.ts`                      | `trigger()` returns `TriggerResult`, add `coalesce` to options     |
 | `packages/durably/src/events.ts`                   | Add `RunCoalescedEvent`                                            |
@@ -558,8 +535,8 @@ Test cases:
 | `packages/durably/tests/browser/coalesce.test.ts`  | New: Browser WASM runner                                           |
 | `packages/durably/tests/**`                        | Update existing tests for new return type                          |
 | `examples/**`                                      | Update trigger() usage if typed                                    |
+| `packages/durably-react/src/types.ts`              | Add `run:coalesced` to `DurablyEvent` union                        |
 | `packages/durably/docs/llms.md`                    | Document all changes                                               |
-| `docs/migration-v2.md`                             | New: migration guide                                               |
 
 ## Design Decisions
 
@@ -571,7 +548,7 @@ Test cases:
 
 4. **`parseUniqueViolation()` distinguishes constraints** — the codebase has two unique indexes (idempotency + pending-concurrency). A generic `isUniqueViolation()` would misclassify idempotency races as concurrency conflicts. PostgreSQL: inspect constraint name. SQLite: inspect **column names** in error message (SQLite does not include index names — only `UNIQUE constraint failed: table.column`).
 
-5. **Post-conflict SELECT returns only active runs** — after a pending-concurrency conflict, the SELECT returns only `pending` or `leased` runs (with `id` as tie-breaker for deterministic ordering). Terminal states (completed/failed) mean the index slot is free — retry the INSERT once (guarded by `_retried` flag to prevent infinite recursion).
+5. **Post-conflict SELECT returns only pending** — after a pending-concurrency conflict, the SELECT returns only `status = 'pending'` (with `id` as tie-breaker). Leased runs are excluded (could be expired orphans). If nothing found, retry INSERT once (guarded by `_retried` flag).
 
 6. **`TriggerResult = TypedRun & { disposition }`** — no destructuring tax. Existing code that reads Run properties works unchanged. `disposition` is available when needed. The persisted `Run` type stays clean.
 
@@ -589,9 +566,11 @@ Test cases:
 
 13. **`releaseExpiredLeases()` uses 2-phase approach** — a single bulk UPDATE would fail entirely if one row hits the unique index. Phase 1: identify conflicting expired leases (another pending run exists) and mark them `failed`. Phase 2: reset the rest to `pending`. This ensures non-conflicting expired leases are always released.
 
-14. **Fail-fast migration** — if existing data has duplicate pending runs per concurrency key, migration v2 fails with a descriptive error (first N entries shown). No silent data cleanup in an OSS library.
+14. **v1 migration consolidation** — only production user (upflow) will recreate their database. No incremental v2 migration needed. Partial unique index is added to v1, keeping `LATEST_SCHEMA_VERSION = 1`.
 
-15. **Breaking change is acceptable** — pre-v1 (v0.14.0). TypeScript compiler flags all affected call sites. Migration guide provided.
+15. **Runtime validation of `coalesce` value** — `trigger()` and `batchTrigger()` validate that `coalesce` is `'skip'` (or undefined). Invalid values from HTTP or programmatic API throw `ValidationError`. Prevents silent misconfiguration.
+
+16. **Breaking change is acceptable** — pre-v1 (v0.14.0). TypeScript compiler flags all affected call sites. Migration guide provided.
 
 ## Future: merge mode
 
