@@ -131,11 +131,13 @@ The handler provides these endpoints:
   "input": { "filename": "data.csv" },
   "idempotencyKey": "unique-key",   // optional
   "concurrencyKey": "user-123",     // optional
+  "coalesce": "skip",               // optional — return existing pending run instead of ConflictError
   "labels": { "organizationId": "org_123" }  // optional
 }
 
 // Response
-{ "runId": "run_abc123" }
+{ "runId": "run_abc123", "disposition": "created" }
+// disposition: "created" | "idempotent" | "coalesced"
 ```
 
 ## SSE Event Stream

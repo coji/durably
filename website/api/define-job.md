@@ -68,10 +68,10 @@ The job handle provides the following methods:
 await job.trigger(
   input: TInput,
   options?: TriggerOptions
-): Promise<Run<TOutput>>
+): Promise<TriggerResult<TOutput>>
 ```
 
-Triggers a new job run.
+Triggers a new job run. Returns a `TriggerResult` which extends `TypedRun` with a `disposition` field indicating how the trigger was resolved (`'created'`, `'idempotent'`, or `'coalesced'`).
 
 #### Trigger Options
 
@@ -79,6 +79,7 @@ Triggers a new job run.
 interface TriggerOptions<TLabels = Record<string, string>> {
   idempotencyKey?: string
   concurrencyKey?: string
+  coalesce?: 'skip'
   labels?: TLabels
 }
 
@@ -91,14 +92,15 @@ interface TriggerAndWaitOptions<
 }
 ```
 
-| Option           | Description                                                     |
-| ---------------- | --------------------------------------------------------------- |
-| `idempotencyKey` | Prevents duplicate runs with the same key                       |
-| `concurrencyKey` | Groups jobs for concurrency control                             |
-| `labels`         | Key/value labels for filtering (type-safe when schema provided) |
-| `timeout`        | Timeout in ms (`triggerAndWait` only)                           |
-| `onProgress`     | Progress callback (`triggerAndWait` only)                       |
-| `onLog`          | Log callback (`triggerAndWait` only)                            |
+| Option           | Description                                                      |
+| ---------------- | ---------------------------------------------------------------- |
+| `idempotencyKey` | Prevents duplicate runs with the same key                        |
+| `concurrencyKey` | Groups jobs for concurrency control (max 1 pending per key)      |
+| `coalesce`       | `'skip'`: return existing pending run instead of `ConflictError` |
+| `labels`         | Key/value labels for filtering (type-safe when schema provided)  |
+| `timeout`        | Timeout in ms (`triggerAndWait` only)                            |
+| `onProgress`     | Progress callback (`triggerAndWait` only)                        |
+| `onLog`          | Log callback (`triggerAndWait` only)                             |
 
 ### `triggerAndWait()`
 
@@ -106,13 +108,15 @@ interface TriggerAndWaitOptions<
 await job.triggerAndWait(
   input: TInput,
   options?: TriggerAndWaitOptions
-): Promise<{ id: string; output: TOutput }>
+): Promise<{ id: string; output: TOutput; disposition: Disposition }>
 ```
 
 Triggers a run and waits for completion. Throws if the run fails.
 
 ```ts
-const { id, output } = await job.triggerAndWait({ orgId: 'org_123' })
+const { id, output, disposition } = await job.triggerAndWait({
+  orgId: 'org_123',
+})
 console.log('Completed:', output)
 
 // With timeout
@@ -127,7 +131,7 @@ const { output } = await job.triggerAndWait(
 ```ts
 await job.batchTrigger(
   inputs: (TInput | { input: TInput; options?: TriggerOptions })[]
-): Promise<Run<TOutput>[]>
+): Promise<TriggerResult<TOutput>[]>
 ```
 
 Triggers multiple runs. All inputs are validated before any runs are created.

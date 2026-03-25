@@ -124,8 +124,12 @@ await durably.jobs.importCsv.trigger(
     // Prevent duplicates: same key = same run
     idempotencyKey: 'import-2024-01-01',
 
-    // Only one job per key runs at a time
+    // Only one job per key runs at a time (max 1 pending per key)
     concurrencyKey: 'csv-imports',
+
+    // Skip creating a new run if one is already pending for this key
+    // Without coalesce, a second pending trigger throws ConflictError
+    coalesce: 'skip',
 
     // Metadata for filtering and multi-tenancy
     labels: { organizationId: 'org_123' },
