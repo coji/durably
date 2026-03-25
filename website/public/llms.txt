@@ -123,6 +123,7 @@ await durably.init()
 // Basic trigger (fire and forget)
 const run = await syncUsers.trigger({ orgId: 'org_123' })
 console.log(run.id, run.status) // "pending"
+console.log(run.disposition) // "created"
 
 // Wait for completion
 const result = await syncUsers.triggerAndWait(
@@ -130,15 +131,27 @@ const result = await syncUsers.triggerAndWait(
   { timeout: 5000 },
 )
 console.log(result.output.syncedCount)
+console.log(result.disposition) // "created"
 
 // With idempotency key (prevents duplicate jobs)
-await syncUsers.trigger(
+const idempotentRun = await syncUsers.trigger(
   { orgId: 'org_123' },
   { idempotencyKey: 'webhook-event-456' },
 )
+console.log(idempotentRun.disposition) // "created" or "idempotent"
 
-// With concurrency key (serializes execution)
+// With concurrency key (serializes execution, max 1 pending per key)
 await syncUsers.trigger({ orgId: 'org_123' }, { concurrencyKey: 'org_123' })
+// Second trigger with same key throws ConflictError if a pending run exists
+
+// With coalesce (skip duplicate pending runs gracefully)
+const coalesced = await syncUsers.trigger(
+  { orgId: 'org_123' },
+  { concurrencyKey: 'org_123', coalesce: 'skip' },
+)
+if (coalesced.disposition === 'coalesced') {
+  console.log('Reused existing pending run:', coalesced.id)
+}
 
 // With labels (for filtering)
 await syncUsers.trigger({ orgId: 'org_123' }, { labels: { source: 'browser' } })
@@ -280,6 +293,9 @@ Subscribe to job execution events. **Listeners run synchronously** in the worker
 ```ts
 // Run lifecycle events
 durably.on('run:trigger', (e) => console.log('Triggered:', e.runId))
+durably.on('run:coalesced', (e) =>
+  console.log('Coalesced:', e.runId, 'skipped input:', e.skippedInput),
+)
 durably.on('run:leased', (e) => console.log('Leased:', e.runId))
 durably.on('run:complete', (e) => console.log('Done:', e.output))
 durably.on('run:fail', (e) => console.error('Failed:', e.error))
@@ -477,11 +493,13 @@ interface TriggerRequest<TLabels> {
   input: unknown
   idempotencyKey?: string
   concurrencyKey?: string
+  coalesce?: 'skip'
   labels?: TLabels
 }
 
 interface TriggerResponse {
   runId: string
+  disposition: Disposition
 }
 ```
 
@@ -586,11 +604,17 @@ interface Run<TLabels extends Record<string, string> = Record<string, string>> {
   updatedAt: string
 }
 
+type Disposition = 'created' | 'idempotent' | 'coalesced'
+
 interface TypedRun<
   TOutput,
   TLabels extends Record<string, string> = Record<string, string>,
 > extends Omit<Run<TLabels>, 'output'> {
   output: TOutput | null
+}
+
+type TriggerResult<TOutput, TLabels> = TypedRun<TOutput, TLabels> & {
+  disposition: Disposition
 }
 
 interface JobHandle<
@@ -603,14 +627,14 @@ interface JobHandle<
   trigger(
     input: TInput,
     options?: TriggerOptions<TLabels>,
-  ): Promise<TypedRun<TOutput, TLabels>>
+  ): Promise<TriggerResult<TOutput, TLabels>>
   triggerAndWait(
     input: TInput,
     options?: TriggerAndWaitOptions<TLabels>,
-  ): Promise<{ id: string; output: TOutput }>
+  ): Promise<TriggerAndWaitResult<TOutput>>
   batchTrigger(
     inputs: BatchTriggerInput<TInput, TLabels>[],
-  ): Promise<TypedRun<TOutput, TLabels>[]>
+  ): Promise<TriggerResult<TOutput, TLabels>[]>
   getRun(id: string): Promise<TypedRun<TOutput, TLabels> | null>
   getRuns(
     filter?: Omit<RunFilter<TLabels>, 'jobName'>,
@@ -622,7 +646,14 @@ interface TriggerOptions<
 > {
   idempotencyKey?: string
   concurrencyKey?: string
+  coalesce?: 'skip'
   labels?: TLabels
+}
+
+interface TriggerAndWaitResult<TOutput> {
+  id: string
+  output: TOutput
+  disposition: Disposition
 }
 
 interface TriggerAndWaitOptions<
