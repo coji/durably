@@ -804,7 +804,7 @@ export function createKyselyStore(
           for (const row of remaining) {
             try {
               await sql`SAVEPOINT sp_release`.execute(trx)
-              await trx
+              const reset = await trx
                 .updateTable('durably_runs')
                 .set({
                   status: 'pending',
@@ -815,14 +815,14 @@ export function createKyselyStore(
                 .where('id', '=', row.id)
                 .where('status', '=', 'leased')
                 .where('lease_expires_at', '<=', now)
-                .execute()
+                .executeTakeFirst()
               await sql`RELEASE SAVEPOINT sp_release`.execute(trx)
-              count++
+              count += Number(reset.numUpdatedRows)
             } catch (err) {
               await sql`ROLLBACK TO SAVEPOINT sp_release`.execute(trx)
               if (!isUniqueViolation(err)) throw err
               // Unique violation — a pending run was inserted concurrently. Fail this lease.
-              await trx
+              const failed = await trx
                 .updateTable('durably_runs')
                 .set({
                   status: 'failed',
@@ -834,8 +834,8 @@ export function createKyselyStore(
                 })
                 .where('id', '=', row.id)
                 .where('status', '=', 'leased')
-                .execute()
-              count++
+                .executeTakeFirst()
+              count += Number(failed.numUpdatedRows)
             }
           }
         })
