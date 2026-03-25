@@ -43,11 +43,11 @@ The current `releaseExpiredLeases()` resets expired leased runs back to `status 
 
 Phase 1: Identify expired leases that **would conflict** (another pending run exists with the same concurrencyKey) and mark them as `failed` with error "lease expired, pending run already exists".
 
-Phase 2: Reset remaining expired leases to `pending` as before (no conflict possible).
+Phase 2: Reset remaining expired leases to `pending` **per-row with SAVEPOINT**, catching any unique index violations that occur due to concurrent `trigger()` calls inserting a pending run between Phase 1 and Phase 2.
 
 ```ts
 async releaseExpiredLeases(now: string): Promise<number> {
-  // Phase 1: fail expired leases that have a pending replacement
+  // Phase 1: fail expired leases that have a pending replacement (snapshot-based)
   const conflicting = await db
     .updateTable('durably_runs')
     .set({ status: 'failed', error: 'Lease expired; pending run already exists', ... })
@@ -64,19 +64,40 @@ async releaseExpiredLeases(now: string): Promise<number> {
     )
     .executeTakeFirst()
 
-  // Phase 2: reset the rest to pending (safe — no conflicts)
-  const released = await db
-    .updateTable('durably_runs')
-    .set({ status: 'pending', lease_owner: null, lease_expires_at: null, ... })
+  // Phase 2: reset remaining expired leases per-row.
+  // A concurrent trigger() may have inserted a pending run between Phase 1 and now,
+  // so each UPDATE is wrapped in SAVEPOINT. On unique violation, mark as failed.
+  const remaining = await db
+    .selectFrom('durably_runs').select('id')
     .where('status', '=', 'leased')
     .where('lease_expires_at', '<=', now)
-    .executeTakeFirst()
+    .execute()
 
-  return Number(conflicting.numUpdatedRows) + Number(released.numUpdatedRows)
+  let count = Number(conflicting.numUpdatedRows)
+  for (const row of remaining) {
+    try {
+      await sql`SAVEPOINT sp_release`.execute(db)
+      await db.updateTable('durably_runs')
+        .set({ status: 'pending', lease_owner: null, lease_expires_at: null, ... })
+        .where('id', '=', row.id)
+        .execute()
+      await sql`RELEASE SAVEPOINT sp_release`.execute(db)
+      count++
+    } catch (err) {
+      await sql`ROLLBACK TO SAVEPOINT sp_release`.execute(db)
+      // Unique violation — a pending run was inserted concurrently. Fail this lease.
+      await db.updateTable('durably_runs')
+        .set({ status: 'failed', error: 'Lease expired; pending run already exists', ... })
+        .where('id', '=', row.id)
+        .execute()
+      count++
+    }
+  }
+  return count
 }
 ```
 
-This is more correct than the old behavior: the original run lost its lease, and a replacement is already queued.
+This handles the race where `trigger()` inserts a pending run between Phase 1 and Phase 2.
 
 > `cancelRun()` is unaffected: cancelled runs have `status = 'cancelled'`, which is outside the partial index condition.
 
@@ -388,7 +409,7 @@ async trigger(
   } else if (disposition === 'coalesced') {
     eventEmitter.emit({
       type: 'run:coalesced', runId: run.id, jobName: jobDef.name,
-      skippedInput: validatedInput, skippedLabels: options?.labels ?? {},
+      labels: run.labels, skippedInput: validatedInput, skippedLabels: options?.labels ?? {},
     })
   }
 
@@ -443,12 +464,16 @@ export interface RunCoalescedEvent extends BaseEvent {
   type: 'run:coalesced'
   runId: string // ID of the existing pending run
   jobName: string
+  labels: Record<string, string> // existing run's labels (for SSE label-scoped filtering)
   skippedInput: unknown // the new input that was NOT used
   skippedLabels: Record<string, string> // the new labels that were NOT used
 }
 ```
 
-The event carries the **skipped** input AND labels (not the existing run's), so audit logs can see exactly what was deduplicated. This avoids the inconsistency of mixing new input with old labels.
+The event carries both:
+
+- **`labels`**: The existing run's labels — required by the SSE layer for label-scoped filtering (`matchesLabels()` in server.ts uses `event.labels`).
+- **`skippedInput` / `skippedLabels`**: What the caller passed (the deduplicated data) — for audit logging.
 
 **SSE/React integration**: `run:coalesced` must also be wired into the event delivery chain:
 
@@ -456,6 +481,7 @@ The event carries the **skipped** input AND labels (not the existing run's), so 
 - **durably-react types.ts**: Add `run:coalesced` to the `DurablyEvent` union type so client-side hooks can receive and filter on it.
 - **use-runs.ts (client)**: Include `run:coalesced` in the event types that trigger a refresh.
 - **use-job.ts (client) followLatest**: The `followLatest` hook currently reacts only to `run:trigger` / `run:leased`. Since coalesce skips `run:trigger`, add `run:coalesced` so follow-latest UI can track the existing pending run.
+- **use-job-subscription.ts (direct/SPA) followLatest**: Same issue — the direct hook's `followLatest` also only reacts to `run:leased`. Add `run:coalesced` handling here too.
 
 ### Step 8: Update callers
 
@@ -592,13 +618,13 @@ Test cases:
 
 12. **`batchTrigger()` uses sequential enqueue, stays atomic** — bulk INSERT cannot handle per-item coalesce/conflict semantics. Sequential enqueue (each with its own SAVEPOINT) within a single transaction preserves all-or-nothing semantics. With `coalesce: 'skip'`, conflicts are absorbed; without coalesce, any ConflictError rolls back the entire batch. The sequential processing order is a **contract**, not an implementation detail.
 
-13. **`releaseExpiredLeases()` uses 2-phase approach** — a single bulk UPDATE would fail entirely if one row hits the unique index. Phase 1: identify conflicting expired leases (another pending run exists) and mark them `failed`. Phase 2: reset the rest to `pending`. This ensures non-conflicting expired leases are always released.
+13. **`releaseExpiredLeases()` uses 2-phase + per-row SAVEPOINT** — Phase 1: bulk fail expired leases with existing pending replacements. Phase 2: per-row UPDATE with SAVEPOINT for the rest, catching any unique violations from concurrent `trigger()` calls. This handles the race where a pending run is inserted between Phase 1 and Phase 2.
 
 14. **v1 migration consolidation** — only production user (upflow) will recreate their database. No incremental v2 migration needed. Partial unique index is added to v1, keeping `LATEST_SCHEMA_VERSION = 1`.
 
 15. **Runtime validation of `coalesce` value** — `trigger()` and `batchTrigger()` validate that `coalesce` is `'skip'` (or undefined). Invalid values from HTTP or programmatic API throw `ValidationError`. Prevents silent misconfiguration.
 
-16. **Breaking change is acceptable** — pre-v1 (v0.14.0). TypeScript compiler flags all affected call sites. Migration guide provided.
+16. **Breaking change is acceptable** — pre-v1 (v0.14.0). Since `TriggerResult` extends `TypedRun`, most existing code works without changes. The TypeScript compiler will NOT flag all call sites — only code that explicitly narrows to `TypedRun` or serializes the return value may be affected.
 
 ## Future: merge mode
 
