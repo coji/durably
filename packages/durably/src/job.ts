@@ -278,6 +278,49 @@ export function createJobHandle<
   const inputSchema = jobDef.input as z.ZodType<TInput>
   const outputSchema = jobDef.output as z.ZodType<TOutput> | undefined
 
+  function validateCoalesceOption(
+    coalesce: string | undefined,
+    concurrencyKey: string | undefined,
+    context?: string,
+  ) {
+    if (coalesce === undefined) return
+    const suffix = context ? ` ${context}` : ''
+    if (coalesce !== 'skip') {
+      throw new ValidationError(
+        `Invalid coalesce value${suffix}: '${coalesce}'. Valid values: 'skip'`,
+      )
+    }
+    if (!concurrencyKey) {
+      throw new ValidationError(`coalesce requires concurrencyKey${suffix}`)
+    }
+  }
+
+  function emitDispositionEvent(
+    disposition: Disposition,
+    run: Run,
+    input: unknown,
+    labels?: Record<string, string>,
+  ) {
+    if (disposition === 'created') {
+      eventEmitter.emit({
+        type: 'run:trigger',
+        runId: run.id,
+        jobName: jobDef.name,
+        input,
+        labels: run.labels,
+      })
+    } else if (disposition === 'coalesced') {
+      eventEmitter.emit({
+        type: 'run:coalesced',
+        runId: run.id,
+        jobName: jobDef.name,
+        labels: run.labels,
+        skippedInput: input,
+        skippedLabels: labels ?? {},
+      })
+    }
+  }
+
   const handle: JobHandle<TName, TInput, TOutput, TLabels> = {
     name: jobDef.name,
 
@@ -285,17 +328,7 @@ export function createJobHandle<
       input: TInput,
       options?: TriggerOptions<TLabels>,
     ): Promise<TriggerResult<TOutput, TLabels>> {
-      // Validate coalesce option
-      if (options?.coalesce !== undefined) {
-        if (options.coalesce !== 'skip') {
-          throw new ValidationError(
-            `Invalid coalesce value: '${options.coalesce}'. Valid values: 'skip'`,
-          )
-        }
-        if (!options.concurrencyKey) {
-          throw new ValidationError('coalesce requires concurrencyKey')
-        }
-      }
+      validateCoalesceOption(options?.coalesce, options?.concurrencyKey)
 
       // Validate input
       const validatedInput = validateJobInputOrThrow(inputSchema, input)
@@ -315,25 +348,12 @@ export function createJobHandle<
         coalesce: options?.coalesce,
       })
 
-      // Emit event based on disposition
-      if (disposition === 'created') {
-        eventEmitter.emit({
-          type: 'run:trigger',
-          runId: run.id,
-          jobName: jobDef.name,
-          input: validatedInput,
-          labels: run.labels,
-        })
-      } else if (disposition === 'coalesced') {
-        eventEmitter.emit({
-          type: 'run:coalesced',
-          runId: run.id,
-          jobName: jobDef.name,
-          labels: run.labels,
-          skippedInput: validatedInput,
-          skippedLabels: (options?.labels ?? {}) as Record<string, string>,
-        })
-      }
+      emitDispositionEvent(
+        disposition,
+        run,
+        validatedInput,
+        options?.labels as Record<string, string>,
+      )
 
       return { ...run, disposition } as TriggerResult<TOutput, TLabels>
     },
@@ -468,18 +488,11 @@ export function createJobHandle<
       }[] = []
       for (let i = 0; i < normalized.length; i++) {
         const opts = normalized[i].options
-        if (opts?.coalesce !== undefined) {
-          if (opts.coalesce !== 'skip') {
-            throw new ValidationError(
-              `Invalid coalesce value at index ${i}: '${opts.coalesce}'. Valid values: 'skip'`,
-            )
-          }
-          if (!opts.concurrencyKey) {
-            throw new ValidationError(
-              `coalesce requires concurrencyKey at index ${i}`,
-            )
-          }
-        }
+        validateCoalesceOption(
+          opts?.coalesce,
+          opts?.concurrencyKey,
+          `at index ${i}`,
+        )
         const validatedInput = validateJobInputOrThrow(
           inputSchema,
           normalized[i].input,
@@ -512,27 +525,12 @@ export function createJobHandle<
 
       // Emit events based on disposition
       for (let i = 0; i < results.length; i++) {
-        if (results[i].disposition === 'created') {
-          eventEmitter.emit({
-            type: 'run:trigger',
-            runId: results[i].run.id,
-            jobName: jobDef.name,
-            input: validated[i].input,
-            labels: results[i].run.labels,
-          })
-        } else if (results[i].disposition === 'coalesced') {
-          eventEmitter.emit({
-            type: 'run:coalesced',
-            runId: results[i].run.id,
-            jobName: jobDef.name,
-            labels: results[i].run.labels,
-            skippedInput: validated[i].input,
-            skippedLabels: (validated[i].options?.labels ?? {}) as Record<
-              string,
-              string
-            >,
-          })
-        }
+        emitDispositionEvent(
+          results[i].disposition,
+          results[i].run,
+          validated[i].input,
+          validated[i].options?.labels as Record<string, string>,
+        )
       }
 
       return results.map(
