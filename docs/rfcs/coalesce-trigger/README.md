@@ -287,11 +287,28 @@ async enqueue(input: CreateRunInput): Promise<{ run: Run; disposition: Dispositi
 
         // Pending run was leased or completed between INSERT failure and SELECT.
         // Index slot may be free — retry once.
+        // Note: _retried is a placeholder — implement as a context parameter
+        // (e.g. enqueue(input, { retryAfterConflict: false })) to avoid
+        // mixing internal state into the business data structure.
         if (!input._retried) {
           return this.enqueue({ ...input, _retried: true })
         }
-        // Should not happen — but if retry also fails, surface the original error.
-        throw err
+        // Retry also failed — one more SELECT before giving up.
+        // Under high concurrency, another trigger may have won the retry race.
+        const lastChance = await db
+          .selectFrom('durably_runs').selectAll()
+          .where('job_name', '=', input.jobName)
+          .where('concurrency_key', '=', input.concurrencyKey)
+          .where('status', '=', 'pending')
+          .limit(1)
+          .executeTakeFirst()
+        if (lastChance) {
+          return { run: rowToRun(lastChance), disposition: 'coalesced' }
+        }
+        throw new ConflictError(
+          `Conflict after retry for concurrency key "${input.concurrencyKey}" ` +
+          `in job "${input.jobName}". Concurrent modification detected.`
+        )
       }
       // No coalesce: explicit error
       throw new ConflictError(
