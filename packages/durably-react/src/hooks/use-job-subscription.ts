@@ -54,6 +54,7 @@ type JobSubscriptionAction<TOutput = unknown> =
   | {
       type: 'switch_to_run'
       runId: string
+      status?: 'leased' | 'pending'
     }
 
 function jobSubscriptionReducer<TOutput = unknown>(
@@ -69,7 +70,7 @@ function jobSubscriptionReducer<TOutput = unknown>(
       return {
         ...initialSubscriptionState,
         currentRunId: action.runId,
-        status: 'leased',
+        status: action.status ?? 'leased',
       } as JobSubscriptionState<TOutput>
 
     case 'reset':
@@ -138,7 +139,11 @@ export function useJobSubscription<TOutput = unknown>(
       durably.on('run:coalesced', (event) => {
         if (event.jobName !== jobName) return
         if (followLatest) {
-          dispatch({ type: 'switch_to_run', runId: event.runId })
+          dispatch({
+            type: 'switch_to_run',
+            runId: event.runId,
+            status: 'pending',
+          })
           currentRunIdRef.current = event.runId
         }
       }),

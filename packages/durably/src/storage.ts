@@ -295,7 +295,25 @@ function createWriteMutex() {
 }
 
 /**
+ * Check if an error is a unique constraint violation (any kind).
+ * PostgreSQL: SQLSTATE '23505' or constraint name present.
+ * SQLite/libsql: message contains "UNIQUE constraint failed" or similar.
+ */
+function isUniqueViolation(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  // PostgreSQL: SQLSTATE 23505 = unique_violation
+  const pgCode = (err as { code?: string }).code
+  if (pgCode === '23505') return true
+  // PostgreSQL: constraint property present
+  if ((err as { constraint?: string }).constraint) return true
+  // SQLite/libsql
+  if (/unique constraint/i.test(err.message)) return true
+  return false
+}
+
+/**
  * Identify which unique constraint was violated.
+ * Only call after isUniqueViolation() returns true.
  * PostgreSQL: constraint name from error object.
  * SQLite/libsql: column names in error message (index names not included).
  */
@@ -476,6 +494,9 @@ export function createKyselyStore(
       }
       return { run: rowToRun(row), disposition: 'created' }
     } catch (err) {
+      // Only handle unique constraint violations — rethrow connection errors, etc.
+      if (!isUniqueViolation(err)) throw err
+
       const violation = parseUniqueViolation(err)
 
       // A single INSERT can violate both constraints non-deterministically.
@@ -788,11 +809,14 @@ export function createKyselyStore(
                   updated_at: now,
                 })
                 .where('id', '=', row.id)
+                .where('status', '=', 'leased')
+                .where('lease_expires_at', '<=', now)
                 .execute()
               await sql`RELEASE SAVEPOINT sp_release`.execute(trx)
               count++
-            } catch {
+            } catch (err) {
               await sql`ROLLBACK TO SAVEPOINT sp_release`.execute(trx)
+              if (!isUniqueViolation(err)) throw err
               // Unique violation — a pending run was inserted concurrently. Fail this lease.
               await trx
                 .updateTable('durably_runs')
@@ -805,6 +829,7 @@ export function createKyselyStore(
                   updated_at: now,
                 })
                 .where('id', '=', row.id)
+                .where('status', '=', 'leased')
                 .execute()
               count++
             }
