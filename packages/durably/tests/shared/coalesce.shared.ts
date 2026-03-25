@@ -39,6 +39,11 @@ export function createCoalesceTests(createDialect: () => Dialect) {
 
     afterEach(async () => {
       await durably.stop()
+      // Clean up data for PostgreSQL (shared schema across tests)
+      await durably.db.deleteFrom('durably_steps').execute()
+      await durably.db.deleteFrom('durably_run_labels').execute()
+      await durably.db.deleteFrom('durably_logs').execute()
+      await durably.db.deleteFrom('durably_runs').execute()
       await durably.db.destroy()
     })
 
