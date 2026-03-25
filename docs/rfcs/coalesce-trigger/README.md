@@ -119,7 +119,7 @@ if (run.disposition === 'coalesced') { ... }
 
 This also surfaces idempotency hits: previously `trigger()` with a matching `idempotencyKey` silently returned the existing run. Now it returns `disposition: 'idempotent'`.
 
-> **Migration note**: This is a breaking change, but the TypeScript compiler will flag all call sites where the new `disposition` property conflicts with existing type expectations. Existing code that only reads Run properties works without changes.
+> **Migration note**: This is a breaking change. However, since `TriggerResult` extends `TypedRun`, most existing code that reads Run properties (e.g. `run.id`, `run.status`) works without changes. The TypeScript compiler will NOT flag all call sites — `TriggerResult` is assignable to `TypedRun` in many contexts. Callers that explicitly type their variables as `TypedRun` or pass the result to functions expecting `TypedRun` will still work. The main impact is on code that spreads or serializes the return value (the extra `disposition` field will be included).
 
 ### Behavior matrix
 
@@ -255,19 +255,23 @@ async enqueue(input: CreateRunInput): Promise<{ run: Run; disposition: Dispositi
   } catch (err) {
     const violation = parseUniqueViolation(err)
 
-    // Idempotency race: another concurrent trigger inserted with same idempotency key
-    // between our SELECT and INSERT. Re-fetch and return as idempotent.
-    if (violation === 'idempotency' && input.idempotencyKey) {
-      const existing = await db
+    // IMPORTANT: A single INSERT can violate both idempotency and pending-concurrency
+    // constraints simultaneously. The DB returns whichever constraint it checks first,
+    // which is non-deterministic. To guarantee "idempotency takes priority", always
+    // check idempotency first regardless of which constraint the DB reported.
+    if (input.idempotencyKey) {
+      const idempotent = await db
         .selectFrom('durably_runs').selectAll()
         .where('job_name', '=', input.jobName)
         .where('idempotency_key', '=', input.idempotencyKey)
-        .executeTakeFirstOrThrow()
-      return { run: rowToRun(existing), disposition: 'idempotent' }
+        .executeTakeFirst()
+      if (idempotent) {
+        return { run: rowToRun(idempotent), disposition: 'idempotent' }
+      }
     }
 
-    // Pending concurrency conflict
-    if (violation === 'pending_concurrency' && input.concurrencyKey) {
+    // Not an idempotency hit — check if it's a pending concurrency conflict.
+    if ((violation === 'pending_concurrency' || violation === null) && input.concurrencyKey) {
       if (input.coalesce === 'skip') {
         // Graceful: return the conflicting run.
         // Only return pending — not leased (could be an expired orphan).
@@ -402,7 +406,13 @@ async trigger(
 
 **Implementation change**: The current `enqueueMany()` uses bulk INSERT, which cannot handle per-item coalesce/conflict semantics. When the same `concurrencyKey` appears multiple times in a batch, a bulk INSERT would fail entirely on the unique constraint.
 
-`batchTrigger()` switches to **sequential `enqueue()` calls** within a single transaction. Each `enqueue()` call uses a SAVEPOINT (required for PostgreSQL — see Step 2). The batch remains **atomic** — if any item throws (e.g. ConflictError without coalesce), the entire transaction rolls back and no runs are created. This preserves the existing "validate all, then create all" contract.
+**Store refactoring required**: The current `enqueue()` opens its own `db.transaction()` internally, so calling it N times from `batchTrigger()` creates N independent transactions — not one atomic batch. To support "sequential enqueue within a single transaction", `enqueue()` must be refactored to accept an optional transaction object (`trx`):
+
+- Extract core enqueue logic into `_enqueueInTx(trx, input)` (internal, takes a transaction)
+- `enqueue(input)` calls `db.transaction(trx => _enqueueInTx(trx, input))` (backwards compatible)
+- `batchTrigger()` calls `db.transaction(trx => items.map(i => _enqueueInTx(trx, i)))` (single transaction, per-item SAVEPOINT)
+
+Each `_enqueueInTx()` call uses a SAVEPOINT within the shared transaction (required for PostgreSQL — see Step 2). The batch remains **atomic** — if any item throws (e.g. ConflictError without coalesce), the entire transaction rolls back and no runs are created. This preserves the existing "validate all, then create all" contract.
 
 With `coalesce: 'skip'`, conflicts within the same batch are absorbed as `disposition: 'coalesced'` (the SAVEPOINT rolls back the failed INSERT, and the catch logic returns the existing run). Without coalesce, a ConflictError on any item fails the entire batch.
 
@@ -445,6 +455,7 @@ The event carries the **skipped** input AND labels (not the existing run's), so 
 - **server.ts SSE handler**: Add `run:coalesced` to the event types forwarded via SSE. The event needs a `labels` field (use the **existing run's labels**, not skippedLabels) for SSE label-scoped filtering to work. The SSE payload is a simplified projection — it doesn't need `skippedInput`/`skippedLabels`.
 - **durably-react types.ts**: Add `run:coalesced` to the `DurablyEvent` union type so client-side hooks can receive and filter on it.
 - **use-runs.ts (client)**: Include `run:coalesced` in the event types that trigger a refresh.
+- **use-job.ts (client) followLatest**: The `followLatest` hook currently reacts only to `run:trigger` / `run:leased`. Since coalesce skips `run:trigger`, add `run:coalesced` so follow-latest UI can track the existing pending run.
 
 ### Step 8: Update callers
 
@@ -571,7 +582,7 @@ Test cases:
 
 7. **`coalesce: 'skip'` string union** — extensible for future modes (`'merge'`, etc.) without breaking the API.
 
-8. **Idempotency takes priority** — idempotency check runs before INSERT, so it's evaluated before the unique index can fire. Disposition `'idempotent'` is returned regardless of coalesce flag.
+8. **Idempotency takes priority (double-checked)** — idempotency is checked both before INSERT (SELECT) and after INSERT failure (re-SELECT in catch). A single INSERT can violate both idempotency and pending-concurrency constraints simultaneously, and the DB may report either one non-deterministically. The catch block always re-checks idempotency first, regardless of which constraint the DB reported.
 
 9. **`run:coalesced` event** — carries both skipped input AND skipped labels (what the caller passed, not the existing run's data). This avoids the inconsistency of mixing new input with old labels. Webhook storm visibility is operationally important.
 
