@@ -71,7 +71,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Test (Node.js + PostgreSQL)
-        run: pnpm --filter @coji/durably test:node:all
+        run: pnpm --filter @coji/durably test:node
 
   test-browser:
     runs-on: ubuntu-latest
