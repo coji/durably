@@ -2,6 +2,8 @@
 
 Issue: #143
 
+> **Note**: Pseudo-code in this RFC is illustrative. The 28 test cases define the contract; implementation details will be validated by tests.
+
 ## Problem
 
 Webhook-driven workloads can trigger many jobs in rapid succession for the same logical entity. Since the job reads latest state from DB at execution time, intermediate triggers are redundant. Without coalescing, N webhook events create N queued runs — all executing sequentially but wastefully.
