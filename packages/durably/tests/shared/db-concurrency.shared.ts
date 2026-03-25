@@ -121,7 +121,7 @@ export function createDbConcurrencyTests(
     )
 
     it('does not lease a later same-key run while an active lease exists', async () => {
-      const first = await runtimes[0].storage.enqueue({
+      const { run: first } = await runtimes[0].storage.enqueue({
         jobName: 'same-key-1',
         input: { ordinal: 1 },
         concurrencyKey: 'group-1',
@@ -131,7 +131,7 @@ export function createDbConcurrencyTests(
         input: { ordinal: 2 },
         concurrencyKey: 'group-1',
       })
-      const keyless = await runtimes[0].storage.enqueue({
+      const { run: keyless } = await runtimes[0].storage.enqueue({
         jobName: 'keyless',
         input: { ordinal: 3 },
       })
@@ -159,7 +159,7 @@ export function createDbConcurrencyTests(
     })
 
     it('reclaims the expired lease before leasing another run with the same key', async () => {
-      const first = await runtimes[0].storage.enqueue({
+      const { run: first } = await runtimes[0].storage.enqueue({
         jobName: 'reclaim-first',
         input: { ordinal: 1 },
         concurrencyKey: 'group-1',

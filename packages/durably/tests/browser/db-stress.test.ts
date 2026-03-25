@@ -31,7 +31,7 @@ describe('sqlocal queue stress', () => {
       await runtimes[0].db.deleteFrom('durably_steps').execute()
       await runtimes[0].db.deleteFrom('durably_runs').execute()
 
-      const created = await runtimes[0].storage.enqueue({
+      const { run: created } = await runtimes[0].storage.enqueue({
         jobName: 'stress-job',
         input: { attempt, nonce: nonce() },
       })

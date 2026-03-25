@@ -34,13 +34,13 @@ export function createDbSemanticsTests(
     })
 
     it('enforces idempotent enqueue at storage level', async () => {
-      const first = await durably.storage.enqueue({
+      const { run: first } = await durably.storage.enqueue({
         jobName: 'job',
         input: { n: 1 },
         idempotencyKey: 'same-key',
       })
 
-      const second = await durably.storage.enqueue({
+      const { run: second } = await durably.storage.enqueue({
         jobName: 'job',
         input: { n: 2 },
         idempotencyKey: 'same-key',
@@ -68,7 +68,7 @@ export function createDbSemanticsTests(
     })
 
     it('rejects lease renewal with wrong generation', async () => {
-      const created = await durably.storage.enqueue({
+      const { run: created } = await durably.storage.enqueue({
         jobName: 'job',
         input: {},
       })
@@ -90,7 +90,7 @@ export function createDbSemanticsTests(
     })
 
     it('rejects completion from a stale owner after reclaim', async () => {
-      const created = await durably.storage.enqueue({
+      const { run: created } = await durably.storage.enqueue({
         jobName: 'job',
         input: {},
       })
@@ -141,7 +141,7 @@ export function createDbSemanticsTests(
     })
 
     it('reclaims an expired leased run and preserves startedAt', async () => {
-      const created = await durably.storage.enqueue({
+      const { run: created } = await durably.storage.enqueue({
         jobName: 'job',
         input: {},
       })

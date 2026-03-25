@@ -62,6 +62,7 @@ export type {
 export { createKyselyStore, toClientRun } from './storage'
 export type {
   ClientRun,
+  EnqueueResult,
   Log,
   Run,
   RunFilter,

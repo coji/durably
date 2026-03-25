@@ -7,6 +7,7 @@ import {
   jsonResponse,
   successResponse,
 } from './http'
+import type { Disposition } from './job'
 import {
   createSSEResponse,
   createSSEStreamFromSubscriptions,
@@ -54,6 +55,7 @@ export interface TriggerRequest<
  */
 export interface TriggerResponse {
   runId: string
+  disposition: Disposition
 }
 
 /**
@@ -334,9 +336,13 @@ export function createDurablyHandler<
         idempotencyKey: body.idempotencyKey,
         concurrencyKey: body.concurrencyKey,
         labels: body.labels,
+        coalesce: body.coalesce,
       })
 
-      const response: TriggerResponse = { runId: run.id }
+      const response: TriggerResponse = {
+        runId: run.id,
+        disposition: run.disposition,
+      }
       return jsonResponse(response)
     })
   }

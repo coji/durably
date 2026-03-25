@@ -831,7 +831,7 @@ function createDurablyInstance<
         `Cannot retrigger run ${runId}`,
       )
 
-      const nextRun = await storage.enqueue({
+      const { run: nextRun } = await storage.enqueue({
         jobName: run.jobName,
         input: validatedInput,
         concurrencyKey: run.concurrencyKey ?? undefined,

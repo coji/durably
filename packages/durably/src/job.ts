@@ -140,6 +140,7 @@ export type BatchTriggerInput<
 export interface TriggerAndWaitResult<TOutput> {
   id: string
   output: TOutput
+  disposition: Disposition
 }
 
 /**
@@ -159,7 +160,7 @@ export interface JobHandle<
   trigger(
     input: TInput,
     options?: TriggerOptions<TLabels>,
-  ): Promise<TypedRun<TOutput, TLabels>>
+  ): Promise<TriggerResult<TOutput, TLabels>>
 
   /**
    * Trigger a new run and wait for completion
@@ -176,7 +177,7 @@ export interface JobHandle<
    */
   batchTrigger(
     inputs: BatchTriggerInput<TInput, TLabels>[],
-  ): Promise<TypedRun<TOutput, TLabels>[]>
+  ): Promise<TriggerResult<TOutput, TLabels>[]>
 
   /**
    * Get a run by ID
@@ -283,7 +284,7 @@ export function createJobHandle<
     async trigger(
       input: TInput,
       options?: TriggerOptions<TLabels>,
-    ): Promise<TypedRun<TOutput, TLabels>> {
+    ): Promise<TriggerResult<TOutput, TLabels>> {
       // Validate input
       const validatedInput = validateJobInputOrThrow(inputSchema, input)
 
@@ -293,24 +294,27 @@ export function createJobHandle<
       }
 
       // Create the run
-      const run = await storage.enqueue({
+      const { run, disposition } = await storage.enqueue({
         jobName: jobDef.name,
         input: validatedInput,
         idempotencyKey: options?.idempotencyKey,
         concurrencyKey: options?.concurrencyKey,
         labels: options?.labels,
+        coalesce: options?.coalesce,
       })
 
-      // Emit run:trigger event
-      eventEmitter.emit({
-        type: 'run:trigger',
-        runId: run.id,
-        jobName: jobDef.name,
-        input: validatedInput,
-        labels: run.labels,
-      })
+      // Emit event based on disposition
+      if (disposition === 'created') {
+        eventEmitter.emit({
+          type: 'run:trigger',
+          runId: run.id,
+          jobName: jobDef.name,
+          input: validatedInput,
+          labels: run.labels,
+        })
+      }
 
-      return run as TypedRun<TOutput, TLabels>
+      return { ...run, disposition } as TriggerResult<TOutput, TLabels>
     },
 
     async triggerAndWait(
@@ -343,6 +347,7 @@ export function createJobHandle<
               resolve({
                 id: run.id,
                 output: event.output as TOutput,
+                disposition: run.disposition,
               })
             }
           }),
@@ -393,6 +398,7 @@ export function createJobHandle<
               resolve({
                 id: run.id,
                 output: currentRun.output as TOutput,
+                disposition: run.disposition,
               })
             } else if (currentRun.status === 'failed') {
               cleanup()
@@ -421,7 +427,7 @@ export function createJobHandle<
 
     async batchTrigger(
       inputs: (TInput | { input: TInput; options?: TriggerOptions<TLabels> })[],
-    ): Promise<TypedRun<TOutput, TLabels>[]> {
+    ): Promise<TriggerResult<TOutput, TLabels>[]> {
       if (inputs.length === 0) {
         return []
       }
@@ -459,7 +465,7 @@ export function createJobHandle<
       }
 
       // Create all runs
-      const runs = await storage.enqueueMany(
+      const results = await storage.enqueueMany(
         validated.map((v) => ({
           jobName: jobDef.name,
           input: v.input,
@@ -469,18 +475,26 @@ export function createJobHandle<
         })),
       )
 
-      // Emit run:trigger events for all created runs
-      for (let i = 0; i < runs.length; i++) {
-        eventEmitter.emit({
-          type: 'run:trigger',
-          runId: runs[i].id,
-          jobName: jobDef.name,
-          input: validated[i].input,
-          labels: runs[i].labels,
-        })
+      // Emit run:trigger events for created runs only
+      for (let i = 0; i < results.length; i++) {
+        if (results[i].disposition === 'created') {
+          eventEmitter.emit({
+            type: 'run:trigger',
+            runId: results[i].run.id,
+            jobName: jobDef.name,
+            input: validated[i].input,
+            labels: results[i].run.labels,
+          })
+        }
       }
 
-      return runs as TypedRun<TOutput, TLabels>[]
+      return results.map(
+        (r) =>
+          ({
+            ...r.run,
+            disposition: r.disposition,
+          }) as TriggerResult<TOutput, TLabels>,
+      )
     },
 
     async getRun(id: string): Promise<TypedRun<TOutput, TLabels> | null> {

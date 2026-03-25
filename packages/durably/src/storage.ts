@@ -2,6 +2,7 @@ import { type Kysely, sql } from 'kysely'
 import { monotonicFactory } from 'ulidx'
 import { claimNextPostgres } from './claim-postgres'
 import { claimNextSqlite } from './claim-sqlite'
+import type { Disposition } from './job'
 import type { Database } from './schema'
 import { rowToLog, rowToRun, rowToStep, validateLabels } from './transformers'
 
@@ -28,6 +29,14 @@ export interface CreateRunInput<
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: TLabels
+  coalesce?: 'skip'
+}
+
+export interface EnqueueResult<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
+  run: Run<TLabels>
+  disposition: Disposition
 }
 
 /**
@@ -155,8 +164,10 @@ export interface Store<
   TLabels extends Record<string, string> = Record<string, string>,
 > {
   // Run lifecycle
-  enqueue(input: CreateRunInput<TLabels>): Promise<Run<TLabels>>
-  enqueueMany(inputs: CreateRunInput<TLabels>[]): Promise<Run<TLabels>[]>
+  enqueue(input: CreateRunInput<TLabels>): Promise<EnqueueResult<TLabels>>
+  enqueueMany(
+    inputs: CreateRunInput<TLabels>[],
+  ): Promise<EnqueueResult<TLabels>[]>
   getRun<T extends Run<TLabels> = Run<TLabels>>(
     runId: string,
   ): Promise<T | null>
@@ -348,7 +359,7 @@ export function createKyselyStore(
   }
 
   const store: Store<Record<string, string>> = {
-    async enqueue(input: CreateRunInput): Promise<Run> {
+    async enqueue(input: CreateRunInput): Promise<EnqueueResult> {
       const now = new Date().toISOString()
 
       // Check for existing run with same idempotency key
@@ -361,7 +372,7 @@ export function createKyselyStore(
           .executeTakeFirst()
 
         if (existing) {
-          return rowToRun(existing)
+          return { run: rowToRun(existing), disposition: 'idempotent' }
         }
       }
 
@@ -396,17 +407,20 @@ export function createKyselyStore(
         await insertLabelRows(trx, id, input.labels)
       })
 
-      return rowToRun(run)
+      return { run: rowToRun(run), disposition: 'created' }
     },
 
-    async enqueueMany(inputs: CreateRunInput[]): Promise<Run[]> {
+    async enqueueMany(inputs: CreateRunInput[]): Promise<EnqueueResult[]> {
       if (inputs.length === 0) {
         return []
       }
       // Use transaction to ensure atomicity of idempotency checks and inserts
       return await db.transaction().execute(async (trx) => {
         const now = new Date().toISOString()
-        const runs: Database['durably_runs'][] = []
+        const results: {
+          row: Database['durably_runs']
+          disposition: Disposition
+        }[] = []
 
         // Validate all labels upfront
         for (const input of inputs) {
@@ -430,7 +444,7 @@ export function createKyselyStore(
               .executeTakeFirst()
 
             if (existing) {
-              runs.push(existing)
+              results.push({ row: existing, disposition: 'idempotent' })
               continue
             }
           }
@@ -441,7 +455,7 @@ export function createKyselyStore(
               allLabelRows.push({ run_id: id, key, value })
             }
           }
-          runs.push({
+          const row: Database['durably_runs'] = {
             id,
             job_name: input.jobName,
             input: JSON.stringify(input.input),
@@ -461,13 +475,16 @@ export function createKyselyStore(
             completed_at: null,
             created_at: now,
             updated_at: now,
-          })
+          }
+          results.push({ row, disposition: 'created' })
         }
 
         // Insert all new runs in a single batch
-        const newRuns = runs.filter((r) => r.created_at === now)
-        if (newRuns.length > 0) {
-          await trx.insertInto('durably_runs').values(newRuns).execute()
+        const newRows = results
+          .filter((r) => r.disposition === 'created')
+          .map((r) => r.row)
+        if (newRows.length > 0) {
+          await trx.insertInto('durably_runs').values(newRows).execute()
 
           // Insert normalized labels for indexed filtering (single batch)
           if (allLabelRows.length > 0) {
@@ -478,7 +495,10 @@ export function createKyselyStore(
           }
         }
 
-        return runs.map(rowToRun)
+        return results.map((r) => ({
+          run: rowToRun(r.row),
+          disposition: r.disposition,
+        }))
       })
     },
 
