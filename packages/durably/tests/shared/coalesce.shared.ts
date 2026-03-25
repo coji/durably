@@ -198,6 +198,22 @@ export function createCoalesceTests(createDialect: () => Dialect) {
         expect(second.disposition).toBe('idempotent')
       })
 
+      it('returns idempotent even with coalesce: skip when idempotencyKey matches', async () => {
+        await d.jobs.job.trigger(
+          { value: 'a' },
+          { idempotencyKey: 'idem-1', concurrencyKey: 'key-1' },
+        )
+        const second = await d.jobs.job.trigger(
+          { value: 'b' },
+          {
+            idempotencyKey: 'idem-1',
+            concurrencyKey: 'key-1',
+            coalesce: 'skip',
+          },
+        )
+        expect(second.disposition).toBe('idempotent')
+      })
+
       it('returns coalesced for skip mode', async () => {
         await d.jobs.job.trigger({ value: 'a' }, { concurrencyKey: 'key-1' })
         const second = await d.jobs.job.trigger(

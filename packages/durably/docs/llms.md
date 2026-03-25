@@ -292,6 +292,7 @@ Subscribe to job execution events. **Listeners run synchronously** in the worker
 
 ```ts
 // Run lifecycle events
+// Note: run:trigger is NOT emitted on idempotent hits (disposition: 'idempotent')
 durably.on('run:trigger', (e) => console.log('Triggered:', e.runId))
 durably.on('run:coalesced', (e) =>
   console.log('Coalesced:', e.runId, 'skipped input:', e.skippedInput),
