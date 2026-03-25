@@ -46,6 +46,7 @@ export interface TriggerRequest<
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: TLabels
+  coalesce?: 'skip'
 }
 
 /**

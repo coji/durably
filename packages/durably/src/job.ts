@@ -78,6 +78,11 @@ export type JobFunction<TInput, TOutput> = (
 ) => Promise<TOutput>
 
 /**
+ * How a trigger was resolved relative to durable storage.
+ */
+export type Disposition = 'created' | 'idempotent' | 'coalesced'
+
+/**
  * Trigger options for trigger() and batchTrigger()
  */
 export interface TriggerOptions<
@@ -86,6 +91,7 @@ export interface TriggerOptions<
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: TLabels
+  coalesce?: 'skip'
 }
 
 /**
@@ -111,6 +117,14 @@ export interface TypedRun<
 > extends Omit<Run<TLabels>, 'output'> {
   output: TOutput | null
 }
+
+/**
+ * Result of trigger() / batchTrigger(): the run plus how it was resolved.
+ */
+export type TriggerResult<
+  TOutput,
+  TLabels extends Record<string, string> = Record<string, string>,
+> = TypedRun<TOutput, TLabels> & { disposition: Disposition }
 
 /**
  * Batch trigger input - either just the input or input with options
