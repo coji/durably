@@ -1,6 +1,11 @@
 import { type z, prettifyError } from 'zod'
 import type { JobDefinition } from './define-job'
-import { toError, ValidationError } from './errors'
+import {
+  CancelledError,
+  NotFoundError,
+  toError,
+  ValidationError,
+} from './errors'
 import type { EventEmitter, LogData, ProgressData } from './events'
 import type { Run, RunFilter, Store } from './storage'
 
@@ -95,11 +100,9 @@ export interface TriggerOptions<
 }
 
 /**
- * Options for triggerAndWait() (extends TriggerOptions with wait-specific options)
+ * Options for waiting on a run (live onProgress/onLog only; no replay of past events)
  */
-export interface TriggerAndWaitOptions<
-  TLabels extends Record<string, string> = Record<string, string>,
-> extends TriggerOptions<TLabels> {
+export interface WaitForRunOptions {
   /** Timeout in milliseconds */
   timeout?: number
   /** Called when step.progress() is invoked during execution */
@@ -107,6 +110,14 @@ export interface TriggerAndWaitOptions<
   /** Called when step.log is invoked during execution */
   onLog?: (log: LogData) => void | Promise<void>
 }
+
+/**
+ * Options for triggerAndWait() (extends TriggerOptions with wait-specific options)
+ */
+export interface TriggerAndWaitOptions<
+  TLabels extends Record<string, string> = Record<string, string>,
+>
+  extends TriggerOptions<TLabels>, WaitForRunOptions {}
 
 /**
  * Typed run with output type
@@ -248,6 +259,131 @@ export function createJobRegistry(): JobRegistry {
 }
 
 /**
+ * Wait for a run to reach a terminal state via events and storage (race-safe).
+ * Subscribes to run:complete, run:fail, run:cancel; onProgress/onLog only when the run is still active.
+ */
+export function waitForRunCompletion(
+  runId: string,
+  storage: Store,
+  eventEmitter: EventEmitter,
+  options?: WaitForRunOptions,
+  timeoutMessagePrefix = 'waitForRun',
+): Promise<Run> {
+  return new Promise((resolve, reject) => {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    let resolved = false
+
+    const unsubscribes: (() => void)[] = []
+
+    const cleanup = () => {
+      if (resolved) return
+      resolved = true
+      for (const unsub of unsubscribes) unsub()
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId)
+      }
+    }
+
+    unsubscribes.push(
+      eventEmitter.on('run:complete', (event) => {
+        if (event.runId !== runId || resolved) return
+        cleanup()
+        storage
+          .getRun(runId)
+          .then((run) => {
+            if (run) resolve(run)
+            else reject(new NotFoundError(`Run not found: ${runId}`))
+          })
+          .catch((err) => reject(toError(err)))
+      }),
+    )
+
+    unsubscribes.push(
+      eventEmitter.on('run:fail', (event) => {
+        if (event.runId !== runId || resolved) return
+        cleanup()
+        reject(new Error(event.error))
+      }),
+    )
+
+    unsubscribes.push(
+      eventEmitter.on('run:cancel', (event) => {
+        if (event.runId !== runId || resolved) return
+        cleanup()
+        reject(new CancelledError(runId))
+      }),
+    )
+
+    if (options?.onProgress) {
+      const onProgress = options.onProgress
+      unsubscribes.push(
+        eventEmitter.on('run:progress', (event) => {
+          if (event.runId !== runId || resolved) return
+          void Promise.resolve(onProgress(event.progress)).catch(noop)
+        }),
+      )
+    }
+
+    if (options?.onLog) {
+      const onLog = options.onLog
+      unsubscribes.push(
+        eventEmitter.on('log:write', (event) => {
+          if (event.runId !== runId || resolved) return
+          const { level, message, data, stepName } = event
+          void Promise.resolve(onLog({ level, message, data, stepName })).catch(
+            noop,
+          )
+        }),
+      )
+    }
+
+    storage
+      .getRun(runId)
+      .then((currentRun) => {
+        if (resolved) return
+        if (!currentRun) {
+          cleanup()
+          reject(new NotFoundError(`Run not found: ${runId}`))
+          return
+        }
+        if (currentRun.status === 'completed') {
+          cleanup()
+          resolve(currentRun)
+          return
+        }
+        if (currentRun.status === 'failed') {
+          cleanup()
+          reject(new Error(currentRun.error || 'Run failed'))
+          return
+        }
+        if (currentRun.status === 'cancelled') {
+          cleanup()
+          reject(new CancelledError(runId))
+          return
+        }
+      })
+      .catch((error) => {
+        if (resolved) return
+        cleanup()
+        reject(toError(error))
+      })
+
+    if (options?.timeout !== undefined) {
+      timeoutId = setTimeout(() => {
+        if (!resolved) {
+          cleanup()
+          reject(
+            new Error(
+              `${timeoutMessagePrefix} timeout after ${options.timeout}ms`,
+            ),
+          )
+        }
+      }, options.timeout)
+    }
+  })
+}
+
+/**
  * Create a job handle from a JobDefinition
  */
 export function createJobHandle<
@@ -364,108 +500,21 @@ export function createJobHandle<
       input: TInput,
       options?: TriggerAndWaitOptions<TLabels>,
     ): Promise<TriggerAndWaitResult<TOutput>> {
-      // Trigger the run
       const run = await this.trigger(input, options)
 
-      // Wait for completion via event subscription
-      return new Promise((resolve, reject) => {
-        let timeoutId: ReturnType<typeof setTimeout> | undefined
-        let resolved = false
+      const completedRun = await waitForRunCompletion(
+        run.id,
+        storage,
+        eventEmitter,
+        options,
+        'triggerAndWait',
+      )
 
-        const unsubscribes: (() => void)[] = []
-
-        const cleanup = () => {
-          if (resolved) return
-          resolved = true
-          for (const unsub of unsubscribes) unsub()
-          if (timeoutId) {
-            clearTimeout(timeoutId)
-          }
-        }
-
-        unsubscribes.push(
-          eventEmitter.on('run:complete', (event) => {
-            if (event.runId === run.id && !resolved) {
-              cleanup()
-              resolve({
-                id: run.id,
-                output: event.output as TOutput,
-                disposition: run.disposition,
-              })
-            }
-          }),
-        )
-
-        unsubscribes.push(
-          eventEmitter.on('run:fail', (event) => {
-            if (event.runId === run.id && !resolved) {
-              cleanup()
-              reject(new Error(event.error))
-            }
-          }),
-        )
-
-        if (options?.onProgress) {
-          const onProgress = options.onProgress
-          unsubscribes.push(
-            eventEmitter.on('run:progress', (event) => {
-              if (event.runId === run.id && !resolved) {
-                void Promise.resolve(onProgress(event.progress)).catch(noop)
-              }
-            }),
-          )
-        }
-
-        if (options?.onLog) {
-          const onLog = options.onLog
-          unsubscribes.push(
-            eventEmitter.on('log:write', (event) => {
-              if (event.runId === run.id && !resolved) {
-                const { level, message, data, stepName } = event
-                void Promise.resolve(
-                  onLog({ level, message, data, stepName }),
-                ).catch(noop)
-              }
-            }),
-          )
-        }
-
-        // Check current status after subscribing (race condition mitigation)
-        // If the run completed before we subscribed, we need to handle it
-        storage
-          .getRun(run.id)
-          .then((currentRun) => {
-            if (resolved || !currentRun) return
-            if (currentRun.status === 'completed') {
-              cleanup()
-              resolve({
-                id: run.id,
-                output: currentRun.output as TOutput,
-                disposition: run.disposition,
-              })
-            } else if (currentRun.status === 'failed') {
-              cleanup()
-              reject(new Error(currentRun.error || 'Run failed'))
-            }
-          })
-          .catch((error) => {
-            if (resolved) return
-            cleanup()
-            reject(toError(error))
-          })
-
-        // Set timeout if specified
-        if (options?.timeout !== undefined) {
-          timeoutId = setTimeout(() => {
-            if (!resolved) {
-              cleanup()
-              reject(
-                new Error(`triggerAndWait timeout after ${options.timeout}ms`),
-              )
-            }
-          }, options.timeout)
-        }
-      })
+      return {
+        id: run.id,
+        output: completedRun.output as TOutput,
+        disposition: run.disposition,
+      }
     },
 
     async batchTrigger(

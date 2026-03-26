@@ -24,9 +24,11 @@ import {
 import {
   type JobHandle,
   type JobRegistry,
+  type WaitForRunOptions,
   createJobHandle,
   createJobRegistry,
   validateJobInputOrThrow,
+  waitForRunCompletion,
 } from './job'
 import { runMigrations } from './migrations'
 import type { Database } from './schema'
@@ -395,6 +397,15 @@ export interface Durably<
    * Returns a ReadableStream that can be used for SSE
    */
   subscribe(runId: string): ReadableStream<DurablyEvent>
+
+  /**
+   * Wait for an existing run to complete (no new run created).
+   * Resolves only when status is completed; failed, cancelled, or missing run throws.
+   */
+  waitForRun(
+    runId: string,
+    options?: WaitForRunOptions,
+  ): Promise<Run<TLabels> & { status: 'completed'; output: unknown }>
 }
 
 /**
@@ -666,6 +677,20 @@ function createDurablyInstance<
 
     getRun: storage.getRun.bind(storage),
     getRuns: storage.getRuns.bind(storage),
+
+    async waitForRun(
+      runId: string,
+      options?: WaitForRunOptions,
+    ): Promise<Run<TLabels> & { status: 'completed'; output: unknown }> {
+      const run = await waitForRunCompletion(
+        runId,
+        storage,
+        eventEmitter,
+        options,
+        'waitForRun',
+      )
+      return run as Run<TLabels> & { status: 'completed'; output: unknown }
+    },
 
     use(plugin: DurablyPlugin): void {
       plugin.install(durably)
