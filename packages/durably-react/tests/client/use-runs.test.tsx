@@ -107,6 +107,46 @@ describe('useRuns (client)', () => {
     expect(url).toContain('status=completed')
   })
 
+  it('appends multiple status params to the request URL', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve([]),
+    })
+    globalThis.fetch = fetchMock
+
+    renderHook(() =>
+      useRuns({ api: '/api/durably', status: ['pending', 'leased'] }),
+    )
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled()
+    })
+
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('status=pending')
+    expect(url).toContain('status=leased')
+  })
+
+  it('does not refetch when the same status array values are passed on re-render', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve([]),
+    })
+    globalThis.fetch = fetchMock
+
+    const { rerender } = renderHook(() =>
+      useRuns({ api: '/api/durably', status: ['pending', 'leased'] }),
+    )
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    })
+
+    rerender()
+
+    expect(fetchMock.mock.calls.length).toBe(1)
+  })
+
   it('handles pagination', async () => {
     const page1Runs = [
       createMockRun({ id: 'run-1' }),

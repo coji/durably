@@ -146,6 +146,42 @@ export function createRunApiTests(createDialect: () => Dialect) {
         expect(pending.length + completed.length).toBe(2)
       })
 
+      it('filters by multiple statuses (OR)', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'multi-status-filter-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        await d.jobs.job.trigger({})
+        await d.jobs.job.trigger({})
+
+        const active = await d.getRuns({ status: ['pending', 'leased'] })
+        expect(active).toHaveLength(2)
+        for (const run of active) {
+          expect(['pending', 'leased']).toContain(run.status)
+        }
+      })
+
+      it('treats empty status array as no filter', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'empty-status-filter-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        await d.jobs.job.trigger({})
+        await d.jobs.job.trigger({})
+
+        const all = await d.getRuns()
+        const withEmptyStatus = await d.getRuns({ status: [] })
+        expect(withEmptyStatus).toHaveLength(all.length)
+      })
+
       it('filters by jobName', async () => {
         const d1 = durably.register({
           job1: defineJob({

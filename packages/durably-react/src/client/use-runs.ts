@@ -70,9 +70,9 @@ export interface UseRunsClientOptions {
    */
   jobName?: string | string[]
   /**
-   * Filter by status
+   * Filter by status(es). Pass one status, or an array for multiple (OR).
    */
-  status?: RunStatus
+  status?: RunStatus | RunStatus[]
   /**
    * Filter by labels (all specified labels must match)
    */
@@ -231,6 +231,14 @@ export function useRuns<
     [jobNameKey],
   )
 
+  const statusKey = status !== undefined ? JSON.stringify(status) : undefined
+  const stableStatus = useMemo((): RunStatus | RunStatus[] | undefined => {
+    if (statusKey === undefined) return undefined
+    const parsed = JSON.parse(statusKey) as RunStatus | RunStatus[]
+    if (Array.isArray(parsed) && parsed.length === 0) return undefined
+    return parsed
+  }, [statusKey])
+
   const [runs, setRuns] = useState<TypedClientRun<TInput, TOutput>[]>([])
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(false)
@@ -247,7 +255,7 @@ export function useRuns<
     try {
       const params = new URLSearchParams()
       appendJobNameToParams(params, stableJobName)
-      if (status) params.set('status', status)
+      appendStatusToParams(params, stableStatus)
       appendLabelsToParams(params, stableLabels)
       params.set('limit', String(pageSize + 1))
       params.set('offset', String(page * pageSize))
@@ -274,7 +282,7 @@ export function useRuns<
         setIsLoading(false)
       }
     }
-  }, [api, stableJobName, status, stableLabels, pageSize, page])
+  }, [api, stableJobName, stableStatus, stableLabels, pageSize, page])
 
   // Initial fetch
   useEffect(() => {
@@ -398,6 +406,16 @@ function appendJobNameToParams(
   if (!jobName) return
   for (const name of Array.isArray(jobName) ? jobName : [jobName]) {
     params.append('jobName', name)
+  }
+}
+
+function appendStatusToParams(
+  params: URLSearchParams,
+  status: RunStatus | RunStatus[] | undefined,
+) {
+  if (!status) return
+  for (const s of Array.isArray(status) ? status : [status]) {
+    params.append('status', s)
   }
 }
 

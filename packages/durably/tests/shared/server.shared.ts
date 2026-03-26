@@ -417,6 +417,64 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(response.status).toBe(400)
       })
 
+      it('filters by multiple status query params', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'multi-status-api-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        await d.jobs.job.trigger({})
+        await d.jobs.job.trigger({})
+
+        const request = new Request(
+          'http://localhost/api/durably/runs?status=pending&status=leased',
+          { method: 'GET' },
+        )
+
+        const response = await handler.handle(request, '/api/durably')
+        const body = await response.json()
+
+        expect(response.status).toBe(200)
+        expect(body).toHaveLength(2)
+        for (const run of body) {
+          expect(['pending', 'leased']).toContain(run.status)
+        }
+      })
+
+      it('rejects invalid status when multiple params are present', async () => {
+        const request = new Request(
+          'http://localhost/api/durably/runs?status=pending&status=running',
+          { method: 'GET' },
+        )
+
+        const response = await handler.handle(request, '/api/durably')
+        expect(response.status).toBe(400)
+      })
+
+      it('rejects empty status query value', async () => {
+        const request = new Request(
+          'http://localhost/api/durably/runs?status=',
+          {
+            method: 'GET',
+          },
+        )
+
+        const response = await handler.handle(request, '/api/durably')
+        expect(response.status).toBe(400)
+      })
+
+      it('rejects empty status when combined with valid status', async () => {
+        const request = new Request(
+          'http://localhost/api/durably/runs?status=pending&status=',
+          { method: 'GET' },
+        )
+
+        const response = await handler.handle(request, '/api/durably')
+        expect(response.status).toBe(400)
+      })
+
       it('supports limit and offset', async () => {
         const d = durably.register({
           job: defineJob({

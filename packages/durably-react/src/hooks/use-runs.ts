@@ -1,4 +1,4 @@
-import type { JobDefinition } from '@coji/durably'
+import type { JobDefinition, RunStatus } from '@coji/durably'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useDurably } from '../context'
 import { type TypedRun, isJobDefinition } from '../types'
@@ -12,9 +12,9 @@ export interface UseRunsOptions {
    */
   jobName?: string | string[]
   /**
-   * Filter by status
+   * Filter by status(es). Pass one status, or an array for multiple (OR).
    */
-  status?: 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
+  status?: RunStatus | RunStatus[]
   /**
    * Filter by labels (all specified labels must match)
    */
@@ -156,7 +156,6 @@ export function useRuns<
 
   const pageSize = options?.pageSize ?? 10
   const realtime = options?.realtime ?? true
-  const status = options?.status
 
   // Stabilize jobName reference to prevent re-fetch loops with array literals
   const jobNameKey = jobName ? JSON.stringify(jobName) : undefined
@@ -165,6 +164,15 @@ export function useRuns<
       jobNameKey ? (JSON.parse(jobNameKey) as string | string[]) : undefined,
     [jobNameKey],
   )
+
+  const statusKey =
+    options?.status !== undefined ? JSON.stringify(options.status) : undefined
+  const stableStatus = useMemo((): RunStatus | RunStatus[] | undefined => {
+    if (statusKey === undefined) return undefined
+    const parsed = JSON.parse(statusKey) as RunStatus | RunStatus[]
+    if (Array.isArray(parsed) && parsed.length === 0) return undefined
+    return parsed
+  }, [statusKey])
 
   // Stabilize labels reference to prevent infinite re-renders
   const labelsKey = options?.labels ? JSON.stringify(options.labels) : undefined
@@ -186,7 +194,7 @@ export function useRuns<
     try {
       const data = await durably.getRuns({
         jobName: stableJobName,
-        status,
+        status: stableStatus,
         labels,
         limit: pageSize + 1,
         offset: page * pageSize,
@@ -196,7 +204,7 @@ export function useRuns<
     } finally {
       setIsLoading(false)
     }
-  }, [durably, stableJobName, status, labels, pageSize, page])
+  }, [durably, stableJobName, stableStatus, labels, pageSize, page])
 
   // Initial fetch and subscribe to events
   useEffect(() => {

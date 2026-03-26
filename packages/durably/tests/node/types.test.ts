@@ -16,6 +16,7 @@ import {
   type ProgressData,
   type Run,
   type RunFilter,
+  type RunStatus,
   type TriggerOptions,
   type WaitForRunOptions,
 } from '../../src'
@@ -95,6 +96,12 @@ describe('Type inference', () => {
       expectTypeOf<RunFilter<Labels>>().toMatchTypeOf<{
         labels?: { organizationId?: string; env?: string }
       }>()
+    })
+
+    it('RunFilter.status accepts a single status or an array', () => {
+      expectTypeOf<RunFilter['status']>().toEqualTypeOf<
+        RunStatus | RunStatus[] | undefined
+      >()
     })
 
     it('Durably.getRun returns Run with typed labels', () => {
