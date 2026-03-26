@@ -12,9 +12,12 @@ import {
   defineJob,
   type Durably,
   type JobHandle,
+  type LogData,
+  type ProgressData,
   type Run,
   type RunFilter,
   type TriggerOptions,
+  type WaitForRunOptions,
 } from '../../src'
 
 describe('Type inference', () => {
@@ -134,6 +137,27 @@ describe('Type inference', () => {
       expectTypeOf(fn).returns.toMatchTypeOf<
         Durably<Record<string, never>, Labels>
       >()
+    })
+  })
+
+  describe('waitForRun', () => {
+    it('is non-generic and resolves to completed run with unknown output', () => {
+      type D = Durably<Record<string, never>, Record<string, string>>
+      expectTypeOf<D['waitForRun']>().parameter(0).toEqualTypeOf<string>()
+      expectTypeOf<D['waitForRun']>()
+        .parameter(1)
+        .toEqualTypeOf<WaitForRunOptions | undefined>()
+      expectTypeOf<D['waitForRun']>().returns.resolves.toMatchTypeOf<
+        Run<Record<string, string>> & { status: 'completed'; output: unknown }
+      >()
+    })
+
+    it('exports WaitForRunOptions with timeout and live callbacks', () => {
+      expectTypeOf<WaitForRunOptions>().toMatchTypeOf<{
+        timeout?: number
+        onProgress?: (progress: ProgressData) => void | Promise<void>
+        onLog?: (log: LogData) => void | Promise<void>
+      }>()
     })
   })
 })

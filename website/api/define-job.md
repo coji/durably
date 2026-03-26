@@ -126,6 +126,17 @@ const { output } = await job.triggerAndWait(
 )
 ```
 
+::: tip triggerAndWait vs waitForRun
+`triggerAndWait()` creates a new run and waits. To wait for an **existing** run, use [`durably.waitForRun(runId)`](/api/create-durably#waitforrun).
+
+```ts
+// Trigger first, wait later
+const run = await job.trigger({ orgId: 'org_123' })
+const completed = await durably.waitForRun(run.id)
+```
+
+:::
+
 ### `batchTrigger()`
 
 ```ts

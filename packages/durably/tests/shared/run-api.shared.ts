@@ -2,6 +2,7 @@ import type { Dialect } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import {
+  CancelledError,
   createDurably,
   defineJob,
   type Durably,
@@ -11,6 +12,20 @@ import {
 
 export function createRunApiTests(createDialect: () => Dialect) {
   describe('Run API', () => {
+    function sleepUntilAbort(signal: AbortSignal, ms = 10_000): Promise<void> {
+      return new Promise((resolve) => {
+        const t = setTimeout(() => resolve(), ms)
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(t)
+            resolve()
+          },
+          { once: true },
+        )
+      })
+    }
+
     let durably: Durably
 
     beforeEach(async () => {
@@ -504,6 +519,296 @@ export function createRunApiTests(createDialect: () => Dialect) {
           message: 'Something went wrong',
           data: { code: 42 },
         })
+      })
+
+      it('rejects with CancelledError when run is cancelled while executing', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'trigger-and-wait-cancel-leased',
+            input: z.object({}),
+            run: async (step) => {
+              await step.run('slow', async (signal) => {
+                await sleepUntilAbort(signal)
+              })
+            },
+          }),
+        })
+
+        d.start()
+
+        const p = d.jobs.job.triggerAndWait({})
+
+        await vi.waitFor(
+          async () => {
+            const leased = await d.getRuns({ status: 'leased' })
+            expect(leased.length).toBe(1)
+          },
+          { timeout: 2000 },
+        )
+
+        const run = (await d.getRuns({ status: 'leased' }))[0]
+        await d.cancel(run.id)
+
+        await expect(p).rejects.toThrow(CancelledError)
+      })
+
+      it('rejects with CancelledError when run was cancelled before worker starts', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'trigger-and-wait-cancel-pending',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        const p = d.jobs.job.triggerAndWait({})
+
+        const pending = await vi.waitFor(
+          async () => {
+            const runs = await d.getRuns({ status: 'pending' })
+            if (runs.length < 1) throw new Error('pending')
+            return runs[0]
+          },
+          { timeout: 2000 },
+        )
+
+        await d.cancel(pending.id)
+
+        await expect(p).rejects.toThrow(CancelledError)
+      })
+    })
+
+    describe('waitForRun()', () => {
+      it('resolves with completed run', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'wait-for-run-success',
+            input: z.object({ value: z.number() }),
+            output: z.object({ result: z.number() }),
+            run: async (_step, input) => ({ result: input.value * 3 }),
+          }),
+        })
+
+        const triggered = await d.jobs.job.trigger({ value: 7 })
+        d.start()
+
+        const result = await d.waitForRun(triggered.id)
+
+        expect(result.id).toBe(triggered.id)
+        expect(result.status).toBe('completed')
+        expect(result.output).toEqual({ result: 21 })
+      })
+
+      it('throws NotFoundError for non-existent run', async () => {
+        await expect(durably.waitForRun('non-existent-run-id')).rejects.toThrow(
+          'Run not found',
+        )
+      })
+
+      it('rejects when run failed', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'wait-for-run-fail',
+            input: z.object({}),
+            run: async (step) => {
+              await step.run('x', async () => {
+                throw new Error('wait-for-run failure')
+              })
+            },
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+        d.start()
+
+        await expect(d.waitForRun(run.id)).rejects.toThrow(
+          'wait-for-run failure',
+        )
+      })
+
+      it('rejects with CancelledError when run is cancelled', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'wait-for-run-cancel',
+            input: z.object({}),
+            run: async (step) => {
+              await step.run('slow', async (signal) => {
+                await sleepUntilAbort(signal)
+              })
+            },
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+        d.start()
+
+        await vi.waitFor(
+          async () => {
+            const leased = await d.getRuns({ status: 'leased' })
+            expect(leased.length).toBe(1)
+          },
+          { timeout: 2000 },
+        )
+
+        await d.cancel(run.id)
+
+        await expect(d.waitForRun(run.id)).rejects.toThrow(CancelledError)
+      })
+
+      it('times out when run does not complete', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'wait-for-run-timeout',
+            input: z.object({}),
+            run: async (step) => {
+              await step.run('slow', async () => {
+                await new Promise((r) => setTimeout(r, 500))
+              })
+            },
+          }),
+        })
+
+        await expect(
+          d.jobs.job
+            .trigger({})
+            .then((run) => d.waitForRun(run.id, { timeout: 80 })),
+        ).rejects.toThrow('waitForRun timeout')
+      })
+
+      it('calls onProgress and onLog for in-flight run only', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'wait-for-run-live-callbacks',
+            input: z.object({}),
+            run: async (step) => {
+              step.progress(1, 2)
+              step.log.info('hello')
+              await step.run('s', async () => {
+                await new Promise((r) => setTimeout(r, 200))
+              })
+            },
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+
+        const progressUpdates: ProgressData[] = []
+        const logs: LogData[] = []
+
+        // Start waitForRun before worker so subscription catches all live events
+        const waitPromise = d.waitForRun(run.id, {
+          onProgress: (progress) => {
+            progressUpdates.push(progress)
+          },
+          onLog: (log) => {
+            logs.push(log)
+          },
+        })
+
+        d.start()
+        await waitPromise
+
+        expect(progressUpdates.length).toBeGreaterThanOrEqual(1)
+        expect(logs.some((l) => l.message === 'hello')).toBe(true)
+      })
+
+      it('does not call onProgress or onLog when run already completed', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'wait-for-run-no-replay',
+            input: z.object({}),
+            output: z.object({ done: z.boolean() }),
+            run: async () => ({ done: true }),
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+        d.start()
+
+        await vi.waitFor(
+          async () => {
+            const r = await d.getRun(run.id)
+            expect(r?.status).toBe('completed')
+          },
+          { timeout: 2000 },
+        )
+
+        let progressCalls = 0
+        let logCalls = 0
+
+        const result = await d.waitForRun(run.id, {
+          onProgress: () => {
+            progressCalls++
+          },
+          onLog: () => {
+            logCalls++
+          },
+        })
+
+        expect(result.status).toBe('completed')
+        expect(progressCalls).toBe(0)
+        expect(logCalls).toBe(0)
+      })
+
+      it('rejects immediately for already failed run', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'wait-for-run-already-failed',
+            input: z.object({}),
+            run: async (step) => {
+              await step.run('x', async () => {
+                throw new Error('boom')
+              })
+            },
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+        d.start()
+
+        await expect(d.waitForRun(run.id)).rejects.toThrow('boom')
+
+        await expect(d.waitForRun(run.id)).rejects.toThrow('boom')
+      })
+
+      it('rejects immediately for already cancelled run', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'wait-for-run-already-cancelled',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+        await d.cancel(run.id)
+
+        await expect(d.waitForRun(run.id)).rejects.toThrow(CancelledError)
+      })
+
+      it('resolves immediately for already completed run', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'wait-for-run-already-done',
+            input: z.object({}),
+            output: z.object({ n: z.number() }),
+            run: async () => ({ n: 99 }),
+          }),
+        })
+
+        const run = await d.jobs.job.trigger({})
+        d.start()
+
+        await vi.waitFor(
+          async () => {
+            const r = await d.getRun(run.id)
+            expect(r?.status).toBe('completed')
+          },
+          { timeout: 2000 },
+        )
+
+        const again = await d.waitForRun(run.id)
+        expect(again.output).toEqual({ n: 99 })
       })
     })
 

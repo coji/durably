@@ -47,6 +47,7 @@ export type {
   TriggerAndWaitResult,
   TriggerOptions,
   TriggerResult,
+  WaitForRunOptions,
 } from './job'
 
 // Schema types (for advanced users)

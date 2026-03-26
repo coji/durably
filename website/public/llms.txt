@@ -197,6 +197,26 @@ step.log.error('Failed to connect', { error: err.message })
 
 ## Run Management
 
+### Wait for Existing Run
+
+```ts
+// Wait for an existing run to complete (no new run created)
+// Useful when Job A triggers Job B and returns B's run ID
+const completedRun = await durably.waitForRun(runId)
+console.log(completedRun.output) // available when completed
+
+// With timeout and callbacks
+const run = await durably.waitForRun(runId, {
+  timeout: 10000,
+  onProgress: (p) => console.log(`${p.current}/${p.total}`),
+  onLog: (l) => console.log(l.message),
+})
+
+// Throws NotFoundError if run doesn't exist
+// Throws CancelledError if run is cancelled
+// Throws Error if run fails
+```
+
 ### Get Run Status
 
 ```ts
@@ -657,13 +677,15 @@ interface TriggerAndWaitResult<TOutput> {
   disposition: Disposition
 }
 
-interface TriggerAndWaitOptions<
-  TLabels extends Record<string, string> = Record<string, string>,
-> extends TriggerOptions<TLabels> {
+interface WaitForRunOptions {
   timeout?: number
   onProgress?: (progress: ProgressData) => void | Promise<void>
   onLog?: (log: LogData) => void | Promise<void>
 }
+
+interface TriggerAndWaitOptions<
+  TLabels extends Record<string, string> = Record<string, string>,
+> extends TriggerOptions<TLabels>, WaitForRunOptions {}
 
 interface ProgressData {
   current: number

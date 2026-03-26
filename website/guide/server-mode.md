@@ -115,6 +115,23 @@ await durably.stop()
 await durably.db.destroy()
 ```
 
+## Waiting for Existing Runs
+
+If you have a run ID from a previous trigger, use `waitForRun()` to wait for it without creating a new run:
+
+```ts
+// Trigger first, wait later
+const { id } = await durably.jobs.processImage.trigger({
+  filename: 'photo.jpg',
+})
+
+// Wait for completion (e.g., from a different code path)
+const run = await durably.waitForRun(id, { timeout: 60000 })
+console.log('Done:', run.output)
+```
+
+This is useful when one job triggers another and the caller needs to wait for the child job's completion.
+
 ## Event Monitoring
 
 Subscribe to events for logging, metrics, or debugging:
