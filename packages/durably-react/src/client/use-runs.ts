@@ -391,7 +391,7 @@ function appendArrayParam(
   key: string,
   value: string | string[] | undefined,
 ) {
-  if (!value) return
+  if (value === undefined) return
   for (const v of Array.isArray(value) ? value : [value]) {
     params.append(key, v)
   }
