@@ -388,14 +388,14 @@ useRuns(options)
 
 ### Options
 
-| Option     | Type                     | Description                                            |
-| ---------- | ------------------------ | ------------------------------------------------------ |
-| `api`      | `string`                 | API base path                                          |
-| `jobName`  | `string \| string[]`     | Filter by job name(s) (only for untyped usage)         |
-| `status`   | `RunStatus`              | Filter by status                                       |
-| `labels`   | `Record<string, string>` | Filter by labels                                       |
-| `pageSize` | `number`                 | Number of runs per page                                |
-| `realtime` | `boolean`                | Subscribe to SSE updates on first page (default: true) |
+| Option     | Type                       | Description                                            |
+| ---------- | -------------------------- | ------------------------------------------------------ |
+| `api`      | `string`                   | API base path                                          |
+| `jobName`  | `string \| string[]`       | Filter by job name(s) (only for untyped usage)         |
+| `status`   | `RunStatus \| RunStatus[]` | Filter by status(es)                                   |
+| `labels`   | `Record<string, string>`   | Filter by labels                                       |
+| `pageSize` | `number`                   | Number of runs per page                                |
+| `realtime` | `boolean`                  | Subscribe to SSE updates on first page (default: true) |
 
 ### Return Type
 

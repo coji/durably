@@ -138,6 +138,31 @@ describe('useRuns', () => {
     })
   })
 
+  it('filters by multiple statuses', async () => {
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
+    instances.push(durably)
+
+    const { result } = renderHook(
+      () => useRuns({ status: ['pending', 'leased'] }),
+      {
+        wrapper: createWrapper(durably),
+      },
+    )
+
+    const d = durably.register({ testJobHandle: testJob })
+
+    await d.jobs.testJobHandle.trigger({ value: 1 })
+    await d.jobs.testJobHandle.trigger({ value: 2 })
+
+    await waitFor(() => {
+      expect(result.current.runs.length).toBe(2)
+    })
+
+    for (const run of result.current.runs) {
+      expect(['pending', 'leased']).toContain(run.status)
+    }
+  })
+
   it('supports pagination', async () => {
     const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)

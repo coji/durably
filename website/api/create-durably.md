@@ -216,7 +216,7 @@ await durably.getRuns<T extends Run<TLabels> = Run<TLabels>>(filter?: RunFilter<
 
 interface RunFilter<TLabels extends Record<string, string> = Record<string, string>> {
   jobName?: string | string[]  // single or multiple job names
-  status?: 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
+  status?: RunStatus | RunStatus[]  // single or multiple statuses
   labels?: Partial<TLabels>    // filter by labels (all specified must match)
   limit?: number
   offset?: number

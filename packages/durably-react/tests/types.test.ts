@@ -7,17 +7,22 @@
  * rather than runtime behavior.
  */
 
-import { defineJob } from '@coji/durably'
+import { defineJob, type RunStatus } from '@coji/durably'
 import { describe, expectTypeOf, it } from 'vitest'
 import { z } from 'zod'
 import type {
   TypedClientRun,
+  UseRunsClientOptions,
   UseRunsClientResult,
 } from '../src/client/use-runs'
 import type { UseJobResult } from '../src/hooks/use-job'
 import type { UseJobLogsResult } from '../src/hooks/use-job-logs'
 import type { UseJobRunResult } from '../src/hooks/use-job-run'
-import type { TypedRun, UseRunsResult } from '../src/hooks/use-runs'
+import type {
+  TypedRun,
+  UseRunsOptions,
+  UseRunsResult,
+} from '../src/hooks/use-runs'
 
 // Test job definitions
 const typedJob = defineJob({
@@ -202,6 +207,12 @@ describe('Type inference', () => {
         { file: string } | { userId: string }
       >()
     })
+
+    it('UseRunsOptions.status accepts a single status or an array', () => {
+      expectTypeOf<UseRunsOptions['status']>().toEqualTypeOf<
+        RunStatus | RunStatus[] | undefined
+      >()
+    })
   })
 
   describe('useRuns (client)', () => {
@@ -274,6 +285,12 @@ describe('Type inference', () => {
       // runs array should accept either type
       expectTypeOf<Result['runs'][0]['input']>().toEqualTypeOf<
         { file: string } | { userId: string }
+      >()
+    })
+
+    it('UseRunsClientOptions.status accepts a single status or an array', () => {
+      expectTypeOf<UseRunsClientOptions['status']>().toEqualTypeOf<
+        RunStatus | RunStatus[] | undefined
       >()
     })
   })

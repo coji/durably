@@ -197,7 +197,7 @@ List runs with pagination and real-time updates.
 interface UseRunsClientOptions {
   api: string // API endpoint URL (e.g., '/api/durably')
   jobName?: string | string[] // Filter by job name(s)
-  status?: RunStatus // Filter by status
+  status?: RunStatus | RunStatus[] // Filter by status(es)
   labels?: Record<string, string> // Filter by labels (all must match)
   pageSize?: number // Runs per page (default: 10)
   realtime?: boolean // Subscribe to real-time updates via SSE (default: true)

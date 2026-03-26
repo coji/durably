@@ -15,7 +15,7 @@ import {
   createThrottledSSEStreamFromReader,
   type SSEStreamController,
 } from './sse'
-import type { Run, RunFilter } from './storage'
+import type { Run, RunFilter, RunStatus } from './storage'
 import { toClientRun } from './storage'
 
 /**
@@ -152,7 +152,7 @@ const VALID_STATUSES = [
   'completed',
   'failed',
   'cancelled',
-] as const satisfies readonly RunFilter['status'][]
+] as const satisfies readonly RunStatus[]
 
 const VALID_STATUSES_SET: ReadonlySet<string> = new Set(VALID_STATUSES)
 
@@ -177,17 +177,31 @@ function parseLabelsFromParams(
  */
 function parseRunFilter(url: URL): RunFilter | Response {
   const jobNames = url.searchParams.getAll('jobName')
-  const statusParam = url.searchParams.get('status')
+  const statusParams = url.searchParams.getAll('status')
   const limitParam = url.searchParams.get('limit')
   const offsetParam = url.searchParams.get('offset')
   const labels = parseLabelsFromParams(url.searchParams)
 
-  // Validate status
-  if (statusParam && !VALID_STATUSES_SET.has(statusParam)) {
-    return errorResponse(
-      `Invalid status: ${statusParam}. Must be one of: ${VALID_STATUSES.join(', ')}`,
-      400,
-    )
+  let status: RunFilter['status'] | undefined
+  if (statusParams.length > 0) {
+    for (const s of statusParams) {
+      if (s === '') {
+        return errorResponse(
+          `Invalid status: empty value. Must be one of: ${VALID_STATUSES.join(', ')}`,
+          400,
+        )
+      }
+      if (!VALID_STATUSES_SET.has(s)) {
+        return errorResponse(
+          `Invalid status: ${s}. Must be one of: ${VALID_STATUSES.join(', ')}`,
+          400,
+        )
+      }
+    }
+    status =
+      statusParams.length === 1
+        ? (statusParams[0] as RunStatus)
+        : (statusParams as RunStatus[])
   }
 
   // Validate limit
@@ -213,7 +227,7 @@ function parseRunFilter(url: URL): RunFilter | Response {
 
   return {
     jobName: jobNames.length > 0 ? jobNames : undefined,
-    status: statusParam as RunFilter['status'],
+    status,
     labels,
     limit,
     offset,

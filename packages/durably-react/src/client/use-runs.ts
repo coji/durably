@@ -1,5 +1,6 @@
 import type { JobDefinition } from '@coji/durably'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useStableValue } from '../shared/use-stable-value'
 import {
   type Progress,
   type RunStatus,
@@ -70,9 +71,9 @@ export interface UseRunsClientOptions {
    */
   jobName?: string | string[]
   /**
-   * Filter by status
+   * Filter by status(es). Pass one status, or an array for multiple (OR).
    */
-  status?: RunStatus
+  status?: RunStatus | RunStatus[]
   /**
    * Filter by labels (all specified labels must match)
    */
@@ -215,21 +216,15 @@ export function useRuns<
 
   const { api, status, labels, pageSize = 10, realtime = true } = options
 
-  // Stabilize labels reference to prevent infinite re-renders
-  const labelsKey = labels ? JSON.stringify(labels) : undefined
-  const stableLabels = useMemo(
-    () =>
-      labelsKey ? (JSON.parse(labelsKey) as Record<string, string>) : undefined,
-    [labelsKey],
-  )
+  const stableLabels = useStableValue(labels)
+  const stableJobName = useStableValue(jobName)
+  const stableStatus = useStableValue(status)
 
-  // Stabilize jobName reference to prevent infinite re-renders with array literals
-  const jobNameKey = jobName ? JSON.stringify(jobName) : undefined
-  const stableJobName = useMemo(
-    () =>
-      jobNameKey ? (JSON.parse(jobNameKey) as string | string[]) : undefined,
-    [jobNameKey],
-  )
+  // Normalize empty status array to undefined (no filter)
+  const normalizedStatus =
+    Array.isArray(stableStatus) && stableStatus.length === 0
+      ? undefined
+      : stableStatus
 
   const [runs, setRuns] = useState<TypedClientRun<TInput, TOutput>[]>([])
   const [page, setPage] = useState(0)
@@ -246,8 +241,8 @@ export function useRuns<
 
     try {
       const params = new URLSearchParams()
-      appendJobNameToParams(params, stableJobName)
-      if (status) params.set('status', status)
+      appendArrayParam(params, 'jobName', stableJobName)
+      appendArrayParam(params, 'status', normalizedStatus)
       appendLabelsToParams(params, stableLabels)
       params.set('limit', String(pageSize + 1))
       params.set('offset', String(page * pageSize))
@@ -274,7 +269,7 @@ export function useRuns<
         setIsLoading(false)
       }
     }
-  }, [api, stableJobName, status, stableLabels, pageSize, page])
+  }, [api, stableJobName, normalizedStatus, stableLabels, pageSize, page])
 
   // Initial fetch
   useEffect(() => {
@@ -300,7 +295,7 @@ export function useRuns<
 
     // Build SSE URL
     const params = new URLSearchParams()
-    appendJobNameToParams(params, stableJobName)
+    appendArrayParam(params, 'jobName', stableJobName)
     appendLabelsToParams(params, stableLabels)
     const sseUrl = `${api}/runs/subscribe${params.toString() ? `?${params.toString()}` : ''}`
 
@@ -391,13 +386,14 @@ export function useRuns<
   }
 }
 
-function appendJobNameToParams(
+function appendArrayParam(
   params: URLSearchParams,
-  jobName: string | string[] | undefined,
+  key: string,
+  value: string | string[] | undefined,
 ) {
-  if (!jobName) return
-  for (const name of Array.isArray(jobName) ? jobName : [jobName]) {
-    params.append('jobName', name)
+  if (value === undefined) return
+  for (const v of Array.isArray(value) ? value : [value]) {
+    params.append(key, v)
   }
 }
 

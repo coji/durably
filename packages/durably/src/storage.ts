@@ -73,7 +73,8 @@ export interface Run<
 export interface RunFilter<
   TLabels extends Record<string, string> = Record<string, string>,
 > {
-  status?: RunStatus
+  /** Filter by status(es). Pass one status, or an array for multiple (OR). */
+  status?: RunStatus | RunStatus[]
   /** Filter by job name(s). Pass a string for one, or an array for multiple (OR). */
   jobName?: string | string[]
   /** Filter by labels (all specified labels must match) */
@@ -598,7 +599,13 @@ export function createKyselyStore(
       let query = db.selectFrom('durably_runs').selectAll()
 
       if (filter?.status) {
-        query = query.where('status', '=', filter.status)
+        if (Array.isArray(filter.status)) {
+          if (filter.status.length > 0) {
+            query = query.where('status', 'in', filter.status)
+          }
+        } else {
+          query = query.where('status', '=', filter.status)
+        }
       }
       if (filter?.jobName) {
         if (Array.isArray(filter.jobName)) {
