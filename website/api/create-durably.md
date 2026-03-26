@@ -142,6 +142,32 @@ await durably.cancel(runId: string): Promise<void>
 
 Cancels a pending or leased run.
 
+### `waitForRun()`
+
+```ts
+await durably.waitForRun(
+  runId: string,
+  options?: WaitForRunOptions
+): Promise<Run<TLabels> & { status: 'completed'; output: unknown }>
+```
+
+Waits for an existing run to complete without creating a new run. Resolves only when the run reaches `completed` status. Throws `NotFoundError` if the run doesn't exist, `CancelledError` if cancelled, or `Error` if failed.
+
+```ts
+const run = await durably.waitForRun(runId, {
+  timeout: 60000,
+  onProgress: (p) => console.log(`${p.current}/${p.total}`),
+  onLog: (l) => console.log(`[${l.level}] ${l.message}`),
+})
+console.log(run.output)
+```
+
+| Option       | Type       | Description                                 |
+| ------------ | ---------- | ------------------------------------------- |
+| `timeout`    | `number`   | Timeout in ms                               |
+| `onProgress` | `function` | Called on live progress updates (no replay) |
+| `onLog`      | `function` | Called on live log entries (no replay)      |
+
 ### `deleteRun()`
 
 ```ts

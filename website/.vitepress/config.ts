@@ -137,6 +137,10 @@ export default defineConfig({
                   link: '/api/create-durably#retrigger',
                 },
                 {
+                  text: 'waitForRun',
+                  link: '/api/create-durably#waitforrun',
+                },
+                {
                   text: 'deleteRun',
                   link: '/api/create-durably#deleterun',
                 },

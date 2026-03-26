@@ -88,6 +88,9 @@ const { id, output } = await durably.jobs.importCsv.triggerAndWait({
 })
 console.log('Done:', output.count)
 
+// Wait for an existing run (no new run created)
+const completed = await durably.waitForRun(run.id, { timeout: 30000 })
+
 // With options
 await durably.jobs.importCsv.trigger(
   { filename: 'data.csv' },
@@ -216,6 +219,7 @@ function ImportButton() {
 | `on(event, handler)` | Subscribe to events                                                               |
 | `stop()`             | Stop worker gracefully                                                            |
 | `retrigger(runId)`   | Retrigger completed/failed/cancelled run (validates input against current schema) |
+| `waitForRun(runId)`  | Wait for an existing run to complete (throws on fail/cancel/not-found)            |
 | `cancel(runId)`      | Cancel pending or leased run                                                      |
 | `deleteRun(runId)`   | Delete a run and its associated steps, logs, and labels                           |
 | `purgeRuns(options)` | Delete terminal runs older than a cutoff (for cleanup)                            |
