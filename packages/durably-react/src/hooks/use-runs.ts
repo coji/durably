@@ -1,6 +1,7 @@
 import type { JobDefinition, RunStatus } from '@coji/durably'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useDurably } from '../context'
+import { useStableValue } from '../shared/use-stable-value'
 import { type TypedRun, isJobDefinition } from '../types'
 
 // Re-export TypedRun for convenience
@@ -157,30 +158,15 @@ export function useRuns<
   const pageSize = options?.pageSize ?? 10
   const realtime = options?.realtime ?? true
 
-  // Stabilize jobName reference to prevent re-fetch loops with array literals
-  const jobNameKey = jobName ? JSON.stringify(jobName) : undefined
-  const stableJobName = useMemo(
-    () =>
-      jobNameKey ? (JSON.parse(jobNameKey) as string | string[]) : undefined,
-    [jobNameKey],
-  )
+  const stableJobName = useStableValue(jobName)
+  const stableStatus = useStableValue(options?.status)
+  const labels = useStableValue(options?.labels)
 
-  const statusKey =
-    options?.status !== undefined ? JSON.stringify(options.status) : undefined
-  const stableStatus = useMemo((): RunStatus | RunStatus[] | undefined => {
-    if (statusKey === undefined) return undefined
-    const parsed = JSON.parse(statusKey) as RunStatus | RunStatus[]
-    if (Array.isArray(parsed) && parsed.length === 0) return undefined
-    return parsed
-  }, [statusKey])
-
-  // Stabilize labels reference to prevent infinite re-renders
-  const labelsKey = options?.labels ? JSON.stringify(options.labels) : undefined
-  const labels = useMemo(
-    () =>
-      labelsKey ? (JSON.parse(labelsKey) as Record<string, string>) : undefined,
-    [labelsKey],
-  )
+  // Normalize empty status array to undefined (no filter)
+  const normalizedStatus =
+    Array.isArray(stableStatus) && stableStatus.length === 0
+      ? undefined
+      : stableStatus
 
   const [runs, setRuns] = useState<TypedRun<TInput, TOutput>[]>([])
   const [page, setPage] = useState(0)
@@ -194,7 +180,7 @@ export function useRuns<
     try {
       const data = await durably.getRuns({
         jobName: stableJobName,
-        status: stableStatus,
+        status: normalizedStatus,
         labels,
         limit: pageSize + 1,
         offset: page * pageSize,
@@ -204,7 +190,7 @@ export function useRuns<
     } finally {
       setIsLoading(false)
     }
-  }, [durably, stableJobName, stableStatus, labels, pageSize, page])
+  }, [durably, stableJobName, normalizedStatus, labels, pageSize, page])
 
   // Initial fetch and subscribe to events
   useEffect(() => {
