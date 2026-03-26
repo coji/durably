@@ -1,0 +1,20 @@
+# Ignore everything by default
+*
+
+# This file itself
+!.gitignore
+
+# Facets and pieces (version-controlled)
+!pieces/
+!pieces/**
+!facets/
+!facets/personas/
+!facets/personas/**
+!facets/policies/
+!facets/policies/**
+!facets/knowledge/
+!facets/knowledge/**
+!facets/instructions/
+!facets/instructions/**
+!facets/output-contracts/
+!facets/output-contracts/**

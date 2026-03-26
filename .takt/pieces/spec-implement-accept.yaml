@@ -1,0 +1,189 @@
+name: spec-implement-accept
+description: '仕様レビュー(codex) → 実装(cursor) → 受け入れ検査(claude) → 簡素化(claude)'
+max_movements: 20
+initial_movement: spec-review
+
+# カスタムファセット（セクションマップ）
+personas:
+  acceptor: ../facets/personas/acceptor.md
+  simplifier: ../facets/personas/simplifier.md
+instructions:
+  spec-review: ../facets/instructions/spec-review.md
+  acceptance: ../facets/instructions/acceptance.md
+  simplify: ../facets/instructions/simplify.md
+knowledge:
+  implementation-plan: ../facets/knowledge/implementation-plan.md
+policies:
+  step-implementation: ../facets/policies/step-implementation.md
+report_formats:
+  spec-review-report: ../facets/output-contracts/spec-review-report.md
+  acceptance-report: ../facets/output-contracts/acceptance-report.md
+
+loop_monitors:
+  - cycle:
+      - acceptance
+      - fix
+    threshold: 3
+    judge:
+      persona: acceptor
+      instruction: |
+        受け入れ検査 → 修正ループが {cycle_count} 回繰り返された。
+
+        **レポートを参照:**
+        - 受け入れ検査結果: {report:acceptance-report.md}
+
+        **判断基準:**
+        - 各サイクルで指摘が減少しているか
+        - 修正が実際に反映されているか
+        - 同じ指摘が繰り返されていないか
+      rules:
+        - condition: 進捗あり（指摘数が減少、修正が反映されている）
+          next: acceptance
+        - condition: 非生産的（同じ指摘が繰り返される）
+          next: ABORT
+
+movements:
+  # 1. 仕様レビュー（codex）
+  - name: spec-review
+    edit: false
+    persona: architecture-reviewer
+    knowledge: implementation-plan
+    instruction: spec-review
+    provider_options:
+      codex:
+        allowed_tools:
+          - Read
+          - Glob
+          - Grep
+          - Bash
+    output_contracts:
+      report:
+        - name: spec-review-report.md
+          format: spec-review-report
+    rules:
+      - condition: 仕様が明確で実装可能（指摘なし、または軽微な改善提案のみ）
+        next: implement
+      - condition: 仕様に重大な問題があり実装不可能（要件の矛盾、変更対象の致命的な漏れ等）
+        next: ABORT
+
+  # 2. 実装（cursor）
+  - name: implement
+    edit: true
+    persona: coder
+    policy:
+      - coding
+      - step-implementation
+    knowledge: implementation-plan
+    session: refresh
+    required_permission_mode: edit
+    instruction: |
+      タスク仕様（order.md）に従って実装する。
+
+      **手順:**
+      1. order.md を読み、実装内容・変更対象ファイル・完了条件を把握
+      2. 変更対象ファイルを読み、既存コードの構造を理解
+      3. 実装を行う
+      4. バリデーションを実行して全チェックがパスすることを確認
+
+      **ルール:**
+      - order.md の変更対象ファイルのみ変更する
+      - PLAN.md, order.md は変更しない
+      - 既存のコードパターンと規約に従う
+      - 最小限の変更に留める
+    provider_options:
+      cursor:
+        allowed_tools:
+          - Read
+          - Glob
+          - Grep
+          - Edit
+          - Write
+          - Bash
+    rules:
+      - condition: 実装完了、バリデーションパス
+        next: acceptance
+      - condition: 実装不可、情報不足
+        next: ABORT
+
+  # 3. 受け入れ検査（claude）
+  - name: acceptance
+    edit: false
+    persona: acceptor
+    policy: step-implementation
+    knowledge: implementation-plan
+    instruction: acceptance
+    provider_options:
+      claude:
+        allowed_tools:
+          - Read
+          - Glob
+          - Grep
+          - Bash
+    output_contracts:
+      report:
+        - name: acceptance-report.md
+          format: acceptance-report
+    rules:
+      - condition: 全完了条件を満たし、バリデーションパス
+        next: simplify
+      - condition: 完了条件未達成または問題あり
+        next: fix
+
+  # 4. 修正（cursor）
+  - name: fix
+    edit: true
+    persona: coder
+    policy:
+      - coding
+      - step-implementation
+    knowledge: implementation-plan
+    session: refresh
+    required_permission_mode: edit
+    pass_previous_response: false
+    instruction: |
+      受け入れ検査で指摘された問題を修正する。
+
+      **手順:**
+      1. 受け入れ検査レポートを読み、指摘事項を把握
+      2. 各指摘に対して修正を実施
+      3. バリデーションを実行して全チェックがパスすることを確認
+
+      **ルール:**
+      - PLAN.md, order.md は変更しない
+      - スコープ内の修正のみ行う
+    provider_options:
+      cursor:
+        allowed_tools:
+          - Read
+          - Glob
+          - Grep
+          - Edit
+          - Write
+          - Bash
+    rules:
+      - condition: 修正完了
+        next: acceptance
+      - condition: 修正不可
+        next: ABORT
+
+  # 5. コード簡素化（claude）
+  - name: simplify
+    edit: true
+    persona: simplifier
+    policy: step-implementation
+    instruction: simplify
+    required_permission_mode: edit
+    provider_options:
+      claude:
+        allowed_tools:
+          - Read
+          - Glob
+          - Grep
+          - Edit
+          - Write
+          - Bash
+    rules:
+      - condition: 簡素化完了（改善あり/なし問わず）、バリデーションパス
+        next: COMPLETE
+      - condition: 簡素化でバリデーション失敗、復旧不可
+        next: ABORT
