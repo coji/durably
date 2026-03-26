@@ -1,0 +1,153 @@
+name: implement-step
+description: 'Implement a single step from a plan: implement → review → fix loop'
+max_movements: 20
+initial_movement: implement
+
+loop_monitors:
+  - cycle:
+      - reviewers
+      - fix
+    threshold: 3
+    judge:
+      persona: supervisor
+      instruction: |
+        The review / fix loop has repeated {cycle_count} times.
+
+        Review the reports from each cycle and determine whether this loop
+        is making progress or stuck on the same issues.
+
+        **Reports to reference:**
+        - Architecture review: {report:architect-review.md}
+        - Supervisor validation: {report:supervisor-validation.md}
+
+        **Judgment criteria:**
+        - Are new issues being found/fixed in each cycle?
+        - Are the same findings being repeated?
+        - Are fixes actually being applied?
+      rules:
+        - condition: converging (findings decreasing, fixes applied)
+          next: reviewers
+        - condition: unproductive (same findings repeating)
+          next: ABORT
+
+movements:
+  - name: implement
+    edit: true
+    persona: coder
+    policy:
+      - coding
+      - step-implementation
+    knowledge:
+      - architecture
+      - implementation-plan
+    required_permission_mode: edit
+    instruction: |
+      You are implementing a specific step from an implementation plan.
+
+      **Read the task order carefully** — it contains the full specification:
+      - What to implement (and what NOT to implement)
+      - Which files to change
+      - Completion conditions
+      - Reference documents (read-only — do NOT modify them)
+
+      **Rules:**
+      - Only implement what the current step specifies
+      - Do NOT modify plan files, RFC documents, or design docs
+      - Each step must leave the project validation passing
+      - Follow existing code patterns and conventions
+      - After implementation, run the validation command specified in the task order
+    rules:
+      - condition: Implementation complete, validation passes
+        next: reviewers
+      - condition: Cannot proceed, need clarification
+        next: ABORT
+        appendix: |
+          Blockers:
+          - {Issue description}
+    output_contracts:
+      report:
+        - name: coder-scope.md
+          format: coder-scope
+        - name: coder-decisions.md
+          format: coder-decisions
+
+  - name: reviewers
+    parallel:
+      - name: arch-review
+        edit: false
+        persona: architecture-reviewer
+        policy: review
+        knowledge: architecture
+        rules:
+          - condition: approved
+          - condition: needs_fix
+        instruction: |
+          Review the implementation changes against the task order specification.
+
+          **Review criteria:**
+          - Does the implementation match the spec in the task order?
+          - Are there any changes outside the specified scope?
+          - Were any plan/RFC/design files modified? (This is NOT allowed)
+          - Is the code consistent with existing patterns?
+          - Are there race conditions or edge cases missed?
+
+          Run the project validation command to verify the build passes.
+        output_contracts:
+          report:
+            - name: architect-review.md
+              format: architecture-review
+      - name: supervise
+        edit: false
+        persona: supervisor
+        policy: review
+        instruction: |
+          Validate the implementation against the step's completion conditions.
+
+          **Read the task order** and check each completion condition.
+
+          **Validation:**
+          - Run the project validation command — must pass
+          - Check each completion condition listed in the task order
+          - Verify no spec/plan/RFC files were modified
+          - Verify no unintended changes outside the step scope
+        rules:
+          - condition: All checks passed
+          - condition: Requirements unmet, tests failing, build errors
+        output_contracts:
+          report:
+            - name: supervisor-validation.md
+              format: supervisor-validation
+            - name: summary.md
+              format: summary
+              use_judge: false
+    rules:
+      - condition: all("approved", "All checks passed")
+        next: COMPLETE
+      - condition: any("needs_fix", "Requirements unmet, tests failing, build errors")
+        next: fix
+
+  - name: fix
+    edit: true
+    persona: coder
+    policy:
+      - coding
+      - step-implementation
+    knowledge:
+      - architecture
+      - implementation-plan
+    required_permission_mode: edit
+    instruction: |
+      Fix the issues found by the reviewers.
+
+      **Read the review reports** and address every issue raised.
+      After fixing, run the project validation command to confirm everything passes.
+
+      **Remember:**
+      - Do NOT modify plan/RFC/design files — fix only implementation code
+      - Stay within the step's scope
+    pass_previous_response: false
+    rules:
+      - condition: Fix complete
+        next: reviewers
+      - condition: Cannot proceed, insufficient info
+        next: ABORT
