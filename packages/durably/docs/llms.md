@@ -243,6 +243,9 @@ const typedRun = await durably.getRun<MyRun>(runId)
 // Get failed runs
 const failedRuns = await durably.getRuns({ status: 'failed' })
 
+// Get active runs (multiple statuses)
+const activeRuns = await durably.getRuns({ status: ['pending', 'leased'] })
+
 // Filter by job name with pagination
 const runs = await durably.getRuns({
   jobName: 'sync-users', // also accepts string[] for multiple jobs
@@ -704,7 +707,7 @@ interface LogData {
 interface RunFilter<
   TLabels extends Record<string, string> = Record<string, string>,
 > {
-  status?: 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
+  status?: RunStatus | RunStatus[]
   jobName?: string | string[]
   labels?: Partial<TLabels>
   limit?: number

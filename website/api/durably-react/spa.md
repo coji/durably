@@ -357,13 +357,13 @@ useRuns(options?)
 
 ### Options
 
-| Option     | Type                     | Description                                    |
-| ---------- | ------------------------ | ---------------------------------------------- |
-| `jobName`  | `string \| string[]`     | Filter by job name(s) (only for untyped usage) |
-| `status`   | `RunStatus`              | Filter by status                               |
-| `labels`   | `Record<string, string>` | Filter by labels                               |
-| `pageSize` | `number`                 | Number of runs per page (default: 10)          |
-| `realtime` | `boolean`                | Subscribe to real-time updates (default: true) |
+| Option     | Type                       | Description                                    |
+| ---------- | -------------------------- | ---------------------------------------------- |
+| `jobName`  | `string \| string[]`       | Filter by job name(s) (only for untyped usage) |
+| `status`   | `RunStatus \| RunStatus[]` | Filter by status(es)                           |
+| `labels`   | `Record<string, string>`   | Filter by labels                               |
+| `pageSize` | `number`                   | Number of runs per page (default: 10)          |
+| `realtime` | `boolean`                  | Subscribe to real-time updates (default: true) |
 
 ### Return Type
 
