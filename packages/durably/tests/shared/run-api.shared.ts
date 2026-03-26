@@ -691,12 +691,12 @@ export function createRunApiTests(createDialect: () => Dialect) {
         })
 
         const run = await d.jobs.job.trigger({})
-        d.start()
 
         const progressUpdates: ProgressData[] = []
         const logs: LogData[] = []
 
-        await d.waitForRun(run.id, {
+        // Start waitForRun before worker so subscription catches all live events
+        const waitPromise = d.waitForRun(run.id, {
           onProgress: (progress) => {
             progressUpdates.push(progress)
           },
@@ -704,6 +704,9 @@ export function createRunApiTests(createDialect: () => Dialect) {
             logs.push(log)
           },
         })
+
+        d.start()
+        await waitPromise
 
         expect(progressUpdates.length).toBeGreaterThanOrEqual(1)
         expect(logs.some((l) => l.message === 'hello')).toBe(true)
