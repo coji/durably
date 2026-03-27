@@ -421,25 +421,25 @@ Perform actions on runs (retrigger, cancel, delete).
 import { useRunActions } from '@coji/durably-react'
 
 function RunActions({ runId, status }: { runId: string; status: string }) {
-  const { retrigger, cancel, deleteRun, getRun, getSteps, isLoading, error } =
+  const { retrigger, cancel, deleteRun, getRun, getSteps, isLoadingFor, error } =
     useRunActions({ api: '/api/durably' })
 
   return (
     <div>
       {(status === 'failed' || status === 'cancelled') && (
-        <button onClick={() => retrigger(runId)} disabled={isLoading}>
+        <button onClick={() => retrigger(runId)} disabled={isLoadingFor(runId)}>
           Retrigger
         </button>
       )}
       {(status === 'pending' || status === 'leased') && (
-        <button onClick={() => cancel(runId)} disabled={isLoading}>
+        <button onClick={() => cancel(runId)} disabled={isLoadingFor(runId)}>
           Cancel
         </button>
       )}
       {(status === 'completed' ||
         status === 'failed' ||
         status === 'cancelled') && (
-        <button onClick={() => deleteRun(runId)} disabled={isLoading}>
+        <button onClick={() => deleteRun(runId)} disabled={isLoadingFor(runId)}>
           Delete
         </button>
       )}
@@ -464,5 +464,5 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
 | `deleteRun` | `(runId: string) => Promise<void>`              | Delete a run                                |
 | `getRun`    | `(runId: string) => Promise<ClientRun \| null>` | Get run details                             |
 | `getSteps`  | `(runId: string) => Promise<StepRecord[]>`      | Get step details                            |
-| `isLoading` | `boolean`                                       | Loading state                               |
+| `isLoadingFor` | `(runId: string) => boolean`                 | Whether a mutating action is in progress for that run |
 | `error`     | `string \| null`                                | Error message                               |

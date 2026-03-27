@@ -65,7 +65,7 @@ describe('useRunActions (client)', () => {
       )
     })
 
-    it('sets isLoading during request', async () => {
+    it('sets isLoadingFor only for that run during request', async () => {
       let resolvePromise: () => void
       const fetchPromise = new Promise<void>((resolve) => {
         resolvePromise = resolve
@@ -82,21 +82,23 @@ describe('useRunActions (client)', () => {
         useRunActions({ api: '/api/durably' }),
       )
 
-      expect(result.current.isLoading).toBe(false)
+      expect(result.current.isLoadingFor('run-A')).toBe(false)
+      expect(result.current.isLoadingFor('run-B')).toBe(false)
 
       let retriggerPromise: Promise<string>
       act(() => {
-        retriggerPromise = result.current.retrigger('run-123')
+        retriggerPromise = result.current.retrigger('run-A')
       })
 
-      expect(result.current.isLoading).toBe(true)
+      expect(result.current.isLoadingFor('run-A')).toBe(true)
+      expect(result.current.isLoadingFor('run-B')).toBe(false)
 
       await act(async () => {
         resolvePromise!()
         await retriggerPromise
       })
 
-      expect(result.current.isLoading).toBe(false)
+      expect(result.current.isLoadingFor('run-A')).toBe(false)
     })
 
     it('sets error on failure and throws', async () => {
@@ -122,7 +124,7 @@ describe('useRunActions (client)', () => {
 
       expect(thrownError?.message).toBe('Run not found')
       expect(result.current.error).toBe('Run not found')
-      expect(result.current.isLoading).toBe(false)
+      expect(result.current.isLoadingFor('run-123')).toBe(false)
     })
 
     it('uses statusText when no error in response', async () => {
@@ -219,6 +221,47 @@ describe('useRunActions (client)', () => {
 
       expect(result.current.error).toBeNull()
     })
+
+    it('clears isLoadingFor after success', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ success: true, runId: 'new-id' }),
+      })
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useRunActions({ api: '/api/durably' }),
+      )
+
+      await act(async () => {
+        await result.current.retrigger('run-A')
+      })
+
+      expect(result.current.isLoadingFor('run-A')).toBe(false)
+    })
+
+    it('clears isLoadingFor on error', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        statusText: 'Bad Request',
+        json: () => Promise.resolve({ error: 'bad' }),
+      })
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useRunActions({ api: '/api/durably' }),
+      )
+
+      await act(async () => {
+        try {
+          await result.current.retrigger('run-A')
+        } catch {
+          // expected
+        }
+      })
+
+      expect(result.current.isLoadingFor('run-A')).toBe(false)
+    })
   })
 
   describe('cancel', () => {
@@ -264,7 +307,7 @@ describe('useRunActions (client)', () => {
       )
     })
 
-    it('sets isLoading during request', async () => {
+    it('sets isLoadingFor only for that run during request', async () => {
       let resolvePromise: () => void
       const fetchPromise = new Promise<void>((resolve) => {
         resolvePromise = resolve
@@ -281,21 +324,22 @@ describe('useRunActions (client)', () => {
         useRunActions({ api: '/api/durably' }),
       )
 
-      expect(result.current.isLoading).toBe(false)
+      expect(result.current.isLoadingFor('run-A')).toBe(false)
 
       let cancelPromise: Promise<void>
       act(() => {
-        cancelPromise = result.current.cancel('run-456')
+        cancelPromise = result.current.cancel('run-A')
       })
 
-      expect(result.current.isLoading).toBe(true)
+      expect(result.current.isLoadingFor('run-A')).toBe(true)
+      expect(result.current.isLoadingFor('run-B')).toBe(false)
 
       await act(async () => {
         resolvePromise!()
         await cancelPromise
       })
 
-      expect(result.current.isLoading).toBe(false)
+      expect(result.current.isLoadingFor('run-A')).toBe(false)
     })
 
     it('sets error on failure and throws', async () => {
@@ -321,7 +365,7 @@ describe('useRunActions (client)', () => {
 
       expect(thrownError?.message).toBe('Run already completed')
       expect(result.current.error).toBe('Run already completed')
-      expect(result.current.isLoading).toBe(false)
+      expect(result.current.isLoadingFor('run-456')).toBe(false)
     })
 
     it('uses statusText when no error in response', async () => {
@@ -383,8 +427,28 @@ describe('useRunActions (client)', () => {
     })
   })
 
-  describe('shared state', () => {
-    it('shares isLoading between retrigger and cancel', async () => {
+  describe('deleteRun', () => {
+    it('calls DELETE on run URL with runId', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ success: true }),
+      })
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useRunActions({ api: '/api/durably' }),
+      )
+
+      await act(async () => {
+        await result.current.deleteRun('run-del')
+      })
+
+      expect(fetchMock).toHaveBeenCalledWith('/api/durably/run?runId=run-del', {
+        method: 'DELETE',
+      })
+    })
+
+    it('sets isLoadingFor during delete', async () => {
       let resolvePromise: () => void
       const fetchPromise = new Promise<void>((resolve) => {
         resolvePromise = resolve
@@ -392,8 +456,7 @@ describe('useRunActions (client)', () => {
       const fetchMock = vi.fn().mockImplementation(() =>
         fetchPromise.then(() => ({
           ok: true,
-          json: () =>
-            Promise.resolve({ success: true, runId: 'new-run-shared' }),
+          json: () => Promise.resolve({ success: true }),
         })),
       )
       globalThis.fetch = fetchMock
@@ -402,19 +465,180 @@ describe('useRunActions (client)', () => {
         useRunActions({ api: '/api/durably' }),
       )
 
-      let retriggerPromise: Promise<string>
+      let p: Promise<void>
       act(() => {
-        retriggerPromise = result.current.retrigger('run-123')
+        p = result.current.deleteRun('run-A')
       })
 
-      expect(result.current.isLoading).toBe(true)
+      expect(result.current.isLoadingFor('run-A')).toBe(true)
 
       await act(async () => {
         resolvePromise!()
-        await retriggerPromise
+        await p
       })
 
-      expect(result.current.isLoading).toBe(false)
+      expect(result.current.isLoadingFor('run-A')).toBe(false)
+    })
+
+    it('sets error and clears isLoadingFor on failure', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        statusText: 'Forbidden',
+        json: () => Promise.resolve({ error: 'cannot delete' }),
+      })
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useRunActions({ api: '/api/durably' }),
+      )
+
+      await act(async () => {
+        try {
+          await result.current.deleteRun('run-x')
+        } catch {
+          // expected
+        }
+      })
+
+      expect(result.current.error).toBe('cannot delete')
+      expect(result.current.isLoadingFor('run-x')).toBe(false)
+    })
+  })
+
+  describe('getRun and getSteps', () => {
+    it('does not set isLoadingFor while getRun is pending', async () => {
+      let resolveFetch: () => void
+      const pending = new Promise<Response>((resolve) => {
+        resolveFetch = () =>
+          resolve({
+            ok: true,
+            status: 200,
+            json: () =>
+              Promise.resolve({
+                id: 'run-A',
+                jobName: 'j',
+                status: 'completed',
+                input: {},
+                output: null,
+                labels: {},
+                createdAt: '',
+                currentStepIndex: 0,
+                completedStepCount: 0,
+              }),
+          } as Response)
+      })
+
+      const fetchMock = vi.fn().mockImplementation(() => pending)
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useRunActions({ api: '/api/durably' }),
+      )
+
+      let getRunPromise: Promise<unknown>
+      act(() => {
+        getRunPromise = result.current.getRun('run-A')
+      })
+
+      expect(result.current.isLoadingFor('run-A')).toBe(false)
+
+      await act(async () => {
+        resolveFetch!()
+        await getRunPromise
+      })
+    })
+
+    it('does not set isLoadingFor while getSteps is pending', async () => {
+      let resolveFetch: () => void
+      const pending = new Promise<Response>((resolve) => {
+        resolveFetch = () =>
+          resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve([]),
+          } as Response)
+      })
+
+      const fetchMock = vi.fn().mockImplementation(() => pending)
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useRunActions({ api: '/api/durably' }),
+      )
+
+      let getStepsPromise: Promise<unknown>
+      act(() => {
+        getStepsPromise = result.current.getSteps('run-A')
+      })
+
+      expect(result.current.isLoadingFor('run-A')).toBe(false)
+
+      await act(async () => {
+        resolveFetch!()
+        await getStepsPromise
+      })
+    })
+  })
+
+  describe('concurrent actions', () => {
+    it('tracks two runs independently', async () => {
+      let resolveRetrigger: () => void
+      let resolveCancel: () => void
+      const pRetrigger = new Promise<void>((r) => {
+        resolveRetrigger = r
+      })
+      const pCancel = new Promise<void>((r) => {
+        resolveCancel = r
+      })
+
+      const fetchMock = vi.fn().mockImplementation((url: string) => {
+        if (url.includes('/retrigger')) {
+          return pRetrigger.then(() => ({
+            ok: true,
+            json: () => Promise.resolve({ success: true, runId: 'new-from-a' }),
+          }))
+        }
+        if (url.includes('/cancel')) {
+          return pCancel.then(() => ({
+            ok: true,
+            json: () => Promise.resolve({ success: true }),
+          }))
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({}),
+        })
+      })
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useRunActions({ api: '/api/durably' }),
+      )
+
+      let p1: Promise<string>
+      let p2: Promise<void>
+      act(() => {
+        p1 = result.current.retrigger('run-A')
+        p2 = result.current.cancel('run-B')
+      })
+
+      expect(result.current.isLoadingFor('run-A')).toBe(true)
+      expect(result.current.isLoadingFor('run-B')).toBe(true)
+
+      await act(async () => {
+        resolveRetrigger!()
+        await p1
+      })
+
+      expect(result.current.isLoadingFor('run-A')).toBe(false)
+      expect(result.current.isLoadingFor('run-B')).toBe(true)
+
+      await act(async () => {
+        resolveCancel!()
+        await p2
+      })
+
+      expect(result.current.isLoadingFor('run-B')).toBe(false)
     })
   })
 })

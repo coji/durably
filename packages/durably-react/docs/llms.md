@@ -263,24 +263,31 @@ Actions for runs (retrigger, cancel, delete):
 import { useRunActions } from '@coji/durably-react'
 
 function RunActions({ runId, status }: { runId: string; status: string }) {
-  const { retrigger, cancel, deleteRun, getRun, getSteps, isLoading, error } =
-    useRunActions({
-      api: '/api/durably',
-    })
+  const {
+    retrigger,
+    cancel,
+    deleteRun,
+    getRun,
+    getSteps,
+    isLoadingFor,
+    error,
+  } = useRunActions({
+    api: '/api/durably',
+  })
 
   return (
     <div>
       {(status === 'failed' || status === 'cancelled') && (
-        <button onClick={() => retrigger(runId)} disabled={isLoading}>
+        <button onClick={() => retrigger(runId)} disabled={isLoadingFor(runId)}>
           Retrigger
         </button>
       )}
       {(status === 'pending' || status === 'leased') && (
-        <button onClick={() => cancel(runId)} disabled={isLoading}>
+        <button onClick={() => cancel(runId)} disabled={isLoadingFor(runId)}>
           Cancel
         </button>
       )}
-      <button onClick={() => deleteRun(runId)} disabled={isLoading}>
+      <button onClick={() => deleteRun(runId)} disabled={isLoadingFor(runId)}>
         Delete
       </button>
       {error && <span>{error}</span>}

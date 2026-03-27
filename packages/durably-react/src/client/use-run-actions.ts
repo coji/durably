@@ -39,9 +39,9 @@ export interface UseRunActionsClientResult {
    */
   getSteps: (runId: string) => Promise<StepRecord[]>
   /**
-   * Whether an action is in progress
+   * Whether a mutating action is in progress for the given run
    */
-  isLoading: boolean
+  isLoadingFor: (runId: string) => boolean
   /**
    * Error message from last action
    */
@@ -54,19 +54,22 @@ export interface UseRunActionsClientResult {
  * @example
  * ```tsx
  * function RunActions({ runId, status }: { runId: string; status: string }) {
- *   const { retrigger, cancel, isLoading, error } = useRunActions({
+ *   const { retrigger, cancel, isLoadingFor, error } = useRunActions({
  *     api: '/api/durably',
  *   })
  *
  *   return (
  *     <div>
  *       {status === 'failed' && (
- *         <button onClick={() => retrigger(runId)} disabled={isLoading}>
+ *         <button
+ *           onClick={() => retrigger(runId)}
+ *           disabled={isLoadingFor(runId)}
+ *         >
  *           Run Again
  *         </button>
  *       )}
  *       {(status === 'pending' || status === 'leased') && (
- *         <button onClick={() => cancel(runId)} disabled={isLoading}>
+ *         <button onClick={() => cancel(runId)} disabled={isLoadingFor(runId)}>
  *           Cancel
  *         </button>
  *       )}
@@ -81,7 +84,9 @@ export function useRunActions(
 ): UseRunActionsClientResult {
   const { api } = options
 
-  const [isLoading, setIsLoading] = useState(false)
+  const [loadingRunIds, setLoadingRunIds] = useState<Set<string>>(
+    () => new Set(),
+  )
   const [error, setError] = useState<string | null>(null)
 
   const executeAction = useCallback(
@@ -89,9 +94,17 @@ export function useRunActions(
       url: string,
       actionName: string,
       init?: RequestInit,
+      runId?: string,
     ): Promise<T> => {
-      setIsLoading(true)
       setError(null)
+
+      if (runId) {
+        setLoadingRunIds((prev) => {
+          const next = new Set(prev)
+          next.add(runId)
+          return next
+        })
+      }
 
       try {
         const response = await fetch(url, init)
@@ -115,10 +128,21 @@ export function useRunActions(
         setError(message)
         throw err
       } finally {
-        setIsLoading(false)
+        if (runId) {
+          setLoadingRunIds((prev) => {
+            const next = new Set(prev)
+            next.delete(runId)
+            return next
+          })
+        }
       }
     },
     [],
+  )
+
+  const isLoadingFor = useCallback(
+    (runId: string) => loadingRunIds.has(runId),
+    [loadingRunIds],
   )
 
   const retrigger = useCallback(
@@ -128,6 +152,7 @@ export function useRunActions(
         `${api}/retrigger?runId=${enc}`,
         'retrigger',
         { method: 'POST' },
+        runId,
       )
       if (!data.runId) {
         const message = 'Failed to retrigger: missing runId in response'
@@ -142,9 +167,14 @@ export function useRunActions(
   const cancel = useCallback(
     async (runId: string) => {
       const enc = encodeURIComponent(runId)
-      await executeAction(`${api}/cancel?runId=${enc}`, 'cancel', {
-        method: 'POST',
-      })
+      await executeAction(
+        `${api}/cancel?runId=${enc}`,
+        'cancel',
+        {
+          method: 'POST',
+        },
+        runId,
+      )
     },
     [api, executeAction],
   )
@@ -152,16 +182,20 @@ export function useRunActions(
   const deleteRun = useCallback(
     async (runId: string) => {
       const enc = encodeURIComponent(runId)
-      await executeAction(`${api}/run?runId=${enc}`, 'delete', {
-        method: 'DELETE',
-      })
+      await executeAction(
+        `${api}/run?runId=${enc}`,
+        'delete',
+        {
+          method: 'DELETE',
+        },
+        runId,
+      )
     },
     [api, executeAction],
   )
 
   const getRun = useCallback(
     async (runId: string): Promise<ClientRun | null> => {
-      setIsLoading(true)
       setError(null)
 
       try {
@@ -190,8 +224,6 @@ export function useRunActions(
         const message = err instanceof Error ? err.message : 'Unknown error'
         setError(message)
         throw err
-      } finally {
-        setIsLoading(false)
       }
     },
     [api],
@@ -214,7 +246,7 @@ export function useRunActions(
     deleteRun,
     getRun,
     getSteps,
-    isLoading,
+    isLoadingFor,
     error,
   }
 }

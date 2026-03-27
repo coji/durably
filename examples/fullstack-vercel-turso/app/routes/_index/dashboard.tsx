@@ -61,13 +61,8 @@ export function Dashboard() {
       pageSize: 6,
     })
 
-  const {
-    cancel,
-    retrigger,
-    deleteRun,
-    getSteps,
-    isLoading: isActioning,
-  } = durably.useRunActions()
+  const { cancel, retrigger, deleteRun, getSteps, isLoadingFor } =
+    durably.useRunActions()
 
   const [selectedRun, setSelectedRun] = useState<ClientRun | null>(null)
   const [steps, setSteps] = useState<StepRecord[]>([])
@@ -214,7 +209,7 @@ export function Dashboard() {
                           <button
                             type="button"
                             onClick={() => handleRetrigger(run.id)}
-                            disabled={isActioning}
+                            disabled={isLoadingFor(run.id)}
                             className="text-xs text-green-600 hover:text-green-800 disabled:cursor-not-allowed disabled:text-gray-400"
                           >
                             Retrigger
@@ -225,7 +220,7 @@ export function Dashboard() {
                           <button
                             type="button"
                             onClick={() => handleCancel(run.id)}
-                            disabled={isActioning}
+                            disabled={isLoadingFor(run.id)}
                             className="text-xs text-orange-600 hover:text-orange-800 disabled:cursor-not-allowed disabled:text-gray-400"
                           >
                             Cancel
@@ -236,7 +231,7 @@ export function Dashboard() {
                             <button
                               type="button"
                               onClick={() => handleDelete(run.id)}
-                              disabled={isActioning}
+                              disabled={isLoadingFor(run.id)}
                               className="text-xs text-red-600 hover:text-red-800 disabled:cursor-not-allowed disabled:text-gray-400"
                             >
                               Delete

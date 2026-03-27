@@ -12,6 +12,7 @@ import { describe, expectTypeOf, it } from 'vitest'
 import { z } from 'zod'
 import type { JobHooks } from '../src/client/create-job-hooks'
 import type { UseJobRunClientResult } from '../src/client/use-job-run'
+import type { UseRunActionsClientResult } from '../src/client/use-run-actions'
 import type {
   TypedClientRun,
   UseRunsClientOptions,
@@ -336,6 +337,21 @@ describe('Type inference', () => {
       expectTypeOf<UseRunsClientOptions['status']>().toEqualTypeOf<
         RunStatus | RunStatus[] | undefined
       >()
+    })
+  })
+
+  describe('useRunActions (client)', () => {
+    it('UseRunActionsClientResult has isLoadingFor (runId: string) => boolean', () => {
+      expectTypeOf<UseRunActionsClientResult['isLoadingFor']>().toEqualTypeOf<
+        (runId: string) => boolean
+      >()
+    })
+
+    it('UseRunActionsClientResult does not include isLoading', () => {
+      type HasIsLoading = 'isLoading' extends keyof UseRunActionsClientResult
+        ? true
+        : false
+      expectTypeOf<HasIsLoading>().toEqualTypeOf<false>()
     })
   })
 })
