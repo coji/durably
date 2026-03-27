@@ -42,6 +42,7 @@ Regenerate the OG image whenever the tagline or feature descriptions change.
 - No automatic retry - failures are immediate and explicit (`retrigger()` creates a fresh run with a new ID and returns it)
 - Dialect injection pattern - Kysely dialect passed to `createDurably()` to abstract SQLite implementations
 - Event system for extensibility (`run:leased`, `run:complete`, `run:fail`, `step:*`, `log:write`)
+- **Don't export internals — fix the API instead**: When internal constants or helpers seem useful to export (e.g., `TERMINAL_STATUSES`), ask why users need that knowledge and make the API express the semantics directly (e.g., `run.isTerminal` instead of users checking individual statuses). See #158.
 
 ## Database Schema
 
