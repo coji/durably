@@ -287,9 +287,13 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
           Cancel
         </button>
       )}
-      <button onClick={() => deleteRun(runId)} disabled={isLoadingFor(runId)}>
-        Delete
-      </button>
+      {(status === 'completed' ||
+        status === 'failed' ||
+        status === 'cancelled') && (
+        <button onClick={() => deleteRun(runId)} disabled={isLoadingFor(runId)}>
+          Delete
+        </button>
+      )}
       {error && <span>{error}</span>}
     </div>
   )
