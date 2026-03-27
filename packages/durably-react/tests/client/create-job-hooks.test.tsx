@@ -7,7 +7,7 @@
  */
 
 import { defineJob } from '@coji/durably'
-import { renderHook } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { createJobHooks } from '../../src/client/create-job-hooks'
@@ -124,5 +124,176 @@ describe('createJobHooks', () => {
 
     // Verify the hook returns expected shape
     expect(result.current.logs).toEqual([])
+  })
+
+  describe('useRun callbacks', () => {
+    const hooks = createJobHooks<typeof importCsvJob>({
+      api: '/api/durably',
+      jobName: 'import-csv',
+    })
+
+    it('works without options', async () => {
+      const { result } = renderHook(() => hooks.useRun('no-opts-run'))
+
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:complete',
+          runId: 'no-opts-run',
+          output: { rowCount: 1, errors: 0 },
+        })
+      })
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('completed')
+        expect(result.current.output).toEqual({ rowCount: 1, errors: 0 })
+      })
+    })
+
+    it('fires onComplete once when run completes via SSE run:complete', async () => {
+      const onComplete = vi.fn()
+
+      const { result } = renderHook(() =>
+        hooks.useRun('complete-hooks-run', { onComplete }),
+      )
+
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:complete',
+          runId: 'complete-hooks-run',
+          output: { rowCount: 1, errors: 0 },
+        })
+      })
+
+      await waitFor(() => {
+        expect(result.current.isCompleted).toBe(true)
+      })
+
+      expect(onComplete).toHaveBeenCalledTimes(1)
+    })
+
+    it('fires onFail once when run fails via SSE run:fail', async () => {
+      const onFail = vi.fn()
+
+      const { result } = renderHook(() =>
+        hooks.useRun('fail-hooks-run', { onFail }),
+      )
+
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:fail',
+          runId: 'fail-hooks-run',
+          error: 'import failed',
+        })
+      })
+
+      await waitFor(() => {
+        expect(result.current.isFailed).toBe(true)
+      })
+
+      expect(onFail).toHaveBeenCalledTimes(1)
+    })
+
+    it('fires onStart once when transitioning from null to pending then leased', async () => {
+      const onStart = vi.fn()
+
+      const { result } = renderHook(() =>
+        hooks.useRun('start-hooks-run', { onStart }),
+      )
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('pending')
+      })
+
+      expect(onStart).toHaveBeenCalledTimes(1)
+
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:leased',
+          runId: 'start-hooks-run',
+        })
+      })
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('leased')
+      })
+
+      expect(onStart).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not refire callbacks on rerender after terminal state', async () => {
+      const onComplete = vi.fn()
+
+      const { rerender, result } = renderHook(() =>
+        hooks.useRun('rerender-run', { onComplete }),
+      )
+
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:complete',
+          runId: 'rerender-run',
+          output: { rowCount: 1, errors: 0 },
+        })
+      })
+
+      await waitFor(() => {
+        expect(result.current.isCompleted).toBe(true)
+      })
+
+      expect(onComplete).toHaveBeenCalledTimes(1)
+
+      rerender()
+
+      expect(onComplete).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not refire onFail on rerender after failure', async () => {
+      const onFail = vi.fn()
+
+      const { rerender, result } = renderHook(() =>
+        hooks.useRun('rerender-fail-run', { onFail }),
+      )
+
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:fail',
+          runId: 'rerender-fail-run',
+          error: 'failed',
+        })
+      })
+
+      await waitFor(() => {
+        expect(result.current.isFailed).toBe(true)
+      })
+
+      expect(onFail).toHaveBeenCalledTimes(1)
+
+      rerender()
+
+      expect(onFail).toHaveBeenCalledTimes(1)
+    })
   })
 })
