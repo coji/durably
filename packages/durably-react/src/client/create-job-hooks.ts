@@ -8,9 +8,6 @@ import {
   type UseJobRunClientResult,
 } from './use-job-run'
 
-/**
- * Callback options for useRun (subset of UseJobRunClientOptions)
- */
 type RunCallbackOptions = Pick<
   UseJobRunClientOptions,
   'onStart' | 'onComplete' | 'onFail'
