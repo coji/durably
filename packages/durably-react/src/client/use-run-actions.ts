@@ -89,6 +89,15 @@ export function useRunActions(
   )
   const [error, setError] = useState<string | null>(null)
 
+  const trackLoading = useCallback((runId: string, loading: boolean) => {
+    setLoadingRunIds((prev) => {
+      const next = new Set(prev)
+      if (loading) next.add(runId)
+      else next.delete(runId)
+      return next
+    })
+  }, [])
+
   const executeAction = useCallback(
     async <T>(
       url: string,
@@ -97,14 +106,7 @@ export function useRunActions(
       runId?: string,
     ): Promise<T> => {
       setError(null)
-
-      if (runId) {
-        setLoadingRunIds((prev) => {
-          const next = new Set(prev)
-          next.add(runId)
-          return next
-        })
-      }
+      if (runId) trackLoading(runId, true)
 
       try {
         const response = await fetch(url, init)
@@ -128,22 +130,13 @@ export function useRunActions(
         setError(message)
         throw err
       } finally {
-        if (runId) {
-          setLoadingRunIds((prev) => {
-            const next = new Set(prev)
-            next.delete(runId)
-            return next
-          })
-        }
+        if (runId) trackLoading(runId, false)
       }
     },
-    [],
+    [trackLoading],
   )
 
-  const isLoadingFor = useCallback(
-    (runId: string) => loadingRunIds.has(runId),
-    [loadingRunIds],
-  )
+  const isLoadingFor = (runId: string) => loadingRunIds.has(runId)
 
   const retrigger = useCallback(
     async (runId: string) => {
