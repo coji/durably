@@ -27,10 +27,23 @@ export const durably = createDurably({
   },
 })
 
-export const durablyHandler = createDurablyHandler(durably)
+export const durablyHandler = createDurablyHandler(durably, {
+  sseThrottleMs: 100, // throttle SSE progress events (default: 100ms, 0 to disable)
+  onRequest: async () => {
+    // called before handling each request (after authentication)
+  },
+})
 
 await durably.init()
 ```
+
+### createDurablyHandler Options
+
+| Option          | Type                          | Description                                                              |
+| --------------- | ----------------------------- | ------------------------------------------------------------------------ |
+| `sseThrottleMs` | `number`                      | Throttle interval for SSE progress events (default: 100ms, 0 to disable) |
+| `onRequest`     | `() => Promise<void> \| void` | Called before handling each request (after authentication)               |
+| `auth`          | `AuthConfig`                  | Auth middleware configuration (see [Auth guide](/guide/auth))            |
 
 ```ts
 // app/routes/api.durably.$.ts
@@ -392,8 +405,8 @@ useRuns(options)
 | ---------- | -------------------------- | ------------------------------------------------------ |
 | `api`      | `string`                   | API base path                                          |
 | `jobName`  | `string \| string[]`       | Filter by job name(s) (only for untyped usage)         |
-| `status`   | `RunStatus \| RunStatus[]` | Filter by status(es)                                   |
-| `labels`   | `Record<string, string>`   | Filter by labels                                       |
+| `status`   | `RunStatus \| RunStatus[]` | Filter by status(es) — array matches any               |
+| `labels`   | `Record<string, string>`   | Filter by labels — all specified labels must match     |
 | `pageSize` | `number`                   | Number of runs per page                                |
 | `realtime` | `boolean`                  | Subscribe to SSE updates on first page (default: true) |
 

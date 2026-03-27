@@ -1314,6 +1314,8 @@ function FilteredDashboard() {
 }
 ```
 
+Return type: `{ runs, page, hasMore, isLoading, nextPage, prevPage, goToPage, refresh }`. Pagination is 0-indexed. Filter semantics: `status` array matches any, `labels` must all match.
+
 ## Server Handler Setup
 
 On your server, use `createDurablyHandler`:
