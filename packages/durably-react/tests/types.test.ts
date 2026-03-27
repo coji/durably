@@ -10,6 +10,8 @@
 import { defineJob, type RunStatus } from '@coji/durably'
 import { describe, expectTypeOf, it } from 'vitest'
 import { z } from 'zod'
+import type { JobHooks } from '../src/client/create-job-hooks'
+import type { UseJobRunClientResult } from '../src/client/use-job-run'
 import type {
   TypedClientRun,
   UseRunsClientOptions,
@@ -106,6 +108,48 @@ describe('Type inference', () => {
       type Result = UseJobRunResult
 
       expectTypeOf<Result['output']>().toEqualTypeOf<unknown | null>()
+    })
+  })
+
+  describe('createJobHooks useRun', () => {
+    type Hooks = JobHooks<{ taskId: string }, { success: boolean }>
+    type UseRun = Hooks['useRun']
+
+    it('accepts runId only or with optional callbacks', () => {
+      expectTypeOf<UseRun>().parameter(0).toEqualTypeOf<string | null>()
+      expectTypeOf<UseRun>().parameter(1).toEqualTypeOf<
+        | {
+            onStart?: () => void
+            onComplete?: () => void
+            onFail?: () => void
+          }
+        | undefined
+      >()
+      expectTypeOf<UseRun>().returns.toEqualTypeOf<
+        UseJobRunClientResult<{ success: boolean }>
+      >()
+    })
+
+    it('accepts runId without second argument', () => {
+      expectTypeOf<UseRun>().toBeCallableWith('run-id')
+      expectTypeOf<UseRun>().toBeCallableWith(null)
+    })
+
+    it('accepts empty options object', () => {
+      expectTypeOf<UseRun>().toBeCallableWith('run-id', {})
+      expectTypeOf<UseRun>().toBeCallableWith(null, {})
+    })
+
+    it('accepts onComplete and optional callbacks', () => {
+      expectTypeOf<UseRun>().toBeCallableWith('run-id', {
+        onComplete: () => {},
+      })
+      expectTypeOf<UseRun>().toBeCallableWith('run-id', {
+        onStart: () => {},
+      })
+      expectTypeOf<UseRun>().toBeCallableWith('run-id', {
+        onFail: () => {},
+      })
     })
   })
 

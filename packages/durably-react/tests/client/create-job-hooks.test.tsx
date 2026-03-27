@@ -7,7 +7,7 @@
  */
 
 import { defineJob } from '@coji/durably'
-import { renderHook } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { createJobHooks } from '../../src/client/create-job-hooks'
@@ -124,5 +124,168 @@ describe('createJobHooks', () => {
 
     // Verify the hook returns expected shape
     expect(result.current.logs).toEqual([])
+  })
+
+  describe('useRun callbacks', () => {
+    const hooks = createJobHooks<typeof importCsvJob>({
+      api: '/api/durably',
+      jobName: 'import-csv',
+    })
+
+    it('works without options', async () => {
+      const { result } = renderHook(() => hooks.useRun('no-opts-run'))
+
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:complete',
+          runId: 'no-opts-run',
+          output: { rowCount: 1, errors: 0 },
+        })
+      })
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('completed')
+        expect(result.current.output).toEqual({ rowCount: 1, errors: 0 })
+      })
+    })
+
+    it('fires onComplete once when run completes via SSE run:complete', async () => {
+      const onComplete = vi.fn()
+
+      const { result } = renderHook(() =>
+        hooks.useRun('complete-hooks-run', { onComplete }),
+      )
+
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:complete',
+          runId: 'complete-hooks-run',
+          output: { rowCount: 1, errors: 0 },
+        })
+      })
+
+      await waitFor(() => {
+        expect(result.current.isCompleted).toBe(true)
+      })
+
+      expect(onComplete).toHaveBeenCalledTimes(1)
+    })
+
+    it('fires onFail once when run fails via SSE run:fail', async () => {
+      const onFail = vi.fn()
+
+      const { result } = renderHook(() =>
+        hooks.useRun('fail-hooks-run', { onFail }),
+      )
+
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:fail',
+          runId: 'fail-hooks-run',
+          error: 'import failed',
+        })
+      })
+
+      await waitFor(() => {
+        expect(result.current.isFailed).toBe(true)
+      })
+
+      expect(onFail).toHaveBeenCalledTimes(1)
+    })
+
+    it('fires onStart once when transitioning from null to pending then leased', async () => {
+      const onStart = vi.fn()
+
+      const { result } = renderHook(() =>
+        hooks.useRun('start-hooks-run', { onStart }),
+      )
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('pending')
+      })
+
+      expect(onStart).toHaveBeenCalledTimes(1)
+
+      await waitFor(() => {
+        expect(mockEventSource.instances.length).toBeGreaterThan(0)
+      })
+
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:leased',
+          runId: 'start-hooks-run',
+        })
+      })
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('leased')
+      })
+
+      expect(onStart).toHaveBeenCalledTimes(1)
+    })
+
+    it.each([
+      {
+        label: 'onComplete after completion',
+        runId: 'rerender-complete-run',
+        callbackKey: 'onComplete' as const,
+        sseEvent: {
+          type: 'run:complete' as const,
+          runId: 'rerender-complete-run',
+          output: { rowCount: 1, errors: 0 },
+        },
+        isFinal: (r: ReturnType<typeof hooks.useRun>) => r.isCompleted,
+      },
+      {
+        label: 'onFail after failure',
+        runId: 'rerender-fail-run',
+        callbackKey: 'onFail' as const,
+        sseEvent: {
+          type: 'run:fail' as const,
+          runId: 'rerender-fail-run',
+          error: 'failed',
+        },
+        isFinal: (r: ReturnType<typeof hooks.useRun>) => r.isFailed,
+      },
+    ])(
+      'does not refire $label on rerender',
+      async ({ runId, callbackKey, sseEvent, isFinal }) => {
+        const cb = vi.fn()
+
+        const { rerender, result } = renderHook(() =>
+          hooks.useRun(runId, { [callbackKey]: cb }),
+        )
+
+        await waitFor(() => {
+          expect(mockEventSource.instances.length).toBeGreaterThan(0)
+        })
+
+        act(() => {
+          mockEventSource.emit(sseEvent)
+        })
+
+        await waitFor(() => {
+          expect(isFinal(result.current)).toBe(true)
+        })
+
+        expect(cb).toHaveBeenCalledTimes(1)
+
+        rerender()
+
+        expect(cb).toHaveBeenCalledTimes(1)
+      },
+    )
   })
 })

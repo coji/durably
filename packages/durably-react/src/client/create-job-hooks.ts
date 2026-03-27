@@ -2,7 +2,16 @@ import type { JobDefinition } from '@coji/durably'
 import type { InferInput, InferOutput } from '../types'
 import { useJob, type UseJobClientResult } from './use-job'
 import { useJobLogs, type UseJobLogsClientResult } from './use-job-logs'
-import { useJobRun, type UseJobRunClientResult } from './use-job-run'
+import {
+  useJobRun,
+  type UseJobRunClientOptions,
+  type UseJobRunClientResult,
+} from './use-job-run'
+
+type RunCallbackOptions = Pick<
+  UseJobRunClientOptions,
+  'onStart' | 'onComplete' | 'onFail'
+>
 
 /**
  * Options for createJobHooks
@@ -30,7 +39,10 @@ export interface JobHooks<TInput, TOutput> {
   /**
    * Hook for subscribing to an existing run by ID
    */
-  useRun: (runId: string | null) => UseJobRunClientResult<TOutput>
+  useRun: (
+    runId: string | null,
+    options?: RunCallbackOptions,
+  ) => UseJobRunClientResult<TOutput>
 
   /**
    * Hook for subscribing to logs from a run
@@ -80,8 +92,8 @@ export function createJobHooks<
       return useJob<InferInput<TJob>, InferOutput<TJob>>({ api, jobName })
     },
 
-    useRun: (runId: string | null) => {
-      return useJobRun<InferOutput<TJob>>({ api, runId })
+    useRun: (runId: string | null, runOptions?: RunCallbackOptions) => {
+      return useJobRun<InferOutput<TJob>>({ api, runId, ...runOptions })
     },
 
     useLogs: (runId: string | null, logsOptions?: { maxLogs?: number }) => {
