@@ -257,7 +257,7 @@ function FilteredDashboard() {
 
 ### Fullstack useRunActions
 
-Actions for runs (retrigger, cancel, delete):
+Actions for runs (retrigger, cancel, delete). Loading state is tracked per-run via `isLoadingFor(runId)` — only the active run's buttons are disabled:
 
 ```tsx
 import { useRunActions } from '@coji/durably-react'

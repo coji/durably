@@ -415,14 +415,21 @@ useRuns(options)
 
 ## useRunActions
 
-Perform actions on runs (retrigger, cancel, delete).
+Perform actions on runs (retrigger, cancel, delete). Loading state is tracked per-run via `isLoadingFor(runId)` — in a run list UI, only the buttons for the active run are disabled while others remain interactive.
 
 ```tsx
 import { useRunActions } from '@coji/durably-react'
 
 function RunActions({ runId, status }: { runId: string; status: string }) {
-  const { retrigger, cancel, deleteRun, getRun, getSteps, isLoadingFor, error } =
-    useRunActions({ api: '/api/durably' })
+  const {
+    retrigger,
+    cancel,
+    deleteRun,
+    getRun,
+    getSteps,
+    isLoadingFor,
+    error,
+  } = useRunActions({ api: '/api/durably' })
 
   return (
     <div>
@@ -457,12 +464,12 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
 
 ### Return Type
 
-| Property    | Type                                            | Description                                 |
-| ----------- | ----------------------------------------------- | ------------------------------------------- |
-| `retrigger` | `(runId: string) => Promise<string>`            | Retrigger a failed run (returns new run ID) |
-| `cancel`    | `(runId: string) => Promise<void>`              | Cancel a pending or leased run              |
-| `deleteRun` | `(runId: string) => Promise<void>`              | Delete a run                                |
-| `getRun`    | `(runId: string) => Promise<ClientRun \| null>` | Get run details                             |
-| `getSteps`  | `(runId: string) => Promise<StepRecord[]>`      | Get step details                            |
-| `isLoadingFor` | `(runId: string) => boolean`                 | Whether a mutating action is in progress for that run |
-| `error`     | `string \| null`                                | Error message                               |
+| Property       | Type                                            | Description                                           |
+| -------------- | ----------------------------------------------- | ----------------------------------------------------- |
+| `retrigger`    | `(runId: string) => Promise<string>`            | Retrigger a failed run (returns new run ID)           |
+| `cancel`       | `(runId: string) => Promise<void>`              | Cancel a pending or leased run                        |
+| `deleteRun`    | `(runId: string) => Promise<void>`              | Delete a run                                          |
+| `getRun`       | `(runId: string) => Promise<ClientRun \| null>` | Get run details                                       |
+| `getSteps`     | `(runId: string) => Promise<StepRecord[]>`      | Get step details                                      |
+| `isLoadingFor` | `(runId: string) => boolean`                    | Whether a mutating action is in progress for that run |
+| `error`        | `string \| null`                                | Error message                                         |
