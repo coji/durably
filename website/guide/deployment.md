@@ -55,6 +55,7 @@ No HTTP handler, no React — just `@coji/durably`. See [Server Mode guide](/gui
   createDurably({
     dialect,
     pollingIntervalMs: 1000, // default, good for production
+    maxConcurrentRuns: 1, // default; raise to process multiple runs concurrently
     leaseRenewIntervalMs: 5000, // default
     leaseMs: 30000, // default
   })
@@ -128,6 +129,7 @@ See [SPA Mode guide](/guide/spa-mode).
   createDurably({
     dialect: sqlocal.dialect,
     pollingIntervalMs: 100,
+    maxConcurrentRuns: 1, // default; raise to process multiple runs concurrently
     leaseRenewIntervalMs: 500,
     leaseMs: 3000,
   })

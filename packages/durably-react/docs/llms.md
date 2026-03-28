@@ -39,6 +39,7 @@ import { createDurably, createDurablyHandler } from '@coji/durably'
 
 export const durably = createDurably({
   dialect,
+  maxConcurrentRuns: 1,
   jobs: {
     importCsv: importCsvJob,
     syncUsers: syncUsersJob,
@@ -307,7 +308,10 @@ import { SQLocalKysely } from 'sqlocal/kysely'
 // Create and initialize Durably
 async function initDurably() {
   const sqlocal = new SQLocalKysely('app.sqlite3')
-  const durably = createDurably({ dialect: sqlocal.dialect })
+  const durably = createDurably({
+    dialect: sqlocal.dialect,
+    maxConcurrentRuns: 1,
+  })
   await durably.init()
   return durably
 }
@@ -593,6 +597,7 @@ const dialect = new LibsqlDialect({ client })
 
 export const durably = createDurably({
   dialect,
+  maxConcurrentRuns: 1,
   jobs: {
     syncData: syncDataJob,
   },

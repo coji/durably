@@ -22,6 +22,7 @@ import { dialect } from './database.server'
 // Create Durably instance with jobs
 export const durably = createDurably({
   dialect,
+  maxConcurrentRuns: 1,
   jobs: {
     processImage: processImageJob,
     dataSync: dataSyncJob,

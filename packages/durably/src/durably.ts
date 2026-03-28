@@ -102,9 +102,9 @@ const DEFAULTS = {
 } as const
 
 function validateMaxConcurrentRuns(value: number): number {
-  if (!Number.isInteger(value) || value < 1) {
+  if (!Number.isSafeInteger(value) || value < 1) {
     throw new ValidationError(
-      'maxConcurrentRuns must be a positive finite integer',
+      'maxConcurrentRuns must be a positive safe integer',
     )
   }
   return value

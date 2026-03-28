@@ -14,10 +14,11 @@ describe('createWorker scheduler (direct)', () => {
     vi.useRealTimers()
   })
 
-  it('never keeps more than one delayed poll for pollingIntervalMs while idle', async () => {
+  it('never keeps more than one active delayed poll timer while idle', async () => {
     const processOne = vi.fn().mockResolvedValue(false)
     const onIdle = vi.fn().mockResolvedValue(undefined)
-    const spy = vi.spyOn(globalThis, 'setTimeout')
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout')
     const worker = createWorker(
       { pollingIntervalMs: 1000, maxConcurrentRuns: 2 },
       processOne,
@@ -25,11 +26,15 @@ describe('createWorker scheduler (direct)', () => {
     )
     worker.start()
     await vi.advanceTimersByTimeAsync(0)
-    const pollTimeouts = spy.mock.calls.filter(
+    // Each idle slot calls scheduleDelayedPoll, but it clears the previous timer first.
+    // Net active timers = total setTimeouts with 1000ms - clearTimeouts
+    const sets = setTimeoutSpy.mock.calls.filter(
       (c) => typeof c[1] === 'number' && (c[1] as number) === 1000,
-    )
-    expect(pollTimeouts.length).toBeLessThanOrEqual(1)
-    spy.mockRestore()
+    ).length
+    const clears = clearTimeoutSpy.mock.calls.length
+    expect(sets - clears).toBeLessThanOrEqual(1)
+    setTimeoutSpy.mockRestore()
+    clearTimeoutSpy.mockRestore()
     await worker.stop()
   })
 

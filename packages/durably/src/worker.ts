@@ -78,15 +78,14 @@ export function createWorker(
       if (didProcess && running) {
         // Work was found — immediately try to refill slots
         fillSlots()
-      } else if (!didProcess && activeCount === 0 && running) {
-        // All slots idle — run maintenance then schedule a delayed poll
-        await runIdleMaintenanceSafe()
-        if (running) {
-          scheduleDelayedPoll()
+      } else if (!didProcess && running) {
+        if (activeCount === 0) {
+          // All slots idle — run maintenance before polling again
+          await runIdleMaintenanceSafe()
         }
+        // Schedule a delayed poll so this slot can pick up new work later
+        scheduleDelayedPoll()
       }
-      // Otherwise (!didProcess, other slots still active): do nothing — let the
-      // remaining active slots handle idle detection when they finish
     } catch (err) {
       activeCount--
       if (running) {
@@ -104,13 +103,14 @@ export function createWorker(
       activeCount++
       const p = processSlotCycle()
       activePromises.add(p)
-      void p.catch(() => {
-        // processOne errors are handled by the caller's event system;
-        // catch here to prevent unhandled rejection from the tracked promise
-      })
-      void p.finally(() => {
-        activePromises.delete(p)
-      })
+      void p
+        .finally(() => {
+          activePromises.delete(p)
+        })
+        .catch(() => {
+          // processOne errors are handled by the caller's event system;
+          // catch here to prevent unhandled rejection from the tracked promise
+        })
     }
   }
 
