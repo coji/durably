@@ -43,6 +43,19 @@ Generate order.md based on the task description (issue body or user input).
    - Explicitly state what will not be done
    ```
 
+4. Run the quality checklist before finalizing
+
+## Quality Checklist
+
+Before completing order.md, verify each item:
+
+- [ ] For refactoring tasks: existing behaviors that must be preserved are listed as explicit completion criteria (not just "keep behavior unchanged")
+- [ ] Negative test cases are required where applicable (e.g., "X does NOT happen when Y")
+- [ ] Each completion criterion is independently verifiable (can be checked Yes/No without ambiguity)
+- [ ] Files to change are confirmed by reading the actual code (not guessed from names)
+- [ ] Out of scope items do not contradict the implementation details or files to change
+- [ ] Implicit dependencies of changed files are accounted for (e.g., if a function signature changes, callers are in scope)
+
 ## Rules
 
 - Do not include code examples or snippets (keep it at the requirements level)

@@ -155,7 +155,10 @@ movements:
       1. Read order.md and understand the implementation details, files to change, and completion criteria
       2. Read the files to change and understand the existing code structure
       3. Perform the implementation
-      4. Run validation and confirm all checks pass
+      4. Run formatting fix and validation:
+         ```bash
+         pnpm format:fix && pnpm validate
+         ```
 
       **Rules:**
       - Only modify files listed in order.md's files to change
@@ -168,10 +171,11 @@ movements:
       - condition: Cannot implement, insufficient information
         next: ABORT
 
-  # 5. Code simplification (claude - improve quality before acceptance)
+  # 5. Code simplification (claude - /simplify skill with parallel review agents)
   - name: simplify
     edit: true
     persona: simplifier
+    provider: claude
     policy: step-implementation
     instruction: simplify
     required_permission_mode: edit
@@ -184,6 +188,8 @@ movements:
           - Edit
           - Write
           - Bash
+          - Skill
+          - Agent
     rules:
       - condition: Simplification complete (with or without improvements), validation passes
         next: acceptance
@@ -235,7 +241,10 @@ movements:
       1. Read the acceptance testing report and understand the issues
       2. If a supervise report exists (supervise-report.md), read it for additional context
       3. Apply fixes for each issue
-      4. Run validation and confirm all checks pass
+      4. Run formatting fix and validation:
+         ```bash
+         pnpm format:fix && pnpm validate
+         ```
 
       **Rules:**
       - Do not modify PLAN.md or order.md
