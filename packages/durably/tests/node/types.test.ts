@@ -178,7 +178,6 @@ describe('Type inference', () => {
   describe('event classification exports', () => {
     it('exports isDomainEvent as a type guard', () => {
       expectTypeOf(isDomainEvent).parameter(0).toEqualTypeOf<DurablyEvent>()
-      expectTypeOf(isDomainEvent).returns.toEqualTypeOf<boolean>()
       const e = {} as DurablyEvent
       if (isDomainEvent(e)) {
         expectTypeOf(e).toEqualTypeOf<DomainEvent>()

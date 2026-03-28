@@ -354,13 +354,13 @@ The `DurablyEvent` union is grouped for callers who want lifecycle facts vs oper
 Use `isDomainEvent(event)` (checks `event.type` only) as a type guard.
 
 ```ts
-import { isDomainEvent } from '@coji/durably'
+import { isDomainEvent, type DurablyEvent } from '@coji/durably'
 
-durably.on('run:complete', (event) => {
+function handleEvent(event: DurablyEvent) {
   if (isDomainEvent(event)) {
-    console.log('Run finished:', event.runId)
+    console.log('State change:', event.type, event.runId)
   }
-})
+}
 ```
 
 ## Advanced APIs

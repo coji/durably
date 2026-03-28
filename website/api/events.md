@@ -12,13 +12,15 @@ Fifteen core event types are exposed as the `DurablyEvent` discriminated union. 
 The helper `isDomainEvent(event)` returns true when `event.type` is a domain event (no `category` field is added to emitted payloads).
 
 ```ts
-import { isDomainEvent } from '@coji/durably'
+import { isDomainEvent, type DurablyEvent } from '@coji/durably'
 
-durably.on('run:fail', (event) => {
+// Filter domain events in a handler that receives mixed event types
+function handleEvent(event: DurablyEvent) {
   if (isDomainEvent(event)) {
-    // narrowed to domain union
+    // narrowed to DomainEvent — state transition facts only
+    console.log(event.type, event.runId)
   }
-})
+}
 ```
 
 ## Subscribing to Events

@@ -321,6 +321,7 @@ export function waitForRunCompletion(
       if (run.status === 'cancelled') {
         cleanup()
         reject(new CancelledError(runId))
+        return
       }
     }
 
