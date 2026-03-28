@@ -233,8 +233,9 @@ movements:
 
       **Steps:**
       1. Read the acceptance testing report and understand the issues
-      2. Apply fixes for each issue
-      3. Run validation and confirm all checks pass
+      2. If a supervise report exists (supervise-report.md), read it for additional context
+      3. Apply fixes for each issue
+      4. Run validation and confirm all checks pass
 
       **Rules:**
       - Do not modify PLAN.md or order.md
