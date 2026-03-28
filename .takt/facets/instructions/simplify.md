@@ -1,24 +1,24 @@
-# コード簡素化手順
+# Code Simplification Procedure
 
-受け入れ検査を通過した実装コードの品質を改善する。
+Improve the quality of implementation code that has passed acceptance testing.
 
-## 手順
+## Steps
 
-1. `git diff` で変更内容を把握
+1. Review the changes with `git diff`
 
-2. 以下の観点でレビュー:
-   - 既存コードとのロジック重複はないか（共通ヘルパーに抽出すべきか）
-   - 不要な抽象化・過剰な型定義はないか
-   - 命名は明確か
-   - テストに不要な重複はないか
-   - エラーメッセージは具体的か
+2. Review from the following perspectives:
+   - Is there logic duplication with existing code (should it be extracted into a shared helper)?
+   - Are there unnecessary abstractions or excessive type definitions?
+   - Are names clear?
+   - Are there unnecessary duplications in tests?
+   - Are error messages specific?
 
-3. 改善点があれば修正を適用
+3. Apply improvements if any are found
 
-4. 修正後にバリデーション実行:
+4. Run validation after making changes:
 
    ```bash
    pnpm validate
    ```
 
-5. 改善点がなければ何もせず完了を報告
+5. If no improvements are needed, report completion without changes

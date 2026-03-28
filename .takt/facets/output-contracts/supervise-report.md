@@ -1,40 +1,40 @@
 ```markdown
-# 最終検証結果
+# Final Verification Result
 
-## 判定: COMPLETE / FIX / SPEC_REVIEW
+## Judgment: COMPLETE / FIX / SPEC_REVIEW
 
-判定基準:
+Judgment criteria:
 
-- COMPLETE: 全完了条件達成、バリデーションパス、スコープ内
-- FIX: 実装レベルの問題が残存（コードの修正で解決可能）
-- SPEC_REVIEW: 仕様レベルの問題（order.md の修正が必要）
+- COMPLETE: All completion criteria met, validation passes, within scope
+- FIX: Implementation-level issues remain (resolvable by code changes)
+- SPEC_REVIEW: Spec-level issues (order.md needs modification)
 
-## サマリー
+## Summary
 
-{1-2文で要約}
+{1-2 sentence summary}
 
-## 完了条件チェック
+## Completion Criteria Check
 
-| #   | 条件 | 結果   | 備考 |
-| --- | ---- | ------ | ---- |
-| 1   |      | Yes/No |      |
+| #   | Criterion | Result | Notes |
+| --- | --------- | ------ | ----- |
+| 1   |           | Yes/No |       |
 
-## バリデーション
+## Validation
 
-pnpm validate の出力（要約）
+Summary of pnpm validate output
 
-## スコープチェック
+## Scope Check
 
-| 観点                     | 結果  |
-| ------------------------ | ----- |
-| 変更ファイルがスコープ内 | OK/NG |
-| order.md 未変更          | OK/NG |
+| Aspect                         | Result |
+| ------------------------------ | ------ |
+| Changed files are within scope | OK/NG  |
+| order.md unmodified            | OK/NG  |
 
-## 残存問題（FIX / SPEC_REVIEW の場合）
+## Remaining Issues (if FIX / SPEC_REVIEW)
 
-各問題に対して:
+For each issue:
 
-- 問題の内容
-- 差し戻し先（fix / spec-review）の理由
-- 具体的な修正指示
+- Description of the issue
+- Reason for routing to fix / spec-review
+- Specific fix instructions
 ```

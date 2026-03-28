@@ -1,45 +1,45 @@
-# ドキュメント更新手順
+# Documentation Update Procedure
 
-実装変更に伴うドキュメント・website・examples の更新を行う。
+Update documentation, website, and examples in response to implementation changes.
 
-## 手順
+## Steps
 
-1. `git diff --name-only` で変更ファイルを確認し、API 変更の有無を判断
+1. Check changed files with `git diff --name-only` and determine whether there are API changes
 
-2. API 変更がある場合、以下を順番に更新:
+2. If there are API changes, update the following in order:
 
-   **a. LLM向けドキュメント:**
+   **a. LLM-facing documentation:**
    - `packages/durably/docs/llms.md`
    - `packages/durably-react/docs/llms.md`
 
-   **b. Website API リファレンス:**
-   - `website/api/` 以下の該当ファイル
+   **b. Website API reference:**
+   - Relevant files under `website/api/`
 
-   **c. Website ガイド:**
-   - `website/guide/` 以下の該当ファイル
+   **c. Website guides:**
+   - Relevant files under `website/guide/`
 
-   **d. Example アプリ:**
-   - `examples/` 以下の該当ファイル
+   **d. Example apps:**
+   - Relevant files under `examples/`
 
-3. API 変更がない場合（内部リファクタ等）:
-   - ドキュメント更新は不要
-   - 変更なしを報告して完了
+3. If there are no API changes (internal refactoring, etc.):
+   - No documentation update is needed
+   - Report no changes and complete
 
-4. llms.md を更新した場合、llms.txt を再生成:
+4. If llms.md was updated, regenerate llms.txt:
 
    ```bash
    pnpm --filter durably-website generate:llms
    ```
 
-5. バリデーション実行:
+5. Run validation:
 
    ```bash
    pnpm validate
    ```
 
-## ルール
+## Rules
 
-- 変更した API のシグネチャ・型・オプションを正確に反映する
-- 実装コードは変更しない（ドキュメントファイルのみ）
-- 既存のドキュメントスタイルに合わせる
-- 更新不要な場合は何もしない（空振りOK）
+- Accurately reflect the changed API signatures, types, and options
+- Do not modify implementation code (documentation files only)
+- Follow the existing documentation style
+- If no updates are needed, do nothing (no-op is fine)

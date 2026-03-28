@@ -1,29 +1,29 @@
-# 受け入れ検査手順
+# Acceptance Testing Procedure
 
-実装がタスク仕様（order.md）の完了条件を満たしているかを検証する。
+Verify that the implementation meets the completion criteria of the task spec (order.md).
 
-## 手順
+## Steps
 
-1. order.md の完了条件を一覧化
+1. List all completion criteria from order.md
 
-2. 各完了条件について:
-   - 該当コードを読んで実装を確認
-   - 条件を満たしているか Yes/No で判定
-   - No の場合、具体的な不足点を記述
+2. For each completion criterion:
+   - Read the relevant code and verify the implementation
+   - Judge whether the criterion is met as Yes/No
+   - If No, describe the specific deficiency
 
-3. バリデーション実行:
+3. Run validation:
 
    ```bash
    pnpm validate
    ```
 
-   全チェック（format, lint, typecheck, tests）がパスすることを確認
+   Confirm that all checks (format, lint, typecheck, tests) pass
 
-4. スコープチェック:
-   - `git diff --name-only` で変更ファイル一覧を取得
-   - order.md の変更対象ファイルと照合
-   - スコープ外の変更がないか確認（ポリシーの禁止事項を参照）
+4. Scope check:
+   - Get the list of changed files with `git diff --name-only`
+   - Cross-reference with the files to change listed in order.md
+   - Check for any out-of-scope changes (refer to prohibited actions in the policy)
 
-5. 判定:
-   - 全完了条件 Yes かつバリデーションパス → approved
-   - それ以外 → needs_fix（具体的な修正指示を添える）
+5. Judgment:
+   - All completion criteria Yes and validation passes -> approved
+   - Otherwise -> needs_fix (include specific fix instructions)

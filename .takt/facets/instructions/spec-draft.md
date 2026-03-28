@@ -1,45 +1,45 @@
-# 仕様書ドラフト作成手順
+# Spec Draft Procedure
 
-タスク説明（イシュー本文またはユーザー入力）をもとに order.md を生成する。
+Generate order.md based on the task description (issue body or user input).
 
-## 手順
+## Steps
 
-1. タスク説明を読み、実装の目的とスコープを把握
+1. Read the task description and understand the purpose and scope of the implementation
 
-2. 既存コードを調査:
-   - 変更対象になりそうなファイルを特定
-   - 既存の構造・パターン・依存関係を確認
-   - テストファイルの有無と構成を確認
+2. Investigate existing code:
+   - Identify files likely to be changed
+   - Review existing structure, patterns, and dependencies
+   - Check for test files and their organization
 
-3. order.md を生成（以下の構成で）:
+3. Generate order.md (with the following structure):
 
    ```
-   # タスク名
+   # Task Name
 
-   ## 概要
-   何をやるか（1-3文）
+   ## Overview
+   What to do (1-3 sentences)
 
-   ## 背景
-   なぜやるか（イシューからの引用可）
+   ## Background
+   Why this is needed (may quote from the issue)
 
-   ## 変更対象ファイル
-   - path/to/file.ts — 変更内容の要約
+   ## Files to Change
+   - path/to/file.ts — Summary of changes
 
-   ## 実装内容
-   - 箇条書きで具体的な変更を列挙
-   - コード例は書かない（何をやるかだけ）
+   ## Implementation Details
+   - List specific changes as bullet points
+   - Do not include code examples (describe what to do, not how)
 
-   ## 完了条件
-   - [ ] 検証可能な条件を列挙
-   - [ ] pnpm validate がパスすること
+   ## Completion Criteria
+   - [ ] List verifiable conditions
+   - [ ] pnpm validate passes
 
-   ## スコープ外
-   - やらないことを明示
+   ## Out of Scope
+   - Explicitly state what will not be done
    ```
 
-## ルール
+## Rules
 
-- コード例やスニペットは書かない（要件レベルに留める）
-- 変更対象ファイルは実際にコードを読んで確認してから記載する
-- 完了条件は Yes/No で判定できる粒度にする
-- 曖昧な表現（「適切に」「必要に応じて」）は使わない
+- Do not include code examples or snippets (keep it at the requirements level)
+- Only list files to change after actually reading the code to confirm
+- Completion criteria must be granular enough to be judged as Yes/No
+- Do not use vague expressions ("appropriately", "as needed")

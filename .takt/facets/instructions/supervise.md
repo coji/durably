@@ -1,24 +1,24 @@
-# 最終検証手順
+# Final Verification Procedure
 
-実装全体の整合性を検証し、完了可能かどうかを判断する。
+Verify the overall consistency of the implementation and determine whether it can be completed.
 
-## 手順
+## Steps
 
-1. order.md の完了条件を一覧化し、各条件の達成状況を確認
+1. List all completion criteria from order.md and check the status of each
 
-2. バリデーション実行:
+2. Run validation:
 
    ```bash
    pnpm validate
    ```
 
-3. `git diff --name-only` で変更ファイルを確認:
-   - スコープ外の変更がないか
-   - order.md, PLAN.md が変更されていないか
+3. Check changed files with `git diff --name-only`:
+   - Are there any out-of-scope changes?
+   - Have order.md or PLAN.md been modified?
 
-4. 受け入れ検査レポートがあれば残存指摘を確認
+4. If an acceptance testing report exists, review any remaining issues
 
-5. 判断:
-   - 全完了条件達成 + バリデーションパス → 完了可能
-   - 軽微な残存問題のみ → 修正指示を出して fix へ
-   - 仕様レベルの問題 → spec-review に差し戻し
+5. Judgment:
+   - All completion criteria met + validation passes -> ready to complete
+   - Only minor remaining issues -> issue fix instructions and route to fix
+   - Spec-level issues -> route back to spec-review
