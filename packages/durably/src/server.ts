@@ -264,7 +264,6 @@ function matchesLabels(
  * Create HTTP handlers for Durably
  * Uses Web Standard Request/Response for framework-agnostic usage
  */
-// biome-ignore lint/suspicious/noExplicitAny: TLabels must be inferred from Durably instance
 export function createDurablyHandler<
   TContext = undefined,
   TLabels extends Record<string, string> = Record<string, string>,
