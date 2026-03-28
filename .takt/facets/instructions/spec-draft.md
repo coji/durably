@@ -55,6 +55,8 @@ Before completing order.md, verify each item:
 - [ ] Files to change are confirmed by reading the actual code (not guessed from names)
 - [ ] Out of scope items do not contradict the implementation details or files to change
 - [ ] Implicit dependencies of changed files are accounted for (e.g., if a function signature changes, callers are in scope)
+- [ ] New public API options require invalid input handling tests (e.g., 0, negative, NaN for numeric params)
+- [ ] Async operations in intervals/loops have in-flight guards to prevent concurrent request buildup
 
 ## Rules
 
