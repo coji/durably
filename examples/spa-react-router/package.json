@@ -7,7 +7,7 @@
     "dev": "react-router dev",
     "preview": "vite preview",
     "typecheck": "react-router typegen && tsc",
-    "lint": "biome lint .",
+    "lint": "biome lint --error-on-warnings .",
     "lint:fix": "biome lint --write .",
     "format": "prettier --experimental-cli --check .",
     "format:fix": "prettier --experimental-cli --write ."

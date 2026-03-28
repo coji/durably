@@ -24,7 +24,7 @@
     "test": "pnpm test:react",
     "test:react": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "biome lint .",
+    "lint": "biome lint --error-on-warnings .",
     "lint:fix": "biome lint --write .",
     "format": "prettier --experimental-cli --check .",
     "format:fix": "prettier --experimental-cli --write ."
