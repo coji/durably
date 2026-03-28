@@ -21,10 +21,25 @@ Review the task spec (order.md) and the existing code targeted for changes.
    - Can existing patterns or utilities be leveraged?
 
 5. Check for common spec omissions:
-   - New public API options/parameters: are invalid input tests required? (e.g., 0, negative, NaN, non-finite values for numeric options)
+
+   **Input validation:**
+   - New public API options used as counts, concurrency limits, or loop bounds: spec must define the exact valid domain (e.g., "positive safe integer"), not just "number". Tests must cover 0, negative, NaN, Infinity, fractional, and > MAX_SAFE_INTEGER.
    - Async operations in intervals/loops: is there a guard against concurrent in-flight requests?
+
+   **Concurrency and scheduling:**
+   - If the spec changes polling, scheduling, or concurrency behavior: completion criteria must cover both safety (no overlap, no double-execution) AND liveness (idle resources keep polling, freed slots are reused, new work is picked up within bounded delay).
+   - Require explicit criteria for each state transition: work found → immediate action, partially idle → keeps polling, fully idle → maintenance + delayed poll, error/reject → no orphaned state, stop → predictable drain.
+
+   **Promise and async ownership:**
+   - If the design creates promises that are not directly awaited at the creation site (detached/tracked promises): spec must define who owns cleanup and rejection handling. Require a test that rejected callbacks do not produce unhandled rejections.
+   - stop()/shutdown methods that await tracked promises: spec must require Promise.allSettled (not Promise.all) or equivalent, so a single rejection doesn't prevent cleanup of other in-flight work.
+
+   **Documentation and examples:**
    - Code examples in docs/examples: do they demonstrate the API correctly without redundant checks?
+
+   **Behavioral preservation:**
    - Existing behaviors that must be preserved: are they listed as explicit completion criteria with negative test cases?
+   - When changing worker/scheduler behavior: require at least one completion criterion that states what must not regress, with a negative or regression test.
 
 ## Routing Guide
 

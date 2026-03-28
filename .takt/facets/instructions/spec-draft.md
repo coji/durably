@@ -55,8 +55,10 @@ Before completing order.md, verify each item:
 - [ ] Files to change are confirmed by reading the actual code (not guessed from names)
 - [ ] Out of scope items do not contradict the implementation details or files to change
 - [ ] Implicit dependencies of changed files are accounted for (e.g., if a function signature changes, callers are in scope)
-- [ ] New public API options require invalid input handling tests (e.g., 0, negative, NaN for numeric params)
+- [ ] New public API options used as counts/concurrency/loop bounds: valid domain is explicit (e.g., "positive safe integer"), tests cover 0, negative, NaN, Infinity, fractional, > MAX_SAFE_INTEGER
 - [ ] Async operations in intervals/loops have in-flight guards to prevent concurrent request buildup
+- [ ] Concurrency/scheduling changes cover both safety (no overlap) AND liveness (idle slots keep polling, freed slots reused)
+- [ ] Detached/tracked promises define rejection ownership; no unhandled rejections from callbacks
 
 ## Rules
 
