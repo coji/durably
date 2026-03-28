@@ -15,3 +15,6 @@ website/.vitepress/dist/
 coverage
 .vercel
 .env*.local
+
+# opensrc (local reference repos)
+opensrc/
