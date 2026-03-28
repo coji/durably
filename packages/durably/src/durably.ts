@@ -2,15 +2,8 @@ import type { Dialect } from 'kysely'
 import { Kysely } from 'kysely'
 import { monotonicFactory } from 'ulidx'
 import type { z } from 'zod'
-import { createStepContext } from './context'
 import type { JobDefinition } from './define-job'
-import {
-  CancelledError,
-  ConflictError,
-  getErrorMessage,
-  LeaseLostError,
-  NotFoundError,
-} from './errors'
+import { ConflictError, getErrorMessage, NotFoundError } from './errors'
 import {
   type AnyEventInput,
   type DurablyEvent,
@@ -31,6 +24,7 @@ import {
   waitForRunCompletion,
 } from './job'
 import { runMigrations } from './migrations'
+import { type RuntimeClock, executeRun as executeRunKernel } from './runtime'
 import type { Database } from './schema'
 import {
   type DatabaseBackend,
@@ -115,6 +109,15 @@ function parseDuration(value: string): number {
 }
 
 const PURGE_INTERVAL_MS = 60_000
+
+/** Real wall-clock delegating to globalThis timers. */
+const realClock: RuntimeClock = {
+  now: () => Date.now(),
+  setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
+  clearTimeout: (id) => globalThis.clearTimeout(id),
+  setInterval: (fn, ms) => globalThis.setInterval(fn, ms),
+  clearInterval: (id) => globalThis.clearInterval(id),
+}
 
 const ulid = monotonicFactory()
 const BROWSER_SINGLETON_REGISTRY_KEY = '__durablyBrowserSingletonRegistry'
@@ -459,7 +462,7 @@ function createDurablyInstance<
 
   async function executeRun(
     run: Run<TLabels>,
-    workerId: string,
+    _workerId: string,
   ): Promise<void> {
     const job = jobRegistry.get(run.jobName)
     if (!job) {
@@ -472,164 +475,16 @@ function createDurablyInstance<
       return
     }
 
-    const { step, abortLeaseOwnership, dispose } = createStepContext(
+    await executeRunKernel(
       run,
-      run.jobName,
-      run.leaseGeneration,
-      storage,
-      eventEmitter,
+      job,
+      {
+        leaseMs: state.leaseMs,
+        leaseRenewIntervalMs: state.leaseRenewIntervalMs,
+        preserveSteps: state.preserveSteps,
+      },
+      { storage, eventEmitter, clock: realClock },
     )
-    let leaseDeadlineTimer: ReturnType<typeof setTimeout> | null = null
-
-    const scheduleLeaseDeadline = (leaseExpiresAt: string | null) => {
-      if (leaseDeadlineTimer) {
-        clearTimeout(leaseDeadlineTimer)
-        leaseDeadlineTimer = null
-      }
-
-      if (!leaseExpiresAt) {
-        return
-      }
-
-      const delay = Math.max(0, Date.parse(leaseExpiresAt) - Date.now())
-      leaseDeadlineTimer = setTimeout(() => {
-        abortLeaseOwnership()
-      }, delay)
-    }
-
-    scheduleLeaseDeadline(run.leaseExpiresAt)
-
-    const leaseTimer = setInterval(() => {
-      const now = new Date().toISOString()
-      storage
-        .renewLease(run.id, run.leaseGeneration, now, state.leaseMs)
-        .then((renewed) => {
-          if (!renewed) {
-            abortLeaseOwnership()
-            eventEmitter.emit({
-              type: 'worker:error',
-              error: `Lease renewal lost ownership for run ${run.id}`,
-              context: 'lease-renewal',
-              runId: run.id,
-            })
-            return
-          }
-
-          const renewedLeaseExpiresAt = new Date(
-            Date.parse(now) + state.leaseMs,
-          ).toISOString()
-
-          scheduleLeaseDeadline(renewedLeaseExpiresAt)
-
-          eventEmitter.emit({
-            type: 'run:lease-renewed',
-            runId: run.id,
-            jobName: run.jobName,
-            leaseOwner: workerId,
-            leaseExpiresAt: renewedLeaseExpiresAt,
-            labels: run.labels,
-          })
-        })
-        .catch((error) => {
-          eventEmitter.emit({
-            type: 'worker:error',
-            error: getErrorMessage(error),
-            context: 'lease-renewal',
-            runId: run.id,
-          })
-        })
-    }, state.leaseRenewIntervalMs)
-
-    const started = Date.now()
-    let reachedTerminalState = false
-
-    try {
-      eventEmitter.emit({
-        type: 'run:leased',
-        runId: run.id,
-        jobName: run.jobName,
-        input: run.input,
-        leaseOwner: workerId,
-        leaseExpiresAt: run.leaseExpiresAt ?? new Date().toISOString(),
-        labels: run.labels,
-      })
-      const output = await job.fn(step, run.input)
-
-      if (job.outputSchema) {
-        const parseResult = job.outputSchema.safeParse(output)
-        if (!parseResult.success) {
-          throw new Error(`Invalid output: ${parseResult.error.message}`)
-        }
-      }
-
-      const completedAt = new Date().toISOString()
-      const completed = await storage.completeRun(
-        run.id,
-        run.leaseGeneration,
-        output,
-        completedAt,
-      )
-
-      if (completed) {
-        reachedTerminalState = true
-        eventEmitter.emit({
-          type: 'run:complete',
-          runId: run.id,
-          jobName: run.jobName,
-          output,
-          duration: Date.now() - started,
-          labels: run.labels,
-        })
-      } else {
-        eventEmitter.emit({
-          type: 'worker:error',
-          error: `Lease lost before completing run ${run.id}`,
-          context: 'run-completion',
-        })
-      }
-    } catch (error) {
-      if (error instanceof LeaseLostError || error instanceof CancelledError) {
-        return
-      }
-
-      const errorMessage = getErrorMessage(error)
-      const completedAt = new Date().toISOString()
-      const failed = await storage.failRun(
-        run.id,
-        run.leaseGeneration,
-        errorMessage,
-        completedAt,
-      )
-
-      if (failed) {
-        reachedTerminalState = true
-        const steps = await storage.getSteps(run.id)
-        const failedStep = steps.find((entry) => entry.status === 'failed')
-        eventEmitter.emit({
-          type: 'run:fail',
-          runId: run.id,
-          jobName: run.jobName,
-          error: errorMessage,
-          failedStepName: failedStep?.name ?? 'unknown',
-          labels: run.labels,
-        })
-      } else {
-        eventEmitter.emit({
-          type: 'worker:error',
-          error: `Lease lost before recording failure for run ${run.id}`,
-          context: 'run-failure',
-        })
-      }
-    } finally {
-      clearInterval(leaseTimer)
-      if (leaseDeadlineTimer) {
-        clearTimeout(leaseDeadlineTimer)
-      }
-      dispose()
-      if (!state.preserveSteps && reachedTerminalState) {
-        await storage.deleteSteps(run.id)
-      }
-    }
   }
 
   const durably: Durably<TJobs, TLabels> = {
