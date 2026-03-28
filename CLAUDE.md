@@ -112,6 +112,14 @@ codex exec "your question or prompt here"
 - Useful for research, design consultation, and debugging — not just search
 - **During `/review` and `/simplify`**: Run `codex exec` in parallel with the review agents to get a second opinion on the diff. Pass the diff content and ask for code quality feedback, potential issues, or improvement suggestions
 
+## takt Workflow
+
+takt is an autonomous multi-agent coding workflow engine. Pieces (`.takt/pieces/`) define movement sequences (spec → review → implement → simplify → accept → docs). Facets (`.takt/facets/`) provide persona/instruction/policy for each movement. Config and task state are gitignored — set these defaults when creating tasks:
+
+- `worktree: false` — work directly on feature branches, no clone isolation
+- `auto_pr: false`, `draft_pr: false` — create PRs manually after review
+- `piece: spec-implement-accept`
+
 ## Skills
 
 - **release-check** - Pre-release integrity check for API changes and spec updates (`.claude/skills/release-check/`)
