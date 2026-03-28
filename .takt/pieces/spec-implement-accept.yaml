@@ -167,7 +167,7 @@ movements:
       - condition: 実装不可、情報不足
         next: ABORT
 
-  # 5. コ��ド簡素化（claude — acceptance ���に品質を上げる）
+  # 5. コード簡素化（claude — acceptance に品質を上げる）
   - name: simplify
     edit: true
     persona: simplifier
@@ -189,7 +189,7 @@ movements:
       - condition: 簡素化でバリデーション失敗、復旧不可
         next: ABORT
 
-  # 6. 受け入れ検査（codex — simplify 後のコ��ドを検証）
+  # 6. 受け入れ検査（codex — simplify 後のコードを検証）
   - name: acceptance
     edit: false
     persona: acceptor
