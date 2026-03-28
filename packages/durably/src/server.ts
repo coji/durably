@@ -1,4 +1,4 @@
-import type { Durably } from './durably'
+import type { AnyDurably } from './durably'
 import { DurablyError, getErrorMessage } from './errors'
 import type { AnyEventInput } from './events'
 import {
@@ -268,7 +268,7 @@ export function createDurablyHandler<
   TContext = undefined,
   TLabels extends Record<string, string> = Record<string, string>,
 >(
-  durably: Durably<any, TLabels>,
+  durably: AnyDurably<TLabels>,
   options?: CreateDurablyHandlerOptions<TContext, TLabels>,
 ): DurablyHandler {
   const throttleMs = options?.sseThrottleMs ?? 100

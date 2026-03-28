@@ -200,12 +200,23 @@ function registerBrowserSingletonWarning(singletonKey: string): () => void {
 }
 
 /**
+ * A Durably instance with erased job types.
+ * Use when the function only needs access to Durably's runtime capabilities
+ * (trigger, getRun, etc.) without constraining the registered job types.
+ */
+export type AnyDurably<
+  TLabels extends Record<string, string> = Record<string, string>,
+> = Durably<
+  Record<string, JobHandle<string, unknown, unknown, TLabels>>,
+  TLabels
+>
+
+/**
  * Plugin interface for extending Durably
  */
 export interface DurablyPlugin {
   name: string
-  // biome-ignore lint/suspicious/noExplicitAny: plugin needs to accept any Durably instance
-  install(durably: Durably<any, any>): void
+  install(durably: AnyDurably): void
 }
 
 /**
