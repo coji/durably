@@ -269,7 +269,7 @@ describe('executeRun (runtime kernel)', () => {
     expect(renewed.length).toBeGreaterThanOrEqual(1)
   })
 
-  it('emits worker:error when renewLease loses ownership', async () => {
+  it('emits worker:error when renewLease loses ownership (non-step job still completes)', async () => {
     const run = makeRun()
     const storage = createMockStore({
       renewLease: async () => false,
