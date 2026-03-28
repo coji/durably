@@ -112,7 +112,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
       const parallelKeysDef = defineJob({
         name: 'parallel-keys-test',
         input: z.object({ id: z.string() }),
-        run: async (step, input) => {
+        run: async (step) => {
           concurrent++
           maxConcurrent = Math.max(maxConcurrent, concurrent)
           await step.run('work', async () => {
