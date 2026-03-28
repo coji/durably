@@ -20,6 +20,12 @@ Review the task spec (order.md) and the existing code targeted for changes.
    - Is the scope appropriate (not too large/too small)?
    - Can existing patterns or utilities be leveraged?
 
+5. Check for common spec omissions:
+   - New public API options/parameters: are invalid input tests required? (e.g., 0, negative, NaN, non-finite values for numeric options)
+   - Async operations in intervals/loops: is there a guard against concurrent in-flight requests?
+   - Code examples in docs/examples: do they demonstrate the API correctly without redundant checks?
+   - Existing behaviors that must be preserved: are they listed as explicit completion criteria with negative test cases?
+
 ## Routing Guide
 
 - **spec-revise** (blocking issues): The spec has concrete problems that can be fixed by editing order.md — missing files, unclear criteria, scope gaps, contradictions between sections
