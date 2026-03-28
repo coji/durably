@@ -14,19 +14,16 @@
 | 1   |           | Yes/No |       |
 
 ## Validation
-```
 
 Summary of pnpm validate output
 
-```
-
 ## Scope Check
 
-| Aspect | Result |
-|--------|--------|
-| Changed files are within scope | OK/NG |
-| PLAN.md unmodified | OK/NG |
-| order.md unmodified | OK/NG |
+| Aspect                         | Result |
+| ------------------------------ | ------ |
+| Changed files are within scope | OK/NG  |
+| PLAN.md unmodified             | OK/NG  |
+| order.md unmodified            | OK/NG  |
 
 ## Fix Instructions (if REJECT)
 

@@ -21,4 +21,4 @@ Improve the quality of implementation code that has passed acceptance testing.
    pnpm validate
    ```
 
-5. If no improvements are needed, report completion without changes
+5. If no improvements are needed, still run `pnpm validate` to confirm the current state passes, then report completion without changes
