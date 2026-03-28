@@ -574,7 +574,6 @@ const { dialect } = new SQLocalKysely('app.sqlite3')
 const durably = createDurably({
   dialect,
   pollingIntervalMs: 100,
-
   leaseRenewIntervalMs: 500,
   leaseMs: 3000,
   jobs: {
