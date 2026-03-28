@@ -281,11 +281,17 @@ export function waitForRunCompletion(
     let timeoutId: ReturnType<typeof setTimeout> | undefined
     let pollIntervalId: ReturnType<typeof setInterval> | undefined
     let resolved = false
+    let pollInFlight = false
 
     const unsubscribes: (() => void)[] = []
 
     const pollingMs =
       options?.pollingIntervalMs ?? DEFAULT_WAIT_POLLING_INTERVAL_MS
+    if (!Number.isFinite(pollingMs) || pollingMs <= 0) {
+      throw new ValidationError(
+        'pollingIntervalMs must be a positive finite number',
+      )
+    }
 
     const cleanup = () => {
       if (resolved) return
@@ -326,7 +332,8 @@ export function waitForRunCompletion(
     }
 
     const poll = () => {
-      if (resolved) return
+      if (resolved || pollInFlight) return
+      pollInFlight = true
       void storage
         .getRun(runId)
         .then((run) => {
@@ -337,6 +344,9 @@ export function waitForRunCompletion(
           if (resolved) return
           cleanup()
           reject(toError(err))
+        })
+        .finally(() => {
+          pollInFlight = false
         })
     }
 
