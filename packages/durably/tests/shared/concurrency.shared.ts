@@ -128,23 +128,25 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
       })
       await d.migrate()
       const dp = d.register({ job: parallelKeysDef })
+      try {
+        await dp.jobs.job.trigger({ id: 'a' }, { concurrencyKey: 'user-A' })
+        await dp.jobs.job.trigger({ id: 'b' }, { concurrencyKey: 'user-B' })
 
-      await dp.jobs.job.trigger({ id: 'a' }, { concurrencyKey: 'user-A' })
-      await dp.jobs.job.trigger({ id: 'b' }, { concurrencyKey: 'user-B' })
+        dp.start()
 
-      dp.start()
+        await vi.waitFor(
+          async () => {
+            const runs = await dp.jobs.job.getRuns()
+            expect(runs.every((r) => r.status === 'completed')).toBe(true)
+          },
+          { timeout: 3000 },
+        )
 
-      await vi.waitFor(
-        async () => {
-          const runs = await dp.jobs.job.getRuns()
-          expect(runs.every((r) => r.status === 'completed')).toBe(true)
-        },
-        { timeout: 3000 },
-      )
-
-      expect(maxConcurrent).toBe(2)
-      await dp.stop()
-      await d.db.destroy()
+        expect(maxConcurrent).toBe(2)
+      } finally {
+        await dp.stop()
+        await d.db.destroy()
+      }
     })
 
     it('with maxConcurrentRuns > 1, identical concurrencyKey runs still never overlap', async () => {
@@ -168,39 +170,41 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
       })
       await d.migrate()
       const dp = d.register({ job: sameKeyParallelDef })
+      try {
+        const first = await dp.jobs.job.trigger(
+          { id: '1' },
+          { concurrencyKey: 'user-123' },
+        )
+        dp.start()
 
-      const first = await dp.jobs.job.trigger(
-        { id: '1' },
-        { concurrencyKey: 'user-123' },
-      )
-      dp.start()
+        await vi.waitFor(
+          async () => {
+            const run = await dp.jobs.job.getRun(first.id)
+            return run?.status === 'leased'
+          },
+          { timeout: 2000 },
+        )
 
-      await vi.waitFor(
-        async () => {
-          const run = await dp.jobs.job.getRun(first.id)
-          return run?.status === 'leased'
-        },
-        { timeout: 2000 },
-      )
+        const second = await dp.jobs.job.trigger(
+          { id: '2' },
+          { concurrencyKey: 'user-123' },
+        )
 
-      const second = await dp.jobs.job.trigger(
-        { id: '2' },
-        { concurrencyKey: 'user-123' },
-      )
+        expect((await dp.jobs.job.getRun(second.id))?.status).toBe('pending')
 
-      expect((await dp.jobs.job.getRun(second.id))?.status).toBe('pending')
+        await vi.waitFor(
+          async () => {
+            const runs = await dp.jobs.job.getRuns()
+            expect(runs.every((r) => r.status === 'completed')).toBe(true)
+          },
+          { timeout: 4000 },
+        )
 
-      await vi.waitFor(
-        async () => {
-          const runs = await dp.jobs.job.getRuns()
-          expect(runs.every((r) => r.status === 'completed')).toBe(true)
-        },
-        { timeout: 4000 },
-      )
-
-      expect(executionOrder).toEqual(['start-1', 'end-1', 'start-2', 'end-2'])
-      await dp.stop()
-      await d.db.destroy()
+        expect(executionOrder).toEqual(['start-1', 'end-1', 'start-2', 'end-2'])
+      } finally {
+        await dp.stop()
+        await d.db.destroy()
+      }
     })
 
     it('runs without concurrencyKey are not blocked', async () => {
@@ -260,25 +264,27 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
       })
       await d.migrate()
       const dp = d.register({ job: nullKeyTestDef })
+      try {
+        await dp.jobs.job.trigger({ id: 1 })
+        await dp.jobs.job.trigger({ id: 2 })
+        await dp.jobs.job.trigger({ id: 3 })
 
-      await dp.jobs.job.trigger({ id: 1 })
-      await dp.jobs.job.trigger({ id: 2 })
-      await dp.jobs.job.trigger({ id: 3 })
+        dp.start()
 
-      dp.start()
+        await vi.waitFor(
+          async () => {
+            const runs = await dp.jobs.job.getRuns()
+            const allCompleted = runs.every((r) => r.status === 'completed')
+            expect(allCompleted).toBe(true)
+          },
+          { timeout: 3000 },
+        )
 
-      await vi.waitFor(
-        async () => {
-          const runs = await dp.jobs.job.getRuns()
-          const allCompleted = runs.every((r) => r.status === 'completed')
-          expect(allCompleted).toBe(true)
-        },
-        { timeout: 3000 },
-      )
-
-      expect(maxConcurrent).toBeGreaterThan(1)
-      await dp.stop()
-      await d.db.destroy()
+        expect(maxConcurrent).toBeGreaterThan(1)
+      } finally {
+        await dp.stop()
+        await d.db.destroy()
+      }
     })
   })
 }
