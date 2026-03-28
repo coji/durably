@@ -1,6 +1,11 @@
 import type { Dialect } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createDurably, type Durably, type DurablyEvent } from '../../src'
+import {
+  createDurably,
+  type Durably,
+  type DurablyEvent,
+  isDomainEvent,
+} from '../../src'
 
 export function createEventsTests(createDialect: () => Dialect) {
   describe('EventEmitter', () => {
@@ -295,6 +300,161 @@ export function createEventsTests(createDialect: () => Dialect) {
           runId: 'run_1',
         }),
       )
+    })
+  })
+
+  describe('core event classification', () => {
+    const base = {
+      timestamp: new Date().toISOString(),
+      sequence: 1,
+    } as const
+
+    it('classifies all domain event types with isDomainEvent()', () => {
+      const domainSamples: DurablyEvent[] = [
+        {
+          ...base,
+          type: 'run:trigger',
+          runId: 'r',
+          jobName: 'j',
+          input: {},
+          labels: {},
+        },
+        {
+          ...base,
+          type: 'run:coalesced',
+          runId: 'r',
+          jobName: 'j',
+          labels: {},
+          skippedInput: {},
+          skippedLabels: {},
+        },
+        {
+          ...base,
+          type: 'run:complete',
+          runId: 'r',
+          jobName: 'j',
+          output: {},
+          duration: 0,
+          labels: {},
+        },
+        {
+          ...base,
+          type: 'run:fail',
+          runId: 'r',
+          jobName: 'j',
+          error: 'e',
+          failedStepName: 's',
+          labels: {},
+        },
+        {
+          ...base,
+          type: 'run:cancel',
+          runId: 'r',
+          jobName: 'j',
+          labels: {},
+        },
+        {
+          ...base,
+          type: 'run:delete',
+          runId: 'r',
+          jobName: 'j',
+          labels: {},
+        },
+      ]
+      for (const e of domainSamples) {
+        expect(isDomainEvent(e)).toBe(true)
+      }
+    })
+
+    it('does not classify operational events as domain events', () => {
+      const operationalSamples: DurablyEvent[] = [
+        {
+          ...base,
+          type: 'run:leased',
+          runId: 'r',
+          jobName: 'j',
+          input: {},
+          leaseOwner: 'w',
+          leaseExpiresAt: 't',
+          labels: {},
+        },
+        {
+          ...base,
+          type: 'run:lease-renewed',
+          runId: 'r',
+          jobName: 'j',
+          leaseOwner: 'w',
+          leaseExpiresAt: 't',
+          labels: {},
+        },
+        {
+          ...base,
+          type: 'run:progress',
+          runId: 'r',
+          jobName: 'j',
+          progress: { current: 1 },
+          labels: {},
+        },
+        {
+          ...base,
+          type: 'step:start',
+          runId: 'r',
+          jobName: 'j',
+          stepName: 's',
+          stepIndex: 0,
+          labels: {},
+        },
+        {
+          ...base,
+          type: 'step:complete',
+          runId: 'r',
+          jobName: 'j',
+          stepName: 's',
+          stepIndex: 0,
+          output: {},
+          duration: 0,
+          labels: {},
+        },
+        {
+          ...base,
+          type: 'step:fail',
+          runId: 'r',
+          jobName: 'j',
+          stepName: 's',
+          stepIndex: 0,
+          error: 'e',
+          labels: {},
+        },
+        {
+          ...base,
+          type: 'step:cancel',
+          runId: 'r',
+          jobName: 'j',
+          stepName: 's',
+          stepIndex: 0,
+          labels: {},
+        },
+        {
+          ...base,
+          type: 'log:write',
+          runId: 'r',
+          jobName: 'j',
+          level: 'info',
+          message: 'm',
+          labels: {},
+          stepName: null,
+          data: {},
+        },
+        {
+          ...base,
+          type: 'worker:error',
+          error: 'e',
+          context: 'c',
+        },
+      ]
+      for (const e of operationalSamples) {
+        expect(isDomainEvent(e)).toBe(false)
+      }
     })
   })
 }

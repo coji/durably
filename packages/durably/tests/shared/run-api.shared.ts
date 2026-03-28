@@ -598,6 +598,9 @@ export function createRunApiTests(createDialect: () => Dialect) {
         })
 
         const p = d.jobs.job.triggerAndWait({})
+        // Attach handler early so the rejection isn't briefly unhandled
+        // if the storage poll settles it before the assertion below.
+        const assertion = expect(p).rejects.toThrow(CancelledError)
 
         const pending = await vi.waitFor(
           async () => {
@@ -610,7 +613,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
 
         await d.cancel(pending.id)
 
-        await expect(p).rejects.toThrow(CancelledError)
+        await assertion
       })
     })
 
@@ -845,6 +848,81 @@ export function createRunApiTests(createDialect: () => Dialect) {
 
         const again = await d.waitForRun(run.id)
         expect(again.output).toEqual({ n: 99 })
+      })
+
+      it('settles without waiting for a polling interval when the run completes in-process', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'wait-fast-path-no-poll',
+            input: z.object({}),
+            output: z.object({ n: z.number() }),
+            run: async () => ({ n: 1 }),
+          }),
+        })
+        const run = await d.jobs.job.trigger({})
+        d.start()
+        const start = Date.now()
+        await d.waitForRun(run.id, { pollingIntervalMs: 60_000 })
+        expect(Date.now() - start).toBeLessThan(5000)
+      })
+
+      it('uses custom pollingIntervalMs for the storage poll loop', async () => {
+        const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
+        const d = durably.register({
+          job: defineJob({
+            name: 'wait-custom-poll-interval',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        const run = await d.jobs.job.trigger({})
+        const p = d.waitForRun(run.id, { pollingIntervalMs: 3333 })
+        await vi.waitFor(() => {
+          expect(setIntervalSpy).toHaveBeenCalledWith(
+            expect.any(Function),
+            3333,
+          )
+        })
+        setIntervalSpy.mockRestore()
+        await d.cancel(run.id)
+        await expect(p).rejects.toThrow(CancelledError)
+      })
+
+      it('times out while storage polling is active for a pending run', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'wait-timeout-while-polling',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        const run = await d.jobs.job.trigger({})
+        await expect(
+          d.waitForRun(run.id, { timeout: 80, pollingIntervalMs: 30 }),
+        ).rejects.toThrow('waitForRun timeout')
+      })
+
+      it('applies the same wait helper options to triggerAndWait', async () => {
+        const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
+        const d = durably.register({
+          job: defineJob({
+            name: 'trigger-wait-custom-poll-interval',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        const p = d.jobs.job.triggerAndWait({}, { pollingIntervalMs: 4242 })
+        await vi.waitFor(() => {
+          expect(setIntervalSpy).toHaveBeenCalledWith(
+            expect.any(Function),
+            4242,
+          )
+        })
+        setIntervalSpy.mockRestore()
+        const pending = await d.getRuns({ status: 'pending' })
+        expect(pending).toHaveLength(1)
+        await d.cancel(pending[0].id)
+        await expect(p).rejects.toThrow(CancelledError)
       })
     })
 

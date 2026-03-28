@@ -153,6 +153,8 @@ await durably.waitForRun(
 
 Waits for an existing run to complete without creating a new run. Resolves only when the run reaches `completed` status. Throws `NotFoundError` if the run doesn't exist, `CancelledError` if cancelled, or `Error` if failed.
 
+Listeners on this process settle the wait as soon as a matching terminal event is emitted. If another runtime completes, fails, or cancels the run against the same database, the wait observes the outcome by **polling storage** at the configured interval. Omitted `pollingIntervalMs` uses the instance `createDurably({ pollingIntervalMs })` value (default `1000`).
+
 ```ts
 const run = await durably.waitForRun(runId, {
   timeout: 60000,
@@ -162,11 +164,12 @@ const run = await durably.waitForRun(runId, {
 console.log(run.output)
 ```
 
-| Option       | Type       | Description                                 |
-| ------------ | ---------- | ------------------------------------------- |
-| `timeout`    | `number`   | Timeout in ms                               |
-| `onProgress` | `function` | Called on live progress updates (no replay) |
-| `onLog`      | `function` | Called on live log entries (no replay)      |
+| Option               | Type       | Description                                                                                    |
+| -------------------- | ---------- | ---------------------------------------------------------------------------------------------- |
+| `timeout`            | `number`   | Timeout in ms                                                                                  |
+| `pollingIntervalMs`  | `number`   | Storage poll interval while the run is non-terminal; inherits instance default when omitted      |
+| `onProgress`         | `function` | Called on live progress updates (no replay)                                                    |
+| `onLog`              | `function` | Called on live log entries (no replay)                                                         |
 
 ### `deleteRun()`
 

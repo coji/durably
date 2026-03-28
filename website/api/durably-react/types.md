@@ -2,6 +2,8 @@
 
 Common types used across both SPA and Fullstack modes.
 
+The React package’s SSE and client event shapes are **transport-layer** unions for the wire protocol. They are not the same symbols as `@coji/durably`’s `DomainEvent` / `OperationalEvent` helpers (`isDomainEvent`, etc.) exported from the core package — use the core helpers when classifying events inside Node or shared libraries; use hook payloads and documented client types when handling SSE in the browser.
+
 ## RunStatus
 
 ```ts

@@ -87,20 +87,22 @@ interface TriggerAndWaitOptions<
   TLabels = Record<string, string>,
 > extends TriggerOptions<TLabels> {
   timeout?: number
+  pollingIntervalMs?: number
   onProgress?: (progress: ProgressData) => void | Promise<void>
   onLog?: (log: LogData) => void | Promise<void>
 }
 ```
 
-| Option           | Description                                                                                                                                                                          |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `idempotencyKey` | Prevents duplicate runs with the same key                                                                                                                                            |
-| `concurrencyKey` | Groups jobs for concurrency control (max 1 pending per key)                                                                                                                          |
-| `coalesce`       | `'skip'`: return existing pending run instead of `ConflictError`. Requires `concurrencyKey`. If `idempotencyKey` matches, disposition is `'idempotent'` (idempotency takes priority) |
-| `labels`         | Key/value labels for filtering (type-safe when schema provided)                                                                                                                      |
-| `timeout`        | Timeout in ms (`triggerAndWait` only)                                                                                                                                                |
-| `onProgress`     | Progress callback (`triggerAndWait` only)                                                                                                                                            |
-| `onLog`          | Log callback (`triggerAndWait` only)                                                                                                                                                 |
+| Option               | Description                                                                                                                                                                          |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `idempotencyKey`     | Prevents duplicate runs with the same key                                                                                                                                            |
+| `concurrencyKey`     | Groups jobs for concurrency control (max 1 pending per key)                                                                                                                          |
+| `coalesce`           | `'skip'`: return existing pending run instead of `ConflictError`. Requires `concurrencyKey`. If `idempotencyKey` matches, disposition is `'idempotent'` (idempotency takes priority) |
+| `labels`             | Key/value labels for filtering (type-safe when schema provided)                                                                                                                      |
+| `timeout`            | Timeout in ms (`triggerAndWait` only)                                                                                                                                                |
+| `pollingIntervalMs`  | Storage poll interval while waiting (`triggerAndWait` only); inherits `createDurably({ pollingIntervalMs })` when omitted — same behavior as [`waitForRun`](/api/create-durably#waitforrun) |
+| `onProgress`         | Progress callback (`triggerAndWait` only)                                                                                                                                            |
+| `onLog`              | Log callback (`triggerAndWait` only)                                                                                                                                                 |
 
 ### `triggerAndWait()`
 

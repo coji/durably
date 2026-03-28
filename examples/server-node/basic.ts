@@ -5,9 +5,10 @@
  * Same job definition as browser/react examples for comparison.
  */
 
+import { isDomainEvent } from '@coji/durably'
 import { durably } from './lib/durably'
 
-// Subscribe to events
+// Subscribe to events (core package: use isDomainEvent() to spot lifecycle facts vs ops/diagnostics)
 durably.on('run:leased', (event) => {
   console.log(`[run:leased] ${event.jobName}`)
 })
@@ -21,9 +22,11 @@ durably.on('step:cancel', (event) => {
 })
 
 durably.on('run:complete', (event) => {
-  console.log(
-    `[run:complete] output=${JSON.stringify(event.output)} duration=${event.duration}ms`,
-  )
+  if (isDomainEvent(event)) {
+    console.log(
+      `[run:complete] output=${JSON.stringify(event.output)} duration=${event.duration}ms`,
+    )
+  }
 })
 
 durably.on('run:fail', (event) => {
