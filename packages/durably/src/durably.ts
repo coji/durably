@@ -3,7 +3,12 @@ import { Kysely } from 'kysely'
 import { monotonicFactory } from 'ulidx'
 import type { z } from 'zod'
 import type { JobDefinition } from './define-job'
-import { ConflictError, getErrorMessage, NotFoundError } from './errors'
+import {
+  ConflictError,
+  getErrorMessage,
+  NotFoundError,
+  ValidationError,
+} from './errors'
 import {
   type AnyEventInput,
   type DurablyEvent,
@@ -53,6 +58,10 @@ export interface DurablyOptions<
    */
   singletonKey?: string
   pollingIntervalMs?: number
+  /**
+   * Maximum number of runs the worker processes concurrently. Defaults to `1` (one run at a time).
+   */
+  maxConcurrentRuns?: number
   leaseRenewIntervalMs?: number
   leaseMs?: number
   preserveSteps?: boolean
@@ -86,10 +95,26 @@ export interface DurablyOptions<
  */
 const DEFAULTS = {
   pollingIntervalMs: 1000,
+  maxConcurrentRuns: 1,
   leaseRenewIntervalMs: 5000,
   leaseMs: 30000,
   preserveSteps: false,
 } as const
+
+const MAX_CONCURRENT_RUNS = 1_000
+
+function validateMaxConcurrentRuns(value: number): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 1 ||
+    value > MAX_CONCURRENT_RUNS
+  ) {
+    throw new ValidationError(
+      `maxConcurrentRuns must be between 1 and ${MAX_CONCURRENT_RUNS}`,
+    )
+  }
+  return value
+}
 
 function parseDuration(value: string): number {
   const match = value.match(/^(\d+)(d|h|m)$/)
@@ -912,8 +937,14 @@ export function createDurably<
 ):
   | Durably<TransformToHandles<TJobs, TLabels>, TLabels>
   | Durably<Record<string, never>, TLabels> {
+  const maxConcurrentRuns =
+    options.maxConcurrentRuns !== undefined
+      ? validateMaxConcurrentRuns(options.maxConcurrentRuns)
+      : DEFAULTS.maxConcurrentRuns
+
   const config = {
     pollingIntervalMs: options.pollingIntervalMs ?? DEFAULTS.pollingIntervalMs,
+    maxConcurrentRuns,
     leaseRenewIntervalMs:
       options.leaseRenewIntervalMs ?? DEFAULTS.leaseRenewIntervalMs,
     leaseMs: options.leaseMs ?? DEFAULTS.leaseMs,
@@ -967,7 +998,10 @@ export function createDurably<
     | ((options?: { workerId?: string }) => Promise<boolean>)
     | null = null
   const worker = createWorker(
-    { pollingIntervalMs: config.pollingIntervalMs },
+    {
+      pollingIntervalMs: config.pollingIntervalMs,
+      maxConcurrentRuns: config.maxConcurrentRuns,
+    },
     (runtimeOptions) => {
       if (!processOneImpl) {
         throw new Error('Durably runtime is not initialized')

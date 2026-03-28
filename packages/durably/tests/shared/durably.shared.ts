@@ -1,6 +1,6 @@
 import type { Dialect } from 'kysely'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createDurably, type Durably } from '../../src'
+import { createDurably, type Durably, ValidationError } from '../../src'
 
 export function createDurablyTests(createDialect: () => Dialect) {
   describe('createDurably()', () => {
@@ -27,6 +27,22 @@ export function createDurablyTests(createDialect: () => Dialect) {
       // Default values should be applied internally
       // We can't directly test internal config, but we verify instance creation works
       expect(durably).toBeDefined()
+    })
+
+    it('defaults maxConcurrentRuns to sequential worker behavior when omitted', () => {
+      durably = createDurably({ dialect: createDialect() })
+      expect(durably).toBeDefined()
+    })
+
+    it('rejects invalid maxConcurrentRuns', () => {
+      for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        expect(() =>
+          createDurably({
+            dialect: createDialect(),
+            maxConcurrentRuns: bad,
+          }),
+        ).toThrow(ValidationError)
+      }
     })
 
     it('accepts custom configuration values', () => {

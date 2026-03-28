@@ -28,6 +28,13 @@ import {
 } from '../../src'
 
 describe('Type inference', () => {
+  it('createDurably options include optional maxConcurrentRuns', () => {
+    expectTypeOf({
+      dialect: {} as never,
+      maxConcurrentRuns: 2 as number | undefined,
+    }).toMatchTypeOf<Parameters<typeof createDurably>[0]>()
+  })
+
   describe('defineJob with branded types', () => {
     it('preserves branded input types in run function', () => {
       const orgIdSchema = z.string().brand<'OrganizationId'>()

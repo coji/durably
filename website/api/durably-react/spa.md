@@ -27,6 +27,7 @@ const sqlocal = new SQLocalKysely('app.sqlite3')
 const durably = createDurably({
   dialect: sqlocal.dialect,
   pollingIntervalMs: 100,
+  maxConcurrentRuns: 1, // default; raise to process multiple runs concurrently (storage still enforces concurrencyKey)
   jobs: {
     myJob: myJobDef,
   },

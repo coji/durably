@@ -3,6 +3,10 @@
  */
 export interface WorkerConfig {
   pollingIntervalMs: number
+  /**
+   * Maximum number of concurrent `processOne()` invocations. Default is `1` (sequential).
+   */
+  maxConcurrentRuns: number
 }
 
 /**
@@ -22,45 +26,91 @@ export function createWorker(
   processOne: (options?: { workerId?: string }) => Promise<boolean>,
   onIdle?: () => Promise<void>,
 ): Worker {
+  const maxConcurrentRuns = config.maxConcurrentRuns
   let running = false
   let pollingTimeout: ReturnType<typeof setTimeout> | null = null
-  let inFlight: Promise<void> | null = null
-  let stopResolver: (() => void) | null = null
+  let activeCount = 0
   let activeWorkerId: string | undefined
+  const activePromises = new Set<Promise<void>>()
+  let idleMaintenanceInFlight: Promise<void> | null = null
 
-  async function poll(): Promise<void> {
+  function scheduleDelayedPoll(): void {
     if (!running) {
       return
     }
+    if (pollingTimeout) {
+      clearTimeout(pollingTimeout)
+      pollingTimeout = null
+    }
+    pollingTimeout = setTimeout(() => {
+      pollingTimeout = null
+      if (running) {
+        fillSlots()
+      }
+    }, config.pollingIntervalMs)
+  }
 
+  async function runIdleMaintenanceSafe(): Promise<void> {
+    if (!onIdle) {
+      return
+    }
     const cycle = (async () => {
-      const didProcess = await processOne({ workerId: activeWorkerId })
-      if (!didProcess && onIdle && running) {
-        try {
-          await onIdle()
-        } catch {
-          // onIdle errors are non-fatal; allow polling to continue
-        }
+      try {
+        await onIdle()
+      } catch {
+        // onIdle errors are non-fatal; allow polling to continue
       }
     })()
-    inFlight = cycle
-
+    idleMaintenanceInFlight = cycle
     try {
       await cycle
     } finally {
-      inFlight = null
+      if (idleMaintenanceInFlight === cycle) {
+        idleMaintenanceInFlight = null
+      }
     }
+  }
 
-    if (running) {
-      pollingTimeout = setTimeout(() => {
-        void poll()
-      }, config.pollingIntervalMs)
+  async function processSlotCycle(): Promise<void> {
+    try {
+      const didProcess = await processOne({ workerId: activeWorkerId })
+      activeCount--
+      if (didProcess && running) {
+        // Work was found — immediately try to refill slots
+        fillSlots()
+      } else if (!didProcess && running) {
+        if (activeCount === 0) {
+          // All slots idle — run maintenance before polling again
+          await runIdleMaintenanceSafe()
+        }
+        // Schedule a delayed poll so this slot can pick up new work later
+        scheduleDelayedPoll()
+      }
+    } catch (err) {
+      activeCount--
+      if (running) {
+        fillSlots()
+      }
+      throw err
+    }
+  }
+
+  function fillSlots(): void {
+    if (!running) {
       return
     }
-
-    if (stopResolver) {
-      stopResolver()
-      stopResolver = null
+    while (running && activeCount < maxConcurrentRuns) {
+      activeCount++
+      const p = processSlotCycle()
+      activePromises.add(p)
+      void p
+        .finally(() => {
+          activePromises.delete(p)
+        })
+        .catch(() => {
+          // processOne errors are handled by the caller's event system;
+          // catch here to prevent unhandled rejection from the tracked promise
+        })
     }
   }
 
@@ -76,7 +126,7 @@ export function createWorker(
 
       activeWorkerId = options?.workerId
       running = true
-      void poll()
+      fillSlots()
     },
 
     async stop(): Promise<void> {
@@ -91,11 +141,14 @@ export function createWorker(
         pollingTimeout = null
       }
 
-      if (inFlight) {
-        return new Promise<void>((resolve) => {
-          stopResolver = resolve
-        })
+      const pending: Promise<void>[] = [...activePromises]
+      if (idleMaintenanceInFlight) {
+        pending.push(idleMaintenanceInFlight)
       }
+      if (pending.length === 0) {
+        return
+      }
+      await Promise.allSettled(pending)
     },
   }
 }

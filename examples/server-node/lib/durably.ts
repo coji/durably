@@ -12,6 +12,7 @@ import { dialect } from './database'
 export const durably = createDurably({
   dialect,
   pollingIntervalMs: 100,
+  maxConcurrentRuns: 1,
   leaseRenewIntervalMs: 500,
   leaseMs: 3000,
   jobs: {

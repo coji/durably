@@ -103,9 +103,108 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
         { timeout: 2000 },
       )
 
-      // Both jobs started - with single-threaded worker they still run sequentially
-      // but the second one doesn't wait for the first to complete before being eligible
       expect(Object.keys(startTimes)).toHaveLength(2)
+    })
+
+    it('with maxConcurrentRuns > 1, different concurrencyKeys can run in parallel', async () => {
+      let concurrent = 0
+      let maxConcurrent = 0
+      const parallelKeysDef = defineJob({
+        name: 'parallel-keys-test',
+        input: z.object({ id: z.string() }),
+        run: async (step) => {
+          concurrent++
+          maxConcurrent = Math.max(maxConcurrent, concurrent)
+          await step.run('work', async () => {
+            await new Promise((r) => setTimeout(r, 100))
+          })
+          concurrent--
+        },
+      })
+      const d = createDurably({
+        dialect: createDialect(),
+        pollingIntervalMs: 50,
+        maxConcurrentRuns: 2,
+      })
+      await d.migrate()
+      const dp = d.register({ job: parallelKeysDef })
+      try {
+        await dp.jobs.job.trigger({ id: 'a' }, { concurrencyKey: 'user-A' })
+        await dp.jobs.job.trigger({ id: 'b' }, { concurrencyKey: 'user-B' })
+
+        dp.start()
+
+        await vi.waitFor(
+          async () => {
+            const runs = await dp.jobs.job.getRuns()
+            expect(runs.every((r) => r.status === 'completed')).toBe(true)
+          },
+          { timeout: 3000 },
+        )
+
+        expect(maxConcurrent).toBe(2)
+      } finally {
+        await dp.stop()
+        await d.db.destroy()
+      }
+    })
+
+    it('with maxConcurrentRuns > 1, identical concurrencyKey runs still never overlap', async () => {
+      const executionOrder: string[] = []
+
+      const sameKeyParallelDef = defineJob({
+        name: 'same-key-parallel',
+        input: z.object({ id: z.string() }),
+        run: async (step, input) => {
+          executionOrder.push(`start-${input.id}`)
+          await step.run('work', async () => {
+            await new Promise((r) => setTimeout(r, 80))
+          })
+          executionOrder.push(`end-${input.id}`)
+        },
+      })
+      const d = createDurably({
+        dialect: createDialect(),
+        pollingIntervalMs: 50,
+        maxConcurrentRuns: 3,
+      })
+      await d.migrate()
+      const dp = d.register({ job: sameKeyParallelDef })
+      try {
+        const first = await dp.jobs.job.trigger(
+          { id: '1' },
+          { concurrencyKey: 'user-123' },
+        )
+        dp.start()
+
+        await vi.waitFor(
+          async () => {
+            const run = await dp.jobs.job.getRun(first.id)
+            return run?.status === 'leased'
+          },
+          { timeout: 2000 },
+        )
+
+        const second = await dp.jobs.job.trigger(
+          { id: '2' },
+          { concurrencyKey: 'user-123' },
+        )
+
+        expect((await dp.jobs.job.getRun(second.id))?.status).toBe('pending')
+
+        await vi.waitFor(
+          async () => {
+            const runs = await dp.jobs.job.getRuns()
+            expect(runs.every((r) => r.status === 'completed')).toBe(true)
+          },
+          { timeout: 4000 },
+        )
+
+        expect(executionOrder).toEqual(['start-1', 'end-1', 'start-2', 'end-2'])
+      } finally {
+        await dp.stop()
+        await d.db.destroy()
+      }
     })
 
     it('runs without concurrencyKey are not blocked', async () => {
@@ -158,26 +257,34 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           concurrentRuns--
         },
       })
-      const d = durably.register({ job: nullKeyTestDef })
+      const d = createDurably({
+        dialect: createDialect(),
+        pollingIntervalMs: 50,
+        maxConcurrentRuns: 3,
+      })
+      await d.migrate()
+      const dp = d.register({ job: nullKeyTestDef })
+      try {
+        await dp.jobs.job.trigger({ id: 1 })
+        await dp.jobs.job.trigger({ id: 2 })
+        await dp.jobs.job.trigger({ id: 3 })
 
-      // Multiple runs with no concurrency key
-      await d.jobs.job.trigger({ id: 1 })
-      await d.jobs.job.trigger({ id: 2 })
-      await d.jobs.job.trigger({ id: 3 })
+        dp.start()
 
-      d.start()
+        await vi.waitFor(
+          async () => {
+            const runs = await dp.jobs.job.getRuns()
+            const allCompleted = runs.every((r) => r.status === 'completed')
+            expect(allCompleted).toBe(true)
+          },
+          { timeout: 3000 },
+        )
 
-      await vi.waitFor(
-        async () => {
-          const runs = await d.jobs.job.getRuns()
-          const allCompleted = runs.every((r) => r.status === 'completed')
-          expect(allCompleted).toBe(true)
-        },
-        { timeout: 2000 },
-      )
-
-      // Single-threaded worker means maxConcurrent should be 1
-      expect(maxConcurrent).toBe(1)
+        expect(maxConcurrent).toBeGreaterThan(1)
+      } finally {
+        await dp.stop()
+        await d.db.destroy()
+      }
     })
   })
 }

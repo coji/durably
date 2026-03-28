@@ -46,6 +46,7 @@ async function init(): Promise<InitResult> {
   const durably = createDurably({
     dialect: sqlocal.dialect,
     pollingIntervalMs: 100,
+    maxConcurrentRuns: 1,
     leaseRenewIntervalMs: 500,
     leaseMs: 3000,
     jobs: {
