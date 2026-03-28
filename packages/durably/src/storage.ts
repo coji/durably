@@ -290,6 +290,7 @@ function createWriteMutex() {
     try {
       return await fn()
     } finally {
+      // biome-ignore lint/style/noNonNullAssertion: release is assigned synchronously in the Promise constructor
       release!()
     }
   }

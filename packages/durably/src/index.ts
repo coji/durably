@@ -4,7 +4,12 @@
 
 // Core
 export { createDurably } from './durably'
-export type { Durably, DurablyOptions, DurablyPlugin } from './durably'
+export type {
+  AnyDurably,
+  Durably,
+  DurablyOptions,
+  DurablyPlugin,
+} from './durably'
 
 // Job Definition
 export { defineJob } from './define-job'

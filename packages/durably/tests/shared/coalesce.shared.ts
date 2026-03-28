@@ -25,7 +25,6 @@ const jobDef = defineJob({
 export function createCoalesceTests(createDialect: () => Dialect) {
   describe('coalesce trigger', () => {
     let durably: Durably
-    // biome-ignore lint/suspicious/noExplicitAny: set in beforeEach
     let d: any
 
     beforeEach(async () => {

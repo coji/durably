@@ -14,7 +14,7 @@ import { DurablyProvider } from '@coji/durably-react/spa'
 import { Suspense, use, useState } from 'react'
 import { Form } from 'react-router'
 import { sqlocal } from '~/lib/database'
-import { type InitResult, initResult } from '~/lib/durably'
+import { initResult } from '~/lib/durably'
 import { Dashboard } from './_index/dashboard'
 import { DataSyncForm } from './_index/data-sync-form'
 import { DataSyncProgress } from './_index/data-sync-progress'
@@ -84,9 +84,7 @@ function TabLockedMessage() {
   )
 }
 
-type Durably = Extract<InitResult, { tabLocked: false }>['durably']
-
-function PageContent({ durably }: { durably: Durably }) {
+function PageContent() {
   const [activeJob, setActiveJob] = useState<'image' | 'sync'>('image')
 
   return (
@@ -182,7 +180,7 @@ function IndexContent() {
 
   return (
     <DurablyProvider durably={result.durably}>
-      <PageContent durably={result.durably} />
+      <PageContent />
     </DurablyProvider>
   )
 }

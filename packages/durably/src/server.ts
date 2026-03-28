@@ -1,4 +1,4 @@
-import type { Durably } from './durably'
+import type { AnyDurably } from './durably'
 import { DurablyError, getErrorMessage } from './errors'
 import type { AnyEventInput } from './events'
 import {
@@ -264,12 +264,11 @@ function matchesLabels(
  * Create HTTP handlers for Durably
  * Uses Web Standard Request/Response for framework-agnostic usage
  */
-// biome-ignore lint/suspicious/noExplicitAny: TLabels must be inferred from Durably instance
 export function createDurablyHandler<
   TContext = undefined,
   TLabels extends Record<string, string> = Record<string, string>,
 >(
-  durably: Durably<any, TLabels>,
+  durably: AnyDurably<TLabels>,
   options?: CreateDurablyHandlerOptions<TContext, TLabels>,
 ): DurablyHandler {
   const throttleMs = options?.sseThrottleMs ?? 100
