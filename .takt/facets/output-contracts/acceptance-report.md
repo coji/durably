@@ -1,34 +1,31 @@
 ```markdown
-# 受け入れ検査結果
+# Acceptance Testing Result
 
-## 結果: APPROVE / REJECT
+## Result: APPROVE / REJECT
 
-## サマリー
+## Summary
 
-{1-2文で要約}
+{1-2 sentence summary}
 
-## 完了条件チェック
+## Completion Criteria Check
 
-| #   | 条件 | 結果   | 備考 |
-| --- | ---- | ------ | ---- |
-| 1   |      | Yes/No |      |
+| #   | Criterion | Result | Notes |
+| --- | --------- | ------ | ----- |
+| 1   |           | Yes/No |       |
 
-## バリデーション
-```
+## Validation
 
-pnpm validate の出力（要約）
+Summary of pnpm validate output
 
-```
+## Scope Check
 
-## スコープチェック
+| Aspect                         | Result |
+| ------------------------------ | ------ |
+| Changed files are within scope | OK/NG  |
+| PLAN.md unmodified             | OK/NG  |
+| order.md unmodified            | OK/NG  |
 
-| 観点 | 結果 |
-|------|------|
-| 変更ファイルがスコープ内 | OK/NG |
-| PLAN.md 未変更 | OK/NG |
-| order.md 未変更 | OK/NG |
-
-## 修正指示（REJECT の場合）
+## Fix Instructions (if REJECT)
 
 -
 ```

@@ -1,25 +1,57 @@
 name: spec-implement-accept
-description: '仕様レビュー(codex) → 実装(cursor) → 受け入れ検査(claude) → 簡素化(claude)'
-max_movements: 20
-initial_movement: spec-review
+description: 'Spec generation(codex) -> Spec refinement(codex<->codex) -> Implementation(cursor) -> Simplification(claude) -> Acceptance(codex<->claude) -> Supervision(codex) -> Doc update(claude)'
+max_movements: 35
+initial_movement: spec-draft
 
-# カスタムファセット（セクションマップ）
+# Custom facets
 personas:
   acceptor: ../facets/personas/acceptor.md
   simplifier: ../facets/personas/simplifier.md
+  supervisor: ../facets/personas/supervisor.md
 instructions:
+  spec-draft: ../facets/instructions/spec-draft.md
   spec-review: ../facets/instructions/spec-review.md
   acceptance: ../facets/instructions/acceptance.md
+  supervise: ../facets/instructions/supervise.md
   simplify: ../facets/instructions/simplify.md
+  doc-update: ../facets/instructions/doc-update.md
 knowledge:
   implementation-plan: ../facets/knowledge/implementation-plan.md
 policies:
   step-implementation: ../facets/policies/step-implementation.md
+  spec-revision: ../facets/policies/spec-revision.md
+  doc-update: ../facets/policies/doc-update.md
 report_formats:
   spec-review-report: ../facets/output-contracts/spec-review-report.md
   acceptance-report: ../facets/output-contracts/acceptance-report.md
+  supervise-report: ../facets/output-contracts/supervise-report.md
 
 loop_monitors:
+  # Spec review <-> Spec revision loop
+  - cycle:
+      - spec-review
+      - spec-revise
+    threshold: 4
+    judge:
+      persona: architecture-reviewer
+      instruction: |
+        The spec review -> revision loop has repeated {cycle_count} times.
+
+        **Refer to the report:**
+        - Spec review result: {report:spec-review-report.md}
+
+        **Judgment criteria:**
+        - Are blocking issues decreasing?
+        - Are revisions being accurately reflected?
+        - Are new blocking issues continuing to emerge?
+        - If only suggestion-level issues remain, the spec can be finalized
+      rules:
+        - condition: Progress is being made (blocking issues decreasing, revisions reflected)
+          next: spec-review
+        - condition: Unproductive (same issues repeating, or only suggestions remain and implementation is feasible)
+          next: spec-review
+
+  # Acceptance testing <-> Fix loop
   - cycle:
       - acceptance
       - fix
@@ -27,46 +59,86 @@ loop_monitors:
     judge:
       persona: acceptor
       instruction: |
-        受け入れ検査 → 修正ループが {cycle_count} 回繰り返された。
+        The acceptance testing -> fix loop has repeated {cycle_count} times.
 
-        **レポートを参照:**
-        - 受け入れ検査結果: {report:acceptance-report.md}
+        **Refer to the report:**
+        - Acceptance testing result: {report:acceptance-report.md}
 
-        **判断基準:**
-        - 各サイクルで指摘が減少しているか
-        - 修正が実際に反映されているか
-        - 同じ指摘が繰り返されていないか
+        **Judgment criteria:**
+        - Are issues decreasing with each cycle?
+        - Are fixes actually being reflected?
+        - Are the same issues being repeated?
       rules:
-        - condition: 進捗あり（指摘数が減少、修正が反映されている）
+        - condition: Progress is being made (issue count decreasing, fixes reflected)
           next: acceptance
-        - condition: 非生産的（同じ指摘が繰り返される）
-          next: ABORT
+        - condition: Unproductive (same issues repeating)
+          next: supervise
 
 movements:
-  # 1. 仕様レビュー（codex）
+  # 1. Spec draft generation (codex)
+  #    Read code from task description and generate order.md
+  - name: spec-draft
+    edit: true
+    persona: architecture-reviewer
+    knowledge: implementation-plan
+    instruction: spec-draft
+    required_permission_mode: edit
+    rules:
+      - condition: order.md generation complete
+        next: spec-review
+      - condition: Task description insufficient to write a spec
+        next: ABORT
+
+  # 2. Spec review (codex)
   - name: spec-review
     edit: false
     persona: architecture-reviewer
     knowledge: implementation-plan
     instruction: spec-review
-    provider_options:
-      codex:
-        allowed_tools:
-          - Read
-          - Glob
-          - Grep
-          - Bash
     output_contracts:
       report:
         - name: spec-review-report.md
           format: spec-review-report
     rules:
-      - condition: 仕様が明確で実装可能（指摘なし、または軽微な改善提案のみ）
+      - condition: Spec is clear and implementable (no blocking issues)
         next: implement
-      - condition: 仕様に重大な問題があり実装不可能（要件の矛盾、変更対象の致命的な漏れ等）
+      - condition: Spec has improvable issues (blocking issues present)
+        next: spec-revise
+      - condition: Spec is fundamentally broken and cannot be fixed
         next: ABORT
 
-  # 2. 実装（cursor）
+  # 3. Spec revision (codex - revise at requirements level, do not dig into code details)
+  - name: spec-revise
+    edit: true
+    persona: architecture-reviewer
+    policy: spec-revision
+    knowledge: implementation-plan
+    required_permission_mode: edit
+    instruction: |
+      Revise order.md in response to issues raised in the spec review.
+
+      **Steps:**
+      1. Read the spec review report and understand the blocking issues
+      2. Read the files to change and verify the actual state of existing code
+      3. Revise order.md:
+         - Fix or supplement the spec to address blocking issues
+         - Selectively incorporate suggestions (not mandatory)
+         - Add or update files to change
+         - Add or update completion criteria
+      4. Report a summary of the changes
+
+      **Rules:**
+      - Only modify order.md (do not change implementation code)
+      - Do not include code examples or snippets (keep at requirements level)
+      - Maintain the existing structure of order.md
+      - Explicitly document how each review issue was addressed
+    rules:
+      - condition: Spec revision complete
+        next: spec-review
+      - condition: Cannot revise (fundamental direction change needed)
+        next: ABORT
+
+  # 4. Implementation (cursor)
   - name: implement
     edit: true
     persona: coder
@@ -77,96 +149,26 @@ movements:
     session: refresh
     required_permission_mode: edit
     instruction: |
-      タスク仕様（order.md）に従って実装する。
+      Implement according to the task spec (order.md).
 
-      **手順:**
-      1. order.md を読み、実装内容・変更対象ファイル・完了条件を把握
-      2. 変更対象ファイルを読み、既存コードの構造を理解
-      3. 実装を行う
-      4. バリデーションを実行して全チェックがパスすることを確認
+      **Steps:**
+      1. Read order.md and understand the implementation details, files to change, and completion criteria
+      2. Read the files to change and understand the existing code structure
+      3. Perform the implementation
+      4. Run validation and confirm all checks pass
 
-      **ルール:**
-      - order.md の変更対象ファイルのみ変更する
-      - PLAN.md, order.md は変更しない
-      - 既存のコードパターンと規約に従う
-      - 最小限の変更に留める
-    provider_options:
-      cursor:
-        allowed_tools:
-          - Read
-          - Glob
-          - Grep
-          - Edit
-          - Write
-          - Bash
+      **Rules:**
+      - Only modify files listed in order.md's files to change
+      - Do not modify PLAN.md or order.md
+      - Follow existing code patterns and conventions
+      - Keep changes minimal
     rules:
-      - condition: 実装完了、バリデーションパス
-        next: acceptance
-      - condition: 実装不可、情報不足
-        next: ABORT
-
-  # 3. 受け入れ検査（claude）
-  - name: acceptance
-    edit: false
-    persona: acceptor
-    policy: step-implementation
-    knowledge: implementation-plan
-    instruction: acceptance
-    provider_options:
-      claude:
-        allowed_tools:
-          - Read
-          - Glob
-          - Grep
-          - Bash
-    output_contracts:
-      report:
-        - name: acceptance-report.md
-          format: acceptance-report
-    rules:
-      - condition: 全完了条件を満たし、バリデーションパス
+      - condition: Implementation complete, validation passes
         next: simplify
-      - condition: 完了条件未達成または問題あり
-        next: fix
-
-  # 4. 修正（cursor）
-  - name: fix
-    edit: true
-    persona: coder
-    policy:
-      - coding
-      - step-implementation
-    knowledge: implementation-plan
-    session: refresh
-    required_permission_mode: edit
-    pass_previous_response: false
-    instruction: |
-      受け入れ検査で指摘された問題を修正する。
-
-      **手順:**
-      1. 受け入れ検査レポートを読み、指摘事項を把握
-      2. 各指摘に対して修正を実施
-      3. バリデーションを実行して全チェックがパスすることを確認
-
-      **ルール:**
-      - PLAN.md, order.md は変更しない
-      - スコープ内の修正のみ行う
-    provider_options:
-      cursor:
-        allowed_tools:
-          - Read
-          - Glob
-          - Grep
-          - Edit
-          - Write
-          - Bash
-    rules:
-      - condition: 修正完了
-        next: acceptance
-      - condition: 修正不可
+      - condition: Cannot implement, insufficient information
         next: ABORT
 
-  # 5. コード簡素化（claude）
+  # 5. Code simplification (claude - improve quality before acceptance)
   - name: simplify
     edit: true
     persona: simplifier
@@ -183,7 +185,105 @@ movements:
           - Write
           - Bash
     rules:
-      - condition: 簡素化完了（改善あり/なし問わず）、バリデーションパス
+      - condition: Simplification complete (with or without improvements), validation passes
+        next: acceptance
+      - condition: Simplification caused validation failure, cannot recover
+        next: ABORT
+
+  # 6. Acceptance testing (codex - verify code after simplification)
+  - name: acceptance
+    edit: false
+    persona: acceptor
+    policy: step-implementation
+    knowledge: implementation-plan
+    instruction: acceptance
+    output_contracts:
+      report:
+        - name: acceptance-report.md
+          format: acceptance-report
+    rules:
+      - condition: All completion criteria met, validation passes
+        next: doc-update
+      - condition: Completion criteria not met or issues found
+        next: fix
+
+  # 7. Fix (claude)
+  - name: fix
+    edit: true
+    persona: coder
+    provider: claude
+    policy:
+      - coding
+      - step-implementation
+    knowledge: implementation-plan
+    session: refresh
+    required_permission_mode: edit
+    pass_previous_response: false
+    provider_options:
+      claude:
+        allowed_tools:
+          - Read
+          - Glob
+          - Grep
+          - Edit
+          - Write
+          - Bash
+    instruction: |
+      Fix the issues raised in the acceptance testing.
+
+      **Steps:**
+      1. Read the acceptance testing report and understand the issues
+      2. If a supervise report exists (supervise-report.md), read it for additional context
+      3. Apply fixes for each issue
+      4. Run validation and confirm all checks pass
+
+      **Rules:**
+      - Do not modify PLAN.md or order.md
+      - Only make fixes within scope
+    rules:
+      - condition: Fix complete
+        next: acceptance
+      - condition: Cannot fix
+        next: supervise
+
+  # 8. Final verification (codex - decide complete/fix-reroute/spec-reroute)
+  - name: supervise
+    edit: false
+    persona: supervisor
+    policy: step-implementation
+    knowledge: implementation-plan
+    instruction: supervise
+    pass_previous_response: false
+    output_contracts:
+      report:
+        - name: supervise-report.md
+          format: supervise-report
+    rules:
+      - condition: All completion criteria met, ready to complete
+        next: doc-update
+      - condition: Implementation-level issues remain (resolvable by code changes)
+        next: fix
+      - condition: Spec-level issues (order.md needs modification)
+        next: spec-review
+
+  # 9. Documentation update (claude - update docs/website/examples if API changed)
+  - name: doc-update
+    edit: true
+    persona: coder
+    policy: doc-update
+    instruction: doc-update
+    required_permission_mode: edit
+    provider_options:
+      claude:
+        allowed_tools:
+          - Read
+          - Glob
+          - Grep
+          - Edit
+          - Write
+          - Bash
+    rules:
+      - condition: Documentation update complete (with or without changes), validation passes
         next: COMPLETE
-      - condition: 簡素化でバリデーション失敗、復旧不可
+      - condition: Validation failure, cannot recover
         next: ABORT

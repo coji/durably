@@ -1,36 +1,36 @@
 ```markdown
-# 仕様レビュー結果
+# Spec Review Result
 
-## 結果: APPROVE / REJECT
+## Result: APPROVE / REJECT
 
-判定基準:
+Judgment criteria:
 
-- APPROVE: 指摘なし、または軽微な改善提案のみ（実装に支障なし）
-- REJECT: 要件の矛盾、変更対象の致命的な漏れ等、このまま実装すると手戻りが確実
+- APPROVE: No issues, or only minor improvement suggestions (no impediment to implementation)
+- REJECT: Contradictions in requirements, critical omissions in files to change, etc. — proceeding to implementation would certainly cause rework
 
-軽微な改善提案（命名の改善案、テストケースの追加案等）は APPROVE として指摘事項に記載する。
-実装者が判断できるレベルの曖昧さは REJECT にしない。
+Minor improvement suggestions (naming alternatives, additional test case ideas, etc.) are filed as issues under APPROVE.
+Ambiguity that implementers can reasonably resolve on their own is not grounds for REJECT.
 
-## サマリー
+## Summary
 
-{1-2文で要約}
+{1-2 sentence summary}
 
-## チェック項目
+## Checklist
 
-| 観点                     | 結果  | 備考 |
-| ------------------------ | ----- | ---- |
-| 実装内容の明確さ         | OK/NG |      |
-| 変更対象ファイルの網羅性 | OK/NG |      |
-| 完了条件の検証可能性     | OK/NG |      |
-| スコープの適切さ         | OK/NG |      |
-| 既存パターンの活用       | OK/NG |      |
+| Aspect                               | Result | Notes |
+| ------------------------------------ | ------ | ----- |
+| Clarity of implementation scope      | OK/NG  |       |
+| Completeness of files to change      | OK/NG  |       |
+| Verifiability of completion criteria | OK/NG  |       |
+| Appropriateness of scope             | OK/NG  |       |
+| Leveraging existing patterns         | OK/NG  |       |
 
-## 指摘事項（あれば）
+## Issues (if any)
 
-各指摘に重大度を付与:
+Assign a severity to each issue:
 
-- **blocking**: 実装不可能。REJECT の根拠
-- **suggestion**: 改善提案。APPROVE のまま実装者に伝達
+- **blocking**: Implementation not possible. Grounds for REJECT
+- **suggestion**: Improvement proposal. Communicated to implementer while remaining APPROVE
 
 -
 ```
