@@ -8,14 +8,9 @@ Durably is a step-oriented batch execution framework for Node.js and browsers. I
 
 ## Documentation
 
-- `packages/durably/docs/llms.md` - LLM/AI agent documentation (bundled in npm package)
+### Documentation to keep in sync with API changes
 
-### LLM Documentation Maintenance
-
-When API changes are made, update `packages/durably/docs/llms.md` to keep it in sync. This file is:
-
-- Bundled in the npm package for coding agents to read from `node_modules`
-- Symlinked to `website/public/llms.txt` for web access
+When changing public API, update: both `llms.md` files (`packages/durably/docs/`, `packages/durably-react/docs/`), website API reference (`website/api/`), and example apps (`examples/`). Run `/doc-check` after to catch misses.
 
 ### Generated Files
 
@@ -26,7 +21,7 @@ pnpm --filter durably-website generate:llms    # website/public/llms.txt ← pac
 node website/scripts/generate-og-image.js      # website/public/og-image.png
 ```
 
-Regenerate the OG image whenever the tagline or feature descriptions change.
+Regenerate `llms.txt` after editing any `llms.md`. Regenerate the OG image whenever the tagline or feature descriptions change.
 
 ## Core Concepts
 
