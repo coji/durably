@@ -2,6 +2,27 @@
 
 Durably provides an event system for monitoring job execution and extensibility.
 
+## Core event categories
+
+Fifteen core event types are exposed as the `DurablyEvent` discriminated union. For filtering and typing, they are grouped into:
+
+- **Domain (lifecycle facts)** — `DomainEvent` / `DomainEventType`: `run:trigger`, `run:coalesced`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`
+- **Operational (execution and diagnostics)** — `OperationalEvent` / `OperationalEventType`: `run:leased`, `run:lease-renewed`, `run:progress`, `step:start`, `step:complete`, `step:fail`, `step:cancel`, `log:write`, `worker:error`
+
+The helper `isDomainEvent(event)` returns true when `event.type` is a domain event (no `category` field is added to emitted payloads).
+
+```ts
+import { isDomainEvent, type DurablyEvent } from '@coji/durably'
+
+// Filter domain events in a handler that receives mixed event types
+function handleEvent(event: DurablyEvent) {
+  if (isDomainEvent(event)) {
+    // narrowed to DomainEvent — state transition facts only
+    console.log(event.type, event.runId)
+  }
+}
+```
+
 ## Subscribing to Events
 
 ```ts

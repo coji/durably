@@ -19,12 +19,17 @@ export type { JobDefinition, JobInput, JobOutput } from './define-job'
 export { withLogPersistence } from './plugins/log-persistence'
 
 // Events
+export { isDomainEvent } from './events'
 export type {
+  DomainEvent,
+  DomainEventType,
   DurablyEvent,
   ErrorHandler,
   EventType,
   LogData,
   LogWriteEvent,
+  OperationalEvent,
+  OperationalEventType,
   ProgressData,
   RunCancelEvent,
   RunCoalescedEvent,

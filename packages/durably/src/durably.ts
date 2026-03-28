@@ -439,6 +439,7 @@ interface DurablyState<
   migrated: boolean
   leaseMs: number
   leaseRenewIntervalMs: number
+  pollingIntervalMs: number
   retainRunsMs: number | null
   releaseBrowserSingleton: () => void
   runIdleMaintenance: () => Promise<void>
@@ -525,6 +526,7 @@ function createDurablyInstance<
           eventEmitter,
           jobRegistry,
           state.labelsSchema as z.ZodType<TLabels> | undefined,
+          state.pollingIntervalMs,
         )
         newHandles[key] = handle as TransformToHandles<
           TNewJobs,
@@ -552,7 +554,11 @@ function createDurablyInstance<
         runId,
         storage,
         eventEmitter,
-        options,
+        {
+          ...options,
+          pollingIntervalMs:
+            options?.pollingIntervalMs ?? state.pollingIntervalMs,
+        },
         'waitForRun',
       )
       return run as Run<TLabels> & { status: 'completed'; output: unknown }
@@ -983,6 +989,7 @@ export function createDurably<
     migrated: false,
     leaseMs: config.leaseMs,
     leaseRenewIntervalMs: config.leaseRenewIntervalMs,
+    pollingIntervalMs: config.pollingIntervalMs,
     retainRunsMs: config.retainRunsMs,
     releaseBrowserSingleton,
     runIdleMaintenance,

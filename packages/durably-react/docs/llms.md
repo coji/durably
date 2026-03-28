@@ -13,6 +13,8 @@
 1. **Fullstack Hooks** (default): Connect to a remote Durably server via HTTP/SSE
 2. **SPA Hooks**: Run Durably entirely in the browser with SQLite WASM (OPFS)
 
+SSE payloads and client-side event unions in this package are **transport-layer** shapes for the wire protocol. They are not the same symbols as `@coji/durably`’s core category helpers (`isDomainEvent`, `DomainEvent`, `OperationalEvent`, etc.). Use the core package when classifying events in Node or shared code; use `durably-react` types for hooks and SSE.
+
 ## Installation
 
 ```bash

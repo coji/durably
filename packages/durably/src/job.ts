@@ -9,6 +9,9 @@ import {
 import type { EventEmitter, LogData, ProgressData } from './events'
 import type { Run, RunFilter, Store } from './storage'
 
+/** Matches `createDurably` default when callers omit `pollingIntervalMs` on the wait options. */
+const DEFAULT_WAIT_POLLING_INTERVAL_MS = 1000
+
 // eslint-disable-next-line @typescript-eslint/no-empty-function
 const noop = () => {}
 
@@ -105,6 +108,11 @@ export interface TriggerOptions<
 export interface WaitForRunOptions {
   /** Timeout in milliseconds */
   timeout?: number
+  /**
+   * Storage polling interval when waiting for a non-terminal run (cross-runtime fallback).
+   * Omitted values inherit the surrounding `createDurably({ pollingIntervalMs })` setting.
+   */
+  pollingIntervalMs?: number
   /** Called when step.progress() is invoked during execution */
   onProgress?: (progress: ProgressData) => void | Promise<void>
   /** Called when step.log is invoked during execution */
@@ -271,9 +279,19 @@ export function waitForRunCompletion(
 ): Promise<Run> {
   return new Promise((resolve, reject) => {
     let timeoutId: ReturnType<typeof setTimeout> | undefined
+    let pollIntervalId: ReturnType<typeof setInterval> | undefined
     let resolved = false
+    let pollInFlight = false
 
     const unsubscribes: (() => void)[] = []
+
+    const pollingMs =
+      options?.pollingIntervalMs ?? DEFAULT_WAIT_POLLING_INTERVAL_MS
+    if (!Number.isFinite(pollingMs) || pollingMs <= 0) {
+      throw new ValidationError(
+        'pollingIntervalMs must be a positive finite number',
+      )
+    }
 
     const cleanup = () => {
       if (resolved) return
@@ -281,7 +299,55 @@ export function waitForRunCompletion(
       for (const unsub of unsubscribes) unsub()
       if (timeoutId !== undefined) {
         clearTimeout(timeoutId)
+        timeoutId = undefined
       }
+      if (pollIntervalId !== undefined) {
+        clearInterval(pollIntervalId)
+        pollIntervalId = undefined
+      }
+    }
+
+    const settleFromStorage = (run: Run | null) => {
+      if (resolved) return
+      if (!run) {
+        cleanup()
+        reject(new NotFoundError(`Run not found: ${runId}`))
+        return
+      }
+      if (run.status === 'completed') {
+        cleanup()
+        resolve(run)
+        return
+      }
+      if (run.status === 'failed') {
+        cleanup()
+        reject(new Error(run.error || 'Run failed'))
+        return
+      }
+      if (run.status === 'cancelled') {
+        cleanup()
+        reject(new CancelledError(runId))
+        return
+      }
+    }
+
+    const poll = () => {
+      if (resolved || pollInFlight) return
+      pollInFlight = true
+      void storage
+        .getRun(runId)
+        .then((run) => {
+          if (resolved) return
+          settleFromStorage(run)
+        })
+        .catch((err) => {
+          if (resolved) return
+          cleanup()
+          reject(toError(err))
+        })
+        .finally(() => {
+          pollInFlight = false
+        })
     }
 
     unsubscribes.push(
@@ -361,6 +427,7 @@ export function waitForRunCompletion(
           reject(new CancelledError(runId))
           return
         }
+        pollIntervalId = setInterval(poll, pollingMs)
       })
       .catch((error) => {
         if (resolved) return
@@ -396,7 +463,8 @@ export function createJobHandle<
   storage: Store,
   eventEmitter: EventEmitter,
   registry: JobRegistry,
-  labelsSchema?: z.ZodType<TLabels>,
+  labelsSchema: z.ZodType<TLabels> | undefined,
+  pollingIntervalMs: number,
 ): JobHandle<TName, TInput, TOutput, TLabels> {
   // Check if same JobDefinition is already registered (idempotent)
   const existingJob = registry.get(jobDef.name)
@@ -506,7 +574,10 @@ export function createJobHandle<
         run.id,
         storage,
         eventEmitter,
-        options,
+        {
+          ...options,
+          pollingIntervalMs: options?.pollingIntervalMs ?? pollingIntervalMs,
+        },
         'triggerAndWait',
       )
 

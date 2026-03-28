@@ -212,6 +212,11 @@ const run = await durably.waitForRun(runId, {
   onLog: (l) => console.log(l.message),
 })
 
+// Same-process listeners settle waits immediately; if another runtime completes the run
+// against the same storage, the wait falls back to storage polling. Optional
+// `pollingIntervalMs` overrides the instance `createDurably({ pollingIntervalMs })` for this call only.
+await durably.waitForRun(runId, { pollingIntervalMs: 2000 })
+
 // Throws NotFoundError if run doesn't exist
 // Throws CancelledError if run is cancelled
 // Throws Error if run fails
@@ -337,6 +342,25 @@ durably.on('step:cancel', (e) => console.log('Step cancelled:', e.stepName))
 
 // Log events
 durably.on('log:write', (e) => console.log(`[${e.level}]`, e.message))
+```
+
+### Core event categories
+
+The `DurablyEvent` union is grouped for callers who want lifecycle facts vs operational detail:
+
+- **Domain** (`DomainEvent` / `DomainEventType`): `run:trigger`, `run:coalesced`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`
+- **Operational** (`OperationalEvent` / `OperationalEventType`): `run:leased`, `run:lease-renewed`, `run:progress`, `step:*`, `log:write`, `worker:error`
+
+Use `isDomainEvent(event)` (checks `event.type` only) as a type guard.
+
+```ts
+import { isDomainEvent, type DurablyEvent } from '@coji/durably'
+
+function handleEvent(event: DurablyEvent) {
+  if (isDomainEvent(event)) {
+    console.log('State change:', event.type, event.runId)
+  }
+}
 ```
 
 ## Advanced APIs

@@ -130,6 +130,8 @@ const run = await durably.waitForRun(id, { timeout: 60000 })
 console.log('Done:', run.output)
 ```
 
+When the run reaches a terminal state in this process, the wait settles immediately from the emitted event. If another worker or process completes, fails, or cancels the same run against the shared database, `waitForRun()` observes that outcome by polling storage; you can pass `pollingIntervalMs` on the wait options, or omit it to use the instance default from `createDurably()` (see [createDurably](/api/create-durably#waitforrun)).
+
 This is useful when one job triggers another and the caller needs to wait for the child job's completion.
 
 ## Event Monitoring

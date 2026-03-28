@@ -224,6 +224,59 @@ export type DurablyEvent =
 export type EventType = DurablyEvent['type']
 
 /**
+ * Domain (lifecycle) event names — run state-transition facts.
+ * Derived from DOMAIN_EVENT_TYPE_VALUES so the Set and type stay in sync.
+ */
+const DOMAIN_EVENT_TYPE_VALUES = [
+  'run:trigger',
+  'run:coalesced',
+  'run:complete',
+  'run:fail',
+  'run:cancel',
+  'run:delete',
+] as const
+
+export type DomainEventType = (typeof DOMAIN_EVENT_TYPE_VALUES)[number]
+
+/**
+ * Operational / diagnostic event names — execution detail and worker diagnostics.
+ */
+export type OperationalEventType =
+  | 'run:leased'
+  | 'run:lease-renewed'
+  | 'run:progress'
+  | 'step:start'
+  | 'step:complete'
+  | 'step:fail'
+  | 'step:cancel'
+  | 'log:write'
+  | 'worker:error'
+
+/**
+ * Domain events: run lifecycle facts (trigger, terminal outcomes, coalesce, delete).
+ */
+export type DomainEvent = Extract<DurablyEvent, { type: DomainEventType }>
+
+/**
+ * Operational events: leased/progress/steps/logs/worker diagnostics.
+ */
+export type OperationalEvent = Extract<
+  DurablyEvent,
+  { type: OperationalEventType }
+>
+
+const DOMAIN_EVENT_TYPES: ReadonlySet<string> = new Set(
+  DOMAIN_EVENT_TYPE_VALUES,
+)
+
+/**
+ * True when `event` is a domain (lifecycle) event — uses `event.type` only.
+ */
+export function isDomainEvent(event: DurablyEvent): event is DomainEvent {
+  return DOMAIN_EVENT_TYPES.has(event.type)
+}
+
+/**
  * Extract event by type
  */
 export type EventByType<T extends EventType> = Extract<

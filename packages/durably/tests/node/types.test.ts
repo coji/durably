@@ -10,9 +10,15 @@ import { z } from 'zod'
 import {
   createDurably,
   defineJob,
+  isDomainEvent,
+  type DomainEvent,
+  type DomainEventType,
   type Durably,
+  type DurablyEvent,
   type JobHandle,
   type LogData,
+  type OperationalEvent,
+  type OperationalEventType,
   type ProgressData,
   type Run,
   type RunFilter,
@@ -159,12 +165,37 @@ describe('Type inference', () => {
       >()
     })
 
-    it('exports WaitForRunOptions with timeout and live callbacks', () => {
+    it('exports WaitForRunOptions with timeout, polling, and live callbacks', () => {
       expectTypeOf<WaitForRunOptions>().toMatchTypeOf<{
         timeout?: number
+        pollingIntervalMs?: number
         onProgress?: (progress: ProgressData) => void | Promise<void>
         onLog?: (log: LogData) => void | Promise<void>
       }>()
+    })
+  })
+
+  describe('event classification exports', () => {
+    it('exports isDomainEvent as a type guard', () => {
+      expectTypeOf(isDomainEvent).parameter(0).toEqualTypeOf<DurablyEvent>()
+      const e = {} as DurablyEvent
+      if (isDomainEvent(e)) {
+        expectTypeOf(e).toEqualTypeOf<DomainEvent>()
+      }
+    })
+
+    it('exports DomainEventType and OperationalEventType aligned with event unions', () => {
+      expectTypeOf<DomainEventType>().toEqualTypeOf<DomainEvent['type']>()
+      expectTypeOf<OperationalEventType>().toEqualTypeOf<
+        OperationalEvent['type']
+      >()
+    })
+
+    it('exports OperationalEvent as the non-domain slice of DurablyEvent', () => {
+      expectTypeOf<
+        Exclude<DurablyEvent, DomainEvent>
+      >().toEqualTypeOf<OperationalEvent>()
+      expectTypeOf<OperationalEvent>().toMatchTypeOf<DurablyEvent>()
     })
   })
 })
