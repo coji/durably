@@ -5,10 +5,9 @@
  * Run: DATABASE_URL=postgresql://localhost:5432/durably tsx basic.ts
  */
 
-import { isDomainEvent } from '@coji/durably'
 import { durably } from './lib/durably'
 
-// Subscribe to events (core package: isDomainEvent narrows lifecycle facts)
+// Subscribe to events
 durably.on('run:leased', (event) => {
   console.log(`[run:leased] ${event.jobName}`)
 })
@@ -18,11 +17,9 @@ durably.on('step:complete', (event) => {
 })
 
 durably.on('run:complete', (event) => {
-  if (isDomainEvent(event)) {
-    console.log(
-      `[run:complete] output=${JSON.stringify(event.output)} duration=${event.duration}ms`,
-    )
-  }
+  console.log(
+    `[run:complete] output=${JSON.stringify(event.output)} duration=${event.duration}ms`,
+  )
 })
 
 durably.on('run:fail', (event) => {
