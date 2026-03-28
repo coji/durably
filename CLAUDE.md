@@ -12,6 +12,16 @@ Durably is a step-oriented batch execution framework for Node.js and browsers. I
 
 When changing public API, update: both `llms.md` files (`packages/durably/docs/`, `packages/durably-react/docs/`), website API reference (`website/api/`), and example apps (`examples/`). Run `/doc-check` after to catch misses.
 
+### Architecture Decision Records (ADRs)
+
+Significant architectural decisions are recorded in `docs/adr/`. Write an ADR when:
+
+- Alternative approaches were considered and rejected
+- The decision would prompt "why is it done this way?" later
+- The change is structural, not just incremental
+
+Workflow: create the ADR as `proposed` when starting the work, update to `accepted` when the PR merges. Reference the ADR from the PR description.
+
 ### Generated Files
 
 These files are generated from source — never edit directly:

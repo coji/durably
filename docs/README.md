@@ -1,20 +1,10 @@
 # Docs
 
-## Start Here
+## Architecture Decision Records
 
-- [Runtime Rearchitecture](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/README.md)
-  The main RFC set.
-- Recommended default for solo developers:
-  Start with `Vercel + Turso`.
-- Secondary path:
-  Consider `Cloudflare Workers + Turso` if edge deployment matters.
-- Common production-oriented paths to keep in view:
-  `Vercel + PostgreSQL`, `Fly.io + PostgreSQL`
+- [ADR Index](adr/README.md)
+- [ADR-0001: Lease-based runtime model](adr/0001-lease-based-runtime.md)
 
-## RFCs
+## Prior Design Documents
 
-- [Runtime Rearchitecture](/Users/coji/progs/oss/durably/docs/rfcs/runtime-rearchitecture/README.md)
-
-## Other Design Docs
-
-- [Auth Middleware](/Users/coji/progs/oss/durably/docs/design-auth-middleware.md)
+Earlier RFCs and design docs are preserved in git history (see `git log -- docs/rfcs/`).
