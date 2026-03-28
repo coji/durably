@@ -101,10 +101,16 @@ const DEFAULTS = {
   preserveSteps: false,
 } as const
 
+const MAX_CONCURRENT_RUNS = 1_000
+
 function validateMaxConcurrentRuns(value: number): number {
-  if (!Number.isSafeInteger(value) || value < 1) {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 1 ||
+    value > MAX_CONCURRENT_RUNS
+  ) {
     throw new ValidationError(
-      'maxConcurrentRuns must be a positive safe integer',
+      `maxConcurrentRuns must be between 1 and ${MAX_CONCURRENT_RUNS}`,
     )
   }
   return value
