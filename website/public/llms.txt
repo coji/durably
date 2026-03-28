@@ -60,7 +60,8 @@ const dialect = new LibsqlDialect({ client })
 // Option 1: With jobs (1-step initialization, returns typed instance)
 const durably = createDurably({
   dialect,
-  pollingIntervalMs: 1000, // Job polling interval (ms)
+  pollingIntervalMs: 1000, // Delay before polling again when idle (ms)
+  maxConcurrentRuns: 1, // Concurrent runs processed by the worker (default: 1)
   leaseRenewIntervalMs: 5000, // Lease renewal interval (ms)
   leaseMs: 30000, // Lease duration (ms); expired leases are reclaimed
   preserveSteps: false, // Set to true to keep step output data after terminal state (default: false = cleanup)
@@ -573,6 +574,7 @@ const { dialect } = new SQLocalKysely('app.sqlite3')
 const durably = createDurably({
   dialect,
   pollingIntervalMs: 100,
+
   leaseRenewIntervalMs: 500,
   leaseMs: 3000,
   jobs: {

@@ -25,6 +25,7 @@ interface DurablyOptions<
 > {
   dialect: Dialect
   pollingIntervalMs?: number
+  maxConcurrentRuns?: number
   leaseRenewIntervalMs?: number
   leaseMs?: number
   preserveSteps?: boolean
@@ -37,7 +38,8 @@ interface DurablyOptions<
 | Option                 | Type        | Default  | Description                                                                                                       |
 | ---------------------- | ----------- | -------- | ----------------------------------------------------------------------------------------------------------------- |
 | `dialect`              | `Dialect`   | required | Kysely dialect (SQLite, libSQL, or PostgreSQL)                                                                    |
-| `pollingIntervalMs`    | `number`    | `1000`   | How often to check for pending jobs (ms)                                                                          |
+| `pollingIntervalMs`    | `number`    | `1000`   | How often to check for pending jobs when the worker is idle (ms)                                                  |
+| `maxConcurrentRuns`    | `number`    | `1`      | Maximum runs the worker executes concurrently (still respects `concurrencyKey` exclusion in storage)              |
 | `leaseRenewIntervalMs` | `number`    | `5000`   | How often to renew the lease (ms)                                                                                 |
 | `leaseMs`              | `number`    | `30000`  | Lease duration — time until a job is considered stale (ms)                                                        |
 | `labels`               | `z.ZodType` | —        | Zod schema for labels. Enables type-safe labels and runtime validation on `trigger()`                             |
@@ -79,7 +81,7 @@ Starts the worker that processes pending jobs. Typically called after `migrate()
 await durably.stop(): Promise<void>
 ```
 
-Stops the worker gracefully, waiting for the current job to complete.
+Stops the worker gracefully: no new work is claimed, pending delayed polls are cleared, and the returned promise resolves after every in-flight run and any idle-maintenance cycle started by the worker have finished.
 
 ### `register()`
 
@@ -164,12 +166,12 @@ const run = await durably.waitForRun(runId, {
 console.log(run.output)
 ```
 
-| Option               | Type       | Description                                                                                    |
-| -------------------- | ---------- | ---------------------------------------------------------------------------------------------- |
-| `timeout`            | `number`   | Timeout in ms                                                                                  |
-| `pollingIntervalMs`  | `number`   | Storage poll interval while the run is non-terminal; inherits instance default when omitted      |
-| `onProgress`         | `function` | Called on live progress updates (no replay)                                                    |
-| `onLog`              | `function` | Called on live log entries (no replay)                                                         |
+| Option              | Type       | Description                                                                                 |
+| ------------------- | ---------- | ------------------------------------------------------------------------------------------- |
+| `timeout`           | `number`   | Timeout in ms                                                                               |
+| `pollingIntervalMs` | `number`   | Storage poll interval while the run is non-terminal; inherits instance default when omitted |
+| `onProgress`        | `function` | Called on live progress updates (no replay)                                                 |
+| `onLog`             | `function` | Called on live log entries (no replay)                                                      |
 
 ### `deleteRun()`
 

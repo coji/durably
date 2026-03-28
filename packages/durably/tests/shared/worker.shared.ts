@@ -242,5 +242,141 @@ export function createWorkerTests(createDialect: () => Dialect) {
         expect(order).toEqual([1, 2, 3])
       })
     })
+
+    describe('maxConcurrentRuns', () => {
+      it('still processes runs one at a time when maxConcurrentRuns is omitted', async () => {
+        const order: number[] = []
+        const sequentialDef = defineJob({
+          name: 'seq-default',
+          input: z.object({ n: z.number() }),
+          run: async (_step, input) => {
+            order.push(input.n)
+            await new Promise((r) => setTimeout(r, 20))
+          },
+        })
+        const d = durably.register({ job: sequentialDef })
+
+        await d.jobs.job.trigger({ n: 1 })
+        await d.jobs.job.trigger({ n: 2 })
+        d.start()
+
+        await vi.waitFor(
+          async () => {
+            const runs = await d.jobs.job.getRuns()
+            expect(runs.every((r) => r.status === 'completed')).toBe(true)
+          },
+          { timeout: 2000 },
+        )
+
+        expect(order).toEqual([1, 2])
+      })
+
+      it('runs multiple jobs concurrently when maxConcurrentRuns > 1', async () => {
+        let concurrent = 0
+        let maxConcurrent = 0
+        const parallelDef = defineJob({
+          name: 'parallel-test',
+          input: z.object({ id: z.number() }),
+          run: async (step) => {
+            concurrent++
+            maxConcurrent = Math.max(maxConcurrent, concurrent)
+            await step.run('work', async () => {
+              await new Promise((r) => setTimeout(r, 80))
+            })
+            concurrent--
+          },
+        })
+        const d = createDurably({
+          dialect: createDialect(),
+          pollingIntervalMs: 50,
+          maxConcurrentRuns: 3,
+        })
+        await d.migrate()
+        const dp = d.register({ job: parallelDef })
+
+        await dp.jobs.job.trigger({ id: 1 })
+        await dp.jobs.job.trigger({ id: 2 })
+        await dp.jobs.job.trigger({ id: 3 })
+
+        dp.start()
+
+        await vi.waitFor(
+          async () => {
+            const runs = await dp.jobs.job.getRuns()
+            expect(runs.every((r) => r.status === 'completed')).toBe(true)
+          },
+          { timeout: 5000 },
+        )
+
+        expect(maxConcurrent).toBeGreaterThan(1)
+        await dp.stop()
+        await d.db.destroy()
+      })
+
+      it('attempts another claim soon after a slot finishes without waiting for pollingIntervalMs', async () => {
+        const longPoll = 60_000
+        const order: string[] = []
+        const refillDef = defineJob({
+          name: 'refill-test',
+          input: z.object({ phase: z.string() }),
+          run: async (_step, input) => {
+            order.push(`start-${input.phase}`)
+            await new Promise((r) => setTimeout(r, 30))
+            order.push(`end-${input.phase}`)
+          },
+        })
+        const d = createDurably({
+          dialect: createDialect(),
+          pollingIntervalMs: longPoll,
+          maxConcurrentRuns: 1,
+        })
+        await d.migrate()
+        const dp = d.register({ job: refillDef })
+
+        await dp.jobs.job.trigger({ phase: 'a' })
+        await dp.jobs.job.trigger({ phase: 'b' })
+        dp.start()
+
+        await vi.waitFor(
+          async () => {
+            const runs = await dp.jobs.job.getRuns()
+            expect(runs.every((r) => r.status === 'completed')).toBe(true)
+          },
+          { timeout: 5000 },
+        )
+
+        expect(order).toEqual(['start-a', 'end-a', 'start-b', 'end-b'])
+        await dp.stop()
+        await d.db.destroy()
+      })
+
+      it('stop() waits for all in-flight runs when maxConcurrentRuns > 1', async () => {
+        const stopDef = defineJob({
+          name: 'stop-parallel',
+          input: z.object({ tag: z.string() }),
+          run: async () => {
+            await new Promise((r) => setTimeout(r, 120))
+          },
+        })
+        const d = createDurably({
+          dialect: createDialect(),
+          pollingIntervalMs: 50,
+          maxConcurrentRuns: 2,
+        })
+        await d.migrate()
+        const dp = d.register({ job: stopDef })
+
+        await dp.jobs.job.trigger({ tag: 'a' })
+        await dp.jobs.job.trigger({ tag: 'b' })
+        dp.start()
+
+        await new Promise((r) => setTimeout(r, 40))
+        await dp.stop()
+
+        const runs = await dp.jobs.job.getRuns()
+        expect(runs.every((r) => r.status === 'completed')).toBe(true)
+        await d.db.destroy()
+      })
+    })
   })
 }

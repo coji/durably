@@ -62,7 +62,8 @@ const dialect = new LibsqlDialect({ client })
 
 const durably = createDurably({
   dialect,
-  pollingIntervalMs: 1000, // Check for jobs every 1s
+  pollingIntervalMs: 1000, // When idle, wait before polling again (1s)
+  maxConcurrentRuns: 1, // One run at a time (default); raise to process multiple runs concurrently
   leaseRenewIntervalMs: 5000, // Lease renewal every 5s
   leaseMs: 30000, // Lease duration (stale after 30s)
   retainRuns: '30d', // Auto-delete terminal runs older than 30 days
@@ -212,17 +213,17 @@ function ImportButton() {
 
 ### Instance Methods
 
-| Method               | Description                                                                       |
-| -------------------- | --------------------------------------------------------------------------------- |
-| `init()`             | Migrate database and start worker                                                 |
-| `register(jobs)`     | Register job definitions                                                          |
-| `on(event, handler)` | Subscribe to events                                                               |
-| `stop()`             | Stop worker gracefully                                                            |
-| `retrigger(runId)`   | Retrigger completed/failed/cancelled run (validates input against current schema) |
+| Method               | Description                                                                                                                         |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `init()`             | Migrate database and start worker                                                                                                   |
+| `register(jobs)`     | Register job definitions                                                                                                            |
+| `on(event, handler)` | Subscribe to events                                                                                                                 |
+| `stop()`             | Stop worker gracefully                                                                                                              |
+| `retrigger(runId)`   | Retrigger completed/failed/cancelled run (validates input against current schema)                                                   |
 | `waitForRun(runId)`  | Wait for an existing run to complete (event-first, storage polling fallback; optional `pollingIntervalMs` inherits `createDurably`) |
-| `cancel(runId)`      | Cancel pending or leased run                                                      |
-| `deleteRun(runId)`   | Delete a run and its associated steps, logs, and labels                           |
-| `purgeRuns(options)` | Delete terminal runs older than a cutoff (for cleanup)                            |
+| `cancel(runId)`      | Cancel pending or leased run                                                                                                        |
+| `deleteRun(runId)`   | Delete a run and its associated steps, logs, and labels                                                                             |
+| `purgeRuns(options)` | Delete terminal runs older than a cutoff (for cleanup)                                                                              |
 
 ### Step Context
 
