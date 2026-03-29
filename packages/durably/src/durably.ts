@@ -463,6 +463,8 @@ interface DurablyState<
   preserveSteps: boolean
   migrating: Promise<void> | null
   migrated: boolean
+  walCheckpointSupported: boolean
+  probeWalCheckpoint: (() => Promise<void>) | null
   leaseMs: number
   leaseRenewIntervalMs: number
   pollingIntervalMs: number
@@ -886,8 +888,9 @@ function createDurablyInstance<
       }
 
       state.migrating = runMigrations(db)
-        .then(() => {
+        .then(async () => {
           state.migrated = true
+          await state.probeWalCheckpoint?.()
         })
         .finally(() => {
           state.migrating = null
@@ -963,8 +966,6 @@ export function createDurably<
       ? registerBrowserSingletonWarning(singletonKey)
       : () => {}
   const backend = detectBackend(options.dialect)
-  const shouldWalCheckpoint =
-    backend === 'generic' && !isBrowserLikeEnvironment()
   const storage = createKyselyStore(db, backend) as Store<TLabels>
   const originalDestroy = db.destroy.bind(db)
   db.destroy = (async () => {
@@ -989,7 +990,7 @@ export function createDurably<
         }
       }
 
-      if (shouldWalCheckpoint) {
+      if (state.walCheckpointSupported) {
         if (nowMs - lastCheckpointAt >= CHECKPOINT_INTERVAL_MS) {
           const result = await sql`PRAGMA wal_checkpoint(TRUNCATE)`.execute(db)
           const row = result.rows[0] as
@@ -1036,12 +1037,25 @@ export function createDurably<
     preserveSteps: config.preserveSteps,
     migrating: null,
     migrated: false,
+    walCheckpointSupported: false,
+    probeWalCheckpoint: null,
     leaseMs: config.leaseMs,
     leaseRenewIntervalMs: config.leaseRenewIntervalMs,
     pollingIntervalMs: config.pollingIntervalMs,
     retainRunsMs: config.retainRunsMs,
     releaseBrowserSingleton,
     runIdleMaintenance,
+  }
+
+  if (backend === 'generic' && !isBrowserLikeEnvironment()) {
+    state.probeWalCheckpoint = async () => {
+      try {
+        await sql`PRAGMA wal_checkpoint(PASSIVE)`.execute(db)
+        state.walCheckpointSupported = true
+      } catch {
+        // Remote backends (e.g. Turso) reject checkpoint pragmas
+      }
+    }
   }
 
   const instance = createDurablyInstance<Record<string, never>, TLabels>(
