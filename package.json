@@ -37,8 +37,11 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "better-sqlite3",
+      "cpu-features",
       "esbuild",
-      "lefthook"
+      "lefthook",
+      "protobufjs",
+      "ssh2"
     ]
   }
 }
