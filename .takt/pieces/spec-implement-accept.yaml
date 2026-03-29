@@ -1,19 +1,17 @@
 name: spec-implement-accept
-description: 'Spec generation(codex) -> Spec refinement(codex<->codex) -> Implementation(cursor) -> Simplification(claude) -> Acceptance(codex<->claude) -> Supervision(codex) -> Doc update(claude)'
+description: 'Spec generation(codex) -> Spec refinement(codex<->codex) -> Implementation(cursor) -> Acceptance(codex<->claude) -> Supervision(codex) -> Doc update(claude)'
 max_movements: 35
 initial_movement: spec-draft
 
 # Custom facets
 personas:
   acceptor: ../facets/personas/acceptor.md
-  simplifier: ../facets/personas/simplifier.md
   supervisor: ../facets/personas/supervisor.md
 instructions:
   spec-draft: ../facets/instructions/spec-draft.md
   spec-review: ../facets/instructions/spec-review.md
   acceptance: ../facets/instructions/acceptance.md
   supervise: ../facets/instructions/supervise.md
-  simplify: ../facets/instructions/simplify.md
   doc-update: ../facets/instructions/doc-update.md
 knowledge:
   implementation-plan: ../facets/knowledge/implementation-plan.md
@@ -167,36 +165,11 @@ movements:
       - Keep changes minimal
     rules:
       - condition: Implementation complete, validation passes
-        next: simplify
+        next: acceptance
       - condition: Cannot implement, insufficient information
         next: ABORT
 
-  # 5. Code simplification (claude - /simplify skill with parallel review agents)
-  - name: simplify
-    edit: true
-    persona: simplifier
-    provider: claude
-    policy: step-implementation
-    instruction: simplify
-    required_permission_mode: edit
-    provider_options:
-      claude:
-        allowed_tools:
-          - Read
-          - Glob
-          - Grep
-          - Edit
-          - Write
-          - Bash
-          - Skill
-          - Agent
-    rules:
-      - condition: Simplification complete (with or without improvements), validation passes
-        next: acceptance
-      - condition: Simplification caused validation failure, cannot recover
-        next: ABORT
-
-  # 6. Acceptance testing (codex - verify code after simplification)
+  # 5. Acceptance testing (codex - verify implementation)
   - name: acceptance
     edit: false
     persona: acceptor
@@ -213,7 +186,7 @@ movements:
       - condition: Completion criteria not met or issues found
         next: fix
 
-  # 7. Fix (claude)
+  # 6. Fix (claude)
   - name: fix
     edit: true
     persona: coder
@@ -255,7 +228,7 @@ movements:
       - condition: Cannot fix
         next: supervise
 
-  # 8. Final verification (codex - decide complete/fix-reroute/spec-reroute)
+  # 7. Final verification (codex - decide complete/fix-reroute/spec-reroute)
   - name: supervise
     edit: false
     persona: supervisor
@@ -275,7 +248,7 @@ movements:
       - condition: Spec-level issues (order.md needs modification)
         next: spec-review
 
-  # 9. Documentation update (claude - update docs/website/examples if API changed)
+  # 8. Documentation update (claude - update docs/website/examples if API changed)
   - name: doc-update
     edit: true
     persona: coder
