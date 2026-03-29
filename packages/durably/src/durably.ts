@@ -1063,8 +1063,14 @@ export function createDurably<
   if (backend === 'generic' && !isBrowserLikeEnvironment()) {
     state.probeWalCheckpoint = async () => {
       try {
-        await sql`PRAGMA wal_checkpoint(PASSIVE)`.execute(db)
-        state.walCheckpointSupported = true
+        const result = await sql`PRAGMA wal_checkpoint(PASSIVE)`.execute(db)
+        const row = result.rows[0] as
+          | { busy: number; log: number; checkpointed: number }
+          | undefined
+        // log === -1 means WAL is not active (e.g. libSQL local uses DELETE mode)
+        if (row && row.log !== -1) {
+          state.walCheckpointSupported = true
+        }
       } catch {
         // Remote backends (e.g. Turso) reject checkpoint pragmas
       }
