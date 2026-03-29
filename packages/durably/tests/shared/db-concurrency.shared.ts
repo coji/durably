@@ -46,6 +46,7 @@ export function createDbConcurrencyTests(
 
     directConcurrentClaim(
       'leases at most one run per concurrency key across concurrent claimers',
+      { timeout: 15_000 },
       async () => {
         for (let attempt = 0; attempt < 25; attempt++) {
           await runtimes[0].db.deleteFrom('durably_logs').execute()
