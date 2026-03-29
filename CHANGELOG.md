@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 #### @coji/durably
 
-- **`TypedRun` / `TypedClientRun` output type**: Default `output` type no longer includes `undefined`, removing unnecessary null checks (#145)
+- **`TypedRun` / `TypedClientRun` output type**: Default `output` type no longer includes `undefined`, removing unnecessary undefined checks (#145)
 
 ## [0.14.0] - 2026-03-16
 
