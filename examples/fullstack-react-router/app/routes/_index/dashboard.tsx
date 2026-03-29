@@ -96,6 +96,8 @@ export function Dashboard() {
   const showDetails = async (runId: string) => {
     setDetailError(null)
     setDetailLoading(true)
+    setSelectedRun(null)
+    setSteps([])
     try {
       const run = await getRun(runId)
       if (!run) {

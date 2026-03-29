@@ -97,7 +97,7 @@ app.all('/api/durably/*', (c) => handler.handle(c.req.raw, '/api/durably'))
 
 ## Response Shape
 
-The `/runs` and `/run` endpoints return `ClientRun` objects — a subset of the full `Run` type with internal fields (`leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `leaseGeneration`, `updatedAt` …) stripped, plus **`isTerminal`** and **`isActive`** derived from `status`. Use `toClientRun()` to apply the same projection in custom code:
+The `/runs` and `/run` endpoints return `ClientRun` objects — a subset of the full `Run` type with internal fields (`leaseOwner`, `leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `leaseGeneration`, `updatedAt`) stripped, plus **`isTerminal`** and **`isActive`** derived from `status`. Use `toClientRun()` to apply the same projection in custom code:
 
 ```ts
 import { toClientRun } from '@coji/durably'
