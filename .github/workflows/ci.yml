@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - 'website/**'
+      - '.takt/**'
+      - '.claude/**'
+      - 'LICENSE'
+      - '.gitignore'
 
 # 同じブランチ/PRの古いワークフローをキャンセル
 concurrency:
