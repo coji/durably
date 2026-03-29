@@ -235,13 +235,13 @@ function ImportButton() {
 
 ### React Hooks (@coji/durably-react)
 
-| Hook            | Mode      | Description                    |
-| --------------- | --------- | ------------------------------ |
-| `useJob`        | Both      | Trigger and monitor jobs       |
-| `useJobRun`     | Both      | Subscribe to existing run      |
-| `useRuns`       | Both      | List runs with pagination      |
-| `useRunActions` | Fullstack | Retrigger, cancel, delete runs |
-| `useDurably`    | SPA       | Access Durably instance        |
+| Hook            | Mode      | Description                                                                  |
+| --------------- | --------- | ---------------------------------------------------------------------------- |
+| `useJob`        | Both      | Trigger and monitor jobs                                                     |
+| `useJobRun`     | Both      | Subscribe to existing run                                                    |
+| `useRuns`       | Both      | List runs with pagination                                                    |
+| `useRunActions` | Fullstack | Run actions (no hook-level loading/error; use local state / `useTransition`) |
+| `useDurably`    | SPA       | Access Durably instance                                                      |
 
 ## Type Exports
 
@@ -308,6 +308,6 @@ Key fields on the `Run` object returned by `getRun()` and `getRuns()`:
 | `createdAt`      | `string`                                                          | ISO timestamp when the run was created                          |
 | `updatedAt`      | `string`                                                          | ISO timestamp of the last update                                |
 
-HTTP endpoints (`/runs`, `/run`) return `ClientRun` — the same fields minus `leaseOwner`, `idempotencyKey`, `concurrencyKey`, `leaseExpiresAt`, and `updatedAt`. Use `toClientRun(run)` to apply the same projection in custom code.
+HTTP endpoints (`/runs`, `/run`) return `ClientRun` — the same fields minus `leaseOwner`, `idempotencyKey`, `concurrencyKey`, `leaseExpiresAt`, `leaseGeneration`, and `updatedAt`, plus derived **`isTerminal`** and **`isActive`**. Use `toClientRun(run)` to apply the same projection in custom code.
 
 **See:** [createDurably - Run Type](/api/create-durably#run-type) for the full field list.

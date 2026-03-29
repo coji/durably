@@ -92,6 +92,8 @@ function Dashboard() {
 
 Note: `useRuns` and `useRunActions` are reserved keys on the proxy. Do not register jobs with these names.
 
+`createJobHooks` forwards the same option objects as `useJob`, `useJobRun`, and `useJobLogs`, except the factory supplies `api`, `jobName`, and per-hook `runId` where applicable (so you omit those keys at the call site).
+
 ### Fullstack useJob
 
 Direct hook when not using `createDurably`:
@@ -113,6 +115,8 @@ function Component() {
     isCompleted,
     isFailed,
     isCancelled,
+    isTerminal,
+    isActive,
     currentRunId,
     reset,
   } = useJob<
@@ -260,30 +264,65 @@ function FilteredDashboard() {
 
 ### Fullstack useRunActions
 
-Actions for runs (retrigger, cancel, delete):
+Actions for runs (retrigger, cancel, delete, fetch run, fetch steps). The hook returns only these functions — no loading or error state. Use `useTransition`, local state, or per-row flags at the call site for pending UI and errors; catch rejected promises in event handlers so failures are not unhandled.
 
 ```tsx
 import { useRunActions } from '@coji/durably-react'
+import { useState, useTransition } from 'react'
 
 function RunActions({ runId, status }: { runId: string; status: string }) {
-  const { retrigger, cancel, deleteRun, getRun, getSteps, isLoading, error } =
-    useRunActions({
-      api: '/api/durably',
-    })
+  const { retrigger, cancel, deleteRun, getRun, getSteps } = useRunActions({
+    api: '/api/durably',
+  })
+  const [isPending, startTransition] = useTransition()
+  const [error, setError] = useState<string | null>(null)
 
   return (
     <div>
       {(status === 'failed' || status === 'cancelled') && (
-        <button onClick={() => retrigger(runId)} disabled={isLoading}>
+        <button
+          type="button"
+          onClick={() => {
+            setError(null)
+            startTransition(() =>
+              retrigger(runId).catch((e: unknown) =>
+                setError(e instanceof Error ? e.message : String(e)),
+              ),
+            )
+          }}
+          disabled={isPending}
+        >
           Retrigger
         </button>
       )}
       {(status === 'pending' || status === 'leased') && (
-        <button onClick={() => cancel(runId)} disabled={isLoading}>
+        <button
+          type="button"
+          onClick={() => {
+            setError(null)
+            startTransition(() =>
+              cancel(runId).catch((e: unknown) =>
+                setError(e instanceof Error ? e.message : String(e)),
+              ),
+            )
+          }}
+          disabled={isPending}
+        >
           Cancel
         </button>
       )}
-      <button onClick={() => deleteRun(runId)} disabled={isLoading}>
+      <button
+        type="button"
+        onClick={() => {
+          setError(null)
+          startTransition(() =>
+            deleteRun(runId).catch((e: unknown) =>
+              setError(e instanceof Error ? e.message : String(e)),
+            ),
+          )
+        }}
+        disabled={isPending}
+      >
         Delete
       </button>
       {error && <span>{error}</span>}
@@ -402,6 +441,8 @@ function Component() {
     isCompleted,
     isFailed,
     isCancelled,
+    isTerminal,
+    isActive,
     currentRunId,
     reset,
   } = useJob(myJob, {
@@ -467,6 +508,8 @@ interface UseJobResult<TInput, TOutput> {
   isCompleted: boolean
   isFailed: boolean
   isCancelled: boolean
+  isTerminal: boolean
+  isActive: boolean
   currentRunId: string | null
   reset: () => void
 }
@@ -624,8 +667,10 @@ export async function action({ request }: Route.ActionArgs) {
 
 ## Type Definitions
 
+`RunStatus` is imported from `@coji/durably` and re-exported from `@coji/durably-react` (root) and `@coji/durably-react/spa`. Terminal means completed, failed, or cancelled; active means pending or leased — these semantics are exposed as `isTerminal` / `isActive` on hook results and on HTTP `ClientRun` payloads.
+
 ```ts
-type RunStatus = 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
+import type { RunStatus } from '@coji/durably' // or from '@coji/durably-react'
 
 interface Progress {
   current: number
@@ -652,7 +697,7 @@ type TypedRun<
   output: TOutput | null
 }
 
-// ClientRun is re-exported from @coji/durably (excludes idempotencyKey, concurrencyKey, leaseOwner, leaseExpiresAt, updatedAt)
+// ClientRun is re-exported from @coji/durably (excludes idempotencyKey, concurrencyKey, leaseOwner, leaseExpiresAt, leaseGeneration, updatedAt; includes isTerminal, isActive)
 
 // Fullstack hooks: TypedClientRun with generic input/output
 type TypedClientRun<

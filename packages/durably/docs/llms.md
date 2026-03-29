@@ -478,13 +478,13 @@ GET /runs?label.organizationId=org_123
 GET /runs/subscribe?label.organizationId=org_123&label.env=prod
 ```
 
-**Response Shape:** The `/runs` and `/run` endpoints return `ClientRun` objects (internal fields like `leaseOwner`, `leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `updatedAt` are stripped). Use `toClientRun()` to apply the same projection in custom code:
+**Response Shape:** The `/runs` and `/run` endpoints return `ClientRun` objects (internal fields like `leaseOwner`, `leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `leaseGeneration`, `updatedAt` are stripped). Each response includes derived `isTerminal` and `isActive` booleans from `status` (terminal: completed, failed, or cancelled; active: pending or leased). Use `toClientRun()` to apply the same projection in custom code:
 
 ```ts
 import { toClientRun } from '@coji/durably'
 
 const run = await durably.getRun(runId)
-const clientRun = toClientRun(run) // strips internal fields
+const clientRun = toClientRun(run) // strips internal fields; adds isTerminal / isActive
 ```
 
 **Handler Interface:**

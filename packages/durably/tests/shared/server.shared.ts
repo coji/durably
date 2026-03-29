@@ -305,6 +305,8 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(body[0]).toHaveProperty('jobName')
         expect(body[0]).toHaveProperty('status')
         expect(body[0]).toHaveProperty('createdAt')
+        expect(body[0].isTerminal).toBe(false)
+        expect(body[0].isActive).toBe(true)
       })
 
       it('filters by jobName', async () => {
@@ -522,6 +524,40 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(response.status).toBe(200)
         expect(body.id).toBe(run.id)
         expect(body.input).toEqual({ value: 42 })
+        expect(body.isTerminal).toBe(false)
+        expect(body.isActive).toBe(true)
+      })
+
+      it('includes derived terminal and active flags for a completed run', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'completed-run-flags-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        const run = await d.jobs.job.trigger({})
+        d.start()
+
+        await vi.waitFor(
+          async () => {
+            const updated = await d.getRun(run.id)
+            expect(updated?.status).toBe('completed')
+          },
+          { timeout: 1000 },
+        )
+
+        const request = new Request(
+          `http://localhost/api/durably/run?runId=${run.id}`,
+          { method: 'GET' },
+        )
+
+        const response = await handler.handle(request, '/api/durably')
+        const body = await response.json()
+
+        expect(response.status).toBe(200)
+        expect(body.isTerminal).toBe(true)
+        expect(body.isActive).toBe(false)
       })
 
       it('excludes internal fields from response', async () => {
@@ -549,6 +585,8 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(body).not.toHaveProperty('leaseExpiresAt')
         expect(body).not.toHaveProperty('updatedAt')
         expect(body).not.toHaveProperty('heartbeatAt')
+        expect(body.isTerminal).toBe(false)
+        expect(body.isActive).toBe(true)
       })
 
       it('returns 400 when runId is missing', async () => {

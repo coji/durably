@@ -239,7 +239,8 @@ export interface Store<
 
 /**
  * A client-safe subset of Run, excluding internal fields like
- * leaseOwner, leaseExpiresAt, idempotencyKey, concurrencyKey, and updatedAt.
+ * leaseOwner, leaseExpiresAt, idempotencyKey, concurrencyKey, and updatedAt,
+ * plus derived `isTerminal` / `isActive` flags from `status`.
  */
 export type ClientRun<
   TLabels extends Record<string, string> = Record<string, string>,
@@ -251,7 +252,10 @@ export type ClientRun<
   | 'leaseExpiresAt'
   | 'leaseGeneration'
   | 'updatedAt'
->
+> & {
+  isTerminal: boolean
+  isActive: boolean
+}
 
 /**
  * Project a full Run to a ClientRun by stripping internal fields.
@@ -268,7 +272,11 @@ export function toClientRun<
     updatedAt,
     ...clientRun
   } = run
-  return clientRun
+  return {
+    ...clientRun,
+    isTerminal: TERMINAL_STATUSES.includes(run.status),
+    isActive: run.status === 'pending' || run.status === 'leased',
+  }
 }
 
 /**

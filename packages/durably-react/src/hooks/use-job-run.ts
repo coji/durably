@@ -53,6 +53,14 @@ export interface UseJobRunResult<TOutput = unknown> {
    * Whether the run was cancelled
    */
   isCancelled: boolean
+  /**
+   * Whether the run reached a terminal status (completed, failed, or cancelled)
+   */
+  isTerminal: boolean
+  /**
+   * Whether the run is pending or leased (actively queued or executing)
+   */
+  isActive: boolean
 }
 
 /**
@@ -81,5 +89,10 @@ export function useJobRun<TOutput = unknown>(
     isCompleted: effectiveStatus === 'completed',
     isFailed: effectiveStatus === 'failed',
     isCancelled: effectiveStatus === 'cancelled',
+    isTerminal:
+      effectiveStatus === 'completed' ||
+      effectiveStatus === 'failed' ||
+      effectiveStatus === 'cancelled',
+    isActive: effectiveStatus === 'pending' || effectiveStatus === 'leased',
   }
 }

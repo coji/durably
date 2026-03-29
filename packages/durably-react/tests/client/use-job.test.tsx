@@ -88,6 +88,8 @@ describe('useJob (client)', () => {
 
     await waitFor(() => {
       expect(result.current.status).toBe('leased')
+      expect(result.current.isTerminal).toBe(false)
+      expect(result.current.isActive).toBe(true)
     })
   })
 
@@ -125,6 +127,8 @@ describe('useJob (client)', () => {
       expect(result.current.status).toBe('completed')
       expect(result.current.output).toEqual({ result: 'done' })
       expect(result.current.isCompleted).toBe(true)
+      expect(result.current.isTerminal).toBe(true)
+      expect(result.current.isActive).toBe(false)
     })
   })
 

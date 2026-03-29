@@ -11,7 +11,9 @@ import { defineJob, type RunStatus } from '@coji/durably'
 import { describe, expectTypeOf, it } from 'vitest'
 import { z } from 'zod'
 import type { JobHooks } from '../src/client/create-job-hooks'
+import type { UseJobClientOptions } from '../src/client/use-job'
 import type { UseJobRunClientResult } from '../src/client/use-job-run'
+import type { UseRunActionsClientResult } from '../src/client/use-run-actions'
 import type {
   TypedClientRun,
   UseRunsClientOptions,
@@ -57,6 +59,8 @@ describe('Type inference', () => {
       expectTypeOf<Result['isPending']>().toEqualTypeOf<boolean>()
       expectTypeOf<Result['isCompleted']>().toEqualTypeOf<boolean>()
       expectTypeOf<Result['isFailed']>().toEqualTypeOf<boolean>()
+      expectTypeOf<Result['isTerminal']>().toEqualTypeOf<boolean>()
+      expectTypeOf<Result['isActive']>().toEqualTypeOf<boolean>()
     })
 
     it('trigger accepts TInput and returns Promise<{ runId: string }>', () => {
@@ -109,6 +113,43 @@ describe('Type inference', () => {
 
       expectTypeOf<Result['output']>().toEqualTypeOf<unknown | null>()
     })
+
+    it('exposes isTerminal and isActive', () => {
+      type Result = UseJobRunResult<{ data: number[] }>
+
+      expectTypeOf<Result['isTerminal']>().toEqualTypeOf<boolean>()
+      expectTypeOf<Result['isActive']>().toEqualTypeOf<boolean>()
+    })
+  })
+
+  describe('createJobHooks useJob', () => {
+    type Hooks = JobHooks<{ taskId: string }, { success: boolean }>
+    type UseJobHook = Hooks['useJob']
+
+    it('accepts optional options without api or jobName', () => {
+      expectTypeOf<UseJobHook>()
+        .parameter(0)
+        .toEqualTypeOf<
+          Omit<UseJobClientOptions, 'api' | 'jobName'> | undefined
+        >()
+    })
+  })
+
+  describe('createJobHooks useLogs', () => {
+    type Hooks = JobHooks<{ taskId: string }, { success: boolean }>
+    type UseLogsHook = Hooks['useLogs']
+
+    it('accepts optional options without api or runId', () => {
+      expectTypeOf<UseLogsHook>()
+        .parameter(1)
+        .toEqualTypeOf<
+          | Omit<
+              import('../src/client/use-job-logs').UseJobLogsClientOptions,
+              'api' | 'runId'
+            >
+          | undefined
+        >()
+    })
   })
 
   describe('createJobHooks useRun', () => {
@@ -117,14 +158,15 @@ describe('Type inference', () => {
 
     it('accepts runId only or with optional callbacks', () => {
       expectTypeOf<UseRun>().parameter(0).toEqualTypeOf<string | null>()
-      expectTypeOf<UseRun>().parameter(1).toEqualTypeOf<
-        | {
-            onStart?: () => void
-            onComplete?: () => void
-            onFail?: () => void
-          }
-        | undefined
-      >()
+      expectTypeOf<UseRun>()
+        .parameter(1)
+        .toEqualTypeOf<
+          | Omit<
+              import('../src/client/use-job-run').UseJobRunClientOptions,
+              'api' | 'runId'
+            >
+          | undefined
+        >()
       expectTypeOf<UseRun>().returns.toEqualTypeOf<
         UseJobRunClientResult<{ success: boolean }>
       >()
@@ -150,6 +192,15 @@ describe('Type inference', () => {
       expectTypeOf<UseRun>().toBeCallableWith('run-id', {
         onFail: () => {},
       })
+    })
+  })
+
+  describe('useRunActions', () => {
+    it('exposes only action methods', () => {
+      type Keys = keyof UseRunActionsClientResult
+      expectTypeOf<Keys>().toEqualTypeOf<
+        'retrigger' | 'cancel' | 'deleteRun' | 'getRun' | 'getSteps'
+      >()
     })
   })
 
@@ -274,6 +325,8 @@ describe('Type inference', () => {
       >()
       expectTypeOf<TestRun['currentStepIndex']>().toEqualTypeOf<number>()
       expectTypeOf<TestRun['completedStepCount']>().toEqualTypeOf<number>()
+      expectTypeOf<TestRun['isTerminal']>().toEqualTypeOf<boolean>()
+      expectTypeOf<TestRun['isActive']>().toEqualTypeOf<boolean>()
     })
 
     it('UseRunsClientResult with generic type has typed runs', () => {

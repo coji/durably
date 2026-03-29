@@ -1,6 +1,8 @@
 // Shared type definitions for @coji/durably-react
 
-import type { ClientRun, JobDefinition, Run } from '@coji/durably'
+import type { ClientRun, JobDefinition, Run, RunStatus } from '@coji/durably'
+
+export type { RunStatus }
 
 // Type inference utilities for extracting Input/Output types from JobDefinition
 export type InferInput<T> =
@@ -26,13 +28,6 @@ export type InferOutput<T> =
         ? TOutput
         : Record<string, unknown>
       : Record<string, unknown>
-
-export type RunStatus =
-  | 'pending'
-  | 'leased'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
 
 export interface Progress {
   current: number

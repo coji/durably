@@ -80,6 +80,29 @@ describe('createJobHooks', () => {
     )
   })
 
+  it('forwards optional useJob options to the underlying hook', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ runId: 'csv-run-id' }),
+    })
+    globalThis.fetch = fetchMock
+
+    const hooks = createJobHooks<typeof importCsvJob>({
+      api: '/api/durably',
+      jobName: 'import-csv',
+    })
+
+    // autoResume: false prevents the auto-fetch on mount;
+    // if it were true, fetch would be called immediately.
+    const { result } = renderHook(() =>
+      hooks.useJob({ followLatest: false, autoResume: false }),
+    )
+
+    expect(result.current.trigger).toBeTypeOf('function')
+    // autoResume: false means no fetch calls on mount
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('useJob uses the configured api endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

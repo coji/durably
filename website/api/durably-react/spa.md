@@ -116,6 +116,8 @@ function Component() {
     isCompleted,
     isFailed,
     isCancelled,
+    isTerminal,
+    isActive,
     currentRunId,
     reset,
   } = useJob(myJob)
@@ -166,6 +168,8 @@ interface UseJobResult<TInput, TOutput> {
   isCompleted: boolean
   isFailed: boolean
   isCancelled: boolean
+  isTerminal: boolean
+  isActive: boolean
   currentRunId: string | null
   reset: () => void
 }
@@ -191,6 +195,8 @@ function RunMonitor({ runId }: { runId: string | null }) {
     isCompleted,
     isFailed,
     isCancelled,
+    isTerminal,
+    isActive,
   } = useJobRun<{ result: number }>({ runId })
 
   if (!runId) return <div>No run selected</div>
@@ -212,18 +218,20 @@ function RunMonitor({ runId }: { runId: string | null }) {
 
 ### Return Type
 
-| Property      | Type                | Description                     |
-| ------------- | ------------------- | ------------------------------- |
-| `status`      | `RunStatus \| null` | Current run status              |
-| `output`      | `TOutput \| null`   | Output from completed run       |
-| `error`       | `string \| null`    | Error message from failed run   |
-| `logs`        | `LogEntry[]`        | Logs collected during execution |
-| `progress`    | `Progress \| null`  | Current progress                |
-| `isLeased`    | `boolean`           | Whether the run is executing    |
-| `isPending`   | `boolean`           | Whether the run is queued       |
-| `isCompleted` | `boolean`           | Whether the run completed       |
-| `isFailed`    | `boolean`           | Whether the run failed          |
-| `isCancelled` | `boolean`           | Whether the run was cancelled   |
+| Property      | Type                | Description                                       |
+| ------------- | ------------------- | ------------------------------------------------- |
+| `status`      | `RunStatus \| null` | Current run status                                |
+| `output`      | `TOutput \| null`   | Output from completed run                         |
+| `error`       | `string \| null`    | Error message from failed run                     |
+| `logs`        | `LogEntry[]`        | Logs collected during execution                   |
+| `progress`    | `Progress \| null`  | Current progress                                  |
+| `isLeased`    | `boolean`           | Whether the run is executing                      |
+| `isPending`   | `boolean`           | Whether the run is queued                         |
+| `isCompleted` | `boolean`           | Whether the run completed                         |
+| `isFailed`    | `boolean`           | Whether the run failed                            |
+| `isCancelled` | `boolean`           | Whether the run was cancelled                     |
+| `isTerminal`  | `boolean`           | Terminal status (completed, failed, or cancelled) |
+| `isActive`    | `boolean`           | Pending or leased                                 |
 
 ---
 
