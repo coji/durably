@@ -891,6 +891,7 @@ function createDurablyInstance<
         .then(async () => {
           state.migrated = true
           await state.probeWalCheckpoint?.()
+          state.probeWalCheckpoint = null
         })
         .finally(() => {
           state.migrating = null
@@ -992,12 +993,24 @@ export function createDurably<
 
       if (state.walCheckpointSupported) {
         if (nowMs - lastCheckpointAt >= CHECKPOINT_INTERVAL_MS) {
-          const result = await sql`PRAGMA wal_checkpoint(TRUNCATE)`.execute(db)
-          const row = result.rows[0] as
-            | { busy: number; log: number; checkpointed: number }
-            | undefined
-          if (row?.busy === 0) {
-            lastCheckpointAt = nowMs
+          lastCheckpointAt = nowMs
+          try {
+            const result = await sql`PRAGMA wal_checkpoint(TRUNCATE)`.execute(
+              db,
+            )
+            const row = result.rows[0] as
+              | { busy: number; log: number; checkpointed: number }
+              | undefined
+            if (row?.busy !== 0) {
+              // Retry sooner on next idle cycle (but not immediately)
+              lastCheckpointAt = nowMs - CHECKPOINT_INTERVAL_MS / 2
+            }
+          } catch (checkpointError) {
+            eventEmitter.emit({
+              type: 'worker:error',
+              error: getErrorMessage(checkpointError),
+              context: 'wal-checkpoint',
+            })
           }
         }
       }
