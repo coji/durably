@@ -111,11 +111,13 @@ export function Dashboard() {
     setDetailLoading(true)
     try {
       const run = await getRun(runId)
-      if (run) {
-        setSelectedRun(run)
-        const stepsData = await getSteps(runId)
-        setSteps(stepsData)
+      if (!run) {
+        setDetailError('Run not found')
+        return
       }
+      const stepsData = await getSteps(runId)
+      setSelectedRun(run)
+      setSteps(stepsData)
     } catch (e) {
       setDetailError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -144,6 +146,9 @@ export function Dashboard() {
       {error && <div className="mb-4 text-sm text-red-600">Error: {error}</div>}
       {actionError && (
         <div className="mb-4 text-sm text-red-600">Action: {actionError}</div>
+      )}
+      {detailError && !selectedRun && (
+        <div className="mb-4 text-sm text-red-600">{detailError}</div>
       )}
 
       {runs.length === 0 ? (

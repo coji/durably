@@ -152,9 +152,9 @@ function ImportButton() {
 
 ### Fullstack Mode Only
 
-| Hook            | Description                                                                                                |
-| --------------- | ---------------------------------------------------------------------------------------------------------- |
-| `useRunActions` | Run actions (retrigger, cancel, delete, getRun, getSteps) — stateless; own pending/errors at the call site |
+| Hook            | Description                                                                                                   |
+| --------------- | ------------------------------------------------------------------------------------------------------------- |
+| `useRunActions` | Run actions (retrigger, cancel, deleteRun, getRun, getSteps) — stateless; own pending/errors at the call site |
 
 ## Common Patterns
 
