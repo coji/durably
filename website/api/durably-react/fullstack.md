@@ -76,7 +76,7 @@ export const durably = createDurably<typeof durably>({
 
 ### Per-job hooks
 
-Each registered job gets `useJob`, `useRun`, and `useLogs` hooks with full type inference:
+Each registered job gets `useJob`, `useRun`, and `useLogs` hooks with full type inference. Options match the standalone hooks (`UseJobClientOptions`, `UseJobRunClientOptions`, `UseJobLogsClientOptions`) except `api`, `jobName`, and (for run/logs) `runId` are injected by the factory.
 
 ```tsx
 // Trigger and monitor a job
@@ -192,6 +192,8 @@ function Component() {
     isCompleted,
     isFailed,
     isCancelled,
+    isTerminal,
+    isActive,
     currentRunId,
     reset,
   } = useJob<
@@ -223,6 +225,14 @@ function Component() {
 | `initialRunId` | `string`  | -       | Resume subscription to an existing run   |
 | `autoResume`   | `boolean` | `true`  | Auto-resume leased/pending jobs on mount |
 | `followLatest` | `boolean` | `true`  | Switch to tracking new runs via SSE      |
+
+### Return value
+
+| Property     | Type      | Description                                                                       |
+| ------------ | --------- | --------------------------------------------------------------------------------- |
+| `isTerminal` | `boolean` | `true` when status is completed, failed, or cancelled                             |
+| `isActive`   | `boolean` | `true` when status is pending or leased                                           |
+| …            | …         | See [Types](/api/durably-react/types) — same boolean helpers as `isPending`, etc. |
 
 ---
 
@@ -429,31 +439,68 @@ useRuns(options)
 
 ## useRunActions
 
-Perform actions on runs (retrigger, cancel, delete).
+Perform actions on runs (retrigger, cancel, delete, fetch run, fetch steps). The hook returns **only** the action functions — no loading or error state. Use `useTransition`, component state, or per-row busy flags for pending UI; handle errors from rejected promises at the call site (e.g. `.catch` in event handlers).
 
 ```tsx
 import { useRunActions } from '@coji/durably-react'
+import { useState, useTransition } from 'react'
 
 function RunActions({ runId, status }: { runId: string; status: string }) {
-  const { retrigger, cancel, deleteRun, getRun, getSteps, isLoading, error } =
-    useRunActions({ api: '/api/durably' })
+  const { retrigger, cancel, deleteRun, getRun, getSteps } = useRunActions({
+    api: '/api/durably',
+  })
+  const [isPending, startTransition] = useTransition()
+  const [error, setError] = useState<string | null>(null)
 
   return (
     <div>
       {(status === 'failed' || status === 'cancelled') && (
-        <button onClick={() => retrigger(runId)} disabled={isLoading}>
+        <button
+          type="button"
+          onClick={() => {
+            setError(null)
+            startTransition(() =>
+              retrigger(runId).catch((e: unknown) =>
+                setError(e instanceof Error ? e.message : String(e)),
+              ),
+            )
+          }}
+          disabled={isPending}
+        >
           Retrigger
         </button>
       )}
       {(status === 'pending' || status === 'leased') && (
-        <button onClick={() => cancel(runId)} disabled={isLoading}>
+        <button
+          type="button"
+          onClick={() => {
+            setError(null)
+            startTransition(() =>
+              cancel(runId).catch((e: unknown) =>
+                setError(e instanceof Error ? e.message : String(e)),
+              ),
+            )
+          }}
+          disabled={isPending}
+        >
           Cancel
         </button>
       )}
       {(status === 'completed' ||
         status === 'failed' ||
         status === 'cancelled') && (
-        <button onClick={() => deleteRun(runId)} disabled={isLoading}>
+        <button
+          type="button"
+          onClick={() => {
+            setError(null)
+            startTransition(() =>
+              deleteRun(runId).catch((e: unknown) =>
+                setError(e instanceof Error ? e.message : String(e)),
+              ),
+            )
+          }}
+          disabled={isPending}
+        >
           Delete
         </button>
       )}
@@ -478,5 +525,3 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
 | `deleteRun` | `(runId: string) => Promise<void>`              | Delete a run                                |
 | `getRun`    | `(runId: string) => Promise<ClientRun \| null>` | Get run details                             |
 | `getSteps`  | `(runId: string) => Promise<StepRecord[]>`      | Get step details                            |
-| `isLoading` | `boolean`                                       | Loading state                               |
-| `error`     | `string \| null`                                | Error message                               |

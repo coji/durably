@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback } from 'react'
 import type { ClientRun } from '../types'
 
 /**
@@ -38,14 +38,27 @@ export interface UseRunActionsClientResult {
    * Get steps for a run
    */
   getSteps: (runId: string) => Promise<StepRecord[]>
-  /**
-   * Whether an action is in progress
-   */
-  isLoading: boolean
-  /**
-   * Error message from last action
-   */
-  error: string | null
+}
+
+async function parseErrorResponse(
+  response: Response,
+  actionName: string,
+): Promise<string> {
+  let errorMessage = `Failed to ${actionName}: ${response.statusText}`
+  try {
+    const data: unknown = await response.json()
+    if (
+      typeof data === 'object' &&
+      data !== null &&
+      'error' in data &&
+      (data as { error: unknown }).error
+    ) {
+      errorMessage = String((data as { error: unknown }).error)
+    }
+  } catch {
+    // Response is not JSON, use statusText
+  }
+  return errorMessage
 }
 
 /**
@@ -54,23 +67,33 @@ export interface UseRunActionsClientResult {
  * @example
  * ```tsx
  * function RunActions({ runId, status }: { runId: string; status: string }) {
- *   const { retrigger, cancel, isLoading, error } = useRunActions({
+ *   const { retrigger, cancel } = useRunActions({
  *     api: '/api/durably',
  *   })
+ *   const [isPending, startTransition] = useTransition()
  *
  *   return (
  *     <div>
  *       {status === 'failed' && (
- *         <button onClick={() => retrigger(runId)} disabled={isLoading}>
+ *         <button
+ *           onClick={() =>
+ *             startTransition(() => retrigger(runId).catch(() => {}))
+ *           }
+ *           disabled={isPending}
+ *         >
  *           Run Again
  *         </button>
  *       )}
  *       {(status === 'pending' || status === 'leased') && (
- *         <button onClick={() => cancel(runId)} disabled={isLoading}>
+ *         <button
+ *           onClick={() =>
+ *             startTransition(() => cancel(runId).catch(() => {}))
+ *           }
+ *           disabled={isPending}
+ *         >
  *           Cancel
  *         </button>
  *       )}
- *       {error && <span className="error">{error}</span>}
  *     </div>
  *   )
  * }
@@ -81,42 +104,20 @@ export function useRunActions(
 ): UseRunActionsClientResult {
   const { api } = options
 
-  const [isLoading, setIsLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const executeAction = useCallback(
+  const executeJson = useCallback(
     async <T>(
       url: string,
       actionName: string,
       init?: RequestInit,
     ): Promise<T> => {
-      setIsLoading(true)
-      setError(null)
+      const response = await fetch(url, init)
 
-      try {
-        const response = await fetch(url, init)
-
-        if (!response.ok) {
-          let errorMessage = `Failed to ${actionName}: ${response.statusText}`
-          try {
-            const data = await response.json()
-            if (data.error) {
-              errorMessage = data.error
-            }
-          } catch {
-            // Response is not JSON, use statusText
-          }
-          throw new Error(errorMessage)
-        }
-
-        return (await response.json()) as T
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Unknown error'
-        setError(message)
-        throw err
-      } finally {
-        setIsLoading(false)
+      if (!response.ok) {
+        const errorMessage = await parseErrorResponse(response, actionName)
+        throw new Error(errorMessage)
       }
+
+      return (await response.json()) as T
     },
     [],
   )
@@ -124,75 +125,54 @@ export function useRunActions(
   const retrigger = useCallback(
     async (runId: string) => {
       const enc = encodeURIComponent(runId)
-      const data = await executeAction<{ runId?: string }>(
+      const data = await executeJson<{ runId?: string }>(
         `${api}/retrigger?runId=${enc}`,
         'retrigger',
         { method: 'POST' },
       )
       if (!data.runId) {
-        const message = 'Failed to retrigger: missing runId in response'
-        setError(message)
-        throw new Error(message)
+        throw new Error('Failed to retrigger: missing runId in response')
       }
       return data.runId
     },
-    [api, executeAction],
+    [api, executeJson],
   )
 
   const cancel = useCallback(
     async (runId: string) => {
       const enc = encodeURIComponent(runId)
-      await executeAction(`${api}/cancel?runId=${enc}`, 'cancel', {
+      await executeJson(`${api}/cancel?runId=${enc}`, 'cancel', {
         method: 'POST',
       })
     },
-    [api, executeAction],
+    [api, executeJson],
   )
 
   const deleteRun = useCallback(
     async (runId: string) => {
       const enc = encodeURIComponent(runId)
-      await executeAction(`${api}/run?runId=${enc}`, 'delete', {
+      await executeJson(`${api}/run?runId=${enc}`, 'delete', {
         method: 'DELETE',
       })
     },
-    [api, executeAction],
+    [api, executeJson],
   )
 
   const getRun = useCallback(
     async (runId: string): Promise<ClientRun | null> => {
-      setIsLoading(true)
-      setError(null)
+      const enc = encodeURIComponent(runId)
+      const response = await fetch(`${api}/run?runId=${enc}`)
 
-      try {
-        const enc = encodeURIComponent(runId)
-        const response = await fetch(`${api}/run?runId=${enc}`)
-
-        if (response.status === 404) {
-          return null
-        }
-
-        if (!response.ok) {
-          let errorMessage = `Failed to get run: ${response.statusText}`
-          try {
-            const data = await response.json()
-            if (data.error) {
-              errorMessage = data.error
-            }
-          } catch {
-            // Response is not JSON, use statusText
-          }
-          throw new Error(errorMessage)
-        }
-
-        return (await response.json()) as ClientRun
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Unknown error'
-        setError(message)
-        throw err
-      } finally {
-        setIsLoading(false)
+      if (response.status === 404) {
+        return null
       }
+
+      if (!response.ok) {
+        const errorMessage = await parseErrorResponse(response, 'get run')
+        throw new Error(errorMessage)
+      }
+
+      return (await response.json()) as ClientRun
     },
     [api],
   )
@@ -200,12 +180,9 @@ export function useRunActions(
   const getSteps = useCallback(
     async (runId: string): Promise<StepRecord[]> => {
       const enc = encodeURIComponent(runId)
-      return executeAction<StepRecord[]>(
-        `${api}/steps?runId=${enc}`,
-        'get steps',
-      )
+      return executeJson<StepRecord[]>(`${api}/steps?runId=${enc}`, 'get steps')
     },
-    [api, executeAction],
+    [api, executeJson],
   )
 
   return {
@@ -214,7 +191,5 @@ export function useRunActions(
     deleteRun,
     getRun,
     getSteps,
-    isLoading,
-    error,
   }
 }

@@ -211,6 +211,7 @@ import { durablyClient } from '~/lib/durably'
 
 function Dashboard() {
   const { runs, hasMore, nextPage } = durablyClient.useRuns({ pageSize: 10 })
+  // useRunActions returns only async methods — no hook-level loading/error; catch rejections in handlers (or use useTransition + local state).
   const { retrigger, cancel, deleteRun } = durablyClient.useRunActions()
 
   return (

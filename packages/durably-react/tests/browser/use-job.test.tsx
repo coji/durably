@@ -212,6 +212,8 @@ describe('useJob', () => {
     expect(result.current.isPending).toBe(false)
     expect(result.current.isCompleted).toBe(false)
     expect(result.current.isFailed).toBe(false)
+    expect(result.current.isTerminal).toBe(false)
+    expect(result.current.isActive).toBe(false)
 
     result.current.trigger({ input: 'test' })
 
@@ -232,6 +234,8 @@ describe('useJob', () => {
     expect(result.current.isLeased).toBe(false)
     expect(result.current.isPending).toBe(false)
     expect(result.current.isFailed).toBe(false)
+    expect(result.current.isTerminal).toBe(true)
+    expect(result.current.isActive).toBe(false)
   })
 
   it('triggerAndWait resolves with output', async () => {

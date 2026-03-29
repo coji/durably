@@ -26,6 +26,8 @@ const createMockRun = (overrides: Partial<ClientRun> = {}): ClientRun => ({
   createdAt: '2024-01-01T00:00:00.000Z',
   startedAt: null,
   completedAt: null,
+  isTerminal: false,
+  isActive: true,
   ...overrides,
 })
 

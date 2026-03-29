@@ -80,6 +80,25 @@ describe('createJobHooks', () => {
     )
   })
 
+  it('forwards optional useJob options to the underlying hook', () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ runId: 'csv-run-id' }),
+    })
+    globalThis.fetch = fetchMock
+
+    const hooks = createJobHooks<typeof importCsvJob>({
+      api: '/api/durably',
+      jobName: 'import-csv',
+    })
+
+    const { result } = renderHook(() =>
+      hooks.useJob({ followLatest: false, autoResume: false }),
+    )
+
+    expect(result.current.trigger).toBeTypeOf('function')
+  })
+
   it('useJob uses the configured api endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

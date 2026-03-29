@@ -1,17 +1,20 @@
 import type { JobDefinition } from '@coji/durably'
 import type { InferInput, InferOutput } from '../types'
-import { useJob, type UseJobClientResult } from './use-job'
-import { useJobLogs, type UseJobLogsClientResult } from './use-job-logs'
+import {
+  useJob,
+  type UseJobClientOptions,
+  type UseJobClientResult,
+} from './use-job'
+import {
+  useJobLogs,
+  type UseJobLogsClientOptions,
+  type UseJobLogsClientResult,
+} from './use-job-logs'
 import {
   useJobRun,
   type UseJobRunClientOptions,
   type UseJobRunClientResult,
 } from './use-job-run'
-
-type RunCallbackOptions = Pick<
-  UseJobRunClientOptions,
-  'onStart' | 'onComplete' | 'onFail'
->
 
 /**
  * Options for createJobHooks
@@ -34,14 +37,16 @@ export interface JobHooks<TInput, TOutput> {
   /**
    * Hook for triggering and monitoring the job
    */
-  useJob: () => UseJobClientResult<TInput, TOutput>
+  useJob: (
+    options?: Omit<UseJobClientOptions, 'api' | 'jobName'>,
+  ) => UseJobClientResult<TInput, TOutput>
 
   /**
    * Hook for subscribing to an existing run by ID
    */
   useRun: (
     runId: string | null,
-    options?: RunCallbackOptions,
+    options?: Omit<UseJobRunClientOptions, 'api' | 'runId'>,
   ) => UseJobRunClientResult<TOutput>
 
   /**
@@ -49,7 +54,7 @@ export interface JobHooks<TInput, TOutput> {
    */
   useLogs: (
     runId: string | null,
-    options?: { maxLogs?: number },
+    options?: Omit<UseJobLogsClientOptions, 'api' | 'runId'>,
   ) => UseJobLogsClientResult
 }
 
@@ -88,16 +93,20 @@ export function createJobHooks<
   const { api, jobName } = options
 
   return {
-    useJob: () => {
-      return useJob<InferInput<TJob>, InferOutput<TJob>>({ api, jobName })
+    useJob: (jobOptions) => {
+      return useJob<InferInput<TJob>, InferOutput<TJob>>({
+        api,
+        jobName,
+        ...jobOptions,
+      })
     },
 
-    useRun: (runId: string | null, runOptions?: RunCallbackOptions) => {
+    useRun: (runId, runOptions) => {
       return useJobRun<InferOutput<TJob>>({ api, runId, ...runOptions })
     },
 
-    useLogs: (runId: string | null, logsOptions?: { maxLogs?: number }) => {
-      return useJobLogs({ api, runId, maxLogs: logsOptions?.maxLogs })
+    useLogs: (runId, logsOptions) => {
+      return useJobLogs({ api, runId, ...logsOptions })
     },
   }
 }

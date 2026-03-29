@@ -6,9 +6,13 @@ The React package’s SSE and client event shapes are **transport-layer** unions
 
 ## RunStatus
 
+Imported from `@coji/durably` and re-exported by `@coji/durably-react`:
+
 ```ts
 type RunStatus = 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
 ```
+
+Hooks expose `isTerminal` and `isActive` flags directly: terminal means completed, failed, or cancelled; active means pending or leased. `ClientRun` objects from the HTTP API also include these derived fields.
 
 | Status      | Description                                      |
 | ----------- | ------------------------------------------------ |
@@ -60,7 +64,7 @@ interface LogEntry {
 
 ## ClientRun
 
-A subset of the core `Run` type returned by HTTP endpoints. Internal fields (`leaseOwner`, `leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `updatedAt`) are excluded.
+A subset of the core `Run` type returned by HTTP endpoints. Internal fields (`leaseOwner`, `leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `leaseGeneration`, `updatedAt`) are excluded. Responses include **`isTerminal`** and **`isActive`** derived from `status`.
 
 ```ts
 interface ClientRun {
@@ -77,24 +81,28 @@ interface ClientRun {
   startedAt: string | null
   completedAt: string | null
   createdAt: string
+  isTerminal: boolean
+  isActive: boolean
 }
 ```
 
-| Property             | Type                     | Description                     |
-| -------------------- | ------------------------ | ------------------------------- |
-| `id`                 | `string`                 | Unique run ID                   |
-| `jobName`            | `string`                 | Name of the job                 |
-| `status`             | `RunStatus`              | Current status                  |
-| `input`              | `unknown`                | Input data                      |
-| `output`             | `unknown`                | Job output (when completed)     |
-| `error`              | `string \| null`         | Error message (when failed)     |
-| `currentStepIndex`   | `number`                 | Index of the current step       |
-| `completedStepCount` | `number`                 | Total number of completed steps |
-| `progress`           | `Progress \| null`       | Current progress                |
-| `labels`             | `Record<string, string>` | Labels set at trigger time      |
-| `startedAt`          | `string \| null`         | ISO timestamp of start          |
-| `completedAt`        | `string \| null`         | ISO timestamp of completion     |
-| `createdAt`          | `string`                 | ISO timestamp of creation       |
+| Property             | Type                     | Description                                           |
+| -------------------- | ------------------------ | ----------------------------------------------------- |
+| `id`                 | `string`                 | Unique run ID                                         |
+| `jobName`            | `string`                 | Name of the job                                       |
+| `status`             | `RunStatus`              | Current status                                        |
+| `input`              | `unknown`                | Input data                                            |
+| `output`             | `unknown`                | Job output (when completed)                           |
+| `error`              | `string \| null`         | Error message (when failed)                           |
+| `currentStepIndex`   | `number`                 | Index of the current step                             |
+| `completedStepCount` | `number`                 | Total number of completed steps                       |
+| `progress`           | `Progress \| null`       | Current progress                                      |
+| `labels`             | `Record<string, string>` | Labels set at trigger time                            |
+| `startedAt`          | `string \| null`         | ISO timestamp of start                                |
+| `completedAt`        | `string \| null`         | ISO timestamp of completion                           |
+| `createdAt`          | `string`                 | ISO timestamp of creation                             |
+| `isTerminal`         | `boolean`                | `true` when status is completed, failed, or cancelled |
+| `isActive`           | `boolean`                | `true` when status is pending or leased               |
 
 ## TypedClientRun
 

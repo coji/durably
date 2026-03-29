@@ -4,7 +4,7 @@
  * Test retrigger and cancel actions via fetch
  */
 
-import { act, renderHook } from '@testing-library/react'
+import { act, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useRunActions } from '../../src/client/use-run-actions'
 
@@ -65,41 +65,7 @@ describe('useRunActions (client)', () => {
       )
     })
 
-    it('sets isLoading during request', async () => {
-      let resolvePromise: () => void
-      const fetchPromise = new Promise<void>((resolve) => {
-        resolvePromise = resolve
-      })
-      const fetchMock = vi.fn().mockImplementation(() =>
-        fetchPromise.then(() => ({
-          ok: true,
-          json: () => Promise.resolve({ success: true, runId: 'new-run-789' }),
-        })),
-      )
-      globalThis.fetch = fetchMock
-
-      const { result } = renderHook(() =>
-        useRunActions({ api: '/api/durably' }),
-      )
-
-      expect(result.current.isLoading).toBe(false)
-
-      let retriggerPromise: Promise<string>
-      act(() => {
-        retriggerPromise = result.current.retrigger('run-123')
-      })
-
-      expect(result.current.isLoading).toBe(true)
-
-      await act(async () => {
-        resolvePromise!()
-        await retriggerPromise
-      })
-
-      expect(result.current.isLoading).toBe(false)
-    })
-
-    it('sets error on failure and throws', async () => {
+    it('throws on failure', async () => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: false,
         statusText: 'Not Found',
@@ -121,8 +87,6 @@ describe('useRunActions (client)', () => {
       })
 
       expect(thrownError?.message).toBe('Run not found')
-      expect(result.current.error).toBe('Run not found')
-      expect(result.current.isLoading).toBe(false)
     })
 
     it('uses statusText when no error in response', async () => {
@@ -147,9 +111,6 @@ describe('useRunActions (client)', () => {
       })
 
       expect(thrownError?.message).toBe(
-        'Failed to retrigger: Internal Server Error',
-      )
-      expect(result.current.error).toBe(
         'Failed to retrigger: Internal Server Error',
       )
     })
@@ -178,46 +139,6 @@ describe('useRunActions (client)', () => {
       expect(thrownError?.message).toBe(
         'Failed to retrigger: Internal Server Error',
       )
-      expect(result.current.error).toBe(
-        'Failed to retrigger: Internal Server Error',
-      )
-    })
-
-    it('clears error on new request', async () => {
-      const fetchMock = vi
-        .fn()
-        .mockResolvedValueOnce({
-          ok: false,
-          statusText: 'Error',
-          json: () => Promise.resolve({ error: 'First error' }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve({ success: true, runId: 'new-run-999' }),
-        })
-      globalThis.fetch = fetchMock
-
-      const { result } = renderHook(() =>
-        useRunActions({ api: '/api/durably' }),
-      )
-
-      // First call fails
-      await act(async () => {
-        try {
-          await result.current.retrigger('run-123')
-        } catch {
-          // Expected
-        }
-      })
-
-      expect(result.current.error).toBe('First error')
-
-      // Second call succeeds
-      await act(async () => {
-        await result.current.retrigger('run-123')
-      })
-
-      expect(result.current.error).toBeNull()
     })
   })
 
@@ -264,41 +185,7 @@ describe('useRunActions (client)', () => {
       )
     })
 
-    it('sets isLoading during request', async () => {
-      let resolvePromise: () => void
-      const fetchPromise = new Promise<void>((resolve) => {
-        resolvePromise = resolve
-      })
-      const fetchMock = vi.fn().mockImplementation(() =>
-        fetchPromise.then(() => ({
-          ok: true,
-          json: () => Promise.resolve({ success: true }),
-        })),
-      )
-      globalThis.fetch = fetchMock
-
-      const { result } = renderHook(() =>
-        useRunActions({ api: '/api/durably' }),
-      )
-
-      expect(result.current.isLoading).toBe(false)
-
-      let cancelPromise: Promise<void>
-      act(() => {
-        cancelPromise = result.current.cancel('run-456')
-      })
-
-      expect(result.current.isLoading).toBe(true)
-
-      await act(async () => {
-        resolvePromise!()
-        await cancelPromise
-      })
-
-      expect(result.current.isLoading).toBe(false)
-    })
-
-    it('sets error on failure and throws', async () => {
+    it('throws on failure', async () => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: false,
         statusText: 'Bad Request',
@@ -320,14 +207,13 @@ describe('useRunActions (client)', () => {
       })
 
       expect(thrownError?.message).toBe('Run already completed')
-      expect(result.current.error).toBe('Run already completed')
-      expect(result.current.isLoading).toBe(false)
     })
+  })
 
-    it('uses statusText when no error in response', async () => {
+  describe('result shape', () => {
+    it('exposes only action methods', () => {
       const fetchMock = vi.fn().mockResolvedValue({
-        ok: false,
-        statusText: 'Internal Server Error',
+        ok: true,
         json: () => Promise.resolve({}),
       })
       globalThis.fetch = fetchMock
@@ -336,85 +222,56 @@ describe('useRunActions (client)', () => {
         useRunActions({ api: '/api/durably' }),
       )
 
-      let thrownError: Error | undefined
-      await act(async () => {
-        try {
-          await result.current.cancel('run-456')
-        } catch (err) {
-          thrownError = err as Error
-        }
-      })
-
-      expect(thrownError?.message).toBe(
-        'Failed to cancel: Internal Server Error',
-      )
-      expect(result.current.error).toBe(
-        'Failed to cancel: Internal Server Error',
-      )
-    })
-
-    it('handles non-JSON error response', async () => {
-      const fetchMock = vi.fn().mockResolvedValue({
-        ok: false,
-        statusText: 'Internal Server Error',
-        json: () => Promise.reject(new Error('Invalid JSON')),
-      })
-      globalThis.fetch = fetchMock
-
-      const { result } = renderHook(() =>
-        useRunActions({ api: '/api/durably' }),
-      )
-
-      let thrownError: Error | undefined
-      await act(async () => {
-        try {
-          await result.current.cancel('run-456')
-        } catch (err) {
-          thrownError = err as Error
-        }
-      })
-
-      expect(thrownError?.message).toBe(
-        'Failed to cancel: Internal Server Error',
-      )
-      expect(result.current.error).toBe(
-        'Failed to cancel: Internal Server Error',
-      )
+      expect(Object.keys(result.current).sort()).toEqual([
+        'cancel',
+        'deleteRun',
+        'getRun',
+        'getSteps',
+        'retrigger',
+      ])
     })
   })
 
-  describe('shared state', () => {
-    it('shares isLoading between retrigger and cancel', async () => {
-      let resolvePromise: () => void
-      const fetchPromise = new Promise<void>((resolve) => {
-        resolvePromise = resolve
+  describe('local rejection handling', () => {
+    it('does not surface an unhandled rejection when the caller catches', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        statusText: 'Not Found',
+        json: () => Promise.resolve({ error: 'Run not found' }),
       })
-      const fetchMock = vi.fn().mockImplementation(() =>
-        fetchPromise.then(() => ({
-          ok: true,
-          json: () =>
-            Promise.resolve({ success: true, runId: 'new-run-shared' }),
-        })),
-      )
       globalThis.fetch = fetchMock
 
-      const { result } = renderHook(() =>
-        useRunActions({ api: '/api/durably' }),
-      )
+      const unhandled: unknown[] = []
+      const onUnhandled = (e: PromiseRejectionEvent) => {
+        unhandled.push(e.reason)
+        e.preventDefault()
+      }
+      globalThis.addEventListener('unhandledrejection', onUnhandled)
 
-      let retriggerPromise: Promise<string>
-      act(() => {
-        retriggerPromise = result.current.retrigger('run-123')
-      })
+      function Harness() {
+        const { retrigger } = useRunActions({ api: '/api/durably' })
+        return (
+          <button
+            type="button"
+            onClick={() => {
+              void retrigger('run-123').catch(() => {})
+            }}
+          >
+            go
+          </button>
+        )
+      }
 
-      expect(result.current.isLoading).toBe(true)
+      const { getByRole } = render(<Harness />)
 
       await act(async () => {
-        resolvePromise!()
-        await retriggerPromise
+        getByRole('button').click()
+        await Promise.resolve()
       })
 
-      expect(result.current.isLoading).toBe(false)
+      globalThis.removeEventListener('unhandledrejection', onUnhandled)
+
+      expect(unhandled).toHaveLength(0)
     })
   })
 })

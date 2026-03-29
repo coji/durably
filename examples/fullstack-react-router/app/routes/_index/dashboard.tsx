@@ -8,7 +8,7 @@
  */
 
 import type { ClientRun, StepRecord, TypedClientRun } from '@coji/durably-react'
-import { useState } from 'react'
+import { useState, useTransition } from 'react'
 import type {
   DataSyncInput,
   DataSyncOutput,
@@ -48,40 +48,65 @@ export function Dashboard() {
       pageSize: 6,
     })
 
-  const {
-    cancel,
-    retrigger,
-    deleteRun,
-    getRun,
-    getSteps,
-    isLoading: isActioning,
-  } = durably.useRunActions()
+  const { cancel, retrigger, deleteRun, getRun, getSteps } =
+    durably.useRunActions()
+
+  const [, startActionTransition] = useTransition()
 
   const [selectedRun, setSelectedRun] = useState<ClientRun | null>(null)
   const [steps, setSteps] = useState<StepRecord[]>([])
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [detailError, setDetailError] = useState<string | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [busyKeys, setBusyKeys] = useState<Set<string>>(new Set())
 
-  const handleCancel = async (runId: string) => {
-    await cancel(runId)
-    refresh()
+  const runAction = (key: string, action: () => Promise<void>) => {
+    setActionError(null)
+    setBusyKeys((prev) => new Set(prev).add(key))
+    startActionTransition(async () => {
+      try {
+        await action()
+        refresh()
+      } catch (e) {
+        setActionError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setBusyKeys((prev) => {
+          const next = new Set(prev)
+          next.delete(key)
+          return next
+        })
+      }
+    })
   }
 
-  const handleRetrigger = async (runId: string) => {
-    await retrigger(runId)
-    refresh()
-  }
+  const handleCancel = (runId: string) =>
+    runAction(`${runId}:cancel`, () => cancel(runId))
 
-  const handleDelete = async (runId: string) => {
-    await deleteRun(runId)
-    setSelectedRun(null)
-    refresh()
-  }
+  const handleRetrigger = (runId: string) =>
+    runAction(`${runId}:retrigger`, async () => {
+      await retrigger(runId)
+    })
+
+  const handleDelete = (runId: string) =>
+    runAction(`${runId}:delete`, async () => {
+      await deleteRun(runId)
+      setSelectedRun(null)
+    })
 
   const showDetails = async (runId: string) => {
-    const run = await getRun(runId)
-    if (run) {
-      setSelectedRun(run)
-      const stepsData = await getSteps(runId)
-      setSteps(stepsData)
+    setDetailError(null)
+    setDetailLoading(true)
+    try {
+      const run = await getRun(runId)
+      if (run) {
+        setSelectedRun(run)
+        const stepsData = await getSteps(runId)
+        setSteps(stepsData)
+      }
+    } catch (e) {
+      setDetailError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDetailLoading(false)
     }
   }
 
@@ -114,6 +139,9 @@ export function Dashboard() {
       </div>
 
       {error && <div className="mb-4 text-sm text-red-600">Error: {error}</div>}
+      {actionError && (
+        <div className="mb-4 text-sm text-red-600">Action: {actionError}</div>
+      )}
 
       {runs.length === 0 ? (
         <p className="py-8 text-center text-sm text-gray-500">No runs yet</p>
@@ -203,7 +231,8 @@ export function Dashboard() {
                         <button
                           type="button"
                           onClick={() => showDetails(run.id)}
-                          className="text-xs text-blue-600 hover:text-blue-800"
+                          disabled={detailLoading}
+                          className="text-xs text-blue-600 hover:text-blue-800 disabled:cursor-not-allowed disabled:text-gray-400"
                         >
                           View
                         </button>
@@ -212,34 +241,32 @@ export function Dashboard() {
                           <button
                             type="button"
                             onClick={() => handleRetrigger(run.id)}
-                            disabled={isActioning}
+                            disabled={busyKeys.has(`${run.id}:retrigger`)}
                             className="text-xs text-green-600 hover:text-green-800 disabled:cursor-not-allowed disabled:text-gray-400"
                           >
                             Retrigger
                           </button>
                         )}
-                        {(run.status === 'leased' ||
-                          run.status === 'pending') && (
+                        {run.isActive && (
                           <button
                             type="button"
                             onClick={() => handleCancel(run.id)}
-                            disabled={isActioning}
+                            disabled={busyKeys.has(`${run.id}:cancel`)}
                             className="text-xs text-orange-600 hover:text-orange-800 disabled:cursor-not-allowed disabled:text-gray-400"
                           >
                             Cancel
                           </button>
                         )}
-                        {run.status !== 'leased' &&
-                          run.status !== 'pending' && (
-                            <button
-                              type="button"
-                              onClick={() => handleDelete(run.id)}
-                              disabled={isActioning}
-                              className="text-xs text-red-600 hover:text-red-800 disabled:cursor-not-allowed disabled:text-gray-400"
-                            >
-                              Delete
-                            </button>
-                          )}
+                        {run.isTerminal && (
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(run.id)}
+                            disabled={busyKeys.has(`${run.id}:delete`)}
+                            className="text-xs text-red-600 hover:text-red-800 disabled:cursor-not-allowed disabled:text-gray-400"
+                          >
+                            Delete
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -286,6 +313,10 @@ export function Dashboard() {
                   ✕
                 </button>
               </div>
+
+              {detailError && (
+                <div className="mb-4 text-sm text-red-600">{detailError}</div>
+              )}
 
               <div className="space-y-3 text-sm">
                 <div>

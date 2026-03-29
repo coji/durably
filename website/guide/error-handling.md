@@ -46,8 +46,12 @@ function FailedRunActions({ runId }: { runId: string }) {
         <p>Failed: {error}</p>
         <button
           onClick={async () => {
-            const newRunId = await retrigger(runId)
-            console.log(`New run: ${newRunId}`)
+            try {
+              const newRunId = await retrigger(runId)
+              console.log(`New run: ${newRunId}`)
+            } catch (e) {
+              console.error('Retrigger failed:', e)
+            }
           }}
         >
           Retrigger
@@ -57,7 +61,15 @@ function FailedRunActions({ runId }: { runId: string }) {
   }
 
   if (status === 'leased') {
-    return <button onClick={() => cancel(runId)}>Cancel</button>
+    return (
+      <button
+        onClick={() => {
+          void cancel(runId).catch((e) => console.error('Cancel failed:', e))
+        }}
+      >
+        Cancel
+      </button>
+    )
   }
 
   return null
@@ -206,7 +218,7 @@ Cancel a pending or leased run. If leased, the current step finishes, then the r
 // Server-side
 await durably.cancel(runId)
 
-// Fullstack (React)
+// Fullstack (React) — useRunActions rejects on failure; handle errors in the caller (try/catch or .catch).
 const { cancel } = durablyClient.useRunActions()
 await cancel(runId)
 ```

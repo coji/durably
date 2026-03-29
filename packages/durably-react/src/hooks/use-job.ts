@@ -75,6 +75,14 @@ export interface UseJobResult<TInput, TOutput> {
    */
   isCancelled: boolean
   /**
+   * Whether the run reached a terminal status (completed, failed, or cancelled)
+   */
+  isTerminal: boolean
+  /**
+   * Whether the run is pending or leased (actively queued or executing)
+   */
+  isActive: boolean
+  /**
    * Current run ID
    */
   currentRunId: string | null
@@ -213,6 +221,12 @@ export function useJob<
     isCompleted: subscription.status === 'completed',
     isFailed: subscription.status === 'failed',
     isCancelled: subscription.status === 'cancelled',
+    isTerminal:
+      subscription.status === 'completed' ||
+      subscription.status === 'failed' ||
+      subscription.status === 'cancelled',
+    isActive:
+      subscription.status === 'pending' || subscription.status === 'leased',
     currentRunId: subscription.currentRunId,
     reset: subscription.reset,
   }
