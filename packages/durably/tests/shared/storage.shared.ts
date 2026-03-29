@@ -1,6 +1,6 @@
 import type { Dialect } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createDurably, type Durably } from '../../src'
+import { ConflictError, createDurably, type Durably } from '../../src'
 
 export function createStorageTests(createDialect: () => Dialect) {
   describe('Storage', () => {
@@ -533,6 +533,693 @@ export function createStorageTests(createDialect: () => Dialect) {
           'non-existent',
         )
         expect(step).toBeNull()
+      })
+    })
+
+    describe('enqueueMany', () => {
+      it('returns an empty array for empty input', async () => {
+        const results = await durably.storage.enqueueMany([])
+        expect(results).toEqual([])
+      })
+
+      it('persists every run in a successful batch', async () => {
+        const results = await durably.storage.enqueueMany([
+          { jobName: 'batch-a', input: { n: 1 } },
+          { jobName: 'batch-b', input: { n: 2 } },
+        ])
+        expect(results).toHaveLength(2)
+        expect(results[0].disposition).toBe('created')
+        expect(results[1].disposition).toBe('created')
+
+        const r0 = await durably.storage.getRun(results[0].run.id)
+        const r1 = await durably.storage.getRun(results[1].run.id)
+        expect(r0!.jobName).toBe('batch-a')
+        expect(r0!.input).toEqual({ n: 1 })
+        expect(r1!.jobName).toBe('batch-b')
+        expect(r1!.input).toEqual({ n: 2 })
+      })
+
+      it('rolls back the entire batch when a later item conflicts', async () => {
+        await expect(
+          durably.storage.enqueueMany([
+            { jobName: 'c-job', input: { x: 1 }, concurrencyKey: 'ck' },
+            { jobName: 'c-job', input: { x: 2 }, concurrencyKey: 'ck' },
+          ]),
+        ).rejects.toThrow(ConflictError)
+
+        const runs = await durably.storage.getRuns({ jobName: 'c-job' })
+        expect(runs).toHaveLength(0)
+      })
+    })
+
+    describe('renewLease', () => {
+      it('extends the lease when leaseGeneration matches', async () => {
+        await durably.storage.enqueue({
+          jobName: 'lease-job',
+          input: {},
+        })
+        const claimed = await durably.storage.claimNext(
+          'w1',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+        const before = (await durably.storage.getRun(claimed!.id))!
+          .leaseExpiresAt
+
+        const renewed = await durably.storage.renewLease(
+          claimed!.id,
+          gen,
+          new Date().toISOString(),
+          60_000,
+        )
+        expect(renewed).toBe(true)
+
+        const after = (await durably.storage.getRun(claimed!.id))!
+          .leaseExpiresAt
+        expect(after).not.toBe(before)
+        expect(Date.parse(after!)).toBeGreaterThan(Date.parse(before!))
+      })
+
+      it('does not change persisted lease when leaseGeneration is stale', async () => {
+        await durably.storage.enqueue({
+          jobName: 'lease-job',
+          input: {},
+        })
+        const claimed = await durably.storage.claimNext(
+          'w1',
+          new Date().toISOString(),
+          30_000,
+        )
+        const snapshot = (await durably.storage.getRun(claimed!.id))!
+
+        const renewed = await durably.storage.renewLease(
+          claimed!.id,
+          claimed!.leaseGeneration + 1,
+          new Date().toISOString(),
+          60_000,
+        )
+        expect(renewed).toBe(false)
+
+        const after = (await durably.storage.getRun(claimed!.id))!
+        expect(after.leaseExpiresAt).toBe(snapshot.leaseExpiresAt)
+        expect(after.leaseGeneration).toBe(snapshot.leaseGeneration)
+      })
+    })
+
+    describe('completeRun and failRun', () => {
+      it('completeRun persists terminal state with output and clears lease', async () => {
+        const { run } = await durably.storage.enqueue({
+          jobName: 'term-job',
+          input: {},
+        })
+        const claimed = await durably.storage.claimNext(
+          'w1',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+        const completedAt = new Date().toISOString()
+        const out = { ok: true }
+
+        const ok = await durably.storage.completeRun(
+          run.id,
+          gen,
+          out,
+          completedAt,
+        )
+        expect(ok).toBe(true)
+
+        const stored = await durably.storage.getRun(run.id)
+        expect(stored!.status).toBe('completed')
+        expect(stored!.output).toEqual(out)
+        expect(stored!.error).toBeNull()
+        expect(stored!.completedAt).toBe(completedAt)
+        expect(stored!.leaseOwner).toBeNull()
+        expect(stored!.leaseExpiresAt).toBeNull()
+
+        expect(
+          await durably.storage.claimNext(
+            'w2',
+            new Date().toISOString(),
+            30_000,
+          ),
+        ).toBeNull()
+        expect(
+          await durably.storage.cancelRun(run.id, new Date().toISOString()),
+        ).toBe(false)
+      })
+
+      it('completeRun rejects stale leaseGeneration', async () => {
+        await durably.storage.enqueue({
+          jobName: 'term-job-stale-complete',
+          input: {},
+        })
+        const t0 = new Date().toISOString()
+        const firstLease = await durably.storage.claimNext('w1', t0, 1)
+        expect(firstLease).not.toBeNull()
+        const staleGen = firstLease!.leaseGeneration
+        const afterExpiry = new Date(Date.parse(t0) + 100).toISOString()
+        await durably.storage.releaseExpiredLeases(afterExpiry)
+        const secondLease = await durably.storage.claimNext(
+          'w2',
+          afterExpiry,
+          30_000,
+        )
+        expect(secondLease).not.toBeNull()
+        expect(secondLease!.leaseGeneration).toBeGreaterThan(staleGen)
+
+        const snapshot = (await durably.storage.getRun(secondLease!.id))!
+        const nope = await durably.storage.completeRun(
+          secondLease!.id,
+          staleGen,
+          { x: 'ignored' },
+          new Date().toISOString(),
+        )
+        expect(nope).toBe(false)
+        const stored = await durably.storage.getRun(secondLease!.id)
+        expect(stored!.status).toBe('leased')
+        expect(stored!.leaseGeneration).toBe(secondLease!.leaseGeneration)
+        expect(stored!.leaseOwner).toBe(snapshot.leaseOwner)
+        expect(stored!.leaseExpiresAt).toBe(snapshot.leaseExpiresAt)
+        expect(stored!.output).toBeNull()
+      })
+
+      it('failRun persists terminal state with error and clears lease', async () => {
+        const { run } = await durably.storage.enqueue({
+          jobName: 'term-job',
+          input: {},
+        })
+        const claimed = await durably.storage.claimNext(
+          'w1',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+        const completedAt = new Date().toISOString()
+        const errMsg = 'step failed'
+
+        const ok = await durably.storage.failRun(
+          run.id,
+          gen,
+          errMsg,
+          completedAt,
+        )
+        expect(ok).toBe(true)
+
+        const stored = await durably.storage.getRun(run.id)
+        expect(stored!.status).toBe('failed')
+        expect(stored!.error).toBe(errMsg)
+        expect(stored!.completedAt).toBe(completedAt)
+        expect(stored!.leaseOwner).toBeNull()
+        expect(stored!.leaseExpiresAt).toBeNull()
+
+        expect(
+          await durably.storage.claimNext(
+            'w2',
+            new Date().toISOString(),
+            30_000,
+          ),
+        ).toBeNull()
+
+        expect(
+          await durably.storage.cancelRun(run.id, new Date().toISOString()),
+        ).toBe(false)
+      })
+
+      it('failRun rejects stale leaseGeneration', async () => {
+        await durably.storage.enqueue({
+          jobName: 'term-job-stale-fail',
+          input: {},
+        })
+        const t0 = new Date().toISOString()
+        const firstLease = await durably.storage.claimNext('w1', t0, 1)
+        expect(firstLease).not.toBeNull()
+        const staleGen = firstLease!.leaseGeneration
+        const afterExpiry = new Date(Date.parse(t0) + 100).toISOString()
+        await durably.storage.releaseExpiredLeases(afterExpiry)
+        const secondLease = await durably.storage.claimNext(
+          'w2',
+          afterExpiry,
+          30_000,
+        )
+        expect(secondLease).not.toBeNull()
+        expect(secondLease!.leaseGeneration).toBeGreaterThan(staleGen)
+
+        const snapshot = (await durably.storage.getRun(secondLease!.id))!
+        const nope = await durably.storage.failRun(
+          secondLease!.id,
+          staleGen,
+          'ignored',
+          new Date().toISOString(),
+        )
+        expect(nope).toBe(false)
+        const stored = await durably.storage.getRun(secondLease!.id)
+        expect(stored!.status).toBe('leased')
+        expect(stored!.leaseGeneration).toBe(secondLease!.leaseGeneration)
+        expect(stored!.leaseOwner).toBe(snapshot.leaseOwner)
+        expect(stored!.leaseExpiresAt).toBe(snapshot.leaseExpiresAt)
+        expect(stored!.error).toBeNull()
+      })
+    })
+
+    describe('updateProgress', () => {
+      it('stores progress with matching leaseGeneration and ignores stale generation', async () => {
+        const { run } = await durably.storage.enqueue({
+          jobName: 'prog-job',
+          input: {},
+        })
+        const claimed = await durably.storage.claimNext(
+          'w1',
+          new Date().toISOString(),
+          30_000,
+        )
+        const gen = claimed!.leaseGeneration
+        const progress = { current: 2, total: 10, message: 'working' }
+
+        await durably.storage.updateProgress(run.id, gen, progress)
+        let stored = await durably.storage.getRun(run.id)
+        expect(stored!.progress).toEqual(progress)
+
+        await durably.storage.updateProgress(run.id, gen + 1, {
+          current: 99,
+          total: 99,
+        })
+        stored = await durably.storage.getRun(run.id)
+        expect(stored!.progress).toEqual(progress)
+      })
+    })
+
+    describe('cancelRun', () => {
+      it('cancels a pending run and persists terminal state', async () => {
+        const { run } = await durably.storage.enqueue({
+          jobName: 'cancel-job',
+          input: { a: 1 },
+        })
+        const now = new Date().toISOString()
+        const ok = await durably.storage.cancelRun(run.id, now)
+        expect(ok).toBe(true)
+
+        const stored = await durably.storage.getRun(run.id)
+        expect(stored!.status).toBe('cancelled')
+        expect(stored!.completedAt).toBe(now)
+        expect(stored!.leaseOwner).toBeNull()
+        expect(stored!.leaseExpiresAt).toBeNull()
+
+        expect(
+          await durably.storage.claimNext(
+            'w1',
+            new Date().toISOString(),
+            30_000,
+          ),
+        ).toBeNull()
+        expect(
+          await durably.storage.cancelRun(run.id, new Date().toISOString()),
+        ).toBe(false)
+      })
+
+      it('cancels a leased run and persists terminal state', async () => {
+        const { run } = await durably.storage.enqueue({
+          jobName: 'cancel-job',
+          input: {},
+        })
+        await durably.storage.claimNext('w1', new Date().toISOString(), 30_000)
+        const now = new Date().toISOString()
+        const ok = await durably.storage.cancelRun(run.id, now)
+        expect(ok).toBe(true)
+
+        const stored = await durably.storage.getRun(run.id)
+        expect(stored!.status).toBe('cancelled')
+        expect(stored!.completedAt).toBe(now)
+        expect(stored!.leaseOwner).toBeNull()
+        expect(stored!.leaseExpiresAt).toBeNull()
+
+        expect(
+          await durably.storage.claimNext(
+            'w2',
+            new Date().toISOString(),
+            30_000,
+          ),
+        ).toBeNull()
+      })
+
+      it('returns false for terminal runs', async () => {
+        const { run } = await durably.storage.enqueue({
+          jobName: 'cancel-job',
+          input: {},
+        })
+        const claimed = await durably.storage.claimNext(
+          'w1',
+          new Date().toISOString(),
+          30_000,
+        )
+        const completedAt = new Date().toISOString()
+        await durably.storage.completeRun(
+          run.id,
+          claimed!.leaseGeneration,
+          {},
+          completedAt,
+        )
+
+        const ok = await durably.storage.cancelRun(
+          run.id,
+          new Date().toISOString(),
+        )
+        expect(ok).toBe(false)
+        expect((await durably.storage.getRun(run.id))!.status).toBe('completed')
+      })
+    })
+
+    describe('releaseExpiredLeases', () => {
+      it('requeues an expired lease when no conflicting pending run exists', async () => {
+        const { run } = await durably.storage.enqueue({
+          jobName: 'rel-job',
+          input: {},
+          concurrencyKey: 'ck-rel',
+        })
+        const now = new Date().toISOString()
+        const pastExpiry = new Date(Date.now() - 1000).toISOString()
+        await durably.storage.updateRun(run.id, {
+          status: 'leased',
+          leaseOwner: 'worker-1',
+          leaseExpiresAt: pastExpiry,
+          startedAt: now,
+        })
+
+        await durably.storage.releaseExpiredLeases(now)
+
+        const stored = await durably.storage.getRun(run.id)
+        expect(stored!.status).toBe('pending')
+        expect(stored!.leaseOwner).toBeNull()
+        expect(stored!.leaseExpiresAt).toBeNull()
+      })
+
+      it('fails an expired leased run when a pending run shares jobName and concurrencyKey', async () => {
+        const { run: runA } = await durably.storage.enqueue({
+          jobName: 'rel-job',
+          input: { which: 'a' },
+          concurrencyKey: 'ck-conf',
+        })
+        const now = new Date().toISOString()
+        const pastExpiry = new Date(Date.now() - 1000).toISOString()
+        await durably.storage.updateRun(runA.id, {
+          status: 'leased',
+          leaseOwner: 'worker-1',
+          leaseExpiresAt: pastExpiry,
+          startedAt: now,
+        })
+
+        const { run: runB } = await durably.storage.enqueue({
+          jobName: 'rel-job',
+          input: { which: 'b' },
+          concurrencyKey: 'ck-conf',
+        })
+        expect(runB.id).not.toBe(runA.id)
+
+        await durably.storage.releaseExpiredLeases(now)
+
+        const updatedA = await durably.storage.getRun(runA.id)
+        expect(updatedA!.status).toBe('failed')
+        expect(updatedA!.error).toContain('pending run already exists')
+
+        const updatedB = await durably.storage.getRun(runB.id)
+        expect(updatedB!.status).toBe('pending')
+      })
+    })
+
+    describe('deleteRun and deleteSteps', () => {
+      it('deleteRun removes the run row, labels, steps, and logs', async () => {
+        const { run } = await durably.storage.enqueue({
+          jobName: 'del-job',
+          input: {},
+          labels: { k: 'v' },
+        })
+        const claimed = await durably.storage.claimNext(
+          'w1',
+          new Date().toISOString(),
+          30_000,
+        )
+        await durably.storage.persistStep(run.id, claimed!.leaseGeneration, {
+          name: 's1',
+          index: 0,
+          status: 'completed',
+          startedAt: new Date().toISOString(),
+        })
+        await durably.storage.createLog({
+          runId: run.id,
+          stepName: 's1',
+          level: 'info',
+          message: 'hello',
+          data: { z: 1 },
+        })
+
+        await durably.storage.deleteRun(run.id)
+
+        expect(await durably.storage.getRun(run.id)).toBeNull()
+        expect(await durably.storage.getSteps(run.id)).toHaveLength(0)
+        expect(await durably.storage.getLogs(run.id)).toHaveLength(0)
+        // Labels have no public API — verify via DB that cascade deleted
+        const labelRows = await durably.db
+          .selectFrom('durably_run_labels')
+          .select('run_id')
+          .where('run_id', '=', run.id)
+          .execute()
+        expect(labelRows).toHaveLength(0)
+      })
+
+      it('deleteSteps removes steps and logs but keeps the run row', async () => {
+        const { run } = await durably.storage.enqueue({
+          jobName: 'del-job',
+          input: {},
+        })
+        const claimed = await durably.storage.claimNext(
+          'w1',
+          new Date().toISOString(),
+          30_000,
+        )
+        await durably.storage.persistStep(run.id, claimed!.leaseGeneration, {
+          name: 's1',
+          index: 0,
+          status: 'completed',
+          startedAt: new Date().toISOString(),
+        })
+        await durably.storage.createLog({
+          runId: run.id,
+          stepName: null,
+          level: 'warn',
+          message: 'x',
+        })
+
+        await durably.storage.deleteSteps(run.id)
+
+        const stored = await durably.storage.getRun(run.id)
+        expect(stored).not.toBeNull()
+        expect(stored!.id).toBe(run.id)
+        expect(await durably.storage.getSteps(run.id)).toHaveLength(0)
+        expect(await durably.storage.getLogs(run.id)).toHaveLength(0)
+      })
+    })
+
+    describe('logs, progress clearing, and completed step replay', () => {
+      it('createLog and getLogs preserve insertion order and payloads', async () => {
+        const { run } = await durably.storage.enqueue({
+          jobName: 'log-job',
+          input: {},
+        })
+        const a = await durably.storage.createLog({
+          runId: run.id,
+          stepName: 'step-a',
+          level: 'info',
+          message: 'first',
+          data: { order: 1 },
+        })
+        const b = await durably.storage.createLog({
+          runId: run.id,
+          stepName: 'step-b',
+          level: 'error',
+          message: 'second',
+          data: { order: 2 },
+        })
+
+        const logs = await durably.storage.getLogs(run.id)
+        expect(logs).toHaveLength(2)
+        expect(logs[0].id).toBe(a.id)
+        expect(logs[1].id).toBe(b.id)
+        expect(logs[0].message).toBe('first')
+        expect(logs[1].message).toBe('second')
+        expect(logs[0].data).toEqual({ order: 1 })
+        expect(logs[1].data).toEqual({ order: 2 })
+      })
+
+      it('updateProgress(null) clears stored progress', async () => {
+        const { run } = await durably.storage.enqueue({
+          jobName: 'prog-job',
+          input: {},
+        })
+        const claimed = await durably.storage.claimNext(
+          'w1',
+          new Date().toISOString(),
+          30_000,
+        )
+        await durably.storage.updateProgress(run.id, claimed!.leaseGeneration, {
+          current: 1,
+          total: 3,
+        })
+        expect((await durably.storage.getRun(run.id))!.progress).not.toBeNull()
+
+        await durably.storage.updateProgress(
+          run.id,
+          claimed!.leaseGeneration,
+          null,
+        )
+        expect((await durably.storage.getRun(run.id))!.progress).toBeNull()
+      })
+
+      it('replays completed step output unchanged from getCompletedStep', async () => {
+        const { run } = await durably.storage.enqueue({
+          jobName: 'replay-job',
+          input: {},
+        })
+        const claimed = await durably.storage.claimNext(
+          'w1',
+          new Date().toISOString(),
+          30_000,
+        )
+        const payload = { items: [1, 2, 3], meta: { nested: true } }
+        await durably.storage.persistStep(run.id, claimed!.leaseGeneration, {
+          name: 'checkpoint',
+          index: 0,
+          status: 'completed',
+          output: payload,
+          startedAt: new Date().toISOString(),
+        })
+
+        const step = await durably.storage.getCompletedStep(
+          run.id,
+          'checkpoint',
+        )
+        expect(step!.output).toEqual(payload)
+      })
+    })
+
+    describe('getRuns pagination and combined filters', () => {
+      it('applies limit and offset with stable ordering', async () => {
+        await durably.storage.enqueue({ jobName: 'page-job', input: { i: 0 } })
+        await durably.storage.enqueue({ jobName: 'page-job', input: { i: 1 } })
+        await durably.storage.enqueue({ jobName: 'page-job', input: { i: 2 } })
+        await durably.storage.enqueue({ jobName: 'page-job', input: { i: 3 } })
+
+        const all = await durably.storage.getRuns({ jobName: 'page-job' })
+        expect(all).toHaveLength(4)
+
+        const page1 = await durably.storage.getRuns({
+          jobName: 'page-job',
+          limit: 2,
+          offset: 0,
+        })
+        const page2 = await durably.storage.getRuns({
+          jobName: 'page-job',
+          limit: 2,
+          offset: 2,
+        })
+        expect(page1).toHaveLength(2)
+        expect(page2).toHaveLength(2)
+        expect(page1.map((r) => r.id)).not.toEqual(page2.map((r) => r.id))
+      })
+
+      it('filters by status and jobName together', async () => {
+        await durably.storage.enqueue({ jobName: 'mix-a', input: {} })
+        const { run: bPending } = await durably.storage.enqueue({
+          jobName: 'mix-b',
+          input: {},
+        })
+        await durably.storage.updateRun(bPending.id, { status: 'completed' })
+
+        const runs = await durably.storage.getRuns({
+          status: 'pending',
+          jobName: 'mix-b',
+        })
+        expect(runs).toHaveLength(0)
+
+        const completedB = await durably.storage.getRuns({
+          status: 'completed',
+          jobName: 'mix-b',
+        })
+        expect(completedB).toHaveLength(1)
+        expect(completedB[0].id).toBe(bPending.id)
+      })
+    })
+
+    describe('purgeRuns', () => {
+      it('deletes only terminal runs older than the cutoff, preserves non-terminal', async () => {
+        const { run: oldDone } = await durably.storage.enqueue({
+          jobName: 'purge-j',
+          input: {},
+        })
+        const claimed = await durably.storage.claimNext(
+          'w1',
+          new Date().toISOString(),
+          30_000,
+        )
+        const t0 = new Date(Date.now() - 60_000).toISOString()
+        await durably.storage.completeRun(
+          oldDone.id,
+          claimed!.leaseGeneration,
+          { done: true },
+          t0,
+        )
+
+        const { run: pending } = await durably.storage.enqueue({
+          jobName: 'purge-j',
+          input: {},
+        })
+
+        const cutoff = new Date().toISOString()
+        const deleted = await durably.storage.purgeRuns({ olderThan: cutoff })
+        expect(deleted).toBe(1)
+
+        expect(await durably.storage.getRun(oldDone.id)).toBeNull()
+        expect((await durably.storage.getRun(pending.id))!.status).toBe(
+          'pending',
+        )
+      })
+
+      it('respects limit and returns 0 when no rows match', async () => {
+        const tOld = new Date(Date.now() - 120_000).toISOString()
+        for (let i = 0; i < 3; i++) {
+          const { run } = await durably.storage.enqueue({
+            jobName: 'purge-limit',
+            input: { i },
+          })
+          const c = await durably.storage.claimNext(
+            'w1',
+            new Date().toISOString(),
+            30_000,
+          )
+          await durably.storage.completeRun(
+            run.id,
+            c!.leaseGeneration,
+            {},
+            tOld,
+          )
+        }
+
+        const cutoff = new Date().toISOString()
+        const deleted = await durably.storage.purgeRuns({
+          olderThan: cutoff,
+          limit: 2,
+        })
+        expect(deleted).toBe(2)
+
+        const remaining = await durably.storage.getRuns({
+          jobName: 'purge-limit',
+        })
+        expect(remaining).toHaveLength(1)
+
+        const none = await durably.storage.purgeRuns({
+          olderThan: new Date(Date.now() - 3600_000).toISOString(),
+        })
+        expect(none).toBe(0)
       })
     })
   })
