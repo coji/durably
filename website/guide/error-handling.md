@@ -63,8 +63,12 @@ function FailedRunActions({ runId }: { runId: string }) {
   if (status === 'leased') {
     return (
       <button
-        onClick={() => {
-          void cancel(runId).catch((e) => console.error('Cancel failed:', e))
+        onClick={async () => {
+          try {
+            await cancel(runId)
+          } catch (e) {
+            console.error('Cancel failed:', e)
+          }
         }}
       >
         Cancel

@@ -77,7 +77,10 @@ async function parseErrorResponse(
  *       {status === 'failed' && (
  *         <button
  *           onClick={() =>
- *             startTransition(() => retrigger(runId).catch(() => {}))
+ *             startTransition(() =>
+ *               // Handle errors in production (e.g. toast, local state)
+ *               retrigger(runId).catch(console.error),
+ *             )
  *           }
  *           disabled={isPending}
  *         >
@@ -87,7 +90,9 @@ async function parseErrorResponse(
  *       {(status === 'pending' || status === 'leased') && (
  *         <button
  *           onClick={() =>
- *             startTransition(() => cancel(runId).catch(() => {}))
+ *             startTransition(() =>
+ *               cancel(runId).catch(console.error),
+ *             )
  *           }
  *           disabled={isPending}
  *         >

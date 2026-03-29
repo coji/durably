@@ -135,6 +135,23 @@ describe('Type inference', () => {
     })
   })
 
+  describe('createJobHooks useLogs', () => {
+    type Hooks = JobHooks<{ taskId: string }, { success: boolean }>
+    type UseLogsHook = Hooks['useLogs']
+
+    it('accepts optional options without api or runId', () => {
+      expectTypeOf<UseLogsHook>()
+        .parameter(1)
+        .toEqualTypeOf<
+          | Omit<
+              import('../src/client/use-job-logs').UseJobLogsClientOptions,
+              'api' | 'runId'
+            >
+          | undefined
+        >()
+    })
+  })
+
   describe('createJobHooks useRun', () => {
     type Hooks = JobHooks<{ taskId: string }, { success: boolean }>
     type UseRun = Hooks['useRun']
