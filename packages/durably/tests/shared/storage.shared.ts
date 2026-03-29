@@ -628,7 +628,7 @@ export function createStorageTests(createDialect: () => Dialect) {
     })
 
     describe('completeRun and failRun', () => {
-      it('completeRun persists terminal state and rejects stale leaseGeneration', async () => {
+      it('completeRun persists terminal state with output and clears lease', async () => {
         const { run } = await durably.storage.enqueue({
           jobName: 'term-job',
           input: {},
@@ -650,7 +650,7 @@ export function createStorageTests(createDialect: () => Dialect) {
         )
         expect(ok).toBe(true)
 
-        let stored = await durably.storage.getRun(run.id)
+        const stored = await durably.storage.getRun(run.id)
         expect(stored!.status).toBe('completed')
         expect(stored!.output).toEqual(out)
         expect(stored!.error).toBeNull()
@@ -668,7 +668,9 @@ export function createStorageTests(createDialect: () => Dialect) {
         expect(
           await durably.storage.cancelRun(run.id, new Date().toISOString()),
         ).toBe(false)
+      })
 
+      it('completeRun rejects stale leaseGeneration', async () => {
         await durably.storage.enqueue({
           jobName: 'term-job-stale-complete',
           input: {},
@@ -695,7 +697,7 @@ export function createStorageTests(createDialect: () => Dialect) {
           new Date().toISOString(),
         )
         expect(nope).toBe(false)
-        stored = await durably.storage.getRun(secondLease!.id)
+        const stored = await durably.storage.getRun(secondLease!.id)
         expect(stored!.status).toBe('leased')
         expect(stored!.leaseGeneration).toBe(secondLease!.leaseGeneration)
         expect(stored!.leaseOwner).toBe(snapshot.leaseOwner)
@@ -703,7 +705,7 @@ export function createStorageTests(createDialect: () => Dialect) {
         expect(stored!.output).toBeNull()
       })
 
-      it('failRun persists terminal state and rejects stale leaseGeneration', async () => {
+      it('failRun persists terminal state with error and clears lease', async () => {
         const { run } = await durably.storage.enqueue({
           jobName: 'term-job',
           input: {},
@@ -725,7 +727,7 @@ export function createStorageTests(createDialect: () => Dialect) {
         )
         expect(ok).toBe(true)
 
-        let stored = await durably.storage.getRun(run.id)
+        const stored = await durably.storage.getRun(run.id)
         expect(stored!.status).toBe('failed')
         expect(stored!.error).toBe(errMsg)
         expect(stored!.completedAt).toBe(completedAt)
@@ -743,10 +745,9 @@ export function createStorageTests(createDialect: () => Dialect) {
         expect(
           await durably.storage.cancelRun(run.id, new Date().toISOString()),
         ).toBe(false)
-        stored = await durably.storage.getRun(run.id)
-        expect(stored!.status).toBe('failed')
-        expect(stored!.error).toBe(errMsg)
+      })
 
+      it('failRun rejects stale leaseGeneration', async () => {
         await durably.storage.enqueue({
           jobName: 'term-job-stale-fail',
           input: {},
@@ -773,7 +774,7 @@ export function createStorageTests(createDialect: () => Dialect) {
           new Date().toISOString(),
         )
         expect(nope).toBe(false)
-        stored = await durably.storage.getRun(secondLease!.id)
+        const stored = await durably.storage.getRun(secondLease!.id)
         expect(stored!.status).toBe('leased')
         expect(stored!.leaseGeneration).toBe(secondLease!.leaseGeneration)
         expect(stored!.leaseOwner).toBe(snapshot.leaseOwner)
@@ -975,24 +976,15 @@ export function createStorageTests(createDialect: () => Dialect) {
         await durably.storage.deleteRun(run.id)
 
         expect(await durably.storage.getRun(run.id)).toBeNull()
+        expect(await durably.storage.getSteps(run.id)).toHaveLength(0)
+        expect(await durably.storage.getLogs(run.id)).toHaveLength(0)
+        // Labels have no public API — verify via DB that cascade deleted
         const labelRows = await durably.db
           .selectFrom('durably_run_labels')
           .select('run_id')
           .where('run_id', '=', run.id)
           .execute()
         expect(labelRows).toHaveLength(0)
-        const stepRows = await durably.db
-          .selectFrom('durably_steps')
-          .select('run_id')
-          .where('run_id', '=', run.id)
-          .execute()
-        expect(stepRows).toHaveLength(0)
-        const logRows = await durably.db
-          .selectFrom('durably_logs')
-          .select('run_id')
-          .where('run_id', '=', run.id)
-          .execute()
-        expect(logRows).toHaveLength(0)
       })
 
       it('deleteSteps removes steps and logs but keeps the run row', async () => {
