@@ -562,6 +562,10 @@ import { withLogPersistence } from '@coji/durably'
 durably.use(withLogPersistence())
 ```
 
+## SQLite WAL Maintenance
+
+For local SQLite backends using WAL mode, Durably automatically runs periodic WAL checkpoints (`PRAGMA wal_checkpoint(TRUNCATE)`) during idle maintenance to prevent unbounded WAL file growth. This is probed at `migrate()` time and only enabled when the backend supports it — automatically skipped for Turso (remote libSQL), PostgreSQL, and browser (OPFS) backends.
+
 ## Browser Usage
 
 ```ts

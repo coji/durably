@@ -97,6 +97,12 @@ const dialect = new SqliteDialect({
 - Good for one-off scripts and CLI tools
 - No remote support (use libSQL if you might need Turso later)
 
+## SQLite WAL Maintenance
+
+For local SQLite backends using WAL (Write-Ahead Logging) mode, Durably automatically runs `PRAGMA wal_checkpoint(TRUNCATE)` during idle maintenance to prevent unbounded WAL file growth. This is throttled to at most once per 60 seconds and only runs when the worker is idle.
+
+At `migrate()` time, Durably probes whether WAL checkpointing is supported. Checkpointing is enabled only for local file-backed SQLite — it is automatically skipped for Turso (remote libSQL), PostgreSQL, and browser (OPFS) backends.
+
 ## PostgreSQL
 
 **For multi-worker production deployments.** The recommended backend for running multiple workers concurrently, with advisory locks and `FOR UPDATE SKIP LOCKED` for strong concurrency guarantees.

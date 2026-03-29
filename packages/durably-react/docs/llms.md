@@ -166,6 +166,9 @@ function Component({ runId }: { runId: string }) {
   }>({
     api: '/api/durably',
     runId,
+    onStart: () => console.log('Run started'),
+    onComplete: () => console.log('Run completed'),
+    onFail: () => console.log('Run failed'),
   })
 
   return <div>Status: {status}</div>
