@@ -2,7 +2,7 @@
 #   docker build -f examples/fullstack-react-router/Dockerfile -t durably-fullstack .
 
 FROM node:24-alpine AS base
-RUN corepack enable pnpm
+RUN npm install -g pnpm
 
 # Install all dependencies (workspace-aware)
 FROM base AS deps
