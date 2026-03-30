@@ -19,7 +19,7 @@ This runs `basic.ts`, which initializes Durably, triggers a job, and displays ru
 To use this example outside the monorepo, replace `workspace:*` in `package.json`:
 
 ```json
-"@coji/durably": "^0.15.0"
+"@coji/durably": "^<latest version>"
 ```
 
 Then install with your preferred package manager.

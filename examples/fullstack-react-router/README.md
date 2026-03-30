@@ -32,8 +32,8 @@ docker run -p 3000:3000 my-app
 To use this example outside the monorepo, replace `workspace:*` in `package.json`:
 
 ```json
-"@coji/durably": "^0.15.0",
-"@coji/durably-react": "^0.15.0"
+"@coji/durably": "^<latest version>",
+"@coji/durably-react": "^<latest version>"
 ```
 
 Then install with your preferred package manager.
