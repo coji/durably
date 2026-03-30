@@ -23,15 +23,15 @@
     "db:down": "docker compose -f docker-compose.postgres.yml down"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.7",
+    "@biomejs/biome": "^2.4.9",
     "@types/node": "^25.5.0",
-    "@vitest/coverage-v8": "4.1.0",
-    "lefthook": "2.1.2",
+    "@vitest/coverage-v8": "4.1.2",
+    "lefthook": "2.1.4",
     "prettier": "^3.8.1",
     "prettier-plugin-organize-imports": "^4.3.0",
     "prettier-plugin-tailwindcss": "0.7.2",
     "tsx": "^4.21.0",
-    "turbo": "2.8.14",
+    "turbo": "2.8.21",
     "typescript": "^5.9.3"
   },
   "pnpm": {
