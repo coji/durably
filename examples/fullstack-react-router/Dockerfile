@@ -1,24 +1,40 @@
-FROM node:24-alpine AS development-dependencies-env
-COPY . /app
-WORKDIR /app
-RUN npm ci
+# Build from monorepo root:
+#   docker build -f examples/fullstack-react-router/Dockerfile -t durably-fullstack .
 
-FROM node:24-alpine AS production-dependencies-env
-COPY ./package.json package-lock.json /app/
-WORKDIR /app
-RUN npm ci --omit=dev
+FROM node:24-alpine AS base
+RUN corepack enable pnpm
 
-FROM node:24-alpine AS build-env
-COPY . /app/
-COPY --from=development-dependencies-env /app/node_modules /app/node_modules
+# Install all dependencies (workspace-aware)
+FROM base AS deps
 WORKDIR /app
-RUN npm run build
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY packages/durably/package.json ./packages/durably/
+COPY packages/durably-react/package.json ./packages/durably-react/
+COPY examples/fullstack-react-router/package.json ./examples/fullstack-react-router/
+RUN pnpm install --frozen-lockfile
 
+# Build workspace packages and the app
+FROM base AS build
+WORKDIR /app
+COPY --from=deps /app ./
+COPY packages/durably/ ./packages/durably/
+COPY packages/durably-react/ ./packages/durably-react/
+COPY examples/fullstack-react-router/ ./examples/fullstack-react-router/
+RUN pnpm --filter @coji/durably build && \
+    pnpm --filter @coji/durably-react build && \
+    pnpm --filter example-fullstack-react-router build
+
+# Deploy as standalone with production dependencies
+FROM base AS deploy
+WORKDIR /app
+COPY --from=build /app ./
+RUN pnpm --filter example-fullstack-react-router --legacy --prod deploy /deployed
+
+# Final production image
 FROM node:24-alpine
 RUN mkdir -p /app && chown node:node /app
 WORKDIR /app
-COPY --chown=node:node ./package.json package-lock.json /app/
-COPY --chown=node:node --from=production-dependencies-env /app/node_modules /app/node_modules
-COPY --chown=node:node --from=build-env /app/build /app/build
+COPY --chown=node:node --from=deploy /deployed ./
+COPY --chown=node:node --from=build /app/examples/fullstack-react-router/build ./build
 USER node
-CMD ["npm", "run", "start"]
+CMD ["./node_modules/.bin/react-router-serve", "./build/server/index.js"]
