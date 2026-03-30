@@ -112,12 +112,12 @@ Menu links, anchors, and OGP/meta descriptions must stay in sync.
 
 Working code that uses the public API. `pnpm typecheck` catches breakage.
 
-| Directory                         | Mode           |
-| --------------------------------- | -------------- |
-| `examples/server-node`            | Server mode    |
-| `examples/spa-vite-react`         | SPA mode       |
-| `examples/spa-react-router`       | SPA mode       |
-| `examples/fullstack-react-router` | Fullstack mode |
+| Directory                   | Mode           |
+| --------------------------- | -------------- |
+| `examples/server-libsql`    | Server mode    |
+| `examples/spa-vite`         | SPA mode       |
+| `examples/spa-react-router` | SPA mode       |
+| `examples/fullstack`        | Fullstack mode |
 
 ## Phase 4: Regenerate
 

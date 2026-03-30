@@ -1,9 +1,11 @@
 {
-  "name": "example-server-node-postgres",
+  "name": "example-spa-vite",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx basic.ts",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "biome lint --error-on-warnings .",
     "lint:fix": "biome lint --write .",
@@ -12,17 +14,23 @@
   },
   "dependencies": {
     "@coji/durably": "workspace:*",
+    "@coji/durably-react": "workspace:*",
     "kysely": "^0.28.14",
-    "pg": "^8.20.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "sqlocal": "^0.17.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.9",
-    "@types/node": "^25.5.0",
-    "@types/pg": "^8.20.0",
+    "@tailwindcss/vite": "^4.2.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
     "prettier": "^3.8.1",
     "prettier-plugin-organize-imports": "^4.3.0",
-    "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "tailwindcss": "^4.2.2",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.3"
   }
 }

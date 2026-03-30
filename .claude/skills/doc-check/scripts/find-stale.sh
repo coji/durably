@@ -97,12 +97,27 @@ else
   check_pattern \
     "Old dir: browser-vite-react" \
     "browser-vite-react" \
-    "Renamed to spa-vite-react"
+    "Renamed to spa-vite"
 
   check_pattern \
     "Old dir: browser-react-router" \
     "browser-react-router" \
     "Renamed to spa-react-router"
+
+  check_pattern \
+    "Old dir: fullstack-react-router" \
+    "fullstack-react-router" \
+    "Renamed to fullstack"
+
+  check_pattern \
+    "Old dir: server-node" \
+    "server-node[^_]" \
+    "Renamed to server-libsql or server-postgres"
+
+  check_pattern \
+    "Old dir: spa-vite-react" \
+    "spa-vite-react" \
+    "Renamed to spa-vite"
 
   check_pattern \
     "Old file: durably.hooks" \

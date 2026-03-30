@@ -1,5 +1,5 @@
 {
-  "name": "example-server-node",
+  "name": "example-server-libsql",
   "private": true,
   "type": "module",
   "scripts": {

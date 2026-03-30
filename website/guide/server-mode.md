@@ -2,7 +2,7 @@
 
 Run batch jobs on Node.js without a frontend. Perfect for cron jobs, data pipelines, and CLI tools.
 
-**Example code:** [server-node](https://github.com/coji/durably/tree/main/examples/server-node)
+**Example code:** [server-libsql](https://github.com/coji/durably/tree/main/examples/server-libsql)
 
 ## When to Use
 

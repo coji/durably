@@ -2,7 +2,7 @@
 
 Run Durably entirely in the browser. Jobs execute locally using SQLite WASM with OPFS persistence. Works offline, survives tab closes.
 
-**Example code:** [spa-vite-react](https://github.com/coji/durably/tree/main/examples/spa-vite-react)
+**Example code:** [spa-vite](https://github.com/coji/durably/tree/main/examples/spa-vite)
 
 ## When to Use
 

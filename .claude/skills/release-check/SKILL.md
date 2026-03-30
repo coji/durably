@@ -151,10 +151,10 @@ Code examples embedded in prose. API changes silently break copy-paste.
 
 All examples must compile and use current API patterns.
 
-- [ ] `examples/server-node/`
-- [ ] `examples/spa-vite-react/`
+- [ ] `examples/server-libsql/`
+- [ ] `examples/spa-vite/`
 - [ ] `examples/spa-react-router/`
-- [ ] `examples/fullstack-react-router/`
+- [ ] `examples/fullstack/`
 
 Check for:
 
