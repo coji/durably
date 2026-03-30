@@ -165,6 +165,7 @@ createDurably({
   dialect,
   leaseRenewIntervalMs: 5000, // Renew lease every 5s (default)
   leaseMs: 30000, // Lease duration — stale after 30s without renewal (default)
+  maxConcurrentRuns: 1, // Concurrent runs per worker (default: 1, increase for I/O-bound jobs)
 })
 ```
 

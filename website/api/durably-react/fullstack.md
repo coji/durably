@@ -249,6 +249,9 @@ function Component({ runId }: { runId: string }) {
   }>({
     api: '/api/durably',
     runId,
+    onStart: () => console.log('Run started'),
+    onComplete: () => console.log('Run completed'),
+    onFail: () => console.log('Run failed'),
   })
 
   return <div>Status: {status}</div>
@@ -257,10 +260,13 @@ function Component({ runId }: { runId: string }) {
 
 ### Options
 
-| Option  | Type     | Description                |
-| ------- | -------- | -------------------------- |
-| `api`   | `string` | API base path              |
-| `runId` | `string` | The run ID to subscribe to |
+| Option       | Type         | Description                                       |
+| ------------ | ------------ | ------------------------------------------------- |
+| `api`        | `string`     | API base path                                     |
+| `runId`      | `string`     | The run ID to subscribe to                        |
+| `onStart`    | `() => void` | Called when the run transitions to pending/leased |
+| `onComplete` | `() => void` | Called when the run completes                     |
+| `onFail`     | `() => void` | Called when the run fails                         |
 
 ---
 

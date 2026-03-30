@@ -37,8 +37,9 @@ Regenerate `llms.txt` after editing any `llms.md`. Regenerate the OG image whene
 
 - **Job**: Defined via `defineJob()` and registered via `jobs` option (or `.register()`), receives a step context and payload
 - **Step**: Created via `step.run()`, each step's success state and return value is persisted (cleaned up on terminal state by default, see `preserveSteps`)
-- **Run**: A job execution instance, created via `trigger()`, always persisted as `pending` before execution
-- **Worker**: Polls for pending runs and executes them sequentially
+- **Run**: A job execution instance, created via `trigger()` (returns `TriggerResult` with `disposition`: `'created' | 'idempotent' | 'coalesced'`), always persisted as `pending` before execution. Use `coalesce: 'skip'` to reuse an existing pending run with the same `concurrencyKey`
+- **Worker**: Polls for pending runs and executes them (sequentially by default, or concurrently via `maxConcurrentRuns`)
+- **waitForRun**: `durably.waitForRun(runId, options?)` waits for a run to reach terminal state, with `timeout`, `onProgress`, `onLog` callbacks. Uses events with storage polling fallback
 
 ## Key Design Decisions
 
@@ -61,6 +62,7 @@ Five tables: `durably_runs`, `durably_run_labels`, `durably_steps`, `durably_log
 - `leaseRenewIntervalMs`: 5000ms
 - `leaseMs`: 30000ms (lease duration; expired leases are reclaimed)
 - `preserveSteps`: false (deletes step output data when runs reach terminal state)
+- `maxConcurrentRuns`: 1 (concurrent runs per worker; increase for I/O-bound jobs)
 - `retainRuns`: undefined (no automatic cleanup; set e.g. `'30d'` to auto-delete terminal runs)
 
 ## Browser Constraints (by design)

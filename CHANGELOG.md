@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-03-29
+
+### Breaking Changes
+
+#### @coji/durably
+
+- **`trigger()` return type changed to `TriggerResult`**: Returns `{ run, disposition }` where `disposition` is `'created' | 'idempotent' | 'coalesced'`. Add `coalesce: 'skip'` option to reuse an existing pending run instead of throwing. `concurrencyKey` now enforces max 1 pending run per key (#148)
+
+#### @coji/durably-react
+
+- **`useRunActions()` no longer returns `isLoading` / `error`**: Use React 19 `useTransition` for per-button pending UI and `try/catch` for error handling. Peer dependency raised to React 19+ (#179)
+
+### Added
+
+#### @coji/durably
+
+- **`waitForRun(runId, options?)`**: Wait for an existing run to reach a terminal state, with `timeout`, `onProgress`, and `onLog` callbacks. Uses event-first resolution with storage polling fallback for cross-process observation (#151, #169)
+- **`maxConcurrentRuns` option**: Enable parallel run processing in the worker. Defaults to `1` (sequential) (#173)
+- **Event classification**: Events classified as Domain or Operational with `isDomainEvent()` type guard (#169)
+- **Automatic WAL checkpoint**: Periodic `PRAGMA wal_checkpoint(TRUNCATE)` during idle maintenance for local SQLite backends, preventing unbounded WAL file growth. Probed at `migrate()` time; skipped for Turso, PostgreSQL, and browser environments (#181)
+
+#### @coji/durably-react
+
+- **`isTerminal` / `isActive` on run objects and hooks**: Derived status booleans replace manual status enumeration (#179)
+- **`useRuns` status array filter**: `status` option accepts `RunStatus | RunStatus[]` to filter by multiple statuses (#154)
+- **`createJobHooks().useRun()` lifecycle callbacks**: `onStart`, `onComplete`, and `onFail` options for per-run lifecycle handling (#155)
+- **`createJobHooks()` options forwarding**: All hook options forwarded transparently via `Omit` (#179)
+
+### Fixed
+
+#### @coji/durably
+
+- **`TypedRun` / `TypedClientRun` output type**: Default `output` type no longer includes `undefined`, removing unnecessary undefined checks (#145)
+
 ## [0.14.0] - 2026-03-16
 
 ### Added
