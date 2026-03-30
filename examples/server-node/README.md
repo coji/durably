@@ -16,13 +16,11 @@ This runs `basic.ts`, which initializes Durably, triggers a job, and displays ru
 
 ## Standalone Use
 
-To use this example outside the monorepo, replace `workspace:*` in `package.json`:
+To use this example outside the monorepo, remove the `workspace:*` dependency and install from npm:
 
-```json
-"@coji/durably": "^<latest version>"
+```bash
+pnpm add @coji/durably
 ```
-
-Then install with your preferred package manager.
 
 ## What It Demonstrates
 

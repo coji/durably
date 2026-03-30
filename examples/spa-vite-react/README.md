@@ -31,14 +31,11 @@ OPFS requires HTTPS or localhost.
 
 ## Standalone Use
 
-To use this example outside the monorepo, replace `workspace:*` in `package.json`:
+To use this example outside the monorepo, remove the `workspace:*` dependencies and install from npm:
 
-```json
-"@coji/durably": "^<latest version>",
-"@coji/durably-react": "^<latest version>"
+```bash
+pnpm add @coji/durably @coji/durably-react
 ```
-
-Then install with your preferred package manager.
 
 ## What It Demonstrates
 
