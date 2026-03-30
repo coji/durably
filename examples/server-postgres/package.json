@@ -1,5 +1,5 @@
 {
-  "name": "example-server-node",
+  "name": "example-server-postgres",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,14 +12,14 @@
   },
   "dependencies": {
     "@coji/durably": "workspace:*",
-    "@libsql/client": "^0.17.0",
-    "@libsql/kysely-libsql": "^0.4.1",
-    "kysely": "^0.28.12",
+    "kysely": "^0.28.14",
+    "pg": "^8.20.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.7",
+    "@biomejs/biome": "^2.4.9",
     "@types/node": "^25.5.0",
+    "@types/pg": "^8.20.0",
     "prettier": "^3.8.1",
     "prettier-plugin-organize-imports": "^4.3.0",
     "tsx": "^4.21.0",

@@ -2,7 +2,7 @@
 
 Server-side jobs with a React UI. Real-time progress via SSE, type-safe hooks, run dashboard with retrigger/cancel/delete.
 
-**Example code:** [fullstack-react-router](https://github.com/coji/durably/tree/main/examples/fullstack-react-router)
+**Example code:** [fullstack](https://github.com/coji/durably/tree/main/examples/fullstack)
 
 ## When to Use
 

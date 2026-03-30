@@ -3,6 +3,7 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
+      "env": ["TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN"],
       "outputs": ["dist/**", "build/**", ".vitepress/dist/**"]
     },
     "dev": {
