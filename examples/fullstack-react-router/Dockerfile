@@ -7,7 +7,7 @@ RUN corepack enable pnpm
 # Install all dependencies (workspace-aware)
 FROM base AS deps
 WORKDIR /app
-COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY .npmrc pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/durably/package.json ./packages/durably/
 COPY packages/durably-react/package.json ./packages/durably-react/
 COPY examples/fullstack-react-router/package.json ./examples/fullstack-react-router/
@@ -28,7 +28,7 @@ RUN pnpm --filter @coji/durably build && \
 FROM base AS deploy
 WORKDIR /app
 COPY --from=build /app ./
-RUN pnpm --filter example-fullstack-react-router --legacy --prod deploy /deployed
+RUN pnpm --filter example-fullstack-react-router --prod deploy /deployed
 
 # Final production image
 FROM node:24-alpine
