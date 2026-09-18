@@ -36,9 +36,10 @@ What we considered and why we didn't do it.
 
 ## Index
 
-| ADR                                 | Title                     | Status   |
-| ----------------------------------- | ------------------------- | -------- |
-| [0001](0001-lease-based-runtime.md) | Lease-based runtime model | Accepted |
+| ADR                                   | Title                                      | Status   |
+| ------------------------------------- | ------------------------------------------ | -------- |
+| [0001](0001-lease-based-runtime.md)   | Lease-based runtime model                  | Accepted |
+| [0002](0002-development-toolchain.md) | Managed runtime and compiler compatibility | proposed |
 
 ## Prior Art
 

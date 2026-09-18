@@ -2,7 +2,7 @@
  * Full-Stack React Router Example
  *
  * This example demonstrates:
- * - React Router v7 with server-side action
+ * - React Router v8 with server-side action
  * - SSE streaming for real-time progress updates
  * - action for Form-based job triggering
  * - useJobRun hook for monitoring jobs via SSE
@@ -59,7 +59,7 @@ export default function Index() {
             Durably - Full-Stack React Router
           </h1>
           <p className="mt-2 text-gray-600">
-            React Router v7 with server action + SSE streaming
+            React Router v8 with server action + SSE streaming
           </p>
         </header>
 

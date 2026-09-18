@@ -1,10 +1,10 @@
-# Browser-Only SPA Example (React Router v7)
+# Browser-Only SPA Example (React Router v8)
 
-This example demonstrates Durably running entirely in the browser using React Router v7 in SPA mode.
+This example demonstrates Durably running entirely in the browser using React Router v8 in SPA mode.
 
 ## Features
 
-- **React Router v7 SPA mode** - No server-side rendering, pure client-side app
+- **React Router v8 SPA mode** - No server-side rendering, pure client-side app
 - **SQLite WASM with OPFS** - Persistent storage in the browser
 - **DurablyProvider** - React context for lifecycle management
 - **Multiple jobs** - Image processing and data sync examples

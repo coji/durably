@@ -22,12 +22,7 @@ import { toClientRun } from './storage'
  * Run operation types for onRunAccess
  */
 export type RunOperation =
-  | 'read'
-  | 'subscribe'
-  | 'steps'
-  | 'retrigger'
-  | 'cancel'
-  | 'delete'
+  'read' | 'subscribe' | 'steps' | 'retrigger' | 'cancel' | 'delete'
 
 /**
  * Subscription filter — only fields that SSE subscriptions actually support.

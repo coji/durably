@@ -5,6 +5,7 @@
 ## Requirements
 
 - **React 19+** (uses `React.use()` for Promise resolution)
+- When using `@coji/durably` on the server: **Node.js 22+**, Kysely `^0.27.0 || ^0.28.0 || ^0.29.0`, and Zod 4. The repository uses Node.js 24 for development.
 
 ## Overview
 
@@ -14,6 +15,8 @@
 2. **SPA Hooks**: Run Durably entirely in the browser with SQLite WASM (OPFS)
 
 SSE payloads and client-side event unions in this package are **transport-layer** shapes for the wire protocol. They are not the same symbols as `@coji/durably`’s core category helpers (`isDomainEvent`, `DomainEvent`, `OperationalEvent`, etc.). Use the core package when classifying events in Node or shared code; use `durably-react` types for hooks and SSE.
+
+For fullstack hooks, the Durably HTTP handler disables compression buffering with `Cache-Control: no-cache, no-transform`. Reverse proxies must also preserve immediate SSE delivery.
 
 ## Installation
 

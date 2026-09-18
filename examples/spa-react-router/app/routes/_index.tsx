@@ -2,7 +2,7 @@
  * Browser-Only SPA Example
  *
  * This example demonstrates:
- * - React Router v7 in SPA mode (ssr: false)
+ * - React Router v8 in SPA mode (ssr: false)
  * - SQLite WASM with OPFS for browser-only persistence
  * - Web Locks API for tab exclusivity
  * - DurablyProvider for context and lifecycle management
@@ -194,7 +194,7 @@ export default function Index() {
             Durably - Browser-Only SPA
           </h1>
           <p className="mt-2 text-gray-600">
-            React Router v7 SPA mode with clientAction + Form
+            React Router v8 SPA mode with clientAction + Form
           </p>
         </header>
 

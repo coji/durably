@@ -138,8 +138,7 @@ export function useRuns<
   TOutput extends Record<string, unknown> | undefined,
 >(
   jobDefinitionOrOptions?:
-    | JobDefinition<TName, TInput, TOutput>
-    | UseRunsOptions,
+    JobDefinition<TName, TInput, TOutput> | UseRunsOptions,
   optionsArg?: Omit<UseRunsOptions, 'jobName'>,
 ): UseRunsResult<TInput, TOutput> {
   const { durably } = useDurably()

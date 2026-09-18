@@ -999,8 +999,7 @@ export function createDurably<
               db,
             )
             const row = result.rows[0] as
-              | { busy: number; log: number; checkpointed: number }
-              | undefined
+              { busy: number; log: number; checkpointed: number } | undefined
             if (row?.busy !== 0) {
               // Retry sooner on next idle cycle (but not immediately)
               lastCheckpointAt = nowMs - CHECKPOINT_INTERVAL_MS / 2
@@ -1024,8 +1023,7 @@ export function createDurably<
   }
 
   let processOneImpl:
-    | ((options?: { workerId?: string }) => Promise<boolean>)
-    | null = null
+    ((options?: { workerId?: string }) => Promise<boolean>) | null = null
   const worker = createWorker(
     {
       pollingIntervalMs: config.pollingIntervalMs,
@@ -1065,8 +1063,7 @@ export function createDurably<
       try {
         const result = await sql`PRAGMA wal_checkpoint(PASSIVE)`.execute(db)
         const row = result.rows[0] as
-          | { busy: number; log: number; checkpointed: number }
-          | undefined
+          { busy: number; log: number; checkpointed: number } | undefined
         // log === -1 means WAL is not active (e.g. libSQL local uses DELETE mode)
         if (row && row.log !== -1) {
           state.walCheckpointSupported = true

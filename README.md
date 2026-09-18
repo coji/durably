@@ -29,6 +29,21 @@ pnpm add @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
 
 See the [Quick Start](https://coji.github.io/durably/guide/quick-start) guide, or [Choosing a Database](https://coji.github.io/durably/guide/databases) for PostgreSQL and other backends.
 
+## Development
+
+Use Node.js 24 and pnpm 12. The exact versions are declared in `package.json`; pnpm downloads the development runtime automatically.
+
+```bash
+pnpm install --frozen-lockfile
+pnpm --filter @coji/durably exec playwright install chromium
+pnpm validate
+pnpm build
+```
+
+Docker must be running for PostgreSQL tests. Alternatively, set `DURABLY_TEST_POSTGRES_URL` to an existing PostgreSQL instance.
+
+See [the dependency migration notes](docs/dependency-updates-2026-09.md) for package-by-package compatibility decisions and validation, and [ADR-0002](docs/adr/0002-development-toolchain.md) for runtime and compiler setup.
+
 ## License
 
 MIT

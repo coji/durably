@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "license": "MIT",
-  "packageManager": "pnpm@10.26.0",
+  "packageManager": "pnpm@12.4.2",
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
@@ -20,28 +20,32 @@
     "format:fix": "pnpm -r format:fix",
     "validate": "turbo run format lint typecheck test",
     "db:up": "docker compose -f docker-compose.postgres.yml up -d",
-    "db:down": "docker compose -f docker-compose.postgres.yml down"
+    "db:down": "docker compose -f docker-compose.postgres.yml down",
+    "deps:outdated": "pnpm outdated -r --include-github-actions",
+    "deps:update:actions": "pnpm update --include-github-actions \"actions/*\" pnpm/setup"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.9",
-    "@types/node": "^25.5.0",
-    "@vitest/coverage-v8": "4.1.2",
-    "lefthook": "2.1.4",
-    "prettier": "^3.8.1",
+    "@biomejs/biome": "^2.5.14",
+    "@types/node": "^24.13.5",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "@vitest/coverage-v8": "5.0.1",
+    "lefthook": "2.1.14",
+    "prettier": "^3.9.7",
     "prettier-plugin-organize-imports": "^4.3.0",
-    "prettier-plugin-tailwindcss": "0.7.2",
-    "tsx": "^4.21.0",
-    "turbo": "2.8.21",
-    "typescript": "^5.9.3"
+    "prettier-plugin-tailwindcss": "0.8.1",
+    "tsx": "^4.23.13",
+    "turbo": "2.10.13",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "cpu-features",
-      "esbuild",
-      "lefthook",
-      "protobufjs",
-      "ssh2"
-    ]
+  "engines": {
+    "node": ">=24.21.0 <25",
+    "pnpm": "12.4.2"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "24.21.0",
+      "onFail": "download"
+    }
   }
 }

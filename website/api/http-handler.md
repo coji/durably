@@ -148,7 +148,7 @@ The handler provides these endpoints:
 
 ## SSE Event Stream
 
-The `/subscribe` endpoint returns Server-Sent Events for real-time updates.
+The `/subscribe` endpoint returns Server-Sent Events for real-time updates. SSE responses use `Cache-Control: no-cache, no-transform` so compression middleware does not buffer events. Reverse proxies must also forward streamed chunks without buffering.
 
 ```ts
 // GET /api/durably/subscribe?runId=run_abc123
@@ -270,12 +270,7 @@ interface AuthConfig<TContext, TLabels> {
 }
 
 type RunOperation =
-  | 'read'
-  | 'subscribe'
-  | 'steps'
-  | 'retrigger'
-  | 'cancel'
-  | 'delete'
+  'read' | 'subscribe' | 'steps' | 'retrigger' | 'cancel' | 'delete'
 ```
 
 ### Execution Order

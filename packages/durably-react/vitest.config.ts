@@ -42,7 +42,7 @@ export default defineConfig({
       '@testing-library/react',
       'zod',
       'kysely',
-      'ulidx',
+      '@coji/durably > ulidx',
     ],
   },
 })
