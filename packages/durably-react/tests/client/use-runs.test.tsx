@@ -506,6 +506,81 @@ describe('useRuns (client)', () => {
     expect(result.current.runs[0].currentStepIndex).toBe(2)
   })
 
+  it('keeps completed lifecycle state when a leased refresh resolves later', async () => {
+    let releaseLeased!: (response: {
+      ok: boolean
+      json: () => Promise<ClientRun[]>
+    }) => void
+    const delayedLeased = new Promise<{
+      ok: boolean
+      json: () => Promise<ClientRun[]>
+    }>((resolve) => {
+      releaseLeased = resolve
+    })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve([createMockRun({ id: 'run-1', status: 'leased' })]),
+      })
+      .mockReturnValueOnce(delayedLeased)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve([
+            createMockRun({
+              id: 'run-1',
+              status: 'completed',
+              output: { reviewed: true },
+              isTerminal: true,
+              isActive: false,
+              completedStepCount: 1,
+              currentStepIndex: 1,
+            }),
+          ]),
+      })
+    globalThis.fetch = fetchMock
+
+    const { result } = renderHook(() => useRuns({ api: '/api/durably' }))
+    await waitFor(() => expect(result.current.runs).toHaveLength(1))
+    await waitFor(() =>
+      expect(mockEventSource.instances.length).toBeGreaterThan(0),
+    )
+
+    act(() => {
+      mockEventSource.emit({
+        type: 'step:complete',
+        runId: 'run-1',
+        jobName: 'test-job',
+        stepIndex: 0,
+      })
+    })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    act(() => {
+      mockEventSource.emit({
+        type: 'run:complete',
+        runId: 'run-1',
+        jobName: 'test-job',
+      })
+    })
+    await waitFor(() => expect(result.current.runs[0].status).toBe('completed'))
+
+    await act(async () => {
+      releaseLeased({
+        ok: true,
+        json: () =>
+          Promise.resolve([createMockRun({ id: 'run-1', status: 'leased' })]),
+      })
+      await delayedLeased
+    })
+    expect(result.current.runs[0]).toMatchObject({
+      status: 'completed',
+      output: { reviewed: true },
+      isTerminal: true,
+    })
+  })
+
   it('does not subscribe to SSE on non-first pages', async () => {
     const page1Runs = [
       createMockRun({ id: 'run-1' }),

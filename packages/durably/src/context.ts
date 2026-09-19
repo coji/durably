@@ -369,11 +369,17 @@ export function createStepContext(
         const byName = new Map(
           rejected.map(({ name, reason }) => [name, reason]),
         )
-        const failedSteps = await storage.getSteps(run.id)
-        const firstFailed = failedSteps.find(
-          (saved) => saved.status === 'failed' && byName.has(saved.name),
-        )
-        if (firstFailed) throw byName.get(firstFailed.name)
+        const attempts = await storage.getStepAttempts(run.id)
+        const firstFailed = attempts
+          .filter(
+            (saved) =>
+              saved.leaseGeneration === leaseGeneration &&
+              saved.status === 'failed' &&
+              saved.interruptionReason === null &&
+              byName.has(saved.stepName),
+          )
+          .sort((a, b) => a.stepIndex - b.stepIndex)[0]
+        if (firstFailed) throw byName.get(firstFailed.stepName)
       }
       if (rejected.length > 0) throw rejected[0].reason
 

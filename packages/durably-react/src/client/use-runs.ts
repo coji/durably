@@ -233,8 +233,11 @@ export function useRuns<
 
   const isMountedRef = useRef(true)
   const eventSourceRef = useRef<EventSource | null>(null)
+  const latestRefreshRef = useRef(0)
+  const latestAppliedRefreshRef = useRef(0)
 
   const refresh = useCallback(async () => {
+    const refreshId = ++latestRefreshRef.current
     setIsLoading(true)
     setError(null)
 
@@ -255,7 +258,9 @@ export function useRuns<
 
       const data = (await response.json()) as TypedClientRun<TInput, TOutput>[]
 
-      if (isMountedRef.current) {
+      if (isMountedRef.current && refreshId > latestAppliedRefreshRef.current) {
+        latestAppliedRefreshRef.current = refreshId
+        setError(null)
         setHasMore(data.length > pageSize)
         setRuns((previous) => {
           const previousById = new Map(previous.map((run) => [run.id, run]))
@@ -279,11 +284,15 @@ export function useRuns<
         })
       }
     } catch (err) {
-      if (isMountedRef.current) {
+      if (
+        isMountedRef.current &&
+        refreshId === latestRefreshRef.current &&
+        refreshId > latestAppliedRefreshRef.current
+      ) {
         setError(err instanceof Error ? err.message : 'Unknown error')
       }
     } finally {
-      if (isMountedRef.current) {
+      if (isMountedRef.current && refreshId === latestRefreshRef.current) {
         setIsLoading(false)
       }
     }
@@ -295,6 +304,7 @@ export function useRuns<
     refresh()
 
     return () => {
+      latestAppliedRefreshRef.current = ++latestRefreshRef.current
       isMountedRef.current = false
     }
   }, [refresh])

@@ -254,6 +254,54 @@ export function createStepTests(createDialect: () => Dialect) {
       ])
     })
 
+    it('attributes a recovered failure to the current branch, not an older failed checkpoint', async () => {
+      const failures: { error: string; failedStepName: string }[] = []
+      durably.on('run:fail', (event) => failures.push(event))
+      const d = durably.register({
+        job: defineJob({
+          name: 'parallel-recovered-failure',
+          input: z.object({}),
+          run: async (step) => {
+            await step.all({
+              first: () => 'recovered successfully',
+              second: () => {
+                throw new Error('current branch failed')
+              },
+            })
+          },
+        }),
+      })
+
+      const run = await d.jobs.job.trigger({})
+      const oldLease = await d.storage.claimNext(
+        'old-worker',
+        new Date().toISOString(),
+        30_000,
+      )
+      expect(oldLease).not.toBeNull()
+      await d.storage.persistStep(run.id, oldLease!.leaseGeneration, {
+        name: 'first',
+        index: 0,
+        status: 'failed',
+        error: 'old branch failure',
+        startedAt: new Date().toISOString(),
+      })
+      await d.storage.updateRun(run.id, {
+        leaseExpiresAt: new Date(Date.now() - 1000).toISOString(),
+      })
+
+      d.start()
+      await vi.waitFor(async () => {
+        expect((await d.jobs.job.getRun(run.id))?.status).toBe('failed')
+      })
+      expect(failures).toEqual([
+        expect.objectContaining({
+          error: 'current branch failed',
+          failedStepName: 'second',
+        }),
+      ])
+    })
+
     it('preserves cancellation when another branch has already failed', async () => {
       let release!: () => void
       const gate = new Promise<void>((resolve) => {

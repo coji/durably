@@ -190,14 +190,23 @@ export async function executeRun<
 
     if (failed) {
       reachedTerminalState = true
-      const steps = await storage.getSteps(run.id)
-      const failedStep = steps.find((entry) => entry.status === 'failed')
+      // Failed checkpoints survive lease recovery. Attribute this error to an
+      // attempt from the current lease, not an older failed branch.
+      const attempts = await storage.getStepAttempts(run.id)
+      const failedStep = attempts
+        .filter(
+          (entry) =>
+            entry.leaseGeneration === run.leaseGeneration &&
+            entry.status === 'failed' &&
+            entry.interruptionReason === null,
+        )
+        .sort((a, b) => a.stepIndex - b.stepIndex)[0]
       eventEmitter.emit({
         type: 'run:fail',
         runId: run.id,
         jobName: run.jobName,
         error: errorMessage,
-        failedStepName: failedStep?.name ?? 'unknown',
+        failedStepName: failedStep?.stepName ?? 'unknown',
         labels: run.labels,
       })
       return { kind: 'failed' }
