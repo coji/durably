@@ -1032,10 +1032,45 @@ describe('useJob', () => {
         { labels: { documentId: 'first' } },
       )
       await waitFor(() => expect(result.current.currentRunId).toBe(followed.id))
+      act(() => {
+        durably.emit({
+          type: 'run:leased',
+          runId: followed.id,
+          jobName: testJob.name,
+          input: { input: 'followed' },
+          leaseOwner: 'worker-1',
+          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+          labels: { documentId: 'first' },
+        })
+        durably.emit({
+          type: 'run:progress',
+          runId: followed.id,
+          jobName: testJob.name,
+          progress: { current: 1, total: 2 },
+          labels: { documentId: 'first' },
+        })
+        durably.emit({
+          type: 'log:write',
+          runId: followed.id,
+          jobName: testJob.name,
+          labels: { documentId: 'first' },
+          stepName: null,
+          level: 'info',
+          message: 'old run log',
+          data: null,
+        })
+      })
+      expect(result.current.status).toBe('leased')
+      expect(result.current.progress).toEqual({ current: 1, total: 2 })
+      expect(result.current.logs.map((log) => log.message)).toEqual([
+        'old run log',
+      ])
       rerender({ documentId: 'second' })
       await waitFor(() => {
         expect(result.current.currentRunId).toBe(fixed.id)
         expect(result.current.status).toBe('pending')
+        expect(result.current.progress).toBeNull()
+        expect(result.current.logs).toEqual([])
       })
     })
 

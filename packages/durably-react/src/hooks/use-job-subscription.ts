@@ -117,7 +117,12 @@ function jobSubscriptionReducer<TOutput = unknown>(
 ): JobSubscriptionState<TOutput> {
   switch (action.type) {
     case 'set_run_id':
-      return { ...state, currentRunId: action.runId }
+      return state.currentRunId === action.runId
+        ? state
+        : ({
+            ...initialSubscriptionState,
+            currentRunId: action.runId,
+          } as JobSubscriptionState<TOutput>)
 
     case 'switch_to_run':
       // Switch to a new run, resetting state
