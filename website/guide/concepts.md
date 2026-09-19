@@ -144,9 +144,14 @@ await durably.jobs.importCsv.trigger(
     // Only one job per key runs at a time (max 1 pending per key)
     concurrencyKey: 'csv-imports',
 
-    // Skip creating a new run if one is already pending for this key
-    // Without coalesce, a second pending trigger throws ConflictError
-    coalesce: 'skip',
+    // Coalesce duplicate triggers: 'skip' or 'queue'
+    // Without coalesce, a second pending trigger throws ConflictError.
+    // In this release, 'skip' and 'queue' are behaviorally equivalent aliases:
+    // - Reuses an existing pending run (disposition: 'coalesced')
+    // - Creates one trailing pending run when predecessor is already leased (disposition: 'created')
+    // - Limits queueing to at most 1 trailing pending run; further triggers coalesce onto it
+    // Use 'queue' to reveal the intent to preserve one subsequent execution after an active run
+    coalesce: 'queue',
 
     // Metadata for filtering and multi-tenancy
     labels: { organizationId: 'org_123' },

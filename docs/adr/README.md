@@ -47,6 +47,7 @@ What we considered and why we didn't do it.
 | [0004](0004-durable-step-attempts.md)               | Durable step attempt records                | accepted |
 | [0005](0005-parallel-step-join.md)                  | Parallel named steps and durable join       | accepted |
 | [0006](0006-adr-acceptance-in-implementation-pr.md) | Accept ADRs in implementation pull requests | accepted |
+| [0007](0007-explicit-trailing-run-coalescing.md)    | Explicit trailing run coalescing            | accepted |
 
 ## Prior Art
 

@@ -107,7 +107,7 @@ function RetryableJob() {
 
 ## Handling ConflictError
 
-When using `concurrencyKey`, at most one pending run per key is allowed. A second trigger throws `ConflictError`:
+When using `concurrencyKey`, at most one pending run per key is allowed. A second trigger while a pending run exists throws `ConflictError`:
 
 ```ts
 import { ConflictError } from '@coji/durably'
@@ -117,15 +117,18 @@ try {
 } catch (err) {
   if (err instanceof ConflictError) {
     // A pending run already exists for this key.
-    // Use coalesce: 'skip' to return the existing run instead:
+    // Use coalesce: 'queue' or coalesce: 'skip' to return the existing run instead:
     const run = await job.trigger(
       { orgId: 'org_123' },
-      { concurrencyKey: 'org_123', coalesce: 'skip' },
+      { concurrencyKey: 'org_123', coalesce: 'queue' },
     )
     // run.disposition === 'coalesced' — the existing pending run was returned
+    // If the predecessor is already leased, 'queue' creates a trailing pending run ('created').
   }
 }
 ```
+
+In this release, `'skip'` and `'queue'` are behaviorally equivalent aliases. Both maintain at most one trailing pending run behind a leased run; further triggers coalesce onto that trailing pending run without overwriting its input or labels (reported via `run:coalesced`). If `idempotencyKey` matches, disposition is `'idempotent'` before concurrency conflict resolution. If an active run's lease expires while a trailing pending run exists, the expired predecessor fails and the trailing replacement remains pending.
 
 ## Designing Resilient Steps
 

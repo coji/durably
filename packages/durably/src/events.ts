@@ -21,7 +21,7 @@ export interface RunTriggerEvent extends BaseEvent {
 }
 
 /**
- * Emitted when a trigger was coalesced onto an existing pending run (same concurrency key).
+ * Emitted when a trigger was coalesced onto an existing pending run (same concurrency key) via `coalesce: 'skip'` or `coalesce: 'queue'`.
  */
 export interface RunCoalescedEvent extends BaseEvent {
   type: 'run:coalesced'
