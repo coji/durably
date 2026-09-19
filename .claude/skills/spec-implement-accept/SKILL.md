@@ -211,13 +211,15 @@ git commit -m "fix: address supervision findings"
 ### Phase 7: Documentation Update (claude)
 
 Use Claude Code Agent tool with prompt from `agents/doc-updater.md`.
-Run this phase if the complete recorded `base...HEAD` change set plus current uncommitted paths
-shows API-related changes or an ADR accompanying the implementation. An ADR status change is
-required even when the implementation does not change a public API.
+Before deciding whether to run it, compare the approved spec and completed implementation with
+the ADR criteria in `CLAUDE.md`, and inspect `docs/adr/README.md` plus existing `proposed` ADRs.
+Do not infer the need for an ADR solely from changed paths: a relevant proposal may already be on
+`main`, or a new non-API architectural decision may need its first ADR. Run this phase if the task
+needs an ADR, has public API changes, or already changes an ADR.
 
-Before Phase 8, set every ADR that records an implemented decision in this PR, and its index
-entry, to `accepted` on the same feature branch. Keep a proposal-only ADR as `proposed`.
-Merging the implementation PR then publishes the accepted status without a follow-up PR.
+For an implemented decision, create or update its ADR and index entry on this feature branch and
+set both to `accepted` before Phase 8. Keep a proposal-only ADR as `proposed`. Merging the
+implementation PR then publishes the accepted status without a follow-up PR.
 
 **After Phase 7 completes (if changes were made):**
 
@@ -229,9 +231,11 @@ git commit -m "docs: update documentation"
 ### Phase 8: Draft PR Creation
 
 Read [the review workflow](../../../docs/workflow/code-review.md) before this phase. A clean,
-pushed commit is required before review. Confirm that any ADR recording an implemented decision
-and its index entry both say `accepted`. Create the PR as Draft immediately after the implementation
-pipeline is complete; do not wait for code review to create it.
+pushed commit is required before review. Check the completed implementation against the ADR
+criteria and existing proposed ADRs, even if no ADR path changed yet. If an implemented decision
+lacks an ADR or its ADR/index is not `accepted`, return to Phase 7 to make and commit that change.
+Create the PR as Draft immediately after the implementation pipeline is complete; do not wait for
+code review to create it.
 
 ```bash
 git push -u origin <branch-name>
@@ -318,6 +322,8 @@ For round `N`:
    - `NO-GO`: run `agents/review-fixer.md` with the issue, `order.md`, and review report. Run focused
      checks and `pnpm validate`; commit and push actual fixes. Begin a new round against the new SHA.
    - `INCOMPLETE`: finish the missing review, verification, or check without declaring success.
+     If a fix changes the architectural decision, update the ADR body and index on the same branch
+     before the next review round.
 5. Update the Draft PR body with the round number, reviewed SHA, blocker counts, and report summary.
    Keep non-blocking findings visible.
 

@@ -20,7 +20,7 @@ Each reviewer call has a ten-minute default limit and one retry for an execution
 A review round has a blocker when any of these is true:
 
 - an issue acceptance criterion is unmet or cannot be verified;
-- an implementation PR includes an ADR for its implemented decision but leaves that ADR or its index entry as `proposed` (proposal-only PRs are exempt);
+- an implementation PR records a decision that meets the repository ADR criteria but omits the ADR, or leaves the relevant ADR or its index entry as `proposed` (including an ADR already on `main`; proposal-only PRs that do not implement the decision are exempt);
 - a `CONFIRMED` P0 or P1 finding remains;
 - a `CONFIRMED` P2 correctness, security, data-integrity, compatibility, or user-visible regression remains;
 - a P0 or P1 candidate is `PLAUSIBLE` and its stated verification has not been completed;
@@ -32,7 +32,7 @@ P3 findings, suggestions, and refactor-only P2 findings are non-blocking unless 
 
 ## Draft-to-Ready loop
 
-1. Start from a clean checkout and record the remote-default base SHA before creating the feature branch. Complete implementation, acceptance checks, simplification, supervision, and documentation against the full `base...HEAD` change set. If the PR implements a decision recorded in an ADR, set the ADR and index to `accepted` on this branch before review. Commit and push a clean worktree.
+1. Start from a clean checkout and record the remote-default base SHA before creating the feature branch. Complete implementation, acceptance checks, simplification, supervision, and documentation against the full `base...HEAD` change set. Check the implementation against the ADR criteria and existing proposed ADRs, even if no ADR path changed. Create or update the relevant ADR and index as `accepted` on this branch before opening the Draft PR. Commit and push a clean worktree.
 2. Create the PR with `gh pr create --draft`. Link the source issue with `Closes #<number>` when applicable. Record the base and current head SHA in the PR body.
 3. Freeze that pushed head and run `$code-review high <PR URL>`.
 4. If the result is `NO-GO`, the orchestrator fixes every blocker, runs focused checks plus the repository validation command, commits, and pushes. Start a new review round for the new head. Do not reuse a previous GO.

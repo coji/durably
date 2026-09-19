@@ -6,7 +6,7 @@ This directory contains Architecture Decision Records (ADRs) for the Durably pro
 
 An ADR captures a significant architectural decision along with its context, consequences, and rejected alternatives. ADRs are numbered sequentially and are immutable once accepted on `main` — superseded decisions are marked as such with a pointer to the replacement.
 
-Start an ADR as `proposed` while exploring the decision. An implementation PR should change both the ADR and its index entry to `accepted` before final review; merging that same PR publishes the accepted decision. A proposal-only PR may remain `proposed`.
+Start an ADR as `proposed` while exploring the decision. Before opening an implementation Draft PR, check whether the decision already has a `proposed` ADR on `main`. Create one if needed, then change both the ADR and its index entry to `accepted` on the implementation branch; merging that same PR publishes the accepted decision. A proposal-only PR, which does not implement the decision described in the ADR, may remain `proposed`.
 
 ## Format
 

@@ -4,11 +4,13 @@ Update documentation, website, and examples in response to implementation change
 
 ## Procedure
 
-1. Read the immutable starting SHA supplied as `{base_sha}`. Check the complete committed branch
-   diff with `git diff --name-only "{base_sha}"...HEAD`, plus current uncommitted and untracked
-   paths, and determine whether there are public API changes or an ADR recording the implemented
-   decision. Never use a bare `git diff` for this decision because implementation commits already
-   exist.
+1. Read the immutable starting SHA supplied as `{base_sha}` and the approved spec supplied by the
+   orchestrator. Check the complete committed branch diff with
+   `git diff --name-only "{base_sha}"...HEAD`, plus current uncommitted and untracked paths, for
+   public API changes. Separately compare the spec and implementation with the ADR criteria in
+   `CLAUDE.md`, and read `docs/adr/README.md` and existing `proposed` ADRs. A relevant ADR may be on
+   the base branch and absent from the diff. Never use a bare `git diff` for the API decision because
+   implementation commits already exist.
 
 Return the update summary to the orchestrator; do not create workflow report files in the worktree.
 
@@ -27,11 +29,12 @@ Return the update summary to the orchestrator; do not create workflow report fil
    **d. Example apps:**
    - Relevant files under `examples/`
 
-3. If an ADR records a decision implemented by this PR, set its status and the matching
-   `docs/adr/README.md` index entry to `accepted` on this branch before the Draft PR review.
-   Do this even when there are no API changes. Leave proposal-only ADRs as `proposed`.
+3. If this PR implements a decision that meets the ADR criteria, use the existing ADR (including
+   one already `proposed` on `main`) or create a new ADR and index entry. Set both to `accepted`
+   on this branch before the Draft PR opens, even when there are no API changes. Keep a PR that
+   only proposes a decision as `proposed`. Edit only the ADR for this decision and its index row.
 
-4. If there are no API changes and no implemented-decision ADR:
+4. If there are no API changes and no decision requiring an ADR:
    - No documentation update is needed
    - Report no changes and complete
 
@@ -41,9 +44,10 @@ Return the update summary to the orchestrator; do not create workflow report fil
    pnpm --filter durably-website generate:llms
    ```
 
-6. Run the doc-check skill to verify completeness
+6. If there are public API changes, run the doc-check skill to verify completeness. For ADR-only
+   changes, verify the ADR status and index entry directly.
 
-7. Run validation:
+7. Run validation once. If doc-check already ran `pnpm validate`, use that result; otherwise run:
    ```bash
    pnpm validate
    ```
