@@ -27,5 +27,6 @@ pnpm add @coji/durably
 - Creating a Durably instance with libSQL dialect
 - Defining and registering jobs with `defineJob()`
 - Triggering jobs with `triggerAndWait()`
+- Joining concurrent named steps with `step.all()` and branch-specific `attempt.log`
 - Subscribing to run and step events
 - Querying run statistics via Kysely

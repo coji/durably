@@ -68,6 +68,14 @@ export interface StepContext {
   ): Promise<T>
 
   /**
+   * Run independent named steps concurrently and join after every branch settles.
+   * Completed branches replay from their checkpoints after lease recovery.
+   */
+  all<const T extends Record<string, StepCallback<unknown>>>(
+    branches: T,
+  ): Promise<{ [K in keyof T]: Awaited<ReturnType<T[K]>> }>
+
+  /**
    * Report progress for the current run
    */
   progress(current: number, total?: number, message?: string): void
@@ -82,10 +90,17 @@ export interface StepContext {
   }
 }
 
+export type StepCallback<T> = (
+  signal: AbortSignal,
+  attempt: StepAttemptContext,
+) => T | Promise<T>
+
 /** Durable identity and metadata for one actual step callback invocation. */
 export interface StepAttemptContext {
   readonly id: string
   readonly metadata: JsonValue | null
+  /** Log with this attempt's step name, including during parallel execution. */
+  readonly log: StepContext['log']
   /** Replace the stored JSON value; resolves after the write commits. */
   setMetadata(value: JsonValue): Promise<void>
 }

@@ -42,6 +42,8 @@ await durably.init() // migrate + start
 await durably.jobs.myJob.trigger({ id: '123' })
 ```
 
+For independent work inside one run, `step.all({ branchName: callback })` executes named branches concurrently and joins their saved results. Use the callback's `attempt.log` to attribute logs to each branch.
+
 ## Documentation
 
 For full documentation, visit [coji.github.io/durably](https://coji.github.io/durably/).

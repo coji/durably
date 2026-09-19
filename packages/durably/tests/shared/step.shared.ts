@@ -12,6 +12,195 @@ import {
 } from '../../src'
 
 export function createStepTests(createDialect: () => Dialect) {
+  describe('step.all() parallel join', () => {
+    let durably: Durably
+
+    beforeEach(async () => {
+      durably = createDurably({
+        dialect: createDialect(),
+        pollingIntervalMs: 50,
+        preserveSteps: true,
+      })
+      await durably.migrate()
+    })
+
+    afterEach(async () => {
+      await durably.stop()
+      await durably.db.destroy()
+    })
+
+    it('runs branches concurrently, joins their results, and attributes logs', async () => {
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const started: string[] = []
+      const logs: { stepName: string | null; message: string }[] = []
+      durably.on('log:write', (event) => logs.push(event))
+
+      const d = durably.register({
+        job: defineJob({
+          name: 'parallel-join',
+          input: z.object({}),
+          output: z.object({ first: z.number(), second: z.string() }),
+          run: async (step) =>
+            step.all({
+              first: async (_signal, attempt) => {
+                started.push('first')
+                await gate
+                attempt.log.info('first branch')
+                step.log.info('ambiguous branch')
+                return 1
+              },
+              second: async (_signal, attempt) => {
+                started.push('second')
+                await gate
+                attempt.log.info('second branch')
+                return 'two'
+              },
+            }),
+        }),
+      })
+
+      const run = await d.jobs.job.trigger({})
+      d.start()
+      try {
+        await vi.waitFor(() => expect(started).toHaveLength(2))
+        expect((await d.jobs.job.getRun(run.id))?.status).toBe('leased')
+      } finally {
+        release()
+      }
+
+      await vi.waitFor(async () => {
+        const updated = await d.jobs.job.getRun(run.id)
+        expect(updated?.status).toBe('completed')
+        expect(updated?.output).toEqual({ first: 1, second: 'two' })
+      })
+      expect(logs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            stepName: 'first',
+            message: 'first branch',
+          }),
+          expect.objectContaining({
+            stepName: 'second',
+            message: 'second branch',
+          }),
+          expect.objectContaining({
+            stepName: null,
+            message: 'ambiguous branch',
+          }),
+        ]),
+      )
+      expect(
+        (await d.storage.getStepAttempts(run.id)).map((a) => a.stepName),
+      ).toEqual(expect.arrayContaining(['first', 'second']))
+    })
+
+    it('reuses a completed branch after lease recovery', async () => {
+      let firstCalls = 0
+      let secondCalls = 0
+      const d = durably.register({
+        job: defineJob({
+          name: 'parallel-recovery',
+          input: z.object({}),
+          output: z.object({ first: z.string(), second: z.string() }),
+          run: async (step) =>
+            step.all({
+              first: () => {
+                firstCalls++
+                return 'first result'
+              },
+              second: () => {
+                secondCalls++
+                return 'second result'
+              },
+            }),
+        }),
+      })
+
+      const run = await d.jobs.job.trigger({})
+      const claimed = await d.storage.claimNext(
+        'old-worker',
+        new Date().toISOString(),
+        30_000,
+      )
+      expect(claimed).not.toBeNull()
+      await d.storage.persistStep(run.id, claimed!.leaseGeneration, {
+        name: 'first',
+        index: 0,
+        status: 'completed',
+        output: 'first result',
+        startedAt: new Date().toISOString(),
+      })
+      await d.storage.updateRun(run.id, {
+        leaseExpiresAt: new Date(Date.now() - 1000).toISOString(),
+      })
+
+      d.start()
+      await vi.waitFor(async () => {
+        const updated = await d.jobs.job.getRun(run.id)
+        expect(updated?.status).toBe('completed')
+        expect(updated?.output).toEqual({
+          first: 'first result',
+          second: 'second result',
+        })
+      })
+      expect(firstCalls).toBe(0)
+      expect(secondCalls).toBe(1)
+    })
+
+    it('waits for sibling records before failing the run', async () => {
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      let siblingStarted = false
+      const d = durably.register({
+        job: defineJob({
+          name: 'parallel-failure',
+          input: z.object({}),
+          run: async (step) => {
+            await step.all({
+              failing: async () => {
+                await vi.waitFor(() => expect(siblingStarted).toBe(true))
+                throw new Error('review failed')
+              },
+              sibling: async () => {
+                siblingStarted = true
+                await gate
+                return 'saved result'
+              },
+            })
+          },
+        }),
+      })
+
+      const run = await d.jobs.job.trigger({})
+      d.start()
+      try {
+        await vi.waitFor(async () => {
+          const attempts = await d.storage.getStepAttempts(run.id)
+          expect(attempts.find((a) => a.stepName === 'failing')?.status).toBe(
+            'failed',
+          )
+        })
+        expect((await d.jobs.job.getRun(run.id))?.status).toBe('leased')
+      } finally {
+        release()
+      }
+
+      await vi.waitFor(async () => {
+        const updated = await d.jobs.job.getRun(run.id)
+        expect(updated?.status).toBe('failed')
+        expect(updated?.error).toContain('review failed')
+      })
+      expect(await d.storage.getCompletedStep(run.id, 'sibling')).toMatchObject(
+        { output: 'saved result' },
+      )
+    })
+  })
+
   describe('step.run() Step Execution', () => {
     let durably: Durably
 

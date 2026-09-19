@@ -26,7 +26,8 @@ export function createStepContext(
   dispose: () => void
 } {
   let stepIndex = run.currentStepIndex
-  let currentStepName: string | null = null
+  const activeStepNames = new Set<string>()
+  let ambiguousLogScope = false
 
   const controller = new AbortController()
 
@@ -93,6 +94,43 @@ export function createStepContext(
       controller.abort()
     }
   })
+
+  function writeLog(
+    level: 'info' | 'warn' | 'error',
+    message: string,
+    data: unknown,
+    stepName: string | null,
+  ): void {
+    eventEmitter.emit({
+      type: 'log:write',
+      runId: run.id,
+      jobName,
+      labels: run.labels,
+      stepName,
+      level,
+      message,
+      data,
+    })
+  }
+
+  function stepLogger(name: string): StepContext['log'] {
+    return {
+      info(message, data) {
+        writeLog('info', message, data, name)
+      },
+      warn(message, data) {
+        writeLog('warn', message, data, name)
+      },
+      error(message, data) {
+        writeLog('error', message, data, name)
+      },
+    }
+  }
+
+  function implicitStepName(): string | null {
+    if (ambiguousLogScope || activeStepNames.size !== 1) return null
+    return activeStepNames.values().next().value ?? null
+  }
 
   const step: StepContext = {
     get runId(): string {
@@ -173,6 +211,7 @@ export function createStepContext(
       let currentMetadata = startedAttempt.metadata
       const attempt: StepAttemptContext = {
         id: startedAttempt.id,
+        log: stepLogger(name),
         get metadata() {
           return currentMetadata === null
             ? null
@@ -192,8 +231,9 @@ export function createStepContext(
         },
       }
 
-      // Track current step for log attribution
-      currentStepName = name
+      // Shared step.log is only attributable while one callback is active.
+      activeStepNames.add(name)
+      if (activeStepNames.size > 1) ambiguousLogScope = true
 
       // The attempt start is durable before the callback or event is visible.
       const startedAt = startedAttempt.startedAt
@@ -293,9 +333,27 @@ export function createStepContext(
 
         return result
       } finally {
-        // Clear current step after execution
-        currentStepName = null
+        activeStepNames.delete(name)
+        if (activeStepNames.size === 0) ambiguousLogScope = false
       }
+    },
+
+    async all(branches) {
+      const entries = Object.entries(branches)
+      if (entries.length === 0) return {} as never
+
+      const settled = await Promise.allSettled(
+        entries.map(([name, fn]) => step.run(name, fn)),
+      )
+      const failure = settled.find((result) => result.status === 'rejected')
+      if (failure?.status === 'rejected') throw failure.reason
+
+      return Object.fromEntries(
+        entries.map(([name], index) => [
+          name,
+          (settled[index] as PromiseFulfilledResult<unknown>).value,
+        ]),
+      ) as never
     },
 
     progress(current: number, total?: number, message?: string): void {
@@ -314,42 +372,15 @@ export function createStepContext(
 
     log: {
       info(message: string, data?: unknown): void {
-        eventEmitter.emit({
-          type: 'log:write',
-          runId: run.id,
-          jobName,
-          labels: run.labels,
-          stepName: currentStepName,
-          level: 'info',
-          message,
-          data,
-        })
+        writeLog('info', message, data, implicitStepName())
       },
 
       warn(message: string, data?: unknown): void {
-        eventEmitter.emit({
-          type: 'log:write',
-          runId: run.id,
-          jobName,
-          labels: run.labels,
-          stepName: currentStepName,
-          level: 'warn',
-          message,
-          data,
-        })
+        writeLog('warn', message, data, implicitStepName())
       },
 
       error(message: string, data?: unknown): void {
-        eventEmitter.emit({
-          type: 'log:write',
-          runId: run.id,
-          jobName,
-          labels: run.labels,
-          stepName: currentStepName,
-          level: 'error',
-          message,
-          data,
-        })
+        writeLog('error', message, data, implicitStepName())
       },
     },
   }

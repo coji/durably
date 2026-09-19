@@ -233,6 +233,7 @@ function ImportButton() {
 | Method                                 | Description                                                                                                            |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `step.run(name, fn, options?)`         | Create a resumable checkpoint and durable callback attempt; optional JSON metadata is saved before callback execution. |
+| `step.all(branches)`                   | Run named steps concurrently and join their saved results after every branch settles.                                  |
 | `step.progress(current, total?, msg?)` | Report progress                                                                                                        |
 | `step.log.info/warn/error(msg)`        | Write structured logs                                                                                                  |
 

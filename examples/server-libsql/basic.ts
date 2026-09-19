@@ -45,6 +45,11 @@ async function main() {
   console.log(`\nRun ${id} completed`)
   console.log(`Output: ${JSON.stringify(output)}`)
 
+  const reviews = await durably.jobs.parallelReview.triggerAndWait({
+    changeId: 'example-change',
+  })
+  console.log(`Parallel reviews: ${JSON.stringify(reviews.output)}`)
+
   // Show stats
   const runs = await durably.storage.getRuns()
   console.log(`\nDatabase Stats:`)

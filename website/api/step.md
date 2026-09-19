@@ -75,6 +75,25 @@ await step.run('fetch-all-pages', async (signal) => {
 
 The signal is compatible with `fetch()` and other APIs that accept `AbortSignal`. Existing callbacks that don't use the signal parameter continue to work unchanged.
 
+### `all()`
+
+Runs independent named steps concurrently and joins after every branch settles. The result retains the branch names and types. A completed branch is replayed from its checkpoint after lease recovery; only unfinished branches invoke their callbacks again.
+
+```ts
+const reviews = await step.all({
+  codex: async (signal, attempt) => {
+    attempt.log.info('Codex review started')
+    return reviewWithCodex({ signal })
+  },
+  claude: async (signal, attempt) => {
+    attempt.log.info('Claude review started')
+    return reviewWithClaude({ signal })
+  },
+})
+```
+
+Use stable, unique branch names within the job. Each branch has its own checkpoint and durable attempt record, available through `getStepAttempts(runId)`. Use `attempt.setMetadata()` to save usage or other JSON data for that branch. A result such as `needsChanges` is a normal value; a thrown error is a failure. If one branch throws, the join waits for its siblings to settle, preserves their records, then throws the first error. All branches share the run's cancellation and lease signal. This call keeps the worker slot occupied until the join settles. The earliest attempt start and latest completion measure the group's wall-clock interval; adding branch durations instead measures combined branch work.
+
 ### `log`
 
 Logger object for writing structured logs.
@@ -95,6 +114,8 @@ step.log.info('Processing started')
 step.log.info('User data', { userId: 'abc', count: 10 })
 step.log.error('Failed to fetch', { error: err.message })
 ```
+
+Inside a parallel callback, use `attempt.log` to attach the correct step name. Shared `step.log` is logged without a step name while callbacks overlap.
 
 ### `progress()`
 

@@ -420,6 +420,8 @@ interface UseDurablyResult {
 
 Trigger and monitor a job:
 
+Job definitions can also use core `step.all({ branchName: callback })` to run independent steps concurrently and join their saved results. Completed branches replay after lease recovery; use the callback's `attempt.log` for branch-specific logs. The React hooks track the resulting run as usual.
+
 ```tsx
 import { defineJob } from '@coji/durably'
 import { useJob } from '@coji/durably-react/spa'
