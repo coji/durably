@@ -35,6 +35,7 @@ import {
   type DatabaseBackend,
   type Run,
   type RunFilter,
+  type StepAttempt,
   type Store,
   createKyselyStore,
 } from './storage'
@@ -419,6 +420,9 @@ export interface Durably<
     filter?: RunFilter<TLabels>,
   ): Promise<T[]>
 
+  /** List durable callback attempts for a run, including unresolved attempts. */
+  getStepAttempts(runId: string): Promise<StepAttempt[]>
+
   /**
    * Register a plugin
    */
@@ -573,6 +577,7 @@ function createDurablyInstance<
 
     getRun: storage.getRun.bind(storage),
     getRuns: storage.getRuns.bind(storage),
+    getStepAttempts: storage.getStepAttempts.bind(storage),
 
     async waitForRun(
       runId: string,

@@ -174,7 +174,7 @@ await syncUsers.trigger(
 
 The `step` object provides these methods:
 
-### step.run(name, fn)
+### step.run(name, fn, options?)
 
 Executes a step and persists its result. On resume, returns cached result without re-executing. The callback receives an `AbortSignal` that is aborted when the run is cancelled, enabling cooperative cancellation of long-running steps.
 
@@ -183,6 +183,24 @@ const result = await step.run('step-name', async (signal) => {
   return await someAsyncOperation({ signal })
 })
 ```
+
+Before attempting each callback invocation, Durably writes a durable attempt record. Cancellation, lease loss, or a crash can prevent the callback from being entered after that write. A replayed checkpoint does not create an attempt. Use the optional metadata to identify a model or external operation before it starts, then replace it with confirmed usage during the callback:
+
+```ts
+await step.run(
+  'generate',
+  async (signal, attempt) => {
+    const result = await generate({ signal })
+    await attempt.setMetadata({ model: 'example-model', usage: result.usage })
+    return result.text
+  },
+  { metadata: { model: 'example-model' } },
+)
+
+const attempts = await durably.getStepAttempts(runId)
+```
+
+`attempt.id` identifies one durable attempt, not proof that the callback or an external operation began. `attempt.metadata` reflects the last successfully awaited replacement; `setMetadata()` replaces the entire JSON value rather than merging it. Omit `metadata` for an initial `null` value; passing `metadata: undefined` explicitly is invalid. Invalid values fail before execution or leave the previous value unchanged. `getStepAttempts()` returns attempts in start-time and ID order, or `[]` for an unknown run. A worker crash or checkpoint write failure can leave an attempt unresolved with `status: 'started'`, `completedAt: null`, and an inferred `interruptionReason` (`'lease-lost'`, `'cancelled'`, `'unknown'`, or `null`). This reason reflects the current persisted run state and may change until the run is terminal; it does not assert when external work stopped or fill in unknown usage. Attempts survive terminal checkpoint cleanup, and are deleted when the run is deleted or purged. `retainRuns` bounds their lifetime only after the run becomes terminal; cancel a run that keeps reclaiming to stop new attempts.
 
 ### step.progress(current, total?, message?)
 
@@ -632,14 +650,44 @@ interface JobDefinition<TName, TInput, TOutput> {
 
 // AbortSignal is aborted when the run is cancelled
 interface StepContext {
-  runId: string
-  run<T>(name: string, fn: (signal: AbortSignal) => T | Promise<T>): Promise<T>
+  readonly runId: string
+  readonly signal: AbortSignal
+  isAborted(): boolean
+  throwIfAborted(): void
+  run<T>(
+    name: string,
+    fn: (signal: AbortSignal, attempt: StepAttemptContext) => T | Promise<T>,
+    options?: { metadata?: JsonValue },
+  ): Promise<T>
   progress(current: number, total?: number, message?: string): void
   log: {
     info(message: string, data?: unknown): void
     warn(message: string, data?: unknown): void
     error(message: string, data?: unknown): void
   }
+}
+
+interface StepAttemptContext {
+  readonly id: string
+  readonly metadata: JsonValue | null
+  setMetadata(value: JsonValue): Promise<void>
+}
+
+type JsonValue =
+  null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
+
+interface StepAttempt {
+  id: string
+  runId: string
+  stepName: string
+  stepIndex: number
+  leaseGeneration: number
+  status: 'started' | 'completed' | 'failed'
+  metadata: JsonValue | null
+  startedAt: string
+  completedAt: string | null
+  error: string | null
+  interruptionReason: 'lease-lost' | 'cancelled' | 'unknown' | null
 }
 
 // TLabels defaults to Record<string, string> when no labels schema is provided

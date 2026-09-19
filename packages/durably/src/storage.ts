@@ -1,5 +1,6 @@
 import { type Kysely, sql } from 'kysely'
 import { monotonicFactory } from 'ulidx'
+import { type JsonValue, serializeJsonValue } from './attempts'
 import { claimNextPostgres } from './claim-postgres'
 import { claimNextSqlite } from './claim-sqlite'
 import { ConflictError } from './errors'
@@ -14,6 +15,8 @@ export type RunStatus =
 
 /** Run statuses that represent terminal (non-active) states */
 const TERMINAL_STATUSES: RunStatus[] = ['completed', 'failed', 'cancelled']
+export const LEASE_EXPIRY_CONFLICT_ERROR =
+  'Lease expired; pending run already exists'
 
 /**
  * Run data for creating a new run
@@ -91,6 +94,28 @@ export interface CreateStepInput {
   output?: unknown
   error?: string
   startedAt: string // ISO8601 timestamp when step execution started
+  /** Internal link to the durable callback attempt. Omit for legacy direct writes. */
+  attemptId?: string
+}
+
+export interface CreateStepAttemptInput {
+  name: string
+  index: number
+  metadata?: JsonValue
+}
+
+export interface StepAttempt {
+  id: string
+  runId: string
+  stepName: string
+  stepIndex: number
+  leaseGeneration: number
+  status: 'started' | 'completed' | 'failed'
+  metadata: JsonValue | null
+  startedAt: string
+  completedAt: string | null
+  error: string | null
+  interruptionReason: 'lease-lost' | 'cancelled' | 'unknown' | null
 }
 
 /**
@@ -214,6 +239,19 @@ export interface Store<
     leaseGeneration: number,
     input: CreateStepInput,
   ): Promise<Step | null>
+  beginStepAttempt(
+    runId: string,
+    leaseGeneration: number,
+    input: CreateStepAttemptInput,
+  ): Promise<StepAttempt | null>
+  updateStepAttemptMetadata(
+    runId: string,
+    leaseGeneration: number,
+    attemptId: string,
+    metadata: JsonValue,
+  ): Promise<JsonValue | undefined>
+  getStepAttempt(attemptId: string): Promise<StepAttempt | null>
+  getStepAttempts(runId: string): Promise<StepAttempt[]>
   getSteps(runId: string): Promise<Step[]>
   getCompletedStep(runId: string, name: string): Promise<Step | null>
   deleteSteps(runId: string): Promise<void>
@@ -358,6 +396,16 @@ export function createKyselyStore(
     ids: string[],
   ): Promise<void> {
     if (ids.length === 0) return
+    // Lock run rows before attempt rows, matching begin/update/finalize order.
+    await trx
+      .updateTable('durably_runs')
+      .set({ updated_at: sql`updated_at` })
+      .where('id', 'in', ids)
+      .execute()
+    await trx
+      .deleteFrom('durably_step_attempts')
+      .where('run_id', 'in', ids)
+      .execute()
     await trx.deleteFrom('durably_steps').where('run_id', 'in', ids).execute()
     await trx.deleteFrom('durably_logs').where('run_id', 'in', ids).execute()
     await trx
@@ -365,6 +413,57 @@ export function createKyselyStore(
       .where('run_id', 'in', ids)
       .execute()
     await trx.deleteFrom('durably_runs').where('id', 'in', ids).execute()
+  }
+
+  async function lockAttemptLease(
+    trx: Kysely<Database>,
+    runId: string,
+    leaseGeneration: number,
+    now: string,
+  ): Promise<boolean> {
+    const row = await trx
+      .updateTable('durably_runs')
+      .set({ updated_at: sql`updated_at` })
+      .where('id', '=', runId)
+      .where('status', '=', 'leased')
+      .where('lease_generation', '=', leaseGeneration)
+      .where('lease_expires_at', '>', now)
+      .returning('id')
+      .executeTakeFirst()
+    return row !== undefined
+  }
+
+  function toStepAttempt(
+    row: Database['durably_step_attempts'],
+    run: Run | null,
+  ): StepAttempt {
+    let interruptionReason: StepAttempt['interruptionReason'] = null
+    if (row.status === 'started' && run) {
+      if (
+        row.lease_generation < run.leaseGeneration ||
+        run.status === 'pending' ||
+        (run.status === 'failed' && run.error === LEASE_EXPIRY_CONFLICT_ERROR)
+      ) {
+        interruptionReason = 'lease-lost'
+      } else if (run.status === 'cancelled') {
+        interruptionReason = 'cancelled'
+      } else if (run.status === 'completed' || run.status === 'failed') {
+        interruptionReason = 'unknown'
+      }
+    }
+    return {
+      id: row.id,
+      runId: row.run_id,
+      stepName: row.step_name,
+      stepIndex: row.step_index,
+      leaseGeneration: row.lease_generation,
+      status: row.status,
+      metadata: row.metadata === null ? null : JSON.parse(row.metadata),
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      error: row.error,
+      interruptionReason,
+    }
   }
 
   async function insertLabelRows(
@@ -773,7 +872,7 @@ export function createKyselyStore(
         .updateTable('durably_runs')
         .set({
           status: 'failed',
-          error: 'Lease expired; pending run already exists',
+          error: LEASE_EXPIRY_CONFLICT_ERROR,
           lease_owner: null,
           lease_expires_at: null,
           completed_at: now,
@@ -838,7 +937,7 @@ export function createKyselyStore(
                 .updateTable('durably_runs')
                 .set({
                   status: 'failed',
-                  error: 'Lease expired; pending run already exists',
+                  error: LEASE_EXPIRY_CONFLICT_ERROR,
                   lease_owner: null,
                   lease_expires_at: null,
                   completed_at: now,
@@ -898,6 +997,133 @@ export function createKyselyStore(
       return Number(result.numUpdatedRows) > 0
     },
 
+    async beginStepAttempt(
+      runId: string,
+      leaseGeneration: number,
+      input: CreateStepAttemptInput,
+    ): Promise<StepAttempt | null> {
+      const metadata =
+        'metadata' in input ? serializeJsonValue(input.metadata) : null
+      const now = new Date().toISOString()
+      const id = ulid()
+      const inserted =
+        backend === 'postgres'
+          ? await db.transaction().execute(async (trx) => {
+              if (!(await lockAttemptLease(trx, runId, leaseGeneration, now))) {
+                return false
+              }
+              await trx
+                .insertInto('durably_step_attempts')
+                .values({
+                  id,
+                  run_id: runId,
+                  step_name: input.name,
+                  step_index: input.index,
+                  lease_generation: leaseGeneration,
+                  status: 'started',
+                  metadata,
+                  error: null,
+                  started_at: now,
+                  completed_at: null,
+                })
+                .execute()
+              return true
+            })
+          : Number(
+              (
+                await sql`
+                  INSERT INTO durably_step_attempts
+                    (id, run_id, step_name, step_index, lease_generation, status, metadata, error, started_at, completed_at)
+                  SELECT ${id}, ${runId}, ${input.name}, ${input.index}, ${leaseGeneration},
+                    'started', ${metadata}, NULL, ${now}, NULL
+                  FROM durably_runs
+                  WHERE id = ${runId} AND status = 'leased'
+                    AND lease_generation = ${leaseGeneration}
+                    AND lease_expires_at > ${now}
+                `.execute(db)
+              ).numAffectedRows,
+            ) > 0
+      if (!inserted) return null
+      return {
+        id,
+        runId,
+        stepName: input.name,
+        stepIndex: input.index,
+        leaseGeneration,
+        status: 'started',
+        metadata: metadata === null ? null : JSON.parse(metadata),
+        error: null,
+        startedAt: now,
+        completedAt: null,
+        interruptionReason: null,
+      }
+    },
+
+    async updateStepAttemptMetadata(
+      runId: string,
+      leaseGeneration: number,
+      attemptId: string,
+      metadata: JsonValue,
+    ): Promise<JsonValue | undefined> {
+      const serialized = serializeJsonValue(metadata)
+      const now = new Date().toISOString()
+      if (backend === 'postgres') {
+        const updated = await db.transaction().execute(async (trx) => {
+          if (!(await lockAttemptLease(trx, runId, leaseGeneration, now))) {
+            return false
+          }
+          const result = await trx
+            .updateTable('durably_step_attempts')
+            .set({ metadata: serialized })
+            .where('id', '=', attemptId)
+            .where('run_id', '=', runId)
+            .where('lease_generation', '=', leaseGeneration)
+            .where('status', '=', 'started')
+            .executeTakeFirst()
+          return Number(result.numUpdatedRows) > 0
+        })
+        return updated ? JSON.parse(serialized) : undefined
+      }
+
+      const result = await sql`
+        UPDATE durably_step_attempts SET metadata = ${serialized}
+        WHERE id = ${attemptId} AND run_id = ${runId}
+          AND lease_generation = ${leaseGeneration} AND status = 'started'
+          AND EXISTS (
+            SELECT 1 FROM durably_runs
+            WHERE id = ${runId} AND status = 'leased'
+              AND lease_generation = ${leaseGeneration}
+              AND lease_expires_at > ${now}
+          )
+      `.execute(db)
+      return Number(result.numAffectedRows) > 0
+        ? JSON.parse(serialized)
+        : undefined
+    },
+
+    async getStepAttempt(attemptId: string): Promise<StepAttempt | null> {
+      const row = await db
+        .selectFrom('durably_step_attempts')
+        .selectAll()
+        .where('id', '=', attemptId)
+        .executeTakeFirst()
+      if (!row) return null
+      return toStepAttempt(row, await store.getRun(row.run_id))
+    },
+
+    async getStepAttempts(runId: string): Promise<StepAttempt[]> {
+      const run = await store.getRun(runId)
+      if (!run) return []
+      const rows = await db
+        .selectFrom('durably_step_attempts')
+        .selectAll()
+        .where('run_id', '=', runId)
+        .orderBy('started_at', 'asc')
+        .orderBy('id', 'asc')
+        .execute()
+      return rows.map((row) => toStepAttempt(row, run))
+    },
+
     async persistStep(
       runId: string,
       leaseGeneration: number,
@@ -909,10 +1135,39 @@ export function createKyselyStore(
         input.output !== undefined ? JSON.stringify(input.output) : null
       const errorValue = input.error ?? null
 
-      return await db.transaction().execute(async (trx) => {
-        // Atomic INSERT...SELECT: the step is only inserted if the
-        // lease generation matches. Single statement, no TOCTOU.
-        const insertResult = await sql`
+      const refusedCheckpoint = Symbol('refused-checkpoint')
+      try {
+        return await db.transaction().execute(async (trx) => {
+          if (input.attemptId) {
+            if (
+              !(await lockAttemptLease(
+                trx,
+                runId,
+                leaseGeneration,
+                completedAt,
+              ))
+            ) {
+              return null
+            }
+            const finalized = await trx
+              .updateTable('durably_step_attempts')
+              .set({
+                status: input.status === 'completed' ? 'completed' : 'failed',
+                error: errorValue,
+                completed_at: completedAt,
+              })
+              .where('id', '=', input.attemptId)
+              .where('run_id', '=', runId)
+              .where('step_name', '=', input.name)
+              .where('step_index', '=', input.index)
+              .where('lease_generation', '=', leaseGeneration)
+              .where('status', '=', 'started')
+              .executeTakeFirst()
+            if (Number(finalized.numUpdatedRows) === 0) return null
+          }
+          // Atomic INSERT...SELECT: the step is only inserted if the
+          // lease generation matches. Single statement, no TOCTOU.
+          const insertResult = await sql`
           INSERT INTO durably_steps (id, run_id, name, "index", status, output, error, started_at, completed_at)
           SELECT ${id}, ${runId}, ${input.name}, ${input.index}, ${input.status},
                  ${outputJson}, ${errorValue}, ${input.startedAt}, ${completedAt}
@@ -920,35 +1175,42 @@ export function createKyselyStore(
           WHERE id = ${runId} AND status = 'leased' AND lease_generation = ${leaseGeneration}
         `.execute(trx)
 
-        if (Number(insertResult.numAffectedRows) === 0) return null
+          if (Number(insertResult.numAffectedRows) === 0) {
+            if (input.attemptId) throw refusedCheckpoint
+            return null
+          }
 
-        // Advance step index and increment completed_step_count for completed steps
-        if (input.status === 'completed') {
-          await trx
-            .updateTable('durably_runs')
-            .set({
-              current_step_index: input.index + 1,
-              completed_step_count: sql`completed_step_count + 1`,
-              updated_at: completedAt,
-            })
-            .where('id', '=', runId)
-            .where('status', '=', 'leased')
-            .where('lease_generation', '=', leaseGeneration)
-            .execute()
-        }
+          // Advance step index and increment completed_step_count for completed steps
+          if (input.status === 'completed') {
+            await trx
+              .updateTable('durably_runs')
+              .set({
+                current_step_index: sql`CASE WHEN current_step_index < ${input.index + 1} THEN ${input.index + 1} ELSE current_step_index END`,
+                completed_step_count: sql`completed_step_count + 1`,
+                updated_at: completedAt,
+              })
+              .where('id', '=', runId)
+              .where('status', '=', 'leased')
+              .where('lease_generation', '=', leaseGeneration)
+              .execute()
+          }
 
-        return {
-          id,
-          runId,
-          name: input.name,
-          index: input.index,
-          status: input.status,
-          output: input.output !== undefined ? input.output : null,
-          error: errorValue,
-          startedAt: input.startedAt,
-          completedAt,
-        } as Step
-      })
+          return {
+            id,
+            runId,
+            name: input.name,
+            index: input.index,
+            status: input.status,
+            output: input.output !== undefined ? input.output : null,
+            error: errorValue,
+            startedAt: input.startedAt,
+            completedAt,
+          } as Step
+        })
+      } catch (error) {
+        if (error === refusedCheckpoint) return null
+        throw error
+      }
     },
 
     async deleteSteps(runId: string): Promise<void> {
@@ -1048,6 +1310,8 @@ export function createKyselyStore(
       'failRun',
       'cancelRun',
       'persistStep',
+      'beginStepAttempt',
+      'updateStepAttemptMetadata',
       'deleteSteps',
       'updateProgress',
       'createLog',

@@ -263,7 +263,7 @@ durably.on('step:fail', (event) => {
 
 #### `step:cancel`
 
-Fired when a step is cancelled (run was cancelled while step was executing).
+Fired when the runtime rejects a step because its run was cancelled. It can occur without a preceding `step:start` if the attempt insert is refused. If cancellation arrives after the attempt insert commits but before the callback begins, neither step event fires; the durable attempt remains unresolved.
 
 ```ts
 durably.on('step:cancel', (event) => {

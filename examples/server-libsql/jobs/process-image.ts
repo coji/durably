@@ -27,10 +27,18 @@ export const processImageJob = defineJob({
     })
 
     // Step 3: Upload
-    const uploaded = await step.run('upload', async () => {
-      await delay(500)
-      return { url: `https://cdn.example.com/${input.filename}` }
-    })
+    const uploaded = await step.run(
+      'upload',
+      async (_signal, attempt) => {
+        await delay(500)
+        await attempt.setMetadata({
+          service: 'example-cdn',
+          bytes: data.size / 2,
+        })
+        return { url: `https://cdn.example.com/${input.filename}` }
+      },
+      { metadata: { service: 'example-cdn' } },
+    )
 
     return { url: uploaded.url }
   },

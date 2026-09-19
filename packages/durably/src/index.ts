@@ -48,10 +48,12 @@ export type {
 } from './events'
 
 // Job types
+export type { JsonValue } from './attempts'
 export type {
   BatchTriggerInput,
   Disposition,
   JobHandle,
+  StepAttemptContext,
   StepContext,
   TriggerAndWaitOptions,
   TriggerAndWaitResult,
@@ -66,6 +68,7 @@ export type {
   LogsTable,
   RunsTable,
   SchemaVersionsTable,
+  StepAttemptsTable,
   StepsTable,
 } from './schema'
 
@@ -79,6 +82,7 @@ export type {
   RunFilter,
   RunStatus,
   Step,
+  StepAttempt,
   Store,
   UpdateRunData,
 } from './storage'

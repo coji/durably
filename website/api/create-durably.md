@@ -43,7 +43,7 @@ interface DurablyOptions<
 | `leaseRenewIntervalMs` | `number`    | `5000`   | How often to renew the lease (ms)                                                                                 |
 | `leaseMs`              | `number`    | `30000`  | Lease duration — time until a job is considered stale (ms)                                                        |
 | `labels`               | `z.ZodType` | —        | Zod schema for labels. Enables type-safe labels and runtime validation on `trigger()`                             |
-| `preserveSteps`        | `boolean`   | `false`  | Keep step output data when runs reach terminal state (completed/failed/cancelled)                                 |
+| `preserveSteps`        | `boolean`   | `false`  | Keep step output data when runs reach terminal state; durable attempt records are retained independently          |
 | `retainRuns`           | `string`    | —        | Auto-delete terminal runs older than this duration (e.g. `'30d'`, `'12h'`, `'90m'`). Throws if format is invalid. |
 | `jobs`                 | `TJobs`     | —        | Job definitions to register. Shorthand for calling `.register()` after creation                                   |
 
@@ -179,7 +179,7 @@ console.log(run.output)
 await durably.deleteRun(runId: string): Promise<void>
 ```
 
-Deletes a run and its associated steps and logs.
+Deletes a run and its associated steps, attempts, logs, and labels.
 
 ### `purgeRuns()`
 
@@ -190,7 +190,7 @@ await durably.purgeRuns(options: {
 }): Promise<number>
 ```
 
-Deletes terminal runs (completed, failed, cancelled) with `completedAt` older than the cutoff. Returns the number of deleted runs. Associated steps, logs, and labels are cascade-deleted.
+Deletes terminal runs (completed, failed, cancelled) with `completedAt` older than the cutoff. Returns the number of deleted runs. Associated steps, attempts, logs, and labels are cascade-deleted.
 
 For automatic cleanup, use the [`retainRuns`](#options) option instead (auto-purge uses a batch size of 100).
 
@@ -213,6 +213,16 @@ type MyRun = Run & {
 }
 const typedRun = await durably.getRun<MyRun>(runId)
 ```
+
+### `getStepAttempts()`
+
+```ts
+const attempts = await durably.getStepAttempts(runId)
+```
+
+Returns durable callback attempts ordered by start time, then ID. Unknown runs return `[]`. Each attempt includes `id`, `runId`, `stepName`, `stepIndex`, `leaseGeneration`, `metadata`, `startedAt`, status (`started`, `completed`, or `failed`), nullable `completedAt`, nullable `error`, and nullable `interruptionReason` (`lease-lost`, `cancelled`, or `unknown`). An unresolved attempt does not prove that the callback began or when external work ended. Its inferred interruption reason may change until the run is terminal. Attempts survive `preserveSteps: false` cleanup but are deleted with the run. `retainRuns` applies only to terminal runs; cancel a perpetually reclaimed run to stop new attempts before retention can remove it.
+
+`metadata` is a snapshot of the latest committed JSON value for that attempt. It starts as `null` if the step omits the metadata option; `attempt.setMetadata()` replaces the whole value.
 
 ### `getRuns()`
 

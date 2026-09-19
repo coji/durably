@@ -215,25 +215,26 @@ function ImportButton() {
 
 ### Instance Methods
 
-| Method               | Description                                                                                                                         |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `init()`             | Migrate database and start worker                                                                                                   |
-| `register(jobs)`     | Register job definitions                                                                                                            |
-| `on(event, handler)` | Subscribe to events                                                                                                                 |
-| `stop()`             | Stop worker gracefully                                                                                                              |
-| `retrigger(runId)`   | Retrigger completed/failed/cancelled run (validates input against current schema)                                                   |
-| `waitForRun(runId)`  | Wait for an existing run to complete (event-first, storage polling fallback; optional `pollingIntervalMs` inherits `createDurably`) |
-| `cancel(runId)`      | Cancel pending or leased run                                                                                                        |
-| `deleteRun(runId)`   | Delete a run and its associated steps, logs, and labels                                                                             |
-| `purgeRuns(options)` | Delete terminal runs older than a cutoff (for cleanup)                                                                              |
+| Method                   | Description                                                                                                                         |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `init()`                 | Migrate database and start worker                                                                                                   |
+| `register(jobs)`         | Register job definitions                                                                                                            |
+| `on(event, handler)`     | Subscribe to events                                                                                                                 |
+| `stop()`                 | Stop worker gracefully                                                                                                              |
+| `retrigger(runId)`       | Retrigger completed/failed/cancelled run (validates input against current schema)                                                   |
+| `waitForRun(runId)`      | Wait for an existing run to complete (event-first, storage polling fallback; optional `pollingIntervalMs` inherits `createDurably`) |
+| `cancel(runId)`          | Cancel pending or leased run                                                                                                        |
+| `deleteRun(runId)`       | Delete a run and its associated steps, attempts, logs, and labels                                                                   |
+| `getStepAttempts(runId)` | List persisted callback attempts, including unresolved attempts after a worker stops                                                |
+| `purgeRuns(options)`     | Delete terminal runs older than a cutoff (for cleanup)                                                                              |
 
 ### Step Context
 
-| Method                                 | Description                                                                               |
-| -------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `step.run(name, fn)`                   | Create resumable checkpoint. `fn` receives an `AbortSignal` for cooperative cancellation. |
-| `step.progress(current, total?, msg?)` | Report progress                                                                           |
-| `step.log.info/warn/error(msg)`        | Write structured logs                                                                     |
+| Method                                 | Description                                                                                                            |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `step.run(name, fn, options?)`         | Create a resumable checkpoint and durable callback attempt; optional JSON metadata is saved before callback execution. |
+| `step.progress(current, total?, msg?)` | Report progress                                                                                                        |
+| `step.log.info/warn/error(msg)`        | Write structured logs                                                                                                  |
 
 ### React Hooks (@coji/durably-react)
 
@@ -258,6 +259,9 @@ import type {
   JobDefinition,
   JobHandle,
   StepContext,
+  StepAttemptContext,
+  StepAttempt,
+  JsonValue,
   Run,
   RunFilter,
   RunOperation,

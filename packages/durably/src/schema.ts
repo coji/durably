@@ -36,6 +36,19 @@ export interface StepsTable {
   completed_at: string | null // ISO8601
 }
 
+export interface StepAttemptsTable {
+  id: string
+  run_id: string
+  step_name: string
+  step_index: number
+  lease_generation: number
+  status: 'started' | 'completed' | 'failed'
+  metadata: string | null // Serialized JSON
+  error: string | null
+  started_at: string
+  completed_at: string | null
+}
+
 export interface LogsTable {
   id: string
   run_id: string
@@ -61,6 +74,7 @@ export interface Database {
   durably_runs: RunsTable
   durably_run_labels: RunLabelsTable
   durably_steps: StepsTable
+  durably_step_attempts: StepAttemptsTable
   durably_logs: LogsTable
   durably_schema_versions: SchemaVersionsTable
 }

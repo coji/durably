@@ -11,14 +11,16 @@ Creates a resumable step.
 ```ts
 const result = await step.run<T>(
   name: string,
-  fn: (signal: AbortSignal) => Promise<T>
+  fn: (signal: AbortSignal, attempt: StepAttemptContext) => T | Promise<T>,
+  options?: { metadata?: JsonValue },
 ): Promise<T>
 ```
 
-| Parameter | Type                                  | Description                                                                                     |
-| --------- | ------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `name`    | `string`                              | Unique step name within the job                                                                 |
-| `fn`      | `(signal: AbortSignal) => Promise<T>` | Async function to execute. Receives an `AbortSignal` that is aborted when the run is cancelled. |
+| Parameter | Type                                   | Description                                                                                         |
+| --------- | -------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `name`    | `string`                               | Unique step name within the job                                                                     |
+| `fn`      | `(signal, attempt) => T \| Promise<T>` | Callback to execute. The signal supports cancellation; the attempt identifies this durable attempt. |
+| `options` | `{ metadata?: JsonValue }`             | Optional JSON metadata persisted before the callback starts.                                        |
 
 **Returns**: The result of `fn`, either freshly computed or retrieved from cache.
 
@@ -26,6 +28,22 @@ const result = await step.run<T>(
 
 1. **First execution**: Runs `fn` and persists the result
 2. **Subsequent executions**: Returns the cached result without running `fn`
+
+Before trying to invoke a callback, Durably commits a record with its own attempt ID. Cancellation, lease loss, or a crash can prevent the callback from being entered after the record commits. Cached replay does not add an attempt. When invoked, the callback receives `attempt.id`, `attempt.metadata`, and `await attempt.setMetadata(jsonValue)` as its second argument. The awaited write replaces the entire JSON value, commits before the promise resolves, and updates `attempt.metadata`.
+
+```ts
+await step.run(
+  'call-provider',
+  async (signal, attempt) => {
+    const response = await callProvider({ signal })
+    await attempt.setMetadata({ provider: 'example', usage: response.usage })
+    return response.output
+  },
+  { metadata: { provider: 'example' } },
+)
+```
+
+Metadata must be a JSON value made of primitives, arrays, and plain objects; class instances and `Date` values are rejected. Omit `metadata` for an initial `null` value; explicitly passing `metadata: undefined` rejects before the callback runs. Invalid updates leave the previous value unchanged. An unresolved attempt remains available after a worker crash or checkpoint write failure even if checkpoint outputs are later cleaned up; `durably.getStepAttempts(runId)` lists it with `completedAt: null`. Its `interruptionReason` is inferred from the current run state and can change until the run is terminal. It does not prove that the callback began or say when external work stopped. Attempts are removed when their run is deleted or purged.
 
 ```ts
 // First run: API is called, result cached
