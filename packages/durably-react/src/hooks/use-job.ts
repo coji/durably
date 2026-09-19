@@ -142,6 +142,8 @@ export function useJob<
   const prevScopeRef = useRef(stableScope)
   const currentScopeRef = useRef(stableScope)
   currentScopeRef.current = stableScope
+  const prevSourceRef = useRef({ durably, jobDefinition })
+  const prevInitialRunIdRef = useRef(initialRunId)
   const [isResolving, setIsResolving] = useState(autoResume && !initialRunId)
 
   useEffect(() => {
@@ -180,6 +182,21 @@ export function useJob<
     }
   }, [stableScope, initialRunId, autoResume, subscription.reset])
 
+  // A new Durably instance or job definition starts a new tracking context.
+  useEffect(() => {
+    if (
+      prevSourceRef.current.durably === durably &&
+      prevSourceRef.current.jobDefinition === jobDefinition
+    ) {
+      return
+    }
+    prevSourceRef.current = { durably, jobDefinition }
+    resolutionEpochRef.current++
+    subscription.reset()
+    setJobHandle(null)
+    setIsResolving(autoResume && !initialRunId)
+  }, [durably, jobDefinition, autoResume, initialRunId, subscription.reset])
+
   // Register job
   useEffect(() => {
     if (!durably) return
@@ -198,39 +215,69 @@ export function useJob<
 
   // Handle initialRunId
   useEffect(() => {
-    if (!initialRunId) return
+    const changed = prevInitialRunIdRef.current !== initialRunId
+    prevInitialRunIdRef.current = initialRunId
+    if (!initialRunId) {
+      if (changed) {
+        resolutionEpochRef.current++
+        subscription.reset()
+        setIsResolving(autoResume)
+      }
+      return
+    }
+    if (changed) subscription.reset()
     const hydrationScope = stableScope
     setIsResolving(false)
     const epoch = ++resolutionEpochRef.current
     subscription.setCurrentRunId(initialRunId)
 
-    if (jobHandle) {
-      jobHandle
-        .getRun(initialRunId)
-        .then((run) => {
-          if (
-            run &&
-            resolutionEpochRef.current === epoch &&
-            currentScopeRef.current === hydrationScope
-          ) {
-            subscription.hydrateRun(
-              run.id,
-              run.status as RunStatus,
-              run.output as TOutput,
-              run.error,
-            )
-          }
-        })
-        .catch(() => {
-          // Status hydration is best effort; the event subscription remains active.
-        })
+    if (!jobHandle) return
+    const hydrateInitialRun = async () => {
+      try {
+        const run = await jobHandle.getRun(initialRunId)
+        if (
+          !run ||
+          resolutionEpochRef.current !== epoch ||
+          currentScopeRef.current !== hydrationScope
+        ) {
+          return
+        }
+        subscription.hydrateRun(
+          run.id,
+          run.status as RunStatus,
+          run.output as TOutput,
+          run.error,
+        )
+
+        // A terminal event can arrive before hydration is installed.
+        const latest = await jobHandle.getRun(initialRunId)
+        if (
+          latest &&
+          resolutionEpochRef.current === epoch &&
+          currentScopeRef.current === hydrationScope
+        ) {
+          subscription.revalidateRun(
+            run.id,
+            run.status as RunStatus,
+            latest.status as RunStatus,
+            latest.output as TOutput,
+            latest.error,
+          )
+        }
+      } catch {
+        // Hydration is best effort; the event subscription remains active.
+      }
     }
+    void hydrateInitialRun()
   }, [
     initialRunId,
+    autoResume,
     stableScope,
     jobHandle,
     subscription.setCurrentRunId,
     subscription.hydrateRun,
+    subscription.revalidateRun,
+    subscription.reset,
   ])
 
   // Auto-resume callbacks
@@ -253,20 +300,24 @@ export function useJob<
           run.output as TOutput,
           run.error ?? null,
         )
-        const revalidated = await jobHandle?.getRun(run.id)
-        if (
-          !revalidated ||
-          resolutionEpochRef.current !== lookupEpochRef.current
-        ) {
-          return
+        try {
+          const revalidated = await jobHandle?.getRun(run.id)
+          if (
+            !revalidated ||
+            resolutionEpochRef.current !== lookupEpochRef.current
+          ) {
+            return
+          }
+          subscription.revalidateRun(
+            revalidated.id,
+            run.status,
+            revalidated.status as RunStatus,
+            revalidated.output as TOutput,
+            revalidated.error,
+          )
+        } catch {
+          return // Keep the run found by getRuns when the best-effort read fails.
         }
-        subscription.revalidateRun(
-          revalidated.id,
-          run.status,
-          revalidated.status as RunStatus,
-          revalidated.output as TOutput,
-          revalidated.error,
-        )
       },
       onSettled: () => {
         if (resolutionEpochRef.current !== lookupEpochRef.current) return

@@ -87,10 +87,7 @@ export function useAutoResume<
 
         if (leasedRuns.length > 0) {
           const run = leasedRuns[0]
-          // Revalidate to ensure latest state is hydrated even if run became terminal
-          const latest = (await jobHandle.getRun(run.id)) ?? run
-          if (cancelled) return
-          await callbacks.onRunFound(latest)
+          await callbacks.onRunFound(run)
           return
         }
 
@@ -104,9 +101,7 @@ export function useAutoResume<
 
         if (pendingRuns.length > 0) {
           const run = pendingRuns[0]
-          const latest = (await jobHandle.getRun(run.id)) ?? run
-          if (cancelled) return
-          await callbacks.onRunFound(latest)
+          await callbacks.onRunFound(run)
           return
         }
       } catch (err) {

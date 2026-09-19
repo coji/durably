@@ -128,6 +128,15 @@ function jobSubscriptionReducer<TOutput = unknown>(
       } as JobSubscriptionState<TOutput>
 
     case 'hydrate_run':
+      if (
+        state.currentRunId === action.runId &&
+        (state.status === 'completed' ||
+          state.status === 'failed' ||
+          state.status === 'cancelled') &&
+        (action.status === 'pending' || action.status === 'leased')
+      ) {
+        return state
+      }
       return {
         ...initialSubscriptionState,
         currentRunId: action.runId,
