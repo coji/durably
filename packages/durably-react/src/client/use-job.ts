@@ -1,5 +1,11 @@
 import type { TriggerOptions } from '@coji/durably'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
 import { createSSEEventSubscriber } from '../shared/sse-event-subscriber'
 import { useStableValue } from '../shared/use-stable-value'
 import type { LogEntry, Progress, RunStatus } from '../types'
@@ -132,6 +138,24 @@ export function useJob<
   const [currentRunId, setCurrentRunId] = useState<string | null>(
     initialRunId ?? null,
   )
+  // A response may settle after a new commit but before passive effects run.
+  // Update this in a layout effect so abandoned renders do not invalidate work.
+  const trackingContextRef = useRef({
+    api,
+    jobName,
+    initialRunId,
+    scope: stableScope,
+    currentRunId,
+  })
+  useLayoutEffect(() => {
+    trackingContextRef.current = {
+      api,
+      jobName,
+      initialRunId,
+      scope: stableScope,
+      currentRunId,
+    }
+  })
   const [isPending, setIsPending] = useState(false)
   const [hydratedStatus, setHydratedStatus] = useState<RunStatus | null>(null)
 
@@ -388,7 +412,21 @@ export function useJob<
       hasUserTriggered.current = true
       const epoch = ++resolutionEpochRef.current
       setIsResolving(false)
-      const preserveFixedRun = !!initialRunId && currentRunId === initialRunId
+      const triggerContext = trackingContextRef.current
+      const preserveFixedRun =
+        !!triggerContext.initialRunId &&
+        triggerContext.currentRunId === triggerContext.initialRunId
+      const isCurrent = () => {
+        const current = trackingContextRef.current
+        return (
+          resolutionEpochRef.current === epoch &&
+          current.api === triggerContext.api &&
+          current.jobName === triggerContext.jobName &&
+          current.initialRunId === triggerContext.initialRunId &&
+          current.scope === triggerContext.scope &&
+          current.currentRunId === triggerContext.currentRunId
+        )
+      }
 
       // Keep the fixed run visible until a new trigger result is accepted.
       // A scope change can supersede the request before it returns.
@@ -424,7 +462,7 @@ export function useJob<
       })
 
       if (!response.ok) {
-        if (resolutionEpochRef.current === epoch) setIsPending(false)
+        if (isCurrent()) setIsPending(false)
         const errorText = await response.text()
         throw new Error(errorText || `HTTP ${response.status}`)
       }
@@ -433,7 +471,7 @@ export function useJob<
         runId: string
         status?: RunStatus
       }
-      if (resolutionEpochRef.current === epoch) {
+      if (isCurrent()) {
         if (preserveFixedRun) {
           subscription.reset()
           setHydratedStatus(null)
@@ -447,14 +485,7 @@ export function useJob<
 
       return { runId: data.runId }
     },
-    [
-      api,
-      jobName,
-      initialRunId,
-      currentRunId,
-      stableTriggerOptions,
-      subscription.reset,
-    ],
+    [api, jobName, stableTriggerOptions, subscription.reset],
   )
 
   const triggerAndWait = useCallback(

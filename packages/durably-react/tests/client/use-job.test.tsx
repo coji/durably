@@ -1550,6 +1550,69 @@ describe('useJob (client)', () => {
       expect(result.current.status).toBe('leased')
     })
 
+    it('clears optimistic pending when a quiet fixed run changes scope during a trigger', async () => {
+      let resolveTrigger!: (response: {
+        ok: boolean
+        json: () => Promise<unknown>
+      }) => void
+      globalThis.fetch = vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveTrigger = resolve
+          }),
+      )
+      const { result, rerender } = renderHook(
+        ({ documentId }: { documentId: string }) =>
+          useJob({
+            api: '/api/durably',
+            jobName: 'test-job',
+            initialRunId: 'quiet-fixed-run',
+            followLatest: false,
+            scope: { labels: { documentId } },
+          }),
+        { initialProps: { documentId: 'first' } },
+      )
+      let pending!: Promise<{ runId: string }>
+      act(() => {
+        pending = result.current.trigger({ input: 'test' })
+      })
+      expect(result.current.status).toBe('pending')
+      rerender({ documentId: 'second' })
+      expect(result.current.currentRunId).toBe('quiet-fixed-run')
+      expect(result.current.status).toBeNull()
+      expect(result.current.isPending).toBe(false)
+      await act(async () => {
+        resolveTrigger({
+          ok: true,
+          json: () =>
+            Promise.resolve({ runId: 'old-scope-run', status: 'pending' }),
+        })
+        await pending
+      })
+      expect(result.current.currentRunId).toBe('quiet-fixed-run')
+      expect(result.current.status).toBeNull()
+    })
+
+    it('keeps trigger callbacks stable when the tracked run changes', async () => {
+      const { result } = renderHook(() =>
+        useJob({ api: '/api/durably', jobName: 'test-job', autoResume: false }),
+      )
+      const trigger = result.current.trigger
+      const triggerAndWait = result.current.triggerAndWait
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:trigger',
+          runId: 'followed-run',
+          jobName: 'test-job',
+        })
+      })
+      await waitFor(() =>
+        expect(result.current.currentRunId).toBe('followed-run'),
+      )
+      expect(result.current.trigger).toBe(trigger)
+      expect(result.current.triggerAndWait).toBe(triggerAndWait)
+    })
+
     it('owns rejected and aborted lookups and settles resolving state', async () => {
       const consoleError = vi
         .spyOn(console, 'error')
