@@ -202,6 +202,27 @@ const attempts = await durably.getStepAttempts(runId)
 
 `attempt.id` identifies one durable attempt, not proof that the callback or an external operation began. `attempt.metadata` reflects the last successfully awaited replacement; `setMetadata()` replaces the entire JSON value rather than merging it. Omit `metadata` for an initial `null` value; passing `metadata: undefined` explicitly is invalid. Invalid values fail before execution or leave the previous value unchanged. `getStepAttempts()` returns attempts in start-time and ID order, or `[]` for an unknown run. A worker crash or checkpoint write failure can leave an attempt unresolved with `status: 'started'`, `completedAt: null`, and an inferred `interruptionReason` (`'lease-lost'`, `'cancelled'`, `'unknown'`, or `null`). This reason reflects the current persisted run state and may change until the run is terminal; it does not assert when external work stopped or fill in unknown usage. Attempts survive terminal checkpoint cleanup, and are deleted when the run is deleted or purged. `retainRuns` bounds their lifetime only after the run becomes terminal; cancel a run that keeps reclaiming to stop new attempts.
 
+### step.all(branches)
+
+Runs named steps concurrently and returns their results by name after every branch settles. Branches use the same checkpoint and attempt records as `step.run()`: after lease recovery, completed branches return their saved results while unfinished branches run again. Give each branch a stable name within the job; the numeric step index is assigned as each branch starts and need not match object key order. A branch can return an ordinary result such as `needsChanges`; a thrown error is an execution failure. If any branch throws, `step.all()` waits for the others to settle. Lease loss and cancellation take precedence over ordinary errors; with multiple ordinary failures, the error from the lowest-index failed checkpoint is thrown. Sibling attempts remain queryable after terminal failure. When a failed join has a successful sibling, its checkpoints and logs remain available even with the default `preserveSteps: false`, so the completed output is not lost. Other terminal runs still follow the normal checkpoint cleanup; `preserveSteps: true` keeps all terminal checkpoints. This does not release the worker slot while branches are running.
+
+```ts
+const reviews = await step.all({
+  codex: async (signal, attempt) => {
+    attempt.log.info('Codex review started')
+    const result = await reviewWithCodex({ signal })
+    await attempt.setMetadata({ usage: result.usage })
+    return result.verdict
+  },
+  claude: async (signal, attempt) => {
+    attempt.log.info('Claude review started')
+    return (await reviewWithClaude({ signal })).verdict
+  },
+})
+```
+
+Use `attempt.log` inside parallel callbacks to attach logs to the correct branch. Once independent callbacks overlap, shared `step.log` has no step name until all active callbacks settle, avoiding false attribution from late logs. Sequentially nested `step.run()` callbacks keep the innermost step name. Individual durations are available from attempt timestamps; the earliest start and latest completion give the group's wall-clock interval, including recovery time when applicable. Sum branch durations only when measuring total branch work, not elapsed time.
+
 ### step.progress(current, total?, message?)
 
 Updates progress information for the run. Call freely in loops — SSE delivery is throttled by `sseThrottleMs` (default 100ms) so clients receive smooth updates without flooding.
@@ -219,6 +240,8 @@ step.log.info('Starting process', { userId: '123' })
 step.log.warn('Rate limit approaching')
 step.log.error('Failed to connect', { error: err.message })
 ```
+
+For parallel callbacks, use `attempt.log` for reliable step attribution.
 
 ## Run Management
 
@@ -649,6 +672,11 @@ interface JobDefinition<TName, TInput, TOutput> {
 }
 
 // AbortSignal is aborted when the run is cancelled
+type StepCallback<T> = (
+  signal: AbortSignal,
+  attempt: StepAttemptContext,
+) => T | Promise<T>
+
 interface StepContext {
   readonly runId: string
   readonly signal: AbortSignal
@@ -659,6 +687,9 @@ interface StepContext {
     fn: (signal: AbortSignal, attempt: StepAttemptContext) => T | Promise<T>,
     options?: { metadata?: JsonValue },
   ): Promise<T>
+  all<const T extends Record<string, StepCallback<unknown>>>(
+    branches: T,
+  ): Promise<{ [K in keyof T]: Awaited<ReturnType<T[K]>> }>
   progress(current: number, total?: number, message?: string): void
   log: {
     info(message: string, data?: unknown): void
@@ -670,6 +701,7 @@ interface StepContext {
 interface StepAttemptContext {
   readonly id: string
   readonly metadata: JsonValue | null
+  readonly log: StepContext['log']
   setMetadata(value: JsonValue): Promise<void>
 }
 
@@ -1225,7 +1257,7 @@ function Component() {
 }
 ```
 
-The same core instance exposes `durably.getStepAttempts(runId)` for durable callback-attempt history. Attempts survive checkpoint cleanup, including unresolved attempts after worker recovery; they are deleted with their run.
+The same core instance exposes `durably.getStepAttempts(runId)` for durable callback-attempt history. Attempts survive checkpoint cleanup, including unresolved attempts after worker recovery; they are deleted with their run. When a parallel join fails after another branch succeeds, the successful branch's checkpoint output remains available even with the default `preserveSteps: false`.
 
 **Return type:**
 
@@ -1237,7 +1269,7 @@ interface UseDurablyResult {
 
 ### useJob
 
-Trigger and monitor a job:
+Trigger and monitor a job. Job definitions can also use core `step.all({ branchName: callback })` to run independent steps concurrently and join their saved results. Completed branches replay after lease recovery; use the callback's `attempt.log` for branch-specific logs. The React hooks track the resulting run as usual.
 
 ```tsx
 import { defineJob } from '@coji/durably'

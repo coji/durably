@@ -5,7 +5,7 @@
  */
 
 import { createDurably } from '@coji/durably'
-import { processImageJob } from '../jobs'
+import { parallelReviewJob, processImageJob } from '../jobs'
 import { dialect } from './database'
 
 // Create durably instance with jobs
@@ -17,5 +17,6 @@ export const durably = createDurably({
   leaseMs: 3000,
   jobs: {
     processImage: processImageJob,
+    parallelReview: parallelReviewJob,
   },
 })

@@ -5,9 +5,9 @@
  */
 
 import { defineJob, type Durably } from '@coji/durably'
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { DurablyProvider, useRuns } from '../../src/spa'
 import { createTestDurably } from '../helpers/create-test-durably'
@@ -76,6 +76,96 @@ describe('useRuns', () => {
     })
 
     expect(result.current.runs[0].jobName).toBe('test-job-runs')
+  })
+
+  it('ignores an older refresh that resolves after newer step progress', async () => {
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
+    instances.push(durably)
+    const d = durably.register({ testJobHandle: testJob })
+    await d.jobs.testJobHandle.trigger({ value: 10 })
+    const oldRuns = await d.getRuns()
+    const newRuns = oldRuns.map((run) => ({
+      ...run,
+      currentStepIndex: 2,
+      completedStepCount: 1,
+    }))
+    let releaseOld!: (runs: typeof oldRuns) => void
+    const delayedOld = new Promise<typeof oldRuns>((resolve) => {
+      releaseOld = resolve
+    })
+    const getRuns = vi
+      .spyOn(durably, 'getRuns')
+      .mockResolvedValueOnce(oldRuns)
+      .mockReturnValueOnce(delayedOld)
+      .mockResolvedValueOnce(newRuns)
+
+    const { result } = renderHook(() => useRuns(), {
+      wrapper: createWrapper(durably),
+    })
+    await waitFor(() => expect(result.current.runs).toHaveLength(1))
+
+    let oldRefresh!: Promise<void>
+    act(() => {
+      oldRefresh = result.current.refresh()
+    })
+    await waitFor(() => expect(getRuns).toHaveBeenCalledTimes(2))
+
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.runs[0].currentStepIndex).toBe(2)
+
+    await act(async () => {
+      releaseOld(oldRuns)
+      await oldRefresh
+    })
+    expect(result.current.runs[0].currentStepIndex).toBe(2)
+    expect(result.current.runs[0].completedStepCount).toBe(1)
+  })
+
+  it('applies an older successful refresh when a newer request fails', async () => {
+    const durably = await createTestDurably({ pollingIntervalMs: 50 })
+    instances.push(durably)
+    const d = durably.register({ testJobHandle: testJob })
+    await d.jobs.testJobHandle.trigger({ value: 10 })
+    const initialRuns = await d.getRuns()
+    const updatedRuns = initialRuns.map((run) => ({
+      ...run,
+      currentStepIndex: 2,
+      completedStepCount: 1,
+    }))
+    let releaseOlder!: (runs: typeof initialRuns) => void
+    const olderResponse = new Promise<typeof initialRuns>((resolve) => {
+      releaseOlder = resolve
+    })
+    const getRuns = vi
+      .spyOn(durably, 'getRuns')
+      .mockResolvedValueOnce(initialRuns)
+      .mockReturnValueOnce(olderResponse)
+      .mockRejectedValueOnce(new Error('temporary read failure'))
+
+    const { result } = renderHook(() => useRuns(), {
+      wrapper: createWrapper(durably),
+    })
+    await waitFor(() => expect(result.current.runs).toHaveLength(1))
+
+    let olderRefresh!: Promise<void>
+    act(() => {
+      olderRefresh = result.current.refresh()
+    })
+    await waitFor(() => expect(getRuns).toHaveBeenCalledTimes(2))
+    await act(async () => {
+      await expect(result.current.refresh()).rejects.toThrow(
+        'temporary read failure',
+      )
+    })
+
+    await act(async () => {
+      releaseOlder(updatedRuns)
+      await olderRefresh
+    })
+    expect(result.current.runs[0].currentStepIndex).toBe(2)
+    expect(result.current.runs[0].completedStepCount).toBe(1)
   })
 
   it('filters by jobName', async () => {

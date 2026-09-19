@@ -23,10 +23,14 @@ export function createStepContext(
 ): {
   step: StepContext
   abortLeaseOwnership(): void
+  preserveFailedParallelSteps(): boolean
   dispose: () => void
 } {
   let stepIndex = run.currentStepIndex
-  let currentStepName: string | null = null
+  const activeStepNames = new Set<string>()
+  const stepParents = new Map<string, string | null>()
+  let ambiguousLogScope = false
+  let preserveFailedParallelSteps = false
 
   const controller = new AbortController()
 
@@ -94,6 +98,54 @@ export function createStepContext(
     }
   })
 
+  function writeLog(
+    level: 'info' | 'warn' | 'error',
+    message: string,
+    data: unknown,
+    stepName: string | null,
+  ): void {
+    eventEmitter.emit({
+      type: 'log:write',
+      runId: run.id,
+      jobName,
+      labels: run.labels,
+      stepName,
+      level,
+      message,
+      data,
+    })
+  }
+
+  function stepLogger(name: string): StepContext['log'] {
+    return {
+      info(message, data) {
+        writeLog('info', message, data, name)
+      },
+      warn(message, data) {
+        writeLog('warn', message, data, name)
+      },
+      error(message, data) {
+        writeLog('error', message, data, name)
+      },
+    }
+  }
+
+  function nestedStepName(): string | null {
+    const names = [...activeStepNames]
+    const innermost = names.at(-1)
+    if (!innermost) return null
+    let parent = stepParents.get(innermost) ?? null
+    for (let index = names.length - 2; index >= 0; index--) {
+      if (names[index] !== parent) return null
+      parent = stepParents.get(names[index]) ?? null
+    }
+    return innermost
+  }
+
+  function implicitStepName(): string | null {
+    return ambiguousLogScope ? null : nestedStepName()
+  }
+
   const step: StepContext = {
     get runId(): string {
       return run.id
@@ -116,6 +168,9 @@ export function createStepContext(
       fn: (signal: AbortSignal, attempt: StepAttemptContext) => T | Promise<T>,
       options?: { metadata?: JsonValue },
     ): Promise<T> {
+      // Capture the caller before the first await. A nested step may start
+      // later, after the parent callback has yielded for the durable lookup.
+      const parentStepName = implicitStepName()
       // Fast path: check in-memory signal first (set by run:cancel event)
       throwIfAborted()
 
@@ -173,6 +228,7 @@ export function createStepContext(
       let currentMetadata = startedAttempt.metadata
       const attempt: StepAttemptContext = {
         id: startedAttempt.id,
+        log: stepLogger(name),
         get metadata() {
           return currentMetadata === null
             ? null
@@ -192,8 +248,13 @@ export function createStepContext(
         },
       }
 
-      // Track current step for log attribution
-      currentStepName = name
+      // A nested chain has an unambiguous innermost callback. Independent
+      // callbacks remain unscoped once their lifetimes overlap.
+      stepParents.set(name, parentStepName)
+      activeStepNames.add(name)
+      if (activeStepNames.size > 1 && !nestedStepName()) {
+        ambiguousLogScope = true
+      }
 
       // The attempt start is durable before the callback or event is visible.
       const startedAt = startedAttempt.startedAt
@@ -293,9 +354,72 @@ export function createStepContext(
 
         return result
       } finally {
-        // Clear current step after execution
-        currentStepName = null
+        activeStepNames.delete(name)
+        stepParents.delete(name)
+        if (activeStepNames.size === 0) ambiguousLogScope = false
       }
+    },
+
+    async all(branches) {
+      const entries = Object.entries(branches)
+      if (entries.length === 0) return {} as never
+
+      const settled = await Promise.allSettled(
+        entries.map(([name, fn]) => step.run(name, fn)),
+      )
+      const rejected = settled.flatMap((result, index) =>
+        result.status === 'rejected'
+          ? [{ name: entries[index][0], reason: result.reason as unknown }]
+          : [],
+      )
+      // A sibling may lose the lease or be cancelled after another branch
+      // fails. Preserve the run lifecycle outcome instead of failing an
+      // expired or cancelled run with the earlier ordinary error.
+      const leaseLoss = rejected.find(
+        ({ reason }) => reason instanceof LeaseLostError,
+      )
+      if (leaseLoss) throw leaseLoss.reason
+      const cancellation = rejected.find(
+        ({ reason }) => reason instanceof CancelledError,
+      )
+      if (cancellation) throw cancellation.reason
+
+      if (
+        rejected.length > 0 &&
+        settled.some((result) => result.status === 'fulfilled')
+      ) {
+        // The failed run has no aggregate output. Retain successful sibling
+        // checkpoints so callers can inspect their results after failure.
+        preserveFailedParallelSteps = true
+      }
+
+      if (rejected.length > 1) {
+        // run:fail names the lowest-index failed checkpoint. Choose its error
+        // too, because asynchronous setup can assign indexes out of branch
+        // declaration order.
+        const byName = new Map(
+          rejected.map(({ name, reason }) => [name, reason]),
+        )
+        const attempts = await storage.getStepAttempts(run.id)
+        const firstFailed = attempts
+          .filter(
+            (saved) =>
+              saved.leaseGeneration === leaseGeneration &&
+              saved.status === 'failed' &&
+              saved.interruptionReason === null &&
+              byName.has(saved.stepName),
+          )
+          .sort((a, b) => a.stepIndex - b.stepIndex)[0]
+        if (firstFailed) throw byName.get(firstFailed.stepName)
+      }
+      if (rejected.length > 0) throw rejected[0].reason
+
+      return Object.fromEntries(
+        entries.map(([name], index) => [
+          name,
+          (settled[index] as PromiseFulfilledResult<unknown>).value,
+        ]),
+      ) as never
     },
 
     progress(current: number, total?: number, message?: string): void {
@@ -314,42 +438,15 @@ export function createStepContext(
 
     log: {
       info(message: string, data?: unknown): void {
-        eventEmitter.emit({
-          type: 'log:write',
-          runId: run.id,
-          jobName,
-          labels: run.labels,
-          stepName: currentStepName,
-          level: 'info',
-          message,
-          data,
-        })
+        writeLog('info', message, data, implicitStepName())
       },
 
       warn(message: string, data?: unknown): void {
-        eventEmitter.emit({
-          type: 'log:write',
-          runId: run.id,
-          jobName,
-          labels: run.labels,
-          stepName: currentStepName,
-          level: 'warn',
-          message,
-          data,
-        })
+        writeLog('warn', message, data, implicitStepName())
       },
 
       error(message: string, data?: unknown): void {
-        eventEmitter.emit({
-          type: 'log:write',
-          runId: run.id,
-          jobName,
-          labels: run.labels,
-          stepName: currentStepName,
-          level: 'error',
-          message,
-          data,
-        })
+        writeLog('error', message, data, implicitStepName())
       },
     },
   }
@@ -357,6 +454,7 @@ export function createStepContext(
   return {
     step,
     abortLeaseOwnership: abortForLeaseLoss,
+    preserveFailedParallelSteps: () => preserveFailedParallelSteps,
     dispose: unsubscribe,
   }
 }

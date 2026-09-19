@@ -29,7 +29,7 @@ const result = await step.run<T>(
 1. **First execution**: Runs `fn` and persists the result
 2. **Subsequent executions**: Returns the cached result without running `fn`
 
-Before trying to invoke a callback, Durably commits a record with its own attempt ID. Cancellation, lease loss, or a crash can prevent the callback from being entered after the record commits. Cached replay does not add an attempt. When invoked, the callback receives `attempt.id`, `attempt.metadata`, and `await attempt.setMetadata(jsonValue)` as its second argument. The awaited write replaces the entire JSON value, commits before the promise resolves, and updates `attempt.metadata`.
+Before trying to invoke a callback, Durably commits a record with its own attempt ID. Cancellation, lease loss, or a crash can prevent the callback from being entered after the record commits. Cached replay does not add an attempt. When invoked, the callback receives `attempt.id`, `attempt.metadata`, `attempt.log`, and `await attempt.setMetadata(jsonValue)` as its second argument. The awaited write replaces the entire JSON value, commits before the promise resolves, and updates `attempt.metadata`. `attempt.log` attaches the step name to each log entry.
 
 ```ts
 await step.run(
@@ -75,6 +75,25 @@ await step.run('fetch-all-pages', async (signal) => {
 
 The signal is compatible with `fetch()` and other APIs that accept `AbortSignal`. Existing callbacks that don't use the signal parameter continue to work unchanged.
 
+### `all()`
+
+Runs independent named steps concurrently and joins after every branch settles. The result retains the branch names and types. A completed branch is replayed from its checkpoint after lease recovery; only unfinished branches invoke their callbacks again.
+
+```ts
+const reviews = await step.all({
+  codex: async (signal, attempt) => {
+    attempt.log.info('Codex review started')
+    return reviewWithCodex({ signal })
+  },
+  claude: async (signal, attempt) => {
+    attempt.log.info('Claude review started')
+    return reviewWithClaude({ signal })
+  },
+})
+```
+
+Use stable, unique branch names within the job. Numeric step indexes are assigned as branches start and need not follow object key order. Each branch has its own checkpoint and durable attempt record, available through `getStepAttempts(runId)`. Use `attempt.setMetadata()` to save usage or other JSON data for that branch. A result such as `needsChanges` is a normal value; a thrown error is a failure. If one branch throws, the join waits for its siblings to settle. Lease loss or cancellation takes precedence over ordinary errors; with multiple ordinary failures, the error from the lowest-index failed checkpoint is thrown. Sibling attempts remain queryable after terminal failure. A failed join with a successful sibling retains its checkpoints and logs, including the completed output, even with the default `preserveSteps: false`. Other terminal runs follow the normal checkpoint cleanup; `preserveSteps: true` keeps all terminal checkpoints. All branches share the run's cancellation and lease signal. This call keeps the worker slot occupied until the join settles. The earliest attempt start and latest completion measure the group's wall-clock interval; adding branch durations instead measures combined branch work.
+
 ### `log`
 
 Logger object for writing structured logs.
@@ -95,6 +114,8 @@ step.log.info('Processing started')
 step.log.info('User data', { userId: 'abc', count: 10 })
 step.log.error('Failed to fetch', { error: err.message })
 ```
+
+Inside a parallel callback, use `attempt.log` to attach the correct step name. Once independent callbacks overlap, shared `step.log` is logged without a step name until all active callbacks settle, avoiding false attribution from late logs. Sequentially nested `step.run()` callbacks retain the innermost step name.
 
 ### `progress()`
 

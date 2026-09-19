@@ -47,6 +47,23 @@ run: async (step, input) => {
 **First execution:** runs the function, saves the result.
 **After restart:** returns the cached result instantly, skips the function.
 
+Independent steps can run concurrently with `step.all()`. It waits for every branch before returning, and after lease recovery reuses completed branches while retrying unfinished ones:
+
+```ts
+const results = await step.all({
+  users: async (_signal, attempt) => {
+    attempt.log.info('Fetching users')
+    return fetchUsers()
+  },
+  orders: async (_signal, attempt) => {
+    attempt.log.info('Fetching orders')
+    return fetchOrders()
+  },
+})
+```
+
+Branch names must remain stable across restarts. Use `attempt.log` inside parallel callbacks so logs retain the right branch name.
+
 ### Step Names Must Be Unique
 
 Each step needs a unique name within a job run. Duplicate names return the cached result of the first one.

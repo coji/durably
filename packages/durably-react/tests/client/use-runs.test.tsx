@@ -360,6 +360,227 @@ describe('useRuns (client)', () => {
     expect(result.current.runs[1].progress).toBeNull()
   })
 
+  it('keeps the highest step index when parallel steps complete out of order', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve([createMockRun({ id: 'run-1', status: 'leased' })]),
+    })
+
+    const { result } = renderHook(() => useRuns({ api: '/api/durably' }))
+    await waitFor(() => expect(result.current.runs).toHaveLength(1))
+    await waitFor(() =>
+      expect(mockEventSource.instances.length).toBeGreaterThan(0),
+    )
+
+    act(() => {
+      mockEventSource.emit({
+        type: 'step:complete',
+        runId: 'run-1',
+        jobName: 'test-job',
+        stepIndex: 1,
+      })
+      mockEventSource.emit({
+        type: 'step:complete',
+        runId: 'run-1',
+        jobName: 'test-job',
+        stepIndex: 0,
+      })
+    })
+
+    expect(result.current.runs[0].currentStepIndex).toBe(2)
+  })
+
+  it('refreshes the completed count while another parallel branch is active', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve([createMockRun({ id: 'run-1', status: 'leased' })]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve([
+            createMockRun({
+              id: 'run-1',
+              status: 'leased',
+              currentStepIndex: 2,
+              completedStepCount: 1,
+            }),
+          ]),
+      })
+    globalThis.fetch = fetchMock
+
+    const { result } = renderHook(() => useRuns({ api: '/api/durably' }))
+    await waitFor(() => expect(result.current.runs).toHaveLength(1))
+    await waitFor(() =>
+      expect(mockEventSource.instances.length).toBeGreaterThan(0),
+    )
+
+    act(() => {
+      mockEventSource.emit({
+        type: 'step:complete',
+        runId: 'run-1',
+        jobName: 'test-job',
+        stepIndex: 1,
+      })
+    })
+
+    await waitFor(() => {
+      expect(result.current.runs[0].status).toBe('leased')
+      expect(result.current.runs[0].completedStepCount).toBe(1)
+      expect(result.current.runs[0].currentStepIndex).toBe(2)
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not replace a completed-step index with a delayed refresh response', async () => {
+    let resolveRefresh!: (response: {
+      ok: boolean
+      json: () => Promise<ClientRun[]>
+    }) => void
+    const delayedRefresh = new Promise<{
+      ok: boolean
+      json: () => Promise<ClientRun[]>
+    }>((resolve) => {
+      resolveRefresh = resolve
+    })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve([createMockRun({ id: 'run-1', status: 'leased' })]),
+      })
+      .mockReturnValueOnce(delayedRefresh)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve([
+            createMockRun({
+              id: 'run-1',
+              status: 'leased',
+              currentStepIndex: 2,
+              completedStepCount: 1,
+            }),
+          ]),
+      })
+    globalThis.fetch = fetchMock
+
+    const { result } = renderHook(() => useRuns({ api: '/api/durably' }))
+    await waitFor(() => expect(result.current.runs).toHaveLength(1))
+    await waitFor(() =>
+      expect(mockEventSource.instances.length).toBeGreaterThan(0),
+    )
+
+    act(() => {
+      mockEventSource.emit({
+        type: 'step:start',
+        runId: 'run-1',
+        jobName: 'test-job',
+        stepIndex: 1,
+      })
+    })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+
+    act(() => {
+      mockEventSource.emit({
+        type: 'step:complete',
+        runId: 'run-1',
+        jobName: 'test-job',
+        stepIndex: 1,
+      })
+    })
+    expect(result.current.runs[0].currentStepIndex).toBe(2)
+
+    await act(async () => {
+      resolveRefresh({
+        ok: true,
+        json: () =>
+          Promise.resolve([createMockRun({ id: 'run-1', status: 'leased' })]),
+      })
+      await delayedRefresh
+    })
+    expect(result.current.runs[0].currentStepIndex).toBe(2)
+  })
+
+  it('keeps completed lifecycle state when a leased refresh resolves later', async () => {
+    let releaseLeased!: (response: {
+      ok: boolean
+      json: () => Promise<ClientRun[]>
+    }) => void
+    const delayedLeased = new Promise<{
+      ok: boolean
+      json: () => Promise<ClientRun[]>
+    }>((resolve) => {
+      releaseLeased = resolve
+    })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve([createMockRun({ id: 'run-1', status: 'leased' })]),
+      })
+      .mockReturnValueOnce(delayedLeased)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve([
+            createMockRun({
+              id: 'run-1',
+              status: 'completed',
+              output: { reviewed: true },
+              isTerminal: true,
+              isActive: false,
+              completedStepCount: 1,
+              currentStepIndex: 1,
+            }),
+          ]),
+      })
+    globalThis.fetch = fetchMock
+
+    const { result } = renderHook(() => useRuns({ api: '/api/durably' }))
+    await waitFor(() => expect(result.current.runs).toHaveLength(1))
+    await waitFor(() =>
+      expect(mockEventSource.instances.length).toBeGreaterThan(0),
+    )
+
+    act(() => {
+      mockEventSource.emit({
+        type: 'step:complete',
+        runId: 'run-1',
+        jobName: 'test-job',
+        stepIndex: 0,
+      })
+    })
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    act(() => {
+      mockEventSource.emit({
+        type: 'run:complete',
+        runId: 'run-1',
+        jobName: 'test-job',
+      })
+    })
+    await waitFor(() => expect(result.current.runs[0].status).toBe('completed'))
+
+    await act(async () => {
+      releaseLeased({
+        ok: true,
+        json: () =>
+          Promise.resolve([createMockRun({ id: 'run-1', status: 'leased' })]),
+      })
+      await delayedLeased
+    })
+    expect(result.current.runs[0]).toMatchObject({
+      status: 'completed',
+      output: { reviewed: true },
+      isTerminal: true,
+    })
+  })
+
   it('does not subscribe to SSE on non-first pages', async () => {
     const page1Runs = [
       createMockRun({ id: 'run-1' }),

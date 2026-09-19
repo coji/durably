@@ -1,5 +1,5 @@
 import type { JobDefinition, RunStatus } from '@coji/durably'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDurably } from '../context'
 import { useStableValue } from '../shared/use-stable-value'
 import { type TypedRun, isJobDefinition } from '../types'
@@ -171,10 +171,13 @@ export function useRuns<
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
+  const latestRefreshRef = useRef(0)
+  const latestAppliedRefreshRef = useRef(0)
 
   const refresh = useCallback(async () => {
     if (!durably) return
 
+    const refreshId = ++latestRefreshRef.current
     setIsLoading(true)
     try {
       const data = await durably.getRuns({
@@ -184,10 +187,15 @@ export function useRuns<
         limit: pageSize + 1,
         offset: page * pageSize,
       })
-      setHasMore(data.length > pageSize)
-      setRuns(data.slice(0, pageSize) as TypedRun<TInput, TOutput>[])
+      // Apply every success newer than the last applied result. A later
+      // request may fail, so merely starting it must not discard this data.
+      if (refreshId > latestAppliedRefreshRef.current) {
+        latestAppliedRefreshRef.current = refreshId
+        setHasMore(data.length > pageSize)
+        setRuns(data.slice(0, pageSize) as TypedRun<TInput, TOutput>[])
+      }
     } finally {
-      setIsLoading(false)
+      if (refreshId === latestRefreshRef.current) setIsLoading(false)
     }
   }, [durably, stableJobName, normalizedStatus, labels, pageSize, page])
 
@@ -197,24 +205,26 @@ export function useRuns<
 
     refresh()
 
-    if (!realtime) return
-
-    const unsubscribes = [
-      durably.on('run:trigger', refresh),
-      durably.on('run:coalesced', refresh),
-      durably.on('run:leased', refresh),
-      durably.on('run:complete', refresh),
-      durably.on('run:fail', refresh),
-      durably.on('run:cancel', refresh),
-      durably.on('run:delete', refresh),
-      durably.on('run:progress', refresh),
-      durably.on('step:start', refresh),
-      durably.on('step:complete', refresh),
-      durably.on('step:fail', refresh),
-      durably.on('step:cancel', refresh),
-    ]
+    const unsubscribes = realtime
+      ? [
+          durably.on('run:trigger', refresh),
+          durably.on('run:coalesced', refresh),
+          durably.on('run:leased', refresh),
+          durably.on('run:complete', refresh),
+          durably.on('run:fail', refresh),
+          durably.on('run:cancel', refresh),
+          durably.on('run:delete', refresh),
+          durably.on('run:progress', refresh),
+          durably.on('step:start', refresh),
+          durably.on('step:complete', refresh),
+          durably.on('step:fail', refresh),
+          durably.on('step:cancel', refresh),
+        ]
+      : []
 
     return () => {
+      // Responses for the old filters/page must not update the new query.
+      latestAppliedRefreshRef.current = ++latestRefreshRef.current
       for (const unsubscribe of unsubscribes) {
         unsubscribe()
       }

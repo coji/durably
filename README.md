@@ -14,6 +14,7 @@ Steps that survive crashes. SQLite to PostgreSQL.
 ## Features
 
 - **Resumable** — each step's result is persisted; interrupted jobs resume from the last successful step
+- **Parallel joins** — run independent named steps concurrently and replay only unfinished branches after recovery
 - **Flexible storage** — libSQL/Turso, PostgreSQL, better-sqlite3, or browser OPFS
 - **Browser + server** — same API for Node.js and browsers
 - **Lease-based recovery** — stale workers are automatically reclaimed via fencing tokens

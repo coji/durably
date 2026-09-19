@@ -54,13 +54,14 @@ export async function executeRun<
 ): Promise<RuntimeExecutionResult> {
   const { storage, eventEmitter, clock } = environment
 
-  const { step, abortLeaseOwnership, dispose } = createStepContext(
-    run,
-    run.jobName,
-    run.leaseGeneration,
-    storage,
-    eventEmitter,
-  )
+  const { step, abortLeaseOwnership, preserveFailedParallelSteps, dispose } =
+    createStepContext(
+      run,
+      run.jobName,
+      run.leaseGeneration,
+      storage,
+      eventEmitter,
+    )
   let leaseDeadlineTimer: ReturnType<RuntimeClock['setTimeout']> | null = null
 
   const scheduleLeaseDeadline = (leaseExpiresAt: string | null) => {
@@ -124,6 +125,7 @@ export async function executeRun<
 
   const started = clock.now()
   let reachedTerminalState = false
+  let failedTerminalState = false
 
   try {
     eventEmitter.emit({
@@ -190,14 +192,24 @@ export async function executeRun<
 
     if (failed) {
       reachedTerminalState = true
-      const steps = await storage.getSteps(run.id)
-      const failedStep = steps.find((entry) => entry.status === 'failed')
+      failedTerminalState = true
+      // Failed checkpoints survive lease recovery. Attribute this error to an
+      // attempt from the current lease, not an older failed branch.
+      const attempts = await storage.getStepAttempts(run.id)
+      const failedStep = attempts
+        .filter(
+          (entry) =>
+            entry.leaseGeneration === run.leaseGeneration &&
+            entry.status === 'failed' &&
+            entry.interruptionReason === null,
+        )
+        .sort((a, b) => a.stepIndex - b.stepIndex)[0]
       eventEmitter.emit({
         type: 'run:fail',
         runId: run.id,
         jobName: run.jobName,
         error: errorMessage,
-        failedStepName: failedStep?.name ?? 'unknown',
+        failedStepName: failedStep?.stepName ?? 'unknown',
         labels: run.labels,
       })
       return { kind: 'failed' }
@@ -215,7 +227,11 @@ export async function executeRun<
       clock.clearTimeout(leaseDeadlineTimer)
     }
     dispose()
-    if (!config.preserveSteps && reachedTerminalState) {
+    if (
+      !config.preserveSteps &&
+      reachedTerminalState &&
+      !(failedTerminalState && preserveFailedParallelSteps())
+    ) {
       await storage.deleteSteps(run.id)
     }
   }

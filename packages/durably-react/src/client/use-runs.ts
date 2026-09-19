@@ -233,8 +233,11 @@ export function useRuns<
 
   const isMountedRef = useRef(true)
   const eventSourceRef = useRef<EventSource | null>(null)
+  const latestRefreshRef = useRef(0)
+  const latestAppliedRefreshRef = useRef(0)
 
   const refresh = useCallback(async () => {
+    const refreshId = ++latestRefreshRef.current
     setIsLoading(true)
     setError(null)
 
@@ -255,16 +258,41 @@ export function useRuns<
 
       const data = (await response.json()) as TypedClientRun<TInput, TOutput>[]
 
-      if (isMountedRef.current) {
+      if (isMountedRef.current && refreshId > latestAppliedRefreshRef.current) {
+        latestAppliedRefreshRef.current = refreshId
+        setError(null)
         setHasMore(data.length > pageSize)
-        setRuns(data.slice(0, pageSize))
+        setRuns((previous) => {
+          const previousById = new Map(previous.map((run) => [run.id, run]))
+          return data.slice(0, pageSize).map((run) => {
+            const current = previousById.get(run.id)
+            if (!current) return run
+            // A step:start refresh may resolve after a newer step:complete SSE.
+            // These counters never decrease for the same run.
+            return {
+              ...run,
+              currentStepIndex: Math.max(
+                run.currentStepIndex,
+                current.currentStepIndex,
+              ),
+              completedStepCount: Math.max(
+                run.completedStepCount,
+                current.completedStepCount,
+              ),
+            }
+          })
+        })
       }
     } catch (err) {
-      if (isMountedRef.current) {
+      if (
+        isMountedRef.current &&
+        refreshId === latestRefreshRef.current &&
+        refreshId > latestAppliedRefreshRef.current
+      ) {
         setError(err instanceof Error ? err.message : 'Unknown error')
       }
     } finally {
-      if (isMountedRef.current) {
+      if (isMountedRef.current && refreshId === latestRefreshRef.current) {
         setIsLoading(false)
       }
     }
@@ -276,6 +304,7 @@ export function useRuns<
     refresh()
 
     return () => {
+      latestAppliedRefreshRef.current = ++latestRefreshRef.current
       isMountedRef.current = false
     }
   }, [refresh])
@@ -324,15 +353,22 @@ export function useRuns<
             ),
           )
         }
-        // On step complete, update currentStepIndex
+        // Keep the index responsive, then refresh the persisted completed count.
         if (data.type === 'step:complete') {
           setRuns((prev) =>
             prev.map((run) =>
               run.id === data.runId
-                ? { ...run, currentStepIndex: data.stepIndex + 1 }
+                ? {
+                    ...run,
+                    currentStepIndex: Math.max(
+                      run.currentStepIndex,
+                      data.stepIndex + 1,
+                    ),
+                  }
                 : run,
             ),
           )
+          refresh()
         }
         // On step start or fail, refresh to get latest state
         if (
