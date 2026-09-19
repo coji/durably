@@ -204,7 +204,7 @@ const attempts = await durably.getStepAttempts(runId)
 
 ### step.all(branches)
 
-Runs named steps concurrently and returns their results by name after every branch settles. Branches use the same checkpoint and attempt records as `step.run()`: after lease recovery, completed branches return their saved results while unfinished branches run again. Give each branch a stable name within the job. A branch can return an ordinary result such as `needsChanges`; a thrown error is an execution failure. If any branch throws, `step.all()` waits for the others to settle and then throws the first error, so their checkpoints and attempts are retained. Cancellation and lease loss use the shared run signal. This does not release the worker slot while branches are running.
+Runs named steps concurrently and returns their results by name after every branch settles. Branches use the same checkpoint and attempt records as `step.run()`: after lease recovery, completed branches return their saved results while unfinished branches run again. Give each branch a stable name within the job. A branch can return an ordinary result such as `needsChanges`; a thrown error is an execution failure. If any branch throws, `step.all()` waits for the others to settle and then throws the first error, so their checkpoints and attempts are retained. Lease loss and cancellation take precedence over ordinary branch errors to preserve the run's lifecycle state. This does not release the worker slot while branches are running.
 
 ```ts
 const reviews = await step.all({
@@ -221,7 +221,7 @@ const reviews = await step.all({
 })
 ```
 
-Use `attempt.log` inside parallel callbacks to attach logs to the correct branch. Shared `step.log` has no step name while callbacks overlap. Individual durations are available from attempt timestamps; the earliest start and latest completion give the group's wall-clock interval, including recovery time when applicable. Sum branch durations only when measuring total branch work, not elapsed time.
+Use `attempt.log` inside parallel callbacks to attach logs to the correct branch. Once callbacks overlap, shared `step.log` has no step name until the entire group settles, avoiding false attribution from late logs. Individual durations are available from attempt timestamps; the earliest start and latest completion give the group's wall-clock interval, including recovery time when applicable. Sum branch durations only when measuring total branch work, not elapsed time.
 
 ### step.progress(current, total?, message?)
 
@@ -672,6 +672,11 @@ interface JobDefinition<TName, TInput, TOutput> {
 }
 
 // AbortSignal is aborted when the run is cancelled
+type StepCallback<T> = (
+  signal: AbortSignal,
+  attempt: StepAttemptContext,
+) => T | Promise<T>
+
 interface StepContext {
   readonly runId: string
   readonly signal: AbortSignal

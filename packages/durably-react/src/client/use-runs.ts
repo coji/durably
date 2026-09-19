@@ -329,7 +329,13 @@ export function useRuns<
           setRuns((prev) =>
             prev.map((run) =>
               run.id === data.runId
-                ? { ...run, currentStepIndex: data.stepIndex + 1 }
+                ? {
+                    ...run,
+                    currentStepIndex: Math.max(
+                      run.currentStepIndex,
+                      data.stepIndex + 1,
+                    ),
+                  }
                 : run,
             ),
           )

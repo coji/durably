@@ -345,7 +345,21 @@ export function createStepContext(
       const settled = await Promise.allSettled(
         entries.map(([name, fn]) => step.run(name, fn)),
       )
-      const failure = settled.find((result) => result.status === 'rejected')
+      // A sibling may lose the lease or be cancelled after another branch
+      // fails. Preserve the run lifecycle outcome instead of failing an
+      // expired or cancelled run with the earlier ordinary error.
+      const failure =
+        settled.find(
+          (result) =>
+            result.status === 'rejected' &&
+            result.reason instanceof LeaseLostError,
+        ) ??
+        settled.find(
+          (result) =>
+            result.status === 'rejected' &&
+            result.reason instanceof CancelledError,
+        ) ??
+        settled.find((result) => result.status === 'rejected')
       if (failure?.status === 'rejected') throw failure.reason
 
       return Object.fromEntries(

@@ -54,6 +54,7 @@ export type {
   Disposition,
   JobHandle,
   StepAttemptContext,
+  StepCallback,
   StepContext,
   TriggerAndWaitOptions,
   TriggerAndWaitResult,

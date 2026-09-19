@@ -92,7 +92,7 @@ const reviews = await step.all({
 })
 ```
 
-Use stable, unique branch names within the job. Each branch has its own checkpoint and durable attempt record, available through `getStepAttempts(runId)`. Use `attempt.setMetadata()` to save usage or other JSON data for that branch. A result such as `needsChanges` is a normal value; a thrown error is a failure. If one branch throws, the join waits for its siblings to settle, preserves their records, then throws the first error. All branches share the run's cancellation and lease signal. This call keeps the worker slot occupied until the join settles. The earliest attempt start and latest completion measure the group's wall-clock interval; adding branch durations instead measures combined branch work.
+Use stable, unique branch names within the job. Each branch has its own checkpoint and durable attempt record, available through `getStepAttempts(runId)`. Use `attempt.setMetadata()` to save usage or other JSON data for that branch. A result such as `needsChanges` is a normal value; a thrown error is a failure. If one branch throws, the join waits for its siblings to settle and preserves their records. Lease loss or cancellation takes precedence over ordinary errors; otherwise the first branch error is thrown. All branches share the run's cancellation and lease signal. This call keeps the worker slot occupied until the join settles. The earliest attempt start and latest completion measure the group's wall-clock interval; adding branch durations instead measures combined branch work.
 
 ### `log`
 
@@ -115,7 +115,7 @@ step.log.info('User data', { userId: 'abc', count: 10 })
 step.log.error('Failed to fetch', { error: err.message })
 ```
 
-Inside a parallel callback, use `attempt.log` to attach the correct step name. Shared `step.log` is logged without a step name while callbacks overlap.
+Inside a parallel callback, use `attempt.log` to attach the correct step name. Once callbacks overlap, shared `step.log` is logged without a step name until the group settles, avoiding false attribution from late logs.
 
 ### `progress()`
 

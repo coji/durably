@@ -5,6 +5,7 @@ import {
   createDurably,
   defineJob,
   type Durably,
+  LeaseLostError,
   type RunProgressEvent,
   type StepCancelEvent,
   type StepCompleteEvent,
@@ -198,6 +199,95 @@ export function createStepTests(createDialect: () => Dialect) {
       expect(await d.storage.getCompletedStep(run.id, 'sibling')).toMatchObject(
         { output: 'saved result' },
       )
+    })
+
+    it('preserves cancellation when another branch has already failed', async () => {
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const workerErrors: string[] = []
+      durably.on('worker:error', (event) => workerErrors.push(event.error))
+      const d = durably.register({
+        job: defineJob({
+          name: 'parallel-cancel',
+          input: z.object({}),
+          run: async (step) => {
+            await step.all({
+              failing: () => {
+                throw new Error('ordinary branch failure')
+              },
+              waiting: async () => {
+                await gate
+                return 'late result'
+              },
+            })
+          },
+        }),
+      })
+
+      const run = await d.jobs.job.trigger({})
+      const processing = d.processOne()
+      try {
+        await vi.waitFor(async () => {
+          const attempts = await d.storage.getStepAttempts(run.id)
+          expect(attempts.find((a) => a.stepName === 'failing')?.status).toBe(
+            'failed',
+          )
+          expect(attempts.some((a) => a.stepName === 'waiting')).toBe(true)
+        })
+        await d.cancel(run.id)
+      } finally {
+        release()
+      }
+      await processing
+
+      expect((await d.jobs.job.getRun(run.id))?.status).toBe('cancelled')
+      expect(workerErrors).toEqual([])
+    })
+
+    it('preserves lease loss when another branch has already failed', async () => {
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const d = durably.register({
+        job: defineJob({
+          name: 'parallel-lease-loss',
+          input: z.object({}),
+          run: async (step) => {
+            await step.all({
+              failing: () => {
+                throw new Error('ordinary branch failure')
+              },
+              waiting: async () => {
+                await gate
+                throw new LeaseLostError(step.runId)
+              },
+            })
+          },
+        }),
+      })
+
+      const run = await d.jobs.job.trigger({})
+      const processing = d.processOne()
+      try {
+        await vi.waitFor(async () => {
+          const attempts = await d.storage.getStepAttempts(run.id)
+          expect(attempts.find((a) => a.stepName === 'failing')?.status).toBe(
+            'failed',
+          )
+          expect(attempts.some((a) => a.stepName === 'waiting')).toBe(true)
+        })
+        await d.storage.updateRun(run.id, {
+          leaseExpiresAt: new Date(Date.now() - 1000).toISOString(),
+        })
+      } finally {
+        release()
+      }
+      await processing
+
+      expect((await d.jobs.job.getRun(run.id))?.status).toBe('leased')
     })
   })
 

@@ -360,6 +360,37 @@ describe('useRuns (client)', () => {
     expect(result.current.runs[1].progress).toBeNull()
   })
 
+  it('keeps the highest step index when parallel steps complete out of order', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve([createMockRun({ id: 'run-1', status: 'leased' })]),
+    })
+
+    const { result } = renderHook(() => useRuns({ api: '/api/durably' }))
+    await waitFor(() => expect(result.current.runs).toHaveLength(1))
+    await waitFor(() =>
+      expect(mockEventSource.instances.length).toBeGreaterThan(0),
+    )
+
+    act(() => {
+      mockEventSource.emit({
+        type: 'step:complete',
+        runId: 'run-1',
+        jobName: 'test-job',
+        stepIndex: 1,
+      })
+      mockEventSource.emit({
+        type: 'step:complete',
+        runId: 'run-1',
+        jobName: 'test-job',
+        stepIndex: 0,
+      })
+    })
+
+    expect(result.current.runs[0].currentStepIndex).toBe(2)
+  })
+
   it('does not subscribe to SSE on non-first pages', async () => {
     const page1Runs = [
       createMockRun({ id: 'run-1' }),
