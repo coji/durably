@@ -6,6 +6,7 @@ import {
   ConflictError,
   createDurably,
   defineJob,
+  LeaseLostError,
   ValidationError,
   type Durably,
   type StepAttemptContext,
@@ -134,6 +135,7 @@ export function createAttemptTests(createDialect: () => Dialect) {
             }),
             step.run('fast', async () => 'fast'),
           ])
+          await step.run('after', () => 'after')
         },
       })
       const d = runtime.register({ job })
@@ -141,9 +143,49 @@ export function createAttemptTests(createDialect: () => Dialect) {
       await d.processOne()
       expect((await d.getRun(run.id))?.status).toBe('completed')
       expect(await d.getStepAttempts(run.id)).toMatchObject([
-        { status: 'completed' },
-        { status: 'completed' },
+        { stepName: 'slow', stepIndex: 0, status: 'completed' },
+        { stepName: 'fast', stepIndex: 1, status: 'completed' },
+        { stepName: 'after', stepIndex: 2, status: 'completed' },
       ])
+      expect((await d.getRun(run.id))?.currentStepIndex).toBe(3)
+    })
+
+    it('keeps the next index stable when concurrent checkpoints replay after recovery', async () => {
+      const runtime = await createRuntime({ preserveSteps: true })
+      let invocations = 0
+      const job = defineJob({
+        name: 'parallel-replay-index',
+        input: z.object({}),
+        run: async (step) => {
+          await Promise.all([
+            step.run('slow', async () => {
+              await new Promise((resolve) => setTimeout(resolve, 20))
+              return 1
+            }),
+            step.run('fast', () => 2),
+          ])
+          if (++invocations === 1) throw new LeaseLostError(step.runId)
+          await step.run('after', () => 3)
+        },
+      })
+      const d = runtime.register({ job })
+      const run = await d.jobs.job.trigger({})
+      await d.processOne()
+      expect((await d.getRun(run.id))?.status).toBe('leased')
+      expect((await d.getRun(run.id))?.currentStepIndex).toBe(2)
+      await d.storage.updateRun(run.id, {
+        leaseExpiresAt: new Date(Date.now() - 1_000).toISOString(),
+      })
+      await d.storage.releaseExpiredLeases(new Date().toISOString())
+      await d.processOne()
+      expect((await d.getRun(run.id))?.status).toBe('completed')
+      expect(await d.getStepAttempts(run.id)).toMatchObject([
+        { stepName: 'slow', stepIndex: 0 },
+        { stepName: 'fast', stepIndex: 1 },
+        { stepName: 'after', stepIndex: 2 },
+      ])
+      expect((await d.getRun(run.id))?.currentStepIndex).toBe(3)
+      expect(await d.storage.getSteps(run.id)).toHaveLength(3)
     })
 
     it('keeps the context metadata separate from a mutated caller value', async () => {
@@ -161,6 +203,9 @@ export function createAttemptTests(createDialect: () => Dialect) {
               const next = { usage: 3 }
               await attempt.setMetadata(next)
               next.usage = 4
+              expect(attempt.metadata).toEqual({ usage: 3 })
+              const exposed = attempt.metadata as { usage: number }
+              exposed.usage = 500
               expect(attempt.metadata).toEqual({ usage: 3 })
             },
             { metadata: initial },
@@ -386,6 +431,42 @@ export function createAttemptTests(createDialect: () => Dialect) {
       ])
       await d.deleteRun(run.id)
       expect(await d.getStepAttempts(run.id)).toEqual([])
+    })
+
+    it('direct Store deletion removes a leased run and its attempts', async () => {
+      const runtime = await createRuntime()
+      const { run } = await runtime.storage.enqueue({
+        jobName: 'store-delete',
+        input: {},
+      })
+      const claimed = await runtime.storage.claimNext(
+        'worker',
+        new Date().toISOString(),
+        30_000,
+      )
+      expect(claimed?.id).toBe(run.id)
+      const attempt = await runtime.storage.beginStepAttempt(
+        run.id,
+        claimed!.leaseGeneration,
+        {
+          name: 'work',
+          index: 0,
+        },
+      )
+      expect(attempt).not.toBeNull()
+      await runtime.storage.deleteRun(run.id)
+      expect(await runtime.storage.getRun(run.id)).toBeNull()
+      expect(await runtime.storage.getStepAttempt(attempt!.id)).toBeNull()
+      expect(
+        await runtime.storage.beginStepAttempt(
+          run.id,
+          claimed!.leaseGeneration,
+          {
+            name: 'work',
+            index: 1,
+          },
+        ),
+      ).toBeNull()
     })
 
     it('removes attempts through retention purging', async () => {

@@ -144,15 +144,15 @@ export function createStepContext(
       // Check if step was already completed
       const existingStep = await storage.getCompletedStep(run.id, name)
       if (existingStep) {
-        stepIndex++
+        stepIndex = Math.max(stepIndex, existingStep.index + 1)
         return existingStep.output as T
       }
 
-      const attemptIndex = stepIndex
       const initialMetadata =
         options && 'metadata' in options
           ? JSON.parse(serializeJsonValue(options.metadata))
           : undefined
+      const attemptIndex = stepIndex++
       const startedAttempt = await storage.beginStepAttempt(
         run.id,
         leaseGeneration,
@@ -167,12 +167,16 @@ export function createStepContext(
       if (!startedAttempt) {
         return await throwForRefusedStep(name, attemptIndex)
       }
+      // Cancellation may arrive while the durable start is being written.
+      throwIfAborted()
 
       let currentMetadata = startedAttempt.metadata
       const attempt: StepAttemptContext = {
         id: startedAttempt.id,
         get metadata() {
-          return currentMetadata
+          return currentMetadata === null
+            ? null
+            : JSON.parse(JSON.stringify(currentMetadata))
         },
         async setMetadata(value) {
           const snapshot = JSON.parse(serializeJsonValue(value)) as JsonValue
@@ -224,8 +228,6 @@ export function createStepContext(
         if (!savedStep) {
           await throwForRefusedStep(name, attemptIndex)
         }
-
-        stepIndex++
 
         // Emit step:complete event
         eventEmitter.emit({

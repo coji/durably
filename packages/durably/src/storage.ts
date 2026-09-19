@@ -396,6 +396,12 @@ export function createKyselyStore(
     ids: string[],
   ): Promise<void> {
     if (ids.length === 0) return
+    // Lock run rows before attempt rows, matching begin/update/finalize order.
+    await trx
+      .updateTable('durably_runs')
+      .set({ updated_at: sql`updated_at` })
+      .where('id', 'in', ids)
+      .execute()
     await trx
       .deleteFrom('durably_step_attempts')
       .where('run_id', 'in', ids)
@@ -1179,7 +1185,7 @@ export function createKyselyStore(
             await trx
               .updateTable('durably_runs')
               .set({
-                current_step_index: input.index + 1,
+                current_step_index: sql`CASE WHEN current_step_index < ${input.index + 1} THEN ${input.index + 1} ELSE current_step_index END`,
                 completed_step_count: sql`completed_step_count + 1`,
                 updated_at: completedAt,
               })

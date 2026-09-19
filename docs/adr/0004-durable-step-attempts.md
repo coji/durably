@@ -18,6 +18,8 @@ When a callback settles, its attempt outcome and the existing step checkpoint co
 
 Attempts survive terminal checkpoint cleanup and are deleted with their run by explicit deletion or retention-based purge. Metadata is application-owned JSON; model names, usage formats, pricing, and analytics stay outside Durably. SQLite uses a single conditional write statement for begin/update to serialize with cancellation and claim; PostgreSQL locks the run row before touching an attempt.
 
+Parallel callbacks reserve distinct step indexes before invocation. Replaying a completed checkpoint uses its persisted index instead of counting it again, and checkpoint persistence never moves the run's index backward when parallel callbacks finish out of order. Run deletion locks the run row before deleting its attempts, matching the mutation lock order.
+
 ## Consequences
 
 - A crash can leave an unresolved attempt that remains queryable after recovery.
