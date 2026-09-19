@@ -933,6 +933,155 @@ describe('useJob (client)', () => {
       expect(result.current.status).toBeNull()
     })
 
+    it('clears resolving when reset supersedes an in-flight lookup', async () => {
+      const resolvers: Array<
+        (value: { ok: boolean; json: () => Promise<unknown> }) => void
+      > = []
+      globalThis.fetch = vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolvers.push(resolve)
+          }),
+      )
+      const { result } = renderHook(() =>
+        useJob({ api: '/api/durably', jobName: 'test-job' }),
+      )
+      await waitFor(() => expect(resolvers).toHaveLength(2))
+      expect(result.current.isResolving).toBe(true)
+
+      act(() => result.current.reset())
+      expect(result.current.isResolving).toBe(false)
+      await act(async () => {
+        for (const resolve of resolvers) {
+          resolve({ ok: true, json: () => Promise.resolve([]) })
+        }
+      })
+      expect(result.current.isResolving).toBe(false)
+    })
+
+    it('marks a lookup as resolving when autoResume is enabled later', async () => {
+      const resolvers: Array<
+        (value: { ok: boolean; json: () => Promise<unknown> }) => void
+      > = []
+      globalThis.fetch = vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolvers.push(resolve)
+          }),
+      )
+      const { result, rerender } = renderHook(
+        ({ autoResume }: { autoResume: boolean }) =>
+          useJob({ api: '/api/durably', jobName: 'test-job', autoResume }),
+        { initialProps: { autoResume: false } },
+      )
+      expect(result.current.isResolving).toBe(false)
+      rerender({ autoResume: true })
+      await waitFor(() => expect(resolvers).toHaveLength(2))
+      expect(result.current.isResolving).toBe(true)
+
+      await act(async () => {
+        for (const resolve of resolvers) {
+          resolve({ ok: true, json: () => Promise.resolve([]) })
+        }
+      })
+      await waitFor(() => expect(result.current.isResolving).toBe(false))
+    })
+
+    it('resolves again when initialRunId is removed', async () => {
+      const resolvers: Array<
+        (value: { ok: boolean; json: () => Promise<unknown> }) => void
+      > = []
+      globalThis.fetch = vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolvers.push(resolve)
+          }),
+      )
+      const { result, rerender } = renderHook(
+        ({ initialRunId }: { initialRunId?: string }) =>
+          useJob({ api: '/api/durably', jobName: 'test-job', initialRunId }),
+        { initialProps: { initialRunId: 'explicit' as string | undefined } },
+      )
+      expect(result.current.currentRunId).toBe('explicit')
+      expect(result.current.isResolving).toBe(false)
+
+      rerender({ initialRunId: undefined })
+      await waitFor(() => expect(resolvers).toHaveLength(2))
+      expect(result.current.currentRunId).toBeNull()
+      expect(result.current.isResolving).toBe(true)
+
+      await act(async () => {
+        for (const resolve of resolvers) {
+          resolve({ ok: true, json: () => Promise.resolve([]) })
+        }
+      })
+      await waitFor(() => expect(result.current.isResolving).toBe(false))
+    })
+
+    it('discards a parsed lookup result after the API changes', async () => {
+      let resolveOldJson!: (runs: unknown[]) => void
+      globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+        if (url.startsWith('/old')) {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              new Promise((resolve) => {
+                resolveOldJson = resolve
+              }),
+          })
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve([]) })
+      })
+      const { result, rerender } = renderHook(
+        ({ api }: { api: string }) => useJob({ api, jobName: 'test-job' }),
+        { initialProps: { api: '/old' } },
+      )
+      await waitFor(() => expect(resolveOldJson).toBeDefined())
+      rerender({ api: '/new' })
+      await waitFor(() => expect(result.current.isResolving).toBe(false))
+
+      await act(async () => {
+        resolveOldJson([{ id: 'old-api-run', status: 'leased' }])
+      })
+      expect(result.current.currentRunId).toBeNull()
+    })
+
+    it('clears provisional status when initialRunId changes', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([]),
+      })
+      const { result, rerender } = renderHook(
+        ({ initialRunId }: { initialRunId?: string }) =>
+          useJob({
+            api: '/api/durably',
+            jobName: 'test-job',
+            autoResume: false,
+            initialRunId,
+          }),
+        { initialProps: { initialRunId: undefined as string | undefined } },
+      )
+      const jobSubscription = mockEventSource.instances.find((instance) =>
+        instance.url.includes('jobName=test-job'),
+      )!
+      act(() => {
+        jobSubscription.onmessage?.(
+          new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'run:coalesced',
+              runId: 'previous',
+              status: 'leased',
+            }),
+          }),
+        )
+      })
+      expect(result.current.status).toBe('leased')
+
+      rerender({ initialRunId: 'explicit' })
+      expect(result.current.currentRunId).toBe('explicit')
+      expect(result.current.status).toBeNull()
+    })
+
     it('serializes all triggerOptions and tracks a leased coalesced response', async () => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: true,

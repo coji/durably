@@ -137,6 +137,8 @@ export function useJob<
 
   const resolutionEpochRef = useRef(0)
   const prevScopeRef = useRef(stableScope)
+  const prevSourceRef = useRef({ api, jobName })
+  const prevInitialRunIdRef = useRef(initialRunId)
   const [isResolving, setIsResolving] = useState(autoResume && !initialRunId)
 
   // Track if user has triggered a run (to prevent autoResume from overwriting)
@@ -165,13 +167,43 @@ export function useJob<
     }
   }, [stableScope, initialRunId, autoResume, subscription.reset])
 
+  // A changed endpoint or job is a new tracking context, even with the same scope.
+  useEffect(() => {
+    if (
+      prevSourceRef.current.api === api &&
+      prevSourceRef.current.jobName === jobName
+    )
+      return
+    prevSourceRef.current = { api, jobName }
+    resolutionEpochRef.current++
+    hasUserTriggered.current = false
+    subscription.reset()
+    setCurrentRunId(initialRunId ?? null)
+    setHydratedStatus(null)
+    setIsPending(false)
+    setIsResolving(autoResume && !initialRunId)
+  }, [api, jobName, initialRunId, autoResume, subscription.reset])
+
   // Handle initialRunId updates
   useEffect(() => {
-    if (!initialRunId) return
+    const previous = prevInitialRunIdRef.current
+    prevInitialRunIdRef.current = initialRunId
+    if (!initialRunId) {
+      if (previous) {
+        resolutionEpochRef.current++
+        subscription.reset()
+        setCurrentRunId(null)
+        setHydratedStatus(null)
+        setIsPending(false)
+      }
+      return
+    }
     resolutionEpochRef.current++
     setIsResolving(false)
+    setHydratedStatus(null)
+    setIsPending(false)
     setCurrentRunId(initialRunId)
-  }, [initialRunId])
+  }, [initialRunId, subscription.reset])
 
   // Auto-resume: fetch leased/pending job on mount / scope change
   useEffect(() => {
@@ -183,6 +215,12 @@ export function useJob<
       setIsResolving(false)
       return // Skip if initialRunId is provided
     }
+    if (hasUserTriggered.current) {
+      setIsResolving(false)
+      return
+    }
+
+    setIsResolving(true)
 
     const abortController = new AbortController()
     let cancelled = false
@@ -215,7 +253,11 @@ export function useJob<
         fetch(`${api}/runs?${pendingParams}`, { signal }),
       ])
 
-      if (hasUserTriggered.current || resolutionEpochRef.current !== epoch) {
+      if (
+        cancelled ||
+        hasUserTriggered.current ||
+        resolutionEpochRef.current !== epoch
+      ) {
         return
       }
 
@@ -225,7 +267,11 @@ export function useJob<
           id: string
           status?: RunStatus
         }>
-        if (hasUserTriggered.current || resolutionEpochRef.current !== epoch)
+        if (
+          cancelled ||
+          hasUserTriggered.current ||
+          resolutionEpochRef.current !== epoch
+        )
           return
         if (runs.length > 0) {
           setCurrentRunId(runs[0].id)
@@ -240,7 +286,11 @@ export function useJob<
           id: string
           status?: RunStatus
         }>
-        if (hasUserTriggered.current || resolutionEpochRef.current !== epoch)
+        if (
+          cancelled ||
+          hasUserTriggered.current ||
+          resolutionEpochRef.current !== epoch
+        )
           return
         if (runs.length > 0) {
           setCurrentRunId(runs[0].id)
@@ -421,6 +471,7 @@ export function useJob<
 
   const reset = useCallback(() => {
     resolutionEpochRef.current++
+    setIsResolving(false)
     subscription.reset()
     setCurrentRunId(null)
     setHydratedStatus(null)

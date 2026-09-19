@@ -566,6 +566,62 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(body2[0].labels).toEqual({ env: 'prod', tenant: 't1' })
       })
 
+      it('keeps a __proto__ label filter in run listing and subscription', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'prototype-label-filter',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        const matchingLabels = JSON.parse('{"__proto__":"target"}') as Record<
+          string,
+          string
+        >
+        const otherLabels = JSON.parse('{"__proto__":"other"}') as Record<
+          string,
+          string
+        >
+        const first = await d.jobs.job.trigger({}, { labels: matchingLabels })
+        await d.jobs.job.trigger({}, { labels: otherLabels })
+
+        const listRequest = new Request(
+          'http://localhost/api/durably/runs?jobName=prototype-label-filter&label.__proto__=target',
+        )
+        const listResponse = await handler.handle(listRequest, '/api/durably')
+        const listed = (await listResponse.json()) as Array<{ id: string }>
+        expect(listed.map((run) => run.id)).toEqual([first.id])
+
+        const subscribeRequest = new Request(
+          'http://localhost/api/durably/runs/subscribe?jobName=prototype-label-filter&label.__proto__=target',
+        )
+        const subscribeResponse = await handler.handle(
+          subscribeRequest,
+          '/api/durably',
+        )
+        const reader = subscribeResponse.body!.getReader()
+        const decoder = new TextDecoder()
+        const wrong = await d.jobs.job.trigger({}, { labels: otherLabels })
+        const matching = await d.jobs.job.trigger(
+          {},
+          { labels: matchingLabels },
+        )
+        let events = ''
+        await Promise.race([
+          (async () => {
+            while (!events.includes(matching.id)) {
+              const { done, value } = await reader.read()
+              if (done) break
+              events += decoder.decode(value)
+            }
+          })(),
+          new Promise((resolve) => setTimeout(resolve, 1000)),
+        ])
+        expect(events).toContain(matching.id)
+        expect(events).not.toContain(wrong.id)
+        await reader.cancel()
+      })
+
       it('filters by status', async () => {
         const d = durably.register({
           job: defineJob({

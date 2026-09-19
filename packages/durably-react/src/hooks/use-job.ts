@@ -140,6 +140,8 @@ export function useJob<
   const resolutionEpochRef = useRef(0)
   const lookupEpochRef = useRef(0)
   const prevScopeRef = useRef(stableScope)
+  const currentScopeRef = useRef(stableScope)
+  currentScopeRef.current = stableScope
   const [isResolving, setIsResolving] = useState(autoResume && !initialRunId)
 
   useEffect(() => {
@@ -197,6 +199,7 @@ export function useJob<
   // Handle initialRunId
   useEffect(() => {
     if (!initialRunId) return
+    const hydrationScope = stableScope
     setIsResolving(false)
     const epoch = ++resolutionEpochRef.current
     subscription.setCurrentRunId(initialRunId)
@@ -205,7 +208,11 @@ export function useJob<
       jobHandle
         .getRun(initialRunId)
         .then((run) => {
-          if (run && resolutionEpochRef.current === epoch) {
+          if (
+            run &&
+            resolutionEpochRef.current === epoch &&
+            currentScopeRef.current === hydrationScope
+          ) {
             subscription.hydrateRun(
               run.id,
               run.status as RunStatus,
@@ -220,6 +227,7 @@ export function useJob<
     }
   }, [
     initialRunId,
+    stableScope,
     jobHandle,
     subscription.setCurrentRunId,
     subscription.hydrateRun,
@@ -280,25 +288,31 @@ export function useJob<
 
   const trackTriggeredRun = useCallback(
     async (run: TriggerResult<TOutput, TLabels>, epoch: number) => {
-      if (!jobHandle || resolutionEpochRef.current !== epoch) return
-      subscription.hydrateRun(
-        run.id,
-        run.status as RunStatus,
-        run.output as TOutput,
-        run.error,
-      )
+      if (!jobHandle) return
+      if (resolutionEpochRef.current === epoch) {
+        subscription.hydrateRun(
+          run.id,
+          run.status as RunStatus,
+          run.output as TOutput,
+          run.error,
+        )
+      }
 
       // Terminal events before hydration could not be applied. Re-read after
       // installing the run ID, while leaving newer events or scopes in control.
-      const revalidated = await jobHandle.getRun(run.id)
-      if (!revalidated || resolutionEpochRef.current !== epoch) return
-      subscription.revalidateRun(
-        run.id,
-        run.status as RunStatus,
-        revalidated.status as RunStatus,
-        revalidated.output as TOutput,
-        revalidated.error,
-      )
+      try {
+        const revalidated = await jobHandle.getRun(run.id)
+        if (!revalidated) return
+        subscription.revalidateRun(
+          run.id,
+          run.status as RunStatus,
+          revalidated.status as RunStatus,
+          revalidated.output as TOutput,
+          revalidated.error,
+        )
+      } catch {
+        // Revalidation is best effort; the durable trigger already succeeded.
+      }
     },
     [jobHandle, subscription.hydrateRun, subscription.revalidateRun],
   )
@@ -382,6 +396,7 @@ export function useJob<
 
   const reset = useCallback(() => {
     resolutionEpochRef.current++
+    setIsResolving(false)
     subscription.reset()
   }, [subscription.reset])
 

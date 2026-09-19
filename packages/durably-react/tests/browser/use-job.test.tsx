@@ -778,6 +778,78 @@ describe('useJob', () => {
       expect(result.current.output).toEqual({ success: true })
     })
 
+    it('keeps a successful trigger result when revalidation fails', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      vi.spyOn(durably.storage, 'getRun').mockRejectedValueOnce(
+        new Error('temporary read failure'),
+      )
+      const { result } = renderHook(
+        () => useJob(testJob, { autoResume: false, followLatest: false }),
+        { wrapper: createWrapper(durably) },
+      )
+
+      const { runId } = await result.current.trigger({ input: 'test' })
+      await waitFor(() => expect(result.current.currentRunId).toBe(runId))
+      expect((await durably.getRun(runId))?.status).toBe('pending')
+    })
+
+    it('clears resolving when reset supersedes an in-flight lookup', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      durably.register({ testJob })
+      let resolveLookup!: (
+        runs: Awaited<ReturnType<typeof durably.storage.getRuns>>,
+      ) => void
+      vi.spyOn(durably.storage, 'getRuns').mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveLookup = resolve
+          }),
+      )
+      const { result } = renderHook(() => useJob(testJob), {
+        wrapper: createWrapper(durably),
+      })
+      await waitFor(() => expect(result.current.isResolving).toBe(true))
+
+      act(() => result.current.reset())
+      expect(result.current.isResolving).toBe(false)
+      await act(async () => resolveLookup([]))
+      expect(result.current.isResolving).toBe(false)
+    })
+
+    it('rehydrates a fixed initialRunId after its scope changes', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const run = await handle.trigger({ input: 'test' })
+      let resolveOldRead!: (
+        value: Awaited<ReturnType<typeof handle.getRun>>,
+      ) => void
+      vi.spyOn(durably.storage, 'getRun').mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveOldRead = resolve
+          }),
+      )
+      const { result, rerender } = renderHook(
+        ({ documentId }: { documentId: string }) =>
+          useJob(testJob, {
+            initialRunId: run.id,
+            scope: { labels: { documentId } },
+          }),
+        {
+          wrapper: createWrapper(durably),
+          initialProps: { documentId: 'one' },
+        },
+      )
+      rerender({ documentId: 'two' })
+      await waitFor(() => expect(result.current.status).toBe('pending'))
+      await act(async () => resolveOldRead(null))
+      expect(result.current.currentRunId).toBe(run.id)
+      expect(result.current.status).toBe('pending')
+    })
+
     it('a matching follow event wins over an older in-flight lookup', async () => {
       const durably = await createTestDurably({ autoStart: false })
       instances.push(durably)

@@ -158,7 +158,7 @@ const VALID_STATUSES_SET: ReadonlySet<string> = new Set(VALID_STATUSES)
 function parseLabelsFromParams(
   searchParams: URLSearchParams,
 ): Record<string, string> | undefined {
-  const labels: Record<string, string> = {}
+  const labels: Record<string, string> = Object.create(null)
   for (const [key, value] of searchParams.entries()) {
     if (key.startsWith('label.')) {
       labels[key.slice(6)] = value
