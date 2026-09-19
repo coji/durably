@@ -194,6 +194,7 @@ function Component() {
     isCancelled,
     isTerminal,
     isActive,
+    isResolving,
     currentRunId,
     reset,
   } = useJob<
@@ -205,6 +206,12 @@ function Component() {
     initialRunId: undefined, // Optional: resume existing run
     autoResume: true, // Auto-resume leased/pending jobs on mount
     followLatest: true, // Switch to tracking new runs via SSE
+    scope: { labels: { userId: 'user_123' } },
+    triggerOptions: {
+      labels: { userId: 'user_123' },
+      concurrencyKey: 'sync:user_123',
+      coalesce: 'active',
+    },
   })
 
   const handleClick = async () => {
@@ -218,21 +225,26 @@ function Component() {
 
 ### Options
 
-| Option         | Type      | Default | Description                              |
-| -------------- | --------- | ------- | ---------------------------------------- |
-| `api`          | `string`  | -       | API base path (e.g., `/api/durably`)     |
-| `jobName`      | `string`  | -       | Name of the job to trigger               |
-| `initialRunId` | `string`  | -       | Resume subscription to an existing run   |
-| `autoResume`   | `boolean` | `true`  | Auto-resume leased/pending jobs on mount |
-| `followLatest` | `boolean` | `true`  | Switch to tracking new runs via SSE      |
+| Option           | Type                                    | Default | Description                                               |
+| ---------------- | --------------------------------------- | ------- | --------------------------------------------------------- |
+| `api`            | `string`                                | -       | API base path (e.g., `/api/durably`)                      |
+| `jobName`        | `string`                                | -       | Name of the job to trigger                                |
+| `initialRunId`   | `string`                                | -       | Track this run immediately and skip scoped auto-resume    |
+| `autoResume`     | `boolean`                               | `true`  | Find a matching leased run, then a matching pending run   |
+| `followLatest`   | `boolean`                               | `true`  | Follow matching trigger, coalesced, and leased SSE events |
+| `scope`          | `{ labels: Record<string, string> }`    | -       | Filter lookups and subscriptions by every supplied label  |
+| `triggerOptions` | `TriggerOptions<Record<string,string>>` | -       | Forward options to both `trigger` and `triggerAndWait`    |
+
+Client mode encodes scope as `label.<key>` query parameters on both `/runs` lookups and `/runs/subscribe`. `isResolving` stays true until the initial lookup settles or is superseded. Scope changes discard the prior run, reset local trigger precedence, rebuild the subscription, and resolve the new scope. Scope labels are not copied into trigger labels.
 
 ### Return value
 
-| Property     | Type      | Description                                                                       |
-| ------------ | --------- | --------------------------------------------------------------------------------- |
-| `isTerminal` | `boolean` | `true` when status is completed, failed, or cancelled                             |
-| `isActive`   | `boolean` | `true` when status is pending or leased                                           |
-| …            | …         | See [Types](/api/durably-react/types) — same boolean helpers as `isPending`, etc. |
+| Property      | Type      | Description                                                                       |
+| ------------- | --------- | --------------------------------------------------------------------------------- |
+| `isTerminal`  | `boolean` | `true` when status is completed, failed, or cancelled                             |
+| `isActive`    | `boolean` | `true` when status is pending or leased                                           |
+| `isResolving` | `boolean` | `true` while the initial scoped lookup is in progress                             |
+| …             | …         | See [Types](/api/durably-react/types) — same boolean helpers as `isPending`, etc. |
 
 ---
 

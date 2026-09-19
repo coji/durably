@@ -3,7 +3,7 @@ import { monotonicFactory } from 'ulidx'
 import { type JsonValue, serializeJsonValue } from './attempts'
 import { claimNextPostgres } from './claim-postgres'
 import { claimNextSqlite } from './claim-sqlite'
-import { ConflictError } from './errors'
+import { ConflictError, ValidationError } from './errors'
 import type { Disposition } from './job'
 import type { Database } from './schema'
 import { rowToLog, rowToRun, rowToStep, validateLabels } from './transformers'
@@ -29,7 +29,7 @@ export interface CreateRunInput<
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: TLabels
-  coalesce?: 'skip' | 'queue'
+  coalesce?: 'skip' | 'queue' | 'active'
 }
 
 export interface EnqueueResult<
@@ -338,6 +338,12 @@ function createWriteMutex() {
   }
 }
 
+// Active coalescing also needs process-wide serialization across stores that
+// point at the same SQLite database. The database write remains the source of
+// truth across processes; this mutex prevents a synchronous SQLite busy wait
+// in one local connection from blocking the connection that must commit.
+const withActiveSqliteLock = createWriteMutex()
+
 /**
  * Check if an error is a unique constraint violation (any kind).
  * PostgreSQL: SQLSTATE '23505' or constraint name present.
@@ -532,6 +538,10 @@ export function createKyselyStore(
     input: CreateRunInput,
     retried = false,
   ): Promise<EnqueueResult> {
+    if (input.coalesce && !input.concurrencyKey) {
+      throw new ValidationError('coalesce requires concurrencyKey')
+    }
+
     const queryDb = trx ?? db
     const now = new Date().toISOString()
 
@@ -546,6 +556,34 @@ export function createKyselyStore(
 
       if (existing) {
         return { run: rowToRun(existing), disposition: 'idempotent' }
+      }
+    }
+
+    if (input.coalesce === 'active' && input.concurrencyKey) {
+      const pending = await findPendingByConcurrencyKey(
+        queryDb,
+        input.jobName,
+        input.concurrencyKey,
+      )
+      if (pending) {
+        return { run: rowToRun(pending), disposition: 'coalesced' }
+      }
+
+      const leased = await queryDb
+        .selectFrom('durably_runs')
+        .selectAll()
+        .where('job_name', '=', input.jobName)
+        .where('concurrency_key', '=', input.concurrencyKey)
+        .where('status', '=', 'leased')
+        .where('lease_expires_at', 'is not', null)
+        .where('lease_expires_at', '>', now)
+        .orderBy('created_at', 'asc')
+        .orderBy('id', 'asc')
+        .limit(1)
+        .executeTakeFirst()
+
+      if (leased) {
+        return { run: rowToRun(leased), disposition: 'coalesced' }
       }
     }
 
@@ -627,7 +665,11 @@ export function createKyselyStore(
         (violation === 'pending_concurrency' || violation === null) &&
         input.concurrencyKey
       ) {
-        if (input.coalesce === 'skip' || input.coalesce === 'queue') {
+        if (
+          input.coalesce === 'skip' ||
+          input.coalesce === 'queue' ||
+          input.coalesce === 'active'
+        ) {
           const pending = await findPendingByConcurrencyKey(
             queryDb,
             input.jobName,
@@ -661,7 +703,7 @@ export function createKyselyStore(
         // No coalesce: explicit error
         throw new ConflictError(
           `A pending run already exists for concurrency key "${input.concurrencyKey}" ` +
-            `in job "${input.jobName}". Use coalesce: 'skip' or coalesce: 'queue' to return the existing run instead.`,
+            `in job "${input.jobName}". Use coalesce: 'skip', 'queue', or 'active' to return the existing run instead.`,
         )
       }
 
@@ -671,6 +713,27 @@ export function createKyselyStore(
 
   const store: Store<Record<string, string>> = {
     async enqueue(input: CreateRunInput): Promise<EnqueueResult> {
+      if (input.coalesce === 'active') {
+        if (!input.concurrencyKey) {
+          throw new ValidationError('coalesce requires concurrencyKey')
+        }
+        const enqueueActive = () =>
+          db.transaction().execute(async (trx) => {
+            if (backend === 'postgres') {
+              await sql`SELECT pg_advisory_xact_lock(hashtext(${input.concurrencyKey}))`.execute(
+                trx,
+              )
+            } else {
+              await sql`UPDATE durably_runs SET updated_at = updated_at WHERE 1 = 0`.execute(
+                trx,
+              )
+            }
+            return enqueueInTx(trx, input)
+          })
+        return backend === 'postgres'
+          ? enqueueActive()
+          : withActiveSqliteLock(enqueueActive)
+      }
       return enqueueInTx(null, input)
     },
 
@@ -678,15 +741,47 @@ export function createKyselyStore(
       if (inputs.length === 0) {
         return []
       }
+      for (const input of inputs) {
+        if (input.coalesce && !input.concurrencyKey) {
+          throw new ValidationError('coalesce requires concurrencyKey')
+        }
+      }
       // Sequential enqueue within a single transaction for atomicity.
       // ConflictError on any item rolls back the entire batch.
-      return db.transaction().execute(async (trx) => {
-        const results: EnqueueResult[] = []
-        for (const input of inputs) {
-          results.push(await enqueueInTx(trx, input))
-        }
-        return results
-      })
+      const enqueueBatch = () =>
+        db.transaction().execute(async (trx) => {
+          if (inputs.some((i) => i.coalesce === 'active')) {
+            if (backend === 'postgres') {
+              const activeKeys = [
+                ...new Set(
+                  inputs.flatMap((i) =>
+                    i.coalesce === 'active' && i.concurrencyKey
+                      ? [i.concurrencyKey]
+                      : [],
+                  ),
+                ),
+              ].sort()
+              for (const key of activeKeys) {
+                await sql`SELECT pg_advisory_xact_lock(hashtext(${key}))`.execute(
+                  trx,
+                )
+              }
+            } else {
+              await sql`UPDATE durably_runs SET updated_at = updated_at WHERE 1 = 0`.execute(
+                trx,
+              )
+            }
+          }
+          const results: EnqueueResult[] = []
+          for (const input of inputs) {
+            results.push(await enqueueInTx(trx, input))
+          }
+          return results
+        })
+      return backend !== 'postgres' &&
+        inputs.some((i) => i.coalesce === 'active')
+        ? withActiveSqliteLock(enqueueBatch)
+        : enqueueBatch()
     },
 
     async getRun<T extends Run = Run>(runId: string): Promise<T | null> {

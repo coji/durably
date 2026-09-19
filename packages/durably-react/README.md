@@ -79,14 +79,27 @@ function App() {
 }
 
 function MyComponent() {
-  const { trigger, isLeased, isCompleted } = useJob(myJob)
+  const entityId = '123'
+  const { trigger, isResolving, isLeased, isCompleted } = useJob(myJob, {
+    scope: { labels: { entityId } },
+    triggerOptions: {
+      labels: { entityId },
+      concurrencyKey: `entity:${entityId}`,
+      coalesce: 'active',
+    },
+  })
   return (
-    <button onClick={() => trigger({ id: '123' })} disabled={isLeased}>
+    <button
+      onClick={() => trigger({ id: entityId })}
+      disabled={isResolving || isLeased}
+    >
       Run
     </button>
   )
 }
 ```
+
+`scope.labels` limits resume and follow behavior to runs matching every label. `triggerOptions` applies to both `trigger` and `triggerAndWait`; provide matching labels explicitly because scope labels are not copied into triggers. `isResolving` distinguishes the initial active-run lookup from an idle hook.
 
 ## Documentation
 

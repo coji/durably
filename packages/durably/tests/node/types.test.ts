@@ -207,9 +207,9 @@ describe('Type inference', () => {
   })
 
   describe('coalesce options', () => {
-    it('TriggerOptions coalesce accepts exactly skip and queue', () => {
+    it('TriggerOptions coalesce accepts exactly skip, queue, and active', () => {
       expectTypeOf<NonNullable<TriggerOptions['coalesce']>>().toEqualTypeOf<
-        'skip' | 'queue'
+        'skip' | 'queue' | 'active'
       >()
     })
   })

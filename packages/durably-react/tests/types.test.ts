@@ -61,6 +61,7 @@ describe('Type inference', () => {
       expectTypeOf<Result['isFailed']>().toEqualTypeOf<boolean>()
       expectTypeOf<Result['isTerminal']>().toEqualTypeOf<boolean>()
       expectTypeOf<Result['isActive']>().toEqualTypeOf<boolean>()
+      expectTypeOf<Result['isResolving']>().toEqualTypeOf<boolean>()
     })
 
     it('trigger accepts TInput and returns Promise<{ runId: string }>', () => {
@@ -92,6 +93,39 @@ describe('Type inference', () => {
 
       expectTypeOf<Result['reset']>().toBeFunction()
       expectTypeOf<Result['reset']>().returns.toEqualTypeOf<void>()
+    })
+
+    it('supports scope and triggerOptions in UseJobOptions', () => {
+      type Options = import('../src/hooks/use-job').UseJobOptions<{
+        env: string
+      }>
+
+      expectTypeOf<Options['scope']>().toEqualTypeOf<
+        { labels: { env: string } } | undefined
+      >()
+      expectTypeOf<Options['triggerOptions']>().toEqualTypeOf<
+        import('@coji/durably').TriggerOptions<{ env: string }> | undefined
+      >()
+    })
+  })
+
+  describe('useJob (client)', () => {
+    it('supports scope and triggerOptions in UseJobClientOptions', () => {
+      expectTypeOf<UseJobClientOptions['scope']>().toEqualTypeOf<
+        { labels: Record<string, string> } | undefined
+      >()
+      expectTypeOf<UseJobClientOptions['triggerOptions']>().toEqualTypeOf<
+        | import('@coji/durably').TriggerOptions<Record<string, string>>
+        | undefined
+      >()
+    })
+
+    it('exposes isResolving in UseJobClientResult', () => {
+      type Result = import('../src/client/use-job').UseJobClientResult<
+        { taskId: string },
+        { success: boolean }
+      >
+      expectTypeOf<Result['isResolving']>().toEqualTypeOf<boolean>()
     })
   })
 

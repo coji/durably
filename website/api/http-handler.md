@@ -131,19 +131,19 @@ The handler provides these endpoints:
   "input": { "filename": "data.csv" },
   "idempotencyKey": "unique-key",   // optional
   "concurrencyKey": "user-123",     // optional
-  "coalesce": "queue",              // optional ('skip' | 'queue') — requires concurrencyKey
+  "coalesce": "active",             // optional ('skip' | 'queue' | 'active') — requires concurrencyKey
   "labels": { "organizationId": "org_123" }  // optional
 }
 
 // Response
-{ "runId": "run_abc123", "disposition": "created" }
+{ "runId": "run_abc123", "disposition": "coalesced", "status": "leased" }
 // disposition: "created" | "idempotent" | "coalesced"
 // When disposition is not "created", runId refers to the existing run.
 // idempotencyKey match returns "idempotent" (takes priority over coalesce).
 ```
 
 ::: info SSE behavior
-`run:trigger` is **not** emitted for idempotent or coalesced triggers. A `run:coalesced` event is emitted instead when `coalesce: 'skip'` or `coalesce: 'queue'` returns an existing pending run.
+`run:trigger` is **not** emitted for idempotent or coalesced triggers. A `run:coalesced` event is emitted instead when coalescing returns an existing pending or leased run, and includes that run's `status`. With `'active'`, the server prefers a pending run, otherwise reuses a non-expired leased run, otherwise creates a pending run. Idempotency takes precedence. Expired or null leases and terminal runs do not block creation.
 :::
 
 ## SSE Event Stream
@@ -191,6 +191,8 @@ The stream closes automatically when the run completes or fails.
   "hasMore": true
 }
 ```
+
+The same `jobName` and `label.<key>` filters apply to `GET /runs/subscribe`. Every supplied label must match, so scoped clients receive only matching `run:trigger`, `run:coalesced`, and `run:leased` events.
 
 ## Auth Middleware
 

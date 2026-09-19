@@ -1,4 +1,4 @@
-import type { Dialect } from 'kysely'
+import { sql, type Dialect } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { createDurably, defineJob, type Durably } from '../../src'
@@ -283,5 +283,257 @@ export function createDbConcurrencyTests(
 
       await Promise.all([runtimeA.db.destroy(), runtimeB.db.destroy()])
     })
+
+    it('concurrent active triggers across separate runtimes produce no duplicate pending work for the same active scope', async () => {
+      for (let i = 0; i < 5; i++) {
+        await runtimes[0].db.deleteFrom('durably_logs').execute()
+        await runtimes[0].db.deleteFrom('durably_steps').execute()
+        await runtimes[0].db.deleteFrom('durably_runs').execute()
+
+        const results = await Promise.all(
+          runtimes.map((runtime, idx) =>
+            runtime.storage.enqueue({
+              jobName: 'race-active-job',
+              input: { idx },
+              concurrencyKey: `active-scope-${i}`,
+              coalesce: 'active',
+            }),
+          ),
+        )
+
+        const created = results.filter((r) => r.disposition === 'created')
+        const coalesced = results.filter((r) => r.disposition === 'coalesced')
+
+        expect(created).toHaveLength(1)
+        expect(coalesced).toHaveLength(runtimes.length - 1)
+
+        for (const c of coalesced) {
+          expect(c.run.id).toBe(created[0].run.id)
+        }
+
+        const pending = await runtimes[0].storage.getRuns({
+          jobName: 'race-active-job',
+          status: 'pending',
+        })
+        expect(pending).toHaveLength(1)
+      }
+    })
+
+    it('race between active trigger and worker claim produces one reusable active run and no trailing duplicate', async () => {
+      for (let i = 0; i < 5; i++) {
+        await runtimes[0].db.deleteFrom('durably_logs').execute()
+        await runtimes[0].db.deleteFrom('durably_steps').execute()
+        await runtimes[0].db.deleteFrom('durably_runs').execute()
+
+        const { run: first } = await runtimes[0].storage.enqueue({
+          jobName: 'race-claim-active',
+          input: { initial: true },
+          concurrencyKey: `claim-race-${i}`,
+          coalesce: 'active',
+        })
+
+        const now = new Date().toISOString()
+        const [claimResult, triggerResult] = await Promise.all([
+          runtimes[1].storage.claimNext('worker-race', now, 30_000),
+          runtimes[2].storage.enqueue({
+            jobName: 'race-claim-active',
+            input: { second: true },
+            concurrencyKey: `claim-race-${i}`,
+            coalesce: 'active',
+          }),
+        ])
+
+        expect(triggerResult.disposition).toBe('coalesced')
+        expect(triggerResult.run.id).toBe(first.id)
+
+        const pending = await runtimes[0].storage.getRuns({
+          jobName: 'race-claim-active',
+          status: 'pending',
+        })
+        if (claimResult) {
+          expect(pending).toHaveLength(0)
+        } else {
+          expect(pending).toHaveLength(1)
+        }
+      }
+    })
+
+    it('when predecessor lease has expired, active trigger may create a pending replacement and worker may reclaim predecessor', async () => {
+      await runtimes[0].db.deleteFrom('durably_logs').execute()
+      await runtimes[0].db.deleteFrom('durably_steps').execute()
+      await runtimes[0].db.deleteFrom('durably_runs').execute()
+
+      const { run: first } = await runtimes[0].storage.enqueue({
+        jobName: 'expired-lease-job',
+        input: { ordinal: 1 },
+        concurrencyKey: 'expired-key-1',
+      })
+
+      const claimed = await runtimes[0].storage.claimNext(
+        'worker-old',
+        new Date().toISOString(),
+        30_000,
+      )
+      expect(claimed?.id).toBe(first.id)
+
+      await runtimes[0].storage.updateRun(first.id, {
+        status: 'leased',
+        leaseOwner: 'worker-old',
+        leaseExpiresAt: new Date(Date.now() - 5000).toISOString(),
+      })
+
+      const triggerResult = await runtimes[1].storage.enqueue({
+        jobName: 'expired-lease-job',
+        input: { ordinal: 2 },
+        concurrencyKey: 'expired-key-1',
+        coalesce: 'active',
+      })
+      expect(triggerResult.disposition).toBe('created')
+      expect(triggerResult.run.id).not.toBe(first.id)
+      expect(triggerResult.run.status).toBe('pending')
+
+      const reclaimed = await runtimes[2].storage.claimNext(
+        'worker-new',
+        new Date().toISOString(),
+        30_000,
+      )
+      expect(reclaimed?.id).toBe(first.id)
+    })
+
+    it('concurrent batches using same keys in different orders complete without deadlock', async () => {
+      await runtimes[0].db.deleteFrom('durably_logs').execute()
+      await runtimes[0].db.deleteFrom('durably_steps').execute()
+      await runtimes[0].db.deleteFrom('durably_runs').execute()
+
+      for (let iter = 0; iter < 5; iter++) {
+        const batchA = [
+          {
+            jobName: 'batch-deadlock-job',
+            input: { a: 1 },
+            concurrencyKey: `key-A-${iter}`,
+            coalesce: 'active' as const,
+          },
+          {
+            jobName: 'batch-deadlock-job',
+            input: { b: 1 },
+            concurrencyKey: `key-B-${iter}`,
+            coalesce: 'active' as const,
+          },
+        ]
+        const batchB = [
+          {
+            jobName: 'batch-deadlock-job',
+            input: { b: 2 },
+            concurrencyKey: `key-B-${iter}`,
+            coalesce: 'active' as const,
+          },
+          {
+            jobName: 'batch-deadlock-job',
+            input: { a: 2 },
+            concurrencyKey: `key-A-${iter}`,
+            coalesce: 'active' as const,
+          },
+        ]
+
+        const [resultsA, resultsB] = await Promise.all([
+          runtimes[0].storage.enqueueMany(batchA),
+          runtimes[1].storage.enqueueMany(batchB),
+        ])
+
+        expect(resultsA).toHaveLength(2)
+        expect(resultsB).toHaveLength(2)
+      }
+    })
+
+    const postgresOnly = label === 'PostgreSQL' ? it : it.skip
+    postgresOnly(
+      'batch-vs-claim contention skips unavailable keys and leaves them claimable on a later poll',
+      { timeout: 15_000 },
+      async () => {
+        const keyA = 'batch-claim-a'
+        const keyB = 'batch-claim-b'
+        await runtimes[0].storage.enqueue({
+          jobName: 'batch-claim-job',
+          input: { key: 'a' },
+          concurrencyKey: keyA,
+        })
+        await runtimes[0].storage.enqueue({
+          jobName: 'batch-claim-job',
+          input: { key: 'b' },
+          concurrencyKey: keyB,
+        })
+
+        let releaseKeyB!: () => void
+        const holdKeyB = new Promise<void>((resolve) => {
+          releaseKeyB = resolve
+        })
+        let keyBLocked!: () => void
+        const keyBReady = new Promise<void>((resolve) => {
+          keyBLocked = resolve
+        })
+        const blocker = runtimes[3].db.transaction().execute(async (trx) => {
+          await sql`SELECT pg_advisory_xact_lock(hashtext(${keyB}))`.execute(
+            trx,
+          )
+          keyBLocked()
+          await holdKeyB
+        })
+        await keyBReady
+
+        const batch = runtimes[0].storage.enqueueMany([
+          {
+            jobName: 'batch-claim-job',
+            input: { key: 'a-batch' },
+            concurrencyKey: keyA,
+            coalesce: 'active',
+          },
+          {
+            jobName: 'batch-claim-job',
+            input: { key: 'b-batch' },
+            concurrencyKey: keyB,
+            coalesce: 'active',
+          },
+        ])
+
+        // Wait until the batch owns key A and is blocked acquiring key B.
+        let batchOwnsKeyA = false
+        for (let attempt = 0; attempt < 100 && !batchOwnsKeyA; attempt++) {
+          batchOwnsKeyA = await runtimes[2].db
+            .transaction()
+            .execute(async (trx) => {
+              const result = await sql<{ acquired: boolean }>`
+              SELECT pg_try_advisory_xact_lock(hashtext(${keyA})) AS acquired
+            `.execute(trx)
+              return result.rows[0]?.acquired === false
+            })
+          if (!batchOwnsKeyA)
+            await new Promise((resolve) => setTimeout(resolve, 10))
+        }
+        expect(batchOwnsKeyA).toBe(true)
+
+        const contestedClaim = await Promise.race([
+          runtimes[1].storage.claimNext(
+            'contested-worker',
+            new Date().toISOString(),
+            30_000,
+          ),
+          new Promise<'timed-out'>((resolve) =>
+            setTimeout(() => resolve('timed-out'), 2_000),
+          ),
+        ])
+        expect(contestedClaim).toBeNull()
+
+        releaseKeyB()
+        await Promise.all([blocker, batch])
+
+        const laterClaim = await runtimes[1].storage.claimNext(
+          'later-worker',
+          new Date().toISOString(),
+          30_000,
+        )
+        expect(laterClaim).not.toBeNull()
+        expect([keyA, keyB]).toContain(laterClaim?.concurrencyKey)
+      },
+    )
   })
 }

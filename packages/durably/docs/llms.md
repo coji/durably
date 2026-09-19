@@ -167,6 +167,19 @@ if (queued.disposition === 'coalesced') {
   console.log('Reused existing pending run:', queued.id)
 }
 
+// With coalesce: 'active'
+// - Reuses the oldest pending run for the same job name and concurrency key
+// - Otherwise reuses a leased run whose lease has not expired
+// - Otherwise creates a new pending run
+// - Terminal runs and null/expired leases do not block a new run
+// Selection is atomic at the database decision point. A reused leased run may
+// become terminal before this caller observes the result.
+const active = await syncUsers.trigger(
+  { orgId: 'org_123' },
+  { concurrencyKey: 'org_123', coalesce: 'active' },
+)
+console.log(active.id, active.status, active.disposition)
+
 // With labels (for filtering)
 await syncUsers.trigger({ orgId: 'org_123' }, { labels: { source: 'browser' } })
 
@@ -378,7 +391,13 @@ Subscribe to job execution events. **Listeners run synchronously** in the worker
 // Note: run:trigger is NOT emitted on idempotent hits (disposition: 'idempotent')
 durably.on('run:trigger', (e) => console.log('Triggered:', e.runId))
 durably.on('run:coalesced', (e) =>
-  console.log('Coalesced:', e.runId, 'skipped input:', e.skippedInput),
+  console.log(
+    'Coalesced:',
+    e.runId,
+    e.status, // 'pending' or 'leased'
+    'skipped input:',
+    e.skippedInput,
+  ),
 )
 durably.on('run:leased', (e) => console.log('Leased:', e.runId))
 durably.on('run:complete', (e) => console.log('Done:', e.output))
@@ -532,6 +551,8 @@ GET /runs?label.organizationId=org_123
 GET /runs/subscribe?label.organizationId=org_123&label.env=prod
 ```
 
+Every supplied label must match. The same filters apply to the initial run list and the `/runs/subscribe` event stream, including `run:trigger`, `run:coalesced`, and `run:leased` projections. HTTP trigger responses include the selected run's current `status`; active coalescing can therefore return either `pending` or `leased` with disposition `coalesced`.
+
 **Response Shape:** The `/runs` and `/run` endpoints return `ClientRun` objects (internal fields like `leaseOwner`, `leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `leaseGeneration`, `updatedAt` are stripped). Each response includes derived `isTerminal` and `isActive` booleans from `status` (terminal: completed, failed, or cancelled; active: pending or leased). Use `toClientRun()` to apply the same projection in custom code:
 
 ```ts
@@ -591,13 +612,14 @@ interface TriggerRequest<TLabels> {
   input: unknown
   idempotencyKey?: string
   concurrencyKey?: string
-  coalesce?: 'skip' | 'queue'
+  coalesce?: 'skip' | 'queue' | 'active'
   labels?: TLabels
 }
 
 interface TriggerResponse {
   runId: string
   disposition: Disposition
+  status: RunStatus
 }
 ```
 
@@ -787,7 +809,7 @@ interface TriggerOptions<
 > {
   idempotencyKey?: string
   concurrencyKey?: string
-  coalesce?: 'skip' | 'queue'
+  coalesce?: 'skip' | 'queue' | 'active'
   labels?: TLabels
 }
 

@@ -719,4 +719,302 @@ describe('useJob (client)', () => {
       expect(result.current.currentRunId).toBe('current-run-id')
     })
   })
+
+  describe('scoped tracking', () => {
+    it('adds every scope label to both active lookups and the job subscription', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([]),
+      })
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          scope: { labels: { documentId: 'doc/1', tenant: 'acme' } },
+        }),
+      )
+
+      expect(result.current.isResolving).toBe(true)
+      await waitFor(() => expect(result.current.isResolving).toBe(false))
+
+      const lookupUrls = fetchMock.mock.calls.map(([url]) => String(url))
+      expect(lookupUrls).toHaveLength(2)
+      for (const url of lookupUrls) {
+        const parsed = new URL(url, 'http://example.test')
+        expect(parsed.searchParams.get('label.documentId')).toBe('doc/1')
+        expect(parsed.searchParams.get('label.tenant')).toBe('acme')
+      }
+      const jobSubscription = mockEventSource.instances.find((instance) =>
+        instance.url.includes('jobName=test-job'),
+      )
+      expect(jobSubscription).toBeDefined()
+      const subscriptionUrl = new URL(
+        jobSubscription!.url,
+        'http://example.test',
+      )
+      expect(subscriptionUrl.searchParams.get('label.documentId')).toBe('doc/1')
+      expect(subscriptionUrl.searchParams.get('label.tenant')).toBe('acme')
+    })
+
+    it('hydrates leased and coalesced follow events with their immediate status', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([]),
+      })
+      const { result } = renderHook(() =>
+        useJob({ api: '/api/durably', jobName: 'test-job' }),
+      )
+      await waitFor(() =>
+        expect(mockEventSource.instances.length).toBeGreaterThan(0),
+      )
+      const jobSubscription = mockEventSource.instances[0]
+
+      act(() => {
+        jobSubscription.onmessage?.(
+          new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'run:coalesced',
+              runId: 'coalesced-leased',
+              jobName: 'test-job',
+              status: 'leased',
+            }),
+          }),
+        )
+      })
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe('coalesced-leased')
+        expect(result.current.status).toBe('leased')
+      })
+
+      act(() => {
+        jobSubscription.onmessage?.(
+          new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'run:trigger',
+              runId: 'new-pending',
+              jobName: 'test-job',
+            }),
+          }),
+        )
+      })
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe('new-pending')
+        expect(result.current.status).toBe('pending')
+      })
+    })
+
+    it('serializes all triggerOptions and tracks a leased coalesced response', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ runId: 'active-run', status: 'leased' }),
+      })
+      globalThis.fetch = fetchMock
+      const { result } = renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          autoResume: false,
+          followLatest: false,
+          triggerOptions: {
+            idempotencyKey: 'request-1',
+            concurrencyKey: 'document:doc-1',
+            labels: { documentId: 'doc-1' },
+            coalesce: 'active',
+          },
+        }),
+      )
+
+      await result.current.trigger({ input: 'test' })
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/durably/trigger',
+        expect.objectContaining({
+          body: JSON.stringify({
+            jobName: 'test-job',
+            input: { input: 'test' },
+            idempotencyKey: 'request-1',
+            concurrencyKey: 'document:doc-1',
+            labels: { documentId: 'doc-1' },
+            coalesce: 'active',
+          }),
+        }),
+      )
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe('active-run')
+        expect(result.current.status).toBe('leased')
+      })
+    })
+
+    it('applies triggerOptions to triggerAndWait', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ runId: 'wait-run', status: 'pending' }),
+      })
+      globalThis.fetch = fetchMock
+      const { result } = renderHook(() =>
+        useJob<{ input: string }, { result: string }>({
+          api: '/api/durably',
+          jobName: 'test-job',
+          autoResume: false,
+          followLatest: false,
+          triggerOptions: {
+            concurrencyKey: 'document:wait',
+            labels: { documentId: 'wait' },
+            coalesce: 'active',
+          },
+        }),
+      )
+
+      const waiting = result.current.triggerAndWait({ input: 'test' })
+      await waitFor(() => expect(result.current.currentRunId).toBe('wait-run'))
+      await waitFor(() =>
+        expect(mockEventSource.instances.length).toBeGreaterThan(0),
+      )
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:complete',
+          runId: 'wait-run',
+          output: { result: 'done' },
+        })
+      })
+      await expect(waiting).resolves.toEqual({
+        runId: 'wait-run',
+        output: { result: 'done' },
+      })
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+        concurrencyKey: 'document:wait',
+        labels: { documentId: 'wait' },
+        coalesce: 'active',
+      })
+    })
+
+    it('a follow event wins over an older lookup result', async () => {
+      let resolveLeased!: (value: unknown) => void
+      let resolvePending!: (value: unknown) => void
+      const leased = new Promise((resolve) => {
+        resolveLeased = resolve
+      })
+      const pending = new Promise((resolve) => {
+        resolvePending = resolve
+      })
+      globalThis.fetch = vi
+        .fn()
+        .mockImplementationOnce(() => leased)
+        .mockImplementationOnce(() => pending)
+
+      const { result } = renderHook(() =>
+        useJob({ api: '/api/durably', jobName: 'test-job' }),
+      )
+      await waitFor(() =>
+        expect(mockEventSource.instances.length).toBeGreaterThan(0),
+      )
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:trigger',
+          runId: 'newer-run',
+          jobName: 'test-job',
+        })
+      })
+      await waitFor(() => expect(result.current.currentRunId).toBe('newer-run'))
+
+      await act(async () => {
+        resolveLeased({
+          ok: true,
+          json: () => Promise.resolve([{ id: 'stale-run', status: 'leased' }]),
+        })
+        resolvePending({ ok: true, json: () => Promise.resolve([]) })
+        await Promise.resolve()
+      })
+      expect(result.current.currentRunId).toBe('newer-run')
+      expect(result.current.isResolving).toBe(false)
+    })
+
+    it('scope changes reset a prior user trigger and auto-resume the new scope', async () => {
+      let phase: 'first' | 'trigger' | 'second' = 'first'
+      const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          phase = 'trigger'
+          return {
+            ok: true,
+            json: () =>
+              Promise.resolve({ runId: 'user-run', status: 'pending' }),
+          }
+        }
+        if (phase === 'second' && url.includes('status=leased')) {
+          return {
+            ok: true,
+            json: () =>
+              Promise.resolve([{ id: 'new-scope-run', status: 'leased' }]),
+          }
+        }
+        return { ok: true, json: () => Promise.resolve([]) }
+      })
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+
+      const { result, rerender } = renderHook(
+        ({ documentId }) =>
+          useJob({
+            api: '/api/durably',
+            jobName: 'test-job',
+            followLatest: false,
+            scope: { labels: { documentId } },
+          }),
+        { initialProps: { documentId: 'first' } },
+      )
+      await waitFor(() => expect(result.current.isResolving).toBe(false))
+      await result.current.trigger({ input: 'test' })
+      await waitFor(() => expect(result.current.currentRunId).toBe('user-run'))
+
+      phase = 'second'
+      rerender({ documentId: 'second' })
+      await waitFor(() => {
+        expect(result.current.isResolving).toBe(false)
+        expect(result.current.currentRunId).toBe('new-scope-run')
+      })
+    })
+
+    it('owns rejected and aborted lookups and settles resolving state', async () => {
+      const consoleError = vi
+        .spyOn(console, 'error')
+        .mockImplementation(() => {})
+      globalThis.fetch = vi.fn().mockRejectedValue(new Error('lookup failed'))
+      const { result, unmount } = renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          followLatest: false,
+        }),
+      )
+      await waitFor(() => expect(result.current.isResolving).toBe(false))
+      expect(consoleError).toHaveBeenCalledTimes(1)
+      unmount()
+    })
+
+    it('inline scope and trigger option objects do not recreate work', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([]),
+      })
+      globalThis.fetch = fetchMock
+      const { rerender } = renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          scope: { labels: { documentId: 'stable' } },
+          triggerOptions: {
+            labels: { documentId: 'stable' },
+            concurrencyKey: 'document:stable',
+            coalesce: 'active',
+          },
+        }),
+      )
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+      const eventSourceCount = mockEventSource.instances.length
+      rerender()
+      await act(async () => Promise.resolve())
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(mockEventSource.instances).toHaveLength(eventSourceCount)
+    })
+  })
 })

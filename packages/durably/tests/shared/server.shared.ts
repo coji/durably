@@ -296,6 +296,119 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(body2.disposition).toBe('coalesced')
         expect(body2.runId).toBe(body1.runId)
       })
+
+      it('accepts coalesce: active and returns disposition and status', async () => {
+        durably.register({
+          job: defineJob({
+            name: 'trigger-active-test',
+            input: z.object({ value: z.string() }),
+            run: async () => {},
+          }),
+        })
+
+        const req1 = new Request('http://localhost/api/durably/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobName: 'trigger-active-test',
+            input: { value: 'first' },
+            concurrencyKey: 'act-key-1',
+            coalesce: 'active',
+          }),
+        })
+        const res1 = await handler.handle(req1, '/api/durably')
+        const body1 = await res1.json()
+        expect(res1.status).toBe(200)
+        expect(body1.disposition).toBe('created')
+        expect(body1.status).toBe('pending')
+        expect(body1.runId).toBeDefined()
+
+        const req2 = new Request('http://localhost/api/durably/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobName: 'trigger-active-test',
+            input: { value: 'second' },
+            concurrencyKey: 'act-key-1',
+            coalesce: 'active',
+          }),
+        })
+        const res2 = await handler.handle(req2, '/api/durably')
+        const body2 = await res2.json()
+        expect(res2.status).toBe(200)
+        expect(body2.disposition).toBe('coalesced')
+        expect(body2.status).toBe('pending')
+        expect(body2.runId).toBe(body1.runId)
+      })
+
+      it('returns 400 when coalesce: active without concurrencyKey', async () => {
+        durably.register({
+          job: defineJob({
+            name: 'trigger-active-val',
+            input: z.object({ value: z.string() }),
+            run: async () => {},
+          }),
+        })
+
+        const req = new Request('http://localhost/api/durably/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobName: 'trigger-active-val',
+            input: { value: 'first' },
+            coalesce: 'active',
+          }),
+        })
+        const res = await handler.handle(req, '/api/durably')
+        expect(res.status).toBe(400)
+        const body = await res.json()
+        expect(body.error).toContain('coalesce requires concurrencyKey')
+      })
+
+      it('returns disposition coalesced and status leased when coalesced onto leased run', async () => {
+        durably.register({
+          job: defineJob({
+            name: 'trigger-active-leased',
+            input: z.object({ value: z.string() }),
+            run: async () => {},
+          }),
+        })
+
+        const req1 = new Request('http://localhost/api/durably/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobName: 'trigger-active-leased',
+            input: { value: 'first' },
+            concurrencyKey: 'act-leased-key',
+          }),
+        })
+        const res1 = await handler.handle(req1, '/api/durably')
+        const body1 = await res1.json()
+
+        await durably.storage.updateRun(body1.runId, {
+          status: 'leased',
+          leaseOwner: 'worker-1',
+          leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        })
+
+        const req2 = new Request('http://localhost/api/durably/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobName: 'trigger-active-leased',
+            input: { value: 'second' },
+            concurrencyKey: 'act-leased-key',
+            coalesce: 'active',
+          }),
+        })
+        const res2 = await handler.handle(req2, '/api/durably')
+        const body2 = await res2.json()
+        expect(res2.status).toBe(200)
+        expect(body2.disposition).toBe('coalesced')
+        expect(body2.status).toBe('leased')
+        expect(body2.runId).toBe(body1.runId)
+      })
     })
 
     describe('runs', () => {
@@ -418,6 +531,39 @@ export function createServerTests(createDialect: () => Dialect) {
           'multi-filter-1',
           'multi-filter-3',
         ])
+      })
+
+      it('filters runs by label.<key> parameters', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'label-filter-test',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        await d.jobs.job.trigger({}, { labels: { env: 'prod', tenant: 't1' } })
+        await d.jobs.job.trigger(
+          {},
+          { labels: { env: 'staging', tenant: 't1' } },
+        )
+        await d.jobs.job.trigger({}, { labels: { env: 'prod', tenant: 't2' } })
+
+        const req1 = new Request(
+          'http://localhost/api/durably/runs?label.env=prod',
+          { method: 'GET' },
+        )
+        const res1 = await handler.handle(req1, '/api/durably')
+        const body1 = await res1.json()
+        expect(body1).toHaveLength(2)
+
+        const req2 = new Request(
+          'http://localhost/api/durably/runs?label.env=prod&label.tenant=t1',
+          { method: 'GET' },
+        )
+        const res2 = await handler.handle(req2, '/api/durably')
+        const body2 = await res2.json()
+        expect(body2).toHaveLength(1)
+        expect(body2[0].labels).toEqual({ env: 'prod', tenant: 't1' })
       })
 
       it('filters by status', async () => {
@@ -1168,6 +1314,68 @@ export function createServerTests(createDialect: () => Dialect) {
         if (allEvents.includes('jobName')) {
           expect(allEvents).not.toContain('multi-subscribe-2')
         }
+      })
+
+      it('filters subscriptions by label.<key> parameters and includes status in run:coalesced', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'label-subscribe-job',
+            input: z.object({ value: z.string() }),
+            run: async () => {},
+          }),
+        })
+
+        const request = new Request(
+          'http://localhost/api/durably/runs/subscribe?label.tenant=t1',
+          { method: 'GET' },
+        )
+
+        const response = await handler.handle(request, '/api/durably')
+        const reader = response.body!.getReader()
+        const decoder = new TextDecoder()
+
+        const first = await d.jobs.job.trigger(
+          { value: 'v1' },
+          { concurrencyKey: 'sub-conc-1', labels: { tenant: 't1' } },
+        )
+
+        // Non-matching run
+        await d.jobs.job.trigger(
+          { value: 'v2' },
+          { concurrencyKey: 'sub-conc-2', labels: { tenant: 't2' } },
+        )
+
+        // Matching coalesced run
+        await d.jobs.job.trigger(
+          { value: 'v3' },
+          {
+            concurrencyKey: 'sub-conc-1',
+            coalesce: 'active',
+            labels: { tenant: 't1' },
+          },
+        )
+
+        const events: string[] = []
+        const readEvents = async () => {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            events.push(decoder.decode(value))
+            if (events.length >= 2) break
+          }
+        }
+
+        await Promise.race([
+          readEvents(),
+          new Promise((r) => setTimeout(r, 1000)),
+        ])
+
+        const allEvents = events.join('')
+        expect(allEvents).toContain(first.id)
+        expect(allEvents).toContain('run:trigger')
+        expect(allEvents).toContain('run:coalesced')
+        expect(allEvents).toContain('"status":"pending"')
+        expect(allEvents).not.toContain('sub-conc-2')
       })
     })
 

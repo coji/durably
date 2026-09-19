@@ -1,11 +1,14 @@
-import type { JobDefinition, JobHandle } from '@coji/durably'
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import type { JobDefinition, JobHandle, TriggerOptions } from '@coji/durably'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDurably } from '../context'
+import { useStableValue } from '../shared/use-stable-value'
 import type { LogEntry, Progress, RunStatus } from '../types'
 import { useAutoResume } from './use-auto-resume'
 import { useJobSubscription } from './use-job-subscription'
 
-export interface UseJobOptions {
+export interface UseJobOptions<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   /**
    * Initial Run ID to subscribe to (for reconnection scenarios)
    */
@@ -23,6 +26,14 @@ export interface UseJobOptions {
    * @default true
    */
   followLatest?: boolean
+  /**
+   * Optional scope to filter active runs and events by labels
+   */
+  scope?: { labels: TLabels }
+  /**
+   * Options passed to trigger() and triggerAndWait()
+   */
+  triggerOptions?: TriggerOptions<TLabels>
 }
 
 export interface UseJobResult<TInput, TOutput> {
@@ -83,6 +94,10 @@ export interface UseJobResult<TInput, TOutput> {
    */
   isActive: boolean
   /**
+   * Whether initial scoped active-run resolution is currently in progress
+   */
+  isResolving: boolean
+  /**
    * Current run ID
    */
   currentRunId: string | null
@@ -97,13 +112,66 @@ export function useJob<
   TInput extends Record<string, unknown>,
   // biome-ignore lint/suspicious/noConfusingVoidType: TOutput can be void for jobs without return value
   TOutput extends Record<string, unknown> | void,
+  TLabels extends Record<string, string> = Record<string, string>,
 >(
   jobDefinition: JobDefinition<TName, TInput, TOutput>,
-  options?: UseJobOptions,
+  options?: UseJobOptions<TLabels>,
 ): UseJobResult<TInput, TOutput> {
   const { durably } = useDurably()
 
-  const jobHandleRef = useRef<JobHandle<TName, TInput, TOutput> | null>(null)
+  const stableScope = useStableValue(options?.scope)
+  const stableTriggerOptions = useStableValue(options?.triggerOptions)
+  const initialRunId = options?.initialRunId
+  const autoResume = options?.autoResume !== false
+  const followLatest = options?.followLatest !== false
+
+  const [jobHandle, setJobHandle] = useState<JobHandle<
+    TName,
+    TInput,
+    TOutput,
+    TLabels
+  > | null>(null)
+
+  const resolutionEpochRef = useRef(0)
+  const lookupEpochRef = useRef(0)
+  const prevScopeRef = useRef(stableScope)
+  const [isResolving, setIsResolving] = useState(autoResume && !initialRunId)
+
+  useEffect(() => {
+    if (!autoResume || initialRunId) setIsResolving(false)
+  }, [autoResume, initialRunId])
+
+  const handleFollow = useCallback((_runId: string) => {
+    resolutionEpochRef.current++
+    setIsResolving(false)
+  }, [])
+
+  // Use the extracted job subscription hook
+  const subscription = useJobSubscription<TOutput>(
+    durably,
+    jobDefinition.name,
+    {
+      followLatest,
+      scope: stableScope,
+      onFollow: handleFollow,
+    },
+  )
+
+  // Scope change handling
+  useEffect(() => {
+    if (prevScopeRef.current !== stableScope) {
+      prevScopeRef.current = stableScope
+      resolutionEpochRef.current++
+      if (!initialRunId) {
+        subscription.reset()
+        if (autoResume) {
+          setIsResolving(true)
+        } else {
+          setIsResolving(false)
+        }
+      }
+    }
+  }, [stableScope, initialRunId, autoResume, subscription.reset])
 
   // Register job
   useEffect(() => {
@@ -112,75 +180,143 @@ export function useJob<
     const d = durably.register({
       _job: jobDefinition,
     })
-    jobHandleRef.current = d.jobs._job
+    const registeredHandle = d.jobs._job as JobHandle<
+      TName,
+      TInput,
+      TOutput,
+      TLabels
+    >
+    setJobHandle(registeredHandle)
   }, [durably, jobDefinition])
 
-  // Use the extracted job subscription hook
-  const subscription = useJobSubscription<TOutput>(
-    durably,
-    jobDefinition.name,
-    {
-      followLatest: options?.followLatest,
-    },
-  )
+  // Handle initialRunId
+  useEffect(() => {
+    if (!initialRunId) return
+    setIsResolving(false)
+    const epoch = ++resolutionEpochRef.current
+    subscription.setCurrentRunId(initialRunId)
 
-  // Auto-resume callbacks - stable reference
-  const autoResumeCallbacks = useMemo(
-    () => ({
-      onRunFound: (runId: string, _status: RunStatus) => {
-        subscription.setCurrentRunId(runId)
+    if (jobHandle) {
+      jobHandle
+        .getRun(initialRunId)
+        .then((run) => {
+          if (run && resolutionEpochRef.current === epoch) {
+            subscription.hydrateRun(
+              run.id,
+              run.status as RunStatus,
+              run.output as TOutput,
+              run.error,
+            )
+          }
+        })
+        .catch(() => {
+          // Status hydration is best effort; the event subscription remains active.
+        })
+    }
+  }, [
+    initialRunId,
+    jobHandle,
+    subscription.setCurrentRunId,
+    subscription.hydrateRun,
+  ])
+
+  // Auto-resume callbacks
+  const autoResumeCallbacks = useMemo(() => {
+    return {
+      onStart: () => {
+        lookupEpochRef.current = resolutionEpochRef.current
+        setIsResolving(true)
       },
-    }),
-    [subscription.setCurrentRunId],
-  )
+      onRunFound: (run: {
+        id: string
+        status: RunStatus
+        output?: unknown
+        error?: string | null
+      }) => {
+        if (resolutionEpochRef.current !== lookupEpochRef.current) return
+        subscription.hydrateRun(
+          run.id,
+          run.status,
+          run.output as TOutput,
+          run.error ?? null,
+        )
+      },
+      onSettled: () => {
+        if (resolutionEpochRef.current !== lookupEpochRef.current) return
+        setIsResolving(false)
+      },
+      onError: () => {
+        if (resolutionEpochRef.current !== lookupEpochRef.current) return
+        setIsResolving(false)
+      },
+    }
+  }, [subscription.hydrateRun])
 
   // Use the extracted auto-resume hook
   useAutoResume(
-    jobHandleRef.current,
+    jobHandle,
     {
-      enabled: options?.autoResume,
-      initialRunId: options?.initialRunId,
+      enabled: autoResume,
+      initialRunId,
+      scope: stableScope,
     },
     autoResumeCallbacks,
   )
 
-  // Handle initialRunId - set it to start tracking
-  useEffect(() => {
-    if (!durably || !options?.initialRunId) return
-
-    subscription.setCurrentRunId(options.initialRunId)
-  }, [durably, options?.initialRunId, subscription.setCurrentRunId])
-
   const trigger = useCallback(
     async (input: TInput): Promise<{ runId: string }> => {
-      const jobHandle = jobHandleRef.current
       if (!jobHandle) {
         throw new Error('Job not ready')
       }
 
+      resolutionEpochRef.current++
+      setIsResolving(false)
+
       // Reset state before triggering
       subscription.reset()
 
-      const run = await jobHandle.trigger(input)
-      subscription.setCurrentRunId(run.id)
+      const run = await jobHandle.trigger(input, stableTriggerOptions)
+      subscription.hydrateRun(
+        run.id,
+        run.status as RunStatus,
+        run.output as TOutput,
+        run.error,
+      )
 
       return { runId: run.id }
     },
-    [subscription],
+    [jobHandle, stableTriggerOptions, subscription],
   )
 
   const triggerAndWait = useCallback(
     async (input: TInput): Promise<{ runId: string; output: TOutput }> => {
-      const jobHandle = jobHandleRef.current
       if (!jobHandle || !durably) {
         throw new Error('Job not ready')
       }
 
+      resolutionEpochRef.current++
+      setIsResolving(false)
+
       // Reset state before triggering
       subscription.reset()
 
-      const run = await jobHandle.trigger(input)
-      subscription.setCurrentRunId(run.id)
+      const run = await jobHandle.trigger(input, stableTriggerOptions)
+      subscription.hydrateRun(
+        run.id,
+        run.status as RunStatus,
+        run.output as TOutput,
+        run.error,
+      )
+
+      if (run.status === 'completed') {
+        return { runId: run.id, output: run.output as TOutput }
+      }
+      if (run.status === 'failed') {
+        throw new Error(run.error || 'Job failed')
+      }
+      if (run.status === 'cancelled') {
+        throw new Error('Job cancelled')
+      }
 
       // Wait for completion by polling
       return new Promise((resolve, reject) => {
@@ -205,7 +341,7 @@ export function useJob<
         checkCompletion()
       })
     },
-    [durably, subscription],
+    [durably, jobHandle, stableTriggerOptions, subscription],
   )
 
   return {
@@ -227,6 +363,7 @@ export function useJob<
       subscription.status === 'cancelled',
     isActive:
       subscription.status === 'pending' || subscription.status === 'leased',
+    isResolving,
     currentRunId: subscription.currentRunId,
     reset: subscription.reset,
   }

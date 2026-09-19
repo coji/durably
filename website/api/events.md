@@ -53,14 +53,15 @@ durably.on('run:trigger', (event) => {
 
 #### `run:coalesced`
 
-Fired when a trigger was coalesced onto an existing pending run (same concurrency key, with `coalesce: 'skip'` or `coalesce: 'queue'`). Not fired for normal triggers (`'created'`) or idempotent hits (`'idempotent'`). Unused inputs and labels are reported in `skippedInput` and `skippedLabels`, rather than overwriting the pending run.
+Fired when a trigger was coalesced onto an existing pending run with `coalesce: 'skip'`, `'queue'`, or `'active'`, or onto a valid leased run with `'active'`. Not fired for normal triggers (`'created'`) or idempotent hits (`'idempotent'`). Unused inputs and labels are reported in `skippedInput` and `skippedLabels`, rather than overwriting the selected run.
 
 ```ts
 durably.on('run:coalesced', (event) => {
   // event: {
   //   type: 'run:coalesced',
-  //   runId: string,           // ID of the existing pending run
+  //   runId: string,           // ID of the existing pending or leased run
   //   jobName: string,
+  //   status: 'pending' | 'leased',
   //   labels: Record<string, string>,  // existing run's labels
   //   skippedInput: unknown,   // the new input that was NOT used
   //   skippedLabels: Record<string, string>, // the new labels that were NOT used

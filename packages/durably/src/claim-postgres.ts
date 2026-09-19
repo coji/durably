@@ -54,9 +54,14 @@ export async function claimNextPostgres(
       if (!candidate) return null
 
       if (candidate.concurrency_key) {
-        await sql`SELECT pg_advisory_xact_lock(hashtext(${candidate.concurrency_key}))`.execute(
-          trx,
-        )
+        const lockAcquired = await sql<{ acquired: boolean }>`
+          SELECT pg_try_advisory_xact_lock(hashtext(${candidate.concurrency_key})) AS acquired
+        `.execute(trx)
+
+        if (!lockAcquired.rows[0]?.acquired) {
+          skipKeys.push(candidate.concurrency_key)
+          continue
+        }
 
         const conflict = await sql`
           SELECT 1 FROM durably_runs

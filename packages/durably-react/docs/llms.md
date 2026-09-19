@@ -120,6 +120,7 @@ function Component() {
     isCancelled,
     isTerminal,
     isActive,
+    isResolving,
     currentRunId,
     reset,
   } = useJob<
@@ -131,6 +132,12 @@ function Component() {
     initialRunId: undefined, // Optional: resume existing run
     autoResume: true, // Auto-resume pending/leased jobs on mount (default: true)
     followLatest: true, // Switch to tracking new runs (default: true)
+    scope: { labels: { userId: 'user_123' } },
+    triggerOptions: {
+      labels: { userId: 'user_123' },
+      concurrencyKey: 'sync:user_123',
+      coalesce: 'active',
+    },
   })
 
   const handleClick = async () => {
@@ -151,12 +158,14 @@ interface UseJobClientOptions {
   initialRunId?: string // Initial Run ID to subscribe to
   autoResume?: boolean // Auto-resume pending/leased jobs on mount (default: true)
   followLatest?: boolean // Switch to tracking new runs via SSE (default: true)
+  scope?: { labels: Record<string, string> }
+  triggerOptions?: TriggerOptions<Record<string, string>>
 }
 ```
 
-The `autoResume` option automatically fetches leased/pending jobs on mount and subscribes to them. This is useful for SSR applications where users may refresh the page while a job is leased.
+The `autoResume` option automatically fetches leased/pending jobs on mount and subscribes to them. `isResolving` is true until this lookup settles, is skipped, or is superseded. `initialRunId` takes precedence and skips the lookup.
 
-The `followLatest` option subscribes to job-level SSE events and automatically switches to tracking the latest triggered job. This enables real-time updates when jobs are triggered from other tabs or clients.
+`scope.labels` adds every label as `label.<key>` to both `/runs` lookups and `/runs/subscribe`; every label must match. `followLatest` switches immediately on matching `run:trigger`, `run:coalesced`, and `run:leased` events. `triggerOptions` is forwarded to both `trigger` and `triggerAndWait`; scope labels are not copied into trigger labels automatically.
 
 ### Fullstack useJobRun
 
@@ -451,12 +460,19 @@ function Component() {
     isCancelled,
     isTerminal,
     isActive,
+    isResolving,
     currentRunId,
     reset,
   } = useJob(myJob, {
     initialRunId: undefined,
     autoResume: true, // Auto-resume pending/leased jobs (default: true)
     followLatest: true, // Switch to tracking new runs (default: true)
+    scope: { labels: { entityId: 'entity_123' } },
+    triggerOptions: {
+      labels: { entityId: 'entity_123' },
+      concurrencyKey: 'entity:entity_123',
+      coalesce: 'active',
+    },
   })
 
   // Trigger job
@@ -497,8 +513,12 @@ interface UseJobOptions {
   initialRunId?: string // Initial Run ID to subscribe to
   autoResume?: boolean // Auto-resume pending/leased jobs (default: true)
   followLatest?: boolean // Switch to tracking new runs (default: true)
+  scope?: { labels: Record<string, string> }
+  triggerOptions?: TriggerOptions<Record<string, string>>
 }
 ```
+
+SPA auto-resume prefers a matching leased run, then a matching pending run, and hydrates its current status. Matching `run:trigger` events are followed while the run is still pending, in addition to `run:coalesced` and `run:leased`. Scope changes discard prior tracking and resolve the new label scope. `isResolving` covers this lookup; `initialRunId` takes precedence and is hydrated directly.
 
 **Return type:**
 
@@ -518,6 +538,7 @@ interface UseJobResult<TInput, TOutput> {
   isCancelled: boolean
   isTerminal: boolean
   isActive: boolean
+  isResolving: boolean
   currentRunId: string | null
   reset: () => void
 }

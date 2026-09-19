@@ -1,8 +1,14 @@
-import type { JobHandle } from '@coji/durably'
+import type { JobHandle, Run } from '@coji/durably'
 import { useEffect } from 'react'
-import type { RunStatus } from '../types'
 
-export interface UseAutoResumeOptions {
+type JobRun<TOutput, TLabels extends Record<string, string>> = Omit<
+  Run<TLabels>,
+  'output'
+> & { output: TOutput | null }
+
+export interface UseAutoResumeOptions<
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
   /**
    * Whether to automatically resume tracking pending/running runs
    * @default true
@@ -16,13 +22,30 @@ export interface UseAutoResumeOptions {
    * Initial run ID (if provided, auto-resume is skipped)
    */
   initialRunId?: string
+  /**
+   * Optional scope to filter active runs by labels
+   */
+  scope?: { labels: TLabels }
 }
 
-export interface UseAutoResumeCallbacks {
+export interface UseAutoResumeCallbacks<
+  TOutput = unknown,
+  TLabels extends Record<string, string> = Record<string, string>,
+> {
+  /** Called when a lookup starts. */
+  onStart?: () => void
   /**
-   * Called when a run is found to resume
+   * Called when an active run is found
    */
-  onRunFound: (runId: string, status: RunStatus) => void
+  onRunFound: (run: JobRun<TOutput, TLabels>) => void
+  /**
+   * Called when auto-resume lookup settles (found, not found, or error)
+   */
+  onSettled?: () => void
+  /**
+   * Called if auto-resume lookup encounters an error
+   */
+  onError?: (error: unknown) => void
 }
 
 /**
@@ -33,14 +56,16 @@ export function useAutoResume<
   TName extends string,
   TInput extends Record<string, unknown>,
   TOutput,
+  TLabels extends Record<string, string> = Record<string, string>,
 >(
-  jobHandle: JobHandle<TName, TInput, TOutput> | null,
-  options: UseAutoResumeOptions,
-  callbacks: UseAutoResumeCallbacks,
+  jobHandle: JobHandle<TName, TInput, TOutput, TLabels> | null,
+  options: UseAutoResumeOptions<TLabels>,
+  callbacks: UseAutoResumeCallbacks<TOutput, TLabels>,
 ): void {
   const enabled = options.enabled !== false
   const skipIfInitialRunId = options.skipIfInitialRunId !== false
   const initialRunId = options.initialRunId
+  const scopeLabels = options.scope?.labels
 
   useEffect(() => {
     if (!jobHandle) return
@@ -48,25 +73,48 @@ export function useAutoResume<
     if (skipIfInitialRunId && initialRunId) return
 
     let cancelled = false
+    callbacks.onStart?.()
 
     const findActiveRun = async () => {
-      // First check for leased runs
-      const leasedRuns = await jobHandle.getRuns({ status: 'leased' })
-      if (cancelled) return
+      try {
+        // First check for leased runs
+        const leasedRuns = await jobHandle.getRuns({
+          status: 'leased',
+          labels: scopeLabels,
+          limit: 1,
+        })
+        if (cancelled) return
 
-      if (leasedRuns.length > 0) {
-        const run = leasedRuns[0]
-        callbacks.onRunFound(run.id, run.status as RunStatus)
-        return
-      }
+        if (leasedRuns.length > 0) {
+          const run = leasedRuns[0]
+          // Revalidate to ensure latest state is hydrated even if run became terminal
+          const latest = (await jobHandle.getRun(run.id)) ?? run
+          if (cancelled) return
+          callbacks.onRunFound(latest)
+          return
+        }
 
-      // Then check for pending runs
-      const pendingRuns = await jobHandle.getRuns({ status: 'pending' })
-      if (cancelled) return
+        // Then check for pending runs
+        const pendingRuns = await jobHandle.getRuns({
+          status: 'pending',
+          labels: scopeLabels,
+          limit: 1,
+        })
+        if (cancelled) return
 
-      if (pendingRuns.length > 0) {
-        const run = pendingRuns[0]
-        callbacks.onRunFound(run.id, run.status as RunStatus)
+        if (pendingRuns.length > 0) {
+          const run = pendingRuns[0]
+          const latest = (await jobHandle.getRun(run.id)) ?? run
+          if (cancelled) return
+          callbacks.onRunFound(latest)
+          return
+        }
+      } catch (err) {
+        callbacks.onError?.(err)
+      } finally {
+        if (!cancelled) {
+          callbacks.onSettled?.()
+        }
       }
     }
 
@@ -75,5 +123,12 @@ export function useAutoResume<
     return () => {
       cancelled = true
     }
-  }, [jobHandle, enabled, skipIfInitialRunId, initialRunId, callbacks])
+  }, [
+    jobHandle,
+    enabled,
+    skipIfInitialRunId,
+    initialRunId,
+    scopeLabels,
+    callbacks,
+  ])
 }

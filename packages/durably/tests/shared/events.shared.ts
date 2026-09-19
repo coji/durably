@@ -324,6 +324,7 @@ export function createEventsTests(createDialect: () => Dialect) {
           type: 'run:coalesced',
           runId: 'r',
           jobName: 'j',
+          status: 'pending',
           labels: {},
           skippedInput: {},
           skippedLabels: {},

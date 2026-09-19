@@ -1,4 +1,6 @@
+import type { TriggerOptions } from '@coji/durably'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useStableValue } from '../shared/use-stable-value'
 import type { LogEntry, Progress, RunStatus } from '../types'
 import { useSSESubscription } from './use-sse-subscription'
 
@@ -26,12 +28,17 @@ export interface UseJobClientOptions {
    * @default true
    */
   followLatest?: boolean
+  /**
+   * Optional scope to filter active runs and events by labels
+   */
+  scope?: { labels: Record<string, string> }
+  /**
+   * Options passed to trigger() and triggerAndWait()
+   */
+  triggerOptions?: TriggerOptions<Record<string, string>>
 }
 
 export interface UseJobClientResult<TInput, TOutput> {
-  /**
-   * Whether the hook is ready (always true for client mode)
-   */
   /**
    * Trigger the job with the given input
    */
@@ -89,6 +96,10 @@ export interface UseJobClientResult<TInput, TOutput> {
    */
   isActive: boolean
   /**
+   * Whether initial scoped active-run resolution is currently in progress
+   */
+  isResolving: boolean
+  /**
    * Current run ID
    */
   currentRunId: string | null
@@ -114,10 +125,18 @@ export function useJob<
     followLatest = true,
   } = options
 
+  const stableScope = useStableValue(options.scope)
+  const stableTriggerOptions = useStableValue(options.triggerOptions)
+
   const [currentRunId, setCurrentRunId] = useState<string | null>(
     initialRunId ?? null,
   )
   const [isPending, setIsPending] = useState(false)
+  const [hydratedStatus, setHydratedStatus] = useState<RunStatus | null>(null)
+
+  const resolutionEpochRef = useRef(0)
+  const prevScopeRef = useRef(stableScope)
+  const [isResolving, setIsResolving] = useState(autoResume && !initialRunId)
 
   // Track if user has triggered a run (to prevent autoResume from overwriting)
   const hasUserTriggered = useRef(false)
@@ -129,63 +148,139 @@ export function useJob<
   const subscriptionRef = useRef(subscription)
   subscriptionRef.current = subscription
 
-  // Auto-resume: fetch leased/pending job on mount
+  // Handle scope changes
   useEffect(() => {
-    if (!autoResume) return
-    if (initialRunId) return // Skip if initialRunId is provided
+    if (prevScopeRef.current !== stableScope) {
+      prevScopeRef.current = stableScope
+      resolutionEpochRef.current++
+      hasUserTriggered.current = false
+      if (!initialRunId) {
+        subscription.reset()
+        setCurrentRunId(null)
+        setHydratedStatus(null)
+        setIsPending(false)
+        if (autoResume) {
+          setIsResolving(true)
+        } else {
+          setIsResolving(false)
+        }
+      }
+    }
+  }, [stableScope, initialRunId, autoResume, subscription.reset])
+
+  // Handle initialRunId updates
+  useEffect(() => {
+    if (!initialRunId) return
+    setIsResolving(false)
+    setCurrentRunId(initialRunId)
+  }, [initialRunId])
+
+  // Auto-resume: fetch leased/pending job on mount / scope change
+  useEffect(() => {
+    if (!autoResume) {
+      setIsResolving(false)
+      return
+    }
+    if (initialRunId) {
+      setIsResolving(false)
+      return // Skip if initialRunId is provided
+    }
 
     const abortController = new AbortController()
+    let cancelled = false
+    const epoch = resolutionEpochRef.current
 
     const findActiveRun = async () => {
-      // Fetch leased and pending in parallel
       const signal = abortController.signal
+
+      const leasedParams = new URLSearchParams({
+        jobName,
+        status: 'leased',
+        limit: '1',
+      })
+      const pendingParams = new URLSearchParams({
+        jobName,
+        status: 'pending',
+        limit: '1',
+      })
+
+      if (stableScope?.labels) {
+        for (const [key, value] of Object.entries(stableScope.labels)) {
+          leasedParams.append(`label.${key}`, value)
+          pendingParams.append(`label.${key}`, value)
+        }
+      }
+
+      // Fetch leased and pending in parallel
       const [leasedRes, pendingRes] = await Promise.all([
-        fetch(
-          `${api}/runs?${new URLSearchParams({ jobName, status: 'leased', limit: '1' })}`,
-          { signal },
-        ),
-        fetch(
-          `${api}/runs?${new URLSearchParams({ jobName, status: 'pending', limit: '1' })}`,
-          { signal },
-        ),
+        fetch(`${api}/runs?${leasedParams}`, { signal }),
+        fetch(`${api}/runs?${pendingParams}`, { signal }),
       ])
 
-      if (hasUserTriggered.current) return
+      if (hasUserTriggered.current || resolutionEpochRef.current !== epoch) {
+        return
+      }
 
       // Prefer leased over pending
       if (leasedRes.ok) {
-        const runs = (await leasedRes.json()) as Array<{ id: string }>
+        const runs = (await leasedRes.json()) as Array<{
+          id: string
+          status?: RunStatus
+        }>
+        if (hasUserTriggered.current || resolutionEpochRef.current !== epoch)
+          return
         if (runs.length > 0) {
           setCurrentRunId(runs[0].id)
+          setHydratedStatus(runs[0].status ?? 'leased')
+          setIsResolving(false)
           return
         }
       }
 
       if (pendingRes.ok) {
-        const runs = (await pendingRes.json()) as Array<{ id: string }>
+        const runs = (await pendingRes.json()) as Array<{
+          id: string
+          status?: RunStatus
+        }>
+        if (hasUserTriggered.current || resolutionEpochRef.current !== epoch)
+          return
         if (runs.length > 0) {
           setCurrentRunId(runs[0].id)
+          setHydratedStatus(runs[0].status ?? 'pending')
+          setIsResolving(false)
+          return
         }
       }
+
+      setIsResolving(false)
     }
 
     findActiveRun().catch((err) => {
-      // Ignore abort errors
+      if (cancelled) return
       if (err.name !== 'AbortError') {
         console.error('autoResume error:', err)
+      }
+      if (resolutionEpochRef.current === epoch) {
+        setIsResolving(false)
       }
     })
 
     return () => {
+      cancelled = true
       abortController.abort()
     }
-  }, [api, jobName, autoResume, initialRunId])
+  }, [api, jobName, autoResume, initialRunId, stableScope])
 
-  // Follow latest: subscribe to job-level SSE for run:trigger/run:leased events
+  // Follow latest: subscribe to job-level SSE for run:trigger/run:leased/run:coalesced events
   useEffect(() => {
     if (!followLatest) return
 
     const params = new URLSearchParams({ jobName })
+    if (stableScope?.labels) {
+      for (const [key, value] of Object.entries(stableScope.labels)) {
+        params.append(`label.${key}`, value)
+      }
+    }
     const eventSource = new EventSource(`${api}/runs/subscribe?${params}`)
 
     eventSource.onmessage = (event) => {
@@ -193,6 +288,7 @@ export function useJob<
         const data = JSON.parse(event.data) as {
           type: string
           runId?: string
+          status?: RunStatus
         }
         if (
           (data.type === 'run:trigger' ||
@@ -200,7 +296,16 @@ export function useJob<
             data.type === 'run:leased') &&
           data.runId
         ) {
+          resolutionEpochRef.current++
+          setIsResolving(false)
           setCurrentRunId(data.runId)
+          if (data.type === 'run:trigger') {
+            setHydratedStatus('pending')
+          } else if (data.type === 'run:leased') {
+            setHydratedStatus('leased')
+          } else if (data.type === 'run:coalesced' && data.status) {
+            setHydratedStatus(data.status)
+          }
         }
       } catch {
         // Ignore parse errors
@@ -208,30 +313,48 @@ export function useJob<
     }
 
     eventSource.onerror = () => {
-      // SSE connection error - could reconnect or log for debugging
-      // No need to surface error to user as this is a background subscription
+      // SSE connection error - EventSource auto-reconnects
     }
 
     return () => {
       eventSource.close()
     }
-  }, [api, jobName, followLatest])
+  }, [api, jobName, followLatest, stableScope])
 
   const trigger = useCallback(
     async (input: TInput): Promise<{ runId: string }> => {
-      // Mark that user has triggered (prevents autoResume from overwriting)
       hasUserTriggered.current = true
+      resolutionEpochRef.current++
+      setIsResolving(false)
 
       // Reset state
       subscription.reset()
+      setHydratedStatus(null)
       setIsPending(true)
+
+      const body: Record<string, unknown> = {
+        jobName,
+        input,
+      }
+      if (stableTriggerOptions?.idempotencyKey) {
+        body.idempotencyKey = stableTriggerOptions.idempotencyKey
+      }
+      if (stableTriggerOptions?.concurrencyKey) {
+        body.concurrencyKey = stableTriggerOptions.concurrencyKey
+      }
+      if (stableTriggerOptions?.labels) {
+        body.labels = stableTriggerOptions.labels
+      }
+      if (stableTriggerOptions?.coalesce) {
+        body.coalesce = stableTriggerOptions.coalesce
+      }
 
       const response = await fetch(`${api}/trigger`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ jobName, input }),
+        body: JSON.stringify(body),
       })
 
       if (!response.ok) {
@@ -240,12 +363,18 @@ export function useJob<
         throw new Error(errorText || `HTTP ${response.status}`)
       }
 
-      const { runId } = (await response.json()) as { runId: string }
-      setCurrentRunId(runId)
+      const data = (await response.json()) as {
+        runId: string
+        status?: RunStatus
+      }
+      setCurrentRunId(data.runId)
+      if (data.status) {
+        setHydratedStatus(data.status)
+      }
 
-      return { runId }
+      return { runId: data.runId }
     },
-    [api, jobName, subscription.reset],
+    [api, jobName, stableTriggerOptions, subscription.reset],
   )
 
   const triggerAndWait = useCallback(
@@ -293,18 +422,21 @@ export function useJob<
   const reset = useCallback(() => {
     subscription.reset()
     setCurrentRunId(null)
+    setHydratedStatus(null)
     setIsPending(false)
   }, [subscription.reset])
 
-  // Compute effective status (pending overrides null when we've triggered but SSE hasn't started)
-  const effectiveStatus = subscription.status ?? (isPending ? 'pending' : null)
+  // Compute effective status
+  const effectiveStatus =
+    subscription.status ?? hydratedStatus ?? (isPending ? 'pending' : null)
 
-  // Clear pending when we get a real status
+  // Clear pending/hydrated when we get a real status from SSE
   useEffect(() => {
-    if (subscription.status && isPending) {
-      setIsPending(false)
+    if (subscription.status) {
+      if (isPending) setIsPending(false)
+      if (hydratedStatus) setHydratedStatus(null)
     }
-  }, [subscription.status, isPending])
+  }, [subscription.status, isPending, hydratedStatus])
 
   return {
     trigger,
@@ -324,6 +456,7 @@ export function useJob<
       effectiveStatus === 'failed' ||
       effectiveStatus === 'cancelled',
     isActive: effectiveStatus === 'pending' || effectiveStatus === 'leased',
+    isResolving,
     currentRunId,
     reset,
   }

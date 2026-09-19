@@ -41,8 +41,15 @@ export async function action({ request }: Route.ActionArgs) {
 
   if (intent === 'sync') {
     const userId = formData.get('userId') as string
-    const run = await durably.jobs.dataSync.trigger({ userId })
-    return { intent: 'sync', runId: run.id }
+    const run = await durably.jobs.dataSync.trigger(
+      { userId },
+      {
+        concurrencyKey: `data-sync:${userId}`,
+        labels: { userId },
+        coalesce: 'active',
+      },
+    )
+    return { intent: 'sync', runId: run.id, userId }
   }
 
   return null

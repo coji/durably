@@ -103,6 +103,45 @@ describe('createJobHooks', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('forwards scope and triggerOptions through generated useJob hooks', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ runId: 'csv-run-id', status: 'pending' }),
+    })
+    globalThis.fetch = fetchMock
+    const hooks = createJobHooks<typeof importCsvJob>({
+      api: '/api/durably',
+      jobName: 'import-csv',
+    })
+
+    const { result } = renderHook(() =>
+      hooks.useJob({
+        autoResume: false,
+        followLatest: false,
+        scope: { labels: { documentId: 'doc-1' } },
+        triggerOptions: {
+          labels: { documentId: 'doc-1' },
+          concurrencyKey: 'document:doc-1',
+          coalesce: 'active',
+        },
+      }),
+    )
+    await result.current.trigger({ filename: 'data.csv' })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/durably/trigger',
+      expect.objectContaining({
+        body: JSON.stringify({
+          jobName: 'import-csv',
+          input: { filename: 'data.csv' },
+          concurrencyKey: 'document:doc-1',
+          labels: { documentId: 'doc-1' },
+          coalesce: 'active',
+        }),
+      }),
+    )
+  })
+
   it('useJob uses the configured api endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
