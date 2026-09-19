@@ -61,6 +61,7 @@ Applied to: doc-update phase.
   - `website/api/`
   - `website/guide/`
   - `examples/`
+  - `docs/adr/`
   - `website/public/llms.txt` (generated)
 - Do NOT modify implementation code, tests, or config files
 - Do NOT modify order.md

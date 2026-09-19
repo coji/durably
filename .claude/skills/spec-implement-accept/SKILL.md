@@ -211,8 +211,13 @@ git commit -m "fix: address supervision findings"
 ### Phase 7: Documentation Update (claude)
 
 Use Claude Code Agent tool with prompt from `agents/doc-updater.md`.
-Only runs if the complete recorded `base...HEAD` change set plus current uncommitted paths shows
-API-related changes.
+Run this phase if the complete recorded `base...HEAD` change set plus current uncommitted paths
+shows API-related changes or an ADR accompanying the implementation. An ADR status change is
+required even when the implementation does not change a public API.
+
+Before Phase 8, set every ADR that records an implemented decision in this PR, and its index
+entry, to `accepted` on the same feature branch. Keep a proposal-only ADR as `proposed`.
+Merging the implementation PR then publishes the accepted status without a follow-up PR.
 
 **After Phase 7 completes (if changes were made):**
 
@@ -224,7 +229,8 @@ git commit -m "docs: update documentation"
 ### Phase 8: Draft PR Creation
 
 Read [the review workflow](../../../docs/workflow/code-review.md) before this phase. A clean,
-pushed commit is required before review. Create the PR as Draft immediately after the implementation
+pushed commit is required before review. Confirm that any ADR recording an implemented decision
+and its index entry both say `accepted`. Create the PR as Draft immediately after the implementation
 pipeline is complete; do not wait for code review to create it.
 
 ```bash
