@@ -245,10 +245,6 @@ export function useJob<
         if (resolutionEpochRef.current !== lookupEpochRef.current) return
         setIsResolving(false)
       },
-      onError: () => {
-        if (resolutionEpochRef.current !== lookupEpochRef.current) return
-        setIsResolving(false)
-      },
     }
   }, [subscription.hydrateRun])
 

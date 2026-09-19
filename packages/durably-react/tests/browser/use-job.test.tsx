@@ -634,6 +634,47 @@ describe('useJob', () => {
       expect(result.current.isResolving).toBe(false)
     })
 
+    it('an old scope lookup rejection does not finish the new scope lookup', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      let rejectOld!: (error: Error) => void
+      let resolveCurrent!: (
+        runs: Awaited<ReturnType<typeof durably.storage.getRuns>>,
+      ) => void
+      const oldLookup = new Promise<
+        Awaited<ReturnType<typeof durably.storage.getRuns>>
+      >((_resolve, reject) => {
+        rejectOld = reject
+      })
+      const currentLookup = new Promise<
+        Awaited<ReturnType<typeof durably.storage.getRuns>>
+      >((resolve) => {
+        resolveCurrent = resolve
+      })
+      const getRuns = vi.spyOn(durably.storage, 'getRuns')
+      getRuns
+        .mockImplementationOnce(() => oldLookup)
+        .mockImplementationOnce(() => currentLookup)
+
+      const { result, rerender } = renderHook(
+        ({ documentId }) =>
+          useJob(testJob, { scope: { labels: { documentId } } }),
+        {
+          initialProps: { documentId: 'old' },
+          wrapper: createWrapper(durably),
+        },
+      )
+      await waitFor(() => expect(getRuns).toHaveBeenCalledTimes(1))
+
+      rerender({ documentId: 'current' })
+      await waitFor(() => expect(getRuns).toHaveBeenCalledTimes(2))
+      await act(async () => rejectOld(new Error('old lookup failed')))
+      expect(result.current.isResolving).toBe(true)
+
+      await act(async () => resolveCurrent([]))
+      await waitFor(() => expect(result.current.isResolving).toBe(false))
+    })
+
     it('inline scope and trigger option objects do not repeat lookups', async () => {
       const durably = await createTestDurably({ autoStart: false })
       instances.push(durably)
