@@ -24,7 +24,7 @@ Parallel callbacks reserve distinct step indexes before invocation. Replaying a 
 
 - A crash can leave an unresolved attempt that remains queryable after recovery.
 - The new table adds one start write and one finalization write per executed step, plus any explicit metadata replacements.
-- Attempt data remains until its run is deleted or purged, independently of `preserveSteps`. Applications should set `retainRuns` or purge runs when retention needs a bound.
+- Attempt data remains until its run is deleted or purged, independently of `preserveSteps`. `retainRuns` and purging apply only to terminal runs; a continually reclaimed run must be cancelled to stop accumulating new attempts.
 - A persisted start proves Durably was about to invoke the callback, not that an external service accepted work; exactly-once side effects remain an application concern.
 
 ## Rejected Alternatives

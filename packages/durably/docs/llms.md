@@ -184,7 +184,7 @@ const result = await step.run('step-name', async (signal) => {
 })
 ```
 
-Each actual callback invocation first writes a durable attempt record. A replayed checkpoint does not create an attempt. Use the optional metadata to identify a model or external operation before it starts, then replace it with confirmed usage during the callback:
+Before attempting each callback invocation, Durably writes a durable attempt record. Cancellation, lease loss, or a crash can prevent the callback from being entered after that write. A replayed checkpoint does not create an attempt. Use the optional metadata to identify a model or external operation before it starts, then replace it with confirmed usage during the callback:
 
 ```ts
 await step.run(
@@ -200,7 +200,7 @@ await step.run(
 const attempts = await durably.getStepAttempts(runId)
 ```
 
-`attempt.id` identifies one callback invocation. `attempt.metadata` reflects the last successfully awaited replacement; `setMetadata()` replaces the entire JSON value rather than merging it. Omit `metadata` for an initial `null` value; passing `metadata: undefined` explicitly is invalid. Invalid values fail before execution or leave the previous value unchanged. `getStepAttempts()` returns attempts in start-time and ID order, or `[]` for an unknown run. A worker crash or checkpoint write failure can leave an attempt unresolved with `status: 'started'`, `completedAt: null`, and an inferred `interruptionReason` (`'lease-lost'`, `'cancelled'`, `'unknown'`, or `null`). These fields do not assert the exact time an external call stopped or fill in unknown usage. Attempts survive terminal checkpoint cleanup, and are deleted when the run is deleted or purged. Use `retainRuns` to bound their lifetime.
+`attempt.id` identifies one durable attempt, not proof that the callback or an external operation began. `attempt.metadata` reflects the last successfully awaited replacement; `setMetadata()` replaces the entire JSON value rather than merging it. Omit `metadata` for an initial `null` value; passing `metadata: undefined` explicitly is invalid. Invalid values fail before execution or leave the previous value unchanged. `getStepAttempts()` returns attempts in start-time and ID order, or `[]` for an unknown run. A worker crash or checkpoint write failure can leave an attempt unresolved with `status: 'started'`, `completedAt: null`, and an inferred `interruptionReason` (`'lease-lost'`, `'cancelled'`, `'unknown'`, or `null`). This reason reflects the current persisted run state and may change until the run is terminal; it does not assert when external work stopped or fill in unknown usage. Attempts survive terminal checkpoint cleanup, and are deleted when the run is deleted or purged. `retainRuns` bounds their lifetime only after the run becomes terminal; cancel a run that keeps reclaiming to stop new attempts.
 
 ### step.progress(current, total?, message?)
 

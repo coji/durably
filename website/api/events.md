@@ -263,7 +263,7 @@ durably.on('step:fail', (event) => {
 
 #### `step:cancel`
 
-Fired when a step is cancelled (run was cancelled while step was executing).
+Fired when a step cannot start or finish because the run was cancelled. It can occur without a preceding `step:start` if cancellation prevents callback invocation.
 
 ```ts
 durably.on('step:cancel', (event) => {
