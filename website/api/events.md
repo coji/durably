@@ -284,7 +284,7 @@ durably.on('step:cancel', (event) => {
 
 #### `log:write`
 
-Fired when `step.log` methods are called.
+Fired when `step.log` or callback-scoped `attempt.log` methods are called.
 
 ```ts
 durably.on('log:write', (event) => {

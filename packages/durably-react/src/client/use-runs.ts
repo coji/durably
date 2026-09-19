@@ -257,7 +257,26 @@ export function useRuns<
 
       if (isMountedRef.current) {
         setHasMore(data.length > pageSize)
-        setRuns(data.slice(0, pageSize))
+        setRuns((previous) => {
+          const previousById = new Map(previous.map((run) => [run.id, run]))
+          return data.slice(0, pageSize).map((run) => {
+            const current = previousById.get(run.id)
+            if (!current) return run
+            // A step:start refresh may resolve after a newer step:complete SSE.
+            // These counters never decrease for the same run.
+            return {
+              ...run,
+              currentStepIndex: Math.max(
+                run.currentStepIndex,
+                current.currentStepIndex,
+              ),
+              completedStepCount: Math.max(
+                run.completedStepCount,
+                current.completedStepCount,
+              ),
+            }
+          })
+        })
       }
     } catch (err) {
       if (isMountedRef.current) {

@@ -204,7 +204,7 @@ const attempts = await durably.getStepAttempts(runId)
 
 ### step.all(branches)
 
-Runs named steps concurrently and returns their results by name after every branch settles. Branches use the same checkpoint and attempt records as `step.run()`: after lease recovery, completed branches return their saved results while unfinished branches run again. Give each branch a stable name within the job. A branch can return an ordinary result such as `needsChanges`; a thrown error is an execution failure. If any branch throws, `step.all()` waits for the others to settle and then throws the first error, so their checkpoints and attempts are retained. Lease loss and cancellation take precedence over ordinary branch errors to preserve the run's lifecycle state. This does not release the worker slot while branches are running.
+Runs named steps concurrently and returns their results by name after every branch settles. Branches use the same checkpoint and attempt records as `step.run()`: after lease recovery, completed branches return their saved results while unfinished branches run again. Give each branch a stable name within the job. A branch can return an ordinary result such as `needsChanges`; a thrown error is an execution failure. If any branch throws, `step.all()` waits for the others to settle and then throws the first error in branch declaration order, so their checkpoints and attempts are retained. Lease loss and cancellation take precedence over ordinary branch errors to preserve the run's lifecycle state. This does not release the worker slot while branches are running.
 
 ```ts
 const reviews = await step.all({

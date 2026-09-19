@@ -5,7 +5,6 @@ import {
   createDurably,
   defineJob,
   type Durably,
-  LeaseLostError,
   type RunProgressEvent,
   type StepCancelEvent,
   type StepCompleteEvent,
@@ -262,7 +261,7 @@ export function createStepTests(createDialect: () => Dialect) {
               },
               waiting: async () => {
                 await gate
-                throw new LeaseLostError(step.runId)
+                return 'late result'
               },
             })
           },
