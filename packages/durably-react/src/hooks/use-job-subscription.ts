@@ -128,14 +128,32 @@ function jobSubscriptionReducer<TOutput = unknown>(
       } as JobSubscriptionState<TOutput>
 
     case 'hydrate_run':
-      if (
-        state.currentRunId === action.runId &&
-        (state.status === 'completed' ||
-          state.status === 'failed' ||
-          state.status === 'cancelled') &&
-        (action.status === 'pending' || action.status === 'leased')
-      ) {
-        return state
+      if (state.currentRunId === action.runId && state.status !== null) {
+        if (
+          (state.status === 'completed' ||
+            state.status === 'failed' ||
+            state.status === 'cancelled' ||
+            state.status === 'leased') &&
+          action.status === 'pending'
+        ) {
+          return state
+        }
+        if (
+          (state.status === 'completed' ||
+            state.status === 'failed' ||
+            state.status === 'cancelled') &&
+          action.status === 'leased'
+        ) {
+          return state
+        }
+        // Events for this run may have arrived after the database snapshot.
+        // Keep their progress and logs when applying the snapshot's status.
+        return {
+          ...state,
+          status: action.status,
+          output: action.output ?? null,
+          error: action.error ?? null,
+        }
       }
       return {
         ...initialSubscriptionState,

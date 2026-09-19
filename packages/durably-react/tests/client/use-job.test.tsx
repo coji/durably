@@ -946,7 +946,7 @@ describe('useJob (client)', () => {
       const { result } = renderHook(() =>
         useJob({ api: '/api/durably', jobName: 'test-job' }),
       )
-      await waitFor(() => expect(resolvers).toHaveLength(2))
+      await waitFor(() => expect(resolvers).toHaveLength(1))
       expect(result.current.isResolving).toBe(true)
 
       act(() => result.current.reset())
@@ -976,13 +976,15 @@ describe('useJob (client)', () => {
       )
       expect(result.current.isResolving).toBe(false)
       rerender({ autoResume: true })
-      await waitFor(() => expect(resolvers).toHaveLength(2))
+      await waitFor(() => expect(resolvers).toHaveLength(1))
       expect(result.current.isResolving).toBe(true)
 
       await act(async () => {
-        for (const resolve of resolvers) {
-          resolve({ ok: true, json: () => Promise.resolve([]) })
-        }
+        resolvers[0]({ ok: true, json: () => Promise.resolve([]) })
+      })
+      await waitFor(() => expect(resolvers).toHaveLength(2))
+      await act(async () => {
+        resolvers[1]({ ok: true, json: () => Promise.resolve([]) })
       })
       await waitFor(() => expect(result.current.isResolving).toBe(false))
     })
@@ -1006,16 +1008,108 @@ describe('useJob (client)', () => {
       expect(result.current.isResolving).toBe(false)
 
       rerender({ initialRunId: undefined })
-      await waitFor(() => expect(resolvers).toHaveLength(2))
+      await waitFor(() => expect(resolvers).toHaveLength(1))
       expect(result.current.currentRunId).toBeNull()
       expect(result.current.isResolving).toBe(true)
 
       await act(async () => {
-        for (const resolve of resolvers) {
-          resolve({ ok: true, json: () => Promise.resolve([]) })
-        }
+        resolvers[0]({ ok: true, json: () => Promise.resolve([]) })
+      })
+      await waitFor(() => expect(resolvers).toHaveLength(2))
+      await act(async () => {
+        resolvers[1]({ ok: true, json: () => Promise.resolve([]) })
       })
       await waitFor(() => expect(result.current.isResolving).toBe(false))
+    })
+
+    it('auto-resumes after an explicit run is removed following a user trigger', async () => {
+      const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          return {
+            ok: true,
+            json: () => Promise.resolve({ runId: 'user-run' }),
+          }
+        }
+        return {
+          ok: true,
+          json: () =>
+            Promise.resolve([{ id: 'resumed-run', status: 'leased' }]),
+        }
+      })
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+      const { result, rerender } = renderHook(
+        ({ initialRunId }: { initialRunId?: string }) =>
+          useJob({
+            api: '/api/durably',
+            jobName: 'test-job',
+            initialRunId,
+            followLatest: false,
+          }),
+        { initialProps: { initialRunId: undefined as string | undefined } },
+      )
+      await waitFor(() =>
+        expect(result.current.currentRunId).toBe('resumed-run'),
+      )
+      await act(async () => {
+        await result.current.trigger({ input: 'test' })
+      })
+      await waitFor(() => expect(result.current.currentRunId).toBe('user-run'))
+      rerender({ initialRunId: 'explicit-run' })
+      await waitFor(() =>
+        expect(result.current.currentRunId).toBe('explicit-run'),
+      )
+      rerender({ initialRunId: undefined })
+      await waitFor(() =>
+        expect(result.current.currentRunId).toBe('resumed-run'),
+      )
+    })
+
+    it('installs a leased run without waiting for the pending lookup', async () => {
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url.includes('status=pending'))
+          throw new Error('pending lookup failed')
+        return {
+          ok: true,
+          json: () => Promise.resolve([{ id: 'leased-run', status: 'leased' }]),
+        }
+      })
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+      const { result } = renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          followLatest: false,
+        }),
+      )
+      await waitFor(() =>
+        expect(result.current.currentRunId).toBe('leased-run'),
+      )
+      expect(result.current.isResolving).toBe(false)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('uses a pending run when the leased lookup fails', async () => {
+      const fetchMock = vi.fn(async (url: string) => {
+        if (url.includes('status=leased'))
+          throw new Error('leased lookup failed')
+        return {
+          ok: true,
+          json: () =>
+            Promise.resolve([{ id: 'pending-run', status: 'pending' }]),
+        }
+      })
+      globalThis.fetch = fetchMock as unknown as typeof fetch
+      const { result } = renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          followLatest: false,
+        }),
+      )
+      await waitFor(() =>
+        expect(result.current.currentRunId).toBe('pending-run'),
+      )
+      expect(fetchMock).toHaveBeenCalledTimes(2)
     })
 
     it('discards a parsed lookup result after the API changes', async () => {
@@ -1338,6 +1432,31 @@ describe('useJob (client)', () => {
         expect(result.current.isResolving).toBe(false)
         expect(result.current.currentRunId).toBe('new-scope-run')
       })
+    })
+
+    it('restores a fixed initialRunId after following another run and changing scope', async () => {
+      const { result, rerender } = renderHook(
+        ({ documentId }: { documentId: string }) =>
+          useJob({
+            api: '/api/durably',
+            jobName: 'test-job',
+            initialRunId: 'fixed-run',
+            scope: { labels: { documentId } },
+          }),
+        { initialProps: { documentId: 'first' } },
+      )
+      act(() => {
+        mockEventSource.emit({
+          type: 'run:trigger',
+          runId: 'followed-run',
+          jobName: 'test-job',
+        })
+      })
+      await waitFor(() =>
+        expect(result.current.currentRunId).toBe('followed-run'),
+      )
+      rerender({ documentId: 'second' })
+      await waitFor(() => expect(result.current.currentRunId).toBe('fixed-run'))
     })
 
     it('owns rejected and aborted lookups and settles resolving state', async () => {

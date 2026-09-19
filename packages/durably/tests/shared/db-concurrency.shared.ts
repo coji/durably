@@ -445,6 +445,55 @@ export function createDbConcurrencyTests(
       }
     })
 
+    const postgresMixedBatch = label === 'PostgreSQL' ? it : it.skip
+    postgresMixedBatch(
+      'mixed skip/active batches with reversed keys do not deadlock',
+      { timeout: 15_000 },
+      async () => {
+        for (let iter = 0; iter < 5; iter++) {
+          const keyA = `mixed-A-${iter}`
+          const keyB = `mixed-B-${iter}`
+          const [first, second] = await Promise.all([
+            runtimes[0].storage.enqueueMany([
+              {
+                jobName: 'mixed-batch-job',
+                input: { batch: 1, key: 'B' },
+                concurrencyKey: keyB,
+                coalesce: 'skip',
+              },
+              {
+                jobName: 'mixed-batch-job',
+                input: { batch: 1, key: 'A' },
+                concurrencyKey: keyA,
+                coalesce: 'active',
+              },
+            ]),
+            runtimes[1].storage.enqueueMany([
+              {
+                jobName: 'mixed-batch-job',
+                input: { batch: 2, key: 'A' },
+                concurrencyKey: keyA,
+                coalesce: 'skip',
+              },
+              {
+                jobName: 'mixed-batch-job',
+                input: { batch: 2, key: 'B' },
+                concurrencyKey: keyB,
+                coalesce: 'active',
+              },
+            ]),
+          ])
+          expect(first).toHaveLength(2)
+          expect(second).toHaveLength(2)
+          expect(
+            [...first, ...second].filter(
+              (item) => item.disposition === 'created',
+            ),
+          ).toHaveLength(2)
+        }
+      },
+    )
+
     const postgresOnly = label === 'PostgreSQL' ? it : it.skip
     postgresOnly(
       'batch-vs-claim contention skips unavailable keys and leaves them claimable on a later poll',

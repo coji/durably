@@ -732,6 +732,61 @@ describe('useJob', () => {
       })
     })
 
+    it('keeps same-run progress and logs when initial hydration returns an older pending snapshot', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const pending = await handle.trigger({ input: 'test' })
+      let resolveFirstRead!: (value: typeof pending) => void
+      vi.spyOn(durably.storage, 'getRun').mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirstRead = resolve
+          }),
+      )
+      const { result } = renderHook(
+        () => useJob(testJob, { initialRunId: pending.id }),
+        { wrapper: createWrapper(durably) },
+      )
+      await waitFor(() => expect(resolveFirstRead).toBeDefined())
+      act(() => {
+        durably.emit({
+          type: 'run:leased',
+          runId: pending.id,
+          jobName: testJob.name,
+          input: { input: 'test' },
+          leaseOwner: 'worker-1',
+          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+          labels: {},
+        })
+        durably.emit({
+          type: 'run:progress',
+          runId: pending.id,
+          jobName: testJob.name,
+          progress: { current: 1, total: 2 },
+          labels: {},
+        })
+        durably.emit({
+          type: 'log:write',
+          runId: pending.id,
+          jobName: testJob.name,
+          labels: {},
+          stepName: null,
+          level: 'info',
+          message: 'keep this',
+          data: null,
+        })
+      })
+      await act(async () => {
+        resolveFirstRead(pending)
+      })
+      expect(result.current.status).toBe('leased')
+      expect(result.current.progress).toEqual({ current: 1, total: 2 })
+      expect(result.current.logs.map((log) => log.message)).toEqual([
+        'keep this',
+      ])
+    })
+
     it('keeps a found run when auto-resume revalidation fails', async () => {
       const durably = await createTestDurably({ autoStart: false })
       instances.push(durably)
@@ -953,6 +1008,35 @@ describe('useJob', () => {
       await act(async () => resolveOldRead(null))
       expect(result.current.currentRunId).toBe(run.id)
       expect(result.current.status).toBe('pending')
+    })
+
+    it('restores a fixed initialRunId after following another run and changing scope', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const fixed = await handle.trigger({ input: 'fixed' })
+      const { result, rerender } = renderHook(
+        ({ documentId }: { documentId: string }) =>
+          useJob(testJob, {
+            initialRunId: fixed.id,
+            scope: { labels: { documentId } },
+          }),
+        {
+          wrapper: createWrapper(durably),
+          initialProps: { documentId: 'first' },
+        },
+      )
+      await waitFor(() => expect(result.current.status).toBe('pending'))
+      const followed = await handle.trigger(
+        { input: 'followed' },
+        { labels: { documentId: 'first' } },
+      )
+      await waitFor(() => expect(result.current.currentRunId).toBe(followed.id))
+      rerender({ documentId: 'second' })
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe(fixed.id)
+        expect(result.current.status).toBe('pending')
+      })
     })
 
     it('a matching follow event wins over an older in-flight lookup', async () => {

@@ -752,16 +752,17 @@ export function createKyselyStore(
         db.transaction().execute(async (trx) => {
           if (inputs.some((i) => i.coalesce === 'active')) {
             if (backend === 'postgres') {
-              const activeKeys = [
+              // A non-active item can still insert a pending row for a key
+              // locked by another batch. Lock every keyed item in the same
+              // order before either batch starts inserting.
+              const batchKeys = [
                 ...new Set(
                   inputs.flatMap((i) =>
-                    i.coalesce === 'active' && i.concurrencyKey
-                      ? [i.concurrencyKey]
-                      : [],
+                    i.concurrencyKey ? [i.concurrencyKey] : [],
                   ),
                 ),
               ].sort()
-              for (const key of activeKeys) {
+              for (const key of batchKeys) {
                 await sql`SELECT pg_advisory_xact_lock(hashtext(${key}))`.execute(
                   trx,
                 )

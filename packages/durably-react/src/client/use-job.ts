@@ -153,17 +153,11 @@ export function useJob<
       prevScopeRef.current = stableScope
       resolutionEpochRef.current++
       hasUserTriggered.current = false
-      if (!initialRunId) {
-        subscription.reset()
-        setCurrentRunId(null)
-        setHydratedStatus(null)
-        setIsPending(false)
-        if (autoResume) {
-          setIsResolving(true)
-        } else {
-          setIsResolving(false)
-        }
-      }
+      subscription.reset()
+      setCurrentRunId(initialRunId ?? null)
+      setHydratedStatus(null)
+      setIsPending(false)
+      setIsResolving(autoResume && !initialRunId)
     }
   }, [stableScope, initialRunId, autoResume, subscription.reset])
 
@@ -191,6 +185,7 @@ export function useJob<
     if (!initialRunId) {
       if (previous) {
         resolutionEpochRef.current++
+        hasUserTriggered.current = false
         subscription.reset()
         setCurrentRunId(null)
         setHydratedStatus(null)
@@ -247,11 +242,14 @@ export function useJob<
         }
       }
 
-      // Fetch leased and pending in parallel
-      const [leasedRes, pendingRes] = await Promise.all([
-        fetch(`${api}/runs?${leasedParams}`, { signal }),
-        fetch(`${api}/runs?${pendingParams}`, { signal }),
-      ])
+      // Resolve the preferred leased run first. A failed or slow pending
+      // lookup must not hide a leased run that is already available.
+      let leasedRes: Response | null = null
+      try {
+        leasedRes = await fetch(`${api}/runs?${leasedParams}`, { signal })
+      } catch (err) {
+        if (signal.aborted) throw err
+      }
 
       if (
         cancelled ||
@@ -262,7 +260,7 @@ export function useJob<
       }
 
       // Prefer leased over pending
-      if (leasedRes.ok) {
+      if (leasedRes?.ok) {
         const runs = (await leasedRes.json()) as Array<{
           id: string
           status?: RunStatus
@@ -281,6 +279,14 @@ export function useJob<
         }
       }
 
+      const pendingRes = await fetch(`${api}/runs?${pendingParams}`, { signal })
+      if (
+        cancelled ||
+        hasUserTriggered.current ||
+        resolutionEpochRef.current !== epoch
+      ) {
+        return
+      }
       if (pendingRes.ok) {
         const runs = (await pendingRes.json()) as Array<{
           id: string
