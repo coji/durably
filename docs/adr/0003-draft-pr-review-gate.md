@@ -8,7 +8,7 @@ proposed
 
 The implementation workflow needs a visible pull request before final code review so CI and preview checks can run against the same commit reviewers inspect. Marking a pull request Ready before issue acceptance, independent review, and exact-head checks complete creates a misleading review state. Reusing a prior review after a fix has the same problem because the reviewed target no longer exists at the pull request head.
 
-The repository previously used takt definitions for multi-stage automation. This workflow must operate without takt and should be available directly to Codex and Claude Code. The eight-perspective review procedure also requires immutable targets, independent discovery, separate candidate verification, and an auditable GO or NO-GO result.
+The repository previously used takt definitions for multi-stage automation. This workflow must operate without takt: Claude Code orchestrates the end-to-end implementation skill, while Codex supplies the repository review skill. The eight-perspective review procedure also requires immutable targets, independent discovery, separate candidate verification, and an auditable GO or NO-GO result.
 
 ## Decision
 

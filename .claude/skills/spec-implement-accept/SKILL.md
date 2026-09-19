@@ -46,6 +46,11 @@ Parse the argument:
 Before Phase 0, read `references/policies.md` and `references/output-contracts.md`. Pass the
 relevant policy and contract to each phase rather than relying on duplicated memory.
 
+Count every phase transition. Stop with the PR Draft and report the current head and remaining
+work if the workflow reaches 35 transitions. Phase 6 may run at most three times; if the same
+finding survives two consecutive supervision rounds, stop rather than cycling back through the
+pipeline.
+
 ### Phase 0: Setup
 
 1. Require an unchanged starting checkout. Resolve and fetch the remote default branch, then record
@@ -261,24 +266,45 @@ For round `N`:
 1. Confirm the PR is still Draft. Read its base/head SHAs and source issue from GitHub.
 2. Run `pnpm validate` for the pushed head and write `<task-dir>/validation.env` containing the
    exact `reviewed_head=<sha>` and `pnpm_validate=pass`. Freeze the pushed head and create
-   `.git/durably-review/<pr>/<head-sha>/` with snapshot hashes.
+   `$(git rev-parse --git-dir)/durably-review/<pr>/<head-sha>/` with snapshot hashes, the source
+   issue acceptance criteria, and applicable rule files. Set their absolute paths as
+   `snapshot_dir`, `hash_file`, `criteria_file`, and `rules_file`.
 3. Dispatch both finder tracks independently. Run the repository Codex skill without showing it
    the Opus prompt or result:
 
    ```bash
    report_dir="$(git rev-parse --git-dir)/durably-review/<pr>/<head-sha>/round-<N>"
    mkdir -p "$report_dir"
+   cat > "$report_dir/codex-prompt.md" <<EOF
+   \$code-review high <PR URL>
+   Fixed head: <head-sha>
+   Fixed snapshot: $snapshot_dir
+   Snapshot hashes: $hash_file
+   Acceptance criteria: $criteria_file
+   Applicable rules: $rules_file
+   Return only the independent Codex track result. Do not launch the Opus track.
+   EOF
    codex exec -m gpt-5.6-sol -c model_reasoning_effort=medium \
      -s read-only -C "$(git rev-parse --show-toplevel)" \
-     -o "$report_dir/codex-track.md" \
-     '$code-review high <PR URL>'
+     -o "$report_dir/codex-track.md" - < "$report_dir/codex-prompt.md"
    ```
 
-   Separately run Claude Opus/high in restricted read-only mode against the same snapshot and
-   capture it as `$report_dir/opus-track.json`. Reviewers do not create snapshots, run validation,
-   write files, or dispatch one another. After both finish, the orchestrator consolidates their
-   candidates and sends every candidate to a verifier that did not discover it. Write the canonical
-   combined result to `$report_dir/code-review-round-<N>.md`.
+   Create an independent `opus-prompt.md` with the same fixed-target facts and all eight
+   perspectives, without Codex candidates. Dispatch it concretely and record the observed model and
+   execution metadata:
+
+   ```bash
+   CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude -p \
+     --model opus --effort high --output-format json --restricted \
+     --add-dir "$snapshot_dir" --tools Read,Glob,Grep \
+     --allowedTools Read,Glob,Grep --strict-mcp-config \
+     < "$report_dir/opus-prompt.md" > "$report_dir/opus-track.json"
+   ```
+
+   Reviewers do not create snapshots, run validation, write files, or dispatch one another. After
+   both finish, the orchestrator consolidates their candidates and sends every candidate to a
+   verifier that did not discover it. Write the canonical combined result to
+   `$report_dir/code-review-round-<N>.md`.
 
 4. Route on the report:
    - `GO`: continue to Phase 10.
@@ -328,13 +354,14 @@ worktree):
 - `spec-review-report.md` — review findings (spec-revise, implement)
 - `acceptance-report.md` — test results (fix)
 - `supervise-report.md` — supervision findings (fix, spec-review)
-- `.git/durably-review/<pr>/<sha>/code-review-round-<n>.md` — immutable review result for that head
+- `$(git rev-parse --git-dir)/durably-review/<pr>/<sha>/round-<n>/code-review-round-<n>.md` — immutable review result for that head
 
 ## Git Conventions
 
 - Branch names: `feat/<issue>-<slug>` or `feat/<slug>`
 - Commits use conventional commit prefixes: `spec:`, `feat:`, `fix:`, `refactor:`, `docs:`
-- Only commit when there are actual changes (`git diff --quiet || git commit ...`)
+- Stage intended paths, then commit only when the index is non-empty:
+  `git add <paths>; git diff --cached --quiet || git commit -m "..."`
 - Never commit to main directly
 - Create PRs as Draft and change them to Ready only through Phase 10
 - Never use takt for this workflow

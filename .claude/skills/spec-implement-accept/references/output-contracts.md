@@ -67,7 +67,6 @@ Summary of pnpm validate output
 | Aspect                         | Result |
 | ------------------------------ | ------ |
 | Changed files are within scope | OK/NG  |
-| PLAN.md unmodified             | OK/NG  |
 | order.md unmodified            | OK/NG  |
 
 ## Fix Instructions (if REJECT)
@@ -122,7 +121,7 @@ For each issue:
 
 Code-review rounds follow the canonical contract in
 `docs/workflow/code-review.md`. Store them under
-`.git/durably-review/<pr>/<head-sha>/` so producing a report cannot change the reviewed diff.
+`$(git rev-parse --git-dir)/durably-review/<pr>/<head-sha>/round-<n>/` so producing a report cannot change the reviewed diff and linked worktrees remain supported.
 
 The `Result` field is exactly one of:
 

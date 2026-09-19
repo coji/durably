@@ -13,7 +13,7 @@ Use two independent review tracks against the same fixed commit:
 
 After both finder tracks finish, the orchestrator consolidates candidates. A candidate must be verified by a reviewer that did not discover it. The two tracks may verify one another's candidates. If either required model, any perspective, or required verification is unavailable, the result is `INCOMPLETE` and the PR remains Draft.
 
-Each reviewer call has a ten-minute default limit and one retry for an execution failure. A longer limit must be recorded before retrying. Keep the worktree unchanged during review and retain the fixed snapshot and reports under `.git/durably-review/<pr>/<head-sha>/`. Review processes run read-only; the orchestrator creates this directory first and captures final CLI output there.
+Each reviewer call has a ten-minute default limit and one retry for an execution failure. A longer limit must be recorded before retrying. Keep the worktree unchanged during review and retain the fixed snapshot under `$(git rev-parse --git-dir)/durably-review/<pr>/<head-sha>/` and each report under its `round-<n>/` child. Review processes run read-only; the orchestrator creates these directories first and captures final CLI output there.
 
 ## Blockers
 
@@ -51,12 +51,13 @@ Stop with the PR still Draft when:
 - six review/fix rounds complete without GO;
 - a required external service, credential, model, or test environment remains unavailable;
 - the fix requires changing issue scope or an architectural decision that needs user input.
+- the end-to-end workflow reaches 35 phase transitions or supervision reaches three rounds.
 
 Report the blocking IDs, evidence, attempts, current head, failed or missing checks, and the decision needed to resume.
 
 ## Review report contract
 
-Each round writes `code-review-round-<n>.md` outside the worktree with:
+Each round writes `round-<n>/code-review-round-<n>.md` outside the worktree with:
 
 ```markdown
 # Code Review Round N
