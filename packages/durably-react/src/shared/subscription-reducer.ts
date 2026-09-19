@@ -43,6 +43,13 @@ export function subscriptionReducer<TOutput = unknown>(
       return { ...state, status: 'leased' }
 
     case 'set_active_status':
+      if (
+        state.status === 'completed' ||
+        state.status === 'failed' ||
+        state.status === 'cancelled'
+      ) {
+        return state
+      }
       return { ...state, status: action.status }
 
     case 'run:complete':

@@ -1,4 +1,9 @@
-import type { JobDefinition, JobHandle, TriggerOptions } from '@coji/durably'
+import type {
+  JobDefinition,
+  JobHandle,
+  TriggerOptions,
+  TriggerResult,
+} from '@coji/durably'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDurably } from '../context'
 import { useStableValue } from '../shared/use-stable-value'
@@ -273,19 +278,9 @@ export function useJob<
     autoResumeCallbacks,
   )
 
-  const trigger = useCallback(
-    async (input: TInput): Promise<{ runId: string }> => {
-      if (!jobHandle) {
-        throw new Error('Job not ready')
-      }
-
-      resolutionEpochRef.current++
-      setIsResolving(false)
-
-      // Reset state before triggering
-      subscription.reset()
-
-      const run = await jobHandle.trigger(input, stableTriggerOptions)
+  const trackTriggeredRun = useCallback(
+    async (run: TriggerResult<TOutput, TLabels>, epoch: number) => {
+      if (!jobHandle || resolutionEpochRef.current !== epoch) return
       subscription.hydrateRun(
         run.id,
         run.status as RunStatus,
@@ -293,9 +288,39 @@ export function useJob<
         run.error,
       )
 
+      // Terminal events before hydration could not be applied. Re-read after
+      // installing the run ID, while leaving newer events or scopes in control.
+      const revalidated = await jobHandle.getRun(run.id)
+      if (!revalidated || resolutionEpochRef.current !== epoch) return
+      subscription.revalidateRun(
+        run.id,
+        run.status as RunStatus,
+        revalidated.status as RunStatus,
+        revalidated.output as TOutput,
+        revalidated.error,
+      )
+    },
+    [jobHandle, subscription.hydrateRun, subscription.revalidateRun],
+  )
+
+  const trigger = useCallback(
+    async (input: TInput): Promise<{ runId: string }> => {
+      if (!jobHandle) {
+        throw new Error('Job not ready')
+      }
+
+      const epoch = ++resolutionEpochRef.current
+      setIsResolving(false)
+
+      // Reset state before triggering
+      subscription.reset()
+
+      const run = await jobHandle.trigger(input, stableTriggerOptions)
+      await trackTriggeredRun(run, epoch)
+
       return { runId: run.id }
     },
-    [jobHandle, stableTriggerOptions, subscription],
+    [jobHandle, stableTriggerOptions, subscription.reset, trackTriggeredRun],
   )
 
   const triggerAndWait = useCallback(
@@ -304,19 +329,14 @@ export function useJob<
         throw new Error('Job not ready')
       }
 
-      resolutionEpochRef.current++
+      const epoch = ++resolutionEpochRef.current
       setIsResolving(false)
 
       // Reset state before triggering
       subscription.reset()
 
       const run = await jobHandle.trigger(input, stableTriggerOptions)
-      subscription.hydrateRun(
-        run.id,
-        run.status as RunStatus,
-        run.output as TOutput,
-        run.error,
-      )
+      await trackTriggeredRun(run, epoch)
 
       if (run.status === 'completed') {
         return { runId: run.id, output: run.output as TOutput }
@@ -351,8 +371,19 @@ export function useJob<
         checkCompletion()
       })
     },
-    [durably, jobHandle, stableTriggerOptions, subscription],
+    [
+      durably,
+      jobHandle,
+      stableTriggerOptions,
+      subscription.reset,
+      trackTriggeredRun,
+    ],
   )
+
+  const reset = useCallback(() => {
+    resolutionEpochRef.current++
+    subscription.reset()
+  }, [subscription.reset])
 
   return {
     trigger,
@@ -375,6 +406,6 @@ export function useJob<
       subscription.status === 'pending' || subscription.status === 'leased',
     isResolving,
     currentRunId: subscription.currentRunId,
-    reset: subscription.reset,
+    reset,
   }
 }

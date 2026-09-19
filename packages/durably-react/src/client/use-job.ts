@@ -168,6 +168,7 @@ export function useJob<
   // Handle initialRunId updates
   useEffect(() => {
     if (!initialRunId) return
+    resolutionEpochRef.current++
     setIsResolving(false)
     setCurrentRunId(initialRunId)
   }, [initialRunId])
@@ -324,7 +325,7 @@ export function useJob<
   const trigger = useCallback(
     async (input: TInput): Promise<{ runId: string }> => {
       hasUserTriggered.current = true
-      resolutionEpochRef.current++
+      const epoch = ++resolutionEpochRef.current
       setIsResolving(false)
 
       // Reset state
@@ -358,7 +359,7 @@ export function useJob<
       })
 
       if (!response.ok) {
-        setIsPending(false)
+        if (resolutionEpochRef.current === epoch) setIsPending(false)
         const errorText = await response.text()
         throw new Error(errorText || `HTTP ${response.status}`)
       }
@@ -367,9 +368,11 @@ export function useJob<
         runId: string
         status?: RunStatus
       }
-      setCurrentRunId(data.runId)
-      if (data.status) {
-        setHydratedStatus(data.status)
+      if (resolutionEpochRef.current === epoch) {
+        setCurrentRunId(data.runId)
+        if (data.status) {
+          setHydratedStatus(data.status)
+        }
       }
 
       return { runId: data.runId }
@@ -417,6 +420,7 @@ export function useJob<
   }, [])
 
   const reset = useCallback(() => {
+    resolutionEpochRef.current++
     subscription.reset()
     setCurrentRunId(null)
     setHydratedStatus(null)

@@ -119,9 +119,6 @@ function jobSubscriptionReducer<TOutput = unknown>(
     case 'set_run_id':
       return { ...state, currentRunId: action.runId }
 
-    case 'set_active_status':
-      return { ...state, status: action.status }
-
     case 'switch_to_run':
       // Switch to a new run, resetting state
       return {

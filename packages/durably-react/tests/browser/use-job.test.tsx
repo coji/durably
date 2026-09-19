@@ -573,6 +573,27 @@ describe('useJob', () => {
       expect(result.current.logs.map((log) => log.message)).toEqual([
         'still here',
       ])
+
+      act(() => {
+        durably.emit({
+          type: 'run:complete',
+          runId: 'same-run',
+          jobName: testJob.name,
+          output: { success: true },
+          duration: 1,
+          labels: {},
+        })
+        durably.emit({
+          type: 'run:coalesced',
+          runId: 'same-run',
+          jobName: testJob.name,
+          status: 'leased',
+          labels: {},
+          skippedInput: { input: 'duplicate' },
+          skippedLabels: {},
+        })
+      })
+      expect(result.current.status).toBe('completed')
     })
 
     it('scope changes discard prior state and resolve the new scope', async () => {
@@ -699,6 +720,62 @@ describe('useJob', () => {
         concurrencyKey: 'document:wait',
         labels: { documentId: 'wait' },
       })
+    })
+
+    it('ignores a trigger result after initialRunId changes', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const old = await handle.trigger({ input: 'old' })
+      const newer = await handle.trigger({ input: 'newer' })
+      let resolveTrigger!: (run: typeof old) => void
+      const delayed = new Promise<typeof old>((resolve) => {
+        resolveTrigger = resolve
+      })
+      vi.spyOn(handle, 'trigger').mockReturnValueOnce(delayed)
+
+      const { result, rerender } = renderHook(
+        ({ initialRunId }: { initialRunId?: string }) =>
+          useJob(testJob, {
+            autoResume: false,
+            followLatest: false,
+            initialRunId,
+          }),
+        {
+          wrapper: createWrapper(durably),
+          initialProps: { initialRunId: undefined as string | undefined },
+        },
+      )
+
+      const pending = result.current.trigger({ input: 'old' })
+      rerender({ initialRunId: newer.id })
+      await waitFor(() => expect(result.current.currentRunId).toBe(newer.id))
+
+      await act(async () => resolveTrigger(old))
+      await expect(pending).resolves.toEqual({ runId: old.id })
+      expect(result.current.currentRunId).toBe(newer.id)
+    })
+
+    it('revalidates a reused trigger result after installing its run ID', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const stale = await handle.trigger({ input: 'test' })
+      await durably.processUntilIdle()
+      expect((await durably.getRun(stale.id))?.status).toBe('completed')
+      vi.spyOn(handle, 'trigger').mockResolvedValueOnce(stale)
+
+      const { result } = renderHook(
+        () => useJob(testJob, { autoResume: false, followLatest: false }),
+        { wrapper: createWrapper(durably) },
+      )
+
+      await result.current.trigger({ input: 'test' })
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe(stale.id)
+        expect(result.current.status).toBe('completed')
+      })
+      expect(result.current.output).toEqual({ success: true })
     })
 
     it('a matching follow event wins over an older in-flight lookup', async () => {

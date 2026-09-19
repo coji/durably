@@ -841,6 +841,98 @@ describe('useJob (client)', () => {
       })
     })
 
+    it('does not regress a completed run after a late coalesced event', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([]),
+      })
+      const { result } = renderHook(() =>
+        useJob({ api: '/api/durably', jobName: 'test-job' }),
+      )
+      const jobSubscription = mockEventSource.instances.find((instance) =>
+        instance.url.includes('jobName=test-job'),
+      )!
+
+      act(() => {
+        jobSubscription.onmessage?.(
+          new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'run:coalesced',
+              runId: 'same-run',
+              status: 'leased',
+            }),
+          }),
+        )
+      })
+      await waitFor(() => expect(result.current.status).toBe('leased'))
+      const runSubscription = mockEventSource.instances.find((instance) =>
+        instance.url.includes('runId=same-run'),
+      )!
+
+      act(() => {
+        runSubscription.onmessage?.(
+          new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'run:complete',
+              runId: 'same-run',
+              output: { success: true },
+            }),
+          }),
+        )
+      })
+      expect(result.current.status).toBe('completed')
+
+      act(() => {
+        jobSubscription.onmessage?.(
+          new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'run:coalesced',
+              runId: 'same-run',
+              status: 'leased',
+            }),
+          }),
+        )
+      })
+      expect(result.current.status).toBe('completed')
+      expect(result.current.output).toEqual({ success: true })
+    })
+
+    it('ignores an old trigger response after its scope changes', async () => {
+      let resolveFetch!: (value: {
+        ok: boolean
+        json: () => Promise<unknown>
+      }) => void
+      globalThis.fetch = vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveFetch = resolve
+          }),
+      )
+      const { result, rerender } = renderHook(
+        ({ documentId }: { documentId: string }) =>
+          useJob({
+            api: '/api/durably',
+            jobName: 'test-job',
+            autoResume: false,
+            followLatest: false,
+            scope: { labels: { documentId } },
+          }),
+        { initialProps: { documentId: 'old' } },
+      )
+
+      const pending = result.current.trigger({ input: 'test' })
+      rerender({ documentId: 'new' })
+      await act(async () => {
+        resolveFetch({
+          ok: true,
+          json: () => Promise.resolve({ runId: 'old-run', status: 'pending' }),
+        })
+      })
+      await expect(pending).resolves.toEqual({ runId: 'old-run' })
+      expect(result.current.currentRunId).toBeNull()
+      expect(result.current.status).toBeNull()
+    })
+
     it('serializes all triggerOptions and tracks a leased coalesced response', async () => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: true,
