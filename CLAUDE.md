@@ -20,7 +20,7 @@ Significant architectural decisions are recorded in `docs/adr/`. Write an ADR wh
 - The decision would prompt "why is it done this way?" later
 - The change is structural, not just incremental
 
-Workflow: create the ADR as `proposed` while exploring the decision. Before opening the implementation Draft PR, check for a relevant `proposed` ADR already on `main`; create one if the decision needs an ADR and none exists. Set the implemented decision's ADR and index entry to `accepted` on the same feature branch, and reference it from the PR description. Merging that PR publishes the accepted decision to `main`; do not open a follow-up PR just to change its status. A PR that only proposes a decision may leave the ADR as `proposed`.
+Workflow: create the ADR as `proposed` while exploring the decision. Before opening the implementation Draft PR, check for a relevant `proposed` ADR already on `main`; create one if the decision needs an ADR and none exists. Set the ADR and index entry to `accepted` in the PR that completes the decision, and reference it from that PR's description. Merging that PR publishes the accepted decision to `main`; do not open a follow-up PR just to change its status. A proposal-only PR may leave the ADR as `proposed`.
 
 ### Generated Files
 

@@ -20,7 +20,7 @@ Each reviewer call has a ten-minute default limit and one retry for an execution
 A review round has a blocker when any of these is true:
 
 - an issue acceptance criterion is unmet or cannot be verified;
-- an implementation PR records a decision that meets the repository ADR criteria but omits the ADR, or leaves the relevant ADR or its index entry as `proposed` (including an ADR already on `main`; proposal-only PRs that do not implement the decision are exempt);
+- a PR completes a decision that meets the repository ADR criteria but omits the ADR, or leaves the relevant ADR or its index entry as `proposed` (including an ADR already on `main`; proposal-only and partial-implementation PRs remain `proposed`);
 - a `CONFIRMED` P0 or P1 finding remains;
 - a `CONFIRMED` P2 correctness, security, data-integrity, compatibility, or user-visible regression remains;
 - a P0 or P1 candidate is `PLAUSIBLE` and its stated verification has not been completed;
@@ -32,9 +32,9 @@ P3 findings, suggestions, and refactor-only P2 findings are non-blocking unless 
 
 ## Draft-to-Ready loop
 
-1. Start from a clean checkout and record the remote-default base SHA before creating the feature branch. Complete implementation, acceptance checks, simplification, supervision, and documentation against the full `base...HEAD` change set. Check the implementation against the ADR criteria and existing proposed ADRs, even if no ADR path changed. Create or update the relevant ADR and index as `accepted` on this branch before opening the Draft PR. Commit and push a clean worktree.
+1. Start from a clean checkout and record the remote-default base SHA before creating the feature branch. Complete implementation, acceptance checks, simplification, supervision, and documentation against the full `base...HEAD` change set. Check the implementation against the ADR criteria and existing proposed ADRs, even if no ADR path changed. If this PR completes the recorded decision, create or update the relevant ADR and index as `accepted` on this branch before opening the Draft PR. Proposal-only and partial-implementation PRs leave their ADRs `proposed`. Commit and push a clean worktree.
 2. Create the PR with `gh pr create --draft`. Link the source issue with `Closes #<number>` when applicable. Record the base and current head SHA in the PR body.
-3. Freeze that pushed head and run `$code-review high <PR URL>`.
+3. Freeze that pushed head and run `$code-review high <PR URL>`. The acceptance table in the review report must state whether the PR completes an ADR-worthy decision and, if so, verify the ADR and index are `accepted`, including when no ADR path appears in the diff.
 4. If the result is `NO-GO`, the orchestrator fixes every blocker, runs focused checks plus the repository validation command, commits, and pushes. Start a new review round for the new head. Do not reuse a previous GO.
 5. If the result is `INCOMPLETE`, finish the missing review or validation. Do not change Ready state.
 6. When the result is `GO`, wait for every check reported for that exact head to finish successfully. Verify that the remote PR head still equals the reviewed SHA and that the issue acceptance criteria remain satisfied.
