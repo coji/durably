@@ -41,7 +41,7 @@ What we considered and why we didn't do it.
 | [0001](0001-lease-based-runtime.md)   | Lease-based runtime model                  | Accepted |
 | [0002](0002-development-toolchain.md) | Managed runtime and compiler compatibility | accepted |
 | [0003](0003-draft-pr-review-gate.md)  | Draft pull request review gate             | accepted |
-| [0004](0004-durable-step-attempts.md) | Durable step attempt records               | proposed |
+| [0004](0004-durable-step-attempts.md) | Durable step attempt records               | accepted |
 
 ## Prior Art
 
