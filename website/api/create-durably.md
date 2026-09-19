@@ -222,6 +222,8 @@ const attempts = await durably.getStepAttempts(runId)
 
 Returns durable callback attempts ordered by start time, then ID. Unknown runs return `[]`. Each attempt includes `id`, `runId`, `stepName`, `stepIndex`, `leaseGeneration`, `metadata`, `startedAt`, status (`started`, `completed`, or `failed`), nullable `completedAt`, nullable `error`, and nullable `interruptionReason` (`lease-lost`, `cancelled`, or `unknown`). An unresolved attempt does not prove when external work ended. Attempts survive `preserveSteps: false` cleanup but are deleted with the run; use `retainRuns` to bound storage.
 
+`metadata` is a snapshot of the latest committed JSON value for that attempt. It starts as `null` if the step omits the metadata option; `attempt.setMetadata()` replaces the whole value.
+
 ### `getRuns()`
 
 ```ts

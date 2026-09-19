@@ -200,7 +200,7 @@ await step.run(
 const attempts = await durably.getStepAttempts(runId)
 ```
 
-`attempt.id` identifies one callback invocation. `attempt.metadata` reflects the last successfully awaited replacement. Metadata must be JSON-compatible; invalid values fail before execution or leave the previous value unchanged. `getStepAttempts()` returns attempts in start-time and ID order, or `[]` for an unknown run. An unresolved attempt has `status: 'started'`, `completedAt: null`, and an inferred `interruptionReason` (`'lease-lost'`, `'cancelled'`, `'unknown'`, or `null`). These fields do not assert the exact time an external call stopped or fill in unknown usage. Attempts survive terminal checkpoint cleanup, and are deleted when the run is deleted or purged. Use `retainRuns` to bound their lifetime.
+`attempt.id` identifies one callback invocation. `attempt.metadata` reflects the last successfully awaited replacement; `setMetadata()` replaces the entire JSON value rather than merging it. Omit `metadata` for an initial `null` value; passing `metadata: undefined` explicitly is invalid. Invalid values fail before execution or leave the previous value unchanged. `getStepAttempts()` returns attempts in start-time and ID order, or `[]` for an unknown run. An unresolved attempt has `status: 'started'`, `completedAt: null`, and an inferred `interruptionReason` (`'lease-lost'`, `'cancelled'`, `'unknown'`, or `null`). These fields do not assert the exact time an external call stopped or fill in unknown usage. Attempts survive terminal checkpoint cleanup, and are deleted when the run is deleted or purged. Use `retainRuns` to bound their lifetime.
 
 ### step.progress(current, total?, message?)
 
@@ -650,7 +650,10 @@ interface JobDefinition<TName, TInput, TOutput> {
 
 // AbortSignal is aborted when the run is cancelled
 interface StepContext {
-  runId: string
+  readonly runId: string
+  readonly signal: AbortSignal
+  isAborted(): boolean
+  throwIfAborted(): void
   run<T>(
     name: string,
     fn: (signal: AbortSignal, attempt: StepAttemptContext) => T | Promise<T>,
@@ -668,6 +671,23 @@ interface StepAttemptContext {
   readonly id: string
   readonly metadata: JsonValue | null
   setMetadata(value: JsonValue): Promise<void>
+}
+
+type JsonValue =
+  null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
+
+interface StepAttempt {
+  id: string
+  runId: string
+  stepName: string
+  stepIndex: number
+  leaseGeneration: number
+  status: 'started' | 'completed' | 'failed'
+  metadata: JsonValue | null
+  startedAt: string
+  completedAt: string | null
+  error: string | null
+  interruptionReason: 'lease-lost' | 'cancelled' | 'unknown' | null
 }
 
 // TLabels defaults to Record<string, string> when no labels schema is provided

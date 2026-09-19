@@ -29,7 +29,7 @@ const result = await step.run<T>(
 1. **First execution**: Runs `fn` and persists the result
 2. **Subsequent executions**: Returns the cached result without running `fn`
 
-Each fresh callback receives its own durable attempt ID. The start record commits before the callback runs. Cached replay does not add an attempt. The second callback argument exposes `attempt.id`, `attempt.metadata`, and `await attempt.setMetadata(jsonValue)`; metadata replacement commits before the promise resolves.
+Each fresh callback receives its own durable attempt ID. The start record commits before the callback runs. Cached replay does not add an attempt. The second callback argument exposes `attempt.id`, `attempt.metadata`, and `await attempt.setMetadata(jsonValue)`. The awaited write replaces the entire JSON value, commits before the promise resolves, and updates `attempt.metadata`.
 
 ```ts
 await step.run(
@@ -43,7 +43,7 @@ await step.run(
 )
 ```
 
-Metadata must be JSON-compatible. Invalid values reject without silently converting them. An unresolved attempt remains available after a worker crash even if checkpoint outputs are later cleaned up; `durably.getStepAttempts(runId)` lists it with `completedAt: null`. Its `interruptionReason` is inferred from run state and does not claim when external work stopped. Attempts are removed when their run is deleted or purged.
+Metadata must be JSON-compatible. Omit `metadata` for an initial `null` value; explicitly passing `metadata: undefined` rejects before the callback runs. Invalid updates leave the previous value unchanged. An unresolved attempt remains available after a worker crash even if checkpoint outputs are later cleaned up; `durably.getStepAttempts(runId)` lists it with `completedAt: null`. Its `interruptionReason` is inferred from run state and does not claim when external work stopped. Attempts are removed when their run is deleted or purged.
 
 ```ts
 // First run: API is called, result cached
