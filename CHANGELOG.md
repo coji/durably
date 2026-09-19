@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+#### @coji/durably
+
+- **`coalesce: 'queue'` option**: Added `'queue'` to the `coalesce` trigger option (`trigger()`, `triggerAndWait()`, `batchTrigger()`, and HTTP `/trigger`). In this release, `'queue'` is behaviorally equivalent to `'skip'`: both create one trailing pending run behind an active leased run, and reuse an existing pending run with disposition `'coalesced'`. Further triggers while a trailing run is pending are coalesced without replacing its input (#184)
+
 ## [0.15.0] - 2026-03-29
 
 ### Breaking Changes

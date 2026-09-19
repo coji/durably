@@ -29,7 +29,7 @@ export interface CreateRunInput<
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: TLabels
-  coalesce?: 'skip'
+  coalesce?: 'skip' | 'queue'
 }
 
 export interface EnqueueResult<
@@ -627,7 +627,7 @@ export function createKyselyStore(
         (violation === 'pending_concurrency' || violation === null) &&
         input.concurrencyKey
       ) {
-        if (input.coalesce === 'skip') {
+        if (input.coalesce === 'skip' || input.coalesce === 'queue') {
           const pending = await findPendingByConcurrencyKey(
             queryDb,
             input.jobName,
@@ -661,7 +661,7 @@ export function createKyselyStore(
         // No coalesce: explicit error
         throw new ConflictError(
           `A pending run already exists for concurrency key "${input.concurrencyKey}" ` +
-            `in job "${input.jobName}". Use coalesce: 'skip' to return the existing run instead.`,
+            `in job "${input.jobName}". Use coalesce: 'skip' or coalesce: 'queue' to return the existing run instead.`,
         )
       }
 

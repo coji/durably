@@ -127,7 +127,7 @@ export interface TriggerOptions<
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: TLabels
-  coalesce?: 'skip'
+  coalesce?: 'skip' | 'queue'
 }
 
 /**
@@ -517,9 +517,9 @@ export function createJobHandle<
   ) {
     if (coalesce === undefined) return
     const suffix = context ? ` ${context}` : ''
-    if (coalesce !== 'skip') {
+    if (coalesce !== 'skip' && coalesce !== 'queue') {
       throw new ValidationError(
-        `Invalid coalesce value${suffix}: '${coalesce}'. Valid values: 'skip'`,
+        `Invalid coalesce value${suffix}: '${coalesce}'. Valid values: 'skip', 'queue'`,
       )
     }
     if (!concurrencyKey) {

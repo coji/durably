@@ -131,7 +131,7 @@ The handler provides these endpoints:
   "input": { "filename": "data.csv" },
   "idempotencyKey": "unique-key",   // optional
   "concurrencyKey": "user-123",     // optional
-  "coalesce": "skip",               // optional — requires concurrencyKey
+  "coalesce": "queue",              // optional ('skip' | 'queue') — requires concurrencyKey
   "labels": { "organizationId": "org_123" }  // optional
 }
 
@@ -143,7 +143,7 @@ The handler provides these endpoints:
 ```
 
 ::: info SSE behavior
-`run:trigger` is **not** emitted for idempotent or coalesced triggers. A `run:coalesced` event is emitted instead when `coalesce: 'skip'` returns an existing pending run.
+`run:trigger` is **not** emitted for idempotent or coalesced triggers. A `run:coalesced` event is emitted instead when `coalesce: 'skip'` or `coalesce: 'queue'` returns an existing pending run.
 :::
 
 ## SSE Event Stream

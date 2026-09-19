@@ -37,7 +37,7 @@ Regenerate `llms.txt` after editing any `llms.md`. Regenerate the OG image whene
 
 - **Job**: Defined via `defineJob()` and registered via `jobs` option (or `.register()`), receives a step context and payload
 - **Step**: Created via `step.run()`, each step's success state and return value is persisted (cleaned up on terminal state by default, see `preserveSteps`). `step.all()` joins concurrent named steps and replays completed branches; use `attempt.log` for branch-specific logs.
-- **Run**: A job execution instance, created via `trigger()` (returns `TriggerResult` with `disposition`: `'created' | 'idempotent' | 'coalesced'`), always persisted as `pending` before execution. Use `coalesce: 'skip'` to reuse an existing pending run with the same `concurrencyKey`
+- **Run**: A job execution instance, created via `trigger()` (returns `TriggerResult` with `disposition`: `'created' | 'idempotent' | 'coalesced'`), always persisted as `pending` before execution. Use `coalesce: 'skip'` or `coalesce: 'queue'` to reuse an existing pending run with the same `concurrencyKey` (or create one trailing pending run when only a leased run exists; both modes are behaviorally equivalent aliases in this release)
 - **Worker**: Polls for pending runs and executes them (sequentially by default, or concurrently via `maxConcurrentRuns`)
 - **waitForRun**: `durably.waitForRun(runId, options?)` waits for a run to reach terminal state, with `timeout`, `onProgress`, `onLog` callbacks. Uses events with storage polling fallback
 

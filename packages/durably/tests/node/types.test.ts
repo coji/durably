@@ -205,4 +205,12 @@ describe('Type inference', () => {
       expectTypeOf<OperationalEvent>().toMatchTypeOf<DurablyEvent>()
     })
   })
+
+  describe('coalesce options', () => {
+    it('TriggerOptions coalesce accepts exactly skip and queue', () => {
+      expectTypeOf<NonNullable<TriggerOptions['coalesce']>>().toEqualTypeOf<
+        'skip' | 'queue'
+      >()
+    })
+  })
 })

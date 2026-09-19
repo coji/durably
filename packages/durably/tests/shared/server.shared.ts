@@ -252,6 +252,50 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(run?.idempotencyKey).toBe('idem-key')
         expect(run?.concurrencyKey).toBe('conc-key')
       })
+
+      it('accepts coalesce: queue and returns correct disposition', async () => {
+        durably.register({
+          job: defineJob({
+            name: 'trigger-queue-test',
+            input: z.object({ value: z.string() }),
+            run: async () => {},
+          }),
+        })
+
+        // First trigger creates a pending run
+        const req1 = new Request('http://localhost/api/durably/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobName: 'trigger-queue-test',
+            input: { value: 'first' },
+            concurrencyKey: 'queue-conc-key',
+            coalesce: 'queue',
+          }),
+        })
+        const res1 = await handler.handle(req1, '/api/durably')
+        const body1 = await res1.json()
+        expect(res1.status).toBe(200)
+        expect(body1.disposition).toBe('created')
+        expect(body1.runId).toBeDefined()
+
+        // Second trigger with same concurrencyKey and coalesce: queue reuses the pending run
+        const req2 = new Request('http://localhost/api/durably/trigger', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobName: 'trigger-queue-test',
+            input: { value: 'second' },
+            concurrencyKey: 'queue-conc-key',
+            coalesce: 'queue',
+          }),
+        })
+        const res2 = await handler.handle(req2, '/api/durably')
+        const body2 = await res2.json()
+        expect(res2.status).toBe(200)
+        expect(body2.disposition).toBe('coalesced')
+        expect(body2.runId).toBe(body1.runId)
+      })
     })
 
     describe('runs', () => {

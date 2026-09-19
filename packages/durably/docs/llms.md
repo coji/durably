@@ -151,13 +151,20 @@ console.log(idempotentRun.disposition) // "created" or "idempotent"
 await syncUsers.trigger({ orgId: 'org_123' }, { concurrencyKey: 'org_123' })
 // Second trigger with same key throws ConflictError if a pending run exists
 
-// With coalesce (skip duplicate pending runs gracefully)
-const coalesced = await syncUsers.trigger(
+// With coalesce: 'skip' or 'queue'
+// In this release, 'skip' and 'queue' are behaviorally equivalent aliases:
+// - If only a pending run exists, reuses it (disposition: 'coalesced')
+// - If only an active leased run exists, creates one trailing pending run (disposition: 'created')
+// - At most one trailing pending run exists per key; further triggers coalesce onto it
+//   (unused input and labels are emitted via run:coalesced, not persisted)
+// - Matching idempotencyKey takes precedence, returning disposition: 'idempotent'
+// - If an active run expires with a pending replacement, the expired run fails; replacement remains pending
+const queued = await syncUsers.trigger(
   { orgId: 'org_123' },
-  { concurrencyKey: 'org_123', coalesce: 'skip' },
+  { concurrencyKey: 'org_123', coalesce: 'queue' },
 )
-if (coalesced.disposition === 'coalesced') {
-  console.log('Reused existing pending run:', coalesced.id)
+if (queued.disposition === 'coalesced') {
+  console.log('Reused existing pending run:', queued.id)
 }
 
 // With labels (for filtering)
@@ -584,7 +591,7 @@ interface TriggerRequest<TLabels> {
   input: unknown
   idempotencyKey?: string
   concurrencyKey?: string
-  coalesce?: 'skip'
+  coalesce?: 'skip' | 'queue'
   labels?: TLabels
 }
 
@@ -780,7 +787,7 @@ interface TriggerOptions<
 > {
   idempotencyKey?: string
   concurrencyKey?: string
-  coalesce?: 'skip'
+  coalesce?: 'skip' | 'queue'
   labels?: TLabels
 }
 
