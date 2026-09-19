@@ -42,7 +42,7 @@ What we considered and why we didn't do it.
 | [0002](0002-development-toolchain.md) | Managed runtime and compiler compatibility | accepted |
 | [0003](0003-draft-pr-review-gate.md)  | Draft pull request review gate             | accepted |
 | [0004](0004-durable-step-attempts.md) | Durable step attempt records               | accepted |
-| [0005](0005-parallel-step-join.md)    | Parallel named steps and durable join      | proposed |
+| [0005](0005-parallel-step-join.md)    | Parallel named steps and durable join      | accepted |
 
 ## Prior Art
 
