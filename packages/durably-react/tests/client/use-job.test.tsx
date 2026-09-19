@@ -1491,6 +1491,65 @@ describe('useJob (client)', () => {
       expect(result.current.isActive).toBe(true)
     })
 
+    it('restores a fixed run when scope changes before a trigger response arrives', async () => {
+      let resolveTrigger!: (response: {
+        ok: boolean
+        json: () => Promise<unknown>
+      }) => void
+      globalThis.fetch = vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveTrigger = resolve
+          }),
+      )
+      const { result, rerender } = renderHook(
+        ({ documentId }: { documentId: string }) =>
+          useJob({
+            api: '/api/durably',
+            jobName: 'test-job',
+            initialRunId: 'fixed-run',
+            followLatest: false,
+            scope: { labels: { documentId } },
+          }),
+        { initialProps: { documentId: 'first' } },
+      )
+      const runSubscription = await waitFor(() => {
+        const instance = mockEventSource.instances.find((candidate) =>
+          candidate.url.includes('runId=fixed-run'),
+        )
+        expect(instance).toBeDefined()
+        return instance!
+      })
+      act(() => {
+        runSubscription.onmessage?.(
+          new MessageEvent('message', {
+            data: JSON.stringify({ type: 'run:leased', runId: 'fixed-run' }),
+          }),
+        )
+      })
+      expect(result.current.status).toBe('leased')
+
+      let pending!: Promise<{ runId: string }>
+      act(() => {
+        pending = result.current.trigger({ input: 'test' })
+      })
+      rerender({ documentId: 'second' })
+      expect(result.current.currentRunId).toBe('fixed-run')
+      expect(result.current.status).toBe('leased')
+      expect(result.current.isPending).toBe(false)
+
+      await act(async () => {
+        resolveTrigger({
+          ok: true,
+          json: () =>
+            Promise.resolve({ runId: 'old-scope-run', status: 'pending' }),
+        })
+        await pending
+      })
+      expect(result.current.currentRunId).toBe('fixed-run')
+      expect(result.current.status).toBe('leased')
+    })
+
     it('owns rejected and aborted lookups and settles resolving state', async () => {
       const consoleError = vi
         .spyOn(console, 'error')

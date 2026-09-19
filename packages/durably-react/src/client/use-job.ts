@@ -154,6 +154,7 @@ export function useJob<
       resolutionEpochRef.current++
       hasUserTriggered.current = false
       if (initialRunId && currentRunId === initialRunId) {
+        setIsPending(false)
         setIsResolving(false)
         return
       }
@@ -387,10 +388,14 @@ export function useJob<
       hasUserTriggered.current = true
       const epoch = ++resolutionEpochRef.current
       setIsResolving(false)
+      const preserveFixedRun = !!initialRunId && currentRunId === initialRunId
 
-      // Reset state
-      subscription.reset()
-      setHydratedStatus(null)
+      // Keep the fixed run visible until a new trigger result is accepted.
+      // A scope change can supersede the request before it returns.
+      if (!preserveFixedRun) {
+        subscription.reset()
+        setHydratedStatus(null)
+      }
       setIsPending(true)
 
       const body: Record<string, unknown> = {
@@ -429,6 +434,11 @@ export function useJob<
         status?: RunStatus
       }
       if (resolutionEpochRef.current === epoch) {
+        if (preserveFixedRun) {
+          subscription.reset()
+          setHydratedStatus(null)
+          setIsPending(!data.status)
+        }
         setCurrentRunId(data.runId)
         if (data.status) {
           setHydratedStatus(data.status)
@@ -437,7 +447,14 @@ export function useJob<
 
       return { runId: data.runId }
     },
-    [api, jobName, stableTriggerOptions, subscription.reset],
+    [
+      api,
+      jobName,
+      initialRunId,
+      currentRunId,
+      stableTriggerOptions,
+      subscription.reset,
+    ],
   )
 
   const triggerAndWait = useCallback(
