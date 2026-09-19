@@ -1613,6 +1613,97 @@ describe('useJob (client)', () => {
       expect(result.current.triggerAndWait).toBe(triggerAndWait)
     })
 
+    it('accepts a trigger issued in the same handler as reset', async () => {
+      let ordinal = 0
+      globalThis.fetch = vi.fn().mockImplementation(() =>
+        Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              runId: `run-${++ordinal}`,
+              status: 'pending',
+            }),
+        }),
+      )
+      const { result } = renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          autoResume: false,
+          followLatest: false,
+        }),
+      )
+      await act(async () => {
+        await result.current.trigger({ input: 'first' })
+      })
+      expect(result.current.currentRunId).toBe('run-1')
+
+      let pending!: Promise<{ runId: string }>
+      act(() => {
+        result.current.reset()
+        pending = result.current.trigger({ input: 'second' })
+      })
+      await act(async () => {
+        await pending
+      })
+      expect(result.current.currentRunId).toBe('run-2')
+      expect(result.current.status).toBe('pending')
+    })
+
+    it('ignores an event from the previous scope after its subscription closes', () => {
+      const { result, rerender } = renderHook(
+        ({ documentId }: { documentId: string }) =>
+          useJob({
+            api: '/api/durably',
+            jobName: 'test-job',
+            initialRunId: 'fixed-run',
+            scope: { labels: { documentId } },
+          }),
+        { initialProps: { documentId: 'first' } },
+      )
+      const oldSubscription = mockEventSource.instances.find(
+        (instance) =>
+          instance.url.includes('/runs/subscribe?') &&
+          instance.url.includes('label.documentId=first'),
+      )!
+      rerender({ documentId: 'second' })
+      act(() => {
+        oldSubscription.onmessage?.(
+          new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'run:trigger',
+              runId: 'old-scope-run',
+            }),
+          }),
+        )
+      })
+      expect(result.current.currentRunId).toBe('fixed-run')
+    })
+
+    it('does not let a retained callback trigger a previous API source', async () => {
+      const fetchMock = vi.fn()
+      globalThis.fetch = fetchMock
+      const { result, rerender } = renderHook(
+        ({ api }: { api: string }) =>
+          useJob({
+            api,
+            jobName: 'test-job',
+            initialRunId: 'fixed-run',
+            autoResume: false,
+            followLatest: false,
+          }),
+        { initialProps: { api: '/old' } },
+      )
+      const oldTrigger = result.current.trigger
+      rerender({ api: '/new' })
+      await expect(oldTrigger({ input: 'test' })).rejects.toThrow(
+        'Job source changed',
+      )
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(result.current.currentRunId).toBe('fixed-run')
+      expect(result.current.status).toBeNull()
+    })
+
     it('owns rejected and aborted lookups and settles resolving state', async () => {
       const consoleError = vi
         .spyOn(console, 'error')

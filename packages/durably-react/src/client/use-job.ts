@@ -367,6 +367,14 @@ export function useJob<
     const eventSource = new EventSource(`${api}/runs/subscribe?${params}`)
 
     eventSource.onmessage = (event) => {
+      const context = trackingContextRef.current
+      if (
+        context.api !== api ||
+        context.jobName !== jobName ||
+        context.scope !== stableScope
+      ) {
+        return
+      }
       try {
         const data = JSON.parse(event.data) as {
           type: string
@@ -409,10 +417,16 @@ export function useJob<
 
   const trigger = useCallback(
     async (input: TInput): Promise<{ runId: string }> => {
+      if (
+        trackingContextRef.current.api !== api ||
+        trackingContextRef.current.jobName !== jobName
+      ) {
+        throw new Error('Job source changed')
+      }
       hasUserTriggered.current = true
       const epoch = ++resolutionEpochRef.current
       setIsResolving(false)
-      const triggerContext = trackingContextRef.current
+      const triggerContext = { ...trackingContextRef.current, api, jobName }
       const preserveFixedRun =
         !!triggerContext.initialRunId &&
         triggerContext.currentRunId === triggerContext.initialRunId
@@ -423,8 +437,7 @@ export function useJob<
           current.api === triggerContext.api &&
           current.jobName === triggerContext.jobName &&
           current.initialRunId === triggerContext.initialRunId &&
-          current.scope === triggerContext.scope &&
-          current.currentRunId === triggerContext.currentRunId
+          current.scope === triggerContext.scope
         )
       }
 
