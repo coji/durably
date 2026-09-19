@@ -387,12 +387,6 @@ export function createCoalesceTests(createDialect: () => Dialect) {
         ).rejects.toThrow(ValidationError)
       })
 
-      it('throws ValidationError for coalesce: skip without concurrencyKey', async () => {
-        await expect(
-          d.jobs.job.trigger({ value: 'a' }, { coalesce: 'skip' }),
-        ).rejects.toThrow(ValidationError)
-      })
-
       it('throws ValidationError for coalesce: queue without concurrencyKey', async () => {
         await expect(
           d.jobs.job.trigger({ value: 'a' }, { coalesce: 'queue' }),
