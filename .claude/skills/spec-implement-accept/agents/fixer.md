@@ -22,7 +22,8 @@ Fix the issues raised in the acceptance testing or supervision.
 ### Scope Rules
 
 - Only implement what order.md specifies
-- Do NOT modify order.md or any spec files
+- Do NOT modify order.md or any spec files. An ADR and its index entry explicitly listed as change
+  targets in order.md may be created or updated in `docs/adr/` following its `README.md`.
 - Changes to files outside the listed change targets are allowed ONLY if the fixes cause compilation or test failures
 
 ### Quality Rules
@@ -33,7 +34,7 @@ Fix the issues raised in the acceptance testing or supervision.
 
 ### Prohibited Actions
 
-- Modifying spec files
+- Modifying spec files, except the ADR and index entry explicitly listed in order.md
 - Adding features not specified in order.md
 - Changing test infrastructure unless required for the fix
 

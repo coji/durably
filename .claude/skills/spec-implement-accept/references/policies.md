@@ -10,9 +10,9 @@ Applied to: implement, acceptance, fix, supervise phases.
 
 - Only implement what the current task specifies
 - Do NOT modify the task order (order.md) — it is the authoritative spec
-- Do NOT modify PLAN.md, RFC, or design docs
+- Do NOT modify PLAN.md, RFC, or design docs, except an ADR and its index entry explicitly listed as change targets in the approved task, or the corresponding ADR and index when a review fix corrects their presence or status for the approved decision or changes that decision within the approved task. A review fix may also update an older accepted ADR when the decision supersedes it under `docs/adr/README.md`.
 - Changes to files outside the listed change targets are allowed ONLY if
-  the changes cause compilation or test failures in those files
+  the changes cause compilation or test failures in those files, or they are the corresponding ADR, index, and superseded ADR updates required for that review fix
 
 ### Quality Rules
 
@@ -22,7 +22,7 @@ Applied to: implement, acceptance, fix, supervise phases.
 
 ### Prohibited Actions
 
-- Modifying spec/plan/RFC files
+- Modifying spec/plan/RFC files, except the ADR and index changes permitted above
 - Modifying the task order (order.md)
 - Adding features not specified in the task
 - Changing test infrastructure unless the task requires it
@@ -61,6 +61,7 @@ Applied to: doc-update phase.
   - `website/api/`
   - `website/guide/`
   - `examples/`
+  - `docs/adr/`
   - `website/public/llms.txt` (generated)
 - Do NOT modify implementation code, tests, or config files
 - Do NOT modify order.md

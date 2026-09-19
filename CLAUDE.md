@@ -20,7 +20,7 @@ Significant architectural decisions are recorded in `docs/adr/`. Write an ADR wh
 - The decision would prompt "why is it done this way?" later
 - The change is structural, not just incremental
 
-Workflow: create the ADR as `proposed` when starting the work, update to `accepted` when the PR merges. Reference the ADR from the PR description.
+Workflow: create the ADR as `proposed` while exploring the decision. Before opening the implementation Draft PR, check for a relevant `proposed` ADR already on `main`; create one if the decision needs an ADR and none exists. Set the ADR and index entry to `accepted` in the PR that completes the decision, and reference it from that PR's description. Merging that PR publishes the accepted decision to `main`; do not open a follow-up PR just to change its status. A proposal-only PR must leave the ADR and index entry as `proposed`.
 
 ### Generated Files
 
@@ -122,13 +122,9 @@ codex exec "your question or prompt here"
 - Useful for research, design consultation, and debugging — not just search
 - **During `/review` and `/simplify`**: Run `codex exec` in parallel with the review agents to get a second opinion on the diff. Pass the diff content and ask for code quality feedback, potential issues, or improvement suggestions
 
-## takt Workflow
+## Development Workflow
 
-takt is an autonomous multi-agent coding workflow engine. Pieces (`.takt/pieces/`) define movement sequences (spec → review → implement → simplify → accept → docs). Facets (`.takt/facets/`) provide persona/instruction/policy for each movement. Config and task state are gitignored — set these defaults when creating tasks:
-
-- `worktree: false` — work directly on feature branches, no clone isolation
-- `auto_pr: false`, `draft_pr: false` — create PRs manually after review
-- `piece: spec-implement-accept`
+Use the non-takt `spec-implement-accept` skill and `docs/workflow/code-review.md` for issue implementation and the Draft-to-Ready review gate. The `.takt/` files are legacy and are not an active workflow; do not invoke takt for new work.
 
 ## Skills
 
