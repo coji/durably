@@ -750,28 +750,26 @@ export function createKyselyStore(
       // ConflictError on any item rolls back the entire batch.
       const enqueueBatch = () =>
         db.transaction().execute(async (trx) => {
-          if (inputs.some((i) => i.coalesce === 'active')) {
-            if (backend === 'postgres') {
-              // A non-active item can still insert a pending row for a key
-              // locked by another batch. Lock every keyed item in the same
-              // order before either batch starts inserting.
-              const batchKeys = [
-                ...new Set(
-                  inputs.flatMap((i) =>
-                    i.concurrencyKey ? [i.concurrencyKey] : [],
-                  ),
+          if (backend === 'postgres') {
+            // Even a batch with no active items can insert pending rows that
+            // conflict with an active batch. All keyed batches must acquire
+            // the same locks in the same order before their first insert.
+            const batchKeys = [
+              ...new Set(
+                inputs.flatMap((i) =>
+                  i.concurrencyKey ? [i.concurrencyKey] : [],
                 ),
-              ].sort()
-              for (const key of batchKeys) {
-                await sql`SELECT pg_advisory_xact_lock(hashtext(${key}))`.execute(
-                  trx,
-                )
-              }
-            } else {
-              await sql`UPDATE durably_runs SET updated_at = updated_at WHERE 1 = 0`.execute(
+              ),
+            ].sort()
+            for (const key of batchKeys) {
+              await sql`SELECT pg_advisory_xact_lock(hashtext(${key}))`.execute(
                 trx,
               )
             }
+          } else if (inputs.some((i) => i.coalesce === 'active')) {
+            await sql`UPDATE durably_runs SET updated_at = updated_at WHERE 1 = 0`.execute(
+              trx,
+            )
           }
           const results: EnqueueResult[] = []
           for (const input of inputs) {

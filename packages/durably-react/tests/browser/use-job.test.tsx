@@ -787,6 +787,60 @@ describe('useJob', () => {
       ])
     })
 
+    it('keeps progress and logs received before hydrating an already leased initial run', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const pending = await handle.trigger({ input: 'test' })
+      const leased = await durably.storage.claimNext(
+        'worker-1',
+        new Date().toISOString(),
+        30_000,
+      )
+      expect(leased?.id).toBe(pending.id)
+      let resolveFirstRead!: (value: typeof leased) => void
+      vi.spyOn(durably.storage, 'getRun').mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirstRead = resolve
+          }),
+      )
+      const { result } = renderHook(
+        () => useJob(testJob, { initialRunId: pending.id }),
+        { wrapper: createWrapper(durably) },
+      )
+      await waitFor(() => expect(resolveFirstRead).toBeDefined())
+      act(() => {
+        durably.emit({
+          type: 'run:progress',
+          runId: pending.id,
+          jobName: testJob.name,
+          progress: { current: 1, total: 2 },
+          labels: {},
+        })
+        durably.emit({
+          type: 'log:write',
+          runId: pending.id,
+          jobName: testJob.name,
+          labels: {},
+          stepName: null,
+          level: 'info',
+          message: 'before hydration',
+          data: null,
+        })
+      })
+      expect(result.current.status).toBeNull()
+      expect(result.current.progress).toEqual({ current: 1, total: 2 })
+      await act(async () => {
+        resolveFirstRead(leased)
+      })
+      expect(result.current.status).toBe('leased')
+      expect(result.current.progress).toEqual({ current: 1, total: 2 })
+      expect(result.current.logs.map((log) => log.message)).toEqual([
+        'before hydration',
+      ])
+    })
+
     it('keeps a found run when auto-resume revalidation fails', async () => {
       const durably = await createTestDurably({ autoStart: false })
       instances.push(durably)
