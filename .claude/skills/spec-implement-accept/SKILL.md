@@ -56,6 +56,7 @@ pipeline.
 1. Require an unchanged starting checkout. Resolve and fetch the remote default branch, then record
    its SHA. If `git status --porcelain=v1 -z` is non-empty, stop and report the paths; never stash,
    delete, commit, or silently include pre-existing work.
+   Run all repository-relative commands from `git rev-parse --show-toplevel`.
 2. Fetch the task input:
    - **Issue number**: `gh issue view <number> --json title,body,labels` and use title + body as task description
    - **Issue URL**: extract the number from the URL, then fetch as above
@@ -326,7 +327,8 @@ Before changing the PR state:
 3. Wait for every check reported for that exact SHA; all must complete successfully.
 4. Confirm the worktree has no workflow-created uncommitted changes and the remote head has not moved.
 5. Update the PR body to show the final reviewed SHA, validation, checks, and non-blocking findings.
-6. Run `scripts/mark-ready.sh <PR URL> <reviewed SHA> <task-dir>/validation.env`. It re-reads `headRefOid` immediately before
+6. Run `.claude/skills/spec-implement-accept/scripts/mark-ready.sh <PR URL> <reviewed SHA>
+<task-dir>/validation.env`. It re-reads `headRefOid` immediately before
    the mutation, rejects pending/failed/cancelled checks, and enters Ready only when the SHA still
    matches.
 7. The script re-reads the head after the mutation. If it changed, it restores Draft state and the
