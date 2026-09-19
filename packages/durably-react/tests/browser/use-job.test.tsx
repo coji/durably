@@ -489,6 +489,73 @@ describe('useJob', () => {
       })
     })
 
+    it('preserves progress and logs when a follow event refers to the current run', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const { result } = renderHook(
+        () => useJob(testJob, { autoResume: false }),
+        { wrapper: createWrapper(durably) },
+      )
+
+      act(() => {
+        durably.emit({
+          type: 'run:trigger',
+          runId: 'same-run',
+          jobName: testJob.name,
+          input: { input: 'test' },
+          labels: {},
+        })
+        durably.emit({
+          type: 'run:progress',
+          runId: 'same-run',
+          jobName: testJob.name,
+          progress: { current: 1, total: 2 },
+          labels: {},
+        })
+        durably.emit({
+          type: 'log:write',
+          runId: 'same-run',
+          jobName: testJob.name,
+          labels: {},
+          stepName: null,
+          level: 'info',
+          message: 'still here',
+          data: null,
+        })
+      })
+      await waitFor(() => {
+        expect(result.current.progress).toEqual({ current: 1, total: 2 })
+        expect(result.current.logs).toHaveLength(1)
+      })
+
+      act(() => {
+        durably.emit({
+          type: 'run:coalesced',
+          runId: 'same-run',
+          jobName: testJob.name,
+          status: 'leased',
+          labels: {},
+          skippedInput: { input: 'duplicate' },
+          skippedLabels: {},
+        })
+        durably.emit({
+          type: 'run:leased',
+          runId: 'same-run',
+          jobName: testJob.name,
+          input: { input: 'test' },
+          leaseOwner: 'worker-1',
+          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+          labels: {},
+        })
+      })
+
+      expect(result.current.status).toBe('leased')
+      expect(result.current.progress).toEqual({ current: 1, total: 2 })
+      expect(result.current.logs.map((log) => log.message)).toEqual([
+        'still here',
+      ])
+    })
+
     it('scope changes discard prior state and resolve the new scope', async () => {
       const durably = await createTestDurably({ autoStart: false })
       instances.push(durably)
@@ -634,6 +701,52 @@ describe('useJob', () => {
       expect(result.current.isResolving).toBe(false)
     })
 
+    it('re-reads after installing an auto-resumed run to catch a missed terminal event', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const pending = await handle.trigger(
+        { input: 'test' },
+        { labels: { documentId: 'terminal-race' } },
+      )
+      const terminal = {
+        ...pending,
+        status: 'completed' as const,
+        output: { success: true },
+      }
+      const getRun = vi.spyOn(durably.storage, 'getRun')
+      getRun
+        .mockImplementationOnce(async () => {
+          durably.emit({
+            type: 'run:complete',
+            runId: pending.id,
+            jobName: testJob.name,
+            output: { success: true },
+            duration: 1,
+            labels: { documentId: 'terminal-race' },
+          })
+          return pending
+        })
+        .mockResolvedValueOnce(terminal)
+
+      const { result } = renderHook(
+        () =>
+          useJob(testJob, {
+            followLatest: false,
+            scope: { labels: { documentId: 'terminal-race' } },
+          }),
+        { wrapper: createWrapper(durably) },
+      )
+
+      await waitFor(() => {
+        expect(result.current.isResolving).toBe(false)
+        expect(result.current.currentRunId).toBe(pending.id)
+        expect(result.current.status).toBe('completed')
+        expect(result.current.output).toEqual({ success: true })
+      })
+      expect(getRun).toHaveBeenCalledTimes(2)
+    })
+
     it('an old scope lookup rejection does not finish the new scope lookup', async () => {
       const durably = await createTestDurably({ autoStart: false })
       instances.push(durably)
@@ -694,6 +807,32 @@ describe('useJob', () => {
       )
       await waitFor(() => expect(getRuns).toHaveBeenCalledTimes(2))
       rerender()
+      await act(async () => Promise.resolve())
+      expect(getRuns).toHaveBeenCalledTimes(2)
+    })
+
+    it('reordered but equal label records do not repeat lookups', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const getRuns = vi.spyOn(durably.storage, 'getRuns')
+      const { rerender } = renderHook(
+        ({ reverse }) => {
+          const labels = reverse
+            ? { tenant: 'acme', documentId: 'stable' }
+            : { documentId: 'stable', tenant: 'acme' }
+          return useJob(testJob, {
+            followLatest: false,
+            scope: { labels },
+            triggerOptions: { labels },
+          })
+        },
+        {
+          initialProps: { reverse: false },
+          wrapper: createWrapper(durably),
+        },
+      )
+      await waitFor(() => expect(getRuns).toHaveBeenCalledTimes(2))
+      rerender({ reverse: true })
       await act(async () => Promise.resolve())
       expect(getRuns).toHaveBeenCalledTimes(2)
     })

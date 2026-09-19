@@ -1266,6 +1266,28 @@ export function createCoalesceTests(createDialect: () => Dialect) {
         expect(fetched?.idempotencyKey).toBe('orig-idem')
       })
 
+      it('validates labels before reusing an active run', async () => {
+        const existing = await d.jobs.job.trigger(
+          { value: 'existing' },
+          { concurrencyKey: 'key-act-invalid-label' },
+        )
+
+        await expect(
+          d.jobs.job.trigger(
+            { value: 'invalid' },
+            {
+              concurrencyKey: 'key-act-invalid-label',
+              coalesce: 'active',
+              labels: { 'invalid label': 'value' },
+            },
+          ),
+        ).rejects.toThrow('Invalid label key')
+
+        const runs = await d.jobs.job.getRuns()
+        expect(runs).toHaveLength(1)
+        expect(runs[0].id).toBe(existing.id)
+      })
+
       describe('events', () => {
         it('emits one run:coalesced event with status pending and no run:trigger event when reusing pending run', async () => {
           const coalescedEvents: any[] = []
@@ -1386,6 +1408,43 @@ export function createCoalesceTests(createDialect: () => Dialect) {
 
           const runs = await d.jobs.job.getRuns()
           expect(runs).toHaveLength(0)
+        })
+
+        it('rolls back a batch when invalid labels would otherwise reuse an active run', async () => {
+          const existing = await d.jobs.job.trigger(
+            { value: 'existing' },
+            { concurrencyKey: 'key-act-invalid-batch-existing' },
+          )
+          const triggerEvents: any[] = []
+          const coalescedEvents: any[] = []
+          durably.on('run:trigger', (event) => triggerEvents.push(event))
+          durably.on('run:coalesced', (event) => coalescedEvents.push(event))
+
+          await expect(
+            d.jobs.job.batchTrigger([
+              {
+                input: { value: 'would-roll-back' },
+                options: {
+                  concurrencyKey: 'key-act-invalid-batch-new',
+                  coalesce: 'active',
+                },
+              },
+              {
+                input: { value: 'invalid' },
+                options: {
+                  concurrencyKey: 'key-act-invalid-batch-existing',
+                  coalesce: 'active',
+                  labels: { 'invalid label': 'value' },
+                },
+              },
+            ]),
+          ).rejects.toThrow('Invalid label key')
+
+          expect(triggerEvents).toHaveLength(0)
+          expect(coalescedEvents).toHaveLength(0)
+          const runs = await d.jobs.job.getRuns()
+          expect(runs).toHaveLength(1)
+          expect(runs[0].id).toBe(existing.id)
         })
       })
     })

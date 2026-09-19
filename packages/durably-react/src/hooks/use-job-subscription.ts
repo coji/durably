@@ -60,6 +60,16 @@ export interface UseJobSubscriptionResult<
     error?: string | null,
   ) => void
   /**
+   * Apply a re-read run state only while that same run is still active.
+   */
+  revalidateRun: (
+    runId: string,
+    expectedStatus: RunStatus,
+    status: RunStatus,
+    output?: TOutput | null,
+    error?: string | null,
+  ) => void
+  /**
    * Clear all logs
    */
   clearLogs: () => void
@@ -92,6 +102,14 @@ type JobSubscriptionAction<TOutput = unknown> =
       output?: TOutput | null
       error?: string | null
     }
+  | {
+      type: 'revalidate_run'
+      runId: string
+      expectedStatus: RunStatus
+      status: RunStatus
+      output?: TOutput | null
+      error?: string | null
+    }
 
 function jobSubscriptionReducer<TOutput = unknown>(
   state: JobSubscriptionState<TOutput>,
@@ -117,6 +135,20 @@ function jobSubscriptionReducer<TOutput = unknown>(
         output: action.output ?? null,
         error: action.error ?? null,
       } as JobSubscriptionState<TOutput>
+
+    case 'revalidate_run':
+      if (
+        state.currentRunId !== action.runId ||
+        state.status !== action.expectedStatus
+      ) {
+        return state
+      }
+      return {
+        ...state,
+        status: action.status,
+        output: action.output ?? null,
+        error: action.error ?? null,
+      }
 
     case 'reset':
       return {
@@ -188,6 +220,10 @@ export function useJobSubscription<TOutput = unknown>(
 
         if (followLatest) {
           if (!matchesLabels(event.labels, scopeLabels)) return
+          if (event.runId === currentRunIdRef.current) {
+            dispatch({ type: 'run:leased' })
+            return
+          }
           // Switch to tracking the new run
           dispatch({
             type: 'switch_to_run',
@@ -211,6 +247,12 @@ export function useJobSubscription<TOutput = unknown>(
         if (!matchesLabels(event.labels, scopeLabels)) return
 
         if (followLatest) {
+          if (event.runId === currentRunIdRef.current) {
+            if (event.status === 'leased') {
+              dispatch({ type: 'run:leased' })
+            }
+            return
+          }
           dispatch({
             type: 'switch_to_run',
             runId: event.runId,
@@ -290,6 +332,26 @@ export function useJobSubscription<TOutput = unknown>(
     [],
   )
 
+  const revalidateRun = useCallback(
+    (
+      runId: string,
+      expectedStatus: RunStatus,
+      status: RunStatus,
+      output?: TOutput | null,
+      error?: string | null,
+    ) => {
+      dispatch({
+        type: 'revalidate_run',
+        runId,
+        expectedStatus,
+        status,
+        output,
+        error,
+      })
+    },
+    [],
+  )
+
   const clearLogs = useCallback(() => {
     dispatch({ type: 'clear_logs' })
   }, [])
@@ -303,6 +365,7 @@ export function useJobSubscription<TOutput = unknown>(
     ...state,
     setCurrentRunId,
     hydrateRun,
+    revalidateRun,
     clearLogs,
     reset,
   }

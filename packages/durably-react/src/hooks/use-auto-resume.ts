@@ -37,7 +37,7 @@ export interface UseAutoResumeCallbacks<
   /**
    * Called when an active run is found
    */
-  onRunFound: (run: JobRun<TOutput, TLabels>) => void
+  onRunFound: (run: JobRun<TOutput, TLabels>) => void | Promise<void>
   /**
    * Called when auto-resume lookup settles (found, not found, or error)
    */
@@ -90,7 +90,7 @@ export function useAutoResume<
           // Revalidate to ensure latest state is hydrated even if run became terminal
           const latest = (await jobHandle.getRun(run.id)) ?? run
           if (cancelled) return
-          callbacks.onRunFound(latest)
+          await callbacks.onRunFound(latest)
           return
         }
 
@@ -106,7 +106,7 @@ export function useAutoResume<
           const run = pendingRuns[0]
           const latest = (await jobHandle.getRun(run.id)) ?? run
           if (cancelled) return
-          callbacks.onRunFound(latest)
+          await callbacks.onRunFound(latest)
           return
         }
       } catch (err) {

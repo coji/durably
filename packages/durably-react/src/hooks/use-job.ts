@@ -227,7 +227,7 @@ export function useJob<
         lookupEpochRef.current = resolutionEpochRef.current
         setIsResolving(true)
       },
-      onRunFound: (run: {
+      onRunFound: async (run: {
         id: string
         status: RunStatus
         output?: unknown
@@ -240,13 +240,27 @@ export function useJob<
           run.output as TOutput,
           run.error ?? null,
         )
+        const revalidated = await jobHandle?.getRun(run.id)
+        if (
+          !revalidated ||
+          resolutionEpochRef.current !== lookupEpochRef.current
+        ) {
+          return
+        }
+        subscription.revalidateRun(
+          revalidated.id,
+          run.status,
+          revalidated.status as RunStatus,
+          revalidated.output as TOutput,
+          revalidated.error,
+        )
       },
       onSettled: () => {
         if (resolutionEpochRef.current !== lookupEpochRef.current) return
         setIsResolving(false)
       },
     }
-  }, [subscription.hydrateRun])
+  }, [jobHandle, subscription.hydrateRun, subscription.revalidateRun])
 
   // Use the extracted auto-resume hook
   useAutoResume(

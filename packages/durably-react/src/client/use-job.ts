@@ -1,5 +1,6 @@
 import type { TriggerOptions } from '@coji/durably'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createSSEEventSubscriber } from '../shared/sse-event-subscriber'
 import { useStableValue } from '../shared/use-stable-value'
 import type { LogEntry, Progress, RunStatus } from '../types'
 import { useSSESubscription } from './use-sse-subscription'
@@ -140,13 +141,9 @@ export function useJob<
 
   // Track if user has triggered a run (to prevent autoResume from overwriting)
   const hasUserTriggered = useRef(false)
-  const waitIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const waitUnsubscribesRef = useRef(new Set<() => void>())
 
   const subscription = useSSESubscription<TOutput>(api, currentRunId)
-
-  // Keep a ref to the latest subscription state for use in triggerAndWait
-  const subscriptionRef = useRef(subscription)
-  subscriptionRef.current = subscription
 
   // Handle scope changes
   useEffect(() => {
@@ -382,40 +379,37 @@ export function useJob<
       const { runId } = await trigger(input)
 
       return new Promise((resolve, reject) => {
-        // Clear any previous wait interval
-        if (waitIntervalRef.current) {
-          clearInterval(waitIntervalRef.current)
+        const subscriber = createSSEEventSubscriber(api)
+        let unsubscribe = () => {}
+        const settle = (callback: () => void) => {
+          unsubscribe()
+          waitUnsubscribesRef.current.delete(unsubscribe)
+          callback()
         }
-
-        const checkInterval = setInterval(() => {
-          const sub = subscriptionRef.current
-          if (sub.status === 'completed' && sub.output) {
-            clearInterval(checkInterval)
-            waitIntervalRef.current = null
-            resolve({ runId, output: sub.output })
-          } else if (sub.status === 'failed') {
-            clearInterval(checkInterval)
-            waitIntervalRef.current = null
-            reject(new Error(sub.error ?? 'Job failed'))
-          } else if (sub.status === 'cancelled') {
-            clearInterval(checkInterval)
-            waitIntervalRef.current = null
-            reject(new Error('Job cancelled'))
+        unsubscribe = subscriber.subscribe<TOutput>(runId, (event) => {
+          if (event.type === 'run:complete') {
+            settle(() => resolve({ runId, output: event.output }))
+          } else if (event.type === 'run:fail') {
+            settle(() => reject(new Error(event.error ?? 'Job failed')))
+          } else if (event.type === 'run:cancel') {
+            settle(() => reject(new Error('Job cancelled')))
+          } else if (event.type === 'connection_error') {
+            settle(() => reject(new Error(event.error)))
           }
-        }, 50)
-
-        waitIntervalRef.current = checkInterval
+        })
+        waitUnsubscribesRef.current.add(unsubscribe)
       })
     },
-    [trigger],
+    [api, trigger],
   )
 
-  // Clean up wait interval on unmount
+  // Clean up run-specific waits on unmount
   useEffect(() => {
     return () => {
-      if (waitIntervalRef.current) {
-        clearInterval(waitIntervalRef.current)
+      for (const unsubscribe of waitUnsubscribesRef.current) {
+        unsubscribe()
       }
+      waitUnsubscribesRef.current.clear()
     }
   }, [])
 

@@ -385,10 +385,6 @@ describe('useJob (client)', () => {
     )
   })
 
-  // Note: triggerAndWait tests are difficult to test with the polling-based implementation
-  // because the hook needs to re-render to see the updated subscription.status.
-  // The triggerAndWait function is covered by the browser tests which use real React re-renders.
-
   describe('initialRunId', () => {
     it('sets currentRunId from initialRunId', () => {
       const fetchMock = vi.fn()
@@ -872,11 +868,19 @@ describe('useJob (client)', () => {
         expect(mockEventSource.instances.length).toBeGreaterThan(0),
       )
       act(() => {
-        mockEventSource.emit({
-          type: 'run:complete',
-          runId: 'wait-run',
-          output: { result: 'done' },
-        })
+        for (const instance of mockEventSource.instances.filter((candidate) =>
+          candidate.url.includes('runId=wait-run'),
+        )) {
+          instance.onmessage?.(
+            new MessageEvent('message', {
+              data: JSON.stringify({
+                type: 'run:complete',
+                runId: 'wait-run',
+                output: { result: 'done' },
+              }),
+            }),
+          )
+        }
       })
       await expect(waiting).resolves.toEqual({
         runId: 'wait-run',
@@ -886,6 +890,87 @@ describe('useJob (client)', () => {
         concurrencyKey: 'document:wait',
         labels: { documentId: 'wait' },
         coalesce: 'active',
+      })
+    })
+
+    it('triggerAndWait remains bound to its run when followLatest switches runs', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ runId: 'run-a', status: 'pending' }),
+      })
+      const { result } = renderHook(() =>
+        useJob<{ input: string }, { result: string }>({
+          api: '/api/durably',
+          jobName: 'test-job',
+          autoResume: false,
+        }),
+      )
+
+      const waiting = result.current.triggerAndWait({ input: 'test' })
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe('run-a')
+        expect(
+          mockEventSource.instances.some((instance) =>
+            instance.url.includes('runId=run-a'),
+          ),
+        ).toBe(true)
+      })
+
+      const jobSubscription = mockEventSource.instances.find((instance) =>
+        instance.url.includes('/runs/subscribe?'),
+      )!
+      act(() => {
+        jobSubscription.onmessage?.(
+          new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'run:trigger',
+              runId: 'run-b',
+              jobName: 'test-job',
+            }),
+          }),
+        )
+      })
+      await waitFor(() => expect(result.current.currentRunId).toBe('run-b'))
+
+      const runBSubscription = await waitFor(() => {
+        const instance = mockEventSource.instances.find((candidate) =>
+          candidate.url.includes('runId=run-b'),
+        )
+        expect(instance).toBeDefined()
+        return instance!
+      })
+      act(() => {
+        runBSubscription.onmessage?.(
+          new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'run:complete',
+              runId: 'run-b',
+              output: { result: 'from-b' },
+            }),
+          }),
+        )
+      })
+      await new Promise((resolve) => setTimeout(resolve, 75))
+
+      act(() => {
+        for (const instance of mockEventSource.instances.filter((candidate) =>
+          candidate.url.includes('runId=run-a'),
+        )) {
+          instance.onmessage?.(
+            new MessageEvent('message', {
+              data: JSON.stringify({
+                type: 'run:complete',
+                runId: 'run-a',
+                output: { result: 'from-a' },
+              }),
+            }),
+          )
+        }
+      })
+
+      await expect(waiting).resolves.toEqual({
+        runId: 'run-a',
+        output: { result: 'from-a' },
       })
     })
 
@@ -1012,6 +1097,34 @@ describe('useJob (client)', () => {
       await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
       const eventSourceCount = mockEventSource.instances.length
       rerender()
+      await act(async () => Promise.resolve())
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(mockEventSource.instances).toHaveLength(eventSourceCount)
+    })
+
+    it('reordered but equal label records do not recreate work', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([]),
+      })
+      globalThis.fetch = fetchMock
+      const { rerender } = renderHook(
+        ({ reverse }) => {
+          const labels = reverse
+            ? { tenant: 'acme', documentId: 'stable' }
+            : { documentId: 'stable', tenant: 'acme' }
+          return useJob({
+            api: '/api/durably',
+            jobName: 'test-job',
+            scope: { labels },
+            triggerOptions: { labels },
+          })
+        },
+        { initialProps: { reverse: false } },
+      )
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+      const eventSourceCount = mockEventSource.instances.length
+      rerender({ reverse: true })
       await act(async () => Promise.resolve())
       expect(fetchMock).toHaveBeenCalledTimes(2)
       expect(mockEventSource.instances).toHaveLength(eventSourceCount)

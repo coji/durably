@@ -559,6 +559,8 @@ export function createKyselyStore(
       }
     }
 
+    validateLabels(input.labels)
+
     if (input.coalesce === 'active' && input.concurrencyKey) {
       const pending = await findPendingByConcurrencyKey(
         queryDb,
@@ -586,8 +588,6 @@ export function createKyselyStore(
         return { run: rowToRun(leased), disposition: 'coalesced' }
       }
     }
-
-    validateLabels(input.labels)
 
     const id = ulid()
     const row: Database['durably_runs'] = {
