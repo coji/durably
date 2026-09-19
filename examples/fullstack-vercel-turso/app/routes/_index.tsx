@@ -50,9 +50,7 @@ export async function action({ request }: Route.ActionArgs) {
 
   if (intent === 'report') {
     const reportType = formData.get('reportType') as
-      | 'daily'
-      | 'weekly'
-      | 'monthly'
+      'daily' | 'weekly' | 'monthly'
     const department = formData.get('department') as string
     const run = await durably.jobs.generateReport.trigger({
       reportType,

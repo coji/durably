@@ -777,7 +777,9 @@ export function createServerTests(createDialect: () => Dialect) {
 
         expect(response.status).toBe(200)
         expect(response.headers.get('Content-Type')).toBe('text/event-stream')
-        expect(response.headers.get('Cache-Control')).toBe('no-cache')
+        expect(response.headers.get('Cache-Control')).toBe(
+          'no-cache, no-transform',
+        )
       })
 
       it('streams events for a run', async () => {

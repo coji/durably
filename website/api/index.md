@@ -4,6 +4,8 @@ A one-page overview of the Durably API. Use this as a cheat sheet or starting po
 
 ## Installation
 
+Server use requires Node.js 22+, Kysely 0.27, 0.28, or 0.29, and Zod 4. React bindings require React 19+.
+
 ```bash
 # Core package
 pnpm add @coji/durably kysely zod

@@ -8,6 +8,10 @@ Durably is a minimal workflow engine that persists step results to SQLite or Pos
 
 ## Installation
 
+Requires Node.js 22+ for server use, Kysely `^0.27.0 || ^0.28.0 || ^0.29.0`, and Zod 4. This repository develops and tests on Node.js 24. Browser use requires a secure context and an OPFS-capable browser.
+
+For libSQL client 0.18 with `@libsql/kysely-libsql@0.4.1`, use the targeted pnpm override documented in the [database guide](https://coji.github.io/durably/guide/databases#libsql-turso) so the dialect and application share compatible client types.
+
 ```bash
 # Node.js with libSQL (recommended for single-server / Turso)
 pnpm add @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
@@ -21,6 +25,8 @@ pnpm add @coji/durably kysely zod pg
 # Browser with SQLocal (OPFS-backed)
 pnpm add @coji/durably kysely zod sqlocal
 ```
+
+SSE responses use `Cache-Control: no-cache, no-transform` to avoid compression buffering. Configure reverse proxies to forward streamed chunks without buffering.
 
 ## Core Concepts
 
@@ -528,12 +534,7 @@ interface AuthConfig<
 }
 
 type RunOperation =
-  | 'read'
-  | 'subscribe'
-  | 'steps'
-  | 'retrigger'
-  | 'cancel'
-  | 'delete'
+  'read' | 'subscribe' | 'steps' | 'retrigger' | 'cancel' | 'delete'
 
 // RunsSubscribeFilter is Pick<RunFilter, 'jobName' | 'labels'>
 
@@ -775,6 +776,7 @@ MIT
 ## Requirements
 
 - **React 19+** (uses `React.use()` for Promise resolution)
+- When using `@coji/durably` on the server: **Node.js 22+**, Kysely `^0.27.0 || ^0.28.0 || ^0.29.0`, and Zod 4. The repository uses Node.js 24 for development.
 
 ## Overview
 
@@ -784,6 +786,8 @@ MIT
 2. **SPA Hooks**: Run Durably entirely in the browser with SQLite WASM (OPFS)
 
 SSE payloads and client-side event unions in this package are **transport-layer** shapes for the wire protocol. They are not the same symbols as `@coji/durably`’s core category helpers (`isDomainEvent`, `DomainEvent`, `OperationalEvent`, etc.). Use the core package when classifying events in Node or shared code; use `durably-react` types for hooks and SSE.
+
+For fullstack hooks, the Durably HTTP handler disables compression buffering with `Cache-Control: no-cache, no-transform`. Reverse proxies must also preserve immediate SSE delivery.
 
 ## Installation
 

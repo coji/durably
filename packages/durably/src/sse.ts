@@ -10,7 +10,8 @@ import type { Unsubscribe } from './events'
  */
 const SSE_HEADERS = {
   'Content-Type': 'text/event-stream',
-  'Cache-Control': 'no-cache',
+  // Compression middleware must not buffer real-time events.
+  'Cache-Control': 'no-cache, no-transform',
   Connection: 'keep-alive',
 } as const
 

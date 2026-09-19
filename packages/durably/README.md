@@ -8,6 +8,8 @@ Steps that survive crashes. SQLite to PostgreSQL.
 
 ## Installation
 
+Requires Node.js 22+, Kysely 0.27, 0.28, or 0.29, and Zod 4. The repository uses Node.js 24 for development.
+
 ```bash
 # libSQL (recommended default)
 npm install @coji/durably kysely zod @libsql/client @libsql/kysely-libsql

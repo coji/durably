@@ -52,6 +52,17 @@ Single server or CLI script?
 pnpm add @libsql/client @libsql/kysely-libsql
 ```
 
+::: warning Client version compatibility
+`@libsql/kysely-libsql@0.4.1` still depends on `@libsql/client@^0.8.0`. When using client 0.18, add this targeted override to your `pnpm-workspace.yaml` before installing so the dialect and application use the same client types:
+
+```yaml
+overrides:
+  '@libsql/kysely-libsql>@libsql/client': 0.18.0
+```
+
+This repository tests that combination. If you pass an externally created client, close that client yourself after stopping Durably and destroying its database; the dialect only closes clients it creates from a URL configuration.
+:::
+
 ```ts
 import { createClient } from '@libsql/client'
 import { LibsqlDialect } from '@libsql/kysely-libsql'

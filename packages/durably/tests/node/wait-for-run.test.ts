@@ -37,8 +37,9 @@ afterAll(async () => {
   await resource.cleanup()
 })
 
-describe.sequential(
+describe(
   'waitForRun / triggerAndWait with shared storage (cross-runtime)',
+  { concurrent: false },
   () => {
     const runtimes: Array<Durably<any, any>> = []
 

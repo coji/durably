@@ -4,6 +4,7 @@ dist/
 .DS_Store
 __screenshots__/
 .vitest-attachments/
+.vitest/
 local.db
 .serena/
 .turbo/

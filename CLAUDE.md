@@ -85,12 +85,19 @@ npm 2FA が有効なため、publish ごとにブラウザで OTP 認証が必�
 - **main ブランチへの直接コミット・push は禁止。** 必ず feature ブランチを切って PR を作成すること。
 - リリース準備（version bump, changelog）も PR 経由で行う。
 
+## Development Toolchain
+
+Use Node.js 24 and pnpm 12; exact versions and the managed runtime are declared in the root `package.json`. CI uses `pnpm/setup` and a frozen lockfile install. `pnpm deps:outdated` includes GitHub Actions; `pnpm deps:update:actions` updates their pinned SHAs.
+
+Type checking uses native TypeScript 7 installed as `@typescript/native`. The `typescript` alias provides the official TypeScript 6 compatibility API for tsup, React Router tooling, and import organization. Keep both declarations in examples.
+
 ## Development Commands
 
 ```bash
 pnpm validate      # Format check, lint, typecheck, tests
-pnpm test          # Run all tests (SQLite only, no Docker needed)
-pnpm format        # Fix formatting
+pnpm test          # Run all tests (Docker or external PostgreSQL required)
+pnpm format        # Check formatting
+pnpm format:fix    # Fix formatting
 pnpm lint:fix      # Fix lint issues
 ```
 

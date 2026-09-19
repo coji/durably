@@ -4,6 +4,8 @@ Run your first resumable job in a single file. No server, no UI — just Node.js
 
 ## Install
 
+Use Node.js 22+ (the examples in this repository use Node.js 24). For the current libSQL client/dialect combination, apply the [client version override](/guide/databases#libsql-turso) before installing.
+
 ```bash
 pnpm add @coji/durably kysely zod @libsql/client @libsql/kysely-libsql
 ```

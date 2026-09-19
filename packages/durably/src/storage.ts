@@ -10,11 +10,7 @@ import { rowToLog, rowToRun, rowToStep, validateLabels } from './transformers'
 const ulid = monotonicFactory()
 
 export type RunStatus =
-  | 'pending'
-  | 'leased'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
+  'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
 
 /** Run statuses that represent terminal (non-active) states */
 const TERMINAL_STATUSES: RunStatus[] = ['completed', 'failed', 'cancelled']

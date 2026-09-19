@@ -8,7 +8,8 @@
     "esModuleInterop": true,
     "noEmit": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "types": ["node", "vite/client"]
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"]
 }
