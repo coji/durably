@@ -133,3 +133,8 @@ takt is an autonomous multi-agent coding workflow engine. Pieces (`.takt/pieces/
 
 - **release-check** - Pre-release integrity check for API changes and spec updates (`.claude/skills/release-check/`)
 - **doc-check** - Documentation update checklist after API changes (`.claude/skills/doc-check/`)
+- **spec-implement-accept** - Non-takt implementation workflow that opens a Draft PR, runs the blocker review/fix loop, and marks Ready only after the final gate (`.claude/skills/spec-implement-accept/`)
+- **code-review** - Codex eight-perspective read-only review track used by the Draft-to-Ready gate (`.agents/skills/code-review/`)
+
+The reviewer topology, blocker rules, convergence limits, and Ready gate are defined in
+`docs/workflow/code-review.md`.
