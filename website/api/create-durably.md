@@ -35,17 +35,17 @@ interface DurablyOptions<
 }
 ```
 
-| Option                 | Type        | Default  | Description                                                                                                       |
-| ---------------------- | ----------- | -------- | ----------------------------------------------------------------------------------------------------------------- |
-| `dialect`              | `Dialect`   | required | Kysely dialect (SQLite, libSQL, or PostgreSQL)                                                                    |
-| `pollingIntervalMs`    | `number`    | `1000`   | How often to check for pending jobs when the worker is idle (ms)                                                  |
-| `maxConcurrentRuns`    | `number`    | `1`      | Maximum runs the worker executes concurrently (still respects `concurrencyKey` exclusion in storage)              |
-| `leaseRenewIntervalMs` | `number`    | `5000`   | How often to renew the lease (ms)                                                                                 |
-| `leaseMs`              | `number`    | `30000`  | Lease duration — time until a job is considered stale (ms)                                                        |
-| `labels`               | `z.ZodType` | —        | Zod schema for labels. Enables type-safe labels and runtime validation on `trigger()`                             |
-| `preserveSteps`        | `boolean`   | `false`  | Keep step output data when runs reach terminal state; durable attempt records are retained independently          |
-| `retainRuns`           | `string`    | —        | Auto-delete terminal runs older than this duration (e.g. `'30d'`, `'12h'`, `'90m'`). Throws if format is invalid. |
-| `jobs`                 | `TJobs`     | —        | Job definitions to register. Shorthand for calling `.register()` after creation                                   |
+| Option                 | Type        | Default  | Description                                                                                                                                                                                                                                                                               |
+| ---------------------- | ----------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dialect`              | `Dialect`   | required | Kysely dialect (SQLite, libSQL, or PostgreSQL)                                                                                                                                                                                                                                            |
+| `pollingIntervalMs`    | `number`    | `1000`   | How often to check for pending jobs when the worker is idle (ms)                                                                                                                                                                                                                          |
+| `maxConcurrentRuns`    | `number`    | `1`      | Maximum runs the worker executes concurrently (still respects `concurrencyKey` exclusion in storage)                                                                                                                                                                                      |
+| `leaseRenewIntervalMs` | `number`    | `5000`   | How often to renew the lease (ms)                                                                                                                                                                                                                                                         |
+| `leaseMs`              | `number`    | `30000`  | Lease duration — time until a job is considered stale (ms)                                                                                                                                                                                                                                |
+| `labels`               | `z.ZodType` | —        | Zod schema for labels. Enables type-safe labels and runtime validation on `trigger()`                                                                                                                                                                                                     |
+| `preserveSteps`        | `boolean`   | `false`  | Keep step output data on terminal runs. With `false`, a failed `step.all()` that has a successful sibling still retains its checkpoints and logs so the sibling output remains inspectable; other terminal runs clean up checkpoints. Durable attempt records are retained independently. |
+| `retainRuns`           | `string`    | —        | Auto-delete terminal runs older than this duration (e.g. `'30d'`, `'12h'`, `'90m'`). Throws if format is invalid.                                                                                                                                                                         |
+| `jobs`                 | `TJobs`     | —        | Job definitions to register. Shorthand for calling `.register()` after creation                                                                                                                                                                                                           |
 
 ## Returns
 

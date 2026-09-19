@@ -12,12 +12,12 @@ Independent tasks such as two code reviews should run concurrently within one lo
 
 Add `step.all({ name: callback })`. Each branch invokes the existing `step.run()` machinery concurrently, so checkpoint replay, attempt recording, lease fencing, and cancellation retain their current semantics. Branch names are stable step names within the job; numeric indexes reflect the order branches start after asynchronous checks, not necessarily object key order. The join uses all-settled behavior: it returns named results after all branches succeed, or waits for all branches to settle before throwing an error. Lease loss and cancellation take precedence over ordinary branch failures; with multiple ordinary failures, the lowest-index failed checkpoint determines the error, matching `run:fail.failedStepName`. A business verdict such as “changes requested” is a returned value, not an execution error. This API does not suspend the run or release its worker slot; external waits remain the separate concern of #188.
 
-Expose `attempt.log` for callback-scoped attribution. Shared `step.log` keeps its existing step name for a single active callback, but after callbacks overlap emits unscoped logs until the group settles. This prevents late logs from a completed callback being attributed to its still-running sibling. Attempt timestamps allow per-branch measurement and group wall-clock measurement without recording a second aggregate attempt.
+Expose `attempt.log` for callback-scoped attribution. Shared `step.log` keeps its existing step name for a single callback or a sequentially nested callback chain, but after independent callbacks overlap emits unscoped logs until all active callbacks settle. This prevents late logs from a completed callback being attributed to its still-running sibling. Attempt timestamps allow per-branch measurement and group wall-clock measurement without recording a second aggregate attempt.
 
 ## Consequences
 
 - Completed branches are replayed without new attempts after lease recovery; unfinished branches get new attempts.
-- A failing branch does not erase a sibling's attempt. The run fails only after siblings settle; completed checkpoints are then subject to the normal terminal cleanup (`preserveSteps: false` by default).
+- A failing branch does not erase a sibling's attempt or completed output. The run fails only after siblings settle. If at least one branch succeeds, the failed run retains its checkpoints and logs even with `preserveSteps: false`, so the successful result remains inspectable. Other terminal runs use normal cleanup; `preserveSteps: true` retains all terminal checkpoints.
 - Branch callbacks that ignore cancellation can delay the join, as with an ordinary long-running step.
 - Users must keep branch names stable across retries and use `attempt.log` for reliable log attribution during parallel work.
 

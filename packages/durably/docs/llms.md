@@ -204,7 +204,7 @@ const attempts = await durably.getStepAttempts(runId)
 
 ### step.all(branches)
 
-Runs named steps concurrently and returns their results by name after every branch settles. Branches use the same checkpoint and attempt records as `step.run()`: after lease recovery, completed branches return their saved results while unfinished branches run again. Give each branch a stable name within the job; the numeric step index is assigned as each branch starts and need not match object key order. A branch can return an ordinary result such as `needsChanges`; a thrown error is an execution failure. If any branch throws, `step.all()` waits for the others to settle. Lease loss and cancellation take precedence over ordinary errors; with multiple ordinary failures, the error from the lowest-index failed checkpoint is thrown. Sibling attempts remain queryable after terminal failure, while checkpoints follow `preserveSteps` (deleted on terminal state by default). This does not release the worker slot while branches are running.
+Runs named steps concurrently and returns their results by name after every branch settles. Branches use the same checkpoint and attempt records as `step.run()`: after lease recovery, completed branches return their saved results while unfinished branches run again. Give each branch a stable name within the job; the numeric step index is assigned as each branch starts and need not match object key order. A branch can return an ordinary result such as `needsChanges`; a thrown error is an execution failure. If any branch throws, `step.all()` waits for the others to settle. Lease loss and cancellation take precedence over ordinary errors; with multiple ordinary failures, the error from the lowest-index failed checkpoint is thrown. Sibling attempts remain queryable after terminal failure. When a failed join has a successful sibling, its checkpoints and logs remain available even with the default `preserveSteps: false`, so the completed output is not lost. Other terminal runs still follow the normal checkpoint cleanup; `preserveSteps: true` keeps all terminal checkpoints. This does not release the worker slot while branches are running.
 
 ```ts
 const reviews = await step.all({
@@ -221,7 +221,7 @@ const reviews = await step.all({
 })
 ```
 
-Use `attempt.log` inside parallel callbacks to attach logs to the correct branch. Once callbacks overlap, shared `step.log` has no step name until the entire group settles, avoiding false attribution from late logs. Individual durations are available from attempt timestamps; the earliest start and latest completion give the group's wall-clock interval, including recovery time when applicable. Sum branch durations only when measuring total branch work, not elapsed time.
+Use `attempt.log` inside parallel callbacks to attach logs to the correct branch. Once independent callbacks overlap, shared `step.log` has no step name until all active callbacks settle, avoiding false attribution from late logs. Sequentially nested `step.run()` callbacks keep the innermost step name. Individual durations are available from attempt timestamps; the earliest start and latest completion give the group's wall-clock interval, including recovery time when applicable. Sum branch durations only when measuring total branch work, not elapsed time.
 
 ### step.progress(current, total?, message?)
 

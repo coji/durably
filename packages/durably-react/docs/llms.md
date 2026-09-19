@@ -406,7 +406,7 @@ function Component() {
 }
 ```
 
-The same core instance exposes `durably.getStepAttempts(runId)` for durable callback-attempt history. Attempts survive checkpoint cleanup, including unresolved attempts after worker recovery; they are deleted with their run.
+The same core instance exposes `durably.getStepAttempts(runId)` for durable callback-attempt history. Attempts survive checkpoint cleanup, including unresolved attempts after worker recovery; they are deleted with their run. When a parallel join fails after another branch succeeds, the successful branch's checkpoint output remains available even with the default `preserveSteps: false`.
 
 **Return type:**
 

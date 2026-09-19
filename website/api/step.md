@@ -92,7 +92,7 @@ const reviews = await step.all({
 })
 ```
 
-Use stable, unique branch names within the job. Numeric step indexes are assigned as branches start and need not follow object key order. Each branch has its own checkpoint and durable attempt record, available through `getStepAttempts(runId)`. Use `attempt.setMetadata()` to save usage or other JSON data for that branch. A result such as `needsChanges` is a normal value; a thrown error is a failure. If one branch throws, the join waits for its siblings to settle. Lease loss or cancellation takes precedence over ordinary errors; with multiple ordinary failures, the error from the lowest-index failed checkpoint is thrown. Sibling attempts remain queryable after terminal failure; checkpoints follow `preserveSteps` and are deleted on terminal state by default. All branches share the run's cancellation and lease signal. This call keeps the worker slot occupied until the join settles. The earliest attempt start and latest completion measure the group's wall-clock interval; adding branch durations instead measures combined branch work.
+Use stable, unique branch names within the job. Numeric step indexes are assigned as branches start and need not follow object key order. Each branch has its own checkpoint and durable attempt record, available through `getStepAttempts(runId)`. Use `attempt.setMetadata()` to save usage or other JSON data for that branch. A result such as `needsChanges` is a normal value; a thrown error is a failure. If one branch throws, the join waits for its siblings to settle. Lease loss or cancellation takes precedence over ordinary errors; with multiple ordinary failures, the error from the lowest-index failed checkpoint is thrown. Sibling attempts remain queryable after terminal failure. A failed join with a successful sibling retains its checkpoints and logs, including the completed output, even with the default `preserveSteps: false`. Other terminal runs follow the normal checkpoint cleanup; `preserveSteps: true` keeps all terminal checkpoints. All branches share the run's cancellation and lease signal. This call keeps the worker slot occupied until the join settles. The earliest attempt start and latest completion measure the group's wall-clock interval; adding branch durations instead measures combined branch work.
 
 ### `log`
 
@@ -115,7 +115,7 @@ step.log.info('User data', { userId: 'abc', count: 10 })
 step.log.error('Failed to fetch', { error: err.message })
 ```
 
-Inside a parallel callback, use `attempt.log` to attach the correct step name. Once callbacks overlap, shared `step.log` is logged without a step name until the group settles, avoiding false attribution from late logs.
+Inside a parallel callback, use `attempt.log` to attach the correct step name. Once independent callbacks overlap, shared `step.log` is logged without a step name until all active callbacks settle, avoiding false attribution from late logs. Sequentially nested `step.run()` callbacks retain the innermost step name.
 
 ### `progress()`
 

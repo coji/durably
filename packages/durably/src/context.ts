@@ -23,11 +23,14 @@ export function createStepContext(
 ): {
   step: StepContext
   abortLeaseOwnership(): void
+  preserveFailedParallelSteps(): boolean
   dispose: () => void
 } {
   let stepIndex = run.currentStepIndex
   const activeStepNames = new Set<string>()
+  const stepParents = new Map<string, string | null>()
   let ambiguousLogScope = false
+  let preserveFailedParallelSteps = false
 
   const controller = new AbortController()
 
@@ -127,9 +130,20 @@ export function createStepContext(
     }
   }
 
+  function nestedStepName(): string | null {
+    const names = [...activeStepNames]
+    const innermost = names.at(-1)
+    if (!innermost) return null
+    let parent = stepParents.get(innermost) ?? null
+    for (let index = names.length - 2; index >= 0; index--) {
+      if (names[index] !== parent) return null
+      parent = stepParents.get(names[index]) ?? null
+    }
+    return innermost
+  }
+
   function implicitStepName(): string | null {
-    if (ambiguousLogScope || activeStepNames.size !== 1) return null
-    return activeStepNames.values().next().value ?? null
+    return ambiguousLogScope ? null : nestedStepName()
   }
 
   const step: StepContext = {
@@ -154,6 +168,9 @@ export function createStepContext(
       fn: (signal: AbortSignal, attempt: StepAttemptContext) => T | Promise<T>,
       options?: { metadata?: JsonValue },
     ): Promise<T> {
+      // Capture the caller before the first await. A nested step may start
+      // later, after the parent callback has yielded for the durable lookup.
+      const parentStepName = implicitStepName()
       // Fast path: check in-memory signal first (set by run:cancel event)
       throwIfAborted()
 
@@ -231,9 +248,13 @@ export function createStepContext(
         },
       }
 
-      // Shared step.log is only attributable while one callback is active.
+      // A nested chain has an unambiguous innermost callback. Independent
+      // callbacks remain unscoped once their lifetimes overlap.
+      stepParents.set(name, parentStepName)
       activeStepNames.add(name)
-      if (activeStepNames.size > 1) ambiguousLogScope = true
+      if (activeStepNames.size > 1 && !nestedStepName()) {
+        ambiguousLogScope = true
+      }
 
       // The attempt start is durable before the callback or event is visible.
       const startedAt = startedAttempt.startedAt
@@ -334,6 +355,7 @@ export function createStepContext(
         return result
       } finally {
         activeStepNames.delete(name)
+        stepParents.delete(name)
         if (activeStepNames.size === 0) ambiguousLogScope = false
       }
     },
@@ -361,6 +383,15 @@ export function createStepContext(
         ({ reason }) => reason instanceof CancelledError,
       )
       if (cancellation) throw cancellation.reason
+
+      if (
+        rejected.length > 0 &&
+        settled.some((result) => result.status === 'fulfilled')
+      ) {
+        // The failed run has no aggregate output. Retain successful sibling
+        // checkpoints so callers can inspect their results after failure.
+        preserveFailedParallelSteps = true
+      }
 
       if (rejected.length > 1) {
         // run:fail names the lowest-index failed checkpoint. Choose its error
@@ -423,6 +454,7 @@ export function createStepContext(
   return {
     step,
     abortLeaseOwnership: abortForLeaseLoss,
+    preserveFailedParallelSteps: () => preserveFailedParallelSteps,
     dispose: unsubscribe,
   }
 }

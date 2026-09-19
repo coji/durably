@@ -97,6 +97,35 @@ export function createStepTests(createDialect: () => Dialect) {
       ).toEqual(expect.arrayContaining(['first', 'second']))
     })
 
+    it('keeps shared logs attributed to an inner sequential step', async () => {
+      const logs: { stepName: string | null; message: string }[] = []
+      durably.on('log:write', (event) => logs.push(event))
+      const d = durably.register({
+        job: defineJob({
+          name: 'nested-step-logs',
+          input: z.object({}),
+          run: async (step) => {
+            await step.run('outer', async () => {
+              await step.run('inner', () => {
+                step.log.info('inner log')
+              })
+              step.log.info('outer log')
+            })
+          },
+        }),
+      })
+
+      const run = await d.jobs.job.trigger({})
+      await d.processOne()
+      expect((await d.jobs.job.getRun(run.id))?.status).toBe('completed')
+      expect(logs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ stepName: 'inner', message: 'inner log' }),
+          expect.objectContaining({ stepName: 'outer', message: 'outer log' }),
+        ]),
+      )
+    })
+
     it('reuses a completed branch after lease recovery', async () => {
       let firstCalls = 0
       let secondCalls = 0
@@ -198,6 +227,36 @@ export function createStepTests(createDialect: () => Dialect) {
       expect(await d.storage.getCompletedStep(run.id, 'sibling')).toMatchObject(
         { output: 'saved result' },
       )
+    })
+
+    it('keeps a successful sibling result after failure with default options', async () => {
+      const defaultDurably = createDurably({ dialect: createDialect() })
+      await defaultDurably.migrate()
+      try {
+        const d = defaultDurably.register({
+          job: defineJob({
+            name: 'parallel-default-retention',
+            input: z.object({}),
+            run: async (step) => {
+              await step.all({
+                failing: () => {
+                  throw new Error('failed branch')
+                },
+                successful: () => 'saved result',
+              })
+            },
+          }),
+        })
+        const run = await d.jobs.job.trigger({})
+        await d.processOne()
+        expect((await d.jobs.job.getRun(run.id))?.status).toBe('failed')
+        expect(
+          await d.storage.getCompletedStep(run.id, 'successful'),
+        ).toMatchObject({ output: 'saved result' })
+      } finally {
+        await defaultDurably.stop()
+        await defaultDurably.db.destroy()
+      }
     })
 
     it('pairs run:fail error with the failed branch name when indexes differ from declaration order', async () => {

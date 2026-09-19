@@ -54,13 +54,14 @@ export async function executeRun<
 ): Promise<RuntimeExecutionResult> {
   const { storage, eventEmitter, clock } = environment
 
-  const { step, abortLeaseOwnership, dispose } = createStepContext(
-    run,
-    run.jobName,
-    run.leaseGeneration,
-    storage,
-    eventEmitter,
-  )
+  const { step, abortLeaseOwnership, preserveFailedParallelSteps, dispose } =
+    createStepContext(
+      run,
+      run.jobName,
+      run.leaseGeneration,
+      storage,
+      eventEmitter,
+    )
   let leaseDeadlineTimer: ReturnType<RuntimeClock['setTimeout']> | null = null
 
   const scheduleLeaseDeadline = (leaseExpiresAt: string | null) => {
@@ -124,6 +125,7 @@ export async function executeRun<
 
   const started = clock.now()
   let reachedTerminalState = false
+  let failedTerminalState = false
 
   try {
     eventEmitter.emit({
@@ -190,6 +192,7 @@ export async function executeRun<
 
     if (failed) {
       reachedTerminalState = true
+      failedTerminalState = true
       // Failed checkpoints survive lease recovery. Attribute this error to an
       // attempt from the current lease, not an older failed branch.
       const attempts = await storage.getStepAttempts(run.id)
@@ -224,7 +227,11 @@ export async function executeRun<
       clock.clearTimeout(leaseDeadlineTimer)
     }
     dispose()
-    if (!config.preserveSteps && reachedTerminalState) {
+    if (
+      !config.preserveSteps &&
+      reachedTerminalState &&
+      !(failedTerminalState && preserveFailedParallelSteps())
+    ) {
       await storage.deleteSteps(run.id)
     }
   }
