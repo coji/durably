@@ -302,6 +302,9 @@ export function useJob<
             setHydratedStatus('leased')
           } else if (data.type === 'run:coalesced' && data.status) {
             setHydratedStatus(data.status)
+            if (data.status === 'pending' || data.status === 'leased') {
+              subscription.setActiveStatus(data.status)
+            }
           }
         }
       } catch {
@@ -316,7 +319,7 @@ export function useJob<
     return () => {
       eventSource.close()
     }
-  }, [api, jobName, followLatest, stableScope])
+  }, [api, jobName, followLatest, stableScope, subscription.setActiveStatus])
 
   const trigger = useCallback(
     async (input: TInput): Promise<{ runId: string }> => {

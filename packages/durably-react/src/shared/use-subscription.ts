@@ -24,6 +24,8 @@ export interface UseSubscriptionResult<
    * Reset all state
    */
   reset: () => void
+  /** Update the tracked run's active status without losing progress or logs. */
+  setActiveStatus: (status: 'pending' | 'leased') => void
 }
 
 /**
@@ -103,9 +105,14 @@ export function useSubscription<TOutput = unknown>(
     dispatch({ type: 'reset' })
   }, [])
 
+  const setActiveStatus = useCallback((status: 'pending' | 'leased') => {
+    dispatch({ type: 'set_active_status', status })
+  }, [])
+
   return {
     ...state,
     clearLogs,
     reset,
+    setActiveStatus,
   }
 }

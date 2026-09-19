@@ -784,6 +784,46 @@ describe('useJob (client)', () => {
         expect(result.current.status).toBe('leased')
       })
 
+      const runSubscription = mockEventSource.instances.find((instance) =>
+        instance.url.includes('runId=coalesced-leased'),
+      )
+      expect(runSubscription).toBeDefined()
+      act(() => {
+        runSubscription!.onmessage?.(
+          new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'run:leased',
+              runId: 'coalesced-leased',
+            }),
+          }),
+        )
+        runSubscription!.onmessage?.(
+          new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'run:progress',
+              runId: 'coalesced-leased',
+              progress: { current: 1, total: 2 },
+            }),
+          }),
+        )
+      })
+      expect(result.current.progress).toEqual({ current: 1, total: 2 })
+
+      act(() => {
+        jobSubscription.onmessage?.(
+          new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'run:coalesced',
+              runId: 'coalesced-leased',
+              jobName: 'test-job',
+              status: 'pending',
+            }),
+          }),
+        )
+      })
+      expect(result.current.status).toBe('pending')
+      expect(result.current.progress).toEqual({ current: 1, total: 2 })
+
       act(() => {
         jobSubscription.onmessage?.(
           new MessageEvent('message', {

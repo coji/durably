@@ -554,6 +554,25 @@ describe('useJob', () => {
       expect(result.current.logs.map((log) => log.message)).toEqual([
         'still here',
       ])
+
+      // Lease recovery can return this same run to pending before an active
+      // trigger coalesces it again. The status changes without a new run ID.
+      act(() => {
+        durably.emit({
+          type: 'run:coalesced',
+          runId: 'same-run',
+          jobName: testJob.name,
+          status: 'pending',
+          labels: {},
+          skippedInput: { input: 'duplicate' },
+          skippedLabels: {},
+        })
+      })
+      expect(result.current.status).toBe('pending')
+      expect(result.current.progress).toEqual({ current: 1, total: 2 })
+      expect(result.current.logs.map((log) => log.message)).toEqual([
+        'still here',
+      ])
     })
 
     it('scope changes discard prior state and resolve the new scope', async () => {
@@ -611,6 +630,20 @@ describe('useJob', () => {
         expect(result.current.isResolving).toBe(false)
       })
       expect(getRuns).not.toHaveBeenCalled()
+
+      act(() => {
+        durably.emit({
+          type: 'run:leased',
+          runId: initial.id,
+          jobName: testJob.name,
+          input: { input: 'test' },
+          leaseOwner: 'worker-1',
+          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+          labels: { documentId: 'explicit' },
+        })
+      })
+      expect(result.current.status).toBe('leased')
+      expect(result.current.isLeased).toBe(true)
     })
 
     it('forwards triggerOptions and keeps explicit triggers tracked when followLatest is false', async () => {

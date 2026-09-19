@@ -119,6 +119,9 @@ function jobSubscriptionReducer<TOutput = unknown>(
     case 'set_run_id':
       return { ...state, currentRunId: action.runId }
 
+    case 'set_active_status':
+      return { ...state, status: action.status }
+
     case 'switch_to_run':
       // Switch to a new run, resetting state
       return {
@@ -217,13 +220,13 @@ export function useJobSubscription<TOutput = unknown>(
     unsubscribes.push(
       durably.on('run:leased', (event) => {
         if (event.jobName !== jobName) return
+        if (event.runId === currentRunIdRef.current) {
+          dispatch({ type: 'set_active_status', status: 'leased' })
+          return
+        }
 
         if (followLatest) {
           if (!matchesLabels(event.labels, scopeLabels)) return
-          if (event.runId === currentRunIdRef.current) {
-            dispatch({ type: 'run:leased' })
-            return
-          }
           // Switch to tracking the new run
           dispatch({
             type: 'switch_to_run',
@@ -232,10 +235,6 @@ export function useJobSubscription<TOutput = unknown>(
           })
           currentRunIdRef.current = event.runId
           onFollow?.(event.runId)
-        } else {
-          // Only update if this is our current run
-          if (event.runId !== currentRunIdRef.current) return
-          dispatch({ type: 'run:leased' })
         }
       }),
     )
@@ -244,15 +243,13 @@ export function useJobSubscription<TOutput = unknown>(
     unsubscribes.push(
       durably.on('run:coalesced', (event) => {
         if (event.jobName !== jobName) return
+        if (event.runId === currentRunIdRef.current) {
+          dispatch({ type: 'set_active_status', status: event.status })
+          return
+        }
         if (!matchesLabels(event.labels, scopeLabels)) return
 
         if (followLatest) {
-          if (event.runId === currentRunIdRef.current) {
-            if (event.status === 'leased') {
-              dispatch({ type: 'run:leased' })
-            }
-            return
-          }
           dispatch({
             type: 'switch_to_run',
             runId: event.runId,
