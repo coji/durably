@@ -760,11 +760,20 @@ export function createKyselyStore(
                   i.concurrencyKey ? [i.concurrencyKey] : [],
                 ),
               ),
-            ].sort()
-            for (const key of batchKeys) {
-              await sql`SELECT pg_advisory_xact_lock(hashtext(${key}))`.execute(
-                trx,
-              )
+            ]
+            if (batchKeys.length > 0) {
+              // Distinct strings can collide under hashtext(). Order the
+              // actual advisory lock IDs, not the original strings.
+              const hashes = await sql<{ lock_id: number }>`
+                SELECT DISTINCT hashtext(key) AS lock_id
+                FROM unnest(ARRAY[${sql.join(batchKeys)}]::text[]) AS keys(key)
+              `.execute(trx)
+              const lockIds = hashes.rows
+                .map((row) => row.lock_id)
+                .sort((a, b) => a - b)
+              for (const lockId of lockIds) {
+                await sql`SELECT pg_advisory_xact_lock(${lockId})`.execute(trx)
+              }
             }
           } else if (inputs.some((i) => i.coalesce === 'active')) {
             await sql`UPDATE durably_runs SET updated_at = updated_at WHERE 1 = 0`.execute(

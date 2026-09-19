@@ -49,6 +49,7 @@ What we considered and why we didn't do it.
 | [0006](0006-adr-acceptance-in-implementation-pr.md)           | Accept ADRs in implementation pull requests   | accepted |
 | [0007](0007-explicit-trailing-run-coalescing.md)              | Explicit trailing run coalescing              | accepted |
 | [0008](0008-active-run-coalescing-and-scoped-job-tracking.md) | Active-run coalescing and scoped job tracking | accepted |
+| [0009](0009-cumulative-delta-review-rounds.md)                | Cumulative delta review rounds                | accepted |
 
 ## Prior Art
 

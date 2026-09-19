@@ -542,13 +542,88 @@ export function createDbConcurrencyTests(
       },
     )
 
+    postgresMixedBatch(
+      'hash collisions cannot reverse PostgreSQL batch advisory lock order',
+      { timeout: 15_000 },
+      async () => {
+        const lowFirst = 'key-048049'
+        const lowSecond = 'key-385881'
+        const highFirst = 'key-009165'
+        const highSecond = 'key-305300'
+        const hashResult = await sql<{
+          low_first: number
+          low_second: number
+          high_first: number
+          high_second: number
+        }>`
+          SELECT
+            hashtext(${lowFirst}) AS low_first,
+            hashtext(${lowSecond}) AS low_second,
+            hashtext(${highFirst}) AS high_first,
+            hashtext(${highSecond}) AS high_second
+        `.execute(runtimes[0].db)
+        const hashes = hashResult.rows[0]
+        expect(hashes.low_first).toBe(hashes.low_second)
+        expect(hashes.high_first).toBe(hashes.high_second)
+        expect(hashes.low_first).not.toBe(hashes.high_first)
+
+        for (let iter = 0; iter < 10; iter++) {
+          const jobName = `collision-batch-job-${iter}`
+          const [first, second] = await Promise.all([
+            runtimes[0].storage.enqueueMany([
+              {
+                jobName,
+                input: { batch: 1, key: 'low' },
+                concurrencyKey: lowFirst,
+                coalesce: 'active',
+              },
+              {
+                jobName,
+                input: { batch: 1, key: 'high' },
+                concurrencyKey: highSecond,
+                coalesce: 'active',
+              },
+            ]),
+            runtimes[1].storage.enqueueMany([
+              {
+                jobName,
+                input: { batch: 2, key: 'high' },
+                concurrencyKey: highFirst,
+                coalesce: 'active',
+              },
+              {
+                jobName,
+                input: { batch: 2, key: 'low' },
+                concurrencyKey: lowSecond,
+                coalesce: 'active',
+              },
+            ]),
+          ])
+          expect(first).toHaveLength(2)
+          expect(second).toHaveLength(2)
+          expect(
+            [...first, ...second].every(
+              (item) => item.disposition === 'created',
+            ),
+          ).toBe(true)
+        }
+      },
+    )
+
     const postgresOnly = label === 'PostgreSQL' ? it : it.skip
     postgresOnly(
       'batch-vs-claim contention skips unavailable keys and leaves them claimable on a later poll',
       { timeout: 15_000 },
       async () => {
-        const keyA = 'batch-claim-a'
-        const keyB = 'batch-claim-b'
+        const candidateA = 'batch-claim-a'
+        const candidateB = 'batch-claim-b'
+        const hashOrder = await sql<{ hash_a: number; hash_b: number }>`
+          SELECT hashtext(${candidateA}) AS hash_a, hashtext(${candidateB}) AS hash_b
+        `.execute(runtimes[0].db)
+        const { hash_a: hashA, hash_b: hashB } = hashOrder.rows[0]
+        expect(hashA).not.toBe(hashB)
+        const [keyA, keyB] =
+          hashA < hashB ? [candidateA, candidateB] : [candidateB, candidateA]
         await runtimes[0].storage.enqueue({
           jobName: 'batch-claim-job',
           input: { key: 'a' },

@@ -1459,6 +1459,38 @@ describe('useJob (client)', () => {
       await waitFor(() => expect(result.current.currentRunId).toBe('fixed-run'))
     })
 
+    it('keeps the current fixed run status when only its scope changes', async () => {
+      const { result, rerender } = renderHook(
+        ({ documentId }: { documentId: string }) =>
+          useJob({
+            api: '/api/durably',
+            jobName: 'test-job',
+            initialRunId: 'fixed-run',
+            scope: { labels: { documentId } },
+          }),
+        { initialProps: { documentId: 'first' } },
+      )
+      const runSubscription = await waitFor(() => {
+        const instance = mockEventSource.instances.find((candidate) =>
+          candidate.url.includes('runId=fixed-run'),
+        )
+        expect(instance).toBeDefined()
+        return instance!
+      })
+      act(() => {
+        runSubscription.onmessage?.(
+          new MessageEvent('message', {
+            data: JSON.stringify({ type: 'run:leased', runId: 'fixed-run' }),
+          }),
+        )
+      })
+      await waitFor(() => expect(result.current.status).toBe('leased'))
+      rerender({ documentId: 'second' })
+      expect(result.current.currentRunId).toBe('fixed-run')
+      expect(result.current.status).toBe('leased')
+      expect(result.current.isActive).toBe(true)
+    })
+
     it('owns rejected and aborted lookups and settles resolving state', async () => {
       const consoleError = vi
         .spyOn(console, 'error')

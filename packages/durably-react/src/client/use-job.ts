@@ -153,13 +153,17 @@ export function useJob<
       prevScopeRef.current = stableScope
       resolutionEpochRef.current++
       hasUserTriggered.current = false
+      if (initialRunId && currentRunId === initialRunId) {
+        setIsResolving(false)
+        return
+      }
       subscription.reset()
       setCurrentRunId(initialRunId ?? null)
       setHydratedStatus(null)
       setIsPending(false)
       setIsResolving(autoResume && !initialRunId)
     }
-  }, [stableScope, initialRunId, autoResume, subscription.reset])
+  }, [stableScope, initialRunId, currentRunId, autoResume, subscription.reset])
 
   // A changed endpoint or job is a new tracking context, even with the same scope.
   useEffect(() => {
