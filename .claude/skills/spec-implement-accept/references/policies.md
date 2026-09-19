@@ -10,7 +10,7 @@ Applied to: implement, acceptance, fix, supervise phases.
 
 - Only implement what the current task specifies
 - Do NOT modify the task order (order.md) — it is the authoritative spec
-- Do NOT modify PLAN.md, RFC, or design docs, except the corresponding ADR and index during a review fix that changes the architectural decision within the approved task
+- Do NOT modify PLAN.md, RFC, or design docs, except the corresponding ADR and index when a review fix corrects their presence or status for the approved decision, or changes that decision within the approved task
 - Changes to files outside the listed change targets are allowed ONLY if
   the changes cause compilation or test failures in those files, or they are the corresponding ADR and index update for that review fix
 
@@ -22,7 +22,7 @@ Applied to: implement, acceptance, fix, supervise phases.
 
 ### Prohibited Actions
 
-- Modifying spec/plan/RFC files, except the corresponding ADR and index during that architectural review fix
+- Modifying spec/plan/RFC files, except the corresponding ADR and index during that review fix
 - Modifying the task order (order.md)
 - Adding features not specified in the task
 - Changing test infrastructure unless the task requires it

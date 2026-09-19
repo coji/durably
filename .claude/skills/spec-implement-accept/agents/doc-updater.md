@@ -29,11 +29,12 @@ Return the update summary to the orchestrator; do not create workflow report fil
    **d. Example apps:**
    - Relevant files under `examples/`
 
-3. If this PR completes a decision that meets the ADR criteria, use the existing ADR (including
-   one already `proposed` on `main`) or create a new ADR and index entry. Set both to `accepted`
-   on this branch before the Draft PR opens, even when there are no API changes. Keep proposal-only
-   and partial-implementation ADRs as `proposed`. Edit only the ADR for this decision, its index row, and
-   any accepted ADR it supersedes as required by `docs/adr/README.md`.
+3. If this task needs an ADR, use the existing ADR (including one already `proposed` on `main`)
+   or create a new ADR and index entry. For a proposal-only PR, create or keep both as `proposed`.
+   For a partial implementation, keep both as `proposed`. If this PR completes the decision, set
+   both to `accepted` before the Draft PR opens, even when there are no API changes. Edit only the
+   ADR for this decision, its index row, and any accepted ADR it supersedes as required by
+   `docs/adr/README.md`.
 
 4. If there are no API changes and no decision requiring an ADR:
    - No documentation update is needed

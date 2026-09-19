@@ -6,7 +6,7 @@ This directory contains Architecture Decision Records (ADRs) for the Durably pro
 
 An ADR captures a significant architectural decision along with its context, consequences, and rejected alternatives. ADRs are numbered sequentially and are immutable once accepted on `main` — superseded decisions are marked as such with a pointer to the replacement.
 
-Start an ADR as `proposed` while exploring the decision. Before opening an implementation Draft PR, check whether the decision already has a `proposed` ADR on `main`. Create one if needed, then change both the ADR and its index entry to `accepted` on the implementation branch; merging that same PR publishes the accepted decision. A proposal-only PR, which does not implement the decision described in the ADR, may remain `proposed`.
+Start an ADR as `proposed` while exploring the decision. Before opening an implementation Draft PR, check whether the decision already has a `proposed` ADR on `main`. Create one if needed, then change both the ADR and its index entry to `accepted` on the implementation branch; merging that same PR publishes the accepted decision. A proposal-only PR, which does not implement the decision described in the ADR, must leave both as `proposed`.
 If the decision is implemented across multiple PRs, accept the ADR in the PR that completes it.
 
 ## Format
@@ -39,14 +39,14 @@ What we considered and why we didn't do it.
 
 ## Index
 
-| ADR                                                 | Title                                      | Status   |
-| --------------------------------------------------- | ------------------------------------------ | -------- |
-| [0001](0001-lease-based-runtime.md)                 | Lease-based runtime model                  | Accepted |
-| [0002](0002-development-toolchain.md)               | Managed runtime and compiler compatibility | accepted |
-| [0003](0003-draft-pr-review-gate.md)                | Draft pull request review gate             | accepted |
-| [0004](0004-durable-step-attempts.md)               | Durable step attempt records               | accepted |
-| [0005](0005-parallel-step-join.md)                  | Parallel named steps and durable join      | accepted |
-| [0006](0006-adr-acceptance-in-implementation-pr.md) | Accept ADRs in implementation PRs          | accepted |
+| ADR                                                 | Title                                       | Status   |
+| --------------------------------------------------- | ------------------------------------------- | -------- |
+| [0001](0001-lease-based-runtime.md)                 | Lease-based runtime model                   | Accepted |
+| [0002](0002-development-toolchain.md)               | Managed runtime and compiler compatibility  | accepted |
+| [0003](0003-draft-pr-review-gate.md)                | Draft pull request review gate              | accepted |
+| [0004](0004-durable-step-attempts.md)               | Durable step attempt records                | accepted |
+| [0005](0005-parallel-step-join.md)                  | Parallel named steps and durable join       | accepted |
+| [0006](0006-adr-acceptance-in-implementation-pr.md) | Accept ADRs in implementation pull requests | accepted |
 
 ## Prior Art
 

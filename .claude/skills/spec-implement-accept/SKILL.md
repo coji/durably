@@ -218,8 +218,9 @@ Do not infer the need for an ADR solely from changed paths: a relevant proposal 
 needs an ADR, has public API changes, or already changes an ADR.
 
 For a decision completed in this PR, create or update its ADR and index entry on this feature branch
-and set both to `accepted` before Phase 8. Keep proposal-only and partial-implementation ADRs as
-`proposed`. Merging the implementation PR publishes the accepted status without a follow-up PR.
+and set both to `accepted` before Phase 8. For a proposal-only PR, create or keep its ADR and index
+entry as `proposed`; a partial implementation also keeps both as `proposed`. Merging the
+implementation PR publishes the accepted status without a follow-up PR.
 
 **After Phase 7 completes (if changes were made):**
 
@@ -234,6 +235,7 @@ Read [the review workflow](../../../docs/workflow/code-review.md) before this ph
 pushed commit is required before review. Check the completed implementation against the ADR
 criteria and existing proposed ADRs, even if no ADR path changed yet. If a completed decision
 lacks an ADR or its ADR/index is not `accepted`, return to Phase 7 to make and commit that change.
+For a proposal-only PR, return to Phase 7 if its ADR or index entry is missing or not `proposed`.
 Create the PR as Draft immediately after the implementation pipeline is complete; do not wait for
 code review to create it.
 
@@ -320,14 +322,15 @@ For round `N`:
 
 4. Route on the report:
    - `GO`: continue to Phase 10.
-   - `NO-GO`: run `agents/review-fixer.md` with the issue, `order.md`, and review report. If a fix
-     changes the architectural decision, update the corresponding ADR body and index on the same
-     branch. Run focused checks and `pnpm validate`; commit and push actual fixes. Begin a new round
-     against the new SHA.
+   - `NO-GO`: run `agents/review-fixer.md` with the issue, `order.md`, and review report. Repair any
+     missing ADR or incorrect ADR/index status for the approved decision on the same branch. If a
+     fix changes that decision, update its ADR body and index there too. Run focused checks and
+     `pnpm validate`; commit and push actual fixes. Begin a new round against the new SHA.
    - `INCOMPLETE`: finish the missing review, verification, or check without declaring success.
 
    Include ADR presence and status in the combined report's acceptance table whenever the PR
-   completes a decision that meets the repository ADR criteria, even when no ADR path changed.
+   completes or proposes a decision that meets the repository ADR criteria, even when no ADR path
+   changed.
 
 5. Update the Draft PR body with the round number, reviewed SHA, blocker counts, and report summary.
    Keep non-blocking findings visible.
