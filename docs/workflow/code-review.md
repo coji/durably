@@ -21,7 +21,7 @@ A review round has a blocker when any of these is true:
 
 - an issue acceptance criterion is unmet or cannot be verified;
 - a PR completes a decision that meets the repository ADR criteria but omits the ADR, or leaves the relevant ADR or its index entry as `proposed` (including an ADR already on `main`; proposal-only and partial-implementation PRs remain `proposed`);
-- a proposal-only PR omits its ADR or index entry, or marks either `accepted` before implementing the decision;
+- a proposal-only or partial-implementation PR omits its ADR or index entry, or marks either `accepted` before completing the decision;
 - a `CONFIRMED` P0 or P1 finding remains;
 - a `CONFIRMED` P2 correctness, security, data-integrity, compatibility, or user-visible regression remains;
 - a P0 or P1 candidate is `PLAUSIBLE` and its stated verification has not been completed;

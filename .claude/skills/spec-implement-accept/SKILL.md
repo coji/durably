@@ -103,7 +103,9 @@ Output: `spec-review-report.md` following the output contract in `references/out
 
 **2b. Route based on review result:**
 
-- `APPROVE` (no blocking issues) -> Phase 3
+- `APPROVE` (no blocking issues) -> Phase 3. If the approved task is a proposal-only ADR,
+  confirm `order.md` lists the ADR and `docs/adr/README.md` as change targets so Phases 3–4
+  can create and verify both as `proposed`; otherwise revise the spec before Phase 3.
 - `REJECT` (blocking issues) -> Run spec revision (2c), then loop back to 2a
 - `ABORT` (fundamentally broken) -> Stop and report to user
 
@@ -221,6 +223,8 @@ For a decision completed in this PR, create or update its ADR and index entry on
 and set both to `accepted` before Phase 8. For a proposal-only PR, create or keep its ADR and index
 entry as `proposed`; a partial implementation also keeps both as `proposed`. Merging the
 implementation PR publishes the accepted status without a follow-up PR.
+If an approved proposal-only task lists its ADR and index as change targets, Phases 3 and 4 may
+create them as `proposed` so acceptance testing can verify that deliverable before Phase 7.
 
 **After Phase 7 completes (if changes were made):**
 
@@ -235,7 +239,8 @@ Read [the review workflow](../../../docs/workflow/code-review.md) before this ph
 pushed commit is required before review. Check the completed implementation against the ADR
 criteria and existing proposed ADRs, even if no ADR path changed yet. If a completed decision
 lacks an ADR or its ADR/index is not `accepted`, return to Phase 7 to make and commit that change.
-For a proposal-only PR, return to Phase 7 if its ADR or index entry is missing or not `proposed`.
+For a proposal-only or partial-implementation PR, return to Phase 7 if its ADR or index entry is
+missing or not `proposed`.
 Create the PR as Draft immediately after the implementation pipeline is complete; do not wait for
 code review to create it.
 
@@ -329,8 +334,8 @@ For round `N`:
    - `INCOMPLETE`: finish the missing review, verification, or check without declaring success.
 
    Include ADR presence and status in the combined report's acceptance table whenever the PR
-   completes or proposes a decision that meets the repository ADR criteria, even when no ADR path
-   changed.
+   completes, partially implements, or proposes a decision that meets the repository ADR criteria,
+   even when no ADR path changed.
 
 5. Update the Draft PR body with the round number, reviewed SHA, blocker counts, and report summary.
    Keep non-blocking findings visible.
