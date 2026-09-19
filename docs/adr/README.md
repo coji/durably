@@ -39,7 +39,7 @@ What we considered and why we didn't do it.
 | ADR                                   | Title                                      | Status   |
 | ------------------------------------- | ------------------------------------------ | -------- |
 | [0001](0001-lease-based-runtime.md)   | Lease-based runtime model                  | Accepted |
-| [0002](0002-development-toolchain.md) | Managed runtime and compiler compatibility | proposed |
+| [0002](0002-development-toolchain.md) | Managed runtime and compiler compatibility | accepted |
 | [0003](0003-draft-pr-review-gate.md)  | Draft pull request review gate             | accepted |
 
 ## Prior Art
