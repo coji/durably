@@ -224,7 +224,7 @@ function ImportButton() {
 | `retrigger(runId)`       | Retrigger completed/failed/cancelled run (validates input against current schema)                                                   |
 | `waitForRun(runId)`      | Wait for an existing run to complete (event-first, storage polling fallback; optional `pollingIntervalMs` inherits `createDurably`) |
 | `cancel(runId)`          | Cancel pending or leased run                                                                                                        |
-| `deleteRun(runId)`       | Delete a run and its associated steps, logs, and labels                                                                             |
+| `deleteRun(runId)`       | Delete a run and its associated steps, attempts, logs, and labels                                                                   |
 | `getStepAttempts(runId)` | List persisted callback attempts, including unresolved attempts after a worker stops                                                |
 | `purgeRuns(options)`     | Delete terminal runs older than a cutoff (for cleanup)                                                                              |
 

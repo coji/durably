@@ -220,7 +220,7 @@ const typedRun = await durably.getRun<MyRun>(runId)
 const attempts = await durably.getStepAttempts(runId)
 ```
 
-Returns durable callback attempts ordered by start time, then ID. Unknown runs return `[]`. Each attempt includes its ID, step name/index, lease generation, JSON metadata, status (`started`, `completed`, or `failed`), nullable `completedAt`, and nullable `interruptionReason` (`lease-lost`, `cancelled`, or `unknown`). An unresolved attempt does not prove when external work ended. Attempts survive `preserveSteps: false` cleanup but are deleted with the run; use `retainRuns` to bound storage.
+Returns durable callback attempts ordered by start time, then ID. Unknown runs return `[]`. Each attempt includes `id`, `runId`, `stepName`, `stepIndex`, `leaseGeneration`, `metadata`, `startedAt`, status (`started`, `completed`, or `failed`), nullable `completedAt`, nullable `error`, and nullable `interruptionReason` (`lease-lost`, `cancelled`, or `unknown`). An unresolved attempt does not prove when external work ended. Attempts survive `preserveSteps: false` cleanup but are deleted with the run; use `retainRuns` to bound storage.
 
 ### `getRuns()`
 

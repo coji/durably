@@ -188,6 +188,7 @@ const migrations: Migration[] = [
     up: async (db) => {
       await db.schema
         .createTable('durably_step_attempts')
+        .ifNotExists()
         .addColumn('id', 'text', (col) => col.primaryKey())
         .addColumn('run_id', 'text', (col) => col.notNull())
         .addColumn('step_name', 'text', (col) => col.notNull())
@@ -202,6 +203,7 @@ const migrations: Migration[] = [
 
       await db.schema
         .createIndex('idx_durably_step_attempts_run_started')
+        .ifNotExists()
         .on('durably_step_attempts')
         .columns(['run_id', 'started_at', 'id'])
         .execute()

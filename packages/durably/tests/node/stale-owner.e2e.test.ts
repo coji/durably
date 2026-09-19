@@ -46,6 +46,91 @@ describe('stale owner end-to-end', () => {
     return { runtimeA, runtimeB }
   }
 
+  it('does not start a callback when cancellation wins before attempt insertion', async () => {
+    const { runtimeA, runtimeB } = createSharedRuntimePair()
+    const beginReached = createDeferred()
+    const releaseBegin = createDeferred()
+    let called = false
+    const job = defineJob({
+      name: 'cancel-before-attempt',
+      input: z.object({}),
+      run: async (step) => {
+        await step.run('work', () => {
+          called = true
+        })
+      },
+    })
+    const a = runtimeA.register({ job })
+    await a.migrate()
+    const run = await a.jobs.job.trigger({})
+    const original = a.storage.beginStepAttempt
+    a.storage.beginStepAttempt = async (...args) => {
+      beginReached.resolve()
+      await releaseBegin.promise
+      return original(...args)
+    }
+    try {
+      const processing = a.processOne()
+      await beginReached.promise
+      await runtimeB.storage.cancelRun(run.id, new Date().toISOString())
+      releaseBegin.resolve()
+      await processing
+      expect(called).toBe(false)
+      expect(await a.getStepAttempts(run.id)).toEqual([])
+      expect((await a.getRun(run.id))?.status).toBe('cancelled')
+    } finally {
+      releaseBegin.resolve()
+      a.storage.beginStepAttempt = original
+    }
+  })
+
+  it('does not start a callback when a later lease generation wins before insertion', async () => {
+    const { runtimeA, runtimeB } = createSharedRuntimePair()
+    const beginReached = createDeferred()
+    const releaseBegin = createDeferred()
+    let called = false
+    const job = defineJob({
+      name: 'reclaim-before-attempt',
+      input: z.object({}),
+      run: async (step) => {
+        await step.run('work', () => {
+          called = true
+        })
+      },
+    })
+    const a = runtimeA.register({ job })
+    await a.migrate()
+    const run = await a.jobs.job.trigger({})
+    const original = a.storage.beginStepAttempt
+    a.storage.beginStepAttempt = async (...args) => {
+      beginReached.resolve()
+      await releaseBegin.promise
+      return original(...args)
+    }
+    try {
+      const processing = a.processOne()
+      await beginReached.promise
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      await runtimeB.storage.releaseExpiredLeases(new Date().toISOString())
+      const claimed = await runtimeB.storage.claimNext(
+        'new-owner',
+        new Date().toISOString(),
+        30_000,
+      )
+      expect(claimed?.id).toBe(run.id)
+      releaseBegin.resolve()
+      await processing
+      expect(called).toBe(false)
+      expect(await a.getStepAttempts(run.id)).toEqual([])
+      expect((await a.getRun(run.id))?.leaseGeneration).toBe(
+        claimed!.leaseGeneration,
+      )
+    } finally {
+      releaseBegin.resolve()
+      a.storage.beginStepAttempt = original
+    }
+  })
+
   it('retains interrupted and successful attempts across lease recovery', async () => {
     const { runtimeA, runtimeB } = createSharedRuntimePair()
     const firstStarted = createDeferred()

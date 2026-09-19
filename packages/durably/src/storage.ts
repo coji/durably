@@ -249,7 +249,7 @@ export interface Store<
     leaseGeneration: number,
     attemptId: string,
     metadata: JsonValue,
-  ): Promise<boolean>
+  ): Promise<JsonValue | undefined>
   getStepAttempt(attemptId: string): Promise<StepAttempt | null>
   getStepAttempts(runId: string): Promise<StepAttempt[]>
   getSteps(runId: string): Promise<Step[]>
@@ -997,7 +997,7 @@ export function createKyselyStore(
       input: CreateStepAttemptInput,
     ): Promise<StepAttempt | null> {
       const metadata =
-        input.metadata === undefined ? null : serializeJsonValue(input.metadata)
+        'metadata' in input ? serializeJsonValue(input.metadata) : null
       const now = new Date().toISOString()
       const id = ulid()
       const inserted =
@@ -1058,11 +1058,11 @@ export function createKyselyStore(
       leaseGeneration: number,
       attemptId: string,
       metadata: JsonValue,
-    ): Promise<boolean> {
+    ): Promise<JsonValue | undefined> {
       const serialized = serializeJsonValue(metadata)
       const now = new Date().toISOString()
       if (backend === 'postgres') {
-        return await db.transaction().execute(async (trx) => {
+        const updated = await db.transaction().execute(async (trx) => {
           if (!(await lockAttemptLease(trx, runId, leaseGeneration, now))) {
             return false
           }
@@ -1076,6 +1076,7 @@ export function createKyselyStore(
             .executeTakeFirst()
           return Number(result.numUpdatedRows) > 0
         })
+        return updated ? JSON.parse(serialized) : undefined
       }
 
       const result = await sql`
@@ -1090,6 +1091,8 @@ export function createKyselyStore(
           )
       `.execute(db)
       return Number(result.numAffectedRows) > 0
+        ? JSON.parse(serialized)
+        : undefined
     },
 
     async getStepAttempt(attemptId: string): Promise<StepAttempt | null> {

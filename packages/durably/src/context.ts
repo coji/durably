@@ -148,17 +148,24 @@ export function createStepContext(
         return existingStep.output as T
       }
 
+      const attemptIndex = stepIndex
+      const initialMetadata =
+        options && 'metadata' in options
+          ? JSON.parse(serializeJsonValue(options.metadata))
+          : undefined
       const startedAttempt = await storage.beginStepAttempt(
         run.id,
         leaseGeneration,
         {
           name,
-          index: stepIndex,
-          metadata: options?.metadata,
+          index: attemptIndex,
+          ...(options && 'metadata' in options
+            ? { metadata: initialMetadata }
+            : {}),
         },
       )
       if (!startedAttempt) {
-        return await throwForRefusedStep(name, stepIndex)
+        return await throwForRefusedStep(name, attemptIndex)
       }
 
       let currentMetadata = startedAttempt.metadata
@@ -168,14 +175,16 @@ export function createStepContext(
           return currentMetadata
         },
         async setMetadata(value) {
+          const snapshot = JSON.parse(serializeJsonValue(value)) as JsonValue
           const updated = await storage.updateStepAttemptMetadata(
             run.id,
             leaseGeneration,
             startedAttempt.id,
-            value,
+            snapshot,
           )
-          if (!updated) await throwForRefusedMetadata(startedAttempt.id)
-          currentMetadata = JSON.parse(serializeJsonValue(value))
+          if (updated === undefined)
+            await throwForRefusedMetadata(startedAttempt.id)
+          currentMetadata = updated as JsonValue
         },
       }
 
@@ -192,7 +201,7 @@ export function createStepContext(
         runId: run.id,
         jobName,
         stepName: name,
-        stepIndex,
+        stepIndex: attemptIndex,
         labels: run.labels,
       })
 
@@ -205,7 +214,7 @@ export function createStepContext(
         // Returns null if the run was cancelled or the lease was reclaimed.
         const savedStep = await storage.persistStep(run.id, leaseGeneration, {
           name,
-          index: stepIndex,
+          index: attemptIndex,
           status: 'completed',
           output: result,
           startedAt,
@@ -213,7 +222,7 @@ export function createStepContext(
         })
 
         if (!savedStep) {
-          await throwForRefusedStep(name, stepIndex)
+          await throwForRefusedStep(name, attemptIndex)
         }
 
         stepIndex++
@@ -224,7 +233,7 @@ export function createStepContext(
           runId: run.id,
           jobName,
           stepName: name,
-          stepIndex: stepIndex - 1,
+          stepIndex: attemptIndex,
           output: result,
           duration: Date.now() - startTime,
           labels: run.labels,
@@ -254,7 +263,7 @@ export function createStepContext(
         // so this returns null if the run was cancelled or the lease was lost.
         const savedStep = await storage.persistStep(run.id, leaseGeneration, {
           name,
-          index: stepIndex,
+          index: attemptIndex,
           status: isCancelled ? 'cancelled' : 'failed',
           error: errorMessage,
           startedAt,
@@ -262,7 +271,7 @@ export function createStepContext(
         })
 
         if (!savedStep) {
-          await throwForRefusedStep(name, stepIndex)
+          await throwForRefusedStep(name, attemptIndex)
         }
 
         // If we reach here, savedStep is truthy — the run is still leased.
@@ -273,7 +282,7 @@ export function createStepContext(
           runId: run.id,
           jobName,
           stepName: name,
-          stepIndex,
+          stepIndex: attemptIndex,
           labels: run.labels,
         })
 

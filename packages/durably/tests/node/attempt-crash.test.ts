@@ -39,6 +39,7 @@ describe('step attempt after process termination', () => {
         dialect: createNodeDialectForFile(dbFile),
         leaseMs: 200,
         leaseRenewIntervalMs: 10_000,
+        preserveSteps: true,
         jobs: { job },
       })
       runtimes.push(runtime)
@@ -87,6 +88,9 @@ describe('step attempt after process termination', () => {
         interruptionReason: null,
       })
       expect((await runtime.getRun(run.id))?.status).toBe('completed')
+      expect(await runtime.storage.getSteps(run.id)).toHaveLength(1)
+      expect(await runtime.processOne()).toBe(false)
+      expect(await runtime.getStepAttempts(run.id)).toHaveLength(2)
     },
   )
 })
