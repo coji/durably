@@ -210,12 +210,62 @@ export function createStepContext(
       })
 
       try {
-        // Execute the step with the abort signal
-        const result = await fn(controller.signal, attempt)
-        throwIfAborted()
+        let result: T
+        try {
+          // Only callback errors produce failed step and attempt records.
+          result = await fn(controller.signal, attempt)
+          throwIfAborted()
+        } catch (error) {
+          // If lease was already lost, don't attempt to write step data —
+          // we no longer own this run and must not pollute the new owner's state.
+          if (error instanceof LeaseLostError) {
+            throw error
+          }
 
-        // Persist step result atomically with lease guard (status='leased' + generation).
-        // Returns null if the run was cancelled or the lease was reclaimed.
+          // Check if signal was aborted due to lease loss (not cancellation).
+          // fn() may have thrown a different error while the lease was lost.
+          const isLeaseLost =
+            controller.signal.aborted && controller.signal.reason === LEASE_LOST
+          if (isLeaseLost) {
+            throw new LeaseLostError(run.id)
+          }
+
+          const isCancelled = controller.signal.aborted
+          const errorMessage = getErrorMessage(error)
+
+          // Persist failed/cancelled step record with lease guard.
+          // The guard checks both status='leased' and lease_generation,
+          // so this returns null if the run was cancelled or the lease was lost.
+          const savedStep = await storage.persistStep(run.id, leaseGeneration, {
+            name,
+            index: attemptIndex,
+            status: isCancelled ? 'cancelled' : 'failed',
+            error: errorMessage,
+            startedAt,
+            attemptId: startedAttempt.id,
+          })
+
+          if (!savedStep) {
+            await throwForRefusedStep(name, attemptIndex)
+          }
+
+          // If we reach here, savedStep is truthy — the run is still leased.
+          // Cancellation is handled above (persistStep returns null for cancelled runs).
+          eventEmitter.emit({
+            type: 'step:fail',
+            error: errorMessage,
+            runId: run.id,
+            jobName,
+            stepName: name,
+            stepIndex: attemptIndex,
+            labels: run.labels,
+          })
+
+          throw error
+        }
+
+        // A checkpoint write error leaves the attempt unresolved. It must not
+        // be reclassified as a callback failure.
         const savedStep = await storage.persistStep(run.id, leaseGeneration, {
           name,
           index: attemptIndex,
@@ -242,53 +292,6 @@ export function createStepContext(
         })
 
         return result
-      } catch (error) {
-        // If lease was already lost, don't attempt to write step data —
-        // we no longer own this run and must not pollute the new owner's state.
-        if (error instanceof LeaseLostError) {
-          throw error
-        }
-
-        // Check if signal was aborted due to lease loss (not cancellation).
-        // fn() may have thrown a different error while the lease was lost.
-        const isLeaseLost =
-          controller.signal.aborted && controller.signal.reason === LEASE_LOST
-        if (isLeaseLost) {
-          throw new LeaseLostError(run.id)
-        }
-
-        const isCancelled = controller.signal.aborted
-        const errorMessage = getErrorMessage(error)
-
-        // Persist failed/cancelled step record with lease guard.
-        // The guard checks both status='leased' and lease_generation,
-        // so this returns null if the run was cancelled or the lease was lost.
-        const savedStep = await storage.persistStep(run.id, leaseGeneration, {
-          name,
-          index: attemptIndex,
-          status: isCancelled ? 'cancelled' : 'failed',
-          error: errorMessage,
-          startedAt,
-          attemptId: startedAttempt.id,
-        })
-
-        if (!savedStep) {
-          await throwForRefusedStep(name, attemptIndex)
-        }
-
-        // If we reach here, savedStep is truthy — the run is still leased.
-        // Cancellation is handled above (persistStep returns null for cancelled runs).
-        eventEmitter.emit({
-          type: 'step:fail',
-          error: errorMessage,
-          runId: run.id,
-          jobName,
-          stepName: name,
-          stepIndex: attemptIndex,
-          labels: run.labels,
-        })
-
-        throw error
       } finally {
         // Clear current step after execution
         currentStepName = null

@@ -295,6 +295,97 @@ export function createAttemptTests(createDialect: () => Dialect) {
       }
     })
 
+    it('leaves a successful callback attempt unresolved when checkpoint storage fails', async () => {
+      const runtime = await createRuntime({ preserveSteps: true })
+      let callbackCalls = 0
+      let failedEvents = 0
+      const job = defineJob({
+        name: 'checkpoint-storage-error',
+        input: z.object({}),
+        run: async (step) => {
+          await step.run('work', () => {
+            callbackCalls++
+            return 'done'
+          })
+        },
+      })
+      const d = runtime.register({ job })
+      d.on('step:fail', () => failedEvents++)
+      const original = d.storage.persistStep
+      let completedWrites = 0
+      d.storage.persistStep = async (runId, generation, input) => {
+        if (input.status === 'completed') {
+          completedWrites++
+          throw new Error('checkpoint storage failed')
+        }
+        return original(runId, generation, input)
+      }
+      try {
+        const run = await d.jobs.job.trigger({})
+        await d.processOne()
+        expect(callbackCalls).toBe(1)
+        expect(completedWrites).toBe(1)
+        expect(failedEvents).toBe(0)
+        expect((await d.getRun(run.id))?.status).toBe('failed')
+        expect(await d.storage.getSteps(run.id)).toEqual([])
+        expect(await d.getStepAttempts(run.id)).toMatchObject([
+          {
+            status: 'started',
+            error: null,
+            completedAt: null,
+            interruptionReason: 'unknown',
+          },
+        ])
+      } finally {
+        d.storage.persistStep = original
+      }
+    })
+
+    it('reports Proxy metadata validation failures without writing them', async () => {
+      const runtime = await createRuntime()
+      const revoked = Proxy.revocable({ usage: 1 }, {})
+      revoked.revoke()
+      let callbackCalls = 0
+      const job = defineJob({
+        name: 'proxy-metadata',
+        input: z.object({}),
+        run: async (step) => {
+          await expect(
+            step.run(
+              'invalid-initial',
+              () => {
+                callbackCalls++
+              },
+              { metadata: revoked.proxy },
+            ),
+          ).rejects.toBeInstanceOf(ValidationError)
+          await step.run(
+            'valid-initial',
+            async (_signal, attempt) => {
+              callbackCalls++
+              await expect(
+                attempt.setMetadata(revoked.proxy),
+              ).rejects.toBeInstanceOf(ValidationError)
+              expect(attempt.metadata).toEqual({ usage: 2 })
+            },
+            { metadata: { usage: 2 } },
+          )
+        },
+      })
+      const d = runtime.register({ job })
+      const run = await d.jobs.job.trigger({})
+      await d.processOne()
+      expect((await d.getRun(run.id))?.status).toBe('completed')
+      expect(callbackCalls).toBe(1)
+      expect(await d.getStepAttempts(run.id)).toMatchObject([
+        {
+          stepName: 'valid-initial',
+          metadata: { usage: 2 },
+          status: 'completed',
+        },
+      ])
+    })
+
     it('rejects undefined, accessors, and extra array properties without a callback', async () => {
       const runtime = await createRuntime()
       let calls = 0
@@ -307,6 +398,16 @@ export function createAttemptTests(createDialect: () => Dialect) {
       const array: unknown[] = [1]
       Object.assign(array, { extra: undefined })
       invalidValues.push(array)
+      invalidValues.push(
+        new Proxy(
+          {},
+          {
+            ownKeys: () => {
+              throw new Error('reflection failed')
+            },
+          },
+        ),
+      )
       for (const metadata of invalidValues) {
         const { run } = await runtime.storage.enqueue({
           jobName: 'invalid-values',

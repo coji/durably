@@ -43,7 +43,7 @@ await step.run(
 )
 ```
 
-Metadata must be JSON-compatible. Omit `metadata` for an initial `null` value; explicitly passing `metadata: undefined` rejects before the callback runs. Invalid updates leave the previous value unchanged. An unresolved attempt remains available after a worker crash even if checkpoint outputs are later cleaned up; `durably.getStepAttempts(runId)` lists it with `completedAt: null`. Its `interruptionReason` is inferred from run state and does not claim when external work stopped. Attempts are removed when their run is deleted or purged.
+Metadata must be a JSON value made of primitives, arrays, and plain objects; class instances and `Date` values are rejected. Omit `metadata` for an initial `null` value; explicitly passing `metadata: undefined` rejects before the callback runs. Invalid updates leave the previous value unchanged. An unresolved attempt remains available after a worker crash or checkpoint write failure even if checkpoint outputs are later cleaned up; `durably.getStepAttempts(runId)` lists it with `completedAt: null`. Its `interruptionReason` is inferred from run state and does not claim when external work stopped. Attempts are removed when their run is deleted or purged.
 
 ```ts
 // First run: API is called, result cached

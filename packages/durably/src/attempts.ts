@@ -83,5 +83,10 @@ export function serializeJsonValue(value: unknown): string {
     }
   }
 
-  return JSON.stringify(normalize(value))
+  try {
+    return JSON.stringify(normalize(value))
+  } catch (error) {
+    if (error instanceof ValidationError) throw error
+    throw new ValidationError('Attempt metadata must be a JSON value')
+  }
 }
