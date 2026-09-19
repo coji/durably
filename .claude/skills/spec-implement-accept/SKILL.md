@@ -105,7 +105,9 @@ Output: `spec-review-report.md` following the output contract in `references/out
 
 - `APPROVE` (no blocking issues) -> Phase 3. If the approved task is a proposal-only ADR,
   confirm `order.md` lists the ADR and `docs/adr/README.md` as change targets so Phases 3–4
-  can create and verify both as `proposed`; otherwise revise the spec before Phase 3.
+  can create and verify both as `proposed`. Its completion criteria must require both entries to
+  be `proposed`. If either check fails, record the missing target or criterion as a blocking
+  spec-review issue, run 2c with that issue, and repeat 2a before Phase 3.
 - `REJECT` (blocking issues) -> Run spec revision (2c), then loop back to 2a
 - `ABORT` (fundamentally broken) -> Stop and report to user
 
@@ -218,6 +220,8 @@ the ADR criteria in `CLAUDE.md`, and inspect `docs/adr/README.md` plus existing 
 Do not infer the need for an ADR solely from changed paths: a relevant proposal may already be on
 `main`, or a new non-API architectural decision may need its first ADR. Run this phase if the task
 needs an ADR, has public API changes, or already changes an ADR.
+For the public API part of this decision, inspect the complete recorded `base...HEAD` change set
+plus current uncommitted paths, not only the latest working-tree diff.
 
 For a decision completed in this PR, create or update its ADR and index entry on this feature branch
 and set both to `accepted` before Phase 8. For a proposal-only PR, create or keep its ADR and index

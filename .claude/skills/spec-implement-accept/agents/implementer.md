@@ -23,7 +23,7 @@ Implement according to the task spec (order.md).
 
 - Only implement what order.md specifies
 - Do NOT modify order.md, PLAN.md, or any spec files. An ADR and its index entry explicitly listed
-  as change targets in order.md may be created or updated under `docs/adr/README.md`.
+  as change targets in order.md may be created or updated in `docs/adr/` following its `README.md`.
 - Changes to files outside the listed change targets are allowed ONLY if the changes cause compilation or test failures in those files
 
 ### Quality Rules
@@ -34,7 +34,7 @@ Implement according to the task spec (order.md).
 
 ### Prohibited Actions
 
-- Modifying spec/plan files
+- Modifying spec/plan files, except the ADR and index entry explicitly listed in order.md
 - Adding features not specified in order.md
 - Changing test infrastructure unless order.md requires it
 
