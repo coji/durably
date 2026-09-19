@@ -36,6 +36,17 @@ export function createMigrateTests(createDialect: () => Dialect) {
       expect(result.rows[0].name).toBe('durably_steps')
     })
 
+    it('creates durably_step_attempts table', async () => {
+      durably = createDurably({ dialect: createDialect() })
+      await durably.migrate()
+
+      const result = await sql<{ name: string }>`
+        SELECT name FROM sqlite_master WHERE type='table' AND name='durably_step_attempts'
+      `.execute(durably.db)
+
+      expect(result.rows).toHaveLength(1)
+    })
+
     it('creates durably_logs table', async () => {
       durably = createDurably({ dialect: createDialect() })
       await durably.migrate()

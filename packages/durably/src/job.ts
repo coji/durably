@@ -1,4 +1,5 @@
 import { type z, prettifyError } from 'zod'
+import type { JsonValue } from './attempts'
 import type { JobDefinition } from './define-job'
 import {
   CancelledError,
@@ -60,7 +61,11 @@ export interface StepContext {
   /**
    * Execute a step with automatic persistence and replay
    */
-  run<T>(name: string, fn: (signal: AbortSignal) => T | Promise<T>): Promise<T>
+  run<T>(
+    name: string,
+    fn: (signal: AbortSignal, attempt: StepAttemptContext) => T | Promise<T>,
+    options?: { metadata?: JsonValue },
+  ): Promise<T>
 
   /**
    * Report progress for the current run
@@ -75,6 +80,14 @@ export interface StepContext {
     warn(message: string, data?: unknown): void
     error(message: string, data?: unknown): void
   }
+}
+
+/** Durable identity and metadata for one actual step callback invocation. */
+export interface StepAttemptContext {
+  readonly id: string
+  readonly metadata: JsonValue | null
+  /** Replace the stored JSON value; resolves after the write commits. */
+  setMetadata(value: JsonValue): Promise<void>
 }
 
 /**

@@ -3,7 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { createDurably, defineJob, type Durably } from '../../src'
+import {
+  createDurably,
+  defineJob,
+  type Durably,
+  LeaseLostError,
+} from '../../src'
 import { createNodeDialectForFile } from '../helpers/node-dialect'
 
 describe('stale owner end-to-end', () => {
@@ -40,6 +45,65 @@ describe('stale owner end-to-end', () => {
     runtimes.push(runtimeA, runtimeB)
     return { runtimeA, runtimeB }
   }
+
+  it('retains interrupted and successful attempts across lease recovery', async () => {
+    const { runtimeA, runtimeB } = createSharedRuntimePair()
+    const firstStarted = createDeferred()
+    const releaseFirst = createDeferred()
+    let executions = 0
+    let staleWriteRejected = false
+
+    const job = defineJob({
+      name: 'attempt-recovery',
+      input: z.object({}),
+      run: async (step) => {
+        await step.run('external-call', async (_signal, attempt) => {
+          executions++
+          if (executions === 1) {
+            await attempt.setMetadata({ usage: 3 })
+            firstStarted.resolve()
+            await releaseFirst.promise
+            try {
+              await attempt.setMetadata({ usage: 999 })
+            } catch (error) {
+              staleWriteRejected = error instanceof LeaseLostError
+            }
+            return 'stale'
+          }
+          await attempt.setMetadata({ usage: 7 })
+          return 'recovered'
+        })
+      },
+    })
+
+    const a = runtimeA.register({ job })
+    const b = runtimeB.register({ job })
+    await a.migrate()
+    const run = await a.jobs.job.trigger({})
+    const firstProcess = a.processOne({ workerId: 'worker-a' })
+    await firstStarted.promise
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    await b.processOne({ workerId: 'worker-b' })
+    releaseFirst.resolve()
+    await firstProcess
+
+    const attempts = await a.getStepAttempts(run.id)
+    expect(attempts).toHaveLength(2)
+    expect(attempts[0]).toMatchObject({
+      status: 'started',
+      metadata: { usage: 3 },
+      completedAt: null,
+      interruptionReason: 'lease-lost',
+    })
+    expect(attempts[1]).toMatchObject({
+      status: 'completed',
+      metadata: { usage: 7 },
+      interruptionReason: null,
+    })
+    expect(attempts[0].id).not.toBe(attempts[1].id)
+    expect(staleWriteRejected).toBe(true)
+    expect((await a.getRun(run.id))?.status).toBe('completed')
+  })
 
   it('does not let a stale worker overwrite a reclaimed completion', async () => {
     const { runtimeA, runtimeB } = createSharedRuntimePair()

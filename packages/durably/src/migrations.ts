@@ -9,7 +9,7 @@ interface Migration {
   up: (db: Kysely<Database>) => Promise<void>
 }
 
-export const LATEST_SCHEMA_VERSION = 1
+export const LATEST_SCHEMA_VERSION = 2
 
 const migrations: Migration[] = [
   {
@@ -183,6 +183,30 @@ const migrations: Migration[] = [
       `.execute(db)
     },
   },
+  {
+    version: 2,
+    up: async (db) => {
+      await db.schema
+        .createTable('durably_step_attempts')
+        .addColumn('id', 'text', (col) => col.primaryKey())
+        .addColumn('run_id', 'text', (col) => col.notNull())
+        .addColumn('step_name', 'text', (col) => col.notNull())
+        .addColumn('step_index', 'integer', (col) => col.notNull())
+        .addColumn('lease_generation', 'integer', (col) => col.notNull())
+        .addColumn('status', 'text', (col) => col.notNull())
+        .addColumn('metadata', 'text')
+        .addColumn('error', 'text')
+        .addColumn('started_at', 'text', (col) => col.notNull())
+        .addColumn('completed_at', 'text')
+        .execute()
+
+      await db.schema
+        .createIndex('idx_durably_step_attempts_run_started')
+        .on('durably_step_attempts')
+        .columns(['run_id', 'started_at', 'id'])
+        .execute()
+    },
+  },
 ]
 
 /**
@@ -207,11 +231,17 @@ async function getCurrentVersion(db: Kysely<Database>): Promise<number> {
 /**
  * Run pending migrations
  */
-export async function runMigrations(db: Kysely<Database>): Promise<void> {
+export async function runMigrations(
+  db: Kysely<Database>,
+  options: { targetVersion?: number } = {},
+): Promise<void> {
   const currentVersion = await getCurrentVersion(db)
 
   for (const migration of migrations) {
-    if (migration.version > currentVersion) {
+    if (
+      migration.version > currentVersion &&
+      migration.version <= (options.targetVersion ?? LATEST_SCHEMA_VERSION)
+    ) {
       await db.transaction().execute(async (trx) => {
         await migration.up(trx)
 

@@ -1,0 +1,351 @@
+import type { Dialect } from 'kysely'
+import { afterEach, describe, expect, it } from 'vitest'
+import { z } from 'zod'
+import {
+  CancelledError,
+  ConflictError,
+  createDurably,
+  defineJob,
+  type Durably,
+  type StepAttemptContext,
+} from '../../src'
+
+export function createAttemptTests(createDialect: () => Dialect) {
+  describe('durable step attempts', () => {
+    const runtimes: Durably<any, any>[] = []
+
+    async function createRuntime(options: { preserveSteps?: boolean } = {}) {
+      const runtime = createDurably({ dialect: createDialect(), ...options })
+      runtimes.push(runtime)
+      await runtime.migrate()
+      return runtime
+    }
+
+    afterEach(async () => {
+      await Promise.all(runtimes.map((runtime) => runtime.stop()))
+      await Promise.all(runtimes.map((runtime) => runtime.db.destroy()))
+      runtimes.length = 0
+    })
+
+    it('persists initial metadata before callback and replaces it durably', async () => {
+      const runtime = await createRuntime({ preserveSteps: false })
+      let attemptId = ''
+      const job = defineJob({
+        name: 'attempt-metadata',
+        input: z.object({}),
+        run: async (step) => {
+          await step.run(
+            'work',
+            async (_signal, attempt) => {
+              attemptId = attempt.id
+              expect(attempt.metadata).toEqual({ model: 'alpha' })
+              const started = await runtime.getStepAttempts(step.runId)
+              expect(started).toHaveLength(1)
+              expect(started[0]).toMatchObject({
+                id: attempt.id,
+                status: 'started',
+                metadata: { model: 'alpha' },
+                completedAt: null,
+              })
+              await attempt.setMetadata({ model: 'alpha', usage: 12 })
+              await attempt.setMetadata({ model: 'alpha', usage: 12 })
+              expect(attempt.metadata).toEqual({ model: 'alpha', usage: 12 })
+              expect(
+                (await runtime.getStepAttempts(step.runId))[0].metadata,
+              ).toEqual({ model: 'alpha', usage: 12 })
+              return 'done'
+            },
+            { metadata: { model: 'alpha' } },
+          )
+        },
+      })
+      const d = runtime.register({ job })
+      const run = await d.jobs.job.trigger({})
+      await d.processOne()
+      expect((await d.getRun(run.id))?.status).toBe('completed')
+      expect(await d.storage.getSteps(run.id)).toEqual([])
+      expect(await d.getStepAttempts(run.id)).toMatchObject([
+        {
+          id: attemptId,
+          stepName: 'work',
+          status: 'completed',
+          metadata: { model: 'alpha', usage: 12 },
+          interruptionReason: null,
+        },
+      ])
+    })
+
+    it('records failed callbacks and preserves metadata', async () => {
+      const runtime = await createRuntime()
+      const job = defineJob({
+        name: 'attempt-failure',
+        input: z.object({}),
+        run: async (step) => {
+          await step.run('work', async (_signal, attempt) => {
+            await attempt.setMetadata({ usage: 5 })
+            throw new Error('provider failed')
+          })
+        },
+      })
+      const d = runtime.register({ job })
+      const run = await d.jobs.job.trigger({})
+      await d.processOne()
+      expect((await d.getRun(run.id))?.status).toBe('failed')
+      expect(await d.getStepAttempts(run.id)).toMatchObject([
+        {
+          status: 'failed',
+          metadata: { usage: 5 },
+          error: 'provider failed',
+          interruptionReason: null,
+        },
+      ])
+    })
+
+    it('does not create another attempt when a completed step is replayed', async () => {
+      const runtime = await createRuntime({ preserveSteps: true })
+      let calls = 0
+      const job = defineJob({
+        name: 'attempt-replay',
+        input: z.object({}),
+        run: async (step) => {
+          const first = await step.run('work', () => ++calls)
+          const second = await step.run('work', () => ++calls)
+          expect([first, second]).toEqual([1, 1])
+        },
+      })
+      const d = runtime.register({ job })
+      const run = await d.jobs.job.trigger({})
+      await d.processOne()
+      expect(calls).toBe(1)
+      expect(await d.getStepAttempts(run.id)).toHaveLength(1)
+    })
+
+    it('keeps the context metadata separate from a mutated caller value', async () => {
+      const runtime = await createRuntime()
+      const job = defineJob({
+        name: 'attempt-metadata-snapshot',
+        input: z.object({}),
+        run: async (step) => {
+          const initial = { usage: 1 }
+          await step.run(
+            'work',
+            async (_signal, attempt) => {
+              initial.usage = 2
+              expect(attempt.metadata).toEqual({ usage: 1 })
+              const next = { usage: 3 }
+              await attempt.setMetadata(next)
+              next.usage = 4
+              expect(attempt.metadata).toEqual({ usage: 3 })
+            },
+            { metadata: initial },
+          )
+        },
+      })
+      const d = runtime.register({ job })
+      const run = await d.jobs.job.trigger({})
+      await d.processOne()
+      expect((await d.getStepAttempts(run.id))[0].metadata).toEqual({
+        usage: 3,
+      })
+    })
+
+    it('rejects invalid metadata before running a callback', async () => {
+      const runtime = await createRuntime()
+      let called = false
+      const job = defineJob({
+        name: 'invalid-attempt-metadata',
+        input: z.object({}),
+        run: async (step) => {
+          await step.run(
+            'work',
+            () => {
+              called = true
+            },
+            { metadata: Number.NaN },
+          )
+        },
+      })
+      const d = runtime.register({ job })
+      const run = await d.jobs.job.trigger({})
+      await d.processOne()
+      expect(called).toBe(false)
+      expect(await d.getStepAttempts(run.id)).toEqual([])
+      expect((await d.getRun(run.id))?.error).toContain('Attempt metadata')
+    })
+
+    it('returns no attempts for an unknown run and purges attempts with the run', async () => {
+      const runtime = await createRuntime()
+      expect(await runtime.getStepAttempts('missing')).toEqual([])
+      const job = defineJob({
+        name: 'attempt-delete',
+        input: z.object({}),
+        run: async (step) => {
+          await step.run('work', () => 1, { metadata: null })
+        },
+      })
+      const d = runtime.register({ job })
+      const run = await d.jobs.job.trigger({})
+      await d.processOne()
+      expect(await d.getStepAttempts(run.id)).toHaveLength(1)
+      await d.deleteRun(run.id)
+      expect(await d.getStepAttempts(run.id)).toEqual([])
+    })
+
+    it('removes attempts through retention purging', async () => {
+      const runtime = await createRuntime()
+      const job = defineJob({
+        name: 'attempt-purge',
+        input: z.object({}),
+        run: async (step) => {
+          await step.run('work', () => 1)
+        },
+      })
+      const d = runtime.register({ job })
+      const run = await d.jobs.job.trigger({})
+      await d.processOne()
+      expect(await d.getStepAttempts(run.id)).toHaveLength(1)
+      expect(
+        await d.purgeRuns({ olderThan: new Date(Date.now() + 60_000) }),
+      ).toBeGreaterThanOrEqual(1)
+      expect(await d.getStepAttempts(run.id)).toEqual([])
+    })
+
+    it('refuses metadata writes after an attempt has finalized', async () => {
+      const runtime = await createRuntime()
+      const job = defineJob({
+        name: 'finalized-attempt',
+        input: z.object({}),
+        run: async (step) => {
+          let savedAttempt: StepAttemptContext | undefined
+          await step.run('work', (_signal, attempt) => {
+            savedAttempt = attempt
+            return 1
+          })
+          expect(savedAttempt).toBeDefined()
+          await expect(
+            savedAttempt!.setMetadata({ tooLate: true }),
+          ).rejects.toBeInstanceOf(ConflictError)
+        },
+      })
+      const d = runtime.register({ job })
+      const run = await d.jobs.job.trigger({})
+      await d.processOne()
+      expect((await d.getRun(run.id))?.status).toBe('completed')
+      expect((await d.getStepAttempts(run.id))[0].metadata).toBeNull()
+    })
+
+    it('derives cancellation without claiming a confirmed callback end', async () => {
+      const runtime = await createRuntime()
+      let signalStarted!: () => void
+      const started = new Promise<void>((resolve) => {
+        signalStarted = resolve
+      })
+      let release!: () => void
+      const held = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      let rejected = false
+      const job = defineJob({
+        name: 'cancelled-attempt',
+        input: z.object({}),
+        run: async (step) => {
+          await step.run('work', async (_signal, attempt) => {
+            await attempt.setMetadata({ usage: 2 })
+            signalStarted()
+            await held
+            try {
+              await attempt.setMetadata({ usage: 3 })
+            } catch (error) {
+              rejected = error instanceof CancelledError
+            }
+            return 1
+          })
+        },
+      })
+      const d = runtime.register({ job })
+      const run = await d.jobs.job.trigger({})
+      const processing = d.processOne()
+      await started
+      await d.cancel(run.id)
+      release()
+      await processing
+      expect(rejected).toBe(true)
+      expect(await d.getStepAttempts(run.id)).toMatchObject([
+        {
+          status: 'started',
+          metadata: { usage: 2 },
+          completedAt: null,
+          interruptionReason: 'cancelled',
+        },
+      ])
+    })
+
+    it('keeps an attempt unresolved when checkpoint insertion rolls back', async () => {
+      const runtime = await createRuntime({ preserveSteps: true })
+      const { run } = await runtime.storage.enqueue({
+        jobName: 'rollback',
+        input: {},
+      })
+      const claimed = await runtime.storage.claimNext(
+        'worker',
+        new Date().toISOString(),
+        30_000,
+      )
+      expect(claimed?.id).toBe(run.id)
+      const generation = claimed!.leaseGeneration
+      await runtime.storage.persistStep(run.id, generation, {
+        name: 'work',
+        index: 0,
+        status: 'completed',
+        output: 1,
+        startedAt: new Date().toISOString(),
+      })
+      const attempt = await runtime.storage.beginStepAttempt(
+        run.id,
+        generation,
+        { name: 'work', index: 0 },
+      )
+      expect(attempt).not.toBeNull()
+      await expect(
+        runtime.storage.persistStep(run.id, generation, {
+          name: 'work',
+          index: 0,
+          status: 'completed',
+          output: 2,
+          startedAt: attempt!.startedAt,
+          attemptId: attempt!.id,
+        }),
+      ).rejects.toThrow()
+      expect((await runtime.storage.getStepAttempt(attempt!.id))?.status).toBe(
+        'started',
+      )
+      expect(await runtime.storage.getSteps(run.id)).toHaveLength(1)
+    })
+
+    it('rejects beginning an attempt after lease expiry', async () => {
+      const runtime = await createRuntime()
+      const { run } = await runtime.storage.enqueue({
+        jobName: 'expired',
+        input: {},
+      })
+      const claimed = await runtime.storage.claimNext(
+        'worker',
+        new Date().toISOString(),
+        1,
+      )
+      expect(claimed).not.toBeNull()
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(
+        await runtime.storage.beginStepAttempt(
+          run.id,
+          claimed!.leaseGeneration,
+          {
+            name: 'work',
+            index: 0,
+          },
+        ),
+      ).toBeNull()
+      expect(await runtime.getStepAttempts(run.id)).toEqual([])
+    })
+  })
+}

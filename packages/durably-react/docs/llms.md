@@ -406,6 +406,8 @@ function Component() {
 }
 ```
 
+The same core instance exposes `durably.getStepAttempts(runId)` for durable callback-attempt history. Attempts survive checkpoint cleanup, including unresolved attempts after worker recovery; they are deleted with their run.
+
 **Return type:**
 
 ```ts

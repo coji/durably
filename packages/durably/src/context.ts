@@ -1,6 +1,12 @@
-import { CancelledError, getErrorMessage, LeaseLostError } from './errors'
+import { serializeJsonValue, type JsonValue } from './attempts'
+import {
+  CancelledError,
+  ConflictError,
+  getErrorMessage,
+  LeaseLostError,
+} from './errors'
 import type { EventEmitter } from './events'
-import type { StepContext } from './job'
+import type { StepAttemptContext, StepContext } from './job'
 import type { Run, Store } from './storage'
 
 const LEASE_LOST = 'lease-lost'
@@ -43,7 +49,10 @@ export function createStepContext(
   }
 
   /** When persistStep returns null, check DB to distinguish cancel from lease loss */
-  async function throwForRefusedStep(stepName: string, stepIndex: number) {
+  async function throwForRefusedStep(
+    stepName: string,
+    stepIndex: number,
+  ): Promise<never> {
     const latestRun = await storage.getRun(run.id)
     if (latestRun?.status === 'cancelled') {
       eventEmitter.emit({
@@ -55,6 +64,25 @@ export function createStepContext(
         labels: run.labels,
       })
       throw new CancelledError(run.id)
+    }
+    abortForLeaseLoss()
+    throw new LeaseLostError(run.id)
+  }
+
+  async function throwForRefusedMetadata(attemptId: string): Promise<never> {
+    const latestRun = await storage.getRun(run.id)
+    if (latestRun?.status === 'cancelled') {
+      throw new CancelledError(run.id)
+    }
+    const latestAttempt = await storage.getStepAttempt(attemptId)
+    if (
+      latestRun?.status === 'leased' &&
+      latestRun.leaseGeneration === leaseGeneration &&
+      latestRun.leaseExpiresAt !== null &&
+      Date.parse(latestRun.leaseExpiresAt) > Date.now() &&
+      latestAttempt?.status !== 'started'
+    ) {
+      throw new ConflictError(`Step attempt is already finalized: ${attemptId}`)
     }
     abortForLeaseLoss()
     throw new LeaseLostError(run.id)
@@ -85,7 +113,8 @@ export function createStepContext(
 
     async run<T>(
       name: string,
-      fn: (signal: AbortSignal) => T | Promise<T>,
+      fn: (signal: AbortSignal, attempt: StepAttemptContext) => T | Promise<T>,
+      options?: { metadata?: JsonValue },
     ): Promise<T> {
       // Fast path: check in-memory signal first (set by run:cancel event)
       throwIfAborted()
@@ -119,11 +148,42 @@ export function createStepContext(
         return existingStep.output as T
       }
 
+      const startedAttempt = await storage.beginStepAttempt(
+        run.id,
+        leaseGeneration,
+        {
+          name,
+          index: stepIndex,
+          metadata: options?.metadata,
+        },
+      )
+      if (!startedAttempt) {
+        return await throwForRefusedStep(name, stepIndex)
+      }
+
+      let currentMetadata = startedAttempt.metadata
+      const attempt: StepAttemptContext = {
+        id: startedAttempt.id,
+        get metadata() {
+          return currentMetadata
+        },
+        async setMetadata(value) {
+          const updated = await storage.updateStepAttemptMetadata(
+            run.id,
+            leaseGeneration,
+            startedAttempt.id,
+            value,
+          )
+          if (!updated) await throwForRefusedMetadata(startedAttempt.id)
+          currentMetadata = JSON.parse(serializeJsonValue(value))
+        },
+      }
+
       // Track current step for log attribution
       currentStepName = name
 
-      // Record step start time
-      const startedAt = new Date().toISOString()
+      // The attempt start is durable before the callback or event is visible.
+      const startedAt = startedAttempt.startedAt
       const startTime = Date.now()
 
       // Emit step:start event
@@ -138,7 +198,7 @@ export function createStepContext(
 
       try {
         // Execute the step with the abort signal
-        const result = await fn(controller.signal)
+        const result = await fn(controller.signal, attempt)
         throwIfAborted()
 
         // Persist step result atomically with lease guard (status='leased' + generation).
@@ -149,6 +209,7 @@ export function createStepContext(
           status: 'completed',
           output: result,
           startedAt,
+          attemptId: startedAttempt.id,
         })
 
         if (!savedStep) {
@@ -197,6 +258,7 @@ export function createStepContext(
           status: isCancelled ? 'cancelled' : 'failed',
           error: errorMessage,
           startedAt,
+          attemptId: startedAttempt.id,
         })
 
         if (!savedStep) {

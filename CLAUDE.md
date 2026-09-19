@@ -51,10 +51,11 @@ Regenerate `llms.txt` after editing any `llms.md`. Regenerate the OG image whene
 
 ## Database Schema
 
-Five tables: `durably_runs`, `durably_run_labels`, `durably_steps`, `durably_logs`, `durably_schema_versions`. Key fields:
+Six tables: `durably_runs`, `durably_run_labels`, `durably_steps`, `durably_step_attempts`, `durably_logs`, `durably_schema_versions`. Key fields:
 
 - Runs have: `status` (pending/leased/completed/failed/cancelled), `idempotency_key`, `concurrency_key`, `lease_owner`, `lease_expires_at`, `lease_generation` (fencing token)
 - Steps have: `status` (completed/failed/cancelled), `output` (JSON), indexed by `run_id` and `index`; completed steps have a partial unique index on `(run_id, name)`
+- Step attempts have an ID, step identity, lease generation, start/confirmed completion times, status, and application-owned JSON metadata. Attempts survive `preserveSteps: false` cleanup and are removed with their run.
 
 ## Configuration Defaults
 
