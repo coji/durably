@@ -343,7 +343,7 @@ export function useRuns<
             ),
           )
         }
-        // On step complete, update currentStepIndex
+        // Keep the index responsive, then refresh the persisted completed count.
         if (data.type === 'step:complete') {
           setRuns((prev) =>
             prev.map((run) =>
@@ -358,6 +358,7 @@ export function useRuns<
                 : run,
             ),
           )
+          refresh()
         }
         // On step start or fail, refresh to get latest state
         if (

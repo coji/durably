@@ -260,6 +260,7 @@ import type {
   JobDefinition,
   JobHandle,
   StepContext,
+  StepCallback,
   StepAttemptContext,
   StepAttempt,
   JsonValue,

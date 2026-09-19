@@ -29,7 +29,7 @@ const result = await step.run<T>(
 1. **First execution**: Runs `fn` and persists the result
 2. **Subsequent executions**: Returns the cached result without running `fn`
 
-Before trying to invoke a callback, Durably commits a record with its own attempt ID. Cancellation, lease loss, or a crash can prevent the callback from being entered after the record commits. Cached replay does not add an attempt. When invoked, the callback receives `attempt.id`, `attempt.metadata`, and `await attempt.setMetadata(jsonValue)` as its second argument. The awaited write replaces the entire JSON value, commits before the promise resolves, and updates `attempt.metadata`.
+Before trying to invoke a callback, Durably commits a record with its own attempt ID. Cancellation, lease loss, or a crash can prevent the callback from being entered after the record commits. Cached replay does not add an attempt. When invoked, the callback receives `attempt.id`, `attempt.metadata`, `attempt.log`, and `await attempt.setMetadata(jsonValue)` as its second argument. The awaited write replaces the entire JSON value, commits before the promise resolves, and updates `attempt.metadata`. `attempt.log` attaches the step name to each log entry.
 
 ```ts
 await step.run(
@@ -92,7 +92,7 @@ const reviews = await step.all({
 })
 ```
 
-Use stable, unique branch names within the job. Each branch has its own checkpoint and durable attempt record, available through `getStepAttempts(runId)`. Use `attempt.setMetadata()` to save usage or other JSON data for that branch. A result such as `needsChanges` is a normal value; a thrown error is a failure. If one branch throws, the join waits for its siblings to settle and preserves their records. Lease loss or cancellation takes precedence over ordinary errors; otherwise the first branch error in declaration order is thrown. All branches share the run's cancellation and lease signal. This call keeps the worker slot occupied until the join settles. The earliest attempt start and latest completion measure the group's wall-clock interval; adding branch durations instead measures combined branch work.
+Use stable, unique branch names within the job. Numeric step indexes are assigned as branches start and need not follow object key order. Each branch has its own checkpoint and durable attempt record, available through `getStepAttempts(runId)`. Use `attempt.setMetadata()` to save usage or other JSON data for that branch. A result such as `needsChanges` is a normal value; a thrown error is a failure. If one branch throws, the join waits for its siblings to settle. Lease loss or cancellation takes precedence over ordinary errors; with multiple ordinary failures, the error from the lowest-index failed checkpoint is thrown. Sibling attempts remain queryable after terminal failure; checkpoints follow `preserveSteps` and are deleted on terminal state by default. All branches share the run's cancellation and lease signal. This call keeps the worker slot occupied until the join settles. The earliest attempt start and latest completion measure the group's wall-clock interval; adding branch durations instead measures combined branch work.
 
 ### `log`
 

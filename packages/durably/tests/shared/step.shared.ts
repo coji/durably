@@ -200,6 +200,60 @@ export function createStepTests(createDialect: () => Dialect) {
       )
     })
 
+    it('pairs run:fail error with the failed branch name when indexes differ from declaration order', async () => {
+      let releaseFirst!: () => void
+      const firstGate = new Promise<void>((resolve) => {
+        releaseFirst = resolve
+      })
+      const failures: { error: string; failedStepName: string }[] = []
+      durably.on('run:fail', (event) => failures.push(event))
+      const d = durably.register({
+        job: defineJob({
+          name: 'parallel-failure-order',
+          input: z.object({}),
+          run: async (step) => {
+            await step.all({
+              first: () => {
+                throw new Error('first error')
+              },
+              second: () => {
+                throw new Error('second error')
+              },
+            })
+          },
+        }),
+      })
+      const originalGetCompletedStep = d.storage.getCompletedStep
+      d.storage.getCompletedStep = async (runId, name) => {
+        if (name === 'first') await firstGate
+        return originalGetCompletedStep(runId, name)
+      }
+
+      const run = await d.jobs.job.trigger({})
+      d.start()
+      try {
+        await vi.waitFor(async () => {
+          const attempts = await d.storage.getStepAttempts(run.id)
+          expect(attempts.find((a) => a.stepName === 'second')?.status).toBe(
+            'failed',
+          )
+        })
+      } finally {
+        releaseFirst()
+        d.storage.getCompletedStep = originalGetCompletedStep
+      }
+
+      await vi.waitFor(async () => {
+        expect((await d.jobs.job.getRun(run.id))?.status).toBe('failed')
+      })
+      expect(failures).toEqual([
+        expect.objectContaining({
+          error: 'second error',
+          failedStepName: 'second',
+        }),
+      ])
+    })
+
     it('preserves cancellation when another branch has already failed', async () => {
       let release!: () => void
       const gate = new Promise<void>((resolve) => {

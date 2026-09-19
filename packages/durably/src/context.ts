@@ -345,22 +345,37 @@ export function createStepContext(
       const settled = await Promise.allSettled(
         entries.map(([name, fn]) => step.run(name, fn)),
       )
+      const rejected = settled.flatMap((result, index) =>
+        result.status === 'rejected'
+          ? [{ name: entries[index][0], reason: result.reason as unknown }]
+          : [],
+      )
       // A sibling may lose the lease or be cancelled after another branch
       // fails. Preserve the run lifecycle outcome instead of failing an
       // expired or cancelled run with the earlier ordinary error.
-      const failure =
-        settled.find(
-          (result) =>
-            result.status === 'rejected' &&
-            result.reason instanceof LeaseLostError,
-        ) ??
-        settled.find(
-          (result) =>
-            result.status === 'rejected' &&
-            result.reason instanceof CancelledError,
-        ) ??
-        settled.find((result) => result.status === 'rejected')
-      if (failure?.status === 'rejected') throw failure.reason
+      const leaseLoss = rejected.find(
+        ({ reason }) => reason instanceof LeaseLostError,
+      )
+      if (leaseLoss) throw leaseLoss.reason
+      const cancellation = rejected.find(
+        ({ reason }) => reason instanceof CancelledError,
+      )
+      if (cancellation) throw cancellation.reason
+
+      if (rejected.length > 1) {
+        // run:fail names the lowest-index failed checkpoint. Choose its error
+        // too, because asynchronous setup can assign indexes out of branch
+        // declaration order.
+        const byName = new Map(
+          rejected.map(({ name, reason }) => [name, reason]),
+        )
+        const failedSteps = await storage.getSteps(run.id)
+        const firstFailed = failedSteps.find(
+          (saved) => saved.status === 'failed' && byName.has(saved.name),
+        )
+        if (firstFailed) throw byName.get(firstFailed.name)
+      }
+      if (rejected.length > 0) throw rejected[0].reason
 
       return Object.fromEntries(
         entries.map(([name], index) => [

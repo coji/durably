@@ -1,5 +1,5 @@
 import type { JobDefinition, RunStatus } from '@coji/durably'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDurably } from '../context'
 import { useStableValue } from '../shared/use-stable-value'
 import { type TypedRun, isJobDefinition } from '../types'
@@ -171,10 +171,12 @@ export function useRuns<
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
+  const latestRefreshRef = useRef(0)
 
   const refresh = useCallback(async () => {
     if (!durably) return
 
+    const refreshId = ++latestRefreshRef.current
     setIsLoading(true)
     try {
       const data = await durably.getRuns({
@@ -184,10 +186,13 @@ export function useRuns<
         limit: pageSize + 1,
         offset: page * pageSize,
       })
-      setHasMore(data.length > pageSize)
-      setRuns(data.slice(0, pageSize) as TypedRun<TInput, TOutput>[])
+      // A later step event may have already fetched a newer run snapshot.
+      if (refreshId === latestRefreshRef.current) {
+        setHasMore(data.length > pageSize)
+        setRuns(data.slice(0, pageSize) as TypedRun<TInput, TOutput>[])
+      }
     } finally {
-      setIsLoading(false)
+      if (refreshId === latestRefreshRef.current) setIsLoading(false)
     }
   }, [durably, stableJobName, normalizedStatus, labels, pageSize, page])
 
