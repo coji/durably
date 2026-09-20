@@ -28,6 +28,7 @@ const createMockRun = (overrides: Partial<ClientRun> = {}): ClientRun => ({
   completedAt: null,
   isTerminal: false,
   isActive: true,
+  isWaiting: false,
   ...overrides,
 })
 

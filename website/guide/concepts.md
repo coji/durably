@@ -230,3 +230,7 @@ See [Events API](/api/events) for the full list.
 - **[Server Mode](/guide/server-mode)** — Batch processing, cron, CLI tools
 - **[Fullstack Mode](/guide/fullstack-mode)** — React UI with real-time progress
 - **[SPA Mode](/guide/spa-mode)** — Run entirely in the browser
+
+## Waiting for external input
+
+A job can persist a wait, release its worker slot, and resume the same run when input arrives. The lifecycle includes `leased → waiting → leased`. Another run can use the released slot and concurrency key. Resume replays completed named steps, so application side effects belong inside steps. See [durable external waits](../api/step#durable-external-waits) for the prepare-before-start pattern and signal retry rules. Deadlines and parallel waits are not supported in this release.

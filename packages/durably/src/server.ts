@@ -143,6 +143,7 @@ export interface CreateDurablyHandlerOptions<
  * Valid status values for runs
  */
 const VALID_STATUSES = [
+  'waiting',
   'pending',
   'leased',
   'completed',
@@ -538,6 +539,18 @@ export function createDurablyHandler<
                 labels: event.labels,
                 skippedInput: event.skippedInput,
                 skippedLabels: event.skippedLabels,
+              })
+            }
+          }),
+
+          durably.on('run:waiting', (event) => {
+            if (matchesFilter(event.jobName, event.labels)) {
+              ctrl.enqueue({
+                type: 'run:waiting',
+                runId: event.runId,
+                jobName: event.jobName,
+                labels: event.labels,
+                waitId: event.waitId,
               })
             }
           }),

@@ -2,6 +2,7 @@ import type { Dialect } from 'kysely'
 import { Kysely, sql } from 'kysely'
 import { monotonicFactory } from 'ulidx'
 import type { z } from 'zod'
+import type { JsonValue } from './attempts'
 import type { JobDefinition } from './define-job'
 import {
   ConflictError,
@@ -39,6 +40,7 @@ import {
   type Store,
   createKyselyStore,
 } from './storage'
+import type { DurableWait } from './waits'
 import { type Worker, createWorker } from './worker'
 
 /**
@@ -420,6 +422,16 @@ export interface Durably<
     filter?: RunFilter<TLabels>,
   ): Promise<T[]>
 
+  /** Inspect a durable input address. */
+  getWait(waitId: string): Promise<DurableWait | null>
+  getWaits(runId: string): Promise<DurableWait[]>
+  /** Persist an input exactly once for this wait; retry with the same signalId and payload. */
+  signal(
+    waitId: string,
+    payload: JsonValue,
+    options: { signalId: string },
+  ): Promise<DurableWait>
+
   /** List durable callback attempts for a run, including unresolved attempts. */
   getStepAttempts(runId: string): Promise<StepAttempt[]>
 
@@ -578,6 +590,9 @@ function createDurablyInstance<
     getRun: storage.getRun.bind(storage),
     getRuns: storage.getRuns.bind(storage),
     getStepAttempts: storage.getStepAttempts.bind(storage),
+    getWait: storage.getWait.bind(storage),
+    getWaits: storage.getWaits.bind(storage),
+    signal: storage.signalWait.bind(storage),
 
     async waitForRun(
       runId: string,
@@ -619,6 +634,7 @@ function createDurablyInstance<
     subscribe(runId: string): ReadableStream<DurablyEvent> {
       // Track closed state and cleanup function in outer scope for cancel handler
       let closed = false
+      let liveStateObserved = false
       let cleanup: (() => void) | null = null
 
       // Events that close the stream after enqueuing
@@ -630,6 +646,7 @@ function createDurablyInstance<
       ])
       // All event types to subscribe to for a run
       const subscribedEvents: EventType[] = [
+        'run:waiting',
         'run:leased',
         'run:complete',
         'run:fail',
@@ -648,6 +665,12 @@ function createDurablyInstance<
           const unsubscribes = subscribedEvents.map((type) =>
             eventEmitter.on(type, (event) => {
               if (closed || event.runId !== runId) return
+              if (
+                type === 'run:waiting' ||
+                type === 'run:leased' ||
+                closeEvents.has(type)
+              )
+                liveStateObserved = true
               controller.enqueue(event)
               if (closeEvents.has(type)) {
                 closed = true
@@ -672,7 +695,7 @@ function createDurablyInstance<
           storage
             .getRun(runId)
             .then((run) => {
-              if (closed || !run) return
+              if (closed || !run || liveStateObserved) return
 
               // Synthetic replay events use sequence=0 and approximate fields
               // (e.g. duration=0) since exact values aren't persisted in the run record.
@@ -692,13 +715,12 @@ function createDurablyInstance<
                   leaseOwner: run.leaseOwner ?? '',
                   leaseExpiresAt: run.leaseExpiresAt ?? '',
                 })
-                if (run.progress != null) {
-                  controller.enqueue({
-                    ...base,
-                    type: 'run:progress',
-                    progress: run.progress,
-                  })
-                }
+              } else if (run.status === 'waiting') {
+                controller.enqueue({
+                  ...base,
+                  type: 'run:waiting',
+                  waitId: run.waitingOnWaitId ?? '',
+                })
               } else if (run.status === 'completed') {
                 controller.enqueue({
                   ...base,
@@ -721,6 +743,16 @@ function createDurablyInstance<
                   type: 'run:cancel',
                 })
                 closeStream()
+              }
+              if (
+                (run.status === 'leased' || run.status === 'waiting') &&
+                run.progress != null
+              ) {
+                controller.enqueue({
+                  ...base,
+                  type: 'run:progress',
+                  progress: run.progress,
+                })
               }
               // pending: no initial event needed, useJobRun already defaults to pending
             })
@@ -748,6 +780,11 @@ function createDurablyInstance<
       }
       if (run.status === 'leased') {
         throw new ConflictError(`Cannot retrigger leased run: ${runId}`)
+      }
+      if (run.status === 'waiting') {
+        throw new ConflictError(
+          `Cannot retrigger waiting run: ${runId}; cancel it first`,
+        )
       }
       const job = jobRegistry.get(run.jobName)
       if (!job) {
@@ -790,7 +827,6 @@ function createDurablyInstance<
       if (run.status === 'cancelled') {
         throw new ConflictError(`Cannot cancel already cancelled run: ${runId}`)
       }
-      const wasPending = run.status === 'pending'
       const cancelled = await storage.cancelRun(runId, new Date().toISOString())
 
       if (!cancelled) {
@@ -801,8 +837,9 @@ function createDurablyInstance<
         )
       }
 
-      // For pending runs, no worker will clean up steps, so do it here
-      if (wasPending && !state.preserveSteps) {
+      // Cancellation is committed and prevents new checkpoints on every path.
+      // This also covers a leased -> waiting race during cancellation.
+      if (!state.preserveSteps) {
         await storage.deleteSteps(runId)
       }
 
@@ -822,6 +859,11 @@ function createDurablyInstance<
       }
       if (run.status === 'leased') {
         throw new ConflictError(`Cannot delete leased run: ${runId}`)
+      }
+      if (run.status === 'waiting') {
+        throw new ConflictError(
+          `Cannot delete waiting run: ${runId}; cancel it first`,
+        )
       }
       await storage.deleteRun(runId)
 

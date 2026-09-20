@@ -9,6 +9,7 @@ import type { Run, Store } from './storage'
  * Distinct from trigger Disposition in job.ts.
  */
 export type RuntimeExecutionResult =
+  | { kind: 'suspended' }
   | { kind: 'completed' }
   | { kind: 'failed' }
   | { kind: 'lease-lost' }
@@ -54,14 +55,22 @@ export async function executeRun<
 ): Promise<RuntimeExecutionResult> {
   const { storage, eventEmitter, clock } = environment
 
-  const { step, abortLeaseOwnership, preserveFailedParallelSteps, dispose } =
-    createStepContext(
-      run,
-      run.jobName,
-      run.leaseGeneration,
-      storage,
-      eventEmitter,
-    )
+  const {
+    step,
+    abortLeaseOwnership,
+    preserveFailedParallelSteps,
+    suspension,
+    settleSteps,
+    dispose,
+  } = createStepContext(
+    run,
+    run.jobName,
+    run.leaseGeneration,
+    storage,
+    eventEmitter,
+  )
+  let ending = false
+  let handoffAttempted = false
   let leaseDeadlineTimer: ReturnType<RuntimeClock['setTimeout']> | null = null
 
   const scheduleLeaseDeadline = (leaseExpiresAt: string | null) => {
@@ -87,6 +96,7 @@ export async function executeRun<
     storage
       .renewLease(run.id, run.leaseGeneration, now, config.leaseMs)
       .then((renewed) => {
+        if (ending) return
         if (!renewed) {
           abortLeaseOwnership()
           eventEmitter.emit({
@@ -114,6 +124,7 @@ export async function executeRun<
         })
       })
       .catch((error: unknown) => {
+        if (ending) return
         eventEmitter.emit({
           type: 'worker:error',
           error: getErrorMessage(error),
@@ -122,6 +133,35 @@ export async function executeRun<
         })
       })
   }, config.leaseRenewIntervalMs)
+
+  async function suspend(): Promise<RuntimeExecutionResult> {
+    handoffAttempted = true
+    ending = true
+    clock.clearInterval(leaseTimer)
+    if (leaseDeadlineTimer) clock.clearTimeout(leaseDeadlineTimer)
+    const waitId = suspension()
+    if (!waitId) throw new Error('Missing suspension request')
+    const suspended = await storage.suspendRun(
+      run.id,
+      run.leaseGeneration,
+      waitId,
+      isoNow(clock),
+    )
+    if (!suspended) {
+      const latest = await storage.getRun(run.id)
+      return {
+        kind: latest?.status === 'cancelled' ? 'cancelled' : 'lease-lost',
+      }
+    }
+    eventEmitter.emit({
+      type: 'run:waiting',
+      runId: run.id,
+      jobName: run.jobName,
+      labels: run.labels,
+      waitId,
+    })
+    return { kind: 'suspended' }
+  }
 
   const started = clock.now()
   let reachedTerminalState = false
@@ -138,6 +178,8 @@ export async function executeRun<
       labels: run.labels,
     })
     const output = await job.fn(step, run.input)
+    await settleSteps()
+    if (suspension()) return await suspend()
 
     if (job.outputSchema) {
       const parseResult = job.outputSchema.safeParse(output)
@@ -174,6 +216,9 @@ export async function executeRun<
     })
     return { kind: 'lease-lost' }
   } catch (error) {
+    await settleSteps()
+    if (handoffAttempted) throw error
+    if (suspension() && !handoffAttempted) return await suspend()
     if (error instanceof LeaseLostError) {
       return { kind: 'lease-lost' }
     }
@@ -222,6 +267,7 @@ export async function executeRun<
     })
     return { kind: 'lease-lost' }
   } finally {
+    ending = true
     clock.clearInterval(leaseTimer)
     if (leaseDeadlineTimer) {
       clock.clearTimeout(leaseDeadlineTimer)

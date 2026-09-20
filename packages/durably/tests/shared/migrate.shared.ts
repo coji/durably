@@ -3,6 +3,7 @@ import { sql } from 'kysely'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createDurably, type Durably } from '../../src'
 import { LATEST_SCHEMA_VERSION, runMigrations } from '../../src/migrations'
+import { seedLegacyRun } from '../helpers/legacy-fixture'
 
 export function createMigrateTests(createDialect: () => Dialect) {
   describe('migrate()', () => {
@@ -114,23 +115,7 @@ export function createMigrateTests(createDialect: () => Dialect) {
     it('upgrades a populated v1 run and checkpoint without creating a historical attempt', async () => {
       durably = createDurably({ dialect: createDialect() })
       await runMigrations(durably.db, { targetVersion: 1 })
-      const { run } = await durably.storage.enqueue({
-        jobName: 'legacy',
-        input: { value: 1 },
-      })
-      const claimed = await durably.storage.claimNext(
-        'worker',
-        new Date().toISOString(),
-        30_000,
-      )
-      expect(claimed?.id).toBe(run.id)
-      await durably.storage.persistStep(run.id, claimed!.leaseGeneration, {
-        name: 'old-step',
-        index: 0,
-        status: 'completed',
-        output: 42,
-        startedAt: new Date().toISOString(),
-      })
+      const run = await seedLegacyRun(durably.db)
       await durably.migrate()
       expect((await durably.storage.getRun(run.id))?.input).toEqual({
         value: 1,

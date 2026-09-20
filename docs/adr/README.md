@@ -51,6 +51,8 @@ What we considered and why we didn't do it.
 | [0008](0008-active-run-coalescing-and-scoped-job-tracking.md) | Active-run coalescing and scoped job tracking | accepted |
 | [0009](0009-cumulative-delta-review-rounds.md)                | Cumulative delta review rounds                | accepted |
 
+| [0010](0010-durable-external-waits.md) | Durable external waits | accepted |
+
 ## Prior Art
 
 Earlier design documents (RFCs) that led to these decisions are preserved in git history under `docs/rfcs/` (removed in the commit that introduced this ADR directory).

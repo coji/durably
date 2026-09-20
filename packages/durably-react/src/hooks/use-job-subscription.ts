@@ -144,7 +144,8 @@ function jobSubscriptionReducer<TOutput = unknown>(
           (state.status === 'completed' ||
             state.status === 'failed' ||
             state.status === 'cancelled' ||
-            state.status === 'leased') &&
+            state.status === 'leased' ||
+            state.status === 'waiting') &&
           action.status === 'pending'
         ) {
           return state
@@ -153,7 +154,7 @@ function jobSubscriptionReducer<TOutput = unknown>(
           (state.status === 'completed' ||
             state.status === 'failed' ||
             state.status === 'cancelled') &&
-          action.status === 'leased'
+          (action.status === 'leased' || action.status === 'waiting')
         ) {
           return state
         }
@@ -271,6 +272,28 @@ export function useJobSubscription<TOutput = unknown>(
             type: 'switch_to_run',
             runId: event.runId,
             status: 'leased',
+          })
+          currentRunIdRef.current = event.runId
+          onFollow?.(event.runId)
+        }
+      }),
+    )
+
+    unsubscribes.push(
+      durably.on('run:waiting', (event) => {
+        if (event.jobName !== jobName) return
+        if (event.runId === currentRunIdRef.current) {
+          dispatch({ type: 'set_active_status', status: 'waiting' })
+          return
+        }
+
+        if (followLatest) {
+          if (!matchesLabels(event.labels, latestScopeLabelsRef.current)) return
+          // Switch to tracking the new run
+          dispatch({
+            type: 'switch_to_run',
+            runId: event.runId,
+            status: 'waiting',
           })
           currentRunIdRef.current = event.runId
           onFollow?.(event.runId)

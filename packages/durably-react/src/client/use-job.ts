@@ -26,7 +26,7 @@ export interface UseJobClientOptions {
    */
   initialRunId?: string
   /**
-   * Automatically resume tracking a leased/pending job on mount
+   * Automatically resume tracking a leased/pending/waiting job on mount
    * @default true
    */
   autoResume?: boolean
@@ -98,6 +98,8 @@ export interface UseJobClientResult<TInput, TOutput> {
    * Whether the run reached a terminal status (completed, failed, or cancelled)
    */
   isTerminal: boolean
+  /** Whether the run is suspended awaiting external input. */
+  isWaiting: boolean
   /**
    * Whether the run is pending or leased (actively queued or executing)
    */
@@ -265,7 +267,7 @@ export function useJob<
     setCurrentRunId(initialRunId)
   }, [initialRunId, subscription.reset])
 
-  // Auto-resume: fetch leased/pending job on mount / scope change
+  // Auto-resume: fetch leased/pending/waiting job on mount / scope change
   useEffect(() => {
     // A failed trigger retries this lookup for the current scope.
     void autoResumeRestart
@@ -311,10 +313,17 @@ export function useJob<
         limit: '1',
       })
 
+      const waitingParams = new URLSearchParams({
+        jobName,
+        status: 'waiting',
+        limit: '1',
+      })
+
       if (stableScope?.labels) {
         for (const [key, value] of Object.entries(stableScope.labels)) {
           leasedParams.append(`label.${key}`, value)
           pendingParams.append(`label.${key}`, value)
+          waitingParams.append(`label.${key}`, value)
         }
       }
 
@@ -382,6 +391,33 @@ export function useJob<
         }
       }
 
+      const waitingRes = await fetch(`${api}/runs?${waitingParams}`, { signal })
+      if (
+        cancelled ||
+        hasUserTriggered.current ||
+        resolutionEpochRef.current !== epoch
+      ) {
+        return
+      }
+      if (waitingRes.ok) {
+        const runs = (await waitingRes.json()) as Array<{
+          id: string
+          status?: RunStatus
+        }>
+        if (
+          cancelled ||
+          hasUserTriggered.current ||
+          resolutionEpochRef.current !== epoch
+        )
+          return
+        if (runs.length > 0) {
+          setCurrentRunId(runs[0].id)
+          setHydratedStatus(runs[0].status ?? 'waiting')
+          setIsResolving(false)
+          return
+        }
+      }
+
       setIsResolving(false)
     }
 
@@ -431,7 +467,8 @@ export function useJob<
         if (
           (data.type === 'run:trigger' ||
             data.type === 'run:coalesced' ||
-            data.type === 'run:leased') &&
+            data.type === 'run:leased' ||
+            data.type === 'run:waiting') &&
           data.runId
         ) {
           followedEpochRef.current = ++resolutionEpochRef.current
@@ -446,11 +483,20 @@ export function useJob<
           setCurrentRunId(data.runId)
           if (data.type === 'run:trigger') {
             setHydratedStatus('pending')
-          } else if (data.type === 'run:leased') {
-            setHydratedStatus('leased')
+          } else if (
+            data.type === 'run:leased' ||
+            data.type === 'run:waiting'
+          ) {
+            const status = data.type === 'run:waiting' ? 'waiting' : 'leased'
+            setHydratedStatus(status)
+            subscription.setActiveStatus(status)
           } else if (data.type === 'run:coalesced' && data.status) {
             setHydratedStatus(data.status)
-            if (data.status === 'pending' || data.status === 'leased') {
+            if (
+              data.status === 'pending' ||
+              data.status === 'leased' ||
+              data.status === 'waiting'
+            ) {
               subscription.setActiveStatus(data.status)
             }
           }
@@ -666,6 +712,7 @@ export function useJob<
       effectiveStatus === 'completed' ||
       effectiveStatus === 'failed' ||
       effectiveStatus === 'cancelled',
+    isWaiting: effectiveStatus === 'waiting',
     isActive: effectiveStatus === 'pending' || effectiveStatus === 'leased',
     isResolving,
     currentRunId,

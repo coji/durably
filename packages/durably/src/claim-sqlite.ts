@@ -24,6 +24,10 @@ export async function claimNextSqlite(
       eb.or([
         eb('status', '=', 'pending'),
         eb.and([
+          eb('status', '=', 'waiting'),
+          sql<boolean>`EXISTS (SELECT 1 FROM durably_waits w WHERE w.id = durably_runs.waiting_on_wait_id AND w.status = 'resolved')`,
+        ]),
+        eb.and([
           eb('status', '=', 'leased'),
           eb('lease_expires_at', 'is not', null),
           eb('lease_expires_at', '<=', now),

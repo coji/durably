@@ -48,7 +48,13 @@ describe('Type inference', () => {
       type Result = UseJobResult<{ taskId: string }, { success: boolean }>
 
       expectTypeOf<Result['status']>().toEqualTypeOf<
-        'pending' | 'leased' | 'completed' | 'failed' | 'cancelled' | null
+        | 'pending'
+        | 'leased'
+        | 'waiting'
+        | 'completed'
+        | 'failed'
+        | 'cancelled'
+        | null
       >()
       expectTypeOf<Result['output']>().toEqualTypeOf<{
         success: boolean
@@ -61,6 +67,7 @@ describe('Type inference', () => {
       expectTypeOf<Result['isFailed']>().toEqualTypeOf<boolean>()
       expectTypeOf<Result['isTerminal']>().toEqualTypeOf<boolean>()
       expectTypeOf<Result['isActive']>().toEqualTypeOf<boolean>()
+      expectTypeOf<Result['isWaiting']>().toEqualTypeOf<boolean>()
       expectTypeOf<Result['isResolving']>().toEqualTypeOf<boolean>()
     })
 
@@ -137,7 +144,13 @@ describe('Type inference', () => {
         data: number[]
       } | null>()
       expectTypeOf<Result['status']>().toEqualTypeOf<
-        'pending' | 'leased' | 'completed' | 'failed' | 'cancelled' | null
+        | 'pending'
+        | 'leased'
+        | 'waiting'
+        | 'completed'
+        | 'failed'
+        | 'cancelled'
+        | null
       >()
       expectTypeOf<Result['error']>().toEqualTypeOf<string | null>()
     })
@@ -153,6 +166,7 @@ describe('Type inference', () => {
 
       expectTypeOf<Result['isTerminal']>().toEqualTypeOf<boolean>()
       expectTypeOf<Result['isActive']>().toEqualTypeOf<boolean>()
+      expectTypeOf<Result['isWaiting']>().toEqualTypeOf<boolean>()
     })
   })
 
@@ -284,7 +298,7 @@ describe('Type inference', () => {
       expectTypeOf<TestRun['id']>().toEqualTypeOf<string>()
       expectTypeOf<TestRun['jobName']>().toEqualTypeOf<string>()
       expectTypeOf<TestRun['status']>().toEqualTypeOf<
-        'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
+        'pending' | 'leased' | 'waiting' | 'completed' | 'failed' | 'cancelled'
       >()
     })
 
@@ -355,12 +369,13 @@ describe('Type inference', () => {
       expectTypeOf<TestRun['id']>().toEqualTypeOf<string>()
       expectTypeOf<TestRun['jobName']>().toEqualTypeOf<string>()
       expectTypeOf<TestRun['status']>().toEqualTypeOf<
-        'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
+        'pending' | 'leased' | 'waiting' | 'completed' | 'failed' | 'cancelled'
       >()
       expectTypeOf<TestRun['currentStepIndex']>().toEqualTypeOf<number>()
       expectTypeOf<TestRun['completedStepCount']>().toEqualTypeOf<number>()
       expectTypeOf<TestRun['isTerminal']>().toEqualTypeOf<boolean>()
       expectTypeOf<TestRun['isActive']>().toEqualTypeOf<boolean>()
+      expectTypeOf<TestRun['isWaiting']>().toEqualTypeOf<boolean>()
     })
 
     it('UseRunsClientResult with generic type has typed runs', () => {

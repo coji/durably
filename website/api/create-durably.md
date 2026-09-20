@@ -142,7 +142,7 @@ Retriggers a completed, failed, or cancelled run by creating a fresh run with th
 await durably.cancel(runId: string): Promise<void>
 ```
 
-Cancels a pending or leased run.
+Cancels a pending, leased, or waiting run.
 
 ### `waitForRun()`
 
@@ -264,7 +264,8 @@ interface Run<TLabels extends Record<string, string> = Record<string, string>> {
   id: string
   jobName: string
   input: unknown
-  status: 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
+  status:
+    'pending' | 'leased' | 'waiting' | 'completed' | 'failed' | 'cancelled'
   idempotencyKey: string | null
   concurrencyKey: string | null
   currentStepIndex: number
@@ -282,26 +283,26 @@ interface Run<TLabels extends Record<string, string> = Record<string, string>> {
 }
 ```
 
-| Field                | Type                                                              | Description                                                     |
-| -------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------- |
-| `id`                 | `string`                                                          | Unique run ID                                                   |
-| `jobName`            | `string`                                                          | Name of the job                                                 |
-| `input`              | `unknown`                                                         | Input payload passed to the job                                 |
-| `status`             | `'pending' \| 'leased' \| 'completed' \| 'failed' \| 'cancelled'` | Current run status                                              |
-| `idempotencyKey`     | `string \| null`                                                  | Deduplication key                                               |
-| `concurrencyKey`     | `string \| null`                                                  | Concurrency group key                                           |
-| `currentStepIndex`   | `number`                                                          | Index of the current step being executed                        |
-| `completedStepCount` | `number`                                                          | Total number of completed steps                                 |
-| `progress`           | `{ current: number; total?: number; message?: string } \| null`   | Latest progress report                                          |
-| `output`             | `unknown \| null`                                                 | Return value of the job (when completed)                        |
-| `error`              | `string \| null`                                                  | Error message (when failed)                                     |
-| `labels`             | `TLabels` (defaults to `Record<string, string>`)                  | Key/value labels for filtering (type-safe when schema provided) |
-| `leaseOwner`         | `string \| null`                                                  | Worker ID that holds the lease (`null` when not leased)         |
-| `leaseExpiresAt`     | `string \| null`                                                  | ISO timestamp when the lease expires (`null` when not leased)   |
-| `startedAt`          | `string \| null`                                                  | ISO timestamp when the run started                              |
-| `completedAt`        | `string \| null`                                                  | ISO timestamp when the run completed or failed                  |
-| `createdAt`          | `string`                                                          | ISO timestamp when the run was created                          |
-| `updatedAt`          | `string`                                                          | ISO timestamp of the last update                                |
+| Field                | Type                                                                           | Description                                                     |
+| -------------------- | ------------------------------------------------------------------------------ | --------------------------------------------------------------- |
+| `id`                 | `string`                                                                       | Unique run ID                                                   |
+| `jobName`            | `string`                                                                       | Name of the job                                                 |
+| `input`              | `unknown`                                                                      | Input payload passed to the job                                 |
+| `status`             | `'pending' \| 'leased' \| 'waiting' \| 'completed' \| 'failed' \| 'cancelled'` | Current run status                                              |
+| `idempotencyKey`     | `string \| null`                                                               | Deduplication key                                               |
+| `concurrencyKey`     | `string \| null`                                                               | Concurrency group key                                           |
+| `currentStepIndex`   | `number`                                                                       | Index of the current step being executed                        |
+| `completedStepCount` | `number`                                                                       | Total number of completed steps                                 |
+| `progress`           | `{ current: number; total?: number; message?: string } \| null`                | Latest progress report                                          |
+| `output`             | `unknown \| null`                                                              | Return value of the job (when completed)                        |
+| `error`              | `string \| null`                                                               | Error message (when failed)                                     |
+| `labels`             | `TLabels` (defaults to `Record<string, string>`)                               | Key/value labels for filtering (type-safe when schema provided) |
+| `leaseOwner`         | `string \| null`                                                               | Worker ID that holds the lease (`null` when not leased)         |
+| `leaseExpiresAt`     | `string \| null`                                                               | ISO timestamp when the lease expires (`null` when not leased)   |
+| `startedAt`          | `string \| null`                                                               | ISO timestamp when the run started                              |
+| `completedAt`        | `string \| null`                                                               | ISO timestamp when the run completed or failed                  |
+| `createdAt`          | `string`                                                                       | ISO timestamp when the run was created                          |
+| `updatedAt`          | `string`                                                                       | ISO timestamp of the last update                                |
 
 ### `getJob()`
 
@@ -367,3 +368,31 @@ process.on('SIGTERM', async () => {
 - [HTTP Handler](/api/http-handler) — Expose Durably via HTTP/SSE for React clients
 - [defineJob](/api/define-job) — Define jobs with typed schemas
 - [Events](/api/events) — Subscribe to run and step events
+
+## Durable wait methods
+
+```ts
+await durably.signal(waitId, payload, { signalId }) // Promise<DurableWait>
+await durably.getWait(waitId) // Promise<DurableWait | null>
+await durably.getWaits(runId) // Promise<DurableWait[]>
+```
+
+These direct APIs persist and inspect external input for waits prepared by a job. `signalId` is required. Retry an uncertain delivery using the same ID and JSON payload. The returned receipt confirms durable acceptance, not job completion. The first signal is immutable; conflicting deliveries and unknown wait IDs are rejected. Wait records are retained until their run is deleted. See [durable external waits](./step#durable-external-waits) for replay, concurrency, cancellation, and usage constraints.
+
+### DurableWait
+
+```ts
+interface DurableWait {
+  id: string
+  runId: string
+  name: string
+  metadata: JsonValue | null
+  status: 'pending' | 'resolved' | 'cancelled' | 'closed'
+  payload: JsonValue | null
+  signalId: string | null
+  createdAt: string
+  resolvedAt: string | null
+}
+```
+
+A pending wait has no accepted input; resolved records hold the immutable signal receipt. Cancelled and closed waits no longer accept input. `getWait` returns `null` for an unknown ID, and `getWaits` returns an empty list for an unknown run. Signal delivery raises `NotFoundError` for missing IDs, `ConflictError` for conflicting or closed input, and `ValidationError` for invalid arguments. `payload: null` is also a valid signal: inspect `status` to distinguish it from missing input.

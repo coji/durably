@@ -1,8 +1,10 @@
 import type { Dialect } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ConflictError, createDurably, type Durably } from '../../src'
+import { createWaitStorageTests } from './waits-storage.shared'
 
 export function createStorageTests(createDialect: () => Dialect) {
+  createWaitStorageTests(createDialect)
   describe('Storage', () => {
     let durably: Durably
 

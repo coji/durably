@@ -170,6 +170,7 @@ if (queued.disposition === 'coalesced') {
 // With coalesce: 'active'
 // - Reuses the oldest pending run for the same job name and concurrency key
 // - Otherwise reuses a leased run whose lease has not expired
+// - Otherwise reuses the oldest waiting run
 // - Otherwise creates a new pending run
 // - Terminal runs and null/expired leases do not block a new run
 // Selection is atomic at the database decision point. A reused leased run may
@@ -189,6 +190,41 @@ await syncUsers.trigger(
   { labels: { organizationId: 'org_123', env: 'prod' } },
 )
 ```
+
+## Durable external waits
+
+Use a durable wait when CI or a human decision should release the worker slot. Prepare the persisted input address **before** starting external work:
+
+```ts
+const wait = await step.prepareWait('ci:review-1', {
+  metadata: { commit: input.commit },
+})
+await step.run('start-ci:review-1', () => startCi({ waitId: wait.id }))
+const result = await step.waitFor(wait)
+// result: { type: 'signal', payload: JsonValue }
+```
+
+An application process sharing the database supplies the result:
+
+```ts
+await durably.signal(waitId, { passed: true }, { signalId: 'ci-result-123' })
+const receipt = await durably.getWait(waitId)
+const waits = await durably.getWaits(runId)
+```
+
+`prepareWait(name, { metadata? })` returns a persisted `DurableWait`. Names identify one logical wait within a run: replay returns its original ID and result. Use distinct names for new iterations; retrigger creates new run and wait IDs. Metadata and payload must be JSON. The application validates authorization, payload schema, and commit/version identity; a wait ID is not an authorization credential.
+
+`waitFor(wait)` returns an already accepted signal immediately, including signals received before suspension. Otherwise the run becomes `waiting`, releases its worker slot and lease, and resumes with the same run ID after a signal. Resume calls the job from the beginning and replays completed step results. Keep side effects inside named steps and use external idempotency keys where needed: a crash between an external effect and checkpoint persistence can repeat that effect. JavaScript stacks and local variables are not persisted.
+
+Prepare and await waits only at sequential boundaries in the job body. Do not call them inside step callbacks, parallel branches, or while another step operation is in flight. Await `step.all()` before preparing a wait. Do not catch and suppress suspension or keep running application work after it; the runtime cannot stop arbitrary JavaScript. Suspension creates no step attempt.
+
+The first signal wins. Retrying the same `signalId` and JSON payload returns the original receipt; a different payload or a second signal cannot overwrite it. An accepted receipt means persisted input, not completed downstream work. Unknown/deleted wait IDs are rejected. A signal for another prepared wait does not resume the wait currently blocking the run. New signals to terminal runs are rejected; an already accepted identical retry remains idempotent until the run is deleted.
+
+Waiting releases execution exclusion for `concurrencyKey`; another run with that key may execute. Resume waits for any valid same-key lease. Business resource reservations remain the application's responsibility. `coalesce: 'active'` selects pending, then valid leased, then waiting runs for the same job/key; `skip` and `queue` retain their pending-only reuse behavior. Resolved waits remain `waiting` until claimed. Candidate ordering follows creation time and ID, without a strict fairness guarantee.
+
+Cancel a waiting run before deleting or retriggering it. Cancellation prevents later input from reviving it and cleans checkpoints according to `preserveSteps`, even without a worker. Wait records survive checkpoint cleanup and are removed with run deletion/purge. `waitForRun()` and `triggerAndWait()` still wait for a terminal run; their caller-side timeout does not cancel a durable wait. This release has no durable deadlines or dedicated HTTP signal/wait endpoints.
+
+`run:waiting` reports suspension and `run:leased` reports resume. Existing HTTP run reads/subscriptions and React hooks understand `waiting`. `isActive` remains pending or leased; `isWaiting` identifies waiting; `isTerminal` is false for waiting. Use `!isTerminal` when testing whether a run is unfinished.
 
 ## Step Context API
 
@@ -370,7 +406,7 @@ await durably.deleteRun(runId)
 ### Purge Old Runs
 
 Batch-delete terminal runs (completed, failed, cancelled) older than a cutoff date.
-Pending and leased runs are never deleted.
+Pending, leased, and waiting runs are never deleted.
 
 ```ts
 // Delete terminal runs older than 30 days
@@ -394,7 +430,7 @@ durably.on('run:coalesced', (e) =>
   console.log(
     'Coalesced:',
     e.runId,
-    e.status, // 'pending' or 'leased'
+    e.status, // 'pending', 'leased', or 'waiting'
     'skipped input:',
     e.skippedInput,
   ),
@@ -422,7 +458,7 @@ durably.on('log:write', (e) => console.log(`[${e.level}]`, e.message))
 
 The `DurablyEvent` union is grouped for callers who want lifecycle facts vs operational detail:
 
-- **Domain** (`DomainEvent` / `DomainEventType`): `run:trigger`, `run:coalesced`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`
+- **Domain** (`DomainEvent` / `DomainEventType`): `run:trigger`, `run:coalesced`, `run:waiting`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`
 - **Operational** (`OperationalEvent` / `OperationalEventType`): `run:leased`, `run:lease-renewed`, `run:progress`, `step:*`, `log:write`, `worker:error`
 
 Use `isDomainEvent(event)` (checks `event.type` only) as a type guard.
@@ -551,15 +587,15 @@ GET /runs?label.organizationId=org_123
 GET /runs/subscribe?label.organizationId=org_123&label.env=prod
 ```
 
-Every supplied label must match. The same filters apply to the initial run list and the `/runs/subscribe` event stream, including `run:trigger`, `run:coalesced`, and `run:leased` projections. HTTP trigger responses include the selected run's current `status`; active coalescing can therefore return either `pending` or `leased` with disposition `coalesced`.
+Every supplied label must match. The same filters apply to the initial run list and the `/runs/subscribe` event stream, including `run:trigger`, `run:coalesced`, and `run:leased` projections. HTTP trigger responses include the selected run's current `status`; active coalescing can therefore return `pending`, `leased`, or `waiting` with disposition `coalesced`.
 
-**Response Shape:** The `/runs` and `/run` endpoints return `ClientRun` objects (internal fields like `leaseOwner`, `leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `leaseGeneration`, `updatedAt` are stripped). Each response includes derived `isTerminal` and `isActive` booleans from `status` (terminal: completed, failed, or cancelled; active: pending or leased). Use `toClientRun()` to apply the same projection in custom code:
+**Response Shape:** The `/runs` and `/run` endpoints return `ClientRun` objects (internal fields like `leaseOwner`, `leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `leaseGeneration`, `updatedAt` are stripped). Each response includes derived `isTerminal`, `isActive`, and `isWaiting` booleans from `status` (terminal: completed, failed, or cancelled; active: pending or leased; waiting: waiting). Use `toClientRun()` to apply the same projection in custom code:
 
 ```ts
 import { toClientRun } from '@coji/durably'
 
 const run = await durably.getRun(runId)
-const clientRun = toClientRun(run) // strips internal fields; adds isTerminal / isActive
+const clientRun = toClientRun(run) // strips internal fields; adds isTerminal / isActive / isWaiting
 ```
 
 **Handler Interface:**
@@ -676,6 +712,7 @@ trigger() → pending → leased → completed
 
 - **pending**: Waiting for worker to pick up
 - **leased**: Worker has acquired a lease and is executing steps
+- **waiting**: Execution suspended for external input; a resolved wait awaits a new lease
 - **completed**: All steps finished successfully
 - **failed**: A step threw an error
 - **cancelled**: Manually cancelled via `cancel()`
@@ -707,6 +744,11 @@ type StepCallback<T> = (
 ) => T | Promise<T>
 
 interface StepContext {
+  prepareWait(
+    name: string,
+    options?: { metadata?: JsonValue },
+  ): Promise<DurableWait>
+  waitFor(wait: DurableWait): Promise<{ type: 'signal'; payload: JsonValue }>
   readonly runId: string
   readonly signal: AbortSignal
   isAborted(): boolean
@@ -755,7 +797,8 @@ interface StepAttempt {
 interface Run<TLabels extends Record<string, string> = Record<string, string>> {
   id: string
   jobName: string
-  status: 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
+  status:
+    'pending' | 'leased' | 'waiting' | 'completed' | 'failed' | 'cancelled'
   input: unknown
   labels: TLabels
   output: unknown | null
@@ -874,3 +917,21 @@ import {
 ## License
 
 MIT
+
+### DurableWait
+
+```ts
+interface DurableWait {
+  id: string
+  runId: string
+  name: string
+  metadata: JsonValue | null
+  status: 'pending' | 'resolved' | 'cancelled' | 'closed'
+  payload: JsonValue | null
+  signalId: string | null
+  createdAt: string
+  resolvedAt: string | null
+}
+```
+
+A pending wait has no accepted input; resolved records hold the immutable signal receipt. Cancelled and closed waits no longer accept input. `getWait` returns `null` for an unknown ID, and `getWaits` returns an empty list for an unknown run. Signal delivery raises `NotFoundError` for missing IDs, `ConflictError` for conflicting or closed input, and `ValidationError` for invalid arguments. `payload: null` is also a valid signal: inspect `status` to distinguish it from missing input.

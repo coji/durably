@@ -27,7 +27,7 @@ export interface RunCoalescedEvent extends BaseEvent {
   type: 'run:coalesced'
   runId: string
   jobName: string
-  status: 'pending' | 'leased'
+  status: 'pending' | 'leased' | 'waiting'
   labels: Record<string, string>
   skippedInput: unknown
   skippedLabels: Record<string, string>
@@ -43,6 +43,15 @@ export interface RunLeasedEvent extends BaseEvent {
   input: unknown
   leaseOwner: string
   leaseExpiresAt: string
+  labels: Record<string, string>
+}
+
+/** Emitted after suspension commits and the execution lease is released. */
+export interface RunWaitingEvent extends BaseEvent {
+  type: 'run:waiting'
+  runId: string
+  jobName: string
+  waitId: string
   labels: Record<string, string>
 }
 
@@ -205,6 +214,7 @@ export interface WorkerErrorEvent extends BaseEvent {
 export type DurablyEvent =
   | RunTriggerEvent
   | RunCoalescedEvent
+  | RunWaitingEvent
   | RunLeasedEvent
   | RunLeaseRenewedEvent
   | RunCompleteEvent
@@ -231,6 +241,7 @@ export type EventType = DurablyEvent['type']
 const DOMAIN_EVENT_TYPE_VALUES = [
   'run:trigger',
   'run:coalesced',
+  'run:waiting',
   'run:complete',
   'run:fail',
   'run:cancel',
@@ -299,6 +310,7 @@ export type EventInput<T extends EventType> = Omit<
 export type AnyEventInput =
   | EventInput<'run:trigger'>
   | EventInput<'run:coalesced'>
+  | EventInput<'run:waiting'>
   | EventInput<'run:leased'>
   | EventInput<'run:lease-renewed'>
   | EventInput<'run:complete'>

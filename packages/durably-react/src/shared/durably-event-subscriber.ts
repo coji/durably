@@ -16,6 +16,13 @@ export function createDurablyEventSubscriber(
       const unsubscribes: (() => void)[] = []
 
       unsubscribes.push(
+        durably.on('run:waiting', (event) => {
+          if (event.runId !== runId) return
+          onEvent({ type: 'run:waiting' })
+        }),
+      )
+
+      unsubscribes.push(
         durably.on('run:leased', (event) => {
           if (event.runId !== runId) return
           onEvent({ type: 'run:leased' })

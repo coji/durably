@@ -10,7 +10,7 @@ export interface UseAutoResumeOptions<
   TLabels extends Record<string, string> = Record<string, string>,
 > {
   /**
-   * Whether to automatically resume tracking pending/running runs
+   * Whether to automatically resume tracking pending/running/waiting runs
    * @default true
    */
   enabled?: boolean
@@ -49,7 +49,7 @@ export interface UseAutoResumeCallbacks<
 }
 
 /**
- * Hook that automatically finds and resumes tracking of pending/running runs.
+ * Hook that automatically finds and resumes tracking of pending/running/waiting runs.
  * Extracted from useJob to separate the auto-resume concern.
  */
 export function useAutoResume<
@@ -101,6 +101,19 @@ export function useAutoResume<
 
         if (pendingRuns.length > 0) {
           const run = pendingRuns[0]
+          await callbacks.onRunFound(run)
+          return
+        }
+        // Then check for waiting runs
+        const waitingRuns = await jobHandle.getRuns({
+          status: 'waiting',
+          labels: scopeLabels,
+          limit: 1,
+        })
+        if (cancelled) return
+
+        if (waitingRuns.length > 0) {
+          const run = waitingRuns[0]
           await callbacks.onRunFound(run)
           return
         }

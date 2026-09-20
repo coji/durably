@@ -4,7 +4,8 @@ import { appendLog, createLogEntry } from './create-log-entry'
 // Action types for subscription state transitions
 export type SubscriptionAction<TOutput = unknown> =
   | { type: 'run:leased' }
-  | { type: 'set_active_status'; status: 'pending' | 'leased' }
+  | { type: 'run:waiting' }
+  | { type: 'set_active_status'; status: 'pending' | 'leased' | 'waiting' }
   | { type: 'run:complete'; output: TOutput }
   | { type: 'run:fail'; error: string }
   | { type: 'run:cancel' }
@@ -39,6 +40,9 @@ export function subscriptionReducer<TOutput = unknown>(
   action: SubscriptionAction<TOutput>,
 ): SubscriptionState<TOutput> {
   switch (action.type) {
+    case 'run:waiting':
+      return { ...state, status: 'waiting' }
+
     case 'run:leased':
       return { ...state, status: 'leased' }
 

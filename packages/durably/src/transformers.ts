@@ -19,6 +19,7 @@ export function rowToRun(row: Database['durably_runs']): Run {
     leaseOwner: row.lease_owner,
     leaseExpiresAt: row.lease_expires_at,
     leaseGeneration: row.lease_generation,
+    waitingOnWaitId: row.waiting_on_wait_id,
     startedAt: row.started_at,
     completedAt: row.completed_at,
     createdAt: row.created_at,
