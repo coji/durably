@@ -140,7 +140,7 @@ else
     "migrate() in guides/examples" \
     'await durably\.migrate()' \
     "Prefer await durably.init() in guides and examples" \
-    "$API_REF_EXCLUDE\|examples/server-libsql/durable-wait.ts"  # Manual migration demonstrates a stopped worker and restart
+    "$API_REF_EXCLUDE\|examples/server-libsql/durable-wait.ts\|examples/server-libsql/ci-poller.ts\|examples/server-libsql/human-input.ts"  # Manual processing/restart examples intentionally do not start a worker
 
   check_pattern \
     "durably.start() in guides/examples" \

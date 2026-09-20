@@ -55,10 +55,10 @@ auth: {
     }
   },
 
-  // Guard before read/retrigger/cancel/delete
+  // Guard before run and wait reads or mutations
   onRunAccess: async (ctx, run, { operation }) => {
     // Everyone can read, only admins can mutate
-    const writeOps = ['retrigger', 'cancel', 'delete']
+    const writeOps = ['retrigger', 'cancel', 'delete', 'signal']
     if (writeOps.includes(operation) && ctx.role !== 'admin') {
       throw new Response('Forbidden', { status: 403 })
     }
