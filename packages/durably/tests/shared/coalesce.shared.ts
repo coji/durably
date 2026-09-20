@@ -402,20 +402,35 @@ export function createCoalesceTests(createDialect: () => Dialect) {
         ).rejects.toThrow(ValidationError)
       })
 
-      it('includes both skip and queue in ValidationError message', async () => {
+      it('throws ValidationError for coalesce: active without concurrencyKey', async () => {
+        await expect(
+          d.jobs.job.trigger({ value: 'a' }, { coalesce: 'active' }),
+        ).rejects.toThrow(ValidationError)
+      })
+
+      it('throws ValidationError for coalesce: active with empty string concurrencyKey', async () => {
+        await expect(
+          d.jobs.job.trigger(
+            { value: 'a' },
+            { concurrencyKey: '', coalesce: 'active' },
+          ),
+        ).rejects.toThrow(ValidationError)
+      })
+
+      it('includes skip, queue, and active in ValidationError message', async () => {
         await expect(
           d.jobs.job.trigger(
             { value: 'a' },
             { concurrencyKey: 'key-1', coalesce: 'invalid' as any },
           ),
-        ).rejects.toThrow(/Valid values: 'skip', 'queue'/)
+        ).rejects.toThrow(/Valid values: 'skip', 'queue', 'active'/)
       })
 
-      it('includes both skip and queue in ConflictError message', async () => {
+      it('includes skip, queue, and active in ConflictError message', async () => {
         await d.jobs.job.trigger({ value: 'a' }, { concurrencyKey: 'key-err' })
         await expect(
           d.jobs.job.trigger({ value: 'b' }, { concurrencyKey: 'key-err' }),
-        ).rejects.toThrow(/coalesce: 'skip' or coalesce: 'queue'/)
+        ).rejects.toThrow(/coalesce: 'skip', 'queue', or 'active'/)
       })
     })
 
@@ -1050,6 +1065,387 @@ export function createCoalesceTests(createDialect: () => Dialect) {
           await durablyMulti.db.deleteFrom('durably_runs').execute()
           await durablyMulti.db.destroy()
         }
+      })
+    })
+
+    // ─── coalesce: active ──────────────────────────────────────────
+    describe("coalesce: 'active'", () => {
+      it('returns existing pending run with disposition coalesced and creates no new run', async () => {
+        const first = await d.jobs.job.trigger(
+          { value: 'first' },
+          { concurrencyKey: 'key-act-1' },
+        )
+        expect(first.disposition).toBe('created')
+
+        const second = await d.jobs.job.trigger(
+          { value: 'second' },
+          { concurrencyKey: 'key-act-1', coalesce: 'active' },
+        )
+        expect(second.disposition).toBe('coalesced')
+        expect(second.id).toBe(first.id)
+
+        const all = await d.jobs.job.getRuns()
+        expect(all).toHaveLength(1)
+      })
+
+      it('when pending and valid leased runs coexist for the same job name and concurrency key, returns the pending run', async () => {
+        const first = await d.jobs.job.trigger(
+          { value: 'first' },
+          { concurrencyKey: 'key-act-coexist' },
+        )
+        const futureExpiry = new Date(Date.now() + 60_000).toISOString()
+        await durably.storage.updateRun(first.id, {
+          status: 'leased',
+          leaseOwner: 'worker-1',
+          leaseExpiresAt: futureExpiry,
+        })
+
+        const second = await d.jobs.job.trigger(
+          { value: 'second' },
+          { concurrencyKey: 'key-act-coexist', coalesce: 'queue' },
+        )
+        expect(second.status).toBe('pending')
+
+        const third = await d.jobs.job.trigger(
+          { value: 'third' },
+          { concurrencyKey: 'key-act-coexist', coalesce: 'active' },
+        )
+        expect(third.disposition).toBe('coalesced')
+        expect(third.id).toBe(second.id)
+      })
+
+      it('when only a non-expired leased run exists, returns that leased run and creates no pending run', async () => {
+        const first = await d.jobs.job.trigger(
+          { value: 'first' },
+          { concurrencyKey: 'key-act-leased' },
+        )
+        const futureExpiry = new Date(Date.now() + 60_000).toISOString()
+        await durably.storage.updateRun(first.id, {
+          status: 'leased',
+          leaseOwner: 'worker-1',
+          leaseExpiresAt: futureExpiry,
+        })
+
+        const second = await d.jobs.job.trigger(
+          { value: 'second' },
+          { concurrencyKey: 'key-act-leased', coalesce: 'active' },
+        )
+        expect(second.disposition).toBe('coalesced')
+        expect(second.id).toBe(first.id)
+        expect(second.status).toBe('leased')
+
+        const pending = await durably.storage.getRuns({
+          jobName: 'coalesce-test',
+          status: 'pending',
+        })
+        expect(pending).toHaveLength(0)
+      })
+
+      it('leased run with a null or expired lease expiry does not block creation of a new pending run', async () => {
+        for (const [suffix, leaseExpiresAt] of [
+          ['null', null],
+          ['expired', new Date(Date.now() - 1000).toISOString()],
+        ] as const) {
+          const concurrencyKey = `key-act-${suffix}`
+          const first = await d.jobs.job.trigger(
+            { value: 'first' },
+            { concurrencyKey },
+          )
+          await durably.storage.updateRun(first.id, {
+            status: 'leased',
+            leaseOwner: 'worker-1',
+            leaseExpiresAt,
+          })
+
+          const second = await d.jobs.job.trigger(
+            { value: 'second' },
+            { concurrencyKey, coalesce: 'active' },
+          )
+          expect(second.disposition).toBe('created')
+          expect(second.id).not.toBe(first.id)
+          expect(second.status).toBe('pending')
+        }
+      })
+
+      it('completed, failed, and cancelled runs do not block a later active trigger', async () => {
+        for (const terminalStatus of [
+          'completed',
+          'failed',
+          'cancelled',
+        ] as const) {
+          const run = await d.jobs.job.trigger(
+            { value: `term-${terminalStatus}` },
+            { concurrencyKey: `key-term-${terminalStatus}` },
+          )
+          await durably.storage.updateRun(run.id, {
+            status: terminalStatus,
+            completedAt: new Date().toISOString(),
+          })
+
+          const next = await d.jobs.job.trigger(
+            { value: `after-${terminalStatus}` },
+            {
+              concurrencyKey: `key-term-${terminalStatus}`,
+              coalesce: 'active',
+            },
+          )
+          expect(next.disposition).toBe('created')
+          expect(next.id).not.toBe(run.id)
+          expect(next.status).toBe('pending')
+        }
+      })
+
+      it('does not reuse a run from another job definition with the same concurrency key', async () => {
+        const otherJob = defineJob({
+          name: 'coalesce-other-job',
+          input: z.object({ value: z.string() }),
+          run: async () => {},
+        })
+        const dOther = durably.register({ otherJob })
+
+        const first = await d.jobs.job.trigger(
+          { value: 'first' },
+          { concurrencyKey: 'shared-key' },
+        )
+        await durably.storage.updateRun(first.id, {
+          status: 'leased',
+          leaseOwner: 'worker-1',
+          leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        })
+
+        const second = await dOther.jobs.otherJob.trigger(
+          { value: 'second' },
+          { concurrencyKey: 'shared-key', coalesce: 'active' },
+        )
+        expect(second.id).not.toBe(first.id)
+        expect(second.disposition).toBe('created')
+      })
+
+      it('idempotency-key match returns disposition idempotent before active-coalescing resolution', async () => {
+        const first = await d.jobs.job.trigger(
+          { value: 'first' },
+          { concurrencyKey: 'key-act-idem', idempotencyKey: 'idem-1' },
+        )
+
+        const second = await d.jobs.job.trigger(
+          { value: 'different' },
+          {
+            concurrencyKey: 'key-act-idem',
+            idempotencyKey: 'idem-1',
+            coalesce: 'active',
+          },
+        )
+        expect(second.disposition).toBe('idempotent')
+        expect(second.id).toBe(first.id)
+      })
+
+      it('does not overwrite existing run input, labels, or idempotency key when coalesced', async () => {
+        const first = await d.jobs.job.trigger(
+          { value: 'original' },
+          {
+            concurrencyKey: 'key-act-no-overwrite',
+            labels: { env: 'prod' },
+            idempotencyKey: 'orig-idem',
+          },
+        )
+
+        const second = await d.jobs.job.trigger(
+          { value: 'replacement' },
+          {
+            concurrencyKey: 'key-act-no-overwrite',
+            labels: { env: 'staging' },
+            idempotencyKey: 'new-idem',
+            coalesce: 'active',
+          },
+        )
+        expect(second.disposition).toBe('coalesced')
+
+        const fetched = await d.jobs.job.getRun(first.id)
+        expect(fetched?.input).toEqual({ value: 'original' })
+        expect(fetched?.labels).toEqual({ env: 'prod' })
+        expect(fetched?.idempotencyKey).toBe('orig-idem')
+      })
+
+      it('validates labels before reusing an active run', async () => {
+        const existing = await d.jobs.job.trigger(
+          { value: 'existing' },
+          { concurrencyKey: 'key-act-invalid-label' },
+        )
+
+        await expect(
+          d.jobs.job.trigger(
+            { value: 'invalid' },
+            {
+              concurrencyKey: 'key-act-invalid-label',
+              coalesce: 'active',
+              labels: { 'invalid label': 'value' },
+            },
+          ),
+        ).rejects.toThrow('Invalid label key')
+
+        const runs = await d.jobs.job.getRuns()
+        expect(runs).toHaveLength(1)
+        expect(runs[0].id).toBe(existing.id)
+      })
+
+      describe('events', () => {
+        it('emits one run:coalesced event with status pending and no run:trigger event when reusing pending run', async () => {
+          const coalescedEvents: any[] = []
+          const triggerEvents: any[] = []
+          durably.on('run:coalesced', (e) => coalescedEvents.push(e))
+          durably.on('run:trigger', (e) => triggerEvents.push(e))
+
+          const first = await d.jobs.job.trigger(
+            { value: 'first' },
+            { concurrencyKey: 'key-ev-pending' },
+          )
+          expect(triggerEvents).toHaveLength(1)
+          expect(coalescedEvents).toHaveLength(0)
+
+          const second = await d.jobs.job.trigger(
+            { value: 'second' },
+            {
+              concurrencyKey: 'key-ev-pending',
+              coalesce: 'active',
+              labels: { extra: 'test' },
+            },
+          )
+          expect(second.disposition).toBe('coalesced')
+          expect(triggerEvents).toHaveLength(1)
+          expect(coalescedEvents).toHaveLength(1)
+          expect(coalescedEvents[0]).toMatchObject({
+            type: 'run:coalesced',
+            runId: first.id,
+            status: 'pending',
+            skippedInput: { value: 'second' },
+            skippedLabels: { extra: 'test' },
+          })
+        })
+
+        it('emits one run:coalesced event with status leased and no run:trigger event when reusing leased run', async () => {
+          const coalescedEvents: any[] = []
+          const triggerEvents: any[] = []
+          durably.on('run:coalesced', (e) => coalescedEvents.push(e))
+          durably.on('run:trigger', (e) => triggerEvents.push(e))
+
+          const first = await d.jobs.job.trigger(
+            { value: 'first' },
+            { concurrencyKey: 'key-ev-leased' },
+          )
+          await durably.storage.updateRun(first.id, {
+            status: 'leased',
+            leaseOwner: 'worker-1',
+            leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+          })
+
+          const second = await d.jobs.job.trigger(
+            { value: 'second' },
+            {
+              concurrencyKey: 'key-ev-leased',
+              coalesce: 'active',
+              labels: { extra: 'test' },
+            },
+          )
+          expect(second.disposition).toBe('coalesced')
+          expect(second.status).toBe('leased')
+          expect(triggerEvents).toHaveLength(1)
+          expect(coalescedEvents).toHaveLength(1)
+          expect(coalescedEvents[0]).toMatchObject({
+            type: 'run:coalesced',
+            runId: first.id,
+            status: 'leased',
+            skippedInput: { value: 'second' },
+            skippedLabels: { extra: 'test' },
+          })
+        })
+      })
+
+      describe('batches', () => {
+        it('first eligible active item creates run and subsequent same-key active items coalesce onto it within one batch', async () => {
+          const results = await d.jobs.job.batchTrigger([
+            {
+              input: { value: 'item-0' },
+              options: { concurrencyKey: 'key-act-batch', coalesce: 'active' },
+            },
+            {
+              input: { value: 'item-1' },
+              options: { concurrencyKey: 'key-act-batch', coalesce: 'active' },
+            },
+            {
+              input: { value: 'item-2' },
+              options: { concurrencyKey: 'key-act-batch', coalesce: 'active' },
+            },
+          ])
+
+          expect(results[0].disposition).toBe('created')
+          expect(results[1].disposition).toBe('coalesced')
+          expect(results[2].disposition).toBe('coalesced')
+          expect(results[1].id).toBe(results[0].id)
+          expect(results[2].id).toBe(results[0].id)
+        })
+
+        it('batch validation and enqueue failures remain atomic and emit no events for rolled-back work', async () => {
+          const triggerEvents: any[] = []
+          const coalescedEvents: any[] = []
+          durably.on('run:trigger', (e) => triggerEvents.push(e))
+          durably.on('run:coalesced', (e) => coalescedEvents.push(e))
+
+          await expect(
+            d.jobs.job.batchTrigger([
+              {
+                input: { value: 'valid' },
+                options: { concurrencyKey: 'key-act-fail', coalesce: 'active' },
+              },
+              {
+                input: { invalid: 123 } as any,
+                options: { concurrencyKey: 'key-act-fail', coalesce: 'active' },
+              },
+            ]),
+          ).rejects.toThrow(ValidationError)
+
+          expect(triggerEvents).toHaveLength(0)
+          expect(coalescedEvents).toHaveLength(0)
+
+          const runs = await d.jobs.job.getRuns()
+          expect(runs).toHaveLength(0)
+        })
+
+        it('rolls back a batch when invalid labels would otherwise reuse an active run', async () => {
+          const existing = await d.jobs.job.trigger(
+            { value: 'existing' },
+            { concurrencyKey: 'key-act-invalid-batch-existing' },
+          )
+          const triggerEvents: any[] = []
+          const coalescedEvents: any[] = []
+          durably.on('run:trigger', (event) => triggerEvents.push(event))
+          durably.on('run:coalesced', (event) => coalescedEvents.push(event))
+
+          await expect(
+            d.jobs.job.batchTrigger([
+              {
+                input: { value: 'would-roll-back' },
+                options: {
+                  concurrencyKey: 'key-act-invalid-batch-new',
+                  coalesce: 'active',
+                },
+              },
+              {
+                input: { value: 'invalid' },
+                options: {
+                  concurrencyKey: 'key-act-invalid-batch-existing',
+                  coalesce: 'active',
+                  labels: { 'invalid label': 'value' },
+                },
+              },
+            ]),
+          ).rejects.toThrow('Invalid label key')
+
+          expect(triggerEvents).toHaveLength(0)
+          expect(coalescedEvents).toHaveLength(0)
+          const runs = await d.jobs.job.getRuns()
+          expect(runs).toHaveLength(1)
+          expect(runs[0].id).toBe(existing.id)
+        })
       })
     })
   })

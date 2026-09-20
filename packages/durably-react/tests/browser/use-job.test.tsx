@@ -5,9 +5,16 @@
  */
 
 import { defineJob, type Durably } from '@coji/durably'
-import { renderHook, waitFor } from '@testing-library/react'
-import type { ReactNode } from 'react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { act, render, renderHook, waitFor } from '@testing-library/react'
+import {
+  Suspense,
+  startTransition,
+  useEffect,
+  useLayoutEffect,
+  useState,
+  type ReactNode,
+} from 'react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { DurablyProvider, useJob } from '../../src/spa'
 import { createTestDurably } from '../helpers/create-test-durably'
@@ -427,5 +434,1308 @@ describe('useJob', () => {
 
     // The promise should reject with 'Job cancelled'
     await expect(waitPromise).rejects.toThrow('Job cancelled')
+  })
+
+  describe('scoped tracking', () => {
+    it('auto-resumes only a run matching every scope label and hydrates pending status', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      await handle.trigger(
+        { input: 'wrong' },
+        { labels: { documentId: 'other', tenant: 'acme' } },
+      )
+      const matching = await handle.trigger(
+        { input: 'test' },
+        { labels: { documentId: 'doc-1', tenant: 'acme' } },
+      )
+
+      const { result } = renderHook(
+        () =>
+          useJob(testJob, {
+            followLatest: false,
+            scope: { labels: { documentId: 'doc-1', tenant: 'acme' } },
+          }),
+        { wrapper: createWrapper(durably) },
+      )
+
+      expect(result.current.isResolving).toBe(true)
+      await waitFor(() => {
+        expect(result.current.isResolving).toBe(false)
+        expect(result.current.currentRunId).toBe(matching.id)
+        expect(result.current.status).toBe('pending')
+      })
+    })
+
+    it('follows matching pending triggers immediately and ignores non-matching labels', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const { result } = renderHook(
+        () =>
+          useJob(testJob, {
+            autoResume: false,
+            scope: { labels: { documentId: 'doc-2' } },
+          }),
+        { wrapper: createWrapper(durably) },
+      )
+
+      const wrong = await handle.trigger(
+        { input: 'wrong' },
+        { labels: { documentId: 'other' } },
+      )
+      expect(result.current.currentRunId).not.toBe(wrong.id)
+
+      const matching = await handle.trigger(
+        { input: 'test' },
+        { labels: { documentId: 'doc-2' } },
+      )
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe(matching.id)
+        expect(result.current.status).toBe('pending')
+      })
+    })
+
+    it('preserves progress and logs when a follow event refers to the current run', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const { result } = renderHook(
+        () => useJob(testJob, { autoResume: false }),
+        { wrapper: createWrapper(durably) },
+      )
+
+      act(() => {
+        durably.emit({
+          type: 'run:trigger',
+          runId: 'same-run',
+          jobName: testJob.name,
+          input: { input: 'test' },
+          labels: {},
+        })
+        durably.emit({
+          type: 'run:progress',
+          runId: 'same-run',
+          jobName: testJob.name,
+          progress: { current: 1, total: 2 },
+          labels: {},
+        })
+        durably.emit({
+          type: 'log:write',
+          runId: 'same-run',
+          jobName: testJob.name,
+          labels: {},
+          stepName: null,
+          level: 'info',
+          message: 'still here',
+          data: null,
+        })
+      })
+      await waitFor(() => {
+        expect(result.current.progress).toEqual({ current: 1, total: 2 })
+        expect(result.current.logs).toHaveLength(1)
+      })
+
+      act(() => {
+        durably.emit({
+          type: 'run:coalesced',
+          runId: 'same-run',
+          jobName: testJob.name,
+          status: 'leased',
+          labels: {},
+          skippedInput: { input: 'duplicate' },
+          skippedLabels: {},
+        })
+        durably.emit({
+          type: 'run:leased',
+          runId: 'same-run',
+          jobName: testJob.name,
+          input: { input: 'test' },
+          leaseOwner: 'worker-1',
+          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+          labels: {},
+        })
+      })
+
+      expect(result.current.status).toBe('leased')
+      expect(result.current.progress).toEqual({ current: 1, total: 2 })
+      expect(result.current.logs.map((log) => log.message)).toEqual([
+        'still here',
+      ])
+
+      // Lease recovery can return this same run to pending before an active
+      // trigger coalesces it again. The status changes without a new run ID.
+      act(() => {
+        durably.emit({
+          type: 'run:coalesced',
+          runId: 'same-run',
+          jobName: testJob.name,
+          status: 'pending',
+          labels: {},
+          skippedInput: { input: 'duplicate' },
+          skippedLabels: {},
+        })
+      })
+      expect(result.current.status).toBe('pending')
+      expect(result.current.progress).toEqual({ current: 1, total: 2 })
+      expect(result.current.logs.map((log) => log.message)).toEqual([
+        'still here',
+      ])
+
+      act(() => {
+        durably.emit({
+          type: 'run:complete',
+          runId: 'same-run',
+          jobName: testJob.name,
+          output: { success: true },
+          duration: 1,
+          labels: {},
+        })
+        durably.emit({
+          type: 'run:coalesced',
+          runId: 'same-run',
+          jobName: testJob.name,
+          status: 'leased',
+          labels: {},
+          skippedInput: { input: 'duplicate' },
+          skippedLabels: {},
+        })
+      })
+      expect(result.current.status).toBe('completed')
+    })
+
+    it('scope changes discard prior state and resolve the new scope', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const first = await handle.trigger(
+        { input: 'first' },
+        { labels: { documentId: 'doc-a' } },
+      )
+      const second = await handle.trigger(
+        { input: 'second' },
+        { labels: { documentId: 'doc-b' } },
+      )
+
+      const { result, rerender } = renderHook(
+        ({ documentId }) =>
+          useJob(testJob, { scope: { labels: { documentId } } }),
+        {
+          initialProps: { documentId: 'doc-a' },
+          wrapper: createWrapper(durably),
+        },
+      )
+      await waitFor(() => expect(result.current.currentRunId).toBe(first.id))
+
+      rerender({ documentId: 'doc-b' })
+      await waitFor(() => {
+        expect(result.current.isResolving).toBe(false)
+        expect(result.current.currentRunId).toBe(second.id)
+      })
+    })
+
+    it('tracks a child effect trigger after a scope change with following disabled', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      let currentRunId: string | null = null
+      let pending!: Promise<{ runId: string }>
+
+      function Child({
+        documentId,
+        trigger,
+      }: {
+        documentId: string
+        trigger: (input: { input: string }) => Promise<{ runId: string }>
+      }) {
+        useEffect(() => {
+          if (documentId === 'doc-b') {
+            pending = trigger({ input: 'test' })
+          }
+        }, [documentId, trigger])
+        return null
+      }
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, {
+          autoResume: false,
+          followLatest: false,
+          scope: { labels: { documentId } },
+        })
+        currentRunId = job.currentRunId
+        return <Child documentId={documentId} trigger={job.trigger} />
+      }
+
+      const { rerender } = render(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-a" />
+        </DurablyProvider>,
+      )
+      rerender(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-b" />
+        </DurablyProvider>,
+      )
+      const { runId } = await act(async () => pending)
+      expect(await durably.getRun(runId)).not.toBeNull()
+      expect(currentRunId).toBe(runId)
+    })
+
+    it('does not let scoped auto-resume replace a child effect trigger', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const older = await handle.trigger(
+        { input: 'older' },
+        { labels: { documentId: 'doc-b' } },
+      )
+      let currentRunId: string | null = null
+      let pending!: Promise<{ runId: string }>
+
+      function Child({
+        documentId,
+        trigger,
+      }: {
+        documentId: string
+        trigger: (input: { input: string }) => Promise<{ runId: string }>
+      }) {
+        useEffect(() => {
+          if (documentId === 'doc-b') pending = trigger({ input: 'newer' })
+        }, [documentId, trigger])
+        return null
+      }
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, {
+          followLatest: false,
+          scope: { labels: { documentId } },
+        })
+        currentRunId = job.currentRunId
+        return <Child documentId={documentId} trigger={job.trigger} />
+      }
+
+      const { rerender } = render(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-a" />
+        </DurablyProvider>,
+      )
+      rerender(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-b" />
+        </DurablyProvider>,
+      )
+      const { runId } = await act(async () => pending)
+      expect(runId).not.toBe(older.id)
+      await waitFor(() => expect(currentRunId).toBe(runId))
+    })
+
+    it('resumes an existing run when a child effect trigger fails', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const older = await handle.trigger(
+        { input: 'older' },
+        { labels: { documentId: 'doc-b' } },
+      )
+      let currentRunId: string | null = null
+      let pending!: Promise<{ runId: string }>
+
+      function Child({
+        documentId,
+        trigger,
+      }: {
+        documentId: string
+        trigger: (input: { input: string }) => Promise<{ runId: string }>
+      }) {
+        useEffect(() => {
+          if (documentId === 'doc-b') {
+            pending = trigger({ input: undefined as unknown as string })
+          }
+        }, [documentId, trigger])
+        return null
+      }
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, {
+          followLatest: false,
+          scope: { labels: { documentId } },
+        })
+        currentRunId = job.currentRunId
+        return <Child documentId={documentId} trigger={job.trigger} />
+      }
+
+      const { rerender } = render(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-a" />
+        </DurablyProvider>,
+      )
+      rerender(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-b" />
+        </DurablyProvider>,
+      )
+      await act(async () => {
+        await expect(pending).rejects.toThrow()
+      })
+      await waitFor(() => expect(currentRunId).toBe(older.id))
+    })
+
+    it('discards an old-scope follow event during a scope change', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      let currentRunId: string | null = null
+
+      function Child({ documentId }: { documentId: string }) {
+        useLayoutEffect(() => {
+          if (documentId === 'doc-b') {
+            durably.emit({
+              type: 'run:trigger',
+              runId: 'old-scope-run',
+              jobName: testJob.name,
+              input: { input: 'test' },
+              labels: { documentId: 'doc-a' },
+            })
+          }
+        }, [documentId])
+        return null
+      }
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, {
+          autoResume: false,
+          scope: { labels: { documentId } },
+        })
+        currentRunId = job.currentRunId
+        return <Child documentId={documentId} />
+      }
+
+      const { rerender } = render(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-a" />
+        </DurablyProvider>,
+      )
+      rerender(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-b" />
+        </DurablyProvider>,
+      )
+      expect(currentRunId).toBeNull()
+    })
+
+    it('follows a new-scope event during the subscription handoff', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      let currentRunId: string | null = null
+
+      function Child({ documentId }: { documentId: string }) {
+        useLayoutEffect(() => {
+          if (documentId === 'doc-b') {
+            durably.emit({
+              type: 'run:trigger',
+              runId: 'new-scope-run',
+              jobName: testJob.name,
+              input: { input: 'test' },
+              labels: { documentId: 'doc-b' },
+            })
+          }
+        }, [documentId])
+        return null
+      }
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, {
+          autoResume: false,
+          scope: { labels: { documentId } },
+        })
+        currentRunId = job.currentRunId
+        return <Child documentId={documentId} />
+      }
+
+      const { rerender } = render(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-a" />
+        </DurablyProvider>,
+      )
+      rerender(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-b" />
+        </DurablyProvider>,
+      )
+      expect(currentRunId).toBe('new-scope-run')
+    })
+
+    it('keeps a new-scope follow ahead of a later auto-resume lookup', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const older = await handle.trigger(
+        { input: 'older' },
+        { labels: { documentId: 'doc-b' } },
+      )
+      const leased = await durably.storage.claimNext(
+        'worker-1',
+        new Date().toISOString(),
+        30_000,
+      )
+      expect(leased?.id).toBe(older.id)
+      const newer = await handle.trigger(
+        { input: 'newer' },
+        { labels: { documentId: 'doc-b' } },
+      )
+      const getRuns = vi.spyOn(durably.storage, 'getRuns')
+      let currentRunId: string | null = null
+      let isResolving = true
+
+      function Child({ documentId }: { documentId: string }) {
+        useLayoutEffect(() => {
+          if (documentId === 'doc-b') {
+            durably.emit({
+              type: 'run:trigger',
+              runId: newer.id,
+              jobName: testJob.name,
+              input: { input: 'newer' },
+              labels: { documentId: 'doc-b' },
+            })
+          }
+        }, [documentId])
+        return null
+      }
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, { scope: { labels: { documentId } } })
+        currentRunId = job.currentRunId
+        isResolving = job.isResolving
+        return <Child documentId={documentId} />
+      }
+
+      const { rerender } = render(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-a" />
+        </DurablyProvider>,
+      )
+      await waitFor(() => expect(isResolving).toBe(false))
+      rerender(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-b" />
+        </DurablyProvider>,
+      )
+      await waitFor(() =>
+        expect(getRuns).toHaveBeenCalledWith(
+          expect.objectContaining({
+            status: 'leased',
+            labels: { documentId: 'doc-b' },
+          }),
+        ),
+      )
+      await waitFor(() => expect(isResolving).toBe(false))
+      expect(currentRunId).toBe(newer.id)
+    })
+
+    it('tracks a child trigger when an old-scope event follows in the same layout effect', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      let currentRunId: string | null = null
+      let pending!: Promise<{ runId: string }>
+
+      function Child({
+        documentId,
+        trigger,
+      }: {
+        documentId: string
+        trigger: (input: { input: string }) => Promise<{ runId: string }>
+      }) {
+        useLayoutEffect(() => {
+          if (documentId !== 'doc-b') return
+          pending = trigger({ input: 'new-scope' })
+          durably.emit({
+            type: 'run:trigger',
+            runId: 'old-scope-run',
+            jobName: testJob.name,
+            input: { input: 'old-scope' },
+            labels: { documentId: 'doc-a' },
+          })
+        }, [documentId, trigger])
+        return null
+      }
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, {
+          autoResume: false,
+          scope: { labels: { documentId } },
+        })
+        currentRunId = job.currentRunId
+        return <Child documentId={documentId} trigger={job.trigger} />
+      }
+
+      const { rerender } = render(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-a" />
+        </DurablyProvider>,
+      )
+      rerender(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-b" />
+        </DurablyProvider>,
+      )
+      const { runId } = await act(async () => pending)
+      expect(currentRunId).toBe(runId)
+    })
+
+    it('keeps following the committed scope while another scope suspends', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const suspended = new Promise<void>(() => {})
+      let changeScope!: () => void
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, {
+          autoResume: false,
+          scope: { labels: { documentId } },
+        })
+        if (documentId === 'doc-b') throw suspended
+        return (
+          <output data-testid="tracked-run">
+            {job.currentRunId ?? 'none'}
+          </output>
+        )
+      }
+
+      function Host() {
+        const [documentId, setDocumentId] = useState('doc-a')
+        changeScope = () => startTransition(() => setDocumentId('doc-b'))
+        return <Parent documentId={documentId} />
+      }
+
+      const { getByTestId } = render(
+        <DurablyProvider durably={durably}>
+          <Suspense fallback={null}>
+            <Host />
+          </Suspense>
+        </DurablyProvider>,
+      )
+      act(() => changeScope())
+      expect(getByTestId('tracked-run').textContent).toBe('none')
+
+      act(() => {
+        durably.emit({
+          type: 'run:trigger',
+          runId: 'committed-scope-run',
+          jobName: testJob.name,
+          input: { input: 'test' },
+          labels: { documentId: 'doc-a' },
+        })
+      })
+      expect(getByTestId('tracked-run').textContent).toBe('committed-scope-run')
+    })
+
+    it('explicit initialRunId skips scoped lookup and hydrates its status', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const initial = await handle.trigger(
+        { input: 'test' },
+        { labels: { documentId: 'explicit' } },
+      )
+      const getRuns = vi.spyOn(durably.storage, 'getRuns')
+
+      const { result } = renderHook(
+        () =>
+          useJob(testJob, {
+            initialRunId: initial.id,
+            scope: { labels: { documentId: 'other' } },
+          }),
+        { wrapper: createWrapper(durably) },
+      )
+
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe(initial.id)
+        expect(result.current.status).toBe('pending')
+        expect(result.current.isResolving).toBe(false)
+      })
+      expect(getRuns).not.toHaveBeenCalled()
+
+      act(() => {
+        durably.emit({
+          type: 'run:leased',
+          runId: initial.id,
+          jobName: testJob.name,
+          input: { input: 'test' },
+          leaseOwner: 'worker-1',
+          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+          labels: { documentId: 'explicit' },
+        })
+      })
+      expect(result.current.status).toBe('leased')
+      expect(result.current.isLeased).toBe(true)
+    })
+
+    it('hydrates a fixed run after a different-scope render suspends', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const run = await handle.trigger({ input: 'test' })
+      await durably.processOne()
+      const completed = await durably.getRun(run.id)
+      expect(completed?.status).toBe('completed')
+      let resolveFirstRead!: (value: typeof completed) => void
+      vi.spyOn(durably.storage, 'getRun').mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirstRead = resolve
+          }),
+      )
+      const suspended = new Promise<void>(() => {})
+      let changeScope!: () => void
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, {
+          initialRunId: run.id,
+          scope: { labels: { documentId } },
+        })
+        if (documentId === 'doc-b') throw suspended
+        return (
+          <output data-testid="fixed-status">{job.status ?? 'none'}</output>
+        )
+      }
+
+      function Host() {
+        const [documentId, setDocumentId] = useState('doc-a')
+        changeScope = () => startTransition(() => setDocumentId('doc-b'))
+        return <Parent documentId={documentId} />
+      }
+
+      const { getByTestId } = render(
+        <DurablyProvider durably={durably}>
+          <Suspense fallback={null}>
+            <Host />
+          </Suspense>
+        </DurablyProvider>,
+      )
+      await waitFor(() => expect(resolveFirstRead).toBeDefined())
+      act(() => changeScope())
+      expect(getByTestId('fixed-status').textContent).toBe('none')
+      await act(async () => {
+        resolveFirstRead(completed)
+      })
+      await waitFor(() =>
+        expect(getByTestId('fixed-status').textContent).toBe('completed'),
+      )
+    })
+
+    it('clears stale run state when initialRunId changes or is removed', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const first = await handle.trigger({ input: 'first' })
+      const second = await handle.trigger({ input: 'second' })
+      const { result, rerender } = renderHook(
+        ({ initialRunId }: { initialRunId?: string }) =>
+          useJob(testJob, { autoResume: false, initialRunId }),
+        {
+          wrapper: createWrapper(durably),
+          initialProps: { initialRunId: first.id as string | undefined },
+        },
+      )
+      await waitFor(() => expect(result.current.status).toBe('pending'))
+      act(() => {
+        durably.emit({
+          type: 'run:progress',
+          runId: first.id,
+          jobName: testJob.name,
+          progress: { current: 1, total: 2 },
+          labels: {},
+        })
+      })
+      expect(result.current.progress).toEqual({ current: 1, total: 2 })
+
+      vi.spyOn(durably.storage, 'getRun').mockResolvedValueOnce(null)
+      rerender({ initialRunId: second.id })
+      await waitFor(() => expect(result.current.currentRunId).toBe(second.id))
+      expect(result.current.status).toBeNull()
+      expect(result.current.progress).toBeNull()
+      expect(result.current.logs).toEqual([])
+
+      rerender({ initialRunId: undefined })
+      await waitFor(() => expect(result.current.currentRunId).toBeNull())
+      expect(result.current.status).toBeNull()
+    })
+
+    it('does not let stale initialRunId hydration replace a terminal event', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const pending = await handle.trigger({ input: 'test' })
+      vi.spyOn(durably.storage, 'getRun').mockImplementationOnce(async () => {
+        durably.emit({
+          type: 'run:complete',
+          runId: pending.id,
+          jobName: testJob.name,
+          output: { success: true },
+          duration: 1,
+          labels: {},
+        })
+        return pending
+      })
+      const { result } = renderHook(
+        () => useJob(testJob, { initialRunId: pending.id }),
+        { wrapper: createWrapper(durably) },
+      )
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe(pending.id)
+        expect(result.current.status).toBe('completed')
+        expect(result.current.output).toEqual({ success: true })
+      })
+    })
+
+    it('keeps same-run progress and logs when initial hydration returns an older pending snapshot', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const pending = await handle.trigger({ input: 'test' })
+      let resolveFirstRead!: (value: typeof pending) => void
+      vi.spyOn(durably.storage, 'getRun').mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirstRead = resolve
+          }),
+      )
+      const { result } = renderHook(
+        () => useJob(testJob, { initialRunId: pending.id }),
+        { wrapper: createWrapper(durably) },
+      )
+      await waitFor(() => expect(resolveFirstRead).toBeDefined())
+      act(() => {
+        durably.emit({
+          type: 'run:leased',
+          runId: pending.id,
+          jobName: testJob.name,
+          input: { input: 'test' },
+          leaseOwner: 'worker-1',
+          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+          labels: {},
+        })
+        durably.emit({
+          type: 'run:progress',
+          runId: pending.id,
+          jobName: testJob.name,
+          progress: { current: 1, total: 2 },
+          labels: {},
+        })
+        durably.emit({
+          type: 'log:write',
+          runId: pending.id,
+          jobName: testJob.name,
+          labels: {},
+          stepName: null,
+          level: 'info',
+          message: 'keep this',
+          data: null,
+        })
+      })
+      await act(async () => {
+        resolveFirstRead(pending)
+      })
+      expect(result.current.status).toBe('leased')
+      expect(result.current.progress).toEqual({ current: 1, total: 2 })
+      expect(result.current.logs.map((log) => log.message)).toEqual([
+        'keep this',
+      ])
+    })
+
+    it('keeps progress and logs received before hydrating an already leased initial run', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const pending = await handle.trigger({ input: 'test' })
+      const leased = await durably.storage.claimNext(
+        'worker-1',
+        new Date().toISOString(),
+        30_000,
+      )
+      expect(leased?.id).toBe(pending.id)
+      let resolveFirstRead!: (value: typeof leased) => void
+      vi.spyOn(durably.storage, 'getRun').mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirstRead = resolve
+          }),
+      )
+      const { result } = renderHook(
+        () => useJob(testJob, { initialRunId: pending.id }),
+        { wrapper: createWrapper(durably) },
+      )
+      await waitFor(() => expect(resolveFirstRead).toBeDefined())
+      act(() => {
+        durably.emit({
+          type: 'run:progress',
+          runId: pending.id,
+          jobName: testJob.name,
+          progress: { current: 1, total: 2 },
+          labels: {},
+        })
+        durably.emit({
+          type: 'log:write',
+          runId: pending.id,
+          jobName: testJob.name,
+          labels: {},
+          stepName: null,
+          level: 'info',
+          message: 'before hydration',
+          data: null,
+        })
+      })
+      expect(result.current.status).toBeNull()
+      expect(result.current.progress).toEqual({ current: 1, total: 2 })
+      await act(async () => {
+        resolveFirstRead(leased)
+      })
+      expect(result.current.status).toBe('leased')
+      expect(result.current.progress).toEqual({ current: 1, total: 2 })
+      expect(result.current.logs.map((log) => log.message)).toEqual([
+        'before hydration',
+      ])
+    })
+
+    it('keeps a found run when auto-resume revalidation fails', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const pending = await handle.trigger({ input: 'test' })
+      vi.spyOn(durably.storage, 'getRun').mockRejectedValueOnce(
+        new Error('temporary read failure'),
+      )
+      const { result } = renderHook(() => useJob(testJob), {
+        wrapper: createWrapper(durably),
+      })
+      await waitFor(() => {
+        expect(result.current.isResolving).toBe(false)
+        expect(result.current.currentRunId).toBe(pending.id)
+        expect(result.current.status).toBe('pending')
+      })
+    })
+
+    it('clears the previous provider run when Durably changes', async () => {
+      const first = await createTestDurably({ autoStart: false })
+      const second = await createTestDurably({ autoStart: false })
+      instances.push(first, second)
+      const provider = { current: first }
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <DurablyProvider durably={provider.current}>{children}</DurablyProvider>
+      )
+      const { result, rerender } = renderHook(
+        () => useJob(testJob, { autoResume: false }),
+        { wrapper },
+      )
+      const { runId } = await result.current.trigger({ input: 'test' })
+      await waitFor(() => expect(result.current.currentRunId).toBe(runId))
+
+      provider.current = second
+      rerender()
+      await waitFor(() => expect(result.current.currentRunId).toBeNull())
+      expect(result.current.status).toBeNull()
+      expect(result.current.progress).toBeNull()
+    })
+
+    it('forwards triggerOptions and keeps explicit triggers tracked when followLatest is false', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const { result } = renderHook(
+        () =>
+          useJob(testJob, {
+            autoResume: false,
+            followLatest: false,
+            triggerOptions: {
+              concurrencyKey: 'document:doc-3',
+              idempotencyKey: 'request-3',
+              labels: { documentId: 'doc-3' },
+              coalesce: 'active',
+            },
+          }),
+        { wrapper: createWrapper(durably) },
+      )
+
+      const { runId } = await result.current.trigger({ input: 'test' })
+      const run = await durably.getRun(runId)
+      expect(result.current.currentRunId).toBe(runId)
+      expect(run).toMatchObject({
+        concurrencyKey: 'document:doc-3',
+        idempotencyKey: 'request-3',
+        labels: { documentId: 'doc-3' },
+      })
+    })
+
+    it('applies triggerOptions to triggerAndWait', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const { result } = renderHook(
+        () =>
+          useJob(testJob, {
+            autoResume: false,
+            triggerOptions: {
+              concurrencyKey: 'document:wait',
+              labels: { documentId: 'wait' },
+              coalesce: 'active',
+            },
+          }),
+        { wrapper: createWrapper(durably) },
+      )
+
+      const waiting = result.current.triggerAndWait({ input: 'test' })
+      await waitFor(() => expect(result.current.currentRunId).not.toBeNull())
+      await durably.processUntilIdle()
+      const { runId, output } = await waiting
+      expect(output).toEqual({ success: true })
+      expect(await durably.getRun(runId)).toMatchObject({
+        concurrencyKey: 'document:wait',
+        labels: { documentId: 'wait' },
+      })
+    })
+
+    it('ignores a trigger result after initialRunId changes', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const old = await handle.trigger({ input: 'old' })
+      const newer = await handle.trigger({ input: 'newer' })
+      let resolveTrigger!: (run: typeof old) => void
+      const delayed = new Promise<typeof old>((resolve) => {
+        resolveTrigger = resolve
+      })
+      vi.spyOn(handle, 'trigger').mockReturnValueOnce(delayed)
+
+      const { result, rerender } = renderHook(
+        ({ initialRunId }: { initialRunId?: string }) =>
+          useJob(testJob, {
+            autoResume: false,
+            followLatest: false,
+            initialRunId,
+          }),
+        {
+          wrapper: createWrapper(durably),
+          initialProps: { initialRunId: undefined as string | undefined },
+        },
+      )
+
+      const pending = result.current.trigger({ input: 'old' })
+      rerender({ initialRunId: newer.id })
+      await waitFor(() => expect(result.current.currentRunId).toBe(newer.id))
+
+      await act(async () => resolveTrigger(old))
+      await expect(pending).resolves.toEqual({ runId: old.id })
+      expect(result.current.currentRunId).toBe(newer.id)
+    })
+
+    it('revalidates a reused trigger result after installing its run ID', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const stale = await handle.trigger({ input: 'test' })
+      await durably.processUntilIdle()
+      expect((await durably.getRun(stale.id))?.status).toBe('completed')
+      vi.spyOn(handle, 'trigger').mockResolvedValueOnce(stale)
+
+      const { result } = renderHook(
+        () => useJob(testJob, { autoResume: false, followLatest: false }),
+        { wrapper: createWrapper(durably) },
+      )
+
+      await result.current.trigger({ input: 'test' })
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe(stale.id)
+        expect(result.current.status).toBe('completed')
+      })
+      expect(result.current.output).toEqual({ success: true })
+    })
+
+    it('keeps a successful trigger result when revalidation fails', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      vi.spyOn(durably.storage, 'getRun').mockRejectedValueOnce(
+        new Error('temporary read failure'),
+      )
+      const { result } = renderHook(
+        () => useJob(testJob, { autoResume: false, followLatest: false }),
+        { wrapper: createWrapper(durably) },
+      )
+
+      const { runId } = await result.current.trigger({ input: 'test' })
+      await waitFor(() => expect(result.current.currentRunId).toBe(runId))
+      expect((await durably.getRun(runId))?.status).toBe('pending')
+    })
+
+    it('clears resolving when reset supersedes an in-flight lookup', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      durably.register({ testJob })
+      let resolveLookup!: (
+        runs: Awaited<ReturnType<typeof durably.storage.getRuns>>,
+      ) => void
+      vi.spyOn(durably.storage, 'getRuns').mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveLookup = resolve
+          }),
+      )
+      const { result } = renderHook(() => useJob(testJob), {
+        wrapper: createWrapper(durably),
+      })
+      await waitFor(() => expect(result.current.isResolving).toBe(true))
+
+      act(() => result.current.reset())
+      expect(result.current.isResolving).toBe(false)
+      await act(async () => resolveLookup([]))
+      expect(result.current.isResolving).toBe(false)
+    })
+
+    it('rehydrates a fixed initialRunId after its scope changes', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const run = await handle.trigger({ input: 'test' })
+      let resolveOldRead!: (
+        value: Awaited<ReturnType<typeof handle.getRun>>,
+      ) => void
+      vi.spyOn(durably.storage, 'getRun').mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveOldRead = resolve
+          }),
+      )
+      const { result, rerender } = renderHook(
+        ({ documentId }: { documentId: string }) =>
+          useJob(testJob, {
+            initialRunId: run.id,
+            scope: { labels: { documentId } },
+          }),
+        {
+          wrapper: createWrapper(durably),
+          initialProps: { documentId: 'one' },
+        },
+      )
+      rerender({ documentId: 'two' })
+      await waitFor(() => expect(result.current.status).toBe('pending'))
+      await act(async () => resolveOldRead(null))
+      expect(result.current.currentRunId).toBe(run.id)
+      expect(result.current.status).toBe('pending')
+    })
+
+    it('restores a fixed initialRunId after following another run and changing scope', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const fixed = await handle.trigger({ input: 'fixed' })
+      const { result, rerender } = renderHook(
+        ({ documentId }: { documentId: string }) =>
+          useJob(testJob, {
+            initialRunId: fixed.id,
+            scope: { labels: { documentId } },
+          }),
+        {
+          wrapper: createWrapper(durably),
+          initialProps: { documentId: 'first' },
+        },
+      )
+      await waitFor(() => expect(result.current.status).toBe('pending'))
+      const followed = await handle.trigger(
+        { input: 'followed' },
+        { labels: { documentId: 'first' } },
+      )
+      await waitFor(() => expect(result.current.currentRunId).toBe(followed.id))
+      act(() => {
+        durably.emit({
+          type: 'run:leased',
+          runId: followed.id,
+          jobName: testJob.name,
+          input: { input: 'followed' },
+          leaseOwner: 'worker-1',
+          leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
+          labels: { documentId: 'first' },
+        })
+        durably.emit({
+          type: 'run:progress',
+          runId: followed.id,
+          jobName: testJob.name,
+          progress: { current: 1, total: 2 },
+          labels: { documentId: 'first' },
+        })
+        durably.emit({
+          type: 'log:write',
+          runId: followed.id,
+          jobName: testJob.name,
+          labels: { documentId: 'first' },
+          stepName: null,
+          level: 'info',
+          message: 'old run log',
+          data: null,
+        })
+      })
+      expect(result.current.status).toBe('leased')
+      expect(result.current.progress).toEqual({ current: 1, total: 2 })
+      expect(result.current.logs.map((log) => log.message)).toEqual([
+        'old run log',
+      ])
+      rerender({ documentId: 'second' })
+      await waitFor(() => {
+        expect(result.current.currentRunId).toBe(fixed.id)
+        expect(result.current.status).toBe('pending')
+        expect(result.current.progress).toBeNull()
+        expect(result.current.logs).toEqual([])
+      })
+    })
+
+    it('a matching follow event wins over an older in-flight lookup', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      let resolveLookup!: (
+        runs: Awaited<ReturnType<typeof durably.storage.getRuns>>,
+      ) => void
+      const lookup = new Promise<
+        Awaited<ReturnType<typeof durably.storage.getRuns>>
+      >((resolve) => {
+        resolveLookup = resolve
+      })
+      const getRuns = vi.spyOn(durably.storage, 'getRuns')
+      getRuns.mockImplementationOnce(() => lookup)
+
+      const { result } = renderHook(
+        () =>
+          useJob(testJob, { scope: { labels: { documentId: 'doc-race' } } }),
+        { wrapper: createWrapper(durably) },
+      )
+      await waitFor(() => expect(getRuns).toHaveBeenCalled())
+
+      const newer = await handle.trigger(
+        { input: 'newer' },
+        { labels: { documentId: 'doc-race' } },
+      )
+      await waitFor(() => expect(result.current.currentRunId).toBe(newer.id))
+
+      await act(async () => resolveLookup([]))
+      expect(result.current.currentRunId).toBe(newer.id)
+      expect(result.current.isResolving).toBe(false)
+    })
+
+    it('re-reads after installing an auto-resumed run to catch a missed terminal event', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const pending = await handle.trigger(
+        { input: 'test' },
+        { labels: { documentId: 'terminal-race' } },
+      )
+      const terminal = {
+        ...pending,
+        status: 'completed' as const,
+        output: { success: true },
+      }
+      const getRun = vi.spyOn(durably.storage, 'getRun')
+      getRun.mockResolvedValueOnce(terminal)
+
+      const { result } = renderHook(
+        () =>
+          useJob(testJob, {
+            followLatest: false,
+            scope: { labels: { documentId: 'terminal-race' } },
+          }),
+        { wrapper: createWrapper(durably) },
+      )
+
+      await waitFor(() => {
+        expect(result.current.isResolving).toBe(false)
+        expect(result.current.currentRunId).toBe(pending.id)
+        expect(result.current.status).toBe('completed')
+        expect(result.current.output).toEqual({ success: true })
+      })
+      expect(getRun).toHaveBeenCalledTimes(1)
+    })
+
+    it('an old scope lookup rejection does not finish the new scope lookup', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      let rejectOld!: (error: Error) => void
+      let resolveCurrent!: (
+        runs: Awaited<ReturnType<typeof durably.storage.getRuns>>,
+      ) => void
+      const oldLookup = new Promise<
+        Awaited<ReturnType<typeof durably.storage.getRuns>>
+      >((_resolve, reject) => {
+        rejectOld = reject
+      })
+      const currentLookup = new Promise<
+        Awaited<ReturnType<typeof durably.storage.getRuns>>
+      >((resolve) => {
+        resolveCurrent = resolve
+      })
+      const getRuns = vi.spyOn(durably.storage, 'getRuns')
+      getRuns
+        .mockImplementationOnce(() => oldLookup)
+        .mockImplementationOnce(() => currentLookup)
+
+      const { result, rerender } = renderHook(
+        ({ documentId }) =>
+          useJob(testJob, { scope: { labels: { documentId } } }),
+        {
+          initialProps: { documentId: 'old' },
+          wrapper: createWrapper(durably),
+        },
+      )
+      await waitFor(() => expect(getRuns).toHaveBeenCalledTimes(1))
+
+      rerender({ documentId: 'current' })
+      await waitFor(() => expect(getRuns).toHaveBeenCalledTimes(2))
+      await act(async () => rejectOld(new Error('old lookup failed')))
+      expect(result.current.isResolving).toBe(true)
+
+      await act(async () => resolveCurrent([]))
+      await waitFor(() => expect(result.current.isResolving).toBe(false))
+    })
+
+    it('inline scope and trigger option objects do not repeat lookups', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const getRuns = vi.spyOn(durably.storage, 'getRuns')
+      const { rerender } = renderHook(
+        () =>
+          useJob(testJob, {
+            followLatest: false,
+            scope: { labels: { documentId: 'stable' } },
+            triggerOptions: {
+              labels: { documentId: 'stable' },
+              concurrencyKey: 'document:stable',
+              coalesce: 'active',
+            },
+          }),
+        { wrapper: createWrapper(durably) },
+      )
+      await waitFor(() => expect(getRuns).toHaveBeenCalledTimes(2))
+      rerender()
+      await act(async () => Promise.resolve())
+      expect(getRuns).toHaveBeenCalledTimes(2)
+    })
+
+    it('reordered but equal label records do not repeat lookups', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const getRuns = vi.spyOn(durably.storage, 'getRuns')
+      const { rerender } = renderHook(
+        ({ reverse }) => {
+          const labels = reverse
+            ? { tenant: 'acme', documentId: 'stable' }
+            : { documentId: 'stable', tenant: 'acme' }
+          return useJob(testJob, {
+            followLatest: false,
+            scope: { labels },
+            triggerOptions: { labels },
+          })
+        },
+        {
+          initialProps: { reverse: false },
+          wrapper: createWrapper(durably),
+        },
+      )
+      await waitFor(() => expect(getRuns).toHaveBeenCalledTimes(2))
+      rerender({ reverse: true })
+      await act(async () => Promise.resolve())
+      expect(getRuns).toHaveBeenCalledTimes(2)
+    })
   })
 })

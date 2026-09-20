@@ -63,6 +63,7 @@ function AppMain({ durably }: { durably: Durably }) {
   const [activeJob, setActiveJob] = useState<'image' | 'sync'>('image')
   const [imageRunId, setImageRunId] = useState<string | null>(null)
   const [syncRunId, setSyncRunId] = useState<string | null>(null)
+  const [syncUserId, setSyncUserId] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const handleImageSubmit = async (data: {
@@ -83,7 +84,12 @@ function AppMain({ durably }: { durably: Durably }) {
   const handleSyncSubmit = async (data: { userId: string }) => {
     setIsSubmitting(true)
     try {
-      const run = await durably.jobs.dataSync.trigger(data)
+      setSyncUserId(data.userId)
+      const run = await durably.jobs.dataSync.trigger(data, {
+        concurrencyKey: `data-sync:${data.userId}`,
+        labels: { userId: data.userId },
+        coalesce: 'active',
+      })
       setSyncRunId(run.id)
     } finally {
       setIsSubmitting(false)
@@ -167,7 +173,10 @@ function AppMain({ durably }: { durably: Durably }) {
           {activeJob === 'image' ? (
             <ImageProcessingProgress runId={imageRunId ?? undefined} />
           ) : (
-            <DataSyncProgress runId={syncRunId ?? undefined} />
+            <DataSyncProgress
+              runId={syncRunId ?? undefined}
+              userId={syncUserId ?? undefined}
+            />
           )}
         </div>
 

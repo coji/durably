@@ -118,9 +118,17 @@ function Component() {
     isCancelled,
     isTerminal,
     isActive,
+    isResolving,
     currentRunId,
     reset,
-  } = useJob(myJob)
+  } = useJob(myJob, {
+    scope: { labels: { entityId: 'entity_123' } },
+    triggerOptions: {
+      labels: { entityId: 'entity_123' },
+      concurrencyKey: 'entity:entity_123',
+      coalesce: 'active',
+    },
+  })
 
   const handleClick = async () => {
     const { runId } = await trigger({ value: 'test' })
@@ -148,9 +156,15 @@ function Component() {
 
 ### Options
 
-| Option         | Type     | Description                            |
-| -------------- | -------- | -------------------------------------- |
-| `initialRunId` | `string` | Resume subscription to an existing run |
+| Option           | Type                                    | Default | Description                                                      |
+| ---------------- | --------------------------------------- | ------- | ---------------------------------------------------------------- |
+| `initialRunId`   | `string`                                | -       | Track and hydrate this run immediately; skips scoped auto-resume |
+| `autoResume`     | `boolean`                               | `true`  | Find a matching leased run, then a matching pending run          |
+| `followLatest`   | `boolean`                               | `true`  | Follow matching trigger, coalesced, and leased events            |
+| `scope`          | `{ labels: Record<string, string> }`    | -       | Require every label for resume and follow                        |
+| `triggerOptions` | `TriggerOptions<Record<string,string>>` | -       | Forward options to both `trigger` and `triggerAndWait`           |
+
+Matching `run:trigger` events are followed while the new run is still pending. This is the pending-time follow behavior. Scope labels and trigger labels are independent, so supply both when a newly triggered run should match the hook. Scope changes clear the previous run and resolve the new scope. Inline option objects are compared by value.
 
 ### Return Type
 
@@ -170,6 +184,7 @@ interface UseJobResult<TInput, TOutput> {
   isCancelled: boolean
   isTerminal: boolean
   isActive: boolean
+  isResolving: boolean
   currentRunId: string | null
   reset: () => void
 }

@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 #### @coji/durably
 
 - **`coalesce: 'queue'` option**: Added `'queue'` to the `coalesce` trigger option (`trigger()`, `triggerAndWait()`, `batchTrigger()`, and HTTP `/trigger`). In this release, `'queue'` is behaviorally equivalent to `'skip'`: both create one trailing pending run behind an active leased run, and reuse an existing pending run with disposition `'coalesced'`. Further triggers while a trailing run is pending are coalesced without replacing its input (#184)
+- **`coalesce: 'active'` option**: Reuse the oldest pending run or a same-job leased run with a valid lease for a concurrency key, otherwise create a pending run. Active selection is atomic across SQLite, libSQL, and PostgreSQL runtimes; coalesced events and HTTP responses expose the selected run status (#185)
+
+#### @coji/durably-react
+
+- **Scoped `useJob` tracking**: SPA and fullstack hooks accept `scope.labels` and `triggerOptions`, expose `isResolving`, hydrate pending or leased selections immediately, and reject stale lookup results after triggers or scope changes. SPA `followLatest` now follows matching `run:trigger` events while runs are pending, as well as coalesced and leased events (#185)
 
 ## [0.15.0] - 2026-03-29
 

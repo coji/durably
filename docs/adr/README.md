@@ -39,15 +39,17 @@ What we considered and why we didn't do it.
 
 ## Index
 
-| ADR                                                 | Title                                       | Status   |
-| --------------------------------------------------- | ------------------------------------------- | -------- |
-| [0001](0001-lease-based-runtime.md)                 | Lease-based runtime model                   | Accepted |
-| [0002](0002-development-toolchain.md)               | Managed runtime and compiler compatibility  | accepted |
-| [0003](0003-draft-pr-review-gate.md)                | Draft pull request review gate              | accepted |
-| [0004](0004-durable-step-attempts.md)               | Durable step attempt records                | accepted |
-| [0005](0005-parallel-step-join.md)                  | Parallel named steps and durable join       | accepted |
-| [0006](0006-adr-acceptance-in-implementation-pr.md) | Accept ADRs in implementation pull requests | accepted |
-| [0007](0007-explicit-trailing-run-coalescing.md)    | Explicit trailing run coalescing            | accepted |
+| ADR                                                           | Title                                         | Status   |
+| ------------------------------------------------------------- | --------------------------------------------- | -------- |
+| [0001](0001-lease-based-runtime.md)                           | Lease-based runtime model                     | Accepted |
+| [0002](0002-development-toolchain.md)                         | Managed runtime and compiler compatibility    | accepted |
+| [0003](0003-draft-pr-review-gate.md)                          | Draft pull request review gate                | accepted |
+| [0004](0004-durable-step-attempts.md)                         | Durable step attempt records                  | accepted |
+| [0005](0005-parallel-step-join.md)                            | Parallel named steps and durable join         | accepted |
+| [0006](0006-adr-acceptance-in-implementation-pr.md)           | Accept ADRs in implementation pull requests   | accepted |
+| [0007](0007-explicit-trailing-run-coalescing.md)              | Explicit trailing run coalescing              | accepted |
+| [0008](0008-active-run-coalescing-and-scoped-job-tracking.md) | Active-run coalescing and scoped job tracking | accepted |
+| [0009](0009-cumulative-delta-review-rounds.md)                | Cumulative delta review rounds                | accepted |
 
 ## Prior Art
 

@@ -1,11 +1,29 @@
 import type { Durably } from '@coji/durably'
-import { useCallback, useEffect, useReducer, useRef } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useInsertionEffect,
+  useReducer,
+  useRef,
+} from 'react'
 import {
   initialSubscriptionState,
   subscriptionReducer,
   type SubscriptionAction,
 } from '../shared/subscription-reducer'
-import type { SubscriptionState } from '../types'
+import type { RunStatus, SubscriptionState } from '../types'
+
+function matchesLabels(
+  eventLabels?: Record<string, string>,
+  scopeLabels?: Record<string, string>,
+): boolean {
+  if (!scopeLabels) return true
+  if (!eventLabels) return false
+  for (const [key, value] of Object.entries(scopeLabels)) {
+    if (eventLabels[key] !== value) return false
+  }
+  return true
+}
 
 export interface UseJobSubscriptionOptions {
   /**
@@ -17,6 +35,14 @@ export interface UseJobSubscriptionOptions {
    * Maximum number of logs to keep (0 = unlimited)
    */
   maxLogs?: number
+  /**
+   * Optional scope to filter events by labels
+   */
+  scope?: { labels: Record<string, string> }
+  /**
+   * Callback when followLatest switches to a new run
+   */
+  onFollow?: (runId: string) => void
 }
 
 export interface UseJobSubscriptionResult<
@@ -30,6 +56,25 @@ export interface UseJobSubscriptionResult<
    * Set the current run ID to track
    */
   setCurrentRunId: (runId: string | null) => void
+  /**
+   * Hydrate full run state immediately
+   */
+  hydrateRun: (
+    runId: string,
+    status: RunStatus,
+    output?: TOutput | null,
+    error?: string | null,
+  ) => void
+  /**
+   * Apply a re-read run state only while that same run is still active.
+   */
+  revalidateRun: (
+    runId: string,
+    expectedStatus: RunStatus,
+    status: RunStatus,
+    output?: TOutput | null,
+    error?: string | null,
+  ) => void
   /**
    * Clear all logs
    */
@@ -54,7 +99,22 @@ type JobSubscriptionAction<TOutput = unknown> =
   | {
       type: 'switch_to_run'
       runId: string
-      status?: 'leased' | 'pending'
+      status?: RunStatus
+    }
+  | {
+      type: 'hydrate_run'
+      runId: string
+      status: RunStatus
+      output?: TOutput | null
+      error?: string | null
+    }
+  | {
+      type: 'revalidate_run'
+      runId: string
+      expectedStatus: RunStatus
+      status: RunStatus
+      output?: TOutput | null
+      error?: string | null
     }
 
 function jobSubscriptionReducer<TOutput = unknown>(
@@ -63,7 +123,12 @@ function jobSubscriptionReducer<TOutput = unknown>(
 ): JobSubscriptionState<TOutput> {
   switch (action.type) {
     case 'set_run_id':
-      return { ...state, currentRunId: action.runId }
+      return state.currentRunId === action.runId
+        ? state
+        : ({
+            ...initialSubscriptionState,
+            currentRunId: action.runId,
+          } as JobSubscriptionState<TOutput>)
 
     case 'switch_to_run':
       // Switch to a new run, resetting state
@@ -72,6 +137,56 @@ function jobSubscriptionReducer<TOutput = unknown>(
         currentRunId: action.runId,
         status: action.status ?? 'leased',
       } as JobSubscriptionState<TOutput>
+
+    case 'hydrate_run':
+      if (state.currentRunId === action.runId) {
+        if (
+          (state.status === 'completed' ||
+            state.status === 'failed' ||
+            state.status === 'cancelled' ||
+            state.status === 'leased') &&
+          action.status === 'pending'
+        ) {
+          return state
+        }
+        if (
+          (state.status === 'completed' ||
+            state.status === 'failed' ||
+            state.status === 'cancelled') &&
+          action.status === 'leased'
+        ) {
+          return state
+        }
+        // Events for this run may have arrived after the database snapshot.
+        // Keep their progress and logs when applying the snapshot's status.
+        return {
+          ...state,
+          status: action.status,
+          output: action.output ?? null,
+          error: action.error ?? null,
+        }
+      }
+      return {
+        ...initialSubscriptionState,
+        currentRunId: action.runId,
+        status: action.status,
+        output: action.output ?? null,
+        error: action.error ?? null,
+      } as JobSubscriptionState<TOutput>
+
+    case 'revalidate_run':
+      if (
+        state.currentRunId !== action.runId ||
+        state.status !== action.expectedStatus
+      ) {
+        return state
+      }
+      return {
+        ...state,
+        status: action.status,
+        output: action.output ?? null,
+        error: action.error ?? null,
+      }
 
     case 'reset':
       return {
@@ -112,6 +227,12 @@ export function useJobSubscription<TOutput = unknown>(
 
   const followLatest = options?.followLatest !== false
   const maxLogs = options?.maxLogs ?? 0
+  const scopeLabels = options?.scope?.labels
+  const onFollow = options?.onFollow
+  const latestScopeLabelsRef = useRef(scopeLabels)
+  useInsertionEffect(() => {
+    latestScopeLabelsRef.current = scopeLabels
+  }, [scopeLabels])
 
   useEffect(() => {
     if (!durably) return
@@ -119,17 +240,40 @@ export function useJobSubscription<TOutput = unknown>(
     const unsubscribes: (() => void)[] = []
 
     unsubscribes.push(
-      durably.on('run:leased', (event) => {
+      durably.on('run:trigger', (event) => {
         if (event.jobName !== jobName) return
+        if (!matchesLabels(event.labels, latestScopeLabelsRef.current)) return
 
         if (followLatest) {
-          // Switch to tracking the new run
-          dispatch({ type: 'switch_to_run', runId: event.runId })
+          dispatch({
+            type: 'switch_to_run',
+            runId: event.runId,
+            status: 'pending',
+          })
           currentRunIdRef.current = event.runId
-        } else {
-          // Only update if this is our current run
-          if (event.runId !== currentRunIdRef.current) return
-          dispatch({ type: 'run:leased' })
+          onFollow?.(event.runId)
+        }
+      }),
+    )
+
+    unsubscribes.push(
+      durably.on('run:leased', (event) => {
+        if (event.jobName !== jobName) return
+        if (event.runId === currentRunIdRef.current) {
+          dispatch({ type: 'set_active_status', status: 'leased' })
+          return
+        }
+
+        if (followLatest) {
+          if (!matchesLabels(event.labels, latestScopeLabelsRef.current)) return
+          // Switch to tracking the new run
+          dispatch({
+            type: 'switch_to_run',
+            runId: event.runId,
+            status: 'leased',
+          })
+          currentRunIdRef.current = event.runId
+          onFollow?.(event.runId)
         }
       }),
     )
@@ -138,13 +282,20 @@ export function useJobSubscription<TOutput = unknown>(
     unsubscribes.push(
       durably.on('run:coalesced', (event) => {
         if (event.jobName !== jobName) return
+        if (event.runId === currentRunIdRef.current) {
+          dispatch({ type: 'set_active_status', status: event.status })
+          return
+        }
+        if (!matchesLabels(event.labels, latestScopeLabelsRef.current)) return
+
         if (followLatest) {
           dispatch({
             type: 'switch_to_run',
             runId: event.runId,
-            status: 'pending',
+            status: event.status,
           })
           currentRunIdRef.current = event.runId
+          onFollow?.(event.runId)
         }
       }),
     )
@@ -197,12 +348,45 @@ export function useJobSubscription<TOutput = unknown>(
         unsubscribe()
       }
     }
-  }, [durably, jobName, followLatest, maxLogs])
+  }, [durably, jobName, followLatest, maxLogs, onFollow])
 
   const setCurrentRunId = useCallback((runId: string | null) => {
     dispatch({ type: 'set_run_id', runId })
     currentRunIdRef.current = runId
   }, [])
+
+  const hydrateRun = useCallback(
+    (
+      runId: string,
+      status: RunStatus,
+      output?: TOutput | null,
+      error?: string | null,
+    ) => {
+      dispatch({ type: 'hydrate_run', runId, status, output, error })
+      currentRunIdRef.current = runId
+    },
+    [],
+  )
+
+  const revalidateRun = useCallback(
+    (
+      runId: string,
+      expectedStatus: RunStatus,
+      status: RunStatus,
+      output?: TOutput | null,
+      error?: string | null,
+    ) => {
+      dispatch({
+        type: 'revalidate_run',
+        runId,
+        expectedStatus,
+        status,
+        output,
+        error,
+      })
+    },
+    [],
+  )
 
   const clearLogs = useCallback(() => {
     dispatch({ type: 'clear_logs' })
@@ -216,6 +400,8 @@ export function useJobSubscription<TOutput = unknown>(
   return {
     ...state,
     setCurrentRunId,
+    hydrateRun,
+    revalidateRun,
     clearLogs,
     reset,
   }

@@ -458,7 +458,7 @@ export function createAttemptTests(createDialect: () => Dialect) {
       const claimedFirst = await runtime.storage.claimNext(
         'worker',
         new Date().toISOString(),
-        100,
+        30_000,
       )
       expect(claimedFirst?.id).toBe(first.run.id)
       await runtime.storage.beginStepAttempt(
@@ -477,7 +477,7 @@ export function createAttemptTests(createDialect: () => Dialect) {
       const claimedSecond = await runtime.storage.claimNext(
         'worker',
         new Date().toISOString(),
-        100,
+        30_000,
       )
       expect(claimedSecond?.id).toBe(second.run.id)
       await runtime.storage.beginStepAttempt(
@@ -493,8 +493,9 @@ export function createAttemptTests(createDialect: () => Dialect) {
         input: { later: true },
         concurrencyKey: 'conflict',
       })
-      await new Promise((resolve) => setTimeout(resolve, 120))
-      await runtime.storage.releaseExpiredLeases(new Date().toISOString())
+      await runtime.storage.releaseExpiredLeases(
+        new Date(Date.parse(claimedSecond!.leaseExpiresAt!) + 1).toISOString(),
+      )
       expect((await runtime.storage.getRun(first.run.id))?.status).toBe(
         'pending',
       )

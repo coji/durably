@@ -21,12 +21,13 @@ export interface RunTriggerEvent extends BaseEvent {
 }
 
 /**
- * Emitted when a trigger was coalesced onto an existing pending run (same concurrency key) via `coalesce: 'skip'` or `coalesce: 'queue'`.
+ * Emitted when a trigger was coalesced onto an existing pending or leased run (same concurrency key) via `coalesce: 'skip'`, `coalesce: 'queue'`, or `coalesce: 'active'`.
  */
 export interface RunCoalescedEvent extends BaseEvent {
   type: 'run:coalesced'
   runId: string
   jobName: string
+  status: 'pending' | 'leased'
   labels: Record<string, string>
   skippedInput: unknown
   skippedLabels: Record<string, string>

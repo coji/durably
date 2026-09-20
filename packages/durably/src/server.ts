@@ -42,7 +42,7 @@ export interface TriggerRequest<
   idempotencyKey?: string
   concurrencyKey?: string
   labels?: TLabels
-  coalesce?: 'skip' | 'queue'
+  coalesce?: 'skip' | 'queue' | 'active'
 }
 
 /**
@@ -51,6 +51,7 @@ export interface TriggerRequest<
 export interface TriggerResponse {
   runId: string
   disposition: Disposition
+  status: RunStatus
 }
 
 /**
@@ -157,7 +158,7 @@ const VALID_STATUSES_SET: ReadonlySet<string> = new Set(VALID_STATUSES)
 function parseLabelsFromParams(
   searchParams: URLSearchParams,
 ): Record<string, string> | undefined {
-  const labels: Record<string, string> = {}
+  const labels: Record<string, string> = Object.create(null)
   for (const [key, value] of searchParams.entries()) {
     if (key.startsWith('label.')) {
       labels[key.slice(6)] = value
@@ -350,6 +351,7 @@ export function createDurablyHandler<
       const response: TriggerResponse = {
         runId: run.id,
         disposition: run.disposition,
+        status: run.status,
       }
       return jsonResponse(response)
     })
@@ -532,6 +534,7 @@ export function createDurablyHandler<
                 type: 'run:coalesced',
                 runId: event.runId,
                 jobName: event.jobName,
+                status: event.status,
                 labels: event.labels,
                 skippedInput: event.skippedInput,
                 skippedLabels: event.skippedLabels,

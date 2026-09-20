@@ -12,6 +12,7 @@ import { RunProgress } from './run-progress'
 export function DataSyncProgress() {
   const actionData = useActionData<typeof action>()
   const runId = actionData?.intent === 'sync' ? actionData.runId : null
+  const userId = actionData?.intent === 'sync' ? actionData.userId : null
 
   const {
     progress,
@@ -23,7 +24,10 @@ export function DataSyncProgress() {
     isCompleted,
     isFailed,
     isCancelled,
-  } = durably.dataSync.useRun(runId)
+  } = durably.dataSync.useJob({
+    initialRunId: runId ?? undefined,
+    scope: userId ? { labels: { userId } } : undefined,
+  })
 
   return (
     <RunProgress

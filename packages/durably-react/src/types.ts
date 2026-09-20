@@ -74,6 +74,7 @@ export type DurablyEvent =
       type: 'run:coalesced'
       runId: string
       jobName: string
+      status: 'pending' | 'leased'
       labels: Record<string, string>
       skippedInput: unknown
       skippedLabels: Record<string, string>

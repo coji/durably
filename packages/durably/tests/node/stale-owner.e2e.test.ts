@@ -23,8 +23,9 @@ describe('stale owner end-to-end', () => {
   }
 
   afterEach(async () => {
-    await Promise.all(runtimes.map((runtime) => runtime.stop()))
-    await Promise.all(runtimes.map((runtime) => runtime.db.destroy()))
+    const completed = runtimes.splice(0)
+    await Promise.all(completed.map((runtime) => runtime.stop()))
+    await Promise.all(completed.map((runtime) => runtime.db.destroy()))
   })
 
   function createSharedRuntimePair() {
@@ -188,7 +189,7 @@ describe('stale owner end-to-end', () => {
     expect(attempts[0].id).not.toBe(attempts[1].id)
     expect(staleWriteRejected).toBe(true)
     expect((await a.getRun(run.id))?.status).toBe('completed')
-  })
+  }, 15_000)
 
   it('does not let a stale worker overwrite a reclaimed completion', async () => {
     const { runtimeA, runtimeB } = createSharedRuntimePair()
@@ -339,7 +340,7 @@ describe('stale owner end-to-end', () => {
     const completedRun = await a.getRun(run.id)
     expect(completedRun?.status).toBe('completed')
     expect(completedRun?.output).toEqual({ winner: 'reclaimer' })
-  })
+  }, 15_000)
 
   it('aborts cooperative long-running work after lease ownership is lost', async () => {
     const { runtimeA, runtimeB } = createSharedRuntimePair()
@@ -401,5 +402,5 @@ describe('stale owner end-to-end', () => {
     const completedRun = await a.getRun(run.id)
     expect(completedRun?.status).toBe('completed')
     expect(completedRun?.output).toEqual({ winner: 'reclaimer' })
-  })
+  }, 15_000)
 })

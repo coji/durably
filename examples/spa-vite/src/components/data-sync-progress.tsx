@@ -10,9 +10,10 @@ import { RunProgress } from './run-progress'
 
 interface DataSyncProgressProps {
   runId?: string
+  userId?: string
 }
 
-export function DataSyncProgress({ runId }: DataSyncProgressProps) {
+export function DataSyncProgress({ runId, userId }: DataSyncProgressProps) {
   const {
     progress,
     output,
@@ -23,7 +24,10 @@ export function DataSyncProgress({ runId }: DataSyncProgressProps) {
     isCompleted,
     isFailed,
     isCancelled,
-  } = useJob(dataSyncJob, { initialRunId: runId })
+  } = useJob(dataSyncJob, {
+    initialRunId: runId,
+    scope: userId ? { labels: { userId } } : undefined,
+  })
 
   return (
     <RunProgress

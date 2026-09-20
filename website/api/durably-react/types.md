@@ -14,6 +14,8 @@ type RunStatus = 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
 
 Hooks expose `isTerminal` and `isActive` flags directly: terminal means completed, failed, or cancelled; active means pending or leased. `ClientRun` objects from the HTTP API also include these derived fields.
 
+Both SPA and fullstack `useJob` results also expose `isResolving: boolean`. It is true while enabled auto-resume is resolving a pending or leased run and false when the lookup succeeds, finds nothing, fails, is superseded, or is skipped by `initialRunId` or `autoResume: false`.
+
 | Status      | Description                                      |
 | ----------- | ------------------------------------------------ |
 | `pending`   | Job is queued, waiting to be picked up by worker |
@@ -164,6 +166,7 @@ type DurablyEvent =
       type: 'run:coalesced'
       runId: string
       jobName: string
+      status: 'pending' | 'leased'
       labels: Record<string, string>
       skippedInput: unknown
       skippedLabels: Record<string, string>
