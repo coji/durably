@@ -1,7 +1,7 @@
 # Standalone Dockerfile for deploying the fullstack React Router example.
 #
 # To use this in your own project, copy this directory and replace
-# "workspace:*" in package.json with the published version (e.g. "^0.15.0"),
+# "workspace:*" in package.json with the published version (e.g. "^0.16.0"),
 # then run:
 #   docker build -t my-app .
 
