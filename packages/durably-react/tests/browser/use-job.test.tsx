@@ -720,6 +720,57 @@ describe('useJob', () => {
       await waitFor(() => expect(currentRunId).toBe(runId))
     })
 
+    it('resumes an existing run when a child effect trigger fails', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const older = await handle.trigger(
+        { input: 'older' },
+        { labels: { documentId: 'doc-b' } },
+      )
+      let currentRunId: string | null = null
+      let pending!: Promise<{ runId: string }>
+
+      function Child({
+        documentId,
+        trigger,
+      }: {
+        documentId: string
+        trigger: (input: { input: string }) => Promise<{ runId: string }>
+      }) {
+        useEffect(() => {
+          if (documentId === 'doc-b') {
+            pending = trigger({ input: undefined as unknown as string })
+          }
+        }, [documentId, trigger])
+        return null
+      }
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, {
+          followLatest: false,
+          scope: { labels: { documentId } },
+        })
+        currentRunId = job.currentRunId
+        return <Child documentId={documentId} trigger={job.trigger} />
+      }
+
+      const { rerender } = render(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-a" />
+        </DurablyProvider>,
+      )
+      rerender(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-b" />
+        </DurablyProvider>,
+      )
+      await act(async () => {
+        await expect(pending).rejects.toThrow()
+      })
+      await waitFor(() => expect(currentRunId).toBe(older.id))
+    })
+
     it('explicit initialRunId skips scoped lookup and hydrates its status', async () => {
       const durably = await createTestDurably({ autoStart: false })
       instances.push(durably)

@@ -139,7 +139,7 @@ export function useJob<
 
   const resolutionEpochRef = useRef(0)
   const lookupEpochRef = useRef(0)
-  const skipResumeForScopeTriggerRef = useRef(false)
+  const acceptedTriggerEpochRef = useRef<number | null>(null)
   const prevScopeRef = useRef(stableScope)
   const currentScopeRef = useRef(stableScope)
   currentScopeRef.current = stableScope
@@ -174,11 +174,7 @@ export function useJob<
       prevScopeRef.current = stableScope
       // A child effect can explicitly trigger a run before this parent effect.
       // Its newer epoch owns tracking in the newly committed scope.
-      if (resolutionEpochRef.current !== renderEpoch) {
-        skipResumeForScopeTriggerRef.current = true
-        return
-      }
-      skipResumeForScopeTriggerRef.current = false
+      if (resolutionEpochRef.current !== renderEpoch) return
       resolutionEpochRef.current++
       if (!initialRunId) {
         subscription.reset()
@@ -293,11 +289,6 @@ export function useJob<
   const autoResumeCallbacks = useMemo(() => {
     return {
       onStart: () => {
-        if (skipResumeForScopeTriggerRef.current) {
-          skipResumeForScopeTriggerRef.current = false
-          lookupEpochRef.current = -1
-          return
-        }
         lookupEpochRef.current = resolutionEpochRef.current
         setIsResolving(true)
       },
@@ -308,6 +299,7 @@ export function useJob<
         error?: string | null
       }) => {
         if (resolutionEpochRef.current !== lookupEpochRef.current) return
+        if (acceptedTriggerEpochRef.current === lookupEpochRef.current) return
         subscription.hydrateRun(
           run.id,
           run.status,
@@ -355,6 +347,7 @@ export function useJob<
     async (run: TriggerResult<TOutput, TLabels>, epoch: number) => {
       if (!jobHandle) return
       if (resolutionEpochRef.current === epoch) {
+        acceptedTriggerEpochRef.current = epoch
         subscription.hydrateRun(
           run.id,
           run.status as RunStatus,
