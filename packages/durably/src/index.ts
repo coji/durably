@@ -53,6 +53,7 @@ export type {
   DurableWaitOutcome,
   DurableWaitResult,
 } from './waits'
+export { WaitExpiredError } from './errors'
 
 // Job types
 export type { JsonValue } from './attempts'

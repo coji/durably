@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 #### @coji/durably
 
 - **Durable external waits**: Prepare and resolve persistent input addresses, suspend without occupying a worker slot or concurrency key, and resume the same run by checkpoint replay. Includes cancellation, idempotent signal receipts, direct wait queries, and waiting-aware active coalescing (#200).
+- **HTTP durable waits**: Inspect waits and deliver signals through run-authorized HTTP endpoints, with atomic accepted/duplicate receipts, explicit expired-wait responses, and reconnect-safe persisted reads. Includes outbound CI polling and local human-input examples (#202).
 
 - **`coalesce: 'queue'` option**: Added `'queue'` to the `coalesce` trigger option (`trigger()`, `triggerAndWait()`, `batchTrigger()`, and HTTP `/trigger`). In this release, `'queue'` is behaviorally equivalent to `'skip'`: both create one trailing pending run behind an active leased run, and reuse an existing pending run with disposition `'coalesced'`. Further triggers while a trailing run is pending are coalesced without replacing its input (#184)
 - **`coalesce: 'active'` option**: Reuse the oldest pending run or a same-job leased run with a valid lease for a concurrency key, otherwise create a pending run. Active selection is atomic across SQLite, libSQL, and PostgreSQL runtimes; coalesced events and HTTP responses expose the selected run status (#185)

@@ -55,10 +55,10 @@ auth: {
     }
   },
 
-  // Guard before read/retrigger/cancel/delete
+  // Guard before run and wait reads or mutations
   onRunAccess: async (ctx, run, { operation }) => {
     // Everyone can read, only admins can mutate
-    const writeOps = ['retrigger', 'cancel', 'delete']
+    const writeOps = ['retrigger', 'cancel', 'delete', 'signal']
     if (writeOps.includes(operation) && ctx.role !== 'admin') {
       throw new Response('Forbidden', { status: 403 })
     }
@@ -70,14 +70,18 @@ auth: {
 
 `onRunAccess` receives the operation type:
 
-| Operation   | Endpoint          |
-| ----------- | ----------------- |
-| `read`      | `GET /run`        |
-| `subscribe` | `GET /subscribe`  |
-| `steps`     | `GET /steps`      |
-| `retrigger` | `POST /retrigger` |
-| `cancel`    | `POST /cancel`    |
-| `delete`    | `DELETE /run`     |
+| Operation   | Endpoint                  |
+| ----------- | ------------------------- |
+| `read`      | `GET /run`                |
+| `subscribe` | `GET /subscribe`          |
+| `steps`     | `GET /steps`              |
+| `retrigger` | `POST /retrigger`         |
+| `cancel`    | `POST /cancel`            |
+| `delete`    | `DELETE /run`             |
+| `waits`     | `GET /waits`, `GET /wait` |
+| `signal`    | `POST /signal`            |
+
+Wait endpoints require `onRunAccess` when authentication is configured. They check the owning run and reject a wait ID paired with another run ID. Use `onSignal(ctx, run, wait, signal)` to validate an application-specific payload or target commit before the result is stored. A wait ID alone grants no access. See [HTTP durable waits](/api/http-handler#durable-waits-over-http).
 
 ## Execution Order
 

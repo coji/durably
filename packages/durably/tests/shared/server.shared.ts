@@ -1435,6 +1435,211 @@ export function createServerTests(createDialect: () => Dialect) {
       })
     })
 
+    describe('HTTP durable waits', () => {
+      const registerWaitJob = () =>
+        durably.register({
+          waitJob: defineJob({
+            name: 'http-wait-test',
+            input: z.object({}),
+            output: z.unknown(),
+            run: async (step) => {
+              const wait = await step.prepareWait('approval')
+              const result = await step.waitFor(wait)
+              return result.type === 'signal' ? result.payload : null
+            },
+          }),
+        })
+
+      it('reads persisted waits after reconnect and distinguishes accepted and duplicate signals', async () => {
+        const jobs = registerWaitJob()
+        const run = await jobs.jobs.waitJob.trigger({})
+        await durably.processUntilIdle()
+        const url = `http://localhost/api/durably/waits?runId=${run.id}`
+        const list = await handler.handle(new Request(url), '/api/durably')
+        expect(list.status).toBe(200)
+        const [wait] = await list.json()
+        expect(wait.status).toBe('pending')
+        expect((await durably.getRun(run.id))?.status).toBe('waiting')
+
+        const waitUrl = `http://localhost/api/durably/wait?runId=${run.id}&waitId=${wait.id}`
+        expect(
+          (
+            await (
+              await handler.handle(new Request(waitUrl), '/api/durably')
+            ).json()
+          ).status,
+        ).toBe('pending')
+        const signalUrl = `http://localhost/api/durably/signal?runId=${run.id}&waitId=${wait.id}`
+        const send = () =>
+          handler.handle(
+            new Request(signalUrl, {
+              method: 'POST',
+              body: JSON.stringify({
+                signalId: 'decision-1',
+                payload: { approved: true },
+              }),
+            }),
+            '/api/durably',
+          )
+        const first = await send()
+        expect(first.status).toBe(200)
+        expect((await first.json()).disposition).toBe('accepted')
+        const duplicate = await send()
+        expect((await duplicate.json()).disposition).toBe('duplicate')
+        const conflict = await handler.handle(
+          new Request(signalUrl, {
+            method: 'POST',
+            body: JSON.stringify({ signalId: 'decision-2', payload: false }),
+          }),
+          '/api/durably',
+        )
+        expect(conflict.status).toBe(409)
+        expect((await conflict.json()).error).toContain('cannot accept')
+
+        // A fresh HTTP read recovers the final wait state without an SSE event.
+        const afterReconnect = await handler.handle(
+          new Request(waitUrl),
+          '/api/durably',
+        )
+        expect((await afterReconnect.json()).outcome).toBe('signal')
+        await durably.processUntilIdle()
+        expect((await durably.getRun(run.id))?.status).toBe('completed')
+      })
+
+      it('authorizes the run before revealing or mutating its waits', async () => {
+        const jobs = registerWaitJob()
+        const own = await jobs.jobs.waitJob.trigger(
+          {},
+          { labels: { tenant: 'one' } },
+        )
+        const foreign = await jobs.jobs.waitJob.trigger(
+          {},
+          { labels: { tenant: 'two' } },
+        )
+        await durably.processUntilIdle()
+        const [wait] = await durably.getWaits(foreign.id)
+        const operations: string[] = []
+        const authorized = createDurablyHandler(durably, {
+          auth: {
+            authenticate: () => ({ tenant: 'one' }),
+            onRunAccess: (ctx, run, { operation }) => {
+              operations.push(operation)
+              if (run.labels.tenant !== ctx.tenant)
+                throw new Response('Forbidden', { status: 403 })
+            },
+          },
+        })
+        const base = 'http://localhost/api/durably'
+        for (const path of [
+          `/waits?runId=${foreign.id}`,
+          `/wait?runId=${foreign.id}&waitId=${wait.id}`,
+        ]) {
+          expect(
+            (await authorized.handle(new Request(base + path), '/api/durably'))
+              .status,
+          ).toBe(403)
+        }
+        const signalPath = `/signal?runId=${foreign.id}&waitId=${wait.id}`
+        expect(
+          (
+            await authorized.handle(
+              new Request(base + signalPath, {
+                method: 'POST',
+                body: JSON.stringify({ signalId: 'x', payload: true }),
+              }),
+              '/api/durably',
+            )
+          ).status,
+        ).toBe(403)
+        expect(
+          (
+            await authorized.handle(
+              new Request(`${base}/wait?runId=${own.id}&waitId=${wait.id}`),
+              '/api/durably',
+            )
+          ).status,
+        ).toBe(404)
+        expect((await durably.getWait(wait.id))?.status).toBe('pending')
+        expect(operations).toContain('waits')
+        expect(operations).toContain('signal')
+      })
+
+      it('requires a run access hook for authenticated wait routes', async () => {
+        const jobs = registerWaitJob()
+        const run = await jobs.jobs.waitJob.trigger({})
+        await durably.processUntilIdle()
+        const handlerWithoutRunGuard = createDurablyHandler(durably, {
+          auth: { authenticate: () => ({}) },
+        })
+        const response = await handlerWithoutRunGuard.handle(
+          new Request(`http://localhost/api/durably/waits?runId=${run.id}`),
+          '/api/durably',
+        )
+        expect(response.status).toBe(400)
+      })
+
+      it('rejects malformed JSON and application-invalid payload before persistence', async () => {
+        const jobs = registerWaitJob()
+        const run = await jobs.jobs.waitJob.trigger({})
+        await durably.processUntilIdle()
+        const [wait] = await durably.getWaits(run.id)
+        const guarded = createDurablyHandler(durably, {
+          auth: {
+            authenticate: () => ({}),
+            onRunAccess: () => {},
+            onSignal: (_ctx, _run, _wait, signal) => {
+              if (typeof signal.payload !== 'boolean')
+                throw new Response('Invalid decision', { status: 400 })
+            },
+          },
+        })
+        const url = `http://localhost/api/durably/signal?runId=${run.id}&waitId=${wait.id}`
+        for (const body of [
+          '{',
+          '{}',
+          '{"signalId":"x","payload":{"bad":true}}',
+        ]) {
+          const response = await guarded.handle(
+            new Request(url, { method: 'POST', body }),
+            '/api/durably',
+          )
+          expect(response.status).toBe(400)
+        }
+        expect((await durably.getWait(wait.id))?.status).toBe('pending')
+      })
+
+      it('returns 404 for missing waits and 410 for expired waits', async () => {
+        const jobs = durably.register({
+          expiring: defineJob({
+            name: 'http-expiring-wait',
+            input: z.object({}),
+            run: async (step) => {
+              const wait = await step.prepareWait('short', { timeoutMs: 1 })
+              await step.waitFor(wait)
+            },
+          }),
+        })
+        const run = await jobs.jobs.expiring.trigger({})
+        await durably.processUntilIdle()
+        const [wait] = await durably.getWaits(run.id)
+        const base = 'http://localhost/api/durably'
+        const missing = await handler.handle(
+          new Request(`${base}/wait?runId=${run.id}&waitId=unknown`),
+          '/api/durably',
+        )
+        expect(missing.status).toBe(404)
+        const signal = await handler.handle(
+          new Request(`${base}/signal?runId=${run.id}&waitId=${wait.id}`, {
+            method: 'POST',
+            body: JSON.stringify({ signalId: 'too-late', payload: true }),
+          }),
+          '/api/durably',
+        )
+        expect(signal.status).toBe(410)
+        expect((await durably.getWait(wait.id))?.outcome).toBe('timeout')
+      })
+    })
+
     describe('auth middleware', () => {
       it('calls authenticate before onRequest', async () => {
         const callOrder: string[] = []

@@ -62,6 +62,7 @@ function createMockStore(overrides: object = {}): Store {
     getWaitResultForRun: async () => null,
     expireDueWaits: async () => 0,
     signalWait: async () => unimplemented(),
+    signalWaitDetailed: async () => unimplemented(),
     suspendRun: async () => false,
     enqueue: async () => unimplemented(),
     enqueueMany: async () => unimplemented(),

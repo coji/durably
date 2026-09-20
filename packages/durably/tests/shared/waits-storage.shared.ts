@@ -4,6 +4,7 @@ import {
   ConflictError,
   createDurably,
   ValidationError,
+  WaitExpiredError,
   type Durably,
 } from '../../src'
 
@@ -258,7 +259,7 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
           { signalId: 'late' },
           at(1000),
         ),
-      ).rejects.toThrow(ConflictError)
+      ).rejects.toThrow(WaitExpiredError)
       expect((await second.store.getWait(second.wait.id))?.outcome).toBe(
         'timeout',
       )
@@ -487,6 +488,56 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
           new Date().toISOString(),
         ),
       ).toBe(false)
+    })
+
+    it('reports first acceptance and canonical duplicate from the signal transaction', async () => {
+      const { store, wait } = await setup()
+      const accepted = await store.signalWaitDetailed(
+        wait.id,
+        { b: 2, a: 1 },
+        { signalId: 'same' },
+      )
+      expect(accepted.disposition).toBe('accepted')
+      const duplicate = await store.signalWaitDetailed(
+        wait.id,
+        { a: 1, b: 2 },
+        { signalId: 'same' },
+      )
+      expect(duplicate).toEqual({
+        wait: accepted.wait,
+        disposition: 'duplicate',
+      })
+    })
+
+    it('reports one accepted result for concurrent identical deliveries', async () => {
+      const { store, wait } = await setup()
+      const results = await Promise.all([
+        store.signalWaitDetailed(wait.id, true, { signalId: 'same' }),
+        store.signalWaitDetailed(wait.id, true, { signalId: 'same' }),
+      ])
+      expect(results.map((result) => result.disposition).sort()).toEqual([
+        'accepted',
+        'duplicate',
+      ])
+      expect(results[0].wait).toEqual(results[1].wait)
+    })
+
+    it('accepts one of two competing signals and conflicts the loser', async () => {
+      const { store, wait } = await setup()
+      const results = await Promise.allSettled([
+        store.signalWaitDetailed(wait.id, 'a', { signalId: 'a' }),
+        store.signalWaitDetailed(wait.id, 'b', { signalId: 'b' }),
+      ])
+      expect(
+        results.filter((result) => result.status === 'fulfilled'),
+      ).toHaveLength(1)
+      expect(
+        results.filter((result) => result.status === 'rejected'),
+      ).toHaveLength(1)
+      const winner = results.find((result) => result.status === 'fulfilled')
+      expect(winner?.value.disposition).toBe('accepted')
+      const loser = results.find((result) => result.status === 'rejected')
+      expect(loser?.reason).toBeInstanceOf(ConflictError)
     })
 
     it('releases the key while waiting and survives repeated recovery alongside trailing pending', async () => {
