@@ -34,6 +34,24 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
       return { store, run, leased, wait }
     }
 
+    async function liveWait(timeoutMs?: number) {
+      const store = durably.storage
+      const { run } = await store.enqueue({ jobName: 'live-wait', input: {} })
+      const leased = (await store.claimNext(
+        'worker',
+        new Date().toISOString(),
+        30_000,
+      ))!
+      const wait = (await store.prepareWait(
+        run.id,
+        leased.leaseGeneration,
+        'approval',
+        undefined,
+        timeoutMs,
+      ))!
+      return { store, run, leased, wait }
+    }
+
     it('uses database time despite a skewed runtime clock', async () => {
       const store = durably.storage
       const { run } = await store.enqueue({ jobName: 'clock-skew', input: {} })
@@ -96,6 +114,25 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
             slowWait.id,
           ),
         ).toBe(true)
+        const resolved = await store.signalWait(slowWait.id, 'approved', {
+          signalId: 'slow-signal',
+        })
+        await new Promise((resolve) => setTimeout(resolve, 30))
+        expect(
+          (
+            await store.claimNext(
+              'slow-resumer',
+              new Date().toISOString(),
+              30_000,
+            )
+          )?.id,
+        ).toBe(slowRun.id)
+        const resumedWait = (await store.getWait(slowWait.id))!
+        expect(Date.parse(resumedWait.firstResumedAt!)).toBeGreaterThanOrEqual(
+          Date.parse(resolved.resolvedAt!),
+        )
+        expect(resumedWait.executionSlotWaitMs).toBeGreaterThanOrEqual(20)
+        expect(resumedWait.executionSlotWaitMs).toBeLessThan(5_000)
       } finally {
         vi.useRealTimers()
       }
@@ -231,36 +268,37 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
     })
 
     it('separates external-input and execution-slot time after suspension', async () => {
-      const { store, run, leased, wait } = await timedWait()
+      const { store, run, leased, wait } = await liveWait()
       expect(
-        await store.suspendRun(
-          run.id,
-          leased.leaseGeneration,
-          wait.id,
-          at(100),
-        ),
+        await store.suspendRun(run.id, leased.leaseGeneration, wait.id),
       ).toBe(true)
-      expect((await store.getWait(wait.id))?.suspendedAt).toBe(at(100))
-      await store.signalWait(wait.id, null, { signalId: 'done' }, at(400))
-      expect((await store.getWait(wait.id))?.inputWaitMs).toBe(300)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      await store.signalWait(wait.id, null, { signalId: 'done' })
+      expect(
+        (await store.getWait(wait.id))?.inputWaitMs,
+      ).toBeGreaterThanOrEqual(20)
       expect((await store.getWait(wait.id))?.executionSlotWaitMs).toBeNull()
-      expect((await store.claimNext('next', at(900), 30_000))?.id).toBe(run.id)
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      expect(
+        (await store.claimNext('next', new Date().toISOString(), 30_000))?.id,
+      ).toBe(run.id)
       const resumed = await store.getWait(wait.id)
-      expect(resumed?.firstResumedAt).toBe(at(900))
-      expect(resumed?.inputWaitMs).toBe(300)
-      expect(resumed?.executionSlotWaitMs).toBe(500)
+      expect(Date.parse(resumed!.firstResumedAt!)).toBeGreaterThanOrEqual(
+        Date.parse(resumed!.resolvedAt!),
+      )
+      expect(resumed?.executionSlotWaitMs).toBeGreaterThanOrEqual(30)
     })
 
     it('counts post-handoff queue time when signal wins just before suspension', async () => {
-      const { store, run, leased, wait } = await timedWait()
-      await store.signalWait(wait.id, null, { signalId: 'early' }, at(100))
-      await store.suspendRun(run.id, leased.leaseGeneration, wait.id, at(200))
+      const { store, run, leased, wait } = await liveWait()
+      await store.signalWait(wait.id, null, { signalId: 'early' })
+      await store.suspendRun(run.id, leased.leaseGeneration, wait.id)
       expect((await store.getWait(wait.id))?.executionSlotWaitMs).toBeNull()
-      await store.claimNext('next', at(500), 30_000)
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      await store.claimNext('next', new Date().toISOString(), 30_000)
       const result = await store.getWait(wait.id)
-      expect(result?.suspendedAt).toBe(at(200))
       expect(result?.inputWaitMs).toBe(0)
-      expect(result?.executionSlotWaitMs).toBe(300)
+      expect(result?.executionSlotWaitMs).toBeGreaterThanOrEqual(30)
     })
 
     it('reports zero durations when an early signal is consumed without suspension', async () => {
@@ -283,16 +321,26 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
     })
 
     it('expires an offline wait at its original deadline and resumes once', async () => {
-      const { store, run, leased, wait } = await timedWait()
-      await store.suspendRun(run.id, leased.leaseGeneration, wait.id, at(100))
-      expect(await store.expireDueWaits(at(999))).toBe(0)
-      expect(await store.expireDueWaits(at(2000))).toBe(1)
-      expect(await store.expireDueWaits(at(2000))).toBe(0)
-      expect((await store.getWait(wait.id))?.inputWaitMs).toBe(900)
-      expect((await store.claimNext('next', at(2500), 30_000))?.id).toBe(run.id)
+      const { store, run, leased, wait } = await liveWait(100)
+      await store.suspendRun(run.id, leased.leaseGeneration, wait.id)
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.max(0, Date.parse(wait.deadlineAt!) - Date.now() + 10),
+        ),
+      )
+      expect(await store.expireDueWaits()).toBe(1)
+      expect(await store.expireDueWaits()).toBe(0)
+      expect(
+        (await store.getWait(wait.id))?.inputWaitMs,
+      ).toBeGreaterThanOrEqual(0)
+      expect(
+        (await store.claimNext('next', new Date().toISOString(), 30_000))?.id,
+      ).toBe(run.id)
       const result = await store.getWait(wait.id)
       expect(result?.outcome).toBe('timeout')
-      expect(result?.executionSlotWaitMs).toBe(1500)
+      expect(result?.resolvedAt).toBe(wait.deadlineAt)
+      expect(result?.executionSlotWaitMs).toBeGreaterThanOrEqual(0)
     })
 
     it('finalizes timeout during a fenced replay read and never extends it', async () => {

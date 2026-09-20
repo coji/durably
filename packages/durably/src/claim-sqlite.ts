@@ -47,7 +47,7 @@ export async function claimNextSqlite(
       lease_expires_at: leaseExpiresAt,
       lease_generation: sql`lease_generation + 1`,
       // This timestamp commits with the lease even if the following wait write fails.
-      resume_claimed_at: sql`CASE WHEN status = 'waiting' THEN COALESCE(resume_claimed_at, ${now}) ELSE resume_claimed_at END`,
+      resume_claimed_at: sql`CASE WHEN status = 'waiting' THEN COALESCE(resume_claimed_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ELSE resume_claimed_at END`,
       started_at: sql`COALESCE(started_at, ${now})`,
       updated_at: now,
     })
@@ -61,7 +61,7 @@ export async function claimNextSqlite(
     // Reclaim after a failed wait write restores the original claim time.
     await db
       .updateTable('durably_waits')
-      .set({ first_resumed_at: row.resume_claimed_at ?? now })
+      .set({ first_resumed_at: row.resume_claimed_at })
       .where('id', '=', row.waiting_on_wait_id)
       .where('status', '=', 'resolved')
       .where('first_resumed_at', 'is', null)

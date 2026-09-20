@@ -87,6 +87,7 @@ export async function claimNextPostgres(
           lease_owner = ${workerId},
           lease_expires_at = ${leaseExpiresAt},
           lease_generation = lease_generation + 1,
+          resume_claimed_at = CASE WHEN status = 'waiting' THEN COALESCE(resume_claimed_at, to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) ELSE resume_claimed_at END,
           started_at = COALESCE(started_at, ${now}),
           updated_at = ${now}
         WHERE id = ${candidate.id}
@@ -98,7 +99,7 @@ export async function claimNextPostgres(
       if (row.waiting_on_wait_id) {
         await trx
           .updateTable('durably_waits')
-          .set({ first_resumed_at: now })
+          .set({ first_resumed_at: row.resume_claimed_at })
           .where('id', '=', row.waiting_on_wait_id)
           .where('status', '=', 'resolved')
           .where('first_resumed_at', 'is', null)

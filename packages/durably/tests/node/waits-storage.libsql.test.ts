@@ -33,6 +33,14 @@ it('recovers the original resumed claim time after its wait write fails', async 
     ).rejects.toThrow('timestamp write failed')
     expect((await store.getRun(run.id))?.status).toBe('leased')
     expect((await store.getWait(wait.id))?.firstResumedAt).toBeNull()
+    const claimedAt = (
+      await durably.db
+        .selectFrom('durably_runs')
+        .select('resume_claimed_at')
+        .where('id', '=', run.id)
+        .executeTakeFirstOrThrow()
+    ).resume_claimed_at
+    expect(claimedAt).not.toBeNull()
 
     await sql`DROP TRIGGER fail_first_resume`.execute(durably.db)
     expect(
@@ -44,9 +52,7 @@ it('recovers the original resumed claim time after its wait write fails', async 
         )
       )?.id,
     ).toBe(run.id)
-    expect((await store.getWait(wait.id))?.firstResumedAt).toBe(
-      originalClaimTime,
-    )
+    expect((await store.getWait(wait.id))?.firstResumedAt).toBe(claimedAt)
   } finally {
     await durably.db.destroy()
   }
