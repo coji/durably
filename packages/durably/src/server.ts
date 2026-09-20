@@ -8,6 +8,7 @@ import {
   successResponse,
 } from './http'
 import type { Disposition } from './job'
+import type { JsonValue } from './attempts'
 import {
   createSSEResponse,
   createSSEStreamFromSubscriptions,
@@ -17,12 +18,21 @@ import {
 } from './sse'
 import type { Run, RunFilter, RunStatus } from './storage'
 import { toClientRun } from './storage'
+import type { DurableWait } from './waits'
+import { canonicalWaitJson } from './waits'
 
 /**
  * Run operation types for onRunAccess
  */
 export type RunOperation =
-  'read' | 'subscribe' | 'steps' | 'retrigger' | 'cancel' | 'delete'
+  | 'read'
+  | 'subscribe'
+  | 'steps'
+  | 'retrigger'
+  | 'cancel'
+  | 'delete'
+  | 'waits'
+  | 'signal'
 
 /**
  * Subscription filter — only fields that SSE subscriptions actually support.
@@ -80,6 +90,14 @@ export interface AuthConfig<
     info: { operation: RunOperation },
   ) => Promise<void> | void
 
+  /** Validate and authorize a wait signal before it is persisted. */
+  onSignal?: (
+    ctx: TContext,
+    run: Run<TLabels>,
+    wait: DurableWait,
+    signal: { signalId: string; payload: JsonValue },
+  ) => Promise<void> | void
+
   /** Scope runs list queries (GET /runs). */
   scopeRuns?: (
     ctx: TContext,
@@ -106,6 +124,9 @@ export interface DurablyHandler {
    * - GET  {basePath}/runs/subscribe - SSE stream of run updates
    * - GET  {basePath}/run?runId=xxx - Get single run
    * - GET  {basePath}/steps?runId=xxx - Get steps
+   * - GET  {basePath}/waits?runId=xxx - List waits for a run
+   * - GET  {basePath}/wait?runId=xxx&waitId=xxx - Get a wait
+   * - POST {basePath}/signal?runId=xxx&waitId=xxx - Resolve a wait
    * - POST {basePath}/trigger - Trigger a job
    * - POST {basePath}/retrigger?runId=xxx - Create a fresh run from a terminal run
    * - POST {basePath}/cancel?runId=xxx - Cancel a run
@@ -291,7 +312,7 @@ export function createDurablyHandler<
       if (error instanceof DurablyError) {
         return errorResponse(
           error.message,
-          error.statusCode as 400 | 404 | 409 | 500,
+          error.statusCode as 400 | 404 | 409 | 410 | 500,
         )
       }
       return errorResponse(getErrorMessage(error), 500)
@@ -310,7 +331,19 @@ export function createDurablyHandler<
     const run = await durably.getRun(runId)
     if (!run) return errorResponse('Run not found', 404)
 
-    if (auth?.onRunAccess && ctx !== undefined) {
+    // Wait addresses must never become capabilities for authenticated deployments.
+    if (
+      (operation === 'waits' || operation === 'signal') &&
+      auth &&
+      !auth.onRunAccess
+    ) {
+      return errorResponse('Wait access requires onRunAccess', 400)
+    }
+
+    if (
+      auth?.onRunAccess &&
+      (ctx !== undefined || operation === 'waits' || operation === 'signal')
+    ) {
       await auth.onRunAccess(ctx as TContext, run as Run<TLabels>, {
         operation,
       })
@@ -415,6 +448,81 @@ export function createDurablyHandler<
 
       const steps = await durably.storage.getSteps(result.runId)
       return jsonResponse(steps)
+    })
+  }
+
+  async function requireWaitAccess(
+    url: URL,
+    ctx: TContext | undefined,
+    operation: 'waits' | 'signal',
+  ): Promise<{ run: Run<TLabels>; wait: DurableWait } | Response> {
+    const result = await requireRunAccess(url, ctx, operation)
+    if (result instanceof Response) return result
+    const waitId = getRequiredQueryParam(url, 'waitId')
+    if (waitId instanceof Response) return waitId
+    const wait = await durably.getWait(waitId)
+    if (!wait || wait.runId !== result.runId)
+      return errorResponse('Wait not found', 404)
+    return { run: result.run, wait }
+  }
+
+  async function handleWaits(
+    url: URL,
+    ctx: TContext | undefined,
+  ): Promise<Response> {
+    return withErrorHandling(async () => {
+      const result = await requireRunAccess(url, ctx, 'waits')
+      if (result instanceof Response) return result
+      return jsonResponse(await durably.getWaits(result.runId))
+    })
+  }
+
+  async function handleWait(
+    url: URL,
+    ctx: TContext | undefined,
+  ): Promise<Response> {
+    return withErrorHandling(async () => {
+      const result = await requireWaitAccess(url, ctx, 'waits')
+      if (result instanceof Response) return result
+      return jsonResponse(result.wait)
+    })
+  }
+
+  async function handleSignal(
+    request: Request,
+    url: URL,
+    ctx: TContext | undefined,
+  ): Promise<Response> {
+    return withErrorHandling(async () => {
+      const result = await requireWaitAccess(url, ctx, 'signal')
+      if (result instanceof Response) return result
+      let body: unknown
+      try {
+        body = await request.json()
+      } catch {
+        return errorResponse('Invalid JSON body', 400)
+      }
+      if (body === null || typeof body !== 'object' || Array.isArray(body))
+        return errorResponse('Signal body must be an object', 400)
+      const fields = body as Record<string, unknown>
+      if (typeof fields.signalId !== 'string' || !fields.signalId.trim())
+        return errorResponse('signalId must be non-empty', 400)
+      if (!Object.hasOwn(fields, 'payload'))
+        return errorResponse('payload is required', 400)
+      // Keep invalid values out of storage and let the application validate its schema.
+      canonicalWaitJson(fields.payload)
+      const signal = {
+        signalId: fields.signalId,
+        payload: fields.payload as JsonValue,
+      }
+      if (auth?.onSignal)
+        await auth.onSignal(ctx as TContext, result.run, result.wait, signal)
+      const receipt = await durably.storage.signalWaitDetailed(
+        result.wait.id,
+        signal.payload,
+        { signalId: signal.signalId },
+      )
+      return jsonResponse(receipt)
     })
   }
 
@@ -725,6 +833,8 @@ export function createDurablyHandler<
           if (path === '/runs') return await handleRuns(url, ctx)
           if (path === '/run') return await handleRun(url, ctx)
           if (path === '/steps') return await handleSteps(url, ctx)
+          if (path === '/waits') return await handleWaits(url, ctx)
+          if (path === '/wait') return await handleWait(url, ctx)
           if (path === '/runs/subscribe')
             return await handleRunsSubscribe(url, ctx)
         }
@@ -734,6 +844,7 @@ export function createDurablyHandler<
           if (path === '/trigger') return await handleTrigger(request, ctx)
           if (path === '/retrigger') return await handleRetrigger(url, ctx)
           if (path === '/cancel') return await handleCancel(url, ctx)
+          if (path === '/signal') return await handleSignal(request, url, ctx)
         }
 
         // DELETE routes

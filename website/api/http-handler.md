@@ -110,17 +110,39 @@ const clientRun = toClientRun(run) // strips internal fields; adds isTerminal / 
 
 The handler provides these endpoints:
 
-| Method   | Path                   | Description                              |
-| -------- | ---------------------- | ---------------------------------------- |
-| `POST`   | `/trigger`             | Trigger a job                            |
-| `GET`    | `/subscribe?runId=xxx` | SSE stream for run events                |
-| `GET`    | `/runs`                | List runs with filtering                 |
-| `GET`    | `/run?runId=xxx`       | Get single run                           |
-| `GET`    | `/steps?runId=xxx`     | Get steps for a run                      |
-| `GET`    | `/runs/subscribe`      | SSE stream for run list updates          |
-| `POST`   | `/retrigger?runId=xxx` | Retrigger a failed run (creates new run) |
-| `POST`   | `/cancel?runId=xxx`    | Cancel a pending, leased, or waiting run |
-| `DELETE` | `/run?runId=xxx`       | Delete a run                             |
+| Method   | Path                           | Description                              |
+| -------- | ------------------------------ | ---------------------------------------- |
+| `POST`   | `/trigger`                     | Trigger a job                            |
+| `GET`    | `/subscribe?runId=xxx`         | SSE stream for run events                |
+| `GET`    | `/runs`                        | List runs with filtering                 |
+| `GET`    | `/run?runId=xxx`               | Get single run                           |
+| `GET`    | `/steps?runId=xxx`             | Get steps for a run                      |
+| `GET`    | `/waits?runId=xxx`             | List persisted waits for a run           |
+| `GET`    | `/wait?runId=xxx&waitId=yyy`   | Read one wait                            |
+| `POST`   | `/signal?runId=xxx&waitId=yyy` | Submit a wait signal                     |
+| `GET`    | `/runs/subscribe`              | SSE stream for run list updates          |
+| `POST`   | `/retrigger?runId=xxx`         | Retrigger a failed run (creates new run) |
+| `POST`   | `/cancel?runId=xxx`            | Cancel a pending, leased, or waiting run |
+| `DELETE` | `/run?runId=xxx`               | Delete a run                             |
+
+## Durable waits over HTTP
+
+Every wait route requires `runId`; single-wait routes also require `waitId`. The handler checks the run with `onRunAccess` before returning or changing a wait and rejects a wait ID belonging to another run with 404. If `auth` is configured, wait routes require an `onRunAccess` hook. A wait ID is never an authorization credential.
+
+```http
+GET /api/durably/waits?runId=run_abc123
+GET /api/durably/wait?runId=run_abc123&waitId=wait_123
+POST /api/durably/signal?runId=run_abc123&waitId=wait_123
+Content-Type: application/json
+
+{"signalId":"ci-check-123","payload":{"commit":"abc123","passed":true}}
+```
+
+`GET /waits` returns a `DurableWait[]` in creation order; `GET /wait` returns one `DurableWait`. The persisted fields include `status`, `outcome`, `payload`, `deadlineAt`, and lifecycle timestamps. The signal response is `{ "wait": DurableWait, "disposition": "accepted" | "duplicate" }`. A same-ID, same-payload retry returns the original receipt with `duplicate`, even after the deadline or run completion. A conflicting signal returns 409; a deadline-expired wait returns 410; unknown or cross-run wait IDs return 404. Malformed JSON, a missing `payload`, or an empty `signalId` returns 400. `null` is a valid payload.
+
+Use `auth.onSignal` to validate the application payload and its target before persistence. For example, compare a CI result's commit with the commit saved in wait metadata and the owning run's input. The core validates JSON and idempotency; the application decides whether a result is valid for its business operation.
+
+SSE can announce `run:waiting` and a resumed lease, but it is not a durable notification queue. On connection or reconnection, read `/run` and `/waits` to recover the saved run and wait state. A wait can have `outcome: "signal"` or `"timeout"` while the run remains `waiting` for a worker slot.
 
 ## Trigger Request
 
@@ -222,6 +244,13 @@ const handler = createDurablyHandler(durably, {
       }
     },
 
+    onSignal: async (ctx, run, wait, { signalId, payload }) => {
+      // Validate the application payload and target before persisting input.
+      if (!isValidDecisionForRun(payload, run, wait)) {
+        throw new Response('Invalid decision', { status: 400 })
+      }
+    },
+
     // Scope runs list queries (GET /runs)
     scopeRuns: async (ctx, filter) => ({
       ...filter,
@@ -258,6 +287,14 @@ interface AuthConfig<TContext, TLabels> {
     info: { operation: RunOperation },
   ) => Promise<void> | void
 
+  /** Validate and authorize a wait signal before persistence. */
+  onSignal?: (
+    ctx: TContext,
+    run: Run<TLabels>,
+    wait: DurableWait,
+    signal: { signalId: string; payload: JsonValue },
+  ) => Promise<void> | void
+
   /** Scope runs list queries (GET /runs). */
   scopeRuns?: (
     ctx: TContext,
@@ -272,7 +309,14 @@ interface AuthConfig<TContext, TLabels> {
 }
 
 type RunOperation =
-  'read' | 'subscribe' | 'steps' | 'retrigger' | 'cancel' | 'delete'
+  | 'read'
+  | 'subscribe'
+  | 'steps'
+  | 'retrigger'
+  | 'cancel'
+  | 'delete'
+  | 'waits'
+  | 'signal'
 ```
 
 ### Execution Order

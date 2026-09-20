@@ -2,6 +2,8 @@
 
 Run batch jobs on Node.js without a frontend. Perfect for cron jobs, data pipelines, and CLI tools.
 
+For external input, the [HTTP handler](/api/http-handler#durable-waits-over-http) supports authorized durable wait reads and signal delivery. See the runnable `examples/server-libsql/ci-poller.ts` and `human-input.ts` examples for outbound CI polling and local decisions.
+
 **Example code:** [server-libsql](https://github.com/coji/durably/tree/main/examples/server-libsql)
 
 ## When to Use

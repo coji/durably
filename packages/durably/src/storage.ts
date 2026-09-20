@@ -3,7 +3,12 @@ import { monotonicFactory } from 'ulidx'
 import { type JsonValue, serializeJsonValue } from './attempts'
 import { claimNextPostgres } from './claim-postgres'
 import { claimNextSqlite } from './claim-sqlite'
-import { ConflictError, NotFoundError, ValidationError } from './errors'
+import {
+  ConflictError,
+  NotFoundError,
+  ValidationError,
+  WaitExpiredError,
+} from './errors'
 import type { Disposition } from './job'
 import type { Database } from './schema'
 import { rowToLog, rowToRun, rowToStep, validateLabels } from './transformers'
@@ -209,6 +214,12 @@ export interface Store<
     options: SignalOptions,
     now?: string,
   ): Promise<DurableWait>
+  signalWaitDetailed(
+    waitId: string,
+    payload: JsonValue,
+    options: SignalOptions,
+    now?: string,
+  ): Promise<{ wait: DurableWait; disposition: 'accepted' | 'duplicate' }>
   getWaitResultForRun(
     runId: string,
     leaseGeneration: number,
@@ -1311,6 +1322,16 @@ export function createKyselyStore(
     },
 
     async signalWait(waitId, payload, options, at) {
+      const receipt = await this.signalWaitDetailed(
+        waitId,
+        payload,
+        options,
+        at,
+      )
+      return receipt.wait
+    },
+
+    async signalWaitDetailed(waitId, payload, options, at) {
       if (typeof options?.signalId !== 'string' || !options.signalId.trim())
         throw new ValidationError('signalId must be non-empty')
       const signalId = options.signalId
@@ -1344,7 +1365,9 @@ export function createKyselyStore(
             wait.signal_id === signalId &&
             wait.payload === json
           )
-            return rowToWait(wait)
+            return { wait: rowToWait(wait), disposition: 'duplicate' as const }
+          if (wait.outcome === 'timeout')
+            throw new WaitExpiredError(`Wait expired: ${waitId}`)
           if (
             wait.status !== 'pending' ||
             TERMINAL_STATUSES.includes(run.status)
@@ -1380,11 +1403,11 @@ export function createKyselyStore(
             .where('id', '=', waitId)
             .returningAll()
             .executeTakeFirstOrThrow()
-          return rowToWait(row)
+          return { wait: rowToWait(row), disposition: 'accepted' as const }
         })
         .then((receipt) => {
           if (receipt === null)
-            throw new ConflictError(`Wait cannot accept this signal: ${waitId}`)
+            throw new WaitExpiredError(`Wait expired: ${waitId}`)
           return receipt
         })
     },
@@ -1858,7 +1881,7 @@ export function createKyselyStore(
       'failRun',
       'cancelRun',
       'prepareWait',
-      'signalWait',
+      'signalWaitDetailed',
       'getWaitResultForRun',
       'expireDueWaits',
       'suspendRun',

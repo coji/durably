@@ -224,9 +224,11 @@ The first signal or deadline wins. A new signal must arrive strictly before the 
 
 Waiting releases execution exclusion for `concurrencyKey`; another run with that key may execute. Resume waits for any valid same-key lease. Business resource reservations remain the application's responsibility. `coalesce: 'active'` selects pending, then valid leased, then waiting runs for the same job/key; `skip` and `queue` retain their pending-only reuse behavior. Resolved waits remain `waiting` until claimed. Candidate ordering follows creation time and ID, without a strict fairness guarantee.
 
-Cancel a waiting run before deleting or retriggering it. Cancellation prevents a finalized signal or timeout from reviving it or starting downstream steps and cleans checkpoints according to `preserveSteps`, even without a worker. Wait records survive checkpoint cleanup and are removed with run deletion/purge. `getWait()` and `getWaits()` expose `deadlineAt`, `outcome`, `suspendedAt`, `firstResumedAt`, `inputWaitMs`, and `executionSlotWaitMs` alongside preparation and finalization times. Input wait counts from suspension to signal acceptance or deadline, floored at zero if the result wins during suspension handoff. Slot wait counts from the later of result finalization and suspension until the first resumed lease and stays `null` until that lease. A result consumed without suspension reports zero for both durations. `waitForRun()` and `triggerAndWait()` still wait for a terminal run; their caller-side timeout does not cancel a durable wait. No dedicated HTTP signal/wait endpoints are provided.
+Cancel a waiting run before deleting or retriggering it. Cancellation prevents a finalized signal or timeout from reviving it or starting downstream steps and cleans checkpoints according to `preserveSteps`, even without a worker. Wait records survive checkpoint cleanup and are removed with run deletion/purge. `getWait()` and `getWaits()` expose `deadlineAt`, `outcome`, `suspendedAt`, `firstResumedAt`, `inputWaitMs`, and `executionSlotWaitMs` alongside preparation and finalization times. Input wait counts from suspension to signal acceptance or deadline, floored at zero if the result wins during suspension handoff. Slot wait counts from the later of result finalization and suspension until the first resumed lease and stays `null` until that lease. A result consumed without suspension reports zero for both durations. `waitForRun()` and `triggerAndWait()` still wait for a terminal run; their caller-side timeout does not cancel a durable wait. The HTTP handler provides `GET /waits?runId=...`, `GET /wait?runId=...&waitId=...`, and `POST /signal?runId=...&waitId=...` with JSON `{ signalId, payload }`. All three routes check the owning run through `onRunAccess`; authenticated handlers must configure that hook for wait access. `auth.onSignal(ctx, run, wait, signal)` can reject invalid application payloads before persistence. The signal response contains `{ wait, disposition: 'accepted' | 'duplicate' }`; conflicts return 409, expired waits 410, unknown/cross-run IDs 404, and invalid JSON or missing fields 400. A same-ID, canonically identical retry returns `duplicate` with the original receipt.
 
 `run:waiting` reports suspension and `run:leased` reports resume. Existing HTTP run reads/subscriptions and React hooks understand `waiting`. `isActive` remains pending or leased; `isWaiting` identifies waiting; `isTerminal` is false for waiting. Use `!isTerminal` when testing whether a run is unfinished.
+
+After reconnecting, read `/run` and `/waits` to recover authoritative saved state. SSE events can be missed; a resolved wait may still belong to a `waiting` run until a worker claims it. The CI poller and local human-input HTTP examples are in `examples/server-libsql/`.
 
 ## Step Context API
 
@@ -630,6 +632,12 @@ interface AuthConfig<
     run: Run<TLabels>,
     info: { operation: RunOperation },
   ) => Promise<void> | void
+  onSignal?: (
+    ctx: TContext,
+    run: Run<TLabels>,
+    wait: DurableWait,
+    signal: { signalId: string; payload: JsonValue },
+  ) => Promise<void> | void
   scopeRuns?: (
     ctx: TContext,
     filter: RunFilter<TLabels>,
@@ -641,7 +649,14 @@ interface AuthConfig<
 }
 
 type RunOperation =
-  'read' | 'subscribe' | 'steps' | 'retrigger' | 'cancel' | 'delete'
+  | 'read'
+  | 'subscribe'
+  | 'steps'
+  | 'retrigger'
+  | 'cancel'
+  | 'delete'
+  | 'waits'
+  | 'signal'
 
 // RunsSubscribeFilter is Pick<RunFilter, 'jobName' | 'labels'>
 
@@ -911,12 +926,13 @@ import {
   NotFoundError, // 404 — resource not found
   ValidationError, // 400 — invalid input or request
   ConflictError, // 409 — operation conflicts with current state
+  WaitExpiredError, // 410 — wait deadline expired
   CancelledError, // Run was cancelled during execution
   LeaseLostError, // Worker lost lease ownership
 } from '@coji/durably'
 ```
 
-`DurablyError` subclasses (`NotFoundError`, `ValidationError`, `ConflictError`) carry a `statusCode` property and are used by the HTTP handler to return appropriate responses.
+`DurablyError` subclasses (`NotFoundError`, `ValidationError`, `ConflictError`, `WaitExpiredError`) carry a `statusCode` property and are used by the HTTP handler to return appropriate responses.
 
 ## License
 
@@ -944,4 +960,4 @@ interface DurableWait {
 }
 ```
 
-A pending wait has no result; a resolved wait has an immutable signal or timeout `outcome`. Cancelled and closed waits no longer accept input. `getWait` returns `null` for an unknown ID, and `getWaits` returns an empty list for an unknown run. Signal delivery raises `NotFoundError` for missing IDs, `ConflictError` for conflicting, expired, or closed input, and `ValidationError` for invalid arguments. `payload: null` is also a valid signal: inspect `outcome` to distinguish it from timeout or missing input. `inputWaitMs` measures external-input waiting only after suspension; `executionSlotWaitMs` measures from the later of suspension and result finalization until the first resumed lease, and remains `null` until resume. Wait records created before the deadline/timing migration may have unknown historical durations (`null`).
+A pending wait has no result; a resolved wait has an immutable signal or timeout `outcome`. Cancelled and closed waits no longer accept input. `getWait` returns `null` for an unknown ID, and `getWaits` returns an empty list for an unknown run. Signal delivery raises `NotFoundError` for missing IDs, `ConflictError` for conflicting or closed input, `WaitExpiredError` (a `ConflictError` subtype) for expired input, and `ValidationError` for invalid arguments. `payload: null` is also a valid signal: inspect `outcome` to distinguish it from timeout or missing input. `inputWaitMs` measures external-input waiting only after suspension; `executionSlotWaitMs` measures from the later of suspension and result finalization until the first resumed lease, and remains `null` until resume. Wait records created before the deadline/timing migration may have unknown historical durations (`null`).

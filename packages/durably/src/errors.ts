@@ -51,9 +51,17 @@ export class ValidationError extends DurablyError {
 
 /** 409 — Operation conflicts with current state */
 export class ConflictError extends DurablyError {
-  constructor(message: string) {
-    super(message, 409)
+  constructor(message: string, statusCode = 409) {
+    super(message, statusCode)
     this.name = 'ConflictError'
+  }
+}
+
+/** 410 — A wait's persisted deadline has passed. */
+export class WaitExpiredError extends ConflictError {
+  constructor(message: string) {
+    super(message, 410)
+    this.name = 'WaitExpiredError'
   }
 }
 
