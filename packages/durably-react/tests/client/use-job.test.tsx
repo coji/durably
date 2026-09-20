@@ -5,6 +5,7 @@
  */
 
 import { act, renderHook, waitFor } from '@testing-library/react'
+import { useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useJob } from '../../src/client/use-job'
 import {
@@ -1648,6 +1649,118 @@ describe('useJob (client)', () => {
       })
       expect(result.current.currentRunId).toBe('run-2')
       expect(result.current.status).toBe('pending')
+    })
+
+    it('tracks a trigger issued in a layout effect after a scope change', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({ runId: 'new-scope-run', status: 'pending' }),
+      })
+      let pending!: Promise<{ runId: string }>
+      const { result, rerender } = renderHook(
+        ({ documentId }: { documentId: string }) => {
+          const job = useJob({
+            api: '/api/durably',
+            jobName: 'test-job',
+            scope: { labels: { documentId } },
+            autoResume: false,
+            followLatest: false,
+          })
+          useLayoutEffect(() => {
+            if (documentId === 'second') {
+              pending = job.trigger({ input: 'new-scope' })
+            }
+          }, [documentId, job.trigger])
+          return job
+        },
+        { initialProps: { documentId: 'first' } },
+      )
+
+      rerender({ documentId: 'second' })
+      await act(async () => {
+        await pending
+      })
+      expect(result.current.currentRunId).toBe('new-scope-run')
+      expect(result.current.status).toBe('pending')
+    })
+
+    it('tracks a trigger issued in a layout effect after an API change', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({ runId: 'new-api-run', status: 'pending' }),
+      })
+      let pending!: Promise<{ runId: string }>
+      const { result, rerender } = renderHook(
+        ({ api }: { api: string }) => {
+          const job = useJob({
+            api,
+            jobName: 'test-job',
+            autoResume: false,
+            followLatest: false,
+          })
+          useLayoutEffect(() => {
+            if (api === '/new') {
+              pending = job.trigger({ input: 'new-api' })
+            }
+          }, [api, job.trigger])
+          return job
+        },
+        { initialProps: { api: '/old' } },
+      )
+
+      rerender({ api: '/new' })
+      await act(async () => {
+        await pending
+      })
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        '/new/trigger',
+        expect.any(Object),
+      )
+      expect(result.current.currentRunId).toBe('new-api-run')
+      expect(result.current.status).toBe('pending')
+    })
+
+    it('clears the previous API run if a post-change layout trigger fails', async () => {
+      globalThis.fetch = vi.fn().mockImplementation((url: string) =>
+        Promise.resolve(
+          url === '/old/trigger'
+            ? {
+                ok: true,
+                json: () =>
+                  Promise.resolve({ runId: 'old-run', status: 'pending' }),
+              }
+            : { ok: false, text: () => Promise.resolve('new source failed') },
+        ),
+      )
+      let pending!: Promise<{ runId: string }>
+      const { result, rerender } = renderHook(
+        ({ api }: { api: string }) => {
+          const job = useJob({
+            api,
+            jobName: 'test-job',
+            autoResume: false,
+            followLatest: false,
+          })
+          useLayoutEffect(() => {
+            if (api === '/new') pending = job.trigger({ input: 'new-api' })
+          }, [api, job.trigger])
+          return job
+        },
+        { initialProps: { api: '/old' } },
+      )
+      await act(async () => {
+        await result.current.trigger({ input: 'old-api' })
+      })
+      expect(result.current.currentRunId).toBe('old-run')
+
+      rerender({ api: '/new' })
+      await act(async () => {
+        await expect(pending).rejects.toThrow('new source failed')
+      })
+      expect(result.current.currentRunId).toBeNull()
+      expect(result.current.status).toBeNull()
     })
 
     it('ignores an event from the previous scope after its subscription closes', () => {

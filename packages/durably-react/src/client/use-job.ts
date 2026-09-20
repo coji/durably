@@ -147,7 +147,21 @@ export function useJob<
     scope: stableScope,
     currentRunId,
   })
+  const resolutionEpochRef = useRef(0)
+  const hasUserTriggered = useRef(false)
   useLayoutEffect(() => {
+    const previous = trackingContextRef.current
+    if (
+      previous.api !== api ||
+      previous.jobName !== jobName ||
+      previous.initialRunId !== initialRunId ||
+      previous.scope !== stableScope
+    ) {
+      // Invalidate the old context before a consumer layout effect can trigger
+      // a run in the newly committed context.
+      resolutionEpochRef.current++
+      hasUserTriggered.current = false
+    }
     trackingContextRef.current = {
       api,
       jobName,
@@ -159,14 +173,12 @@ export function useJob<
   const [isPending, setIsPending] = useState(false)
   const [hydratedStatus, setHydratedStatus] = useState<RunStatus | null>(null)
 
-  const resolutionEpochRef = useRef(0)
   const prevScopeRef = useRef(stableScope)
   const prevSourceRef = useRef({ api, jobName })
   const prevInitialRunIdRef = useRef(initialRunId)
   const [isResolving, setIsResolving] = useState(autoResume && !initialRunId)
 
   // Track if user has triggered a run (to prevent autoResume from overwriting)
-  const hasUserTriggered = useRef(false)
   const waitUnsubscribesRef = useRef(new Set<() => void>())
 
   const subscription = useSSESubscription<TOutput>(api, currentRunId)
@@ -175,8 +187,14 @@ export function useJob<
   useEffect(() => {
     if (prevScopeRef.current !== stableScope) {
       prevScopeRef.current = stableScope
-      resolutionEpochRef.current++
-      hasUserTriggered.current = false
+      if (hasUserTriggered.current) {
+        if (initialRunId && currentRunId === initialRunId) return
+        subscription.reset()
+        setCurrentRunId(initialRunId ?? null)
+        setHydratedStatus(null)
+        setIsResolving(false)
+        return
+      }
       if (initialRunId && currentRunId === initialRunId) {
         setIsPending(false)
         setIsResolving(false)
@@ -198,8 +216,13 @@ export function useJob<
     )
       return
     prevSourceRef.current = { api, jobName }
-    resolutionEpochRef.current++
-    hasUserTriggered.current = false
+    if (hasUserTriggered.current) {
+      subscription.reset()
+      setCurrentRunId(initialRunId ?? null)
+      setHydratedStatus(null)
+      setIsResolving(false)
+      return
+    }
     subscription.reset()
     setCurrentRunId(initialRunId ?? null)
     setHydratedStatus(null)
@@ -210,11 +233,17 @@ export function useJob<
   // Handle initialRunId updates
   useEffect(() => {
     const previous = prevInitialRunIdRef.current
+    if (previous === initialRunId) return
     prevInitialRunIdRef.current = initialRunId
+    if (hasUserTriggered.current) {
+      subscription.reset()
+      setCurrentRunId(initialRunId ?? null)
+      setHydratedStatus(null)
+      setIsResolving(false)
+      return
+    }
     if (!initialRunId) {
       if (previous) {
-        resolutionEpochRef.current++
-        hasUserTriggered.current = false
         subscription.reset()
         setCurrentRunId(null)
         setHydratedStatus(null)
@@ -222,7 +251,6 @@ export function useJob<
       }
       return
     }
-    resolutionEpochRef.current++
     setIsResolving(false)
     setHydratedStatus(null)
     setIsPending(false)
