@@ -149,6 +149,9 @@ export function useJob<
   })
   const resolutionEpochRef = useRef(0)
   const followedEpochRef = useRef<number | null>(null)
+  const followedRunIdRef = useRef<string | null>(null)
+  const activeTriggerEpochRef = useRef<number | null>(null)
+  const explicitRunIdRef = useRef<string | null>(null)
   const retryAfterTriggerFailureRef = useRef(false)
   const hasUserTriggered = useRef(false)
   useInsertionEffect(() => {
@@ -163,6 +166,8 @@ export function useJob<
       // a run in the newly committed context.
       resolutionEpochRef.current++
       hasUserTriggered.current = false
+      activeTriggerEpochRef.current = null
+      explicitRunIdRef.current = null
     }
     trackingContextRef.current = {
       api,
@@ -430,7 +435,13 @@ export function useJob<
           data.runId
         ) {
           followedEpochRef.current = ++resolutionEpochRef.current
-          hasUserTriggered.current = false
+          followedRunIdRef.current = data.runId
+          if (activeTriggerEpochRef.current === null) {
+            if (explicitRunIdRef.current !== data.runId) {
+              explicitRunIdRef.current = null
+              hasUserTriggered.current = false
+            }
+          }
           setIsResolving(false)
           setCurrentRunId(data.runId)
           if (data.type === 'run:trigger') {
@@ -468,21 +479,27 @@ export function useJob<
       }
       hasUserTriggered.current = true
       const epoch = ++resolutionEpochRef.current
+      activeTriggerEpochRef.current = epoch
+      explicitRunIdRef.current = null
       setIsResolving(false)
       const triggerContext = { ...trackingContextRef.current, api, jobName }
       const preserveFixedRun =
         !!triggerContext.initialRunId &&
         triggerContext.currentRunId === triggerContext.initialRunId
-      const isCurrent = () => {
+      const isSameContext = () => {
         const current = trackingContextRef.current
         return (
-          resolutionEpochRef.current === epoch &&
           current.api === triggerContext.api &&
           current.jobName === triggerContext.jobName &&
           current.initialRunId === triggerContext.initialRunId &&
           current.scope === triggerContext.scope
         )
       }
+      const isCurrent = () =>
+        resolutionEpochRef.current === epoch && isSameContext()
+      const isFollowCurrent = () =>
+        isSameContext() &&
+        followedEpochRef.current === resolutionEpochRef.current
 
       // Keep the fixed run visible until a new trigger result is accepted.
       // A scope change can supersede the request before it returns.
@@ -529,15 +546,23 @@ export function useJob<
           status?: RunStatus
         }
       } catch (error) {
+        const wasActiveTrigger = activeTriggerEpochRef.current === epoch
+        if (wasActiveTrigger) activeTriggerEpochRef.current = null
         if (isCurrent()) {
           hasUserTriggered.current = false
           setIsPending(false)
           retryAfterTriggerFailureRef.current = true
           setAutoResumeRestart((value) => value + 1)
+        } else if (wasActiveTrigger && isFollowCurrent()) {
+          hasUserTriggered.current = false
+          setIsPending(false)
         }
         throw error
       }
+      const wasActiveTrigger = activeTriggerEpochRef.current === epoch
+      if (wasActiveTrigger) activeTriggerEpochRef.current = null
       if (isCurrent()) {
+        explicitRunIdRef.current = data.runId
         if (preserveFixedRun) {
           subscription.reset()
           setHydratedStatus(null)
@@ -546,6 +571,13 @@ export function useJob<
         setCurrentRunId(data.runId)
         if (data.status) {
           setHydratedStatus(data.status)
+        }
+      } else if (wasActiveTrigger && isFollowCurrent()) {
+        if (followedRunIdRef.current === data.runId) {
+          explicitRunIdRef.current = data.runId
+        } else {
+          hasUserTriggered.current = false
+          setIsPending(false)
         }
       }
 
@@ -595,6 +627,9 @@ export function useJob<
 
   const reset = useCallback(() => {
     resolutionEpochRef.current++
+    hasUserTriggered.current = false
+    activeTriggerEpochRef.current = null
+    explicitRunIdRef.current = null
     setIsResolving(false)
     subscription.reset()
     setCurrentRunId(null)

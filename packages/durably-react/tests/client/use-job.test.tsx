@@ -1949,6 +1949,124 @@ describe('useJob (client)', () => {
       )
     })
 
+    it('keeps an explicit run when its own follow arrives before trigger success', async () => {
+      let resolveTrigger!: (response: unknown) => void
+      const fetchMock = vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith('/trigger')) {
+          return new Promise((resolve) => {
+            resolveTrigger = resolve
+          })
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve([{ id: 'older-leased-run', status: 'leased' }]),
+        })
+      })
+      globalThis.fetch = fetchMock
+      const { result, rerender } = renderHook(
+        ({
+          autoResume,
+          followLatest,
+        }: {
+          autoResume: boolean
+          followLatest: boolean
+        }) =>
+          useJob({
+            api: '/api/durably',
+            jobName: 'test-job',
+            autoResume,
+            followLatest,
+          }),
+        { initialProps: { autoResume: false, followLatest: true } },
+      )
+
+      const pending = result.current.trigger({ input: 'test' })
+      act(() => {
+        mockEventSource.emit({ type: 'run:trigger', runId: 'explicit-run' })
+      })
+      await waitFor(() =>
+        expect(result.current.currentRunId).toBe('explicit-run'),
+      )
+      await act(async () => {
+        resolveTrigger({
+          ok: true,
+          json: () =>
+            Promise.resolve({ runId: 'explicit-run', status: 'pending' }),
+        })
+        await expect(pending).resolves.toEqual({ runId: 'explicit-run' })
+      })
+
+      rerender({ autoResume: false, followLatest: false })
+      rerender({ autoResume: true, followLatest: false })
+      expect(result.current.currentRunId).toBe('explicit-run')
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('releases explicit ownership when another run is followed before trigger success', async () => {
+      let resolveTrigger!: (response: unknown) => void
+      let newerRunAvailable = false
+      const fetchMock = vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith('/trigger')) {
+          return new Promise((resolve) => {
+            resolveTrigger = resolve
+          })
+        }
+        const runs =
+          newerRunAvailable && url.includes('status=leased')
+            ? [{ id: 'newer-leased-run', status: 'leased' }]
+            : []
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(runs),
+        })
+      })
+      globalThis.fetch = fetchMock
+      const { result, rerender } = renderHook(
+        ({
+          autoResume,
+          followLatest,
+        }: {
+          autoResume: boolean
+          followLatest: boolean
+        }) =>
+          useJob({
+            api: '/api/durably',
+            jobName: 'test-job',
+            autoResume,
+            followLatest,
+          }),
+        { initialProps: { autoResume: false, followLatest: true } },
+      )
+
+      const pending = result.current.trigger({ input: 'test' })
+      act(() => {
+        mockEventSource.emit({ type: 'run:trigger', runId: 'followed-run' })
+      })
+      await waitFor(() =>
+        expect(result.current.currentRunId).toBe('followed-run'),
+      )
+      await act(async () => {
+        resolveTrigger({
+          ok: true,
+          json: () =>
+            Promise.resolve({ runId: 'explicit-run', status: 'pending' }),
+        })
+        await expect(pending).resolves.toEqual({ runId: 'explicit-run' })
+      })
+      act(() => {
+        mockEventSource.emit({ type: 'run:complete', runId: 'followed-run' })
+      })
+      await waitFor(() => expect(result.current.isTerminal).toBe(true))
+
+      rerender({ autoResume: false, followLatest: false })
+      newerRunAvailable = true
+      rerender({ autoResume: true, followLatest: false })
+      await waitFor(() =>
+        expect(result.current.currentRunId).toBe('newer-leased-run'),
+      )
+    })
+
     it('tracks a trigger issued in a layout effect after an API change', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,
