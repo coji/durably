@@ -2,6 +2,30 @@
   "name": "@coji/durably-react",
   "version": "0.15.0",
   "description": "React bindings for Durably - step-oriented resumable batch execution",
+  "keywords": [
+    "batch",
+    "durable",
+    "durably",
+    "hooks",
+    "job",
+    "queue",
+    "react",
+    "workflow"
+  ],
+  "homepage": "https://github.com/coji/durably#readme",
+  "bugs": {
+    "url": "https://github.com/coji/durably/issues"
+  },
+  "license": "MIT",
+  "author": "coji",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coji/durably.git"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -15,51 +39,17 @@
       "import": "./dist/spa.js"
     }
   },
-  "files": [
-    "dist",
-    "README.md"
-  ],
   "scripts": {
     "build": "tsup",
     "test": "pnpm test:react",
     "test:react": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "biome lint --error-on-warnings .",
-    "lint:fix": "biome lint --write .",
-    "format": "prettier --experimental-cli --check .",
-    "format:fix": "prettier --experimental-cli --write ."
-  },
-  "keywords": [
-    "react",
-    "hooks",
-    "durably",
-    "batch",
-    "job",
-    "queue",
-    "workflow",
-    "durable"
-  ],
-  "author": "coji",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/coji/durably.git"
-  },
-  "bugs": {
-    "url": "https://github.com/coji/durably/issues"
-  },
-  "homepage": "https://github.com/coji/durably#readme",
-  "peerDependencies": {
-    "react": ">=19.0.0",
-    "react-dom": ">=19.0.0"
-  },
-  "peerDependenciesMeta": {
-    "@coji/durably": {
-      "optional": true
-    }
+    "lint": "oxlint --deny-warnings .",
+    "lint:fix": "oxlint --fix .",
+    "format": "oxfmt --check .",
+    "format:fix": "oxfmt --write ."
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.14",
     "@coji/durably": "workspace:*",
     "@testing-library/react": "^16.3.3",
     "@types/react": "^19.3.0",
@@ -70,8 +60,6 @@
     "@vitest/browser-playwright": "5.0.1",
     "kysely": "^0.29.6",
     "playwright": "^1.63.0",
-    "prettier": "^3.9.7",
-    "prettier-plugin-organize-imports": "^4.3.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "sqlocal": "^0.18.0",
@@ -80,5 +68,14 @@
     "vite": "^8.3.0",
     "vitest": "5.0.1",
     "zod": "^4.6.5"
+  },
+  "peerDependencies": {
+    "react": ">=19.0.0",
+    "react-dom": ">=19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@coji/durably": {
+      "optional": true
+    }
   }
 }

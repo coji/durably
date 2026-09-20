@@ -1,5 +1,6 @@
 import type { Durably } from '@coji/durably'
 import { useMemo } from 'react'
+
 import { createDurablyEventSubscriber } from '../shared/durably-event-subscriber'
 import {
   useSubscription,

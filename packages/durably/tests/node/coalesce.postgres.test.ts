@@ -1,4 +1,5 @@
 import { afterAll, beforeAll } from 'vitest'
+
 import { createPostgresSchemaResource } from '../helpers/postgres-dialect'
 import { createCoalesceTests } from '../shared/coalesce.shared'
 

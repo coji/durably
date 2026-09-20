@@ -7,6 +7,7 @@
 import { act, render, renderHook, waitFor } from '@testing-library/react'
 import { useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
 import { useJob } from '../../src/client/use-job'
 import {
   createMockEventSource,

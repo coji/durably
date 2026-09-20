@@ -1,4 +1,5 @@
 import { type Kysely, sql } from 'kysely'
+
 import type { Database } from '../../src/schema'
 
 /** Seed old schema using SQL, without calling the current version's store. */

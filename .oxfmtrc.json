@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "semi": false,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "printWidth": 80,
+  "sortImports": true,
+  "sortPackageJson": false,
+  "sortTailwindcss": true,
+  "ignorePatterns": [
+    "pnpm-lock.yaml",
+    "dist/",
+    "node_modules/",
+    ".turbo/",
+    "__screenshots__/",
+    "website/.vitepress/cache/",
+    "website/.vitepress/dist/",
+    "website/public/llms.txt",
+    "*.log",
+    "CHANGELOG.md"
+  ]
+}

@@ -1,6 +1,7 @@
 import type { Dialect } from 'kysely'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
+
 import { createDurably, defineJob, type Durably } from '../../src'
 
 export function createConcurrencyTests(createDialect: () => Dialect) {

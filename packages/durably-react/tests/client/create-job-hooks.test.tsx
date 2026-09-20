@@ -10,6 +10,7 @@ import { defineJob } from '@coji/durably'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
+
 import { createJobHooks } from '../../src/client/create-job-hooks'
 import {
   createMockEventSource,

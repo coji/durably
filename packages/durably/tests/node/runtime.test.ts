@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
+
 import { createEventEmitter, type RunLeasedEvent } from '../../src/events'
 import type { RegisteredJob } from '../../src/job'
 import {

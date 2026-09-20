@@ -1,6 +1,8 @@
-import compression from 'compression'
 import { createServer } from 'node:http'
+
+import compression from 'compression'
 import { expect, it } from 'vitest'
+
 import { createSSEResponse } from '../../src/sse'
 
 it('delivers an SSE event through compression while the stream remains open', async () => {

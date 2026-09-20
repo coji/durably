@@ -6,6 +6,7 @@
  */
 
 import type { JobInput, JobOutput } from '@coji/durably'
+
 import { dataSyncJob } from './data-sync'
 import { processImageJob } from './process-image'
 

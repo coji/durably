@@ -2,6 +2,31 @@
   "name": "@coji/durably",
   "version": "0.15.0",
   "description": "Step-oriented resumable batch execution for Node.js and browsers using SQLite",
+  "keywords": [
+    "batch",
+    "durable",
+    "job",
+    "kysely",
+    "queue",
+    "resumable",
+    "sqlite",
+    "workflow"
+  ],
+  "homepage": "https://github.com/coji/durably#readme",
+  "bugs": {
+    "url": "https://github.com/coji/durably/issues"
+  },
+  "license": "MIT",
+  "author": "coji",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coji/durably.git"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md"
+  ],
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -15,11 +40,6 @@
       "import": "./dist/plugins/index.js"
     }
   },
-  "files": [
-    "dist",
-    "docs",
-    "README.md"
-  ],
   "scripts": {
     "build": "tsup",
     "test": "pnpm test:node && pnpm test:react && pnpm test:browser",
@@ -27,41 +47,16 @@
     "test:react": "vitest run --config vitest.react.config.ts",
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "biome lint --error-on-warnings .",
-    "lint:fix": "biome lint --write .",
-    "format": "prettier --experimental-cli --check .",
-    "format:fix": "prettier --experimental-cli --write ."
-  },
-  "keywords": [
-    "batch",
-    "job",
-    "queue",
-    "workflow",
-    "durable",
-    "resumable",
-    "sqlite",
-    "kysely"
-  ],
-  "author": "coji",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/coji/durably.git"
-  },
-  "bugs": {
-    "url": "https://github.com/coji/durably/issues"
-  },
-  "homepage": "https://github.com/coji/durably#readme",
-  "peerDependencies": {
-    "kysely": "^0.27.0 || ^0.28.0 || ^0.29.0",
-    "zod": "^4.0.0"
+    "lint": "oxlint --deny-warnings .",
+    "lint:fix": "oxlint --fix .",
+    "format": "oxfmt --check .",
+    "format:fix": "oxfmt --write ."
   },
   "dependencies": {
     "better-sqlite3": "13.0.3",
     "ulidx": "^2.4.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.14",
     "@libsql/client": "^0.18.0",
     "@libsql/kysely-libsql": "^0.4.1",
     "@testcontainers/postgresql": "12.1.0",
@@ -80,8 +75,6 @@
     "kysely": "^0.29.6",
     "pg": "^8.23.0",
     "playwright": "^1.63.0",
-    "prettier": "^3.9.7",
-    "prettier-plugin-organize-imports": "^4.3.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "sqlocal": "^0.18.0",
@@ -91,6 +84,10 @@
     "vite": "^8.3.0",
     "vitest": "5.0.1",
     "zod": "^4.6.5"
+  },
+  "peerDependencies": {
+    "kysely": "^0.27.0 || ^0.28.0 || ^0.29.0",
+    "zod": "^4.0.0"
   },
   "engines": {
     "node": ">=22"

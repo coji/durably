@@ -25,14 +25,12 @@
     "deps:update:actions": "pnpm update --include-github-actions \"actions/*\" pnpm/setup"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.14",
     "@types/node": "^24.13.5",
     "@typescript/native": "npm:typescript@^7.0.2",
     "@vitest/coverage-v8": "5.0.1",
     "lefthook": "2.1.14",
-    "prettier": "^3.9.7",
-    "prettier-plugin-organize-imports": "^4.3.0",
-    "prettier-plugin-tailwindcss": "0.8.1",
+    "oxfmt": "0.68.0",
+    "oxlint": "1.83.0",
     "tsx": "^4.23.13",
     "turbo": "2.10.13",
     "typescript": "npm:@typescript/typescript6@^6.0.2"

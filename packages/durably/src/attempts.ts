@@ -1,7 +1,12 @@
 import { ValidationError } from './errors'
 
 export type JsonValue =
-  null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
+  | null
+  | boolean
+  | number
+  | string
+  | JsonValue[]
+  | { [key: string]: JsonValue }
 
 /** Take one data-property snapshot so validation and serialization see the same values. */
 export function serializeJsonValue(value: unknown): string {

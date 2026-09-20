@@ -7,7 +7,12 @@ export interface RunsTable {
   job_name: string
   input: string // JSON
   status:
-    'pending' | 'leased' | 'waiting' | 'completed' | 'failed' | 'cancelled'
+    | 'pending'
+    | 'leased'
+    | 'waiting'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
   idempotency_key: string | null
   concurrency_key: string | null
   current_step_index: number

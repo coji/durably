@@ -1,5 +1,6 @@
 import type { Dialect } from 'kysely'
 import { afterEach, describe, expect, it } from 'vitest'
+
 import { createDurably, type Durably, ValidationError } from '../../src'
 
 export function createDurablyTests(createDialect: () => Dialect) {

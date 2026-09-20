@@ -3,7 +3,8 @@ import type { Database } from './schema'
 
 export type DurableWaitOutcome = 'signal' | 'timeout'
 export type DurableWaitResult =
-  { type: 'signal'; payload: JsonValue } | { type: 'timeout' }
+  | { type: 'signal'; payload: JsonValue }
+  | { type: 'timeout' }
 
 export interface DurableWait {
   id: string

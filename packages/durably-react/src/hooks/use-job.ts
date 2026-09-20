@@ -12,6 +12,7 @@ import {
   useRef,
   useState,
 } from 'react'
+
 import { useDurably } from '../context'
 import { useStableValue } from '../shared/use-stable-value'
 import type { LogEntry, Progress, RunStatus } from '../types'
@@ -124,7 +125,6 @@ export interface UseJobResult<TInput, TOutput> {
 export function useJob<
   TName extends string,
   TInput extends Record<string, unknown>,
-  // biome-ignore lint/suspicious/noConfusingVoidType: TOutput can be void for jobs without return value
   TOutput extends Record<string, unknown> | void,
   TLabels extends Record<string, string> = Record<string, string>,
 >(

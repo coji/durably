@@ -1,5 +1,6 @@
 import type { JobDefinition, RunStatus } from '@coji/durably'
 import { useCallback, useEffect, useRef, useState } from 'react'
+
 import { useDurably } from '../context'
 import { useStableValue } from '../shared/use-stable-value'
 import { type TypedRun, isJobDefinition } from '../types'
@@ -138,7 +139,8 @@ export function useRuns<
   TOutput extends Record<string, unknown> | undefined,
 >(
   jobDefinitionOrOptions?:
-    JobDefinition<TName, TInput, TOutput> | UseRunsOptions,
+    | JobDefinition<TName, TInput, TOutput>
+    | UseRunsOptions,
   optionsArg?: Omit<UseRunsOptions, 'jobName'>,
 ): UseRunsResult<TInput, TOutput> {
   const { durably } = useDurably()

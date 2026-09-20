@@ -1,5 +1,6 @@
-import { PostgresDialect } from 'kysely'
 import { randomUUID } from 'node:crypto'
+
+import { PostgresDialect } from 'kysely'
 import pg from 'pg'
 
 const DEFAULT_POSTGRES_URL =

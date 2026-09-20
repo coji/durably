@@ -1,4 +1,5 @@
 import { type z, prettifyError } from 'zod'
+
 import type { JsonValue } from './attempts'
 import type { JobDefinition } from './define-job'
 import {
@@ -14,7 +15,6 @@ import type { DurableWait, DurableWaitResult } from './waits'
 /** Matches `createDurably` default when callers omit `pollingIntervalMs` on the wait options. */
 const DEFAULT_WAIT_POLLING_INTERVAL_MS = 1000
 
-// eslint-disable-next-line @typescript-eslint/no-empty-function
 const noop = () => {}
 
 /**
@@ -259,7 +259,7 @@ export interface RegisteredJob<TInput, TOutput> {
   labelsSchema: z.ZodType | undefined
   fn: JobFunction<TInput, TOutput>
   jobDef: JobDefinition<string, TInput, TOutput>
-  // biome-ignore lint/suspicious/noExplicitAny: handle may have any labels type
+  // oxlint-disable-next-line typescript/no-explicit-any -- handle may have any labels type
   handle: JobHandle<string, TInput, TOutput, any>
 }
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+
 import type { LogEntry, Progress, RunStatus } from '../types'
 import { useSSESubscription } from './use-sse-subscription'
 
