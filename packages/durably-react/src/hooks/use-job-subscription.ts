@@ -1,5 +1,11 @@
 import type { Durably } from '@coji/durably'
-import { useCallback, useEffect, useReducer, useRef } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useInsertionEffect,
+  useReducer,
+  useRef,
+} from 'react'
 import {
   initialSubscriptionState,
   subscriptionReducer,
@@ -224,7 +230,9 @@ export function useJobSubscription<TOutput = unknown>(
   const scopeLabels = options?.scope?.labels
   const onFollow = options?.onFollow
   const latestScopeLabelsRef = useRef(scopeLabels)
-  latestScopeLabelsRef.current = scopeLabels
+  useInsertionEffect(() => {
+    latestScopeLabelsRef.current = scopeLabels
+  }, [scopeLabels])
 
   useEffect(() => {
     if (!durably) return

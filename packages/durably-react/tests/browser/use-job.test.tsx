@@ -6,7 +6,14 @@
 
 import { defineJob, type Durably } from '@coji/durably'
 import { act, render, renderHook, waitFor } from '@testing-library/react'
-import { useEffect, useLayoutEffect, type ReactNode } from 'react'
+import {
+  Suspense,
+  startTransition,
+  useEffect,
+  useLayoutEffect,
+  useState,
+  type ReactNode,
+} from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { DurablyProvider, useJob } from '../../src/spa'
@@ -861,6 +868,53 @@ describe('useJob', () => {
       )
       const { runId } = await act(async () => pending)
       expect(currentRunId).toBe(runId)
+    })
+
+    it('keeps following the committed scope while another scope suspends', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const suspended = new Promise<void>(() => {})
+      let changeScope!: () => void
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, {
+          autoResume: false,
+          scope: { labels: { documentId } },
+        })
+        if (documentId === 'doc-b') throw suspended
+        return (
+          <output data-testid="tracked-run">
+            {job.currentRunId ?? 'none'}
+          </output>
+        )
+      }
+
+      function Host() {
+        const [documentId, setDocumentId] = useState('doc-a')
+        changeScope = () => startTransition(() => setDocumentId('doc-b'))
+        return <Parent documentId={documentId} />
+      }
+
+      const { getByTestId } = render(
+        <DurablyProvider durably={durably}>
+          <Suspense fallback={null}>
+            <Host />
+          </Suspense>
+        </DurablyProvider>,
+      )
+      act(() => changeScope())
+      expect(getByTestId('tracked-run').textContent).toBe('none')
+
+      act(() => {
+        durably.emit({
+          type: 'run:trigger',
+          runId: 'committed-scope-run',
+          jobName: testJob.name,
+          input: { input: 'test' },
+          labels: { documentId: 'doc-a' },
+        })
+      })
+      expect(getByTestId('tracked-run').textContent).toBe('committed-scope-run')
     })
 
     it('explicit initialRunId skips scoped lookup and hydrates its status', async () => {
