@@ -95,6 +95,15 @@ export async function claimNextPostgres(
 
       const row = result.rows[0]
       if (!row) return null
+      if (row.waiting_on_wait_id) {
+        await trx
+          .updateTable('durably_waits')
+          .set({ first_resumed_at: now })
+          .where('id', '=', row.waiting_on_wait_id)
+          .where('status', '=', 'resolved')
+          .where('first_resumed_at', 'is', null)
+          .execute()
+      }
       return rowToRun(row)
     }
   })

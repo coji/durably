@@ -198,6 +198,8 @@ export interface Store<
     leaseGeneration: number,
     name: string,
     metadata?: JsonValue,
+    timeoutMs?: number,
+    now?: string,
   ): Promise<DurableWait | null>
   getWait(waitId: string): Promise<DurableWait | null>
   getWaits(runId: string): Promise<DurableWait[]>
@@ -205,12 +207,20 @@ export interface Store<
     waitId: string,
     payload: JsonValue,
     options: SignalOptions,
+    now?: string,
   ): Promise<DurableWait>
+  getWaitResultForRun(
+    runId: string,
+    leaseGeneration: number,
+    waitId: string,
+    now?: string,
+  ): Promise<DurableWait | null>
+  expireDueWaits(now: string, limit?: number): Promise<number>
   suspendRun(
     runId: string,
     leaseGeneration: number,
     waitId: string,
-    now: string,
+    now?: string,
   ): Promise<boolean>
   // Run lifecycle
   enqueue(input: CreateRunInput<TLabels>): Promise<EnqueueResult<TLabels>>
@@ -466,6 +476,23 @@ export function createKyselyStore(
       .where('lease_generation', '=', leaseGeneration)
       .where('lease_expires_at', '>', now)
       .returning('id')
+      .executeTakeFirst()
+    return row !== undefined
+  }
+
+  async function leaseStillValidAt(
+    trx: Kysely<Database>,
+    runId: string,
+    leaseGeneration: number,
+    now: string,
+  ): Promise<boolean> {
+    const row = await trx
+      .selectFrom('durably_runs')
+      .select('id')
+      .where('id', '=', runId)
+      .where('status', '=', 'leased')
+      .where('lease_generation', '=', leaseGeneration)
+      .where('lease_expires_at', '>', now)
       .executeTakeFirst()
     return row !== undefined
   }
@@ -1181,13 +1208,27 @@ export function createKyselyStore(
       })
     },
 
-    async prepareWait(runId, leaseGeneration, name, metadata) {
+    async prepareWait(runId, leaseGeneration, name, metadata, timeoutMs, at) {
       if (typeof name !== 'string' || !name.trim())
         throw new ValidationError('Wait name must be non-empty')
+      if (
+        timeoutMs !== undefined &&
+        (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
+      )
+        throw new ValidationError('timeoutMs must be a positive safe integer')
       const json = metadata === undefined ? null : canonicalWaitJson(metadata)
-      const now = new Date().toISOString()
       return db.transaction().execute(async (trx) => {
-        if (!(await lockAttemptLease(trx, runId, leaseGeneration, now)))
+        if (
+          !(await lockAttemptLease(
+            trx,
+            runId,
+            leaseGeneration,
+            at ?? new Date().toISOString(),
+          ))
+        )
+          return null
+        const now = at ?? new Date().toISOString()
+        if (!(await leaseStillValidAt(trx, runId, leaseGeneration, now)))
           return null
         const existing = await trx
           .selectFrom('durably_waits')
@@ -1196,6 +1237,18 @@ export function createKyselyStore(
           .where('name', '=', name)
           .executeTakeFirst()
         if (existing) return rowToWait(existing)
+        const deadlineMs =
+          timeoutMs === undefined ? null : Date.parse(now) + timeoutMs
+        let deadlineAt: string | null = null
+        if (deadlineMs !== null) {
+          try {
+            deadlineAt = new Date(deadlineMs).toISOString()
+          } catch {
+            throw new ValidationError(
+              'timeoutMs exceeds the representable date range',
+            )
+          }
+        }
         const row: Database['durably_waits'] = {
           id: ulid(),
           run_id: runId,
@@ -1205,7 +1258,12 @@ export function createKyselyStore(
           payload: null,
           signal_id: null,
           created_at: now,
+          deadline_at: deadlineAt,
+          outcome: null,
+          suspended_at: null,
           resolved_at: null,
+          first_resumed_at: null,
+          timing_known: 1,
         }
         await trx.insertInto('durably_waits').values(row).execute()
         return rowToWait(row)
@@ -1233,57 +1291,186 @@ export function createKyselyStore(
       ).map(rowToWait)
     },
 
-    async signalWait(waitId, payload, options) {
+    async signalWait(waitId, payload, options, at) {
       if (typeof options?.signalId !== 'string' || !options.signalId.trim())
         throw new ValidationError('signalId must be non-empty')
       const signalId = options.signalId
       const json = canonicalWaitJson(payload)
+      return db
+        .transaction()
+        .execute(async (trx) => {
+          const initial = await trx
+            .selectFrom('durably_waits')
+            .select('run_id')
+            .where('id', '=', waitId)
+            .executeTakeFirst()
+          if (!initial) throw new NotFoundError(`Wait not found: ${waitId}`)
+          // All wait mutations lock run before wait, including cancellation/deletion.
+          const run = await trx
+            .updateTable('durably_runs')
+            .set({ updated_at: sql`updated_at` })
+            .where('id', '=', initial.run_id)
+            .returningAll()
+            .executeTakeFirst()
+          const wait = await trx
+            .selectFrom('durably_waits')
+            .selectAll()
+            .where('id', '=', waitId)
+            .executeTakeFirst()
+          if (!run || !wait)
+            throw new NotFoundError(`Wait not found: ${waitId}`)
+          if (
+            wait.status === 'resolved' &&
+            wait.outcome === 'signal' &&
+            wait.signal_id === signalId &&
+            wait.payload === json
+          )
+            return rowToWait(wait)
+          if (
+            wait.status !== 'pending' ||
+            TERMINAL_STATUSES.includes(run.status)
+          )
+            throw new ConflictError(`Wait cannot accept this signal: ${waitId}`)
+          const now = at ?? new Date().toISOString()
+          if (wait.deadline_at !== null && now >= wait.deadline_at) {
+            await trx
+              .updateTable('durably_waits')
+              .set({
+                status: 'resolved',
+                outcome: 'timeout',
+                resolved_at: wait.deadline_at,
+              })
+              .where('id', '=', waitId)
+              .where('status', '=', 'pending')
+              .execute()
+            // A rejected signal must not roll back the committed timeout.
+            return null
+          }
+          const row = await trx
+            .updateTable('durably_waits')
+            .set({
+              status: 'resolved',
+              outcome: 'signal',
+              payload: json,
+              signal_id: signalId,
+              resolved_at: now,
+            })
+            .where('id', '=', waitId)
+            .returningAll()
+            .executeTakeFirstOrThrow()
+          return rowToWait(row)
+        })
+        .then((receipt) => {
+          if (receipt === null)
+            throw new ConflictError(`Wait cannot accept this signal: ${waitId}`)
+          return receipt
+        })
+    },
+
+    async getWaitResultForRun(runId, leaseGeneration, waitId, now) {
       return db.transaction().execute(async (trx) => {
-        const initial = await trx
-          .selectFrom('durably_waits')
-          .select('run_id')
-          .where('id', '=', waitId)
-          .executeTakeFirst()
-        if (!initial) throw new NotFoundError(`Wait not found: ${waitId}`)
-        // All wait mutations lock run before wait, including cancellation/deletion.
-        const run = await trx
-          .updateTable('durably_runs')
-          .set({ updated_at: sql`updated_at` })
-          .where('id', '=', initial.run_id)
-          .returningAll()
-          .executeTakeFirst()
+        if (
+          !(await lockAttemptLease(
+            trx,
+            runId,
+            leaseGeneration,
+            now ?? new Date().toISOString(),
+          ))
+        )
+          return null
+        now ??= new Date().toISOString()
+        if (!(await leaseStillValidAt(trx, runId, leaseGeneration, now)))
+          return null
         const wait = await trx
           .selectFrom('durably_waits')
           .selectAll()
           .where('id', '=', waitId)
           .executeTakeFirst()
-        if (!run || !wait) throw new NotFoundError(`Wait not found: ${waitId}`)
+        if (!wait || wait.run_id !== runId)
+          throw new ValidationError('Wait does not belong to this run')
         if (
-          wait.status === 'resolved' &&
-          wait.signal_id === signalId &&
-          wait.payload === json
+          wait.status !== 'pending' ||
+          wait.deadline_at === null ||
+          wait.deadline_at > now
         )
           return rowToWait(wait)
-        if (wait.status !== 'pending' || TERMINAL_STATUSES.includes(run.status))
-          throw new ConflictError(`Wait cannot accept this signal: ${waitId}`)
-        const row = await trx
+        const resolved = await trx
           .updateTable('durably_waits')
           .set({
             status: 'resolved',
-            payload: json,
-            signal_id: signalId,
-            resolved_at: new Date().toISOString(),
+            outcome: 'timeout',
+            resolved_at: wait.deadline_at,
           })
           .where('id', '=', waitId)
+          .where('status', '=', 'pending')
           .returningAll()
           .executeTakeFirstOrThrow()
-        return rowToWait(row)
+        return rowToWait(resolved)
       })
     },
 
-    async suspendRun(runId, leaseGeneration, waitId, now) {
+    async expireDueWaits(now, limit = 100) {
+      if (!Number.isSafeInteger(limit) || limit <= 0)
+        throw new ValidationError('limit must be a positive safe integer')
+      const due = await db
+        .selectFrom('durably_waits')
+        .select(['id', 'run_id'])
+        .where('status', '=', 'pending')
+        .where('deadline_at', '<=', now)
+        .orderBy('deadline_at', 'asc')
+        .orderBy('id', 'asc')
+        .limit(limit)
+        .execute()
+      let expired = 0
+      for (const candidate of due) {
+        expired += await db.transaction().execute(async (trx) => {
+          const run = await trx
+            .updateTable('durably_runs')
+            .set({ updated_at: sql`updated_at` })
+            .where('id', '=', candidate.run_id)
+            .returning('status')
+            .executeTakeFirst()
+          if (!run || TERMINAL_STATUSES.includes(run.status)) return 0
+          const wait = await trx
+            .selectFrom('durably_waits')
+            .selectAll()
+            .where('id', '=', candidate.id)
+            .executeTakeFirst()
+          if (
+            wait?.status !== 'pending' ||
+            wait.deadline_at === null ||
+            wait.deadline_at > now
+          )
+            return 0
+          const result = await trx
+            .updateTable('durably_waits')
+            .set({
+              status: 'resolved',
+              outcome: 'timeout',
+              resolved_at: wait.deadline_at,
+            })
+            .where('id', '=', wait.id)
+            .where('status', '=', 'pending')
+            .executeTakeFirst()
+          return Number(result.numUpdatedRows) > 0 ? 1 : 0
+        })
+      }
+      return expired
+    },
+
+    async suspendRun(runId, leaseGeneration, waitId, at) {
       return db.transaction().execute(async (trx) => {
-        if (!(await lockAttemptLease(trx, runId, leaseGeneration, now)))
+        if (
+          !(await lockAttemptLease(
+            trx,
+            runId,
+            leaseGeneration,
+            at ?? new Date().toISOString(),
+          ))
+        )
+          return false
+        const now = at ?? new Date().toISOString()
+        if (!(await leaseStillValidAt(trx, runId, leaseGeneration, now)))
           return false
         const wait = await trx
           .selectFrom('durably_waits')
@@ -1293,6 +1480,21 @@ export function createKyselyStore(
           .executeTakeFirst()
         if (!wait || (wait.status !== 'pending' && wait.status !== 'resolved'))
           throw new ConflictError('Wait is not available for this run')
+        const expiresBeforeSuspension =
+          wait.status === 'pending' &&
+          wait.deadline_at !== null &&
+          wait.deadline_at <= now
+        if (expiresBeforeSuspension)
+          await trx
+            .updateTable('durably_waits')
+            .set({
+              status: 'resolved',
+              outcome: 'timeout',
+              resolved_at: wait.deadline_at,
+            })
+            .where('id', '=', waitId)
+            .where('status', '=', 'pending')
+            .execute()
         await trx
           .updateTable('durably_runs')
           .set({
@@ -1303,6 +1505,13 @@ export function createKyselyStore(
             updated_at: now,
           })
           .where('id', '=', runId)
+          .execute()
+        // Even if a signal or deadline won just before this handoff, the run
+        // really enters the waiting queue and may spend time awaiting a slot.
+        await trx
+          .updateTable('durably_waits')
+          .set({ suspended_at: sql`COALESCE(suspended_at, ${now})` })
+          .where('id', '=', waitId)
           .execute()
         return true
       })

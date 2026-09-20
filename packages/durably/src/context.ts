@@ -400,6 +400,7 @@ export function createStepContext(
           leaseGeneration,
           name,
           options?.metadata,
+          options?.timeoutMs,
         )
         if (!wait) {
           const current = await storage.getRun(run.id)
@@ -418,23 +419,25 @@ export function createStepContext(
       try {
         if (!handle || typeof handle.id !== 'string')
           throw new ValidationError('A prepared wait ID is required')
-        const currentRun = await storage.getRun(run.id)
-        if (currentRun?.status === 'cancelled') throw new CancelledError(run.id)
-        if (
-          currentRun?.status !== 'leased' ||
-          currentRun.leaseGeneration !== leaseGeneration ||
-          !currentRun.leaseExpiresAt ||
-          Date.parse(currentRun.leaseExpiresAt) <= Date.now()
-        ) {
+        const wait = await storage.getWaitResultForRun(
+          run.id,
+          leaseGeneration,
+          handle.id,
+        )
+        if (!wait) {
+          const currentRun = await storage.getRun(run.id)
+          if (currentRun?.status === 'cancelled')
+            throw new CancelledError(run.id)
           abortForLeaseLoss()
           throw new LeaseLostError(run.id)
         }
-        const wait = await storage.getWait(handle.id)
         throwIfAborted()
         if (!wait || wait.runId !== run.id)
           throw new ValidationError('Wait must belong to the current run')
         if (wait.status === 'resolved')
-          return { type: 'signal', payload: wait.payload }
+          return wait.outcome === 'timeout'
+            ? { type: 'timeout' }
+            : { type: 'signal', payload: wait.payload }
         if (wait.status !== 'pending')
           throw new ConflictError(`Wait is already closed: ${wait.id}`)
         suspensionId = wait.id

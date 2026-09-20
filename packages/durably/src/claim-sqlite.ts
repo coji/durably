@@ -54,5 +54,17 @@ export async function claimNextSqlite(
     .executeTakeFirst()
 
   if (!row) return null
+  if (row.waiting_on_wait_id) {
+    // Keep the claim as a single atomic UPDATE for SQLite concurrency.
+    // Await this idempotent write before returning the lease to the worker;
+    // if it fails, no job callback starts and lease expiry can recover it.
+    await db
+      .updateTable('durably_waits')
+      .set({ first_resumed_at: now })
+      .where('id', '=', row.waiting_on_wait_id)
+      .where('status', '=', 'resolved')
+      .where('first_resumed_at', 'is', null)
+      .execute()
+  }
   return rowToRun(row)
 }

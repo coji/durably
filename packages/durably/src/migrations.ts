@@ -9,7 +9,7 @@ interface Migration {
   up: (db: Kysely<Database>) => Promise<void>
 }
 
-export const LATEST_SCHEMA_VERSION = 3
+export const LATEST_SCHEMA_VERSION = 4
 
 const migrations: Migration[] = [
   {
@@ -233,6 +233,43 @@ const migrations: Migration[] = [
         .on('durably_waits')
         .columns(['run_id', 'name'])
         .unique()
+        .execute()
+    },
+  },
+  {
+    version: 4,
+    up: async (db) => {
+      await db.schema
+        .alterTable('durably_waits')
+        .addColumn('deadline_at', 'text')
+        .execute()
+      await db.schema
+        .alterTable('durably_waits')
+        .addColumn('outcome', 'text')
+        .execute()
+      await db.schema
+        .alterTable('durably_waits')
+        .addColumn('suspended_at', 'text')
+        .execute()
+      await db.schema
+        .alterTable('durably_waits')
+        .addColumn('first_resumed_at', 'text')
+        .execute()
+      await db.schema
+        .alterTable('durably_waits')
+        .addColumn('timing_known', 'integer', (col) =>
+          col.notNull().defaultTo(0),
+        )
+        .execute()
+      await db
+        .updateTable('durably_waits')
+        .set({ outcome: 'signal' })
+        .where('status', '=', 'resolved')
+        .execute()
+      await db.schema
+        .createIndex('idx_durably_waits_due')
+        .on('durably_waits')
+        .columns(['status', 'deadline_at', 'id'])
         .execute()
     },
   },

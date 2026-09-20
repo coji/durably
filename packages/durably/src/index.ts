@@ -48,7 +48,11 @@ export type {
   WorkerErrorEvent,
 } from './events'
 
-export type { DurableWait } from './waits'
+export type {
+  DurableWait,
+  DurableWaitOutcome,
+  DurableWaitResult,
+} from './waits'
 
 // Job types
 export type { JsonValue } from './attempts'

@@ -40,7 +40,7 @@ describe('migration consolidated schema', () => {
       SELECT version FROM durably_schema_versions ORDER BY version DESC LIMIT 1
     `.execute(durably.db)
     expect(versions.rows[0]?.version).toBe(LATEST_SCHEMA_VERSION)
-    expect(LATEST_SCHEMA_VERSION).toBe(3)
+    expect(LATEST_SCHEMA_VERSION).toBe(4)
   })
 
   it('creates all expected indexes', async () => {
@@ -70,6 +70,7 @@ describe('migration consolidated schema', () => {
     expect(indexNames).toContain('idx_durably_steps_run_index')
     expect(indexNames).toContain('idx_durably_steps_completed_unique')
     expect(indexNames).toContain('idx_durably_step_attempts_run_started')
+    expect(indexNames).toContain('idx_durably_waits_due')
 
     // Labels indexes
     expect(indexNames).toContain('idx_durably_run_labels_pk')
@@ -93,6 +94,32 @@ describe('migration consolidated schema', () => {
     const versions = await sql<{ version: number }>`
       SELECT version FROM durably_schema_versions ORDER BY version
     `.execute(durably.db)
-    expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3])
+    expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3, 4])
+  })
+
+  it('upgrades v3 waits without inventing historical timing', async () => {
+    const dbFile = join(tmpdir(), `durably-migrate-${randomUUID()}.sqlite3`)
+    const durably = createDurably({ dialect: createLocalSqliteDialect(dbFile) })
+    dbs.push(durably.db)
+    await runMigrations(durably.db, { targetVersion: 3 })
+    const now = new Date().toISOString()
+    await sql`INSERT INTO durably_runs
+      (id, job_name, input, status, labels, lease_generation,
+       current_step_index, completed_step_count, created_at, updated_at)
+      VALUES ('old-run', 'legacy', '{}', 'waiting', '{}', 1, 0, 0, ${now}, ${now})`.execute(
+      durably.db,
+    )
+    await sql`INSERT INTO durably_waits
+      (id, run_id, name, status, payload, signal_id, created_at, resolved_at)
+      VALUES ('old-wait', 'old-run', 'approval', 'resolved', 'true', 'old-signal', ${now}, ${now})`.execute(
+      durably.db,
+    )
+    await durably.migrate()
+    const wait = await durably.storage.getWait('old-wait')
+    expect(wait?.status).toBe('resolved')
+    expect(wait?.outcome).toBe('signal')
+    expect(wait?.deadlineAt).toBeNull()
+    expect(wait?.inputWaitMs).toBeNull()
+    expect(wait?.executionSlotWaitMs).toBeNull()
   })
 })

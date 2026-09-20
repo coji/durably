@@ -1,6 +1,10 @@
 import { type JsonValue, serializeJsonValue } from './attempts'
 import type { Database } from './schema'
 
+export type DurableWaitOutcome = 'signal' | 'timeout'
+export type DurableWaitResult =
+  { type: 'signal'; payload: JsonValue } | { type: 'timeout' }
+
 export interface DurableWait {
   id: string
   runId: string
@@ -10,7 +14,15 @@ export interface DurableWait {
   payload: JsonValue | null
   signalId: string | null
   createdAt: string
+  deadlineAt: string | null
+  outcome: DurableWaitOutcome | null
+  suspendedAt: string | null
   resolvedAt: string | null
+  firstResumedAt: string | null
+  /** Time spent suspended before an external result was finalized. */
+  inputWaitMs: number | null
+  /** Time from finalization to the first resumed lease. */
+  executionSlotWaitMs: number | null
 }
 
 export interface WaitHandle {
@@ -39,6 +51,30 @@ export function canonicalWaitJson(value: unknown): string {
 }
 
 export function rowToWait(row: Database['durably_waits']): DurableWait {
+  const inputWaitMs =
+    row.outcome === null || row.timing_known !== 1 || row.resolved_at === null
+      ? null
+      : row.suspended_at === null
+        ? 0
+        : Math.max(
+            0,
+            Date.parse(row.resolved_at) - Date.parse(row.suspended_at),
+          )
+  const executionSlotWaitMs =
+    row.outcome === null || row.timing_known !== 1 || row.resolved_at === null
+      ? null
+      : row.suspended_at === null
+        ? 0
+        : row.first_resumed_at === null
+          ? null
+          : Math.max(
+              0,
+              Date.parse(row.first_resumed_at) -
+                Math.max(
+                  Date.parse(row.resolved_at),
+                  Date.parse(row.suspended_at),
+                ),
+            )
   return {
     id: row.id,
     runId: row.run_id,
@@ -48,6 +84,12 @@ export function rowToWait(row: Database['durably_waits']): DurableWait {
     payload: row.payload === null ? null : JSON.parse(row.payload),
     signalId: row.signal_id,
     createdAt: row.created_at,
+    deadlineAt: row.deadline_at,
+    outcome: row.outcome,
+    suspendedAt: row.suspended_at,
     resolvedAt: row.resolved_at,
+    firstResumedAt: row.first_resumed_at,
+    inputWaitMs,
+    executionSlotWaitMs,
   }
 }

@@ -26,6 +26,7 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
     afterEach(async () => {
       await d.stop()
       await d.db.destroy()
+      vi.useRealTimers()
     })
 
     it('releases one worker slot and same-key exclusion, then replays checkpoints on the same run', async () => {
@@ -43,6 +44,8 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
                 metadata: { target: 'review-1' },
               })
               const result = await step.waitFor(wait)
+              if (result.type !== 'signal')
+                throw new Error('Unexpected timeout')
               await step.run('after', () => continuation(result.payload))
               return result.payload
             }
@@ -87,7 +90,12 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
       expect(continuation).toHaveBeenCalledTimes(1)
       expect(await app.getStepAttempts(a.id)).toHaveLength(2)
       expect(await app.storage.getSteps(a.id)).toHaveLength(0)
-      expect(await app.getWait(wait.id)).toEqual(receipt)
+      expect(await app.getWait(wait.id)).toMatchObject({
+        id: receipt.id,
+        outcome: 'signal',
+        payload: receipt.payload,
+        resolvedAt: receipt.resolvedAt,
+      })
     })
 
     it('accepts early input without suspending or recording wait attempts', async () => {
@@ -113,6 +121,108 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
       })
       expect(waiting).not.toHaveBeenCalled()
       expect(await app.getStepAttempts(run.id)).toEqual([])
+    })
+
+    it('resumes a timed-out run with a distinct result and separates input from slot waiting', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      const preparedAt = new Date('2026-01-01T00:00:00.000Z')
+      vi.setSystemTime(preparedAt)
+      const after = vi.fn()
+      const app = d.register({
+        job: defineJob({
+          name: 'deadline',
+          input: z.object({}),
+          output: z.unknown(),
+          run: async (step) => {
+            const wait = await step.prepareWait('approval', {
+              timeoutMs: 1_000,
+            })
+            const result = await step.waitFor(wait)
+            await step.run('after', () => after(result))
+            return result
+          },
+        }),
+      })
+      const run = await app.jobs.job.trigger({})
+      await app.processOne()
+      expect((await app.getRun(run.id))?.status).toBe('waiting')
+      const [initial] = await app.getWaits(run.id)
+      expect(initial.deadlineAt).toBe('2026-01-01T00:00:01.000Z')
+
+      vi.setSystemTime(new Date('2026-01-01T00:00:02.000Z'))
+      await app.processOne()
+      expect((await app.getRun(run.id))?.output).toEqual({ type: 'timeout' })
+      expect(after).toHaveBeenCalledExactlyOnceWith({ type: 'timeout' })
+      const wait = await app.getWait(initial.id)
+      expect(wait).toMatchObject({
+        outcome: 'timeout',
+        resolvedAt: '2026-01-01T00:00:01.000Z',
+        firstResumedAt: '2026-01-01T00:00:02.000Z',
+        inputWaitMs: 1_000,
+        executionSlotWaitMs: 1_000,
+      })
+    })
+
+    it('returns an early timeout without suspending the run', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+      const waiting = vi.fn()
+      d.on('run:waiting', waiting)
+      const app = d.register({
+        job: defineJob({
+          name: 'early-timeout',
+          input: z.object({}),
+          output: z.unknown(),
+          run: async (step) => {
+            const wait = await step.prepareWait('approval', {
+              timeoutMs: 1_000,
+            })
+            vi.setSystemTime(new Date('2026-01-01T00:00:01.000Z'))
+            return step.waitFor(wait)
+          },
+        }),
+      })
+      const run = await app.jobs.job.trigger({})
+      await app.processOne()
+      expect((await app.getRun(run.id))?.output).toEqual({ type: 'timeout' })
+      expect(waiting).not.toHaveBeenCalled()
+      expect((await app.getWaits(run.id))[0]).toMatchObject({
+        suspendedAt: null,
+        firstResumedAt: null,
+        inputWaitMs: 0,
+        executionSlotWaitMs: 0,
+      })
+    })
+
+    it('cancellation after timeout finalization prevents continuation', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+      const after = vi.fn()
+      const app = d.register({
+        job: defineJob({
+          name: 'cancelled-timeout',
+          input: z.object({}),
+          run: async (step) => {
+            const wait = await step.prepareWait('approval', {
+              timeoutMs: 1_000,
+            })
+            await step.waitFor(wait)
+            await step.run('after', after)
+          },
+        }),
+      })
+      const run = await app.jobs.job.trigger({})
+      await app.processOne()
+      const [wait] = await app.getWaits(run.id)
+      vi.setSystemTime(new Date('2026-01-01T00:00:01.000Z'))
+      await expect(
+        app.signal(wait.id, true, { signalId: 'late' }),
+      ).rejects.toThrow()
+      expect((await app.getWait(wait.id))?.outcome).toBe('timeout')
+      await app.cancel(run.id)
+      expect(await app.processOne()).toBe(false)
+      expect((await app.getRun(run.id))?.status).toBe('cancelled')
+      expect(after).not.toHaveBeenCalled()
     })
 
     it('does not hand off while finally is running, even after input arrives', async () => {

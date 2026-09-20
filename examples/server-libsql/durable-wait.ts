@@ -5,11 +5,15 @@ import { z } from 'zod'
 
 const approval = defineJob({
   name: 'durable-wait-example',
-  input: z.object({ changeId: z.string() }),
+  input: z.object({
+    changeId: z.string(),
+    timeoutMs: z.number().int().positive(),
+  }),
   output: z.object({ approved: z.boolean() }),
   run: async (step, input) => {
     const wait = await step.prepareWait('approval:1', {
       metadata: { changeId: input.changeId },
+      timeoutMs: input.timeoutMs,
     })
     await step.run('request-approval:1', () => {
       // Send this ID to your application after validating the target change.
@@ -18,6 +22,10 @@ const approval = defineJob({
       return null
     })
     const result = await step.waitFor(wait)
+    if (result.type === 'timeout') {
+      console.log(`Approval expired for ${input.changeId}`)
+      return { approved: false }
+    }
     const decision = z.object({ approved: z.boolean() }).parse(result.payload)
     return decision
   },
@@ -39,9 +47,17 @@ let durably = openRuntime()
 // Migrate only: init() would start a background worker and race these manual stages.
 await durably.migrate()
 try {
-  const first = await durably.jobs.approval.trigger({ changeId: 'change-123' })
+  const first = await durably.jobs.approval.trigger({
+    changeId: 'change-123',
+    timeoutMs: 60_000,
+  })
+  const expiring = await durably.jobs.approval.trigger({
+    changeId: 'change-456',
+    timeoutMs: 1_000,
+  })
   await durably.processUntilIdle()
   console.log('Suspended:', (await durably.getRun(first.id))?.status)
+  console.log('Will expire:', (await durably.getRun(expiring.id))?.status)
 
   const second = await durably.jobs.background.trigger({})
   await durably.processUntilIdle()
@@ -60,6 +76,13 @@ try {
   await durably.signal(wait.id, { approved: true }, { signalId: 'decision-1' })
   await durably.processUntilIdle()
   console.log('Same run resumed:', first.id, await durably.getRun(first.id))
+  console.log('Signal wait timing:', await durably.getWait(wait.id))
+
+  // The other wait's fixed deadline survives runtime recreation without a signal.
+  await new Promise((resolve) => setTimeout(resolve, 1_100))
+  await durably.processUntilIdle()
+  console.log('Timed-out run:', expiring.id, await durably.getRun(expiring.id))
+  console.log('Timeout wait timing:', await durably.getWaits(expiring.id))
 } finally {
   await durably.db.destroy()
 }

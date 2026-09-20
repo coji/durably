@@ -81,7 +81,12 @@ export interface WaitsTable {
   payload: string | null
   signal_id: string | null
   created_at: string
+  deadline_at: string | null
+  outcome: 'signal' | 'timeout' | null
+  suspended_at: string | null
   resolved_at: string | null
+  first_resumed_at: string | null
+  timing_known: number
 }
 
 export interface Database {
