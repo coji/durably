@@ -1837,6 +1837,58 @@ describe('useJob (client)', () => {
       ).toHaveLength(1)
     })
 
+    it('looks up a new run when auto-resume is enabled after a prior follow', async () => {
+      let newerRunAvailable = false
+      const fetchMock = vi.fn().mockImplementation((url: string) => {
+        const runs =
+          newerRunAvailable && url.includes('status=leased')
+            ? [{ id: 'newer-leased-run', status: 'leased' }]
+            : []
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(runs),
+        })
+      })
+      globalThis.fetch = fetchMock
+      const { result, rerender } = renderHook(
+        ({
+          autoResume,
+          followLatest,
+        }: {
+          autoResume: boolean
+          followLatest: boolean
+        }) =>
+          useJob({
+            api: '/api/durably',
+            jobName: 'test-job',
+            autoResume,
+            followLatest,
+          }),
+        { initialProps: { autoResume: false, followLatest: true } },
+      )
+
+      act(() => {
+        mockEventSource.emit({ type: 'run:trigger', runId: 'old-run' })
+      })
+      await waitFor(() => expect(result.current.currentRunId).toBe('old-run'))
+      act(() => {
+        mockEventSource.emit({ type: 'run:complete', runId: 'old-run' })
+      })
+      await waitFor(() => expect(result.current.isTerminal).toBe(true))
+
+      rerender({ autoResume: false, followLatest: false })
+      newerRunAvailable = true
+      rerender({ autoResume: true, followLatest: false })
+      await waitFor(() =>
+        expect(result.current.currentRunId).toBe('newer-leased-run'),
+      )
+      expect(result.current.status).toBe('leased')
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('status=leased'),
+        expect.any(Object),
+      )
+    })
+
     it('tracks a trigger issued in a layout effect after an API change', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,

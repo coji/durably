@@ -149,6 +149,7 @@ export function useJob<
   })
   const resolutionEpochRef = useRef(0)
   const followedEpochRef = useRef<number | null>(null)
+  const retryAfterTriggerFailureRef = useRef(false)
   const hasUserTriggered = useRef(false)
   useInsertionEffect(() => {
     const previous = trackingContextRef.current
@@ -263,6 +264,8 @@ export function useJob<
   useEffect(() => {
     // A failed trigger retries this lookup for the current scope.
     void autoResumeRestart
+    const retryAfterTriggerFailure = retryAfterTriggerFailureRef.current
+    retryAfterTriggerFailureRef.current = false
     if (!autoResume) {
       setIsResolving(false)
       return
@@ -275,7 +278,10 @@ export function useJob<
       setIsResolving(false)
       return
     }
-    if (followedEpochRef.current === resolutionEpochRef.current) {
+    if (
+      retryAfterTriggerFailure &&
+      followedEpochRef.current === resolutionEpochRef.current
+    ) {
       setIsResolving(false)
       return
     }
@@ -525,6 +531,7 @@ export function useJob<
         if (isCurrent()) {
           hasUserTriggered.current = false
           setIsPending(false)
+          retryAfterTriggerFailureRef.current = true
           setAutoResumeRestart((value) => value + 1)
         }
         throw error
