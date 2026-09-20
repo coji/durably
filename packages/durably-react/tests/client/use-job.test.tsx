@@ -1787,6 +1787,56 @@ describe('useJob (client)', () => {
       await waitFor(() => expect(currentRunId).toBe('existing-new-scope-run'))
     })
 
+    it('keeps a matching follow ahead of a lookup restarted after trigger failure', async () => {
+      let triggerFailed = false
+      const fetchMock = vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith('/trigger')) {
+          triggerFailed = true
+          return Promise.resolve({
+            ok: false,
+            status: 400,
+            text: () => Promise.resolve('trigger failed'),
+          })
+        }
+        const runs =
+          triggerFailed && url.includes('status=leased')
+            ? [{ id: 'older-leased-run', status: 'leased' }]
+            : []
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(runs),
+        })
+      })
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          scope: { labels: { documentId: 'doc-a' } },
+        }),
+      )
+      await waitFor(() => expect(result.current.isResolving).toBe(false))
+
+      await act(async () => {
+        await expect(result.current.trigger({ input: 'test' })).rejects.toThrow(
+          'trigger failed',
+        )
+        mockEventSource.emit({
+          type: 'run:trigger',
+          runId: 'newer-followed-run',
+        })
+      })
+
+      expect(result.current.currentRunId).toBe('newer-followed-run')
+      expect(result.current.status).toBe('pending')
+      expect(
+        fetchMock.mock.calls.filter(([url]) =>
+          (url as string).includes('status=leased'),
+        ),
+      ).toHaveLength(1)
+    })
+
     it('tracks a trigger issued in a layout effect after an API change', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,

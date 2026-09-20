@@ -148,6 +148,7 @@ export function useJob<
     currentRunId,
   })
   const resolutionEpochRef = useRef(0)
+  const followedEpochRef = useRef<number | null>(null)
   const hasUserTriggered = useRef(false)
   useInsertionEffect(() => {
     const previous = trackingContextRef.current
@@ -271,6 +272,10 @@ export function useJob<
       return // Skip if initialRunId is provided
     }
     if (hasUserTriggered.current) {
+      setIsResolving(false)
+      return
+    }
+    if (followedEpochRef.current === resolutionEpochRef.current) {
       setIsResolving(false)
       return
     }
@@ -418,7 +423,7 @@ export function useJob<
             data.type === 'run:leased') &&
           data.runId
         ) {
-          resolutionEpochRef.current++
+          followedEpochRef.current = ++resolutionEpochRef.current
           setIsResolving(false)
           setCurrentRunId(data.runId)
           if (data.type === 'run:trigger') {
