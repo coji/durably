@@ -40,12 +40,15 @@ export type {
   RunLeasedEvent,
   RunProgressEvent,
   RunTriggerEvent,
+  RunWaitingEvent,
   StepCancelEvent,
   StepCompleteEvent,
   StepFailEvent,
   StepStartEvent,
   WorkerErrorEvent,
 } from './events'
+
+export type { DurableWait } from './waits'
 
 // Job types
 export type { JsonValue } from './attempts'

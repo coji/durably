@@ -4,6 +4,7 @@ import {
   ConflictError,
   getErrorMessage,
   LeaseLostError,
+  ValidationError,
 } from './errors'
 import type { EventEmitter } from './events'
 import type { StepAttemptContext, StepContext } from './job'
@@ -24,8 +25,13 @@ export function createStepContext(
   step: StepContext
   abortLeaseOwnership(): void
   preserveFailedParallelSteps(): boolean
+  suspension(): string | null
+  settleSteps(): Promise<void>
   dispose: () => void
 } {
+  let suspensionId: string | null = null
+  let waitOperation = false
+  const executingSteps = new Set<Promise<unknown>>()
   let stepIndex = run.currentStepIndex
   const activeStepNames = new Set<string>()
   const stepParents = new Map<string, string | null>()
@@ -42,6 +48,7 @@ export function createStepContext(
 
   function throwIfAborted(): void {
     if (!controller.signal.aborted) {
+      if (suspensionId !== null) throw new Error('Durably execution suspended')
       return
     }
 
@@ -146,6 +153,213 @@ export function createStepContext(
     return ambiguousLogScope ? null : nestedStepName()
   }
 
+  function beginWaitOperation() {
+    throwIfAborted()
+    if (executingSteps.size > 0 || waitOperation) {
+      throw new ValidationError(
+        'Durable waits require a sequential job boundary, outside step callbacks',
+      )
+    }
+    waitOperation = true
+  }
+
+  async function executeStep<T>(
+    name: string,
+    fn: (signal: AbortSignal, attempt: StepAttemptContext) => T | Promise<T>,
+    options?: { metadata?: JsonValue },
+  ): Promise<T> {
+    // Capture the caller before the first await. A nested step may start
+    // later, after the parent callback has yielded for the durable lookup.
+    const parentStepName = implicitStepName()
+    // Fast path: check in-memory signal first (set by run:cancel event)
+    throwIfAborted()
+
+    // Slow path: DB check for cases where event wasn't received
+    // (e.g., run cancelled while worker was down, then resumed)
+    const currentRun = await storage.getRun(run.id)
+    if (currentRun?.status === 'cancelled') {
+      controller.abort()
+      throwIfAborted()
+    }
+
+    if (
+      currentRun &&
+      ((currentRun.status === 'leased' &&
+        currentRun.leaseGeneration !== leaseGeneration) ||
+        currentRun.status === 'completed' ||
+        currentRun.status === 'failed')
+    ) {
+      abortForLeaseLoss()
+      throwIfAborted()
+    }
+
+    // Check cancellation before replaying cached steps
+    throwIfAborted()
+
+    // Check if step was already completed
+    const existingStep = await storage.getCompletedStep(run.id, name)
+    if (existingStep) {
+      stepIndex = Math.max(stepIndex, existingStep.index + 1)
+      return existingStep.output as T
+    }
+
+    const initialMetadata =
+      options && 'metadata' in options
+        ? JSON.parse(serializeJsonValue(options.metadata))
+        : undefined
+    const attemptIndex = stepIndex++
+    const startedAttempt = await storage.beginStepAttempt(
+      run.id,
+      leaseGeneration,
+      {
+        name,
+        index: attemptIndex,
+        ...(options && 'metadata' in options
+          ? { metadata: initialMetadata }
+          : {}),
+      },
+    )
+    if (!startedAttempt) {
+      return await throwForRefusedStep(name, attemptIndex)
+    }
+    // Cancellation may arrive while the durable start is being written.
+    throwIfAborted()
+
+    let currentMetadata = startedAttempt.metadata
+    const attempt: StepAttemptContext = {
+      id: startedAttempt.id,
+      log: stepLogger(name),
+      get metadata() {
+        return currentMetadata === null
+          ? null
+          : JSON.parse(JSON.stringify(currentMetadata))
+      },
+      async setMetadata(value) {
+        const snapshot = JSON.parse(serializeJsonValue(value)) as JsonValue
+        const updated = await storage.updateStepAttemptMetadata(
+          run.id,
+          leaseGeneration,
+          startedAttempt.id,
+          snapshot,
+        )
+        if (updated === undefined)
+          await throwForRefusedMetadata(startedAttempt.id)
+        currentMetadata = updated as JsonValue
+      },
+    }
+
+    // A nested chain has an unambiguous innermost callback. Independent
+    // callbacks remain unscoped once their lifetimes overlap.
+    stepParents.set(name, parentStepName)
+    activeStepNames.add(name)
+    if (activeStepNames.size > 1 && !nestedStepName()) {
+      ambiguousLogScope = true
+    }
+
+    // The attempt start is durable before the callback or event is visible.
+    const startedAt = startedAttempt.startedAt
+    const startTime = Date.now()
+
+    // Emit step:start event
+    eventEmitter.emit({
+      type: 'step:start',
+      runId: run.id,
+      jobName,
+      stepName: name,
+      stepIndex: attemptIndex,
+      labels: run.labels,
+    })
+
+    try {
+      let result: T
+      try {
+        // Only callback errors produce failed step and attempt records.
+        result = await fn(controller.signal, attempt)
+        throwIfAborted()
+      } catch (error) {
+        // If lease was already lost, don't attempt to write step data —
+        // we no longer own this run and must not pollute the new owner's state.
+        if (error instanceof LeaseLostError) {
+          throw error
+        }
+
+        // Check if signal was aborted due to lease loss (not cancellation).
+        // fn() may have thrown a different error while the lease was lost.
+        const isLeaseLost =
+          controller.signal.aborted && controller.signal.reason === LEASE_LOST
+        if (isLeaseLost) {
+          throw new LeaseLostError(run.id)
+        }
+
+        const isCancelled = controller.signal.aborted
+        const errorMessage = getErrorMessage(error)
+
+        // Persist failed/cancelled step record with lease guard.
+        // The guard checks both status='leased' and lease_generation,
+        // so this returns null if the run was cancelled or the lease was lost.
+        const savedStep = await storage.persistStep(run.id, leaseGeneration, {
+          name,
+          index: attemptIndex,
+          status: isCancelled ? 'cancelled' : 'failed',
+          error: errorMessage,
+          startedAt,
+          attemptId: startedAttempt.id,
+        })
+
+        if (!savedStep) {
+          await throwForRefusedStep(name, attemptIndex)
+        }
+
+        // If we reach here, savedStep is truthy — the run is still leased.
+        // Cancellation is handled above (persistStep returns null for cancelled runs).
+        eventEmitter.emit({
+          type: 'step:fail',
+          error: errorMessage,
+          runId: run.id,
+          jobName,
+          stepName: name,
+          stepIndex: attemptIndex,
+          labels: run.labels,
+        })
+
+        throw error
+      }
+
+      // A checkpoint write error leaves the attempt unresolved. It must not
+      // be reclassified as a callback failure.
+      const savedStep = await storage.persistStep(run.id, leaseGeneration, {
+        name,
+        index: attemptIndex,
+        status: 'completed',
+        output: result,
+        startedAt,
+        attemptId: startedAttempt.id,
+      })
+
+      if (!savedStep) {
+        await throwForRefusedStep(name, attemptIndex)
+      }
+
+      // Emit step:complete event
+      eventEmitter.emit({
+        type: 'step:complete',
+        runId: run.id,
+        jobName,
+        stepName: name,
+        stepIndex: attemptIndex,
+        output: result,
+        duration: Date.now() - startTime,
+        labels: run.labels,
+      })
+
+      return result
+    } finally {
+      activeStepNames.delete(name)
+      stepParents.delete(name)
+      if (activeStepNames.size === 0) ambiguousLogScope = false
+    }
+  }
+
   const step: StepContext = {
     get runId(): string {
       return run.id
@@ -163,200 +377,70 @@ export function createStepContext(
       throwIfAborted()
     },
 
-    async run<T>(
-      name: string,
-      fn: (signal: AbortSignal, attempt: StepAttemptContext) => T | Promise<T>,
-      options?: { metadata?: JsonValue },
-    ): Promise<T> {
-      // Capture the caller before the first await. A nested step may start
-      // later, after the parent callback has yielded for the durable lookup.
-      const parentStepName = implicitStepName()
-      // Fast path: check in-memory signal first (set by run:cancel event)
+    async run(name, fn, options) {
       throwIfAborted()
-
-      // Slow path: DB check for cases where event wasn't received
-      // (e.g., run cancelled while worker was down, then resumed)
-      const currentRun = await storage.getRun(run.id)
-      if (currentRun?.status === 'cancelled') {
-        controller.abort()
-        throwIfAborted()
-      }
-
-      if (
-        currentRun &&
-        ((currentRun.status === 'leased' &&
-          currentRun.leaseGeneration !== leaseGeneration) ||
-          currentRun.status === 'completed' ||
-          currentRun.status === 'failed')
-      ) {
-        abortForLeaseLoss()
-        throwIfAborted()
-      }
-
-      // Check cancellation before replaying cached steps
-      throwIfAborted()
-
-      // Check if step was already completed
-      const existingStep = await storage.getCompletedStep(run.id, name)
-      if (existingStep) {
-        stepIndex = Math.max(stepIndex, existingStep.index + 1)
-        return existingStep.output as T
-      }
-
-      const initialMetadata =
-        options && 'metadata' in options
-          ? JSON.parse(serializeJsonValue(options.metadata))
-          : undefined
-      const attemptIndex = stepIndex++
-      const startedAttempt = await storage.beginStepAttempt(
-        run.id,
-        leaseGeneration,
-        {
-          name,
-          index: attemptIndex,
-          ...(options && 'metadata' in options
-            ? { metadata: initialMetadata }
-            : {}),
-        },
+      if (waitOperation)
+        throw new ValidationError(
+          'Cannot start a step during wait preparation or suspension',
+        )
+      const task = executeStep(name, fn, options)
+      executingSteps.add(task)
+      void task.then(
+        () => executingSteps.delete(task),
+        () => executingSteps.delete(task),
       )
-      if (!startedAttempt) {
-        return await throwForRefusedStep(name, attemptIndex)
-      }
-      // Cancellation may arrive while the durable start is being written.
-      throwIfAborted()
+      return task
+    },
 
-      let currentMetadata = startedAttempt.metadata
-      const attempt: StepAttemptContext = {
-        id: startedAttempt.id,
-        log: stepLogger(name),
-        get metadata() {
-          return currentMetadata === null
-            ? null
-            : JSON.parse(JSON.stringify(currentMetadata))
-        },
-        async setMetadata(value) {
-          const snapshot = JSON.parse(serializeJsonValue(value)) as JsonValue
-          const updated = await storage.updateStepAttemptMetadata(
-            run.id,
-            leaseGeneration,
-            startedAttempt.id,
-            snapshot,
-          )
-          if (updated === undefined)
-            await throwForRefusedMetadata(startedAttempt.id)
-          currentMetadata = updated as JsonValue
-        },
-      }
-
-      // A nested chain has an unambiguous innermost callback. Independent
-      // callbacks remain unscoped once their lifetimes overlap.
-      stepParents.set(name, parentStepName)
-      activeStepNames.add(name)
-      if (activeStepNames.size > 1 && !nestedStepName()) {
-        ambiguousLogScope = true
-      }
-
-      // The attempt start is durable before the callback or event is visible.
-      const startedAt = startedAttempt.startedAt
-      const startTime = Date.now()
-
-      // Emit step:start event
-      eventEmitter.emit({
-        type: 'step:start',
-        runId: run.id,
-        jobName,
-        stepName: name,
-        stepIndex: attemptIndex,
-        labels: run.labels,
-      })
-
+    async prepareWait(name, options) {
+      beginWaitOperation()
       try {
-        let result: T
-        try {
-          // Only callback errors produce failed step and attempt records.
-          result = await fn(controller.signal, attempt)
-          throwIfAborted()
-        } catch (error) {
-          // If lease was already lost, don't attempt to write step data —
-          // we no longer own this run and must not pollute the new owner's state.
-          if (error instanceof LeaseLostError) {
-            throw error
-          }
-
-          // Check if signal was aborted due to lease loss (not cancellation).
-          // fn() may have thrown a different error while the lease was lost.
-          const isLeaseLost =
-            controller.signal.aborted && controller.signal.reason === LEASE_LOST
-          if (isLeaseLost) {
-            throw new LeaseLostError(run.id)
-          }
-
-          const isCancelled = controller.signal.aborted
-          const errorMessage = getErrorMessage(error)
-
-          // Persist failed/cancelled step record with lease guard.
-          // The guard checks both status='leased' and lease_generation,
-          // so this returns null if the run was cancelled or the lease was lost.
-          const savedStep = await storage.persistStep(run.id, leaseGeneration, {
-            name,
-            index: attemptIndex,
-            status: isCancelled ? 'cancelled' : 'failed',
-            error: errorMessage,
-            startedAt,
-            attemptId: startedAttempt.id,
-          })
-
-          if (!savedStep) {
-            await throwForRefusedStep(name, attemptIndex)
-          }
-
-          // If we reach here, savedStep is truthy — the run is still leased.
-          // Cancellation is handled above (persistStep returns null for cancelled runs).
-          eventEmitter.emit({
-            type: 'step:fail',
-            error: errorMessage,
-            runId: run.id,
-            jobName,
-            stepName: name,
-            stepIndex: attemptIndex,
-            labels: run.labels,
-          })
-
-          throw error
-        }
-
-        // A checkpoint write error leaves the attempt unresolved. It must not
-        // be reclassified as a callback failure.
-        const savedStep = await storage.persistStep(run.id, leaseGeneration, {
+        const wait = await storage.prepareWait(
+          run.id,
+          leaseGeneration,
           name,
-          index: attemptIndex,
-          status: 'completed',
-          output: result,
-          startedAt,
-          attemptId: startedAttempt.id,
-        })
-
-        if (!savedStep) {
-          await throwForRefusedStep(name, attemptIndex)
+          options?.metadata,
+        )
+        if (!wait) {
+          const current = await storage.getRun(run.id)
+          if (current?.status === 'cancelled') throw new CancelledError(run.id)
+          abortForLeaseLoss()
+          throw new LeaseLostError(run.id)
         }
-
-        // Emit step:complete event
-        eventEmitter.emit({
-          type: 'step:complete',
-          runId: run.id,
-          jobName,
-          stepName: name,
-          stepIndex: attemptIndex,
-          output: result,
-          duration: Date.now() - startTime,
-          labels: run.labels,
-        })
-
-        return result
+        return wait
       } finally {
-        activeStepNames.delete(name)
-        stepParents.delete(name)
-        if (activeStepNames.size === 0) ambiguousLogScope = false
+        waitOperation = false
+      }
+    },
+
+    async waitFor(handle) {
+      beginWaitOperation()
+      try {
+        if (!handle || typeof handle.id !== 'string')
+          throw new ValidationError('A prepared wait ID is required')
+        const currentRun = await storage.getRun(run.id)
+        if (currentRun?.status === 'cancelled') throw new CancelledError(run.id)
+        if (
+          currentRun?.status !== 'leased' ||
+          currentRun.leaseGeneration !== leaseGeneration ||
+          !currentRun.leaseExpiresAt ||
+          Date.parse(currentRun.leaseExpiresAt) <= Date.now()
+        ) {
+          abortForLeaseLoss()
+          throw new LeaseLostError(run.id)
+        }
+        const wait = await storage.getWait(handle.id)
+        throwIfAborted()
+        if (!wait || wait.runId !== run.id)
+          throw new ValidationError('Wait must belong to the current run')
+        if (wait.status === 'resolved')
+          return { type: 'signal', payload: wait.payload }
+        if (wait.status !== 'pending')
+          throw new ConflictError(`Wait is already closed: ${wait.id}`)
+        suspensionId = wait.id
+        throw new Error('Durably execution suspended')
+      } finally {
+        waitOperation = false
       }
     },
 
@@ -455,6 +539,12 @@ export function createStepContext(
     step,
     abortLeaseOwnership: abortForLeaseLoss,
     preserveFailedParallelSteps: () => preserveFailedParallelSteps,
+    suspension: () => suspensionId,
+    async settleSteps() {
+      // Rejected illegal waits must not release a slot while a sibling is still running.
+      while (executingSteps.size > 0)
+        await Promise.allSettled([...executingSteps])
+    },
     dispose: unsubscribe,
   }
 }

@@ -97,13 +97,13 @@ app.all('/api/durably/*', (c) => handler.handle(c.req.raw, '/api/durably'))
 
 ## Response Shape
 
-The `/runs` and `/run` endpoints return `ClientRun` objects — a subset of the full `Run` type with internal fields (`leaseOwner`, `leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `leaseGeneration`, `updatedAt`) stripped, plus **`isTerminal`** and **`isActive`** derived from `status`. Use `toClientRun()` to apply the same projection in custom code:
+The `/runs` and `/run` endpoints return `ClientRun` objects — a subset of the full `Run` type with internal fields (`leaseOwner`, `leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `leaseGeneration`, `updatedAt`) stripped, plus **`isTerminal`**, **`isActive`**, and **`isWaiting`** derived from `status`. Use `toClientRun()` to apply the same projection in custom code:
 
 ```ts
 import { toClientRun } from '@coji/durably'
 
 const run = await durably.getRun(runId)
-const clientRun = toClientRun(run) // strips internal fields; adds isTerminal / isActive
+const clientRun = toClientRun(run) // strips internal fields; adds isTerminal / isActive / isWaiting
 ```
 
 ## Endpoints
@@ -119,7 +119,7 @@ The handler provides these endpoints:
 | `GET`    | `/steps?runId=xxx`     | Get steps for a run                      |
 | `GET`    | `/runs/subscribe`      | SSE stream for run list updates          |
 | `POST`   | `/retrigger?runId=xxx` | Retrigger a failed run (creates new run) |
-| `POST`   | `/cancel?runId=xxx`    | Cancel a pending or leased run           |
+| `POST`   | `/cancel?runId=xxx`    | Cancel a pending, leased, or waiting run |
 | `DELETE` | `/run?runId=xxx`       | Delete a run                             |
 
 ## Trigger Request
@@ -143,7 +143,7 @@ The handler provides these endpoints:
 ```
 
 ::: info SSE behavior
-`run:trigger` is **not** emitted for idempotent or coalesced triggers. A `run:coalesced` event is emitted instead when coalescing returns an existing pending or leased run, and includes that run's `status`. With `'active'`, the server prefers a pending run, otherwise reuses a non-expired leased run, otherwise creates a pending run. Idempotency takes precedence. Expired or null leases and terminal runs do not block creation.
+`run:trigger` is **not** emitted for idempotent or coalesced triggers. A `run:coalesced` event is emitted instead when coalescing returns an existing pending, leased, or waiting run, and includes that run's `status`. With `'active'`, the server prefers a pending run, otherwise reuses a non-expired leased run, otherwise a waiting run, otherwise creates a pending run. Idempotency takes precedence. Expired or null leases and terminal runs do not block creation.
 :::
 
 ## SSE Event Stream

@@ -20,6 +20,9 @@ export function createSSEEventSubscriber(apiBaseUrl: string): EventSubscriber {
           if (data.runId !== runId) return
 
           switch (data.type) {
+            case 'run:waiting':
+              onEvent({ type: 'run:waiting' })
+              break
             case 'run:leased':
               onEvent({ type: 'run:leased' })
               break

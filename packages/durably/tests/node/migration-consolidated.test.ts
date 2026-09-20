@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createDurably } from '../../src'
 import { LATEST_SCHEMA_VERSION, runMigrations } from '../../src/migrations'
 import type { Database } from '../../src/schema'
+import { seedLegacyRun } from '../helpers/legacy-fixture'
 import { createLocalSqliteDialect } from '../helpers/local-sqlite-dialect'
 
 describe('migration consolidated schema', () => {
@@ -39,7 +40,7 @@ describe('migration consolidated schema', () => {
       SELECT version FROM durably_schema_versions ORDER BY version DESC LIMIT 1
     `.execute(durably.db)
     expect(versions.rows[0]?.version).toBe(LATEST_SCHEMA_VERSION)
-    expect(LATEST_SCHEMA_VERSION).toBe(2)
+    expect(LATEST_SCHEMA_VERSION).toBe(3)
   })
 
   it('creates all expected indexes', async () => {
@@ -84,24 +85,7 @@ describe('migration consolidated schema', () => {
     dbs.push(durably.db)
 
     await runMigrations(durably.db, { targetVersion: 1 })
-    const { run } = await durably.storage.enqueue({
-      jobName: 'existing-job',
-      input: { value: 1 },
-    })
-    const claimed = await durably.storage.claimNext(
-      'old-worker',
-      new Date().toISOString(),
-      30_000,
-    )
-    expect(claimed?.id).toBe(run.id)
-    await durably.storage.persistStep(run.id, claimed!.leaseGeneration, {
-      name: 'existing-step',
-      index: 0,
-      status: 'completed',
-      output: 42,
-      startedAt: new Date().toISOString(),
-    })
-
+    const run = await seedLegacyRun(durably.db)
     await durably.migrate()
     expect((await durably.storage.getRun(run.id))?.input).toEqual({ value: 1 })
     expect((await durably.storage.getSteps(run.id))[0].output).toBe(42)
@@ -109,6 +93,6 @@ describe('migration consolidated schema', () => {
     const versions = await sql<{ version: number }>`
       SELECT version FROM durably_schema_versions ORDER BY version
     `.execute(durably.db)
-    expect(versions.rows.map((row) => row.version)).toEqual([1, 2])
+    expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3])
   })
 })

@@ -31,6 +31,47 @@ describe('useJob (client)', () => {
     vi.restoreAllMocks()
   })
 
+  it('finds a scoped waiting run after leased and pending lookups', async () => {
+    const fetchMock = vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () =>
+        url.includes('status=waiting')
+          ? [{ id: 'waiting-run', status: 'waiting' }]
+          : [],
+    }))
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+    const { result } = renderHook(() =>
+      useJob({
+        api: '/api/durably',
+        jobName: 'test-job',
+        scope: { labels: { project: 'a' } },
+      }),
+    )
+    await waitFor(() => expect(result.current.isWaiting).toBe(true))
+    expect(result.current.isActive).toBe(false)
+    expect(result.current.isTerminal).toBe(false)
+    expect(
+      fetchMock.mock.calls.map(([url]) =>
+        new URL(url, 'http://localhost').searchParams.get('status'),
+      ),
+    ).toEqual(['leased', 'pending', 'waiting'])
+    expect(
+      fetchMock.mock.calls.every(([url]) => url.includes('label.project=a')),
+    ).toBe(true)
+    act(() =>
+      mockEventSource.emit({ type: 'run:leased', runId: 'waiting-run' }),
+    )
+    await waitFor(() => expect(result.current.isLeased).toBe(true))
+    act(() =>
+      mockEventSource.emit({
+        type: 'run:waiting',
+        runId: 'waiting-run',
+        waitId: 'wait-2',
+      }),
+    )
+    await waitFor(() => expect(result.current.isWaiting).toBe(true))
+  })
+
   it('triggers via fetch', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -737,7 +778,7 @@ describe('useJob (client)', () => {
       await waitFor(() => expect(result.current.isResolving).toBe(false))
 
       const lookupUrls = fetchMock.mock.calls.map(([url]) => String(url))
-      expect(lookupUrls).toHaveLength(2)
+      expect(lookupUrls).toHaveLength(3)
       for (const url of lookupUrls) {
         const parsed = new URL(url, 'http://example.test')
         expect(parsed.searchParams.get('label.documentId')).toBe('doc/1')
@@ -987,6 +1028,10 @@ describe('useJob (client)', () => {
       await act(async () => {
         resolvers[1]({ ok: true, json: () => Promise.resolve([]) })
       })
+      await waitFor(() => expect(resolvers).toHaveLength(3))
+      await act(async () => {
+        resolvers[2]({ ok: true, json: () => Promise.resolve([]) })
+      })
       await waitFor(() => expect(result.current.isResolving).toBe(false))
     })
 
@@ -1019,6 +1064,10 @@ describe('useJob (client)', () => {
       await waitFor(() => expect(resolvers).toHaveLength(2))
       await act(async () => {
         resolvers[1]({ ok: true, json: () => Promise.resolve([]) })
+      })
+      await waitFor(() => expect(resolvers).toHaveLength(3))
+      await act(async () => {
+        resolvers[2]({ ok: true, json: () => Promise.resolve([]) })
       })
       await waitFor(() => expect(result.current.isResolving).toBe(false))
     })
@@ -2234,11 +2283,11 @@ describe('useJob (client)', () => {
           },
         }),
       )
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
       const eventSourceCount = mockEventSource.instances.length
       rerender()
       await act(async () => Promise.resolve())
-      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(fetchMock).toHaveBeenCalledTimes(3)
       expect(mockEventSource.instances).toHaveLength(eventSourceCount)
     })
 
@@ -2262,11 +2311,11 @@ describe('useJob (client)', () => {
         },
         { initialProps: { reverse: false } },
       )
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
       const eventSourceCount = mockEventSource.instances.length
       rerender({ reverse: true })
       await act(async () => Promise.resolve())
-      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(fetchMock).toHaveBeenCalledTimes(3)
       expect(mockEventSource.instances).toHaveLength(eventSourceCount)
     })
   })

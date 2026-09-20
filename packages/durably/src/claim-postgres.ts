@@ -41,6 +41,7 @@ export async function claimNextPostgres(
         WHERE
           (
             status = 'pending'
+            OR (status = 'waiting' AND EXISTS (SELECT 1 FROM durably_waits w WHERE w.id = durably_runs.waiting_on_wait_id AND w.status = 'resolved'))
             OR (status = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ${now})
           )
           AND ${activeLeaseGuard}

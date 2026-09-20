@@ -20,6 +20,7 @@ type RunUpdateEvent =
         | 'run:trigger'
         | 'run:coalesced'
         | 'run:leased'
+        | 'run:waiting'
         | 'run:complete'
         | 'run:fail'
         | 'run:cancel'
@@ -338,6 +339,7 @@ export function useRuns<
           data.type === 'run:trigger' ||
           data.type === 'run:coalesced' ||
           data.type === 'run:leased' ||
+          data.type === 'run:waiting' ||
           data.type === 'run:complete' ||
           data.type === 'run:fail' ||
           data.type === 'run:cancel' ||

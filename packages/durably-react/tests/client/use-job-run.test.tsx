@@ -53,6 +53,43 @@ describe('useJobRun (client)', () => {
     })
   })
 
+  it('restores waiting from a reconnect snapshot and resumes without becoming terminal', async () => {
+    const { result } = renderHook(() =>
+      useJobRun({ api: '/api/durably', runId: 'waiting-run' }),
+    )
+    act(() => {
+      mockEventSource.emit({
+        type: 'run:waiting',
+        runId: 'waiting-run',
+        waitId: 'wait-1',
+      })
+    })
+    await waitFor(() => {
+      expect(result.current.isWaiting).toBe(true)
+      expect(result.current.isActive).toBe(false)
+      expect(result.current.isTerminal).toBe(false)
+    })
+    act(() => {
+      mockEventSource.emit({
+        type: 'run:waiting',
+        runId: 'waiting-run',
+        waitId: 'wait-1',
+      })
+    })
+    expect(result.current.status).toBe('waiting')
+    act(() => {
+      mockEventSource.emit({ type: 'run:leased', runId: 'waiting-run' })
+    })
+    await waitFor(() => {
+      expect(result.current.isWaiting).toBe(false)
+      expect(result.current.isActive).toBe(true)
+    })
+    act(() => {
+      mockEventSource.emit({ type: 'run:cancel', runId: 'waiting-run' })
+    })
+    await waitFor(() => expect(result.current.isTerminal).toBe(true))
+  })
+
   it('does not subscribe when runId is null', () => {
     renderHook(() => useJobRun({ api: '/api/durably', runId: null }))
 

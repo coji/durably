@@ -58,6 +58,13 @@ export interface SubscriptionState<TOutput = unknown> {
 // Note: Unlike core DurablyEvent, these omit timestamp/sequence because
 // the SSE handler in server.ts sends only the fields needed by the UI.
 export type DurablyEvent =
+  | {
+      type: 'run:waiting'
+      runId: string
+      jobName: string
+      waitId: string
+      labels: Record<string, string>
+    }
   | { type: 'run:leased'; runId: string; jobName: string; input: unknown }
   | {
       type: 'run:complete'
@@ -74,7 +81,7 @@ export type DurablyEvent =
       type: 'run:coalesced'
       runId: string
       jobName: string
-      status: 'pending' | 'leased'
+      status: 'pending' | 'leased' | 'waiting'
       labels: Record<string, string>
       skippedInput: unknown
       skippedLabels: Record<string, string>

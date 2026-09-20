@@ -130,7 +130,7 @@ function Component() {
     api: '/api/durably',
     jobName: 'sync-data',
     initialRunId: undefined, // Optional: resume existing run
-    autoResume: true, // Auto-resume pending/leased jobs on mount (default: true)
+    autoResume: true, // Auto-resume pending/leased/waiting jobs on mount (default: true)
     followLatest: true, // Switch to tracking new runs (default: true)
     scope: { labels: { userId: 'user_123' } },
     triggerOptions: {
@@ -156,14 +156,14 @@ interface UseJobClientOptions {
   api: string // API endpoint URL (e.g., '/api/durably')
   jobName: string // Job name to trigger
   initialRunId?: string // Initial Run ID to subscribe to
-  autoResume?: boolean // Auto-resume pending/leased jobs on mount (default: true)
+  autoResume?: boolean // Auto-resume pending/leased/waiting jobs on mount (default: true)
   followLatest?: boolean // Switch to tracking new runs via SSE (default: true)
   scope?: { labels: Record<string, string> }
   triggerOptions?: TriggerOptions<Record<string, string>>
 }
 ```
 
-The `autoResume` option automatically fetches leased/pending jobs on mount and subscribes to them. `isResolving` is true until this lookup settles, is skipped, or is superseded. `initialRunId` takes precedence and skips the lookup.
+The `autoResume` option automatically fetches leased/pending/waiting jobs on mount and subscribes to them. `isResolving` is true until this lookup settles, is skipped, or is superseded. `initialRunId` takes precedence and skips the lookup.
 
 `scope.labels` adds every label as `label.<key>` to both `/runs` lookups and `/runs/subscribe`; every label must match. `followLatest` switches immediately on matching `run:trigger`, `run:coalesced`, and `run:leased` events. `triggerOptions` is forwarded to both `trigger` and `triggerAndWait`; scope labels are not copied into trigger labels automatically.
 
@@ -310,7 +310,9 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
           Retrigger
         </button>
       )}
-      {(status === 'pending' || status === 'leased') && (
+      {(status === 'pending' ||
+        status === 'leased' ||
+        status === 'waiting') && (
         <button
           type="button"
           onClick={() => {
@@ -465,7 +467,7 @@ function Component() {
     reset,
   } = useJob(myJob, {
     initialRunId: undefined,
-    autoResume: true, // Auto-resume pending/leased jobs (default: true)
+    autoResume: true, // Auto-resume pending/leased/waiting jobs (default: true)
     followLatest: true, // Switch to tracking new runs (default: true)
     scope: { labels: { entityId: 'entity_123' } },
     triggerOptions: {
@@ -511,14 +513,14 @@ function Component() {
 ```ts
 interface UseJobOptions {
   initialRunId?: string // Initial Run ID to subscribe to
-  autoResume?: boolean // Auto-resume pending/leased jobs (default: true)
+  autoResume?: boolean // Auto-resume pending/leased/waiting jobs (default: true)
   followLatest?: boolean // Switch to tracking new runs (default: true)
   scope?: { labels: Record<string, string> }
   triggerOptions?: TriggerOptions<Record<string, string>>
 }
 ```
 
-SPA auto-resume prefers a matching leased run, then a matching pending run, and hydrates its current status. Matching `run:trigger` events are followed while the run is still pending, in addition to `run:coalesced` and `run:leased`. Scope changes discard prior tracking and resolve the new label scope. `isResolving` covers this lookup; `initialRunId` takes precedence and is hydrated directly.
+SPA auto-resume prefers a matching leased run, then a matching pending run, then a matching waiting run, and hydrates its current status. Matching `run:trigger` events are followed while the run is still pending, in addition to `run:coalesced` and `run:leased`. Scope changes discard prior tracking and resolve the new label scope. `isResolving` covers this lookup; `initialRunId` takes precedence and is hydrated directly.
 
 **Return type:**
 
@@ -526,7 +528,14 @@ SPA auto-resume prefers a matching leased run, then a matching pending run, and 
 interface UseJobResult<TInput, TOutput> {
   trigger: (input: TInput) => Promise<{ runId: string }>
   triggerAndWait: (input: TInput) => Promise<{ runId: string; output: TOutput }>
-  status: 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled' | null
+  status:
+    | 'pending'
+    | 'leased'
+    | 'waiting'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
+    | null
   output: TOutput | null
   error: string | null
   logs: LogEntry[]
@@ -538,6 +547,7 @@ interface UseJobResult<TInput, TOutput> {
   isCancelled: boolean
   isTerminal: boolean
   isActive: boolean
+  isWaiting: boolean
   isResolving: boolean
   currentRunId: string | null
   reset: () => void
@@ -726,7 +736,7 @@ type TypedRun<
   output: TOutput | null
 }
 
-// ClientRun is re-exported from @coji/durably (excludes idempotencyKey, concurrencyKey, leaseOwner, leaseExpiresAt, leaseGeneration, updatedAt; includes isTerminal, isActive)
+// ClientRun is re-exported from @coji/durably (excludes idempotencyKey, concurrencyKey, leaseOwner, leaseExpiresAt, leaseGeneration, updatedAt; includes isTerminal, isActive, isWaiting)
 
 // Fullstack hooks: TypedClientRun with generic input/output
 type TypedClientRun<
@@ -817,3 +827,7 @@ function Component({ existingRunId }: { existingRunId?: string }) {
 ## License
 
 MIT
+
+### Waiting runs
+
+`isWaiting` is true exactly when status is `waiting`, including accepted input awaiting a new lease. `isActive` retains its pending/leased meaning, so it is not the inverse of `isTerminal`. Use `!isTerminal` to identify unfinished runs. Auto-resume prefers leased, then pending, then waiting runs. `run:waiting` updates tracked runs and run lists; subscriptions hydrate waiting state after reconnect. Cancellation remains available while waiting; delete/retrigger require cancellation first. Dedicated HTTP wait/signal APIs are not included yet.

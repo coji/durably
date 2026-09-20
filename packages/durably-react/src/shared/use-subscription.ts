@@ -25,7 +25,7 @@ export interface UseSubscriptionResult<
    */
   reset: () => void
   /** Update the tracked run's active status without losing progress or logs. */
-  setActiveStatus: (status: 'pending' | 'leased') => void
+  setActiveStatus: (status: 'pending' | 'leased' | 'waiting') => void
 }
 
 /**
@@ -64,6 +64,7 @@ export function useSubscription<TOutput = unknown>(
       if (runIdRef.current !== runId) return
 
       switch (event.type) {
+        case 'run:waiting':
         case 'run:leased':
         case 'run:cancel':
           dispatch({ type: event.type })
@@ -105,9 +106,12 @@ export function useSubscription<TOutput = unknown>(
     dispatch({ type: 'reset' })
   }, [])
 
-  const setActiveStatus = useCallback((status: 'pending' | 'leased') => {
-    dispatch({ type: 'set_active_status', status })
-  }, [])
+  const setActiveStatus = useCallback(
+    (status: 'pending' | 'leased' | 'waiting') => {
+      dispatch({ type: 'set_active_status', status })
+    },
+    [],
+  )
 
   return {
     ...state,

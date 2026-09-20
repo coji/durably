@@ -3,15 +3,21 @@ import { monotonicFactory } from 'ulidx'
 import { type JsonValue, serializeJsonValue } from './attempts'
 import { claimNextPostgres } from './claim-postgres'
 import { claimNextSqlite } from './claim-sqlite'
-import { ConflictError, ValidationError } from './errors'
+import { ConflictError, NotFoundError, ValidationError } from './errors'
 import type { Disposition } from './job'
 import type { Database } from './schema'
 import { rowToLog, rowToRun, rowToStep, validateLabels } from './transformers'
+import {
+  canonicalWaitJson,
+  type DurableWait,
+  rowToWait,
+  type SignalOptions,
+} from './waits'
 
 const ulid = monotonicFactory()
 
 export type RunStatus =
-  'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
+  'pending' | 'leased' | 'waiting' | 'completed' | 'failed' | 'cancelled'
 
 /** Run statuses that represent terminal (non-active) states */
 const TERMINAL_STATUSES: RunStatus[] = ['completed', 'failed', 'cancelled']
@@ -60,6 +66,7 @@ export interface Run<
   leaseOwner: string | null
   leaseExpiresAt: string | null
   leaseGeneration: number
+  waitingOnWaitId: string | null
   startedAt: string | null
   completedAt: string | null
   createdAt: string
@@ -186,6 +193,25 @@ export interface UpdateRunData {
 export interface Store<
   TLabels extends Record<string, string> = Record<string, string>,
 > {
+  prepareWait(
+    runId: string,
+    leaseGeneration: number,
+    name: string,
+    metadata?: JsonValue,
+  ): Promise<DurableWait | null>
+  getWait(waitId: string): Promise<DurableWait | null>
+  getWaits(runId: string): Promise<DurableWait[]>
+  signalWait(
+    waitId: string,
+    payload: JsonValue,
+    options: SignalOptions,
+  ): Promise<DurableWait>
+  suspendRun(
+    runId: string,
+    leaseGeneration: number,
+    waitId: string,
+    now: string,
+  ): Promise<boolean>
   // Run lifecycle
   enqueue(input: CreateRunInput<TLabels>): Promise<EnqueueResult<TLabels>>
   enqueueMany(
@@ -285,10 +311,12 @@ export type ClientRun<
   | 'leaseOwner'
   | 'leaseExpiresAt'
   | 'leaseGeneration'
+  | 'waitingOnWaitId'
   | 'updatedAt'
 > & {
   isTerminal: boolean
   isActive: boolean
+  isWaiting: boolean
 }
 
 /**
@@ -303,12 +331,14 @@ export function toClientRun<
     leaseOwner,
     leaseExpiresAt,
     leaseGeneration,
+    waitingOnWaitId,
     updatedAt,
     ...clientRun
   } = run
   return {
     ...clientRun,
     isTerminal: TERMINAL_STATUSES.includes(run.status),
+    isWaiting: run.status === 'waiting',
     isActive: run.status === 'pending' || run.status === 'leased',
   }
 }
@@ -412,6 +442,7 @@ export function createKyselyStore(
       .deleteFrom('durably_step_attempts')
       .where('run_id', 'in', ids)
       .execute()
+    await trx.deleteFrom('durably_waits').where('run_id', 'in', ids).execute()
     await trx.deleteFrom('durably_steps').where('run_id', 'in', ids).execute()
     await trx.deleteFrom('durably_logs').where('run_id', 'in', ids).execute()
     await trx
@@ -496,21 +527,31 @@ export function createKyselyStore(
       error?: string | null
     },
   ): Promise<boolean> {
-    const result = await db
-      .updateTable('durably_runs')
-      .set({
-        ...fields,
-        lease_owner: null,
-        lease_expires_at: null,
-        completed_at: completedAt,
-        updated_at: completedAt,
-      })
-      .where('id', '=', runId)
-      .where('status', '=', 'leased')
-      .where('lease_generation', '=', leaseGeneration)
-      .executeTakeFirst()
+    return db.transaction().execute(async (trx) => {
+      const result = await trx
+        .updateTable('durably_runs')
+        .set({
+          ...fields,
+          lease_owner: null,
+          lease_expires_at: null,
+          completed_at: completedAt,
+          updated_at: completedAt,
+        })
+        .where('id', '=', runId)
+        .where('status', '=', 'leased')
+        .where('lease_generation', '=', leaseGeneration)
+        .executeTakeFirst()
 
-    return Number(result.numUpdatedRows) > 0
+      const changed = Number(result.numUpdatedRows) > 0
+      if (changed)
+        await trx
+          .updateTable('durably_waits')
+          .set({ status: 'closed', resolved_at: completedAt })
+          .where('run_id', '=', runId)
+          .where('status', '=', 'pending')
+          .execute()
+      return changed
+    })
   }
 
   function findPendingByConcurrencyKey(
@@ -587,6 +628,17 @@ export function createKyselyStore(
       if (leased) {
         return { run: rowToRun(leased), disposition: 'coalesced' }
       }
+      const waiting = await queryDb
+        .selectFrom('durably_runs')
+        .selectAll()
+        .where('job_name', '=', input.jobName)
+        .where('concurrency_key', '=', input.concurrencyKey)
+        .where('status', '=', 'waiting')
+        .orderBy('created_at', 'asc')
+        .orderBy('id', 'asc')
+        .limit(1)
+        .executeTakeFirst()
+      if (waiting) return { run: rowToRun(waiting), disposition: 'coalesced' }
     }
 
     const id = ulid()
@@ -606,6 +658,7 @@ export function createKyselyStore(
       lease_owner: null,
       lease_expires_at: null,
       lease_generation: 0,
+      waiting_on_wait_id: null,
       started_at: null,
       completed_at: null,
       created_at: now,
@@ -967,6 +1020,8 @@ export function createKyselyStore(
     },
 
     async releaseExpiredLeases(now: string): Promise<number> {
+      // Runs with durable waits retain expired leases for direct reclaim. Moving
+      // them to pending could conflict with a trailing run and lose a signal.
       // Phase 1: Fail expired leases that have a pending replacement
       // (resetting to pending would violate the partial unique index).
       // Runs without concurrency_key are unaffected: NULL = NULL is false in SQL,
@@ -982,6 +1037,10 @@ export function createKyselyStore(
           updated_at: now,
         })
         .where('status', '=', 'leased')
+        .where('waiting_on_wait_id', 'is', null)
+        .where(
+          sql<boolean>`NOT EXISTS (SELECT 1 FROM durably_waits w WHERE w.run_id = durably_runs.id)`,
+        )
         .where('lease_expires_at', 'is not', null)
         .where('lease_expires_at', '<=', now)
         .where(({ exists, selectFrom }) =>
@@ -1009,6 +1068,10 @@ export function createKyselyStore(
         .selectFrom('durably_runs')
         .select('id')
         .where('status', '=', 'leased')
+        .where('waiting_on_wait_id', 'is', null)
+        .where(
+          sql<boolean>`NOT EXISTS (SELECT 1 FROM durably_waits w WHERE w.run_id = durably_runs.id)`,
+        )
         .where('lease_expires_at', 'is not', null)
         .where('lease_expires_at', '<=', now)
         .execute()
@@ -1028,6 +1091,10 @@ export function createKyselyStore(
                 })
                 .where('id', '=', row.id)
                 .where('status', '=', 'leased')
+                .where('waiting_on_wait_id', 'is', null)
+                .where(
+                  sql<boolean>`NOT EXISTS (SELECT 1 FROM durably_waits w WHERE w.run_id = durably_runs.id)`,
+                )
                 .where('lease_expires_at', '<=', now)
                 .executeTakeFirst()
               await sql`RELEASE SAVEPOINT sp_release`.execute(trx)
@@ -1048,6 +1115,10 @@ export function createKyselyStore(
                 })
                 .where('id', '=', row.id)
                 .where('status', '=', 'leased')
+                .where('waiting_on_wait_id', 'is', null)
+                .where(
+                  sql<boolean>`NOT EXISTS (SELECT 1 FROM durably_waits w WHERE w.run_id = durably_runs.id)`,
+                )
                 .executeTakeFirst()
               count += Number(failed.numUpdatedRows)
             }
@@ -1084,20 +1155,157 @@ export function createKyselyStore(
     },
 
     async cancelRun(runId: string, now: string): Promise<boolean> {
-      const result = await db
-        .updateTable('durably_runs')
-        .set({
-          status: 'cancelled',
-          lease_owner: null,
-          lease_expires_at: null,
-          completed_at: now,
-          updated_at: now,
-        })
-        .where('id', '=', runId)
-        .where('status', 'in', ['pending', 'leased'])
-        .executeTakeFirst()
+      return db.transaction().execute(async (trx) => {
+        const result = await trx
+          .updateTable('durably_runs')
+          .set({
+            status: 'cancelled',
+            lease_owner: null,
+            lease_expires_at: null,
+            completed_at: now,
+            updated_at: now,
+          })
+          .where('id', '=', runId)
+          .where('status', 'in', ['pending', 'leased', 'waiting'])
+          .executeTakeFirst()
 
-      return Number(result.numUpdatedRows) > 0
+        const changed = Number(result.numUpdatedRows) > 0
+        if (changed)
+          await trx
+            .updateTable('durably_waits')
+            .set({ status: 'cancelled', resolved_at: now })
+            .where('run_id', '=', runId)
+            .where('status', '=', 'pending')
+            .execute()
+        return changed
+      })
+    },
+
+    async prepareWait(runId, leaseGeneration, name, metadata) {
+      if (typeof name !== 'string' || !name.trim())
+        throw new ValidationError('Wait name must be non-empty')
+      const json = metadata === undefined ? null : canonicalWaitJson(metadata)
+      const now = new Date().toISOString()
+      return db.transaction().execute(async (trx) => {
+        if (!(await lockAttemptLease(trx, runId, leaseGeneration, now)))
+          return null
+        const existing = await trx
+          .selectFrom('durably_waits')
+          .selectAll()
+          .where('run_id', '=', runId)
+          .where('name', '=', name)
+          .executeTakeFirst()
+        if (existing) return rowToWait(existing)
+        const row: Database['durably_waits'] = {
+          id: ulid(),
+          run_id: runId,
+          name,
+          metadata: json,
+          status: 'pending',
+          payload: null,
+          signal_id: null,
+          created_at: now,
+          resolved_at: null,
+        }
+        await trx.insertInto('durably_waits').values(row).execute()
+        return rowToWait(row)
+      })
+    },
+
+    async getWait(waitId) {
+      const row = await db
+        .selectFrom('durably_waits')
+        .selectAll()
+        .where('id', '=', waitId)
+        .executeTakeFirst()
+      return row ? rowToWait(row) : null
+    },
+
+    async getWaits(runId) {
+      return (
+        await db
+          .selectFrom('durably_waits')
+          .selectAll()
+          .where('run_id', '=', runId)
+          .orderBy('created_at', 'asc')
+          .orderBy('id', 'asc')
+          .execute()
+      ).map(rowToWait)
+    },
+
+    async signalWait(waitId, payload, options) {
+      if (typeof options?.signalId !== 'string' || !options.signalId.trim())
+        throw new ValidationError('signalId must be non-empty')
+      const signalId = options.signalId
+      const json = canonicalWaitJson(payload)
+      return db.transaction().execute(async (trx) => {
+        const initial = await trx
+          .selectFrom('durably_waits')
+          .select('run_id')
+          .where('id', '=', waitId)
+          .executeTakeFirst()
+        if (!initial) throw new NotFoundError(`Wait not found: ${waitId}`)
+        // All wait mutations lock run before wait, including cancellation/deletion.
+        const run = await trx
+          .updateTable('durably_runs')
+          .set({ updated_at: sql`updated_at` })
+          .where('id', '=', initial.run_id)
+          .returningAll()
+          .executeTakeFirst()
+        const wait = await trx
+          .selectFrom('durably_waits')
+          .selectAll()
+          .where('id', '=', waitId)
+          .executeTakeFirst()
+        if (!run || !wait) throw new NotFoundError(`Wait not found: ${waitId}`)
+        if (
+          wait.status === 'resolved' &&
+          wait.signal_id === signalId &&
+          wait.payload === json
+        )
+          return rowToWait(wait)
+        if (wait.status !== 'pending' || TERMINAL_STATUSES.includes(run.status))
+          throw new ConflictError(`Wait cannot accept this signal: ${waitId}`)
+        const row = await trx
+          .updateTable('durably_waits')
+          .set({
+            status: 'resolved',
+            payload: json,
+            signal_id: signalId,
+            resolved_at: new Date().toISOString(),
+          })
+          .where('id', '=', waitId)
+          .returningAll()
+          .executeTakeFirstOrThrow()
+        return rowToWait(row)
+      })
+    },
+
+    async suspendRun(runId, leaseGeneration, waitId, now) {
+      return db.transaction().execute(async (trx) => {
+        if (!(await lockAttemptLease(trx, runId, leaseGeneration, now)))
+          return false
+        const wait = await trx
+          .selectFrom('durably_waits')
+          .selectAll()
+          .where('id', '=', waitId)
+          .where('run_id', '=', runId)
+          .executeTakeFirst()
+        if (!wait || (wait.status !== 'pending' && wait.status !== 'resolved'))
+          throw new ConflictError('Wait is not available for this run')
+        await trx
+          .updateTable('durably_runs')
+          .set({
+            status: 'waiting',
+            waiting_on_wait_id: waitId,
+            lease_owner: null,
+            lease_expires_at: null,
+            updated_at: now,
+          })
+          .where('id', '=', runId)
+          .execute()
+        return true
+      })
     },
 
     async beginStepAttempt(
@@ -1412,6 +1620,9 @@ export function createKyselyStore(
       'completeRun',
       'failRun',
       'cancelRun',
+      'prepareWait',
+      'signalWait',
+      'suspendRun',
       'persistStep',
       'beginStepAttempt',
       'updateStepAttemptMetadata',

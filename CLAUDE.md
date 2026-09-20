@@ -37,8 +37,9 @@ Regenerate `llms.txt` after editing any `llms.md`. Regenerate the OG image whene
 
 - **Job**: Defined via `defineJob()` and registered via `jobs` option (or `.register()`), receives a step context and payload
 - **Step**: Created via `step.run()`, each step's success state and return value is persisted (cleaned up on terminal state by default, see `preserveSteps`). `step.all()` joins concurrent named steps and replays completed branches; use `attempt.log` for branch-specific logs.
-- **Run**: A job execution instance, created via `trigger()` (returns `TriggerResult` with `disposition`: `'created' | 'idempotent' | 'coalesced'`), always persisted as `pending` before execution. Use `coalesce: 'skip'` or `coalesce: 'queue'` to reuse an existing pending run with the same `concurrencyKey` (or create one trailing pending run when only a leased run exists; both modes are behaviorally equivalent aliases in this release). Use `coalesce: 'active'` to reuse a same-job pending or valid leased run and create a new pending run only when neither exists.
-- **Scoped React tracking**: SPA and client `useJob` accept `scope.labels`, `triggerOptions`, and expose `isResolving`. Scoped lookup prefers leased then pending runs; matching trigger, coalesced, and leased events are followed. Scope labels and trigger labels are supplied independently.
+- **Run**: A job execution instance, created via `trigger()` (returns `TriggerResult` with `disposition`: `'created' | 'idempotent' | 'coalesced'`), always persisted as `pending` before execution. Use `coalesce: 'skip'` or `coalesce: 'queue'` to reuse an existing pending run with the same `concurrencyKey` (or create one trailing pending run when only a leased run exists; both modes are behaviorally equivalent aliases in this release). Use `coalesce: 'active'` to reuse a same-job pending, valid leased, or waiting run (in that order), and create a new pending run only when none exists.
+- **Scoped React tracking**: SPA and client `useJob` accept `scope.labels`, `triggerOptions`, and expose `isResolving`. Scoped lookup prefers leased, then pending, then waiting runs; matching trigger, coalesced, and leased events are followed. Scope labels and trigger labels are supplied independently.
+- **Durable waits**: `step.prepareWait(name, { metadata? })` persists an input address before external work; `step.waitFor(wait)` suspends at a sequential job boundary. `durably.signal(wait.id, payload, { signalId })` resumes the same run by checkpoint replay. Waiting releases worker capacity and concurrency-key exclusion; deadlines and HTTP signal endpoints are not yet provided.
 - **Worker**: Polls for pending runs and executes them (sequentially by default, or concurrently via `maxConcurrentRuns`)
 - **waitForRun**: `durably.waitForRun(runId, options?)` waits for a run to reach terminal state, with `timeout`, `onProgress`, `onLog` callbacks. Uses events with storage polling fallback
 
@@ -52,9 +53,9 @@ Regenerate `llms.txt` after editing any `llms.md`. Regenerate the OG image whene
 
 ## Database Schema
 
-Six tables: `durably_runs`, `durably_run_labels`, `durably_steps`, `durably_step_attempts`, `durably_logs`, `durably_schema_versions`. Key fields:
+Seven tables: `durably_runs`, `durably_run_labels`, `durably_steps`, `durably_step_attempts`, `durably_waits`, `durably_logs`, `durably_schema_versions`. Key fields:
 
-- Runs have: `status` (pending/leased/completed/failed/cancelled), `idempotency_key`, `concurrency_key`, `lease_owner`, `lease_expires_at`, `lease_generation` (fencing token)
+- Runs have: `status` (pending/leased/waiting/completed/failed/cancelled), `idempotency_key`, `concurrency_key`, `lease_owner`, `lease_expires_at`, `lease_generation` (fencing token)
 - Steps have: `status` (completed/failed/cancelled), `output` (JSON), indexed by `run_id` and `index`; completed steps have a partial unique index on `(run_id, name)`
 - Step attempts have an ID, step identity, lease generation, start/confirmed completion times, status, and application-owned JSON metadata. Attempts survive `preserveSteps: false` cleanup and are removed with their run.
 

@@ -26,8 +26,8 @@ export interface UseJobOptions<
    */
   initialRunId?: string
   /**
-   * Automatically resume tracking any pending or running job on initialization.
-   * If a pending or running run exists for this job, the hook will subscribe to it.
+   * Automatically resume tracking any pending, running, or waiting job on initialization.
+   * If a pending, running, or waiting run exists for this job, the hook will subscribe to it.
    * @default true
    */
   autoResume?: boolean
@@ -101,6 +101,8 @@ export interface UseJobResult<TInput, TOutput> {
    * Whether the run reached a terminal status (completed, failed, or cancelled)
    */
   isTerminal: boolean
+  /** Whether the run is suspended awaiting external input. */
+  isWaiting: boolean
   /**
    * Whether the run is pending or leased (actively queued or executing)
    */
@@ -516,6 +518,7 @@ export function useJob<
       subscription.status === 'completed' ||
       subscription.status === 'failed' ||
       subscription.status === 'cancelled',
+    isWaiting: subscription.status === 'waiting',
     isActive:
       subscription.status === 'pending' || subscription.status === 'leased',
     isResolving,

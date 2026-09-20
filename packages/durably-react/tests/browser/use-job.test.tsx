@@ -421,6 +421,8 @@ describe('useJob', () => {
 
     // Start the long-running job and get the promise
     const waitPromise = result.current.triggerAndWait({ input: 'test' })
+    // Observe rejection before asynchronous cancellation/cleanup can settle it.
+    const rejected = expect(waitPromise).rejects.toThrow('Job cancelled')
 
     // Wait for the job to start running
     await waitFor(() => {
@@ -433,7 +435,7 @@ describe('useJob', () => {
     await durably.cancel(runId)
 
     // The promise should reject with 'Job cancelled'
-    await expect(waitPromise).rejects.toThrow('Job cancelled')
+    await rejected
   })
 
   describe('scoped tracking', () => {
@@ -465,6 +467,113 @@ describe('useJob', () => {
         expect(result.current.currentRunId).toBe(matching.id)
         expect(result.current.status).toBe('pending')
       })
+    })
+
+    it('restores a scoped waiting run only after finding no leased or pending run', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const run = await handle.trigger(
+        { input: 'test' },
+        { labels: { documentId: 'doc-2' } },
+      )
+      const waitingRun = {
+        ...(await handle.getRun(run.id)),
+        status: 'waiting' as const,
+      }
+      const getRuns = vi
+        .spyOn(durably.storage, 'getRuns')
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          waitingRun as NonNullable<Awaited<ReturnType<typeof handle.getRun>>>,
+        ])
+      vi.spyOn(durably.storage, 'getRun').mockResolvedValue(
+        waitingRun as NonNullable<Awaited<ReturnType<typeof handle.getRun>>>,
+      )
+      const { result } = renderHook(
+        () =>
+          useJob(testJob, {
+            scope: { labels: { documentId: 'doc-2' } },
+            followLatest: false,
+          }),
+        { wrapper: createWrapper(durably) },
+      )
+      await waitFor(() => expect(result.current.isWaiting).toBe(true))
+      expect(result.current.currentRunId).toBe(run.id)
+      expect(result.current.isResolving).toBe(false)
+      expect(getRuns.mock.calls.map(([filter]) => filter?.status)).toEqual([
+        'leased',
+        'pending',
+        'waiting',
+      ])
+      expect(
+        getRuns.mock.calls.every(
+          ([filter]) => filter?.labels?.documentId === 'doc-2',
+        ),
+      ).toBe(true)
+    })
+
+    it('follows scoped waiting events and preserves state through coalescing and resume', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      durably.register({ testJob })
+      const { result } = renderHook(
+        () =>
+          useJob(testJob, {
+            autoResume: false,
+            scope: { labels: { documentId: 'doc-2' } },
+          }),
+        { wrapper: createWrapper(durably) },
+      )
+      act(() =>
+        durably.emit({
+          type: 'run:waiting',
+          runId: 'wrong',
+          jobName: testJob.name,
+          waitId: 'wait-0',
+          labels: { documentId: 'other' },
+        }),
+      )
+      expect(result.current.currentRunId).toBeNull()
+      act(() =>
+        durably.emit({
+          type: 'run:waiting',
+          runId: 'waiting',
+          jobName: testJob.name,
+          waitId: 'wait-1',
+          labels: { documentId: 'doc-2' },
+        }),
+      )
+      expect(result.current.currentRunId).toBe('waiting')
+      expect(result.current.isWaiting).toBe(true)
+      expect(result.current.isActive).toBe(false)
+      expect(result.current.isTerminal).toBe(false)
+      act(() =>
+        durably.emit({
+          type: 'run:coalesced',
+          runId: 'waiting',
+          jobName: testJob.name,
+          status: 'waiting',
+          labels: { documentId: 'doc-2' },
+          skippedInput: {},
+          skippedLabels: {},
+        }),
+      )
+      expect(result.current.isWaiting).toBe(true)
+      act(() =>
+        durably.emit({
+          type: 'run:leased',
+          runId: 'waiting',
+          jobName: testJob.name,
+          input: {},
+          leaseOwner: 'worker',
+          leaseExpiresAt: new Date(Date.now() + 30000).toISOString(),
+          labels: { documentId: 'doc-2' },
+        }),
+      )
+      expect(result.current.isWaiting).toBe(false)
+      expect(result.current.isLeased).toBe(true)
     })
 
     it('follows matching pending triggers immediately and ignores non-matching labels', async () => {
@@ -1706,10 +1815,10 @@ describe('useJob', () => {
           }),
         { wrapper: createWrapper(durably) },
       )
-      await waitFor(() => expect(getRuns).toHaveBeenCalledTimes(2))
+      await waitFor(() => expect(getRuns).toHaveBeenCalledTimes(3))
       rerender()
       await act(async () => Promise.resolve())
-      expect(getRuns).toHaveBeenCalledTimes(2)
+      expect(getRuns).toHaveBeenCalledTimes(3)
     })
 
     it('reordered but equal label records do not repeat lookups', async () => {
@@ -1732,10 +1841,10 @@ describe('useJob', () => {
           wrapper: createWrapper(durably),
         },
       )
-      await waitFor(() => expect(getRuns).toHaveBeenCalledTimes(2))
+      await waitFor(() => expect(getRuns).toHaveBeenCalledTimes(3))
       rerender({ reverse: true })
       await act(async () => Promise.resolve())
-      expect(getRuns).toHaveBeenCalledTimes(2)
+      expect(getRuns).toHaveBeenCalledTimes(3)
     })
   })
 })

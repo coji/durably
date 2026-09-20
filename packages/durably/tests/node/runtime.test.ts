@@ -17,6 +17,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     status: 'leased',
     idempotencyKey: null,
     concurrencyKey: null,
+    waitingOnWaitId: null,
     currentStepIndex: 0,
     completedStepCount: 0,
     progress: null,
@@ -55,6 +56,11 @@ function unimplemented(): never {
 
 function createMockStore(overrides: object = {}): Store {
   const base: Store = {
+    prepareWait: async () => null,
+    getWait: async () => null,
+    getWaits: async () => [],
+    signalWait: async () => unimplemented(),
+    suspendRun: async () => false,
     enqueue: async () => unimplemented(),
     enqueueMany: async () => unimplemented(),
     getRun: async () => null,

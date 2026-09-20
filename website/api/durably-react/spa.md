@@ -156,13 +156,13 @@ function Component() {
 
 ### Options
 
-| Option           | Type                                    | Default | Description                                                      |
-| ---------------- | --------------------------------------- | ------- | ---------------------------------------------------------------- |
-| `initialRunId`   | `string`                                | -       | Track and hydrate this run immediately; skips scoped auto-resume |
-| `autoResume`     | `boolean`                               | `true`  | Find a matching leased run, then a matching pending run          |
-| `followLatest`   | `boolean`                               | `true`  | Follow matching trigger, coalesced, and leased events            |
-| `scope`          | `{ labels: Record<string, string> }`    | -       | Require every label for resume and follow                        |
-| `triggerOptions` | `TriggerOptions<Record<string,string>>` | -       | Forward options to both `trigger` and `triggerAndWait`           |
+| Option           | Type                                    | Default | Description                                                                          |
+| ---------------- | --------------------------------------- | ------- | ------------------------------------------------------------------------------------ |
+| `initialRunId`   | `string`                                | -       | Track and hydrate this run immediately; skips scoped auto-resume                     |
+| `autoResume`     | `boolean`                               | `true`  | Find a matching leased run, then a matching pending run, then a matching waiting run |
+| `followLatest`   | `boolean`                               | `true`  | Follow matching trigger, coalesced, and leased events                                |
+| `scope`          | `{ labels: Record<string, string> }`    | -       | Require every label for resume and follow                                            |
+| `triggerOptions` | `TriggerOptions<Record<string,string>>` | -       | Forward options to both `trigger` and `triggerAndWait`                               |
 
 Matching `run:trigger` events are followed while the new run is still pending. This is the pending-time follow behavior. Scope labels and trigger labels are independent, so supply both when a newly triggered run should match the hook. Scope changes clear the previous run and resolve the new scope. Inline option objects are compared by value.
 
@@ -184,6 +184,7 @@ interface UseJobResult<TInput, TOutput> {
   isCancelled: boolean
   isTerminal: boolean
   isActive: boolean
+  isWaiting: boolean
   isResolving: boolean
   currentRunId: string | null
   reset: () => void
@@ -247,6 +248,7 @@ function RunMonitor({ runId }: { runId: string | null }) {
 | `isCancelled` | `boolean`           | Whether the run was cancelled                     |
 | `isTerminal`  | `boolean`           | Terminal status (completed, failed, or cancelled) |
 | `isActive`    | `boolean`           | Pending or leased                                 |
+| `isWaiting`   | `boolean`           | `true` when status is waiting                     |
 
 ---
 
@@ -294,7 +296,7 @@ List runs with optional filtering, pagination, and real-time updates.
 
 The hook automatically subscribes to Durably events and refreshes the list when runs change. It listens to:
 
-- `run:trigger`, `run:leased`, `run:complete`, `run:fail`, `run:cancel`, `run:delete` - refresh list
+- `run:trigger`, `run:leased`, `run:waiting`, `run:complete`, `run:fail`, `run:cancel`, `run:delete` - refresh list
 - `run:progress` - update progress in place
 - `step:start`, `step:complete` - refresh for step count updates
 
@@ -416,3 +418,5 @@ useRuns(options?)
 | `prevPage`  | `() => void`                  | Go to previous page                           |
 | `goToPage`  | `(page: number) => void`      | Go to specific page                           |
 | `refresh`   | `() => Promise<void>`         | Manually refresh the list                     |
+
+`isWaiting` is true for suspended runs, including accepted input awaiting a lease. Waiting is nonterminal but is not included in `isActive`; use `!isTerminal` for unfinished work.

@@ -6,7 +6,7 @@ Durably provides an event system for monitoring job execution and extensibility.
 
 Fifteen core event types are exposed as the `DurablyEvent` discriminated union. For filtering and typing, they are grouped into:
 
-- **Domain (lifecycle facts)** — `DomainEvent` / `DomainEventType`: `run:trigger`, `run:coalesced`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`
+- **Domain (lifecycle facts)** — `DomainEvent` / `DomainEventType`: `run:trigger`, `run:coalesced`, `run:waiting`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`
 - **Operational (execution and diagnostics)** — `OperationalEvent` / `OperationalEventType`: `run:leased`, `run:lease-renewed`, `run:progress`, `step:start`, `step:complete`, `step:fail`, `step:cancel`, `log:write`, `worker:error`
 
 The helper `isDomainEvent(event)` returns true when `event.type` is a domain event (no `category` field is added to emitted payloads).
@@ -53,15 +53,15 @@ durably.on('run:trigger', (event) => {
 
 #### `run:coalesced`
 
-Fired when a trigger was coalesced onto an existing pending run with `coalesce: 'skip'`, `'queue'`, or `'active'`, or onto a valid leased run with `'active'`. Not fired for normal triggers (`'created'`) or idempotent hits (`'idempotent'`). Unused inputs and labels are reported in `skippedInput` and `skippedLabels`, rather than overwriting the selected run.
+Fired when a trigger was coalesced onto an existing pending run with `coalesce: 'skip'`, `'queue'`, or `'active'`, or onto a valid leased or waiting run with `'active'`. Not fired for normal triggers (`'created'`) or idempotent hits (`'idempotent'`). Unused inputs and labels are reported in `skippedInput` and `skippedLabels`, rather than overwriting the selected run.
 
 ```ts
 durably.on('run:coalesced', (event) => {
   // event: {
   //   type: 'run:coalesced',
-  //   runId: string,           // ID of the existing pending or leased run
+  //   runId: string,           // ID of the existing pending, leased, or waiting run
   //   jobName: string,
-  //   status: 'pending' | 'leased',
+  //   status: 'pending' | 'leased' | 'waiting',
   //   labels: Record<string, string>,  // existing run's labels
   //   skippedInput: unknown,   // the new input that was NOT used
   //   skippedLabels: Record<string, string>, // the new labels that were NOT used
@@ -439,5 +439,15 @@ durably.on('step:complete', (e) => {
 // Handle listener errors
 durably.onError((error, event) => {
   console.error('Event listener threw:', error)
+})
+```
+
+### `run:waiting`
+
+Emitted after suspension is persisted. The run has released its lease and worker slot. `run:leased` is emitted again when it resumes with a new lease. HTTP subscriptions restore waiting state from persisted snapshots on reconnect; in-process events alone are not a cross-process delivery guarantee.
+
+```ts
+durably.on('run:waiting', (event) => {
+  console.log('Waiting:', event.runId)
 })
 ```

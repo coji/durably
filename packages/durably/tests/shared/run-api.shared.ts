@@ -573,6 +573,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
         d.start()
 
         const p = d.jobs.job.triggerAndWait({})
+        const rejection = expect(p).rejects.toThrow(CancelledError)
 
         await vi.waitFor(
           async () => {
@@ -585,7 +586,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
         const run = (await d.getRuns({ status: 'leased' }))[0]
         await d.cancel(run.id)
 
-        await expect(p).rejects.toThrow(CancelledError)
+        await rejection
       })
 
       it('rejects with CancelledError when run was cancelled before worker starts', async () => {
@@ -877,6 +878,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
         })
         const run = await d.jobs.job.trigger({})
         const p = d.waitForRun(run.id, { pollingIntervalMs: 3333 })
+        const rejection = expect(p).rejects.toThrow(CancelledError)
         await vi.waitFor(() => {
           expect(setIntervalSpy).toHaveBeenCalledWith(
             expect.any(Function),
@@ -885,7 +887,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
         })
         setIntervalSpy.mockRestore()
         await d.cancel(run.id)
-        await expect(p).rejects.toThrow(CancelledError)
+        await rejection
       })
 
       it('times out while storage polling is active for a pending run', async () => {
@@ -912,6 +914,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
           }),
         })
         const p = d.jobs.job.triggerAndWait({}, { pollingIntervalMs: 4242 })
+        const rejection = expect(p).rejects.toThrow(CancelledError)
         await vi.waitFor(() => {
           expect(setIntervalSpy).toHaveBeenCalledWith(
             expect.any(Function),
@@ -922,7 +925,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
         const pending = await d.getRuns({ status: 'pending' })
         expect(pending).toHaveLength(1)
         await d.cancel(pending[0].id)
-        await expect(p).rejects.toThrow(CancelledError)
+        await rejection
       })
     })
 

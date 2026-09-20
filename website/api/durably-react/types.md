@@ -9,20 +9,22 @@ The React package’s SSE and client event shapes are **transport-layer** unions
 Imported from `@coji/durably` and re-exported by `@coji/durably-react`:
 
 ```ts
-type RunStatus = 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
+type RunStatus =
+  'pending' | 'leased' | 'waiting' | 'completed' | 'failed' | 'cancelled'
 ```
 
 Hooks expose `isTerminal` and `isActive` flags directly: terminal means completed, failed, or cancelled; active means pending or leased. `ClientRun` objects from the HTTP API also include these derived fields.
 
-Both SPA and fullstack `useJob` results also expose `isResolving: boolean`. It is true while enabled auto-resume is resolving a pending or leased run and false when the lookup succeeds, finds nothing, fails, is superseded, or is skipped by `initialRunId` or `autoResume: false`.
+Both SPA and fullstack `useJob` results also expose `isResolving: boolean`. It is true while enabled auto-resume is resolving a pending, leased, or waiting run and false when the lookup succeeds, finds nothing, fails, is superseded, or is skipped by `initialRunId` or `autoResume: false`.
 
-| Status      | Description                                      |
-| ----------- | ------------------------------------------------ |
-| `pending`   | Job is queued, waiting to be picked up by worker |
-| `leased`    | Job is currently executing                       |
-| `completed` | Job finished successfully                        |
-| `failed`    | Job encountered an error                         |
-| `cancelled` | Job was cancelled before completion              |
+| Status      | Description                                                    |
+| ----------- | -------------------------------------------------------------- |
+| `pending`   | Job is queued, waiting to be picked up by worker               |
+| `waiting`   | Job is suspended for external input or awaiting a resume lease |
+| `leased`    | Job is currently executing                                     |
+| `completed` | Job finished successfully                                      |
+| `failed`    | Job encountered an error                                       |
+| `cancelled` | Job was cancelled before completion                            |
 
 ## Progress
 
@@ -66,7 +68,7 @@ interface LogEntry {
 
 ## ClientRun
 
-A subset of the core `Run` type returned by HTTP endpoints. Internal fields (`leaseOwner`, `leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `leaseGeneration`, `updatedAt`) are excluded. Responses include **`isTerminal`** and **`isActive`** derived from `status`.
+A subset of the core `Run` type returned by HTTP endpoints. Internal fields (`leaseOwner`, `leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `leaseGeneration`, `updatedAt`) are excluded. Responses include **`isTerminal`**, **`isActive`**, and **`isWaiting`** derived from `status`.
 
 ```ts
 interface ClientRun {
@@ -85,6 +87,7 @@ interface ClientRun {
   createdAt: string
   isTerminal: boolean
   isActive: boolean
+  isWaiting: boolean
 }
 ```
 
@@ -105,6 +108,7 @@ interface ClientRun {
 | `createdAt`          | `string`                 | ISO timestamp of creation                             |
 | `isTerminal`         | `boolean`                | `true` when status is completed, failed, or cancelled |
 | `isActive`           | `boolean`                | `true` when status is pending or leased               |
+| `isWaiting`          | `boolean`                | `true` when status is waiting                         |
 
 ## TypedClientRun
 
@@ -150,6 +154,13 @@ Union type for all SSE events streamed from the server. Useful for custom event 
 
 ```ts
 type DurablyEvent =
+  | {
+      type: 'run:waiting'
+      runId: string
+      jobName: string
+      waitId: string
+      labels: Record<string, string>
+    }
   | { type: 'run:leased'; runId: string; jobName: string; input: unknown }
   | {
       type: 'run:complete'
@@ -166,7 +177,7 @@ type DurablyEvent =
       type: 'run:coalesced'
       runId: string
       jobName: string
-      status: 'pending' | 'leased'
+      status: 'pending' | 'leased' | 'waiting'
       labels: Record<string, string>
       skippedInput: unknown
       skippedLabels: Record<string, string>
@@ -230,3 +241,7 @@ interface StepRecord {
 | `error`       | `string \| null`                         | Error message (when failed) |
 | `startedAt`   | `string`                                 | ISO timestamp of start      |
 | `completedAt` | `string \| null`                         | ISO timestamp of completion |
+
+### Waiting runs
+
+`isWaiting` is true exactly when status is `waiting`, including accepted input awaiting a new lease. `isActive` retains its pending/leased meaning, so it is not the inverse of `isTerminal`. Use `!isTerminal` to identify unfinished runs. Auto-resume prefers leased, then pending, then waiting runs. `run:waiting` updates tracked runs and run lists; subscriptions hydrate waiting state after reconnect. Cancellation remains available while waiting; delete/retrigger require cancellation first. Dedicated HTTP wait/signal APIs are not included yet.

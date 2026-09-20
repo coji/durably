@@ -9,7 +9,7 @@ interface Migration {
   up: (db: Kysely<Database>) => Promise<void>
 }
 
-export const LATEST_SCHEMA_VERSION = 2
+export const LATEST_SCHEMA_VERSION = 3
 
 const migrations: Migration[] = [
   {
@@ -206,6 +206,33 @@ const migrations: Migration[] = [
         .ifNotExists()
         .on('durably_step_attempts')
         .columns(['run_id', 'started_at', 'id'])
+        .execute()
+    },
+  },
+  {
+    version: 3,
+    up: async (db) => {
+      await db.schema
+        .alterTable('durably_runs')
+        .addColumn('waiting_on_wait_id', 'text')
+        .execute()
+      await db.schema
+        .createTable('durably_waits')
+        .addColumn('id', 'text', (col) => col.primaryKey())
+        .addColumn('run_id', 'text', (col) => col.notNull())
+        .addColumn('name', 'text', (col) => col.notNull())
+        .addColumn('metadata', 'text')
+        .addColumn('status', 'text', (col) => col.notNull())
+        .addColumn('payload', 'text')
+        .addColumn('signal_id', 'text')
+        .addColumn('created_at', 'text', (col) => col.notNull())
+        .addColumn('resolved_at', 'text')
+        .execute()
+      await db.schema
+        .createIndex('idx_durably_waits_run_name')
+        .on('durably_waits')
+        .columns(['run_id', 'name'])
+        .unique()
         .execute()
     },
   },

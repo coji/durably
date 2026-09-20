@@ -9,6 +9,7 @@ import {
 } from './errors'
 import type { EventEmitter, LogData, ProgressData } from './events'
 import type { Run, RunFilter, Store } from './storage'
+import type { DurableWait } from './waits'
 
 /** Matches `createDurably` default when callers omit `pollingIntervalMs` on the wait options. */
 const DEFAULT_WAIT_POLLING_INTERVAL_MS = 1000
@@ -74,6 +75,17 @@ export interface StepContext {
   all<const T extends Record<string, StepCallback<unknown>>>(
     branches: T,
   ): Promise<{ [K in keyof T]: Awaited<ReturnType<T[K]>> }>
+
+  /** Persist an input address before starting external work. Stable by run and name. */
+  prepareWait(
+    name: string,
+    options?: { metadata?: JsonValue },
+  ): Promise<DurableWait>
+
+  /** Await one external input at a sequential job boundary, releasing the worker slot. */
+  waitFor(
+    wait: Pick<DurableWait, 'id'>,
+  ): Promise<{ type: 'signal'; payload: JsonValue }>
 
   /**
    * Report progress for the current run
@@ -546,7 +558,7 @@ export function createJobHandle<
         type: 'run:coalesced',
         runId: run.id,
         jobName: jobDef.name,
-        status: run.status as 'pending' | 'leased',
+        status: run.status as 'pending' | 'leased' | 'waiting',
         labels: run.labels,
         skippedInput: input,
         skippedLabels: labels ?? {},

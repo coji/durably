@@ -123,7 +123,7 @@ function Dashboard() {
               {run.status === 'failed' && (
                 <button onClick={() => retrigger(run.id)}>Retrigger</button>
               )}
-              {(run.status === 'pending' || run.status === 'leased') && (
+              {!run.isTerminal && (
                 <button onClick={() => cancel(run.id)}>Cancel</button>
               )}
               <button onClick={() => deleteRun(run.id)}>Delete</button>
@@ -204,7 +204,7 @@ function Component() {
     api: '/api/durably',
     jobName: 'sync-data',
     initialRunId: undefined, // Optional: resume existing run
-    autoResume: true, // Auto-resume leased/pending jobs on mount
+    autoResume: true, // Auto-resume leased/pending/waiting jobs on mount
     followLatest: true, // Switch to tracking new runs via SSE
     scope: { labels: { userId: 'user_123' } },
     triggerOptions: {
@@ -225,15 +225,15 @@ function Component() {
 
 ### Options
 
-| Option           | Type                                    | Default | Description                                               |
-| ---------------- | --------------------------------------- | ------- | --------------------------------------------------------- |
-| `api`            | `string`                                | -       | API base path (e.g., `/api/durably`)                      |
-| `jobName`        | `string`                                | -       | Name of the job to trigger                                |
-| `initialRunId`   | `string`                                | -       | Track this run immediately and skip scoped auto-resume    |
-| `autoResume`     | `boolean`                               | `true`  | Find a matching leased run, then a matching pending run   |
-| `followLatest`   | `boolean`                               | `true`  | Follow matching trigger, coalesced, and leased SSE events |
-| `scope`          | `{ labels: Record<string, string> }`    | -       | Filter lookups and subscriptions by every supplied label  |
-| `triggerOptions` | `TriggerOptions<Record<string,string>>` | -       | Forward options to both `trigger` and `triggerAndWait`    |
+| Option           | Type                                    | Default | Description                                                                          |
+| ---------------- | --------------------------------------- | ------- | ------------------------------------------------------------------------------------ |
+| `api`            | `string`                                | -       | API base path (e.g., `/api/durably`)                                                 |
+| `jobName`        | `string`                                | -       | Name of the job to trigger                                                           |
+| `initialRunId`   | `string`                                | -       | Track this run immediately and skip scoped auto-resume                               |
+| `autoResume`     | `boolean`                               | `true`  | Find a matching leased run, then a matching pending run, then a matching waiting run |
+| `followLatest`   | `boolean`                               | `true`  | Follow matching trigger, coalesced, and leased SSE events                            |
+| `scope`          | `{ labels: Record<string, string> }`    | -       | Filter lookups and subscriptions by every supplied label                             |
+| `triggerOptions` | `TriggerOptions<Record<string,string>>` | -       | Forward options to both `trigger` and `triggerAndWait`                               |
 
 Client mode encodes scope as `label.<key>` query parameters on both `/runs` lookups and `/runs/subscribe`. `isResolving` stays true until the initial lookup settles or is superseded. Scope changes discard the prior run, reset local trigger precedence, rebuild the subscription, and resolve the new scope. Scope labels are not copied into trigger labels.
 
@@ -243,6 +243,7 @@ Client mode encodes scope as `label.<key>` query parameters on both `/runs` look
 | ------------- | --------- | --------------------------------------------------------------------------------- |
 | `isTerminal`  | `boolean` | `true` when status is completed, failed, or cancelled                             |
 | `isActive`    | `boolean` | `true` when status is pending or leased                                           |
+| `isWaiting`   | `boolean` | `true` when status is waiting                                                     |
 | `isResolving` | `boolean` | `true` while the initial scoped lookup is in progress                             |
 | …             | …         | See [Types](/api/durably-react/types) — same boolean helpers as `isPending`, etc. |
 
@@ -322,7 +323,7 @@ List and paginate job runs with real-time updates on the first page.
 
 The first page (page 0) automatically subscribes to SSE for real-time updates. It listens to:
 
-- `run:trigger`, `run:leased`, `run:complete`, `run:fail`, `run:cancel`, `run:delete` - refresh list
+- `run:trigger`, `run:leased`, `run:waiting`, `run:complete`, `run:fail`, `run:cancel`, `run:delete` - refresh list
 - `run:progress` - update progress in place
 - `step:start`, `step:complete`, `step:fail` - refresh for step updates
 
@@ -488,7 +489,9 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
           Retrigger
         </button>
       )}
-      {(status === 'pending' || status === 'leased') && (
+      {(status === 'pending' ||
+        status === 'leased' ||
+        status === 'waiting') && (
         <button
           type="button"
           onClick={() => {
@@ -539,7 +542,9 @@ function RunActions({ runId, status }: { runId: string; status: string }) {
 | Property    | Type                                            | Description                                 |
 | ----------- | ----------------------------------------------- | ------------------------------------------- |
 | `retrigger` | `(runId: string) => Promise<string>`            | Retrigger a failed run (returns new run ID) |
-| `cancel`    | `(runId: string) => Promise<void>`              | Cancel a pending or leased run              |
+| `cancel`    | `(runId: string) => Promise<void>`              | Cancel a pending, leased, or waiting run    |
 | `deleteRun` | `(runId: string) => Promise<void>`              | Delete a run                                |
 | `getRun`    | `(runId: string) => Promise<ClientRun \| null>` | Get run details                             |
 | `getSteps`  | `(runId: string) => Promise<StepRecord[]>`      | Get step details                            |
+
+`isWaiting` is true for suspended runs, including accepted input awaiting a lease. Waiting is nonterminal but is not included in `isActive`; use `!isTerminal` for unfinished work.

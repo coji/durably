@@ -6,7 +6,8 @@ export interface RunsTable {
   id: string
   job_name: string
   input: string // JSON
-  status: 'pending' | 'leased' | 'completed' | 'failed' | 'cancelled'
+  status:
+    'pending' | 'leased' | 'waiting' | 'completed' | 'failed' | 'cancelled'
   idempotency_key: string | null
   concurrency_key: string | null
   current_step_index: number
@@ -18,6 +19,7 @@ export interface RunsTable {
   lease_owner: string | null
   lease_expires_at: string | null // ISO8601
   lease_generation: number
+  waiting_on_wait_id: string | null
   started_at: string | null // ISO8601
   completed_at: string | null // ISO8601
   created_at: string // ISO8601
@@ -70,7 +72,20 @@ export interface SchemaVersionsTable {
   applied_at: string // ISO8601
 }
 
+export interface WaitsTable {
+  id: string
+  run_id: string
+  name: string
+  metadata: string | null
+  status: 'pending' | 'resolved' | 'cancelled' | 'closed'
+  payload: string | null
+  signal_id: string | null
+  created_at: string
+  resolved_at: string | null
+}
+
 export interface Database {
+  durably_waits: WaitsTable
   durably_runs: RunsTable
   durably_run_labels: RunLabelsTable
   durably_steps: StepsTable
