@@ -14,6 +14,8 @@ Signal delivery, deadline evaluation, and cancellation may occur in different ru
 
 Add optional `timeoutMs` to `step.prepareWait()`. Require a positive safe integer in milliseconds and a resulting deadline within the representable date range. The first preparation persists an absolute deadline; replaying the same run/name returns that deadline even if later code changes the option. Omitting the option creates an unbounded wait. A deadline is a property of this one wait, not a general timer or job retry policy.
 
+Store deadline milliseconds as a number for comparisons and expiry scans. The public ISO timestamp remains available for inspection; ISO string order does not match time order for JavaScript's extended years.
+
 Persist one immutable result with an outcome of `signal` or `timeout`. `step.waitFor()` returns a discriminated signal/payload or timeout result. A timeout is ordinary job input so the job chooses its branch. A new signal wins only if its authoritative transaction time is strictly before the deadline. At or after the deadline, signal delivery first finalizes an unresolved wait as timed out and rejects the new input, even if no worker has swept it. An identical retry of an already accepted signal returns its original receipt after the deadline or run cancellation.
 
 Serialize signal, timeout, and cancellation changes in database transactions, locking the run before the wait on backends with row locks. Conditional writes allow only a pending wait to be finalized. Cancellation remains terminal even when a signal or timeout result has already been recorded; replay checks the current lease and cancellation state before subsequent step work. A finalized wait never revives a cancelled run.

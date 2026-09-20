@@ -82,6 +82,7 @@ export interface WaitsTable {
   signal_id: string | null
   created_at: string
   deadline_at: string | null
+  deadline_ms: number | null
   outcome: 'signal' | 'timeout' | null
   suspended_at: string | null
   resolved_at: string | null

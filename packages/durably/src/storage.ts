@@ -1259,6 +1259,7 @@ export function createKyselyStore(
           signal_id: null,
           created_at: now,
           deadline_at: deadlineAt,
+          deadline_ms: deadlineMs,
           outcome: null,
           suspended_at: null,
           resolved_at: null,
@@ -1332,7 +1333,10 @@ export function createKyselyStore(
           )
             throw new ConflictError(`Wait cannot accept this signal: ${waitId}`)
           const now = at ?? new Date().toISOString()
-          if (wait.deadline_at !== null && now >= wait.deadline_at) {
+          if (
+            wait.deadline_ms !== null &&
+            Date.parse(now) >= wait.deadline_ms
+          ) {
             await trx
               .updateTable('durably_waits')
               .set({
@@ -1390,8 +1394,8 @@ export function createKyselyStore(
           throw new ValidationError('Wait does not belong to this run')
         if (
           wait.status !== 'pending' ||
-          wait.deadline_at === null ||
-          wait.deadline_at > now
+          wait.deadline_ms === null ||
+          wait.deadline_ms > Date.parse(now)
         )
           return rowToWait(wait)
         const resolved = await trx
@@ -1416,8 +1420,8 @@ export function createKyselyStore(
         .selectFrom('durably_waits')
         .select(['id', 'run_id'])
         .where('status', '=', 'pending')
-        .where('deadline_at', '<=', now)
-        .orderBy('deadline_at', 'asc')
+        .where('deadline_ms', '<=', Date.parse(now))
+        .orderBy('deadline_ms', 'asc')
         .orderBy('id', 'asc')
         .limit(limit)
         .execute()
@@ -1438,8 +1442,8 @@ export function createKyselyStore(
             .executeTakeFirst()
           if (
             wait?.status !== 'pending' ||
-            wait.deadline_at === null ||
-            wait.deadline_at > now
+            wait.deadline_ms === null ||
+            wait.deadline_ms > Date.parse(now)
           )
             return 0
           const result = await trx
@@ -1482,8 +1486,8 @@ export function createKyselyStore(
           throw new ConflictError('Wait is not available for this run')
         const expiresBeforeSuspension =
           wait.status === 'pending' &&
-          wait.deadline_at !== null &&
-          wait.deadline_at <= now
+          wait.deadline_ms !== null &&
+          wait.deadline_ms <= Date.parse(now)
         if (expiresBeforeSuspension)
           await trx
             .updateTable('durably_waits')

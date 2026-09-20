@@ -109,17 +109,27 @@ describe('migration consolidated schema', () => {
       VALUES ('old-run', 'legacy', '{}', 'waiting', '{}', 1, 0, 0, ${now}, ${now})`.execute(
       durably.db,
     )
-    await sql`INSERT INTO durably_waits
-      (id, run_id, name, status, payload, signal_id, created_at, resolved_at)
-      VALUES ('old-wait', 'old-run', 'approval', 'resolved', 'true', 'old-signal', ${now}, ${now})`.execute(
-      durably.db,
-    )
+    for (const status of ['pending', 'resolved', 'cancelled', 'closed']) {
+      const id = `old-${status}`
+      const payload = status === 'resolved' ? 'true' : null
+      const signalId = status === 'resolved' ? 'old-signal' : null
+      const resolvedAt = status === 'pending' ? null : now
+      await sql`INSERT INTO durably_waits
+        (id, run_id, name, status, payload, signal_id, created_at, resolved_at)
+        VALUES (${id}, 'old-run', ${id}, ${status}, ${payload}, ${signalId}, ${now}, ${resolvedAt})`.execute(
+        durably.db,
+      )
+    }
     await durably.migrate()
-    const wait = await durably.storage.getWait('old-wait')
-    expect(wait?.status).toBe('resolved')
-    expect(wait?.outcome).toBe('signal')
-    expect(wait?.deadlineAt).toBeNull()
-    expect(wait?.inputWaitMs).toBeNull()
-    expect(wait?.executionSlotWaitMs).toBeNull()
+    for (const status of ['pending', 'resolved', 'cancelled', 'closed']) {
+      const wait = await durably.storage.getWait(`old-${status}`)
+      expect(wait?.status).toBe(status)
+      expect(wait?.outcome).toBe(status === 'resolved' ? 'signal' : null)
+      expect(wait?.deadlineAt).toBeNull()
+      expect(wait?.suspendedAt).toBeNull()
+      expect(wait?.firstResumedAt).toBeNull()
+      expect(wait?.inputWaitMs).toBeNull()
+      expect(wait?.executionSlotWaitMs).toBeNull()
+    }
   })
 })

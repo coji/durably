@@ -83,18 +83,27 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
         ).rejects.toThrow(ValidationError)
       }
       const maxRepresentable = 8_640_000_000_000_000 - Date.parse(at(0))
+      const maxWait = (await store.prepareWait(
+        run.id,
+        leased.leaseGeneration,
+        'max-deadline',
+        undefined,
+        maxRepresentable,
+        at(0),
+      ))!
+      expect(maxWait.deadlineAt).toBe('+275760-09-13T00:00:00.000Z')
+      expect(await store.expireDueWaits(at(1))).toBe(0)
+      expect((await store.getWait(maxWait.id))?.outcome).toBeNull()
       expect(
         (
-          await store.prepareWait(
-            run.id,
-            leased.leaseGeneration,
-            'max-deadline',
-            undefined,
-            maxRepresentable,
-            at(0),
+          await store.signalWait(
+            maxWait.id,
+            true,
+            { signalId: 'before-max' },
+            at(1),
           )
-        )?.deadlineAt,
-      ).toBe('+275760-09-13T00:00:00.000Z')
+        ).outcome,
+      ).toBe('signal')
       await expect(
         store.prepareWait(
           run.id,

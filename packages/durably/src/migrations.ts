@@ -243,6 +243,12 @@ const migrations: Migration[] = [
         .alterTable('durably_waits')
         .addColumn('deadline_at', 'text')
         .execute()
+      // IEEE-754 doubles exactly represent every valid JavaScript Date
+      // millisecond. Numeric ordering also handles extended-year ISO strings.
+      await db.schema
+        .alterTable('durably_waits')
+        .addColumn('deadline_ms', 'double precision')
+        .execute()
       await db.schema
         .alterTable('durably_waits')
         .addColumn('outcome', 'text')
@@ -269,7 +275,7 @@ const migrations: Migration[] = [
       await db.schema
         .createIndex('idx_durably_waits_due')
         .on('durably_waits')
-        .columns(['status', 'deadline_at', 'id'])
+        .columns(['status', 'deadline_ms', 'id'])
         .execute()
     },
   },
