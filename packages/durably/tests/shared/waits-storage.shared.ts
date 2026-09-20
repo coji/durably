@@ -1,5 +1,5 @@
 import type { Dialect } from 'kysely'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   ConflictError,
   createDurably,
@@ -33,6 +33,37 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
       ))!
       return { store, run, leased, wait }
     }
+
+    it('uses database time despite a skewed runtime clock', async () => {
+      const store = durably.storage
+      const { run } = await store.enqueue({ jobName: 'clock-skew', input: {} })
+      const databaseTime = Date.now()
+      const leased = (await store.claimNext(
+        'worker',
+        new Date(databaseTime).toISOString(),
+        30_000,
+      ))!
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        vi.setSystemTime(new Date(databaseTime + 60_000))
+        const wait = (await store.prepareWait(
+          run.id,
+          leased.leaseGeneration,
+          'approval',
+          undefined,
+          10_000,
+        ))!
+        expect(
+          Math.abs(Date.parse(wait.createdAt) - databaseTime),
+        ).toBeLessThan(5_000)
+        expect(await store.expireDueWaits()).toBe(0)
+        expect(
+          (await durably.signal(wait.id, 'yes', { signalId: 'one' })).outcome,
+        ).toBe('signal')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
 
     it('validates and fixes the first absolute deadline across replays', async () => {
       const { store, run, leased, wait } = await timedWait()

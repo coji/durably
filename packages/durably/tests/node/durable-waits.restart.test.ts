@@ -2,16 +2,12 @@ import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, expect, it, vi } from 'vitest'
+import { expect, it } from 'vitest'
 import { z } from 'zod'
 import { createDurably, defineJob } from '../../src'
 import { createNodeDialectForFile } from '../helpers/node-dialect'
 
-afterEach(() => vi.useRealTimers())
-
 it('recreates a runtime after the deadline and resumes the original run through timeout', async () => {
-  vi.useFakeTimers({ toFake: ['Date'] })
-  vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
   const directory = mkdtempSync(join(tmpdir(), `durably-wait-${randomUUID()}-`))
   const file = join(directory, 'wait.db')
   const job = defineJob({
@@ -19,7 +15,7 @@ it('recreates a runtime after the deadline and resumes the original run through 
     input: z.object({}),
     output: z.unknown(),
     run: async (step) => {
-      const wait = await step.prepareWait('approval', { timeoutMs: 1_000 })
+      const wait = await step.prepareWait('approval', { timeoutMs: 500 })
       return step.waitFor(wait)
     },
   })
@@ -39,14 +35,17 @@ it('recreates a runtime after the deadline and resumes the original run through 
     await first.db.destroy()
     firstDestroyed = true
 
-    vi.setSystemTime(new Date('2026-01-01T00:00:02.000Z'))
+    await new Promise((resolve) =>
+      setTimeout(
+        resolve,
+        Math.max(0, Date.parse(wait.deadlineAt!) - Date.now() + 10),
+      ),
+    )
     second = createDurably({
       dialect: createNodeDialectForFile(file),
     }).register({ job })
     await second.migrate()
-    expect((await second.getWait(wait.id))?.deadlineAt).toBe(
-      '2026-01-01T00:00:01.000Z',
-    )
+    expect((await second.getWait(wait.id))?.deadlineAt).toBe(wait.deadlineAt)
     await second.processOne()
     expect((await second.getRun(run.id))?.output).toEqual({ type: 'timeout' })
     expect((await second.getWait(wait.id))?.id).toBe(wait.id)

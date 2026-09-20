@@ -124,9 +124,6 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
     })
 
     it('resumes a timed-out run with a distinct result and separates input from slot waiting', async () => {
-      vi.useFakeTimers({ toFake: ['Date'] })
-      const preparedAt = new Date('2026-01-01T00:00:00.000Z')
-      vi.setSystemTime(preparedAt)
       const after = vi.fn()
       const app = d.register({
         job: defineJob({
@@ -135,7 +132,7 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
           output: z.unknown(),
           run: async (step) => {
             const wait = await step.prepareWait('approval', {
-              timeoutMs: 1_000,
+              timeoutMs: 100,
             })
             const result = await step.waitFor(wait)
             await step.run('after', () => after(result))
@@ -147,25 +144,31 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
       await app.processOne()
       expect((await app.getRun(run.id))?.status).toBe('waiting')
       const [initial] = await app.getWaits(run.id)
-      expect(initial.deadlineAt).toBe('2026-01-01T00:00:01.000Z')
+      expect(
+        Date.parse(initial.deadlineAt!) - Date.parse(initial.createdAt),
+      ).toBe(100)
 
-      vi.setSystemTime(new Date('2026-01-01T00:00:02.000Z'))
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.max(0, Date.parse(initial.deadlineAt!) - Date.now() + 10),
+        ),
+      )
       await app.processOne()
       expect((await app.getRun(run.id))?.output).toEqual({ type: 'timeout' })
       expect(after).toHaveBeenCalledExactlyOnceWith({ type: 'timeout' })
       const wait = await app.getWait(initial.id)
-      expect(wait).toMatchObject({
-        outcome: 'timeout',
-        resolvedAt: '2026-01-01T00:00:01.000Z',
-        firstResumedAt: '2026-01-01T00:00:02.000Z',
-        inputWaitMs: 1_000,
-        executionSlotWaitMs: 1_000,
-      })
+      expect(wait?.outcome).toBe('timeout')
+      expect(wait?.resolvedAt).toBe(initial.deadlineAt)
+      expect(Date.parse(wait!.firstResumedAt!)).toBeGreaterThanOrEqual(
+        Date.parse(initial.deadlineAt!),
+      )
+      expect(wait?.inputWaitMs).toBeGreaterThanOrEqual(0)
+      expect(wait?.inputWaitMs).toBeLessThanOrEqual(100)
+      expect(wait?.executionSlotWaitMs).toBeGreaterThanOrEqual(0)
     })
 
     it('returns an early timeout without suspending the run', async () => {
-      vi.useFakeTimers({ toFake: ['Date'] })
-      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
       const waiting = vi.fn()
       d.on('run:waiting', waiting)
       const app = d.register({
@@ -175,9 +178,9 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
           output: z.unknown(),
           run: async (step) => {
             const wait = await step.prepareWait('approval', {
-              timeoutMs: 1_000,
+              timeoutMs: 1,
             })
-            vi.setSystemTime(new Date('2026-01-01T00:00:01.000Z'))
+            await new Promise((resolve) => setTimeout(resolve, 10))
             return step.waitFor(wait)
           },
         }),
@@ -195,8 +198,6 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
     })
 
     it('cancellation after timeout finalization prevents continuation', async () => {
-      vi.useFakeTimers({ toFake: ['Date'] })
-      vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
       const after = vi.fn()
       const app = d.register({
         job: defineJob({
@@ -204,7 +205,7 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
           input: z.object({}),
           run: async (step) => {
             const wait = await step.prepareWait('approval', {
-              timeoutMs: 1_000,
+              timeoutMs: 100,
             })
             await step.waitFor(wait)
             await step.run('after', after)
@@ -214,7 +215,12 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
       const run = await app.jobs.job.trigger({})
       await app.processOne()
       const [wait] = await app.getWaits(run.id)
-      vi.setSystemTime(new Date('2026-01-01T00:00:01.000Z'))
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.max(0, Date.parse(wait.deadlineAt!) - Date.now() + 10),
+        ),
+      )
       await expect(
         app.signal(wait.id, true, { signalId: 'late' }),
       ).rejects.toThrow()

@@ -215,7 +215,7 @@ export interface Store<
     waitId: string,
     now?: string,
   ): Promise<DurableWait | null>
-  expireDueWaits(now: string, limit?: number): Promise<number>
+  expireDueWaits(now?: string, limit?: number): Promise<number>
   suspendRun(
     runId: string,
     leaseGeneration: number,
@@ -435,6 +435,22 @@ export function createKyselyStore(
   backend: DatabaseBackend = 'generic',
 ): Store<Record<string, string>> {
   const withWriteLock = createWriteMutex()
+
+  async function databaseNow(queryDb: Kysely<Database>): Promise<string> {
+    const result =
+      backend === 'postgres'
+        ? await sql<{
+            now_ms: string | number
+          }>`SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms`.execute(
+            queryDb,
+          )
+        : await sql<{
+            now_ms: string | number
+          }>`SELECT CAST(strftime('%s', 'now') AS INTEGER) * 1000 + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER) AS now_ms`.execute(
+            queryDb,
+          )
+    return new Date(Number(result.rows[0].now_ms)).toISOString()
+  }
 
   /** Delete runs and all associated data (steps, logs, labels) in dependency order */
   async function cascadeDeleteRuns(
@@ -686,6 +702,7 @@ export function createKyselyStore(
       lease_expires_at: null,
       lease_generation: 0,
       waiting_on_wait_id: null,
+      resume_claimed_at: null,
       started_at: null,
       completed_at: null,
       created_at: now,
@@ -1218,16 +1235,10 @@ export function createKyselyStore(
         throw new ValidationError('timeoutMs must be a positive safe integer')
       const json = metadata === undefined ? null : canonicalWaitJson(metadata)
       return db.transaction().execute(async (trx) => {
-        if (
-          !(await lockAttemptLease(
-            trx,
-            runId,
-            leaseGeneration,
-            at ?? new Date().toISOString(),
-          ))
-        )
+        const lockTime = at ?? (await databaseNow(trx))
+        if (!(await lockAttemptLease(trx, runId, leaseGeneration, lockTime)))
           return null
-        const now = at ?? new Date().toISOString()
+        const now = at ?? (await databaseNow(trx))
         if (!(await leaseStillValidAt(trx, runId, leaseGeneration, now)))
           return null
         const existing = await trx
@@ -1332,7 +1343,7 @@ export function createKyselyStore(
             TERMINAL_STATUSES.includes(run.status)
           )
             throw new ConflictError(`Wait cannot accept this signal: ${waitId}`)
-          const now = at ?? new Date().toISOString()
+          const now = at ?? (await databaseNow(trx))
           if (
             wait.deadline_ms !== null &&
             Date.parse(now) >= wait.deadline_ms
@@ -1373,16 +1384,10 @@ export function createKyselyStore(
 
     async getWaitResultForRun(runId, leaseGeneration, waitId, now) {
       return db.transaction().execute(async (trx) => {
-        if (
-          !(await lockAttemptLease(
-            trx,
-            runId,
-            leaseGeneration,
-            now ?? new Date().toISOString(),
-          ))
-        )
+        const lockTime = now ?? (await databaseNow(trx))
+        if (!(await lockAttemptLease(trx, runId, leaseGeneration, lockTime)))
           return null
-        now ??= new Date().toISOString()
+        now ??= await databaseNow(trx)
         if (!(await leaseStillValidAt(trx, runId, leaseGeneration, now)))
           return null
         const wait = await trx
@@ -1416,6 +1421,8 @@ export function createKyselyStore(
     async expireDueWaits(now, limit = 100) {
       if (!Number.isSafeInteger(limit) || limit <= 0)
         throw new ValidationError('limit must be a positive safe integer')
+      const explicitNow = now !== undefined
+      now ??= await databaseNow(db)
       const due = await db
         .selectFrom('durably_waits')
         .select(['id', 'run_id'])
@@ -1435,6 +1442,7 @@ export function createKyselyStore(
             .returning('status')
             .executeTakeFirst()
           if (!run || TERMINAL_STATUSES.includes(run.status)) return 0
+          const transactionNow = explicitNow ? now : await databaseNow(trx)
           const wait = await trx
             .selectFrom('durably_waits')
             .selectAll()
@@ -1443,7 +1451,7 @@ export function createKyselyStore(
           if (
             wait?.status !== 'pending' ||
             wait.deadline_ms === null ||
-            wait.deadline_ms > Date.parse(now)
+            wait.deadline_ms > Date.parse(transactionNow)
           )
             return 0
           const result = await trx
@@ -1464,16 +1472,10 @@ export function createKyselyStore(
 
     async suspendRun(runId, leaseGeneration, waitId, at) {
       return db.transaction().execute(async (trx) => {
-        if (
-          !(await lockAttemptLease(
-            trx,
-            runId,
-            leaseGeneration,
-            at ?? new Date().toISOString(),
-          ))
-        )
+        const lockTime = at ?? (await databaseNow(trx))
+        if (!(await lockAttemptLease(trx, runId, leaseGeneration, lockTime)))
           return false
-        const now = at ?? new Date().toISOString()
+        const now = at ?? (await databaseNow(trx))
         if (!(await leaseStillValidAt(trx, runId, leaseGeneration, now)))
           return false
         const wait = await trx
@@ -1504,6 +1506,7 @@ export function createKyselyStore(
           .set({
             status: 'waiting',
             waiting_on_wait_id: waitId,
+            resume_claimed_at: null,
             lease_owner: null,
             lease_expires_at: null,
             updated_at: now,
@@ -1835,6 +1838,8 @@ export function createKyselyStore(
       'cancelRun',
       'prepareWait',
       'signalWait',
+      'getWaitResultForRun',
+      'expireDueWaits',
       'suspendRun',
       'persistStep',
       'beginStepAttempt',

@@ -20,6 +20,7 @@ export interface RunsTable {
   lease_expires_at: string | null // ISO8601
   lease_generation: number
   waiting_on_wait_id: string | null
+  resume_claimed_at: string | null // Original first claim after a wait resolved
   started_at: string | null // ISO8601
   completed_at: string | null // ISO8601
   created_at: string // ISO8601

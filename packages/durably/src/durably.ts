@@ -593,7 +593,8 @@ function createDurablyInstance<
     getStepAttempts: storage.getStepAttempts.bind(storage),
     getWait: storage.getWait.bind(storage),
     getWaits: storage.getWaits.bind(storage),
-    signal: storage.signalWait.bind(storage),
+    signal: (waitId, payload, options) =>
+      storage.signalWait(waitId, payload, options),
 
     async waitForRun(
       runId: string,
@@ -1029,18 +1030,16 @@ export function createDurably<
 
   const expireDueWaits = (): Promise<void> => {
     if (expiryInFlight) return expiryInFlight
-    const sweep = storage
-      .expireDueWaits(new Date(realClock.now()).toISOString())
-      .then(
-        () => {},
-        (error: unknown) => {
-          eventEmitter.emit({
-            type: 'worker:error',
-            error: getErrorMessage(error),
-            context: 'wait-expiry',
-          })
-        },
-      )
+    const sweep = storage.expireDueWaits().then(
+      () => {},
+      (error: unknown) => {
+        eventEmitter.emit({
+          type: 'worker:error',
+          error: getErrorMessage(error),
+          context: 'wait-expiry',
+        })
+      },
+    )
     expiryInFlight = sweep
     void sweep.then(
       () => {

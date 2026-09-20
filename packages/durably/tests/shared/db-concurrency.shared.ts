@@ -251,7 +251,7 @@ export function createDbConcurrencyTests(
       await vi.waitFor(
         async () => {
           const run = await runtimeA.jobs.job.getRun(firstRun.id)
-          return run?.status === 'leased'
+          expect(run?.status).toBe('leased')
         },
         { timeout: 2000 },
       )

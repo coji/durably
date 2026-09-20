@@ -240,6 +240,10 @@ const migrations: Migration[] = [
     version: 4,
     up: async (db) => {
       await db.schema
+        .alterTable('durably_runs')
+        .addColumn('resume_claimed_at', 'text')
+        .execute()
+      await db.schema
         .alterTable('durably_waits')
         .addColumn('deadline_at', 'text')
         .execute()

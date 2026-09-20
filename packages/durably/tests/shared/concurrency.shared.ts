@@ -45,7 +45,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
       await vi.waitFor(
         async () => {
           const run = await d.jobs.job.getRun(first.id)
-          return run?.status === 'leased'
+          expect(run?.status).toBe('leased')
         },
         { timeout: 2000 },
       )
@@ -180,7 +180,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
         await vi.waitFor(
           async () => {
             const run = await dp.jobs.job.getRun(first.id)
-            return run?.status === 'leased'
+            expect(run?.status).toBe('leased')
           },
           { timeout: 2000 },
         )
