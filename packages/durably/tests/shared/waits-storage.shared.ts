@@ -38,14 +38,14 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
       const store = durably.storage
       const { run } = await store.enqueue({ jobName: 'clock-skew', input: {} })
       const databaseTime = Date.now()
-      const leased = (await store.claimNext(
-        'worker',
-        new Date(databaseTime).toISOString(),
-        30_000,
-      ))!
       vi.useFakeTimers({ toFake: ['Date'] })
       try {
         vi.setSystemTime(new Date(databaseTime + 60_000))
+        const leased = (await store.claimNext(
+          'fast-worker',
+          new Date().toISOString(),
+          30_000,
+        ))!
         const wait = (await store.prepareWait(
           run.id,
           leased.leaseGeneration,
@@ -60,6 +60,42 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
         expect(
           (await durably.signal(wait.id, 'yes', { signalId: 'one' })).outcome,
         ).toBe('signal')
+
+        vi.setSystemTime(new Date(databaseTime - 60_000))
+        const { run: slowRun } = await store.enqueue({
+          jobName: 'clock-skew',
+          input: {},
+        })
+        const slowLease = (await store.claimNext(
+          'slow-worker',
+          new Date().toISOString(),
+          30_000,
+        ))!
+        expect(slowLease.id).toBe(slowRun.id)
+        const slowWait = (await store.prepareWait(
+          slowRun.id,
+          slowLease.leaseGeneration,
+          'slow-approval',
+          undefined,
+          10_000,
+        ))!
+        expect(slowWait).not.toBeNull()
+        expect(
+          (
+            await store.getWaitResultForRun(
+              slowRun.id,
+              slowLease.leaseGeneration,
+              slowWait.id,
+            )
+          )?.outcome,
+        ).toBeNull()
+        expect(
+          await store.suspendRun(
+            slowRun.id,
+            slowLease.leaseGeneration,
+            slowWait.id,
+          ),
+        ).toBe(true)
       } finally {
         vi.useRealTimers()
       }

@@ -1235,12 +1235,19 @@ export function createKyselyStore(
         throw new ValidationError('timeoutMs must be a positive safe integer')
       const json = metadata === undefined ? null : canonicalWaitJson(metadata)
       return db.transaction().execute(async (trx) => {
-        const lockTime = at ?? (await databaseNow(trx))
+        const lockTime = at ?? new Date().toISOString()
         if (!(await lockAttemptLease(trx, runId, leaseGeneration, lockTime)))
           return null
-        const now = at ?? (await databaseNow(trx))
-        if (!(await leaseStillValidAt(trx, runId, leaseGeneration, now)))
+        if (
+          !(await leaseStillValidAt(
+            trx,
+            runId,
+            leaseGeneration,
+            at ?? new Date().toISOString(),
+          ))
+        )
           return null
+        const now = at ?? (await databaseNow(trx))
         const existing = await trx
           .selectFrom('durably_waits')
           .selectAll()
@@ -1384,12 +1391,19 @@ export function createKyselyStore(
 
     async getWaitResultForRun(runId, leaseGeneration, waitId, now) {
       return db.transaction().execute(async (trx) => {
-        const lockTime = now ?? (await databaseNow(trx))
+        const lockTime = now ?? new Date().toISOString()
         if (!(await lockAttemptLease(trx, runId, leaseGeneration, lockTime)))
           return null
-        now ??= await databaseNow(trx)
-        if (!(await leaseStillValidAt(trx, runId, leaseGeneration, now)))
+        if (
+          !(await leaseStillValidAt(
+            trx,
+            runId,
+            leaseGeneration,
+            now ?? new Date().toISOString(),
+          ))
+        )
           return null
+        now ??= await databaseNow(trx)
         const wait = await trx
           .selectFrom('durably_waits')
           .selectAll()
@@ -1472,12 +1486,19 @@ export function createKyselyStore(
 
     async suspendRun(runId, leaseGeneration, waitId, at) {
       return db.transaction().execute(async (trx) => {
-        const lockTime = at ?? (await databaseNow(trx))
+        const lockTime = at ?? new Date().toISOString()
         if (!(await lockAttemptLease(trx, runId, leaseGeneration, lockTime)))
           return false
-        const now = at ?? (await databaseNow(trx))
-        if (!(await leaseStillValidAt(trx, runId, leaseGeneration, now)))
+        if (
+          !(await leaseStillValidAt(
+            trx,
+            runId,
+            leaseGeneration,
+            at ?? new Date().toISOString(),
+          ))
+        )
           return false
+        const now = at ?? (await databaseNow(trx))
         const wait = await trx
           .selectFrom('durably_waits')
           .selectAll()

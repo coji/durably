@@ -29,6 +29,30 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
       vi.useRealTimers()
     })
 
+    it('suspends a run even when its worker clock lags the database', async () => {
+      const databaseTime = Date.now()
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date(databaseTime - 60_000))
+      const app = d.register({
+        job: defineJob({
+          name: 'slow-clock-wait',
+          input: z.object({}),
+          run: async (step) => {
+            await step.waitFor(
+              await step.prepareWait('approval', { timeoutMs: 10_000 }),
+            )
+          },
+        }),
+      })
+      const run = await app.jobs.job.trigger({})
+      await app.processOne()
+      expect((await app.getRun(run.id))?.status).toBe('waiting')
+      const [wait] = await app.getWaits(run.id)
+      expect(Math.abs(Date.parse(wait.createdAt) - databaseTime)).toBeLessThan(
+        5_000,
+      )
+    })
+
     it('releases one worker slot and same-key exclusion, then replays checkpoints on the same run', async () => {
       const callback = vi.fn(() => 'saved')
       const continuation = vi.fn()
