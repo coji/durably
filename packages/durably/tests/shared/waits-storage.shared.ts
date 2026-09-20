@@ -1,6 +1,11 @@
 import type { Dialect } from 'kysely'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { ConflictError, createDurably, type Durably } from '../../src'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  ConflictError,
+  createDurably,
+  ValidationError,
+  type Durably,
+} from '../../src'
 
 export function createWaitStorageTests(createDialect: () => Dialect) {
   let durably: Durably
@@ -12,6 +17,410 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
     await durably.db.destroy()
   })
   describe('durable waits', () => {
+    const at = (offset: number) =>
+      new Date(Date.UTC(2030, 0, 1) + offset).toISOString()
+    async function timedWait(timeoutMs = 1000) {
+      const store = durably.storage
+      const { run } = await store.enqueue({ jobName: 'deadline', input: {} })
+      const leased = (await store.claimNext('worker', at(0), 30_000))!
+      const wait = (await store.prepareWait(
+        run.id,
+        leased.leaseGeneration,
+        'approval',
+        undefined,
+        timeoutMs,
+        at(0),
+      ))!
+      return { store, run, leased, wait }
+    }
+
+    async function liveWait(timeoutMs?: number) {
+      const store = durably.storage
+      const { run } = await store.enqueue({ jobName: 'live-wait', input: {} })
+      const leased = (await store.claimNext(
+        'worker',
+        new Date().toISOString(),
+        30_000,
+      ))!
+      const wait = (await store.prepareWait(
+        run.id,
+        leased.leaseGeneration,
+        'approval',
+        undefined,
+        timeoutMs,
+      ))!
+      return { store, run, leased, wait }
+    }
+
+    it('uses database time despite a skewed runtime clock', async () => {
+      const store = durably.storage
+      const { run } = await store.enqueue({ jobName: 'clock-skew', input: {} })
+      const databaseTime = Date.now()
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        vi.setSystemTime(new Date(databaseTime + 60_000))
+        const leased = (await store.claimNext(
+          'fast-worker',
+          new Date().toISOString(),
+          30_000,
+        ))!
+        const wait = (await store.prepareWait(
+          run.id,
+          leased.leaseGeneration,
+          'approval',
+          undefined,
+          10_000,
+        ))!
+        expect(
+          Math.abs(Date.parse(wait.createdAt) - databaseTime),
+        ).toBeLessThan(5_000)
+        expect(await store.expireDueWaits()).toBe(0)
+        expect(
+          (await durably.signal(wait.id, 'yes', { signalId: 'one' })).outcome,
+        ).toBe('signal')
+
+        vi.setSystemTime(new Date(databaseTime - 60_000))
+        const { run: slowRun } = await store.enqueue({
+          jobName: 'clock-skew',
+          input: {},
+        })
+        const slowLease = (await store.claimNext(
+          'slow-worker',
+          new Date().toISOString(),
+          30_000,
+        ))!
+        expect(slowLease.id).toBe(slowRun.id)
+        const slowWait = (await store.prepareWait(
+          slowRun.id,
+          slowLease.leaseGeneration,
+          'slow-approval',
+          undefined,
+          10_000,
+        ))!
+        expect(slowWait).not.toBeNull()
+        expect(
+          (
+            await store.getWaitResultForRun(
+              slowRun.id,
+              slowLease.leaseGeneration,
+              slowWait.id,
+            )
+          )?.outcome,
+        ).toBeNull()
+        expect(
+          await store.suspendRun(
+            slowRun.id,
+            slowLease.leaseGeneration,
+            slowWait.id,
+          ),
+        ).toBe(true)
+        const resolved = await store.signalWait(slowWait.id, 'approved', {
+          signalId: 'slow-signal',
+        })
+        await new Promise((resolve) => setTimeout(resolve, 30))
+        expect(
+          (
+            await store.claimNext(
+              'slow-resumer',
+              new Date().toISOString(),
+              30_000,
+            )
+          )?.id,
+        ).toBe(slowRun.id)
+        const resumedWait = (await store.getWait(slowWait.id))!
+        expect(Date.parse(resumedWait.firstResumedAt!)).toBeGreaterThanOrEqual(
+          Date.parse(resolved.resolvedAt!),
+        )
+        expect(resumedWait.executionSlotWaitMs).toBeGreaterThanOrEqual(20)
+        expect(resumedWait.executionSlotWaitMs).toBeLessThan(5_000)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('validates and fixes the first absolute deadline across replays', async () => {
+      const { store, run, leased, wait } = await timedWait()
+      expect(wait.deadlineAt).toBe(at(1000))
+      expect(wait.outcome).toBeNull()
+      expect(
+        (
+          await store.prepareWait(
+            run.id,
+            leased.leaseGeneration,
+            'approval',
+            undefined,
+            2000,
+            at(100),
+          )
+        )?.deadlineAt,
+      ).toBe(at(1000))
+      expect(
+        (
+          await store.prepareWait(
+            run.id,
+            leased.leaseGeneration,
+            'approval',
+            undefined,
+            undefined,
+            at(100),
+          )
+        )?.deadlineAt,
+      ).toBe(at(1000))
+      for (const invalid of [
+        0,
+        -1,
+        NaN,
+        Infinity,
+        1.5,
+        Number.MAX_SAFE_INTEGER + 1,
+        Number.MAX_SAFE_INTEGER,
+      ]) {
+        await expect(
+          store.prepareWait(
+            run.id,
+            leased.leaseGeneration,
+            `invalid-${String(invalid)}`,
+            undefined,
+            invalid,
+            at(0),
+          ),
+        ).rejects.toThrow(ValidationError)
+      }
+      const maxRepresentable = 8_640_000_000_000_000 - Date.parse(at(0))
+      const maxWait = (await store.prepareWait(
+        run.id,
+        leased.leaseGeneration,
+        'max-deadline',
+        undefined,
+        maxRepresentable,
+        at(0),
+      ))!
+      expect(maxWait.deadlineAt).toBe('+275760-09-13T00:00:00.000Z')
+      expect(await store.expireDueWaits(at(1))).toBe(0)
+      expect((await store.getWait(maxWait.id))?.outcome).toBeNull()
+      expect(
+        (
+          await store.signalWait(
+            maxWait.id,
+            true,
+            { signalId: 'before-max' },
+            at(1),
+          )
+        ).outcome,
+      ).toBe('signal')
+      await expect(
+        store.prepareWait(
+          run.id,
+          leased.leaseGeneration,
+          'beyond-max-deadline',
+          undefined,
+          maxRepresentable + 1,
+          at(0),
+        ),
+      ).rejects.toThrow(ValidationError)
+      expect(
+        (
+          await store.prepareWait(
+            run.id,
+            leased.leaseGeneration,
+            'unbounded',
+            undefined,
+            undefined,
+            at(0),
+          )
+        )?.deadlineAt,
+      ).toBeNull()
+    })
+
+    it('accepts only before the deadline and keeps an identical retry', async () => {
+      const { store, wait } = await timedWait()
+      const receipt = await store.signalWait(
+        wait.id,
+        { approved: true },
+        { signalId: 'accepted' },
+        at(999),
+      )
+      expect(receipt.outcome).toBe('signal')
+      expect(receipt.resolvedAt).toBe(at(999))
+      expect(
+        await store.signalWait(
+          wait.id,
+          { approved: true },
+          { signalId: 'accepted' },
+          at(2000),
+        ),
+      ).toEqual(receipt)
+      const second = await timedWait()
+      await expect(
+        second.store.signalWait(
+          second.wait.id,
+          true,
+          { signalId: 'late' },
+          at(1000),
+        ),
+      ).rejects.toThrow(ConflictError)
+      expect((await second.store.getWait(second.wait.id))?.outcome).toBe(
+        'timeout',
+      )
+      expect((await second.store.getWait(second.wait.id))?.resolvedAt).toBe(
+        at(1000),
+      )
+    })
+
+    it('separates external-input and execution-slot time after suspension', async () => {
+      const { store, run, leased, wait } = await liveWait()
+      expect(
+        await store.suspendRun(run.id, leased.leaseGeneration, wait.id),
+      ).toBe(true)
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      await store.signalWait(wait.id, null, { signalId: 'done' })
+      expect(
+        (await store.getWait(wait.id))?.inputWaitMs,
+      ).toBeGreaterThanOrEqual(20)
+      expect((await store.getWait(wait.id))?.executionSlotWaitMs).toBeNull()
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      expect(
+        (await store.claimNext('next', new Date().toISOString(), 30_000))?.id,
+      ).toBe(run.id)
+      const resumed = await store.getWait(wait.id)
+      expect(Date.parse(resumed!.firstResumedAt!)).toBeGreaterThanOrEqual(
+        Date.parse(resumed!.resolvedAt!),
+      )
+      expect(resumed?.executionSlotWaitMs).toBeGreaterThanOrEqual(30)
+    })
+
+    it('counts post-handoff queue time when signal wins just before suspension', async () => {
+      const { store, run, leased, wait } = await liveWait()
+      await store.signalWait(wait.id, null, { signalId: 'early' })
+      await store.suspendRun(run.id, leased.leaseGeneration, wait.id)
+      expect((await store.getWait(wait.id))?.executionSlotWaitMs).toBeNull()
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      await store.claimNext('next', new Date().toISOString(), 30_000)
+      const result = await store.getWait(wait.id)
+      expect(result?.inputWaitMs).toBe(0)
+      expect(result?.executionSlotWaitMs).toBeGreaterThanOrEqual(30)
+    })
+
+    it('reports zero durations when an early signal is consumed without suspension', async () => {
+      const { store, run, leased, wait } = await timedWait()
+      await store.signalWait(wait.id, null, { signalId: 'early' }, at(100))
+      expect(
+        (
+          await store.getWaitResultForRun(
+            run.id,
+            leased.leaseGeneration,
+            wait.id,
+            at(200),
+          )
+        )?.outcome,
+      ).toBe('signal')
+      const result = await store.getWait(wait.id)
+      expect(result?.suspendedAt).toBeNull()
+      expect(result?.inputWaitMs).toBe(0)
+      expect(result?.executionSlotWaitMs).toBe(0)
+    })
+
+    it('expires an offline wait at its original deadline and resumes once', async () => {
+      const { store, run, leased, wait } = await liveWait(100)
+      await store.suspendRun(run.id, leased.leaseGeneration, wait.id)
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.max(0, Date.parse(wait.deadlineAt!) - Date.now() + 10),
+        ),
+      )
+      expect(await store.expireDueWaits()).toBe(1)
+      expect(await store.expireDueWaits()).toBe(0)
+      expect(
+        (await store.getWait(wait.id))?.inputWaitMs,
+      ).toBeGreaterThanOrEqual(0)
+      expect(
+        (await store.claimNext('next', new Date().toISOString(), 30_000))?.id,
+      ).toBe(run.id)
+      const result = await store.getWait(wait.id)
+      expect(result?.outcome).toBe('timeout')
+      expect(result?.resolvedAt).toBe(wait.deadlineAt)
+      expect(result?.executionSlotWaitMs).toBeGreaterThanOrEqual(0)
+    })
+
+    it('finalizes timeout during a fenced replay read and never extends it', async () => {
+      const { store, run, leased, wait } = await timedWait()
+      expect(
+        (
+          await store.getWaitResultForRun(
+            run.id,
+            leased.leaseGeneration,
+            wait.id,
+            at(999),
+          )
+        )?.outcome,
+      ).toBeNull()
+      const timedOut = await store.getWaitResultForRun(
+        run.id,
+        leased.leaseGeneration,
+        wait.id,
+        at(1000),
+      )
+      expect(timedOut?.outcome).toBe('timeout')
+      expect(timedOut?.resolvedAt).toBe(at(1000))
+      expect(
+        (
+          await store.getWaitResultForRun(
+            run.id,
+            leased.leaseGeneration,
+            wait.id,
+            at(2000),
+          )
+        )?.resolvedAt,
+      ).toBe(at(1000))
+      expect(
+        await store.getWaitResultForRun(
+          run.id,
+          leased.leaseGeneration + 1,
+          wait.id,
+          at(1000),
+        ),
+      ).toBeNull()
+    })
+
+    it('serializes timeout, signal, and cancellation without reviving the run', async () => {
+      const first = await timedWait()
+      await first.store.suspendRun(
+        first.run.id,
+        first.leased.leaseGeneration,
+        first.wait.id,
+        at(100),
+      )
+      await Promise.allSettled([
+        first.store.signalWait(
+          first.wait.id,
+          'late',
+          { signalId: 'late' },
+          at(1000),
+        ),
+        first.store.expireDueWaits(at(1000)),
+      ])
+      expect((await first.store.getWait(first.wait.id))?.outcome).toBe(
+        'timeout',
+      )
+      await first.store.cancelRun(first.run.id, at(1100))
+      expect((await first.store.getRun(first.run.id))?.status).toBe('cancelled')
+      expect(await first.store.claimNext('idle', at(1200), 30_000)).toBeNull()
+
+      const second = await timedWait()
+      await second.store.suspendRun(
+        second.run.id,
+        second.leased.leaseGeneration,
+        second.wait.id,
+        at(100),
+      )
+      await second.store.cancelRun(second.run.id, at(900))
+      expect(await second.store.expireDueWaits(at(1000))).toBe(0)
+      expect((await second.store.getWait(second.wait.id))?.status).toBe(
+        'cancelled',
+      )
+      expect((await second.store.getWait(second.wait.id))?.outcome).toBeNull()
+    })
     async function setup(key?: string) {
       const store = durably.storage
       const { run } = await store.enqueue({

@@ -26,6 +26,31 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
     afterEach(async () => {
       await d.stop()
       await d.db.destroy()
+      vi.useRealTimers()
+    })
+
+    it('suspends a run even when its worker clock lags the database', async () => {
+      const databaseTime = Date.now()
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date(databaseTime - 60_000))
+      const app = d.register({
+        job: defineJob({
+          name: 'slow-clock-wait',
+          input: z.object({}),
+          run: async (step) => {
+            await step.waitFor(
+              await step.prepareWait('approval', { timeoutMs: 10_000 }),
+            )
+          },
+        }),
+      })
+      const run = await app.jobs.job.trigger({})
+      await app.processOne()
+      expect((await app.getRun(run.id))?.status).toBe('waiting')
+      const [wait] = await app.getWaits(run.id)
+      expect(Math.abs(Date.parse(wait.createdAt) - databaseTime)).toBeLessThan(
+        5_000,
+      )
     })
 
     it('releases one worker slot and same-key exclusion, then replays checkpoints on the same run', async () => {
@@ -43,6 +68,8 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
                 metadata: { target: 'review-1' },
               })
               const result = await step.waitFor(wait)
+              if (result.type !== 'signal')
+                throw new Error('Unexpected timeout')
               await step.run('after', () => continuation(result.payload))
               return result.payload
             }
@@ -87,7 +114,12 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
       expect(continuation).toHaveBeenCalledTimes(1)
       expect(await app.getStepAttempts(a.id)).toHaveLength(2)
       expect(await app.storage.getSteps(a.id)).toHaveLength(0)
-      expect(await app.getWait(wait.id)).toEqual(receipt)
+      expect(await app.getWait(wait.id)).toMatchObject({
+        id: receipt.id,
+        outcome: 'signal',
+        payload: receipt.payload,
+        resolvedAt: receipt.resolvedAt,
+      })
     })
 
     it('accepts early input without suspending or recording wait attempts', async () => {
@@ -113,6 +145,114 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
       })
       expect(waiting).not.toHaveBeenCalled()
       expect(await app.getStepAttempts(run.id)).toEqual([])
+    })
+
+    it('resumes a timed-out run with a distinct result and separates input from slot waiting', async () => {
+      const after = vi.fn()
+      const app = d.register({
+        job: defineJob({
+          name: 'deadline',
+          input: z.object({}),
+          output: z.unknown(),
+          run: async (step) => {
+            const wait = await step.prepareWait('approval', {
+              timeoutMs: 100,
+            })
+            const result = await step.waitFor(wait)
+            await step.run('after', () => after(result))
+            return result
+          },
+        }),
+      })
+      const run = await app.jobs.job.trigger({})
+      await app.processOne()
+      expect((await app.getRun(run.id))?.status).toBe('waiting')
+      const [initial] = await app.getWaits(run.id)
+      expect(
+        Date.parse(initial.deadlineAt!) - Date.parse(initial.createdAt),
+      ).toBe(100)
+
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.max(0, Date.parse(initial.deadlineAt!) - Date.now() + 10),
+        ),
+      )
+      await app.processOne()
+      expect((await app.getRun(run.id))?.output).toEqual({ type: 'timeout' })
+      expect(after).toHaveBeenCalledExactlyOnceWith({ type: 'timeout' })
+      const wait = await app.getWait(initial.id)
+      expect(wait?.outcome).toBe('timeout')
+      expect(wait?.resolvedAt).toBe(initial.deadlineAt)
+      expect(Date.parse(wait!.firstResumedAt!)).toBeGreaterThanOrEqual(
+        Date.parse(initial.deadlineAt!),
+      )
+      expect(wait?.inputWaitMs).toBeGreaterThanOrEqual(0)
+      expect(wait?.inputWaitMs).toBeLessThanOrEqual(100)
+      expect(wait?.executionSlotWaitMs).toBeGreaterThanOrEqual(0)
+    })
+
+    it('returns an early timeout without suspending the run', async () => {
+      const waiting = vi.fn()
+      d.on('run:waiting', waiting)
+      const app = d.register({
+        job: defineJob({
+          name: 'early-timeout',
+          input: z.object({}),
+          output: z.unknown(),
+          run: async (step) => {
+            const wait = await step.prepareWait('approval', {
+              timeoutMs: 1,
+            })
+            await new Promise((resolve) => setTimeout(resolve, 10))
+            return step.waitFor(wait)
+          },
+        }),
+      })
+      const run = await app.jobs.job.trigger({})
+      await app.processOne()
+      expect((await app.getRun(run.id))?.output).toEqual({ type: 'timeout' })
+      expect(waiting).not.toHaveBeenCalled()
+      expect((await app.getWaits(run.id))[0]).toMatchObject({
+        suspendedAt: null,
+        firstResumedAt: null,
+        inputWaitMs: 0,
+        executionSlotWaitMs: 0,
+      })
+    })
+
+    it('cancellation after timeout finalization prevents continuation', async () => {
+      const after = vi.fn()
+      const app = d.register({
+        job: defineJob({
+          name: 'cancelled-timeout',
+          input: z.object({}),
+          run: async (step) => {
+            const wait = await step.prepareWait('approval', {
+              timeoutMs: 100,
+            })
+            await step.waitFor(wait)
+            await step.run('after', after)
+          },
+        }),
+      })
+      const run = await app.jobs.job.trigger({})
+      await app.processOne()
+      const [wait] = await app.getWaits(run.id)
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.max(0, Date.parse(wait.deadlineAt!) - Date.now() + 10),
+        ),
+      )
+      await expect(
+        app.signal(wait.id, true, { signalId: 'late' }),
+      ).rejects.toThrow()
+      expect((await app.getWait(wait.id))?.outcome).toBe('timeout')
+      await app.cancel(run.id)
+      expect(await app.processOne()).toBe(false)
+      expect((await app.getRun(run.id))?.status).toBe('cancelled')
+      expect(after).not.toHaveBeenCalled()
     })
 
     it('does not hand off while finally is running, even after input arrives', async () => {

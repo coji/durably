@@ -145,7 +145,6 @@ export async function executeRun<
       run.id,
       run.leaseGeneration,
       waitId,
-      isoNow(clock),
     )
     if (!suspended) {
       const latest = await storage.getRun(run.id)

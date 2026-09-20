@@ -234,10 +234,12 @@ Use a durable wait when CI or a human decision should release the worker slot. P
 ```ts
 const wait = await step.prepareWait('ci:review-1', {
   metadata: { commit: input.commit },
+  timeoutMs: 60_000,
 })
 await step.run('start-ci:review-1', () => startCi({ waitId: wait.id }))
 const result = await step.waitFor(wait)
-// result: { type: 'signal', payload: JsonValue }
+if (result.type === 'timeout') return { passed: false }
+// result.payload is available only for a signal
 ```
 
 An application process sharing the database supplies the result:
@@ -248,16 +250,16 @@ const receipt = await durably.getWait(waitId)
 const waits = await durably.getWaits(runId)
 ```
 
-`prepareWait(name, { metadata? })` returns a persisted `DurableWait`. Names identify one logical wait within a run: replay returns its original ID and result. Use distinct names for new iterations; retrigger creates new run and wait IDs. Metadata and payload must be JSON. The application validates authorization, payload schema, and commit/version identity; a wait ID is not an authorization credential.
+`prepareWait(name, { metadata?, timeoutMs? })` returns a persisted `DurableWait`. `timeoutMs` must be a positive safe integer number of milliseconds whose resulting deadline fits the JavaScript date range. The first preparation fixes an absolute deadline; replay returns the original ID and deadline even if it supplies a different timeout or omits it. Omit `timeoutMs` for an unbounded wait. Names identify one logical wait within a run: replay returns its original result. Use distinct names for new iterations; retrigger creates new run and wait IDs. Metadata and payload must be JSON. The application validates authorization, payload schema, and commit/version identity; a wait ID is not an authorization credential.
 
-`waitFor(wait)` returns an already accepted signal immediately, including signals received before suspension. Otherwise the run becomes `waiting`, releases its worker slot and lease, and resumes with the same run ID after a signal. Resume calls the job from the beginning and replays completed step results. Keep side effects inside named steps and use external idempotency keys where needed: a crash between an external effect and checkpoint persistence can repeat that effect. JavaScript stacks and local variables are not persisted.
+`waitFor(wait)` returns `{ type: 'signal', payload }` or `{ type: 'timeout' }`. A result finalized before suspension returns immediately. Otherwise the run becomes `waiting`, releases its worker slot and lease, and resumes with the same run ID after a signal or deadline. A timeout is a normal job result, not an automatic failure or retry. Resume calls the job from the beginning and replays completed step results. Keep side effects inside named steps and use external idempotency keys where needed: a crash between an external effect and checkpoint persistence can repeat that effect. JavaScript stacks and local variables are not persisted.
 
 Prepare and await waits only at sequential boundaries in the job body. Do not call them inside step callbacks, parallel branches, or while another step operation is in flight. Await `step.all()` before preparing a wait. Do not catch and suppress suspension or keep running application work after it; the runtime cannot stop arbitrary JavaScript. Suspension creates no step attempt.
 
-The first signal wins. Retrying the same `signalId` and JSON payload returns the original receipt; a different payload or a second signal cannot overwrite it. An accepted receipt means persisted input, not completed downstream work. Unknown/deleted wait IDs are rejected. A signal for another prepared wait does not resume the wait currently blocking the run. New signals to terminal runs are rejected; an already accepted identical retry remains idempotent until the run is deleted.
+The first signal or deadline wins. A new signal must arrive strictly before the persisted deadline; at the deadline it is rejected even if no worker has swept expired waits. Retrying an accepted signal with the same `signalId` and JSON payload returns the original receipt even after the deadline or run cancellation; a different payload or a second signal cannot overwrite it. An accepted receipt means persisted input, not completed downstream work. Unknown/deleted wait IDs are rejected. A signal for another prepared wait does not resume the wait currently blocking the run. New signals to terminal runs are rejected.
 
 Waiting releases execution exclusion for `concurrencyKey`; another run with that key may execute. Resume waits for any valid same-key lease. Business resource reservations remain the application's responsibility. `coalesce: 'active'` selects pending, then valid leased, then waiting runs for the same job/key; `skip` and `queue` retain their pending-only reuse behavior. Resolved waits remain `waiting` until claimed. Candidate ordering follows creation time and ID, without a strict fairness guarantee.
 
-Cancel a waiting run before deleting or retriggering it. Cancellation prevents later input from reviving it and cleans checkpoints according to `preserveSteps`, even without a worker. Wait records survive checkpoint cleanup and are removed with run deletion/purge. `waitForRun()` and `triggerAndWait()` still wait for a terminal run; their caller-side timeout does not cancel a durable wait. This release has no durable deadlines or dedicated HTTP signal/wait endpoints.
+Cancel a waiting run before deleting or retriggering it. Cancellation prevents a finalized signal or timeout from reviving it or starting downstream steps and cleans checkpoints according to `preserveSteps`, even without a worker. Wait records survive checkpoint cleanup and are removed with run deletion/purge. `getWait()` and `getWaits()` expose deadline, outcome, suspension, first-resume, external-input-wait, and post-result-slot-wait fields; see [DurableWait](./create-durably#durablewait). `waitForRun()` and `triggerAndWait()` still wait for a terminal run; their caller-side timeout does not cancel a durable wait. No dedicated HTTP signal/wait endpoints are provided.
 
 `run:waiting` reports suspension and `run:leased` reports resume. Existing HTTP run reads/subscriptions and React hooks understand `waiting`. `isActive` remains pending or leased; `isWaiting` identifies waiting; `isTerminal` is false for waiting. Use `!isTerminal` when testing whether a run is unfinished.

@@ -99,7 +99,7 @@ describe('useRuns', () => {
       .mockReturnValueOnce(delayedOld)
       .mockResolvedValueOnce(newRuns)
 
-    const { result } = renderHook(() => useRuns(), {
+    const { result } = renderHook(() => useRuns({ realtime: false }), {
       wrapper: createWrapper(durably),
     })
     await waitFor(() => expect(result.current.runs).toHaveLength(1))
@@ -144,7 +144,7 @@ describe('useRuns', () => {
       .mockReturnValueOnce(olderResponse)
       .mockRejectedValueOnce(new Error('temporary read failure'))
 
-    const { result } = renderHook(() => useRuns(), {
+    const { result } = renderHook(() => useRuns({ realtime: false }), {
       wrapper: createWrapper(durably),
     })
     await waitFor(() => expect(result.current.runs).toHaveLength(1))

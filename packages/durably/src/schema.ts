@@ -20,6 +20,7 @@ export interface RunsTable {
   lease_expires_at: string | null // ISO8601
   lease_generation: number
   waiting_on_wait_id: string | null
+  resume_claimed_at: string | null // Original first claim after a wait resolved
   started_at: string | null // ISO8601
   completed_at: string | null // ISO8601
   created_at: string // ISO8601
@@ -81,7 +82,13 @@ export interface WaitsTable {
   payload: string | null
   signal_id: string | null
   created_at: string
+  deadline_at: string | null
+  deadline_ms: number | null
+  outcome: 'signal' | 'timeout' | null
+  suspended_at: string | null
   resolved_at: string | null
+  first_resumed_at: string | null
+  timing_known: number
 }
 
 export interface Database {

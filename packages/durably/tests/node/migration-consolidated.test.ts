@@ -40,7 +40,7 @@ describe('migration consolidated schema', () => {
       SELECT version FROM durably_schema_versions ORDER BY version DESC LIMIT 1
     `.execute(durably.db)
     expect(versions.rows[0]?.version).toBe(LATEST_SCHEMA_VERSION)
-    expect(LATEST_SCHEMA_VERSION).toBe(3)
+    expect(LATEST_SCHEMA_VERSION).toBe(4)
   })
 
   it('creates all expected indexes', async () => {
@@ -70,6 +70,7 @@ describe('migration consolidated schema', () => {
     expect(indexNames).toContain('idx_durably_steps_run_index')
     expect(indexNames).toContain('idx_durably_steps_completed_unique')
     expect(indexNames).toContain('idx_durably_step_attempts_run_started')
+    expect(indexNames).toContain('idx_durably_waits_due')
 
     // Labels indexes
     expect(indexNames).toContain('idx_durably_run_labels_pk')
@@ -93,6 +94,42 @@ describe('migration consolidated schema', () => {
     const versions = await sql<{ version: number }>`
       SELECT version FROM durably_schema_versions ORDER BY version
     `.execute(durably.db)
-    expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3])
+    expect(versions.rows.map((row) => row.version)).toEqual([1, 2, 3, 4])
+  })
+
+  it('upgrades v3 waits without inventing historical timing', async () => {
+    const dbFile = join(tmpdir(), `durably-migrate-${randomUUID()}.sqlite3`)
+    const durably = createDurably({ dialect: createLocalSqliteDialect(dbFile) })
+    dbs.push(durably.db)
+    await runMigrations(durably.db, { targetVersion: 3 })
+    const now = new Date().toISOString()
+    await sql`INSERT INTO durably_runs
+      (id, job_name, input, status, labels, lease_generation,
+       current_step_index, completed_step_count, created_at, updated_at)
+      VALUES ('old-run', 'legacy', '{}', 'waiting', '{}', 1, 0, 0, ${now}, ${now})`.execute(
+      durably.db,
+    )
+    for (const status of ['pending', 'resolved', 'cancelled', 'closed']) {
+      const id = `old-${status}`
+      const payload = status === 'resolved' ? 'true' : null
+      const signalId = status === 'resolved' ? 'old-signal' : null
+      const resolvedAt = status === 'pending' ? null : now
+      await sql`INSERT INTO durably_waits
+        (id, run_id, name, status, payload, signal_id, created_at, resolved_at)
+        VALUES (${id}, 'old-run', ${id}, ${status}, ${payload}, ${signalId}, ${now}, ${resolvedAt})`.execute(
+        durably.db,
+      )
+    }
+    await durably.migrate()
+    for (const status of ['pending', 'resolved', 'cancelled', 'closed']) {
+      const wait = await durably.storage.getWait(`old-${status}`)
+      expect(wait?.status).toBe(status)
+      expect(wait?.outcome).toBe(status === 'resolved' ? 'signal' : null)
+      expect(wait?.deadlineAt).toBeNull()
+      expect(wait?.suspendedAt).toBeNull()
+      expect(wait?.firstResumedAt).toBeNull()
+      expect(wait?.inputWaitMs).toBeNull()
+      expect(wait?.executionSlotWaitMs).toBeNull()
+    }
   })
 })

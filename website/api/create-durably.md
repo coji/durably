@@ -377,7 +377,7 @@ await durably.getWait(waitId) // Promise<DurableWait | null>
 await durably.getWaits(runId) // Promise<DurableWait[]>
 ```
 
-These direct APIs persist and inspect external input for waits prepared by a job. `signalId` is required. Retry an uncertain delivery using the same ID and JSON payload. The returned receipt confirms durable acceptance, not job completion. The first signal is immutable; conflicting deliveries and unknown wait IDs are rejected. Wait records are retained until their run is deleted. See [durable external waits](./step#durable-external-waits) for replay, concurrency, cancellation, and usage constraints.
+These direct APIs persist and inspect external input for waits prepared by a job. `signalId` is required. Retry an uncertain delivery using the same ID and JSON payload. The returned receipt confirms durable acceptance, not job completion. The first signal or deadline result is immutable; a new signal at or after the deadline is rejected even before a worker sweep. Conflicting deliveries and unknown wait IDs are rejected. An identical retry of an accepted signal still returns its original receipt after the deadline or cancellation. Wait records are retained until their run is deleted. See [durable external waits](./step#durable-external-waits) for replay, concurrency, cancellation, and usage constraints.
 
 ### DurableWait
 
@@ -392,7 +392,17 @@ interface DurableWait {
   signalId: string | null
   createdAt: string
   resolvedAt: string | null
+  deadlineAt: string | null
+  outcome: 'signal' | 'timeout' | null
+  suspendedAt: string | null
+  firstResumedAt: string | null
+  inputWaitMs: number | null
+  executionSlotWaitMs: number | null
 }
 ```
 
-A pending wait has no accepted input; resolved records hold the immutable signal receipt. Cancelled and closed waits no longer accept input. `getWait` returns `null` for an unknown ID, and `getWaits` returns an empty list for an unknown run. Signal delivery raises `NotFoundError` for missing IDs, `ConflictError` for conflicting or closed input, and `ValidationError` for invalid arguments. `payload: null` is also a valid signal: inspect `status` to distinguish it from missing input.
+A pending wait has no result. Resolved records have an immutable `outcome`: `signal` carries the accepted payload, while `timeout` has no signal. Cancelled and closed waits no longer accept input. `createdAt` is preparation time; `deadlineAt` is fixed on first preparation; `resolvedAt` is signal acceptance time or the deadline for a timeout. `suspendedAt` and `firstResumedAt` are written once when those transitions occur.
+
+`inputWaitMs` measures time from suspension to signal acceptance or the deadline, floored at zero if the result wins during suspension handoff. It is zero if the result is consumed without suspension, and `null` while unresolved. `executionSlotWaitMs` measures time from the later of result finalization and suspension until the first resumed lease. It is zero when a result is consumed without suspension, and `null` until a suspended run resumes. A result can be finalized just before the suspension handoff; in that race, input wait is zero but slot wait can be positive. Wait records created before this migration may have unknown historical durations (`null`). A valid same-key lease can increase slot wait without changing input wait. These are per-wait direct-query fields, not aggregate job timings.
+
+`getWait` returns `null` for an unknown ID, and `getWaits` returns an empty list for an unknown run. Signal delivery raises `NotFoundError` for missing IDs, `ConflictError` for conflicting, expired, or closed input, and `ValidationError` for invalid arguments. `payload: null` is also a valid signal: inspect `outcome` to distinguish it from timeout or missing input.

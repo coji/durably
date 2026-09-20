@@ -50,8 +50,8 @@ What we considered and why we didn't do it.
 | [0007](0007-explicit-trailing-run-coalescing.md)              | Explicit trailing run coalescing              | accepted |
 | [0008](0008-active-run-coalescing-and-scoped-job-tracking.md) | Active-run coalescing and scoped job tracking | accepted |
 | [0009](0009-cumulative-delta-review-rounds.md)                | Cumulative delta review rounds                | accepted |
-
-| [0010](0010-durable-external-waits.md) | Durable external waits | accepted |
+| [0010](0010-durable-external-waits.md)                        | Durable external waits                        | accepted |
+| [0011](0011-durable-wait-deadlines.md)                        | Durable wait deadlines and lifecycle timing   | accepted |
 
 ## Prior Art
 

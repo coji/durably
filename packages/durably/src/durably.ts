@@ -487,6 +487,7 @@ interface DurablyState<
   retainRunsMs: number | null
   releaseBrowserSingleton: () => void
   runIdleMaintenance: () => Promise<void>
+  expireDueWaits: () => Promise<void>
 }
 
 /**
@@ -592,7 +593,8 @@ function createDurablyInstance<
     getStepAttempts: storage.getStepAttempts.bind(storage),
     getWait: storage.getWait.bind(storage),
     getWaits: storage.getWaits.bind(storage),
-    signal: storage.signalWait.bind(storage),
+    signal: (waitId, payload, options) =>
+      storage.signalWait(waitId, payload, options),
 
     async waitForRun(
       runId: string,
@@ -888,8 +890,8 @@ function createDurablyInstance<
 
     async processOne(options?: { workerId?: string }): Promise<boolean> {
       const workerId = options?.workerId ?? defaultWorkerId()
-      const now = new Date().toISOString()
-
+      await state.expireDueWaits()
+      const now = new Date(realClock.now()).toISOString()
       const run = await storage.claimNext(workerId, now, state.leaseMs)
       if (!run) {
         return false
@@ -1024,6 +1026,31 @@ export function createDurably<
   const jobRegistry = createJobRegistry()
   let lastPurgeAt = 0
   let lastCheckpointAt = 0
+  let expiryInFlight: Promise<void> | null = null
+
+  const expireDueWaits = (): Promise<void> => {
+    if (expiryInFlight) return expiryInFlight
+    const sweep = storage.expireDueWaits().then(
+      () => {},
+      (error: unknown) => {
+        eventEmitter.emit({
+          type: 'worker:error',
+          error: getErrorMessage(error),
+          context: 'wait-expiry',
+        })
+      },
+    )
+    expiryInFlight = sweep
+    void sweep.then(
+      () => {
+        if (expiryInFlight === sweep) expiryInFlight = null
+      },
+      () => {
+        if (expiryInFlight === sweep) expiryInFlight = null
+      },
+    )
+    return sweep
+  }
 
   const runIdleMaintenance = async (): Promise<void> => {
     try {
@@ -1103,6 +1130,7 @@ export function createDurably<
     retainRunsMs: config.retainRunsMs,
     releaseBrowserSingleton,
     runIdleMaintenance,
+    expireDueWaits,
   }
 
   if (backend === 'generic' && !isBrowserLikeEnvironment()) {
