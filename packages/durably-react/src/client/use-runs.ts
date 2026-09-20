@@ -1,5 +1,6 @@
 import type { JobDefinition } from '@coji/durably'
 import { useCallback, useEffect, useRef, useState } from 'react'
+
 import { useStableValue } from '../shared/use-stable-value'
 import {
   type Progress,
@@ -200,7 +201,8 @@ export function useRuns<
   TOutput extends Record<string, unknown> | undefined,
 >(
   jobDefinitionOrOptions:
-    JobDefinition<TName, TInput, TOutput> | UseRunsClientOptions,
+    | JobDefinition<TName, TInput, TOutput>
+    | UseRunsClientOptions,
   optionsArg?: Omit<UseRunsClientOptions, 'jobName'>,
 ): UseRunsClientResult<TInput, TOutput> {
   // Determine if first argument is a JobDefinition using type guard

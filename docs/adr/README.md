@@ -53,6 +53,7 @@ What we considered and why we didn't do it.
 | [0010](0010-durable-external-waits.md)                        | Durable external waits                        | accepted |
 | [0011](0011-durable-wait-deadlines.md)                        | Durable wait deadlines and lifecycle timing   | accepted |
 | [0012](0012-run-authorized-http-waits.md)                     | Run-authorized HTTP durable waits             | accepted |
+| [0013](0013-oxc-lint-and-format.md)                           | Oxlint and Oxfmt for linting and formatting   | accepted |
 
 ## Prior Art
 

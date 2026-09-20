@@ -1,6 +1,9 @@
 pre-commit:
   parallel: true
   jobs:
-    - name: prettier
+    - name: oxfmt
       glob: '*.{js,ts,jsx,tsx,json,css,md,yml,yaml}'
-      run: npx prettier --experimental-cli --write {staged_files} && git add {staged_files}
+      exclude:
+        - pnpm-lock.yaml
+        - CHANGELOG.md
+      run: pnpm exec oxfmt --write {staged_files} && git add {staged_files}

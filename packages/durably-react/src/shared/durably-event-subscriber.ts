@@ -1,4 +1,5 @@
 import type { Durably } from '@coji/durably'
+
 import type { EventSubscriber, SubscriptionEvent } from './event-subscriber'
 
 /**

@@ -1,4 +1,5 @@
 import type { JobDefinition } from '@coji/durably'
+
 import type { InferInput, InferOutput } from '../types'
 import {
   useJob,
@@ -85,7 +86,7 @@ export interface JobHooks<TInput, TOutput> {
  * ```
  */
 export function createJobHooks<
-  // biome-ignore lint/suspicious/noExplicitAny: TJob needs to accept any JobDefinition
+  // oxlint-disable-next-line typescript/no-explicit-any -- TJob needs to accept any JobDefinition
   TJob extends JobDefinition<string, any, any>,
 >(
   options: CreateJobHooksOptions,

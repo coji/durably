@@ -42,7 +42,8 @@ export type DurablyClient<T> = {
   useRuns: <
     TInput extends Record<string, unknown> = Record<string, unknown>,
     TOutput extends Record<string, unknown> | undefined =
-      Record<string, unknown> | undefined,
+      | Record<string, unknown>
+      | undefined,
   >(
     options?: Omit<UseRunsClientOptions, 'api'>,
   ) => UseRunsClientResult<TInput, TOutput>

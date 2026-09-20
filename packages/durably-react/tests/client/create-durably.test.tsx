@@ -8,6 +8,7 @@
 
 import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
 import { createDurably } from '../../src/client/create-durably'
 import {
   createMockEventSource,

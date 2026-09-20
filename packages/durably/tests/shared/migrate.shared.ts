@@ -1,6 +1,7 @@
 import type { Dialect } from 'kysely'
 import { sql } from 'kysely'
 import { afterEach, describe, expect, it } from 'vitest'
+
 import { createDurably, type Durably } from '../../src'
 import { LATEST_SCHEMA_VERSION, runMigrations } from '../../src/migrations'
 import { seedLegacyRun } from '../helpers/legacy-fixture'

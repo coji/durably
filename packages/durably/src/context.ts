@@ -546,6 +546,7 @@ export function createStepContext(
     async settleSteps() {
       // Rejected illegal waits must not release a slot while a sibling is still running.
       while (executingSteps.size > 0)
+        // oxlint-disable-next-line unicorn/no-useless-spread -- Preserve a snapshot while steps settle.
         await Promise.allSettled([...executingSteps])
     },
     dispose: unsubscribe,

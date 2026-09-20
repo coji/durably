@@ -1,5 +1,6 @@
 import { type Kysely, sql } from 'kysely'
 import { monotonicFactory } from 'ulidx'
+
 import { type JsonValue, serializeJsonValue } from './attempts'
 import { claimNextPostgres } from './claim-postgres'
 import { claimNextSqlite } from './claim-sqlite'
@@ -22,7 +23,12 @@ import {
 const ulid = monotonicFactory()
 
 export type RunStatus =
-  'pending' | 'leased' | 'waiting' | 'completed' | 'failed' | 'cancelled'
+  | 'pending'
+  | 'leased'
+  | 'waiting'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
 
 /** Run statuses that represent terminal (non-active) states */
 const TERMINAL_STATUSES: RunStatus[] = ['completed', 'failed', 'cancelled']
@@ -383,7 +389,7 @@ function createWriteMutex() {
     try {
       return await fn()
     } finally {
-      // biome-ignore lint/style/noNonNullAssertion: release is assigned synchronously in the Promise constructor
+      // oxlint-disable-next-line typescript/no-non-null-assertion -- release is assigned synchronously in the Promise constructor
       release!()
     }
   }

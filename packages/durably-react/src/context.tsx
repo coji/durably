@@ -1,7 +1,7 @@
 import type { Durably } from '@coji/durably'
 import { Suspense, createContext, use, useContext, type ReactNode } from 'react'
 
-// biome-ignore lint/suspicious/noExplicitAny: Durably context accepts any job/label configuration
+// oxlint-disable-next-line typescript/no-explicit-any -- Durably context accepts any job/label configuration
 type AnyDurably = Durably<any, any>
 
 interface DurablyContextValue {

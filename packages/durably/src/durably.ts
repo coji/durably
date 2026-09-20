@@ -2,6 +2,7 @@ import type { Dialect } from 'kysely'
 import { Kysely, sql } from 'kysely'
 import { monotonicFactory } from 'ulidx'
 import type { z } from 'zod'
+
 import type { JsonValue } from './attempts'
 import type { JobDefinition } from './define-job'
 import {
@@ -48,7 +49,7 @@ import { type Worker, createWorker } from './worker'
  */
 export interface DurablyOptions<
   TLabels extends Record<string, string> = Record<string, string>,
-  // biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
+  // oxlint-disable-next-line typescript/no-explicit-any -- flexible type constraint for job definitions
   TJobs extends Record<string, JobDefinition<string, any, any>> = Record<
     string,
     never
@@ -337,7 +338,7 @@ export interface Durably<
    * // Usage: durably.jobs.importCsv.trigger({ rows: [...] })
    * ```
    */
-  // biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
+  // oxlint-disable-next-line typescript/no-explicit-any -- flexible type constraint for job definitions
   register<TNewJobs extends Record<string, JobDefinition<string, any, any>>>(
     jobDefs: TNewJobs,
   ): Durably<TJobs & TransformToHandles<TNewJobs, TLabels>, TLabels>
@@ -557,7 +558,7 @@ function createDurablyInstance<
       await worker.stop()
     },
 
-    // biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
+    // oxlint-disable-next-line typescript/no-explicit-any -- flexible type constraint for job definitions
     register<TNewJobs extends Record<string, JobDefinition<string, any, any>>>(
       jobDefs: TNewJobs,
     ): Durably<TJobs & TransformToHandles<TNewJobs, TLabels>, TLabels> {
@@ -964,7 +965,7 @@ function createDurablyInstance<
 // Overload: with jobs
 export function createDurably<
   TLabels extends Record<string, string> = Record<string, string>,
-  // biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
+  // oxlint-disable-next-line typescript/no-explicit-any -- flexible type constraint for job definitions
   TJobs extends Record<string, JobDefinition<string, any, any>> = Record<
     string,
     never
@@ -981,7 +982,7 @@ export function createDurably<
 // Implementation
 export function createDurably<
   TLabels extends Record<string, string> = Record<string, string>,
-  // biome-ignore lint/suspicious/noExplicitAny: flexible type constraint for job definitions
+  // oxlint-disable-next-line typescript/no-explicit-any -- flexible type constraint for job definitions
   TJobs extends Record<string, JobDefinition<string, any, any>> = Record<
     string,
     never
@@ -1073,7 +1074,8 @@ export function createDurably<
               db,
             )
             const row = result.rows[0] as
-              { busy: number; log: number; checkpointed: number } | undefined
+              | { busy: number; log: number; checkpointed: number }
+              | undefined
             if (row?.busy !== 0) {
               // Retry sooner on next idle cycle (but not immediately)
               lastCheckpointAt = nowMs - CHECKPOINT_INTERVAL_MS / 2
@@ -1097,7 +1099,8 @@ export function createDurably<
   }
 
   let processOneImpl:
-    ((options?: { workerId?: string }) => Promise<boolean>) | null = null
+    | ((options?: { workerId?: string }) => Promise<boolean>)
+    | null = null
   const worker = createWorker(
     {
       pollingIntervalMs: config.pollingIntervalMs,
@@ -1138,7 +1141,8 @@ export function createDurably<
       try {
         const result = await sql`PRAGMA wal_checkpoint(PASSIVE)`.execute(db)
         const row = result.rows[0] as
-          { busy: number; log: number; checkpointed: number } | undefined
+          | { busy: number; log: number; checkpointed: number }
+          | undefined
         // log === -1 means WAL is not active (e.g. libSQL local uses DELETE mode)
         if (row && row.log !== -1) {
           state.walCheckpointSupported = true

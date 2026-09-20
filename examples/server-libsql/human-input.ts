@@ -1,8 +1,9 @@
+import { stdin, stdout } from 'node:process'
+import { createInterface } from 'node:readline/promises'
+
 /** Run with: pnpm --filter example-server-libsql exec tsx human-input.ts */
 import { createDurably, createDurablyHandler, defineJob } from '@coji/durably'
 import { LibsqlDialect } from '@libsql/kysely-libsql'
-import { stdin, stdout } from 'node:process'
-import { createInterface } from 'node:readline/promises'
 import { z } from 'zod'
 
 const approval = defineJob({

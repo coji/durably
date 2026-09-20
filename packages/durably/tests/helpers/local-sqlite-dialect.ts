@@ -1,8 +1,9 @@
-import Database from 'better-sqlite3'
-import { SqliteDialect } from 'kysely'
 import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+import Database from 'better-sqlite3'
+import { SqliteDialect } from 'kysely'
 
 export function createLocalSqliteDialect(filename?: string) {
   const dbFile =

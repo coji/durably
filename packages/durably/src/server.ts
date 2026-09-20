@@ -1,3 +1,4 @@
+import type { JsonValue } from './attempts'
 import type { AnyDurably } from './durably'
 import { DurablyError, getErrorMessage } from './errors'
 import type { AnyEventInput } from './events'
@@ -8,7 +9,6 @@ import {
   successResponse,
 } from './http'
 import type { Disposition } from './job'
-import type { JsonValue } from './attempts'
 import {
   createSSEResponse,
   createSSEStreamFromSubscriptions,
