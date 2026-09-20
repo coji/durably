@@ -3,4 +3,4 @@ pre-commit:
   jobs:
     - name: oxfmt
       glob: '*.{js,ts,jsx,tsx,json,css,md,yml,yaml}'
-      run: pnpm exec oxfmt --write {staged_files} && git add {staged_files}
+      run: pnpm exec oxfmt --write --no-error-on-unmatched-pattern {staged_files} && git add {staged_files}
