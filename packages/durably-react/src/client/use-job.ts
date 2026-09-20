@@ -2,7 +2,7 @@ import type { TriggerOptions } from '@coji/durably'
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
+  useInsertionEffect,
   useRef,
   useState,
 } from 'react'
@@ -139,7 +139,7 @@ export function useJob<
     initialRunId ?? null,
   )
   // A response may settle after a new commit but before passive effects run.
-  // Update this in a layout effect so abandoned renders do not invalidate work.
+  // Publish only committed contexts, before descendant layout effects can trigger.
   const trackingContextRef = useRef({
     api,
     jobName,
@@ -149,7 +149,7 @@ export function useJob<
   })
   const resolutionEpochRef = useRef(0)
   const hasUserTriggered = useRef(false)
-  useLayoutEffect(() => {
+  useInsertionEffect(() => {
     const previous = trackingContextRef.current
     if (
       previous.api !== api ||

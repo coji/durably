@@ -241,9 +241,8 @@ export function useJobSubscription<TOutput = unknown>(
 
     unsubscribes.push(
       durably.on('run:trigger', (event) => {
-        if (scopeLabels !== latestScopeLabelsRef.current) return
         if (event.jobName !== jobName) return
-        if (!matchesLabels(event.labels, scopeLabels)) return
+        if (!matchesLabels(event.labels, latestScopeLabelsRef.current)) return
 
         if (followLatest) {
           dispatch({
@@ -259,7 +258,6 @@ export function useJobSubscription<TOutput = unknown>(
 
     unsubscribes.push(
       durably.on('run:leased', (event) => {
-        if (scopeLabels !== latestScopeLabelsRef.current) return
         if (event.jobName !== jobName) return
         if (event.runId === currentRunIdRef.current) {
           dispatch({ type: 'set_active_status', status: 'leased' })
@@ -267,7 +265,7 @@ export function useJobSubscription<TOutput = unknown>(
         }
 
         if (followLatest) {
-          if (!matchesLabels(event.labels, scopeLabels)) return
+          if (!matchesLabels(event.labels, latestScopeLabelsRef.current)) return
           // Switch to tracking the new run
           dispatch({
             type: 'switch_to_run',
@@ -283,13 +281,12 @@ export function useJobSubscription<TOutput = unknown>(
     // Coalesced triggers skip run:trigger, so followLatest must react here
     unsubscribes.push(
       durably.on('run:coalesced', (event) => {
-        if (scopeLabels !== latestScopeLabelsRef.current) return
         if (event.jobName !== jobName) return
         if (event.runId === currentRunIdRef.current) {
           dispatch({ type: 'set_active_status', status: event.status })
           return
         }
-        if (!matchesLabels(event.labels, scopeLabels)) return
+        if (!matchesLabels(event.labels, latestScopeLabelsRef.current)) return
 
         if (followLatest) {
           dispatch({
@@ -351,7 +348,7 @@ export function useJobSubscription<TOutput = unknown>(
         unsubscribe()
       }
     }
-  }, [durably, jobName, followLatest, maxLogs, scopeLabels, onFollow])
+  }, [durably, jobName, followLatest, maxLogs, onFollow])
 
   const setCurrentRunId = useCallback((runId: string | null) => {
     dispatch({ type: 'set_run_id', runId })

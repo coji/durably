@@ -4,7 +4,14 @@ import type {
   TriggerOptions,
   TriggerResult,
 } from '@coji/durably'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useInsertionEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useDurably } from '../context'
 import { useStableValue } from '../shared/use-stable-value'
 import type { LogEntry, Progress, RunStatus } from '../types'
@@ -138,10 +145,17 @@ export function useJob<
   > | null>(null)
 
   const resolutionEpochRef = useRef(0)
-  const explicitTriggerEpochRef = useRef<number | null>(null)
+  const scopeOwnerRef = useRef<{
+    epoch: number
+    scope: typeof stableScope
+  } | null>(null)
   const lookupEpochRef = useRef(0)
   const acceptedTriggerEpochRef = useRef<number | null>(null)
   const prevScopeRef = useRef(stableScope)
+  const committedScopeRef = useRef(stableScope)
+  useInsertionEffect(() => {
+    committedScopeRef.current = stableScope
+  }, [stableScope])
   const currentScopeRef = useRef(stableScope)
   currentScopeRef.current = stableScope
   const prevSourceRef = useRef({ durably, jobDefinition })
@@ -153,7 +167,8 @@ export function useJob<
   }, [autoResume, initialRunId])
 
   const handleFollow = useCallback((_runId: string) => {
-    resolutionEpochRef.current++
+    const epoch = ++resolutionEpochRef.current
+    scopeOwnerRef.current = { epoch, scope: committedScopeRef.current }
     setIsResolving(false)
   }, [])
 
@@ -173,11 +188,12 @@ export function useJob<
   useEffect(() => {
     if (prevScopeRef.current !== stableScope) {
       prevScopeRef.current = stableScope
-      // A child effect can explicitly trigger a run before this parent effect.
-      // Its newer epoch owns tracking in the newly committed scope.
+      // A child effect can trigger or follow a matching run before this effect.
+      // Preserve only tracking that began in the newly committed scope.
       if (
         resolutionEpochRef.current !== renderEpoch &&
-        explicitTriggerEpochRef.current === resolutionEpochRef.current
+        scopeOwnerRef.current?.epoch === resolutionEpochRef.current &&
+        scopeOwnerRef.current.scope === stableScope
       ) {
         return
       }
@@ -388,7 +404,7 @@ export function useJob<
       }
 
       const epoch = ++resolutionEpochRef.current
-      explicitTriggerEpochRef.current = epoch
+      scopeOwnerRef.current = { epoch, scope: committedScopeRef.current }
       setIsResolving(false)
 
       // Reset state before triggering
@@ -409,7 +425,7 @@ export function useJob<
       }
 
       const epoch = ++resolutionEpochRef.current
-      explicitTriggerEpochRef.current = epoch
+      scopeOwnerRef.current = { epoch, scope: committedScopeRef.current }
       setIsResolving(false)
 
       // Reset state before triggering

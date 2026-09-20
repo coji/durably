@@ -4,7 +4,7 @@
  * Test trigger via fetch and SSE subscription
  */
 
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { act, render, renderHook, waitFor } from '@testing-library/react'
 import { useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useJob } from '../../src/client/use-job'
@@ -1683,6 +1683,50 @@ describe('useJob (client)', () => {
       })
       expect(result.current.currentRunId).toBe('new-scope-run')
       expect(result.current.status).toBe('pending')
+    })
+
+    it('tracks a child layout-effect trigger during a scope change', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({ runId: 'child-scope-run', status: 'pending' }),
+      })
+      let pending!: Promise<{ runId: string }>
+      let currentRunId: string | null = null
+
+      function Child({
+        documentId,
+        trigger,
+      }: {
+        documentId: string
+        trigger: (input: { input: string }) => Promise<{ runId: string }>
+      }) {
+        useLayoutEffect(() => {
+          if (documentId === 'second') {
+            pending = trigger({ input: 'new-scope' })
+          }
+        }, [documentId, trigger])
+        return null
+      }
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          scope: { labels: { documentId } },
+          autoResume: false,
+          followLatest: false,
+        })
+        currentRunId = job.currentRunId
+        return <Child documentId={documentId} trigger={job.trigger} />
+      }
+
+      const { rerender } = render(<Parent documentId="first" />)
+      rerender(<Parent documentId="second" />)
+      await act(async () => {
+        await pending
+      })
+      expect(currentRunId).toBe('child-scope-run')
     })
 
     it('tracks a trigger issued in a layout effect after an API change', async () => {

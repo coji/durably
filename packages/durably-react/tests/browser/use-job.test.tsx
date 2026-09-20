@@ -820,6 +820,48 @@ describe('useJob', () => {
       expect(currentRunId).toBeNull()
     })
 
+    it('follows a new-scope event during the subscription handoff', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      let currentRunId: string | null = null
+
+      function Child({ documentId }: { documentId: string }) {
+        useLayoutEffect(() => {
+          if (documentId === 'doc-b') {
+            durably.emit({
+              type: 'run:trigger',
+              runId: 'new-scope-run',
+              jobName: testJob.name,
+              input: { input: 'test' },
+              labels: { documentId: 'doc-b' },
+            })
+          }
+        }, [documentId])
+        return null
+      }
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, {
+          autoResume: false,
+          scope: { labels: { documentId } },
+        })
+        currentRunId = job.currentRunId
+        return <Child documentId={documentId} />
+      }
+
+      const { rerender } = render(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-a" />
+        </DurablyProvider>,
+      )
+      rerender(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-b" />
+        </DurablyProvider>,
+      )
+      expect(currentRunId).toBe('new-scope-run')
+    })
+
     it('tracks a child trigger when an old-scope event follows in the same layout effect', async () => {
       const durably = await createTestDurably({ autoStart: false })
       instances.push(durably)
