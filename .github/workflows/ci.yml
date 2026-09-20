@@ -48,6 +48,9 @@ jobs:
       - name: Type check
         run: pnpm typecheck
 
+      - name: React example import smoke test
+        run: pnpm smoke:react-examples
+
       - name: React Doctor (100/100)
         run: pnpm doctor:check
 

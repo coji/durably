@@ -22,11 +22,13 @@ type DashboardRun =
   | TypedRun<DataSyncInput, DataSyncOutput>
   | TypedRun<ProcessImageInput, ProcessImageOutput>
 
-const dateFormatter = new Intl.DateTimeFormat('en-US', {
-  dateStyle: 'medium',
-  timeStyle: 'short',
-  timeZone: 'UTC',
-  timeZoneName: 'short',
+const dateFormatter = new Intl.DateTimeFormat(undefined, {
+  year: 'numeric',
+  month: 'numeric',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: 'numeric',
+  second: 'numeric',
 })
 
 const formatDate = (iso: string) => dateFormatter.format(new Date(iso))

@@ -8,7 +8,7 @@
  */
 
 import type { ClientRun, StepRecord, TypedClientRun } from '@coji/durably-react'
-import { useState, useTransition } from 'react'
+import { useState, useSyncExternalStore, useTransition } from 'react'
 
 import type {
   DataSyncInput,
@@ -29,11 +29,13 @@ type DashboardRun =
   | TypedClientRun<ImportCsvInput, ImportCsvOutput>
   | TypedClientRun<ProcessImageInput, ProcessImageOutput>
 
-const dateFormatter = new Intl.DateTimeFormat('en-US', {
-  dateStyle: 'medium',
-  timeStyle: 'short',
-  timeZone: 'UTC',
-  timeZoneName: 'short',
+const dateFormatter = new Intl.DateTimeFormat(undefined, {
+  year: 'numeric',
+  month: 'numeric',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: 'numeric',
+  second: 'numeric',
 })
 
 function LabelChips({ labels }: { labels: Record<string, string> }) {
@@ -53,7 +55,16 @@ function LabelChips({ labels }: { labels: Record<string, string> }) {
   )
 }
 
-const formatDate = (iso: string) => dateFormatter.format(new Date(iso))
+const subscribeToLocale = () => () => {}
+
+function LocalDate({ iso }: { iso: string }) {
+  const formatted = useSyncExternalStore(
+    subscribeToLocale,
+    () => dateFormatter.format(new Date(iso)),
+    () => iso,
+  )
+  return <time dateTime={iso}>{formatted}</time>
+}
 
 const statusClasses: Record<string, string> = {
   pending: 'bg-yellow-100 text-yellow-800',
@@ -243,7 +254,7 @@ export function Dashboard() {
                       )}
                     </td>
                     <td className="px-2 py-2 text-gray-600">
-                      {formatDate(run.createdAt)}
+                      <LocalDate iso={run.createdAt} />
                     </td>
                     <td className="px-2 py-2">
                       <div className="flex gap-1">
@@ -387,7 +398,7 @@ function RunDetailsModal({
             )}
             <div>
               <span className="font-medium text-gray-600">Created:</span>{' '}
-              {formatDate(selectedRun.createdAt)}
+              <LocalDate iso={selectedRun.createdAt} />
             </div>
 
             {selectedRun.progress && (
