@@ -138,6 +138,7 @@ export function useJob<
   > | null>(null)
 
   const resolutionEpochRef = useRef(0)
+  const explicitTriggerEpochRef = useRef<number | null>(null)
   const lookupEpochRef = useRef(0)
   const acceptedTriggerEpochRef = useRef<number | null>(null)
   const prevScopeRef = useRef(stableScope)
@@ -174,7 +175,12 @@ export function useJob<
       prevScopeRef.current = stableScope
       // A child effect can explicitly trigger a run before this parent effect.
       // Its newer epoch owns tracking in the newly committed scope.
-      if (resolutionEpochRef.current !== renderEpoch) return
+      if (
+        resolutionEpochRef.current !== renderEpoch &&
+        explicitTriggerEpochRef.current === resolutionEpochRef.current
+      ) {
+        return
+      }
       resolutionEpochRef.current++
       if (!initialRunId) {
         subscription.reset()
@@ -382,6 +388,7 @@ export function useJob<
       }
 
       const epoch = ++resolutionEpochRef.current
+      explicitTriggerEpochRef.current = epoch
       setIsResolving(false)
 
       // Reset state before triggering
@@ -402,6 +409,7 @@ export function useJob<
       }
 
       const epoch = ++resolutionEpochRef.current
+      explicitTriggerEpochRef.current = epoch
       setIsResolving(false)
 
       // Reset state before triggering

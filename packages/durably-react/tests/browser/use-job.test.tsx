@@ -6,7 +6,7 @@
 
 import { defineJob, type Durably } from '@coji/durably'
 import { act, render, renderHook, waitFor } from '@testing-library/react'
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { DurablyProvider, useJob } from '../../src/spa'
@@ -769,6 +769,48 @@ describe('useJob', () => {
         await expect(pending).rejects.toThrow()
       })
       await waitFor(() => expect(currentRunId).toBe(older.id))
+    })
+
+    it('discards an old-scope follow event during a scope change', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      let currentRunId: string | null = null
+
+      function Child({ documentId }: { documentId: string }) {
+        useLayoutEffect(() => {
+          if (documentId === 'doc-b') {
+            durably.emit({
+              type: 'run:trigger',
+              runId: 'old-scope-run',
+              jobName: testJob.name,
+              input: { input: 'test' },
+              labels: { documentId: 'doc-a' },
+            })
+          }
+        }, [documentId])
+        return null
+      }
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, {
+          autoResume: false,
+          scope: { labels: { documentId } },
+        })
+        currentRunId = job.currentRunId
+        return <Child documentId={documentId} />
+      }
+
+      const { rerender } = render(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-a" />
+        </DurablyProvider>,
+      )
+      rerender(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-b" />
+        </DurablyProvider>,
+      )
+      expect(currentRunId).toBeNull()
     })
 
     it('explicit initialRunId skips scoped lookup and hydrates its status', async () => {
