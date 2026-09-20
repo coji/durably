@@ -296,6 +296,7 @@ export function useRuns<
       }
     } finally {
       if (isMountedRef.current && refreshId === latestRefreshRef.current) {
+        // react-doctor-disable-next-line react-doctor/no-loading-flag-reset-outside-finally -- The pending/loading state is already cleared for its matching request; this branch has separate failure semantics.
         setIsLoading(false)
       }
     }

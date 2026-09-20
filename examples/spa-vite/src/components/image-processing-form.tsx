@@ -18,11 +18,18 @@ export function ImageProcessingForm({
   runId,
 }: ImageProcessingFormProps) {
   const [filename, setFilename] = useState('photo.jpg')
-  const [width, setWidth] = useState(800)
+  const [width, setWidth] = useState('800')
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    onSubmit({ filename, width })
+    const parsedWidth = Number(width)
+    if (
+      !Number.isInteger(parsedWidth) ||
+      parsedWidth < 100 ||
+      parsedWidth > 4000
+    )
+      return
+    onSubmit({ filename, width: parsedWidth })
   }
 
   return (
@@ -52,9 +59,10 @@ export function ImageProcessingForm({
           id="width"
           type="number"
           value={width}
-          onChange={(e) => setWidth(Number(e.target.value))}
+          onChange={(e) => setWidth(e.target.value)}
           min={100}
           max={4000}
+          required
           className="w-full rounded-md border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
         />
       </div>

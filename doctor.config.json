@@ -1,0 +1,13 @@
+{
+  "$schema": "https://react.doctor/schema/config.json",
+  "projects": [
+    "@coji/durably-react",
+    "example-fullstack",
+    "example-fullstack-vercel-turso",
+    "example-spa-react-router",
+    "example-spa-vite"
+  ],
+  "supplyChain": {
+    "enabled": false
+  }
+}

@@ -225,7 +225,9 @@ export function useJobSubscription<TOutput = unknown>(
   )
 
   const currentRunIdRef = useRef<string | null>(null)
-  currentRunIdRef.current = state.currentRunId
+  useInsertionEffect(() => {
+    currentRunIdRef.current = state.currentRunId
+  }, [state.currentRunId])
 
   const followLatest = options?.followLatest !== false
   const maxLogs = options?.maxLogs ?? 0
@@ -236,6 +238,7 @@ export function useJobSubscription<TOutput = unknown>(
     latestScopeLabelsRef.current = scopeLabels
   }, [scopeLabels])
 
+  // react-doctor-disable-next-line react-doctor/effect-needs-cleanup -- The returned cleanup unsubscribes every registered event listener.
   useEffect(() => {
     if (!durably) return
 

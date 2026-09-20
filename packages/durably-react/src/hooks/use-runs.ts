@@ -197,11 +197,13 @@ export function useRuns<
         setRuns(data.slice(0, pageSize) as TypedRun<TInput, TOutput>[])
       }
     } finally {
+      // react-doctor-disable-next-line react-doctor/no-loading-flag-reset-outside-finally -- The pending/loading state is already cleared for its matching request; this branch has separate failure semantics.
       if (refreshId === latestRefreshRef.current) setIsLoading(false)
     }
   }, [durably, stableJobName, normalizedStatus, labels, pageSize, page])
 
   // Initial fetch and subscribe to events
+  // react-doctor-disable-next-line react-doctor/effect-needs-cleanup -- The returned cleanup unsubscribes every registered event listener.
   useEffect(() => {
     if (!durably) return
 
