@@ -430,6 +430,7 @@ export function useJob<
           data.runId
         ) {
           followedEpochRef.current = ++resolutionEpochRef.current
+          hasUserTriggered.current = false
           setIsResolving(false)
           setCurrentRunId(data.runId)
           if (data.type === 'run:trigger') {
