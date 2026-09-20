@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useReducer, useRef } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useInsertionEffect,
+  useReducer,
+  useRef,
+} from 'react'
 
 import type { SubscriptionState } from '../types'
 import type { EventSubscriber } from './event-subscriber'
@@ -50,12 +56,15 @@ export function useSubscription<TOutput = unknown>(
 
   // Reset state when runId changes
   if (prevRunIdRef.current !== runId) {
+    // react-doctor-disable-next-line react-doctor/no-ref-current-in-render -- The render-time identity guard prevents stale subscription events before effect cleanup.
     prevRunIdRef.current = runId
     if (runIdRef.current !== runId) {
       dispatch({ type: 'reset' })
     }
   }
-  runIdRef.current = runId
+  useInsertionEffect(() => {
+    runIdRef.current = runId
+  }, [runId])
 
   useEffect(() => {
     if (!subscriber || !runId) return

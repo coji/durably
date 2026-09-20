@@ -1,5 +1,12 @@
 import type { Durably } from '@coji/durably'
-import { Suspense, createContext, use, useContext, type ReactNode } from 'react'
+import {
+  Suspense,
+  createContext,
+  use,
+  useContext,
+  useMemo,
+  type ReactNode,
+} from 'react'
 
 // oxlint-disable-next-line typescript/no-explicit-any -- Durably context accepts any job/label configuration
 type AnyDurably = Durably<any, any>
@@ -51,11 +58,10 @@ function DurablyProviderInner({
     durablyOrPromise instanceof Promise
       ? use(durablyOrPromise)
       : durablyOrPromise
+  const value = useMemo(() => ({ durably }), [durably])
 
   return (
-    <DurablyContext.Provider value={{ durably }}>
-      {children}
-    </DurablyContext.Provider>
+    <DurablyContext.Provider value={value}>{children}</DurablyContext.Provider>
   )
 }
 

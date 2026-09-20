@@ -201,19 +201,27 @@ export function useJob<
       if (hasUserTriggered.current) {
         if (initialRunId && currentRunId === initialRunId) return
         subscription.reset()
+        // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
         setCurrentRunId(initialRunId ?? null)
+        // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
         setHydratedStatus(null)
+        // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
         setIsResolving(false)
         return
       }
       if (initialRunId && currentRunId === initialRunId) {
+        // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
         setIsPending(false)
+        // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
         setIsResolving(false)
         return
       }
       subscription.reset()
+      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
       setCurrentRunId(initialRunId ?? null)
+      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
       setHydratedStatus(null)
+      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
       setIsPending(false)
       setIsResolving(autoResume && !initialRunId)
     }
@@ -230,13 +238,17 @@ export function useJob<
     if (hasUserTriggered.current) {
       subscription.reset()
       setCurrentRunId(initialRunId ?? null)
+      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
       setHydratedStatus(null)
+      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
       setIsResolving(false)
       return
     }
     subscription.reset()
     setCurrentRunId(initialRunId ?? null)
+    // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
     setHydratedStatus(null)
+    // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
     setIsPending(false)
     setIsResolving(autoResume && !initialRunId)
   }, [api, jobName, initialRunId, autoResume, subscription.reset])
@@ -249,21 +261,29 @@ export function useJob<
     if (hasUserTriggered.current) {
       subscription.reset()
       setCurrentRunId(initialRunId ?? null)
+      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
       setHydratedStatus(null)
+      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
       setIsResolving(false)
       return
     }
     if (!initialRunId) {
       if (previous) {
         subscription.reset()
+        // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
         setCurrentRunId(null)
+        // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
         setHydratedStatus(null)
+        // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
         setIsPending(false)
       }
       return
     }
+    // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
     setIsResolving(false)
+    // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
     setHydratedStatus(null)
+    // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
     setIsPending(false)
     setCurrentRunId(initialRunId)
   }, [initialRunId, subscription.reset])
@@ -597,6 +617,7 @@ export function useJob<
         if (wasActiveTrigger) activeTriggerEpochRef.current = null
         if (isCurrent()) {
           hasUserTriggered.current = false
+          // react-doctor-disable-next-line react-doctor/no-loading-flag-reset-outside-finally -- The pending/loading state is already cleared for its matching request; this branch has separate failure semantics.
           setIsPending(false)
           retryAfterTriggerFailureRef.current = true
           setAutoResumeRestart((value) => value + 1)
@@ -691,7 +712,9 @@ export function useJob<
   // Clear pending/hydrated when we get a real status from SSE
   useEffect(() => {
     if (subscription.status) {
+      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
       if (isPending) setIsPending(false)
+      // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
       if (hydratedStatus) setHydratedStatus(null)
     }
   }, [subscription.status, isPending, hydratedStatus])

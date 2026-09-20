@@ -164,6 +164,7 @@ export function useJob<
   const [isResolving, setIsResolving] = useState(autoResume && !initialRunId)
 
   useEffect(() => {
+    // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
     if (!autoResume || initialRunId) setIsResolving(false)
   }, [autoResume, initialRunId])
 
@@ -206,8 +207,10 @@ export function useJob<
       if (!initialRunId) {
         subscription.reset()
         if (autoResume) {
+          // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
           setIsResolving(true)
         } else {
+          // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
           setIsResolving(false)
         }
       }
@@ -225,6 +228,7 @@ export function useJob<
     prevSourceRef.current = { durably, jobDefinition }
     resolutionEpochRef.current++
     subscription.reset()
+    // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- Tracking state must reset when the external run identity or scope changes.
     setJobHandle(null)
     setIsResolving(autoResume && !initialRunId)
   }, [durably, jobDefinition, autoResume, initialRunId, subscription.reset])

@@ -30,6 +30,7 @@ export const dataSyncJob = defineJob({
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
+      // react-doctor-disable-next-line react-doctor/async-await-in-loop -- Each durable item step advances progress in order.
       const success = await step.run(`sync-item-${item.id}`, async () => {
         step.progress(2 + Math.floor(i / 5), 4, `Syncing item ${i + 1}...`)
         await delay(100)

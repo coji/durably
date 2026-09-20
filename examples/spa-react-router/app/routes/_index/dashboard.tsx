@@ -25,6 +25,24 @@ type DashboardRun =
   | TypedRun<ImportCsvInput, ImportCsvOutput>
   | TypedRun<ProcessImageInput, ProcessImageOutput>
 
+const dateFormatter = new Intl.DateTimeFormat('en-US', {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+  timeZone: 'UTC',
+  timeZoneName: 'short',
+})
+
+const formatDate = (iso: string) => dateFormatter.format(new Date(iso))
+
+const statusClasses: Record<string, string> = {
+  pending: 'bg-yellow-100 text-yellow-800',
+  leased: 'bg-blue-100 text-blue-800',
+  waiting: 'bg-purple-100 text-purple-800',
+  completed: 'bg-green-100 text-green-800',
+  failed: 'bg-red-100 text-red-800',
+  cancelled: 'bg-gray-100 text-gray-800',
+}
+
 function LabelChips({ labels }: { labels: Record<string, string> }) {
   const entries = Object.entries(labels)
   if (entries.length === 0) return <span className="text-gray-400">-</span>
@@ -83,17 +101,6 @@ export function Dashboard() {
     await durably.deleteRun(runId)
     setSelectedRun(null)
     refresh()
-  }
-
-  const formatDate = (iso: string) => new Date(iso).toLocaleString()
-
-  const statusClasses: Record<string, string> = {
-    pending: 'bg-yellow-100 text-yellow-800',
-    leased: 'bg-blue-100 text-blue-800',
-    waiting: 'bg-purple-100 text-purple-800',
-    completed: 'bg-green-100 text-green-800',
-    failed: 'bg-red-100 text-red-800',
-    cancelled: 'bg-gray-100 text-gray-800',
   }
 
   return (
@@ -269,119 +276,135 @@ export function Dashboard() {
         </>
       )}
 
-      {/* Run Details Modal */}
       {selectedRun && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="mx-4 max-h-[80vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-white shadow-xl">
-            <div className="p-6">
-              <div className="mb-4 flex items-center justify-between">
-                <h3 className="text-lg font-semibold">Run Details</h3>
-                <button
-                  type="button"
-                  onClick={() => setSelectedRun(null)}
-                  className="text-gray-400 hover:text-gray-600"
-                >
-                  ✕
-                </button>
-              </div>
-
-              <div className="space-y-3 text-sm">
-                <div>
-                  <span className="font-medium text-gray-600">ID:</span>{' '}
-                  <span className="font-mono text-gray-800">
-                    {selectedRun.id}
-                  </span>
-                </div>
-                <div>
-                  <span className="font-medium text-gray-600">Job:</span>{' '}
-                  {selectedRun.jobName}
-                </div>
-                <div>
-                  <span className="font-medium text-gray-600">Status:</span>{' '}
-                  <span
-                    className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${statusClasses[selectedRun.status] || 'bg-gray-100 text-gray-800'}`}
-                  >
-                    {selectedRun.status}
-                  </span>
-                </div>
-                {Object.keys(selectedRun.labels).length > 0 && (
-                  <div>
-                    <span className="font-medium text-gray-600">Labels:</span>
-                    <div className="mt-1">
-                      <LabelChips labels={selectedRun.labels} />
-                    </div>
-                  </div>
-                )}
-                <div>
-                  <span className="font-medium text-gray-600">Created:</span>{' '}
-                  {formatDate(selectedRun.createdAt)}
-                </div>
-
-                {selectedRun.progress && (
-                  <div>
-                    <span className="font-medium text-gray-600">Progress:</span>{' '}
-                    {selectedRun.progress.current}
-                    {selectedRun.progress.total
-                      ? `/${selectedRun.progress.total}`
-                      : ''}{' '}
-                    {selectedRun.progress.message || ''}
-                  </div>
-                )}
-
-                {selectedRun.error && (
-                  <div>
-                    <span className="font-medium text-gray-600">Error:</span>{' '}
-                    <span className="text-red-600">{selectedRun.error}</span>
-                  </div>
-                )}
-
-                {selectedRun.output !== null && (
-                  <div>
-                    <span className="font-medium text-gray-600">Output:</span>
-                    <pre className="mt-1 overflow-auto rounded border bg-gray-50 p-3 text-xs">
-                      {JSON.stringify(selectedRun.output, null, 2)}
-                    </pre>
-                  </div>
-                )}
-
-                <div>
-                  <span className="font-medium text-gray-600">Input:</span>
-                  <pre className="mt-1 overflow-auto rounded border bg-gray-50 p-3 text-xs">
-                    {JSON.stringify(selectedRun.input, null, 2)}
-                  </pre>
-                </div>
-
-                {steps.length > 0 && (
-                  <div>
-                    <span className="font-medium text-gray-600">Steps:</span>
-                    <ul className="mt-1 divide-y divide-gray-100 rounded border">
-                      {steps.map((s) => (
-                        <li
-                          key={s.name}
-                          className="flex items-center justify-between p-2"
-                        >
-                          <span className="text-gray-800">{s.name}</span>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                              s.status === 'completed'
-                                ? 'bg-green-100 text-green-800'
-                                : s.status === 'cancelled'
-                                  ? 'bg-gray-100 text-gray-800'
-                                  : 'bg-red-100 text-red-800'
-                            }`}
-                          >
-                            {s.status}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
+        <RunDetailsModal
+          selectedRun={selectedRun}
+          steps={steps}
+          onClose={() => setSelectedRun(null)}
+        />
       )}
     </section>
+  )
+}
+
+function RunDetailsModal({
+  selectedRun,
+  steps,
+  onClose,
+}: {
+  selectedRun: DashboardRun
+  steps: { index: number; name: string; status: string }[]
+  onClose: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div className="mx-4 max-h-[80vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-white shadow-xl">
+        <div className="p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="text-lg font-semibold">Run Details</h3>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close run details"
+              className="text-gray-400 hover:text-gray-600"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="space-y-3 text-sm">
+            <div>
+              <span className="font-medium text-gray-600">ID:</span>{' '}
+              <span className="font-mono text-gray-800">{selectedRun.id}</span>
+            </div>
+            <div>
+              <span className="font-medium text-gray-600">Job:</span>{' '}
+              {selectedRun.jobName}
+            </div>
+            <div>
+              <span className="font-medium text-gray-600">Status:</span>{' '}
+              <span
+                className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${statusClasses[selectedRun.status] || 'bg-gray-100 text-gray-800'}`}
+              >
+                {selectedRun.status}
+              </span>
+            </div>
+            {Object.keys(selectedRun.labels).length > 0 && (
+              <div>
+                <span className="font-medium text-gray-600">Labels:</span>
+                <div className="mt-1">
+                  <LabelChips labels={selectedRun.labels} />
+                </div>
+              </div>
+            )}
+            <div>
+              <span className="font-medium text-gray-600">Created:</span>{' '}
+              {formatDate(selectedRun.createdAt)}
+            </div>
+
+            {selectedRun.progress && (
+              <div>
+                <span className="font-medium text-gray-600">Progress:</span>{' '}
+                {selectedRun.progress.current}
+                {selectedRun.progress.total
+                  ? `/${selectedRun.progress.total}`
+                  : ''}{' '}
+                {selectedRun.progress.message || ''}
+              </div>
+            )}
+
+            {selectedRun.error && (
+              <div>
+                <span className="font-medium text-gray-600">Error:</span>{' '}
+                <span className="text-red-600">{selectedRun.error}</span>
+              </div>
+            )}
+
+            {selectedRun.output !== null && (
+              <div>
+                <span className="font-medium text-gray-600">Output:</span>
+                <pre className="mt-1 overflow-auto rounded border bg-gray-50 p-3 text-xs">
+                  {JSON.stringify(selectedRun.output, null, 2)}
+                </pre>
+              </div>
+            )}
+
+            <div>
+              <span className="font-medium text-gray-600">Input:</span>
+              <pre className="mt-1 overflow-auto rounded border bg-gray-50 p-3 text-xs">
+                {JSON.stringify(selectedRun.input, null, 2)}
+              </pre>
+            </div>
+
+            {steps.length > 0 && (
+              <div>
+                <span className="font-medium text-gray-600">Steps:</span>
+                <ul className="mt-1 divide-y divide-gray-100 rounded border">
+                  {steps.map((s) => (
+                    <li
+                      key={s.name}
+                      className="flex items-center justify-between p-2"
+                    >
+                      <span className="text-gray-800">{s.name}</span>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                          s.status === 'completed'
+                            ? 'bg-green-100 text-green-800'
+                            : s.status === 'cancelled'
+                              ? 'bg-gray-100 text-gray-800'
+                              : 'bg-red-100 text-red-800'
+                        }`}
+                      >
+                        {s.status}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
   )
 }

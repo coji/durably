@@ -48,6 +48,9 @@ jobs:
       - name: Type check
         run: pnpm typecheck
 
+      - name: React Doctor (100/100)
+        run: pnpm doctor:check
+
   test-node:
     runs-on: ubuntu-latest
 
