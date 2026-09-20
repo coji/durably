@@ -139,6 +139,7 @@ export function useJob<
 
   const resolutionEpochRef = useRef(0)
   const lookupEpochRef = useRef(0)
+  const skipResumeForScopeTriggerRef = useRef(false)
   const prevScopeRef = useRef(stableScope)
   const currentScopeRef = useRef(stableScope)
   currentScopeRef.current = stableScope
@@ -167,9 +168,17 @@ export function useJob<
   )
 
   // Scope change handling
+  const renderEpoch = resolutionEpochRef.current
   useEffect(() => {
     if (prevScopeRef.current !== stableScope) {
       prevScopeRef.current = stableScope
+      // A child effect can explicitly trigger a run before this parent effect.
+      // Its newer epoch owns tracking in the newly committed scope.
+      if (resolutionEpochRef.current !== renderEpoch) {
+        skipResumeForScopeTriggerRef.current = true
+        return
+      }
+      skipResumeForScopeTriggerRef.current = false
       resolutionEpochRef.current++
       if (!initialRunId) {
         subscription.reset()
@@ -180,7 +189,7 @@ export function useJob<
         }
       }
     }
-  }, [stableScope, initialRunId, autoResume, subscription.reset])
+  }, [stableScope, initialRunId, autoResume, subscription.reset, renderEpoch])
 
   // A new Durably instance or job definition starts a new tracking context.
   useEffect(() => {
@@ -284,6 +293,11 @@ export function useJob<
   const autoResumeCallbacks = useMemo(() => {
     return {
       onStart: () => {
+        if (skipResumeForScopeTriggerRef.current) {
+          skipResumeForScopeTriggerRef.current = false
+          lookupEpochRef.current = -1
+          return
+        }
         lookupEpochRef.current = resolutionEpochRef.current
         setIsResolving(true)
       },

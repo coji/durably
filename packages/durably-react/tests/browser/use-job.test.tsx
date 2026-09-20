@@ -5,8 +5,8 @@
  */
 
 import { defineJob, type Durably } from '@coji/durably'
-import { act, renderHook, waitFor } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import { act, render, renderHook, waitFor } from '@testing-library/react'
+import { useEffect, type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { DurablyProvider, useJob } from '../../src/spa'
@@ -624,6 +624,100 @@ describe('useJob', () => {
         expect(result.current.isResolving).toBe(false)
         expect(result.current.currentRunId).toBe(second.id)
       })
+    })
+
+    it('tracks a child effect trigger after a scope change with following disabled', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      let currentRunId: string | null = null
+      let pending!: Promise<{ runId: string }>
+
+      function Child({
+        documentId,
+        trigger,
+      }: {
+        documentId: string
+        trigger: (input: { input: string }) => Promise<{ runId: string }>
+      }) {
+        useEffect(() => {
+          if (documentId === 'doc-b') {
+            pending = trigger({ input: 'test' })
+          }
+        }, [documentId, trigger])
+        return null
+      }
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, {
+          autoResume: false,
+          followLatest: false,
+          scope: { labels: { documentId } },
+        })
+        currentRunId = job.currentRunId
+        return <Child documentId={documentId} trigger={job.trigger} />
+      }
+
+      const { rerender } = render(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-a" />
+        </DurablyProvider>,
+      )
+      rerender(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-b" />
+        </DurablyProvider>,
+      )
+      const { runId } = await act(async () => pending)
+      expect(await durably.getRun(runId)).not.toBeNull()
+      expect(currentRunId).toBe(runId)
+    })
+
+    it('does not let scoped auto-resume replace a child effect trigger', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const older = await handle.trigger(
+        { input: 'older' },
+        { labels: { documentId: 'doc-b' } },
+      )
+      let currentRunId: string | null = null
+      let pending!: Promise<{ runId: string }>
+
+      function Child({
+        documentId,
+        trigger,
+      }: {
+        documentId: string
+        trigger: (input: { input: string }) => Promise<{ runId: string }>
+      }) {
+        useEffect(() => {
+          if (documentId === 'doc-b') pending = trigger({ input: 'newer' })
+        }, [documentId, trigger])
+        return null
+      }
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, {
+          followLatest: false,
+          scope: { labels: { documentId } },
+        })
+        currentRunId = job.currentRunId
+        return <Child documentId={documentId} trigger={job.trigger} />
+      }
+
+      const { rerender } = render(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-a" />
+        </DurablyProvider>,
+      )
+      rerender(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-b" />
+        </DurablyProvider>,
+      )
+      const { runId } = await act(async () => pending)
+      expect(runId).not.toBe(older.id)
+      await waitFor(() => expect(currentRunId).toBe(runId))
     })
 
     it('explicit initialRunId skips scoped lookup and hydrates its status', async () => {
