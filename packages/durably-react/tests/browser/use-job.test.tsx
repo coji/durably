@@ -813,6 +813,56 @@ describe('useJob', () => {
       expect(currentRunId).toBeNull()
     })
 
+    it('tracks a child trigger when an old-scope event follows in the same layout effect', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      let currentRunId: string | null = null
+      let pending!: Promise<{ runId: string }>
+
+      function Child({
+        documentId,
+        trigger,
+      }: {
+        documentId: string
+        trigger: (input: { input: string }) => Promise<{ runId: string }>
+      }) {
+        useLayoutEffect(() => {
+          if (documentId !== 'doc-b') return
+          pending = trigger({ input: 'new-scope' })
+          durably.emit({
+            type: 'run:trigger',
+            runId: 'old-scope-run',
+            jobName: testJob.name,
+            input: { input: 'old-scope' },
+            labels: { documentId: 'doc-a' },
+          })
+        }, [documentId, trigger])
+        return null
+      }
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, {
+          autoResume: false,
+          scope: { labels: { documentId } },
+        })
+        currentRunId = job.currentRunId
+        return <Child documentId={documentId} trigger={job.trigger} />
+      }
+
+      const { rerender } = render(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-a" />
+        </DurablyProvider>,
+      )
+      rerender(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-b" />
+        </DurablyProvider>,
+      )
+      const { runId } = await act(async () => pending)
+      expect(currentRunId).toBe(runId)
+    })
+
     it('explicit initialRunId skips scoped lookup and hydrates its status', async () => {
       const durably = await createTestDurably({ autoStart: false })
       instances.push(durably)

@@ -223,6 +223,8 @@ export function useJobSubscription<TOutput = unknown>(
   const maxLogs = options?.maxLogs ?? 0
   const scopeLabels = options?.scope?.labels
   const onFollow = options?.onFollow
+  const latestScopeLabelsRef = useRef(scopeLabels)
+  latestScopeLabelsRef.current = scopeLabels
 
   useEffect(() => {
     if (!durably) return
@@ -231,6 +233,7 @@ export function useJobSubscription<TOutput = unknown>(
 
     unsubscribes.push(
       durably.on('run:trigger', (event) => {
+        if (scopeLabels !== latestScopeLabelsRef.current) return
         if (event.jobName !== jobName) return
         if (!matchesLabels(event.labels, scopeLabels)) return
 
@@ -248,6 +251,7 @@ export function useJobSubscription<TOutput = unknown>(
 
     unsubscribes.push(
       durably.on('run:leased', (event) => {
+        if (scopeLabels !== latestScopeLabelsRef.current) return
         if (event.jobName !== jobName) return
         if (event.runId === currentRunIdRef.current) {
           dispatch({ type: 'set_active_status', status: 'leased' })
@@ -271,6 +275,7 @@ export function useJobSubscription<TOutput = unknown>(
     // Coalesced triggers skip run:trigger, so followLatest must react here
     unsubscribes.push(
       durably.on('run:coalesced', (event) => {
+        if (scopeLabels !== latestScopeLabelsRef.current) return
         if (event.jobName !== jobName) return
         if (event.runId === currentRunIdRef.current) {
           dispatch({ type: 'set_active_status', status: event.status })
