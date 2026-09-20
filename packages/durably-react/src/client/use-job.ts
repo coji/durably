@@ -177,6 +177,7 @@ export function useJob<
   const prevSourceRef = useRef({ api, jobName })
   const prevInitialRunIdRef = useRef(initialRunId)
   const [isResolving, setIsResolving] = useState(autoResume && !initialRunId)
+  const [autoResumeRestart, setAutoResumeRestart] = useState(0)
 
   // Track if user has triggered a run (to prevent autoResume from overwriting)
   const waitUnsubscribesRef = useRef(new Set<() => void>())
@@ -259,6 +260,8 @@ export function useJob<
 
   // Auto-resume: fetch leased/pending job on mount / scope change
   useEffect(() => {
+    // A failed trigger retries this lookup for the current scope.
+    void autoResumeRestart
     if (!autoResume) {
       setIsResolving(false)
       return
@@ -380,7 +383,7 @@ export function useJob<
       cancelled = true
       abortController.abort()
     }
-  }, [api, jobName, autoResume, initialRunId, stableScope])
+  }, [api, jobName, autoResume, initialRunId, stableScope, autoResumeRestart])
 
   // Follow latest: subscribe to job-level SSE for run:trigger/run:leased/run:coalesced events
   useEffect(() => {
@@ -494,23 +497,32 @@ export function useJob<
         body.coalesce = stableTriggerOptions.coalesce
       }
 
-      const response = await fetch(`${api}/trigger`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      })
+      let data: { runId: string; status?: RunStatus }
+      try {
+        const response = await fetch(`${api}/trigger`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        })
 
-      if (!response.ok) {
-        if (isCurrent()) setIsPending(false)
-        const errorText = await response.text()
-        throw new Error(errorText || `HTTP ${response.status}`)
-      }
+        if (!response.ok) {
+          const errorText = await response.text()
+          throw new Error(errorText || `HTTP ${response.status}`)
+        }
 
-      const data = (await response.json()) as {
-        runId: string
-        status?: RunStatus
+        data = (await response.json()) as {
+          runId: string
+          status?: RunStatus
+        }
+      } catch (error) {
+        if (isCurrent()) {
+          hasUserTriggered.current = false
+          setIsPending(false)
+          setAutoResumeRestart((value) => value + 1)
+        }
+        throw error
       }
       if (isCurrent()) {
         if (preserveFixedRun) {

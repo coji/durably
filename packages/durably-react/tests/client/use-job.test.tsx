@@ -1729,6 +1729,64 @@ describe('useJob (client)', () => {
       expect(currentRunId).toBe('child-scope-run')
     })
 
+    it('resumes the new scope when a child layout-effect trigger fails', async () => {
+      globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith('/trigger')) {
+          return Promise.resolve({
+            ok: false,
+            status: 400,
+            text: () => Promise.resolve('trigger failed'),
+          })
+        }
+        const runs =
+          url.includes('label.documentId=second') &&
+          url.includes('status=leased')
+            ? [{ id: 'existing-new-scope-run', status: 'leased' }]
+            : []
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(runs),
+        })
+      })
+      let pending!: Promise<{ runId: string }>
+      let currentRunId: string | null = null
+      let isResolving = true
+
+      function Child({
+        documentId,
+        trigger,
+      }: {
+        documentId: string
+        trigger: (input: { input: string }) => Promise<{ runId: string }>
+      }) {
+        useLayoutEffect(() => {
+          if (documentId === 'second') {
+            pending = trigger({ input: 'new-scope' })
+          }
+        }, [documentId, trigger])
+        return null
+      }
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob({
+          api: '/api/durably',
+          jobName: 'test-job',
+          scope: { labels: { documentId } },
+        })
+        currentRunId = job.currentRunId
+        isResolving = job.isResolving
+        return <Child documentId={documentId} trigger={job.trigger} />
+      }
+
+      const { rerender } = render(<Parent documentId="first" />)
+      await waitFor(() => expect(isResolving).toBe(false))
+      rerender(<Parent documentId="second" />)
+      await act(async () => {
+        await expect(pending).rejects.toThrow('trigger failed')
+      })
+      await waitFor(() => expect(currentRunId).toBe('existing-new-scope-run'))
+    })
+
     it('tracks a trigger issued in a layout effect after an API change', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,

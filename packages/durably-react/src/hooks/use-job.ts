@@ -148,6 +148,7 @@ export function useJob<
   const scopeOwnerRef = useRef<{
     epoch: number
     scope: typeof stableScope
+    source: 'follow' | 'trigger'
   } | null>(null)
   const lookupEpochRef = useRef(0)
   const acceptedTriggerEpochRef = useRef<number | null>(null)
@@ -156,8 +157,6 @@ export function useJob<
   useInsertionEffect(() => {
     committedScopeRef.current = stableScope
   }, [stableScope])
-  const currentScopeRef = useRef(stableScope)
-  currentScopeRef.current = stableScope
   const prevSourceRef = useRef({ durably, jobDefinition })
   const prevInitialRunIdRef = useRef(initialRunId)
   const [isResolving, setIsResolving] = useState(autoResume && !initialRunId)
@@ -168,7 +167,11 @@ export function useJob<
 
   const handleFollow = useCallback((_runId: string) => {
     const epoch = ++resolutionEpochRef.current
-    scopeOwnerRef.current = { epoch, scope: committedScopeRef.current }
+    scopeOwnerRef.current = {
+      epoch,
+      scope: committedScopeRef.current,
+      source: 'follow',
+    }
     setIsResolving(false)
   }, [])
 
@@ -265,7 +268,7 @@ export function useJob<
         if (
           !run ||
           resolutionEpochRef.current !== epoch ||
-          currentScopeRef.current !== hydrationScope
+          committedScopeRef.current !== hydrationScope
         ) {
           return
         }
@@ -281,7 +284,7 @@ export function useJob<
         if (
           latest &&
           resolutionEpochRef.current === epoch &&
-          currentScopeRef.current === hydrationScope
+          committedScopeRef.current === hydrationScope
         ) {
           subscription.revalidateRun(
             run.id,
@@ -322,6 +325,12 @@ export function useJob<
       }) => {
         if (resolutionEpochRef.current !== lookupEpochRef.current) return
         if (acceptedTriggerEpochRef.current === lookupEpochRef.current) return
+        if (
+          scopeOwnerRef.current?.epoch === lookupEpochRef.current &&
+          scopeOwnerRef.current.source === 'follow'
+        ) {
+          return
+        }
         subscription.hydrateRun(
           run.id,
           run.status,
@@ -404,7 +413,11 @@ export function useJob<
       }
 
       const epoch = ++resolutionEpochRef.current
-      scopeOwnerRef.current = { epoch, scope: committedScopeRef.current }
+      scopeOwnerRef.current = {
+        epoch,
+        scope: committedScopeRef.current,
+        source: 'trigger',
+      }
       setIsResolving(false)
 
       // Reset state before triggering
@@ -425,7 +438,11 @@ export function useJob<
       }
 
       const epoch = ++resolutionEpochRef.current
-      scopeOwnerRef.current = { epoch, scope: committedScopeRef.current }
+      scopeOwnerRef.current = {
+        epoch,
+        scope: committedScopeRef.current,
+        source: 'trigger',
+      }
       setIsResolving(false)
 
       // Reset state before triggering

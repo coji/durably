@@ -862,6 +862,73 @@ describe('useJob', () => {
       expect(currentRunId).toBe('new-scope-run')
     })
 
+    it('keeps a new-scope follow ahead of a later auto-resume lookup', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const older = await handle.trigger(
+        { input: 'older' },
+        { labels: { documentId: 'doc-b' } },
+      )
+      const leased = await durably.storage.claimNext(
+        'worker-1',
+        new Date().toISOString(),
+        30_000,
+      )
+      expect(leased?.id).toBe(older.id)
+      const newer = await handle.trigger(
+        { input: 'newer' },
+        { labels: { documentId: 'doc-b' } },
+      )
+      const getRuns = vi.spyOn(durably.storage, 'getRuns')
+      let currentRunId: string | null = null
+      let isResolving = true
+
+      function Child({ documentId }: { documentId: string }) {
+        useLayoutEffect(() => {
+          if (documentId === 'doc-b') {
+            durably.emit({
+              type: 'run:trigger',
+              runId: newer.id,
+              jobName: testJob.name,
+              input: { input: 'newer' },
+              labels: { documentId: 'doc-b' },
+            })
+          }
+        }, [documentId])
+        return null
+      }
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, { scope: { labels: { documentId } } })
+        currentRunId = job.currentRunId
+        isResolving = job.isResolving
+        return <Child documentId={documentId} />
+      }
+
+      const { rerender } = render(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-a" />
+        </DurablyProvider>,
+      )
+      await waitFor(() => expect(isResolving).toBe(false))
+      rerender(
+        <DurablyProvider durably={durably}>
+          <Parent documentId="doc-b" />
+        </DurablyProvider>,
+      )
+      await waitFor(() =>
+        expect(getRuns).toHaveBeenCalledWith(
+          expect.objectContaining({
+            status: 'leased',
+            labels: { documentId: 'doc-b' },
+          }),
+        ),
+      )
+      await waitFor(() => expect(isResolving).toBe(false))
+      expect(currentRunId).toBe(newer.id)
+    })
+
     it('tracks a child trigger when an old-scope event follows in the same layout effect', async () => {
       const durably = await createTestDurably({ autoStart: false })
       instances.push(durably)
@@ -998,6 +1065,59 @@ describe('useJob', () => {
       })
       expect(result.current.status).toBe('leased')
       expect(result.current.isLeased).toBe(true)
+    })
+
+    it('hydrates a fixed run after a different-scope render suspends', async () => {
+      const durably = await createTestDurably({ autoStart: false })
+      instances.push(durably)
+      const handle = durably.register({ testJob }).jobs.testJob
+      const run = await handle.trigger({ input: 'test' })
+      await durably.processOne()
+      const completed = await durably.getRun(run.id)
+      expect(completed?.status).toBe('completed')
+      let resolveFirstRead!: (value: typeof completed) => void
+      vi.spyOn(durably.storage, 'getRun').mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirstRead = resolve
+          }),
+      )
+      const suspended = new Promise<void>(() => {})
+      let changeScope!: () => void
+
+      function Parent({ documentId }: { documentId: string }) {
+        const job = useJob(testJob, {
+          initialRunId: run.id,
+          scope: { labels: { documentId } },
+        })
+        if (documentId === 'doc-b') throw suspended
+        return (
+          <output data-testid="fixed-status">{job.status ?? 'none'}</output>
+        )
+      }
+
+      function Host() {
+        const [documentId, setDocumentId] = useState('doc-a')
+        changeScope = () => startTransition(() => setDocumentId('doc-b'))
+        return <Parent documentId={documentId} />
+      }
+
+      const { getByTestId } = render(
+        <DurablyProvider durably={durably}>
+          <Suspense fallback={null}>
+            <Host />
+          </Suspense>
+        </DurablyProvider>,
+      )
+      await waitFor(() => expect(resolveFirstRead).toBeDefined())
+      act(() => changeScope())
+      expect(getByTestId('fixed-status').textContent).toBe('none')
+      await act(async () => {
+        resolveFirstRead(completed)
+      })
+      await waitFor(() =>
+        expect(getByTestId('fixed-status').textContent).toBe('completed'),
+      )
     })
 
     it('clears stale run state when initialRunId changes or is removed', async () => {
