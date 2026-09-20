@@ -7,21 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-21
+
 ### Added
 
 #### @coji/durably
 
-- **Durable external waits**: Prepare and resolve persistent input addresses, suspend without occupying a worker slot or concurrency key, and resume the same run by checkpoint replay. Includes cancellation, idempotent signal receipts, direct wait queries, and waiting-aware active coalescing (#200).
-- **HTTP durable waits**: Inspect waits and deliver signals through run-authorized HTTP endpoints, with atomic accepted/duplicate receipts, explicit expired-wait responses, and reconnect-safe persisted reads. Includes outbound CI polling and local human-input examples (#202).
+- **Durable step attempts**: Persist each callback attempt and optional JSON metadata across worker crashes, including unresolved attempts, and expose them through `getStepAttempts(runId)` (#193).
+- **Parallel step joins**: `step.all({ branchName: callback })` runs named branches concurrently, replays completed branches after recovery, and keeps branch-specific attempt logs and checkpoint output when a sibling fails (#195).
+- **Durable external waits**: Prepare and resolve persistent input addresses, suspend without occupying a worker slot or concurrency key, and resume the same run by checkpoint replay. Includes optional deadlines, cancellation, idempotent signal receipts, direct wait queries, and waiting-aware active coalescing (#203, #204).
+- **HTTP durable waits**: Inspect waits and deliver signals through run-authorized HTTP endpoints, with atomic accepted/duplicate receipts, explicit expired-wait responses, and reconnect-safe persisted reads. Includes outbound CI polling and local human-input examples (#205).
 
-- **`coalesce: 'queue'` option**: Added `'queue'` to the `coalesce` trigger option (`trigger()`, `triggerAndWait()`, `batchTrigger()`, and HTTP `/trigger`). In this release, `'queue'` is behaviorally equivalent to `'skip'`: both create one trailing pending run behind an active leased run, and reuse an existing pending run with disposition `'coalesced'`. Further triggers while a trailing run is pending are coalesced without replacing its input (#184)
-- **`coalesce: 'active'` option**: Reuse the oldest pending run or a same-job leased run with a valid lease for a concurrency key, otherwise create a pending run. Active selection is atomic across SQLite, libSQL, and PostgreSQL runtimes; coalesced events and HTTP responses expose the selected run status (#185)
+- **`coalesce: 'queue'` option**: Added `'queue'` to the `coalesce` trigger option (`trigger()`, `triggerAndWait()`, `batchTrigger()`, and HTTP `/trigger`). In this release, `'queue'` is behaviorally equivalent to `'skip'`: both create one trailing pending run behind an active leased run, and reuse an existing pending run with disposition `'coalesced'`. Further triggers while a trailing run is pending are coalesced without replacing its input (#198).
+- **`coalesce: 'active'` option**: Reuse the oldest pending run or a same-job leased run with a valid lease for a concurrency key, otherwise create a pending run. Active selection is atomic across SQLite, libSQL, and PostgreSQL runtimes; coalesced events and HTTP responses expose the selected run status (#199).
 
 #### @coji/durably-react
 
-- **Waiting run tracking**: Hooks and HTTP run projections expose `isWaiting`, restore waiting runs on mount/reconnect, and preserve the pending/leased definition of `isActive` (#200).
+- **Waiting run tracking**: Hooks and HTTP run projections expose `isWaiting`, restore waiting runs on mount/reconnect, and preserve the pending/leased definition of `isActive` (#203).
 
-- **Scoped `useJob` tracking**: SPA and fullstack hooks accept `scope.labels` and `triggerOptions`, expose `isResolving`, hydrate pending or leased selections immediately, and reject stale lookup results after triggers or scope changes. SPA `followLatest` now follows matching `run:trigger` events while runs are pending, as well as coalesced and leased events (#185)
+- **Scoped `useJob` tracking**: SPA and fullstack hooks accept `scope.labels` and `triggerOptions`, expose `isResolving`, hydrate pending or leased selections immediately, and reject stale lookup results after triggers or scope changes. SPA `followLatest` now follows matching `run:trigger` events while runs are pending, as well as coalesced and leased events (#199).
 
 ## [0.15.0] - 2026-03-29
 
