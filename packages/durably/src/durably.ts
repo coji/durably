@@ -715,13 +715,6 @@ function createDurablyInstance<
                   leaseOwner: run.leaseOwner ?? '',
                   leaseExpiresAt: run.leaseExpiresAt ?? '',
                 })
-                if (run.progress != null) {
-                  controller.enqueue({
-                    ...base,
-                    type: 'run:progress',
-                    progress: run.progress,
-                  })
-                }
               } else if (run.status === 'waiting') {
                 controller.enqueue({
                   ...base,
@@ -750,6 +743,16 @@ function createDurablyInstance<
                   type: 'run:cancel',
                 })
                 closeStream()
+              }
+              if (
+                (run.status === 'leased' || run.status === 'waiting') &&
+                run.progress != null
+              ) {
+                controller.enqueue({
+                  ...base,
+                  type: 'run:progress',
+                  progress: run.progress,
+                })
               }
               // pending: no initial event needed, useJobRun already defaults to pending
             })

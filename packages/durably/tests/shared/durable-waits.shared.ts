@@ -280,6 +280,7 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
           name: 'cancel-wait',
           input: z.object({}),
           run: async (step) => {
+            step.progress(1, 2, 'Awaiting approval')
             await step.run('before', () => 42)
             await step.waitFor(await step.prepareWait('approval'))
           },
@@ -307,6 +308,10 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
       )
       const reader = app.subscribe(run.id).getReader()
       expect((await reader.read()).value?.type).toBe('run:waiting')
+      expect((await reader.read()).value).toMatchObject({
+        type: 'run:progress',
+        progress: { current: 1, total: 2, message: 'Awaiting approval' },
+      })
       await expect(app.deleteRun(run.id)).rejects.toThrow('waiting')
       await expect(app.retrigger(run.id)).rejects.toThrow('waiting')
       await app.cancel(run.id)
