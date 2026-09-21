@@ -1,0 +1,225 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version already prepared in both package manifests and CHANGELOG.md
+        required: true
+        type: string
+
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  NPM_VERSION: 11.19.0
+  SEMVER_VERSION: 7.7.3
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Require main branch
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF" != 'refs/heads/main' ]; then
+            echo "Release workflow must run from main, got $GITHUB_REF" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        with:
+          cache: true
+          install: false
+
+      - name: Verify release target
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs'
+          const version = process.env.VERSION
+          if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
+            throw new Error(`Expected a stable semantic version, got ${version}`)
+          }
+          for (const name of ['durably', 'durably-react']) {
+            const pkg = JSON.parse(readFileSync(`packages/${name}/package.json`, 'utf8'))
+            if (pkg.version !== version) throw new Error(`${pkg.name}: expected ${version}, got ${pkg.version}`)
+          }
+          const changelog = readFileSync('CHANGELOG.md', 'utf8')
+          const heading = `## [${version}]`
+          if (!changelog.split('\n').some((line) => line.startsWith(heading))) {
+            throw new Error(`Missing ${heading} in CHANGELOG.md`)
+          }
+          NODE
+          remote_main=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$remote_main" != "$GITHUB_SHA" ]; then
+            echo "Release commit $GITHUB_SHA is no longer current main ($remote_main)" >&2
+            exit 1
+          fi
+          tag_sha=$(git ls-remote --refs --tags origin "refs/tags/v${VERSION}" | cut -f1)
+          if [ -n "$tag_sha" ]; then
+            echo "Tag v${VERSION} already exists" >&2
+            exit 1
+          fi
+          if ! gh run list --workflow ci.yml --commit "$GITHUB_SHA" --limit 30 \
+            --json event,status,conclusion,headSha \
+            | jq -e 'any(.[]; .event == "push" and .status == "completed" and .conclusion == "success" and .headSha == env.GITHUB_SHA)' >/dev/null; then
+            echo "No successful main-push CI run for $GITHUB_SHA" >&2
+            exit 1
+          fi
+
+      - name: Install dependencies and verify toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          npm_cli() { pnpm --silent dlx "npm@$NPM_VERSION" "$@"; }
+          npm_version=$(npm_cli --version)
+          node -e '
+            const [major, minor, patch] = process.argv[1].split(".").map(Number)
+            if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
+              throw new Error("npm 11.5.1+ is required for Trusted Publishing")
+            }
+          ' "$npm_version"
+          echo "Node $(node --version), npm $npm_version"
+          peer_range=$(node -p 'require("./packages/durably-react/package.json").peerDependencies["@coji/durably"]')
+          if ! pnpm --silent dlx "semver@$SEMVER_VERSION" -r "$peer_range" "$VERSION" >/dev/null; then
+            echo "@coji/durably-react peer range $peer_range does not cover $VERSION" >&2
+            exit 1
+          fi
+
+      - name: Build packages
+        run: pnpm exec turbo run build --filter=@coji/durably --filter=@coji/durably-react
+
+      - name: Pack and inspect packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir release-artifacts
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs'
+          for (const name of ['durably', 'durably-react']) {
+            const path = `packages/${name}/package.json`
+            const pkg = JSON.parse(readFileSync(path, 'utf8'))
+            pkg.gitHead = process.env.GITHUB_SHA
+            writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`)
+          }
+          NODE
+          npm_cli() { pnpm --silent dlx "npm@$NPM_VERSION" "$@"; }
+          for package in durably durably-react; do
+            (cd "packages/$package" && npm_cli pack \
+              --json --pack-destination "$GITHUB_WORKSPACE/release-artifacts")
+          done
+          test "$(find release-artifacts -name '*.tgz' -type f | wc -l | tr -d ' ')" = 2
+          for tarball in release-artifacts/*.tgz; do
+            tar -tzf "$tarball" | grep '^package/dist/' >/dev/null
+            tar -tzf "$tarball" | grep -x 'package/docs/llms.md' >/dev/null
+            test "$(tar -xOzf "$tarball" package/package.json | jq -r .gitHead)" = "$GITHUB_SHA"
+          done
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-packages-${{ github.sha }}
+          path: release-artifacts/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm-publish
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      VERSION: ${{ inputs.version }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        with:
+          install: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-packages-${{ github.sha }}
+          path: release-artifacts
+
+      - name: Publish packages through npm Trusted Publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_main=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$remote_main" != "$GITHUB_SHA" ]; then
+            echo "Release commit $GITHUB_SHA is no longer current main ($remote_main)" >&2
+            exit 1
+          fi
+          npm_cli() { pnpm --silent dlx "npm@$NPM_VERSION" "$@"; }
+          test "$(npm_cli --version)" = "$NPM_VERSION"
+          for package in durably durably-react; do
+            name="@coji/$package"
+            tarball="release-artifacts/coji-$package-$VERSION.tgz"
+            test -f "$tarball"
+            if npm_cli view "$name@$VERSION" version --json >/dev/null 2>&1; then
+              published_sha=$(npm_cli view "$name@$VERSION" gitHead --json | jq -r .)
+              published_integrity=$(npm_cli view "$name@$VERSION" dist.integrity --json | jq -r .)
+              expected_integrity="sha512-$(openssl dgst -sha512 -binary "$tarball" | openssl base64 -A)"
+              if [ "$published_sha" != "$GITHUB_SHA" ] || [ "$published_integrity" != "$expected_integrity" ]; then
+                echo "$name@$VERSION already exists with different source or package contents" >&2
+                exit 1
+              fi
+              echo "$name@$VERSION already published from this commit and tarball"
+            else
+              npm_cli publish "$tarball" --access public
+            fi
+          done
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Create GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE' > "$RUNNER_TEMP/release-notes.md"
+          import { readFileSync } from 'node:fs'
+          const changelog = readFileSync('CHANGELOG.md', 'utf8')
+          const heading = `## [${process.env.VERSION}]`
+          const start = changelog.indexOf(heading)
+          const end = changelog.indexOf('\n## [', start + heading.length)
+          if (start < 0) throw new Error(`Missing ${heading}`)
+          const bodyStart = changelog.indexOf('\n', start + heading.length)
+          if (bodyStart < 0) throw new Error(`Missing release body for ${heading}`)
+          process.stdout.write(changelog.slice(bodyStart + 1, end < 0 ? undefined : end).trim() + '\n')
+          NODE
+          gh release create "v$VERSION" --target "$GITHUB_SHA" \
+            --title "v$VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"

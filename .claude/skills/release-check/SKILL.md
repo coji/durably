@@ -180,7 +180,7 @@ Write a changelog entry in the repo root. Group by package and category:
 ```markdown
 # Changelog
 
-## v0.X.0
+## [0.X.0] - YYYY-MM-DD
 
 ### @coji/durably
 
@@ -245,7 +245,7 @@ Commit as: `chore: bump version to 0.X.0`
 .claude/skills/doc-check/scripts/find-stale.sh
 ```
 
-Must be clean before release. After this, the release PR is ready to merge.
+Must be clean before release. After this, the release PR is ready to merge. After it merges and the main-branch CI succeeds, publish through the GitHub **Release** workflow as described in [`docs/releasing.md`](../../../docs/releasing.md).
 
 ---
 
