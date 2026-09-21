@@ -1,0 +1,28 @@
+{
+  "name": "example-local-agent-loop",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "demo": "tsx src/cli.ts",
+    "worker": "tsx src/cli.ts worker",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint --deny-warnings .",
+    "lint:fix": "oxlint --fix .",
+    "format": "oxfmt --check .",
+    "format:fix": "oxfmt --write .",
+    "test:unit": "tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@coji/durably": "workspace:*",
+    "better-sqlite3": "13.0.3",
+    "kysely": "^0.29.6",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^24.13.5",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "tsx": "^4.23.13",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  }
+}
