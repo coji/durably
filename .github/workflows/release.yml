@@ -1,0 +1,129 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version already prepared in both package manifests and CHANGELOG.md
+        required: true
+        type: string
+
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+  id-token: write
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        with:
+          install: false
+
+      - name: Verify release target
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'EOF'
+          import { readFileSync } from 'node:fs'
+          const version = process.env.VERSION
+          if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
+            throw new Error(`Expected a stable semantic version, got ${version}`)
+          }
+          for (const name of ['durably', 'durably-react']) {
+            const pkg = JSON.parse(readFileSync(`packages/${name}/package.json`, 'utf8'))
+            if (pkg.version !== version) throw new Error(`${pkg.name}: expected ${version}, got ${pkg.version}`)
+          }
+          const changelog = readFileSync('CHANGELOG.md', 'utf8')
+          const heading = `## [${version}]`
+          if (!changelog.split('\n').some((line) => line.startsWith(heading))) {
+            throw new Error(`Missing ${heading} in CHANGELOG.md`)
+          }
+          EOF
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA"
+          if git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" >/dev/null; then
+            echo "Tag v${VERSION} already exists" >&2
+            exit 1
+          fi
+          if ! gh run list --workflow ci.yml --commit "$GITHUB_SHA" --limit 30 \
+            --json event,status,conclusion,headSha \
+            | jq -e 'any(.[]; .event == "push" and .status == "completed" and .conclusion == "success" and .headSha == env.GITHUB_SHA)' >/dev/null; then
+            echo "No successful main-push CI run for $GITHUB_SHA" >&2
+            exit 1
+          fi
+          node -e 'const [major,minor]=process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 14)) throw new Error("Node.js 22.14+ is required")'
+          npm_version=$(npm --version)
+          node -e '
+            const [major, minor, patch] = process.argv[1].split(".").map(Number)
+            if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
+              throw new Error("npm 11.5.1+ is required for Trusted Publishing")
+            }
+          ' "$npm_version"
+          echo "Node $(node --version), npm $npm_version"
+
+      - name: Install and build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Check package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          for package in durably durably-react; do
+            (cd "packages/$package" && npm pack --dry-run --json) |
+              node --input-type=module -e '
+                let input = ""
+                for await (const chunk of process.stdin) input += chunk
+                const paths = JSON.parse(input)[0].files.map((file) => file.path)
+                if (!paths.some((path) => path.startsWith("dist/")) || !paths.includes("docs/llms.md")) {
+                  throw new Error("Package is missing dist or docs/llms.md")
+                }
+              '
+          done
+
+      - name: Publish packages through npm Trusted Publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          for package in durably durably-react; do
+            name="@coji/$package"
+            if published_sha=$(npm view "$name@$VERSION" gitHead --json 2>/dev/null); then
+              if [ "$(jq -r . <<< "$published_sha")" != "$GITHUB_SHA" ]; then
+                echo "$name@$VERSION already exists from a different commit" >&2
+                exit 1
+              fi
+              echo "$name@$VERSION already published from this commit"
+            else
+              (cd "packages/$package" && npm publish --access public)
+            fi
+          done
+
+      - name: Create GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'EOF' > "$RUNNER_TEMP/release-notes.md"
+          import { readFileSync } from 'node:fs'
+          const changelog = readFileSync('CHANGELOG.md', 'utf8')
+          const heading = `## [${process.env.VERSION}]`
+          const start = changelog.indexOf(heading)
+          const end = changelog.indexOf('\n## [', start + heading.length)
+          if (start < 0) throw new Error(`Missing ${heading}`)
+          process.stdout.write(changelog.slice(start, end < 0 ? undefined : end).trim() + '\n')
+          EOF
+          gh release create "v$VERSION" --target "$GITHUB_SHA" \
+            --title "v$VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"

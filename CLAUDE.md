@@ -77,12 +77,7 @@ Seven tables: `durably_runs`, `durably_run_labels`, `durably_steps`, `durably_st
 
 ## Publishing
 
-```bash
-cd packages/durably && npm publish --access public
-cd packages/durably-react && npm publish --access public
-```
-
-npm 2FA が有効なため、publish ごとにブラウザで OTP 認証が必要。ターミナルから直接実行すること。
+リリース準備 PR をマージして main の CI が通ったら、GitHub Actions の **Release** workflow を `main` から手動実行する。バージョンは `v` を付けずに入力する。両パッケージを npm Trusted Publishing (OIDC) で公開したあと、workflow が GitHub Release とタグを作る。初回設定と再実行手順は [docs/releasing.md](docs/releasing.md) を参照。
 
 ## Git Workflow
 
