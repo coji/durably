@@ -146,12 +146,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write
+      contents: read
       actions: read
       id-token: write
     env:
       VERSION: ${{ inputs.version }}
-      GH_TOKEN: ${{ github.token }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -180,16 +179,32 @@ jobs:
             name="@coji/$package"
             tarball="release-artifacts/coji-$package-$VERSION.tgz"
             test -f "$tarball"
-            if published_sha=$(npm_cli view "$name@$VERSION" gitHead --json 2>/dev/null); then
-              if [ "$(jq -r . <<< "$published_sha")" != "$GITHUB_SHA" ]; then
-                echo "$name@$VERSION already exists from a different commit" >&2
+            if npm_cli view "$name@$VERSION" version --json >/dev/null 2>&1; then
+              published_sha=$(npm_cli view "$name@$VERSION" gitHead --json | jq -r .)
+              published_integrity=$(npm_cli view "$name@$VERSION" dist.integrity --json | jq -r .)
+              expected_integrity="sha512-$(openssl dgst -sha512 -binary "$tarball" | openssl base64 -A)"
+              if [ "$published_sha" != "$GITHUB_SHA" ] || [ "$published_integrity" != "$expected_integrity" ]; then
+                echo "$name@$VERSION already exists with different source or package contents" >&2
                 exit 1
               fi
-              echo "$name@$VERSION already published from this commit"
+              echo "$name@$VERSION already published from this commit and tarball"
             else
               npm_cli publish "$tarball" --access public
             fi
           done
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Create GitHub Release
         shell: bash
