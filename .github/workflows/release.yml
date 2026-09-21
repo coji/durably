@@ -177,7 +177,7 @@ jobs:
           test "$(npm_cli --version)" = "$NPM_VERSION"
           for package in durably durably-react; do
             name="@coji/$package"
-            tarball="release-artifacts/coji-$package-$VERSION.tgz"
+            tarball="./release-artifacts/coji-$package-$VERSION.tgz"
             test -f "$tarball"
             if npm_cli view "$name@$VERSION" version --json >/dev/null 2>&1; then
               published_sha=$(npm_cli view "$name@$VERSION" gitHead --json | jq -r .)
