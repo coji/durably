@@ -173,9 +173,14 @@ describe('stale owner end-to-end', () => {
     const firstProcess = a.processOne({ workerId: 'worker-a' })
     await firstStarted.promise
     await new Promise((resolve) => setTimeout(resolve, 40))
-    expect(await b.processOne({ workerId: 'worker-b' })).toBe(true)
-    releaseFirst.resolve()
-    await firstProcess
+    let reclaimed = false
+    try {
+      reclaimed = await b.processOne({ workerId: 'worker-b' })
+    } finally {
+      releaseFirst.resolve()
+      await firstProcess
+    }
+    expect(reclaimed).toBe(true)
 
     const attempts = await a.getStepAttempts(run.id)
     expect(attempts).toHaveLength(2)
