@@ -144,7 +144,7 @@ jobs:
     timeout-minutes: 15
     environment: npm-publish
     permissions:
-      contents: write
+      contents: read
       actions: read
       id-token: write
     env:
@@ -193,9 +193,20 @@ jobs:
             fi
           done
 
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
