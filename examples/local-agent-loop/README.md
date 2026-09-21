@@ -8,17 +8,26 @@ What it does:
 
 1. Copies `subject/` (tiny buggy `calc.js`) into an execution-only
    `runs/<runId>/work/` directory; the selected agent edits only that copy.
-2. Runs implement → local `npm test` (Mac subprocess) in a bounded loop.
+2. Runs implement → immutable acceptance-test grading (snapshot + tamper
+   check) → local `npm test` (Mac subprocess) in a bounded loop.
 3. Runs **two parallel reviews with the same provider in separate sessions**
-   via `step.all({ 'review-a', 'review-b' })`.
-4. Suspends on a durable wait for **local human approval** from the terminal.
-5. Records per-attempt model / effort / token usage / elapsed / result into
-   Durably attempt metadata; regenerates CLI + JSON/Markdown reports from
-   persisted data.
+   via `step.all({ 'review-a:<n>', 'review-b:<n>' })` against a frozen
+   read-only snapshot. Adopted `needsChanges` findings route back to
+   implement (target invalidated, notes carried); only an explicit
+   well-formed `pass` counts — garbled/missing/contradictory verdicts are
+   review-incomplete failures, never passes.
+4. Suspends on a durable wait for **local human approval** from the terminal,
+   bound to the reviewed target hash.
+5. Records per-attempt requested/reported model / effort / token usage
+   (input/cache/output + source) / elapsed / result into Durably attempt
+   metadata; regenerates CLI + JSON/Markdown reports from persisted data
+   (stage timings, run elapsed, human `inputWaitMs` vs requeue
+   `executionSlotWaitMs`).
 
-Stage / Event / Reducer / Policy are separated (`src/types.ts`, `src/events.ts`,
-`src/reducer.ts`, `src/policy.ts`); transitions use a lookup table, no giant
-switch.
+Policy → Stage → Event are separated (`src/policy.ts` holds the Stage
+registry; the runner persists each `decideNext()` to a `policy:<n>` step,
+executes the stage, then reduces the event); transitions use a lookup table,
+no giant switch.
 
 ## Setup
 
@@ -83,8 +92,48 @@ via `--effort` or `CODEX_EFFORT` / `CLAUDE_EFFORT` (precedence:
 
 Prices checked 2026-09-21 against OpenAI/Anthropic docs; they feed only the
 `api-equivalent-estimate` cost label in reports, never subscription billing.
-`codex exec` exposes no effort flag, so Codex effort is record-only metadata;
-Claude effort is enforced via `claude --effort`.
+Effort is **applied**, not just recorded: Codex via `reasoningEffort`,
+Claude via the `effort` setting (unsupported values fail fast instead of
+being silently dropped). Requested vs provider-reported model/effort are
+stored separately — a value the provider never reported is never shown as
+reported.
+
+## LLM calls (AI SDK v7, one common path)
+
+All implement/review invocations go through a single runner
+(`src/runner.ts`) on top of Vercel AI SDK v7 (`ai@7.0.107`) with the
+community local-CLI providers `ai-sdk-provider-codex-cli@2.2.1` (Codex,
+`codex login` subscription auth) and `ai-sdk-provider-claude-code@4.3.1`
+(Claude, `claude auth login` subscription auth). No per-stage spawn/parse
+duplication, no API-key fallback: the unselected CLI is never required to be
+installed or authenticated. Per-attempt metadata records the resolved
+package + CLI versions (`codex --version` / `claude --version`).
+
+## Permissions (enforced, not just prompted)
+
+- Codex implement runs with `-s workspace-write -C <workdir>`; reviews run
+  with `sandboxMode: 'read-only'` against a frozen `review-snapshot-<n>/`
+  copy that both reviewers share.
+- Claude never uses `--dangerously-skip-permissions` by default
+  (`permissionMode: 'default'`); a `canUseTool` guard denies file operations
+  outside the execution dir (implement) and everything except `Read` inside
+  the snapshot (reviews).
+- Acceptance tests (`subject/test/`) are snapshotted at prepare time and
+  hash-verified before every grading run: editing `test/` to force green
+  fails the run with `acceptance-tampered`.
+- Human approval binds to the reviewed target hash (`targetHash` in the wait
+  metadata); if the workdir changed after review, the approval is rejected
+  instead of reused.
+
+## Cancel / resume semantics
+
+The Durably step signal (cancel / lease-loss) aborts the in-flight AI SDK
+call or test subprocess; only the owned child is killed (tracked pids, no
+process-group broadcast), and the worker awaits its exit. A `kill -9`ed
+worker reconciles a leftover pid marker on restart (pid + start-time match
+required — reused pids are never signaled). Note: the Durably lease guards
+**database writes only**; it does not guarantee the external CLI ran exactly
+once — reports and this README never claim otherwise.
 
 ## Run B — Claude Code only
 
@@ -115,12 +164,12 @@ pnpm --filter example-local-agent-loop demo trigger --provider claude --model cl
 1. Trigger with `--provider fake` and slow down one review branch:
    `FAKE_REVIEW_SLOW_MS=15000 pnpm --filter example-local-agent-loop demo worker`
    in terminal 1, trigger in terminal 2.
-2. Wait until `status --run <id>` shows `review-a` completed (one attempt row),
+2. Wait until `status --run <id>` shows `review-a:<n>` completed (one attempt row),
    then hard-kill the worker: `kill -9 <worker-pid>`.
 3. Restart the **same** command against the **same**
    `examples/local-agent-loop/local-agent-loop.db`.
-4. Verify: completed `review-a` branch is **not** re-executed (single completed
-   attempt, old `leaseGeneration`); the unfinished `review-b` attempt stays
+4. Verify: the completed `review-a:<n>` branch is **not** re-executed (single completed
+   attempt, old `leaseGeneration`); the unfinished `review-b:<n>` attempt stays
    `started` with `interruptionReason` (`lease-lost`/`unknown`) plus a new
    post-recovery attempt with a newer `leaseGeneration`. `report` shows both.
 
@@ -137,17 +186,32 @@ pnpm --filter example-local-agent-loop demo trigger --provider fake --max-iterat
 
 `fake` is deterministic: iteration 1 misses the fix (tests fail), iteration 2
 fixes it, both reviews pass. `FAKE_FAIL_FIRST=0` makes iteration 1 pass.
-fake success is **never** real-LLM verification — reports carry
-`fake: true` / `verifiedByRealLlm: false`.
+`FAKE_REVIEW_SEQUENCE="needsChanges,pass"` forces a fix loop (round 1 has a
+`needsChanges`, later rounds pass). fake success is **never** real-LLM
+verification — reports carry `fake: true`, `realLlmCallCount: 0`,
+`fullLoopVerified: false`.
 
 ## Measurements
 
 - Every implement / test / review branch writes an `AttemptMeasurement`
-  (`provider, model, effort, elapsedMs, usage, costUsdEstimate, result, error`).
-- Missing values are `null` and render as `unknown` — never zero-filled.
-- Cost is an **API-equivalent estimate** (`costBasis: 'api-equivalent-estimate'`),
-  not subscription billing; unknown model/usage yields `null`.
+  (`requestedModel/Effort`, `reportedModel/Effort`, `elapsedMs`, `usage`,
+  `costUsdEstimate`, `result`, `error`). Requested values (what you asked
+  for) and reported values (what the provider confirmed) are stored
+  separately.
+- Usage snapshots merge in order into the attempt; a failed tail preserves
+  already-reported numbers. Missing values are `null` and render as
+  `unknown` — never zero-filled. Both priced legs (input + output) are
+  required before any cost is shown; partial usage yields `unknown` cost.
+- Cost is an **API-equivalent estimate** (`costBasis: 'api-equivalent-estimate'`,
+  source + check date in `priceBasis`), not subscription billing; unknown
+  model/usage yields `null`.
+- `codex exec` / Claude Agent SDK report usage once at completion
+  (`usageSource: 'provider-final'`, `partialUsage: false`) — that constraint
+  is recorded, not worked around with estimates.
 - Failures and interruptions are recorded too (error text, `interruptionReason`).
+- Reports show real-CLI call counts (`realLlmCallCount`) separately from
+  `fullLoopVerified` (real CLI + terminal success + approval): usage rows
+  alone never imply a verified loop.
 
 ## If real-LLM run is not possible here
 
@@ -163,8 +227,14 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md
 
 - `subject/` — pristine buggy template (never edited in place)
 - `src/types.ts`, `src/events.ts`, `src/reducer.ts`, `src/policy.ts`
-- `src/providers/` — `codex.ts`, `claude.ts`, `fake.ts`, lookup factory
+  (Stage registry + `decideNext`)
+- `src/providers/` — `codex.ts`, `claude.ts` (AI SDK v7 providers), `fake.ts`,
+  lookup factory; `src/runner.ts` — the single common call path
+- `src/child.ts` — cancel-aware subprocess + pid reconciliation
+- `src/acceptance.ts` — immutable acceptance-test snapshot/tamper check
+- `src/usage.ts`, `src/pricing.ts`, `src/versions.ts` — measurement helpers
 - `src/job.ts` — `agent-loop` Durably job; `src/durably.ts` — better-sqlite3 instance
 - `src/cli.ts` — worker/trigger/status/waits/approve/reject/report
-- `src/report.ts`, `src/pricing.ts`, `src/prompts.ts`, `src/test-runner.ts`
+- `src/report.ts`, `src/prompts.ts` (strict verdicts), `src/test-runner.ts`,
+  `src/test-step.ts`
 - `runs/` (gitignored execution dirs), `local-agent-loop.db` (gitignored SQLite)

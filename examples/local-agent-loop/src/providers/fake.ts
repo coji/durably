@@ -1,28 +1,68 @@
-/** Fake provider: deterministic local behavior for loop/kill reproduction.
+/**
+ * Fake provider: deterministic local behavior for loop/kill reproduction.
  * NEVER counts as real-LLM verification. Marked fake:true everywhere.
+ *
+ * Honors AbortSignal (sleep becomes rejectable) so cancel/kill paths are
+ * exercisable without a real CLI.
+ *
+ * Env controls (tests / rehearsal only):
+ * - FAKE_FAIL_FIRST=0 ......... iteration 1 implement already fixes the bug
+ * - FAKE_REVIEW_SEQUENCE ...... comma list consumed per review call, e.g.
+ *   "needsChanges,pass,pass" (default: every review passes). Entries may be
+ *   `pass`, `needsChanges`, `invalid` (garbled output), or `empty`.
+ * - FAKE_REVIEW_SLOW_MS ....... extra delay (ms) on review-b for kill tests
  */
-import { writeFile, mkdir, readFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import type { AgentCallOptions, AgentProvider, AgentResult } from './types.js'
 
-const FAIL_FIRST = process.env.FAKE_FAIL_FIRST !== '0'
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('fake call cancelled before start'))
+      return
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(new Error('fake call cancelled (lease lost or run cancelled)'))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+function nextReviewDecision(): string {
+  const seq = (process.env.FAKE_REVIEW_SEQUENCE ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+  if (seq.length === 0) return 'pass'
+  const head = seq[0] ?? 'pass'
+  process.env.FAKE_REVIEW_SEQUENCE = seq.slice(1).join(',')
+  return head
+}
 
 export class FakeProvider implements AgentProvider {
   readonly name = 'fake' as const
   readonly fake = true
+  readonly partialUsage = false
 
   async call(options: AgentCallOptions): Promise<AgentResult> {
     const started = Date.now()
-    await new Promise((r) => setTimeout(r, 50))
+    await sleep(50, options.signal)
     if (options.role === 'implement') {
       const iter = options.prompt.match(/iteration (\d+)/)?.[1] ?? '1'
-      const shouldFail = FAIL_FIRST && iter === '1'
+      const failFirst = process.env.FAKE_FAIL_FIRST !== '0'
+      const shouldFail = failFirst && iter === '1'
       if (shouldFail) {
         return {
           text: 'fake: left the bug in place (simulated first-iteration miss)',
-          model: 'fake-model',
-          effort: 'low',
+          reportedModel: 'fake-model',
+          reportedEffort: 'low',
           usage: null,
           elapsedMs: Date.now() - started,
         }
@@ -45,21 +85,39 @@ export class FakeProvider implements AgentProvider {
       }
       return {
         text: 'fake: fixed add() to return a + b',
-        model: 'fake-model',
-        effort: 'low',
+        reportedModel: 'fake-model',
+        reportedEffort: 'low',
         usage: null,
         elapsedMs: Date.now() - started,
       }
     }
     const slow = process.env.FAKE_REVIEW_SLOW_MS
     if (options.role === 'review-b' && slow) {
-      await new Promise((r) => setTimeout(r, parseInt(slow, 10)))
+      await sleep(parseInt(slow, 10), options.signal)
     }
-    const decision = options.role === 'review-a' ? 'pass' : 'pass'
+    const decision = nextReviewDecision()
+    if (decision === 'empty') {
+      return {
+        text: '',
+        reportedModel: 'fake-model',
+        reportedEffort: 'low',
+        usage: null,
+        elapsedMs: Date.now() - started,
+      }
+    }
+    if (decision === 'invalid') {
+      return {
+        text: 'looks good to me, ship it (no structured verdict)',
+        reportedModel: 'fake-model',
+        reportedEffort: 'low',
+        usage: null,
+        elapsedMs: Date.now() - started,
+      }
+    }
     return {
-      text: `DECISION: ${decision}\nNOTES: fake ${options.role ?? 'review'} deterministic pass`,
-      model: 'fake-model',
-      effort: 'low',
+      text: `DECISION: ${decision}\nNOTES: fake ${options.role ?? 'review'} deterministic ${decision}`,
+      reportedModel: 'fake-model',
+      reportedEffort: 'low',
       usage: null,
       elapsedMs: Date.now() - started,
     }

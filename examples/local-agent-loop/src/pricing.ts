@@ -1,11 +1,17 @@
-/** API-equivalent price estimates (USD per 1K tokens).
- * Sources (checked 2026-09-21): OpenAI docs / openai.com pricing posts for
- * gpt-6-astra ($10/$50 per 1M), gpt-5.6-sol ($5/$30), gpt-5.6-luna ($0.20/$1.20);
- * Anthropic docs and Sep-2026 pricing roundups for claude-fable-5-1 ($10/$50),
- * claude-opus-5 ($5/$25), claude-sonnet-5 ($2/$10, introductory rate permanent).
+/**
+ * API-equivalent price estimates (USD per 1K tokens).
+ *
  * Comparison labels for local cost reasoning only — NOT subscription billing.
- * Unknown models yield null (never guessed).
+ * Unknown models, and usage missing either priced leg, yield null (never
+ * zero-filled, never priced from a partial leg).
  */
+export const PRICE_BASIS = {
+  source:
+    'OpenAI docs / openai.com pricing posts; Anthropic docs + Sep-2026 pricing roundups',
+  checkedAt: '2026-09-21',
+  basis: 'api-equivalent-estimate',
+} as const
+
 const PRICE_PER_1K: Record<string, { in: number; out: number }> = {
   'gpt-6-astra': { in: 0.01, out: 0.05 },
   'gpt-5.6-sol': { in: 0.005, out: 0.03 },
@@ -29,16 +35,21 @@ function matchPrice(model: string | null): { in: number; out: number } | null {
   return null
 }
 
+/**
+ * Estimate cost only when the model is known AND both priced legs
+ * (input + output) are known. Anything else is `null` (unknown) —
+ * a partial leg must never read as a complete cost.
+ */
 export function estimateCostUsd(
   model: string | null,
   usage: { inputTokens: number | null; outputTokens: number | null } | null,
 ): number | null {
   if (!usage) return null
-  if (usage.inputTokens == null && usage.outputTokens == null) return null
+  if (usage.inputTokens == null || usage.outputTokens == null) return null
   const price = matchPrice(model)
   if (!price) return null
-  const input = usage.inputTokens ?? 0
-  const output = usage.outputTokens ?? 0
-  if (usage.inputTokens == null && usage.outputTokens == null) return null
-  return (input / 1000) * price.in + (output / 1000) * price.out
+  return (
+    (usage.inputTokens / 1000) * price.in +
+    (usage.outputTokens / 1000) * price.out
+  )
 }

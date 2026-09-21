@@ -12,7 +12,14 @@ const onPrepared: Handler = (s) => ({
 
 const onImplemented: Handler = (s, e) => {
   if (e.kind !== 'implemented') return s
-  return { ...s, stage: 'test', implemented: [...s.implemented, e.outcome] }
+  // The target changed: prior verification and reviews are invalid.
+  return {
+    ...s,
+    stage: 'test',
+    implemented: [...s.implemented, e.outcome],
+    tests: s.stage === 'aggregate' ? [] : s.tests,
+    reviews: [],
+  }
 }
 
 const onTested: Handler = (s, e) => {
@@ -26,7 +33,28 @@ const onTested: Handler = (s, e) => {
 
 const onReviewsCollected: Handler = (s, e) => {
   if (e.kind !== 'reviewsCollected') return s
-  return { ...s, stage: 'aggregate', reviews: e.reviews }
+  return {
+    ...s,
+    stage: 'aggregate',
+    reviews: e.reviews,
+    reviewHistory: [
+      ...s.reviewHistory,
+      { iteration: s.iteration, reviews: e.reviews },
+    ],
+  }
+}
+
+const onFixRequested: Handler = (s, e) => {
+  if (e.kind !== 'fixRequested') return s
+  return {
+    ...s,
+    stage: 'implement',
+    iteration: s.iteration + 1,
+    pendingReviewNotes: [...s.pendingReviewNotes, ...e.notes],
+    // Target is about to change: invalidate this round's verification.
+    tests: [],
+    reviews: [],
+  }
 }
 
 const onApprovalDecided: Handler = (s, e) => {
@@ -34,9 +62,23 @@ const onApprovalDecided: Handler = (s, e) => {
   return { ...s, stage: 'finalize', approval: e.decision }
 }
 
-const onFinalized: Handler = (s) => ({ ...s, stage: 'finalize', done: true })
+const onFinalized: Handler = (s, e) => {
+  if (e.kind !== 'finalized') return s
+  return {
+    ...s,
+    stage: 'finalize',
+    done: true,
+    conclusion: e.conclusion,
+    failed: e.conclusion !== 'approved',
+  }
+}
 
-const onAbandoned: Handler = (s) => ({ ...s, failed: true, done: true })
+const onAbandoned: Handler = (s) => ({
+  ...s,
+  failed: true,
+  done: true,
+  conclusion: 'abandoned',
+})
 
 /** Lookup table keeps each transition isolated; no giant switch. */
 const handlers: Record<PipelineEvent['kind'], Handler> = {
@@ -44,6 +86,7 @@ const handlers: Record<PipelineEvent['kind'], Handler> = {
   implemented: onImplemented,
   tested: onTested,
   reviewsCollected: onReviewsCollected,
+  fixRequested: onFixRequested,
   approvalDecided: onApprovalDecided,
   finalized: onFinalized,
   abandoned: onAbandoned,

@@ -14,6 +14,9 @@
   },
   "dependencies": {
     "@coji/durably": "workspace:*",
+    "ai": "^7.0.107",
+    "ai-sdk-provider-claude-code": "^4.3.1",
+    "ai-sdk-provider-codex-cli": "^2.2.1",
     "better-sqlite3": "13.0.3",
     "kysely": "^0.29.6",
     "zod": "^4.6.5"
