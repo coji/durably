@@ -14,7 +14,7 @@
 import { generateText } from 'ai'
 import { claudeCode } from 'ai-sdk-provider-claude-code'
 
-import { resolveEffort } from '../models.js'
+import { defaultModelFor, resolveEffort } from '../models.js'
 import type {
   AgentCallOptions,
   AgentProvider,
@@ -29,7 +29,7 @@ function resolveModel(options: AgentCallOptions): string {
     options.requestedModel ??
     process.env.CLAUDE_MODEL ??
     process.env.MODEL ??
-    'sonnet'
+    defaultModelFor('claude')
   )
 }
 

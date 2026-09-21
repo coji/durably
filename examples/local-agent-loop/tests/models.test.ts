@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
+import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { presetForModel, resolveEffort } from '../src/models.js'
+import {
+  defaultModelFor,
+  presetForModel,
+  resolveEffort,
+} from '../src/models.js'
 import { estimateCostUsd } from '../src/pricing.js'
 
 describe('model presets', () => {
@@ -20,6 +25,20 @@ describe('model presets', () => {
     assert.equal(resolveEffort(undefined, undefined, 'gpt-5.6-luna'), 'max')
     assert.equal(resolveEffort(undefined, undefined, 'unknown'), null)
     assert.equal(resolveEffort(undefined, undefined, null), null)
+  })
+
+  it('provider defaults always hit a preset (no unknown effort)', () => {
+    for (const provider of ['codex', 'claude'] as const) {
+      const model = defaultModelFor(provider)
+      assert.ok(
+        presetForModel(model),
+        `${provider} default ${model} must be a preset model`,
+      )
+      assert.ok(
+        resolveEffort(undefined, undefined, model) !== null,
+        `${provider} default effort must resolve, got null`,
+      )
+    }
   })
 
   it('prices preset models without cross-matching siblings', () => {

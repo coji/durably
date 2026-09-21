@@ -20,6 +20,20 @@ const byModel: Record<string, ModelPreset> = Object.fromEntries(
   MODEL_PRESETS.map((p) => [p.model.toLowerCase(), p]),
 )
 
+/** Provider default when no model is requested: always a preset model, so
+ * effort and pricing resolve without unknowns. Single source of truth —
+ * providers must use this instead of hardcoding their own default. */
+const DEFAULT_MODEL: Record<Exclude<ProviderName, 'fake'>, string> = {
+  codex: 'gpt-5.6-sol',
+  claude: 'claude-sonnet-5',
+}
+
+export function defaultModelFor(
+  provider: Exclude<ProviderName, 'fake'>,
+): string {
+  return DEFAULT_MODEL[provider]
+}
+
 export function presetForModel(
   model: string | null | undefined,
 ): ModelPreset | null {

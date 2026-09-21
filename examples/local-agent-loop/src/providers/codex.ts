@@ -18,7 +18,7 @@ import {
   type ReasoningEffort,
 } from 'ai-sdk-provider-codex-cli'
 
-import { resolveEffort } from '../models.js'
+import { defaultModelFor, resolveEffort } from '../models.js'
 import type {
   AgentCallOptions,
   AgentProvider,
@@ -35,7 +35,7 @@ function resolveModel(options: AgentCallOptions): string {
     options.requestedModel ??
     process.env.CODEX_MODEL ??
     process.env.MODEL ??
-    'gpt-5.6-sol'
+    defaultModelFor('codex')
   )
 }
 

@@ -81,14 +81,16 @@ AGENT_TIMEOUT_MS=300000 TEST_TIMEOUT_MS=120000 \
 via `--effort` or `CODEX_EFFORT` / `CLAUDE_EFFORT` (precedence:
 `--effort` > env > preset).
 
-| provider | model              | default effort | API-equiv $/1M in/out |
-| -------- | ------------------ | -------------- | --------------------- |
-| codex    | `gpt-6-astra`      | low            | $10 / $50             |
-| codex    | `gpt-5.6-sol`      | low            | $5 / $30              |
-| codex    | `gpt-5.6-luna`     | max            | $0.20 / $1.20         |
-| claude   | `claude-fable-5-1` | low            | $10 / $50             |
-| claude   | `claude-opus-5`    | high           | $5 / $25              |
-| claude   | `claude-sonnet-5`  | high           | $2 / $10              |
+| provider | model                       | default effort | API-equiv $/1M in/out |
+| -------- | --------------------------- | -------------- | --------------------- |
+| codex    | `gpt-6-astra`               | low            | $10 / $50             |
+| codex    | `gpt-5.6-sol` (default)     | low            | $5 / $30              |
+| codex    | `gpt-5.6-luna`              | max            | $0.20 / $1.20         |
+| claude   | `claude-fable-5-1`          | low            | $10 / $50             |
+| claude   | `claude-opus-5`             | high           | $5 / $25              |
+| claude   | `claude-sonnet-5` (default) | high           | $2 / $10              |
+
+`--model`を省略すると既定モデル（必ずプリセット内）が使われるため、通常実行でeffort・料金がunknownになることはありません。
 
 Prices checked 2026-09-21 against OpenAI/Anthropic docs; they feed only the
 `api-equivalent-estimate` cost label in reports, never subscription billing.
