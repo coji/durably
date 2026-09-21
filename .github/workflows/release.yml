@@ -16,9 +16,25 @@ permissions:
   contents: read
   actions: read
 
+env:
+  NPM_VERSION: 11.19.0
+  SEMVER_VERSION: 7.7.3
+
 jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Require main branch
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF" != 'refs/heads/main' ]; then
+            echo "Release workflow must run from main, got $GITHUB_REF" >&2
+            exit 1
+          fi
+
   build:
-    if: github.ref == 'refs/heads/main'
+    needs: guard
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -74,7 +90,8 @@ jobs:
         run: |
           set -euo pipefail
           pnpm install --frozen-lockfile
-          npm_version=$(./node_modules/.bin/npm --version)
+          npm_cli() { pnpm --silent dlx "npm@$NPM_VERSION" "$@"; }
+          npm_version=$(npm_cli --version)
           node -e '
             const [major, minor, patch] = process.argv[1].split(".").map(Number)
             if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
@@ -82,15 +99,11 @@ jobs:
             }
           ' "$npm_version"
           echo "Node $(node --version), npm $npm_version"
-          node --input-type=module <<'NODE'
-          import { readFileSync } from 'node:fs'
-          import semver from 'semver'
-          const pkg = JSON.parse(readFileSync('packages/durably-react/package.json', 'utf8'))
-          const range = pkg.peerDependencies?.['@coji/durably']
-          if (!range || !semver.satisfies(process.env.VERSION, range)) {
-            throw new Error(`@coji/durably-react peer range ${range} does not cover ${process.env.VERSION}`)
-          }
-          NODE
+          peer_range=$(node -p 'require("./packages/durably-react/package.json").peerDependencies["@coji/durably"]')
+          if ! pnpm --silent dlx "semver@$SEMVER_VERSION" -r "$peer_range" "$VERSION" >/dev/null; then
+            echo "@coji/durably-react peer range $peer_range does not cover $VERSION" >&2
+            exit 1
+          fi
 
       - name: Build packages
         run: pnpm exec turbo run build --filter=@coji/durably --filter=@coji/durably-react
@@ -109,8 +122,9 @@ jobs:
             writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`)
           }
           NODE
+          npm_cli() { pnpm --silent dlx "npm@$NPM_VERSION" "$@"; }
           for package in durably durably-react; do
-            (cd "packages/$package" && "$GITHUB_WORKSPACE/node_modules/.bin/npm" pack \
+            (cd "packages/$package" && npm_cli pack \
               --json --pack-destination "$GITHUB_WORKSPACE/release-artifacts")
           done
           test "$(find release-artifacts -name '*.tgz' -type f | wc -l | tr -d ' ')" = 2
@@ -129,7 +143,6 @@ jobs:
 
   publish:
     needs: build
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -161,7 +174,8 @@ jobs:
             echo "Release commit $GITHUB_SHA is no longer current main ($remote_main)" >&2
             exit 1
           fi
-          npm_cli() { pnpm --silent dlx npm@11.19.0 "$@"; }
+          npm_cli() { pnpm --silent dlx "npm@$NPM_VERSION" "$@"; }
+          test "$(npm_cli --version)" = "$NPM_VERSION"
           for package in durably durably-react; do
             name="@coji/$package"
             tarball="release-artifacts/coji-$package-$VERSION.tgz"
@@ -188,7 +202,9 @@ jobs:
           const start = changelog.indexOf(heading)
           const end = changelog.indexOf('\n## [', start + heading.length)
           if (start < 0) throw new Error(`Missing ${heading}`)
-          process.stdout.write(changelog.slice(start + heading.length, end < 0 ? undefined : end).trim() + '\n')
+          const bodyStart = changelog.indexOf('\n', start + heading.length)
+          if (bodyStart < 0) throw new Error(`Missing release body for ${heading}`)
+          process.stdout.write(changelog.slice(bodyStart + 1, end < 0 ? undefined : end).trim() + '\n')
           NODE
           gh release create "v$VERSION" --target "$GITHUB_SHA" \
             --title "v$VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
