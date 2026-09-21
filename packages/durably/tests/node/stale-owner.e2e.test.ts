@@ -41,7 +41,9 @@ describe('stale owner end-to-end', () => {
     })
     const runtimeB = createDurably({
       dialect: createDialect(),
-      leaseMs: 25,
+      // Only the original owner should expire. Give the reclaimer enough time
+      // to finish even when CI stalls between its attempt and checkpoint.
+      leaseMs: 30_000,
       leaseRenewIntervalMs: 1_000,
     })
 
@@ -171,7 +173,7 @@ describe('stale owner end-to-end', () => {
     const firstProcess = a.processOne({ workerId: 'worker-a' })
     await firstStarted.promise
     await new Promise((resolve) => setTimeout(resolve, 40))
-    await b.processOne({ workerId: 'worker-b' })
+    expect(await b.processOne({ workerId: 'worker-b' })).toBe(true)
     releaseFirst.resolve()
     await firstProcess
 
