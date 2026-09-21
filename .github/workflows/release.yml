@@ -13,12 +13,11 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
   actions: read
-  id-token: write
 
 jobs:
-  publish:
+  build:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -31,13 +30,14 @@ jobs:
 
       - uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
+          cache: true
           install: false
 
       - name: Verify release target
         shell: bash
         run: |
           set -euo pipefail
-          node --input-type=module <<'EOF'
+          node --input-type=module <<'NODE'
           import { readFileSync } from 'node:fs'
           const version = process.env.VERSION
           if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
@@ -52,8 +52,12 @@ jobs:
           if (!changelog.split('\n').some((line) => line.startsWith(heading))) {
             throw new Error(`Missing ${heading} in CHANGELOG.md`)
           }
-          EOF
-          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA"
+          NODE
+          remote_main=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$remote_main" != "$GITHUB_SHA" ]; then
+            echo "Release commit $GITHUB_SHA is no longer current main ($remote_main)" >&2
+            exit 1
+          fi
           if git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" >/dev/null; then
             echo "Tag v${VERSION} already exists" >&2
             exit 1
@@ -64,8 +68,13 @@ jobs:
             echo "No successful main-push CI run for $GITHUB_SHA" >&2
             exit 1
           fi
-          node -e 'const [major,minor]=process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 14)) throw new Error("Node.js 22.14+ is required")'
-          npm_version=$(npm --version)
+
+      - name: Install dependencies and verify toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          npm_version=$(./node_modules/.bin/npm --version)
           node -e '
             const [major, minor, patch] = process.argv[1].split(".").map(Number)
             if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
@@ -73,42 +82,98 @@ jobs:
             }
           ' "$npm_version"
           echo "Node $(node --version), npm $npm_version"
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs'
+          import semver from 'semver'
+          const pkg = JSON.parse(readFileSync('packages/durably-react/package.json', 'utf8'))
+          const range = pkg.peerDependencies?.['@coji/durably']
+          if (!range || !semver.satisfies(process.env.VERSION, range)) {
+            throw new Error(`@coji/durably-react peer range ${range} does not cover ${process.env.VERSION}`)
+          }
+          NODE
 
-      - name: Install and build
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm build
+      - name: Build packages
+        run: pnpm exec turbo run build --filter=@coji/durably --filter=@coji/durably-react
 
-      - name: Check package contents
+      - name: Pack and inspect packages
         shell: bash
         run: |
           set -euo pipefail
+          mkdir release-artifacts
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs'
+          for (const name of ['durably', 'durably-react']) {
+            const path = `packages/${name}/package.json`
+            const pkg = JSON.parse(readFileSync(path, 'utf8'))
+            pkg.gitHead = process.env.GITHUB_SHA
+            writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`)
+          }
+          NODE
           for package in durably durably-react; do
-            (cd "packages/$package" && npm pack --dry-run --json) |
-              node --input-type=module -e '
-                let input = ""
-                for await (const chunk of process.stdin) input += chunk
-                const paths = JSON.parse(input)[0].files.map((file) => file.path)
-                if (!paths.some((path) => path.startsWith("dist/")) || !paths.includes("docs/llms.md")) {
-                  throw new Error("Package is missing dist or docs/llms.md")
-                }
-              '
+            (cd "packages/$package" && "$GITHUB_WORKSPACE/node_modules/.bin/npm" pack \
+              --json --pack-destination "$GITHUB_WORKSPACE/release-artifacts")
           done
+          test "$(find release-artifacts -name '*.tgz' -type f | wc -l | tr -d ' ')" = 2
+          for tarball in release-artifacts/*.tgz; do
+            tar -tzf "$tarball" | grep '^package/dist/' >/dev/null
+            tar -tzf "$tarball" | grep -x 'package/docs/llms.md' >/dev/null
+            test "$(tar -xOzf "$tarball" package/package.json | jq -r .gitHead)" = "$GITHUB_SHA"
+          done
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-packages-${{ github.sha }}
+          path: release-artifacts/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        with:
+          install: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-packages-${{ github.sha }}
+          path: release-artifacts
 
       - name: Publish packages through npm Trusted Publishing
         shell: bash
         run: |
           set -euo pipefail
+          remote_main=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$remote_main" != "$GITHUB_SHA" ]; then
+            echo "Release commit $GITHUB_SHA is no longer current main ($remote_main)" >&2
+            exit 1
+          fi
+          npm_cli() { pnpm --silent dlx npm@11.19.0 "$@"; }
           for package in durably durably-react; do
             name="@coji/$package"
-            if published_sha=$(npm view "$name@$VERSION" gitHead --json 2>/dev/null); then
+            tarball="release-artifacts/coji-$package-$VERSION.tgz"
+            test -f "$tarball"
+            if published_sha=$(npm_cli view "$name@$VERSION" gitHead --json 2>/dev/null); then
               if [ "$(jq -r . <<< "$published_sha")" != "$GITHUB_SHA" ]; then
                 echo "$name@$VERSION already exists from a different commit" >&2
                 exit 1
               fi
               echo "$name@$VERSION already published from this commit"
             else
-              (cd "packages/$package" && npm publish --access public)
+              npm_cli publish "$tarball" --access public
             fi
           done
 
@@ -116,14 +181,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node --input-type=module <<'EOF' > "$RUNNER_TEMP/release-notes.md"
+          node --input-type=module <<'NODE' > "$RUNNER_TEMP/release-notes.md"
           import { readFileSync } from 'node:fs'
           const changelog = readFileSync('CHANGELOG.md', 'utf8')
           const heading = `## [${process.env.VERSION}]`
           const start = changelog.indexOf(heading)
           const end = changelog.indexOf('\n## [', start + heading.length)
           if (start < 0) throw new Error(`Missing ${heading}`)
-          process.stdout.write(changelog.slice(start, end < 0 ? undefined : end).trim() + '\n')
-          EOF
+          process.stdout.write(changelog.slice(start + heading.length, end < 0 ? undefined : end).trim() + '\n')
+          NODE
           gh release create "v$VERSION" --target "$GITHUB_SHA" \
             --title "v$VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"

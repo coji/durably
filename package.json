@@ -32,9 +32,11 @@
     "@typescript/native": "npm:typescript@^7.0.2",
     "@vitest/coverage-v8": "5.0.1",
     "lefthook": "2.1.14",
+    "npm": "11.19.0",
     "oxfmt": "0.68.0",
     "oxlint": "1.83.0",
     "react-doctor": "0.9.14",
+    "semver": "7.7.3",
     "tsx": "^4.23.13",
     "turbo": "2.10.13",
     "typescript": "npm:@typescript/typescript6@^6.0.2"
