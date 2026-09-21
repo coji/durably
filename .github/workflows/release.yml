@@ -21,9 +21,13 @@ env:
   SEMVER_VERSION: 7.7.3
 
 jobs:
-  guard:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+
     steps:
       - name: Require main branch
         shell: bash
@@ -33,15 +37,6 @@ jobs:
             exit 1
           fi
 
-  build:
-    needs: guard
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      VERSION: ${{ inputs.version }}
-      GH_TOKEN: ${{ github.token }}
-
-    steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
@@ -74,7 +69,8 @@ jobs:
             echo "Release commit $GITHUB_SHA is no longer current main ($remote_main)" >&2
             exit 1
           fi
-          if git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" >/dev/null; then
+          tag_sha=$(git ls-remote --refs --tags origin "refs/tags/v${VERSION}" | cut -f1)
+          if [ -n "$tag_sha" ]; then
             echo "Tag v${VERSION} already exists" >&2
             exit 1
           fi
@@ -146,8 +142,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: npm-publish
     permissions:
-      contents: read
+      contents: write
       actions: read
       id-token: write
     env:
@@ -155,6 +152,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
@@ -194,20 +193,9 @@ jobs:
             fi
           done
 
-  release:
-    needs: publish
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    env:
-      VERSION: ${{ inputs.version }}
-      GH_TOKEN: ${{ github.token }}
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
       - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
