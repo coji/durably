@@ -62,9 +62,29 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format json -
 Optional caps/env:
 
 ```bash
-AGENT_TIMEOUT_MS=300000 TEST_TIMEOUT_MS=120000 CODEX_MODEL=gpt-5 CODEX_EFFORT=medium \
-  pnpm --filter example-local-agent-loop demo trigger --provider codex
+AGENT_TIMEOUT_MS=300000 TEST_TIMEOUT_MS=120000 \
+  pnpm --filter example-local-agent-loop demo trigger --provider codex --model gpt-5.6-sol
 ```
+
+## Model presets
+
+`--model` selects a preset; effort defaults from the preset unless overridden
+via `--effort` or `CODEX_EFFORT` / `CLAUDE_EFFORT` (precedence:
+`--effort` > env > preset).
+
+| provider | model              | default effort | API-equiv $/1M in/out |
+| -------- | ------------------ | -------------- | --------------------- |
+| codex    | `gpt-6-astra`      | low            | $10 / $50             |
+| codex    | `gpt-5.6-sol`      | low            | $5 / $30              |
+| codex    | `gpt-5.6-luna`     | max            | $0.20 / $1.20         |
+| claude   | `claude-fable-5-1` | low            | $10 / $50             |
+| claude   | `claude-opus-5`    | high           | $5 / $25              |
+| claude   | `claude-sonnet-5`  | high           | $2 / $10              |
+
+Prices checked 2026-09-21 against OpenAI/Anthropic docs; they feed only the
+`api-equivalent-estimate` cost label in reports, never subscription billing.
+`codex exec` exposes no effort flag, so Codex effort is record-only metadata;
+Claude effort is enforced via `claude --effort`.
 
 ## Run B — Claude Code only
 
@@ -82,6 +102,12 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md
 ```bash
 AGENT_TIMEOUT_MS=300000 CLAUDE_MODEL=sonnet CLAUDE_EFFORT=medium \
   pnpm --filter example-local-agent-loop demo trigger --provider claude
+```
+
+With a preset:
+
+```bash
+pnpm --filter example-local-agent-loop demo trigger --provider claude --model claude-opus-5
 ```
 
 ## Stop / restart resume check (same Mac, same SQLite)

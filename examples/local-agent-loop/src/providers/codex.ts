@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { resolveEffort } from '../models.js'
 import type {
   AgentCallOptions,
   AgentProvider,
@@ -43,7 +44,12 @@ export class CodexProvider implements AgentProvider {
     const started = Date.now()
     const model =
       options.model ?? process.env.CODEX_MODEL ?? process.env.MODEL ?? null
-    const effort = options.effort ?? process.env.CODEX_EFFORT ?? null
+    // codex exec exposes no effort flag: effort is record-only metadata.
+    const effort = resolveEffort(
+      options.effort,
+      process.env.CODEX_EFFORT,
+      model,
+    )
     const outFile = join(tmpdir(), `codex-last-${randomUUID()}.md`)
     const args = [
       'exec',

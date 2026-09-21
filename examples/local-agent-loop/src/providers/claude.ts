@@ -1,6 +1,7 @@
 /** Claude Code provider: `claude -p --output-format json` in workdir. */
 import { spawn } from 'node:child_process'
 
+import { resolveEffort } from '../models.js'
 import type {
   AgentCallOptions,
   AgentProvider,
@@ -26,7 +27,12 @@ export class ClaudeProvider implements AgentProvider {
     const started = Date.now()
     const model =
       options.model ?? process.env.CLAUDE_MODEL ?? process.env.MODEL ?? null
-    const effort = options.effort ?? process.env.CLAUDE_EFFORT ?? null
+    // Preset effort is enforced via --effort unless overridden.
+    const effort = resolveEffort(
+      options.effort,
+      process.env.CLAUDE_EFFORT,
+      model,
+    )
     const args = [
       '-p',
       '--output-format',

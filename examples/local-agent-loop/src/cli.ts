@@ -38,6 +38,11 @@ Commands (run from examples/local-agent-loop):
   pnpm demo approve --run <id> --wait <waitId>
   pnpm demo reject --run <id> --wait <waitId>
   pnpm demo report --run <id> [--format json|md] [--out <file>]
+Model presets (--model selects one; effort defaults from the preset,
+overridable via --effort or CODEX_EFFORT / CLAUDE_EFFORT):
+  codex:  gpt-6-astra (low) | gpt-5.6-sol (low) | gpt-5.6-luna (max)
+  claude: claude-fable-5-1 (low) | claude-opus-5 (high) | claude-sonnet-5 (high)
+Note: codex exec has no effort flag, so Codex effort is record-only metadata.
 Env: DURABLY_DB, AGENT_TIMEOUT_MS (default 300000), TEST_TIMEOUT_MS (default 120000),
      CODEX_MODEL/CODEX_EFFORT, CLAUDE_MODEL/CLAUDE_EFFORT, FAKE_FAIL_FIRST=0, FAKE_REVIEW_SLOW_MS
 `)
