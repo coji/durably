@@ -16,6 +16,12 @@ const sessionSchema = z.object({
   instructionsVersion: z.string(),
 })
 
+const deliverySchema = z.object({
+  kind: z.enum(['snapshot', 'patch', 'pull-request']),
+  location: z.string(),
+  summary: z.string(),
+})
+
 const reviewSchema = z.object({
   lens: z.enum(['correctness', 'edge-cases']),
   decision: z.enum(['pass', 'needsChanges']),
@@ -62,6 +68,7 @@ export const FactoryEventSchema = z.discriminatedUnion('type', [
       reviews: z.array(reviewSchema),
       workdir: z.string(),
       fake: z.boolean(),
+      delivery: deliverySchema.nullable(),
     }),
   }),
 ])

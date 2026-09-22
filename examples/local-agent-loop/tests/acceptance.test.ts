@@ -8,7 +8,7 @@ import { hashDir } from '../src/engine/tree.js'
 import {
   snapshotAcceptance,
   verifyAcceptanceIntact,
-} from '../src/project/acceptance.js'
+} from '../src/targets/subject-acceptance.js'
 
 async function seed(dir: string, files: Record<string, string>) {
   const { mkdir } = await import('node:fs/promises')

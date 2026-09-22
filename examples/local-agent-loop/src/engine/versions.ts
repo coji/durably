@@ -67,6 +67,8 @@ export interface ConfigVersionInput {
   contextMode: string
   instructionsVersion: string
   maxIterations: number
+  /** What the run was pointed at; runs against different work are not comparable. */
+  target: string
   code: { model: string | null; effort: string | null }
   review: { model: string | null; effort: string | null }
 }
@@ -83,6 +85,7 @@ export function configVersionOf(input: ConfigVersionInput): string {
     contextMode: input.contextMode,
     instructionsVersion: input.instructionsVersion,
     maxIterations: input.maxIterations,
+    target: input.target,
     code: { model: input.code.model, effort: input.code.effort },
     review: { model: input.review.model, effort: input.review.effort },
   })

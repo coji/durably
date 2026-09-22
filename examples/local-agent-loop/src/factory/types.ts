@@ -10,8 +10,10 @@ import type {
   SessionRef,
 } from '../engine/types.js'
 import type { FactoryEvent } from './events.js'
+import type { Delivery, Target, TargetConfig } from './target.js'
 
 export type { CandidateRef, ContextMode, ResolvedProfile, SessionRef }
+export type { Delivery, TargetConfig }
 
 export type StageName =
   | 'code'
@@ -28,11 +30,8 @@ export interface FactorySetup {
   provider: ProviderName
   fake: boolean
   contextMode: ContextMode
-  workdir: string
-  acceptanceDir: string
-  acceptanceHash: string
-  baselineDir: string
-  baselineHash: string
+  /** What this run is pointed at; rebuilt into a live Target on every replay. */
+  target: TargetConfig
   checkpointsDir: string
   instructionsVersion: string
   /** Hash of the fixed profile; equal across runs that are fair to compare. */
@@ -43,7 +42,12 @@ export interface FactorySetup {
   }
   maxIterations: number
   agentTimeoutMs: number
-  testTimeoutMs: number
+  /**
+   * Skip the human approval wait and deliver as soon as the reviews pass.
+   * Appropriate when the delivery is itself reviewable, such as a draft pull
+   * request the human still has to merge.
+   */
+  autoApprove: boolean
 }
 
 export interface VerificationResult {
@@ -72,6 +76,8 @@ export interface FactoryOutcome {
   reviews: ReviewVerdict[]
   workdir: string
   fake: boolean
+  /** What the human receives; null when the run produced nothing to act on. */
+  delivery: Delivery | null
 }
 
 export interface FactoryState {
@@ -110,6 +116,8 @@ export interface StageDecision {
 
 export interface FactoryServices {
   provider: AgentProvider
+  /** Rebuilt from `setup.target` on every replay. */
+  target: Target
 }
 
 export interface StageArgs {

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 import { createAgentDurably } from './durably.js'
 import { buildReport } from './engine/build-report.js'
-import { killOwnedChildren } from './engine/child.js'
+import { killOwnedChildren, runChild } from './engine/child.js'
 import { compareReports, comparisonToMarkdown } from './engine/compare.js'
 import { parseProviderName } from './engine/providers/index.js'
 import {
@@ -14,6 +14,74 @@ import {
   reportToMarkdown,
   type LoopReport,
 } from './engine/report.js'
+
+interface IssueRef {
+  number: number
+  title: string
+  url: string
+  body: string
+}
+
+/** Read one issue through the user's own `gh` login. */
+async function fetchIssue(repoPath: string, number: string): Promise<IssueRef> {
+  const res = await runChild(
+    'gh',
+    ['issue', 'view', number, '--json', 'number,title,url,body'],
+    { cwd: repoPath, timeoutMs: 60000 },
+  )
+  if (res.code !== 0)
+    throw new Error(
+      `gh issue view ${number} failed (${res.code ?? 'null'}): ${res.stderr.slice(-500)}`,
+    )
+  const parsed = JSON.parse(res.stdout) as IssueRef
+  if (typeof parsed.number !== 'number' || typeof parsed.body !== 'string')
+    throw new Error(`unexpected gh issue payload for ${number}`)
+  return parsed
+}
+
+/**
+ * Build the job's target from the flags.
+ *
+ * A check command is required for a repository target and is recorded before
+ * the agent starts, so nothing the agent edits can change what grading runs.
+ * The value is argv split on whitespace, not a shell line.
+ */
+async function resolveTarget(a: Record<string, string>) {
+  const repo = a['repo']
+  if (!repo) {
+    if (a['issue'] || a['task'])
+      throw new Error('--issue and --task need --repo <path>')
+    return { kind: 'subject' as const }
+  }
+  const repoPath = isAbsolute(repo) ? repo : join(process.cwd(), repo)
+  const check = a['check']
+  if (!check)
+    throw new Error(
+      '--check "<command>" is required for --repo: it is the pinned check that decides pass or fail',
+    )
+  const issueNumber = a['issue']
+  if (issueNumber && a['task'])
+    throw new Error('pass either --issue or --task, not both')
+  if (!issueNumber && !a['task'])
+    throw new Error('--repo needs --issue <number> or --task "<text>"')
+  const issue = issueNumber
+    ? await fetchIssue(repoPath, issueNumber.replace(/^#/, ''))
+    : null
+  return {
+    kind: 'repo' as const,
+    repoPath,
+    baseRef: a['base'] ?? 'HEAD',
+    task: issue ? issue.body : (a['task'] as string),
+    issue: issue
+      ? { number: issue.number, title: issue.title, url: issue.url }
+      : null,
+    checkCommand: check.split(/\s+/).filter((part) => part.length > 0),
+    setupCommand: a['setup']
+      ? a['setup'].split(/\s+/).filter((part) => part.length > 0)
+      : null,
+    publish: a['publish'] === 'true',
+  }
+}
 
 async function emit(text: string, out: string | undefined): Promise<void> {
   if (out) {
@@ -54,6 +122,9 @@ function usage(): void {
 Commands (run from examples/local-agent-loop):
   pnpm demo worker                          start worker (long-running; kill -9 to test resume)
   pnpm demo trigger --provider codex|claude|fake [--context reuse|fresh] [--max-iterations 2] [--model X] [--effort Y]
+      bundled sample (default): no further flags
+      real repository:  --repo <path> (--issue 234 | --task "...") --check "pnpm validate"
+                        [--setup "pnpm install"] [--base <ref>] [--publish] [--approve auto|manual]
   pnpm demo status --run <id>
   pnpm demo waits --run <id>
   pnpm demo approve --run <id> --wait <waitId>
@@ -119,16 +190,28 @@ if (cmd === 'worker') {
   if (!/^[1-3]$/.test(rawIterations))
     throw new Error('--max-iterations must be an integer between 1 and 3')
   const maxIterations = Number(rawIterations)
+  const target = await resolveTarget(a)
+  const approve = a['approve']
+  if (approve !== undefined && approve !== 'auto' && approve !== 'manual')
+    throw new Error('--approve must be auto|manual')
   const durably = createAgentDurably()
   await durably.migrate()
   const run = await durably.jobs.agentLoop.trigger({
     provider,
+    target,
     maxIterations,
     model: a['model'],
     effort: a['effort'],
     context,
+    ...(approve ? { autoApprove: approve === 'auto' } : {}),
   })
-  console.log(JSON.stringify({ runId: run.id, status: run.status }, null, 2))
+  console.log(
+    JSON.stringify(
+      { runId: run.id, status: run.status, target: target.kind },
+      null,
+      2,
+    ),
+  )
   await durably.db.destroy()
 } else if (cmd === 'status') {
   const a = args()

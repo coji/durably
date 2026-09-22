@@ -1,19 +1,19 @@
-/** Stage handlers own deterministic mechanics; the job only dispatches them. */
-import { readFile } from 'node:fs/promises'
+/**
+ * Stage handlers own deterministic mechanics; the job only dispatches them.
+ *
+ * Nothing here knows what is being built. Where the agent edits, how work is
+ * sealed, what counts as verified and what the human finally receives all come
+ * from the run's `Target`, so the same stage graph drives the bundled sample
+ * and a real repository.
+ */
 import { join } from 'node:path'
 
 import type { JsonValue, StepAttemptContext } from '@coji/durably'
 
-import {
-  assertCandidateIntact,
-  candidatesDirFor,
-  createCandidate,
-} from '../engine/candidate.js'
 import { runAgentCall } from '../engine/runner.js'
-import { describeTreeChanges, hashDir } from '../engine/tree.js'
 import { runVerificationStep } from '../engine/verification.js'
-import { runAcceptanceSuite } from './acceptance.js'
 import { codePrompt, parseReviewOutput, reviewPrompt } from './prompts.js'
+import type { Delivery } from './target.js'
 import type {
   FactoryOutcome,
   ReviewLens,
@@ -31,6 +31,8 @@ function requireCandidate(state: StageArgs['state']) {
 function outcome(
   state: StageArgs['state'],
   conclusion: FactoryOutcome['conclusion'],
+  delivery: Delivery | null,
+  workdir: string,
 ): FactoryOutcome {
   return {
     approved: conclusion === 'approved',
@@ -39,8 +41,9 @@ function outcome(
     iterations: state.iteration,
     reviewRounds: state.reviewRounds,
     reviews: state.reviews,
-    workdir: state.setup.workdir,
+    workdir,
     fake: state.setup.fake,
+    delivery,
   }
 }
 
@@ -55,13 +58,14 @@ export const codeStage: StageHandler = async ({
   if (!role) throw new Error('code stage requires a role')
   const iteration = state.iteration + 1
   const profile = state.setup.profiles.code
+  const target = services.target
   const continuedSession =
     state.setup.contextMode === 'reuse' ? state.implementationSession : null
   if (
     continuedSession &&
     (continuedSession.provider !== state.setup.provider ||
       continuedSession.profileId !== profile.id ||
-      continuedSession.cwd !== state.setup.workdir ||
+      continuedSession.cwd !== target.workdir ||
       continuedSession.instructionsVersion !== state.setup.instructionsVersion)
   ) {
     throw new Error('implementation session provenance no longer matches setup')
@@ -72,8 +76,14 @@ export const codeStage: StageHandler = async ({
       runAgentCall(signal, attempt, {
         provider: services.provider,
         providerName: state.setup.provider,
-        prompt: codePrompt(role, iteration, state.repairNotes),
-        workdir: state.setup.workdir,
+        prompt: codePrompt({
+          role,
+          iteration,
+          repairNotes: state.repairNotes,
+          task: target.taskBrief(),
+          rules: target.implementationRules(),
+        }),
+        workdir: target.workdir,
         timeoutMs: state.setup.agentTimeoutMs,
         requestedModel: profile.requestedModel,
         requestedEffort: profile.requestedEffort,
@@ -95,14 +105,8 @@ export const codeStage: StageHandler = async ({
       } as unknown as JsonValue,
     },
   )
-  const candidate = await step.run(`${key}:candidate`, (_signal, attempt) =>
-    createCandidate({
-      workdir: state.setup.workdir,
-      candidatesDir: candidatesDirFor(state.setup.workdir),
-      iteration,
-      acceptanceHash: state.setup.acceptanceHash,
-      attemptId: attempt.id,
-    }),
+  const candidate = await step.run(`${key}:candidate`, (signal, attempt) =>
+    target.seal({ iteration, attemptId: attempt.id, signal }),
   )
   const session: SessionRef | null =
     state.setup.contextMode === 'reuse' && call.sessionId
@@ -110,16 +114,22 @@ export const codeStage: StageHandler = async ({
           provider: state.setup.provider,
           nativeId: call.sessionId,
           profileId: profile.id,
-          cwd: state.setup.workdir,
+          cwd: target.workdir,
           instructionsVersion: state.setup.instructionsVersion,
         }
       : null
   return { type: 'code.completed', role, candidate, session }
 }
 
-export const verifyStage: StageHandler = async ({ step, state, key }) => {
-  const target = requireCandidate(state)
-  await assertCandidateIntact(target)
+export const verifyStage: StageHandler = async ({
+  step,
+  state,
+  key,
+  services,
+}) => {
+  const target = services.target
+  const candidate = requireCandidate(state)
+  await target.assertIntact(candidate)
   const result = await step.run(`${key}:acceptance`, (signal, attempt) =>
     runVerificationStep(
       attempt,
@@ -129,33 +139,28 @@ export const verifyStage: StageHandler = async ({ step, state, key }) => {
         checkpointsDir: state.setup.checkpointsDir,
         stage: 'verify',
         iteration: state.iteration,
-        // What "verified" means is this factory's policy: the pinned suite
-        // over the sealed candidate. The engine only owns the checkpointing.
+        // What "verified" means belongs to the target. The engine only owns
+        // the checkpointing, the measurement, and the signal.
         grade: (graderSignal) =>
-          runAcceptanceSuite(
-            {
-              workdir: target.snapshotDir,
-              acceptanceDir: state.setup.acceptanceDir,
-              scratchDir: join(
-                state.setup.workdir,
-                '..',
-                'verification-scratch',
-                target.id,
-                attempt.id,
-              ),
-              timeoutMs: state.setup.testTimeoutMs,
-              signal: graderSignal,
-            },
-            target.acceptanceHash,
-          ),
+          target.grade({
+            candidate,
+            scratchDir: join(
+              state.setup.checkpointsDir,
+              '..',
+              'verification-scratch',
+              candidate.id,
+              attempt.id,
+            ),
+            signal: graderSignal,
+          }),
       },
       signal,
     ),
   )
-  await assertCandidateIntact(target)
+  await target.assertIntact(candidate)
   return {
     type: 'verify.completed',
-    targetId: target.id,
+    targetId: candidate.id,
     passed: result.passed,
     stdout: result.stdout,
     exitCode: result.exitCode,
@@ -168,39 +173,26 @@ export const reviewStage: StageHandler = async ({
   key,
   services,
 }) => {
-  const target = requireCandidate(state)
-  if (!state.verification?.passed || state.verification.targetId !== target.id)
+  const target = services.target
+  const candidate = requireCandidate(state)
+  if (
+    !state.verification?.passed ||
+    state.verification.targetId !== candidate.id
+  )
     throw new Error('review requires the same verified candidate')
-  await assertCandidateIntact(target)
-  if ((await hashDir(state.setup.baselineDir)) !== state.setup.baselineHash)
-    throw new Error('trusted baseline mutated')
-  const changes = await describeTreeChanges(
-    state.setup.baselineDir,
-    target.snapshotDir,
-  )
-  const baselineCalc = await readFile(
-    join(state.setup.baselineDir, 'src', 'calc.js'),
-    'utf8',
-  )
-  const baselineContext = [
-    'TRUSTED BASELINE CONTEXT:',
-    `Changed paths: ${changes.length > 0 ? changes.join(', ') : '(none)'}`,
-    'Original src/calc.js:',
-    '```js',
-    baselineCalc,
-    '```',
-  ].join('\n')
+  await target.assertIntact(candidate)
+  const trustedContext = await target.reviewContext(candidate)
+  const reviewCwd = target.reviewCwd(candidate)
   const review =
     (lens: ReviewLens) =>
-    async (_signal: AbortSignal, attempt: StepAttemptContext) => {
-      const signal = _signal
+    async (signal: AbortSignal, attempt: StepAttemptContext) => {
       const profile = state.setup.profiles.review
       const role = lens === 'correctness' ? 'review-a' : 'review-b'
       const result = await runAgentCall(signal, attempt, {
         provider: services.provider,
         providerName: state.setup.provider,
-        prompt: reviewPrompt(lens, baselineContext),
-        workdir: target.snapshotDir,
+        prompt: reviewPrompt(lens, trustedContext),
+        workdir: reviewCwd,
         timeoutMs: state.setup.agentTimeoutMs,
         requestedModel: profile.requestedModel,
         requestedEffort: profile.requestedEffort,
@@ -230,63 +222,99 @@ export const reviewStage: StageHandler = async ({
     [correctness]: review('correctness'),
     [edgeCases]: review('edge-cases'),
   })
-  await assertCandidateIntact(target)
+  await target.assertIntact(candidate)
   return {
     type: 'review.completed',
-    targetId: target.id,
+    targetId: candidate.id,
     reviews: [results[correctness], results[edgeCases]],
   }
 }
 
-export const approvalStage: StageHandler = async ({ step, state, key }) => {
-  const target = requireCandidate(state)
-  await assertCandidateIntact(target)
-  const wait = await step.prepareWait(`${key}:${target.id}`, {
+export const approvalStage: StageHandler = async ({
+  step,
+  state,
+  key,
+  services,
+}) => {
+  const target = services.target
+  const candidate = requireCandidate(state)
+  await target.assertIntact(candidate)
+  const wait = await step.prepareWait(`${key}:${candidate.id}`, {
     metadata: {
-      candidateId: target.id,
-      snapshotDir: target.snapshotDir,
-      sourceHash: target.sourceHash,
+      candidateId: candidate.id,
+      snapshotDir: candidate.snapshotDir,
+      sourceHash: candidate.sourceHash,
       reviews: state.reviews,
     } as unknown as JsonValue,
   })
   const result = await step.waitFor(wait)
-  await assertCandidateIntact(target)
+  await target.assertIntact(candidate)
   const payload =
     result.type === 'signal' &&
     result.payload &&
     typeof result.payload === 'object'
       ? (result.payload as { candidateId?: string; decision?: string })
       : null
-  if (payload?.candidateId !== target.id)
-    throw new Error(`approval candidate mismatch: expected ${target.id}`)
+  if (payload?.candidateId !== candidate.id)
+    throw new Error(`approval candidate mismatch: expected ${candidate.id}`)
   if (payload.decision !== 'approved' && payload.decision !== 'rejected')
-    throw new Error(`invalid approval decision for ${target.id}`)
+    throw new Error(`invalid approval decision for ${candidate.id}`)
   return {
     type: 'approval.completed',
-    targetId: target.id,
+    targetId: candidate.id,
     decision: payload.decision,
   }
 }
 
-export const finishStage: StageHandler = async ({ step, state, key }) => {
-  const target = requireCandidate(state)
-  await assertCandidateIntact(target)
+export const finishStage: StageHandler = async ({
+  step,
+  state,
+  key,
+  services,
+}) => {
+  const target = services.target
+  const candidate = requireCandidate(state)
+  await target.assertIntact(candidate)
+  const rejected = state.approval === 'rejected'
+  // Delivery is outward-facing (it may push a branch and open a pull request),
+  // so it is its own step: a replay reads the recorded result instead of
+  // publishing twice.
+  const delivery = rejected
+    ? null
+    : await step.run(`${key}:deliver`, (signal) =>
+        target.deliver({
+          candidate,
+          runId: step.runId,
+          reviews: state.reviews,
+          signal,
+        }),
+      )
   return step.run(`${key}:result`, async () => ({
     type: 'factory.finished' as const,
     outcome: outcome(
       state,
-      state.approval === 'approved' ? 'approved' : 'rejected',
+      rejected ? 'rejected' : 'approved',
+      delivery,
+      target.workdir,
     ),
   }))
 }
 
-export const stopStage: StageHandler = async ({ step, state, key }) => {
-  if (state.candidate) await assertCandidateIntact(state.candidate)
+export const stopStage: StageHandler = async ({
+  step,
+  state,
+  key,
+  services,
+}) => {
+  const target = services.target
+  if (state.candidate) await target.assertIntact(state.candidate)
   return step.run(`${key}:result`, async () => ({
     type: 'factory.finished' as const,
     outcome: outcome(
       state,
       state.verification?.passed ? 'review-cap-reached' : 'verification-failed',
+      null,
+      target.workdir,
     ),
   }))
 }

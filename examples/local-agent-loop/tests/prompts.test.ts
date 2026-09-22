@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { parseReviewOutput } from '../src/project/prompts.js'
+import { parseReviewOutput } from '../src/factory/prompts.js'
 
 describe('parseReviewOutput (strict verdicts)', () => {
   it('accepts an explicit pass', () => {

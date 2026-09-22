@@ -29,6 +29,7 @@ describe('candidate-bound approval', { timeout: 180000 }, () => {
     try {
       const run = await durably.jobs.agentLoop.trigger({
         provider: 'fake',
+        target: { kind: 'subject' as const },
         maxIterations: 2,
         context: 'reuse',
       })
@@ -81,6 +82,7 @@ describe('candidate-bound approval', { timeout: 180000 }, () => {
     try {
       const run = await durably.jobs.agentLoop.trigger({
         provider: 'fake',
+        target: { kind: 'subject' as const },
         maxIterations: 2,
         context: 'reuse',
       })

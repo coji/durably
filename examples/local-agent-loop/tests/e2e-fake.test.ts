@@ -42,6 +42,7 @@ describe('fake e2e fix loop', { timeout: 180000 }, () => {
     try {
       const run = await durably.jobs.agentLoop.trigger({
         provider: 'fake',
+        target: { kind: 'subject' as const },
         maxIterations: 3,
         context: 'reuse',
       })
@@ -153,6 +154,7 @@ describe('fake e2e fix loop', { timeout: 180000 }, () => {
     try {
       const run = await durably.jobs.agentLoop.trigger({
         provider: 'fake',
+        target: { kind: 'subject' as const },
         maxIterations: 3,
         context: 'fresh',
       })

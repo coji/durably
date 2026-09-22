@@ -13,6 +13,9 @@ export function availableActions(state: FactoryState): StageName[] {
   if (state.reviews.some((review) => review.decision === 'needsChanges')) {
     return state.iteration < state.setup.maxIterations ? ['code'] : ['stop']
   }
+  // With auto-approval the delivery is itself what a human reviews, so the
+  // run does not hold a worker while waiting for a signal it will always get.
+  if (state.setup.autoApprove) return ['finish']
   if (state.approval === null) return ['approve']
   return ['finish']
 }

@@ -111,6 +111,36 @@ Claudeでは `--provider claude` に替えるだけです。承認CLIはwait met
 Candidate IDを読み、signal payloadにも同じIDを入れます。拒否は `approve` の
 代わりに `reject` を使います。
 
+## 実リポジトリに対して動かす
+
+同梱の題材ではなく、実際のリポジトリのissueを働かせる場合です。
+
+```bash
+pnpm --filter example-local-agent-loop demo trigger \
+  --provider codex --repo ~/progs/myapp --issue 234 \
+  --check "pnpm validate" --setup "pnpm install --frozen-lockfile"
+```
+
+- `--repo` のリポジトリから `git worktree` を切り、その中だけで作業します。
+  あなたが開いているcheckoutは一切動きません。
+- `--issue` は `gh issue view` で本文を取り、実装promptのTASKにします。
+  issueの代わりに `--task "..."` を直接渡すこともできます。
+- `--check` は**エージェントが走り出す前に固定される採点コマンド**です。argvとして
+  そのまま実行するのでshellではありません。これを渡さないと起動しません。
+  何を直せば通るのかが決まっていない依頼は、そもそもファクトリーに向きません。
+- `--setup` は新しいworktreeに依存をインストールするためのものです。省略すると
+  installなしで `--check` が走ります。
+- 反復ごとにcommitして封印します。検証・レビュー・成果物は同じcommitを見ます。
+- 既定の成果物は `runs/<runId>/delivery/<candidate>.patch` です。
+  `--publish` を付けるとブランチをpushしてDraft PRを作ります。
+
+`--publish` を付けない限り、外向きの操作は起きません。まずpatchで確かめてから
+PRに進むのが安全です。
+
+人間の承認待ちは、実リポジトリでは既定で入りません。Draft PR自体が人間の
+レビュー対象で、マージするのも人間だからです。`--approve manual` で
+同梱題材と同じ承認waitを挟めます。
+
 ## reuse / fresh 比較
 
 同じ題材、provider、model、effort、最大反復数で二つのrunを作ります。
@@ -248,16 +278,17 @@ pnpm --filter example-local-agent-loop demo trigger \
 
 ## Layout
 
-コードは二層に分かれています。`engine/` はどのリポジトリでも同じもの、
-`project/` はこのファクトリーの方針とこの題材だけのものです。別のリポジトリへ
-移すときは `engine/` をそのまま持っていき、`project/` を書き直します。
+コードは三層です。`engine/` はどのリポジトリでも同じもの、`factory/` は工程の
+つなぎ方、`targets/` は「何に対して働くか」です。別のリポジトリへ移すときは
+`engine/` と `factory/` をそのまま持っていき、`targets/` を書きます。
 
 ```text
 src/
   engine/           リポジトリに依存しない機構
     runner.ts       LLM呼び出し1回の冪等化と計測
     verification.ts checkpoint付き検証step（採点内容は呼び出し側が渡す）
-    candidate.ts    Candidateの封印とintegrity check
+    candidate.ts    ディレクトリコピーによるCandidate封印
+    git.ts          worktree、commit封印、差分、patch、push
     tree.ts         ディレクトリのhashと差分
     child.ts        process group単位で終了する子process
     providers/      AI SDK v7のCodex / Claude / fake adapter
@@ -268,19 +299,26 @@ src/
     build-report.ts 永続記録からのレポート組み立て
     compare.ts      config version別の複数run比較
     types.ts        CandidateRef / SessionRef / ResolvedProfile
-  project/          このファクトリーの方針
+  factory/          工程のつなぎ方（何を作るかは知らない）
+    target.ts       Targetインターフェース：targetsとの境界
     job.ts          decision保存とStage dispatch
     stages.ts       code / verify / review / approve / finish / stop
     policy.ts       次に実行する工程の決定
-    prompts.ts      実装・レビューのprompt
-    acceptance.ts   固定受け入れテスト（題材ごとに置き換わる）
+    prompts.ts      promptの骨格（TASKとRULESはtargetが埋める）
     types.ts, events.ts, reducer.ts   状態機械
+  targets/          何に対して働くか
+    subject.ts      同梱の題材。固定テストで採点、成果物はディレクトリ
+    repo.ts         実リポジトリ。worktreeで作業、commitで封印、patch/PRを出す
+    index.ts        setup時のprepareと、replay時のcreateTarget
   cli.ts, durably.ts  配線
 subject/            変更しないバグ入り題材
 runs/, local-agent-loop.db   gitignored runtime data
 ```
 
-`engine/verification.ts` が境界の形をよく表しています。start/complete
-checkpoint、計測、signalの転送までがengineで、「何をもって検証とするか」は
-`grade` コールバックとして `project/` から渡します。ここがリポジトリごとに
-一番変わる部分だからです。
+境界の形は `engine/verification.ts` と `factory/target.ts` によく出ています。
+前者は start/complete checkpoint、計測、signalの転送までを持ち、「何をもって
+検証とするか」は `grade` コールバックとして受け取ります。後者は、作業場所、
+封印の仕方、採点、レビューに渡す文脈、成果物の渡し方という、ターゲットごとに
+必ず違う5つだけを切り出しています。
+
+移植の手順は [docs/porting.md](docs/porting.md) にあります。

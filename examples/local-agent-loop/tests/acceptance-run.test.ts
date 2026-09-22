@@ -8,7 +8,7 @@ import { runChild } from '../src/engine/child.js'
 import {
   runAcceptanceSuite,
   snapshotAcceptance,
-} from '../src/project/acceptance.js'
+} from '../src/targets/subject-acceptance.js'
 
 const TEST_FILE = `import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'

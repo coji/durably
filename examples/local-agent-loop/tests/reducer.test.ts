@@ -1,19 +1,24 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { decide } from '../src/project/policy.js'
-import { reduce } from '../src/project/reducer.js'
-import { initialState, type FactorySetup } from '../src/project/types.js'
+import { decide } from '../src/factory/policy.js'
+import { reduce } from '../src/factory/reducer.js'
+import { initialState, type FactorySetup } from '../src/factory/types.js'
 
 const setup: FactorySetup = {
   provider: 'fake',
   fake: true,
   contextMode: 'reuse',
-  workdir: '/tmp/work',
-  acceptanceDir: '/tmp/acceptance',
-  acceptanceHash: 'acceptance',
-  baselineDir: '/tmp/baseline',
-  baselineHash: 'baseline',
+  target: {
+    kind: 'subject',
+    workdir: '/tmp/work',
+    baselineDir: '/tmp/baseline',
+    baselineHash: 'baseline',
+    acceptanceDir: '/tmp/acceptance',
+    acceptanceHash: 'acceptance',
+    candidatesDir: '/tmp/candidates',
+    testTimeoutMs: 1,
+  },
   checkpointsDir: '/tmp/checkpoints',
   instructionsVersion: 'v2',
   configVersion: 'cfg-test',
@@ -37,7 +42,7 @@ const setup: FactorySetup = {
   },
   maxIterations: 2,
   agentTimeoutMs: 1,
-  testTimeoutMs: 1,
+  autoApprove: false,
 }
 
 const candidate = {

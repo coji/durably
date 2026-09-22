@@ -1,21 +1,30 @@
 /** Prompt builders — same provider, separate sessions for parallel reviews. */
 import { z } from 'zod'
 
-export function codePrompt(
-  role: 'implement' | 'repair',
-  iteration: number,
-  repairNotes: string[],
-): string {
+export interface CodePromptArgs {
+  role: 'implement' | 'repair'
+  iteration: number
+  repairNotes: string[]
+  /** What to accomplish. Supplied by the target, not by this factory. */
+  task: string
+  /** Target-specific constraints, such as which files may be edited. */
+  rules: string[]
+}
+
+export function codePrompt(args: CodePromptArgs): string {
   const feedback =
-    repairNotes.length > 0
-      ? `\nVerified feedback to address:\n${repairNotes.map((n) => `- ${n}`).join('\n')}`
+    args.repairNotes.length > 0
+      ? `\nVerified feedback to address:\n${args.repairNotes.map((n) => `- ${n}`).join('\n')}`
       : ''
   return [
-    `You are the implementation owner continuing the ${role} conversation (iteration ${iteration}).`,
-    'Task: fix src/calc.js add() so decimal inputs are not truncated.',
-    'Keep the change minimal; only edit files under src/.',
-    'Do not modify files under test/ — acceptance tests are immutable and tampering fails the run.',
-    'Do not run network commands. You may run `npm test` to check locally, but grading runs the pristine snapshot with a fixed command — rewriting the test script cannot fake a pass.',
+    `You are the implementation owner continuing the ${args.role} conversation (iteration ${args.iteration}).`,
+    '',
+    'TASK:',
+    args.task,
+    '',
+    'RULES:',
+    ...args.rules.map((rule) => `- ${rule}`),
+    '',
     'Reply with a short summary of files changed.',
     feedback,
   ].join('\n')
