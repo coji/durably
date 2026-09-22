@@ -143,4 +143,42 @@ describe('fake e2e fix loop', { timeout: 180000 }, () => {
       await durably.db.destroy()
     }
   })
+
+  it('uses a new implementation session for each fresh-mode repair', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'e2e-fresh-'))
+    process.env.DURABLY_DB = join(dir, 'e2e.db')
+    process.env.FAKE_FAIL_FIRST = '0'
+    process.env.FAKE_REVIEW_SEQUENCE = 'needsChanges,pass'
+    const durably = createAgentDurably()
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        maxIterations: 3,
+        context: 'fresh',
+      })
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'waiting',
+        120000,
+        'fresh run reaches approval',
+      )
+      const attempts = await durably.getStepAttempts(run.id)
+      const sessions = attempts
+        .map(
+          (attempt) =>
+            attempt.metadata as { stage?: string; sessionId?: string } | null,
+        )
+        .filter(
+          (measurement) =>
+            measurement?.stage === 'implement' ||
+            measurement?.stage === 'repair',
+        )
+        .map((measurement) => measurement?.sessionId)
+      assert.equal(sessions.length, 2)
+      assert.notEqual(sessions[0], sessions[1])
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
 })

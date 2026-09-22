@@ -1,23 +1,8 @@
-/**
- * Cancel-aware subprocess spawning for local agent execution.
- *
- * - Every spawn registers its pid in a process-local owned set; abort or
- *   timeout kills ONLY that child (never a process-group broadcast, never an
- *   unrelated pid).
- * - The caller awaits the exit after killing, so a restarted worker resumes
- *   only after the previous child is confirmed gone.
- * - A pid marker file lets a restarted worker reconcile a child left behind
- *   by a `kill -9` (pid + start-time checked before any signal is sent).
- *
- * Durably's lease protects DB writes; it does NOT make the external CLI run
- * exactly once. This module narrows the gap but does not close it — see README.
- */
+/** Cancel-aware subprocess execution with identity-checked restart recovery. */
 import { execFileSync, spawn, type SpawnOptions } from 'node:child_process'
-import { readdir } from 'node:fs/promises'
-import { readFile, rm, writeFile } from 'node:fs/promises'
+import { readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-/** Pids owned by this process (spawned through this module, still running). */
 const owned = new Set<number>()
 
 export function ownedChildPids(): number[] {
@@ -40,19 +25,15 @@ export class SpawnCancelledError extends Error {
 }
 
 export interface RunChildOptions extends SpawnOptions {
-  /** Durably step signal (cancel / lease-loss). */
   signal?: AbortSignal
   timeoutMs: number
-  /** Kill signal for timeout/cancel (default SIGKILL). */
   killSignal?: NodeJS.Signals
-  /** Truncate captured output to this many chars (default 8000). */
   maxOutputChars?: number
-  /** Write a pid marker for post-kill reconciliation (optional path). */
   pidFile?: string
 }
 
-/** Start time of a live pid (`ps -o lstart=`), or null when not alive. */
-function pidStartTime(pid: number): string | null {
+/** Stable identity used to distinguish a live process from a reused pid. */
+export function processStartTime(pid: number): string | null {
   try {
     const out = execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], {
       encoding: 'utf8',
@@ -64,11 +45,20 @@ function pidStartTime(pid: number): string | null {
   }
 }
 
-/**
- * Reconcile a pid marker left by a previous worker that died (e.g. kill -9).
- * Sends a signal ONLY when the pid is alive AND its start time still matches
- * the marker (guards against pid reuse). Returns what happened.
- */
+async function waitForIdentityToDisappear(
+  pid: number,
+  startedAt: string,
+  timeoutMs = 5000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const live = processStartTime(pid)
+    if (live === null || live !== startedAt) return
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error(`process ${pid} did not exit after signal; marker retained`)
+}
+
 export async function reconcilePidFile(
   pidFile: string,
   killSignal: NodeJS.Signals = 'SIGKILL',
@@ -86,25 +76,26 @@ export async function reconcilePidFile(
     await rm(pidFile, { force: true })
     return 'stale-marker-removed'
   }
-  if (typeof marker.pid !== 'number') {
+  if (
+    typeof marker.pid !== 'number' ||
+    typeof marker.startedAt !== 'string' ||
+    marker.startedAt.length === 0
+  ) {
+    // An unauthenticated pid is never safe to signal.
     await rm(pidFile, { force: true })
     return 'stale-marker-removed'
   }
-  const liveStart = pidStartTime(marker.pid)
-  if (liveStart === null) {
-    await rm(pidFile, { force: true })
-    return 'clean'
-  }
-  if (marker.startedAt && liveStart !== marker.startedAt) {
-    // Pid was reused by an unrelated process — never touch it.
+  const liveStart = processStartTime(marker.pid)
+  if (liveStart === null || liveStart !== marker.startedAt) {
     await rm(pidFile, { force: true })
     return 'clean'
   }
   try {
     process.kill(marker.pid, killSignal)
-  } catch {
-    // Already gone (race); fall through to cleanup.
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
   }
+  await waitForIdentityToDisappear(marker.pid, marker.startedAt)
   await rm(pidFile, { force: true })
   return 'residual-killed'
 }
@@ -115,17 +106,6 @@ export interface PidReconcileSummary {
   residualKilled: number
 }
 
-/**
- * Worker-startup reconciliation: sweep `<runsRoot>/<runId>/*.pid` markers
- * left by grading (`node --test`) processes of a kill -9ed worker.
- * Each marker is verified (pid + start-time) before any signal, so reused
- * pids are never touched. Missing roots are clean.
- *
- * Scope: only processes spawned through `runChild` with a `pidFile` leave
- * markers. CLI children spawned inside the AI SDK providers are stopped via
- * AbortSignal on graceful cancel — a `kill -9`ed worker can orphan one, and
- * that case is documented (not reconciled here).
- */
 export async function reconcileRunPidFiles(
   runsRoot: string,
 ): Promise<PidReconcileSummary> {
@@ -150,12 +130,17 @@ export async function reconcileRunPidFiles(
     for (const entry of entries) {
       if (!entry.endsWith('.pid')) continue
       summary.checked += 1
-      const outcome = await reconcilePidFile(join(runsRoot, runId, entry))
-      if (outcome === 'residual-killed') summary.residualKilled += 1
+      const result = await reconcilePidFile(join(runsRoot, runId, entry))
+      if (result === 'residual-killed') summary.residualKilled += 1
       else summary.cleaned += 1
     }
   }
   return summary
+}
+
+function appendTail(current: string, chunk: Buffer, limit: number): string {
+  const next = current + chunk.toString()
+  return next.length <= limit ? next : next.slice(-limit)
 }
 
 export async function runChild(
@@ -173,13 +158,8 @@ export async function runChild(
     ...spawnOptions
   } = options
   const started = Date.now()
-  if (signal?.aborted) {
-    throw new SpawnCancelledError('aborted before spawn')
-  }
-  // A child must never inherit this process's test-runner context: when the
-  // worker itself runs under `node --test` (unit tests), an inherited
-  // NODE_TEST_CONTEXT makes a nested `node --test` skip its files and exit 0
-  // — a vacuous pass. Scrub it so every spawn is a top-level run.
+  if (signal?.aborted) throw new SpawnCancelledError('aborted before spawn')
+
   const childEnv: NodeJS.ProcessEnv = { ...process.env, ...explicitEnv }
   for (const key of Object.keys(childEnv)) {
     if (key.startsWith('NODE_TEST_')) delete childEnv[key]
@@ -190,72 +170,96 @@ export async function runChild(
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   if (child.pid !== undefined) owned.add(child.pid)
-  if (pidFile && child.pid !== undefined) {
-    const liveStart = pidStartTime(child.pid)
-    await writeFile(
-      pidFile,
-      JSON.stringify({ pid: child.pid, startedAt: liveStart }),
-    ).catch(() => {})
-  }
+
   let stdout = ''
   let stderr = ''
-  child.stdout?.on('data', (d: Buffer) => {
-    stdout += d.toString()
-  })
-  child.stderr?.on('data', (d: Buffer) => {
-    stderr += d.toString()
-  })
-
   let killed = false
+  let terminationError: Error | null = null
   let timer: ReturnType<typeof setTimeout> | undefined
-  const cleanup = () => {
-    if (timer) clearTimeout(timer)
-    signal?.removeEventListener('abort', onAbort)
-  }
+  let settled = false
   const kill = () => {
     killed = true
     try {
       child.kill(killSignal)
     } catch {
-      // Already exited; exit handler below still resolves.
+      // The close/error listener remains the authority for completion.
     }
   }
-  const onAbort = () => kill()
+  const onAbort = () => {
+    terminationError = new SpawnCancelledError(
+      `${command} cancelled (lease lost or run cancelled); child killed`,
+    )
+    kill()
+  }
+  const cleanupListeners = () => {
+    if (timer) clearTimeout(timer)
+    signal?.removeEventListener('abort', onAbort)
+  }
 
+  // Attach every lifecycle listener immediately after spawn. Marker setup may
+  // perform synchronous `ps` and filesystem I/O, but a fast exit is retained.
   const exit = new Promise<SpawnResult>((resolve, reject) => {
-    timer = setTimeout(() => {
-      kill()
-      reject(
-        new Error(`${command} timed out after ${timeoutMs}ms (child killed)`),
-      )
-    }, timeoutMs)
-    timer.unref?.()
-    signal?.addEventListener('abort', onAbort, { once: true })
-    child.on('error', (err) => {
-      cleanup()
-      reject(err)
+    const rejectOnce = (error: Error) => {
+      if (settled) return
+      settled = true
+      cleanupListeners()
+      reject(error)
+    }
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout = appendTail(stdout, chunk, maxOutputChars)
     })
-    child.on('close', (code) => {
-      cleanup()
-      if (signal?.aborted && killed) {
-        reject(
-          new SpawnCancelledError(
-            `${command} cancelled (lease lost or run cancelled); child killed`,
-          ),
-        )
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr = appendTail(stderr, chunk, maxOutputChars)
+    })
+    child.once('error', rejectOnce)
+    child.once('close', (code) => {
+      if (settled) return
+      settled = true
+      cleanupListeners()
+      if (terminationError) {
+        reject(terminationError)
         return
       }
       resolve({
         code,
-        stdout: stdout.slice(-maxOutputChars),
-        stderr: stderr.slice(-maxOutputChars),
+        stdout,
+        stderr,
         elapsedMs: Date.now() - started,
         killed,
       })
     })
+    timer = setTimeout(() => {
+      terminationError = new Error(
+        `${command} timed out after ${timeoutMs}ms (child killed)`,
+      )
+      kill()
+    }, timeoutMs)
+    timer.unref?.()
+    signal?.addEventListener('abort', onAbort, { once: true })
   })
 
   try {
+    if (pidFile && child.pid !== undefined && child.exitCode === null) {
+      const identity = processStartTime(child.pid)
+      if (identity === null && child.exitCode === null) {
+        terminationError = new Error(
+          `cannot establish process identity for ${child.pid}; child killed`,
+        )
+        kill()
+      } else if (identity !== null && child.exitCode === null) {
+        try {
+          await writeFile(
+            pidFile,
+            JSON.stringify({ pid: child.pid, startedAt: identity }),
+          )
+        } catch (error) {
+          terminationError = new Error(
+            `cannot persist pid marker: ${error instanceof Error ? error.message : String(error)}`,
+          )
+          kill()
+        }
+      }
+    }
     return await exit
   } finally {
     if (child.pid !== undefined) owned.delete(child.pid)

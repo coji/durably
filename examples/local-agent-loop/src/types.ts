@@ -2,6 +2,7 @@
 
 import type { StepContext } from '@coji/durably'
 
+import type { FactoryEvent } from './events.js'
 import type { AgentProvider, ProviderName } from './providers/types.js'
 
 export type StageName =
@@ -130,4 +131,4 @@ export interface StageArgs {
   services: FactoryServices
 }
 
-export type StageHandler = (args: StageArgs) => Promise<unknown>
+export type StageHandler = (args: StageArgs) => Promise<FactoryEvent>

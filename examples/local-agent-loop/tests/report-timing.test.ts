@@ -51,7 +51,7 @@ describe('stage timing completeness', () => {
       row('implement:1', 'a2', null),
     ])
     assert.equal(timings.length, 1)
-    assert.equal(timings[0]?.stage, 'implement')
+    assert.equal(timings[0]?.stage, 'code')
     assert.equal(timings[0]?.elapsedMs, 100)
     assert.equal(timings[0]?.complete, false)
   })

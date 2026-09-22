@@ -118,6 +118,7 @@ function stageOf(stepName: string): string {
   if (parts[0] === 'stage' && parts[2]) return parts[2]
   if (parts[0] === 'decision') return 'policy'
   const base = stepName.split(':')[0] ?? stepName
+  if (base === 'implement' || base === 'repair') return 'code'
   if (base === 'review-a' || base === 'review-b') return 'review'
   if (base === 'prepare-workdir') return 'prepare'
   if (base === 'implement' || base === 'test') return base
@@ -129,11 +130,24 @@ function stageOf(stepName: string): string {
 
 /** Sum attempt elapsedMs per stage (latest measurement per attempt id). */
 export function stageTimings(attempts: AttemptRow[]): StageTiming[] {
+  const selected = new Map<string, AttemptRow>()
+  for (const attempt of attempts) {
+    const key = attempt.measurement?.invocationId ?? attempt.attemptId
+    const previous = selected.get(key)
+    const isCompletedInvocation =
+      attempt.measurement?.result === 'checkpoint-recovered' ||
+      (attempt.measurement?.result?.endsWith('-done') ?? false)
+    const previousCompleted =
+      previous?.measurement?.result === 'checkpoint-recovered' ||
+      (previous?.measurement?.result?.endsWith('-done') ?? false)
+    if (!previous || (isCompletedInvocation && !previousCompleted))
+      selected.set(key, attempt)
+  }
   const byStage = new Map<string, number>()
   const bounds = new Map<string, { start: number; end: number }>()
   const incomplete = new Set<string>()
   const seen = new Set<string>()
-  for (const a of attempts) {
+  for (const a of selected.values()) {
     if (seen.has(a.attemptId)) continue
     seen.add(a.attemptId)
     const stage = stageOf(a.measurement?.stage ?? a.stepName)
@@ -158,13 +172,14 @@ export function stageTimings(attempts: AttemptRow[]): StageTiming[] {
     byStage.set(stage, (byStage.get(stage) ?? 0) + ms)
   }
   const order = [
-    'prepare',
-    'implement',
-    'test',
-    'review',
-    'approval',
-    'finalize',
+    'setup',
     'policy',
+    'code',
+    'verify',
+    'review',
+    'approve',
+    'finish',
+    'stop',
   ]
   const stages = [...new Set([...byStage.keys(), ...incomplete])]
   stages.sort((x, y) => order.indexOf(x) - order.indexOf(y))

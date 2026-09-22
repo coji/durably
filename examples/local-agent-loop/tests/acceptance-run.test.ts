@@ -132,4 +132,30 @@ describe('acceptance runs the fixed snapshot directly (reviewer repro)', () => {
       /acceptance-tampered/,
     )
   })
+
+  it('fails closed when the fixed acceptance directory is edited', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'accept-run-'))
+    const pristine = join(root, 'pristine')
+    const acceptanceDir = join(root, 'acceptance')
+    const workdir = join(root, 'work')
+    await seed(pristine, { 'calc.test.js': TEST_FILE })
+    const snap = await snapshotAcceptance(pristine, acceptanceDir)
+    await seed(workdir, {
+      'src/calc.js': FIXED_SRC,
+      'test/calc.test.js': TEST_FILE,
+    })
+    await seed(acceptanceDir, { 'calc.test.js': 'assert(true)\n' })
+    await assert.rejects(
+      runAcceptanceSuite(
+        {
+          workdir,
+          acceptanceDir,
+          scratchDir: join(root, 'scratch'),
+          timeoutMs: 60000,
+        },
+        snap.hash,
+      ),
+      /fixed acceptance snapshot differs/,
+    )
+  })
 })

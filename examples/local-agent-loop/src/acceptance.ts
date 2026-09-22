@@ -21,11 +21,11 @@
 import { createHash } from 'node:crypto'
 import {
   cp,
+  lstat,
   mkdir,
   readFile,
   readdir,
   rm,
-  stat,
   symlink,
 } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -55,7 +55,10 @@ async function readTree(
     for (const name of entries) {
       const full = join(dir, name)
       const rp = rel.length > 0 ? `${rel}/${name}` : name
-      const st = await stat(full)
+      const st = await lstat(full)
+      if (st.isSymbolicLink()) {
+        throw new Error(`snapshot contains a symbolic link: ${rp}`)
+      }
       if (st.isDirectory()) {
         await walk(full, rp)
       } else if (st.isFile()) {
@@ -141,6 +144,12 @@ export async function runAcceptanceSuite(
 ): Promise<AcceptanceRunResult> {
   const started = Date.now()
   await verifyAcceptanceIntact(join(spec.workdir, 'test'), expectedHash)
+  const acceptanceHash = await hashDir(spec.acceptanceDir)
+  if (acceptanceHash !== expectedHash) {
+    throw new Error(
+      `acceptance-tampered: fixed acceptance snapshot differs from its saved hash (expected ${expectedHash.slice(0, 12)}, got ${acceptanceHash.slice(0, 12)})`,
+    )
+  }
   const scratchTestDir = join(spec.scratchDir, 'test')
   await rm(spec.scratchDir, { recursive: true, force: true })
   await mkdir(scratchTestDir, { recursive: true })

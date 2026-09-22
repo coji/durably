@@ -69,6 +69,13 @@ if (!cmd || cmd === '--help' || cmd === '-h') {
 
 if (cmd === 'worker') {
   const durably = createAgentDurably()
+  const runsRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'runs')
+  const reconciled = await reconcileRunPidFiles(runsRoot)
+  if (reconciled.checked > 0) {
+    console.log(
+      `[reconcile] pid markers checked=${reconciled.checked} cleaned=${reconciled.cleaned} residualKilled=${reconciled.residualKilled}`,
+    )
+  }
   durably.on('run:leased', (e) =>
     console.log(`[run:leased] ${e.jobName} ${e.runId}`),
   )
@@ -82,13 +89,6 @@ if (cmd === 'worker') {
   )
   await durably.init()
   console.log('worker running (Ctrl-C to stop; kill -9 <pid> to test resume)')
-  const runsRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'runs')
-  const reconciled = await reconcileRunPidFiles(runsRoot)
-  if (reconciled.checked > 0) {
-    console.log(
-      `[reconcile] pid markers checked=${reconciled.checked} cleaned=${reconciled.cleaned} residualKilled=${reconciled.residualKilled}`,
-    )
-  }
   const shutdown = async () => {
     await durably.stop()
     await durably.db.destroy()

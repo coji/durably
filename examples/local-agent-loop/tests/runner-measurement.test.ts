@@ -91,6 +91,7 @@ describe('runner measurement on the real launch path', () => {
     assert.equal(second.recovered, true)
     assert.equal(second.invocationId, first.invocationId)
     assert.equal(second.sessionId, 'native-session')
+    assert.equal(second.measurement.elapsedMs, 5)
   })
 
   it('saves resolved execution settings pre-launch; reported stays native-only', async () => {
@@ -148,6 +149,7 @@ describe('runner measurement on the real launch path', () => {
         }),
     )
     const controller = new AbortController()
+    const pendingOperationKey = `test/${randomUUID()}`
     const pending = runAgentCall(controller.signal, attempt as never, {
       provider,
       providerName: 'codex',
@@ -159,7 +161,7 @@ describe('runner measurement on the real launch path', () => {
       role: 'implement',
       stage: 'implement',
       iteration: 1,
-      operationKey: `test/${randomUUID()}`,
+      operationKey: pendingOperationKey,
     })
     await new Promise((r) => setTimeout(r, 50))
     controller.abort()
@@ -168,5 +170,28 @@ describe('runner measurement on the real launch path', () => {
     const last = attempt.snapshots[attempt.snapshots.length - 1]
     assert.equal(last?.result, 'uncertain')
     assert.equal(last?.interruptionReason, 'cancelled-or-lease-lost')
+
+    let resent = false
+    const retryProvider = stubProvider(async () => {
+      resent = true
+      throw new Error('must not be called')
+    })
+    await assert.rejects(
+      runAgentCall(new AbortController().signal, fakeAttempt() as never, {
+        provider: retryProvider,
+        providerName: 'codex',
+        prompt: 'p',
+        workdir: '/tmp',
+        timeoutMs: 30000,
+        requestedModel: null,
+        requestedEffort: null,
+        role: 'implement',
+        stage: 'implement',
+        iteration: 1,
+        operationKey: pendingOperationKey,
+      }),
+      /uncertain external invocation/,
+    )
+    assert.equal(resent, false)
   })
 })

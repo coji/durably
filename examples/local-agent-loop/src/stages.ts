@@ -98,6 +98,11 @@ export const codeStage: StageHandler = async ({
           instructionsVersion: state.setup.instructionsVersion,
         }
       : null
+  if (state.setup.contextMode === 'reuse' && !session) {
+    throw new Error(
+      `${state.setup.provider} did not report a native session id; refusing to label this run as context reuse`,
+    )
+  }
   return { type: 'code.completed', role, candidate, session }
 }
 
@@ -205,6 +210,7 @@ export const approvalStage: StageHandler = async ({ step, state, key }) => {
     } as unknown as JsonValue,
   })
   const result = await step.waitFor(wait)
+  await assertCandidateIntact(target)
   const payload =
     result.type === 'signal' &&
     result.payload &&
@@ -213,28 +219,35 @@ export const approvalStage: StageHandler = async ({ step, state, key }) => {
       : null
   if (payload?.candidateId !== target.id)
     throw new Error(`approval candidate mismatch: expected ${target.id}`)
+  if (payload.decision !== 'approved' && payload.decision !== 'rejected')
+    throw new Error(`invalid approval decision for ${target.id}`)
   return {
     type: 'approval.completed',
     targetId: target.id,
-    decision: payload.decision === 'approved' ? 'approved' : 'rejected',
+    decision: payload.decision,
   }
 }
 
-export const finishStage: StageHandler = async ({ state }) => ({
-  type: 'factory.finished',
-  outcome: outcome(
-    state,
-    state.approval === 'approved' ? 'approved' : 'rejected',
-  ),
-})
+export const finishStage: StageHandler = async ({ step, state, key }) => {
+  const target = requireCandidate(state)
+  await assertCandidateIntact(target)
+  return step.run(`${key}:result`, async () => ({
+    type: 'factory.finished' as const,
+    outcome: outcome(
+      state,
+      state.approval === 'approved' ? 'approved' : 'rejected',
+    ),
+  }))
+}
 
-export const stopStage: StageHandler = async ({ state }) => ({
-  type: 'factory.finished',
-  outcome: outcome(
-    state,
-    state.verification?.passed ? 'review-cap-reached' : 'verification-failed',
-  ),
-})
+export const stopStage: StageHandler = async ({ step, state, key }) =>
+  step.run(`${key}:result`, async () => ({
+    type: 'factory.finished' as const,
+    outcome: outcome(
+      state,
+      state.verification?.passed ? 'review-cap-reached' : 'verification-failed',
+    ),
+  }))
 
 export const stages = {
   code: codeStage,

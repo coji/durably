@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -48,5 +48,12 @@ describe('immutable acceptance tests', () => {
     assert.equal(h1, h2)
     await seed(a, { 'y.js': '3' })
     assert.notEqual(await hashDir(a), h1)
+  })
+
+  it('rejects symlinks instead of hashing mutable external targets', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hash-link-'))
+    await seed(root, { outside: 'mutable' })
+    await symlink(join(root, 'outside'), join(root, 'inside-link'))
+    await assert.rejects(hashDir(root), /symbolic link/)
   })
 })

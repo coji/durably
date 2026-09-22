@@ -7,6 +7,7 @@ import { describe, it } from 'node:test'
 
 import {
   ownedChildPids,
+  processStartTime,
   reconcilePidFile,
   reconcileRunPidFiles,
   runChild,
@@ -86,7 +87,10 @@ describe('cancel-aware subprocess', () => {
     const exited = new Promise((resolve) => residual.on('exit', resolve))
     await writeFile(
       join(runsRoot, 'run-a', 'test-2.pid'),
-      JSON.stringify({ pid: residual.pid }),
+      JSON.stringify({
+        pid: residual.pid,
+        startedAt: processStartTime(residual.pid as number),
+      }),
     )
     const summary = await reconcileRunPidFiles(runsRoot)
     assert.equal(summary.checked, 2)

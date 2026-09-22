@@ -10,6 +10,7 @@
     "lint:fix": "oxlint --fix .",
     "format": "oxfmt --check .",
     "format:fix": "oxfmt --write .",
+    "test": "pnpm test:unit",
     "test:unit": "tsx --test tests/*.test.ts"
   },
   "dependencies": {

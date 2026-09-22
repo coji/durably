@@ -70,4 +70,50 @@ describe('candidate-bound approval', { timeout: 180000 }, () => {
       await durably.db.destroy()
     }
   })
+
+  it('fails when the candidate itself changes during approval wait', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'candidate-tamper-'))
+    process.env.DURABLY_DB = join(dir, 'run.db')
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    const durably = createAgentDurably()
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        maxIterations: 2,
+        context: 'reuse',
+      })
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'waiting',
+        120000,
+      )
+      const wait = (await durably.getWaits(run.id))[0]
+      assert.ok(wait)
+      const metadata = wait.metadata as {
+        candidateId: string
+        snapshotDir: string
+      }
+      await appendFile(
+        join(metadata.snapshotDir, 'src', 'calc.js'),
+        '\n// candidate tampered during approval\n',
+      )
+      await durably.signal(
+        wait.id,
+        { candidateId: metadata.candidateId, decision: 'approved' },
+        { signalId: 'candidate-tamper' },
+      )
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'failed',
+        60000,
+      )
+      assert.match(
+        (await durably.getRun(run.id))?.error ?? '',
+        /candidate-mutated/,
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
 })

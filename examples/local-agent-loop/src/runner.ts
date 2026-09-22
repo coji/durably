@@ -165,7 +165,7 @@ export async function runAgentCall(
       reportedEffort: result.reportedEffort,
       sessionId: result.session?.id ?? spec.session?.nativeId ?? null,
       usagePatch: result.usage,
-      elapsedMs: recovered ? 0 : result.elapsedMs,
+      elapsedMs: result.elapsedMs,
       recovered,
       result: recovered ? 'checkpoint-recovered' : `${spec.role}-done`,
       error: null,
