@@ -34,14 +34,19 @@ and steer it.
 
 ## Starting a run
 
-1. Confirm a worker is running:
+1. Confirm exactly one worker is running:
 
    ```bash
-   pgrep -f "local-agent-loop.*demo worker" >/dev/null && echo running || echo stopped
+   pgrep -f "local-agent-loop.*demo worker" | wc -l
    ```
 
-   If stopped, tell the user to start one in another terminal and stop here.
-   Do not start it yourself; it is long-running and owns the terminal.
+   If none, tell the user to start one in another terminal and stop here. Do
+   not start it yourself; it is long-running and owns the terminal.
+
+   If more than one, say so and stop. Leases keep concurrent workers safe, but
+   each carries its own environment, so which one picks up the run decides
+   which timeouts apply. Stray workers from earlier experiments are the usual
+   cause; `pkill -f "cli.ts worker"` clears them.
 
    ```bash
    pnpm --filter example-local-agent-loop demo worker

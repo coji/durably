@@ -47,7 +47,7 @@ export function reviewPrompt(
     '',
     trustedContext,
     '',
-    'Reply in exactly this shape:',
+    'Reply in exactly this shape, with DECISION on a line of its own:',
     'DECISION: pass | needsChanges',
     'NOTES: <one or two sentences>',
   ].join('\n')
@@ -79,8 +79,13 @@ export function parseReviewOutput(text: string): ParsedReview {
   }
   const values: string[] = []
   for (const line of text.split('\n')) {
-    const m = /^\s*DECISION:\s*(.+?)\s*$/i.exec(line)
-    if (m?.[1] !== undefined) values.push(m[1].toLowerCase())
+    // `DECISION:` does not have to start the line. A real reviewer often
+    // writes a sentence about what it is checking and then the verdict on the
+    // same line. What follows the marker is still taken whole and validated
+    // whole, so an echoed `DECISION: pass | needsChanges` template stays
+    // review-incomplete rather than reading as a pass.
+    const m = /DECISION:\s*(.*)$/i.exec(line)
+    if (m?.[1] !== undefined) values.push(m[1].trim().toLowerCase())
   }
   if (values.length === 0) {
     return { ok: false, error: 'no DECISION line in review output' }
