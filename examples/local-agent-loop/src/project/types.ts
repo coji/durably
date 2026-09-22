@@ -1,9 +1,17 @@
-/** Domain types for the local factory sample. */
+/** Policy types for this factory: its stages, state, and terminal outcome. */
 
 import type { StepContext } from '@coji/durably'
 
+import type { AgentProvider, ProviderName } from '../engine/providers/types.js'
+import type {
+  CandidateRef,
+  ContextMode,
+  ResolvedProfile,
+  SessionRef,
+} from '../engine/types.js'
 import type { FactoryEvent } from './events.js'
-import type { AgentProvider, ProviderName } from './providers/types.js'
+
+export type { CandidateRef, ContextMode, ResolvedProfile, SessionRef }
 
 export type StageName =
   | 'code'
@@ -13,33 +21,8 @@ export type StageName =
   | 'finish'
   | 'stop'
 
-export type ContextMode = 'reuse' | 'fresh'
 export type CodeRole = 'implement' | 'repair'
 export type ReviewLens = 'correctness' | 'edge-cases'
-
-export interface ResolvedProfile {
-  id: string
-  provider: ProviderName
-  requestedModel: string | null
-  requestedEffort: string | null
-  effectiveModel: string | null
-  effectiveEffort: string | null
-}
-
-export interface SessionRef {
-  provider: ProviderName
-  nativeId: string
-  profileId: string
-  cwd: string
-  instructionsVersion: string
-}
-
-export interface CandidateRef {
-  id: string
-  snapshotDir: string
-  sourceHash: string
-  acceptanceHash: string
-}
 
 export interface FactorySetup {
   provider: ProviderName

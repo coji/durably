@@ -5,7 +5,7 @@ import {
   buildClaudeSettings,
   decideToolPermission,
   preToolUseHook,
-} from '../src/providers/claude.js'
+} from '../src/engine/providers/claude.js'
 
 const ROOT = '/demo/work'
 

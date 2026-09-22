@@ -248,13 +248,39 @@ pnpm --filter example-local-agent-loop demo trigger \
 
 ## Layout
 
-- `src/job.ts` — decision保存とStage dispatchだけを行うDurably job
-- `src/stages.ts` — code / verify / review / approve / finish / stop
-- `src/candidate.ts` —非上書きCandidate作成とintegrity check
-- `src/types.ts`, `events.ts`, `reducer.ts`, `policy.ts` — 状態機械
-- `src/providers/` — AI SDK v7のCodex / Claude / fake adapter
-- `src/runner.ts` — session、operation checkpoint、共通計測
-- `src/acceptance.ts`, `test-step.ts` — 固定受け入れテスト
-- `src/report.ts`, `build-report.ts`, `compare.ts`, `usage.ts`, `pricing.ts` — 永続記録からの集計と複数run比較
-- `subject/` — 変更しないバグ入り題材
-- `runs/`, `local-agent-loop.db` — gitignored runtime data
+コードは二層に分かれています。`engine/` はどのリポジトリでも同じもの、
+`project/` はこのファクトリーの方針とこの題材だけのものです。別のリポジトリへ
+移すときは `engine/` をそのまま持っていき、`project/` を書き直します。
+
+```text
+src/
+  engine/           リポジトリに依存しない機構
+    runner.ts       LLM呼び出し1回の冪等化と計測
+    verification.ts checkpoint付き検証step（採点内容は呼び出し側が渡す）
+    candidate.ts    Candidateの封印とintegrity check
+    tree.ts         ディレクトリのhashと差分
+    child.ts        process group単位で終了する子process
+    providers/      AI SDK v7のCodex / Claude / fake adapter
+    models.ts       modelごとのpresetとprovider既定
+    usage.ts        token集計（欠測はnullのまま）
+    pricing.ts      meter別のAPI換算参考価格
+    report.ts       工程別集計とmarkdown/json
+    build-report.ts 永続記録からのレポート組み立て
+    compare.ts      config version別の複数run比較
+    types.ts        CandidateRef / SessionRef / ResolvedProfile
+  project/          このファクトリーの方針
+    job.ts          decision保存とStage dispatch
+    stages.ts       code / verify / review / approve / finish / stop
+    policy.ts       次に実行する工程の決定
+    prompts.ts      実装・レビューのprompt
+    acceptance.ts   固定受け入れテスト（題材ごとに置き換わる）
+    types.ts, events.ts, reducer.ts   状態機械
+  cli.ts, durably.ts  配線
+subject/            変更しないバグ入り題材
+runs/, local-agent-loop.db   gitignored runtime data
+```
+
+`engine/verification.ts` が境界の形をよく表しています。start/complete
+checkpoint、計測、signalの転送までがengineで、「何をもって検証とするか」は
+`grade` コールバックとして `project/` から渡します。ここがリポジトリごとに
+一番変わる部分だからです。

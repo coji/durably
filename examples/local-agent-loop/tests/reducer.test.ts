@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { decide } from '../src/policy.js'
-import { reduce } from '../src/reducer.js'
-import { initialState, type FactorySetup } from '../src/types.js'
+import { decide } from '../src/project/policy.js'
+import { reduce } from '../src/project/reducer.js'
+import { initialState, type FactorySetup } from '../src/project/types.js'
 
 const setup: FactorySetup = {
   provider: 'fake',

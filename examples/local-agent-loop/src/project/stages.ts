@@ -4,15 +4,16 @@ import { join } from 'node:path'
 
 import type { JsonValue, StepAttemptContext } from '@coji/durably'
 
-import { describeTreeChanges, hashDir } from './acceptance.js'
 import {
   assertCandidateIntact,
   candidatesDirFor,
   createCandidate,
-} from './candidate.js'
+} from '../engine/candidate.js'
+import { runAgentCall } from '../engine/runner.js'
+import { describeTreeChanges, hashDir } from '../engine/tree.js'
+import { runVerificationStep } from '../engine/verification.js'
+import { runAcceptanceSuite } from './acceptance.js'
 import { codePrompt, parseReviewOutput, reviewPrompt } from './prompts.js'
-import { runAgentCall } from './runner.js'
-import { runAgentTestStep } from './test-step.js'
 import type {
   FactoryOutcome,
   ReviewLens,
@@ -120,25 +121,33 @@ export const verifyStage: StageHandler = async ({ step, state, key }) => {
   const target = requireCandidate(state)
   await assertCandidateIntact(target)
   const result = await step.run(`${key}:acceptance`, (signal, attempt) =>
-    runAgentTestStep(
+    runVerificationStep(
       attempt,
       {
         provider: state.setup.provider,
-        workdir: target.snapshotDir,
-        acceptanceHash: target.acceptanceHash,
-        acceptanceDir: state.setup.acceptanceDir,
-        scratchDir: join(
-          state.setup.workdir,
-          '..',
-          'verification-scratch',
-          target.id,
-          attempt.id,
-        ),
         operationKey: `${step.runId}/${key}/acceptance`,
         checkpointsDir: state.setup.checkpointsDir,
-        timeoutMs: state.setup.testTimeoutMs,
         stage: 'verify',
         iteration: state.iteration,
+        // What "verified" means is this factory's policy: the pinned suite
+        // over the sealed candidate. The engine only owns the checkpointing.
+        grade: (graderSignal) =>
+          runAcceptanceSuite(
+            {
+              workdir: target.snapshotDir,
+              acceptanceDir: state.setup.acceptanceDir,
+              scratchDir: join(
+                state.setup.workdir,
+                '..',
+                'verification-scratch',
+                target.id,
+                attempt.id,
+              ),
+              timeoutMs: state.setup.testTimeoutMs,
+              signal: graderSignal,
+            },
+            target.acceptanceHash,
+          ),
       },
       signal,
     ),

@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { ClaudeProvider, resolveClaudeEffort } from '../src/providers/claude.js'
-import { CodexProvider, resolveCodexEffort } from '../src/providers/codex.js'
-import type { AgentCallOptions } from '../src/providers/types.js'
+import {
+  ClaudeProvider,
+  resolveClaudeEffort,
+} from '../src/engine/providers/claude.js'
+import {
+  CodexProvider,
+  resolveCodexEffort,
+} from '../src/engine/providers/codex.js'
+import type { AgentCallOptions } from '../src/engine/providers/types.js'
 
 /**
  * Names that resolution must ignore. `CLAUDE_EFFORT` is the sharp one: Claude

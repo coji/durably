@@ -4,12 +4,16 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { buildReport } from './build-report.js'
-import { killOwnedChildren } from './child.js'
-import { compareReports, comparisonToMarkdown } from './compare.js'
 import { createAgentDurably } from './durably.js'
-import { parseProviderName } from './providers/index.js'
-import { reportToJson, reportToMarkdown, type LoopReport } from './report.js'
+import { buildReport } from './engine/build-report.js'
+import { killOwnedChildren } from './engine/child.js'
+import { compareReports, comparisonToMarkdown } from './engine/compare.js'
+import { parseProviderName } from './engine/providers/index.js'
+import {
+  reportToJson,
+  reportToMarkdown,
+  type LoopReport,
+} from './engine/report.js'
 
 async function emit(text: string, out: string | undefined): Promise<void> {
   if (out) {

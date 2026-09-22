@@ -3,45 +3,51 @@ import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 /**
- * Test verification step: acceptance-tamper check + grading against the
- * pristine snapshot with a sample-fixed command.
+ * Checkpointed verification step.
  *
- * Measurement merges into the attempt snapshot (never wholesale replace),
- * and the Durably step signal is forwarded so cancel/lease-loss kills only
- * the owned test process.
+ * Owns the durability mechanics only: the start/complete checkpoint pair, the
+ * attempt measurement, and forwarding the Durably step signal so a cancel or a
+ * lost lease kills the owned process. WHAT counts as verification is supplied
+ * by the caller as `grade`, because that is the part every project defines
+ * differently — a pinned suite over a snapshot here, a repository's own check
+ * command elsewhere.
+ *
+ * `grade` must be idempotent. A worker killed mid-grading clears the stale
+ * start record and grades again, which is safe precisely because a local check
+ * reads the sealed candidate and writes only to scratch space. The
+ * uncertainty contract that stops a replay belongs to billed LLM calls, not
+ * here.
  */
 import type { StepAttemptContext } from '@coji/durably'
 
-import { runAcceptanceSuite } from './acceptance.js'
 import type { ProviderName } from './providers/types.js'
 import { UncertainInvocationError, writeMeasurement } from './runner.js'
 
-export interface TestStepSpec {
-  provider: ProviderName
-  workdir: string
-  acceptanceHash: string
-  /** Pristine snapshot dir (setup step); grading reads tests from here. */
-  acceptanceDir: string
-  /** Rebuilt scratch dir for grading (outside the agent's workdir). */
-  scratchDir: string
-  operationKey: string
-  checkpointsDir: string
-  timeoutMs: number
-  stage: string
-  iteration: number
-}
-
-export interface TestStepOutcome {
+export interface VerificationOutcome {
   passed: boolean
   stdout: string
   exitCode: number | null
 }
 
-export async function runAgentTestStep(
+export interface GradeResult extends VerificationOutcome {
+  elapsedMs: number
+}
+
+export interface VerificationStepSpec {
+  provider: ProviderName
+  operationKey: string
+  checkpointsDir: string
+  stage: string
+  iteration: number
+  /** Idempotent grading of the sealed candidate. */
+  grade: (signal: AbortSignal) => Promise<GradeResult>
+}
+
+export async function runVerificationStep(
   attempt: StepAttemptContext,
-  spec: TestStepSpec,
+  spec: VerificationStepSpec,
   signal: AbortSignal,
-): Promise<TestStepOutcome> {
+): Promise<VerificationOutcome> {
   const started = Date.now()
   const checkpointId = createHash('sha256')
     .update(spec.operationKey)
@@ -67,7 +73,7 @@ export async function runAgentTestStep(
   }
   type Completed = Started & {
     invocationCompletedAt: string
-    result: TestStepOutcome
+    result: VerificationOutcome
     elapsedMs: number
   }
   const saved = await readCheckpoint<Completed>(completedPath)
@@ -163,20 +169,8 @@ export async function runAgentTestStep(
     invocationStartedAt: startRecord.invocationStartedAt,
   })
   try {
-    // Tamper check + grading run the pristine snapshot via a fixed argv;
-    // the workdir's `npm test` is never executed, so a rewritten test
-    // script cannot fake a pass.
-    const res = await runAcceptanceSuite(
-      {
-        workdir: spec.workdir,
-        acceptanceDir: spec.acceptanceDir,
-        scratchDir: spec.scratchDir,
-        timeoutMs: spec.timeoutMs,
-        signal,
-      },
-      spec.acceptanceHash,
-    )
-    const result: TestStepOutcome = {
+    const res = await spec.grade(signal)
+    const result: VerificationOutcome = {
       passed: res.passed,
       stdout: res.stdout.slice(-4000),
       exitCode: res.exitCode,

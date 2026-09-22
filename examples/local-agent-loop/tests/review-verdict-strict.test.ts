@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { parseReviewOutput } from '../src/prompts.js'
+import { parseReviewOutput } from '../src/project/prompts.js'
 
 describe('parseReviewOutput whole-line validation (reviewer repro)', () => {
   it('rejects a DECISION line that carries two values', () => {

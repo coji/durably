@@ -6,14 +6,15 @@ import { fileURLToPath } from 'node:url'
 import { defineJob, type JsonValue } from '@coji/durably'
 import { z } from 'zod'
 
-import { hashDir, snapshotAcceptance } from './acceptance.js'
+import { createProvider } from '../engine/providers/index.js'
+import { hashDir } from '../engine/tree.js'
+import { configVersionOf } from '../engine/versions.js'
+import { snapshotAcceptance } from './acceptance.js'
 import { FactoryEventSchema } from './events.js'
 import { assertAllowedDecision, availableActions, decide } from './policy.js'
-import { createProvider } from './providers/index.js'
 import { reduce } from './reducer.js'
 import { stages } from './stages.js'
 import { initialState, type FactorySetup, type StageDecision } from './types.js'
-import { configVersionOf } from './versions.js'
 
 const inputSchema = z.object({
   provider: z.enum(['codex', 'claude', 'fake']),
@@ -52,9 +53,10 @@ const outputSchema = z.object({
   fake: z.boolean(),
 })
 
-const here = dirname(fileURLToPath(import.meta.url))
-const runRoot = (runId: string) => join(here, '..', 'runs', runId)
-const subjectDir = () => join(here, '..', 'subject')
+/** Example package root (`src/project/` -> `src/` -> package). */
+const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+const runRoot = (runId: string) => join(packageRoot, 'runs', runId)
+const subjectDir = () => join(packageRoot, 'subject')
 
 function positiveTimeout(name: string, fallback: number): number {
   const raw = process.env[name]

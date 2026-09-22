@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
 
-import { hashDir } from '../src/acceptance.js'
 import { createAgentDurably } from '../src/durably.js'
+import { hashDir } from '../src/engine/tree.js'
 
 async function waitFor(
   condition: () => Promise<boolean>,

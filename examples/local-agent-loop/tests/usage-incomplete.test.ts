@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { aggregateUsage } from '../src/usage.js'
+import { aggregateUsage } from '../src/engine/usage.js'
 
 describe('aggregateUsage completeness (reviewer repro)', () => {
   it('marks the aggregate incomplete when an LLM attempt has no usage', () => {

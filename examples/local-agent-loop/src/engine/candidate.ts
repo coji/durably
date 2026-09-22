@@ -2,7 +2,7 @@
 import { cp, mkdir, rename, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
-import { hashDir } from './acceptance.js'
+import { hashDir } from './tree.js'
 import type { CandidateRef } from './types.js'
 
 export async function createCandidate(options: {

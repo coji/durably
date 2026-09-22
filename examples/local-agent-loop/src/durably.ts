@@ -5,7 +5,7 @@ import { createDurably } from '@coji/durably'
 import Database from 'better-sqlite3'
 import { SqliteDialect } from 'kysely'
 
-import { agentLoopJob } from './job.js'
+import { agentLoopJob } from './project/job.js'
 
 export function dbPath(): string {
   return (

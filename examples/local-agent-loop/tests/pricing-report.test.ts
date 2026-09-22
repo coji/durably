@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { PRICE_BASIS, estimateCostUsd } from '../src/pricing.js'
-import { reportToMarkdown } from '../src/report.js'
-import type { LoopReport } from '../src/report.js'
+import { PRICE_BASIS, estimateCostUsd } from '../src/engine/pricing.js'
+import { reportToMarkdown } from '../src/engine/report.js'
+import type { LoopReport } from '../src/engine/report.js'
 
 function baseReport(): LoopReport {
   return {

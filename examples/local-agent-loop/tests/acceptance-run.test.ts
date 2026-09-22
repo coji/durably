@@ -4,8 +4,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
-import { runAcceptanceSuite, snapshotAcceptance } from '../src/acceptance.js'
-import { runChild } from '../src/child.js'
+import { runChild } from '../src/engine/child.js'
+import {
+  runAcceptanceSuite,
+  snapshotAcceptance,
+} from '../src/project/acceptance.js'
 
 const TEST_FILE = `import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'

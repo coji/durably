@@ -4,11 +4,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
+import { hashDir } from '../src/engine/tree.js'
 import {
-  hashDir,
   snapshotAcceptance,
   verifyAcceptanceIntact,
-} from '../src/acceptance.js'
+} from '../src/project/acceptance.js'
 
 async function seed(dir: string, files: Record<string, string>) {
   const { mkdir } = await import('node:fs/promises')

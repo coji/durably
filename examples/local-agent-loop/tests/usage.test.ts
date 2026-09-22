@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { mergeUsage, aggregateUsage, emptyUsage } from '../src/usage.js'
+import { mergeUsage, aggregateUsage, emptyUsage } from '../src/engine/usage.js'
 
 describe('usage accounting', () => {
   it('merges incrementally, never downgrades the source', () => {

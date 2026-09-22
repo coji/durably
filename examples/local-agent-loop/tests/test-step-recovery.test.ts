@@ -6,9 +6,12 @@ import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { snapshotAcceptance } from '../src/acceptance.js'
-import type { AttemptMeasurement } from '../src/providers/types.js'
-import { runAgentTestStep } from '../src/test-step.js'
+import type { AttemptMeasurement } from '../src/engine/providers/types.js'
+import { runVerificationStep } from '../src/engine/verification.js'
+import {
+  runAcceptanceSuite,
+  snapshotAcceptance,
+} from '../src/project/acceptance.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -36,20 +39,26 @@ describe('verification invocation recovery', () => {
     )
     const spec = {
       provider: 'fake' as const,
-      workdir,
-      acceptanceHash: acceptance.hash,
-      acceptanceDir,
-      scratchDir: join(root, 'scratch'),
       operationKey: 'run/stage:1:verify/acceptance',
       checkpointsDir: join(root, 'checkpoints'),
-      timeoutMs: 10000,
       stage: 'verify',
       iteration: 1,
+      grade: (signal: AbortSignal) =>
+        runAcceptanceSuite(
+          {
+            workdir,
+            acceptanceDir,
+            scratchDir: join(root, 'scratch'),
+            timeoutMs: 10000,
+            signal,
+          },
+          acceptance.hash,
+        ),
     }
     const controller = new AbortController()
     controller.abort()
     await assert.rejects(
-      runAgentTestStep(attempt() as never, spec, controller.signal),
+      runVerificationStep(attempt() as never, spec, controller.signal),
       /aborted before spawn/,
     )
     // Local grading only reads the sealed candidate and writes to a scratch
@@ -57,7 +66,7 @@ describe('verification invocation recovery', () => {
     // contract exists for an LLM call that may already have been billed, and
     // applying it here would fail the run for good on the documented
     // `kill -9 the worker` resume demo.
-    const graded = await runAgentTestStep(
+    const graded = await runVerificationStep(
       attempt() as never,
       spec,
       new AbortController().signal,
@@ -66,7 +75,7 @@ describe('verification invocation recovery', () => {
     // That completion is checkpointed, so a further replay reads it back
     // instead of grading a third time.
     const replayAttempt = attempt()
-    const replayed = await runAgentTestStep(
+    const replayed = await runVerificationStep(
       replayAttempt as never,
       spec,
       new AbortController().signal,

@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { compareReports, comparisonToMarkdown, stat } from '../src/compare.js'
-import { PRICE_BASIS, estimateCostBreakdown } from '../src/pricing.js'
+import {
+  compareReports,
+  comparisonToMarkdown,
+  stat,
+} from '../src/engine/compare.js'
+import { PRICE_BASIS, estimateCostBreakdown } from '../src/engine/pricing.js'
 import {
   reportToMarkdown,
   stageUsage,
@@ -10,8 +14,8 @@ import {
   summarizeRun,
   type AttemptRow,
   type LoopReport,
-} from '../src/report.js'
-import type { TokenUsage } from '../src/usage.js'
+} from '../src/engine/report.js'
+import type { TokenUsage } from '../src/engine/usage.js'
 
 function usage(
   input: number,

@@ -5,8 +5,8 @@ import {
   defaultModelFor,
   presetForModel,
   resolveEffort,
-} from '../src/models.js'
-import { estimateCostUsd } from '../src/pricing.js'
+} from '../src/engine/models.js'
+import { estimateCostUsd } from '../src/engine/pricing.js'
 
 describe('model presets', () => {
   it('maps each preset model to its default effort', () => {

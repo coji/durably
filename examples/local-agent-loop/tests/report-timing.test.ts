@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { PRICE_BASIS } from '../src/pricing.js'
+import { PRICE_BASIS } from '../src/engine/pricing.js'
 import {
   reportToMarkdown,
   stageTimings,
   totalStageMs,
   type AttemptRow,
   type RunSummary,
-} from '../src/report.js'
+} from '../src/engine/report.js'
 
 function emptySummary(): RunSummary {
   return {

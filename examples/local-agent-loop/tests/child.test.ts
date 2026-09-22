@@ -5,7 +5,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
-import { ownedChildPids, runChild, SpawnCancelledError } from '../src/child.js'
+import {
+  ownedChildPids,
+  runChild,
+  SpawnCancelledError,
+} from '../src/engine/child.js'
 
 describe('cancel-aware subprocess', () => {
   it('kills ONLY the owned child on abort and confirms the exit', async () => {

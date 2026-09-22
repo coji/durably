@@ -9,10 +9,10 @@ import type {
   AgentCallOptions,
   AgentProvider,
   AgentResult,
-} from '../src/providers/types.js'
-import type { AttemptMeasurement } from '../src/providers/types.js'
-import { runAgentCall } from '../src/runner.js'
-import type { TokenUsage } from '../src/usage.js'
+} from '../src/engine/providers/types.js'
+import type { AttemptMeasurement } from '../src/engine/providers/types.js'
+import { runAgentCall } from '../src/engine/runner.js'
+import type { TokenUsage } from '../src/engine/usage.js'
 
 interface StubAttempt {
   id: string
