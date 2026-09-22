@@ -56,8 +56,9 @@ Commands (run from examples/local-agent-loop):
   pnpm demo reject --run <id> --wait <waitId>
   pnpm demo report --run <id> [--format json|md] [--out <file>]
   pnpm demo compare --runs <id,id,...> [--format json|md] [--out <file>]
-Model presets (--model selects one; effort defaults from the preset,
-overridable via --effort or CODEX_EFFORT / CLAUDE_EFFORT):
+Model presets (--model selects one; effort defaults from the preset and is
+overridden only by --effort — no environment variable participates, so a run's
+configuration is readable off the command line that started it):
   codex:  gpt-6-astra (low) | gpt-5.6-sol (low, default) | gpt-5.6-luna (max)
   claude: claude-fable-5-1 (low) | claude-opus-5 (high) | claude-sonnet-5 (high, default)
 Note: effort is applied (Codex reasoningEffort / Claude effort setting), not
@@ -66,7 +67,7 @@ resolved effective, and provider-reported settings separate.
 Context defaults to reuse: implementation and repair continue one explicit
 native session. Reviews always use independent new sessions.
 Env: DURABLY_DB, AGENT_TIMEOUT_MS (default 300000), TEST_TIMEOUT_MS (default 120000),
-     CODEX_MODEL/CODEX_EFFORT, CLAUDE_MODEL/CLAUDE_EFFORT, FAKE_FAIL_FIRST=0, FAKE_REVIEW_SLOW_MS
+     FAKE_FAIL_FIRST=0, FAKE_REVIEW_SEQUENCE, FAKE_REVIEW_SLOW_MS
 `)
 }
 

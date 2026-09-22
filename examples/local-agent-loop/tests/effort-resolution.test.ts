@@ -1,40 +1,40 @@
 import assert from 'node:assert/strict'
-import { afterEach, beforeEach, describe, it } from 'node:test'
+import { describe, it } from 'node:test'
 
 import { ClaudeProvider, resolveClaudeEffort } from '../src/providers/claude.js'
 import { CodexProvider, resolveCodexEffort } from '../src/providers/codex.js'
 import type { AgentCallOptions } from '../src/providers/types.js'
 
 /**
- * Model and effort resolution reads the environment, and the agent CLIs this
- * example targets export these variables themselves — Claude Code sets
- * `CLAUDE_EFFORT`. Clear them so the suite grades preset resolution instead of
- * whichever shell happens to run it.
+ * Names that resolution must ignore. `CLAUDE_EFFORT` is the sharp one: Claude
+ * Code exports it into the shell it runs commands in, so honouring it would
+ * tie a run's effort to the effort of whichever agent session launched it —
+ * invisible in the command, invisible in the shell history, and enough to
+ * split otherwise-identical runs across config versions.
  */
-const ENV_KEYS = [
+const AMBIENT_NAMES = [
+  'MODEL',
   'CODEX_MODEL',
   'CODEX_EFFORT',
   'CLAUDE_MODEL',
   'CLAUDE_EFFORT',
-  'MODEL',
 ] as const
-const savedEnv = new Map<string, string | undefined>()
 
-beforeEach(() => {
-  for (const key of ENV_KEYS) {
-    savedEnv.set(key, process.env[key])
-    delete process.env[key]
+function withAmbientEnv(body: () => void): void {
+  const saved = new Map<string, string | undefined>()
+  for (const key of AMBIENT_NAMES) {
+    saved.set(key, process.env[key])
+    process.env[key] = key.endsWith('EFFORT') ? 'max' : 'llama3'
   }
-})
-
-afterEach(() => {
-  for (const key of ENV_KEYS) {
-    const value = savedEnv.get(key)
-    if (value === undefined) delete process.env[key]
-    else process.env[key] = value
+  try {
+    body()
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
   }
-  savedEnv.clear()
-})
+}
 
 function opts(over: Partial<AgentCallOptions> = {}): AgentCallOptions {
   return {
@@ -55,7 +55,7 @@ describe('effort resolution against the effective model', () => {
     assert.equal(resolveClaudeEffort(opts(), 'claude-opus-5'), 'high')
   })
 
-  it('explicit and env values still win over presets', () => {
+  it('an explicit effort still wins over the preset', () => {
     assert.equal(
       resolveCodexEffort(opts({ requestedEffort: 'high' }), 'gpt-5.6-sol'),
       'high',
@@ -95,25 +95,27 @@ describe('resolveExecution (resolved settings, saved before launch)', () => {
     assert.equal(claude.effort, 'high')
   })
 
-  it('ignores a generic MODEL env var from unrelated tooling', () => {
-    // `MODEL` is a common name (Ollama scripts, CI matrices). Inheriting it
-    // would resolve an unpriced model, blank every cost in the report, and
-    // split otherwise-comparable runs across config versions.
-    process.env['MODEL'] = 'llama3'
-    assert.equal(
-      new CodexProvider().resolveExecution({
+  it('ignores every ambient model and effort variable', () => {
+    withAmbientEnv(() => {
+      const codex = new CodexProvider().resolveExecution({
         requestedModel: null,
         requestedEffort: null,
-      }).model,
-      'gpt-5.6-sol',
-    )
-    assert.equal(
-      new ClaudeProvider().resolveExecution({
+      })
+      assert.deepEqual(codex, { model: 'gpt-5.6-sol', effort: 'low' })
+      const claude = new ClaudeProvider().resolveExecution({
         requestedModel: null,
         requestedEffort: null,
-      }).model,
-      'claude-sonnet-5',
-    )
+      })
+      assert.deepEqual(claude, { model: 'claude-sonnet-5', effort: 'high' })
+      // An explicit flag still wins; only the environment is ignored.
+      assert.equal(
+        new CodexProvider().resolveExecution({
+          requestedModel: 'gpt-5.6-luna',
+          requestedEffort: 'medium',
+        }).effort,
+        'medium',
+      )
+    })
   })
 
   it('lets an explicit model carry its preset effort', () => {

@@ -18,9 +18,9 @@ const VALID_EFFORTS = new Set<string>(
   CODEX_REASONING_EFFORTS as readonly string[],
 )
 
+/** Command line or preset table only — see the matching note in claude.ts. */
 function resolveModel(requestedModel: string | null): string {
-  // No generic `MODEL` fallback — see the matching note in claude.ts.
-  return requestedModel ?? process.env.CODEX_MODEL ?? defaultModelFor('codex')
+  return requestedModel ?? defaultModelFor('codex')
 }
 
 function resolveEffortFor(
@@ -30,7 +30,6 @@ function resolveEffortFor(
 ): string | null {
   const effort = resolveEffort(
     requestedEffort ?? undefined,
-    process.env.CODEX_EFFORT,
     requestedModel ?? modelId,
   )
   if (effort !== null && !VALID_EFFORTS.has(effort)) {

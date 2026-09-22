@@ -41,13 +41,18 @@ export function presetForModel(
   return byModel[model.toLowerCase()] ?? null
 }
 
-/** Precedence: explicit option > env var > model preset > null (unknown). */
+/**
+ * Precedence: explicit option > model preset > null (unknown).
+ *
+ * Nothing ambient participates. A run's configuration has to be readable off
+ * the command line that started it: an environment variable changes what is
+ * measured and which `configVersion` the run lands in while appearing in
+ * neither the command nor the shell history.
+ */
 export function resolveEffort(
   explicit: string | undefined,
-  envValue: string | undefined,
   model: string | null,
 ): string | null {
   if (explicit) return explicit
-  if (envValue) return envValue
   return presetForModel(model)?.effort ?? null
 }

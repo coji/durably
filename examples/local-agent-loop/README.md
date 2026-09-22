@@ -127,6 +127,12 @@ pnpm --filter example-local-agent-loop demo trigger \
 並列review区間、人間待ち、run全体時間の中央値を比較します。session継続はcache hitを
 保証しません。効果はproviderが報告したcache usageで判断します。
 
+modelとeffortはコマンドラインとpreset表だけで決まります。環境変数は一切参加
+しません。runの構成が、それを起動したコマンドを読めば分かる状態を保つためです。
+とくに `CLAUDE_EFFORT` はClaude Codeがシェルへexportするので、これを尊重すると
+「どのagent sessionから叩いたか」でeffortが変わり、同じつもりのrunが別の
+configVersionに分かれてしまいます。
+
 ## 呼び出し識別と復旧
 
 次のIDを混同しません。

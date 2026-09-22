@@ -18,12 +18,12 @@ describe('model presets', () => {
     assert.equal(presetForModel('claude-sonnet-5')?.effort, 'high')
   })
 
-  it('resolves explicit > env > preset > null', () => {
-    assert.equal(resolveEffort('high', 'low', 'gpt-6-astra'), 'high')
-    assert.equal(resolveEffort(undefined, 'low', 'claude-opus-5'), 'low')
-    assert.equal(resolveEffort(undefined, undefined, 'gpt-5.6-luna'), 'max')
-    assert.equal(resolveEffort(undefined, undefined, 'unknown'), null)
-    assert.equal(resolveEffort(undefined, undefined, null), null)
+  it('resolves explicit > preset > null', () => {
+    assert.equal(resolveEffort('high', 'gpt-6-astra'), 'high')
+    assert.equal(resolveEffort(undefined, 'claude-opus-5'), 'high')
+    assert.equal(resolveEffort(undefined, 'gpt-5.6-luna'), 'max')
+    assert.equal(resolveEffort(undefined, 'unknown'), null)
+    assert.equal(resolveEffort(undefined, null), null)
   })
 
   it('provider defaults always hit a preset (no unknown effort)', () => {
@@ -34,7 +34,7 @@ describe('model presets', () => {
         `${provider} default ${model} must be a preset model`,
       )
       assert.ok(
-        resolveEffort(undefined, undefined, model) !== null,
+        resolveEffort(undefined, model) !== null,
         `${provider} default effort must resolve, got null`,
       )
     }

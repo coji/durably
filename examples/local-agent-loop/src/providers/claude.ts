@@ -34,16 +34,14 @@ import type {
 
 const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
 
+/**
+ * Model and effort come from the command line or the preset table, never from
+ * the environment. `CLAUDE_EFFORT` is a particularly sharp case: Claude Code
+ * exports it into the shell it runs commands in, so honouring it would make a
+ * run's effort depend on the effort of whichever agent session launched it.
+ */
 function resolveModel(options: { requestedModel: string | null }): string {
-  // No generic `MODEL` fallback: it is a common name in unrelated tooling, and
-  // an inherited value would silently resolve to an unpriced model, blanking
-  // every cost in the report and splitting comparable runs across config
-  // versions.
-  return (
-    options.requestedModel ??
-    process.env.CLAUDE_MODEL ??
-    defaultModelFor('claude')
-  )
+  return options.requestedModel ?? defaultModelFor('claude')
 }
 
 function resolveEffortFor(
@@ -53,7 +51,6 @@ function resolveEffortFor(
 ): string | null {
   const effort = resolveEffort(
     requestedEffort ?? undefined,
-    process.env.CLAUDE_EFFORT,
     requestedModel ?? modelId,
   )
   if (effort !== null && !VALID_EFFORTS.has(effort)) {
