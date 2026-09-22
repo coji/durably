@@ -81,6 +81,7 @@ export default defineConfig({
             { text: 'Authentication', link: '/guide/auth' },
             { text: 'Multi-Tenant', link: '/guide/multi-tenant' },
             { text: 'Deployment Guide', link: '/guide/deployment' },
+            { text: 'Agent Factory', link: '/guide/agent-factory' },
           ],
         },
       ],
