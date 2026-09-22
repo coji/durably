@@ -100,8 +100,12 @@ workerは1つだけ動かしてください。同じDBを見るworkerを複数�
 `AGENT_TIMEOUT_MS` を変えたつもりが古いworkerに拾われる、という形で黙って効きません。
 
 ```bash
-pgrep -f 'local-agent-loop.*demo worker' | wc -l   # 1 であること
+pgrep -f 'local-agent-loop.*cli.ts worker' | wc -l   # 1 であること
 ```
+
+数えるのはpnpmのラッパーではなく実体のプロセスです。`pnpm demo worker` と
+`pnpm worker` のどちらで起動しても同じ1つとして数えます。残ってしまったworkerは
+`pkill -f 'local-agent-loop.*cli.ts worker'` で片付きます。
 
 Terminal 2:
 

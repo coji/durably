@@ -68,4 +68,25 @@ describe('parseReviewOutput whole-line validation (reviewer repro)', () => {
     )
     assert.equal(parsed.ok, false)
   })
+
+  it('prefers a verdict on its own line over one narrated earlier', () => {
+    // Un-anchoring the marker introduced the mirror of the bug it fixed: a
+    // reviewer that announces the format and then complies left two markers,
+    // and a count-based contradiction check threw the review away.
+    const parsed = parseReviewOutput(
+      'Reviewing per the rules; I will finish with DECISION: pass or needsChanges.\n' +
+        'DECISION: pass\n' +
+        'NOTES: the guide matches the example.',
+    )
+    assert.equal(parsed.ok, true)
+    assert.equal(parsed.ok && parsed.decision, 'pass')
+  })
+
+  it('treats a repeated identical verdict as redundant, not contradictory', () => {
+    const parsed = parseReviewOutput(
+      'DECISION: pass\nNOTES: fine.\nDECISION: pass',
+    )
+    assert.equal(parsed.ok, true)
+    assert.equal(parsed.ok && parsed.decision, 'pass')
+  })
 })

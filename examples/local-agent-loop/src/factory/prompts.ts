@@ -77,16 +77,29 @@ export function parseReviewOutput(text: string): ParsedReview {
   if (!text || text.trim().length === 0) {
     return { ok: false, error: 'empty review output' }
   }
-  const values: string[] = []
+  // `DECISION:` does not have to start the line: a real reviewer often writes
+  // a sentence about what it is checking and then the verdict on that same
+  // line. But a reviewer that narrates the format first ("I will finish with
+  // DECISION: pass or needsChanges") and then complies would leave two
+  // markers, so an answer that has the verdict on a line of its own wins and
+  // the narration is ignored. Only when nothing is line-anchored does the
+  // inline reading apply.
+  const anchored: string[] = []
+  const inline: string[] = []
   for (const line of text.split('\n')) {
-    // `DECISION:` does not have to start the line. A real reviewer often
-    // writes a sentence about what it is checking and then the verdict on the
-    // same line. What follows the marker is still taken whole and validated
-    // whole, so an echoed `DECISION: pass | needsChanges` template stays
-    // review-incomplete rather than reading as a pass.
-    const m = /DECISION:\s*(.*)$/i.exec(line)
-    if (m?.[1] !== undefined) values.push(m[1].trim().toLowerCase())
+    const atLineStart = /^\s*DECISION:\s*(.*)$/i.exec(line)
+    if (atLineStart?.[1] !== undefined) {
+      anchored.push(atLineStart[1].trim().toLowerCase())
+      continue
+    }
+    const anywhere = /DECISION:\s*(.*)$/i.exec(line)
+    if (anywhere?.[1] !== undefined)
+      inline.push(anywhere[1].trim().toLowerCase())
   }
+  // Repeating the same verdict is redundant, not contradictory. What follows
+  // each marker is still taken whole and validated whole, so an echoed
+  // `DECISION: pass | needsChanges` template stays review-incomplete.
+  const values = [...new Set(anchored.length > 0 ? anchored : inline)]
   if (values.length === 0) {
     return { ok: false, error: 'no DECISION line in review output' }
   }
