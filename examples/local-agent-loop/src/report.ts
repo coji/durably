@@ -13,7 +13,7 @@
  */
 import type { StepAttempt } from '@coji/durably'
 
-import { PRICE_BASIS, estimateCostUsd } from './pricing.js'
+import { PRICE_BASIS } from './pricing.js'
 import type { AttemptMeasurement } from './providers/types.js'
 import { aggregateUsage } from './usage.js'
 
@@ -207,6 +207,25 @@ export function attemptExpectsUsage(stepName: string): boolean {
   )
 }
 
+/** Sum the already-priced invocations without applying one model to another. */
+function aggregateInvocationCost(
+  attempts: AttemptRow[],
+  usageComplete: boolean,
+): number | null {
+  if (!usageComplete) return null
+  const costs = new Map<string, number | null>()
+  for (const attempt of attempts) {
+    if (!attemptExpectsUsage(attempt.stepName)) continue
+    const key = attempt.measurement?.invocationId ?? attempt.attemptId
+    const cost = attempt.measurement?.costUsdEstimate ?? null
+    const previous = costs.get(key)
+    if (!costs.has(key) || (previous === null && cost !== null))
+      costs.set(key, cost)
+  }
+  if ([...costs.values()].some((cost) => cost === null)) return null
+  return [...costs.values()].reduce<number>((sum, cost) => sum + (cost ?? 0), 0)
+}
+
 export function reportToMarkdown(r: LoopReport): string {
   const lines: string[] = []
   lines.push(`# Agent loop report — ${r.runId}`)
@@ -266,13 +285,7 @@ export function reportToMarkdown(r: LoopReport): string {
     `- aggregate usage (deduped by invocation): in=${fmt(agg.inputTokens)} cache-read=${fmt(agg.cacheReadTokens)} cache-write=${fmt(agg.cacheWriteTokens)} out=${fmt(agg.outputTokens)} total=${fmt(agg.totalTokens)}${agg.complete ? '' : ' (PARTIAL — some invocations missing usage)'}`,
   )
   lines.push(`- missing usage invocations: ${agg.missingAttempts.length}`)
-  const aggCost = agg.complete
-    ? estimateCostUsd(
-        r.attempts.find((a) => a.measurement?.reportedModel)?.measurement
-          ?.reportedModel ?? null,
-        { inputTokens: agg.inputTokens, outputTokens: agg.outputTokens },
-      )
-    : null
+  const aggCost = aggregateInvocationCost(r.attempts, agg.complete)
   lines.push(
     `- aggregate cost: ${aggCost != null ? `${aggCost.toFixed(6)} USD (${PRICE_BASIS.basis}; ${PRICE_BASIS.source}; checked ${PRICE_BASIS.checkedAt})` : 'unknown'}`,
   )

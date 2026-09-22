@@ -126,4 +126,82 @@ describe('pricing/report', () => {
     assert.match(md, /inputWait=60000ms/)
     assert.match(md, /executionSlotWait=500ms/)
   })
+
+  it('keeps aggregate cost unknown when any invocation cannot be priced', () => {
+    const known = baseReport().attempts[0]!
+    const md = reportToMarkdown({
+      ...baseReport(),
+      attempts: [
+        {
+          ...known,
+          stepName: 'stage:0:code:agent',
+          measurement: {
+            ...known.measurement!,
+            invocationId: 'known',
+            usage: {
+              inputTokens: 100,
+              cachedInputTokens: null,
+              outputTokens: 50,
+              totalTokens: 150,
+              usageSource: 'provider-final',
+            },
+            reportedModel: 'gpt-5',
+            costUsdEstimate: 0.000625,
+            costBasis: 'api-equivalent-estimate',
+          },
+        },
+        {
+          ...known,
+          attemptId: 'a2',
+          stepName: 'stage:1:review:correctness',
+          measurement: {
+            ...known.measurement!,
+            invocationId: 'unknown',
+            usage: {
+              inputTokens: 100,
+              cachedInputTokens: null,
+              outputTokens: 50,
+              totalTokens: 150,
+              usageSource: 'provider-final',
+            },
+            reportedModel: null,
+            costUsdEstimate: null,
+            costBasis: null,
+          },
+        },
+      ],
+    })
+    assert.match(md, /aggregate cost: unknown/)
+  })
+
+  it('adds per-invocation costs across different models', () => {
+    const known = baseReport().attempts[0]!
+    const invocation = (id: string, cost: number, model: string) => ({
+      ...known,
+      attemptId: id,
+      stepName: 'stage:0:code:agent',
+      measurement: {
+        ...known.measurement!,
+        invocationId: id,
+        reportedModel: model,
+        usage: {
+          inputTokens: 100,
+          cachedInputTokens: null,
+          outputTokens: 50,
+          totalTokens: 150,
+          usageSource: 'provider-final' as const,
+        },
+        costUsdEstimate: cost,
+        costBasis: 'api-equivalent-estimate' as const,
+      },
+    })
+    const md = reportToMarkdown({
+      ...baseReport(),
+      attempts: [
+        invocation('codex-call', 0.001, 'gpt-5'),
+        invocation('claude-call', 0.002, 'claude-opus-5'),
+      ],
+    })
+    assert.match(md, /aggregate cost: 0\.003000 USD/)
+  })
 })
