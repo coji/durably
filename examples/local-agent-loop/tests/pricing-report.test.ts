@@ -171,7 +171,10 @@ describe('pricing/report', () => {
         },
       ],
     })
-    assert.match(md, /aggregate cost: unknown/)
+    assert.match(
+      md,
+      /aggregate cost \(stored per-invocation estimates\): unknown/,
+    )
   })
 
   it('adds per-invocation costs across different models', () => {
@@ -202,6 +205,11 @@ describe('pricing/report', () => {
         invocation('claude-call', 0.002, 'claude-opus-5'),
       ],
     })
-    assert.match(md, /aggregate cost: 0\.003000 USD/)
+    assert.match(
+      md,
+      /aggregate cost \(stored per-invocation estimates\): 0\.003000 USD/,
+    )
+    assert.doesNotMatch(md, new RegExp(PRICE_BASIS.checkedAt))
+    assert.doesNotMatch(md, new RegExp(PRICE_BASIS.source))
   })
 })

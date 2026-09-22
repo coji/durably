@@ -168,8 +168,9 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
   --out reports/<runId>.md
 ```
 
-価格はsubscription請求額ではなく `api-equivalent-estimate` です。未知のmodelや
-欠けたusageを0円として扱いません。
+価格はsubscription請求額ではなく、各呼び出し時に保存した
+`api-equivalent-estimate` の参考値です。レポートは保存済みの値を合計し、現在の
+価格表で再計算したとは表示しません。未知のmodelや欠けたusageを0円として扱いません。
 
 ## 権限と制約
 

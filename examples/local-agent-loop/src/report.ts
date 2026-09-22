@@ -287,7 +287,7 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push(`- missing usage invocations: ${agg.missingAttempts.length}`)
   const aggCost = aggregateInvocationCost(r.attempts, agg.complete)
   lines.push(
-    `- aggregate cost: ${aggCost != null ? `${aggCost.toFixed(6)} USD (${PRICE_BASIS.basis}; ${PRICE_BASIS.source}; checked ${PRICE_BASIS.checkedAt})` : 'unknown'}`,
+    `- aggregate cost (stored per-invocation estimates): ${aggCost != null ? `${aggCost.toFixed(6)} USD` : 'unknown'}`,
   )
   lines.push('')
   lines.push('## Waits')
