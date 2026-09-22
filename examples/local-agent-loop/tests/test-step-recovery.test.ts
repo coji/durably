@@ -25,7 +25,7 @@ function attempt() {
 }
 
 describe('verification invocation recovery', () => {
-  it('does not resend a start-only acceptance invocation', async () => {
+  it('re-grades a start-only acceptance invocation instead of poisoning the run', async () => {
     const root = await mkdtemp(join(tmpdir(), 'verify-checkpoint-'))
     const workdir = join(root, 'work')
     const acceptanceDir = join(root, 'acceptance')
@@ -52,9 +52,26 @@ describe('verification invocation recovery', () => {
       runAgentTestStep(attempt() as never, spec, controller.signal),
       /aborted before spawn/,
     )
-    await assert.rejects(
-      runAgentTestStep(attempt() as never, spec, new AbortController().signal),
-      /uncertain external invocation/,
+    // Local grading only reads the sealed candidate and writes to a scratch
+    // directory, so re-running it is free and repeatable. The uncertainty
+    // contract exists for an LLM call that may already have been billed, and
+    // applying it here would fail the run for good on the documented
+    // `kill -9 the worker` resume demo.
+    const graded = await runAgentTestStep(
+      attempt() as never,
+      spec,
+      new AbortController().signal,
     )
+    assert.equal(typeof graded.passed, 'boolean')
+    // That completion is checkpointed, so a further replay reads it back
+    // instead of grading a third time.
+    const replayAttempt = attempt()
+    const replayed = await runAgentTestStep(
+      replayAttempt as never,
+      spec,
+      new AbortController().signal,
+    )
+    assert.deepEqual(replayed, graded)
+    assert.equal(replayAttempt.snapshots.at(-1)?.recovered, true)
   })
 })

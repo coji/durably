@@ -1,10 +1,11 @@
 #!/usr/bin/env tsx
 /** CLI: worker | trigger | status | waits | approve | reject | report | compare */
 import { mkdir, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { buildReport } from './build-report.js'
+import { killOwnedChildren } from './child.js'
 import { compareReports, comparisonToMarkdown } from './compare.js'
 import { createAgentDurably } from './durably.js'
 import { parseProviderName } from './providers/index.js'
@@ -13,7 +14,9 @@ import { reportToJson, reportToMarkdown, type LoopReport } from './report.js'
 async function emit(text: string, out: string | undefined): Promise<void> {
   if (out) {
     const here = dirname(fileURLToPath(import.meta.url))
-    const dest = join(here, '..', out)
+    // `join` does not reset on an absolute segment, so without this an
+    // absolute --out lands under the example directory instead.
+    const dest = isAbsolute(out) ? out : join(here, '..', out)
     await mkdir(dirname(dest), { recursive: true })
     await writeFile(dest, text)
     console.log(`wrote ${dest}`)
@@ -89,6 +92,9 @@ if (cmd === 'worker') {
   await durably.init()
   console.log('worker running (Ctrl-C to stop; kill -9 <pid> to test resume)')
   const shutdown = async () => {
+    // Children lead their own process group, so an interrupt reaches the
+    // worker but not the agent CLI it launched.
+    killOwnedChildren()
     await durably.stop()
     await durably.db.destroy()
     process.exit(0)
@@ -102,10 +108,12 @@ if (cmd === 'worker') {
   const context = a['context'] ?? 'reuse'
   if (context !== 'reuse' && context !== 'fresh')
     throw new Error('--context must be reuse|fresh')
-  const maxIterations = Math.min(
-    3,
-    Math.max(1, parseInt(a['max-iterations'] ?? '2', 10)),
-  )
+  // Math.min/Math.max propagate NaN rather than clamping it, so a non-numeric
+  // value would reach the job schema as NaN and surface as a zod stack trace.
+  const rawIterations = a['max-iterations'] ?? '2'
+  if (!/^[1-3]$/.test(rawIterations))
+    throw new Error('--max-iterations must be an integer between 1 and 3')
+  const maxIterations = Number(rawIterations)
   const durably = createAgentDurably()
   await durably.migrate()
   const run = await durably.jobs.agentLoop.trigger({

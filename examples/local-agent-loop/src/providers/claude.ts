@@ -35,10 +35,13 @@ import type {
 const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
 
 function resolveModel(options: { requestedModel: string | null }): string {
+  // No generic `MODEL` fallback: it is a common name in unrelated tooling, and
+  // an inherited value would silently resolve to an unpriced model, blanking
+  // every cost in the report and splitting comparable runs across config
+  // versions.
   return (
     options.requestedModel ??
     process.env.CLAUDE_MODEL ??
-    process.env.MODEL ??
     defaultModelFor('claude')
   )
 }

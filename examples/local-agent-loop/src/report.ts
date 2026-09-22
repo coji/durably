@@ -435,17 +435,13 @@ function aggregateInvocationCost(
   usageComplete: boolean,
 ): number | null {
   if (!usageComplete) return null
-  const costs = new Map<string, number | null>()
-  for (const attempt of attempts) {
-    if (!attemptExpectsUsage(attempt.stepName)) continue
-    const key = attempt.measurement?.invocationId ?? attempt.attemptId
-    const cost = attempt.measurement?.costUsdEstimate ?? null
-    const previous = costs.get(key)
-    if (!costs.has(key) || (previous === null && cost !== null))
-      costs.set(key, cost)
-  }
-  if ([...costs.values()].some((cost) => cost === null)) return null
-  return [...costs.values()].reduce<number>((sum, cost) => sum + (cost ?? 0), 0)
+  // Same dedupe rule as `stageUsage`, so the aggregate line and the per-stage
+  // costs can never be derived two different ways and disagree.
+  const costs = dedupeByInvocation(
+    attempts.filter((a) => attemptExpectsUsage(a.stepName)),
+  ).map((a) => a.measurement?.costUsdEstimate ?? null)
+  if (costs.some((cost) => cost === null)) return null
+  return costs.reduce<number>((sum, cost) => sum + (cost ?? 0), 0)
 }
 
 export function reportToMarkdown(r: LoopReport): string {

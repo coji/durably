@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 /**
@@ -119,8 +119,13 @@ export async function runAgentTestStep(
     })
     return saved.result
   }
-  if (prior)
-    throw new UncertainInvocationError(spec.operationKey, prior.invocationId)
+  // A start-only checkpoint means the worker died mid-grading. Unlike an LLM
+  // invocation — which may already have been billed and must never be resent —
+  // the acceptance suite only reads the sealed candidate and writes to a
+  // scratch directory, so re-running it is free and yields the same verdict.
+  // Clear the stale start record and grade again; the invocation id is kept so
+  // the retry reports as the same logical verification.
+  if (prior) await rm(startedPath, { force: true })
   const startRecord: Started = {
     operationKey: spec.operationKey,
     invocationId,

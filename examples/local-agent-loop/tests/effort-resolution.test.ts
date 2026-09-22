@@ -16,6 +16,7 @@ const ENV_KEYS = [
   'CODEX_EFFORT',
   'CLAUDE_MODEL',
   'CLAUDE_EFFORT',
+  'MODEL',
 ] as const
 const savedEnv = new Map<string, string | undefined>()
 
@@ -92,6 +93,27 @@ describe('resolveExecution (resolved settings, saved before launch)', () => {
     })
     assert.equal(claude.model, 'claude-sonnet-5')
     assert.equal(claude.effort, 'high')
+  })
+
+  it('ignores a generic MODEL env var from unrelated tooling', () => {
+    // `MODEL` is a common name (Ollama scripts, CI matrices). Inheriting it
+    // would resolve an unpriced model, blank every cost in the report, and
+    // split otherwise-comparable runs across config versions.
+    process.env['MODEL'] = 'llama3'
+    assert.equal(
+      new CodexProvider().resolveExecution({
+        requestedModel: null,
+        requestedEffort: null,
+      }).model,
+      'gpt-5.6-sol',
+    )
+    assert.equal(
+      new ClaudeProvider().resolveExecution({
+        requestedModel: null,
+        requestedEffort: null,
+      }).model,
+      'claude-sonnet-5',
+    )
   })
 
   it('lets an explicit model carry its preset effort', () => {

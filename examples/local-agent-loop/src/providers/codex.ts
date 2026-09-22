@@ -19,12 +19,8 @@ const VALID_EFFORTS = new Set<string>(
 )
 
 function resolveModel(requestedModel: string | null): string {
-  return (
-    requestedModel ??
-    process.env.CODEX_MODEL ??
-    process.env.MODEL ??
-    defaultModelFor('codex')
-  )
+  // No generic `MODEL` fallback — see the matching note in claude.ts.
+  return requestedModel ?? process.env.CODEX_MODEL ?? defaultModelFor('codex')
 }
 
 function resolveEffortFor(

@@ -57,8 +57,11 @@ type CandidateRef = {
 守るものではありません。レビューpromptには固定した
 baselineの変更一覧と元の `src/calc.js` を渡すため、Candidateだけを読む独立session
 でも「変更が最小か」「`mul()` を触っていないか」を比較できます。
-固定テストは通常の子processで実行し、workerが生きている間は指定したtimeoutで
-終了します。
+固定テストは通常の子processで実行します。子processは独自のprocess groupを持ち、
+timeoutやcancelではgroupごと終了するので、CLIが起動した孫processが残りません。
+hard killはnode自身の `--test-timeout` より少し後ろに置きます。同時に撃つと
+SIGKILLが勝ち、「どのテストが止まったか」を含まない結果が修正promptへ渡るため
+です。
 
 ## セットアップ
 
@@ -139,9 +142,17 @@ LLM呼び出しと固定テストは、実行前に `operationKey` と `invocati
 checkpointを保存し、結果を受け取ったらcomplete checkpointをatomicに保存してから
 stepを完了します。復旧時にcomplete checkpointがあれば同じ結果を読み、依頼や
 テストは再送しません。
-startだけが残った場合、外部呼び出しが完了したか安全に判定できないため、自動再送
-せず `uncertain external invocation` で停止します。作業物とcheckpointは
-`runs/<runId>/` に残ります。独自daemonや送信管理DBはありません。
+
+startだけが残った場合の扱いは、その仕事を送り直して良いかで分かれます。
+
+- **LLM呼び出し**: 自動再送せず `uncertain external invocation` で停止します。
+  CLIがすでに仕事を終えて課金された可能性を、こちらからは判定できないためです。
+- **固定テスト**: 古いstart recordを消して採点し直します。固定した
+  Candidateを読み、scratchディレクトリへ書くだけなので、再実行は無料で同じ
+  判定になります。workerを `kill -9` する再開デモを恒久的に詰まらせません。
+
+作業物とcheckpointは `runs/<runId>/` に残ります。独自daemonや送信管理DBは
+ありません。
 
 この契約は「結果受信後、Durably checkpoint前」の重複を防ぎます。一方、CLIが
 作業を終えた直後かつcomplete checkpoint前にプロセスを強制終了した場合は未確定

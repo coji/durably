@@ -242,6 +242,14 @@ export async function runAcceptanceSuite(
       'acceptance-tampered: snapshot contains no *.test.js files to grade',
     )
   }
+  // Node's own per-test timeout must get a chance to fire before the hard
+  // kill. Given the same deadline the SIGKILL wins, and the verdict degrades
+  // to a bare "timed out" with no indication of which test hung — that string
+  // is exactly what the repair prompt receives. The headroom stays small
+  // because a synchronous infinite loop blocks node's timer entirely, leaving
+  // the kill as the only way out.
+  const killDeadlineMs =
+    spec.timeoutMs + Math.min(5000, Math.max(1000, spec.timeoutMs / 4))
   try {
     const res = await runChild(
       process.execPath,
@@ -253,7 +261,7 @@ export async function runAcceptanceSuite(
       ],
       {
         cwd: spec.scratchDir,
-        timeoutMs: spec.timeoutMs,
+        timeoutMs: killDeadlineMs,
         env: { NODE_OPTIONS: '' },
         ...(spec.signal ? { signal: spec.signal } : {}),
       },
@@ -269,7 +277,10 @@ export async function runAcceptanceSuite(
     if (err instanceof Error && err.message.includes('timed out')) {
       return {
         passed: false,
-        stdout: `acceptance suite timed out after ${spec.timeoutMs}ms`,
+        stdout:
+          `acceptance suite timed out: killed after ${killDeadlineMs}ms. ` +
+          `node --test-timeout=${spec.timeoutMs}ms never fired, so the suite ` +
+          'blocked the event loop instead of failing one test.',
         exitCode: null,
         elapsedMs: Date.now() - started,
       }
