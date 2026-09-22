@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { appendFile, mkdtemp } from 'node:fs/promises'
+import { appendFile, chmod, mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -94,8 +94,10 @@ describe('candidate-bound approval', { timeout: 180000 }, () => {
         candidateId: string
         snapshotDir: string
       }
+      const candidateFile = join(metadata.snapshotDir, 'src', 'calc.js')
+      await chmod(candidateFile, 0o644)
       await appendFile(
-        join(metadata.snapshotDir, 'src', 'calc.js'),
+        candidateFile,
         '\n// candidate tampered during approval\n',
       )
       await durably.signal(

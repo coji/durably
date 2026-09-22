@@ -5,8 +5,8 @@
  * - `usageSource` records where the numbers came from; providers that only
  *   report a final number are labeled `provider-final` and partial snapshots
  *   are labeled `provider-partial`.
- * - Aggregation dedupes by attempt id so re-reports never double-count, and
- *   replayed (non-re-executed) steps contribute nothing new.
+ * - Aggregation dedupes by the caller-supplied identity (`invocationId` in
+ *   reports) so recovery attempts never double-count one invocation.
  */
 
 /** Where a usage number came from. Never fabricated. */
@@ -114,7 +114,7 @@ export interface UsageAggregateRow {
 }
 
 /**
- * Sum usage across attempts, counting each attempt id once. Attempts without
+ * Sum usage across rows, counting each supplied identity once. Rows without
  * usage (replayed steps, local tests, failures before any report) are listed
  * under `missingAttempts` — never zero-filled. Each leg sums only the rows
  * that know it; `complete` is false when any usage-expecting attempt lacks a

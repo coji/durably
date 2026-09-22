@@ -1,3 +1,7 @@
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+
 /**
  * Test verification step: acceptance-tamper check + grading against the
  * pristine snapshot with a sample-fixed command.
@@ -7,22 +11,21 @@
  * the owned test process.
  */
 import type { StepAttemptContext } from '@coji/durably'
-import type { JsonValue } from '@coji/durably'
 
 import { runAcceptanceSuite } from './acceptance.js'
 import type { ProviderName } from './providers/types.js'
-import { writeMeasurement } from './runner.js'
+import { UncertainInvocationError, writeMeasurement } from './runner.js'
 
 export interface TestStepSpec {
   provider: ProviderName
   workdir: string
   acceptanceHash: string
-  /** Pristine snapshot dir (prepare step); grading reads tests from here. */
+  /** Pristine snapshot dir (setup step); grading reads tests from here. */
   acceptanceDir: string
   /** Rebuilt scratch dir for grading (outside the agent's workdir). */
   scratchDir: string
-  /** Pid marker so a restarted worker can reconcile the grading process. */
-  pidFile: string
+  operationKey: string
+  checkpointsDir: string
   timeoutMs: number
   stage: string
   iteration: number
@@ -40,6 +43,41 @@ export async function runAgentTestStep(
   signal: AbortSignal,
 ): Promise<TestStepOutcome> {
   const started = Date.now()
+  const checkpointId = createHash('sha256')
+    .update(spec.operationKey)
+    .digest('hex')
+  const startedPath = join(spec.checkpointsDir, `${checkpointId}.started.json`)
+  const completedPath = join(
+    spec.checkpointsDir,
+    `${checkpointId}.completed.json`,
+  )
+  await mkdir(spec.checkpointsDir, { recursive: true })
+  const readCheckpoint = async <T>(path: string): Promise<T | null> => {
+    try {
+      return JSON.parse(await readFile(path, 'utf8')) as T
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    }
+  }
+  type Started = {
+    operationKey: string
+    invocationId: string
+    invocationStartedAt: string
+  }
+  type Completed = Started & {
+    invocationCompletedAt: string
+    result: TestStepOutcome
+    elapsedMs: number
+  }
+  const saved = await readCheckpoint<Completed>(completedPath)
+  const prior = await readCheckpoint<Started>(startedPath)
+  const invocationId =
+    saved?.invocationId ?? prior?.invocationId ?? randomUUID()
+  if (saved && saved.operationKey !== spec.operationKey)
+    throw new Error('verification checkpoint key mismatch')
+  if (prior && prior.operationKey !== spec.operationKey)
+    throw new Error('verification start checkpoint key mismatch')
   let measurement = await writeMeasurement(
     attempt,
     {
@@ -47,26 +85,76 @@ export async function runAgentTestStep(
       fake: spec.provider === 'fake',
       stage: spec.stage,
       iteration: spec.iteration,
-      operationKey: null,
-      invocationId: null,
+      operationKey: spec.operationKey,
+      invocationId,
       sessionId: null,
-      recovered: false,
+      recovered: saved !== null,
       usageScope: null,
       requestedModel: null,
       requestedEffort: null,
+      effectiveModel: null,
+      effectiveEffort: null,
       reportedModel: null,
       reportedEffort: null,
+      invocationStartedAt:
+        saved?.invocationStartedAt ?? prior?.invocationStartedAt ?? null,
+      invocationCompletedAt: saved?.invocationCompletedAt ?? null,
       versions: {},
       elapsedMs: null,
       usage: null,
       costUsdEstimate: null,
       costBasis: null,
-      result: 'started',
+      result: saved ? 'checkpoint-recovered' : 'started',
       error: null,
       interruptionReason: null,
     },
     {},
   )
+  if (saved) {
+    await writeMeasurement(attempt, measurement, {
+      elapsedMs: saved.elapsedMs,
+      recovered: true,
+      result: 'checkpoint-recovered',
+    })
+    return saved.result
+  }
+  if (prior)
+    throw new UncertainInvocationError(spec.operationKey, prior.invocationId)
+  const startRecord: Started = {
+    operationKey: spec.operationKey,
+    invocationId,
+    invocationStartedAt: new Date().toISOString(),
+  }
+  try {
+    const handle = await open(startedPath, 'wx')
+    await handle.writeFile(`${JSON.stringify(startRecord)}\n`, 'utf8')
+    await handle.close()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      const raced = await readCheckpoint<Completed>(completedPath)
+      if (raced) {
+        if (raced.operationKey !== spec.operationKey)
+          throw new Error('verification checkpoint key mismatch')
+        await writeMeasurement(attempt, measurement, {
+          elapsedMs: raced.elapsedMs,
+          recovered: true,
+          result: 'checkpoint-recovered',
+          invocationStartedAt: raced.invocationStartedAt,
+          invocationCompletedAt: raced.invocationCompletedAt,
+        })
+        return raced.result
+      }
+      const racedStart = await readCheckpoint<Started>(startedPath)
+      throw new UncertainInvocationError(
+        spec.operationKey,
+        racedStart?.invocationId ?? invocationId,
+      )
+    }
+    throw error
+  }
+  measurement = await writeMeasurement(attempt, measurement, {
+    invocationStartedAt: startRecord.invocationStartedAt,
+  })
   try {
     // Tamper check + grading run the pristine snapshot via a fixed argv;
     // the workdir's `npm test` is never executed, so a rewritten test
@@ -77,22 +165,33 @@ export async function runAgentTestStep(
         acceptanceDir: spec.acceptanceDir,
         scratchDir: spec.scratchDir,
         timeoutMs: spec.timeoutMs,
-        pidFile: spec.pidFile,
         signal,
       },
       spec.acceptanceHash,
     )
-    measurement = await writeMeasurement(attempt, measurement, {
-      elapsedMs: res.elapsedMs,
-      result: res.passed ? 'pass' : 'fail',
-      error: res.passed ? null : res.stdout.slice(-2000),
-    })
-    void measurement
-    return {
+    const result: TestStepOutcome = {
       passed: res.passed,
       stdout: res.stdout.slice(-4000),
       exitCode: res.exitCode,
     }
+    const completed: Completed = {
+      ...startRecord,
+      invocationCompletedAt: new Date().toISOString(),
+      result,
+      elapsedMs: res.elapsedMs,
+    }
+    const temporary = `${completedPath}.${attempt.id}.tmp`
+    await writeFile(temporary, `${JSON.stringify(completed)}\n`, 'utf8')
+    await rename(temporary, completedPath)
+    measurement = await writeMeasurement(attempt, measurement, {
+      elapsedMs: res.elapsedMs,
+      result: res.passed ? 'pass' : 'fail',
+      error: res.passed ? null : res.stdout.slice(-2000),
+      invocationStartedAt: startRecord.invocationStartedAt,
+      invocationCompletedAt: completed.invocationCompletedAt,
+    })
+    void measurement
+    return result
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     await writeMeasurement(attempt, measurement, {
@@ -103,8 +202,4 @@ export async function runAgentTestStep(
     })
     throw err
   }
-}
-
-export function toJson<T>(value: T): JsonValue {
-  return value as unknown as JsonValue
 }

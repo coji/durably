@@ -4,7 +4,6 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { reconcileRunPidFiles } from './child.js'
 import { createAgentDurably } from './durably.js'
 import { PRICE_BASIS } from './pricing.js'
 import { parseProviderName } from './providers/index.js'
@@ -52,8 +51,8 @@ overridable via --effort or CODEX_EFFORT / CLAUDE_EFFORT):
   codex:  gpt-6-astra (low) | gpt-5.6-sol (low, default) | gpt-5.6-luna (max)
   claude: claude-fable-5-1 (low) | claude-opus-5 (high) | claude-sonnet-5 (high, default)
 Note: effort is applied (Codex reasoningEffort / Claude effort setting), not
-just recorded; unsupported values fail fast. Requested shows the resolved
-settings saved before launch; reported shows only natively-confirmed values.
+just recorded; unsupported values fail fast. Reports keep the raw requested,
+resolved effective, and provider-reported settings separate.
 Context defaults to reuse: implementation and repair continue one explicit
 native session. Reviews always use independent new sessions.
 Env: DURABLY_DB, AGENT_TIMEOUT_MS (default 300000), TEST_TIMEOUT_MS (default 120000),
@@ -69,13 +68,6 @@ if (!cmd || cmd === '--help' || cmd === '-h') {
 
 if (cmd === 'worker') {
   const durably = createAgentDurably()
-  const runsRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'runs')
-  const reconciled = await reconcileRunPidFiles(runsRoot)
-  if (reconciled.checked > 0) {
-    console.log(
-      `[reconcile] pid markers checked=${reconciled.checked} cleaned=${reconciled.cleaned} residualKilled=${reconciled.residualKilled}`,
-    )
-  }
   durably.on('run:leased', (e) =>
     console.log(`[run:leased] ${e.jobName} ${e.runId}`),
   )

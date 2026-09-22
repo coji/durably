@@ -49,7 +49,10 @@ type CandidateRef = {
 
 受け入れテストは開始時に別ディレクトリへ固定します。検証コマンドはサンプル側に
 固定した `node --test` であり、agentが編集した `package.json` のtest scriptは
-合否判定に使いません。Candidate自身も検証・レビュー前にhashを確認します。
+合否判定に使いません。Candidateは作成後にread-only化し、検証・レビューの前後、
+承認再開後、終了直前にraw bytesのhashを確認します。レビューpromptには固定した
+baselineの変更一覧と元の `src/calc.js` を渡すため、Candidateだけを読む独立session
+でも「変更が最小か」「`mul()` を触っていないか」を比較できます。
 
 ## セットアップ
 
@@ -126,9 +129,10 @@ invocationId   実際に送った一回の依頼
 attempt.id     Durably step callbackの実行試行
 ```
 
-共通runnerは送信前に `operationKey` と `invocationId` のstart checkpointを保存し、
-provider結果を受け取ったらcomplete checkpointをatomicに保存してからstepを完了
-します。復旧時にcomplete checkpointがあれば同じ結果を読み、promptは再送しません。
+LLM呼び出しと固定テストは、実行前に `operationKey` と `invocationId` のstart
+checkpointを保存し、結果を受け取ったらcomplete checkpointをatomicに保存してから
+stepを完了します。復旧時にcomplete checkpointがあれば同じ結果を読み、依頼や
+テストは再送しません。
 startだけが残った場合、外部呼び出しが完了したか安全に判定できないため、自動再送
 せず `uncertain external invocation` で停止します。作業物とcheckpointは
 `runs/<runId>/` に残ります。独自daemonや送信管理DBはありません。
@@ -141,7 +145,7 @@ startだけが残った場合、外部呼び出しが完了したか安全に判
 
 LLM呼び出しはすべて `src/runner.ts` を通り、attempt metadataへ以下を保存します。
 
-- effective model/effortとprovider-reported model/effort（未報告値は `null`）
+- requested、effective、provider-reported model/effort（未指定・未報告値は `null`）
 - `sessionId`、`operationKey`、`invocationId`、回収結果かどうか
 - 通常input、cache read、cache write、output、total token
 - usageの単位（このサンプルは一provider invocation）と取得元

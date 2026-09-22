@@ -118,17 +118,10 @@ function stageOf(stepName: string): string {
   if (parts[0] === 'stage' && parts[2]) return parts[2]
   if (parts[0] === 'decision') return 'policy'
   const base = stepName.split(':')[0] ?? stepName
-  if (base === 'implement' || base === 'repair') return 'code'
-  if (base === 'review-a' || base === 'review-b') return 'review'
-  if (base === 'prepare-workdir') return 'prepare'
-  if (base === 'implement' || base === 'test') return base
-  if (base === 'review-snapshot') return 'review'
-  if (base === 'finalize-report') return 'finalize'
-  if (base === 'policy') return 'policy'
   return base
 }
 
-/** Sum attempt elapsedMs per stage (latest measurement per attempt id). */
+/** Sum once per invocation while retaining its original execution interval. */
 export function stageTimings(attempts: AttemptRow[]): StageTiming[] {
   const selected = new Map<string, AttemptRow>()
   for (const attempt of attempts) {
@@ -151,8 +144,10 @@ export function stageTimings(attempts: AttemptRow[]): StageTiming[] {
     if (seen.has(a.attemptId)) continue
     seen.add(a.attemptId)
     const stage = stageOf(a.measurement?.stage ?? a.stepName)
-    const start = Date.parse(a.startedAt)
-    const end = a.completedAt ? Date.parse(a.completedAt) : Number.NaN
+    const start = Date.parse(a.measurement?.invocationStartedAt ?? a.startedAt)
+    const end = Date.parse(
+      a.measurement?.invocationCompletedAt ?? a.completedAt ?? '',
+    )
     const ms =
       a.measurement?.elapsedMs ??
       (Number.isFinite(start) && Number.isFinite(end)
@@ -239,7 +234,7 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('## Attempts (from persisted step attempts)')
   lines.push('')
   lines.push(
-    '| step | invocation | status | model(effective/reported) | effort(effective/reported) | elapsedMs | tokens(in/cache-read/cache-write/out/total) | cost(USD api-equiv) | result |',
+    '| step | invocation | status | model(requested/effective/reported) | effort(requested/effective/reported) | elapsedMs | tokens(in/cache-read/cache-write/out/total) | cost(USD api-equiv) | result |',
   )
   lines.push('|---|---|---|---|---|---|---|---|---|')
   for (const a of r.attempts) {
@@ -249,12 +244,12 @@ export function reportToMarkdown(r: LoopReport): string {
       : 'unknown/unknown/unknown/unknown/unknown'
     const model =
       m != null
-        ? `${fmt(m.requestedModel ?? m.reportedModel)}/${fmt(m.reportedModel)}`
-        : 'unknown/unknown'
+        ? `${fmt(m.requestedModel)}/${fmt(m.effectiveModel)}/${fmt(m.reportedModel)}`
+        : 'unknown/unknown/unknown'
     const effort =
       m != null
-        ? `${fmt(m.requestedEffort ?? m.reportedEffort)}/${fmt(m.reportedEffort)}`
-        : 'unknown/unknown'
+        ? `${fmt(m.requestedEffort)}/${fmt(m.effectiveEffort)}/${fmt(m.reportedEffort)}`
+        : 'unknown/unknown/unknown'
     lines.push(
       `| ${a.stepName} | ${m?.invocationId?.slice(0, 8) ?? 'n/a'} | ${a.status}${a.interruptionReason ? ` (${a.interruptionReason})` : ''} | ${model} | ${effort} | ${fmt(m?.elapsedMs)} | ${tokens} | ${m?.costUsdEstimate != null ? `${m.costUsdEstimate.toFixed(6)} (${m.costBasis})` : 'unknown'} | ${fmt(m?.result)} |`,
     )

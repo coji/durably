@@ -21,12 +21,16 @@ export function codePrompt(
   ].join('\n')
 }
 
-export function reviewPrompt(lens: 'correctness' | 'edge-cases'): string {
+export function reviewPrompt(
+  lens: 'correctness' | 'edge-cases',
+  baselineContext: string,
+): string {
   if (lens === 'correctness') {
     return [
       'You are an independent correctness reviewer. READ ONLY — do not modify any file.',
       'Read src/calc.js and test/calc.test.js in the workdir.',
-      'Check: does add() handle decimals, negatives, zero? Is mul() untouched?',
+      'Check: does add() handle decimals, negatives, zero? Use the trusted baseline context below to confirm whether mul() was touched.',
+      baselineContext,
       'Reply in exactly this shape:',
       'DECISION: pass | needsChanges',
       'NOTES: <one or two sentences>',
@@ -34,8 +38,9 @@ export function reviewPrompt(lens: 'correctness' | 'edge-cases'): string {
   }
   return [
     'You are an independent edge-case reviewer. READ ONLY — do not modify any file.',
-    'Read src/calc.js diff vs the pristine template intent.',
+    'Inspect the Candidate using the trusted baseline context below.',
     'Check: minimal change, no extra deps, no unrelated edits, tests cover the fix.',
+    baselineContext,
     'Reply in exactly this shape:',
     'DECISION: pass | needsChanges',
     'NOTES: <one or two sentences>',

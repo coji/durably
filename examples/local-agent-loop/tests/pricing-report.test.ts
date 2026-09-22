@@ -32,6 +32,8 @@ function baseReport(): LoopReport {
           iteration: 1,
           requestedModel: null,
           requestedEffort: null,
+          effectiveModel: null,
+          effectiveEffort: null,
           reportedModel: null,
           reportedEffort: null,
           versions: {},

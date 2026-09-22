@@ -20,8 +20,10 @@ export type ReviewLens = 'correctness' | 'edge-cases'
 export interface ResolvedProfile {
   id: string
   provider: ProviderName
-  model: string | null
-  effort: string | null
+  requestedModel: string | null
+  requestedEffort: string | null
+  effectiveModel: string | null
+  effectiveEffort: string | null
 }
 
 export interface SessionRef {
@@ -46,6 +48,8 @@ export interface FactorySetup {
   workdir: string
   acceptanceDir: string
   acceptanceHash: string
+  baselineDir: string
+  baselineHash: string
   checkpointsDir: string
   instructionsVersion: string
   profiles: {

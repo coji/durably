@@ -24,12 +24,15 @@ export interface AgentCallSpec {
   timeoutMs: number
   requestedModel: string | null
   requestedEffort: string | null
+  effectiveModel: string | null
+  effectiveEffort: string | null
   role: 'implement' | 'repair' | 'review-a' | 'review-b'
   stage: string
   iteration: number
   operationKey?: string
   checkpointsDir?: string
   session?: SessionRef | null
+  requireSession?: boolean
 }
 
 export interface AgentCallOutcome {
@@ -44,6 +47,7 @@ interface StartedCheckpoint {
   operationKey: string
   invocationId: string
   status: 'started'
+  invocationStartedAt: string
 }
 
 interface CompletedCheckpoint {
@@ -51,6 +55,8 @@ interface CompletedCheckpoint {
   invocationId: string
   status: 'completed'
   result: AgentResult
+  invocationStartedAt: string
+  invocationCompletedAt: string
 }
 
 export class UncertainInvocationError extends Error {
@@ -117,10 +123,6 @@ export async function runAgentCall(
 ): Promise<AgentCallOutcome> {
   const startedAt = Date.now()
   const versions = await resolveVersions(spec.providerName)
-  const resolved = spec.provider.resolveExecution({
-    requestedModel: spec.requestedModel,
-    requestedEffort: spec.requestedEffort,
-  })
   const operationKey = spec.operationKey ?? `attempt/${attempt.id}`
   const checkpointsDir =
     spec.checkpointsDir ?? join(spec.workdir, '.operation-checkpoints')
@@ -141,10 +143,15 @@ export async function runAgentCall(
     sessionId: spec.session?.nativeId ?? null,
     recovered: saved !== null,
     usageScope: 'invocation',
-    requestedModel: resolved.model,
-    requestedEffort: resolved.effort,
+    requestedModel: spec.requestedModel,
+    requestedEffort: spec.requestedEffort,
+    effectiveModel: spec.effectiveModel,
+    effectiveEffort: spec.effectiveEffort,
     reportedModel: null,
     reportedEffort: null,
+    invocationStartedAt:
+      saved?.invocationStartedAt ?? existingStart?.invocationStartedAt ?? null,
+    invocationCompletedAt: saved?.invocationCompletedAt ?? null,
     versions,
     elapsedMs: null,
     usage: null,
@@ -160,19 +167,28 @@ export async function runAgentCall(
     result: AgentResult,
     recovered: boolean,
   ): Promise<AgentCallOutcome> => {
+    const sessionId = result.session?.id ?? spec.session?.nativeId ?? null
+    if (spec.requireSession && !sessionId)
+      throw new Error(
+        `${spec.providerName} did not report a native session id for context reuse`,
+      )
     measurement = await writeMeasurement(attempt, measurement, {
       reportedModel: result.reportedModel,
       reportedEffort: result.reportedEffort,
-      sessionId: result.session?.id ?? spec.session?.nativeId ?? null,
+      sessionId,
       usagePatch: result.usage,
       elapsedMs: result.elapsedMs,
+      invocationStartedAt:
+        saved?.invocationStartedAt ?? measurement.invocationStartedAt,
+      invocationCompletedAt:
+        saved?.invocationCompletedAt ?? new Date().toISOString(),
       recovered,
       result: recovered ? 'checkpoint-recovered' : `${spec.role}-done`,
       error: null,
     })
     return {
       text: result.text,
-      sessionId: result.session?.id ?? spec.session?.nativeId ?? null,
+      sessionId,
       invocationId,
       recovered,
       measurement,
@@ -191,6 +207,7 @@ export async function runAgentCall(
     operationKey,
     invocationId,
     status: 'started',
+    invocationStartedAt: new Date().toISOString(),
   }
   try {
     const handle = await open(paths.started, 'wx')
@@ -208,6 +225,9 @@ export async function runAgentCall(
     }
     throw error
   }
+  measurement = await writeMeasurement(attempt, measurement, {
+    invocationStartedAt: startRecord.invocationStartedAt,
+  })
 
   const timeout = new AbortController()
   const timer = setTimeout(
@@ -220,8 +240,8 @@ export async function runAgentCall(
       prompt: spec.prompt,
       workdir: spec.workdir,
       timeoutMs: spec.timeoutMs,
-      requestedModel: spec.requestedModel,
-      requestedEffort: spec.requestedEffort,
+      requestedModel: spec.effectiveModel,
+      requestedEffort: spec.effectiveEffort,
       role: spec.role,
       sessionId: spec.session?.nativeId ?? null,
       signal: linked,
@@ -234,10 +254,19 @@ export async function runAgentCall(
         })
       },
     })
+    if (
+      spec.requireSession &&
+      !(result.session?.id ?? spec.session?.nativeId ?? null)
+    ) {
+      throw new Error(
+        `${spec.providerName} did not report a native session id for context reuse`,
+      )
+    }
     const completed: CompletedCheckpoint = {
       ...startRecord,
       status: 'completed',
       result,
+      invocationCompletedAt: new Date().toISOString(),
     }
     await writeJsonAtomic(paths.completed, completed, attempt.id)
     return finish(result, false)
@@ -249,7 +278,7 @@ export async function runAgentCall(
       error: message.slice(0, 2000),
       interruptionReason: signal.aborted
         ? 'cancelled-or-lease-lost'
-        : message.includes('timed out')
+        : timeout.signal.aborted || /timed? out|timeout/i.test(message)
           ? 'timeout'
           : null,
     })

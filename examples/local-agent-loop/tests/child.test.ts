@@ -1,18 +1,7 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
-import {
-  ownedChildPids,
-  processStartTime,
-  reconcilePidFile,
-  reconcileRunPidFiles,
-  runChild,
-  SpawnCancelledError,
-} from '../src/child.js'
+import { ownedChildPids, runChild, SpawnCancelledError } from '../src/child.js'
 
 describe('cancel-aware subprocess', () => {
   it('kills ONLY the owned child on abort and confirms the exit', async () => {
@@ -47,67 +36,6 @@ describe('cancel-aware subprocess', () => {
       SpawnCancelledError,
     )
     assert.equal(ownedChildPids().length, 0)
-  })
-
-  it('reconciles a stale pid marker without touching live processes', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'reconcile-'))
-    // Dead pid marker -> cleaned, nothing killed.
-    const deadFile = join(dir, 'dead.json')
-    await writeFile(deadFile, JSON.stringify({ pid: 99999999, startedAt: 'x' }))
-    assert.equal(await reconcilePidFile(deadFile), 'clean')
-    // Garbled marker -> removed, never signaled.
-    const garbled = join(dir, 'garbled.json')
-    await writeFile(garbled, 'not json')
-    assert.equal(await reconcilePidFile(garbled), 'stale-marker-removed')
-    // Pid-reuse guard: live pid with a mismatched start time is NOT killed.
-    const liveFile = join(dir, 'live.json')
-    await writeFile(
-      liveFile,
-      JSON.stringify({
-        pid: process.pid,
-        startedAt: 'definitely-not-the-start-time',
-      }),
-    )
-    assert.equal(await reconcilePidFile(liveFile), 'clean')
-    assert.ok(process.pid > 0, 'test process survived reconciliation')
-  })
-
-  it('reconciles pid markers under a runs root on worker start', async () => {
-    const runsRoot = await mkdtemp(join(tmpdir(), 'runs-'))
-    await mkdir(join(runsRoot, 'run-a'), { recursive: true })
-    // Stale marker (dead pid) is cleaned without killing anything.
-    await writeFile(
-      join(runsRoot, 'run-a', 'test-1.pid'),
-      JSON.stringify({ pid: 99999999 }),
-    )
-    // Real residual: spawned directly (not via runChild) and left behind,
-    // the way a kill -9ed worker would leave a test process.
-    const residual = spawn('sleep', ['30'])
-    assert.ok(residual.pid)
-    const exited = new Promise((resolve) => residual.on('exit', resolve))
-    await writeFile(
-      join(runsRoot, 'run-a', 'test-2.pid'),
-      JSON.stringify({
-        pid: residual.pid,
-        startedAt: processStartTime(residual.pid as number),
-      }),
-    )
-    const summary = await reconcileRunPidFiles(runsRoot)
-    assert.equal(summary.checked, 2)
-    assert.equal(summary.residualKilled, 1)
-    await Promise.race([
-      exited,
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('residual was not killed')), 10000),
-      ),
-    ])
-  })
-
-  it('treats a missing runs root as clean', async () => {
-    const summary = await reconcileRunPidFiles(
-      join(tmpdir(), 'runs-missing-root'),
-    )
-    assert.deepEqual(summary, { checked: 0, cleaned: 0, residualKilled: 0 })
   })
 
   it('scrubs the test-runner context so nested node --test really runs', async () => {

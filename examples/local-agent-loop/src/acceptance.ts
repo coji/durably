@@ -33,23 +33,29 @@ import { join } from 'node:path'
 import { runChild } from './child.js'
 
 export async function hashFiles(
-  files: { path: string; content: string }[],
+  files: { path: string; content: string | Uint8Array }[],
 ): Promise<string> {
   const h = createHash('sha256')
   const sorted = [...files].sort((a, b) => (a.path < b.path ? -1 : 1))
   for (const f of sorted) {
-    h.update(f.path)
-    h.update('\0')
-    h.update(f.content)
-    h.update('\0')
+    const path = Buffer.from(f.path)
+    const content =
+      typeof f.content === 'string' ? Buffer.from(f.content) : f.content
+    const lengths = Buffer.allocUnsafe(16)
+    lengths.writeBigUInt64BE(BigInt(path.length), 0)
+    lengths.writeBigUInt64BE(BigInt(content.length), 8)
+    h.update('file\0')
+    h.update(lengths)
+    h.update(path)
+    h.update(content)
   }
   return h.digest('hex')
 }
 
 async function readTree(
   root: string,
-): Promise<{ path: string; content: string }[]> {
-  const out: { path: string; content: string }[] = []
+): Promise<{ path: string; content: Buffer }[]> {
+  const out: { path: string; content: Buffer }[] = []
   async function walk(dir: string, rel: string) {
     const entries = await readdir(dir)
     for (const name of entries) {
@@ -62,7 +68,7 @@ async function readTree(
       if (st.isDirectory()) {
         await walk(full, rp)
       } else if (st.isFile()) {
-        out.push({ path: rp, content: await readFile(full, 'utf8') })
+        out.push({ path: rp, content: await readFile(full) })
       }
     }
   }
@@ -73,6 +79,35 @@ async function readTree(
 /** Hash every file under a directory (relative paths + contents). */
 export async function hashDir(root: string): Promise<string> {
   return hashFiles(await readTree(root))
+}
+
+/** Trusted changed-path summary for reviewers that only receive the Candidate. */
+export async function describeTreeChanges(
+  baselineDir: string,
+  candidateDir: string,
+): Promise<string[]> {
+  const digest = (content: Buffer) =>
+    createHash('sha256').update(content).digest('hex')
+  const baseline = new Map(
+    (await readTree(baselineDir)).map((entry) => [
+      entry.path,
+      digest(entry.content),
+    ]),
+  )
+  const candidate = new Map(
+    (await readTree(candidateDir)).map((entry) => [
+      entry.path,
+      digest(entry.content),
+    ]),
+  )
+  const paths = [...new Set([...baseline.keys(), ...candidate.keys()])].sort()
+  return paths.flatMap((path) => {
+    if (!baseline.has(path)) return [`added: ${path}`]
+    if (!candidate.has(path)) return [`deleted: ${path}`]
+    return baseline.get(path) === candidate.get(path)
+      ? []
+      : [`modified: ${path}`]
+  })
 }
 
 /** Snapshot the pristine subject tests for this run. */
@@ -118,8 +153,6 @@ export interface AcceptanceRunSpec {
   scratchDir: string
   timeoutMs: number
   signal?: AbortSignal
-  /** Pid marker so a restarted worker can reconcile this grading process. */
-  pidFile?: string
 }
 
 export interface AcceptanceRunResult {
@@ -176,7 +209,6 @@ export async function runAcceptanceSuite(
       cwd: spec.scratchDir,
       timeoutMs: spec.timeoutMs,
       ...(spec.signal ? { signal: spec.signal } : {}),
-      ...(spec.pidFile ? { pidFile: spec.pidFile } : {}),
     })
     return {
       passed: res.code === 0,

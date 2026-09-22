@@ -1,9 +1,26 @@
 /** Immutable candidate snapshots shared by verification, review and approval. */
-import { cp, mkdir, rename, rm } from 'node:fs/promises'
+import { chmod, cp, lstat, mkdir, readdir, rename, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 import { hashDir } from './acceptance.js'
 import type { CandidateRef } from './types.js'
+
+export async function makeTreeReadOnly(root: string): Promise<void> {
+  const entries = await readdir(root)
+  for (const name of entries) {
+    const path = join(root, name)
+    const stat = await lstat(path)
+    if (stat.isSymbolicLink())
+      throw new Error(`candidate contains a symbolic link: ${path}`)
+    if (stat.isDirectory()) {
+      await makeTreeReadOnly(path)
+      await chmod(path, 0o555)
+    } else if (stat.isFile()) {
+      await chmod(path, 0o444)
+    }
+  }
+  await chmod(root, 0o555)
+}
 
 export async function createCandidate(options: {
   workdir: string
@@ -31,6 +48,9 @@ export async function createCandidate(options: {
     if ((await hashDir(snapshotDir)) !== sourceHash)
       throw new Error(`existing candidate differs: ${id}`)
   }
+  await makeTreeReadOnly(snapshotDir)
+  if ((await hashDir(snapshotDir)) !== sourceHash)
+    throw new Error(`candidate changed while sealing: ${id}`)
   return {
     id,
     snapshotDir,

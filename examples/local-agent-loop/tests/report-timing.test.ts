@@ -30,6 +30,8 @@ function row(
       iteration: 1,
       requestedModel: 'gpt-5.6-sol',
       requestedEffort: 'low',
+      effectiveModel: 'gpt-5.6-sol',
+      effectiveEffort: 'low',
       reportedModel: 'gpt-5.6-sol',
       reportedEffort: null,
       versions: {},
@@ -47,8 +49,8 @@ function row(
 describe('stage timing completeness', () => {
   it('marks a stage partial when any attempt lacks elapsedMs', () => {
     const timings = stageTimings([
-      row('implement:1', 'a1', 100),
-      row('implement:1', 'a2', null),
+      row('stage:0:code:agent', 'a1', 100),
+      row('stage:0:code:agent', 'a2', null),
     ])
     assert.equal(timings.length, 1)
     assert.equal(timings[0]?.stage, 'code')
@@ -57,7 +59,7 @@ describe('stage timing completeness', () => {
   })
 
   it('marks a stage complete when every attempt reports elapsedMs', () => {
-    const timings = stageTimings([row('implement:1', 'a1', 100)])
+    const timings = stageTimings([row('stage:0:code:agent', 'a1', 100)])
     assert.equal(timings[0]?.complete, true)
   })
 
@@ -85,11 +87,14 @@ describe('stage timing completeness', () => {
       fake: false,
       realLlmCallCount: 1,
       fullLoopVerified: false,
-      attempts: [row('implement:1', 'a1', 100), row('implement:1', 'a2', null)],
+      attempts: [
+        row('stage:0:code:agent', 'a1', 100),
+        row('stage:0:code:agent', 'a2', null),
+      ],
       waits: [],
       stageTimings: stageTimings([
-        row('implement:1', 'a1', 100),
-        row('implement:1', 'a2', null),
+        row('stage:0:code:agent', 'a1', 100),
+        row('stage:0:code:agent', 'a2', null),
       ]),
       stageTotalMs: null,
       runElapsedMs: 200,
@@ -98,5 +103,22 @@ describe('stage timing completeness', () => {
       notes: [],
     })
     assert.match(md, /PARTIAL/)
+  })
+
+  it('uses the original invocation interval after checkpoint recovery', () => {
+    const recovered = row('stage:0:code:agent', 'retry', 1000)
+    recovered.startedAt = '2026-01-01T00:01:00.000Z'
+    recovered.completedAt = '2026-01-01T00:01:00.010Z'
+    recovered.measurement = {
+      ...recovered.measurement!,
+      invocationId: 'same-invocation',
+      recovered: true,
+      result: 'checkpoint-recovered',
+      invocationStartedAt: '2026-01-01T00:00:00.000Z',
+      invocationCompletedAt: '2026-01-01T00:00:01.000Z',
+    }
+    const [timing] = stageTimings([recovered])
+    assert.equal(timing?.elapsedMs, 1000)
+    assert.equal(timing?.wallElapsedMs, 1000)
   })
 })

@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url'
 import { defineJob, type JsonValue } from '@coji/durably'
 import { z } from 'zod'
 
-import { snapshotAcceptance } from './acceptance.js'
+import { hashDir, snapshotAcceptance } from './acceptance.js'
+import { makeTreeReadOnly } from './candidate.js'
 import { FactoryEventSchema } from './events.js'
 import { assertAllowedDecision, availableActions, decide } from './policy.js'
 import { createProvider } from './providers/index.js'
@@ -55,6 +56,16 @@ const here = dirname(fileURLToPath(import.meta.url))
 const runRoot = (runId: string) => join(here, '..', 'runs', runId)
 const subjectDir = () => join(here, '..', 'subject')
 
+function positiveTimeout(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (raw === undefined) return fallback
+  if (!/^\d+$/.test(raw)) throw new Error(`${name} must be a positive integer`)
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value <= 0)
+    throw new Error(`${name} must be a positive integer`)
+  return value
+}
+
 export const agentLoopJob = defineJob({
   name: 'local-factory.v2',
   input: inputSchema,
@@ -67,8 +78,12 @@ export const agentLoopJob = defineJob({
       async () => {
         const workdir = join(root, 'work')
         const acceptanceDir = join(root, 'acceptance')
+        const baselineDir = join(root, 'baseline')
         await mkdir(root, { recursive: true })
         await cp(subjectDir(), workdir, { recursive: true })
+        await cp(subjectDir(), baselineDir, { recursive: true })
+        const baselineHash = await hashDir(baselineDir)
+        await makeTreeReadOnly(baselineDir)
         const acceptance = await snapshotAcceptance(
           join(subjectDir(), 'test'),
           acceptanceDir,
@@ -89,31 +104,31 @@ export const agentLoopJob = defineJob({
           workdir,
           acceptanceDir,
           acceptanceHash: acceptance.hash,
+          baselineDir,
+          baselineHash,
           checkpointsDir: join(root, 'operation-checkpoints'),
           instructionsVersion: 'local-factory.v2',
           profiles: {
             code: {
               id: `${profileId}:code`,
               provider: input.provider,
-              model: resolved.model,
-              effort: resolved.effort,
+              requestedModel: input.model ?? null,
+              requestedEffort: input.effort ?? null,
+              effectiveModel: resolved.model,
+              effectiveEffort: resolved.effort,
             },
             review: {
               id: `${profileId}:review`,
               provider: input.provider,
-              model: resolved.model,
-              effort: resolved.effort,
+              requestedModel: input.model ?? null,
+              requestedEffort: input.effort ?? null,
+              effectiveModel: resolved.model,
+              effectiveEffort: resolved.effort,
             },
           },
           maxIterations: input.maxIterations,
-          agentTimeoutMs: Number.parseInt(
-            process.env.AGENT_TIMEOUT_MS ?? '300000',
-            10,
-          ),
-          testTimeoutMs: Number.parseInt(
-            process.env.TEST_TIMEOUT_MS ?? '120000',
-            10,
-          ),
+          agentTimeoutMs: positiveTimeout('AGENT_TIMEOUT_MS', 300000),
+          testTimeoutMs: positiveTimeout('TEST_TIMEOUT_MS', 120000),
         }
         return value
       },

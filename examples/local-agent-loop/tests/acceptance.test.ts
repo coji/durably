@@ -56,4 +56,12 @@ describe('immutable acceptance tests', () => {
     await symlink(join(root, 'outside'), join(root, 'inside-link'))
     await assert.rejects(hashDir(root), /symbolic link/)
   })
+
+  it('hashes raw bytes without UTF-8 replacement collisions', async () => {
+    const left = await mkdtemp(join(tmpdir(), 'hash-bytes-left-'))
+    const right = await mkdtemp(join(tmpdir(), 'hash-bytes-right-'))
+    await writeFile(join(left, 'binary'), Buffer.from([0x80]))
+    await writeFile(join(right, 'binary'), Buffer.from([0x81]))
+    assert.notEqual(await hashDir(left), await hashDir(right))
+  })
 })

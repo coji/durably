@@ -70,6 +70,8 @@ describe('runner measurement on the real launch path', () => {
       timeoutMs: 5000,
       requestedModel: null,
       requestedEffort: null,
+      effectiveModel: 'resolved-model',
+      effectiveEffort: 'low',
       role: 'implement' as const,
       stage: 'implement',
       iteration: 1,
@@ -94,7 +96,7 @@ describe('runner measurement on the real launch path', () => {
     assert.equal(second.measurement.elapsedMs, 5)
   })
 
-  it('saves resolved execution settings pre-launch; reported stays native-only', async () => {
+  it('keeps requested, effective, and reported settings separate', async () => {
     const attempt = fakeAttempt()
     const provider = stubProvider(async () => ({
       text: 'done',
@@ -118,18 +120,23 @@ describe('runner measurement on the real launch path', () => {
         timeoutMs: 5000,
         requestedModel: null,
         requestedEffort: null,
+        effectiveModel: 'resolved-model',
+        effectiveEffort: 'low',
         role: 'implement',
         stage: 'implement',
         iteration: 1,
         operationKey: `test/${randomUUID()}`,
       },
     )
-    assert.equal(measurement.requestedModel, 'resolved-model')
-    assert.equal(measurement.requestedEffort, 'low')
+    assert.equal(measurement.requestedModel, null)
+    assert.equal(measurement.requestedEffort, null)
+    assert.equal(measurement.effectiveModel, 'resolved-model')
+    assert.equal(measurement.effectiveEffort, 'low')
     assert.equal(measurement.reportedModel, null)
     assert.equal(measurement.reportedEffort, null)
     // The FIRST persisted snapshot already carries the resolved settings.
-    assert.equal(attempt.snapshots[0]?.requestedModel, 'resolved-model')
+    assert.equal(attempt.snapshots[0]?.requestedModel, null)
+    assert.equal(attempt.snapshots[0]?.effectiveModel, 'resolved-model')
   })
 
   it('propagates AbortSignal into the provider and records the cancel', async () => {
@@ -158,6 +165,8 @@ describe('runner measurement on the real launch path', () => {
       timeoutMs: 30000,
       requestedModel: null,
       requestedEffort: null,
+      effectiveModel: 'resolved-model',
+      effectiveEffort: 'low',
       role: 'implement',
       stage: 'implement',
       iteration: 1,
@@ -185,6 +194,8 @@ describe('runner measurement on the real launch path', () => {
         timeoutMs: 30000,
         requestedModel: null,
         requestedEffort: null,
+        effectiveModel: 'resolved-model',
+        effectiveEffort: 'low',
         role: 'implement',
         stage: 'implement',
         iteration: 1,
@@ -193,5 +204,37 @@ describe('runner measurement on the real launch path', () => {
       /uncertain external invocation/,
     )
     assert.equal(resent, false)
+  })
+
+  it('classifies the runner timeout separately from cancellation', async () => {
+    const attempt = fakeAttempt()
+    const provider = stubProvider(
+      (options) =>
+        new Promise<AgentResult>((_resolve, reject) => {
+          options.signal?.addEventListener(
+            'abort',
+            () => reject(new Error('The operation was aborted due to timeout')),
+            { once: true },
+          )
+        }),
+    )
+    await assert.rejects(
+      runAgentCall(new AbortController().signal, attempt as never, {
+        provider,
+        providerName: 'codex',
+        prompt: 'p',
+        workdir: '/tmp',
+        timeoutMs: 10,
+        requestedModel: null,
+        requestedEffort: null,
+        effectiveModel: 'resolved-model',
+        effectiveEffort: 'low',
+        role: 'implement',
+        stage: 'implement',
+        iteration: 1,
+        operationKey: `test/${randomUUID()}`,
+      }),
+    )
+    assert.equal(attempt.snapshots.at(-1)?.interruptionReason, 'timeout')
   })
 })

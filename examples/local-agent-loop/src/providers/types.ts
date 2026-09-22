@@ -1,9 +1,9 @@
 /**
  * Provider contract + attempt measurement stored in Durably metadata.
  *
- * Requested (input) vs reported (provider-observed) model/effort are stored
- * separately: a value the provider never reported must never be presented as
- * a reported value. Incremental usage snapshots merge via `mergeUsage`
+ * Requested input, effective resolved settings, and provider-reported
+ * model/effort are stored separately. A value the provider never reported
+ * must never be presented as reported. Incremental usage snapshots merge via `mergeUsage`
  * (see usage.ts) so a failure preserves already-reported partial numbers.
  */
 import type { TokenUsage } from '../usage.js'
@@ -101,8 +101,13 @@ export interface AttemptMeasurement {
   usageScope?: 'invocation' | 'session' | null
   requestedModel: string | null
   requestedEffort: string | null
+  effectiveModel: string | null
+  effectiveEffort: string | null
   reportedModel: string | null
   reportedEffort: string | null
+  /** Original provider invocation interval, retained across recovery. */
+  invocationStartedAt?: string | null
+  invocationCompletedAt?: string | null
   /** Subprocess/CLI versions at call time (null when unresolvable). */
   versions: Record<string, string | null>
   elapsedMs: number | null

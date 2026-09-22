@@ -1,8 +1,10 @@
 /** Stage handlers own deterministic mechanics; the job only dispatches them. */
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import type { JsonValue, StepAttemptContext } from '@coji/durably'
 
+import { describeTreeChanges, hashDir } from './acceptance.js'
 import {
   assertCandidateIntact,
   candidatesDirFor,
@@ -54,6 +56,15 @@ export const codeStage: StageHandler = async ({
   const profile = state.setup.profiles.code
   const continuedSession =
     state.setup.contextMode === 'reuse' ? state.implementationSession : null
+  if (
+    continuedSession &&
+    (continuedSession.provider !== state.setup.provider ||
+      continuedSession.profileId !== profile.id ||
+      continuedSession.cwd !== state.setup.workdir ||
+      continuedSession.instructionsVersion !== state.setup.instructionsVersion)
+  ) {
+    throw new Error('implementation session provenance no longer matches setup')
+  }
   const call = await step.run(
     `${key}:agent`,
     (signal, attempt) =>
@@ -63,14 +74,17 @@ export const codeStage: StageHandler = async ({
         prompt: codePrompt(role, iteration, state.repairNotes),
         workdir: state.setup.workdir,
         timeoutMs: state.setup.agentTimeoutMs,
-        requestedModel: profile.model,
-        requestedEffort: profile.effort,
+        requestedModel: profile.requestedModel,
+        requestedEffort: profile.requestedEffort,
+        effectiveModel: profile.effectiveModel,
+        effectiveEffort: profile.effectiveEffort,
         role,
         stage: role,
         iteration,
         operationKey: `${step.runId}/${key}/agent`,
         checkpointsDir: state.setup.checkpointsDir,
         session: continuedSession,
+        requireSession: state.setup.contextMode === 'reuse',
       }),
     {
       metadata: {
@@ -98,11 +112,6 @@ export const codeStage: StageHandler = async ({
           instructionsVersion: state.setup.instructionsVersion,
         }
       : null
-  if (state.setup.contextMode === 'reuse' && !session) {
-    throw new Error(
-      `${state.setup.provider} did not report a native session id; refusing to label this run as context reuse`,
-    )
-  }
   return { type: 'code.completed', role, candidate, session }
 }
 
@@ -122,12 +131,10 @@ export const verifyStage: StageHandler = async ({ step, state, key }) => {
           '..',
           'verification-scratch',
           target.id,
+          attempt.id,
         ),
-        pidFile: join(
-          state.setup.workdir,
-          '..',
-          `verification-${target.id}.pid`,
-        ),
+        operationKey: `${step.runId}/${key}/acceptance`,
+        checkpointsDir: state.setup.checkpointsDir,
         timeoutMs: state.setup.testTimeoutMs,
         stage: 'verify',
         iteration: state.iteration,
@@ -135,6 +142,7 @@ export const verifyStage: StageHandler = async ({ step, state, key }) => {
       signal,
     ),
   )
+  await assertCandidateIntact(target)
   return {
     type: 'verify.completed',
     targetId: target.id,
@@ -154,6 +162,24 @@ export const reviewStage: StageHandler = async ({
   if (!state.verification?.passed || state.verification.targetId !== target.id)
     throw new Error('review requires the same verified candidate')
   await assertCandidateIntact(target)
+  if ((await hashDir(state.setup.baselineDir)) !== state.setup.baselineHash)
+    throw new Error('trusted baseline mutated')
+  const changes = await describeTreeChanges(
+    state.setup.baselineDir,
+    target.snapshotDir,
+  )
+  const baselineCalc = await readFile(
+    join(state.setup.baselineDir, 'src', 'calc.js'),
+    'utf8',
+  )
+  const baselineContext = [
+    'TRUSTED BASELINE CONTEXT:',
+    `Changed paths: ${changes.length > 0 ? changes.join(', ') : '(none)'}`,
+    'Original src/calc.js:',
+    '```js',
+    baselineCalc,
+    '```',
+  ].join('\n')
   const review =
     (lens: ReviewLens) =>
     async (_signal: AbortSignal, attempt: StepAttemptContext) => {
@@ -163,11 +189,13 @@ export const reviewStage: StageHandler = async ({
       const result = await runAgentCall(signal, attempt, {
         provider: services.provider,
         providerName: state.setup.provider,
-        prompt: reviewPrompt(lens),
+        prompt: reviewPrompt(lens, baselineContext),
         workdir: target.snapshotDir,
         timeoutMs: state.setup.agentTimeoutMs,
-        requestedModel: profile.model,
-        requestedEffort: profile.effort,
+        requestedModel: profile.requestedModel,
+        requestedEffort: profile.requestedEffort,
+        effectiveModel: profile.effectiveModel,
+        effectiveEffort: profile.effectiveEffort,
         role,
         stage: `review:${lens}`,
         iteration: state.iteration,
@@ -191,6 +219,7 @@ export const reviewStage: StageHandler = async ({
     [correctness]: review('correctness'),
     [edgeCases]: review('edge-cases'),
   })
+  await assertCandidateIntact(target)
   return {
     type: 'review.completed',
     targetId: target.id,
@@ -240,14 +269,16 @@ export const finishStage: StageHandler = async ({ step, state, key }) => {
   }))
 }
 
-export const stopStage: StageHandler = async ({ step, state, key }) =>
-  step.run(`${key}:result`, async () => ({
+export const stopStage: StageHandler = async ({ step, state, key }) => {
+  if (state.candidate) await assertCandidateIntact(state.candidate)
+  return step.run(`${key}:result`, async () => ({
     type: 'factory.finished' as const,
     outcome: outcome(
       state,
       state.verification?.passed ? 'review-cap-reached' : 'verification-failed',
     ),
   }))
+}
 
 export const stages = {
   code: codeStage,

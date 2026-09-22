@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
+const versionCache = new Map<string, Promise<Record<string, string | null>>>()
 
 function packageVersion(name: string): string | null {
   try {
@@ -32,6 +33,16 @@ function cliVersion(command: string, args: string[]): Promise<string | null> {
  * installed or authenticated.
  */
 export async function resolveVersions(
+  provider: 'codex' | 'claude' | 'fake',
+): Promise<Record<string, string | null>> {
+  const cached = versionCache.get(provider)
+  if (cached) return cached
+  const pending = resolveVersionsUncached(provider)
+  versionCache.set(provider, pending)
+  return pending
+}
+
+async function resolveVersionsUncached(
   provider: 'codex' | 'claude' | 'fake',
 ): Promise<Record<string, string | null>> {
   const base = {
