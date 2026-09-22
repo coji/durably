@@ -95,6 +95,18 @@ Terminal 1:
 pnpm --filter example-local-agent-loop demo worker
 ```
 
+workerは1つだけ動かしてください。同じDBを見るworkerを複数起動すると、どれがrunを
+拾うか分かりません。leaseがあるので壊れはしませんが、環境変数はworkerごとに違うので、
+`AGENT_TIMEOUT_MS` を変えたつもりが古いworkerに拾われる、という形で黙って効きません。
+
+```bash
+pgrep -f 'local-agent-loop.*cli.ts worker' | wc -l   # 1 であること
+```
+
+数えるのはpnpmのラッパーではなく実体のプロセスです。`pnpm demo worker` と
+`pnpm worker` のどちらで起動しても同じ1つとして数えます。残ってしまったworkerは
+`pkill -f 'local-agent-loop.*cli.ts worker'` で片付きます。
+
 Terminal 2:
 
 ```bash
@@ -130,6 +142,9 @@ pnpm --filter example-local-agent-loop demo trigger \
   何を直せば通るのかが決まっていない依頼は、そもそもファクトリーに向きません。
 - `--setup` は新しいworktreeに依存をインストールするためのものです。省略すると
   installなしで `--check` が走ります。
+- timeoutの既定値はターゲットで変わります。実リポジトリはagent呼び出し30分、
+  検査15分。同梱題材はそれぞれ5分と2分です。`AGENT_TIMEOUT_MS` と
+  `TEST_TIMEOUT_MS` で上書きできます。
 - 反復ごとにcommitして封印します。検証・レビュー・成果物は同じcommitを見ます。
 - 既定の成果物は `runs/<runId>/delivery/<candidate>.patch` です。
   `--publish` を付けるとブランチをpushしてDraft PRを作ります。

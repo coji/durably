@@ -34,18 +34,28 @@ and steer it.
 
 ## Starting a run
 
-1. Confirm a worker is running:
+1. Confirm exactly one worker is running:
 
    ```bash
-   pgrep -f "local-agent-loop.*demo worker" >/dev/null && echo running || echo stopped
+   pgrep -f "local-agent-loop.*cli.ts worker" | wc -l
    ```
 
-   If stopped, tell the user to start one in another terminal and stop here.
-   Do not start it yourself; it is long-running and owns the terminal.
+   Count the worker process itself, not the pnpm wrapper that launched it: a
+   single healthy worker matches this pattern exactly once, however it was
+   started.
+
+   If the count is 0, tell the user to start one in another terminal and stop
+   here. Do not start it yourself; it is long-running and owns the terminal.
 
    ```bash
    pnpm --filter example-local-agent-loop demo worker
    ```
+
+   If the count is above 1, say so and stop. Leases keep concurrent workers
+   safe, but each carries its own environment, so which one picks up the run
+   decides which timeouts apply. Stray workers from earlier experiments are
+   the usual cause; `pkill -f "local-agent-loop.*cli.ts worker"` clears them,
+   after which the user starts one again.
 
 2. Confirm the repository is clean. The factory cuts a worktree from a
    commit, so uncommitted work would not be included and the user should know

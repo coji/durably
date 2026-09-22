@@ -125,7 +125,16 @@ export const agentLoopJob = defineJob({
       'setup',
       async (signal) => {
         await mkdir(root, { recursive: true })
-        const testTimeoutMs = positiveTimeout('TEST_TIMEOUT_MS', 120000)
+        // A real repository needs far more room than the bundled sample. The
+        // sample is a one-line fix graded by a two-file suite; a repository
+        // task means reading the code base and running its whole check, and
+        // the first real run of this factory died on a five minute agent
+        // timeout before it had finished reading.
+        const isRepo = input.target.kind === 'repo'
+        const testTimeoutMs = positiveTimeout(
+          'TEST_TIMEOUT_MS',
+          isRepo ? 900000 : 120000,
+        )
         const target: TargetConfig =
           input.target.kind === 'subject'
             ? await prepareSubjectTarget({
@@ -146,7 +155,10 @@ export const agentLoopJob = defineJob({
                 publish: input.target.publish,
                 signal,
               })
-        const agentTimeoutMs = positiveTimeout('AGENT_TIMEOUT_MS', 300000)
+        const agentTimeoutMs = positiveTimeout(
+          'AGENT_TIMEOUT_MS',
+          isRepo ? 1800000 : 300000,
+        )
         const resolved = provider.resolveExecution({
           requestedModel: input.model ?? null,
           requestedEffort: input.effort ?? null,
