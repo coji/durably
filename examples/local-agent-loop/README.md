@@ -29,14 +29,16 @@ Durably + local SQLite + AI SDK v7 + one logged-in CLI (Codex or Claude Code)
 ```text
 decision:N
   └─ stages[decision.stage](...)
-       ├─ code: agent call → immutable Candidate
+       ├─ code: agent call → fixed Candidate
        ├─ verify: fixed acceptance command against Candidate
        ├─ review: correctness + edge-cases (step.all, new sessions)
        ├─ approve: prepareWait → waitFor(Candidate ID)
        └─ finish/stop: approved Candidate or terminal failure
 ```
 
-Candidateは次の参照を持ちます。
+ここでCandidateは「実装を終えた時点のコードをコピーした候補版」です。テスト、
+レビュー、承認が別々のコードを見ないようにするための識別子であり、信頼できない
+コードを隔離するsecurity sandboxではありません。Candidateは次の参照を持ちます。
 
 ```ts
 type CandidateRef = {
@@ -49,13 +51,14 @@ type CandidateRef = {
 
 受け入れテストは開始時に別ディレクトリへ固定します。検証コマンドはサンプル側に
 固定した `node --test` であり、agentが編集した `package.json` のtest scriptは
-合否判定に使いません。Candidateは作成後にread-only化し、検証・レビューの前後、
-承認再開後、終了直前にraw bytesのhashを確認します。レビューpromptには固定した
+合否判定に使いません。Candidateは作成後に同じ場所へ上書きせず、検証・レビューの
+前後、承認再開後、終了直前にraw bytesのhashを確認します。これは工程間の
+取り違えや意図しない変更を検出するための仕組みで、敵対的なコードからfilesystemを
+守るものではありません。レビューpromptには固定した
 baselineの変更一覧と元の `src/calc.js` を渡すため、Candidateだけを読む独立session
 でも「変更が最小か」「`mul()` を触っていないか」を比較できます。
-固定テストはNode 24 Permission Modelでfilesystem writeとchild processを禁止した
-別processで実行します。その外側に独立watchdogを置くため、workerがSIGKILLされても
-テストprocessは固定deadlineで終了します。
+固定テストは通常の子processで実行し、workerが生きている間は指定したtimeoutで
+終了します。
 
 ## セットアップ
 

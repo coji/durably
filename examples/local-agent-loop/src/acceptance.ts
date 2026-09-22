@@ -29,15 +29,8 @@ import {
   symlink,
 } from 'node:fs/promises'
 import { join } from 'node:path'
-import { dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 import { runChild } from './child.js'
-
-const supervisorPath = join(
-  dirname(fileURLToPath(import.meta.url)),
-  'test-supervisor.mjs',
-)
 
 export async function hashFiles(
   files: {
@@ -210,8 +203,10 @@ export interface AcceptanceRunResult {
  * Fail-closed order: tamper check first (throws `acceptance-tampered`), then
  * the sample-fixed `node --test` argv over the SNAPSHOT test files (no shell,
  * no workdir `package.json`, no `npm`). The workdir's `npm test` is never
- * executed, so a rewritten test script cannot fake a pass; an empty snapshot
- * (nothing to grade) throws instead of passing vacuously.
+ * executed, so a rewritten test script cannot accidentally become the pass
+ * criterion; an empty snapshot (nothing to grade) throws instead of passing
+ * vacuously. This is consistency checking for a local development demo, not
+ * a sandbox for adversarial Candidate code.
  */
 export async function runAcceptanceSuite(
   spec: AcceptanceRunSpec,
@@ -251,11 +246,6 @@ export async function runAcceptanceSuite(
     const res = await runChild(
       process.execPath,
       [
-        supervisorPath,
-        String(spec.timeoutMs),
-        spec.scratchDir,
-        '--permission',
-        '--allow-fs-read=*',
         '--test',
         '--test-isolation=none',
         `--test-timeout=${spec.timeoutMs}`,
@@ -263,18 +253,14 @@ export async function runAcceptanceSuite(
       ],
       {
         cwd: spec.scratchDir,
-        timeoutMs: spec.timeoutMs + 5000,
-        killSignal: 'SIGTERM',
+        timeoutMs: spec.timeoutMs,
         env: { NODE_OPTIONS: '' },
         ...(spec.signal ? { signal: spec.signal } : {}),
       },
     )
     return {
       passed: res.code === 0,
-      stdout:
-        res.code === 124
-          ? `acceptance suite timed out after ${spec.timeoutMs}ms`
-          : `${res.stdout}${res.stderr}`.slice(-8000),
+      stdout: `${res.stdout}${res.stderr}`.slice(-8000),
       exitCode: res.code,
       elapsedMs: Date.now() - started,
     }
@@ -289,5 +275,7 @@ export async function runAcceptanceSuite(
       }
     }
     throw err
+  } finally {
+    await rm(spec.scratchDir, { recursive: true, force: true })
   }
 }

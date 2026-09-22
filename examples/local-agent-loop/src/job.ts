@@ -7,7 +7,6 @@ import { defineJob, type JsonValue } from '@coji/durably'
 import { z } from 'zod'
 
 import { hashDir, snapshotAcceptance } from './acceptance.js'
-import { makeTreeReadOnly } from './candidate.js'
 import { FactoryEventSchema } from './events.js'
 import { assertAllowedDecision, availableActions, decide } from './policy.js'
 import { createProvider } from './providers/index.js'
@@ -82,7 +81,6 @@ export const agentLoopJob = defineJob({
         await mkdir(root, { recursive: true })
         await cp(subjectDir(), workdir, { recursive: true })
         await cp(subjectDir(), baselineDir, { recursive: true })
-        await makeTreeReadOnly(baselineDir)
         const baselineHash = await hashDir(baselineDir)
         const acceptance = await snapshotAcceptance(
           join(subjectDir(), 'test'),
