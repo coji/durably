@@ -295,6 +295,20 @@ export async function runAgentCall(
           })
       },
     })
+    // Record the result before validating it. The call has already been made
+    // and, on a subscription or an API key, already been paid for. Throwing
+    // first would leave a start-only checkpoint, and every later resume would
+    // stop at `uncertain external invocation` with the paid result
+    // unreachable — the exact loss this checkpoint pair exists to prevent.
+    // A validation failure still fails the run, now with a reason that says
+    // what went wrong and replays to the same reason.
+    const completed: CompletedCheckpoint = {
+      ...startRecord,
+      status: 'completed',
+      result,
+      invocationCompletedAt: new Date().toISOString(),
+    }
+    await writeJsonAtomic(paths.completed, completed, attempt.id)
     if (
       spec.requireSession &&
       !(result.session?.id ?? spec.session?.nativeId ?? null)
@@ -304,14 +318,10 @@ export async function runAgentCall(
       )
     }
     assertResolvedSettings(result)
-    const completed: CompletedCheckpoint = {
-      ...startRecord,
-      status: 'completed',
-      result,
-      invocationCompletedAt: new Date().toISOString(),
-    }
-    await writeJsonAtomic(paths.completed, completed, attempt.id)
-    return finish(result, false)
+    // Pass the checkpoint so the attempt records the completion time that was
+    // persisted, not a second `now` taken after the atomic write. A replay
+    // reads the checkpoint's value, and the two must agree.
+    return finish(result, false, completed)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     await settleMeasurement()

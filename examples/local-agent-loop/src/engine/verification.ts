@@ -195,11 +195,19 @@ export async function runVerificationStep(
     return result
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
+    // An interrupted grading produced no verdict, so it is not a failure.
+    // Recording it as one turns "the worker was killed" into "the check did
+    // not pass" in every report that reads the result column.
+    const interrupted = signal.aborted || /timed? out|timeout/i.test(message)
     await writeMeasurement(attempt, measurement, {
       elapsedMs: Date.now() - started,
-      result: 'fail',
+      result: interrupted ? 'uncertain' : 'fail',
       error: message.slice(0, 2000),
-      interruptionReason: signal.aborted ? 'cancelled-or-lease-lost' : null,
+      interruptionReason: signal.aborted
+        ? 'cancelled-or-lease-lost'
+        : interrupted
+          ? 'timeout'
+          : null,
     })
     throw err
   }

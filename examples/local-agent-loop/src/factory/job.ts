@@ -146,6 +146,7 @@ export const agentLoopJob = defineJob({
                 publish: input.target.publish,
                 signal,
               })
+        const agentTimeoutMs = positiveTimeout('AGENT_TIMEOUT_MS', 300000)
         const resolved = provider.resolveExecution({
           requestedModel: input.model ?? null,
           requestedEffort: input.effort ?? null,
@@ -172,6 +173,8 @@ export const agentLoopJob = defineJob({
               target.kind === 'subject'
                 ? 'subject'
                 : `repo:${target.checkCommand.join(' ')}`,
+            agentTimeoutMs,
+            checkTimeoutMs: testTimeoutMs,
             code: { model: resolved.model, effort: resolved.effort },
             review: { model: resolved.model, effort: resolved.effort },
           }),
@@ -194,7 +197,7 @@ export const agentLoopJob = defineJob({
             },
           },
           maxIterations: input.maxIterations,
-          agentTimeoutMs: positiveTimeout('AGENT_TIMEOUT_MS', 300000),
+          agentTimeoutMs,
           // A draft pull request is itself what the human reviews, so waiting
           // for a separate approval signal first would hold a worker for
           // nothing. The bundled sample keeps the wait: its human-wait timing
@@ -215,33 +218,34 @@ export const agentLoopJob = defineJob({
 
     const target = createTarget(setup.target)
     let state = initialState(setup)
-    try {
-      for (let sequence = 0; state.outcome === null; sequence++) {
-        const decision = await step.run(
-          `decision:${sequence}`,
-          async () => decide(state),
-          {
-            metadata: {
-              stage: 'decision',
-              sequence,
-              candidates: availableActions(state),
-            } as unknown as JsonValue,
-          },
-        )
-        assertAllowedDecision(state, decision as StageDecision)
-        const selected = decision as StageDecision
-        const rawEvent = await stages[selected.stage]({
-          step,
-          state,
-          decision: selected,
-          key: `stage:${sequence}:${selected.stage}`,
-          services: { provider, target },
-        })
-        state = reduce(state, FactoryEventSchema.parse(rawEvent))
-      }
-      return state.outcome
-    } finally {
-      await target.cleanup()
+    // Deliberately not a `finally`: `step.waitFor` suspends by throwing, so a
+    // finally block would run cleanup every time the run parks on the human
+    // approval wait, and a target that really removes its worktree would
+    // destroy the work mid-approval.
+    for (let sequence = 0; state.outcome === null; sequence++) {
+      const decision = await step.run(
+        `decision:${sequence}`,
+        async () => decide(state),
+        {
+          metadata: {
+            stage: 'decision',
+            sequence,
+            candidates: availableActions(state),
+          } as unknown as JsonValue,
+        },
+      )
+      assertAllowedDecision(state, decision as StageDecision)
+      const selected = decision as StageDecision
+      const rawEvent = await stages[selected.stage]({
+        step,
+        state,
+        decision: selected,
+        key: `stage:${sequence}:${selected.stage}`,
+        services: { provider, target },
+      })
+      state = reduce(state, FactoryEventSchema.parse(rawEvent))
     }
+    await target.cleanup()
+    return state.outcome
   },
 })

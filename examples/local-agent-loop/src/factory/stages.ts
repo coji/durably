@@ -191,7 +191,7 @@ export const reviewStage: StageHandler = async ({
       const result = await runAgentCall(signal, attempt, {
         provider: services.provider,
         providerName: state.setup.provider,
-        prompt: reviewPrompt(lens, trustedContext),
+        prompt: reviewPrompt(lens, trustedContext, target.reviewRules(lens)),
         workdir: reviewCwd,
         timeoutMs: state.setup.agentTimeoutMs,
         requestedModel: profile.requestedModel,
@@ -249,6 +249,13 @@ export const approvalStage: StageHandler = async ({
   })
   const result = await step.waitFor(wait)
   await target.assertIntact(candidate)
+  if (result.type === 'timeout') {
+    // Nobody answered. Saying so is not the same as saying the candidate
+    // changed under us, which is what the mismatch check below reports.
+    throw new Error(
+      `approval timed out for ${candidate.id}; no decision was signalled`,
+    )
+  }
   const payload =
     result.type === 'signal' &&
     result.payload &&

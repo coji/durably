@@ -143,7 +143,16 @@ export function toAttemptRow(a: StepAttempt): AttemptRow {
   let measurement: AttemptMeasurement | null = null
   try {
     const m = a.metadata as unknown
-    if (m && typeof m === 'object' && 'provider' in (m as object)) {
+    // Key on fields only a measurement has. Several steps put a `provider`
+    // in their metadata for context — `setup` among them — and treating one
+    // of those as a measurement renders a phantom row of `unknown`s beside
+    // the real invocations.
+    if (
+      m &&
+      typeof m === 'object' &&
+      'invocationId' in (m as object) &&
+      'usageScope' in (m as object)
+    ) {
       measurement = m as AttemptMeasurement
     }
   } catch {

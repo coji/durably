@@ -9,6 +9,7 @@ import {
 import { PRICE_BASIS, estimateCostBreakdown } from '../src/engine/pricing.js'
 import {
   reportToMarkdown,
+  toAttemptRow,
   stageUsage,
   stageVisits,
   summarizeRun,
@@ -386,5 +387,50 @@ describe('cross-run comparison', () => {
     assert.match(md, /## codex\/gpt-5\.6-sol\/low\/reuse — config cfg-a/)
     assert.match(md, /- success: 2\/3 \(67%\)/)
     assert.match(md, /cost USD: unknown \(1 unknown\)/)
+  })
+})
+
+describe('measurement detection', () => {
+  it('does not mistake a step that merely records a provider for a measurement', () => {
+    // `setup` stores { stage, provider, context, target } for context. Keying
+    // on `provider` alone rendered that as an attempt row of unknowns beside
+    // the real invocations.
+    const row = toAttemptRow({
+      id: 'a1',
+      stepName: 'setup',
+      stepIndex: 0,
+      leaseGeneration: 1,
+      status: 'completed',
+      startedAt: 't',
+      completedAt: 't',
+      interruptionReason: null,
+      metadata: {
+        stage: 'setup',
+        provider: 'codex',
+        context: 'reuse',
+        target: 'repo',
+      },
+    } as never)
+    assert.equal(row.measurement, null)
+  })
+
+  it('recognises a real measurement', () => {
+    const row = toAttemptRow({
+      id: 'a2',
+      stepName: 'stage:0:code:agent',
+      stepIndex: 1,
+      leaseGeneration: 1,
+      status: 'completed',
+      startedAt: 't',
+      completedAt: 't',
+      interruptionReason: null,
+      metadata: {
+        provider: 'codex',
+        invocationId: 'inv-1',
+        usageScope: 'invocation',
+        usage: null,
+      },
+    } as never)
+    assert.equal(row.measurement?.invocationId, 'inv-1')
   })
 })

@@ -10,7 +10,12 @@ import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { runChild } from '../engine/child.js'
-import { addWorktree, repoRoot, resolveCommit } from '../engine/git.js'
+import {
+  addWorktree,
+  discardWorktree,
+  repoRoot,
+  resolveCommit,
+} from '../engine/git.js'
 import type {
   RepoTargetConfig,
   Target,
@@ -51,6 +56,10 @@ export async function prepareRepoTarget(
   const baseCommit = await resolveCommit(repo, args.baseRef)
   const workdir = join(args.root, 'work')
   await mkdir(args.root, { recursive: true })
+  // Setup is a durable step, so a worker killed part way through re-runs it.
+  // `git worktree add -b` refuses an existing directory or branch, so clear
+  // both first. Nothing has been sealed yet, and the branch carries the run id.
+  await discardWorktree(repo, workdir, args.branch)
   await addWorktree({
     repo,
     dir: workdir,

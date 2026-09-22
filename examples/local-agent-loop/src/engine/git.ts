@@ -23,12 +23,16 @@ export class GitError extends Error {
 async function git(
   cwd: string,
   args: string[],
-  options: { signal?: AbortSignal; timeoutMs?: number } = {},
+  options: {
+    signal?: AbortSignal
+    timeoutMs?: number
+    maxOutputChars?: number
+  } = {},
 ): Promise<string> {
   const result = await runChild('git', args, {
     cwd,
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    maxOutputChars: 1_000_000,
+    maxOutputChars: options.maxOutputChars ?? 1_000_000,
     ...(options.signal ? { signal: options.signal } : {}),
   })
   if (result.code !== 0) {
@@ -62,9 +66,21 @@ export async function treeOf(repo: string, commit: string): Promise<string> {
   return (await git(repo, ['rev-parse', `${commit}^{tree}`])).trim()
 }
 
-/** True when the working tree has staged or unstaged changes. */
-export async function isDirty(cwd: string): Promise<boolean> {
-  const out = await git(cwd, ['status', '--porcelain=v1'])
+/**
+ * True when the working tree differs from `HEAD`.
+ *
+ * `includeUntracked` decides whether files git does not track count. They are
+ * not part of any commit, so they cannot change a sealed candidate's tree —
+ * but a later `commitAll` would pick them up, so sealing and integrity
+ * checking want opposite answers here.
+ */
+export async function isDirty(
+  cwd: string,
+  options: { includeUntracked?: boolean } = {},
+): Promise<boolean> {
+  const args = ['status', '--porcelain=v1']
+  if (options.includeUntracked === false) args.push('--untracked-files=no')
+  const out = await git(cwd, args)
   return out.trim().length > 0
 }
 
@@ -179,13 +195,54 @@ export async function describeCommitChanges(
   return lines
 }
 
-/** Unified diff between two commits, suitable for `git apply`. */
-export async function patchBetween(
+/**
+ * Write the unified diff between two commits to a file.
+ *
+ * git writes the file itself rather than streaming through this process,
+ * because a captured diff is subject to the output cap and a patch truncated
+ * from the front is worse than no patch at all: it still looks like a patch,
+ * and `git apply` rejects it with nothing to explain why.
+ */
+export async function writePatch(
   repo: string,
   baseCommit: string,
   headCommit: string,
-): Promise<string> {
-  return git(repo, ['diff', '--binary', '--no-color', baseCommit, headCommit])
+  outPath: string,
+): Promise<void> {
+  await git(repo, [
+    'diff',
+    '--binary',
+    '--no-color',
+    `--output=${outPath}`,
+    baseCommit,
+    headCommit,
+  ])
+}
+
+/**
+ * Drop a worktree and its branch, ignoring every failure.
+ *
+ * Setup is a durable step: a worker killed part way through re-runs it, and
+ * `git worktree add -b` refuses a directory or branch that already exists.
+ * Clearing both first makes preparation replayable. Safe because no candidate
+ * has been sealed yet at that point, and the branch name carries the run id.
+ */
+export async function discardWorktree(
+  repo: string,
+  dir: string,
+  branch: string,
+): Promise<void> {
+  await removeWorktree(repo, dir)
+  for (const args of [
+    ['worktree', 'prune'],
+    ['branch', '-D', branch],
+  ]) {
+    try {
+      await git(repo, args)
+    } catch {
+      // Nothing to remove; a fresh run takes this path every time.
+    }
+  }
 }
 
 /** Read one file's contents at a commit without checking it out. */

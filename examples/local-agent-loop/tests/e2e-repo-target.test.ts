@@ -210,4 +210,56 @@ describe('repo target end to end', { timeout: 180000 }, () => {
       delete process.env.DURABLY_DB
     }
   })
+
+  it('survives a check that leaves untracked build output behind', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-dirty-'))
+    const repo = await seedRepo(root)
+
+    process.env.DURABLY_DB = join(root, 'factory.db')
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+
+    const durably = createAgentDurably()
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        target: {
+          kind: 'repo' as const,
+          repoPath: repo,
+          baseRef: 'HEAD',
+          task: 'Fix add() so decimal inputs are not truncated.',
+          issue: null,
+          // Real checks write build output: .turbo/, *.tsbuildinfo, coverage.
+          // None of it is in the commit the candidate names, so a passing
+          // check must not read as "the candidate changed under us".
+          checkCommand: [
+            'sh',
+            '-c',
+            'node --test test/**/*.test.js; code=$?; echo built > build-output.txt; exit $code',
+          ],
+          setupCommand: null,
+          publish: false,
+        },
+        maxIterations: 2,
+        context: 'reuse',
+      })
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        150000,
+        'dirty-check run completes',
+      )
+      const output = (await durably.getRun(run.id))?.output as {
+        conclusion: string
+        workdir: string
+      }
+      assert.equal(output.conclusion, 'approved')
+      assert.ok(existsSync(join(output.workdir, 'build-output.txt')))
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.DURABLY_DB
+      delete process.env.FAKE_FAIL_FIRST
+    }
+  })
 })

@@ -21,9 +21,9 @@ Durably + local SQLite + AI SDK v7 + one logged-in CLI (Codex or Claude Code)
 
 ## 構造
 
-`src/job.ts` は、保存済みstateからPolicy判断を記録し、実関数を持つregistryを
-呼び、返ったeventをreduceするだけです。ファイルコピー、固定テスト、並列
-レビュー、waitは `src/stages.ts` 内の各Stageが組み立てます。Stage全体を一律に
+`src/factory/job.ts` は、保存済みstateからPolicy判断を記録し、実関数を持つ
+registryを呼び、返ったeventをreduceするだけです。作業場所の用意、固定テスト、
+並列レビュー、waitは `src/factory/stages.ts` 内の各Stageが組み立てます。Stage全体を一律に
 `step.run()` で包まないため、承認waitはDurablyの正しい境界にあります。
 
 ```text
@@ -196,7 +196,7 @@ startだけが残った場合の扱いは、その仕事を送り直して良い
 
 ## 計測
 
-LLM呼び出しはすべて `src/runner.ts` を通り、attempt metadataへ以下を保存します。
+LLM呼び出しはすべて `src/engine/runner.ts` を通り、attempt metadataへ以下を保存します。
 
 - requested、effective、provider-reported model/effort（未指定・未報告値は `null`）
 - `sessionId`、`operationKey`、`invocationId`、回収結果かどうか

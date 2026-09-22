@@ -53,11 +53,19 @@ const PRICE_PER_1K: Record<string, ModelPrice> = {
   'claude-sonnet-4-6': { in: 0.003, out: 0.015, ...ANTHROPIC_CACHE },
 }
 
+/**
+ * Longest first, so `gpt-5-codex` wins over `gpt-5`. Computed once: pricing is
+ * consulted on every measurement write, including each streamed usage
+ * snapshot.
+ */
+const PRICE_KEYS_LONGEST_FIRST = Object.keys(PRICE_PER_1K).sort(
+  (a, b) => b.length - a.length,
+)
+
 function matchPrice(model: string | null): ModelPrice | null {
   if (!model) return null
   const key = model.toLowerCase()
-  const names = Object.keys(PRICE_PER_1K).sort((a, b) => b.length - a.length)
-  for (const name of names) {
+  for (const name of PRICE_KEYS_LONGEST_FIRST) {
     if (key.includes(name)) return PRICE_PER_1K[name]
   }
   return null

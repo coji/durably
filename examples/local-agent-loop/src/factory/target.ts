@@ -97,6 +97,12 @@ export interface Target {
   taskBrief(): string
   /** Constraints appended to the implementation prompt. */
   implementationRules(): string[]
+  /**
+   * What each reviewer is asked to check. Reviewers see only the candidate
+   * and the trusted context, so the questions have to come from whoever knows
+   * what is being built.
+   */
+  reviewRules(lens: 'correctness' | 'edge-cases'): string[]
   /** Seal the current workdir as an immutable candidate. */
   seal(args: SealArgs): Promise<CandidateRef>
   /** Throw when a sealed candidate no longer matches what was sealed. */

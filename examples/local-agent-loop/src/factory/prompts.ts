@@ -32,24 +32,21 @@ export function codePrompt(args: CodePromptArgs): string {
 
 export function reviewPrompt(
   lens: 'correctness' | 'edge-cases',
-  baselineContext: string,
+  trustedContext: string,
+  rules: string[],
 ): string {
-  if (lens === 'correctness') {
-    return [
-      'You are an independent correctness reviewer. READ ONLY — do not modify any file.',
-      'Read src/calc.js and test/calc.test.js in the workdir.',
-      'Check: does add() handle decimals, negatives, zero? Use the trusted baseline context below to confirm whether mul() was touched.',
-      baselineContext,
-      'Reply in exactly this shape:',
-      'DECISION: pass | needsChanges',
-      'NOTES: <one or two sentences>',
-    ].join('\n')
-  }
+  const role =
+    lens === 'correctness'
+      ? 'an independent correctness reviewer'
+      : 'an independent edge-case reviewer'
   return [
-    'You are an independent edge-case reviewer. READ ONLY — do not modify any file.',
-    'Inspect the Candidate using the trusted baseline context below.',
-    'Check: minimal change, no extra deps, no unrelated edits, tests cover the fix.',
-    baselineContext,
+    `You are ${role}. READ ONLY — do not modify any file.`,
+    '',
+    'CHECK:',
+    ...rules.map((rule) => `- ${rule}`),
+    '',
+    trustedContext,
+    '',
     'Reply in exactly this shape:',
     'DECISION: pass | needsChanges',
     'NOTES: <one or two sentences>',

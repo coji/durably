@@ -1,7 +1,8 @@
 /** Version recording: AI SDK + provider packages + local CLIs. */
-import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
+
+import { runChild } from './child.js'
 
 const require = createRequire(import.meta.url)
 const versionCache = new Map<string, Promise<Record<string, string | null>>>()
@@ -15,17 +16,28 @@ function packageVersion(name: string): string | null {
   }
 }
 
-function cliVersion(command: string, args: string[]): Promise<string | null> {
-  return new Promise((resolve) => {
-    execFile(command, args, { timeout: 15000 }, (err, stdout, stderr) => {
-      if (err) {
-        resolve(null)
-        return
-      }
-      const out = `${stdout} ${stderr}`.trim().split('\n')[0]?.trim() ?? ''
-      resolve(out.length > 0 ? out.slice(0, 120) : null)
+/**
+ * Probe a CLI's version through `runChild`, like every other subprocess here,
+ * so it joins the owned-children registry and its own process group. A bare
+ * `execFile` would survive the worker's shutdown path and ignore the step
+ * signal.
+ */
+async function cliVersion(
+  command: string,
+  args: string[],
+): Promise<string | null> {
+  try {
+    const res = await runChild(command, args, {
+      timeoutMs: 15000,
+      maxOutputChars: 2000,
     })
-  })
+    if (res.code !== 0) return null
+    const out =
+      `${res.stdout} ${res.stderr}`.trim().split('\n')[0]?.trim() ?? ''
+    return out.length > 0 ? out.slice(0, 120) : null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -38,7 +50,12 @@ export async function resolveVersions(
 ): Promise<Record<string, string | null>> {
   const cached = versionCache.get(provider)
   if (cached) return cached
-  const pending = resolveVersionsUncached(provider)
+  // Drop a rejected probe from the cache: caching it would make one transient
+  // failure permanent for the life of the worker.
+  const pending = resolveVersionsUncached(provider).catch((error) => {
+    versionCache.delete(provider)
+    throw error
+  })
   versionCache.set(provider, pending)
   return pending
 }
@@ -69,6 +86,12 @@ export interface ConfigVersionInput {
   maxIterations: number
   /** What the run was pointed at; runs against different work are not comparable. */
   target: string
+  /**
+   * Timeouts decide whether a candidate passes, so two runs with different
+   * ones are not one population even when everything else matches.
+   */
+  agentTimeoutMs: number
+  checkTimeoutMs: number
   code: { model: string | null; effort: string | null }
   review: { model: string | null; effort: string | null }
 }
@@ -86,6 +109,8 @@ export function configVersionOf(input: ConfigVersionInput): string {
     instructionsVersion: input.instructionsVersion,
     maxIterations: input.maxIterations,
     target: input.target,
+    agentTimeoutMs: input.agentTimeoutMs,
+    checkTimeoutMs: input.checkTimeoutMs,
     code: { model: input.code.model, effort: input.code.effort },
     review: { model: input.review.model, effort: input.review.effort },
   })

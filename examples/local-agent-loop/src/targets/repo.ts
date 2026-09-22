@@ -13,7 +13,7 @@
  * still be the candidate's commit. Like the directory-hash check on the sample
  * target, this detects an unintended change; it is not a sandbox.
  */
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { runChild } from '../engine/child.js'
@@ -22,7 +22,7 @@ import {
   defaultBranch,
   describeCommitChanges,
   isDirty,
-  patchBetween,
+  writePatch,
   pushBranch,
   resolveCommit,
   treeOf,
@@ -74,6 +74,15 @@ export class RepoTarget implements Target {
     ]
   }
 
+  reviewRules(): string[] {
+    return [
+      'Judge the change against the task and the trusted context below. You are reading a real repository, so follow its own conventions rather than any assumed layout.',
+      'Check that the change is minimal and that nothing unrelated was touched.',
+      'Check the tests: a test that passes whether or not the change is present does not count as coverage. Say needsChanges when the new tests would pass against the base commit.',
+      'Check that no dependency was added without need and that no secret, credential or absolute local path was introduced.',
+    ]
+  }
+
   async seal(args: SealArgs): Promise<CandidateRef> {
     const sealed = await commitAll(
       this.config.workdir,
@@ -91,9 +100,14 @@ export class RepoTarget implements Target {
   }
 
   async assertIntact(candidate: CandidateRef): Promise<void> {
-    if (await isDirty(this.config.workdir)) {
+    // Untracked files do not count. A real check command leaves build output
+    // behind (`.turbo/`, `*.tsbuildinfo`, coverage), and none of it is in the
+    // commit the candidate names, so a passing check would otherwise fail the
+    // run every time. Tracked changes still do count: those would mean the
+    // sealed content moved.
+    if (await isDirty(this.config.workdir, { includeUntracked: false })) {
       throw new Error(
-        `candidate-mutated: ${candidate.id} has uncommitted changes in ${this.config.workdir}`,
+        `candidate-mutated: ${candidate.id} has uncommitted changes to tracked files in ${this.config.workdir}`,
       )
     }
     const head = await resolveCommit(this.config.workdir, 'HEAD')
@@ -169,9 +183,11 @@ export class RepoTarget implements Target {
       this.config.deliveryDir,
       `${args.candidate.id}.patch`,
     )
-    await writeFile(
+    await writePatch(
+      this.config.repoPath,
+      this.config.baseCommit,
+      head,
       patchPath,
-      await patchBetween(this.config.repoPath, this.config.baseCommit, head),
     )
     if (!this.config.publish) {
       return {

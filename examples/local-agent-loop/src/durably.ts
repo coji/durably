@@ -18,9 +18,13 @@ export function dbPath(): string {
 }
 
 function build() {
-  const dialect = new SqliteDialect({
-    database: new Database(dbPath()),
-  })
+  const database = new Database(dbPath())
+  // The documented workflow is two processes: a polling worker in one
+  // terminal and the CLI in another. Under the default rollback journal a
+  // writer locks the whole database, so `demo approve` and `demo report`
+  // contend with the worker's 500ms poll and eventually die on SQLITE_BUSY.
+  database.pragma('journal_mode = WAL')
+  const dialect = new SqliteDialect({ database })
   return createDurably({
     dialect,
     pollingIntervalMs: 500,

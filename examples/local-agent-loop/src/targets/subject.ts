@@ -82,6 +82,17 @@ export class SubjectTarget implements Target {
     ]
   }
 
+  reviewRules(lens: 'correctness' | 'edge-cases'): string[] {
+    return lens === 'correctness'
+      ? [
+          'Read src/calc.js and test/calc.test.js in the workdir.',
+          'Check: does add() handle decimals, negatives, zero? Use the trusted baseline context to confirm whether mul() was touched.',
+        ]
+      : [
+          'Check: minimal change, no extra deps, no unrelated edits, tests cover the fix.',
+        ]
+  }
+
   async seal(args: SealArgs): Promise<CandidateRef> {
     return createCandidate({
       workdir: this.config.workdir,
