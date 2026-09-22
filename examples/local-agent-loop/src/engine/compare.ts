@@ -1,0 +1,187 @@
+/**
+ * Cross-run comparison: group reports by config version and reduce each
+ * group's per-run summaries and per-stage numbers to median / min / max.
+ *
+ * A single run is a noisy sample — cache hits, provider latency, and
+ * repair counts vary between otherwise identical runs — so comparisons
+ * between context modes or model placements should be read from group
+ * statistics, never from one report. Unknown values are dropped from the
+ * statistic and counted in `unknown`, never treated as zero.
+ */
+import type { LoopReport } from './report.js'
+
+export interface Stat {
+  n: number
+  unknown: number
+  median: number | null
+  min: number | null
+  max: number | null
+}
+
+export interface StageStats {
+  stage: string
+  workMs: Stat
+  totalTokens: Stat
+  cacheReadTokens: Stat
+  costUsd: Stat
+  reworked: Stat
+}
+
+export interface ConfigGroup {
+  configVersion: string | null
+  runIds: string[]
+  /** Label reconstructed from the first run's input for readability. */
+  label: string
+  runs: number
+  successes: number
+  successRate: number
+  leadTimeMs: Stat
+  workMs: Stat
+  humanWaitMs: Stat
+  totalTokens: Stat
+  costUsd: Stat
+  /** Cost over successful runs only. */
+  costPerSuccessUsd: Stat
+  repairs: Stat
+  stages: StageStats[]
+}
+
+export interface Comparison {
+  groups: ConfigGroup[]
+}
+
+export function stat(values: (number | null | undefined)[]): Stat {
+  const known = values
+    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
+    .sort((a, b) => a - b)
+  const unknown = values.length - known.length
+  if (known.length === 0)
+    return { n: 0, unknown, median: null, min: null, max: null }
+  const mid = Math.floor(known.length / 2)
+  const at = (i: number): number => known[i] ?? Number.NaN
+  const median = known.length % 2 === 1 ? at(mid) : (at(mid - 1) + at(mid)) / 2
+  return {
+    n: known.length,
+    unknown,
+    median,
+    min: at(0),
+    max: at(known.length - 1),
+  }
+}
+
+function labelOf(report: LoopReport): string {
+  const input = report.input as {
+    provider?: string
+    model?: string
+    effort?: string
+    context?: string
+  } | null
+  const code = report.attempts.find(
+    (a) => a.stepName.includes(':code:') && a.measurement,
+  )?.measurement
+  return [
+    input?.provider ?? 'unknown',
+    code?.effectiveModel ?? input?.model ?? 'default-model',
+    code?.effectiveEffort ?? input?.effort ?? 'default-effort',
+    input?.context ?? 'unknown-context',
+  ].join('/')
+}
+
+export function compareReports(reports: LoopReport[]): Comparison {
+  const groups = new Map<string, LoopReport[]>()
+  for (const r of reports) {
+    const key = r.configVersion ?? `unversioned:${labelOf(r)}`
+    groups.set(key, [...(groups.get(key) ?? []), r])
+  }
+  const out: ConfigGroup[] = []
+  for (const list of groups.values()) {
+    const first = list[0]
+    if (!first) continue
+    const successes = list.filter((r) => r.summary.success).length
+    const stageNames = [
+      ...new Set(list.flatMap((r) => r.stageUsage.map((u) => u.stage))),
+    ]
+    const stages: StageStats[] = stageNames.map((stage) => {
+      const usage = list.map((r) => r.stageUsage.find((u) => u.stage === stage))
+      const timing = list.map((r) =>
+        r.stageTimings.find((t) => t.stage === stage),
+      )
+      const visits = list.map((r) =>
+        r.stageVisits.find((v) => v.stage === stage),
+      )
+      return {
+        stage,
+        workMs: stat(timing.map((t) => (t?.complete ? t.elapsedMs : null))),
+        totalTokens: stat(usage.map((u) => u?.totalTokens)),
+        cacheReadTokens: stat(usage.map((u) => u?.cacheReadTokens)),
+        costUsd: stat(usage.map((u) => u?.costUsd)),
+        reworked: stat(visits.map((v) => v?.reworked ?? 0)),
+      }
+    })
+    out.push({
+      configVersion: first.configVersion,
+      runIds: list.map((r) => r.runId),
+      label: labelOf(first),
+      runs: list.length,
+      successes,
+      successRate: successes / list.length,
+      leadTimeMs: stat(list.map((r) => r.summary.leadTimeMs)),
+      workMs: stat(list.map((r) => r.summary.workMs)),
+      humanWaitMs: stat(list.map((r) => r.summary.humanWaitMs)),
+      totalTokens: stat(list.map((r) => r.summary.totalTokens)),
+      costUsd: stat(list.map((r) => r.summary.costUsd)),
+      costPerSuccessUsd: stat(
+        list
+          .filter((r) => r.summary.success)
+          .map((r) => r.summary.costPerSuccessUsd),
+      ),
+      repairs: stat(list.map((r) => r.summary.repairs)),
+      stages,
+    })
+  }
+  return { groups: out }
+}
+
+function fmtStat(s: Stat, digits = 0): string {
+  if (s.median === null) return `unknown (${s.unknown} unknown)`
+  const f = (v: number | null) => (v === null ? '?' : v.toFixed(digits))
+  const tail = s.unknown > 0 ? `, ${s.unknown} unknown` : ''
+  return `${f(s.median)} [${f(s.min)}..${f(s.max)}] (n=${s.n}${tail})`
+}
+
+export function comparisonToMarkdown(c: Comparison): string {
+  const lines: string[] = []
+  lines.push('# Run comparison')
+  lines.push('')
+  lines.push(
+    'median [min..max] (n=known runs); unknown values are excluded, never zero-filled.',
+  )
+  for (const g of c.groups) {
+    lines.push('')
+    lines.push(`## ${g.label} — config ${g.configVersion ?? 'unversioned'}`)
+    lines.push('')
+    lines.push(`- runs: ${g.runIds.join(', ')}`)
+    lines.push(
+      `- success: ${g.successes}/${g.runs} (${(g.successRate * 100).toFixed(0)}%)`,
+    )
+    lines.push(`- lead time ms: ${fmtStat(g.leadTimeMs)}`)
+    lines.push(`- work ms: ${fmtStat(g.workMs)}`)
+    lines.push(`- human wait ms: ${fmtStat(g.humanWaitMs)}`)
+    lines.push(`- total tokens: ${fmtStat(g.totalTokens)}`)
+    lines.push(`- cost USD: ${fmtStat(g.costUsd, 6)}`)
+    lines.push(`- cost per success USD: ${fmtStat(g.costPerSuccessUsd, 6)}`)
+    lines.push(`- repairs: ${fmtStat(g.repairs)}`)
+    lines.push('')
+    lines.push(
+      '| stage | work ms | total tokens | cache-read | cost USD | reworked |',
+    )
+    lines.push('|---|---|---|---|---|---|')
+    for (const s of g.stages) {
+      lines.push(
+        `| ${s.stage} | ${fmtStat(s.workMs)} | ${fmtStat(s.totalTokens)} | ${fmtStat(s.cacheReadTokens)} | ${fmtStat(s.costUsd, 6)} | ${fmtStat(s.reworked)} |`,
+      )
+    }
+  }
+  lines.push('')
+  return lines.join('\n')
+}

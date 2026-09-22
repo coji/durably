@@ -130,6 +130,7 @@ Use the non-takt `spec-implement-accept` skill and `docs/workflow/code-review.md
 - **doc-check** - Documentation update checklist after API changes (`.claude/skills/doc-check/`)
 - **spec-implement-accept** - Non-takt implementation workflow that opens a Draft PR, runs the blocker review/fix loop, and marks Ready only after the final gate (`.claude/skills/spec-implement-accept/`)
 - **code-review** - Codex eight-perspective read-only review track used by the Draft-to-Ready gate (`.agents/skills/code-review/`)
+- **factory** - Hand an issue to the local Durably factory worker and read its runs (`.claude/skills/factory/`). Use it when the job should outlive the session or when per-stage time, token and cost records matter; use `spec-implement-accept` when the session should do the work itself.
 
 The reviewer topology, blocker rules, convergence limits, and Ready gate are defined in
 `docs/workflow/code-review.md`.

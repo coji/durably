@@ -1,0 +1,4 @@
+local-agent-loop.db
+local-agent-loop.db-*
+runs/
+reports/
