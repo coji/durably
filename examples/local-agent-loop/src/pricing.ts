@@ -37,6 +37,7 @@ interface ModelPrice {
 }
 
 const OPENAI_CACHE = { cacheRead: 0.1, cacheWrite: 1 }
+/** Anthropic's 5-minute cache write premium; the 1h TTL (2x) is not modelled. */
 const ANTHROPIC_CACHE = { cacheRead: 0.1, cacheWrite: 1.25 }
 
 const PRICE_PER_1K: Record<string, ModelPrice> = {
@@ -48,7 +49,7 @@ const PRICE_PER_1K: Record<string, ModelPrice> = {
   'claude-sonnet-5': { in: 0.002, out: 0.01, ...ANTHROPIC_CACHE },
   'gpt-5-codex': { in: 0.00125, out: 0.01, ...OPENAI_CACHE },
   'gpt-5': { in: 0.00125, out: 0.01, ...OPENAI_CACHE },
-  'claude-opus-4-6': { in: 0.015, out: 0.075, ...ANTHROPIC_CACHE },
+  'claude-opus-4-6': { in: 0.005, out: 0.025, ...ANTHROPIC_CACHE },
   'claude-sonnet-4-6': { in: 0.003, out: 0.015, ...ANTHROPIC_CACHE },
 }
 

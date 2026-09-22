@@ -1,9 +1,39 @@
 import assert from 'node:assert/strict'
-import { describe, it } from 'node:test'
+import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { ClaudeProvider, resolveClaudeEffort } from '../src/providers/claude.js'
 import { CodexProvider, resolveCodexEffort } from '../src/providers/codex.js'
 import type { AgentCallOptions } from '../src/providers/types.js'
+
+/**
+ * Model and effort resolution reads the environment, and the agent CLIs this
+ * example targets export these variables themselves — Claude Code sets
+ * `CLAUDE_EFFORT`. Clear them so the suite grades preset resolution instead of
+ * whichever shell happens to run it.
+ */
+const ENV_KEYS = [
+  'CODEX_MODEL',
+  'CODEX_EFFORT',
+  'CLAUDE_MODEL',
+  'CLAUDE_EFFORT',
+] as const
+const savedEnv = new Map<string, string | undefined>()
+
+beforeEach(() => {
+  for (const key of ENV_KEYS) {
+    savedEnv.set(key, process.env[key])
+    delete process.env[key]
+  }
+})
+
+afterEach(() => {
+  for (const key of ENV_KEYS) {
+    const value = savedEnv.get(key)
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  savedEnv.clear()
+})
 
 function opts(over: Partial<AgentCallOptions> = {}): AgentCallOptions {
   return {

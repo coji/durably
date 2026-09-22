@@ -105,6 +105,17 @@ describe('pricing meters', () => {
     assert.equal('input_cache_read_tokens' in b.meters, false)
   })
 
+  it('prices Claude Opus 4.6 at its published rate', () => {
+    // $5 / $25 per MTok. The Opus 4.x family dropped from $15/$75 at 4.5, and
+    // a stale $15/$75 row inflates every cost this report produces by 3x.
+    const input = estimateCostBreakdown('claude-opus-4-6', usage(1_000_000, 0))
+    assert.ok(input)
+    assert.ok(Math.abs(input.totalUsd - 5) < 1e-6)
+    const output = estimateCostBreakdown('claude-opus-4-6', usage(0, 1_000_000))
+    assert.ok(output)
+    assert.ok(Math.abs(output.totalUsd - 25) < 1e-6)
+  })
+
   it('prices flat and says so when no cache leg was reported', () => {
     const b = estimateCostBreakdown('gpt-5.6-sol', usage(1_000, 1_000))
     assert.ok(b)

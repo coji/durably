@@ -12,6 +12,7 @@ import type {
 } from '../src/providers/types.js'
 import type { AttemptMeasurement } from '../src/providers/types.js'
 import { runAgentCall } from '../src/runner.js'
+import type { TokenUsage } from '../src/usage.js'
 
 interface StubAttempt {
   id: string
@@ -236,5 +237,112 @@ describe('runner measurement on the real launch path', () => {
       }),
     )
     assert.equal(attempt.snapshots.at(-1)?.interruptionReason, 'timeout')
+  })
+})
+
+const FINAL_USAGE: TokenUsage = {
+  inputTokens: 100,
+  cachedInputTokens: null,
+  cacheReadTokens: null,
+  cacheWriteTokens: null,
+  outputTokens: 50,
+  totalTokens: 150,
+  usageSource: 'provider-final',
+}
+
+const PARTIAL_USAGE: TokenUsage = {
+  ...FINAL_USAGE,
+  inputTokens: 999,
+  outputTokens: null,
+  totalTokens: null,
+  usageSource: 'provider-partial',
+}
+
+function baseSpec(provider: AgentProvider, checkpointsDir: string) {
+  return {
+    provider,
+    providerName: 'codex' as const,
+    prompt: 'p',
+    workdir: '/tmp',
+    timeoutMs: 5000,
+    requestedModel: null,
+    requestedEffort: null,
+    effectiveModel: 'resolved-model',
+    effectiveEffort: 'low',
+    role: 'implement' as const,
+    stage: 'implement',
+    iteration: 1,
+    operationKey: `test/${randomUUID()}`,
+    checkpointsDir,
+  }
+}
+
+describe('partial usage snapshots never outrank the terminal write', () => {
+  it('survives a failed snapshot write instead of rejecting the call', async () => {
+    const snapshots: AttemptMeasurement[] = []
+    const attempt = {
+      id: randomUUID(),
+      snapshots,
+      log: { info: () => {} },
+      setMetadata: async (m: unknown) => {
+        const next = m as AttemptMeasurement
+        // A busy database, a lost lease, or an already-terminal run makes the
+        // advisory progress write fail while the call itself is still fine.
+        if (next.usage?.usageSource === 'provider-partial')
+          throw new Error('metadata store unavailable')
+        snapshots.push(JSON.parse(JSON.stringify(next)) as AttemptMeasurement)
+      },
+    }
+    const checkpointsDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+    const provider = stubProvider(async (options) => {
+      options.onPartialUsage?.(PARTIAL_USAGE)
+      return {
+        text: 'done',
+        resolvedModel: 'resolved-model',
+        resolvedEffort: 'low',
+        reportedModel: 'resolved-model',
+        reportedEffort: null,
+        usage: FINAL_USAGE,
+        elapsedMs: 5,
+      }
+    })
+    const { measurement } = await runAgentCall(
+      new AbortController().signal,
+      attempt as never,
+      baseSpec(provider, checkpointsDir),
+    )
+    assert.equal(measurement.result, 'implement-done')
+    assert.equal(measurement.usage?.inputTokens, 100)
+    assert.equal(measurement.usage?.usageSource, 'provider-final')
+  })
+
+  it('drops a snapshot that arrives after the terminal write', async () => {
+    const attempt = fakeAttempt()
+    const checkpointsDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+    const late: { fire: ((usage: TokenUsage) => void) | null } = { fire: null }
+    const provider = stubProvider(async (options) => {
+      // The provider schedules one more snapshot and returns before it lands.
+      late.fire = options.onPartialUsage ?? null
+      return {
+        text: 'done',
+        resolvedModel: 'resolved-model',
+        resolvedEffort: 'low',
+        reportedModel: 'resolved-model',
+        reportedEffort: null,
+        usage: FINAL_USAGE,
+        elapsedMs: 5,
+      }
+    })
+    await runAgentCall(
+      new AbortController().signal,
+      attempt as never,
+      baseSpec(provider, checkpointsDir),
+    )
+    const settled = attempt.snapshots.length
+    late.fire?.(PARTIAL_USAGE)
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(attempt.snapshots.length, settled)
+    assert.equal(attempt.snapshots.at(-1)?.result, 'implement-done')
+    assert.equal(attempt.snapshots.at(-1)?.usage?.inputTokens, 100)
   })
 })

@@ -82,6 +82,41 @@ describe('claude workdir guard (reviewer repro)', () => {
     }
   })
 
+  it('denies variable expansion the containment check cannot resolve', () => {
+    // The tokenizer splits on `$`, so a per-token check would grade
+    // `$HOME/.ssh/id_rsa` as the relative path `HOME/.ssh/id_rsa` and allow it.
+    for (const cmd of [
+      'cat $HOME/.ssh/id_rsa',
+      'echo $SECRET',
+      'cat ${HOME}/.ssh/id_rsa',
+    ]) {
+      assert.equal(
+        decideToolPermission(ROOT, false, 'Bash', { command: cmd }).allow,
+        false,
+        cmd,
+      )
+    }
+  })
+
+  it('grades a flag value as a path instead of one opaque token', () => {
+    for (const cmd of [
+      'node --out=/etc/passwd',
+      'node --config=../outside.json',
+    ]) {
+      assert.equal(
+        decideToolPermission(ROOT, false, 'Bash', { command: cmd }).allow,
+        false,
+        cmd,
+      )
+    }
+    assert.equal(
+      decideToolPermission(ROOT, false, 'Bash', {
+        command: 'node --out=src/report.json',
+      }).allow,
+      true,
+    )
+  })
+
   it('PreToolUse hook denies with the Agent SDK decision shape', async () => {
     const hook = preToolUseHook(ROOT, false)
     const denied = (await hook({

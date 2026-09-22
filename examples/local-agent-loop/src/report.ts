@@ -46,7 +46,11 @@ export interface StageTiming {
   stage: string
   /** Sum of measured work in the stage. */
   elapsedMs: number | null
-  /** Wall-clock interval spanning parallel branches. */
+  /**
+   * Sum of each visit's wall-clock interval. Within one visit the interval
+   * spans parallel branches; separate visits are summed rather than spanned,
+   * so time spent in other stages between two visits is never counted here.
+   */
   wallElapsedMs?: number | null
   /**
    * False when any attempt in the stage lacks elapsedMs: the sum covers only
@@ -189,6 +193,18 @@ function stageOf(stepName: string): string {
   if (parts[0] === 'decision') return 'policy'
   const base = stepName.split(':')[0] ?? stepName
   return base
+}
+
+/**
+ * Sequence number distinguishing repeat entries into the same stage.
+ * `stage:<sequence>:<name>:...` and `decision:<sequence>` carry one; steps
+ * that run once per run (setup) do not.
+ */
+function sequenceOf(stepName: string): string | null {
+  const parts = stepName.split(':')
+  if ((parts[0] === 'stage' || parts[0] === 'decision') && parts[1])
+    return parts[1]
+  return null
 }
 
 function sortStages<T extends { stage: string }>(rows: T[]): T[] {
@@ -338,7 +354,13 @@ export function summarizeRun(input: SummaryInput): RunSummary {
 /** Sum once per invocation while retaining its original execution interval. */
 export function stageTimings(attempts: AttemptRow[]): StageTiming[] {
   const byStage = new Map<string, number>()
-  const bounds = new Map<string, { start: number; end: number }>()
+  // Bounds are per visit, never per stage: a stage entered twice would
+  // otherwise report one span from its first start to its last end, swallowing
+  // every stage that ran in between.
+  const visitBounds = new Map<
+    string,
+    { stage: string; start: number; end: number }
+  >()
   const incomplete = new Set<string>()
   const seen = new Set<string>()
   for (const a of dedupeByInvocation(attempts)) {
@@ -355,8 +377,10 @@ export function stageTimings(attempts: AttemptRow[]): StageTiming[] {
         ? Math.max(0, end - start)
         : null)
     if (Number.isFinite(start) && Number.isFinite(end)) {
-      const current = bounds.get(stage)
-      bounds.set(stage, {
+      const key = `${stage}#${sequenceOf(a.stepName) ?? 'once'}`
+      const current = visitBounds.get(key)
+      visitBounds.set(key, {
+        stage,
         start: current ? Math.min(current.start, start) : start,
         end: current ? Math.max(current.end, end) : end,
       })
@@ -367,14 +391,20 @@ export function stageTimings(attempts: AttemptRow[]): StageTiming[] {
     }
     byStage.set(stage, (byStage.get(stage) ?? 0) + ms)
   }
+  const wallByStage = new Map<string, number>()
+  for (const visit of visitBounds.values()) {
+    wallByStage.set(
+      visit.stage,
+      (wallByStage.get(visit.stage) ?? 0) +
+        Math.max(0, visit.end - visit.start),
+    )
+  }
   const stages = [...new Set([...byStage.keys(), ...incomplete])]
   return sortStages(
     stages.map((stage) => ({
       stage,
       elapsedMs: byStage.get(stage) ?? null,
-      wallElapsedMs: bounds.has(stage)
-        ? (bounds.get(stage)?.end ?? 0) - (bounds.get(stage)?.start ?? 0)
-        : null,
+      wallElapsedMs: wallByStage.get(stage) ?? null,
       complete: !incomplete.has(stage),
     })),
   )

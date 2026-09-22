@@ -152,22 +152,24 @@ export function decideToolPermission(
 
 /** Lexically resolve `..`/`.` in a token; null when it escapes the root. */
 function bashEscapeReason(root: string, cmd: string): string | null {
-  // Dynamic shell forms whose target cannot be resolved statically.
+  // Dynamic shell forms whose target cannot be resolved statically. Any `$`
+  // is rejected here rather than per token: the tokenizer below splits on `$`,
+  // so `$HOME/.ssh/id_rsa` would otherwise reach the containment check as the
+  // relative-looking `HOME/.ssh/id_rsa` and resolve inside the workdir.
   if (
-    cmd.includes('$(') ||
+    cmd.includes('$') ||
     cmd.includes('`') ||
     /(^|[\s;"'=])~(\/|$)/.test(cmd)
   ) {
     return `command uses dynamic expansion that cannot be contained: ${cmd.slice(0, 200)}`
   }
+  // `=` separates a flag from its value, so `--out=/etc/passwd` must be graded
+  // as the path `/etc/passwd` and not as one opaque relative-looking token.
   const tokens = cmd
-    .split(/[\s;&|()<>$'"`]+/)
+    .split(/[\s;&|()<>$'"`=]+/)
     .map((t) => t.trim())
     .filter((t) => t.length > 0)
   for (const token of tokens) {
-    if (token.includes('$')) {
-      return `command references an unresolvable variable path: ${token.slice(0, 100)}`
-    }
     const looksLikePath =
       token.includes('/') ||
       token.startsWith('.') ||

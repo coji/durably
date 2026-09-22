@@ -171,12 +171,24 @@ export async function runAgentCall(
   }
   await attempt.setMetadata(measurement as unknown as JsonValue)
 
+  // Partial usage snapshots are advisory and arrive while the call is still
+  // running. They are written one at a time and stop once the terminal write
+  // begins, so a late snapshot can never overwrite the final measurement, and
+  // a failed snapshot write can never reject into an unhandled rejection.
+  let finalized = false
+  let partialWrites: Promise<void> = Promise.resolve()
+  const settleMeasurement = async (): Promise<void> => {
+    finalized = true
+    await partialWrites
+  }
+
   const finish = async (
     result: AgentResult,
     recovered: boolean,
     checkpoint?: CompletedCheckpoint,
   ): Promise<AgentCallOutcome> => {
     if (checkpoint) invocationId = checkpoint.invocationId
+    await settleMeasurement()
     const sessionId = result.session?.id ?? spec.session?.nativeId ?? null
     if (spec.requireSession && !sessionId)
       throw new Error(
@@ -269,12 +281,18 @@ export async function runAgentCall(
       sessionId: spec.session?.nativeId ?? null,
       signal: linked,
       onPartialUsage: (usage) => {
-        void writeMeasurement(attempt, measurement, {
-          usagePatch: { ...usage, usageSource: 'provider-partial' },
-          elapsedMs: Date.now() - startedAt,
-        }).then((next) => {
-          measurement = next
-        })
+        partialWrites = partialWrites
+          .then(async () => {
+            if (finalized) return
+            measurement = await writeMeasurement(attempt, measurement, {
+              usagePatch: { ...usage, usageSource: 'provider-partial' },
+              elapsedMs: Date.now() - startedAt,
+            })
+          })
+          .catch(() => {
+            // Losing one progress snapshot must not fail the call or crash the
+            // worker; the terminal write reports the provider's final usage.
+          })
       },
     })
     if (
@@ -296,6 +314,7 @@ export async function runAgentCall(
     return finish(result, false)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    await settleMeasurement()
     measurement = await writeMeasurement(attempt, measurement, {
       elapsedMs: Date.now() - startedAt,
       result: 'uncertain',

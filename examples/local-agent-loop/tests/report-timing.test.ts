@@ -144,3 +144,80 @@ describe('stage timing completeness', () => {
     assert.equal(timing?.wallElapsedMs, 1000)
   })
 })
+
+function timedRow(
+  stepName: string,
+  attemptId: string,
+  startedAt: string,
+  completedAt: string,
+): AttemptRow {
+  const base = row(
+    stepName,
+    attemptId,
+    Date.parse(completedAt) - Date.parse(startedAt),
+  )
+  return {
+    ...base,
+    startedAt,
+    completedAt,
+    measurement: {
+      ...base.measurement!,
+      invocationStartedAt: startedAt,
+      invocationCompletedAt: completedAt,
+    },
+  }
+}
+
+describe('stage wall time across repeat visits', () => {
+  it('sums each visit instead of spanning the stages that ran in between', () => {
+    // code(0-20s) -> verify(20-40s) -> code again(200-220s)
+    const timings = stageTimings([
+      timedRow(
+        'stage:0:code:agent',
+        'a1',
+        '2026-01-01T00:00:00.000Z',
+        '2026-01-01T00:00:20.000Z',
+      ),
+      timedRow(
+        'stage:1:verify:acceptance',
+        'v1',
+        '2026-01-01T00:00:20.000Z',
+        '2026-01-01T00:00:40.000Z',
+      ),
+      timedRow(
+        'stage:2:code:agent',
+        'a2',
+        '2026-01-01T00:03:20.000Z',
+        '2026-01-01T00:03:40.000Z',
+      ),
+    ])
+    const code = timings.find((t) => t.stage === 'code')
+    assert.equal(code?.elapsedMs, 40000)
+    // Not 220000: the verify stage and the idle gap belong to neither visit.
+    assert.equal(code?.wallElapsedMs, 40000)
+    assert.equal(
+      timings.find((t) => t.stage === 'verify')?.wallElapsedMs,
+      20000,
+    )
+  })
+
+  it('still spans parallel branches within one visit', () => {
+    const timings = stageTimings([
+      timedRow(
+        'stage:2:review:correctness',
+        'r1',
+        '2026-01-01T00:00:00.000Z',
+        '2026-01-01T00:00:10.000Z',
+      ),
+      timedRow(
+        'stage:2:review:edge-cases',
+        'r2',
+        '2026-01-01T00:00:02.000Z',
+        '2026-01-01T00:00:12.000Z',
+      ),
+    ])
+    const review = timings.find((t) => t.stage === 'review')
+    assert.equal(review?.elapsedMs, 20000)
+    assert.equal(review?.wallElapsedMs, 12000)
+  })
+})
