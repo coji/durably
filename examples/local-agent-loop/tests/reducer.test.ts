@@ -16,6 +16,7 @@ const setup: FactorySetup = {
   baselineHash: 'baseline',
   checkpointsDir: '/tmp/checkpoints',
   instructionsVersion: 'v2',
+  configVersion: 'cfg-test',
   profiles: {
     code: {
       id: 'fake:code',

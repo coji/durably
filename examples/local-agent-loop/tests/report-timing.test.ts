@@ -7,7 +7,25 @@ import {
   stageTimings,
   totalStageMs,
   type AttemptRow,
+  type RunSummary,
 } from '../src/report.js'
+
+function emptySummary(): RunSummary {
+  return {
+    success: false,
+    conclusion: null,
+    leadTimeMs: null,
+    workMs: null,
+    humanWaitMs: null,
+    humanWaitRatio: null,
+    llmInvocations: 0,
+    totalTokens: null,
+    costUsd: null,
+    costPerSuccessUsd: null,
+    repairs: 0,
+    reviewRounds: 0,
+  }
+}
 
 function row(
   stepName: string,
@@ -85,6 +103,10 @@ describe('stage timing completeness', () => {
       input: {},
       output: null,
       fake: false,
+      configVersion: null,
+      summary: emptySummary(),
+      stageUsage: [],
+      stageVisits: [],
       realLlmCallCount: 1,
       fullLoopVerified: false,
       attempts: [

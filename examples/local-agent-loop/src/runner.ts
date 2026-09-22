@@ -5,7 +5,7 @@ import { join } from 'node:path'
 
 import type { JsonValue, StepAttemptContext } from '@coji/durably'
 
-import { estimateCostUsd } from './pricing.js'
+import { estimateCostBreakdown } from './pricing.js'
 import type {
   AgentProvider,
   AgentResult,
@@ -33,6 +33,7 @@ export interface AgentCallSpec {
   checkpointsDir?: string
   session?: SessionRef | null
   requireSession?: boolean
+  configVersion?: string | null
 }
 
 export interface AgentCallOutcome {
@@ -110,8 +111,11 @@ export async function writeMeasurement(
         ? mergeUsage(current.usage, usagePatch)
         : current.usage,
   }
-  next.costUsdEstimate = estimateCostUsd(next.reportedModel, next.usage)
+  const breakdown = estimateCostBreakdown(next.reportedModel, next.usage)
+  next.costUsdEstimate = breakdown?.totalUsd ?? null
   next.costBasis = next.usage ? 'api-equivalent-estimate' : null
+  next.costMeters = breakdown?.meters ?? null
+  next.costCacheAware = breakdown?.cacheAware ?? null
   await attempt.setMetadata(next as unknown as JsonValue)
   return next
 }
@@ -158,6 +162,9 @@ export async function runAgentCall(
     usage: null,
     costUsdEstimate: null,
     costBasis: null,
+    costMeters: null,
+    costCacheAware: null,
+    configVersion: spec.configVersion ?? null,
     result: saved ? 'checkpoint-recovered' : 'started',
     error: null,
     interruptionReason: null,

@@ -116,6 +116,15 @@ export interface AttemptMeasurement {
   /** API-equivalent price estimate; null when usage or pricing unknown. */
   costUsdEstimate: number | null
   costBasis: 'api-equivalent-estimate' | null
+  /** Per-meter USD split of `costUsdEstimate`; absent when unpriced. */
+  costMeters?: Partial<Record<string, number>> | null
+  /** True when cache legs were reported and priced at their own rates. */
+  costCacheAware?: boolean | null
+  /**
+   * Hash of the run's fixed configuration (provider, models, efforts,
+   * context mode, instructions version). Runs sharing it are comparable.
+   */
+  configVersion?: string | null
   result: string | null
   error: string | null
   /** Why the attempt stopped early (cancel / lease-loss / timeout). */

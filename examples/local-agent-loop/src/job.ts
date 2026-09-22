@@ -13,6 +13,7 @@ import { createProvider } from './providers/index.js'
 import { reduce } from './reducer.js'
 import { stages } from './stages.js'
 import { initialState, type FactorySetup, type StageDecision } from './types.js'
+import { configVersionOf } from './versions.js'
 
 const inputSchema = z.object({
   provider: z.enum(['codex', 'claude', 'fake']),
@@ -95,6 +96,7 @@ export const agentLoopJob = defineJob({
           resolved.model ?? 'provider-default',
           resolved.effort ?? 'provider-default',
         ].join(':')
+        const instructionsVersion = 'local-factory.v2'
         const value: FactorySetup = {
           provider: input.provider,
           fake: provider.fake,
@@ -105,7 +107,15 @@ export const agentLoopJob = defineJob({
           baselineDir,
           baselineHash,
           checkpointsDir: join(root, 'operation-checkpoints'),
-          instructionsVersion: 'local-factory.v2',
+          instructionsVersion,
+          configVersion: configVersionOf({
+            provider: input.provider,
+            contextMode: input.context,
+            instructionsVersion,
+            maxIterations: input.maxIterations,
+            code: { model: resolved.model, effort: resolved.effort },
+            review: { model: resolved.model, effort: resolved.effort },
+          }),
           profiles: {
             code: {
               id: `${profileId}:code`,

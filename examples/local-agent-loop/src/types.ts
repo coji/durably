@@ -52,6 +52,8 @@ export interface FactorySetup {
   baselineHash: string
   checkpointsDir: string
   instructionsVersion: string
+  /** Hash of the fixed profile; equal across runs that are fair to compare. */
+  configVersion: string
   profiles: {
     code: ResolvedProfile
     review: ResolvedProfile

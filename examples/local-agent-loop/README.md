@@ -120,8 +120,8 @@ pnpm --filter example-local-agent-loop demo trigger \
   --provider codex --context fresh --model gpt-5.6-sol --effort medium
 ```
 
-両方を承認まで進め、JSON reportで修正回数、cache read/write、実作業時間、
-並列review区間、人間待ち、run全体時間を比較します。session継続はcache hitを
+両方を承認まで進め、`compare` で修正回数、cache read/write、実作業時間、
+並列review区間、人間待ち、run全体時間の中央値を比較します。session継続はcache hitを
 保証しません。効果はproviderが報告したcache usageで判断します。
 
 ## 呼び出し識別と復旧
@@ -155,7 +155,8 @@ LLM呼び出しはすべて `src/runner.ts` を通り、attempt metadataへ以�
 - `sessionId`、`operationKey`、`invocationId`、回収結果かどうか
 - 通常input、cache read、cache write、output、total token
 - usageの単位（このサンプルは一provider invocation）と取得元
-- elapsed、result、error、interruption reason、API換算参考価格
+- elapsed、result、error、interruption reason、API換算参考価格とmeter別内訳
+- `configVersion`（provider、model、effort、context、指示版、反復上限のhash）
 
 集計は `invocationId` で一度だけ数えます。同じcomplete checkpointを別attemptが
 読み直してもtokenを二重計上しません。ローカルテストやPolicyはusage対象外です。
@@ -168,9 +169,42 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
   --out reports/<runId>.md
 ```
 
+レポートは次の三層で出します。
+
+- **Summary**: run 1本を1行に畳んだ値。success、lead time（trigger→終了）、
+  work（工程実作業の合計）、human wait とその lead time 比、LLM呼び出し数、
+  total tokens、cost、cost per success（成功したrunだけ）、repairs、review rounds
+- **Stage usage**: 工程ごとの visits / reworked（同じ工程への再突入＝手戻り）、
+  invocation数、in / cache-read / cache-write / out / total、cost。
+  いずれかの呼び出しが未計上なら PARTIAL、価格不明なら unknown
+- **Timing / Attempts / Waits**: 従来どおりの工程別 work / wall 時間、
+  呼び出しごとの生データ、承認待ちの inputWait / executionSlotWait
+
 価格はsubscription請求額ではなく、各呼び出し時に保存した
-`api-equivalent-estimate` の参考値です。レポートは保存済みの値を合計し、現在の
-価格表で再計算したとは表示しません。未知のmodelや欠けたusageを0円として扱いません。
+`api-equivalent-estimate` の参考値です。AI SDK v7 の usage 契約に合わせ、
+`inputTokens` 全体のうち cache read / cache write を各 meter の単価
+（cache read 10%、Anthropic の cache write 125%）で、残りを input 単価で
+計算します。cache legs が報告されなかった呼び出しは input 全体を定価で扱い、
+`costCacheAware: false` として区別します。レポートは保存済みの値を合計し、
+現在の価格表で再計算したとは表示しません。未知のmodelや欠けたusageを
+0円として扱いません。
+
+### 複数 run の比較
+
+1本の run はキャッシュ命中や修正回数でぶれるので、同条件を複数回まわして
+`compare` で見ます。`configVersion` が同じ run を1グループにまとめ、
+中央値 / 最小 / 最大と欠測数を出します。
+
+```bash
+pnpm --filter example-local-agent-loop demo compare \
+  --runs <runA>,<runB>,<runC>,<runD> --format md
+```
+
+グループごとに success 率、lead time、work、human wait、total tokens、cost、
+cost per success、repairs、工程別の work / tokens / cache-read / cost / reworked
+を並べます。reuse と fresh を比べるときは、`code` 工程の cache-read 比と
+repairs の中央値を見ます。unknown は統計から外して件数だけ残し、0 として
+平均に混ぜません。
 
 ## 権限と制約
 
@@ -204,6 +238,6 @@ pnpm --filter example-local-agent-loop demo trigger \
 - `src/providers/` — AI SDK v7のCodex / Claude / fake adapter
 - `src/runner.ts` — session、operation checkpoint、共通計測
 - `src/acceptance.ts`, `test-step.ts` — 固定受け入れテスト
-- `src/report.ts`, `usage.ts`, `pricing.ts` — 永続記録からの集計
+- `src/report.ts`, `build-report.ts`, `compare.ts`, `usage.ts`, `pricing.ts` — 永続記録からの集計と複数run比較
 - `subject/` — 変更しないバグ入り題材
 - `runs/`, `local-agent-loop.db` — gitignored runtime data

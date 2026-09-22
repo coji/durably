@@ -55,6 +55,56 @@ export interface StageTiming {
   complete: boolean
 }
 
+/** Token and cost consumption of one stage, counted once per invocation. */
+export interface StageUsage {
+  stage: string
+  /** LLM invocations that completed in this stage (deduped). */
+  invocations: number
+  inputTokens: number | null
+  cacheReadTokens: number | null
+  cacheWriteTokens: number | null
+  outputTokens: number | null
+  totalTokens: number | null
+  /** Sum of stored per-invocation estimates; null when any is unpriced. */
+  costUsd: number | null
+  /** False when any usage-expecting invocation lacks usage or a priced leg. */
+  complete: boolean
+}
+
+/**
+ * How many times a stage was entered. A second visit is rework: the stage
+ * ran again because a later stage sent the candidate back (Mastra Factory's
+ * `reworked` outcome, derived here from step names instead of a board).
+ */
+export interface StageVisits {
+  stage: string
+  visits: number
+  reworked: number
+}
+
+/** One row per run, the unit that cross-run comparisons operate on. */
+export interface RunSummary {
+  /** Terminal completed run whose candidate was approved. */
+  success: boolean
+  conclusion: string | null
+  /** Trigger to terminal state; null while the run is still open. */
+  leadTimeMs: number | null
+  /** Sum of measured stage work; null when any stage is partial. */
+  workMs: number | null
+  /** Human/external input wait across all waits; null when unknown. */
+  humanWaitMs: number | null
+  /** humanWaitMs / leadTimeMs; null when either is unknown. */
+  humanWaitRatio: number | null
+  llmInvocations: number
+  totalTokens: number | null
+  costUsd: number | null
+  /** costUsd when the run succeeded, else null: what one success cost. */
+  costPerSuccessUsd: number | null
+  /** Times the code stage ran after the first implementation. */
+  repairs: number
+  reviewRounds: number
+}
+
 export interface LoopReport {
   runId: string
   jobName: string
@@ -62,6 +112,11 @@ export interface LoopReport {
   input: unknown
   output: unknown
   fake: boolean
+  /** Shared by runs with identical provider/model/effort/context settings. */
+  configVersion: string | null
+  summary: RunSummary
+  stageUsage: StageUsage[]
+  stageVisits: StageVisits[]
   /** Real (non-fake) CLI invocations observed in attempts. */
   realLlmCallCount: number
   /**
@@ -113,6 +168,21 @@ function fmtMs(v: number | null): string {
   return v === null ? 'unknown' : `${v}ms`
 }
 
+function fmtUsd(v: number | null): string {
+  return v === null ? 'unknown' : v.toFixed(6)
+}
+
+const STAGE_ORDER = [
+  'setup',
+  'policy',
+  'code',
+  'verify',
+  'review',
+  'approve',
+  'finish',
+  'stop',
+]
+
 function stageOf(stepName: string): string {
   const parts = stepName.split(':')
   if (parts[0] === 'stage' && parts[2]) return parts[2]
@@ -121,26 +191,157 @@ function stageOf(stepName: string): string {
   return base
 }
 
-/** Sum once per invocation while retaining its original execution interval. */
-export function stageTimings(attempts: AttemptRow[]): StageTiming[] {
+function sortStages<T extends { stage: string }>(rows: T[]): T[] {
+  return [...rows].sort(
+    (x, y) => STAGE_ORDER.indexOf(x.stage) - STAGE_ORDER.indexOf(y.stage),
+  )
+}
+
+/**
+ * Keep one row per invocation, preferring the attempt that completed it.
+ * Recovery attempts re-read the same invocation and must not add tokens.
+ */
+function dedupeByInvocation(attempts: AttemptRow[]): AttemptRow[] {
   const selected = new Map<string, AttemptRow>()
+  const completed = (a: AttemptRow | undefined) =>
+    a?.measurement?.result === 'checkpoint-recovered' ||
+    (a?.measurement?.result?.endsWith('-done') ?? false)
   for (const attempt of attempts) {
     const key = attempt.measurement?.invocationId ?? attempt.attemptId
     const previous = selected.get(key)
-    const isCompletedInvocation =
-      attempt.measurement?.result === 'checkpoint-recovered' ||
-      (attempt.measurement?.result?.endsWith('-done') ?? false)
-    const previousCompleted =
-      previous?.measurement?.result === 'checkpoint-recovered' ||
-      (previous?.measurement?.result?.endsWith('-done') ?? false)
-    if (!previous || (isCompletedInvocation && !previousCompleted))
+    if (!previous || (completed(attempt) && !completed(previous)))
       selected.set(key, attempt)
   }
+  return [...selected.values()]
+}
+
+/** Per-stage token and cost sums, one count per invocation. */
+export function stageUsage(attempts: AttemptRow[]): StageUsage[] {
+  const byStage = new Map<string, AttemptRow[]>()
+  for (const a of dedupeByInvocation(attempts)) {
+    if (!attemptExpectsUsage(a.stepName)) continue
+    const stage = stageOf(a.stepName)
+    byStage.set(stage, [...(byStage.get(stage) ?? []), a])
+  }
+  const rows: StageUsage[] = []
+  for (const [stage, list] of byStage) {
+    const agg = aggregateUsage(
+      list.map((a) => ({
+        attemptId: a.measurement?.invocationId ?? a.attemptId,
+        usage: a.measurement?.usage ?? null,
+        expectsUsage: true,
+      })),
+    )
+    const costs = list.map((a) => a.measurement?.costUsdEstimate ?? null)
+    const costUsd =
+      agg.complete && costs.every((c) => c !== null)
+        ? costs.reduce<number>((sum, c) => sum + (c ?? 0), 0)
+        : null
+    rows.push({
+      stage,
+      invocations: list.length,
+      inputTokens: agg.inputTokens,
+      cacheReadTokens: agg.cacheReadTokens,
+      cacheWriteTokens: agg.cacheWriteTokens,
+      outputTokens: agg.outputTokens,
+      totalTokens: agg.totalTokens,
+      costUsd,
+      complete: agg.complete,
+    })
+  }
+  return sortStages(rows)
+}
+
+/**
+ * Count distinct entries into each stage from `stage:<sequence>:<stage>`
+ * step names. Setup and policy steps carry no sequence and are skipped.
+ */
+export function stageVisits(attempts: AttemptRow[]): StageVisits[] {
+  const sequences = new Map<string, Set<string>>()
+  for (const a of attempts) {
+    const parts = a.stepName.split(':')
+    if (parts[0] !== 'stage' || !parts[1] || !parts[2]) continue
+    const set = sequences.get(parts[2]) ?? new Set<string>()
+    set.add(parts[1])
+    sequences.set(parts[2], set)
+  }
+  return sortStages(
+    [...sequences].map(([stage, set]) => ({
+      stage,
+      visits: set.size,
+      reworked: Math.max(0, set.size - 1),
+    })),
+  )
+}
+
+export interface SummaryInput {
+  status: string
+  output: unknown
+  runElapsedMs: number | null
+  stageTotalMs: number | null
+  waits: WaitRow[]
+  attempts: AttemptRow[]
+  stageUsage: StageUsage[]
+  stageVisits: StageVisits[]
+}
+
+/** Fold a run into the one-row summary used for cross-run comparison. */
+export function summarizeRun(input: SummaryInput): RunSummary {
+  const output = input.output as {
+    approved?: boolean
+    conclusion?: string
+    reviewRounds?: number
+  } | null
+  const success =
+    input.status === 'completed' &&
+    output?.approved === true &&
+    output?.conclusion === 'approved'
+  const usageRows = input.stageUsage
+  const allComplete = usageRows.every((r) => r.complete)
+  const sumLeg = (pick: (r: StageUsage) => number | null): number | null => {
+    const known = usageRows.map(pick).filter((v): v is number => v !== null)
+    return known.length === usageRows.length && usageRows.length > 0
+      ? known.reduce((s, v) => s + v, 0)
+      : null
+  }
+  const costUsd = allComplete ? sumLeg((r) => r.costUsd) : null
+  const humanWaits = input.waits.map((w) => w.inputWaitMs)
+  const humanWaitMs =
+    humanWaits.length > 0 && humanWaits.every((v) => v !== null)
+      ? humanWaits.reduce<number>((s, v) => s + (v ?? 0), 0)
+      : humanWaits.length === 0
+        ? 0
+        : null
+  const leadTimeMs = input.runElapsedMs
+  return {
+    success,
+    conclusion: output?.conclusion ?? null,
+    leadTimeMs,
+    workMs: input.stageTotalMs,
+    humanWaitMs,
+    humanWaitRatio:
+      humanWaitMs !== null && leadTimeMs !== null && leadTimeMs > 0
+        ? humanWaitMs / leadTimeMs
+        : null,
+    llmInvocations: usageRows.reduce((s, r) => s + r.invocations, 0),
+    totalTokens: sumLeg((r) => r.totalTokens),
+    costUsd,
+    costPerSuccessUsd: success ? costUsd : null,
+    repairs: input.stageVisits.find((v) => v.stage === 'code')?.reworked ?? 0,
+    reviewRounds:
+      typeof output?.reviewRounds === 'number'
+        ? output.reviewRounds
+        : (input.stageVisits.find((v) => v.stage === 'review')?.visits ?? 0),
+  }
+}
+
+/** Sum once per invocation while retaining its original execution interval. */
+export function stageTimings(attempts: AttemptRow[]): StageTiming[] {
   const byStage = new Map<string, number>()
   const bounds = new Map<string, { start: number; end: number }>()
   const incomplete = new Set<string>()
   const seen = new Set<string>()
-  for (const a of selected.values()) {
+  for (const a of dedupeByInvocation(attempts)) {
     if (seen.has(a.attemptId)) continue
     seen.add(a.attemptId)
     const stage = stageOf(a.measurement?.stage ?? a.stepName)
@@ -166,26 +367,17 @@ export function stageTimings(attempts: AttemptRow[]): StageTiming[] {
     }
     byStage.set(stage, (byStage.get(stage) ?? 0) + ms)
   }
-  const order = [
-    'setup',
-    'policy',
-    'code',
-    'verify',
-    'review',
-    'approve',
-    'finish',
-    'stop',
-  ]
   const stages = [...new Set([...byStage.keys(), ...incomplete])]
-  stages.sort((x, y) => order.indexOf(x) - order.indexOf(y))
-  return stages.map((stage) => ({
-    stage,
-    elapsedMs: byStage.get(stage) ?? null,
-    wallElapsedMs: bounds.has(stage)
-      ? (bounds.get(stage)?.end ?? 0) - (bounds.get(stage)?.start ?? 0)
-      : null,
-    complete: !incomplete.has(stage),
-  }))
+  return sortStages(
+    stages.map((stage) => ({
+      stage,
+      elapsedMs: byStage.get(stage) ?? null,
+      wallElapsedMs: bounds.has(stage)
+        ? (bounds.get(stage)?.end ?? 0) - (bounds.get(stage)?.start ?? 0)
+        : null,
+      complete: !incomplete.has(stage),
+    })),
+  )
 }
 
 /** Stage total across stages; unknown when any stage timing is partial. */
@@ -239,6 +431,42 @@ export function reportToMarkdown(r: LoopReport): string {
     `- full loop verified: ${r.fullLoopVerified ? 'yes (real CLI, terminal success, approved)' : 'no (see notes)'}`,
   )
   lines.push(`- output: ${JSON.stringify(r.output)}`)
+  lines.push(`- config version: ${fmt(r.configVersion)}`)
+  lines.push('')
+  lines.push('## Summary (one row per run)')
+  lines.push('')
+  const s = r.summary
+  lines.push(`- success: ${s.success ? 'yes' : 'no'} (${fmt(s.conclusion)})`)
+  lines.push(`- lead time (trigger -> terminal): ${fmtMs(s.leadTimeMs)}`)
+  lines.push(`- work (stage total): ${fmtMs(s.workMs)}`)
+  lines.push(
+    `- human wait: ${fmtMs(s.humanWaitMs)}${s.humanWaitRatio !== null ? ` (${(s.humanWaitRatio * 100).toFixed(1)}% of lead time)` : ''}`,
+  )
+  lines.push(`- llm invocations: ${s.llmInvocations}`)
+  lines.push(`- total tokens: ${fmt(s.totalTokens)}`)
+  lines.push(`- cost (USD api-equiv): ${fmtUsd(s.costUsd)}`)
+  lines.push(`- cost per success: ${fmtUsd(s.costPerSuccessUsd)}`)
+  lines.push(`- repairs: ${s.repairs}, review rounds: ${s.reviewRounds}`)
+  lines.push('')
+  lines.push('## Stage usage (deduped by invocation)')
+  lines.push('')
+  lines.push(
+    '| stage | visits | reworked | invocations | in | cache-read | cache-write | out | total | cost(USD) |',
+  )
+  lines.push('|---|---|---|---|---|---|---|---|---|---|')
+  const visits = new Map(r.stageVisits.map((v) => [v.stage, v]))
+  for (const u of r.stageUsage) {
+    const v = visits.get(u.stage)
+    lines.push(
+      `| ${u.stage} | ${v?.visits ?? 'n/a'} | ${v?.reworked ?? 'n/a'} | ${u.invocations} | ${fmt(u.inputTokens)} | ${fmt(u.cacheReadTokens)} | ${fmt(u.cacheWriteTokens)} | ${fmt(u.outputTokens)} | ${fmt(u.totalTokens)} | ${fmtUsd(u.costUsd)}${u.complete ? '' : ' (PARTIAL)'} |`,
+    )
+  }
+  for (const v of r.stageVisits) {
+    if (r.stageUsage.some((u) => u.stage === v.stage)) continue
+    lines.push(
+      `| ${v.stage} | ${v.visits} | ${v.reworked} | 0 | - | - | - | - | - | - |`,
+    )
+  }
   lines.push('')
   lines.push('## Timing')
   lines.push('')

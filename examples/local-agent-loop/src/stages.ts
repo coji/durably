@@ -85,6 +85,7 @@ export const codeStage: StageHandler = async ({
         checkpointsDir: state.setup.checkpointsDir,
         session: continuedSession,
         requireSession: state.setup.contextMode === 'reuse',
+        configVersion: state.setup.configVersion,
       }),
     {
       metadata: {
@@ -202,6 +203,7 @@ export const reviewStage: StageHandler = async ({
         operationKey: `${step.runId}/${key}/${lens}`,
         checkpointsDir: state.setup.checkpointsDir,
         session: null,
+        configVersion: state.setup.configVersion,
       })
       const parsed = parseReviewOutput(result.text)
       if (!parsed.ok)

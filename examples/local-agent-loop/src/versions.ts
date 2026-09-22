@@ -1,5 +1,6 @@
 /** Version recording: AI SDK + provider packages + local CLIs. */
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
@@ -59,4 +60,31 @@ async function resolveVersionsUncached(
     return { ...base, claudeCli: await cliVersion('claude', ['--version']) }
   }
   return base
+}
+
+export interface ConfigVersionInput {
+  provider: string
+  contextMode: string
+  instructionsVersion: string
+  maxIterations: number
+  code: { model: string | null; effort: string | null }
+  review: { model: string | null; effort: string | null }
+}
+
+/**
+ * Stable hash of the fixed run configuration. Two runs share a config
+ * version exactly when their provider, models, efforts, context mode,
+ * iteration budget, and instruction set are identical — the unit of a fair
+ * comparison. Stored on every LLM attempt as `configVersion`.
+ */
+export function configVersionOf(input: ConfigVersionInput): string {
+  const canonical = JSON.stringify({
+    provider: input.provider,
+    contextMode: input.contextMode,
+    instructionsVersion: input.instructionsVersion,
+    maxIterations: input.maxIterations,
+    code: { model: input.code.model, effort: input.code.effort },
+    review: { model: input.review.model, effort: input.review.effort },
+  })
+  return createHash('sha256').update(canonical).digest('hex').slice(0, 16)
 }

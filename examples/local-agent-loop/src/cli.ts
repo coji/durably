@@ -1,20 +1,26 @@
 #!/usr/bin/env tsx
-/** CLI: worker | trigger | status | waits | approve | reject | report */
+/** CLI: worker | trigger | status | waits | approve | reject | report | compare */
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { buildReport } from './build-report.js'
+import { compareReports, comparisonToMarkdown } from './compare.js'
 import { createAgentDurably } from './durably.js'
-import { PRICE_BASIS } from './pricing.js'
 import { parseProviderName } from './providers/index.js'
-import {
-  reportToJson,
-  reportToMarkdown,
-  stageTimings,
-  totalStageMs,
-  toAttemptRow,
-  type LoopReport,
-} from './report.js'
+import { reportToJson, reportToMarkdown, type LoopReport } from './report.js'
+
+async function emit(text: string, out: string | undefined): Promise<void> {
+  if (out) {
+    const here = dirname(fileURLToPath(import.meta.url))
+    const dest = join(here, '..', out)
+    await mkdir(dirname(dest), { recursive: true })
+    await writeFile(dest, text)
+    console.log(`wrote ${dest}`)
+  } else {
+    console.log(text)
+  }
+}
 
 function args(): Record<string, string> {
   const out: Record<string, string> = {}
@@ -46,6 +52,7 @@ Commands (run from examples/local-agent-loop):
   pnpm demo approve --run <id> --wait <waitId>
   pnpm demo reject --run <id> --wait <waitId>
   pnpm demo report --run <id> [--format json|md] [--out <file>]
+  pnpm demo compare --runs <id,id,...> [--format json|md] [--out <file>]
 Model presets (--model selects one; effort defaults from the preset,
 overridable via --effort or CODEX_EFFORT / CLAUDE_EFFORT):
   codex:  gpt-6-astra (low) | gpt-5.6-sol (low, default) | gpt-5.6-luna (max)
@@ -183,126 +190,30 @@ if (cmd === 'worker') {
   const format = a['format'] ?? 'md'
   const durably = createAgentDurably()
   await durably.migrate()
-  const run = await durably.getRun(runId)
-  if (!run) throw new Error(`run not found: ${runId}`)
-  const attempts = await durably.getStepAttempts(runId)
-  const waits = await durably.getWaits(runId)
-  const input = run.input as { provider?: string } | null
-  const fake = (input?.provider ?? '') === 'fake'
-  const output = run.output as {
-    fake?: boolean
-    conclusion?: string
-    approved?: boolean
-  } | null
-  const isFake = output?.fake ?? fake
-  const notes: string[] = []
-  if (isFake)
-    notes.push(
-      'fake mode: deterministic local rehearsal, NOT real-LLM verification.',
-    )
-  const rows = attempts.map(toAttemptRow)
-  // A real CLI call happened when a non-fake attempt completed its provider
-  // invocation — independent of whether usage numbers were captured.
-  const realInvocationIds = new Set(
-    rows
-      .filter(
-        (r) =>
-          r.measurement !== null &&
-          r.measurement.provider !== 'fake' &&
-          r.measurement.fake === false &&
-          r.measurement.usageScope === 'invocation' &&
-          (r.measurement.result?.endsWith('-done') ||
-            r.measurement.result === 'checkpoint-recovered'),
-      )
-      .map((r) => r.measurement?.invocationId)
-      .filter((id): id is string => typeof id === 'string'),
-  )
-  const realLlmCallCount = realInvocationIds.size
-  const conclusion = output?.conclusion ?? null
-  const fullLoopVerified =
-    !isFake &&
-    run.status === 'completed' &&
-    conclusion === 'approved' &&
-    output?.approved === true &&
-    realLlmCallCount > 0
-  if (!isFake && realLlmCallCount === 0)
-    notes.push(
-      'unverified: no completed call from the selected CLI was observed; rerun with the logged-in CLI.',
-    )
-  if (!isFake && realLlmCallCount > 0 && !fullLoopVerified)
-    notes.push(
-      `real CLI calls observed (${realLlmCallCount}) but the full loop did not succeed (status=${run.status}, conclusion=${conclusion ?? 'unknown'}); this run is NOT full-loop verified.`,
-    )
-  if (
-    rows.some(
-      (r) =>
-        r.measurement?.usage != null &&
-        (r.measurement.usage.inputTokens === null ||
-          r.measurement.usage.outputTokens === null),
-    )
-  )
-    notes.push(
-      'partial usage: some attempts report incomplete token legs; those legs render unknown and are excluded from cost.',
-    )
-  notes.push(
-    'Completed invocation checkpoints are reused without resending. A start-only checkpoint is reported as uncertain and stops the run.',
-  )
-  const timings = stageTimings(rows)
-  // Unknown when any stage timing is partial (missing attempts), so a
-  // known-only sum is never presented as the whole-run stage cost.
-  const stageTotalMs = totalStageMs(timings)
-  const runElapsedMs =
-    run.completedAt != null
-      ? Math.max(0, Date.parse(run.completedAt) - Date.parse(run.createdAt))
-      : null
-  const versions: Record<string, string | null> = {}
-  for (const r of rows) {
-    const v = r.measurement?.versions
-    if (v && typeof v === 'object') {
-      for (const [k, val] of Object.entries(v)) {
-        if (versions[k] == null && typeof val === 'string') versions[k] = val
-      }
-    }
-  }
-  const report: LoopReport = {
-    runId,
-    jobName: run.jobName,
-    status: run.status,
-    input: run.input,
-    output: run.output,
-    fake: isFake,
-    realLlmCallCount,
-    fullLoopVerified,
-    attempts: rows,
-    waits: waits.map((w) => ({
-      id: w.id,
-      name: w.name,
-      outcome: w.outcome,
-      createdAt: w.createdAt,
-      suspendedAt: w.suspendedAt,
-      resolvedAt: w.resolvedAt,
-      inputWaitMs: w.inputWaitMs,
-      executionSlotWaitMs: w.executionSlotWaitMs,
-    })),
-    stageTimings: timings,
-    stageTotalMs,
-    runElapsedMs,
-    versions,
-    priceBasis: PRICE_BASIS,
-    notes,
-  }
+  const report = await buildReport(durably, runId)
   const text =
     format === 'json' ? reportToJson(report) : reportToMarkdown(report)
-  const out = a['out']
-  if (out) {
-    const here = dirname(fileURLToPath(import.meta.url))
-    const dest = join(here, '..', out)
-    await mkdir(dirname(dest), { recursive: true })
-    await writeFile(dest, text)
-    console.log(`wrote ${dest}`)
-  } else {
-    console.log(text)
-  }
+  await emit(text, a['out'])
+  await durably.db.destroy()
+} else if (cmd === 'compare') {
+  const a = args()
+  const runIds = (a['runs'] ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0)
+  if (runIds.length === 0)
+    throw new Error('--runs <id,id,...> required (comma-separated run ids)')
+  const format = a['format'] ?? 'md'
+  const durably = createAgentDurably()
+  await durably.migrate()
+  const reports: LoopReport[] = []
+  for (const runId of runIds) reports.push(await buildReport(durably, runId))
+  const comparison = compareReports(reports)
+  const text =
+    format === 'json'
+      ? JSON.stringify(comparison, null, 2)
+      : comparisonToMarkdown(comparison)
+  await emit(text, a['out'])
   await durably.db.destroy()
 } else {
   usage()
