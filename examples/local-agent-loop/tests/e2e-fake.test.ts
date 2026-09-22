@@ -43,6 +43,7 @@ describe('fake e2e fix loop', { timeout: 180000 }, () => {
       const run = await durably.jobs.agentLoop.trigger({
         provider: 'fake',
         maxIterations: 3,
+        context: 'reuse',
       })
       await waitFor(
         async () => (await durably.getRun(run.id))?.status === 'waiting',
@@ -50,25 +51,28 @@ describe('fake e2e fix loop', { timeout: 180000 }, () => {
         'run reaches human-approval wait',
       )
       const waits = await durably.getWaits(run.id)
-      const wait = waits.find((w) => w.name === 'human-approval')
-      assert.ok(wait, 'human-approval wait exists')
+      const wait = waits.find((w) => w.name.includes(':approve:'))
+      assert.ok(wait, 'candidate approval wait exists')
+      const candidateId = (wait.metadata as { candidateId?: string })
+        .candidateId
+      assert.ok(candidateId)
 
       // Idempotent redelivery with the same signal id resolves the same
       // wait instead of double-applying; a conflicting payload is rejected.
       await durably.signal(
         wait.id,
-        { decision: 'approved' },
+        { candidateId, decision: 'approved' },
         { signalId: 'e2e-approve-1' },
       )
       await durably.signal(
         wait.id,
-        { decision: 'approved' },
+        { candidateId, decision: 'approved' },
         { signalId: 'e2e-approve-1' },
       )
       await assert.rejects(
         durably.signal(
           wait.id,
-          { decision: 'rejected' },
+          { candidateId, decision: 'rejected' },
           { signalId: 'e2e-conflict-1' },
         ),
         /cannot accept|Conflict/i,
@@ -87,14 +91,12 @@ describe('fake e2e fix loop', { timeout: 180000 }, () => {
       const output = final?.output as {
         approved: boolean
         conclusion: string
-        testsPassed: boolean
         iterations: number
         reviewRounds: number
-        reviews: { reviewer: string; decision: string }[]
+        reviews: { lens: string; decision: string }[]
       }
       assert.equal(output.approved, true)
       assert.equal(output.conclusion, 'approved')
-      assert.equal(output.testsPassed, true)
       // Prove the fix loop ran: two review rounds, finished on iteration 2.
       assert.equal(output.reviewRounds, 2)
       assert.equal(output.iterations, 2)
@@ -105,16 +107,36 @@ describe('fake e2e fix loop', { timeout: 180000 }, () => {
 
       const attempts = await durably.getStepAttempts(run.id)
       const names = attempts.map((a) => a.stepName)
-      assert.ok(names.includes('implement:1'), 'implement:1 ran')
+      assert.ok(names.some((name) => name.endsWith(':code:agent')))
       assert.ok(
-        names.includes('implement:2'),
-        'implement:2 ran after needsChanges',
+        names.filter((name) => name.endsWith(':code:agent')).length >= 2,
+        'repair ran after needsChanges',
       )
-      assert.ok(names.includes('review-a:1'), 'round-1 reviews ran')
-      assert.ok(names.includes('review-b:2'), 'round-2 reviews ran')
+      assert.ok(names.some((name) => name.endsWith(':correctness')))
+      assert.ok(names.some((name) => name.endsWith(':edge-cases')))
       assert.ok(
-        names.some((n) => n.startsWith('policy:')),
+        names.some((n) => n.startsWith('decision:')),
         'policy decisions persisted to named steps',
+      )
+      const codeSessions = attempts
+        .map(
+          (attempt) =>
+            attempt.metadata as {
+              stage?: string
+              sessionId?: string
+            } | null,
+        )
+        .filter(
+          (measurement) =>
+            measurement?.stage === 'implement' ||
+            measurement?.stage === 'repair',
+        )
+        .map((measurement) => measurement?.sessionId)
+      assert.equal(codeSessions.length, 2)
+      assert.equal(
+        codeSessions[0],
+        codeSessions[1],
+        'repair explicitly resumes the implementation session',
       )
     } finally {
       await durably.stop()

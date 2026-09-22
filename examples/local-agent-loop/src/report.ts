@@ -8,7 +8,8 @@
  *   consumption. Confirmed sums and missing legs are shown separately.
  * - Timings: per-stage elapsed, stage total, whole-run elapsed, and human
  *   `inputWaitMs` vs requeue `executionSlotWaitMs` per wait. Unknown end
- *   times render `unknown`, never a fabricated zero.
+ *   times render `unknown`, never a fabricated zero; stages with missing
+ *   attempts render PARTIAL and poison the stage total to unknown.
  */
 import type { StepAttempt } from '@coji/durably'
 
@@ -43,7 +44,15 @@ export interface WaitRow {
 
 export interface StageTiming {
   stage: string
+  /** Sum of measured work in the stage. */
   elapsedMs: number | null
+  /** Wall-clock interval spanning parallel branches. */
+  wallElapsedMs?: number | null
+  /**
+   * False when any attempt in the stage lacks elapsedMs: the sum covers only
+   * known attempts and must not be presented as a complete stage total.
+   */
+  complete: boolean
 }
 
 export interface LoopReport {
@@ -105,6 +114,9 @@ function fmtMs(v: number | null): string {
 }
 
 function stageOf(stepName: string): string {
+  const parts = stepName.split(':')
+  if (parts[0] === 'stage' && parts[2]) return parts[2]
+  if (parts[0] === 'decision') return 'policy'
   const base = stepName.split(':')[0] ?? stepName
   if (base === 'review-a' || base === 'review-b') return 'review'
   if (base === 'prepare-workdir') return 'prepare'
@@ -118,15 +130,29 @@ function stageOf(stepName: string): string {
 /** Sum attempt elapsedMs per stage (latest measurement per attempt id). */
 export function stageTimings(attempts: AttemptRow[]): StageTiming[] {
   const byStage = new Map<string, number>()
-  const missing = new Set<string>()
+  const bounds = new Map<string, { start: number; end: number }>()
+  const incomplete = new Set<string>()
   const seen = new Set<string>()
   for (const a of attempts) {
     if (seen.has(a.attemptId)) continue
     seen.add(a.attemptId)
-    const ms = a.measurement?.elapsedMs ?? null
-    const stage = stageOf(a.stepName)
+    const stage = stageOf(a.measurement?.stage ?? a.stepName)
+    const start = Date.parse(a.startedAt)
+    const end = a.completedAt ? Date.parse(a.completedAt) : Number.NaN
+    const ms =
+      a.measurement?.elapsedMs ??
+      (Number.isFinite(start) && Number.isFinite(end)
+        ? Math.max(0, end - start)
+        : null)
+    if (Number.isFinite(start) && Number.isFinite(end)) {
+      const current = bounds.get(stage)
+      bounds.set(stage, {
+        start: current ? Math.min(current.start, start) : start,
+        end: current ? Math.max(current.end, end) : end,
+      })
+    }
     if (ms === null) {
-      missing.add(stage)
+      incomplete.add(stage)
       continue
     }
     byStage.set(stage, (byStage.get(stage) ?? 0) + ms)
@@ -140,12 +166,35 @@ export function stageTimings(attempts: AttemptRow[]): StageTiming[] {
     'finalize',
     'policy',
   ]
-  const stages = [...new Set([...byStage.keys(), ...missing])]
+  const stages = [...new Set([...byStage.keys(), ...incomplete])]
   stages.sort((x, y) => order.indexOf(x) - order.indexOf(y))
   return stages.map((stage) => ({
     stage,
     elapsedMs: byStage.get(stage) ?? null,
+    wallElapsedMs: bounds.has(stage)
+      ? (bounds.get(stage)?.end ?? 0) - (bounds.get(stage)?.start ?? 0)
+      : null,
+    complete: !incomplete.has(stage),
   }))
+}
+
+/** Stage total across stages; unknown when any stage timing is partial. */
+export function totalStageMs(timings: StageTiming[]): number | null {
+  if (timings.some((t) => !t.complete)) return null
+  return timings.reduce((sum, t) => sum + (t.elapsedMs ?? 0), 0)
+}
+
+/**
+ * Only implement/review branches invoke an LLM: every other step (local
+ * grading, prepare, policy, snapshots) is out of usage scope, so its null
+ * usage never marks the aggregate incomplete.
+ */
+export function attemptExpectsUsage(stepName: string): boolean {
+  return (
+    stepName.endsWith(':agent') ||
+    stepName.endsWith(':correctness') ||
+    stepName.endsWith(':edge-cases')
+  )
 }
 
 export function reportToMarkdown(r: LoopReport): string {
@@ -165,7 +214,9 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('## Timing')
   lines.push('')
   for (const t of r.stageTimings) {
-    lines.push(`- ${t.stage}: ${fmtMs(t.elapsedMs)}`)
+    lines.push(
+      `- ${t.stage}: work=${fmtMs(t.elapsedMs)}, wall=${fmtMs(t.wallElapsedMs ?? null)}${t.complete ? '' : ' (PARTIAL — some attempts missing elapsedMs)'}`,
+    )
   }
   lines.push(`- stage total: ${fmtMs(r.stageTotalMs)}`)
   lines.push(`- run elapsed: ${fmtMs(r.runElapsedMs)}`)
@@ -173,14 +224,14 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('## Attempts (from persisted step attempts)')
   lines.push('')
   lines.push(
-    '| step | attempt | leaseGen | status | model(req/rep) | effort(req/rep) | elapsedMs | tokens(in/out/total) | cost(USD api-equiv) | result |',
+    '| step | invocation | status | model(effective/reported) | effort(effective/reported) | elapsedMs | tokens(in/cache-read/cache-write/out/total) | cost(USD api-equiv) | result |',
   )
-  lines.push('|---|---|---|---|---|---|---|---|---|---|---|')
+  lines.push('|---|---|---|---|---|---|---|---|---|')
   for (const a of r.attempts) {
     const m = a.measurement
     const tokens = m?.usage
-      ? `${fmt(m.usage.inputTokens)}/${fmt(m.usage.outputTokens)}/${fmt(m.usage.totalTokens)}`
-      : 'unknown/unknown/unknown'
+      ? `${fmt(m.usage.inputTokens)}/${fmt(m.usage.cacheReadTokens)}/${fmt(m.usage.cacheWriteTokens)}/${fmt(m.usage.outputTokens)}/${fmt(m.usage.totalTokens)}`
+      : 'unknown/unknown/unknown/unknown/unknown'
     const model =
       m != null
         ? `${fmt(m.requestedModel ?? m.reportedModel)}/${fmt(m.reportedModel)}`
@@ -190,19 +241,21 @@ export function reportToMarkdown(r: LoopReport): string {
         ? `${fmt(m.requestedEffort ?? m.reportedEffort)}/${fmt(m.reportedEffort)}`
         : 'unknown/unknown'
     lines.push(
-      `| ${a.stepName} | ${a.attemptId.slice(0, 8)} | ${a.leaseGeneration} | ${a.status}${a.interruptionReason ? ` (${a.interruptionReason})` : ''} | ${model} | ${effort} | ${fmt(m?.elapsedMs)} | ${tokens} | ${m?.costUsdEstimate != null ? `${m.costUsdEstimate.toFixed(6)} (${m.costBasis})` : 'unknown'} | ${fmt(m?.result)} |`,
+      `| ${a.stepName} | ${m?.invocationId?.slice(0, 8) ?? 'n/a'} | ${a.status}${a.interruptionReason ? ` (${a.interruptionReason})` : ''} | ${model} | ${effort} | ${fmt(m?.elapsedMs)} | ${tokens} | ${m?.costUsdEstimate != null ? `${m.costUsdEstimate.toFixed(6)} (${m.costBasis})` : 'unknown'} | ${fmt(m?.result)} |`,
     )
   }
   const agg = aggregateUsage(
     r.attempts.map((a) => ({
-      attemptId: a.attemptId,
+      attemptId: a.measurement?.invocationId ?? a.attemptId,
       usage: a.measurement?.usage ?? null,
+      expectsUsage: attemptExpectsUsage(a.stepName),
     })),
   )
   lines.push('')
   lines.push(
-    `- aggregate usage (deduped by attempt): in=${fmt(agg.inputTokens)} cached=${fmt(agg.cachedInputTokens)} out=${fmt(agg.outputTokens)} total=${fmt(agg.totalTokens)}${agg.complete ? '' : ' (PARTIAL — some attempts missing usage)'}`,
+    `- aggregate usage (deduped by invocation): in=${fmt(agg.inputTokens)} cache-read=${fmt(agg.cacheReadTokens)} cache-write=${fmt(agg.cacheWriteTokens)} out=${fmt(agg.outputTokens)} total=${fmt(agg.totalTokens)}${agg.complete ? '' : ' (PARTIAL — some invocations missing usage)'}`,
   )
+  lines.push(`- missing usage invocations: ${agg.missingAttempts.length}`)
   const aggCost = agg.complete
     ? estimateCostUsd(
         r.attempts.find((a) => a.measurement?.reportedModel)?.measurement

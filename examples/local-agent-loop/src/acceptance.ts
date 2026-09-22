@@ -9,17 +9,28 @@
  *   compared to the snapshot. A mismatch fails the run with
  *   `acceptance-tampered` — the agent cannot green its own suite by editing
  *   tests.
- * - The suite itself runs from the snapshot-laid files via `node --test`
- *   with cwd pinned to the workdir (so relative imports resolve to the
- *   agent's `src/`), while the test files executed are the pristine copies.
+ * - Grading runs the PRISTINE snapshot files with a sample-fixed command
+ *   (`node --test test/`), never the workdir's `npm test`: rewriting
+ *   `package.json`'s test script cannot bypass grading either.
  *
- * Implementation detail: the snapshot test files are bind-copied over a
- * scratch dir whose `src` is a symlink to the workdir `src`, so the exact
- * bytes graded are the snapshot bytes, linked against the agent's code.
+ * Execution layout: the snapshot test files are copied into a scratch dir
+ * whose `src` is a symlink to the workdir `src`, so the exact bytes graded
+ * are the snapshot bytes, linked against the agent's live code. The command
+ * argv is fixed in code; no agent-editable file is consulted.
  */
 import { createHash } from 'node:crypto'
-import { cp, mkdir, readFile, readdir, stat } from 'node:fs/promises'
+import {
+  cp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+} from 'node:fs/promises'
 import { join } from 'node:path'
+
+import { runChild } from './child.js'
 
 export async function hashFiles(
   files: { path: string; content: string }[],
@@ -95,4 +106,85 @@ export async function verifyAcceptanceIntact(
     )
   }
   return { hash: actual }
+}
+
+export interface AcceptanceRunSpec {
+  workdir: string
+  acceptanceDir: string
+  /** Rebuilt on every grading run (outside the agent's workdir). */
+  scratchDir: string
+  timeoutMs: number
+  signal?: AbortSignal
+  /** Pid marker so a restarted worker can reconcile this grading process. */
+  pidFile?: string
+}
+
+export interface AcceptanceRunResult {
+  passed: boolean
+  stdout: string
+  exitCode: number | null
+  elapsedMs: number
+}
+
+/**
+ * Grade the agent's `src/` against the pristine snapshot tests.
+ *
+ * Fail-closed order: tamper check first (throws `acceptance-tampered`), then
+ * the sample-fixed `node --test` argv over the SNAPSHOT test files (no shell,
+ * no workdir `package.json`, no `npm`). The workdir's `npm test` is never
+ * executed, so a rewritten test script cannot fake a pass; an empty snapshot
+ * (nothing to grade) throws instead of passing vacuously.
+ */
+export async function runAcceptanceSuite(
+  spec: AcceptanceRunSpec,
+  expectedHash: string,
+): Promise<AcceptanceRunResult> {
+  const started = Date.now()
+  await verifyAcceptanceIntact(join(spec.workdir, 'test'), expectedHash)
+  const scratchTestDir = join(spec.scratchDir, 'test')
+  await rm(spec.scratchDir, { recursive: true, force: true })
+  await mkdir(scratchTestDir, { recursive: true })
+  await cp(spec.acceptanceDir, scratchTestDir, {
+    recursive: true,
+  })
+  await symlink(
+    join(spec.workdir, 'src'),
+    join(spec.scratchDir, 'src'),
+    process.platform === 'win32' ? 'junction' : 'dir',
+  )
+  const testFiles = (await readTree(scratchTestDir))
+    .map((f) => f.path)
+    .filter((p) => p.endsWith('.test.js'))
+    .sort()
+    .map((p) => join('test', p))
+  if (testFiles.length === 0) {
+    throw new Error(
+      'acceptance-tampered: snapshot contains no *.test.js files to grade',
+    )
+  }
+  try {
+    const res = await runChild('node', ['--test', ...testFiles], {
+      cwd: spec.scratchDir,
+      timeoutMs: spec.timeoutMs,
+      ...(spec.signal ? { signal: spec.signal } : {}),
+      ...(spec.pidFile ? { pidFile: spec.pidFile } : {}),
+    })
+    return {
+      passed: res.code === 0,
+      stdout: `${res.stdout}${res.stderr}`.slice(-8000),
+      exitCode: res.code,
+      elapsedMs: Date.now() - started,
+    }
+  } catch (err) {
+    if (err instanceof Error && err.name === 'SpawnCancelledError') throw err
+    if (err instanceof Error && err.message.includes('timed out')) {
+      return {
+        passed: false,
+        stdout: `acceptance suite timed out after ${spec.timeoutMs}ms`,
+        exitCode: null,
+        elapsedMs: Date.now() - started,
+      }
+    }
+    throw err
+  }
 }

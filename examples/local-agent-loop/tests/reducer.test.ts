@@ -1,109 +1,125 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import {
-  approvalDecided,
-  finalized,
-  fixRequested,
-  implemented,
-  prepared,
-  reviewsCollected,
-  tested,
-} from '../src/events.js'
-import { decideNext } from '../src/policy.js'
+import { decide } from '../src/policy.js'
 import { reduce } from '../src/reducer.js'
-import { initialState } from '../src/types.js'
+import { initialState, type FactorySetup } from '../src/types.js'
 
-describe('reducer/policy', () => {
-  it('walks prepare -> implement -> test(pass) -> review', () => {
-    let s = initialState(2)
-    s = reduce(s, prepared())
-    assert.equal(s.stage, 'implement')
-    s = reduce(s, implemented({ summary: 'fix', filesChanged: [] }))
-    assert.equal(s.stage, 'test')
-    s = reduce(s, tested({ passed: true, stdout: 'ok', exitCode: 0 }))
-    assert.equal(s.stage, 'review')
-    assert.equal(decideNext(s).action, 'review')
+const setup: FactorySetup = {
+  provider: 'fake',
+  fake: true,
+  contextMode: 'reuse',
+  workdir: '/tmp/work',
+  acceptanceDir: '/tmp/acceptance',
+  acceptanceHash: 'acceptance',
+  checkpointsDir: '/tmp/checkpoints',
+  instructionsVersion: 'v2',
+  profiles: {
+    code: { id: 'fake:code', provider: 'fake', model: null, effort: null },
+    review: { id: 'fake:review', provider: 'fake', model: null, effort: null },
+  },
+  maxIterations: 2,
+  agentTimeoutMs: 1,
+  testTimeoutMs: 1,
+}
+
+const candidate = {
+  id: 'candidate-1',
+  snapshotDir: '/tmp/candidate-1',
+  sourceHash: 'source-1',
+  acceptanceHash: 'acceptance',
+}
+
+describe('factory reducer and policy', () => {
+  it('walks code -> verify -> review -> approve -> finish', () => {
+    let state = initialState(setup)
+    assert.equal(decide(state).stage, 'code')
+    state = reduce(state, {
+      type: 'code.completed',
+      role: 'implement',
+      candidate,
+      session: null,
+    })
+    assert.equal(decide(state).stage, 'verify')
+    state = reduce(state, {
+      type: 'verify.completed',
+      targetId: candidate.id,
+      passed: true,
+      stdout: 'ok',
+      exitCode: 0,
+    })
+    assert.equal(decide(state).stage, 'review')
+    state = reduce(state, {
+      type: 'review.completed',
+      targetId: candidate.id,
+      reviews: [
+        { lens: 'correctness', decision: 'pass', notes: 'ok' },
+        { lens: 'edge-cases', decision: 'pass', notes: 'ok' },
+      ],
+    })
+    assert.equal(decide(state).stage, 'approve')
+    state = reduce(state, {
+      type: 'approval.completed',
+      targetId: candidate.id,
+      decision: 'approved',
+    })
+    assert.equal(decide(state).stage, 'finish')
   })
 
-  it('retries on test failure while iterations remain', () => {
-    let s = initialState(2)
-    s = reduce(s, prepared())
-    s = reduce(s, implemented({ summary: 'miss', filesChanged: [] }))
-    s = reduce(s, tested({ passed: false, stdout: 'fail', exitCode: 1 }))
-    assert.equal(s.stage, 'implement')
-    assert.equal(s.iteration, 2)
+  it('invalidates verification and reviews when repair creates a candidate', () => {
+    let state = initialState(setup)
+    state = reduce(state, {
+      type: 'code.completed',
+      role: 'implement',
+      candidate,
+      session: null,
+    })
+    state = reduce(state, {
+      type: 'verify.completed',
+      targetId: candidate.id,
+      passed: true,
+      stdout: 'ok',
+      exitCode: 0,
+    })
+    state = reduce(state, {
+      type: 'review.completed',
+      targetId: candidate.id,
+      reviews: [
+        { lens: 'correctness', decision: 'needsChanges', notes: 'edge' },
+        { lens: 'edge-cases', decision: 'pass', notes: 'ok' },
+      ],
+    })
+    assert.equal(decide(state).stage, 'code')
+    const repaired = { ...candidate, id: 'candidate-2', sourceHash: 'source-2' }
+    state = reduce(state, {
+      type: 'code.completed',
+      role: 'repair',
+      candidate: repaired,
+      session: null,
+    })
+    assert.equal(state.verification, null)
+    assert.deepEqual(state.reviews, [])
+    assert.equal(decide(state).stage, 'verify')
   })
 
-  it('requests approval after passing reviews, finalizes on decision', () => {
-    let s = initialState(2)
-    s = reduce(s, prepared())
-    s = reduce(s, implemented({ summary: 'fix', filesChanged: [] }))
-    s = reduce(s, tested({ passed: true, stdout: 'ok', exitCode: 0 }))
-    s = reduce(
-      s,
-      reviewsCollected([
-        { reviewer: 'review-a', decision: 'pass', notes: 'ok' },
-        { reviewer: 'review-b', decision: 'pass', notes: 'ok' },
-      ]),
+  it('rejects stale target events', () => {
+    let state = initialState(setup)
+    state = reduce(state, {
+      type: 'code.completed',
+      role: 'implement',
+      candidate,
+      session: null,
+    })
+    assert.throws(
+      () =>
+        reduce(state, {
+          type: 'verify.completed',
+          targetId: 'old-candidate',
+          passed: true,
+          stdout: 'ok',
+          exitCode: 0,
+        }),
+      /stale/,
     )
-    assert.equal(decideNext(s).action, 'requestApproval')
-    s = reduce(s, approvalDecided('approved'))
-    assert.equal(s.stage, 'finalize')
-    assert.equal(s.approval, 'approved')
-    s = reduce(s, finalized('approved'))
-    assert.equal(s.done, true)
-    assert.equal(s.failed, false)
-    assert.equal(s.conclusion, 'approved')
-  })
-
-  it('routes adopted review findings back to implement (fix loop)', () => {
-    let s = initialState(3)
-    s = reduce(s, prepared())
-    s = reduce(s, implemented({ summary: 'fix', filesChanged: [] }))
-    s = reduce(s, tested({ passed: true, stdout: 'ok', exitCode: 0 }))
-    s = reduce(
-      s,
-      reviewsCollected([
-        { reviewer: 'review-a', decision: 'needsChanges', notes: 'edge case' },
-        { reviewer: 'review-b', decision: 'pass', notes: 'ok' },
-      ]),
-    )
-    // Both reviews are in before the policy decides.
-    assert.equal(s.reviews.length, 2)
-    const next = decideNext(s)
-    assert.equal(next.action, 'implement')
-    if (next.action === 'implement') assert.equal(next.iteration, 2)
-    // The fix request invalidates the round's verification and carries notes.
-    s = reduce(s, fixRequested(['review-a: edge case']))
-    assert.equal(s.stage, 'implement')
-    assert.equal(s.iteration, 2)
-    assert.deepEqual(s.pendingReviewNotes, ['review-a: edge case'])
-    assert.deepEqual(s.tests, [])
-    assert.deepEqual(s.reviews, [])
-    // History is kept for audit.
-    assert.equal(s.reviewHistory.length, 1)
-  })
-
-  it('finalizes review-cap-reached instead of approval when fixes run out', () => {
-    let s = initialState(1)
-    s = reduce(s, prepared())
-    s = reduce(s, implemented({ summary: 'fix', filesChanged: [] }))
-    s = reduce(s, tested({ passed: true, stdout: 'ok', exitCode: 0 }))
-    s = reduce(
-      s,
-      reviewsCollected([
-        { reviewer: 'review-a', decision: 'needsChanges', notes: 'nope' },
-        { reviewer: 'review-b', decision: 'pass', notes: 'ok' },
-      ]),
-    )
-    const next = decideNext(s)
-    assert.equal(next.action, 'finalize')
-    if (next.action === 'finalize')
-      assert.equal(next.conclusion, 'review-cap-reached')
-    s = reduce(s, finalized('review-cap-reached'))
-    assert.equal(s.done, true)
-    assert.equal(s.failed, true)
-    assert.equal(s.conclusion, 'review-cap-reached')
   })
 })

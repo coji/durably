@@ -46,7 +46,7 @@ function baseReport(): LoopReport {
       },
     ],
     waits: [],
-    stageTimings: [{ stage: 'implement', elapsedMs: null }],
+    stageTimings: [{ stage: 'implement', elapsedMs: null, complete: false }],
     stageTotalMs: null,
     runElapsedMs: null,
     versions: {},

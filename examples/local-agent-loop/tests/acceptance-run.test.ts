@@ -1,0 +1,135 @@
+import assert from 'node:assert/strict'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, it } from 'node:test'
+
+import { runAcceptanceSuite, snapshotAcceptance } from '../src/acceptance.js'
+import { runChild } from '../src/child.js'
+
+const TEST_FILE = `import assert from 'node:assert/strict'
+import { describe, it } from 'node:test'
+
+import { add } from '../src/calc.js'
+
+describe('calc', () => {
+  it('adds decimals without truncation', () => {
+    assert.equal(add(0.1, 0.2), 0.30000000000000004)
+  })
+})
+`
+
+const BROKEN_SRC = `export function add(a, b) {
+  return Math.trunc(a) + Math.trunc(b)
+}
+`
+
+const FIXED_SRC = `export function add(a, b) {
+  return a + b
+}
+`
+
+async function seed(dir: string, files: Record<string, string>) {
+  const { mkdir } = await import('node:fs/promises')
+  for (const [rel, content] of Object.entries(files)) {
+    const full = join(dir, rel)
+    await mkdir(join(full, '..'), { recursive: true })
+    await writeFile(full, content)
+  }
+}
+
+describe('acceptance runs the fixed snapshot directly (reviewer repro)', () => {
+  it('fails a broken src even when workdir `npm test` is neutered to exit 0', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'accept-run-'))
+    const pristine = join(root, 'pristine')
+    const acceptanceDir = join(root, 'acceptance')
+    const workdir = join(root, 'work')
+    const scratchDir = join(root, 'scratch')
+    await seed(pristine, { 'calc.test.js': TEST_FILE })
+    const snap = await snapshotAcceptance(pristine, acceptanceDir)
+    await seed(workdir, {
+      'src/calc.js': BROKEN_SRC,
+      'test/calc.test.js': TEST_FILE,
+      // Agent rewrites the runner instead of the tests: grading must not care.
+      'package.json': JSON.stringify({
+        name: 'loop-subject',
+        type: 'module',
+        scripts: { test: 'node -e "process.exit(0)"' },
+      }),
+    })
+    // Premise: the neutered `npm test` really does pass in the workdir.
+    const neutered = await runChild('npm', ['test', '--silent'], {
+      cwd: workdir,
+      timeoutMs: 30000,
+    })
+    assert.equal(neutered.code, 0, 'premise: neutered npm test exits 0')
+
+    const res = await runAcceptanceSuite(
+      {
+        workdir,
+        acceptanceDir,
+        scratchDir,
+        timeoutMs: 60000,
+      },
+      snap.hash,
+    )
+    assert.equal(
+      res.passed,
+      false,
+      'pristine snapshot tests must fail against the broken src',
+    )
+    assert.notEqual(res.exitCode, 0)
+  })
+
+  it('passes once the src is actually fixed (same neutered package.json)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'accept-run-'))
+    const pristine = join(root, 'pristine')
+    const acceptanceDir = join(root, 'acceptance')
+    const workdir = join(root, 'work')
+    const scratchDir = join(root, 'scratch')
+    await seed(pristine, { 'calc.test.js': TEST_FILE })
+    const snap = await snapshotAcceptance(pristine, acceptanceDir)
+    await seed(workdir, {
+      'src/calc.js': FIXED_SRC,
+      'test/calc.test.js': TEST_FILE,
+      'package.json': JSON.stringify({
+        name: 'loop-subject',
+        type: 'module',
+        scripts: { test: 'node -e "process.exit(0)"' },
+      }),
+    })
+    const res = await runAcceptanceSuite(
+      {
+        workdir,
+        acceptanceDir,
+        scratchDir,
+        timeoutMs: 60000,
+      },
+      snap.hash,
+    )
+    assert.equal(res.passed, true)
+    assert.equal(res.exitCode, 0)
+  })
+
+  it('still fails closed when workdir tests were edited', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'accept-run-'))
+    const pristine = join(root, 'pristine')
+    const acceptanceDir = join(root, 'acceptance')
+    const workdir = join(root, 'work')
+    const scratchDir = join(root, 'scratch')
+    await seed(pristine, { 'calc.test.js': TEST_FILE })
+    const snap = await snapshotAcceptance(pristine, acceptanceDir)
+    await seed(workdir, {
+      'src/calc.js': FIXED_SRC,
+      'test/calc.test.js': 'edited by agent\n',
+      'package.json': '{}',
+    })
+    await assert.rejects(
+      runAcceptanceSuite(
+        { workdir, acceptanceDir, scratchDir, timeoutMs: 60000 },
+        snap.hash,
+      ),
+      /acceptance-tampered/,
+    )
+  })
+})

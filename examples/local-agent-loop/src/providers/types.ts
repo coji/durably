@@ -10,13 +10,33 @@ import type { TokenUsage } from '../usage.js'
 
 export type ProviderName = 'codex' | 'claude' | 'fake'
 
-export type AgentRole = 'implement' | 'review-a' | 'review-b'
+export type AgentRole = 'implement' | 'repair' | 'review-a' | 'review-b'
+
+export interface NativeSession {
+  id: string
+}
 
 export interface AgentResult {
   text: string
-  /** Model the provider reports for this call (null when unreported). */
+  /** Provider-native conversation/thread created or resumed by this call. */
+  session?: NativeSession | null
+  /**
+   * Execution settings actually applied to this call (explicit > env >
+   * preset > provider default). Saved to the attempt BEFORE launch as the
+   * requested model/effort — never presented as provider-reported.
+   */
+  resolvedModel: string | null
+  resolvedEffort: string | null
+  /**
+   * Model the provider natively confirms for this call (read from the
+   * response object, never assigned from config). Null when the response
+   * confirms nothing.
+   */
   reportedModel: string | null
-  /** Effort the provider reports/confirms (null when unreported). */
+  /**
+   * Effort the provider natively confirms. CLI providers do not report this
+   * back, so real providers leave it null — never back-filled from config.
+   */
   reportedEffort: string | null
   usage: TokenUsage | null
   elapsedMs: number | null
@@ -30,6 +50,8 @@ export interface AgentCallOptions {
   requestedModel: string | null
   requestedEffort: string | null
   role: AgentRole
+  /** Explicit native session to resume. Null always creates a new conversation. */
+  sessionId?: string | null
   /** Durably step signal: cancel / lease-loss aborts the call. */
   signal?: AbortSignal
   /**
@@ -40,12 +62,26 @@ export interface AgentCallOptions {
   onPartialUsage?: (usage: TokenUsage) => void
 }
 
+export interface ResolvedExecution {
+  model: string | null
+  effort: string | null
+}
+
 /** One provider invocation: run the selected local CLI in workdir. */
 export interface AgentProvider {
   readonly name: ProviderName
   readonly fake: boolean
   /** True when this provider streams partial usage via onPartialUsage. */
   readonly partialUsage: boolean
+  /**
+   * Resolve the execution settings (explicit > env > preset > default)
+   * WITHOUT launching anything. The runner saves these before the call so
+   * the resolved configuration is on record even if the call never reports.
+   */
+  resolveExecution(requested: {
+    requestedModel: string | null
+    requestedEffort: string | null
+  }): ResolvedExecution
   call(options: AgentCallOptions): Promise<AgentResult>
 }
 
@@ -56,6 +92,13 @@ export interface AttemptMeasurement {
   /** Stage/iteration snapshot — merged, never wholesale-replaced. */
   stage: string | null
   iteration: number | null
+  operationKey?: string | null
+  invocationId?: string | null
+  sessionId?: string | null
+  /** True when a saved completed invocation was read without sending again. */
+  recovered?: boolean
+  /** Whether usage is for one provider invocation or a larger CLI session. */
+  usageScope?: 'invocation' | 'session' | null
   requestedModel: string | null
   requestedEffort: string | null
   reportedModel: string | null

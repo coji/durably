@@ -1,77 +1,133 @@
-/** Shared pipeline types. No logic here — see reducer.ts and policy.ts. */
+/** Domain types for the local factory sample. */
 
-export type Stage =
-  | 'prepare'
-  | 'implement'
-  | 'test'
+import type { StepContext } from '@coji/durably'
+
+import type { AgentProvider, ProviderName } from './providers/types.js'
+
+export type StageName =
+  | 'code'
+  | 'verify'
   | 'review'
-  | 'aggregate'
-  | 'approval'
-  | 'finalize'
+  | 'approve'
+  | 'finish'
+  | 'stop'
 
-export type IterationResult = 'pass' | 'fail'
+export type ContextMode = 'reuse' | 'fresh'
+export type CodeRole = 'implement' | 'repair'
+export type ReviewLens = 'correctness' | 'edge-cases'
 
-export interface ImplementOutcome {
-  summary: string
-  filesChanged: string[]
+export interface ResolvedProfile {
+  id: string
+  provider: ProviderName
+  model: string | null
+  effort: string | null
 }
 
-export interface TestOutcome {
+export interface SessionRef {
+  provider: ProviderName
+  nativeId: string
+  profileId: string
+  cwd: string
+  instructionsVersion: string
+}
+
+export interface CandidateRef {
+  id: string
+  snapshotDir: string
+  sourceHash: string
+  acceptanceHash: string
+}
+
+export interface FactorySetup {
+  provider: ProviderName
+  fake: boolean
+  contextMode: ContextMode
+  workdir: string
+  acceptanceDir: string
+  acceptanceHash: string
+  checkpointsDir: string
+  instructionsVersion: string
+  profiles: {
+    code: ResolvedProfile
+    review: ResolvedProfile
+  }
+  maxIterations: number
+  agentTimeoutMs: number
+  testTimeoutMs: number
+}
+
+export interface VerificationResult {
+  targetId: string
   passed: boolean
   stdout: string
   exitCode: number | null
 }
 
 export interface ReviewVerdict {
-  reviewer: 'review-a' | 'review-b'
+  lens: ReviewLens
   decision: 'pass' | 'needsChanges'
   notes: string
 }
 
-/** One completed review round (both reviewers reported). */
-export interface ReviewRound {
-  iteration: number
+export interface FactoryOutcome {
+  approved: boolean
+  conclusion:
+    | 'approved'
+    | 'rejected'
+    | 'verification-failed'
+    | 'review-cap-reached'
+  candidate: CandidateRef | null
+  iterations: number
+  reviewRounds: number
   reviews: ReviewVerdict[]
+  workdir: string
+  fake: boolean
 }
 
-export type Conclusion =
-  | 'approved'
-  | 'rejected'
-  | 'tests-failed'
-  | 'review-cap-reached'
-  | 'abandoned'
-
-export interface PipelineState {
-  stage: Stage
+export interface FactoryState {
+  setup: FactorySetup
   iteration: number
-  maxIterations: number
-  implemented: ImplementOutcome[]
-  tests: TestOutcome[]
-  /** Latest completed review round (reset when the target changes). */
+  candidate: CandidateRef | null
+  verification: VerificationResult | null
   reviews: ReviewVerdict[]
-  /** All completed rounds, oldest first (audit trail, never reset). */
-  reviewHistory: ReviewRound[]
-  /** Review notes that the next implement iteration must address. */
-  pendingReviewNotes: string[]
+  reviewRounds: number
+  implementationSession: SessionRef | null
+  repairNotes: string[]
   approval: 'approved' | 'rejected' | null
-  conclusion: Conclusion | null
-  done: boolean
-  failed: boolean
+  outcome: FactoryOutcome | null
 }
 
-export function initialState(maxIterations: number): PipelineState {
+export function initialState(setup: FactorySetup): FactoryState {
   return {
-    stage: 'prepare',
+    setup,
     iteration: 0,
-    maxIterations,
-    implemented: [],
-    tests: [],
+    candidate: null,
+    verification: null,
     reviews: [],
-    reviewHistory: [],
-    pendingReviewNotes: [],
+    reviewRounds: 0,
+    implementationSession: null,
+    repairNotes: [],
     approval: null,
-    conclusion: null,
-    done: false,
-    failed: false,
+    outcome: null,
   }
 }
+
+export interface StageDecision {
+  stage: StageName
+  role?: CodeRole
+  reason: string
+}
+
+export interface FactoryServices {
+  provider: AgentProvider
+}
+
+export interface StageArgs {
+  step: StepContext
+  state: FactoryState
+  decision: StageDecision
+  key: string
+  services: FactoryServices
+}
+
+export type StageHandler = (args: StageArgs) => Promise<unknown>

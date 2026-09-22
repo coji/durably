@@ -5,6 +5,9 @@
  * Honors AbortSignal (sleep becomes rejectable) so cancel/kill paths are
  * exercisable without a real CLI.
  *
+ * Resolved and reported model/effort are both the fixed fake label (there is
+ * no native response to read); fake rows never count as real-LLM verification.
+ *
  * Env controls (tests / rehearsal only):
  * - FAKE_FAIL_FIRST=0 ......... iteration 1 implement already fixes the bug
  * - FAKE_REVIEW_SEQUENCE ...... comma list consumed per review call, e.g.
@@ -12,6 +15,7 @@
  *   `pass`, `needsChanges`, `invalid` (garbled output), or `empty`.
  * - FAKE_REVIEW_SLOW_MS ....... extra delay (ms) on review-b for kill tests
  */
+import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -51,16 +55,23 @@ export class FakeProvider implements AgentProvider {
   readonly fake = true
   readonly partialUsage = false
 
+  resolveExecution(): { model: string | null; effort: string | null } {
+    return { model: 'fake-model', effort: 'low' }
+  }
+
   async call(options: AgentCallOptions): Promise<AgentResult> {
     const started = Date.now()
     await sleep(50, options.signal)
-    if (options.role === 'implement') {
+    if (options.role === 'implement' || options.role === 'repair') {
       const iter = options.prompt.match(/iteration (\d+)/)?.[1] ?? '1'
       const failFirst = process.env.FAKE_FAIL_FIRST !== '0'
       const shouldFail = failFirst && iter === '1'
       if (shouldFail) {
         return {
           text: 'fake: left the bug in place (simulated first-iteration miss)',
+          session: { id: options.sessionId ?? `fake-${randomUUID()}` },
+          resolvedModel: 'fake-model',
+          resolvedEffort: 'low',
           reportedModel: 'fake-model',
           reportedEffort: 'low',
           usage: null,
@@ -85,6 +96,9 @@ export class FakeProvider implements AgentProvider {
       }
       return {
         text: 'fake: fixed add() to return a + b',
+        session: { id: options.sessionId ?? `fake-${randomUUID()}` },
+        resolvedModel: 'fake-model',
+        resolvedEffort: 'low',
         reportedModel: 'fake-model',
         reportedEffort: 'low',
         usage: null,
@@ -99,6 +113,9 @@ export class FakeProvider implements AgentProvider {
     if (decision === 'empty') {
       return {
         text: '',
+        session: { id: `fake-${randomUUID()}` },
+        resolvedModel: 'fake-model',
+        resolvedEffort: 'low',
         reportedModel: 'fake-model',
         reportedEffort: 'low',
         usage: null,
@@ -108,6 +125,9 @@ export class FakeProvider implements AgentProvider {
     if (decision === 'invalid') {
       return {
         text: 'looks good to me, ship it (no structured verdict)',
+        session: { id: `fake-${randomUUID()}` },
+        resolvedModel: 'fake-model',
+        resolvedEffort: 'low',
         reportedModel: 'fake-model',
         reportedEffort: 'low',
         usage: null,
@@ -116,6 +136,9 @@ export class FakeProvider implements AgentProvider {
     }
     return {
       text: `DECISION: ${decision}\nNOTES: fake ${options.role ?? 'review'} deterministic ${decision}`,
+      session: { id: `fake-${randomUUID()}` },
+      resolvedModel: 'fake-model',
+      resolvedEffort: 'low',
       reportedModel: 'fake-model',
       reportedEffort: 'low',
       usage: null,

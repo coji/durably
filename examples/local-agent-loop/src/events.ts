@@ -1,47 +1,69 @@
-/** Domain events for the agent loop. Reducer consumes these; policy reads state. */
-import type {
-  Conclusion,
-  ImplementOutcome,
-  ReviewVerdict,
-  TestOutcome,
-} from './types.js'
+/** Persistable stage results consumed by the pure reducer. */
+import { z } from 'zod'
 
-export type PipelineEvent =
-  | { kind: 'prepared' }
-  | { kind: 'implemented'; outcome: ImplementOutcome }
-  | { kind: 'tested'; outcome: TestOutcome }
-  | { kind: 'reviewsCollected'; reviews: ReviewVerdict[] }
-  | { kind: 'fixRequested'; notes: string[] }
-  | { kind: 'approvalDecided'; decision: 'approved' | 'rejected' }
-  | { kind: 'finalized'; conclusion: Conclusion }
-  | { kind: 'abandoned'; reason: string }
+const candidateSchema = z.object({
+  id: z.string(),
+  snapshotDir: z.string(),
+  sourceHash: z.string(),
+  acceptanceHash: z.string(),
+})
 
-export const prepared = (): PipelineEvent => ({ kind: 'prepared' })
-export const implemented = (outcome: ImplementOutcome): PipelineEvent => ({
-  kind: 'implemented',
-  outcome,
+const sessionSchema = z.object({
+  provider: z.enum(['codex', 'claude', 'fake']),
+  nativeId: z.string(),
+  profileId: z.string(),
+  cwd: z.string(),
+  instructionsVersion: z.string(),
 })
-export const tested = (outcome: TestOutcome): PipelineEvent => ({
-  kind: 'tested',
-  outcome,
+
+const reviewSchema = z.object({
+  lens: z.enum(['correctness', 'edge-cases']),
+  decision: z.enum(['pass', 'needsChanges']),
+  notes: z.string(),
 })
-export const reviewsCollected = (reviews: ReviewVerdict[]): PipelineEvent => ({
-  kind: 'reviewsCollected',
-  reviews,
-})
-/** A review round demanded changes: carry notes into the next fix. */
-export const fixRequested = (notes: string[]): PipelineEvent => ({
-  kind: 'fixRequested',
-  notes,
-})
-export const approvalDecided = (
-  decision: 'approved' | 'rejected',
-): PipelineEvent => ({ kind: 'approvalDecided', decision })
-export const finalized = (conclusion: Conclusion): PipelineEvent => ({
-  kind: 'finalized',
-  conclusion,
-})
-export const abandoned = (reason: string): PipelineEvent => ({
-  kind: 'abandoned',
-  reason,
-})
+
+export const FactoryEventSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('code.completed'),
+    role: z.enum(['implement', 'repair']),
+    candidate: candidateSchema,
+    session: sessionSchema.nullable(),
+  }),
+  z.object({
+    type: z.literal('verify.completed'),
+    targetId: z.string(),
+    passed: z.boolean(),
+    stdout: z.string(),
+    exitCode: z.number().nullable(),
+  }),
+  z.object({
+    type: z.literal('review.completed'),
+    targetId: z.string(),
+    reviews: z.array(reviewSchema).length(2),
+  }),
+  z.object({
+    type: z.literal('approval.completed'),
+    targetId: z.string(),
+    decision: z.enum(['approved', 'rejected']),
+  }),
+  z.object({
+    type: z.literal('factory.finished'),
+    outcome: z.object({
+      approved: z.boolean(),
+      conclusion: z.enum([
+        'approved',
+        'rejected',
+        'verification-failed',
+        'review-cap-reached',
+      ]),
+      candidate: candidateSchema.nullable(),
+      iterations: z.number(),
+      reviewRounds: z.number(),
+      reviews: z.array(reviewSchema),
+      workdir: z.string(),
+      fake: z.boolean(),
+    }),
+  }),
+])
+
+export type FactoryEvent = z.infer<typeof FactoryEventSchema>

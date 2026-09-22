@@ -1,52 +1,83 @@
-# local-agent-loop — Durably local agent demo
+# local-agent-loop — Durably local factory demo
 
-Local-only demo: Durably + local SQLite (better-sqlite3) + **one** logged-in CLI
-(Codex **or** Claude Code). No Docker, no cloud workflow infra, no GitHub auth,
-no CI changes.
+Durably + local SQLite + AI SDK v7 + one logged-in CLI (Codex or Claude Code)
+で、実装、固定テスト、独立レビュー、人間承認までをローカルで実行する
+サンプルです。新しいワークフローフレームワーク、Docker、GitHub認証、CIは
+使いません。
 
-What it does:
+中心となる設計は、工程の境界と会話の境界を分けることです。
 
-1. Copies `subject/` (tiny buggy `calc.js`) into an execution-only
-   `runs/<runId>/work/` directory; the selected agent edits only that copy.
-2. Runs implement → immutable acceptance-test grading (snapshot + tamper
-   check) → local `npm test` (Mac subprocess) in a bounded loop.
-3. Runs **two parallel reviews with the same provider in separate sessions**
-   via `step.all({ 'review-a:<n>', 'review-b:<n>' })` against a frozen
-   read-only snapshot. Adopted `needsChanges` findings route back to
-   implement (target invalidated, notes carried); only an explicit
-   well-formed `pass` counts — garbled/missing/contradictory verdicts are
-   review-incomplete failures, never passes.
-4. Suspends on a durable wait for **local human approval** from the terminal,
-   bound to the reviewed target hash.
-5. Records per-attempt requested/reported model / effort / token usage
-   (input/cache/output + source) / elapsed / result into Durably attempt
-   metadata; regenerates CLI + JSON/Markdown reports from persisted data
-   (stage timings, run elapsed, human `inputWaitMs` vs requeue
-   `executionSlotWaitMs`).
+- 工程は `code → verify → review → approve → finish/stop` に分け、各判断と
+  実行をDurably stepとして保存します。
+- `code` は初回実装と修正で共有します。`--context reuse` では同じ
+  provider-native sessionを明示的に再開し、`--context fresh` では毎回新しい
+  会話を使います。
+- `verify` と二つの `review` は、編集可能なworkdirではなく、同じ固定
+  Candidateを対象にします。レビュー会話は実装会話と独立した新規sessionです。
+- 修正後は新しいCandidateになり、古いテスト結果、レビュー、承認はReducerが
+  無効化します。
+- 承認waitとsignalは同じCandidate IDを必須とし、最終成果物には承認された
+  Candidateを返します。
 
-Policy → Stage → Event are separated (`src/policy.ts` holds the Stage
-registry; the runner persists each `decideNext()` to a `policy:<n>` step,
-executes the stage, then reduces the event); transitions use a lookup table,
-no giant switch.
+## 構造
 
-## Setup
+`src/job.ts` は、保存済みstateからPolicy判断を記録し、実関数を持つregistryを
+呼び、返ったeventをreduceするだけです。ファイルコピー、固定テスト、並列
+レビュー、waitは `src/stages.ts` 内の各Stageが組み立てます。Stage全体を一律に
+`step.run()` で包まないため、承認waitはDurablyの正しい境界にあります。
+
+```text
+decision:N
+  └─ stages[decision.stage](...)
+       ├─ code: agent call → immutable Candidate
+       ├─ verify: fixed acceptance command against Candidate
+       ├─ review: correctness + edge-cases (step.all, new sessions)
+       ├─ approve: prepareWait → waitFor(Candidate ID)
+       └─ finish/stop: approved Candidate or terminal failure
+```
+
+Candidateは次の参照を持ちます。
+
+```ts
+type CandidateRef = {
+  id: string
+  snapshotDir: string
+  sourceHash: string
+  acceptanceHash: string
+}
+```
+
+受け入れテストは開始時に別ディレクトリへ固定します。検証コマンドはサンプル側に
+固定した `node --test` であり、agentが編集した `package.json` のtest scriptは
+合否判定に使いません。Candidate自身も検証・レビュー前にhashを確認します。
+
+## セットアップ
 
 ```bash
 pnpm install
-node --test examples/local-agent-loop/subject/test/*.test.js  # subject is red until fixed (expected)
+pnpm --filter example-local-agent-loop typecheck
 pnpm --filter example-local-agent-loop test:unit
 ```
 
-Only the provider you use must be installed and logged in:
+使うproviderだけをインストールし、ログインしておきます。
 
 ```bash
-codex --version   # Codex path
-claude --version  # Claude Code path
+codex --version
+codex login
+
+# または
+claude --version
+claude auth login
 ```
 
-## Run A — Codex only
+Codexは `ai-sdk-provider-codex-cli@2.2.1` のapp-server modeを使い、最初の
+呼び出しでpersistent threadを作り、修正時は保存した `threadId` を明示します。
+Claudeは `ai-sdk-provider-claude-code@4.3.1` が返す `sessionId` を保存し、修正時は
+明示的な `resume` を使います。「cwdで最新の会話を選ぶ」動作は使いません。
 
-Terminal 1 (worker):
+## 実行
+
+Terminal 1:
 
 ```bash
 pnpm --filter example-local-agent-loop demo worker
@@ -55,188 +86,113 @@ pnpm --filter example-local-agent-loop demo worker
 Terminal 2:
 
 ```bash
-# trigger (caps: max 2 iterations, 5 min per agent call by default)
-pnpm --filter example-local-agent-loop demo trigger --provider codex --max-iterations 2
-# status / waits
-pnpm --filter example-local-agent-loop demo status --run <runId>
-pnpm --filter example-local-agent-loop demo waits --run <runId>
-# approve (or reject)
-pnpm --filter example-local-agent-loop demo approve --run <runId> --wait <waitId>
-pnpm --filter example-local-agent-loop demo reject --run <runId> --wait <waitId>
-# reports (regenerated from SQLite, not memory)
-pnpm --filter example-local-agent-loop demo report --run <runId> --format md
-pnpm --filter example-local-agent-loop demo report --run <runId> --format json --out reports/<runId>.json
-```
+pnpm --filter example-local-agent-loop demo trigger \
+  --provider codex --context reuse --max-iterations 2
 
-Optional caps/env:
-
-```bash
-AGENT_TIMEOUT_MS=300000 TEST_TIMEOUT_MS=120000 \
-  pnpm --filter example-local-agent-loop demo trigger --provider codex --model gpt-5.6-sol
-```
-
-## Model presets
-
-`--model` selects a preset; effort defaults from the preset unless overridden
-via `--effort` or `CODEX_EFFORT` / `CLAUDE_EFFORT` (precedence:
-`--effort` > env > preset).
-
-| provider | model                       | default effort | API-equiv $/1M in/out |
-| -------- | --------------------------- | -------------- | --------------------- |
-| codex    | `gpt-6-astra`               | low            | $10 / $50             |
-| codex    | `gpt-5.6-sol` (default)     | low            | $5 / $30              |
-| codex    | `gpt-5.6-luna`              | max            | $0.20 / $1.20         |
-| claude   | `claude-fable-5-1`          | low            | $10 / $50             |
-| claude   | `claude-opus-5`             | high           | $5 / $25              |
-| claude   | `claude-sonnet-5` (default) | high           | $2 / $10              |
-
-`--model`を省略すると既定モデル（必ずプリセット内）が使われるため、通常実行でeffort・料金がunknownになることはありません。
-
-Prices checked 2026-09-21 against OpenAI/Anthropic docs; they feed only the
-`api-equivalent-estimate` cost label in reports, never subscription billing.
-Effort is **applied**, not just recorded: Codex via `reasoningEffort`,
-Claude via the `effort` setting (unsupported values fail fast instead of
-being silently dropped). Requested vs provider-reported model/effort are
-stored separately — a value the provider never reported is never shown as
-reported.
-
-## LLM calls (AI SDK v7, one common path)
-
-All implement/review invocations go through a single runner
-(`src/runner.ts`) on top of Vercel AI SDK v7 (`ai@7.0.107`) with the
-community local-CLI providers `ai-sdk-provider-codex-cli@2.2.1` (Codex,
-`codex login` subscription auth) and `ai-sdk-provider-claude-code@4.3.1`
-(Claude, `claude auth login` subscription auth). No per-stage spawn/parse
-duplication, no API-key fallback: the unselected CLI is never required to be
-installed or authenticated. Per-attempt metadata records the resolved
-package + CLI versions (`codex --version` / `claude --version`).
-
-## Permissions (enforced, not just prompted)
-
-- Codex implement runs with `-s workspace-write -C <workdir>`; reviews run
-  with `sandboxMode: 'read-only'` against a frozen `review-snapshot-<n>/`
-  copy that both reviewers share.
-- Claude never uses `--dangerously-skip-permissions` by default
-  (`permissionMode: 'default'`); a `canUseTool` guard denies file operations
-  outside the execution dir (implement) and everything except `Read` inside
-  the snapshot (reviews).
-- Acceptance tests (`subject/test/`) are snapshotted at prepare time and
-  hash-verified before every grading run: editing `test/` to force green
-  fails the run with `acceptance-tampered`.
-- Human approval binds to the reviewed target hash (`targetHash` in the wait
-  metadata); if the workdir changed after review, the approval is rejected
-  instead of reused.
-
-## Cancel / resume semantics
-
-The Durably step signal (cancel / lease-loss) aborts the in-flight AI SDK
-call or test subprocess; only the owned child is killed (tracked pids, no
-process-group broadcast), and the worker awaits its exit. A `kill -9`ed
-worker reconciles a leftover pid marker on restart (pid + start-time match
-required — reused pids are never signaled). Note: the Durably lease guards
-**database writes only**; it does not guarantee the external CLI ran exactly
-once — reports and this README never claim otherwise.
-
-## Run B — Claude Code only
-
-Same flow with `--provider claude` (no Codex needed):
-
-```bash
-pnpm --filter example-local-agent-loop demo worker
-pnpm --filter example-local-agent-loop demo trigger --provider claude --max-iterations 2
 pnpm --filter example-local-agent-loop demo status --run <runId>
 pnpm --filter example-local-agent-loop demo waits --run <runId>
 pnpm --filter example-local-agent-loop demo approve --run <runId> --wait <waitId>
 pnpm --filter example-local-agent-loop demo report --run <runId> --format md
 ```
 
+Claudeでは `--provider claude` に替えるだけです。承認CLIはwait metadataから
+Candidate IDを読み、signal payloadにも同じIDを入れます。拒否は `approve` の
+代わりに `reject` を使います。
+
+## reuse / fresh 比較
+
+同じ題材、provider、model、effort、最大反復数で二つのrunを作ります。
+
 ```bash
-AGENT_TIMEOUT_MS=300000 CLAUDE_MODEL=sonnet CLAUDE_EFFORT=medium \
-  pnpm --filter example-local-agent-loop demo trigger --provider claude
+pnpm --filter example-local-agent-loop demo trigger \
+  --provider codex --context reuse --model gpt-5.6-sol --effort medium
+
+pnpm --filter example-local-agent-loop demo trigger \
+  --provider codex --context fresh --model gpt-5.6-sol --effort medium
 ```
 
-With a preset:
+両方を承認まで進め、JSON reportで修正回数、cache read/write、実作業時間、
+並列review区間、人間待ち、run全体時間を比較します。session継続はcache hitを
+保証しません。効果はproviderが報告したcache usageで判断します。
 
-```bash
-pnpm --filter example-local-agent-loop demo trigger --provider claude --model claude-opus-5
+## 呼び出し識別と復旧
+
+次のIDを混同しません。
+
+```text
+sessionId      provider-native conversation/thread
+operationKey   一つの論理的な仕事
+invocationId   実際に送った一回の依頼
+attempt.id     Durably step callbackの実行試行
 ```
 
-## Stop / restart resume check (same Mac, same SQLite)
+共通runnerは送信前に `operationKey` と `invocationId` のstart checkpointを保存し、
+provider結果を受け取ったらcomplete checkpointをatomicに保存してからstepを完了
+します。復旧時にcomplete checkpointがあれば同じ結果を読み、promptは再送しません。
+startだけが残った場合、外部呼び出しが完了したか安全に判定できないため、自動再送
+せず `uncertain external invocation` で停止します。作業物とcheckpointは
+`runs/<runId>/` に残ります。独自daemonや送信管理DBはありません。
 
-1. Trigger with `--provider fake` and slow down one review branch:
-   `FAKE_REVIEW_SLOW_MS=15000 pnpm --filter example-local-agent-loop demo worker`
-   in terminal 1, trigger in terminal 2.
-2. Wait until `status --run <id>` shows `review-a:<n>` completed (one attempt row),
-   then hard-kill the worker: `kill -9 <worker-pid>`.
-3. Restart the **same** command against the **same**
-   `examples/local-agent-loop/local-agent-loop.db`.
-4. Verify: the completed `review-a:<n>` branch is **not** re-executed (single completed
-   attempt, old `leaseGeneration`); the unfinished `review-b:<n>` attempt stays
-   `started` with `interruptionReason` (`lease-lost`/`unknown`) plus a new
-   post-recovery attempt with a newer `leaseGeneration`. `report` shows both.
+この契約は「結果受信後、Durably checkpoint前」の重複を防ぎます。一方、CLIが
+作業を終えた直後かつcomplete checkpoint前にプロセスを強制終了した場合は未確定
+として止まります。初版ではprovider-native履歴を推測して自動採用しません。
 
-Real-LLM kill test works the same way (start one review, kill, restart), but
-costs model calls; fake mode is the cheap rehearsal.
+## 計測
 
-## fake mode (rehearsal only)
+LLM呼び出しはすべて `src/runner.ts` を通り、attempt metadataへ以下を保存します。
+
+- effective model/effortとprovider-reported model/effort（未報告値は `null`）
+- `sessionId`、`operationKey`、`invocationId`、回収結果かどうか
+- 通常input、cache read、cache write、output、total token
+- usageの単位（このサンプルは一provider invocation）と取得元
+- elapsed、result、error、interruption reason、API換算参考価格
+
+集計は `invocationId` で一度だけ数えます。同じcomplete checkpointを別attemptが
+読み直してもtokenを二重計上しません。ローカルテストやPolicyはusage対象外です。
+LLMを呼んだのにusageが無い場合は欠測として件数を残し、完全な合計にはしません。
+レポートはSQLiteのrun、attempt、waitから再生成する純粋な処理です。
+
+```bash
+pnpm --filter example-local-agent-loop demo report --run <runId> --format json
+pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
+  --out reports/<runId>.md
+```
+
+価格はsubscription請求額ではなく `api-equivalent-estimate` です。未知のmodelや
+欠けたusageを0円として扱いません。
+
+## 権限と制約
+
+- Codex implement/repairはworkspace-write、reviewはread-only sandboxです。
+- Claude reviewはReadのみです。implement/repairは `canUseTool` と `PreToolUse`
+  hookの双方でworkdir外パスを拒否します。これは入力検査であり、OS sandboxでは
+  ありません。
+- 同じsessionへ並列送信しません。並列なのは新規sessionを使う二つのreviewだけ
+  です。
+- model、effort、指示版、tool、cwdを途中で替えるhandoffは未実装です。初版では
+  setup時に解決したprofileをrun中固定します。
+- fake providerは決定的なローカル練習用で、実LLM検証として数えません。
+
+## fake mode
 
 ```bash
 pnpm --filter example-local-agent-loop demo worker &
-pnpm --filter example-local-agent-loop demo trigger --provider fake --max-iterations 2
-# ... waits, approve, report as above; report is labeled fake
+pnpm --filter example-local-agent-loop demo trigger \
+  --provider fake --context reuse --max-iterations 3
 ```
 
-`fake` is deterministic: iteration 1 misses the fix (tests fail), iteration 2
-fixes it, both reviews pass. `FAKE_FAIL_FIRST=0` makes iteration 1 pass.
-`FAKE_REVIEW_SEQUENCE="needsChanges,pass"` forces a fix loop (round 1 has a
-`needsChanges`, later rounds pass). fake success is **never** real-LLM
-verification — reports carry `fake: true`, `realLlmCallCount: 0`,
-`fullLoopVerified: false`.
-
-## Measurements
-
-- Every implement / test / review branch writes an `AttemptMeasurement`
-  (`requestedModel/Effort`, `reportedModel/Effort`, `elapsedMs`, `usage`,
-  `costUsdEstimate`, `result`, `error`). Requested values (what you asked
-  for) and reported values (what the provider confirmed) are stored
-  separately.
-- Usage snapshots merge in order into the attempt; a failed tail preserves
-  already-reported numbers. Missing values are `null` and render as
-  `unknown` — never zero-filled. Both priced legs (input + output) are
-  required before any cost is shown; partial usage yields `unknown` cost.
-- Cost is an **API-equivalent estimate** (`costBasis: 'api-equivalent-estimate'`,
-  source + check date in `priceBasis`), not subscription billing; unknown
-  model/usage yields `null`.
-- `codex exec` / Claude Agent SDK report usage once at completion
-  (`usageSource: 'provider-final'`, `partialUsage: false`) — that constraint
-  is recorded, not worked around with estimates.
-- Failures and interruptions are recorded too (error text, `interruptionReason`).
-- Reports show real-CLI call counts (`realLlmCallCount`) separately from
-  `fullLoopVerified` (real CLI + terminal success + approval): usage rows
-  alone never imply a verified loop.
-
-## If real-LLM run is not possible here
-
-Keep the evidence: report notes say `unverified` with the reason, plus the
-repro command, e.g.:
-
-```bash
-pnpm --filter example-local-agent-loop demo trigger --provider codex --max-iterations 2
-pnpm --filter example-local-agent-loop demo report --run <runId> --format md
-```
+`FAKE_FAIL_FIRST=0` で初回実装を成功させられます。
+`FAKE_REVIEW_SEQUENCE="needsChanges,pass"` でreview修正ループを再現できます。
 
 ## Layout
 
-- `subject/` — pristine buggy template (never edited in place)
-- `src/types.ts`, `src/events.ts`, `src/reducer.ts`, `src/policy.ts`
-  (Stage registry + `decideNext`)
-- `src/providers/` — `codex.ts`, `claude.ts` (AI SDK v7 providers), `fake.ts`,
-  lookup factory; `src/runner.ts` — the single common call path
-- `src/child.ts` — cancel-aware subprocess + pid reconciliation
-- `src/acceptance.ts` — immutable acceptance-test snapshot/tamper check
-- `src/usage.ts`, `src/pricing.ts`, `src/versions.ts` — measurement helpers
-- `src/job.ts` — `agent-loop` Durably job; `src/durably.ts` — better-sqlite3 instance
-- `src/cli.ts` — worker/trigger/status/waits/approve/reject/report
-- `src/report.ts`, `src/prompts.ts` (strict verdicts), `src/test-runner.ts`,
-  `src/test-step.ts`
-- `runs/` (gitignored execution dirs), `local-agent-loop.db` (gitignored SQLite)
+- `src/job.ts` — decision保存とStage dispatchだけを行うDurably job
+- `src/stages.ts` — code / verify / review / approve / finish / stop
+- `src/candidate.ts` —非上書きCandidate作成とintegrity check
+- `src/types.ts`, `events.ts`, `reducer.ts`, `policy.ts` — 状態機械
+- `src/providers/` — AI SDK v7のCodex / Claude / fake adapter
+- `src/runner.ts` — session、operation checkpoint、共通計測
+- `src/acceptance.ts`, `test-step.ts` — 固定受け入れテスト
+- `src/report.ts`, `usage.ts`, `pricing.ts` — 永続記録からの集計
+- `subject/` — 変更しないバグ入り題材
+- `runs/`, `local-agent-loop.db` — gitignored runtime data

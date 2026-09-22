@@ -1,5 +1,6 @@
 /**
- * Test verification step: acceptance-tamper check + local `npm test`.
+ * Test verification step: acceptance-tamper check + grading against the
+ * pristine snapshot with a sample-fixed command.
  *
  * Measurement merges into the attempt snapshot (never wholesale replace),
  * and the Durably step signal is forwarded so cancel/lease-loss kills only
@@ -8,15 +9,20 @@
 import type { StepAttemptContext } from '@coji/durably'
 import type { JsonValue } from '@coji/durably'
 
-import { verifyAcceptanceIntact } from './acceptance.js'
+import { runAcceptanceSuite } from './acceptance.js'
 import type { ProviderName } from './providers/types.js'
 import { writeMeasurement } from './runner.js'
-import { runLocalTests } from './test-runner.js'
 
 export interface TestStepSpec {
   provider: ProviderName
   workdir: string
   acceptanceHash: string
+  /** Pristine snapshot dir (prepare step); grading reads tests from here. */
+  acceptanceDir: string
+  /** Rebuilt scratch dir for grading (outside the agent's workdir). */
+  scratchDir: string
+  /** Pid marker so a restarted worker can reconcile the grading process. */
+  pidFile: string
   timeoutMs: number
   stage: string
   iteration: number
@@ -41,6 +47,11 @@ export async function runAgentTestStep(
       fake: spec.provider === 'fake',
       stage: spec.stage,
       iteration: spec.iteration,
+      operationKey: null,
+      invocationId: null,
+      sessionId: null,
+      recovered: false,
+      usageScope: null,
       requestedModel: null,
       requestedEffort: null,
       reportedModel: null,
@@ -57,8 +68,20 @@ export async function runAgentTestStep(
     {},
   )
   try {
-    await verifyAcceptanceIntact(`${spec.workdir}/test`, spec.acceptanceHash)
-    const res = await runLocalTests(spec.workdir, spec.timeoutMs, signal)
+    // Tamper check + grading run the pristine snapshot via a fixed argv;
+    // the workdir's `npm test` is never executed, so a rewritten test
+    // script cannot fake a pass.
+    const res = await runAcceptanceSuite(
+      {
+        workdir: spec.workdir,
+        acceptanceDir: spec.acceptanceDir,
+        scratchDir: spec.scratchDir,
+        timeoutMs: spec.timeoutMs,
+        pidFile: spec.pidFile,
+        signal,
+      },
+      spec.acceptanceHash,
+    )
     measurement = await writeMeasurement(attempt, measurement, {
       elapsedMs: res.elapsedMs,
       result: res.passed ? 'pass' : 'fail',

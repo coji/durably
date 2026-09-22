@@ -13,7 +13,9 @@
  * exactly once. This module narrows the gap but does not close it — see README.
  */
 import { execFileSync, spawn, type SpawnOptions } from 'node:child_process'
+import { readdir } from 'node:fs/promises'
 import { readFile, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 
 /** Pids owned by this process (spawned through this module, still running). */
 const owned = new Set<number>()
@@ -107,6 +109,55 @@ export async function reconcilePidFile(
   return 'residual-killed'
 }
 
+export interface PidReconcileSummary {
+  checked: number
+  cleaned: number
+  residualKilled: number
+}
+
+/**
+ * Worker-startup reconciliation: sweep `<runsRoot>/<runId>/*.pid` markers
+ * left by grading (`node --test`) processes of a kill -9ed worker.
+ * Each marker is verified (pid + start-time) before any signal, so reused
+ * pids are never touched. Missing roots are clean.
+ *
+ * Scope: only processes spawned through `runChild` with a `pidFile` leave
+ * markers. CLI children spawned inside the AI SDK providers are stopped via
+ * AbortSignal on graceful cancel — a `kill -9`ed worker can orphan one, and
+ * that case is documented (not reconciled here).
+ */
+export async function reconcileRunPidFiles(
+  runsRoot: string,
+): Promise<PidReconcileSummary> {
+  const summary: PidReconcileSummary = {
+    checked: 0,
+    cleaned: 0,
+    residualKilled: 0,
+  }
+  let runIds: string[]
+  try {
+    runIds = await readdir(runsRoot)
+  } catch {
+    return summary
+  }
+  for (const runId of runIds) {
+    let entries: string[]
+    try {
+      entries = await readdir(join(runsRoot, runId))
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith('.pid')) continue
+      summary.checked += 1
+      const outcome = await reconcilePidFile(join(runsRoot, runId, entry))
+      if (outcome === 'residual-killed') summary.residualKilled += 1
+      else summary.cleaned += 1
+    }
+  }
+  return summary
+}
+
 export async function runChild(
   command: string,
   args: string[],
@@ -118,14 +169,24 @@ export async function runChild(
     killSignal = 'SIGKILL',
     maxOutputChars = 8000,
     pidFile,
+    env: explicitEnv,
     ...spawnOptions
   } = options
   const started = Date.now()
   if (signal?.aborted) {
     throw new SpawnCancelledError('aborted before spawn')
   }
+  // A child must never inherit this process's test-runner context: when the
+  // worker itself runs under `node --test` (unit tests), an inherited
+  // NODE_TEST_CONTEXT makes a nested `node --test` skip its files and exit 0
+  // — a vacuous pass. Scrub it so every spawn is a top-level run.
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, ...explicitEnv }
+  for (const key of Object.keys(childEnv)) {
+    if (key.startsWith('NODE_TEST_')) delete childEnv[key]
+  }
   const child = spawn(command, args, {
     ...spawnOptions,
+    env: childEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   if (child.pid !== undefined) owned.add(child.pid)
