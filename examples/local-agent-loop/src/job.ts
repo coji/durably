@@ -82,8 +82,8 @@ export const agentLoopJob = defineJob({
         await mkdir(root, { recursive: true })
         await cp(subjectDir(), workdir, { recursive: true })
         await cp(subjectDir(), baselineDir, { recursive: true })
-        const baselineHash = await hashDir(baselineDir)
         await makeTreeReadOnly(baselineDir)
+        const baselineHash = await hashDir(baselineDir)
         const acceptance = await snapshotAcceptance(
           join(subjectDir(), 'test'),
           acceptanceDir,

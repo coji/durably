@@ -53,6 +53,9 @@ type CandidateRef = {
 承認再開後、終了直前にraw bytesのhashを確認します。レビューpromptには固定した
 baselineの変更一覧と元の `src/calc.js` を渡すため、Candidateだけを読む独立session
 でも「変更が最小か」「`mul()` を触っていないか」を比較できます。
+固定テストはNode 24 Permission Modelでfilesystem writeとchild processを禁止した
+別processで実行します。その外側に独立watchdogを置くため、workerがSIGKILLされても
+テストprocessは固定deadlineで終了します。
 
 ## セットアップ
 

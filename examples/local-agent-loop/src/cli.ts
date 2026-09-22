@@ -163,11 +163,9 @@ if (cmd === 'worker') {
   } | null
   if (!target?.candidateId)
     throw new Error('wait metadata has no candidateId; refusing unbound signal')
-  if (target?.candidateId) {
-    console.log(
-      `binding approval to candidate ${target.candidateId} (${target.sourceHash?.slice(0, 12) ?? 'unknown hash'}).`,
-    )
-  }
+  console.log(
+    `binding approval to candidate ${target.candidateId} (${target.sourceHash?.slice(0, 12) ?? 'unknown hash'}).`,
+  )
   const receipt = await durably.signal(
     waitId,
     {
@@ -212,6 +210,7 @@ if (cmd === 'worker') {
           r.measurement !== null &&
           r.measurement.provider !== 'fake' &&
           r.measurement.fake === false &&
+          r.measurement.usageScope === 'invocation' &&
           (r.measurement.result?.endsWith('-done') ||
             r.measurement.result === 'checkpoint-recovered'),
       )

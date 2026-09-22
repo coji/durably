@@ -122,14 +122,13 @@ describe('fake e2e fix loop', { timeout: 180000 }, () => {
         .map(
           (attempt) =>
             attempt.metadata as {
-              stage?: string
+              role?: string
               sessionId?: string
             } | null,
         )
         .filter(
           (measurement) =>
-            measurement?.stage === 'implement' ||
-            measurement?.stage === 'repair',
+            measurement?.role === 'implement' || measurement?.role === 'repair',
         )
         .map((measurement) => measurement?.sessionId)
       assert.equal(codeSessions.length, 2)
@@ -166,12 +165,11 @@ describe('fake e2e fix loop', { timeout: 180000 }, () => {
       const sessions = attempts
         .map(
           (attempt) =>
-            attempt.metadata as { stage?: string; sessionId?: string } | null,
+            attempt.metadata as { role?: string; sessionId?: string } | null,
         )
         .filter(
           (measurement) =>
-            measurement?.stage === 'implement' ||
-            measurement?.stage === 'repair',
+            measurement?.role === 'implement' || measurement?.role === 'repair',
         )
         .map((measurement) => measurement?.sessionId)
       assert.equal(sessions.length, 2)

@@ -79,7 +79,7 @@ export const codeStage: StageHandler = async ({
         effectiveModel: profile.effectiveModel,
         effectiveEffort: profile.effectiveEffort,
         role,
-        stage: role,
+        stage: 'code',
         iteration,
         operationKey: `${step.runId}/${key}/agent`,
         checkpointsDir: state.setup.checkpointsDir,

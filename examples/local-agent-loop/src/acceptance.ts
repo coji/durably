@@ -3,7 +3,7 @@
  *
  * The agent must never be able to rewrite the tests it is graded by:
  *
- * - At `prepare`, `subject/test/*` is copied to `<run>/acceptance/` and its
+ * - At `setup`, `subject/test/*` is copied to `<run>/acceptance/` and its
  *   sha256 recorded.
  * - Before every verification, the workdir's `test/` tree is hashed and
  *   compared to the snapshot. A mismatch fails the run with
@@ -29,11 +29,23 @@ import {
   symlink,
 } from 'node:fs/promises'
 import { join } from 'node:path'
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { runChild } from './child.js'
 
+const supervisorPath = join(
+  dirname(fileURLToPath(import.meta.url)),
+  'test-supervisor.mjs',
+)
+
 export async function hashFiles(
-  files: { path: string; content: string | Uint8Array }[],
+  files: {
+    path: string
+    content: string | Uint8Array
+    type?: 'file' | 'directory'
+    mode?: number
+  }[],
 ): Promise<string> {
   const h = createHash('sha256')
   const sorted = [...files].sort((a, b) => (a.path < b.path ? -1 : 1))
@@ -41,10 +53,13 @@ export async function hashFiles(
     const path = Buffer.from(f.path)
     const content =
       typeof f.content === 'string' ? Buffer.from(f.content) : f.content
-    const lengths = Buffer.allocUnsafe(16)
+    const type = f.type ?? 'file'
+    const mode = f.mode ?? 0
+    const lengths = Buffer.allocUnsafe(20)
     lengths.writeBigUInt64BE(BigInt(path.length), 0)
     lengths.writeBigUInt64BE(BigInt(content.length), 8)
-    h.update('file\0')
+    lengths.writeUInt32BE(mode, 16)
+    h.update(`${type}\0`)
     h.update(lengths)
     h.update(path)
     h.update(content)
@@ -52,10 +67,20 @@ export async function hashFiles(
   return h.digest('hex')
 }
 
-async function readTree(
-  root: string,
-): Promise<{ path: string; content: Buffer }[]> {
-  const out: { path: string; content: Buffer }[] = []
+async function readTree(root: string): Promise<
+  {
+    path: string
+    content: Buffer
+    type: 'file' | 'directory'
+    mode: number
+  }[]
+> {
+  const out: {
+    path: string
+    content: Buffer
+    type: 'file' | 'directory'
+    mode: number
+  }[] = []
   async function walk(dir: string, rel: string) {
     const entries = await readdir(dir)
     for (const name of entries) {
@@ -66,9 +91,20 @@ async function readTree(
         throw new Error(`snapshot contains a symbolic link: ${rp}`)
       }
       if (st.isDirectory()) {
+        out.push({
+          path: rp,
+          content: Buffer.alloc(0),
+          type: 'directory',
+          mode: st.mode & 0o777,
+        })
         await walk(full, rp)
       } else if (st.isFile()) {
-        out.push({ path: rp, content: await readFile(full) })
+        out.push({
+          path: rp,
+          content: await readFile(full),
+          type: 'file',
+          mode: st.mode & 0o777,
+        })
       }
     }
   }
@@ -77,8 +113,14 @@ async function readTree(
 }
 
 /** Hash every file under a directory (relative paths + contents). */
-export async function hashDir(root: string): Promise<string> {
-  return hashFiles(await readTree(root))
+export async function hashDir(
+  root: string,
+  includeMode = true,
+): Promise<string> {
+  const entries = await readTree(root)
+  return hashFiles(
+    includeMode ? entries : entries.map((entry) => ({ ...entry, mode: 0 })),
+  )
 }
 
 /** Trusted changed-path summary for reviewers that only receive the Candidate. */
@@ -86,19 +128,17 @@ export async function describeTreeChanges(
   baselineDir: string,
   candidateDir: string,
 ): Promise<string[]> {
-  const digest = (content: Buffer) =>
-    createHash('sha256').update(content).digest('hex')
+  const digest = (entry: Awaited<ReturnType<typeof readTree>>[number]) =>
+    createHash('sha256')
+      .update(entry.type)
+      .update(String(entry.mode))
+      .update(entry.content)
+      .digest('hex')
   const baseline = new Map(
-    (await readTree(baselineDir)).map((entry) => [
-      entry.path,
-      digest(entry.content),
-    ]),
+    (await readTree(baselineDir)).map((entry) => [entry.path, digest(entry)]),
   )
   const candidate = new Map(
-    (await readTree(candidateDir)).map((entry) => [
-      entry.path,
-      digest(entry.content),
-    ]),
+    (await readTree(candidateDir)).map((entry) => [entry.path, digest(entry)]),
   )
   const paths = [...new Set([...baseline.keys(), ...candidate.keys()])].sort()
   return paths.flatMap((path) => {
@@ -117,8 +157,10 @@ export async function snapshotAcceptance(
 ): Promise<{ files: number; hash: string }> {
   await mkdir(acceptanceDir, { recursive: true })
   await cp(subjectTestDir, acceptanceDir, { recursive: true })
-  const hash = await hashDir(acceptanceDir)
-  const files = (await readTree(acceptanceDir)).length
+  const hash = await hashDir(acceptanceDir, false)
+  const files = (await readTree(acceptanceDir)).filter(
+    (entry) => entry.type === 'file',
+  ).length
   return { files, hash }
 }
 
@@ -132,7 +174,7 @@ export async function verifyAcceptanceIntact(
 ): Promise<{ hash: string }> {
   let actual: string
   try {
-    actual = await hashDir(workdirTestDir)
+    actual = await hashDir(workdirTestDir, false)
   } catch (err) {
     throw new Error(
       `acceptance-tampered: cannot read workdir tests: ${err instanceof Error ? err.message : String(err)}`,
@@ -177,7 +219,7 @@ export async function runAcceptanceSuite(
 ): Promise<AcceptanceRunResult> {
   const started = Date.now()
   await verifyAcceptanceIntact(join(spec.workdir, 'test'), expectedHash)
-  const acceptanceHash = await hashDir(spec.acceptanceDir)
+  const acceptanceHash = await hashDir(spec.acceptanceDir, false)
   if (acceptanceHash !== expectedHash) {
     throw new Error(
       `acceptance-tampered: fixed acceptance snapshot differs from its saved hash (expected ${expectedHash.slice(0, 12)}, got ${acceptanceHash.slice(0, 12)})`,
@@ -195,24 +237,44 @@ export async function runAcceptanceSuite(
     process.platform === 'win32' ? 'junction' : 'dir',
   )
   const testFiles = (await readTree(scratchTestDir))
+    .filter((entry) => entry.type === 'file')
     .map((f) => f.path)
     .filter((p) => p.endsWith('.test.js'))
     .sort()
-    .map((p) => join('test', p))
+    .map((p) => join(spec.scratchDir, 'test', p))
   if (testFiles.length === 0) {
     throw new Error(
       'acceptance-tampered: snapshot contains no *.test.js files to grade',
     )
   }
   try {
-    const res = await runChild('node', ['--test', ...testFiles], {
-      cwd: spec.scratchDir,
-      timeoutMs: spec.timeoutMs,
-      ...(spec.signal ? { signal: spec.signal } : {}),
-    })
+    const res = await runChild(
+      process.execPath,
+      [
+        supervisorPath,
+        String(spec.timeoutMs),
+        spec.scratchDir,
+        '--permission',
+        '--allow-fs-read=*',
+        '--test',
+        '--test-isolation=none',
+        `--test-timeout=${spec.timeoutMs}`,
+        ...testFiles,
+      ],
+      {
+        cwd: spec.scratchDir,
+        timeoutMs: spec.timeoutMs + 5000,
+        killSignal: 'SIGTERM',
+        env: { NODE_OPTIONS: '' },
+        ...(spec.signal ? { signal: spec.signal } : {}),
+      },
+    )
     return {
       passed: res.code === 0,
-      stdout: `${res.stdout}${res.stderr}`.slice(-8000),
+      stdout:
+        res.code === 124
+          ? `acceptance suite timed out after ${spec.timeoutMs}ms`
+          : `${res.stdout}${res.stderr}`.slice(-8000),
       exitCode: res.code,
       elapsedMs: Date.now() - started,
     }

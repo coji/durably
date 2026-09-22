@@ -130,13 +130,14 @@ export async function runAgentCall(
   const paths = checkpointPaths(checkpointsDir, operationKey)
   const saved = await readJson<CompletedCheckpoint>(paths.completed)
   const existingStart = await readJson<StartedCheckpoint>(paths.started)
-  const invocationId =
+  let invocationId =
     saved?.invocationId ?? existingStart?.invocationId ?? randomUUID()
 
   let measurement: AttemptMeasurement = {
     provider: spec.providerName,
     fake: spec.provider.fake,
     stage: spec.stage,
+    role: spec.role,
     iteration: spec.iteration,
     operationKey,
     invocationId,
@@ -166,7 +167,9 @@ export async function runAgentCall(
   const finish = async (
     result: AgentResult,
     recovered: boolean,
+    checkpoint?: CompletedCheckpoint,
   ): Promise<AgentCallOutcome> => {
+    if (checkpoint) invocationId = checkpoint.invocationId
     const sessionId = result.session?.id ?? spec.session?.nativeId ?? null
     if (spec.requireSession && !sessionId)
       throw new Error(
@@ -175,13 +178,14 @@ export async function runAgentCall(
     measurement = await writeMeasurement(attempt, measurement, {
       reportedModel: result.reportedModel,
       reportedEffort: result.reportedEffort,
+      invocationId,
       sessionId,
       usagePatch: result.usage,
       elapsedMs: result.elapsedMs,
       invocationStartedAt:
-        saved?.invocationStartedAt ?? measurement.invocationStartedAt,
+        checkpoint?.invocationStartedAt ?? measurement.invocationStartedAt,
       invocationCompletedAt:
-        saved?.invocationCompletedAt ?? new Date().toISOString(),
+        checkpoint?.invocationCompletedAt ?? new Date().toISOString(),
       recovered,
       result: recovered ? 'checkpoint-recovered' : `${spec.role}-done`,
       error: null,
@@ -195,10 +199,22 @@ export async function runAgentCall(
     }
   }
 
+  const assertResolvedSettings = (result: AgentResult) => {
+    if (
+      result.resolvedModel !== spec.effectiveModel ||
+      result.resolvedEffort !== spec.effectiveEffort
+    ) {
+      throw new Error(
+        `provider resolution drift: expected ${spec.effectiveModel ?? 'null'}/${spec.effectiveEffort ?? 'null'}, got ${result.resolvedModel ?? 'null'}/${result.resolvedEffort ?? 'null'}`,
+      )
+    }
+  }
+
   if (saved) {
     if (saved.operationKey !== operationKey)
       throw new Error('operation checkpoint key mismatch')
-    return finish(saved.result, true)
+    assertResolvedSettings(saved.result)
+    return finish(saved.result, true, saved)
   }
   if (existingStart)
     throw new UncertainInvocationError(operationKey, invocationId)
@@ -216,7 +232,7 @@ export async function runAgentCall(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
       const raced = await readJson<CompletedCheckpoint>(paths.completed)
-      if (raced) return finish(raced.result, true)
+      if (raced) return finish(raced.result, true, raced)
       const start = await readJson<StartedCheckpoint>(paths.started)
       throw new UncertainInvocationError(
         operationKey,
@@ -262,6 +278,7 @@ export async function runAgentCall(
         `${spec.providerName} did not report a native session id for context reuse`,
       )
     }
+    assertResolvedSettings(result)
     const completed: CompletedCheckpoint = {
       ...startRecord,
       status: 'completed',

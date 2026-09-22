@@ -14,12 +14,12 @@ export async function makeTreeReadOnly(root: string): Promise<void> {
       throw new Error(`candidate contains a symbolic link: ${path}`)
     if (stat.isDirectory()) {
       await makeTreeReadOnly(path)
-      await chmod(path, 0o555)
+      await chmod(path, 0o755)
     } else if (stat.isFile()) {
       await chmod(path, 0o444)
     }
   }
-  await chmod(root, 0o555)
+  await chmod(root, 0o755)
 }
 
 export async function createCandidate(options: {
@@ -36,6 +36,7 @@ export async function createCandidate(options: {
   )
   await rm(temporary, { recursive: true, force: true })
   await cp(options.workdir, temporary, { recursive: true })
+  await makeTreeReadOnly(temporary)
   const sourceHash = await hashDir(temporary)
   const id = `candidate-${options.iteration}-${sourceHash.slice(0, 12)}`
   const snapshotDir = join(options.candidatesDir, id)
@@ -48,7 +49,6 @@ export async function createCandidate(options: {
     if ((await hashDir(snapshotDir)) !== sourceHash)
       throw new Error(`existing candidate differs: ${id}`)
   }
-  await makeTreeReadOnly(snapshotDir)
   if ((await hashDir(snapshotDir)) !== sourceHash)
     throw new Error(`candidate changed while sealing: ${id}`)
   return {

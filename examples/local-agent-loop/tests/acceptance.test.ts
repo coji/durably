@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -63,5 +63,16 @@ describe('immutable acceptance tests', () => {
     await writeFile(join(left, 'binary'), Buffer.from([0x80]))
     await writeFile(join(right, 'binary'), Buffer.from([0x81]))
     assert.notEqual(await hashDir(left), await hashDir(right))
+  })
+
+  it('includes file modes and empty directories in Candidate hashes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hash-metadata-'))
+    await writeFile(join(root, 'file'), 'same bytes')
+    const original = await hashDir(root)
+    await chmod(join(root, 'file'), 0o444)
+    assert.notEqual(await hashDir(root), original)
+    const afterMode = await hashDir(root)
+    await mkdir(join(root, 'empty'))
+    assert.notEqual(await hashDir(root), afterMode)
   })
 })

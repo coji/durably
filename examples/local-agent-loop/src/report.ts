@@ -4,7 +4,7 @@
  * - `realLlmCallCount` (a real CLI was invoked) and `fullLoopVerified`
  *   (real CLI + terminal success + approval) are reported separately — one
  *   usage row never implies a verified loop.
- * - Usage aggregates dedupe by attempt id; replayed steps add no new
+ * - Usage aggregates dedupe by invocation id; recovery attempts add no new
  *   consumption. Confirmed sums and missing legs are shown separately.
  * - Timings: per-stage elapsed, stage total, whole-run elapsed, and human
  *   `inputWaitMs` vs requeue `executionSlotWaitMs` per wait. Unknown end

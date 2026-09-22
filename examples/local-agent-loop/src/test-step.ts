@@ -84,6 +84,7 @@ export async function runAgentTestStep(
       provider: spec.provider,
       fake: spec.provider === 'fake',
       stage: spec.stage,
+      role: null,
       iteration: spec.iteration,
       operationKey: spec.operationKey,
       invocationId,
@@ -136,6 +137,7 @@ export async function runAgentTestStep(
         if (raced.operationKey !== spec.operationKey)
           throw new Error('verification checkpoint key mismatch')
         await writeMeasurement(attempt, measurement, {
+          invocationId: raced.invocationId,
           elapsedMs: raced.elapsedMs,
           recovered: true,
           result: 'checkpoint-recovered',

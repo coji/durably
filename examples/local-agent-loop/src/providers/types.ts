@@ -23,7 +23,7 @@ export interface AgentResult {
   /**
    * Execution settings actually applied to this call (explicit > env >
    * preset > provider default). Saved to the attempt BEFORE launch as the
-   * requested model/effort — never presented as provider-reported.
+   * effective model/effort — never presented as provider-reported.
    */
   resolvedModel: string | null
   resolvedEffort: string | null
@@ -91,6 +91,7 @@ export interface AttemptMeasurement {
   fake: boolean
   /** Stage/iteration snapshot — merged, never wholesale-replaced. */
   stage: string | null
+  role?: AgentRole | null
   iteration: number | null
   operationKey?: string | null
   invocationId?: string | null
