@@ -209,7 +209,7 @@ describe('pricing/report', () => {
       md,
       /aggregate cost \(stored per-invocation estimates\): 0\.003000 USD/,
     )
-    assert.doesNotMatch(md, new RegExp(PRICE_BASIS.checkedAt))
-    assert.doesNotMatch(md, new RegExp(PRICE_BASIS.source))
+    assert.ok(!md.includes(PRICE_BASIS.checkedAt))
+    assert.ok(!md.includes(PRICE_BASIS.source))
   })
 })
