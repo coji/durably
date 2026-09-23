@@ -1,12 +1,4 @@
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  describe,
-  expect,
-  it,
-  vi,
-} from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 
 import {
@@ -16,7 +8,7 @@ import {
   NotFoundError,
   type Durably,
 } from '../../src'
-import { createPostgresSchemaResource } from '../helpers/postgres-dialect'
+import { usePostgresSchemaPerTest } from '../helpers/postgres-dialect'
 
 async function waitForPendingRunOnB(b: Durably<any, any>) {
   await vi.waitFor(
@@ -28,15 +20,44 @@ async function waitForPendingRunOnB(b: Durably<any, any>) {
   )
 }
 
-const resource = createPostgresSchemaResource()
+const createPostgresDialect = usePostgresSchemaPerTest()
 
-beforeAll(async () => {
-  await resource.setup()
-})
-
-afterAll(async () => {
-  await resource.cleanup()
-})
+/**
+ * Control the storage reads a waiter makes. Deleting a run means completing
+ * it first, and a poll that reads between completion and deletion would
+ * legitimately resolve with the completed run. `pause` holds new reads and
+ * waits for any read already in flight, so the next read the waiter makes
+ * happens after `resume` and sees the deletion.
+ */
+function controlRunReads(durably: Durably<any, any>) {
+  const original = durably.storage.getRun
+  const inFlight = new Set<Promise<unknown>>()
+  let held: Promise<void> | null = null
+  let release = () => {}
+  durably.storage.getRun = (async (...args: Parameters<typeof original>) => {
+    if (held) await held
+    const read = original(...args)
+    inFlight.add(read)
+    try {
+      return await read
+    } finally {
+      inFlight.delete(read)
+    }
+  }) as typeof original
+  return {
+    async pause() {
+      held = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      await Promise.allSettled(inFlight)
+    },
+    restore() {
+      release()
+      held = null
+      durably.storage.getRun = original
+    },
+  }
+}
 
 describe(
   'waitForRun / triggerAndWait with shared storage (cross-runtime)',
@@ -51,7 +72,7 @@ describe(
     })
 
     function createPair(pollingIntervalMs: number) {
-      const dialect = () => resource.createDialect()
+      const dialect = createPostgresDialect
       const runtimeA = createDurably({
         dialect: dialect(),
         pollingIntervalMs,
@@ -217,6 +238,7 @@ describe(
       await a.migrate()
       await b.migrate()
 
+      const reads = controlRunReads(a)
       const run = await a.jobs.job.trigger({})
       const wait = a.waitForRun(run.id)
       const assertDone = expect(wait).rejects.toThrow(NotFoundError)
@@ -229,9 +251,15 @@ describe(
         },
         { timeout: 5000 },
       )
-      release()
-      await process
-      await b.deleteRun(run.id)
+      try {
+        await reads.pause()
+        release()
+        await process
+        await b.deleteRun(run.id)
+      } finally {
+        release()
+        reads.restore()
+      }
       await assertDone
     })
 
@@ -257,6 +285,7 @@ describe(
       await a.migrate()
       await b.migrate()
 
+      const reads = controlRunReads(a)
       const p = a.jobs.job.triggerAndWait({})
       const assertDone = expect(p).rejects.toThrow(NotFoundError)
       await waitForPendingRunOnB(b)
@@ -270,9 +299,15 @@ describe(
       )
       const runs = await b.getRuns({ status: 'leased' })
       const runId = runs[0].id
-      release()
-      await process
-      await b.deleteRun(runId)
+      try {
+        await reads.pause()
+        release()
+        await process
+        await b.deleteRun(runId)
+      } finally {
+        release()
+        reads.restore()
+      }
       await assertDone
     })
   },

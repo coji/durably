@@ -30,25 +30,43 @@ describe('stale owner end-to-end', () => {
     await Promise.all(completed.map((runtime) => runtime.db.destroy()))
   })
 
-  function createSharedRuntimePair() {
+  function createSharedRuntimePair(
+    owner: { leaseMs?: number; leaseRenewIntervalMs?: number } = {},
+  ) {
     const dbFile = join(tmpdir(), `durably-stale-owner-${randomUUID()}.db`)
     const createDialect = () => createNodeDialectForFile(dbFile)
 
+    // By default both leases are long so neither expires on its own, however
+    // slow the machine. Tests end the original owner's lease explicitly with
+    // `expireLease` at the moment they want the reclaim to happen.
     const runtimeA = createDurably({
       dialect: createDialect(),
-      leaseMs: 25,
-      leaseRenewIntervalMs: 1_000,
+      leaseMs: owner.leaseMs ?? 30_000,
+      leaseRenewIntervalMs: owner.leaseRenewIntervalMs ?? 1_000,
     })
     const runtimeB = createDurably({
       dialect: createDialect(),
-      // Only the original owner should expire. Give the reclaimer enough time
-      // to finish even when CI stalls between its attempt and checkpoint.
       leaseMs: 30_000,
       leaseRenewIntervalMs: 1_000,
     })
 
     runtimes.push(runtimeA, runtimeB)
     return { runtimeA, runtimeB }
+  }
+
+  /**
+   * End the current lease as if its owner had stalled past `leaseMs`. Setting
+   * the expiry directly, rather than sleeping past a tiny lease, keeps the
+   * owner from losing its lease before the test reaches the point it probes.
+   * The owner's next renewal then fails, as it would after a real expiry.
+   */
+  async function expireLease(runtime: Durably<any, any>, runId: string) {
+    await runtime.db
+      .updateTable('durably_runs')
+      .set({ lease_expires_at: new Date(0).toISOString() })
+      .where('id', '=', runId)
+      .where('status', '=', 'leased')
+      .execute()
   }
 
   it('does not start a callback when cancellation wins before attempt insertion', async () => {
@@ -115,7 +133,7 @@ describe('stale owner end-to-end', () => {
     try {
       const processing = a.processOne()
       await beginReached.promise
-      await new Promise((resolve) => setTimeout(resolve, 40))
+      await expireLease(runtimeB, run.id)
       await runtimeB.storage.releaseExpiredLeases(new Date().toISOString())
       const claimed = await runtimeB.storage.claimNext(
         'new-owner',
@@ -172,7 +190,7 @@ describe('stale owner end-to-end', () => {
     const run = await a.jobs.job.trigger({})
     const firstProcess = a.processOne({ workerId: 'worker-a' })
     await firstStarted.promise
-    await new Promise((resolve) => setTimeout(resolve, 40))
+    await expireLease(runtimeB, run.id)
     let reclaimed = false
     try {
       reclaimed = await b.processOne({ workerId: 'worker-b' })
@@ -198,7 +216,7 @@ describe('stale owner end-to-end', () => {
     expect(attempts[0].id).not.toBe(attempts[1].id)
     expect(staleWriteRejected).toBe(true)
     expect((await a.getRun(run.id))?.status).toBe('completed')
-  }, 15_000)
+  })
 
   it('does not let a stale worker overwrite a reclaimed completion', async () => {
     const { runtimeA, runtimeB } = createSharedRuntimePair()
@@ -232,7 +250,7 @@ describe('stale owner end-to-end', () => {
 
     const firstProcess = a.processOne({ workerId: 'worker-a' })
     await firstExecutionStarted.promise
-    await new Promise((resolve) => setTimeout(resolve, 40))
+    await expireLease(runtimeB, run.id)
 
     const secondProcess = await b.processOne({ workerId: 'worker-b' })
     expect(secondProcess).toBe(true)
@@ -279,7 +297,7 @@ describe('stale owner end-to-end', () => {
 
     const firstProcess = a.processOne({ workerId: 'worker-a' })
     await firstExecutionStarted.promise
-    await new Promise((resolve) => setTimeout(resolve, 40))
+    await expireLease(runtimeB, run.id)
 
     const secondProcess = await b.processOne({ workerId: 'worker-b' })
     expect(secondProcess).toBe(true)
@@ -299,6 +317,8 @@ describe('stale owner end-to-end', () => {
 
     const firstStepStarted = createDeferred()
     const releaseFirstStep = createDeferred()
+    const reclaimStarted = createDeferred()
+    const releaseReclaim = createDeferred()
     let executionCount = 0
     let secondStepStarted = false
 
@@ -309,6 +329,8 @@ describe('stale owner end-to-end', () => {
       run: async (step) => {
         executionCount++
         if (executionCount > 1) {
+          reclaimStarted.resolve()
+          await releaseReclaim.promise
           return { winner: 'reclaimer' }
         }
 
@@ -335,24 +357,37 @@ describe('stale owner end-to-end', () => {
 
     const firstProcess = a.processOne({ workerId: 'worker-a' })
     await firstStepStarted.promise
-    await new Promise((resolve) => setTimeout(resolve, 40))
+    await expireLease(runtimeB, run.id)
 
-    const secondProcessPromise = b.processOne({ workerId: 'worker-b' })
-
-    releaseFirstStep.resolve()
-    await firstProcess
-    expect(secondStepStarted).toBe(false)
-
-    const reclaimed = await secondProcessPromise
-    expect(reclaimed).toBe(true)
+    // Resume the stale owner while the reclaimer holds a live, newer lease
+    // and is still running, so only the lease generation can refuse the
+    // stale checkpoint. Waiting for the reclaimer to finish would let the
+    // completed status refuse it instead.
+    const secondProcess = b.processOne({ workerId: 'worker-b' })
+    try {
+      await reclaimStarted.promise
+      releaseFirstStep.resolve()
+      await firstProcess
+      expect(secondStepStarted).toBe(false)
+    } finally {
+      releaseFirstStep.resolve()
+      releaseReclaim.resolve()
+    }
+    expect(await secondProcess).toBe(true)
 
     const completedRun = await a.getRun(run.id)
     expect(completedRun?.status).toBe('completed')
     expect(completedRun?.output).toEqual({ winner: 'reclaimer' })
-  }, 15_000)
+  })
 
   it('aborts cooperative long-running work after lease ownership is lost', async () => {
-    const { runtimeA, runtimeB } = createSharedRuntimePair()
+    // The owner's lease runs out on its own and renewal is too rare to save
+    // it, so the owner's local lease deadline is what aborts the step. The
+    // lease is long enough that the step always starts before it ends.
+    const { runtimeA, runtimeB } = createSharedRuntimePair({
+      leaseMs: 2_000,
+      leaseRenewIntervalMs: 60_000,
+    })
 
     const firstStepStarted = createDeferred()
     let executionCount = 0
@@ -399,17 +434,14 @@ describe('stale owner end-to-end', () => {
 
     const firstProcess = a.processOne({ workerId: 'worker-a' })
     await firstStepStarted.promise
-    await new Promise((resolve) => setTimeout(resolve, 40))
+    await firstProcess
+    expect(signalObservedAborted).toBe(true)
 
     const reclaimed = await b.processOne({ workerId: 'worker-b' })
     expect(reclaimed).toBe(true)
 
-    await firstProcess
-
-    expect(signalObservedAborted).toBe(true)
-
     const completedRun = await a.getRun(run.id)
     expect(completedRun?.status).toBe('completed')
     expect(completedRun?.output).toEqual({ winner: 'reclaimer' })
-  }, 15_000)
+  })
 })

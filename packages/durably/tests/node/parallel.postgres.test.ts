@@ -1,16 +1,14 @@
-import { afterAll, beforeAll, expect, it, vi } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { z } from 'zod'
 
 import { createDurably, defineJob } from '../../src'
-import { createPostgresSchemaResource } from '../helpers/postgres-dialect'
+import { usePostgresSchemaPerTest } from '../helpers/postgres-dialect'
 
-const resource = createPostgresSchemaResource()
-beforeAll(() => resource.setup())
-afterAll(() => resource.cleanup())
+const createDialect = usePostgresSchemaPerTest()
 
 it('joins out-of-order PostgreSQL branches with separate durable attempts', async () => {
   const durably = createDurably({
-    dialect: resource.createDialect(),
+    dialect: createDialect(),
     pollingIntervalMs: 50,
     preserveSteps: true,
   })

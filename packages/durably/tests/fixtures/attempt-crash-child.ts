@@ -22,8 +22,9 @@ const job = defineJob({
 })
 const runtime = createDurably({
   dialect: createNodeDialectForFile(dbFile),
-  leaseMs: 200,
-  leaseRenewIntervalMs: 10_000,
+  // Long enough never to expire on its own; the parent ends it explicitly.
+  leaseMs: 60_000,
+  leaseRenewIntervalMs: 60_000,
   jobs: { job },
 })
 await runtime.migrate()

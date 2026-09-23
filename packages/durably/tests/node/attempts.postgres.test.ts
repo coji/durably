@@ -1,20 +1,16 @@
-import { afterAll, beforeAll, expect, it } from 'vitest'
+import { expect, it } from 'vitest'
 
 import { createDurably } from '../../src'
 import { runMigrations } from '../../src/migrations'
 import { seedLegacyRun } from '../helpers/legacy-fixture'
-import { createPostgresSchemaResource } from '../helpers/postgres-dialect'
+import { usePostgresSchemaPerTest } from '../helpers/postgres-dialect'
 import { createAttemptTests } from '../shared/attempts.shared'
 
-const resource = createPostgresSchemaResource()
-beforeAll(() => resource.setup())
-afterAll(() => resource.cleanup())
-createAttemptTests(resource.createDialect)
+const createDialect = usePostgresSchemaPerTest()
+createAttemptTests(createDialect)
 
 it('upgrades populated PostgreSQL v1 data without changing the run or checkpoint', async () => {
-  const legacy = createPostgresSchemaResource()
-  await legacy.setup()
-  const runtime = createDurably({ dialect: legacy.createDialect() })
+  const runtime = createDurably({ dialect: createDialect() })
   try {
     await runMigrations(runtime.db, { targetVersion: 1 })
     const run = await seedLegacyRun(runtime.db)
@@ -24,6 +20,5 @@ it('upgrades populated PostgreSQL v1 data without changing the run or checkpoint
     expect(await runtime.getStepAttempts(run.id)).toEqual([])
   } finally {
     await runtime.db.destroy()
-    await legacy.cleanup()
   }
 })
