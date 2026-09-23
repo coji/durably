@@ -13,49 +13,19 @@ import { z } from 'zod'
 
 import { DurablyProvider, useDurably, useJobLogs } from '../../src/spa'
 import { createTestDurably } from '../helpers/create-test-durably'
+import { createGates, subscribeThenOpen } from '../helpers/gates'
 
 // Browser useJobLogs only listens to log events, so logs written before the
 // hook subscribes are never observed. Each run waits at its gate until the
-// test has subscribed to it (see `subscribe`) instead of sleeping and hoping
+// test has subscribed to it (see `subscribeThenOpen`) instead of sleeping and hoping
 // the subscription wins the race.
-type Gate = { promise: Promise<void>; open: () => void }
-const gates = new Map<string, Gate>()
-let gatesForcedOpen = false
-
-function gate(runId: string): Gate {
-  let entry = gates.get(runId)
-  if (!entry) {
-    let open!: () => void
-    const promise = new Promise<void>((resolve) => {
-      open = resolve
-    })
-    entry = { promise, open }
-    gates.set(runId, entry)
-    if (gatesForcedOpen) open()
-  }
-  return entry
-}
-
-async function subscribe(
-  result: { current: { runId: string | null; setRunId: (id: string) => void } },
-  runId: string,
-) {
-  act(() => {
-    result.current.setRunId(runId)
-  })
-  // renderHook publishes result.current from an effect declared after the
-  // hook's subscription effect, so the new runId means the hook is listening.
-  await waitFor(() => expect(result.current.runId).toBe(runId), {
-    timeout: 5000,
-  })
-  gate(runId).open()
-}
+const gates = createGates()
 
 const loggingJob = defineJob({
   name: 'logging-job-logs',
   input: z.object({ count: z.number() }),
   run: async (context, payload) => {
-    await gate(context.runId).promise
+    await gates.get(context.runId).promise
     for (let i = 0; i < payload.count; i++) {
       context.log.info(`Log ${i + 1}`)
       await context.run(`step${i}`, async () => `done${i}`)
@@ -68,8 +38,7 @@ describe('useJobLogs', () => {
 
   afterEach(async () => {
     // Stopping waits for active runs, so let every gated run finish.
-    gatesForcedOpen = true
-    for (const entry of gates.values()) entry.open()
+    gates.openAll()
     for (const instance of instances) {
       try {
         await instance.stop()
@@ -78,11 +47,7 @@ describe('useJobLogs', () => {
       }
     }
     instances.length = 0
-    gates.clear()
-    gatesForcedOpen = false
-    // sleep-ok(yield): settles leftover async work after stop(); every test
-    // uses its own database, so nothing depends on how long this is.
-    await new Promise((r) => setTimeout(r, 200))
+    gates.reset()
   })
 
   const createWrapper = (durably: Durably) => {
@@ -116,7 +81,7 @@ describe('useJobLogs', () => {
       _job: loggingJob,
     })
     const run = await d.jobs._job.trigger({ count: 3 })
-    await subscribe(result, run.id)
+    await subscribeThenOpen(result, run.id, gates)
 
     await waitFor(
       () => {
@@ -169,7 +134,7 @@ describe('useJobLogs', () => {
       _job: loggingJob,
     })
     const run = await d.jobs._job.trigger({ count: 10 })
-    await subscribe(result, run.id)
+    await subscribeThenOpen(result, run.id, gates)
 
     await durably.waitForRun(run.id, { timeout: 5000 })
 
@@ -214,7 +179,7 @@ describe('useJobLogs', () => {
       _job: loggingJob,
     })
     const run = await d.jobs._job.trigger({ count: 3 })
-    await subscribe(result, run.id)
+    await subscribeThenOpen(result, run.id, gates)
 
     // Wait for job to complete and all its logs to be collected, so no log
     // can arrive after clearLogs

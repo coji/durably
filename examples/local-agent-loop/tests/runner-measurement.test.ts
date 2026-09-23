@@ -143,9 +143,16 @@ describe('runner measurement on the real launch path', () => {
   it('propagates AbortSignal into the provider and records the cancel', async () => {
     const attempt = fakeAttempt()
     let sawAbort = false
+    // The provider reports when it is running, so the abort below always
+    // lands on an in-flight call rather than racing its start.
+    let markStarted!: () => void
+    const providerStarted = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
     const provider = stubProvider(
       (options) =>
         new Promise<AgentResult>((_resolve, reject) => {
+          markStarted()
           options.signal?.addEventListener(
             'abort',
             () => {
@@ -173,7 +180,7 @@ describe('runner measurement on the real launch path', () => {
       iteration: 1,
       operationKey: pendingOperationKey,
     })
-    await new Promise((r) => setTimeout(r, 50))
+    await providerStarted
     controller.abort()
     await assert.rejects(pending)
     assert.equal(sawAbort, true)

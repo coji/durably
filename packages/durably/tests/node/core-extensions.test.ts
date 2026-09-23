@@ -15,6 +15,7 @@ import {
 } from '../../src'
 import type { DurablyEvent } from '../../src/events'
 import { createNodeDialect } from '../helpers/node-dialect'
+import { untilAborted } from '../helpers/sync'
 
 describe('Core Extensions', () => {
   let durably: Durably
@@ -265,11 +266,7 @@ describe('Core Extensions', () => {
         run: async (ctx) => {
           // Hold the step until the test cancels the run, so the run is still
           // active whenever the test reads and cancels the stream.
-          await ctx.run('wait', async (signal) => {
-            await new Promise((resolve) =>
-              signal.addEventListener('abort', resolve, { once: true }),
-            )
-          })
+          await ctx.run('wait', (signal) => untilAborted(signal))
         },
       })
 

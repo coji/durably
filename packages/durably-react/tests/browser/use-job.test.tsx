@@ -19,6 +19,7 @@ import { z } from 'zod'
 
 import { DurablyProvider, useJob } from '../../src/spa'
 import { createTestDurably } from '../helpers/create-test-durably'
+import { createGates } from '../helpers/gates'
 
 // Test job definitions
 const testJob = defineJob({
@@ -91,9 +92,6 @@ describe('useJob', () => {
       }
     }
     instances.length = 0
-    // sleep-ok(yield): settles leftover async work after stop(); every test
-    // uses its own database, so nothing depends on how long this is.
-    await new Promise((r) => setTimeout(r, 200))
   })
 
   // Helper to create wrapper with a fresh durably instance
@@ -375,23 +373,22 @@ describe('useJob', () => {
     })
 
     it('stays on current run when followLatest: false and external run starts', async () => {
-      const durably = await createTestDurably({ pollingIntervalMs: 50 })
+      // Two slots, so the external run is leased while the first is held
+      const durably = await createTestDurably({
+        pollingIntervalMs: 50,
+        maxConcurrentRuns: 2,
+      })
       instances.push(durably)
 
-      // This test verifies that followLatest: false keeps tracking the current run
-      // even when run:leased events fire (from the worker starting jobs)
-      // The run holds here until the test has observed it leased
-      let release!: () => void
-      const released = new Promise<void>((resolve) => {
-        release = resolve
-      })
+      // Each run holds until the test opens its gate
+      const gates = createGates()
       const slowJob = defineJob({
         name: 'slow-job-no-follow',
         input: z.object({ id: z.number() }),
         output: z.object({ id: z.number() }),
         run: async (context, payload) => {
           await context.run('work', async () => {
-            await released
+            await gates.get(context.runId).promise
           })
           return { id: payload.id }
         },
@@ -402,11 +399,8 @@ describe('useJob', () => {
         { wrapper: createWrapper(durably) },
       )
 
-      // Trigger first job
-      const { runId: firstRunId } = await result.current.trigger({ id: 1 })
-
-      // Wait for it to be leased (status becomes 'leased')
       try {
+        const { runId: firstRunId } = await result.current.trigger({ id: 1 })
         await waitFor(
           () => {
             expect(result.current.status).toBe('leased')
@@ -414,23 +408,35 @@ describe('useJob', () => {
           },
           { timeout: 5000 },
         )
+
+        // Start a run of the same job outside the hook while the first is held
+        const handle = durably.register({ slowJob }).jobs.slowJob
+        const external = await handle.trigger({ id: 2 })
+        await waitFor(
+          async () => {
+            expect((await handle.getRun(external.id))?.status).toBe('leased')
+          },
+          { timeout: 5000 },
+        )
+
+        // The hook saw run:trigger and run:leased for the external run and
+        // still reports the first one
+        expect(result.current.currentRunId).toBe(firstRunId)
+        expect(result.current.status).toBe('leased')
+
+        gates.get(firstRunId).open()
+        await waitFor(
+          () => {
+            expect(result.current.status).toBe('completed')
+            expect(result.current.currentRunId).toBe(firstRunId)
+          },
+          { timeout: 5000 },
+        )
+        expect(result.current.output).toEqual({ id: 1 })
       } finally {
-        // stop() waits for the run, so release it even if the wait failed
-        release()
+        // stop() waits for active runs, so release them even if a wait failed
+        gates.openAll()
       }
-
-      // Wait for the first run to complete - with followLatest: false,
-      // it should stay on firstRunId and eventually complete
-      await waitFor(
-        () => {
-          expect(result.current.status).toBe('completed')
-          expect(result.current.currentRunId).toBe(firstRunId)
-        },
-        { timeout: 5000 },
-      )
-
-      // Verify output is from the first job
-      expect(result.current.output).toEqual({ id: 1 })
     })
   })
 

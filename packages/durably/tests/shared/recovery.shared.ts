@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 
 import { createDurably, defineJob, type Durably } from '../../src'
-import { createDeferred, expireLease } from '../helpers/sync'
+import { createDeferred, expireLease, untilAborted } from '../helpers/sync'
 
 export function createRecoveryTests(createDialect: () => Dialect) {
   describe('Failure Recovery', () => {
@@ -45,30 +45,32 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
         d.start()
 
-        // Wait for run to be claimed, then record initial lease
-        let initialLeaseExpiresAt: string | null = null
-        await vi.waitFor(
-          async () => {
-            const claimed = await d.jobs.job.getRun(run.id)
-            expect(claimed?.status).toBe('leased')
-            initialLeaseExpiresAt = claimed!.leaseExpiresAt
-          },
-          { timeout: 5_000 },
-        )
+        try {
+          // Wait for run to be claimed, then record initial lease
+          let initialLeaseExpiresAt: string | null = null
+          await vi.waitFor(
+            async () => {
+              const claimed = await d.jobs.job.getRun(run.id)
+              expect(claimed?.status).toBe('leased')
+              initialLeaseExpiresAt = claimed!.leaseExpiresAt
+            },
+            { timeout: 5_000 },
+          )
 
-        // Wait for a renewal to push the lease expiry forward
-        await vi.waitFor(
-          async () => {
-            const midRun = await d.jobs.job.getRun(run.id)
-            expect(midRun?.status).toBe('leased')
-            expect(new Date(midRun!.leaseExpiresAt!).getTime()).toBeGreaterThan(
-              new Date(initialLeaseExpiresAt!).getTime(),
-            )
-          },
-          { timeout: 5_000 },
-        )
-
-        release.resolve()
+          // Wait for a renewal to push the lease expiry forward
+          await vi.waitFor(
+            async () => {
+              const midRun = await d.jobs.job.getRun(run.id)
+              expect(midRun?.status).toBe('leased')
+              expect(
+                new Date(midRun!.leaseExpiresAt!).getTime(),
+              ).toBeGreaterThan(new Date(initialLeaseExpiresAt!).getTime())
+            },
+            { timeout: 5_000 },
+          )
+        } finally {
+          release.resolve()
+        }
 
         // Wait for completion
         await vi.waitFor(
@@ -261,10 +263,12 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
     describe('Step preservation on lease loss', () => {
       it('preserves steps when lease is lost mid-execution', async () => {
-        const step2Started = createDeferred()
-        const leaseLost = createDeferred()
+        let step2Started = false
+        let leaseLost = false
         // Holds a re-execution after the worker reclaims the expired run, so
-        // the run cannot complete (and clean up its steps) before the check
+        // the run cannot complete (and clean up its steps) before the check.
+        // Releasing it also ends the first execution if the abort never
+        // comes, so stop() can finish when the test fails.
         const release = createDeferred()
         let step2Calls = 0
         const d = durably.register({
@@ -276,12 +280,10 @@ export function createRecoveryTests(createDialect: () => Dialect) {
               await step.run('step2', async (signal) => {
                 step2Calls++
                 if (step2Calls === 1) {
-                  step2Started.resolve()
+                  step2Started = true
                   // Stay in the step until the worker notices the lost lease
-                  await new Promise((r) =>
-                    signal.addEventListener('abort', r, { once: true }),
-                  )
-                  leaseLost.resolve()
+                  await Promise.race([untilAborted(signal), release.promise])
+                  leaseLost = signal.aborted
                 }
                 await release.promise
                 return 'result-2'
@@ -295,13 +297,17 @@ export function createRecoveryTests(createDialect: () => Dialect) {
 
         try {
           // step1 is persisted once step2 has started
-          await step2Started.promise
+          await vi.waitFor(() => expect(step2Started).toBe(true), {
+            timeout: 5_000,
+          })
 
           // Expire the lease to simulate lease loss
           await expireLease(d, run.id)
 
           // Wait for worker to detect lease loss
-          await leaseLost.promise
+          await vi.waitFor(() => expect(leaseLost).toBe(true), {
+            timeout: 5_000,
+          })
 
           // Steps from before lease loss should still exist
           const steps = await d.storage.getSteps(run.id)
@@ -712,7 +718,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         let step1Executed = false
         let step2Executed = false
         let step3Executed = false
-        const step1Started = createDeferred()
+        let step1Started = false
         const release = createDeferred()
 
         const d = durably.register({
@@ -722,7 +728,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             run: async (step) => {
               await step.run('step1', async () => {
                 step1Executed = true
-                step1Started.resolve()
+                step1Started = true
                 // Hold step1 until the test has cancelled the run
                 await release.promise
                 return 'step1'
@@ -742,12 +748,17 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         const run = await d.jobs.job.trigger({})
         d.start()
 
-        // Wait until step1 is running
-        await step1Started.promise
+        try {
+          // Wait until step1 is running
+          await vi.waitFor(() => expect(step1Started).toBe(true), {
+            timeout: 5_000,
+          })
 
-        // Cancel while step1 is executing
-        await d.cancel(run.id)
-        release.resolve()
+          // Cancel while step1 is executing
+          await d.cancel(run.id)
+        } finally {
+          release.resolve()
+        }
 
         // Wait for worker to finish processing
         await d.stop()
@@ -764,7 +775,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
       })
 
       it('does not overwrite cancelled status with completed', async () => {
-        const stepStarted = createDeferred()
+        let stepStarted = false
         const release = createDeferred()
         const d = durably.register({
           job: defineJob({
@@ -772,7 +783,7 @@ export function createRecoveryTests(createDialect: () => Dialect) {
             input: z.object({}),
             run: async (step) => {
               await step.run('step1', async () => {
-                stepStarted.resolve()
+                stepStarted = true
                 // Hold the step until the test has cancelled the run
                 await release.promise
                 return 'done'
@@ -784,14 +795,19 @@ export function createRecoveryTests(createDialect: () => Dialect) {
         const run = await d.jobs.job.trigger({})
         d.start()
 
-        // Wait until the step is executing
-        await stepStarted.promise
+        try {
+          // Wait until the step is executing
+          await vi.waitFor(() => expect(stepStarted).toBe(true), {
+            timeout: 5_000,
+          })
 
-        // Cancel while step is executing
-        await d.cancel(run.id)
-
-        // Let the step complete naturally, then wait for the worker to finish
-        release.resolve()
+          // Cancel while step is executing
+          await d.cancel(run.id)
+        } finally {
+          // Let the step complete naturally
+          release.resolve()
+        }
+        // Wait for the worker to finish
         await d.stop()
 
         // Status should remain cancelled even though job function returned normally

@@ -10,28 +10,22 @@ import {
   type LogData,
   type ProgressData,
 } from '../../src'
+import { createDeferred, untilAborted } from '../helpers/sync'
 
 export function createRunApiTests(createDialect: () => Dialect) {
   describe('Run API', () => {
-    function sleepUntilAbort(signal: AbortSignal, ms = 10_000): Promise<void> {
-      return new Promise((resolve) => {
-        // sleep-ok(guard): a fallback end for a job that is never aborted;
-        // the tests order on the abort, not on this deadline
-        const t = setTimeout(() => resolve(), ms)
-        signal.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(t)
-            resolve()
-          },
-          { once: true },
-        )
-      })
+    let durably: Durably
+    // Ends steps still waiting for an abort that never came, so stop() can
+    // finish when a cancellation test fails
+    let teardown = createDeferred()
+
+    /** Run until cancellation aborts the step, or until teardown. */
+    function untilCancelled(signal: AbortSignal): Promise<void> {
+      return Promise.race([untilAborted(signal), teardown.promise])
     }
 
-    let durably: Durably
-
     beforeEach(async () => {
+      teardown = createDeferred()
       durably = createDurably({
         dialect: createDialect(),
         pollingIntervalMs: 50,
@@ -40,6 +34,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
     })
 
     afterEach(async () => {
+      teardown.resolve()
       await durably.stop()
       await durably.db.destroy()
     })
@@ -477,19 +472,14 @@ export function createRunApiTests(createDialect: () => Dialect) {
             input: z.object({}),
             output: z.object({}),
             run: async (step) => {
-              await step.run('slow-step', async () => {
-                // This step takes longer than the timeout
-                // sleep-ok(work): the worker is never started, so this step
-                // never runs; the timeout fires on an idle pending run
-                await new Promise((r) => setTimeout(r, 500))
-              })
+              // Never runs: the worker is not started
+              await step.run('slow-step', async () => {})
               return {}
             },
           }),
         })
 
-        // Don't start the worker - job will never complete
-        // Or start with a delay that exceeds timeout
+        // The worker is not started, so the run stays pending past the timeout
 
         await expect(
           d.jobs.job.triggerAndWait({}, { timeout: 100 }),
@@ -581,7 +571,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             input: z.object({}),
             run: async (step) => {
               await step.run('slow', async (signal) => {
-                await sleepUntilAbort(signal)
+                await untilCancelled(signal)
               })
             },
           }),
@@ -690,7 +680,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             input: z.object({}),
             run: async (step) => {
               await step.run('slow', async (signal) => {
-                await sleepUntilAbort(signal)
+                await untilCancelled(signal)
               })
             },
           }),
@@ -718,11 +708,9 @@ export function createRunApiTests(createDialect: () => Dialect) {
             name: 'wait-for-run-timeout',
             input: z.object({}),
             run: async (step) => {
-              await step.run('slow', async () => {
-                // sleep-ok(work): the worker is never started, so this step
-                // never runs; waitForRun times out on an idle pending run
-                await new Promise((r) => setTimeout(r, 500))
-              })
+              // Never runs: the worker is not started, so waitForRun times
+              // out on a run that stays pending
+              await step.run('slow', async () => {})
             },
           }),
         })

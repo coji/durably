@@ -12,7 +12,7 @@ import {
   type Durably,
   type StepAttemptContext,
 } from '../../src'
-import { createDeferred, expireLease } from '../helpers/sync'
+import { expireLease } from '../helpers/sync'
 
 export function createAttemptTests(createDialect: () => Dialect) {
   describe('durable step attempts', () => {
@@ -126,23 +126,19 @@ export function createAttemptTests(createDialect: () => Dialect) {
 
     it('finalizes concurrent step callbacks under their own attempt index', async () => {
       const runtime = await createRuntime({ preserveSteps: true })
-      // 'slow' finishes only after 'fast' has, so completion order differs
-      // from call order every time
-      const fastDone = createDeferred()
       const job = defineJob({
         name: 'parallel-attempts',
         input: z.object({}),
         run: async (step) => {
-          await Promise.all([
-            step.run('slow', async () => {
-              await fastDone.promise
-              return 'slow'
-            }),
-            step.run('fast', async () => {
-              fastDone.resolve()
-              return 'fast'
-            }),
-          ])
+          // 'slow' returns only after 'fast' has written its checkpoint, so
+          // checkpoints land in the reverse of call order every time
+          let fast!: Promise<string>
+          const slow = step.run('slow', async () => {
+            await fast
+            return 'slow'
+          })
+          fast = step.run('fast', () => 'fast')
+          await Promise.all([slow, fast])
           await step.run('after', () => 'after')
         },
       })
@@ -161,23 +157,19 @@ export function createAttemptTests(createDialect: () => Dialect) {
     it('keeps the next index stable when concurrent checkpoints replay after recovery', async () => {
       const runtime = await createRuntime({ preserveSteps: true })
       let invocations = 0
-      // 'slow' finishes only after 'fast' has, so completion order differs
-      // from call order every time
-      const fastDone = createDeferred()
       const job = defineJob({
         name: 'parallel-replay-index',
         input: z.object({}),
         run: async (step) => {
-          await Promise.all([
-            step.run('slow', async () => {
-              await fastDone.promise
-              return 1
-            }),
-            step.run('fast', () => {
-              fastDone.resolve()
-              return 2
-            }),
-          ])
+          // 'slow' returns only after 'fast' has written its checkpoint, so
+          // checkpoints land in the reverse of call order every time
+          let fast!: Promise<number>
+          const slow = step.run('slow', async () => {
+            await fast
+            return 1
+          })
+          fast = step.run('fast', () => 2)
+          await Promise.all([slow, fast])
           if (++invocations === 1) throw new LeaseLostError(step.runId)
           await step.run('after', () => 3)
         },

@@ -79,3 +79,14 @@ export function controlRunReads(durably: Durably<any, any>) {
     },
   }
 }
+
+/**
+ * Resolve once `signal` aborts, including when it already has. Use it for a
+ * step that should run until cancellation or lease loss ends it.
+ */
+export function untilAborted(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    signal.addEventListener('abort', () => resolve(), { once: true })
+  })
+}

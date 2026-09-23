@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -11,6 +11,28 @@ import {
   SpawnCancelledError,
 } from '../src/engine/child.js'
 
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function waitUntil(
+  condition: () => boolean,
+  timeoutMs: number,
+  label: string,
+): Promise<void> {
+  const started = Date.now()
+  while (!condition()) {
+    if (Date.now() - started > timeoutMs) throw new Error(`timed out: ${label}`)
+    // sleep-ok(poll): one tick of a loop that re-checks the condition until its deadline
+    await new Promise((r) => setTimeout(r, 20))
+  }
+}
+
 describe('cancel-aware subprocess', () => {
   it('kills ONLY the owned child on abort and confirms the exit', async () => {
     const controller = new AbortController()
@@ -18,9 +40,11 @@ describe('cancel-aware subprocess', () => {
       timeoutMs: 20000,
       signal: controller.signal,
     })
-    await new Promise((r) => setTimeout(r, 300))
+    // runChild registers the pid and its abort listener synchronously once
+    // spawn() returns, so the child is live and owned before the abort.
     assert.equal(ownedChildPids().length, 1)
     const owned = ownedChildPids()[0] as number
+    assert.equal(isAlive(owned), true)
     controller.abort()
     await assert.rejects(pending, (err: unknown) => {
       assert.match((err as Error).message, /cancelled/)
@@ -48,21 +72,29 @@ describe('cancel-aware subprocess', () => {
 
   it('kills the whole process group so subprocesses do not outlive the child', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'child-group-'))
-    const marker = join(dir, 'grandchild.txt')
+    const ready = join(dir, 'grandchild.pid')
     // The agent CLIs are wrappers: killing only the direct child leaves the
-    // model and tool subprocesses running inside the workdir.
+    // model and tool subprocesses running inside the workdir. The grandchild
+    // reports its pid once it runs, and the kill waits for that report.
     const script =
-      `node -e 'setTimeout(function(){require("fs").writeFileSync("${marker}","alive")},1200)' &` +
+      `node -e 'require("fs").writeFileSync("${ready}",String(process.pid));setInterval(function(){},1000)' &` +
       ' sleep 30'
-    await assert.rejects(
-      runChild('sh', ['-c', script], { timeoutMs: 200 }),
-      /timed out/,
-    )
-    await new Promise((r) => setTimeout(r, 2000))
-    assert.equal(
-      existsSync(marker),
-      false,
-      'a grandchild outlived the kill and kept writing',
+    const controller = new AbortController()
+    const pending = runChild('sh', ['-c', script], {
+      timeoutMs: 60000,
+      signal: controller.signal,
+    })
+    await waitUntil(() => existsSync(ready), 20000, 'grandchild started')
+    const grandchild = Number(await readFile(ready, 'utf8'))
+    assert.ok(grandchild > 0)
+    controller.abort()
+    await assert.rejects(pending, /cancelled/)
+    // SIGKILL to the group is immediate; the wait only covers reaping the
+    // orphan. A grandchild outside the group stays alive and hits the deadline.
+    await waitUntil(
+      () => !isAlive(grandchild),
+      5000,
+      'a grandchild outlived the kill',
     )
   })
 

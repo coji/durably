@@ -8,7 +8,7 @@
  * 3. Cleanup running before initialization completes
  */
 
-import { act, render, waitFor } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import { StrictMode, useEffect, useRef, useState } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
@@ -32,10 +32,6 @@ describe('React StrictMode', () => {
       }
     }
     instances.length = 0
-    // Wait for any pending async operations to complete
-    // sleep-ok(yield): settles leftover async work after stop(); every test
-    // uses its own database, so nothing depends on how long this is.
-    await new Promise((r) => setTimeout(r, 200))
   })
 
   it('handles double mount/unmount in StrictMode safely', async () => {
@@ -324,17 +320,28 @@ describe('React StrictMode', () => {
       </StrictMode>,
     )
 
-    // Wait a bit for any events
-    await act(async () => {
-      // sleep-ok(yield): lets the mounts run before unmounting; the assertion
-      // below accepts any event count, so nothing depends on how long this is.
-      await new Promise((r) => setTimeout(r, 200))
+    // The listener is live while mounted: the surviving mount's run is leased.
+    await waitFor(() => expect(events.length).toBeGreaterThanOrEqual(1), {
+      timeout: 5000,
     })
 
     unmount()
 
-    // Events should have been captured
-    // Due to StrictMode double mount, we may get events from both instances
-    expect(events.length).toBeGreaterThanOrEqual(0)
+    // Every mount unsubscribed in its cleanup, so an event emitted on any
+    // instance after unmount reaches no listener.
+    const before = events.length
+    expect(instances).toHaveLength(2)
+    for (const instance of instances) {
+      instance.emit({
+        type: 'run:leased',
+        runId: 'after-unmount',
+        jobName: 'event-test',
+        input: {},
+        leaseOwner: 'test',
+        leaseExpiresAt: new Date().toISOString(),
+        labels: {},
+      })
+    }
+    expect(events.length).toBe(before)
   })
 })

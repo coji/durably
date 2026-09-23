@@ -19,12 +19,18 @@
 //   fake      runs under vi.useFakeTimers
 //   yield     lets pending callbacks run; nothing depends on how long
 //   poll      one tick of a loop that re-checks a condition until it holds
+//
+// The check reads source text, so it cannot follow a call: a marked sleep
+// inside a helper exempts every caller. Keep test helpers free of sleeps;
+// `packages/durably/tests/helpers/sync.ts` has none.
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const root = new URL('..', import.meta.url).pathname
+const root = fileURLToPath(new URL('..', import.meta.url))
 const kinds = new Set(['negative', 'work', 'guard', 'clock', 'fake', 'yield', 'poll'])
 const marker = /sleep-ok\((\w+)\):\s*\S/
+const sleepCall = /\bsetTimeout\s*\(/
 
 function* testFiles(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -37,8 +43,10 @@ function* testFiles(dir) {
 
 const problems = []
 let marked = 0
-for (const pkg of readdirSync(join(root, 'packages'))) {
-  const tests = join(root, 'packages', pkg, 'tests')
+const suites = ['packages', 'examples'].flatMap((group) =>
+  readdirSync(join(root, group)).map((name) => join(root, group, name, 'tests')),
+)
+for (const tests of suites) {
   let files
   try {
     files = [...testFiles(tests)]
@@ -48,7 +56,7 @@ for (const pkg of readdirSync(join(root, 'packages'))) {
   for (const file of files) {
     const lines = readFileSync(file, 'utf8').split('\n')
     lines.forEach((line, index) => {
-      if (!line.includes('setTimeout(')) return
+      if (!sleepCall.test(line)) return
       // The marker sits on this line or in the comment block right above the
       // statement, which may start a few lines up when it wraps.
       let found = line.match(marker)

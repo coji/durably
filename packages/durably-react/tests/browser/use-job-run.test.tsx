@@ -13,50 +13,20 @@ import { z } from 'zod'
 
 import { DurablyProvider, useDurably, useJobRun } from '../../src/spa'
 import { createTestDurably } from '../helpers/create-test-durably'
+import { createGates, subscribeThenOpen } from '../helpers/gates'
 
 // Browser useJobRun only listens to events, so a run that finishes before the
 // hook subscribes is never observed. Each run waits at its gate until the test
-// has subscribed to it (see `subscribe`) instead of sleeping and hoping the
+// has subscribed to it (see `subscribeThenOpen`) instead of sleeping and hoping the
 // subscription wins the race.
-type Gate = { promise: Promise<void>; open: () => void }
-const gates = new Map<string, Gate>()
-let gatesForcedOpen = false
-
-function gate(runId: string): Gate {
-  let entry = gates.get(runId)
-  if (!entry) {
-    let open!: () => void
-    const promise = new Promise<void>((resolve) => {
-      open = resolve
-    })
-    entry = { promise, open }
-    gates.set(runId, entry)
-    if (gatesForcedOpen) open()
-  }
-  return entry
-}
-
-async function subscribe(
-  result: { current: { runId: string | null; setRunId: (id: string) => void } },
-  runId: string,
-) {
-  act(() => {
-    result.current.setRunId(runId)
-  })
-  // renderHook publishes result.current from an effect declared after the
-  // hook's subscription effect, so the new runId means the hook is listening.
-  await waitFor(() => expect(result.current.runId).toBe(runId), {
-    timeout: 5000,
-  })
-  gate(runId).open()
-}
+const gates = createGates()
 
 const testJob = defineJob({
   name: 'test-job-run',
   input: z.object({ input: z.string() }),
   output: z.object({ result: z.string() }),
   run: async (context, payload) => {
-    await gate(context.runId).promise
+    await gates.get(context.runId).promise
     await context.run('process', async () => {})
     return { result: `processed: ${payload.input}` }
   },
@@ -66,7 +36,7 @@ const failingJob = defineJob({
   name: 'failing-job-run',
   input: z.object({ input: z.string() }),
   run: async (context) => {
-    await gate(context.runId).promise
+    await gates.get(context.runId).promise
     await context.run('fail', async () => {})
     throw new Error('Job failed')
   },
@@ -77,7 +47,7 @@ const progressJob = defineJob({
   input: z.object({ input: z.string() }),
   output: z.object({ done: z.boolean() }),
   run: async (context) => {
-    await gate(context.runId).promise
+    await gates.get(context.runId).promise
     context.progress(1, 2, 'Step 1')
     await context.run('step1', async () => {})
     context.progress(2, 2, 'Step 2')
@@ -90,8 +60,7 @@ describe('useJobRun', () => {
 
   afterEach(async () => {
     // Stopping waits for active runs, so let every gated run finish.
-    gatesForcedOpen = true
-    for (const entry of gates.values()) entry.open()
+    gates.openAll()
     for (const instance of instances) {
       try {
         await instance.stop()
@@ -100,11 +69,7 @@ describe('useJobRun', () => {
       }
     }
     instances.length = 0
-    gates.clear()
-    gatesForcedOpen = false
-    // sleep-ok(yield): settles leftover async work after stop(); every test
-    // uses its own database, so nothing depends on how long this is.
-    await new Promise((r) => setTimeout(r, 200))
+    gates.reset()
   })
 
   const createWrapper = (durably: Durably) => {
@@ -140,7 +105,7 @@ describe('useJobRun', () => {
     const run = await d.jobs._job.trigger({ input: 'test' })
 
     // Update runId to start subscription
-    await subscribe(result, run.id)
+    await subscribeThenOpen(result, run.id, gates)
 
     // Should eventually see the run complete
     await waitFor(
@@ -188,7 +153,7 @@ describe('useJobRun', () => {
 
     const d = durably.register({ _job: testJob })
     const run = await d.jobs._job.trigger({ input: 'hello' })
-    await subscribe(result, run.id)
+    await subscribeThenOpen(result, run.id, gates)
 
     await waitFor(
       () => {
@@ -224,7 +189,7 @@ describe('useJobRun', () => {
       _job: failingJob,
     })
     const run = await d.jobs._job.trigger({ input: 'test' })
-    await subscribe(result, run.id)
+    await subscribeThenOpen(result, run.id, gates)
 
     await waitFor(
       () => {
@@ -266,7 +231,7 @@ describe('useJobRun', () => {
 
     const d = durably.register({ _job: testJob })
     const run = await d.jobs._job.trigger({ input: 'test' })
-    await subscribe(result, run.id)
+    await subscribeThenOpen(result, run.id, gates)
 
     // Cancel the pending run (worker is not running)
     await durably.cancel(run.id)
@@ -303,7 +268,7 @@ describe('useJobRun', () => {
 
     const d = durably.register({ _job: failingJob })
     const run = await d.jobs._job.trigger({ input: 'test' })
-    await subscribe(result, run.id)
+    await subscribeThenOpen(result, run.id, gates)
 
     // Wait for the run to fail
     await waitFor(
@@ -318,7 +283,7 @@ describe('useJobRun', () => {
     await durably.stop()
 
     const nextRun = await durably.retrigger(run.id)
-    await subscribe(result, nextRun.id)
+    await subscribeThenOpen(result, nextRun.id, gates)
 
     await waitFor(
       () => {
@@ -342,7 +307,7 @@ describe('useJobRun', () => {
       output: z.object({ result: z.string() }),
       run: async (context, payload) => {
         attemptCount++
-        await gate(context.runId).promise
+        await gates.get(context.runId).promise
         await context.run('process', async () => {})
         if (attemptCount === 1) {
           throw new Error('First attempt failed')
@@ -370,7 +335,7 @@ describe('useJobRun', () => {
 
     const d = durably.register({ _job: retriggerableJob })
     const run = await d.jobs._job.trigger({ input: 'test' })
-    await subscribe(result, run.id)
+    await subscribeThenOpen(result, run.id, gates)
 
     // Wait for the run to fail
     await waitFor(
@@ -381,7 +346,7 @@ describe('useJobRun', () => {
     )
 
     const nextRun = await durably.retrigger(run.id)
-    await subscribe(result, nextRun.id)
+    await subscribeThenOpen(result, nextRun.id, gates)
 
     // Should track through to completion
     await waitFor(
@@ -424,7 +389,7 @@ describe('useJobRun', () => {
 
     const d = durably.register({ _job: testJob })
     const run = await d.jobs._job.trigger({ input: 'test' })
-    await subscribe(result, run.id)
+    await subscribeThenOpen(result, run.id, gates)
 
     // Cancel the pending run
     await durably.cancel(run.id)
@@ -438,7 +403,7 @@ describe('useJobRun', () => {
     )
 
     const nextRun = await durably.retrigger(run.id)
-    await subscribe(result, nextRun.id)
+    await subscribeThenOpen(result, nextRun.id, gates)
 
     // Should see pending
     await waitFor(
@@ -486,7 +451,7 @@ describe('useJobRun', () => {
       _job: progressJob,
     })
     const run = await d.jobs._job.trigger({ input: 'test' })
-    await subscribe(result, run.id)
+    await subscribeThenOpen(result, run.id, gates)
 
     // Should eventually see progress or complete
     await waitFor(
@@ -523,7 +488,7 @@ describe('useJobRun', () => {
 
     const d = durably.register({ _job: testJob })
     const run = await d.jobs._job.trigger({ input: 'test' })
-    await subscribe(result, run.id)
+    await subscribeThenOpen(result, run.id, gates)
 
     await waitFor(
       () => {

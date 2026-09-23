@@ -25,9 +25,6 @@ describe('DurablyProvider', () => {
       }
     }
     instances.length = 0
-    // sleep-ok(yield): settles leftover async work after stop(); every test
-    // uses its own database, so nothing depends on how long this is.
-    await new Promise((r) => setTimeout(r, 200))
   })
 
   it('provides Durably instance via context', async () => {

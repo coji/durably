@@ -46,24 +46,27 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
       )
       d.start()
 
-      await vi.waitFor(
-        async () => {
-          const run = await d.jobs.job.getRun(first.id)
-          expect(run?.status).toBe('leased')
-        },
-        { timeout: 5_000 },
-      )
+      try {
+        await vi.waitFor(
+          async () => {
+            const run = await d.jobs.job.getRun(first.id)
+            expect(run?.status).toBe('leased')
+          },
+          { timeout: 5_000 },
+        )
 
-      const second = await d.jobs.job.trigger(
-        { id: '2' },
-        { concurrencyKey: 'user-123' },
-      )
+        const second = await d.jobs.job.trigger(
+          { id: '2' },
+          { concurrencyKey: 'user-123' },
+        )
 
-      const firstWhileSecondQueued = await d.jobs.job.getRun(first.id)
-      const secondWhileBlocked = await d.jobs.job.getRun(second.id)
-      expect(firstWhileSecondQueued?.status).toBe('leased')
-      expect(secondWhileBlocked?.status).toBe('pending')
-      releaseFirst.resolve()
+        const firstWhileSecondQueued = await d.jobs.job.getRun(first.id)
+        const secondWhileBlocked = await d.jobs.job.getRun(second.id)
+        expect(firstWhileSecondQueued?.status).toBe('leased')
+        expect(secondWhileBlocked?.status).toBe('pending')
+      } finally {
+        releaseFirst.resolve()
+      }
 
       await vi.waitFor(
         async () => {

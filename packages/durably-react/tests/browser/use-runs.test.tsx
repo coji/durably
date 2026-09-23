@@ -12,18 +12,18 @@ import { z } from 'zod'
 
 import { DurablyProvider, useRuns } from '../../src/spa'
 import { createTestDurably } from '../helpers/create-test-durably'
+import { createGates } from '../helpers/gates'
 
-// Test job definition
+// Each run holds at its gate until the test opens it, so a run stays pending
+// or leased for as long as a test needs it to (see 'filters by status').
+const gates = createGates()
+
 const testJob = defineJob({
   name: 'test-job-runs',
   input: z.object({ value: z.number() }),
   run: async (context, payload) => {
-    await context.run('work', async () => {
-      // sleep-ok(work): tests wait for the runs list itself, not for this
-      // run to be at any particular point.
-      await new Promise((r) => setTimeout(r, 50))
-      return payload.value * 2
-    })
+    await gates.get(context.runId).promise
+    await context.run('work', async () => payload.value * 2)
   },
 })
 
@@ -31,6 +31,8 @@ describe('useRuns', () => {
   const instances: Durably[] = []
 
   afterEach(async () => {
+    // Stopping waits for active runs, so let every gated run finish.
+    gates.openAll()
     for (const instance of instances) {
       try {
         await instance.stop()
@@ -39,9 +41,7 @@ describe('useRuns', () => {
       }
     }
     instances.length = 0
-    // sleep-ok(yield): settles leftover async work after stop(); every test
-    // uses its own database, so nothing depends on how long this is.
-    await new Promise((r) => setTimeout(r, 200))
+    gates.reset()
   })
 
   const createWrapper = (durably: Durably) => {
@@ -212,10 +212,9 @@ describe('useRuns', () => {
 
     const d = durably.register({ testJobHandle: testJob })
 
-    // Trigger and wait for completion
     const run = await d.jobs.testJobHandle.trigger({ value: 5 })
+    gates.get(run.id).open()
 
-    // Wait for run to complete
     await waitFor(
       async () => {
         const runData = await d.jobs.testJobHandle.getRun(run.id)
@@ -227,10 +226,13 @@ describe('useRuns', () => {
     // Refresh to get completed runs
     await result.current.refresh()
 
-    await waitFor(() => {
-      expect(result.current.runs.length).toBe(1)
-      expect(result.current.runs[0].status).toBe('completed')
-    })
+    await waitFor(
+      () => {
+        expect(result.current.runs.length).toBe(1)
+        expect(result.current.runs[0].status).toBe('completed')
+      },
+      { timeout: 5000 },
+    )
   })
 
   it('filters by multiple statuses', async () => {
@@ -246,12 +248,17 @@ describe('useRuns', () => {
 
     const d = durably.register({ testJobHandle: testJob })
 
+    // Both runs stay gated, so neither can leave pending/leased before the
+    // list is read.
     await d.jobs.testJobHandle.trigger({ value: 1 })
     await d.jobs.testJobHandle.trigger({ value: 2 })
 
-    await waitFor(() => {
-      expect(result.current.runs.length).toBe(2)
-    })
+    await waitFor(
+      () => {
+        expect(result.current.runs.length).toBe(2)
+      },
+      { timeout: 5000 },
+    )
 
     for (const run of result.current.runs) {
       expect(['pending', 'leased']).toContain(run.status)
