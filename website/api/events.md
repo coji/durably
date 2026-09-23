@@ -315,7 +315,7 @@ durably.on('worker:error', (event) => {
   // event: {
   //   type: 'worker:error',
   //   error: string,
-  //   context: string,  // e.g., 'lease-renewal'
+  //   context: string,  // e.g., 'lease-renewal', 'cancel-cleanup'
   //   runId?: string,
   //   timestamp: string,
   //   sequence: number
@@ -353,9 +353,22 @@ durably.on('run:complete', (e) => {
 })
 ```
 
+## Ordering with persisted state
+
+A run or step state change is written to storage first, and its event is emitted directly after that write, before the runtime touches storage again. A listener that reads the run when its event arrives therefore sees the new state. This covers `run:trigger`, `run:coalesced`, `run:leased`, `run:waiting`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`, `step:start`, `step:complete`, and `step:fail`. `batchTrigger()` writes its runs in one storage call and then emits each run's event in order. The guarantee concerns the runtime's own storage access; a synchronous listener may start its own reads before the next event is emitted. With `preserveSteps: false`, a terminal run's checkpoint and log cleanup, where it applies (see [`step.all()`](./step.md) for when a failed run keeps them), starts once listeners have returned. Listeners are not awaited, so an asynchronous listener, or a read on another connection, may find the steps already deleted; set `preserveSteps: true` to read them after a run ends.
+
+The guarantee runs from the write to the event, not the other way. Code that polls storage, such as `getRun()` or `waitForRun()` falling back to polling, can read the new state a moment before the event is delivered. To act on both the state and the event payload, wait for the event.
+
+Limits:
+
+- Events are in-process. Another runtime that shares the database sees the persisted state but receives no events; use `waitForRun()` or the HTTP subscription endpoints there.
+- `step:cancel` is emitted when a step observes a cancellation made elsewhere, after reading the run back.
+- `log:write` and `run:progress` are emitted when the job calls them. Progress is written in the background; logs are stored only when `withLogPersistence()` is installed, by its `log:write` listener. A listener may briefly read the previous value.
+- Maintenance transitions emit no events: expired leases released or failed during idle maintenance, waits expiring at their deadline, and runs removed by `retainRuns` or `purgeRuns()`.
+
 ## Error Handling
 
-Exceptions thrown in event listeners are caught and forwarded to the error handler — they do not crash the worker, abort the current run, or interrupt subsequent listeners for the same event. If a listener returns a rejected Promise (async listener), the rejection is also forwarded to `onError`. Use `onError` to catch both:
+Exceptions thrown in event listeners are caught and forwarded to the error handler — they do not crash the worker, abort the current run, or interrupt subsequent listeners for the same event. An exception thrown by the `onError` handler itself, or a rejected promise returned by an async `onError` handler, is ignored for the same reason. If a listener returns a rejected Promise (async listener), the rejection is also forwarded to `onError`. Use `onError` to catch both:
 
 ```ts
 durably.onError((error, event) => {

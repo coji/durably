@@ -25,6 +25,8 @@ export function createStepContext(
   step: StepContext
   abortLeaseOwnership(): void
   preserveFailedParallelSteps(): boolean
+  /** The lowest-index step whose failure was recorded under this lease. */
+  firstFailedStep(): string | null
   suspension(): string | null
   settleSteps(): Promise<void>
   dispose: () => void
@@ -37,6 +39,21 @@ export function createStepContext(
   const stepParents = new Map<string, string | null>()
   let ambiguousLogScope = false
   let preserveFailedParallelSteps = false
+  // Failures recorded under this lease, by step name. Older leases' failed
+  // checkpoints survive recovery, so attribution must not read them back.
+  const failedSteps = new Map<string, number>()
+  function firstFailedStep(names?: { has(name: string): boolean }) {
+    let first: string | null = null
+    let firstIndex = Number.POSITIVE_INFINITY
+    for (const [name, index] of failedSteps) {
+      if (names && !names.has(name)) continue
+      if (index < firstIndex) {
+        first = name
+        firstIndex = index
+      }
+    }
+    return first
+  }
 
   const controller = new AbortController()
 
@@ -312,6 +329,15 @@ export function createStepContext(
 
         // If we reach here, savedStep is truthy — the run is still leased.
         // Cancellation is handled above (persistStep returns null for cancelled runs).
+        // Keep a name's lowest failed index: a retry of the same name, or an
+        // overlapping attempt that finishes later, must not hide it.
+        const recorded = failedSteps.get(name)
+        if (
+          !isCancelled &&
+          (recorded === undefined || attemptIndex < recorded)
+        ) {
+          failedSteps.set(name, attemptIndex)
+        }
         eventEmitter.emit({
           type: 'step:fail',
           error: errorMessage,
@@ -481,23 +507,14 @@ export function createStepContext(
       }
 
       if (rejected.length > 1) {
-        // run:fail names the lowest-index failed checkpoint. Choose its error
-        // too, because asynchronous setup can assign indexes out of branch
-        // declaration order.
+        // run:fail names the lowest-index step that failed under this lease.
+        // Choose its error too, because asynchronous setup can assign indexes
+        // out of branch declaration order.
         const byName = new Map(
           rejected.map(({ name, reason }) => [name, reason]),
         )
-        const attempts = await storage.getStepAttempts(run.id)
-        const firstFailed = attempts
-          .filter(
-            (saved) =>
-              saved.leaseGeneration === leaseGeneration &&
-              saved.status === 'failed' &&
-              saved.interruptionReason === null &&
-              byName.has(saved.stepName),
-          )
-          .sort((a, b) => a.stepIndex - b.stepIndex)[0]
-        if (firstFailed) throw byName.get(firstFailed.stepName)
+        const firstFailed = firstFailedStep(byName)
+        if (firstFailed) throw byName.get(firstFailed)
       }
       if (rejected.length > 0) throw rejected[0].reason
 
@@ -542,6 +559,7 @@ export function createStepContext(
     step,
     abortLeaseOwnership: abortForLeaseLoss,
     preserveFailedParallelSteps: () => preserveFailedParallelSteps,
+    firstFailedStep: () => firstFailedStep(),
     suspension: () => suspensionId,
     async settleSteps() {
       // Rejected illegal waits must not release a slot while a sibling is still running.

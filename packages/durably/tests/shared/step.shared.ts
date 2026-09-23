@@ -319,6 +319,81 @@ export function createStepTests(createDialect: () => Dialect) {
       ])
     })
 
+    it('fails a run whose error message cannot be read', async () => {
+      const d = durably.register({
+        job: defineJob({
+          name: 'unreadable-message',
+          input: z.object({}),
+          run: async () => {
+            const error = new Error('hidden')
+            Object.defineProperty(error, 'message', {
+              get() {
+                throw new Error('message getter failed')
+              },
+            })
+            throw error
+          },
+        }),
+      })
+      const run = await d.jobs.job.trigger({})
+      await d.processOne()
+      expect(await d.getRun(run.id)).toMatchObject({
+        status: 'failed',
+        error: 'Unknown error',
+      })
+    })
+
+    it('fails a run whose thrown value has no string form', async () => {
+      const d = durably.register({
+        job: defineJob({
+          name: 'unprintable-throw',
+          input: z.object({}),
+          run: async () => {
+            throw Object.create(null)
+          },
+        }),
+      })
+      const run = await d.jobs.job.trigger({})
+      await d.processOne()
+      expect(await d.getRun(run.id)).toMatchObject({
+        status: 'failed',
+        error: 'Unknown error',
+      })
+    })
+
+    it('attributes a failure to the earliest failed attempt when a step name fails twice', async () => {
+      const failures: { failedStepName: string }[] = []
+      durably.on('run:fail', (event) => failures.push(event))
+      const d = durably.register({
+        job: defineJob({
+          name: 'repeated-step-failure',
+          input: z.object({}),
+          run: async (step) => {
+            // x fails at index 0 and y at index 1, both caught; x then fails
+            // again at index 2. The earliest failed attempt is still x.
+            try {
+              await step.run('x', () => {
+                throw new Error('x first')
+              })
+            } catch {}
+            try {
+              await step.run('y', () => {
+                throw new Error('y')
+              })
+            } catch {}
+            await step.run('x', () => {
+              throw new Error('x again')
+            })
+          },
+        }),
+      })
+      await d.jobs.job.trigger({})
+      await d.processOne()
+      expect(failures).toEqual([
+        expect.objectContaining({ failedStepName: 'x' }),
+      ])
+    })
+
     it('attributes a recovered failure to the current branch, not an older failed checkpoint', async () => {
       const failures: { error: string; failedStepName: string }[] = []
       durably.on('run:fail', (event) => failures.push(event))
@@ -356,8 +431,8 @@ export function createStepTests(createDialect: () => Dialect) {
       })
 
       d.start()
-      // run:fail is emitted after the failed status is written and the
-      // failing attempt is looked up, so wait for the event itself.
+      // The worker writes the failed status before it emits run:fail, so a
+      // poll can see the status first; wait for the event itself.
       await vi.waitFor(
         async () => {
           expect((await d.jobs.job.getRun(run.id))?.status).toBe('failed')

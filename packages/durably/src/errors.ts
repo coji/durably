@@ -69,12 +69,19 @@ export class WaitExpiredError extends ConflictError {
  * Extract error message from unknown error
  */
 export function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  try {
+    return error instanceof Error ? error.message : String(error)
+  } catch {
+    // A value without a usable string form (Object.create(null), or an Error
+    // whose message getter throws) must still fail its run, be reported to
+    // onError, or reach worker:error rather than escape the failure path.
+    return 'Unknown error'
+  }
 }
 
 /**
  * Coerce unknown value to Error
  */
 export function toError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error))
+  return error instanceof Error ? error : new Error(getErrorMessage(error))
 }

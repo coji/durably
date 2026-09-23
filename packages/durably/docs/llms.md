@@ -426,7 +426,9 @@ For automatic cleanup, use the `retainRuns` option (see Core Concepts). Cleanup 
 
 ## Events
 
-Subscribe to job execution events. **Listeners run synchronously** in the worker's hot path — keep them fast and non-blocking. Use fire-and-forget (`void asyncFn()`) for expensive work.
+Subscribe to job execution events. **Listeners run synchronously** in the worker's hot path — keep them fast and non-blocking. Use fire-and-forget (`void asyncFn()`) for expensive work. Exceptions and rejected promises from listeners go to `onError`; an exception thrown by `onError`, or a rejection from an async `onError`, is ignored and never stops delivery to other listeners.
+
+Run and step state events (`run:trigger`, `run:coalesced`, `run:leased`, `run:waiting`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`, `step:start`, `step:complete`, `step:fail`) are emitted directly after their storage write, with no other storage access in between, so a listener that reads the run sees the new state. `batchTrigger()` writes all its runs in one call, then emits each run's event in order; listeners' own storage calls are not counted as runtime access. The reverse is not guaranteed: a poller can read the new state just before the event arrives, so wait for the event when you need its payload. With `preserveSteps: false`, terminal checkpoint and log cleanup, where it applies (see `step.all()` for when a failed run keeps them), starts once listeners return; listeners are not awaited, so async listeners may find steps already deleted. A failed cleanup after `cancel()` is reported as `worker:error` with `context: 'cancel-cleanup'`. Events are in-process only; other runtimes on the same database see state, not events. `step:cancel` follows a read-back of the run. `run:progress` persists in the background, and `log:write` is stored only with `withLogPersistence()`. Maintenance transitions (idle lease release or expiry failure, wait deadline expiry, retention purges) emit no events.
 
 ```ts
 // Run lifecycle events

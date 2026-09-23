@@ -523,16 +523,6 @@ function createDurablyInstance<
     _workerId: string,
   ): Promise<void> {
     const job = jobRegistry.get(run.jobName)
-    if (!job) {
-      await storage.failRun(
-        run.id,
-        run.leaseGeneration,
-        `Unknown job: ${run.jobName}`,
-        new Date().toISOString(),
-      )
-      return
-    }
-
     await executeRunKernel(
       run,
       job,
@@ -840,19 +830,32 @@ function createDurablyInstance<
         )
       }
 
-      // Cancellation is committed and prevents new checkpoints on every path.
-      // This also covers a leased -> waiting race during cancellation.
-      if (!state.preserveSteps) {
-        await storage.deleteSteps(runId)
-      }
-
-      // Emit run:cancel event
+      // Emit before any further await so listeners learn of the committed
+      // cancellation as soon as the status write is visible.
       eventEmitter.emit({
         type: 'run:cancel',
         runId,
         jobName: run.jobName,
         labels: run.labels,
       })
+
+      // Cancellation is committed and prevents new checkpoints on every path.
+      // This also covers a leased -> waiting race during cancellation. As for
+      // the other terminal events, cleanup follows the event. A cleanup
+      // failure does not undo the cancellation, so report it instead of
+      // rejecting a cancel that happened.
+      if (!state.preserveSteps) {
+        try {
+          await storage.deleteSteps(runId)
+        } catch (error) {
+          eventEmitter.emit({
+            type: 'worker:error',
+            error: getErrorMessage(error),
+            context: 'cancel-cleanup',
+            runId,
+          })
+        }
+      }
     },
 
     async deleteRun(runId: string): Promise<void> {

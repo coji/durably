@@ -307,6 +307,86 @@ export function createEventsTests(createDialect: () => Dialect) {
         }),
       )
     })
+
+    it('keeps delivering when the onError handler itself throws', async () => {
+      const leased = {
+        type: 'run:leased',
+        runId: 'run_1',
+        jobName: 'test-job',
+        input: {},
+        leaseOwner: 'worker-1',
+        leaseExpiresAt: '2024-01-01T00:00:30.000Z',
+        labels: {},
+      } as const
+      const errorHandler = vi.fn(() => {
+        throw new Error('onError failed')
+      })
+      const later = vi.fn()
+      durably.onError(errorHandler)
+      durably.on('run:leased', () => {
+        throw new Error('sync listener failed')
+      })
+      durably.on('run:leased', async () => {
+        throw new Error('async listener failed')
+      })
+      durably.on('run:leased', later)
+
+      expect(() => durably.emit(leased)).not.toThrow()
+      expect(later).toHaveBeenCalledTimes(1)
+      // The async rejection reaches onError, whose throw is contained
+      // rather than becoming an unhandled rejection that fails the run.
+      await vi.waitFor(() => expect(errorHandler).toHaveBeenCalledTimes(2), {
+        timeout: 5_000,
+      })
+    })
+
+    it('forwards listener failures that cannot be printed to onError', async () => {
+      const errorHandler = vi.fn()
+      durably.onError(errorHandler)
+      durably.on('run:leased', () => {
+        throw Object.create(null)
+      })
+      durably.on('run:leased', async () => {
+        throw Object.create(null)
+      })
+      durably.emit({
+        type: 'run:leased',
+        runId: 'run_1',
+        jobName: 'test-job',
+        input: {},
+        leaseOwner: 'worker-1',
+        leaseExpiresAt: '2024-01-01T00:00:30.000Z',
+        labels: {},
+      })
+      await vi.waitFor(() => expect(errorHandler).toHaveBeenCalledTimes(2), {
+        timeout: 5_000,
+      })
+      expect(errorHandler).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'Unknown error' }),
+        expect.objectContaining({ type: 'run:leased' }),
+      )
+    })
+
+    it('contains a rejection from an async onError handler', () => {
+      // Stand in for the handler's promise: containment means emit attaches
+      // a rejection handler to it.
+      const pending = new Promise<void>(() => {})
+      const then = vi.spyOn(pending, 'then')
+      durably.onError(() => pending as unknown as void)
+      durably.on('run:leased', () => {
+        throw new Error('listener failed')
+      })
+      durably.emit({
+        type: 'run:leased',
+        runId: 'run_1',
+        jobName: 'test-job',
+        input: {},
+        leaseOwner: 'worker-1',
+        leaseExpiresAt: '2024-01-01T00:00:30.000Z',
+        labels: {},
+      })
+      expect(then).toHaveBeenCalledWith(undefined, expect.any(Function))
+    })
   })
 
   describe('core event classification', () => {
