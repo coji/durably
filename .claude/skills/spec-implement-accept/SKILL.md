@@ -318,7 +318,7 @@ For round `N`:
 
    ```bash
    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude -p \
-     --model claude-opus-5-5 --effort high --output-format json --restricted \
+     --model opus --effort high --output-format json --restricted \
      --add-dir "$snapshot_dir" --tools Read,Glob,Grep \
      --allowedTools Read,Glob,Grep --strict-mcp-config \
      < "$report_dir/opus-prompt.md" > "$report_dir/opus-track.json"

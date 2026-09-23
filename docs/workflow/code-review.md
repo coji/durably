@@ -9,7 +9,7 @@ The review mechanics build on [the eight-perspective Codex review procedure](htt
 Use two independent review tracks against the same fixed commit:
 
 - Codex `gpt-6-sol`, reasoning effort `medium`: eight independent perspective reviewers defined by the repository `$code-review` skill, followed by independent candidate verification.
-- Claude Opus `claude-opus-5-5`, effort `high`: the outer orchestrator dispatches an independent pass over all eight perspectives. It must not see Codex candidates before returning its own candidates. Neither finder dispatches the other.
+- Claude Opus, effort `high`: the outer orchestrator dispatches an independent pass over all eight perspectives. It must not see Codex candidates before returning its own candidates. Neither finder dispatches the other.
 
 After both finder tracks finish, the orchestrator consolidates candidates. A candidate must be verified by a reviewer that did not discover it. The two tracks may verify one another's candidates. If either required model, any perspective, or required verification is unavailable, the result is `INCOMPLETE` and the PR remains Draft.
 
