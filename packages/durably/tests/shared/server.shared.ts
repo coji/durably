@@ -1307,17 +1307,18 @@ export function createServerTests(createDialect: () => Dialect) {
         const reader = response.body!.getReader()
         const decoder = new TextDecoder()
 
-        await d2.jobs.job1.trigger({})
+        // The excluded job goes first: stream order means that if the filter
+        // let it through, it would arrive before the included one.
         await d2.jobs.job2.trigger({})
+        await d2.jobs.job1.trigger({})
         d2.start()
 
         const events: string[] = []
         const readEvents = async () => {
-          while (true) {
+          while (!events.join('').includes('filter-subscribe-1')) {
             const { done, value } = await reader.read()
             if (done) break
             events.push(decoder.decode(value))
-            if (events.length >= 2) break
           }
         }
 
@@ -1329,10 +1330,8 @@ export function createServerTests(createDialect: () => Dialect) {
         ])
 
         const allEvents = events.join('')
-        if (allEvents.includes('jobName')) {
-          expect(allEvents).toContain('filter-subscribe-1')
-          expect(allEvents).not.toContain('filter-subscribe-2')
-        }
+        expect(allEvents).toContain('filter-subscribe-1')
+        expect(allEvents).not.toContain('filter-subscribe-2')
       })
 
       it('filters by multiple jobName params', async () => {
@@ -1367,17 +1366,24 @@ export function createServerTests(createDialect: () => Dialect) {
         const reader = response.body!.getReader()
         const decoder = new TextDecoder()
 
-        await d3.jobs.job1.trigger({})
+        // The excluded job goes first so a leak would arrive before the rest.
         await d3.jobs.job2.trigger({})
+        await d3.jobs.job1.trigger({})
         await d3.jobs.job3.trigger({})
 
         const events: string[] = []
+        const seenBoth = () => {
+          const text = events.join('')
+          return (
+            text.includes('multi-subscribe-1') &&
+            text.includes('multi-subscribe-3')
+          )
+        }
         const readEvents = async () => {
-          while (true) {
+          while (!seenBoth()) {
             const { done, value } = await reader.read()
             if (done) break
             events.push(decoder.decode(value))
-            if (events.length >= 2) break
           }
         }
 
@@ -1389,9 +1395,9 @@ export function createServerTests(createDialect: () => Dialect) {
         ])
 
         const allEvents = events.join('')
-        if (allEvents.includes('jobName')) {
-          expect(allEvents).not.toContain('multi-subscribe-2')
-        }
+        expect(allEvents).toContain('multi-subscribe-1')
+        expect(allEvents).toContain('multi-subscribe-3')
+        expect(allEvents).not.toContain('multi-subscribe-2')
       })
 
       it('filters subscriptions by label.<key> parameters and includes status in run:coalesced', async () => {

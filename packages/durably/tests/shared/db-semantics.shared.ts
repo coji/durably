@@ -51,6 +51,44 @@ export function createDbSemanticsTests(
       expect(second.input).toEqual({ n: 1 })
     })
 
+    it('orders runs and logs that share a timestamp by id', async () => {
+      const runIds: string[] = []
+      for (let n = 0; n < 5; n++) {
+        const { run } = await durably.storage.enqueue({
+          jobName: 'job',
+          input: { n },
+        })
+        runIds.push(run.id)
+      }
+      const logIds: string[] = []
+      for (let n = 0; n < 5; n++) {
+        const log = await durably.storage.createLog({
+          runId: runIds[0],
+          stepName: null,
+          level: 'info',
+          message: `log ${n}`,
+        })
+        logIds.push(log.id)
+      }
+      // Force a tie, as rows written within one millisecond have.
+      const sameInstant = new Date().toISOString()
+      await durably.db
+        .updateTable('durably_runs')
+        .set({ created_at: sameInstant })
+        .execute()
+      await durably.db
+        .updateTable('durably_logs')
+        .set({ created_at: sameInstant })
+        .execute()
+
+      expect((await durably.storage.getRuns()).map((run) => run.id)).toEqual(
+        [...runIds].reverse(),
+      )
+      expect(
+        (await durably.storage.getLogs(runIds[0])).map((log) => log.id),
+      ).toEqual(logIds)
+    })
+
     it('allows only one claimant to win the same run', async () => {
       await durably.storage.enqueue({
         jobName: 'job',

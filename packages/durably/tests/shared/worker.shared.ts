@@ -76,46 +76,70 @@ export function createWorkerTests(createDialect: () => Dialect) {
         expect(run.status).toBe('completed')
       })
 
-      it('stop() resolves immediately if no run is executing', async () => {
-        durably.start()
-        const startTime = Date.now()
-        await durably.stop()
-        const elapsed = Date.now() - startTime
-
-        expect(elapsed).toBeLessThan(100)
+      it('stop() does not wait for the next poll when no run is executing', async () => {
+        // A polling interval far longer than the bound below: if stop() waited
+        // for the next poll, it could not resolve in time.
+        const d = createDurably({
+          dialect: createDialect(),
+          pollingIntervalMs: 60_000,
+        })
+        await d.migrate()
+        const idle = createDeferred()
+        const original = d.storage.releaseExpiredLeases
+        d.storage.releaseExpiredLeases = async (...args) => {
+          const result = await original(...args)
+          idle.resolve()
+          return result
+        }
+        try {
+          d.start()
+          // Wait until the first poll found nothing and the worker went idle.
+          await idle.promise
+          const startTime = Date.now()
+          await d.stop()
+          expect(Date.now() - startTime).toBeLessThan(5_000)
+        } finally {
+          await d.stop()
+          await d.db.destroy()
+        }
       })
 
       it('stop() awaits in-flight idle maintenance before resolving', async () => {
-        let maintenanceCompleted = false
-
-        // Use retainRuns to ensure runIdleMaintenance does real work
         const d = createDurably({
           dialect: createDialect(),
           pollingIntervalMs: 50,
-          retainRuns: '30d',
         })
         await d.migrate()
+        // Hold the idle maintenance the worker runs after an empty poll.
+        const entered = createDeferred()
+        const release = createDeferred()
+        const original = d.storage.releaseExpiredLeases
+        d.storage.releaseExpiredLeases = async (...args) => {
+          entered.resolve()
+          await release.promise
+          return original(...args)
+        }
+        try {
+          d.start()
+          await entered.promise
 
-        // Listen for the idle-maintenance cycle completing via worker:error
-        // or simply track that stop() doesn't resolve before maintenance
-        d.on('run:leased', () => {
-          // noop — just need the worker to process something
-        })
+          let stopped = false
+          const stopping = d.stop().then(() => {
+            stopped = true
+          })
+          // sleep-ok(negative): gives stop() a chance to resolve while the
+          // maintenance is still held, which it must not do.
+          await new Promise((r) => setTimeout(r, 50))
+          expect(stopped).toBe(false)
 
-        d.start()
-
-        // Let the worker go through at least one idle cycle
-        // (processOne returns false → onIdle runs releaseExpiredLeases)
-        // sleep-ok(yield): only gives stop() a chance to overlap idle
-        // maintenance; the assertions hold whether or not a cycle ran
-        await new Promise((r) => setTimeout(r, 150))
-
-        // stop() should await any in-flight maintenance
-        await d.stop()
-        maintenanceCompleted = true
-
-        expect(maintenanceCompleted).toBe(true)
-        await d.db.destroy()
+          release.resolve()
+          await stopping
+          expect(stopped).toBe(true)
+        } finally {
+          release.resolve()
+          await d.stop()
+          await d.db.destroy()
+        }
       })
     })
 
