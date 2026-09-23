@@ -1,0 +1,45 @@
+diff --git a/dist/index.js b/dist/index.js
+index 06014caa0d5b0b34ea6ebf197a217c7eca98606b..4f2cd929c928b356803947eac0943701802bfd1e 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -3198,7 +3198,14 @@ var TurnStreamController = class {
+       emitter: this.emitter,
+       threadId: this.options.threadId,
+       onUsage: (nextUsage) => {
+-        this.usage = nextUsage;
++        // Local patch: `thread/tokenUsage/updated` fires once per model
++        // response with that response's usage in `last`. Overwriting kept only
++        // the final response of the turn, so an agent loop of 25 responses was
++        // reported as one. Accumulate across the turn instead. The events are
++        // already filtered to this turn, and this object is per call, so the
++        // sum is exactly this invocation — unlike `tokenUsage.total`, which
++        // spans every turn of a reused thread.
++        this.usage = accumulateAppServerUsage(this.usage, nextUsage);
+       },
+       onThreadTurnCompleted: (turn) => {
+         this.options.session?.setInactive(turn.id);
+@@ -4761,6 +4768,24 @@ var fileChangeOutputDeltaNotificationSchema = z.object({
+   itemId: z.string(),
+   delta: z.string()
+ }).passthrough();
++function accumulateAppServerUsage(prev, next) {
++  if (!prev) return next;
++  const add = (a, b) => a === void 0 && b === void 0 ? void 0 : (a ?? 0) + (b ?? 0);
++  return {
++    inputTokens: {
++      total: add(prev.inputTokens?.total, next.inputTokens?.total),
++      noCache: add(prev.inputTokens?.noCache, next.inputTokens?.noCache),
++      cacheRead: add(prev.inputTokens?.cacheRead, next.inputTokens?.cacheRead),
++      cacheWrite: add(prev.inputTokens?.cacheWrite, next.inputTokens?.cacheWrite)
++    },
++    outputTokens: {
++      total: add(prev.outputTokens?.total, next.outputTokens?.total),
++      text: add(prev.outputTokens?.text, next.outputTokens?.text),
++      reasoning: add(prev.outputTokens?.reasoning, next.outputTokens?.reasoning)
++    },
++    raw: next.raw
++  };
++}
+ var tokenUsageBreakdownSchema = z.object({
+   totalTokens: z.number(),
+   inputTokens: z.number(),

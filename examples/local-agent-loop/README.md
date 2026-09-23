@@ -220,6 +220,19 @@ LLM呼び出しはすべて `src/engine/runner.ts` を通り、attempt metadata�
 - elapsed、result、error、interruption reason、API換算参考価格とmeter別内訳
 - `configVersion`（provider、model、effort、context、指示版、反復上限のhash）
 
+providerが返すusageは、一回の呼び出しの**全モデル応答の合計**でなければいけません。
+エージェントCLIは一回の呼び出しの中で何十回もモデルを呼ぶので、最後の応答だけでは
+桁が変わります。
+
+- **Claude**: Agent SDKの `result` メッセージの累計をそのまま使います。Claude Codeの
+  transcriptに記録された各応答の合計と一致することを確認済みです。
+- **Codex**: `ai-sdk-provider-codex-cli@2.2.1` は応答ごとのイベントで usage を上書き
+  するため、最後の応答分しか返しません。`patches/` のパッチでturn内の合計に直して
+  います。thread累計の `total` は使いません。`--context reuse` では前回の呼び出し分
+  まで含んでしまうからです。修正後の値はCodex自身のセッションログと一致することを
+  確認済みです。修正前は、実際には25回応答していた実装工程が1回分として記録され、
+  run全体のコストが約16分の1に見えていました。
+
 集計は `invocationId` で一度だけ数えます。同じcomplete checkpointを別attemptが
 読み直してもtokenを二重計上しません。ローカルテストやPolicyはusage対象外です。
 LLMを呼んだのにusageが無い場合は欠測として件数を残し、完全な合計にはしません。

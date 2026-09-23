@@ -171,6 +171,9 @@ overrides:
   satori>fflate: 0.7.5
   tsup>esbuild: 0.28.2
 
+patchedDependencies:
+  ai-sdk-provider-codex-cli@2.2.1: dd4b3c14eec4baa942271c21ff2b61e933bb50c87a88f306771ff582c4a0f548
+
 importers:
 
   .:
@@ -353,7 +356,7 @@ importers:
         version: 4.3.1(@anthropic-ai/sdk@0.127.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.30.0(supports-color@7.2.0)(zod@4.6.5))(zod@4.6.5)
       ai-sdk-provider-codex-cli:
         specifier: ^2.2.1
-        version: 2.2.1(zod@4.6.5)
+        version: 2.2.1(patch_hash=dd4b3c14eec4baa942271c21ff2b61e933bb50c87a88f306771ff582c4a0f548)(zod@4.6.5)
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3
@@ -9083,7 +9086,7 @@ snapshots:
       - '@anthropic-ai/sdk'
       - '@modelcontextprotocol/sdk'
 
-  ai-sdk-provider-codex-cli@2.2.1(zod@4.6.5):
+  ai-sdk-provider-codex-cli@2.2.1(patch_hash=dd4b3c14eec4baa942271c21ff2b61e933bb50c87a88f306771ff582c4a0f548)(zod@4.6.5):
     dependencies:
       '@ai-sdk/provider': 4.0.17
       '@ai-sdk/provider-utils': 5.0.45(zod@4.6.5)
