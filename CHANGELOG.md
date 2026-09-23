@@ -15,7 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Unregistered jobs**: a run whose job is not registered in the worker now emits `run:leased` and `run:fail` (with `failedStepName: 'unknown'`), like any other failed run. It is also cleaned up like one: with `preserveSteps: false` its checkpoints and logs are deleted.
 - **`cancel()` cleanup**: a failure to delete checkpoints after a committed cancellation is reported as `worker:error` (`context: 'cancel-cleanup'`) instead of rejecting `cancel()`.
 - **`onError` isolation**: an exception thrown by the `onError` handler, or a rejected promise from an async handler, is now ignored. Before, it escaped the emitting call (for example rejecting `cancel()` after a committed cancellation) and stopped delivery to the remaining listeners, and for an async listener it became an unhandled rejection.
-- **Unprintable errors**: a job, step, listener or cleanup that throws a value with no string form (such as `Object.create(null)`, or an `Error` whose `message` getter throws) is now recorded as `Unknown error`. Before, converting it threw inside the failure path, leaving the run leased until its lease expired, or dropping the listener error before `onError`.
 - **Stable run and log ordering**: `getRuns()` and `storage.getLogs()` break creation-time ties by ID, so runs or logs written in the same millisecond keep a deterministic order and `limit`/`offset` pages no longer overlap or skip.
 
 ## [0.16.0] - 2026-09-21
