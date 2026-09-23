@@ -56,6 +56,11 @@ export interface ConfigGroup {
   runs: number
   successes: number
   successRate: number
+  /**
+   * Runs per conclusion. A run that ended without one (failed or cancelled
+   * before its outcome was recorded) counts under its status instead.
+   */
+  conclusions: Record<string, number>
   leadTimeMs: Stat
   workMs: Stat
   humanWaitMs: Stat
@@ -170,6 +175,11 @@ export function compareReports(reports: LoopReport[]): Comparison {
         reworked: stat(visits.map((v) => v?.reworked ?? 0)),
       }
     })
+    const conclusions: Record<string, number> = {}
+    for (const r of list) {
+      const key = r.summary.conclusion ?? r.status
+      conclusions[key] = (conclusions[key] ?? 0) + 1
+    }
     out.push({
       configVersion: first.configVersion,
       runIds: list.map((r) => r.runId),
@@ -177,6 +187,7 @@ export function compareReports(reports: LoopReport[]): Comparison {
       runs: list.length,
       successes,
       successRate: successes / list.length,
+      conclusions,
       leadTimeMs: stat(list.map((r) => r.summary.leadTimeMs)),
       workMs: stat(list.map((r) => r.summary.workMs)),
       humanWaitMs: stat(list.map((r) => r.summary.humanWaitMs)),
@@ -216,6 +227,11 @@ export function comparisonToMarkdown(c: Comparison): string {
     lines.push(`- runs: ${g.runIds.join(', ')}`)
     lines.push(
       `- success: ${g.successes}/${g.runs} (${(g.successRate * 100).toFixed(0)}%)`,
+    )
+    lines.push(
+      `- conclusions: ${Object.entries(g.conclusions)
+        .map(([c, n]) => `${c} ${n}`)
+        .join(', ')}`,
     )
     lines.push(`- lead time ms: ${fmtStat(g.leadTimeMs)}`)
     lines.push(`- work ms: ${fmtStat(g.workMs)}`)

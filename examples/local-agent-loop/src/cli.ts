@@ -1,29 +1,17 @@
 #!/usr/bin/env tsx
-/** CLI: worker | trigger | status | waits | approve | reject | report | compare */
+/** CLI: worker | trigger | status | waits | approve | reject | report | compare | ui */
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import type { Run } from '@coji/durably'
 import { z } from 'zod'
 
-import {
-  createAgentDurably,
-  dbPath,
-  legacyDbWarning,
-  type AgentLoopDurably,
-} from './durably.js'
+import { createAgentDurably, dbPath, legacyDbWarning } from './durably.js'
 import { buildReport, recordedTriage } from './engine/build-report.js'
 import { killOwnedChildren, runChild } from './engine/child.js'
 import { compareReports, comparisonToMarkdown } from './engine/compare.js'
-import {
-  classifyRun,
-  DEMO,
-  retryText,
-  uncertainCheckpoints,
-  type FailureClassification,
-} from './engine/failure-reasons.js'
+import { classifyRun } from './engine/failure-reasons.js'
 import { repoRoot } from './engine/git.js'
 import { parseProviderName } from './engine/providers/index.js'
 import {
@@ -31,6 +19,7 @@ import {
   reportToMarkdown,
   type LoopReport,
 } from './engine/report.js'
+import { diagnose, diagnosisLines } from './engine/status.js'
 import {
   assertSingleMode,
   fixProfile,
@@ -331,170 +320,6 @@ function args(): Record<string, string> {
   return out
 }
 
-/** Quote for a POSIX shell, so a printed command pastes safely. */
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`
-}
-
-interface Diagnosis {
-  /** False for a run a human already decided, shown only for its cleanup. */
-  needsAttention: boolean
-  reason: string
-  next: string[]
-  /** Set only for a stopped run. */
-  failure?: FailureClassification
-  /** A non-forcing worktree removal, for a finished repo run's worktree. */
-  cleanup: string | null
-}
-
-/**
- * Say why a run is where it is and what to do next. Open runs are described
- * from their status, lease and approval wait; stopped runs from the failure
- * table. Nothing here runs a command or changes the run.
- */
-async function diagnose(
-  durably: AgentLoopDurably,
-  run: Run,
-  now: number,
-): Promise<Diagnosis> {
-  const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))
-    ?.output as {
-    target?: { kind?: string; repoPath?: string; workdir?: string }
-    checkpointsDir?: string
-  } | null
-  const terminal = ['completed', 'failed', 'cancelled'].includes(run.status)
-  const target = setup?.target
-  // Only the worktree the setup step recorded, and only when it is still
-  // there: a subject run has none, and a run that failed before setup
-  // finished has no record to trust.
-  const cleanup =
-    terminal &&
-    target?.kind === 'repo' &&
-    target.repoPath &&
-    target.workdir &&
-    existsSync(target.workdir)
-      ? `git -C ${shellQuote(target.repoPath)} worktree remove ${shellQuote(target.workdir)}`
-      : null
-  const show = `${DEMO} status --run ${run.id}`
-  const worker = `${DEMO} worker`
-  if (run.status === 'pending')
-    return {
-      needsAttention: true,
-      reason: 'queued; no worker has picked it up yet',
-      next: [`${worker}  # if none is running`, show],
-      cleanup,
-    }
-  if (run.status === 'leased') {
-    const expires = run.leaseExpiresAt ? Date.parse(run.leaseExpiresAt) : NaN
-    if (Number.isFinite(expires) && expires < now) {
-      const reason = `lease expired at ${run.leaseExpiresAt}; the worker holding it stopped or lost contact`
-      // A reclaimed run refuses an agent call that started without a
-      // completion, so it will stop there rather than resume past it.
-      const uncertain = uncertainCheckpoints(
-        setup?.checkpointsDir ?? null,
-        await durably.getStepAttempts(run.id),
-      )
-      if (uncertain.length > 0)
-        return {
-          needsAttention: true,
-          reason: `${reason}; an agent call it started has no completed checkpoint`,
-          next: [
-            `${worker}  # the reclaimed run stops at that call for a human to check`,
-            show,
-          ],
-          cleanup,
-        }
-      return {
-        needsAttention: true,
-        reason,
-        next: [
-          `${worker}  # a worker reclaims the run and resumes it from its checkpoints`,
-          show,
-        ],
-        cleanup,
-      }
-    }
-    return {
-      needsAttention: true,
-      reason: `a worker is running it (lease held until ${run.leaseExpiresAt ?? 'unknown'})`,
-      next: [show],
-      cleanup,
-    }
-  }
-  if (run.status === 'waiting') {
-    const waits = await durably.getWaits(run.id)
-    const wait = waits.find((w) => w.id === run.waitingOnWaitId)
-    const candidateId = (
-      wait?.metadata as { candidateId?: unknown } | null | undefined
-    )?.candidateId
-    if (wait && typeof candidateId === 'string') {
-      // Approved or rejected, but no worker has picked the run up yet.
-      if (wait.status === 'resolved') {
-        const decision = (wait.payload as { decision?: unknown } | null)
-          ?.decision
-        return {
-          needsAttention: true,
-          reason: `the decision on candidate ${candidateId} is recorded (${typeof decision === 'string' ? decision : wait.outcome}); a worker resumes the run`,
-          next: [`${worker}  # if none is running`, show],
-          cleanup,
-        }
-      }
-      if (wait.status === 'pending')
-        return {
-          needsAttention: true,
-          reason: `waiting for human approval of candidate ${candidateId}`,
-          next: [
-            `${DEMO} report --run ${run.id}  # read the reviews first`,
-            `${DEMO} approve --run ${run.id} --wait ${wait.id}`,
-            `${DEMO} reject --run ${run.id} --wait ${wait.id}`,
-          ],
-          cleanup,
-        }
-    }
-    return {
-      needsAttention: true,
-      reason: 'waiting on an input that is not a candidate approval',
-      next: [`${DEMO} waits --run ${run.id}`],
-      cleanup,
-    }
-  }
-  const failure = await classifyRun(durably, run)
-  if (failure)
-    return {
-      needsAttention: true,
-      reason: `${failure.kind}: ${failure.reason}`,
-      next: failure.next,
-      failure,
-      // The worktree is evidence a human has to inspect first.
-      cleanup: failure.kind === 'uncertain-invocation' ? null : cleanup,
-    }
-  const conclusion = (run.output as { conclusion?: string } | null)?.conclusion
-  return {
-    needsAttention: false,
-    reason: `finished: ${conclusion ?? run.status}`,
-    next: [],
-    cleanup,
-  }
-}
-
-function diagnosisLines(run: Run, d: Diagnosis): string[] {
-  const lines = [`${run.id}  ${run.status}  (created ${run.createdAt})`]
-  lines.push(`  reason:  ${d.reason}`)
-  if (d.failure) {
-    lines.push(`  retry:   ${retryText(d.failure.retryable)}`)
-    lines.push(`  check:   ${d.failure.humanCheck}`)
-    for (const detail of d.failure.details) lines.push(`  detail:  ${detail}`)
-  }
-  d.next.forEach((n, i) =>
-    lines.push(`  ${i === 0 ? 'next:' : '     '}    ${n}`),
-  )
-  if (d.cleanup)
-    lines.push(
-      `  cleanup: ${d.cleanup}  # keeps the branch; refuses a worktree with changes`,
-    )
-  return lines
-}
-
 function usage(): void {
   console.log(`local-agent-loop — Durably local agent demo
 Commands (run from examples/local-agent-loop):
@@ -513,6 +338,7 @@ Commands (run from examples/local-agent-loop):
   pnpm demo retrigger --run <id>            new run with the stored input (only for stops safe to repeat)
   pnpm demo report --run <id> [--format json|md] [--out <file>]
   pnpm demo compare --runs <id,id,...> [--format json|md] [--out <file>]
+  pnpm demo ui [--port 4380]                read-only web UI on 127.0.0.1 (runs, reports, comparison)
 Repository config: factory.json at the repository root, or --config <file>:
   { "check": ["pnpm", "validate"], "setup": ["pnpm", "install"], "base": "main",
     "profiles": { "code": { "provider": "codex", "model": "...", "effort": "..." },
@@ -798,6 +624,22 @@ if (cmd === 'worker') {
       : comparisonToMarkdown(comparison)
   await emit(text, a['out'])
   await durably.db.destroy()
+} else if (cmd === 'ui') {
+  const rawPort = args()['port'] ?? '4380'
+  // Checked before anything listens: a typo must not silently pick a port.
+  if (!/^\d{1,5}$/.test(rawPort) || +rawPort < 1 || +rawPort > 65535)
+    throw new Error('--port must be an integer between 1 and 65535')
+  const { startUiServer } = await import('./ui/server.js')
+  const ui = await startUiServer({ port: Number(rawPort) })
+  console.log(`web UI (read-only): ${ui.url}`)
+  console.log(`database: ${dbPath()}`)
+  console.log('Ctrl-C to stop')
+  const shutdown = async () => {
+    await ui.close()
+    process.exit(0)
+  }
+  process.on('SIGINT', () => void shutdown())
+  process.on('SIGTERM', () => void shutdown())
 } else {
   usage()
   process.exit(1)

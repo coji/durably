@@ -577,6 +577,7 @@ function report(
       dispositions: null,
     },
     candidate: null,
+    reviews: [],
     delivery: {
       kind: 'patch',
       location: '/tmp/c.patch',

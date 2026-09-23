@@ -131,6 +131,16 @@ export interface ReportCandidate {
   commit: string | null
 }
 
+/**
+ * One reviewer's verdict. A finished run carries the last round in its
+ * output; a run waiting for approval has it only in the approval wait.
+ */
+export interface ReportReview {
+  lens: string
+  decision: string
+  notes: string
+}
+
 /** What the run delivered, as recorded in its output. */
 export interface ReportDelivery {
   kind: string
@@ -195,6 +205,8 @@ export interface LoopReport {
   inputs: ReportInputs
   /** Last sealed candidate, whatever the conclusion; null before one exists. */
   candidate: ReportCandidate | null
+  /** Last review round; empty before a review round has finished. */
+  reviews: ReportReview[]
   /** Branch, commit and location of the delivery; null when none was made. */
   delivery: ReportDelivery | null
   /** Why the run stopped and what to do next; null when it did not stop. */
@@ -276,7 +288,7 @@ const STAGE_ORDER = [
   'stop',
 ]
 
-function stageOf(stepName: string): string {
+export function stageOf(stepName: string): string {
   const parts = stepName.split(':')
   if (parts[0] === 'stage' && parts[2]) return parts[2]
   if (parts[0] === 'decision') return 'policy'
@@ -540,6 +552,57 @@ export function totalStageMs(timings: StageTiming[]): number | null {
 }
 
 /**
+ * Provisional elapsed times of an open run, as of `now`. Never part of the
+ * report: `runElapsedMs` and `stageTimings` stay the settled values, and
+ * anything shown from here has to say it is still running.
+ */
+export interface LiveElapsed {
+  /** From the first lease (or creation, before one) to `now`. */
+  runMs: number
+  /** Stage of the latest attempt not yet completed; null between steps. */
+  stage: string | null
+  stepName: string | null
+  /** From that attempt's start to `now`. */
+  stageMs: number | null
+}
+
+/**
+ * Provisional elapsed times for an open run; null for a finished one. Only
+ * attempts of the current lease generation count, so an attempt a lost
+ * worker left open is not taken for the step running now.
+ */
+export function liveElapsed(
+  run: {
+    status: string
+    createdAt: string
+    startedAt: string | null
+    leaseGeneration: number
+  },
+  attempts: Pick<
+    AttemptRow,
+    'stepName' | 'startedAt' | 'completedAt' | 'status' | 'leaseGeneration'
+  >[],
+  now: number,
+): LiveElapsed | null {
+  if (['completed', 'failed', 'cancelled'].includes(run.status)) return null
+  const since = (iso: string) => Math.max(0, now - Date.parse(iso))
+  const open = attempts
+    .filter(
+      (a) =>
+        a.status === 'started' &&
+        a.completedAt === null &&
+        a.leaseGeneration === run.leaseGeneration,
+    )
+    .sort((x, y) => Date.parse(y.startedAt) - Date.parse(x.startedAt))[0]
+  return {
+    runMs: since(run.startedAt ?? run.createdAt),
+    stage: open ? stageOf(open.stepName) : null,
+    stepName: open?.stepName ?? null,
+    stageMs: open ? since(open.startedAt) : null,
+  }
+}
+
+/**
  * Only triage and implement/review branches invoke an LLM: every other step
  * (local grading, prepare, policy, snapshots) is out of usage scope, so its
  * null usage never marks the aggregate incomplete.
@@ -603,6 +666,15 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push(`- commit: ${fmt(r.candidate.commit)}`)
   } else {
     lines.push('- none')
+  }
+  lines.push('')
+  lines.push('## Reviews')
+  lines.push('')
+  if (r.reviews.length > 0) {
+    for (const review of r.reviews)
+      lines.push(`- ${review.lens}: ${review.decision} — ${review.notes}`)
+  } else {
+    lines.push('- none (no review round has finished)')
   }
   lines.push('')
   lines.push('## Delivery')

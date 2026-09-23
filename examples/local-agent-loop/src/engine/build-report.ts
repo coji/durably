@@ -18,6 +18,7 @@ import {
   type ReportCandidate,
   type ReportDelivery,
   type ReportInputs,
+  type ReportReview,
   type ReportTriage,
   type RoleProfileRow,
 } from './report.js'
@@ -92,6 +93,66 @@ export async function recordedTriage(
   return asTriage(
     (await durably.storage.getCompletedStep(run.id, 'triage'))?.output,
   )
+}
+
+function asReviews(value: unknown): ReportReview[] | null {
+  if (!Array.isArray(value)) return null
+  return value.flatMap((v) => {
+    const r = v as Partial<ReportReview> | null
+    return typeof r?.lens === 'string' &&
+      typeof r.decision === 'string' &&
+      typeof r.notes === 'string'
+      ? [{ lens: r.lens, decision: r.decision, notes: r.notes }]
+      : []
+  })
+}
+
+/**
+ * The last review round. A run with an output carries it there; a run
+ * waiting for approval has it only in the approval wait's metadata, so the
+ * latest wait that recorded reviews is used.
+ */
+function lastReviews(
+  output: unknown,
+  waits: { metadata: unknown }[],
+): ReportReview[] {
+  if (output != null)
+    return asReviews((output as { reviews?: unknown }).reviews) ?? []
+  for (const wait of [...waits].reverse()) {
+    const fromWait = asReviews(
+      (wait.metadata as { reviews?: unknown } | null)?.reviews,
+    )
+    if (fromWait) return fromWait
+  }
+  return []
+}
+
+/**
+ * The last sealed candidate. A run with an output carries it there; an open
+ * one has only its completed `stage:<n>:code:candidate` steps.
+ */
+async function lastCandidate(
+  durably: Pick<AnyDurably, 'storage'>,
+  runId: string,
+  output: { candidate?: unknown } | null,
+): Promise<ReportCandidate | null> {
+  const sealed = (
+    output != null
+      ? output.candidate
+      : (await durably.storage.getSteps(runId))
+          .filter(
+            (s) => s.status === 'completed' && s.name.endsWith(':candidate'),
+          )
+          .sort((x, y) => x.index - y.index)
+          .at(-1)?.output
+  ) as { id?: string; branch?: string; commit?: string } | null | undefined
+  return sealed?.id
+    ? {
+        id: sealed.id,
+        branch: sealed.branch ?? null,
+        commit: sealed.commit ?? null,
+      }
+    : null
 }
 
 /**
@@ -245,14 +306,7 @@ export async function buildReport(
         commit: recorded.commit ?? null,
       }
     : null
-  const sealed = output?.candidate
-  const candidate: ReportCandidate | null = sealed?.id
-    ? {
-        id: sealed.id,
-        branch: sealed.branch ?? null,
-        commit: sealed.commit ?? null,
-      }
-    : null
+  const candidate = await lastCandidate(durably, runId, output)
   return {
     runId,
     jobName: run.jobName,
@@ -276,6 +330,7 @@ export async function buildReport(
     roleUsage: roleUsage(rows, profileRows(input)),
     inputs: inputHashes(input),
     candidate,
+    reviews: lastReviews(run.output, waits),
     delivery,
     failure,
     stageVisits: visits,

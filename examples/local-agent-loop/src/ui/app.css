@@ -1,0 +1,152 @@
+@import 'tailwindcss';
+
+/* Design tokens: copied as is from .ui-craft/tokens.md. */
+:root {
+  /* primitives */
+  --gray-50: oklch(98.5% 0.004 250);
+  --gray-100: oklch(96% 0.005 250);
+  --gray-200: oklch(91% 0.006 250);
+  --gray-300: oklch(84% 0.007 250);
+  --gray-400: oklch(70% 0.008 250);
+  --gray-500: oklch(56% 0.008 250);
+  --gray-600: oklch(45% 0.008 250);
+  --gray-700: oklch(35% 0.007 250);
+  --gray-800: oklch(25% 0.006 250);
+  --gray-900: oklch(19% 0.005 250);
+  --gray-950: oklch(14% 0.005 250);
+  --amber-500: oklch(72% 0.15 70);
+  --amber-700: oklch(52% 0.13 70);
+  --red-500: oklch(60% 0.19 25);
+  --red-700: oklch(48% 0.18 25);
+  --blue-500: oklch(62% 0.14 250);
+  --blue-700: oklch(48% 0.14 250);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --shadow-pop: 0 4px 12px oklch(0% 0 0 / 0.08), 0 1px 3px oklch(0% 0 0 / 0.06);
+  --duration-fast: 150ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --z-sticky: 20;
+  --z-toast: 50;
+
+  /* semantics (light) */
+  --surface-canvas: var(--gray-50);
+  --surface-raised: #fff;
+  --surface-sunken: var(--gray-100);
+  --text-primary: var(--gray-900);
+  --text-secondary: var(--gray-600);
+  --text-tertiary: var(--gray-500);
+  --border-subtle: oklch(0% 0 0 / 0.07);
+  --border-default: oklch(0% 0 0 / 0.13);
+  --focus-ring: var(--blue-500);
+  --state-waiting: var(--amber-700);
+  --state-waiting-bg: oklch(97% 0.04 70);
+  --state-failed: var(--red-700);
+  --state-failed-bg: oklch(97% 0.03 25);
+  --state-running: var(--blue-700);
+  --state-running-bg: oklch(97% 0.03 250);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface-canvas: var(--gray-950);
+    --surface-raised: var(--gray-900);
+    --surface-sunken: oklch(11% 0.005 250);
+    --text-primary: var(--gray-50);
+    --text-secondary: var(--gray-400);
+    --text-tertiary: var(--gray-500);
+    --border-subtle: oklch(100% 0 0 / 0.07);
+    --border-default: oklch(100% 0 0 / 0.13);
+    --state-waiting: oklch(78% 0.13 70);
+    --state-waiting-bg: oklch(24% 0.04 70);
+    --state-failed: oklch(70% 0.16 25);
+    --state-failed-bg: oklch(23% 0.04 25);
+    --state-running: oklch(72% 0.12 250);
+    --state-running-bg: oklch(23% 0.04 250);
+  }
+}
+
+/*
+ * Utilities named after the semantic tokens. The type, radius and spacing
+ * scales keep Tailwind's names with the token values.
+ */
+@theme inline {
+  --color-canvas: var(--surface-canvas);
+  --color-raised: var(--surface-raised);
+  --color-sunken: var(--surface-sunken);
+  --color-fg: var(--text-primary);
+  --color-fg-2: var(--text-secondary);
+  --color-fg-3: var(--text-tertiary);
+  --color-line: var(--border-subtle);
+  --color-line-strong: var(--border-default);
+  --color-focus: var(--focus-ring);
+  --color-waiting: var(--state-waiting);
+  --color-waiting-bg: var(--state-waiting-bg);
+  --color-failed: var(--state-failed);
+  --color-failed-bg: var(--state-failed-bg);
+  --color-running: var(--state-running);
+  --color-running-bg: var(--state-running-bg);
+  --font-ui: var(--font-sans);
+  --font-code: var(--font-mono);
+}
+@theme {
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+}
+
+html {
+  color-scheme: light dark;
+}
+body {
+  margin: 0;
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* The only motion: the dot of a running run. */
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.dot-live {
+  animation: blink 1.2s var(--ease-out) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot-live {
+    animation: none;
+  }
+}

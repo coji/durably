@@ -110,6 +110,7 @@ describe('stage timing completeness', () => {
       roleUsage: [],
       inputs: { task: null, spec: null, dispositions: null },
       candidate: null,
+      reviews: [],
       delivery: null,
       failure: null,
       stageVisits: [],

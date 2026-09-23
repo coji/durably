@@ -177,6 +177,67 @@ pnpm --filter example-local-agent-loop demo status
 同じ理由と次の手順は、`status --run <runId>` の `diagnosis` と、reportの
 `failure`（JSON）および「Stop reason」節（Markdown）にも出ます。
 
+### ブラウザで見る（web UI）
+
+worker を動かしたまま、別のターミナルで読み取り専用の web UI を起動できます。
+
+```bash
+pnpm --filter example-local-agent-loop demo ui             # http://127.0.0.1:4380/
+pnpm --filter example-local-agent-loop demo ui --port 4500
+```
+
+- 表示された URL をブラウザで開きます。待ち受けは `127.0.0.1` だけで、外部には
+  公開しません。`--port` は 1〜65535 の整数だけを受け付けます。
+- 事前のビルドは要りません。Vite が画面を要求時に変換して配信します。
+  `pnpm --filter example-local-agent-loop build:ui` は静的アセットがビルドできるかの
+  確認用です。
+- UI は固定 state root の DB を読み取り専用で開くだけで、書き込みません。DB が
+  まだなければ空の画面を出し、DB を作りません。worker か `trigger` が DB を作ると、
+  次の更新から表示されます。
+- 画面は 3 秒ごとに読み直します。前の読み込みが終わるまで次は始めません。
+  読み込みに失敗したときは直前の表示を残し、上部に「更新失敗」と表示します。
+- approve、reject、retrigger などの操作はできません。表示するのはコマンドまでで、
+  コピーして CLI で実行します。コピーするのはコマンド本体だけで、後ろの
+  `# ...` の補足は含みません。
+
+**run 一覧**は3つの欄に分かれます。
+
+- **人の判断が必要**：承認待ち（approve / reject を決める）、停止（検証失敗、
+  レビュー上限、未確定の外部呼び出しなど）、承認以外の入力待ち。停止した run は
+  「終了した run」にも並びます。
+- **進行中**：実行中（期限内の lease）、lease 期限切れ（worker が止まった。
+  worker を起動すれば再開）、未処理（worker 待ち）、判断記録済み・再開待ち。
+  正常に実行中の run は人の判断が必要な欄には出ません。
+- **終了した run**：新しい順に、結論、所要時間、費用、記録した triage 判定。
+
+状態名は必ず文字で出し、色は「人待ち（琥珀）」「失敗（赤）」「実行中（青）」だけに
+付けます。理由と次のコマンドは `demo status` と同じ関数（`src/engine/status.ts`）から
+作るので、同じ時点の `demo status --run <id>` と一致します。未確定の外部呼び出しで
+止まった run には、再実行を促すコマンドを出しません。
+
+実行中の run の「経過（実行中）」は、run の開始（lease 取得、まだなら作成）から、
+およびいまの工程の attempt の開始から、画面を読んだ時点までの暫定値です。
+report の確定値（所要時間、工程ごとの時間）とは別に扱い、確定値には混ぜません。
+
+**run 詳細**は `demo report --run <id> --format json` と同じ値を表示します。工程ごとの
+時間（横棒）、工程別・役割別の token と費用、レビューの判定とメモ、candidate、
+delivery、入力ファイルの SHA-256 です。承認待ちの run では、レビューの判定とメモは
+承認 wait の metadata から、candidate は保存済みの candidate step から読みます
+（report の `reviews` と `candidate` にも同じ値が入ります）。
+
+**集計**は終了した run だけを `demo compare` と同じ処理にかけ、config version ごとに
+結論別の件数、所要時間・作業時間・費用などの中央値、最小、最大、件数、不明の数、
+triage 判定別の結果を表示します。
+
+表示値の読み方：
+
+- 費用は記録した token 数を API 料金で換算した参考値です。サブスクリプションの
+  請求額ではありません。
+- 使用量や価格が分からないものは「不明」と表示し、0 とは表示しません。一部の
+  呼び出しだけ分かっている値には「（一部）」、一部の attempt だけ計測できた工程時間
+  には「（一部のみ計測）」を付けます。
+- 集計の統計は不明な値を除いて計算し、除いた数を「不明」の列に出します。
+
 ## 実リポジトリに対して動かす
 
 同梱の題材ではなく、実際のリポジトリの作業を渡す場合です。リポジトリごとに変わらない
@@ -519,7 +580,8 @@ pnpm --filter example-local-agent-loop demo compare \
   --runs <runA>,<runB>,<runC>,<runD> --format md
 ```
 
-グループごとに success 率、lead time、work、human wait、total tokens、cost、
+グループごとに success 率、結論別の run 数（`conclusions`。結論を記録する前に
+失敗・取り消しで終わった run は `failed` / `cancelled` として数える）、lead time、work、human wait、total tokens、cost、
 cost per success、repairs、工程別の work / tokens / cache-read / cost / reworked
 を並べます。triage 判定のあるrunを含むグループには、判定（`routine`、`probe`、
 `unknown`）ごとの表が付きます。列は run 数、approved、verification-failed、
@@ -585,6 +647,7 @@ src/
     report.ts       工程別集計とmarkdown/json
     build-report.ts 永続記録からのレポート組み立て
     compare.ts      config version別の複数run比較
+    status.ts       runの状態区分、理由、次のコマンド（statusとweb UIで共有）
     types.ts        CandidateRef / SessionRef / ResolvedProfile
   factory/          工程のつなぎ方（何を作るかは知らない）
     target.ts       Targetインターフェース：targetsとの境界
@@ -597,8 +660,9 @@ src/
     subject.ts      同梱の題材。固定テストで採点、成果物はディレクトリ
     repo.ts         実リポジトリ。worktreeで作業、commitで封印、patch/PRを出す
     index.ts        setup時のprepareと、replay時のcreateTarget
+  ui/               読み取り専用のweb UI（server.tsとReactの画面）
   cli.ts            factory.jsonと入力ファイルの読み込み、trigger時の固定
-  durably.ts        固定state directoryのDB
+  durably.ts        固定state directoryのDB（web UI用の読み取り専用接続を含む）
 subject/            変更しないバグ入り題材
 ```
 
