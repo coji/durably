@@ -472,7 +472,7 @@ if (cmd === 'worker') {
     jobName: durably.jobs.agentLoop.name,
   })) {
     const d = await diagnose(durably, run, now)
-    if (d.needsAttention) open.push(diagnosisLines(run, d))
+    if (d.kind !== 'finished') open.push(diagnosisLines(run, d))
     else if (d.cleanup) leftovers.push(diagnosisLines(run, d))
   }
   const out: string[] = []

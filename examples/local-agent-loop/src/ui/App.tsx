@@ -16,6 +16,7 @@ import {
 import type { Stat } from '../engine/compare'
 import type { LiveElapsed, LoopReport, UsageTotals } from '../engine/report'
 import type { DiagnosisKind } from '../engine/status'
+import { TERMINAL_STATUSES } from '../engine/terminal'
 import { pollJson } from './poll'
 import type {
   CompareResponse,
@@ -112,6 +113,12 @@ const timeFmt = new Intl.DateTimeFormat('ja-JP', {
   minute: '2-digit',
   second: '2-digit',
 })
+
+function retryLabel(retryable: boolean): string {
+  return retryable
+    ? 'できる（結果の分からない呼び出しを重ねない）'
+    : 'しない — 先に人が確認する'
+}
 
 /** The command itself, without the CLI's trailing `  # note`. */
 function splitCommand(line: string): { command: string; note: string | null } {
@@ -213,7 +220,7 @@ function CommandLine({
   onCopy,
 }: {
   line: string
-  copied: boolean
+  copied: string | null
   onCopy: (command: string) => void
 }) {
   const { command, note } = splitCommand(line)
@@ -234,7 +241,7 @@ function CommandLine({
         >
           コピー
         </button>
-        {copied ? (
+        {copied === command ? (
           <span className="bg-raised text-fg absolute top-full right-0 z-50 mt-1 rounded-sm px-2 py-1 text-xs whitespace-nowrap shadow-[var(--shadow-pop)]">
             コピーしました
           </span>
@@ -254,7 +261,7 @@ function Commands({ lines }: { lines: string[] }) {
           <CommandLine
             key={line}
             line={line}
-            copied={copied === splitCommand(line).command}
+            copied={copied}
             onCopy={(c) => void copy(c)}
           />
         ))}
@@ -399,10 +406,7 @@ function OpenRun({ run }: { run: RunRow }) {
       ) : null}
       {run.diagnosis.failure ? (
         <p className="text-fg-2 text-xs">
-          再実行:{' '}
-          {run.diagnosis.failure.retryable
-            ? 'できる（結果の分からない呼び出しを重ねない）'
-            : 'しない — 先に人が確認する'}
+          再実行: {retryLabel(run.diagnosis.failure.retryable)}
         </p>
       ) : null}
       <Commands lines={run.diagnosis.next} />
@@ -497,12 +501,9 @@ function RunsPage({ data }: { data: RunsResponse }) {
     )
   const human = data.runs.filter((r) => r.needsHuman)
   const open = data.runs.filter(
-    (r) =>
-      !r.needsHuman && !['completed', 'failed', 'cancelled'].includes(r.status),
+    (r) => !r.needsHuman && !TERMINAL_STATUSES.includes(r.status),
   )
-  const finished = data.runs.filter((r) =>
-    ['completed', 'failed', 'cancelled'].includes(r.status),
-  )
+  const finished = data.runs.filter((r) => TERMINAL_STATUSES.includes(r.status))
   return (
     <>
       <Section title="人の判断が必要" count={human.length}>
@@ -550,20 +551,26 @@ function Panel({ title, children }: { title: string; children: ReactNode }) {
   )
 }
 
-/** A token or cost value with its completeness said in words. */
-function partial(value: string, complete: boolean): string {
-  return complete || value === UNKNOWN ? value : `${value}（一部）`
-}
+const TOKEN_KEYS = [
+  'inputTokens',
+  'cacheReadTokens',
+  'cacheWriteTokens',
+  'outputTokens',
+  'totalTokens',
+] as const
 
+/** Token counts, marked when only some calls reported usage. */
 function UsageCells({ u }: { u: UsageTotals }) {
   return (
     <>
       <Td num>{u.invocations}</Td>
-      <Td num>{partial(fmtInt(u.inputTokens), u.complete)}</Td>
-      <Td num>{partial(fmtInt(u.cacheReadTokens), u.complete)}</Td>
-      <Td num>{partial(fmtInt(u.cacheWriteTokens), u.complete)}</Td>
-      <Td num>{partial(fmtInt(u.outputTokens), u.complete)}</Td>
-      <Td num>{partial(fmtInt(u.totalTokens), u.complete)}</Td>
+      {TOKEN_KEYS.map((key) => (
+        <Td key={key} num>
+          {u[key] == null || u.complete
+            ? fmtInt(u[key])
+            : `${fmtInt(u[key])}（一部）`}
+        </Td>
+      ))}
       <Td num>{fmtUsd(u.costUsd)}</Td>
     </>
   )
@@ -631,9 +638,7 @@ function StatusPanel({ data }: { data: RunDetailResponse }) {
       {data.diagnosis.failure ? (
         <dl className="mb-3 flex flex-col gap-2">
           <Field label="再実行">
-            {data.diagnosis.failure.retryable
-              ? 'できる（結果の分からない呼び出しを重ねない）'
-              : 'しない — 先に人が確認する'}
+            {retryLabel(data.diagnosis.failure.retryable)}
           </Field>
           <Field label="人が確認すること">
             <span className="font-ui">{data.diagnosis.failure.humanCheck}</span>
@@ -881,10 +886,6 @@ function RunPage({ data }: { data: RunDetailResponse }) {
 
 // ---------------------------------------------------------------- compare
 
-function fmtStat(s: Stat, f: (v: number | null) => string): string {
-  return s.median === null ? UNKNOWN : `${f(s.median)}`
-}
-
 function StatRow({
   label,
   stat,
@@ -897,9 +898,9 @@ function StatRow({
   return (
     <tr>
       <Td>{label}</Td>
-      <Td num>{fmtStat(stat, f)}</Td>
-      <Td num>{stat.min === null ? UNKNOWN : f(stat.min)}</Td>
-      <Td num>{stat.max === null ? UNKNOWN : f(stat.max)}</Td>
+      <Td num>{f(stat.median)}</Td>
+      <Td num>{f(stat.min)}</Td>
+      <Td num>{f(stat.max)}</Td>
       <Td num>{stat.n}</Td>
       <Td num>{stat.unknown}</Td>
     </tr>
@@ -1024,8 +1025,8 @@ function ComparePage({ data }: { data: CompareResponse }) {
                       <Td num>{t.approved}</Td>
                       <Td num>{t.verificationFailed}</Td>
                       <Td num>{t.reviewCapReached}</Td>
-                      <Td num>{fmtStat(t.repairs, fmtInt)}</Td>
-                      <Td num>{fmtStat(t.costUsd, fmtUsd)}</Td>
+                      <Td num>{fmtInt(t.repairs.median)}</Td>
+                      <Td num>{fmtUsd(t.costUsd.median)}</Td>
                       <Td num>
                         {t.judgment === 'routine' ? t.routineNeedingMore : '–'}
                       </Td>

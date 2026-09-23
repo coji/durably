@@ -16,6 +16,7 @@ import type { StepAttempt } from '@coji/durably'
 import { retryText, type FailureClassification } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import type { AttemptMeasurement } from './providers/types.js'
+import { TERMINAL_STATUSES } from './terminal.js'
 import { aggregateUsage } from './usage.js'
 
 export interface AttemptRow {
@@ -584,7 +585,7 @@ export function liveElapsed(
   >[],
   now: number,
 ): LiveElapsed | null {
-  if (['completed', 'failed', 'cancelled'].includes(run.status)) return null
+  if (TERMINAL_STATUSES.includes(run.status)) return null
   const since = (iso: string) => Math.max(0, now - Date.parse(iso))
   const open = attempts
     .filter(

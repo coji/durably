@@ -14,6 +14,7 @@ import {
   uncertainCheckpoints,
   type FailureClassification,
 } from './failure-reasons.js'
+import { TERMINAL_STATUSES } from './terminal.js'
 
 /**
  * Where an open or stopped run stands. Only `approval`, `stopped` and
@@ -43,8 +44,6 @@ export function needsHuman(kind: DiagnosisKind): boolean {
 
 export interface Diagnosis {
   kind: DiagnosisKind
-  /** False for a run a human already decided, shown only for its cleanup. */
-  needsAttention: boolean
   reason: string
   next: string[]
   /** Set only for a stopped run. */
@@ -73,7 +72,7 @@ export async function diagnose(
     target?: { kind?: string; repoPath?: string; workdir?: string }
     checkpointsDir?: string
   } | null
-  const terminal = ['completed', 'failed', 'cancelled'].includes(run.status)
+  const terminal = TERMINAL_STATUSES.includes(run.status)
   const target = setup?.target
   // Only the worktree the setup step recorded, and only when it is still
   // there: a subject run has none, and a run that failed before setup
@@ -91,7 +90,6 @@ export async function diagnose(
   if (run.status === 'pending')
     return {
       kind: 'pending',
-      needsAttention: true,
       reason: 'queued; no worker has picked it up yet',
       next: [`${worker}  # if none is running`, show],
       cleanup,
@@ -106,23 +104,16 @@ export async function diagnose(
         setup?.checkpointsDir ?? null,
         await durably.getStepAttempts(run.id),
       )
-      if (uncertain.length > 0)
-        return {
-          kind: 'lease-expired',
-          needsAttention: true,
-          reason: `${reason}; an agent call it started has no completed checkpoint`,
-          next: [
-            `${worker}  # the reclaimed run stops at that call for a human to check`,
-            show,
-          ],
-          cleanup,
-        }
+      const stuck = uncertain.length > 0
       return {
         kind: 'lease-expired',
-        needsAttention: true,
-        reason,
+        reason: stuck
+          ? `${reason}; an agent call it started has no completed checkpoint`
+          : reason,
         next: [
-          `${worker}  # a worker reclaims the run and resumes it from its checkpoints`,
+          stuck
+            ? `${worker}  # the reclaimed run stops at that call for a human to check`
+            : `${worker}  # a worker reclaims the run and resumes it from its checkpoints`,
           show,
         ],
         cleanup,
@@ -130,7 +121,6 @@ export async function diagnose(
     }
     return {
       kind: 'running',
-      needsAttention: true,
       reason: `a worker is running it (lease held until ${run.leaseExpiresAt ?? 'unknown'})`,
       next: [show],
       cleanup,
@@ -149,7 +139,6 @@ export async function diagnose(
           ?.decision
         return {
           kind: 'decided',
-          needsAttention: true,
           reason: `the decision on candidate ${candidateId} is recorded (${typeof decision === 'string' ? decision : wait.outcome}); a worker resumes the run`,
           next: [`${worker}  # if none is running`, show],
           cleanup,
@@ -158,7 +147,6 @@ export async function diagnose(
       if (wait.status === 'pending')
         return {
           kind: 'approval',
-          needsAttention: true,
           reason: `waiting for human approval of candidate ${candidateId}`,
           next: [
             `${DEMO} report --run ${run.id}  # read the reviews first`,
@@ -170,7 +158,6 @@ export async function diagnose(
     }
     return {
       kind: 'other-wait',
-      needsAttention: true,
       reason: 'waiting on an input that is not a candidate approval',
       next: [`${DEMO} waits --run ${run.id}`],
       cleanup,
@@ -180,7 +167,6 @@ export async function diagnose(
   if (failure)
     return {
       kind: 'stopped',
-      needsAttention: true,
       reason: `${failure.kind}: ${failure.reason}`,
       next: failure.next,
       failure,
@@ -190,7 +176,6 @@ export async function diagnose(
   const conclusion = (run.output as { conclusion?: string } | null)?.conclusion
   return {
     kind: 'finished',
-    needsAttention: false,
     reason: `finished: ${conclusion ?? run.status}`,
     next: [],
     cleanup,

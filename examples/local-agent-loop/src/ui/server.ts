@@ -37,6 +37,7 @@ import {
   type ReportTriage,
 } from '../engine/report.js'
 import { diagnose, needsHuman, type Diagnosis } from '../engine/status.js'
+import { TERMINAL_STATUSES } from '../engine/terminal.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -87,8 +88,6 @@ export interface CompareResponse {
   comparison: Comparison
 }
 
-const TERMINAL = ['completed', 'failed', 'cancelled']
-
 function titleOf(run: Run): string {
   const target = (
     run.input as {
@@ -106,9 +105,12 @@ function titleOf(run: Run): string {
   return line.length > 80 ? `${line.slice(0, 79)}…` : line || 'task'
 }
 
-/** A database that exists but has no tables yet is still empty. */
-function isMissingSchema(error: unknown): boolean {
-  return /no such table/.test((error as Error)?.message ?? '')
+/** A database that exists but has no tables yet reads as `empty`. */
+function orEmpty<T>(read: Promise<T>, empty: T): Promise<T> {
+  return read.catch((error: unknown) => {
+    if (/no such table/.test((error as Error)?.message ?? '')) return empty
+    throw error
+  })
 }
 
 async function allRuns(durably: AgentLoopDurably): Promise<Run[]> {
@@ -116,27 +118,36 @@ async function allRuns(durably: AgentLoopDurably): Promise<Run[]> {
   return runs.sort((x, y) => Date.parse(y.createdAt) - Date.parse(x.createdAt))
 }
 
-async function runRow(
-  durably: AgentLoopDurably,
-  run: Run,
-  now: number,
-): Promise<RunRow> {
+/** What both the list row and the detail page read for one run. */
+async function inspect(durably: AgentLoopDurably, run: Run, now: number) {
   const [diagnosis, report] = await Promise.all([
     diagnose(durably, run, now),
     buildReport(durably, run.id),
   ])
   return {
-    id: run.id,
-    status: run.status,
-    createdAt: run.createdAt,
     title: titleOf(run),
+    createdAt: run.createdAt,
     diagnosis,
     needsHuman: needsHuman(diagnosis.kind),
     live: liveElapsed(run, report.attempts, now),
+    report,
+  }
+}
+
+async function runRow(
+  durably: AgentLoopDurably,
+  run: Run,
+  now: number,
+): Promise<RunRow> {
+  const { report, ...seen } = await inspect(durably, run, now)
+  return {
+    id: run.id,
+    status: run.status,
+    ...seen,
     iterations: report.stageVisits.find((v) => v.stage === 'code')?.visits ?? 0,
     reviewRounds: report.summary.reviewRounds,
     conclusion: report.summary.conclusion,
-    leadTimeMs: report.runElapsedMs,
+    leadTimeMs: report.summary.leadTimeMs,
     costUsd: report.summary.costUsd,
     triage: report.triage?.judgment ?? null,
   }
@@ -151,76 +162,43 @@ class HttpError extends Error {
   }
 }
 
-export interface UiApiOptions {
-  /** Test-only: read another state root. Not reachable over HTTP. */
-  stateRoot?: string
-  /** Test-only: the clock `diagnose` and `liveElapsed` read. */
-  now?: () => number
-}
-
 /** The read API, without a listening socket. */
-export function createUiApi(options: UiApiOptions = {}) {
-  const stateRoot = options.stateRoot ?? defaultStateRoot()
-  const clock = options.now ?? Date.now
+function createUiApi() {
+  const stateRoot = defaultStateRoot()
   let durably: AgentLoopDurably | null = null
   // Opened on first use after the file appears, then kept.
   const source = () => (durably ??= openReadOnlyAgentDurably({ stateRoot }))
 
   async function runs(): Promise<RunsResponse> {
-    const now = clock()
+    const now = Date.now()
     const base = {
       db: dbPath(stateRoot),
       now: new Date(now).toISOString(),
     }
     const db = source()
     if (!db) return { ...base, exists: false, runs: [] }
-    try {
-      const rows = await Promise.all(
-        (await allRuns(db)).map((run) => runRow(db, run, now)),
-      )
-      return { ...base, exists: true, runs: rows }
-    } catch (error) {
-      if (isMissingSchema(error)) return { ...base, exists: true, runs: [] }
-      throw error
-    }
+    const all = await orEmpty(allRuns(db), [])
+    const rows = await Promise.all(all.map((run) => runRow(db, run, now)))
+    return { ...base, exists: true, runs: rows }
   }
 
   async function run(id: string): Promise<RunDetailResponse> {
-    const now = clock()
+    const now = Date.now()
     const db = source()
-    const found = db
-      ? await db.getRun(id).catch((error: unknown) => {
-          if (isMissingSchema(error)) return null
-          throw error
-        })
-      : null
+    const found = db ? await orEmpty(db.getRun(id), null) : null
     if (!db || !found) throw new HttpError(404, `no run ${id}`)
-    const [diagnosis, report] = await Promise.all([
-      diagnose(db, found, now),
-      buildReport(db, id),
-    ])
     return {
       now: new Date(now).toISOString(),
-      title: titleOf(found),
-      createdAt: found.createdAt,
-      diagnosis,
-      needsHuman: needsHuman(diagnosis.kind),
-      live: liveElapsed(found, report.attempts, now),
-      report,
+      ...(await inspect(db, found, now)),
     }
   }
 
   async function compare(): Promise<CompareResponse> {
     const db = source()
-    const empty = { runIds: [], comparison: { groups: [] } }
-    if (!db) return empty
-    let finished: Run[]
-    try {
-      finished = (await allRuns(db)).filter((r) => TERMINAL.includes(r.status))
-    } catch (error) {
-      if (isMissingSchema(error)) return empty
-      throw error
-    }
+    if (!db) return { runIds: [], comparison: { groups: [] } }
+    const finished = (await orEmpty(allRuns(db), [])).filter((r) =>
+      TERMINAL_STATUSES.includes(r.status),
+    )
     const reports = await Promise.all(
       finished.map((r) => buildReport(db, r.id)),
     )
@@ -239,9 +217,6 @@ export function createUiApi(options: UiApiOptions = {}) {
   }
 
   return {
-    runs,
-    run,
-    compare,
     handle,
     async close() {
       await durably?.db.destroy()
@@ -249,10 +224,8 @@ export function createUiApi(options: UiApiOptions = {}) {
   }
 }
 
-export interface UiServerOptions extends UiApiOptions {
+export interface UiServerOptions {
   port: number
-  /** Test-only: serve the API alone, without Vite and the page. */
-  page?: boolean
 }
 
 export interface UiServer {
@@ -273,15 +246,11 @@ export async function startUiServer(
   options: UiServerOptions,
 ): Promise<UiServer> {
   const host = '127.0.0.1'
-  const api = createUiApi(options)
+  const api = createUiApi()
   let port = options.port
   const onRequest = async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', `http://${host}`)
-    if (!url.pathname.startsWith('/api/')) {
-      if (vite) vite.middlewares(req, res)
-      else sendJson(res, 404, { error: 'page not served' })
-      return
-    }
+    if (!url.pathname.startsWith('/api/')) return vite.middlewares(req, res)
     const hostHeader = req.headers.host ?? ''
     if (hostHeader !== `${host}:${port}` && hostHeader !== `localhost:${port}`)
       return sendJson(res, 403, { error: 'loopback host only' })
@@ -296,17 +265,14 @@ export async function startUiServer(
   }
   const server = createServer((req, res) => void onRequest(req, res))
   // Vite's live-reload socket shares this server, so it stays on loopback.
-  const vite =
-    options.page === false
-      ? null
-      : await (
-          await import('vite')
-        ).createServer({
-          configFile: join(packageRoot, 'vite.config.ts'),
-          appType: 'spa',
-          logLevel: 'warn',
-          server: { middlewareMode: true, hmr: { server } },
-        })
+  const vite = await (
+    await import('vite')
+  ).createServer({
+    configFile: join(packageRoot, 'vite.config.ts'),
+    appType: 'spa',
+    logLevel: 'warn',
+    server: { middlewareMode: true, hmr: { server } },
+  })
   try {
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)
@@ -316,7 +282,7 @@ export async function startUiServer(
       })
     })
   } catch (error) {
-    await vite?.close()
+    await vite.close()
     throw error
   }
   port = (server.address() as AddressInfo).port
@@ -328,7 +294,7 @@ export async function startUiServer(
       )
       server.closeAllConnections()
       await closed
-      await vite?.close()
+      await vite.close()
       await api.close()
     },
   }
