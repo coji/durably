@@ -352,6 +352,8 @@ const typedRun = await durably.getRun<MyRun>(runId)
 
 ### Query Runs
 
+`getRuns()` returns runs newest first, ordered by creation time and then ID, so pages are stable even when runs share a millisecond.
+
 ```ts
 // Get failed runs
 const failedRuns = await durably.getRuns({ status: 'failed' })

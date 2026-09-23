@@ -955,7 +955,9 @@ export function createKyselyStore(
         }
       }
 
-      query = query.orderBy('created_at', 'desc')
+      // Ids are monotonic ULIDs, so they order runs created in the same
+      // millisecond, which created_at alone leaves unordered.
+      query = query.orderBy('created_at', 'desc').orderBy('id', 'desc')
 
       if (filter?.limit !== undefined) {
         query = query.limit(filter.limit)
@@ -1860,6 +1862,7 @@ export function createKyselyStore(
         .selectAll()
         .where('run_id', '=', runId)
         .orderBy('created_at', 'asc')
+        .orderBy('id', 'asc')
         .execute()
 
       return rows.map(rowToLog)

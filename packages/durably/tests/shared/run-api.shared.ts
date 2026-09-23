@@ -217,12 +217,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
         })
 
         await d.jobs.job.trigger({ order: 1 })
-        // sleep-ok(clock): getRuns orders by created_at alone (ms resolution),
-        // so each trigger needs a later timestamp; a slow runner only widens it
-        await new Promise((r) => setTimeout(r, 10))
         await d.jobs.job.trigger({ order: 2 })
-        // sleep-ok(clock): same distinct created_at requirement as above
-        await new Promise((r) => setTimeout(r, 10))
         await d.jobs.job.trigger({ order: 3 })
 
         const runs = await d.getRuns()
@@ -245,9 +240,6 @@ export function createRunApiTests(createDialect: () => Dialect) {
         // Add slight delays to ensure distinct created_at timestamps
         for (let i = 1; i <= 5; i++) {
           await d.jobs.job.trigger({ order: i })
-          // sleep-ok(clock): getRuns orders by created_at alone (ms
-          // resolution); a slow runner only widens the gap between triggers
-          if (i < 5) await new Promise((r) => setTimeout(r, 5))
         }
 
         const limited = await d.getRuns({
@@ -274,9 +266,6 @@ export function createRunApiTests(createDialect: () => Dialect) {
         // Add slight delays to ensure distinct created_at timestamps
         for (let i = 1; i <= 5; i++) {
           await d.jobs.job.trigger({ order: i })
-          // sleep-ok(clock): getRuns orders by created_at alone (ms
-          // resolution); a slow runner only widens the gap between triggers
-          if (i < 5) await new Promise((r) => setTimeout(r, 5))
         }
 
         const offset = await d.getRuns({
@@ -303,9 +292,6 @@ export function createRunApiTests(createDialect: () => Dialect) {
         // Add slight delays to ensure distinct created_at timestamps
         for (let i = 1; i <= 10; i++) {
           await d.jobs.job.trigger({ order: i })
-          // sleep-ok(clock): getRuns orders by created_at alone (ms
-          // resolution); a slow runner only widens the gap between triggers
-          if (i < 10) await new Promise((r) => setTimeout(r, 5))
         }
 
         // Page 1: first 3 items
@@ -352,9 +338,6 @@ export function createRunApiTests(createDialect: () => Dialect) {
         // Add slight delays to ensure distinct created_at timestamps
         for (let i = 1; i <= 6; i++) {
           await d.jobs.job.trigger({ order: i })
-          // sleep-ok(clock): getRuns orders by created_at alone (ms
-          // resolution); a slow runner only widens the gap between triggers
-          if (i < 6) await new Promise((r) => setTimeout(r, 5))
         }
 
         const filtered = await d.getRuns({

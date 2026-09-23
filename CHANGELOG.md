@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### @coji/durably
+
+- **Stable run and log ordering**: `getRuns()` and `storage.getLogs()` break creation-time ties by ID, so runs or logs written in the same millisecond keep a deterministic order and `limit`/`offset` pages no longer overlap or skip.
+
 ## [0.16.0] - 2026-09-21
 
 ### Added

@@ -238,6 +238,8 @@ interface RunFilter<TLabels extends Record<string, string> = Record<string, stri
 }
 ```
 
+Returns runs newest first: by creation time, then by ID for runs created in the same millisecond, so `limit`/`offset` pages are stable.
+
 Gets runs with optional filtering and pagination. Supports generic type parameter.
 
 ```ts
