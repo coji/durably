@@ -121,11 +121,14 @@ export interface FailureClassification {
  */
 export function uncertainCheckpoints(
   checkpointsDir: string | null,
-  attempts: Pick<StepAttempt, 'metadata'>[],
+  attempts: Pick<StepAttempt, 'metadata' | 'status'>[],
 ): string[] {
   if (!checkpointsDir) return []
   const found = new Set<string>()
   for (const attempt of attempts) {
+    // A completed step never replays its call (shadow triage records a failed
+    // call as `unknown` and moves on), so its leftover start is not a doubt.
+    if (attempt.status === 'completed') continue
     const m = attempt.metadata as {
       usageScope?: unknown
       operationKey?: unknown
