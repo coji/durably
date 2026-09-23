@@ -155,6 +155,8 @@ describe('useJobLogs (client)', () => {
     })
 
     // Wait a bit and check logs are still empty
+    // sleep-ok(negative): gives a wrongly accepted log a chance to render; a
+    // slow machine can only hide it, not fail the test.
     await new Promise((r) => setTimeout(r, 50))
     expect(result.current.logs).toHaveLength(0)
   })

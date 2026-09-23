@@ -683,20 +683,20 @@ export function createDbConcurrencyTests(
         ])
 
         // Wait until the batch owns key A and is blocked acquiring key B.
-        let batchOwnsKeyA = false
-        for (let attempt = 0; attempt < 100 && !batchOwnsKeyA; attempt++) {
-          batchOwnsKeyA = await runtimes[2].db
-            .transaction()
-            .execute(async (trx) => {
-              const result = await sql<{ acquired: boolean }>`
-              SELECT pg_try_advisory_xact_lock(hashtext(${keyA})) AS acquired
-            `.execute(trx)
-              return result.rows[0]?.acquired === false
-            })
-          if (!batchOwnsKeyA)
-            await new Promise((resolve) => setTimeout(resolve, 10))
-        }
-        expect(batchOwnsKeyA).toBe(true)
+        await vi.waitFor(
+          async () => {
+            const batchOwnsKeyA = await runtimes[2].db
+              .transaction()
+              .execute(async (trx) => {
+                const result = await sql<{ acquired: boolean }>`
+                SELECT pg_try_advisory_xact_lock(hashtext(${keyA})) AS acquired
+              `.execute(trx)
+                return result.rows[0]?.acquired === false
+              })
+            expect(batchOwnsKeyA).toBe(true)
+          },
+          { timeout: 5_000 },
+        )
 
         const contestedClaim = await Promise.race([
           runtimes[1].storage.claimNext(
@@ -704,8 +704,10 @@ export function createDbConcurrencyTests(
             new Date().toISOString(),
             30_000,
           ),
+          // sleep-ok(guard): fails the test if the claim blocks on key B
+          // instead of skipping it; a prompt null resolves the race.
           new Promise<'timed-out'>((resolve) =>
-            setTimeout(() => resolve('timed-out'), 2_000),
+            setTimeout(() => resolve('timed-out'), 5_000),
           ),
         ])
         expect(contestedClaim).toBeNull()

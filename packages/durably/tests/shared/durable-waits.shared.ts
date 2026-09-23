@@ -210,7 +210,9 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
             const wait = await step.prepareWait('approval', {
               timeoutMs: 1,
             })
-            await new Promise((resolve) => setTimeout(resolve, 10))
+            // sleep-ok(clock): lets the 1ms deadline pass before waitFor, with
+            // a wide margin, so waitFor sees an already-expired wait.
+            await new Promise((resolve) => setTimeout(resolve, 50))
             return step.waitFor(wait)
           },
         }),

@@ -9,6 +9,7 @@ import {
   type Durably,
 } from '../../src'
 import { usePostgresSchemaPerTest } from '../helpers/postgres-dialect'
+import { controlRunReads } from '../helpers/sync'
 
 async function waitForPendingRunOnB(b: Durably<any, any>) {
   await vi.waitFor(
@@ -21,43 +22,6 @@ async function waitForPendingRunOnB(b: Durably<any, any>) {
 }
 
 const createPostgresDialect = usePostgresSchemaPerTest()
-
-/**
- * Control the storage reads a waiter makes. Deleting a run means completing
- * it first, and a poll that reads between completion and deletion would
- * legitimately resolve with the completed run. `pause` holds new reads and
- * waits for any read already in flight, so the next read the waiter makes
- * happens after `resume` and sees the deletion.
- */
-function controlRunReads(durably: Durably<any, any>) {
-  const original = durably.storage.getRun
-  const inFlight = new Set<Promise<unknown>>()
-  let held: Promise<void> | null = null
-  let release = () => {}
-  durably.storage.getRun = (async (...args: Parameters<typeof original>) => {
-    if (held) await held
-    const read = original(...args)
-    inFlight.add(read)
-    try {
-      return await read
-    } finally {
-      inFlight.delete(read)
-    }
-  }) as typeof original
-  return {
-    async pause() {
-      held = new Promise<void>((resolve) => {
-        release = resolve
-      })
-      await Promise.allSettled(inFlight)
-    },
-    restore() {
-      release()
-      held = null
-      durably.storage.getRun = original
-    },
-  }
-}
 
 describe(
   'waitForRun / triggerAndWait with shared storage (cross-runtime)',

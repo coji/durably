@@ -10,6 +10,7 @@ export interface TestDurablyOptions {
    * @default true
    */
   autoStart?: boolean
+  maxConcurrentRuns?: number
 }
 
 /**
@@ -25,6 +26,7 @@ export async function createTestDurably(
     pollingIntervalMs: options?.pollingIntervalMs ?? 100,
     leaseRenewIntervalMs: 500,
     leaseMs: 3000,
+    maxConcurrentRuns: options?.maxConcurrentRuns,
   })
 
   if (options?.autoMigrate !== false) {

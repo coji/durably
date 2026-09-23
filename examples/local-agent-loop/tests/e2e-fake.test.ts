@@ -23,6 +23,7 @@ async function waitFor(
   for (;;) {
     if (await cond()) return
     if (Date.now() - start > timeoutMs) throw new Error(`timed out: ${label}`)
+    // sleep-ok(poll): one tick of a loop that re-checks the run state until its deadline
     await new Promise((r) => setTimeout(r, 500))
   }
 }

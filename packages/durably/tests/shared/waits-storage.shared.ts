@@ -36,22 +36,25 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
       return { store, run, leased, wait }
     }
 
-    async function liveWait(timeoutMs?: number) {
+    // A resume claim always stamps firstResumedAt with the database clock.
+    // So that a test can fix every other timestamp exactly and still have the
+    // resume land after them, `past(offset)` counts from ten seconds ago: far
+    // more than any database clock skew, well inside the 30s lease.
+    async function pastWait(timeoutMs?: number) {
+      const origin = Date.now() - 10_000
+      const past = (offset: number) => new Date(origin + offset).toISOString()
       const store = durably.storage
-      const { run } = await store.enqueue({ jobName: 'live-wait', input: {} })
-      const leased = (await store.claimNext(
-        'worker',
-        new Date().toISOString(),
-        30_000,
-      ))!
+      const { run } = await store.enqueue({ jobName: 'past-wait', input: {} })
+      const leased = (await store.claimNext('worker', past(0), 30_000))!
       const wait = (await store.prepareWait(
         run.id,
         leased.leaseGeneration,
         'approval',
         undefined,
         timeoutMs,
+        past(0),
       ))!
-      return { store, run, leased, wait }
+      return { store, run, leased, wait, past }
     }
 
     it('uses database time despite a skewed runtime clock', async () => {
@@ -119,6 +122,10 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
         const resolved = await store.signalWait(slowWait.id, 'approved', {
           signalId: 'slow-signal',
         })
+        // sleep-ok(clock): the signal and the resume claim take database time
+        // by default, which is what this test is about, so the slot wait can
+        // only grow in real time; 30ms against a 20ms lower bound leaves
+        // margin for timestamp rounding.
         await new Promise((resolve) => setTimeout(resolve, 30))
         expect(
           (
@@ -270,36 +277,44 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
     })
 
     it('separates external-input and execution-slot time after suspension', async () => {
-      const { store, run, leased, wait } = await liveWait()
+      const { store, run, leased, wait, past } = await pastWait()
       expect(
-        await store.suspendRun(run.id, leased.leaseGeneration, wait.id),
+        await store.suspendRun(
+          run.id,
+          leased.leaseGeneration,
+          wait.id,
+          past(10),
+        ),
       ).toBe(true)
-      await new Promise((resolve) => setTimeout(resolve, 20))
-      await store.signalWait(wait.id, null, { signalId: 'done' })
-      expect(
-        (await store.getWait(wait.id))?.inputWaitMs,
-      ).toBeGreaterThanOrEqual(20)
+      await store.signalWait(wait.id, null, { signalId: 'done' }, past(40))
+      expect((await store.getWait(wait.id))?.inputWaitMs).toBe(30)
       expect((await store.getWait(wait.id))?.executionSlotWaitMs).toBeNull()
-      await new Promise((resolve) => setTimeout(resolve, 30))
-      expect(
-        (await store.claimNext('next', new Date().toISOString(), 30_000))?.id,
-      ).toBe(run.id)
+      expect((await store.claimNext('next', past(80), 30_000))?.id).toBe(run.id)
       const resumed = await store.getWait(wait.id)
       expect(Date.parse(resumed!.firstResumedAt!)).toBeGreaterThanOrEqual(
         Date.parse(resumed!.resolvedAt!),
       )
+      // The resume is stamped by the database clock, about ten seconds after
+      // the signal at past(40)
+      expect(resumed?.executionSlotWaitMs).toBe(
+        Date.parse(resumed!.firstResumedAt!) - Date.parse(past(40)),
+      )
       expect(resumed?.executionSlotWaitMs).toBeGreaterThanOrEqual(30)
+      expect(resumed?.inputWaitMs).toBe(30)
     })
 
     it('counts post-handoff queue time when signal wins just before suspension', async () => {
-      const { store, run, leased, wait } = await liveWait()
-      await store.signalWait(wait.id, null, { signalId: 'early' })
-      await store.suspendRun(run.id, leased.leaseGeneration, wait.id)
+      const { store, run, leased, wait, past } = await pastWait()
+      await store.signalWait(wait.id, null, { signalId: 'early' }, past(10))
+      await store.suspendRun(run.id, leased.leaseGeneration, wait.id, past(20))
       expect((await store.getWait(wait.id))?.executionSlotWaitMs).toBeNull()
-      await new Promise((resolve) => setTimeout(resolve, 30))
-      await store.claimNext('next', new Date().toISOString(), 30_000)
+      await store.claimNext('next', past(60), 30_000)
       const result = await store.getWait(wait.id)
       expect(result?.inputWaitMs).toBe(0)
+      // Queue time counts from the suspension, not the earlier signal
+      expect(result?.executionSlotWaitMs).toBe(
+        Date.parse(result!.firstResumedAt!) - Date.parse(past(20)),
+      )
       expect(result?.executionSlotWaitMs).toBeGreaterThanOrEqual(30)
     })
 
@@ -323,25 +338,23 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
     })
 
     it('expires an offline wait at its original deadline and resumes once', async () => {
-      const { store, run, leased, wait } = await liveWait(100)
-      await store.suspendRun(run.id, leased.leaseGeneration, wait.id)
-      await new Promise((resolve) =>
-        setTimeout(
-          resolve,
-          Math.max(0, Date.parse(wait.deadlineAt!) - Date.now() + 10),
-        ),
+      const { store, run, leased, wait, past } = await pastWait(100)
+      expect(wait.deadlineAt).toBe(past(100))
+      await store.suspendRun(run.id, leased.leaseGeneration, wait.id, past(10))
+      expect(await store.expireDueWaits(past(99))).toBe(0)
+      // Expiry runs late, but the timeout resolves at the original deadline
+      expect(await store.expireDueWaits(past(500))).toBe(1)
+      expect(await store.expireDueWaits(past(600))).toBe(0)
+      expect((await store.getWait(wait.id))?.inputWaitMs).toBe(90)
+      expect((await store.claimNext('next', past(700), 30_000))?.id).toBe(
+        run.id,
       )
-      expect(await store.expireDueWaits()).toBe(1)
-      expect(await store.expireDueWaits()).toBe(0)
-      expect(
-        (await store.getWait(wait.id))?.inputWaitMs,
-      ).toBeGreaterThanOrEqual(0)
-      expect(
-        (await store.claimNext('next', new Date().toISOString(), 30_000))?.id,
-      ).toBe(run.id)
       const result = await store.getWait(wait.id)
       expect(result?.outcome).toBe('timeout')
       expect(result?.resolvedAt).toBe(wait.deadlineAt)
+      expect(result?.executionSlotWaitMs).toBe(
+        Date.parse(result!.firstResumedAt!) - Date.parse(past(100)),
+      )
       expect(result?.executionSlotWaitMs).toBeGreaterThanOrEqual(0)
     })
 

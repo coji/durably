@@ -25,7 +25,6 @@ describe('DurablyProvider', () => {
       }
     }
     instances.length = 0
-    await new Promise((r) => setTimeout(r, 200))
   })
 
   it('provides Durably instance via context', async () => {

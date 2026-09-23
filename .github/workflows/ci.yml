@@ -54,6 +54,9 @@ jobs:
       - name: React Doctor (100/100)
         run: pnpm doctor:check
 
+      - name: Test sleeps are explained
+        run: node scripts/check-test-sleeps.mjs
+
   test-node:
     runs-on: ubuntu-latest
 

@@ -616,7 +616,9 @@ export function createServerTests(createDialect: () => Dialect) {
               events += decoder.decode(value)
             }
           })(),
-          new Promise((resolve) => setTimeout(resolve, 1000)),
+          // sleep-ok(guard): ends the read if the expected events never
+          // arrive; the read stops early as soon as they do
+          new Promise((resolve) => setTimeout(resolve, 5_000)),
         ])
         expect(events).toContain(matching.id)
         expect(events).not.toContain(wrong.id)
@@ -734,7 +736,6 @@ export function createServerTests(createDialect: () => Dialect) {
         })
         for (let i = 1; i <= 5; i++) {
           await d.jobs.job.trigger({ order: i })
-          if (i < 5) await new Promise((r) => setTimeout(r, 5))
         }
 
         const request = new Request(
@@ -1064,7 +1065,9 @@ export function createServerTests(createDialect: () => Dialect) {
 
         await Promise.race([
           readEvents(),
-          new Promise((r) => setTimeout(r, 1000)),
+          // sleep-ok(guard): ends the read if the expected events never
+          // arrive; the read stops early as soon as they do
+          new Promise((r) => setTimeout(r, 5_000)),
         ])
 
         expect(events.length).toBeGreaterThan(0)
@@ -1127,7 +1130,9 @@ export function createServerTests(createDialect: () => Dialect) {
 
         await Promise.race([
           readPromise,
-          new Promise((r) => setTimeout(r, 500)),
+          // sleep-ok(guard): ends the read if the expected events never
+          // arrive; the read stops early as soon as they do
+          new Promise((r) => setTimeout(r, 5_000)),
         ])
 
         const allEvents = events.join('')
@@ -1167,7 +1172,9 @@ export function createServerTests(createDialect: () => Dialect) {
 
         await Promise.race([
           readPromise,
-          new Promise((r) => setTimeout(r, 500)),
+          // sleep-ok(guard): ends the read if the expected events never
+          // arrive; the read stops early as soon as they do
+          new Promise((r) => setTimeout(r, 5_000)),
         ])
 
         const allEvents = events.join('')
@@ -1188,7 +1195,13 @@ export function createServerTests(createDialect: () => Dialect) {
         const run = await d.jobs.job.trigger({})
         d.start()
 
-        await new Promise((r) => setTimeout(r, 200))
+        // retrigger() rejects a pending or leased run, so wait for the failure.
+        await vi.waitFor(
+          async () => {
+            expect((await d.getRun(run.id))?.status).toBe('failed')
+          },
+          { timeout: 5_000 },
+        )
 
         const request = new Request(
           'http://localhost/api/durably/runs/subscribe',
@@ -1213,7 +1226,9 @@ export function createServerTests(createDialect: () => Dialect) {
 
         await Promise.race([
           readPromise,
-          new Promise((r) => setTimeout(r, 500)),
+          // sleep-ok(guard): ends the read if the expected events never
+          // arrive; the read stops early as soon as they do
+          new Promise((r) => setTimeout(r, 5_000)),
         ])
 
         const allEvents = events.join('')
@@ -1256,7 +1271,9 @@ export function createServerTests(createDialect: () => Dialect) {
 
         await Promise.race([
           readEvents(),
-          new Promise((r) => setTimeout(r, 1000)),
+          // sleep-ok(guard): ends the read if the expected events never
+          // arrive; the read stops early as soon as they do
+          new Promise((r) => setTimeout(r, 5_000)),
         ])
 
         expect(events.length).toBeGreaterThan(0)
@@ -1306,7 +1323,9 @@ export function createServerTests(createDialect: () => Dialect) {
 
         await Promise.race([
           readEvents(),
-          new Promise((r) => setTimeout(r, 1000)),
+          // sleep-ok(guard): ends the read if the expected events never
+          // arrive; the read stops early as soon as they do
+          new Promise((r) => setTimeout(r, 5_000)),
         ])
 
         const allEvents = events.join('')
@@ -1364,7 +1383,9 @@ export function createServerTests(createDialect: () => Dialect) {
 
         await Promise.race([
           readEvents(),
-          new Promise((r) => setTimeout(r, 1000)),
+          // sleep-ok(guard): ends the read if the expected events never
+          // arrive; the read stops early as soon as they do
+          new Promise((r) => setTimeout(r, 5_000)),
         ])
 
         const allEvents = events.join('')
@@ -1424,7 +1445,9 @@ export function createServerTests(createDialect: () => Dialect) {
 
         await Promise.race([
           readEvents(),
-          new Promise((r) => setTimeout(r, 1000)),
+          // sleep-ok(guard): ends the read if the expected events never
+          // arrive; the read stops early as soon as they do
+          new Promise((r) => setTimeout(r, 5_000)),
         ])
 
         const allEvents = events.join('')

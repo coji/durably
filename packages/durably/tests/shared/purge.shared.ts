@@ -228,6 +228,8 @@ export function createPurgeTests(createDialect: () => Dialect) {
 
         // Run just completed — should NOT be purged (it's not 1 minute old)
         // Wait a polling cycle to ensure auto-purge ran
+        // sleep-ok(negative): gives auto-purge a chance to wrongly delete the
+        // fresh run; a slow runner can only hide a bug here
         await new Promise((r) => setTimeout(r, 200))
         expect(await d.getRun(run.id)).not.toBeNull()
 

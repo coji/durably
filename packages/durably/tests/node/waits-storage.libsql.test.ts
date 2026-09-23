@@ -94,6 +94,8 @@ it('serializes wait result reads and expiry sweeps with other libsql writes', as
       secondLease.leaseGeneration,
       secondWait.id,
     )
+    // sleep-ok(clock): the second wait's 1ms deadline must be in the past
+    // for the expiry sweep; 10ms after suspending leaves a wide margin.
     await new Promise((resolve) => setTimeout(resolve, 10))
 
     await Promise.all([

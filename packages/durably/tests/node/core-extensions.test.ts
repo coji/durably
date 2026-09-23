@@ -15,6 +15,7 @@ import {
 } from '../../src'
 import type { DurablyEvent } from '../../src/events'
 import { createNodeDialect } from '../helpers/node-dialect'
+import { untilAborted } from '../helpers/sync'
 
 describe('Core Extensions', () => {
   let durably: Durably
@@ -263,9 +264,9 @@ describe('Core Extensions', () => {
         name: 'long-running-subscribe',
         input: z.object({ message: z.string() }),
         run: async (ctx) => {
-          await ctx.run('wait', async () => {
-            await new Promise((resolve) => setTimeout(resolve, 10000))
-          })
+          // Hold the step until the test cancels the run, so the run is still
+          // active whenever the test reads and cancels the stream.
+          await ctx.run('wait', (signal) => untilAborted(signal))
         },
       })
 
@@ -287,7 +288,8 @@ describe('Core Extensions', () => {
 
       // The stream should be cancelled and no errors should occur
       // If event listeners are not cleaned up, this would cause memory leaks
-      // Wait a bit to ensure no errors are thrown after cancellation
+      // sleep-ok(negative): gives a leaked listener time to throw after
+      // cancellation; a slow machine can only hide that, not fail the test.
       await new Promise((resolve) => setTimeout(resolve, 100))
 
       // Cancel the run to clean up

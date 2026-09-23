@@ -93,6 +93,8 @@ describe('processUntilIdle serverless shape', () => {
       output: z.object({ id: z.string() }),
       run: async (_step, input) => {
         executions.push(input.id)
+        // sleep-ok(work): widens the overlap between the two invocations; the
+        // assertions only check totals and no double execution.
         await new Promise((resolve) => setTimeout(resolve, 20))
         return { id: input.id }
       },

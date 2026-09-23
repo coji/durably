@@ -12,6 +12,7 @@ import {
   type Durably,
   type StepAttemptContext,
 } from '../../src'
+import { expireLease } from '../helpers/sync'
 
 export function createAttemptTests(createDialect: () => Dialect) {
   describe('durable step attempts', () => {
@@ -129,13 +130,15 @@ export function createAttemptTests(createDialect: () => Dialect) {
         name: 'parallel-attempts',
         input: z.object({}),
         run: async (step) => {
-          await Promise.all([
-            step.run('slow', async () => {
-              await new Promise((resolve) => setTimeout(resolve, 20))
-              return 'slow'
-            }),
-            step.run('fast', async () => 'fast'),
-          ])
+          // 'slow' returns only after 'fast' has written its checkpoint, so
+          // checkpoints land in the reverse of call order every time
+          let fast!: Promise<string>
+          const slow = step.run('slow', async () => {
+            await fast
+            return 'slow'
+          })
+          fast = step.run('fast', () => 'fast')
+          await Promise.all([slow, fast])
           await step.run('after', () => 'after')
         },
       })
@@ -158,13 +161,15 @@ export function createAttemptTests(createDialect: () => Dialect) {
         name: 'parallel-replay-index',
         input: z.object({}),
         run: async (step) => {
-          await Promise.all([
-            step.run('slow', async () => {
-              await new Promise((resolve) => setTimeout(resolve, 20))
-              return 1
-            }),
-            step.run('fast', () => 2),
-          ])
+          // 'slow' returns only after 'fast' has written its checkpoint, so
+          // checkpoints land in the reverse of call order every time
+          let fast!: Promise<number>
+          const slow = step.run('slow', async () => {
+            await fast
+            return 1
+          })
+          fast = step.run('fast', () => 2)
+          await Promise.all([slow, fast])
           if (++invocations === 1) throw new LeaseLostError(step.runId)
           await step.run('after', () => 3)
         },
@@ -767,10 +772,10 @@ export function createAttemptTests(createDialect: () => Dialect) {
       const claimed = await runtime.storage.claimNext(
         'worker',
         new Date().toISOString(),
-        1,
+        30_000,
       )
       expect(claimed).not.toBeNull()
-      await new Promise((resolve) => setTimeout(resolve, 10))
+      await expireLease(runtime, run.id)
       expect(
         await runtime.storage.beginStepAttempt(
           run.id,

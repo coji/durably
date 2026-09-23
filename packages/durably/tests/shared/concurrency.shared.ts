@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 
 import { createDurably, defineJob, type Durably } from '../../src'
+import { createDeferred } from '../helpers/sync'
 
 export function createConcurrencyTests(createDialect: () => Dialect) {
   describe('concurrencyKey Serialization', () => {
@@ -23,6 +24,8 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
 
     it('excludes runs with same concurrencyKey when one is running', async () => {
       const executionOrder: string[] = []
+      // Holds the first run until the second has been checked as blocked
+      const releaseFirst = createDeferred()
 
       const concurrencyTestDef = defineJob({
         name: 'concurrency-test',
@@ -30,7 +33,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
         run: async (step, input) => {
           executionOrder.push(`start-${input.id}`)
           await step.run('work', async () => {
-            await new Promise((r) => setTimeout(r, 100))
+            if (input.id === '1') await releaseFirst.promise
           })
           executionOrder.push(`end-${input.id}`)
         },
@@ -43,23 +46,27 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
       )
       d.start()
 
-      await vi.waitFor(
-        async () => {
-          const run = await d.jobs.job.getRun(first.id)
-          expect(run?.status).toBe('leased')
-        },
-        { timeout: 2000 },
-      )
+      try {
+        await vi.waitFor(
+          async () => {
+            const run = await d.jobs.job.getRun(first.id)
+            expect(run?.status).toBe('leased')
+          },
+          { timeout: 5_000 },
+        )
 
-      const second = await d.jobs.job.trigger(
-        { id: '2' },
-        { concurrencyKey: 'user-123' },
-      )
+        const second = await d.jobs.job.trigger(
+          { id: '2' },
+          { concurrencyKey: 'user-123' },
+        )
 
-      const firstWhileSecondQueued = await d.jobs.job.getRun(first.id)
-      const secondWhileBlocked = await d.jobs.job.getRun(second.id)
-      expect(firstWhileSecondQueued?.status).toBe('leased')
-      expect(secondWhileBlocked?.status).toBe('pending')
+        const firstWhileSecondQueued = await d.jobs.job.getRun(first.id)
+        const secondWhileBlocked = await d.jobs.job.getRun(second.id)
+        expect(firstWhileSecondQueued?.status).toBe('leased')
+        expect(secondWhileBlocked?.status).toBe('pending')
+      } finally {
+        releaseFirst.resolve()
+      }
 
       await vi.waitFor(
         async () => {
@@ -67,7 +74,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           const allCompleted = runs.every((r) => r.status === 'completed')
           expect(allCompleted).toBe(true)
         },
-        { timeout: 2000 },
+        { timeout: 5_000 },
       )
 
       // They should run sequentially: start-1, end-1, start-2, end-2
@@ -83,6 +90,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
         run: async (step, input) => {
           startTimes[input.id] = Date.now()
           await step.run('work', async () => {
+            // sleep-ok(work): the test only checks that both runs started
             await new Promise((r) => setTimeout(r, 100))
           })
         },
@@ -101,7 +109,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           const allCompleted = runs.every((r) => r.status === 'completed')
           expect(allCompleted).toBe(true)
         },
-        { timeout: 2000 },
+        { timeout: 5_000 },
       )
 
       expect(Object.keys(startTimes)).toHaveLength(2)
@@ -110,15 +118,16 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
     it('with maxConcurrentRuns > 1, different concurrencyKeys can run in parallel', async () => {
       let concurrent = 0
       let maxConcurrent = 0
+      // Each run waits until both are running, so they overlap by construction
+      const bothRunning = createDeferred()
       const parallelKeysDef = defineJob({
         name: 'parallel-keys-test',
         input: z.object({ id: z.string() }),
         run: async (step) => {
           concurrent++
           maxConcurrent = Math.max(maxConcurrent, concurrent)
-          await step.run('work', async () => {
-            await new Promise((r) => setTimeout(r, 100))
-          })
+          if (concurrent === 2) bothRunning.resolve()
+          await step.run('work', () => bothRunning.promise)
           concurrent--
         },
       })
@@ -140,11 +149,12 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
             const runs = await dp.jobs.job.getRuns()
             expect(runs.every((r) => r.status === 'completed')).toBe(true)
           },
-          { timeout: 3000 },
+          { timeout: 5_000 },
         )
 
         expect(maxConcurrent).toBe(2)
       } finally {
+        bothRunning.resolve()
         await dp.stop()
         await d.db.destroy()
       }
@@ -152,6 +162,8 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
 
     it('with maxConcurrentRuns > 1, identical concurrencyKey runs still never overlap', async () => {
       const executionOrder: string[] = []
+      // Holds the first run until the second has been checked as pending
+      const releaseFirst = createDeferred()
 
       const sameKeyParallelDef = defineJob({
         name: 'same-key-parallel',
@@ -159,7 +171,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
         run: async (step, input) => {
           executionOrder.push(`start-${input.id}`)
           await step.run('work', async () => {
-            await new Promise((r) => setTimeout(r, 80))
+            if (input.id === '1') await releaseFirst.promise
           })
           executionOrder.push(`end-${input.id}`)
         },
@@ -183,7 +195,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
             const run = await dp.jobs.job.getRun(first.id)
             expect(run?.status).toBe('leased')
           },
-          { timeout: 2000 },
+          { timeout: 5_000 },
         )
 
         const second = await dp.jobs.job.trigger(
@@ -192,17 +204,19 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
         )
 
         expect((await dp.jobs.job.getRun(second.id))?.status).toBe('pending')
+        releaseFirst.resolve()
 
         await vi.waitFor(
           async () => {
             const runs = await dp.jobs.job.getRuns()
             expect(runs.every((r) => r.status === 'completed')).toBe(true)
           },
-          { timeout: 4000 },
+          { timeout: 5_000 },
         )
 
         expect(executionOrder).toEqual(['start-1', 'end-1', 'start-2', 'end-2'])
       } finally {
+        releaseFirst.resolve()
         await dp.stop()
         await d.db.destroy()
       }
@@ -217,6 +231,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
         run: async (step, input) => {
           executionOrder.push(input.id)
           await step.run('work', async () => {
+            // sleep-ok(work): the test only checks that all three runs ran
             await new Promise((r) => setTimeout(r, 50))
           })
         },
@@ -236,7 +251,7 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
           const allCompleted = runs.every((r) => r.status === 'completed')
           expect(allCompleted).toBe(true)
         },
-        { timeout: 2000 },
+        { timeout: 5_000 },
       )
 
       expect(executionOrder).toHaveLength(3)
@@ -245,6 +260,8 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
     it('null concurrencyKey runs are independent', async () => {
       let concurrentRuns = 0
       let maxConcurrent = 0
+      // Runs wait until two overlap, so the overlap does not hinge on timing
+      const overlapped = createDeferred()
 
       const nullKeyTestDef = defineJob({
         name: 'null-key-test',
@@ -252,9 +269,8 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
         run: async (step) => {
           concurrentRuns++
           maxConcurrent = Math.max(maxConcurrent, concurrentRuns)
-          await step.run('work', async () => {
-            await new Promise((r) => setTimeout(r, 50))
-          })
+          if (concurrentRuns >= 2) overlapped.resolve()
+          await step.run('work', () => overlapped.promise)
           concurrentRuns--
         },
       })
@@ -278,11 +294,12 @@ export function createConcurrencyTests(createDialect: () => Dialect) {
             const allCompleted = runs.every((r) => r.status === 'completed')
             expect(allCompleted).toBe(true)
           },
-          { timeout: 3000 },
+          { timeout: 5_000 },
         )
 
         expect(maxConcurrent).toBeGreaterThan(1)
       } finally {
+        overlapped.resolve()
         await dp.stop()
         await d.db.destroy()
       }

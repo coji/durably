@@ -9,6 +9,7 @@ import { z } from 'zod'
 
 import { createDurably, defineJob, type Durably } from '../../src'
 import { createNodeDialectForFile } from '../helpers/node-dialect'
+import { expireLease } from '../helpers/sync'
 
 const childPath = fileURLToPath(
   new URL('../fixtures/attempt-crash-child.ts', import.meta.url),
@@ -52,6 +53,8 @@ describe('step attempt after process termination', () => {
       stderr += chunk.toString()
     })
     const firstId = await new Promise<string>((resolve, reject) => {
+      // sleep-ok(guard): fails the test only if the child never reports its
+      // attempt; the message itself resolves the wait.
       const timeout = setTimeout(
         () => reject(new Error(`Child did not begin attempt: ${stderr}`)),
         8_000,
@@ -67,15 +70,8 @@ describe('step attempt after process termination', () => {
     })
     child.kill('SIGKILL')
     await new Promise<void>((resolve) => child.once('exit', () => resolve()))
-    // End the dead child's lease directly instead of sleeping past a short
-    // one: a sleep races the lease clock on a loaded machine, and a short
-    // lease can also expire inside the child before it reports its attempt.
-    await runtime.db
-      .updateTable('durably_runs')
-      .set({ lease_expires_at: new Date(0).toISOString() })
-      .where('id', '=', run.id)
-      .where('status', '=', 'leased')
-      .execute()
+    // The child's lease is long; end it now that the child is dead.
+    await expireLease(runtime, run.id)
 
     expect(await runtime.processOne({ workerId: 'recovery-worker' })).toBe(true)
     const attempts = await runtime.getStepAttempts(run.id)

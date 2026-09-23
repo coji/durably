@@ -14,6 +14,7 @@ async function waitFor(
   const started = Date.now()
   while (!(await condition())) {
     if (Date.now() - started > timeoutMs) throw new Error('timed out')
+    // sleep-ok(poll): one tick of a loop that re-checks the run state until its deadline
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
 }
