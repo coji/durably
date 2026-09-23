@@ -3,13 +3,10 @@ import { describe, it } from 'node:test'
 
 import { parseReviewOutput } from '../src/factory/prompts.js'
 
-/** The independent-work lines every well-formed review carries. */
-const W = 'PLAN: change add() only\nCOUNTEREXAMPLE: tried 0.1 + 0.2, correct\n'
-
 describe('parseReviewOutput whole-line validation (reviewer repro)', () => {
   it('rejects a DECISION line that carries two values', () => {
     const r = parseReviewOutput(
-      W + 'DECISION: pass | needsChanges\nNOTES: undecided',
+      'DECISION: pass | needsChanges\nNOTES: undecided',
     )
     assert.equal(r.ok, false)
   })
@@ -21,13 +18,13 @@ describe('parseReviewOutput whole-line validation (reviewer repro)', () => {
       'DECISION: needsChanges-now\nNOTES: suffixed',
       'DECISION: passing\nNOTES: gerund',
     ]) {
-      const r = parseReviewOutput(W + text)
+      const r = parseReviewOutput(text)
       assert.equal(r.ok, false, JSON.stringify(text))
     }
   })
 
   it('rejects trailing content after the value', () => {
-    const r = parseReviewOutput(W + 'DECISION: pass please\nNOTES: extra words')
+    const r = parseReviewOutput('DECISION: pass please\nNOTES: extra words')
     assert.equal(r.ok, false)
   })
 
@@ -37,7 +34,7 @@ describe('parseReviewOutput whole-line validation (reviewer repro)', () => {
       'DECISION:   needsChanges  \nNOTES: fix it',
       'decision: PASS\nNOTES: shouty but exact',
     ]) {
-      const r = parseReviewOutput(W + text)
+      const r = parseReviewOutput(text)
       assert.equal(r.ok, true, JSON.stringify(text))
     }
   })
@@ -48,8 +45,7 @@ describe('parseReviewOutput whole-line validation (reviewer repro)', () => {
     // a line-anchored parser threw both reviews away after they had been paid
     // for.
     const parsed = parseReviewOutput(
-      W +
-        '指定どおり読み取り専用で、基準コミットとの差分を確認します。DECISION: pass\n' +
+      '指定どおり読み取り専用で、基準コミットとの差分を確認します。DECISION: pass\n' +
         'NOTES: The guide accurately reflects the example.',
     )
     assert.equal(parsed.ok, true)
@@ -61,15 +57,14 @@ describe('parseReviewOutput whole-line validation (reviewer repro)', () => {
       'Here is my answer. DECISION: pass | needsChanges\nNOTES: unsure',
       'DECISION: pass | needsChanges\nNOTES: unsure',
     ]) {
-      const parsed = parseReviewOutput(W + text)
+      const parsed = parseReviewOutput(text)
       assert.equal(parsed.ok, false, text)
     }
   })
 
   it('still refuses two verdicts even when one is inline', () => {
     const parsed = parseReviewOutput(
-      W +
-        'Thinking. DECISION: pass\nOn reflection DECISION: needsChanges\nNOTES: x',
+      'Thinking. DECISION: pass\nOn reflection DECISION: needsChanges\nNOTES: x',
     )
     assert.equal(parsed.ok, false)
   })
@@ -79,8 +74,7 @@ describe('parseReviewOutput whole-line validation (reviewer repro)', () => {
     // reviewer that announces the format and then complies left two markers,
     // and a count-based contradiction check threw the review away.
     const parsed = parseReviewOutput(
-      W +
-        'Reviewing per the rules; I will finish with DECISION: pass or needsChanges.\n' +
+      'Reviewing per the rules; I will finish with DECISION: pass or needsChanges.\n' +
         'DECISION: pass\n' +
         'NOTES: the guide matches the example.',
     )
@@ -90,7 +84,7 @@ describe('parseReviewOutput whole-line validation (reviewer repro)', () => {
 
   it('treats a repeated identical verdict as redundant, not contradictory', () => {
     const parsed = parseReviewOutput(
-      W + 'DECISION: pass\nNOTES: fine.\nDECISION: pass',
+      'DECISION: pass\nNOTES: fine.\nDECISION: pass',
     )
     assert.equal(parsed.ok, true)
     assert.equal(parsed.ok && parsed.decision, 'pass')
