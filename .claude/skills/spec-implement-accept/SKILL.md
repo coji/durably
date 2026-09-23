@@ -76,7 +76,7 @@ pipeline.
 Run codex to generate the task spec:
 
 ```bash
-codex exec -m gpt-5.6-sol -c model_reasoning_effort=medium -s read-only \
+codex exec -m gpt-6-sol -c model_reasoning_effort=medium -s read-only \
   -o "<task-dir>/order.md" "$(cat <<'PROMPT'
 <prompt from agents/spec-drafter.md, with input.md content appended>
 PROMPT
@@ -95,7 +95,7 @@ For each iteration:
 **2a. Review:**
 
 ```bash
-codex exec -m gpt-5.6-sol -c model_reasoning_effort=medium -s read-only \
+codex exec -m gpt-6-sol -c model_reasoning_effort=medium -s read-only \
   -o "<task-dir>/spec-review-report.md" "<prompt from agents/spec-reviewer.md>"
 ```
 
@@ -151,7 +151,7 @@ For each iteration:
 `order_sha256`, and task context to read-only Codex:
 
 ```bash
-codex exec -m gpt-5.6-sol -c model_reasoning_effort=medium -s read-only \
+codex exec -m gpt-6-sol -c model_reasoning_effort=medium -s read-only \
   -o "<task-dir>/acceptance-report.md" "<prompt from agents/acceptor.md>"
 ```
 
@@ -193,7 +193,7 @@ git commit -m "refactor: simplify implementation"
 Run `pnpm validate`, then pass its complete output and task context to read-only Codex:
 
 ```bash
-codex exec -m gpt-5.6-sol -c model_reasoning_effort=medium -s read-only \
+codex exec -m gpt-6-sol -c model_reasoning_effort=medium -s read-only \
   -o "<task-dir>/supervise-report.md" "<prompt from agents/supervisor.md>"
 ```
 
@@ -307,7 +307,7 @@ For round `N`:
    Applicable rules: $rules_file
    Return only the independent Codex track result. Do not launch the Opus track.
    EOF
-   codex exec -m gpt-5.6-sol -c model_reasoning_effort=medium \
+   codex exec -m gpt-6-sol -c model_reasoning_effort=medium \
      -s read-only -C "$(git rev-parse --show-toplevel)" \
      -o "$report_dir/codex-track.md" - < "$report_dir/codex-prompt.md"
    ```
