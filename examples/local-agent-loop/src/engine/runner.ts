@@ -9,6 +9,7 @@ import { estimateCostBreakdown } from './pricing.js'
 import type {
   AgentProvider,
   AgentResult,
+  AgentRole,
   AttemptMeasurement,
   ProviderName,
 } from './providers/types.js'
@@ -26,7 +27,7 @@ export interface AgentCallSpec {
   requestedEffort: string | null
   effectiveModel: string | null
   effectiveEffort: string | null
-  role: 'implement' | 'repair' | 'review-a' | 'review-b'
+  role: AgentRole
   stage: string
   iteration: number
   operationKey?: string

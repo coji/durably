@@ -17,6 +17,7 @@ import {
   type ReportCandidate,
   type ReportDelivery,
   type ReportInputs,
+  type ReportTriage,
   type RoleProfileRow,
 } from './report.js'
 
@@ -47,7 +48,8 @@ const ROLES = ['code', 'correctness', 'edge-cases'] as const
  * every role.
  */
 function profileRows(input: PersistedInput | null): RoleProfileRow[] {
-  return ROLES.map((role) => {
+  const triage = input?.profiles?.['triage']
+  const rows = ROLES.map((role) => {
     const p = input?.profiles?.[role]
     return p
       ? {
@@ -63,6 +65,46 @@ function profileRows(input: PersistedInput | null): RoleProfileRow[] {
           requestedEffort: input?.effort ?? null,
         }
   })
+  // Triage has no fallback: without its own profile it never runs.
+  return triage
+    ? [
+        ...rows,
+        {
+          role: 'triage',
+          provider: triage.provider ?? null,
+          requestedModel: triage.requestedModel ?? null,
+          requestedEffort: triage.requestedEffort ?? null,
+        },
+      ]
+    : rows
+}
+
+function asTriage(value: unknown): ReportTriage | null {
+  const v = value as { judgment?: unknown; reason?: unknown } | null
+  return v &&
+    (v.judgment === 'routine' ||
+      v.judgment === 'probe' ||
+      v.judgment === 'unknown') &&
+    typeof v.reason === 'string'
+    ? { judgment: v.judgment, reason: v.reason }
+    : null
+}
+
+/**
+ * The run's triage judgment. A finished run carries it in its output; an open
+ * one (running, or waiting for approval) has only the completed triage step.
+ */
+export async function recordedTriage(
+  durably: Pick<AnyDurably, 'storage'>,
+  run: { id: string; output: unknown },
+): Promise<ReportTriage | null> {
+  const fromOutput = asTriage(
+    (run.output as { triage?: unknown } | null)?.triage,
+  )
+  if (fromOutput) return fromOutput
+  return asTriage(
+    (await durably.storage.getCompletedStep(run.id, 'triage'))?.output,
+  )
 }
 
 /**
@@ -242,6 +284,7 @@ export async function buildReport(
       stageUsage: usage,
       stageVisits: visits,
     }),
+    triage: await recordedTriage(durably, run),
     stageUsage: usage,
     roleUsage: roleUsage(rows, profileRows(input)),
     inputs: inputHashes(input),

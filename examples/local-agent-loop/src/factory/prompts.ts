@@ -177,3 +177,89 @@ export function parseReviewOutput(text: string): ParsedReview {
   }
   return { ok: true, decision, notes }
 }
+
+/**
+ * Shadow triage: judge the task before any code exists. The judgment is only
+ * recorded; nothing in the run reads it to choose a stage or a profile.
+ */
+export function triagePrompt(
+  task: string,
+  untrusted: UntrustedInput[] = [],
+): string {
+  return [
+    'You are a triage reviewer. READ ONLY — do not modify any file and do not start the work.',
+    '',
+    'Judge from the task alone how the work should be approached:',
+    '- routine: the change is well understood; one implementation and a normal review should finish it.',
+    '- probe: the change is risky, ambiguous or broad; a trial implementation should come first.',
+    '',
+    'TASK:',
+    task,
+    '',
+    ...untrustedSection(untrusted),
+    'Reply in exactly this shape, each on a line of its own:',
+    'JUDGMENT: routine | probe',
+    'REASON: <one or two sentences>',
+  ].join('\n')
+}
+
+export type TriageJudgment = 'routine' | 'probe'
+
+export type ParsedTriage =
+  | { ok: true; judgment: TriageJudgment; reason: string }
+  | { ok: false; error: string }
+
+/**
+ * Strict triage-output parser.
+ *
+ * Exactly one line-anchored JUDGMENT with the whole value `routine` or `probe`
+ * (case-insensitive), and exactly one REASON of one or two sentences. Anything
+ * else — empty output, no judgment, two different judgments, a value outside
+ * the closed set, a missing or long reason — is rejected, and the caller
+ * records it as `unknown` rather than guessing.
+ */
+export function parseTriageOutput(text: string): ParsedTriage {
+  if (!text || text.trim().length === 0)
+    return { ok: false, error: 'empty triage output' }
+  const judgments: string[] = []
+  const reasons: string[] = []
+  for (const line of text.split('\n')) {
+    const judgment = /^\s*JUDGMENT:\s*(.*)$/i.exec(line)
+    if (judgment?.[1] !== undefined)
+      judgments.push(judgment[1].trim().toLowerCase())
+    const reason = /^\s*REASON:\s*(.*)$/i.exec(line)
+    if (reason?.[1] !== undefined) reasons.push(reason[1].trim())
+  }
+  const values = [...new Set(judgments)]
+  if (values.length === 0)
+    return { ok: false, error: 'no JUDGMENT line in triage output' }
+  if (values.length > 1)
+    return {
+      ok: false,
+      error: `contradictory triage output: ${values.length} JUDGMENT values`,
+    }
+  const value = values[0]
+  if (value !== 'routine' && value !== 'probe')
+    return { ok: false, error: `unsupported JUDGMENT value: ${value}` }
+  if (reasons.length !== 1 || !reasons[0])
+    return {
+      ok: false,
+      error:
+        reasons.length > 1
+          ? `${reasons.length} REASON lines in triage output`
+          : 'missing REASON line in triage output',
+    }
+  const reason = reasons[0]
+  if (reason.length > 500)
+    return { ok: false, error: 'triage REASON is longer than 500 characters' }
+  const sentences = reason
+    // A full stop ends a sentence only before whitespace, so `3.5` is one.
+    .split(/(?<=[.!?])\s+|(?<=。)/)
+    .filter((s) => s.trim().length > 0)
+  if (sentences.length > 2)
+    return {
+      ok: false,
+      error: `triage REASON has ${sentences.length} sentences; at most two are allowed`,
+    }
+  return { ok: true, judgment: value, reason }
+}

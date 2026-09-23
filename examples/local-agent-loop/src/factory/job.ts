@@ -3,11 +3,16 @@ import { mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { defineJob, type JsonValue } from '@coji/durably'
+import {
+  defineJob,
+  type JsonValue,
+  type StepAttemptContext,
+} from '@coji/durably'
 import { z } from 'zod'
 
 import { createProvider } from '../engine/providers/index.js'
-import type { ProviderName } from '../engine/providers/types.js'
+import type { AgentProvider, ProviderName } from '../engine/providers/types.js'
+import { runAgentCall, UncertainInvocationError } from '../engine/runner.js'
 import type { ResolvedProfile } from '../engine/types.js'
 import { configVersionOf } from '../engine/versions.js'
 import {
@@ -17,15 +22,17 @@ import {
 } from '../targets/index.js'
 import { deliverySchema, FactoryEventSchema } from './events.js'
 import { assertAllowedDecision, availableActions, decide } from './policy.js'
+import { parseTriageOutput, triagePrompt } from './prompts.js'
 import { reduce } from './reducer.js'
 import { stages } from './stages.js'
-import type { TargetConfig } from './target.js'
+import type { Target, TargetConfig } from './target.js'
 import {
   initialState,
   PROFILE_ROLES,
   type FactorySetup,
   type ProfileRole,
   type StageDecision,
+  type TriageResult,
 } from './types.js'
 
 const issueSchema = z.object({
@@ -96,6 +103,8 @@ const inputSchema = z.object({
       code: requestedProfileSchema,
       correctness: requestedProfileSchema,
       'edge-cases': requestedProfileSchema,
+      /** Shadow triage before the code stage. Absent: no triage call. */
+      triage: requestedProfileSchema.optional(),
     })
     .optional(),
   target: targetSchema,
@@ -133,6 +142,13 @@ const outputSchema = z.object({
   workdir: z.string(),
   fake: z.boolean(),
   delivery: deliverySchema.nullable(),
+  /** Null when the run had no triage profile. */
+  triage: z
+    .object({
+      judgment: z.enum(['routine', 'probe', 'unknown']),
+      reason: z.string(),
+    })
+    .nullable(),
 })
 
 /** Example package root (`src/factory/` -> `src/` -> package). */
@@ -181,11 +197,16 @@ export function fixProfile(request: {
  */
 export function assertSingleMode(
   profiles: Record<ProfileRole, { provider: ProviderName }>,
+  triage: { provider: ProviderName } | null = null,
 ): void {
-  const fakes = PROFILE_ROLES.filter(
-    (role) => profiles[role].provider === 'fake',
-  )
-  if (fakes.length > 0 && fakes.length < PROFILE_ROLES.length)
+  const roles = [
+    ...PROFILE_ROLES.map((role) => [role, profiles[role]] as const),
+    ...(triage ? [['triage', triage] as const] : []),
+  ]
+  const fakes = roles
+    .filter(([, profile]) => profile.provider === 'fake')
+    .map(([role]) => role)
+  if (fakes.length > 0 && fakes.length < roles.length)
     throw new Error(
       `roles cannot mix the fake provider with a real one (fake: ${fakes.join(', ')})`,
     )
@@ -206,6 +227,63 @@ function branchFor(
   issue: { number: number } | null | undefined,
 ): string {
   return issue ? `factory/issue-${issue.number}-${runId}` : `factory/${runId}`
+}
+
+/**
+ * One read-only triage call in a fresh session, through the same checkpoint
+ * and measurement path as every other LLM call.
+ *
+ * Shadow triage must never be why a run fails. A malformed answer, a provider
+ * error or a timeout is recorded as `unknown` and the run carries on; the call
+ * is not resent, because this step completes with that record. Only what the
+ * other calls also stop on still stops the run: a start-only checkpoint met
+ * on replay, and a lost lease or cancel.
+ */
+async function runTriage(
+  signal: AbortSignal,
+  attempt: StepAttemptContext,
+  args: {
+    runId: string
+    setup: FactorySetup
+    profile: ResolvedProfile
+    provider: AgentProvider
+    target: Target
+  },
+): Promise<TriageResult> {
+  const { setup, profile, target } = args
+  try {
+    const call = await runAgentCall(signal, attempt, {
+      provider: args.provider,
+      providerName: profile.provider,
+      // The task and spec as stored, fenced as data; dispositions are for
+      // reviewers and are not sent.
+      prompt: triagePrompt(target.taskBrief(), target.untrustedInputs('code')),
+      workdir: target.workdir,
+      timeoutMs: setup.agentTimeoutMs,
+      requestedModel: profile.requestedModel,
+      requestedEffort: profile.requestedEffort,
+      effectiveModel: profile.effectiveModel,
+      effectiveEffort: profile.effectiveEffort,
+      role: 'triage',
+      stage: 'triage',
+      iteration: 0,
+      operationKey: `${args.runId}/triage/agent`,
+      checkpointsDir: setup.checkpointsDir,
+      session: null,
+      configVersion: setup.configVersion,
+    })
+    const parsed = parseTriageOutput(call.text)
+    return parsed.ok
+      ? { judgment: parsed.judgment, reason: parsed.reason }
+      : { judgment: 'unknown', reason: `malformed triage: ${parsed.error}` }
+  } catch (error) {
+    if (error instanceof UncertainInvocationError || signal.aborted) throw error
+    const message = error instanceof Error ? error.message : String(error)
+    return {
+      judgment: 'unknown',
+      reason: `triage call failed: ${message.slice(0, 500)}`,
+    }
+  }
 }
 
 export interface AgentLoopJobOptions {
@@ -242,16 +320,29 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   },
             )
           })
-          assertSingleMode(fixed)
-          const profiles = byRole((role): ResolvedProfile => ({
+          const requestedTriage = input.profiles?.triage
+          const fixedTriage = requestedTriage
+            ? fixProfile({
+                provider: requestedTriage.provider,
+                model: requestedTriage.requestedModel,
+                effort: requestedTriage.requestedEffort,
+              })
+            : null
+          assertSingleMode(fixed, fixedTriage)
+          const resolve = (
+            role: string,
+            profile: FixedProfile,
+          ): ResolvedProfile => ({
             id: [
-              fixed[role].provider,
-              fixed[role].effectiveModel ?? 'provider-default',
-              fixed[role].effectiveEffort ?? 'provider-default',
+              profile.provider,
+              profile.effectiveModel ?? 'provider-default',
+              profile.effectiveEffort ?? 'provider-default',
               role,
             ].join(':'),
-            ...fixed[role],
-          }))
+            ...profile,
+          })
+          const profiles = byRole((role) => resolve(role, fixed[role]))
+          const triage = fixedTriage ? resolve('triage', fixedTriage) : null
           // A real repository needs far more room than the bundled sample. The
           // sample is a one-line fix graded by a two-file suite; a repository
           // task means reading the code base and running its whole check, and
@@ -311,8 +402,10 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               code: profiles.code,
               correctness: profiles.correctness,
               edgeCases: profiles['edge-cases'],
+              triage,
             }),
             profiles,
+            triage,
             maxIterations: input.maxIterations,
             agentTimeoutMs,
             // A draft pull request is itself what the human reviews, so waiting
@@ -337,6 +430,27 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       const providers = byRole((role) =>
         createProvider(setup.profiles[role].provider),
       )
+      // Shadow mode: the judgment is recorded and nothing below reads it.
+      const triageProfile = setup.triage ?? null
+      const triage = triageProfile
+        ? await step.run(
+            'triage',
+            (signal, attempt) =>
+              runTriage(signal, attempt, {
+                runId: step.runId,
+                setup,
+                profile: triageProfile,
+                provider: createProvider(triageProfile.provider),
+                target,
+              }),
+            {
+              metadata: {
+                stage: 'triage',
+                operationKey: `${step.runId}/triage/agent`,
+              } as unknown as JsonValue,
+            },
+          )
+        : null
       let state = initialState(setup)
       // Deliberately not a `finally`: `step.waitFor` suspends by throwing, so a
       // finally block would run cleanup every time the run parks on the human
@@ -366,7 +480,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
         state = reduce(state, FactoryEventSchema.parse(rawEvent))
       }
       await target.cleanup()
-      return state.outcome
+      return { ...state.outcome, triage }
     },
   })
 }

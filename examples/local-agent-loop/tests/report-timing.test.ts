@@ -104,6 +104,7 @@ describe('stage timing completeness', () => {
       output: null,
       fake: false,
       configVersion: null,
+      triage: null,
       summary: emptySummary(),
       stageUsage: [],
       roleUsage: [],

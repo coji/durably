@@ -27,6 +27,8 @@ registryを呼び、返ったeventをreduceするだけです。作業場所の�
 `step.run()` で包まないため、承認waitはDurablyの正しい境界にあります。
 
 ```text
+setup
+triage (profiles.triage があるときだけ一度。判定を記録するだけ)
 decision:N
   └─ stages[decision.stage](...)
        ├─ code: agent call → fixed Candidate
@@ -254,6 +256,42 @@ presetで解決します。workerは元のファイルを読み直さないの�
 書き換えても、そのrunの設定とpromptは変わりません。reportには各入力ファイルの
 pathと、保存した本文から計算したSHA-256が出ます。
 
+### タスクの事前判定（shadow mode）
+
+`factory.json` の `profiles.triage` を書くと、setupの後、実装の前に一度だけ
+LLMにタスクを判定させます。書かなければ判定の呼び出しは起きず、従来と同じ
+流れで動きます。
+
+```json
+{
+  "profiles": {
+    "triage": { "provider": "codex", "model": "gpt-5.6-sol", "effort": "low" }
+  }
+}
+```
+
+- 項目の補い方は他の役割と同じです。`"triage": {}` でも有効になり、
+  `--provider`、`--model`、`--effort` とpresetの値を使います。fakeと実providerを
+  混ぜられない規則も同じです。
+- 判定は `routine`（そのまま実装とレビューで終わりそう）か `probe`（試しに実装
+  してみるべき）のどちらかと、1〜2文の理由です。新しいsessionで、読み取り専用
+  権限で動きます。渡すのは保存済みのtaskとspecだけで、「信頼しないデータ」の
+  区画に入れます。dispositionsは渡しません。
+- 今は **shadow mode** です。判定は記録するだけで、工程やprofileの選択には
+  一切使いません。`routine` と `probe` のrunは同じ工程を同じprofileで進みます。
+  経路の切り替えは [ADR-0018](../../docs/adr/0018-local-agent-loop-adaptive-routing.md)
+  の後続の段階で、判定の精度を測ってから入れます。
+- 形式に合わない応答（空、JUDGMENTが無い、二つある、`routine`/`probe` 以外、
+  REASONが無いか3文以上）と、provider errorやtimeoutは `unknown` として理由と
+  一緒に記録し、runは実装へ進みます。判定の失敗でrunが止まることはありません。
+  ただし、再開時に開始だけのcheckpointが見つかった場合は、他の呼び出しと同じく
+  未確定として止まります。
+- 判定と理由は `report --format json` の `triage`、Markdownの「Triage」節、
+  `status --run` の `triage` に出ます。承認待ちの途中でも読めます。判定の
+  無いrunは `null`（Markdownでは `none`）で、`unknown` とは区別します。
+- `profiles.triage` の有無と中身は `configVersion` に入ります。triageの無いrunの
+  `configVersion` は以前と変わりません。
+
 ### durably checkoutを固定して呼ぶ
 
 コードを対象リポジトリへコピーせず、durablyのcheckoutを特定のcommitに固定して
@@ -382,7 +420,7 @@ LLM呼び出しはすべて `src/engine/runner.ts` を通り、attempt metadata�
 - usageの単位（このサンプルは一provider invocation）と取得元
 - elapsed、result、error、interruption reason、API換算参考価格とmeter別内訳
 - `configVersion`（三役割それぞれのprovider、model、effort、context、指示版、
-  反復上限、対象、timeoutのhash）
+  反復上限、対象、timeoutのhash。triage profileがあればそれも含む）
 
 providerが返すusageは、一回の呼び出しの**全モデル応答の合計**でなければいけません。
 エージェントCLIは一回の呼び出しの中で何十回もモデルを呼ぶので、最後の応答だけでは
@@ -426,10 +464,13 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
   total tokens、cost、cost per success（成功したrunだけ）、repairs、review rounds
 - **Inputs / Candidate / Delivery**: task、spec、dispositionsの各ファイルの
   SHA-256、最後に封印したcandidateのbranchとcommit、成果物の場所、branch名、commit SHA
+- **Triage**: 事前判定（`routine` / `probe` / `unknown`）とその理由。判定の無い
+  runは `none`
 - **Stage usage**: 工程ごとの visits / reworked（同じ工程への再突入＝手戻り）、
   invocation数、in / cache-read / cache-write / out / total、cost。
   いずれかの呼び出しが未計上なら PARTIAL、価格不明なら unknown
-- **Role usage**: `code`、`correctness`、`edge-cases` ごとのrequested
+- **Role usage**: `code`、`correctness`、`edge-cases`（triage profileがあれば
+  `triage` も）ごとのrequested
   provider/model/effort、invocation数、token、cost、usageとcostそれぞれの完全性。二つのレビューを
   別の行に分けるので、役割ごとに違うmodelを使ったrunでも内訳が混ざりません
 - **Timing / Attempts / Waits**: 従来どおりの工程別 work / wall 時間、
@@ -478,13 +519,22 @@ pnpm --filter example-local-agent-loop demo compare \
 
 グループごとに success 率、lead time、work、human wait、total tokens、cost、
 cost per success、repairs、工程別の work / tokens / cache-read / cost / reworked
-を並べます。reuse と fresh を比べるときは、`code` 工程の cache-read 比と
+を並べます。triage 判定のあるrunを含むグループには、判定（`routine`、`probe`、
+`unknown`）ごとの表が付きます。列は run 数、approved、verification-failed、
+review-cap-reached、repairs と cost の統計、そして `routine` と判定されたのに
+修正が要った、または上限（review cap か、検証失敗で終わった反復上限）に達した
+run の数です。最後の列が判定の見逃しで、shadow mode で測りたい値です。cost
+不明の run は統計から外して unknown 件数に数えます。triage 呼び出しのtokenと
+costは `triage` 工程と `triage` 役割に1回ずつ計上します。
+
+reuse と fresh を比べるときは、`code` 工程の cache-read 比と
 repairs の中央値を見ます。unknown は統計から外して件数だけ残し、0 として
 平均に混ぜません。
 
 ## 権限と制約
 
 - Codex implement/repairはworkspace-write、reviewはread-only sandboxです。
+- triageはCodexではread-only sandbox、ClaudeではReadのみで動きます。
 - Claude reviewはReadのみです。implement/repairは `canUseTool` と `PreToolUse`
   hookの双方でworkdir外パスを拒否します。これは入力検査であり、OS sandboxでは
   ありません。
@@ -506,6 +556,10 @@ pnpm --filter example-local-agent-loop demo trigger \
 
 `FAKE_FAIL_FIRST=0` で初回実装を成功させられます。
 `FAKE_REVIEW_SEQUENCE="needsChanges,pass"` でreview修正ループを再現できます。
+`FAKE_TRIAGE` はtriageの応答を呼び出しごとに順に選びます（`routine`、`probe`、
+`empty`、`invalid`、`contradictory`、`unsupported`、`error`。既定は `routine`）。
+fakeのtriageは同梱題材ではtriggerのフラグから指定できないので、job inputの
+`profiles.triage` で渡します。
 
 ## Layout
 

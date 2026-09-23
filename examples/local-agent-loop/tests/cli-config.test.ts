@@ -19,7 +19,11 @@ import { createAgentDurably, dbPath } from '../src/durably.js'
 import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
-import { codePrompt, reviewPrompt } from '../src/factory/prompts.js'
+import {
+  codePrompt,
+  reviewPrompt,
+  triagePrompt,
+} from '../src/factory/prompts.js'
 import type { FactorySetup } from '../src/factory/types.js'
 import { createTarget } from '../src/targets/index.js'
 
@@ -223,6 +227,14 @@ describe('factory.json and input files', { timeout: 180000 }, () => {
       )
       assert.ok(review.includes(dispositions.trimEnd()))
       assert.ok(!review.includes('DIFFERENT'))
+      // Triage would see the stored task and spec, never the dispositions.
+      const triage = triagePrompt(
+        target.taskBrief(),
+        target.untrustedInputs('code'),
+      )
+      assert.ok(triage.includes(task.trimEnd()))
+      assert.ok(triage.includes(spec.trimEnd()))
+      assert.ok(!triage.includes(dispositions.trimEnd()))
 
       // Report and status name the hashes, the branch and the commit.
       const report = await buildReport(durably, runId)
@@ -372,6 +384,52 @@ describe('factory.json and input files', { timeout: 180000 }, () => {
     assert.deepEqual(pick('edge-cases'), ['claude', null, null])
     // Only requested settings are stored; the worker resolves the rest.
     assert.equal('effectiveModel' in (profiles['code'] ?? {}), false)
+    // No triage profile in the config: the run has none.
+    assert.equal('triage' in profiles, false)
+  })
+
+  it('stores a triage profile only when the config names one, fixed at trigger', async () => {
+    const box = await sandbox({
+      check: CHECK,
+      profiles: { triage: { model: 'triage-model' } },
+    })
+    const runId = await trigger(box, [
+      '--repo',
+      box.repo,
+      '--task',
+      'do it',
+      '--provider',
+      'fake',
+      '--effort',
+      'low',
+    ])
+    // Changing the config afterwards does not reach the run.
+    await writeFile(
+      join(box.repo, 'factory.json'),
+      JSON.stringify({
+        check: CHECK,
+        profiles: { triage: { model: 'other' } },
+      }),
+    )
+    const { profiles } = await inputOf(box, runId)
+    assert.deepEqual(profiles['triage'], {
+      provider: 'fake',
+      requestedModel: 'triage-model',
+      requestedEffort: 'low',
+    })
+    // An empty object still turns triage on, with the fallback settings.
+    const empty = await sandbox({ check: CHECK, profiles: { triage: {} } })
+    const emptyRun = await trigger(empty, [
+      '--repo',
+      empty.repo,
+      '--task',
+      'do it',
+    ])
+    assert.deepEqual((await inputOf(empty, emptyRun)).profiles['triage'], {
+      provider: 'fake',
+      requestedModel: null,
+      requestedEffort: null,
+    })
   })
 })
 
@@ -631,6 +689,25 @@ describe('trigger validation', { timeout: 120000 }, () => {
       mixed,
       ['--repo', mixed.repo, '--task', 'x'],
       /cannot mix the fake provider/,
+    )
+    // Triage is held to the same rule, in both directions.
+    const realTriage = await sandbox({
+      check: CHECK,
+      profiles: { triage: { provider: 'codex' } },
+    })
+    await rejected(
+      realTriage,
+      ['--repo', realTriage.repo, '--task', 'x'],
+      /cannot mix the fake provider .*\(fake: code, correctness, edge-cases\)/,
+    )
+    const fakeTriage = await sandbox({
+      check: CHECK,
+      profiles: { triage: { provider: 'fake' } },
+    })
+    await rejected(
+      fakeTriage,
+      ['--repo', fakeTriage.repo, '--task', 'x', '--provider', 'codex'],
+      /cannot mix the fake provider .*\(fake: triage\)/,
     )
     const effort = await sandbox({ check: CHECK })
     await rejected(

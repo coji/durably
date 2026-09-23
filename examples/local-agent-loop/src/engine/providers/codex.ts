@@ -104,9 +104,10 @@ export function resolveCodexEffort(
   )
 }
 
-const READ_ONLY_ROLES: ReadonlySet<AgentRole> = new Set([
+export const READ_ONLY_ROLES: ReadonlySet<AgentRole> = new Set([
   'review-a',
   'review-b',
+  'triage',
 ])
 
 export class CodexProvider implements AgentProvider {

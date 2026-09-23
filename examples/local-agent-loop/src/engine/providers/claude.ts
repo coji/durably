@@ -9,7 +9,8 @@
  *   (so the agent can work non-interactively), and pre-approved calls bypass
  *   `canUseTool`; only the hook inspects every call.
  * - Review roles run read-only (`allowedTools: ['Read']`) against a frozen
- *   snapshot directory, never the live workdir.
+ *   snapshot directory, never the live workdir. Triage runs read-only too,
+ *   before any code exists.
  * - Requested effort is applied via the `effort` setting; unsupported values
  *   throw instead of being silently dropped.
  * - Bash containment is best-effort input inspection (documented limits, not
@@ -72,9 +73,10 @@ export function resolveClaudeEffort(
   )
 }
 
-const READ_ONLY_ROLES: ReadonlySet<AgentRole> = new Set([
+export const READ_ONLY_ROLES: ReadonlySet<AgentRole> = new Set([
   'review-a',
   'review-b',
+  'triage',
 ])
 
 /** Normalize and resolve a candidate path against the allowed root. */
