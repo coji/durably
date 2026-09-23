@@ -142,7 +142,7 @@ Retriggers a completed, failed, or cancelled run by creating a fresh run with th
 await durably.cancel(runId: string): Promise<void>
 ```
 
-Cancels a pending, leased, or waiting run.
+Cancels a pending, leased, or waiting run. `run:cancel` is emitted as soon as the cancellation is written. With `preserveSteps: false` the run's checkpoints and logs are deleted afterwards; if that cleanup fails, `cancel()` still resolves and the failure is reported as `worker:error` with `context: 'cancel-cleanup'`.
 
 ### `waitForRun()`
 

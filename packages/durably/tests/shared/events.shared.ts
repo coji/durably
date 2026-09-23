@@ -339,6 +339,27 @@ export function createEventsTests(createDialect: () => Dialect) {
         timeout: 5_000,
       })
     })
+
+    it('contains a rejection from an async onError handler', () => {
+      // Stand in for the handler's promise: containment means emit attaches
+      // a rejection handler to it.
+      const pending = new Promise<void>(() => {})
+      const then = vi.spyOn(pending, 'then')
+      durably.onError(() => pending as unknown as void)
+      durably.on('run:leased', () => {
+        throw new Error('listener failed')
+      })
+      durably.emit({
+        type: 'run:leased',
+        runId: 'run_1',
+        jobName: 'test-job',
+        input: {},
+        leaseOwner: 'worker-1',
+        leaseExpiresAt: '2024-01-01T00:00:30.000Z',
+        labels: {},
+      })
+      expect(then).toHaveBeenCalledWith(undefined, expect.any(Function))
+    })
   })
 
   describe('core event classification', () => {

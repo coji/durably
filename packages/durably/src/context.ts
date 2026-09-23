@@ -26,7 +26,7 @@ export function createStepContext(
   abortLeaseOwnership(): void
   preserveFailedParallelSteps(): boolean
   /** The lowest-index step whose failure was recorded under this lease. */
-  firstFailedStep(): { name: string; index: number } | null
+  firstFailedStep(): string | null
   suspension(): string | null
   settleSteps(): Promise<void>
   dispose: () => void
@@ -42,11 +42,15 @@ export function createStepContext(
   // Failures recorded under this lease, by step name. Older leases' failed
   // checkpoints survive recovery, so attribution must not read them back.
   const failedSteps = new Map<string, number>()
-  function firstFailedStep(names?: ReadonlySet<string>) {
-    let first: { name: string; index: number } | null = null
+  function firstFailedStep(names?: { has(name: string): boolean }) {
+    let first: string | null = null
+    let firstIndex = Number.POSITIVE_INFINITY
     for (const [name, index] of failedSteps) {
       if (names && !names.has(name)) continue
-      if (!first || index < first.index) first = { name, index }
+      if (index < firstIndex) {
+        first = name
+        firstIndex = index
+      }
     }
     return first
   }
@@ -509,8 +513,8 @@ export function createStepContext(
         const byName = new Map(
           rejected.map(({ name, reason }) => [name, reason]),
         )
-        const firstFailed = firstFailedStep(new Set(byName.keys()))
-        if (firstFailed) throw byName.get(firstFailed.name)
+        const firstFailed = firstFailedStep(byName)
+        if (firstFailed) throw byName.get(firstFailed)
       }
       if (rejected.length > 0) throw rejected[0].reason
 

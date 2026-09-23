@@ -401,12 +401,20 @@ export function createEventEmitter(): EventEmitter {
       }
 
       const reportError = (error: unknown) => {
+        // A failing error handler must not stop delivery to the remaining
+        // listeners, escape into the code that emitted the event, or surface
+        // as an unhandled rejection, whether it throws or returns a rejected
+        // promise.
         try {
-          errorHandler?.(toError(error), fullEvent)
+          const result: unknown = errorHandler?.(toError(error), fullEvent)
+          if (
+            result != null &&
+            typeof (result as Promise<unknown>).then === 'function'
+          ) {
+            ;(result as Promise<unknown>).then(undefined, () => {})
+          }
         } catch {
-          // A throwing error handler must not stop delivery to the remaining
-          // listeners, escape into the code that emitted the event, or
-          // surface as an unhandled rejection from an async listener.
+          // Ignored for the reasons above.
         }
       }
 

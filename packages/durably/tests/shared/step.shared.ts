@@ -319,6 +319,24 @@ export function createStepTests(createDialect: () => Dialect) {
       ])
     })
 
+    it('fails a run whose thrown value has no string form', async () => {
+      const d = durably.register({
+        job: defineJob({
+          name: 'unprintable-throw',
+          input: z.object({}),
+          run: async () => {
+            throw Object.create(null)
+          },
+        }),
+      })
+      const run = await d.jobs.job.trigger({})
+      await d.processOne()
+      expect(await d.getRun(run.id)).toMatchObject({
+        status: 'failed',
+        error: 'Unknown error',
+      })
+    })
+
     it('attributes a failure to the earliest failed attempt when a step name fails twice', async () => {
       const failures: { failedStepName: string }[] = []
       durably.on('run:fail', (event) => failures.push(event))

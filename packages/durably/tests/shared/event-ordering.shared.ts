@@ -124,6 +124,25 @@ export function createEventOrderingTests(createDialect: () => Dialect) {
       expectEventRightAfter(trace, 'failRun', 'run:fail')
     })
 
+    it('batch trigger emits every event right after its single write', async () => {
+      const { durably, trace } = await setup()
+      const d = durably.register({
+        job: defineJob({
+          name: 'ordering-batch',
+          input: z.object({ n: z.number() }),
+          run: async () => {},
+        }),
+      })
+      await d.jobs.job.batchTrigger([{ n: 1 }, { n: 2 }, { n: 3 }])
+      const index = trace.lastIndexOf('done:enqueueMany')
+      expect(trace.slice(index)).toEqual([
+        'done:enqueueMany',
+        'event:run:trigger',
+        'event:run:trigger',
+        'event:run:trigger',
+      ])
+    })
+
     it('coalesced trigger', async () => {
       const { durably, trace } = await setup()
       const d = durably.register({

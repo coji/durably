@@ -247,7 +247,7 @@ export async function executeRun<
         error: errorMessage,
         // Only failures recorded under this lease: an older lease's failed
         // checkpoint survives recovery but did not cause this failure.
-        failedStepName: firstFailedStep()?.name ?? 'unknown',
+        failedStepName: firstFailedStep() ?? 'unknown',
         labels: run.labels,
       })
       return { kind: 'failed' }
