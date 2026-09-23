@@ -143,11 +143,11 @@ export function createWorkerTests(createDialect: () => Dialect) {
           async () => {
             const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('completed')
+            // The event follows the status write; wait for it too.
+            expect(states).toEqual(['leased', 'completed'])
           },
           { timeout: 5_000 },
         )
-
-        expect(states).toEqual(['leased', 'completed'])
       })
 
       it('transitions to failed when job throws', async () => {

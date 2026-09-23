@@ -303,9 +303,14 @@ export function createStepTests(createDialect: () => Dialect) {
         d.storage.getCompletedStep = originalGetCompletedStep
       }
 
-      await vi.waitFor(async () => {
-        expect((await d.jobs.job.getRun(run.id))?.status).toBe('failed')
-      })
+      // run:fail follows the failed status write; wait for the event itself.
+      await vi.waitFor(
+        async () => {
+          expect((await d.jobs.job.getRun(run.id))?.status).toBe('failed')
+          expect(failures).toHaveLength(1)
+        },
+        { timeout: 5_000 },
+      )
       expect(failures).toEqual([
         expect.objectContaining({
           error: 'second error',
@@ -351,9 +356,15 @@ export function createStepTests(createDialect: () => Dialect) {
       })
 
       d.start()
-      await vi.waitFor(async () => {
-        expect((await d.jobs.job.getRun(run.id))?.status).toBe('failed')
-      })
+      // run:fail is emitted after the failed status is written and the
+      // failing attempt is looked up, so wait for the event itself.
+      await vi.waitFor(
+        async () => {
+          expect((await d.jobs.job.getRun(run.id))?.status).toBe('failed')
+          expect(failures).toHaveLength(1)
+        },
+        { timeout: 5_000 },
+      )
       expect(failures).toEqual([
         expect.objectContaining({
           error: 'current branch failed',
