@@ -18,7 +18,21 @@ export type FailureKind =
   | 'review-cap-reached'
   | 'uncertain-invocation'
   | 'cancelled'
+  | 'cancelled-publish'
   | 'unclassified'
+
+/**
+ * The demo CLI as it runs from anywhere in this repository. Every printed
+ * command starts with it, so it pastes and runs as is.
+ */
+export const DEMO = 'pnpm --filter example-local-agent-loop demo'
+
+/**
+ * A bare `demo trigger` would run the bundled sample, not this run's target,
+ * so the retry step points at the original command and its stored inputs.
+ */
+const RETRIGGER =
+  '# re-run the original trigger command; the report JSON `input` shows what it was given'
 
 interface FailureEntry {
   reason: string
@@ -36,8 +50,8 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
     humanCheck:
       'read the check output in the report and decide whether the task, the check or --max-iterations has to change',
     next: (runId) => [
-      `pnpm demo report --run ${runId}`,
-      'then start a new run with pnpm demo trigger (revised task or a higher --max-iterations)',
+      `${DEMO} report --run ${runId}`,
+      `${RETRIGGER}, with a revised task or a higher --max-iterations`,
     ],
   },
   'review-cap-reached': {
@@ -47,8 +61,8 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
     humanCheck:
       'read the reviewer notes in the report; finish the candidate by hand or restate the task',
     next: (runId) => [
-      `pnpm demo report --run ${runId}`,
-      'then start a new run with pnpm demo trigger, or finish the candidate by hand',
+      `${DEMO} report --run ${runId}`,
+      `${RETRIGGER}, or finish the candidate by hand`,
     ],
   },
   'uncertain-invocation': {
@@ -58,8 +72,8 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
     humanCheck:
       "check the provider's own session history and usage for that call, the worktree, and the start checkpoint named below before sending anything again",
     next: (runId) => [
-      `pnpm demo report --run ${runId}`,
-      `pnpm demo status --run ${runId}`,
+      `${DEMO} report --run ${runId}`,
+      `${DEMO} status --run ${runId}`,
     ],
   },
   cancelled: {
@@ -68,8 +82,18 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
     retryable: true,
     humanCheck: 'confirm the cancel was intended',
     next: (runId) => [
-      `pnpm demo report --run ${runId}`,
-      'then start a new run with pnpm demo trigger if the work is still wanted',
+      `${DEMO} report --run ${runId}`,
+      `${RETRIGGER}, if the work is still wanted`,
+    ],
+  },
+  'cancelled-publish': {
+    reason:
+      'the run was cancelled with --publish; the branch may already be pushed and a pull request opened',
+    retryable: false,
+    humanCheck:
+      'check the remote for the run branch and a draft pull request before starting another run',
+    next: (runId) => [
+      `${DEMO} report --run ${runId}  # delivery shows what was recorded`,
     ],
   },
   unclassified: {
@@ -77,7 +101,7 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
     retryable: false,
     humanCheck:
       'read the run error and the attempts before starting another run',
-    next: (runId) => [`pnpm demo status --run ${runId}`],
+    next: (runId) => [`${DEMO} status --run ${runId}`],
   },
 }
 
@@ -125,6 +149,8 @@ export interface ClassifyInput {
   error: string | null
   /** From `uncertainCheckpoints`: start checkpoints with no completion. */
   uncertain: string[]
+  /** A repo run that pushes and opens a pull request once approved. */
+  publish?: boolean
 }
 
 /**
@@ -153,11 +179,19 @@ export function classifyFailure(
       for (const path of input.uncertain)
         details.push(`start checkpoint without completion: ${path}`)
     } else if (input.status === 'cancelled') {
-      kind = 'cancelled'
+      // A cancel can land after the push or pull request but before the
+      // delivery is recorded; a new run could publish a second time.
+      kind = input.publish ? 'cancelled-publish' : 'cancelled'
     } else {
       kind = 'unclassified'
     }
-    if (input.error) details.push(`error: ${input.error.slice(0, 500)}`)
+    if (input.error)
+      details.push(
+        `error: ${input.error
+          .slice(0, 500)
+          .trim()
+          .replace(/\s*\n\s*/g, ' | ')}`,
+      )
   } else {
     return null
   }
@@ -179,7 +213,7 @@ export function retryText(retryable: boolean): string {
  */
 export async function classifyRun(
   durably: Pick<AnyDurably, 'storage' | 'getStepAttempts'>,
-  run: Pick<Run, 'id' | 'status' | 'output' | 'error'>,
+  run: Pick<Run, 'id' | 'status' | 'input' | 'output' | 'error'>,
 ): Promise<FailureClassification | null> {
   let uncertain: string[] = []
   if (run.status === 'failed' || run.status === 'cancelled') {
@@ -196,5 +230,8 @@ export async function classifyRun(
     output: run.output,
     error: run.error,
     uncertain,
+    publish:
+      (run.input as { target?: { publish?: unknown } } | null)?.target
+        ?.publish === true,
   })
 }

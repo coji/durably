@@ -137,24 +137,34 @@ pnpm --filter example-local-agent-loop demo status
 ```text
 01M375ZAYC...  waiting  (created 2026-09-23T13:06:11.530Z)
   reason:  waiting for human approval of candidate candidate-1-9958e915bf52
-  next:    pnpm demo report --run 01M375ZAYC... (read the reviews first)
-           pnpm demo approve --run 01M375ZAYC... --wait 01M375ZC2C...
-           pnpm demo reject --run 01M375ZAYC... --wait 01M375ZC2C...
+  next:    pnpm --filter example-local-agent-loop demo report --run 01M375ZAYC...  # read the reviews first
+           pnpm --filter example-local-agent-loop demo approve --run 01M375ZAYC... --wait 01M375ZC2C...
+           pnpm --filter example-local-agent-loop demo reject --run 01M375ZAYC... --wait 01M375ZC2C...
 ```
 
+- 表示するコマンドは、リポジトリ内のどこからでもそのまま貼り付けて実行できます。
+  補足は `  # ...` のシェルコメントとして後ろに付けます。
 - 承認waitで止まっているrunだけに、そのrun IDとwait IDを入れた `approve` と
-  `reject` を表示します。
+  `reject` を表示します。承認・拒否を記録済みでまだworkerが拾っていないrunには、
+  判断が記録済みであることと、workerの起動を表示します。
 - leasedは、lease期限内なら実行中、期限切れならworkerが止まったものとして
   区別します。期限切れは失敗ではないので、workerを起動すればcheckpointから
-  再開します。
+  再開します。ただし完了checkpointのないagent呼び出しが残っていれば、再開した
+  runはその呼び出しで止まり、人の確認を待ちます。
 - 止まったrunには、理由、再試行の可否（`retry`）、人が確認すべき内容
   （`check`）を表示します。`retry: yes` は「新しいrunを始めても、結果の
   分からないagent呼び出しを重ねて送らない」という意味で、同じ入力で成功する
   保証ではありません。
 - 開始checkpointだけが残ったagent呼び出しは `uncertain-invocation` として
   `retry: NO` になり、送り直すコマンドは出しません。providerの履歴と作業場所、
-  表示されたcheckpointを人が確かめてください。分類できない失敗も `retry: NO`
-  です。
+  表示されたcheckpointを人が確かめてください。このrunにはworktreeの削除
+  コマンドも出しません。分類できない失敗も `retry: NO` です。
+- `--publish` 付きでcancelされたrunは `cancelled-publish` として `retry: NO`
+  になります。pushやpull requestの作成が記録前に済んでいる可能性があるので、
+  remoteのbranchとpull requestを先に確かめてください。
+- 新しいrunを勧める場合も、素の `demo trigger` は出しません（同梱の題材で
+  動くため）。元のtriggerコマンドを打ち直します。runに渡した入力はreport JSONの
+  `input` で確かめられます。
 - 終わったrepo runのworktreeが残っていれば、
   `git -C '<repo>' worktree remove '<workdir>'` を表示します。setupが記録した
   パスが存在するときだけ出し、強制削除やbranch削除は含みません。変更が残る

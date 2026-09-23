@@ -488,8 +488,20 @@ describe('status without --run', { timeout: 180000 }, () => {
     const res = await demo(box, ['status'])
     assert.equal(res.code, 0, res.stderr)
     const out = res.stdout
-    const approve = `pnpm demo approve --run ${waiting} --wait ${waitId}`
-    const reject = `pnpm demo reject --run ${waiting} --wait ${waitId}`
+    // Printed commands run as pasted from anywhere in the repository; any
+    // explanation follows as a shell comment.
+    const demoCmd = 'pnpm --filter example-local-agent-loop demo'
+    const approve = `${demoCmd} approve --run ${waiting} --wait ${waitId}`
+    const reject = `${demoCmd} reject --run ${waiting} --wait ${waitId}`
+    for (const line of out.split('\n')) {
+      const cmd = line.match(/^ {2}(?:next:| {5}|cleanup:) +(.*)$/)?.[1]
+      if (!cmd) continue
+      assert.ok(
+        cmd.startsWith(`${demoCmd} `) || cmd.startsWith('git -C '),
+        line,
+      )
+      assert.doesNotMatch(cmd.split('  #')[0] ?? '', /[()]/, line)
+    }
     assert.ok(blockOf(out, waiting).includes(approve), out)
     assert.ok(blockOf(out, waiting).includes(reject), out)
     assert.match(blockOf(out, pending), /pending[\s\S]*queued/)
@@ -536,6 +548,22 @@ describe('status without --run', { timeout: 180000 }, () => {
     ])
       assert.ok(key in shown, key)
     assert.ok(shown.diagnosis.next.includes(approve))
+
+    // Once approved, with no worker running, the run is still waiting but
+    // its decision is recorded: no second approve, and a worker resumes it.
+    const approved = await demo(box, [
+      'approve',
+      '--run',
+      waiting,
+      '--wait',
+      waitId,
+    ])
+    assert.equal(approved.code, 0, approved.stderr)
+    const decided = blockOf((await demo(box, ['status'])).stdout, waiting)
+    assert.match(decided, /waiting/)
+    assert.match(decided, /decision on candidate .* is recorded \(approved\)/)
+    assert.match(decided, /demo worker/)
+    assert.doesNotMatch(decided, /demo (approve|reject)|not a candidate/)
   })
 })
 

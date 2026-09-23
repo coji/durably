@@ -19,7 +19,9 @@ import { killOwnedChildren, runChild } from './engine/child.js'
 import { compareReports, comparisonToMarkdown } from './engine/compare.js'
 import {
   classifyRun,
+  DEMO,
   retryText,
+  uncertainCheckpoints,
   type FailureClassification,
 } from './engine/failure-reasons.js'
 import { repoRoot } from './engine/git.js'
@@ -352,6 +354,7 @@ async function diagnose(
   const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))
     ?.output as {
     target?: { kind?: string; repoPath?: string; workdir?: string }
+    checkpointsDir?: string
   } | null
   const terminal = ['completed', 'failed', 'cancelled'].includes(run.status)
   const target = setup?.target
@@ -366,26 +369,45 @@ async function diagnose(
     existsSync(target.workdir)
       ? `git -C ${shellQuote(target.repoPath)} worktree remove ${shellQuote(target.workdir)}`
       : null
-  const show = `pnpm demo status --run ${run.id}`
+  const show = `${DEMO} status --run ${run.id}`
+  const worker = `${DEMO} worker`
   if (run.status === 'pending')
     return {
       needsAttention: true,
       reason: 'queued; no worker has picked it up yet',
-      next: ['pnpm demo worker (if none is running)', show],
+      next: [`${worker}  # if none is running`, show],
       cleanup,
     }
   if (run.status === 'leased') {
     const expires = run.leaseExpiresAt ? Date.parse(run.leaseExpiresAt) : NaN
-    if (Number.isFinite(expires) && expires < now)
+    if (Number.isFinite(expires) && expires < now) {
+      const reason = `lease expired at ${run.leaseExpiresAt}; the worker holding it stopped or lost contact`
+      // A reclaimed run refuses an agent call that started without a
+      // completion, so it will stop there rather than resume past it.
+      const uncertain = uncertainCheckpoints(
+        setup?.checkpointsDir ?? null,
+        await durably.getStepAttempts(run.id),
+      )
+      if (uncertain.length > 0)
+        return {
+          needsAttention: true,
+          reason: `${reason}; an agent call it started has no completed checkpoint`,
+          next: [
+            `${worker}  # the reclaimed run stops at that call for a human to check`,
+            show,
+          ],
+          cleanup,
+        }
       return {
         needsAttention: true,
-        reason: `lease expired at ${run.leaseExpiresAt}; the worker holding it stopped or lost contact`,
+        reason,
         next: [
-          'pnpm demo worker (a worker reclaims the run and resumes it from its checkpoints)',
+          `${worker}  # a worker reclaims the run and resumes it from its checkpoints`,
           show,
         ],
         cleanup,
       }
+    }
     return {
       needsAttention: true,
       reason: `a worker is running it (lease held until ${run.leaseExpiresAt ?? 'unknown'})`,
@@ -395,28 +417,38 @@ async function diagnose(
   }
   if (run.status === 'waiting') {
     const waits = await durably.getWaits(run.id)
-    const approval = waits.find(
-      (w) => w.id === run.waitingOnWaitId && w.status === 'pending',
-    )
+    const wait = waits.find((w) => w.id === run.waitingOnWaitId)
     const candidateId = (
-      approval?.metadata as { candidateId?: unknown } | null | undefined
+      wait?.metadata as { candidateId?: unknown } | null | undefined
     )?.candidateId
-    if (approval && typeof candidateId === 'string') {
-      return {
-        needsAttention: true,
-        reason: `waiting for human approval of candidate ${candidateId}`,
-        next: [
-          `pnpm demo report --run ${run.id} (read the reviews first)`,
-          `pnpm demo approve --run ${run.id} --wait ${approval.id}`,
-          `pnpm demo reject --run ${run.id} --wait ${approval.id}`,
-        ],
-        cleanup,
+    if (wait && typeof candidateId === 'string') {
+      // Approved or rejected, but no worker has picked the run up yet.
+      if (wait.status === 'resolved') {
+        const decision = (wait.payload as { decision?: unknown } | null)
+          ?.decision
+        return {
+          needsAttention: true,
+          reason: `the decision on candidate ${candidateId} is recorded (${typeof decision === 'string' ? decision : wait.outcome}); a worker resumes the run`,
+          next: [`${worker}  # if none is running`, show],
+          cleanup,
+        }
       }
+      if (wait.status === 'pending')
+        return {
+          needsAttention: true,
+          reason: `waiting for human approval of candidate ${candidateId}`,
+          next: [
+            `${DEMO} report --run ${run.id}  # read the reviews first`,
+            `${DEMO} approve --run ${run.id} --wait ${wait.id}`,
+            `${DEMO} reject --run ${run.id} --wait ${wait.id}`,
+          ],
+          cleanup,
+        }
     }
     return {
       needsAttention: true,
       reason: 'waiting on an input that is not a candidate approval',
-      next: [`pnpm demo waits --run ${run.id}`],
+      next: [`${DEMO} waits --run ${run.id}`],
       cleanup,
     }
   }
@@ -427,7 +459,8 @@ async function diagnose(
       reason: `${failure.kind}: ${failure.reason}`,
       next: failure.next,
       failure,
-      cleanup,
+      // The worktree is evidence a human has to inspect first.
+      cleanup: failure.kind === 'uncertain-invocation' ? null : cleanup,
     }
   const conclusion = (run.output as { conclusion?: string } | null)?.conclusion
   return {
@@ -451,7 +484,7 @@ function diagnosisLines(run: Run, d: Diagnosis): string[] {
   )
   if (d.cleanup)
     lines.push(
-      `  cleanup: ${d.cleanup}  (keeps the branch; refuses a worktree with changes)`,
+      `  cleanup: ${d.cleanup}  # keeps the branch; refuses a worktree with changes`,
     )
   return lines
 }

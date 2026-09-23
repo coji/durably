@@ -185,6 +185,27 @@ describe('runner measurement on the real launch path', () => {
     })
     assert.equal(other?.kind, 'unclassified')
     assert.equal(other?.retryable, false)
+
+    // A cancel may land after a push or pull request that was never
+    // recorded, so a publishing run is not called retryable.
+    const cancel = (publish: boolean) =>
+      classifyFailure({
+        runId: 'r1',
+        status: 'cancelled',
+        output: null,
+        error: 'setup failed\n\nfatal: bad ref\n',
+        uncertain: [],
+        publish,
+      })
+    assert.equal(cancel(false)?.retryable, true)
+    assert.equal(cancel(true)?.kind, 'cancelled-publish')
+    assert.equal(cancel(true)?.retryable, false)
+    assert.match(cancel(true)?.humanCheck ?? '', /pull request/)
+    // The error detail stays on one line, and no step is a bare trigger.
+    assert.deepEqual(cancel(false)?.details, [
+      'error: setup failed | fatal: bad ref',
+    ])
+    assert.ok(cancel(false)?.next.every((n) => !/demo trigger/.test(n)))
   })
 
   it('keeps requested, effective, and reported settings separate', async () => {

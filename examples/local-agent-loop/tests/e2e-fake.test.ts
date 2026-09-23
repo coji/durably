@@ -295,7 +295,7 @@ describe('fake runs that stop', { timeout: 180000 }, () => {
           assert.ok(md.includes(heading), heading)
         if (kind === 'uncertain-invocation') {
           assert.ok(md.includes('NO — do not start a new run'))
-          assert.ok(!md.includes('- next: then start a new run'))
+          assert.ok(!md.includes('re-run the original trigger'))
         }
       }
       assert.equal(reasons.size, 3)
