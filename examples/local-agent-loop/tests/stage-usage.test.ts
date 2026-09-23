@@ -83,18 +83,38 @@ function row(
 
 describe('pricing meters', () => {
   it('prices cache legs at their own rates and bills the remainder as input', () => {
-    // gpt-5.6-sol: in 0.005, out 0.03 per 1K; cache read 10%, cache write 100%.
+    // gpt-5.6-sol: in 0.004, out 0.02 per 1K; OpenAI lists cache reads at
+    // 0.1x and cache writes at 1.25x input.
     const b = estimateCostBreakdown(
       'gpt-5.6-sol',
       usage(10_000, 1_000, { read: 8_000, write: 1_000 }),
     )
     assert.ok(b)
     assert.equal(b.cacheAware, true)
-    assert.ok(Math.abs((b.meters.input_tokens ?? 0) - 0.005) < 1e-9) // 1K non-cached
-    assert.ok(Math.abs((b.meters.input_cache_read_tokens ?? 0) - 0.004) < 1e-9)
+    assert.ok(Math.abs((b.meters.input_tokens ?? 0) - 0.004) < 1e-9) // 1K non-cached
+    assert.ok(Math.abs((b.meters.input_cache_read_tokens ?? 0) - 0.0032) < 1e-9)
     assert.ok(Math.abs((b.meters.input_cache_write_tokens ?? 0) - 0.005) < 1e-9)
-    assert.ok(Math.abs((b.meters.output_tokens ?? 0) - 0.03) < 1e-9)
-    assert.ok(Math.abs(b.totalUsd - 0.044) < 1e-9)
+    assert.ok(Math.abs((b.meters.output_tokens ?? 0) - 0.02) < 1e-9)
+    assert.ok(Math.abs(b.totalUsd - 0.0322) < 1e-9)
+  })
+
+  it('uses the cache-read rate of each model rather than a vendor default', () => {
+    // Opus 5.5 reads cache at 0.05x input and Fable 5.1 at 0.025x; the usual
+    // 0.1x would overstate the cache leg of an agent run, which is most of it.
+    const opus = estimateCostBreakdown(
+      'claude-opus-5-5',
+      usage(1_000_000, 0, { read: 1_000_000 }),
+    )
+    assert.ok(opus)
+    assert.ok(Math.abs((opus.meters.input_cache_read_tokens ?? 0) - 0.2) < 1e-9)
+    const fable = estimateCostBreakdown(
+      'claude-fable-5-1',
+      usage(1_000_000, 0, { read: 1_000_000 }),
+    )
+    assert.ok(fable)
+    assert.ok(
+      Math.abs((fable.meters.input_cache_read_tokens ?? 0) - 0.25) < 1e-9,
+    )
   })
 
   it('charges the Anthropic cache-write premium', () => {
@@ -125,7 +145,7 @@ describe('pricing meters', () => {
     const b = estimateCostBreakdown('gpt-5.6-sol', usage(1_000, 1_000))
     assert.ok(b)
     assert.equal(b.cacheAware, false)
-    assert.ok(Math.abs(b.totalUsd - 0.035) < 1e-9)
+    assert.ok(Math.abs(b.totalUsd - 0.024) < 1e-9)
   })
 })
 

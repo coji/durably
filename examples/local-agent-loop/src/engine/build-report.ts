@@ -80,6 +80,20 @@ export async function buildReport(
   notes.push(
     'Completed invocation checkpoints are reused without resending. A start-only checkpoint is reported as uncertain and stops the run.',
   )
+  const codexUnknownWrites = new Set(
+    rows
+      .filter(
+        (r) =>
+          r.measurement?.provider === 'codex' &&
+          r.measurement.usage != null &&
+          r.measurement.usage.cacheWriteTokens == null,
+      )
+      .map((r) => r.measurement?.invocationId ?? r.attemptId),
+  )
+  if (codexUnknownWrites.size > 0)
+    notes.push(
+      `cache writes unknown for ${codexUnknownWrites.size} Codex invocation(s): on a ChatGPT login the server reports 0 for every request (openai/codex#32479), so the cost estimate excludes the 1.25x cache-write premium and is a lower bound.`,
+    )
   const timings = stageTimings(rows)
   // Unknown when any stage timing is partial (missing attempts), so a
   // known-only sum is never presented as the whole-run stage cost.

@@ -232,7 +232,16 @@ providerが返すusageは、一回の呼び出しの**全モデル応答の合�
   で報告済みです。`patches/` のパッチでturn内の合計に直して
   います。thread累計の `total` は使いません。`--context reuse` では前回の呼び出し分
   まで含んでしまうからです。修正後の値はCodex自身のセッションログと一致することを
-  確認済みです。修正前は、実際には25回応答していた実装工程が1回分として記録され、
+  確認済みです。同じパッチで、上流が `0` 固定にしていた cache write も
+  app-serverが返す値を読むようにしています。ただしChatGPTログイン（サブスク）では、
+  サーバーが実際の書き込みに関係なく常に0を返します
+  （[openai/codex#32479](https://github.com/openai/codex/issues/32479)）。この環境の
+  33万応答のうち、確実に書き込みが起きた2,334件もすべて0でした。そのため
+  ChatGPTログインの0は不明として扱い、正の値だけを採用します。APIキーでは値が
+  実数なので0もそのまま使います。ログイン方式は `codex login status` で判定します。
+  cache writeが不明な呼び出しがあると、レポートは「書き込み割増を含まない下限」
+  と注記します。
+  修正前は、実際には25回応答していた実装工程が1回分として記録され、
   run全体のコストが約16分の1に見えていました。
 
 集計は `invocationId` で一度だけ数えます。同じcomplete checkpointを別attemptが
@@ -259,12 +268,33 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
 
 価格はsubscription請求額ではなく、各呼び出し時に保存した
 `api-equivalent-estimate` の参考値です。AI SDK v7 の usage 契約に合わせ、
-`inputTokens` 全体のうち cache read / cache write を各 meter の単価
-（cache read 10%、Anthropic の cache write 125%）で、残りを input 単価で
-計算します。cache legs が報告されなかった呼び出しは input 全体を定価で扱い、
+`inputTokens` 全体のうち cache read / cache write を各 meter の単価で、
+残りを input 単価で計算します。cache write はどちらも input の1.25倍です。
+cache read はモデルごとに違い、多くは0.1倍、Claude Opus 5.5 は0.05倍、
+Claude Fable 5.1 は0.025倍です。価格表は `src/engine/pricing.ts` にあり、
+確認日と出典を `PRICE_BASIS` に記録しています。cache legs が報告されなかった呼び出しは input 全体を定価で扱い、
 `costCacheAware: false` として区別します。レポートは保存済みの値を合計し、
 現在の価格表で再計算したとは表示しません。未知のmodelや欠けたusageを
 0円として扱いません。
+
+### モデルの選び方とサブスクでの制約
+
+ログイン済みCLI（サブスク）で使う前提なので、価格表に載っていても呼べない
+モデルがあります。2026-09-23 に実際に呼んで確かめた結果です。
+
+| モデル                                                        | サブスクで使えるか                                                 |
+| ------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | 使える                                                             |
+| `gpt-6-sol`, `gpt-6-luna`                                     | 使えない。ChatGPTアカウントのCodexでは400が返る。APIキーでは使える |
+| `claude-opus-5-5`, `claude-sonnet-5`                          | 使える                                                             |
+
+`claude-opus-5-5` は Claude Code 2.1.280 以上が必要です。
+`ai-sdk-provider-claude-code` は Agent SDK を固定版で同梱しており、最新の4.3.2でも
+2.1.278 までしか入らないので、ルートの `pnpm-workspace.yaml` の override で
+`@anthropic-ai/claude-agent-sdk` を 0.3.280 に上げています。
+
+`codex debug models` の一覧には、サブスクで呼べないモデルも出ます。一覧ではなく
+実際に呼べるかで判断してください。
 
 ### 複数 run の比較
 

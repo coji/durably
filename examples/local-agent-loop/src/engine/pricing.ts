@@ -13,8 +13,8 @@
  */
 export const PRICE_BASIS = {
   source:
-    'OpenAI docs / openai.com pricing posts; Anthropic docs + Sep-2026 pricing roundups',
-  checkedAt: '2026-09-21',
+    'developers.openai.com/api/docs/pricing (standard, short context); platform.claude.com/docs/en/about-claude/pricing',
+  checkedAt: '2026-09-23',
   basis: 'api-equivalent-estimate',
 } as const
 
@@ -30,25 +30,51 @@ export type PricingMeter = (typeof PRICING_METERS)[number]
 interface ModelPrice {
   in: number
   out: number
-  /** Cache read price as a multiple of `in`. */
+  /** Cache read price as a multiple of `in`. Varies by model, not by vendor. */
   cacheRead: number
-  /** Cache write price as a multiple of `in` (OpenAI charges no premium). */
+  /** Cache write price as a multiple of `in`. */
   cacheWrite: number
 }
 
-const OPENAI_CACHE = { cacheRead: 0.1, cacheWrite: 1 }
-/** Anthropic's 5-minute cache write premium; the 1h TTL (2x) is not modelled. */
+/**
+ * OpenAI lists cache writes at 1.25x input and cache reads at 0.1x for every
+ * current model. Not modelled: the long-context tier (2x input, 1.5x output
+ * past a threshold the page does not state in its text).
+ */
+const OPENAI_CACHE = { cacheRead: 0.1, cacheWrite: 1.25 }
+/**
+ * Anthropic's 5-minute cache write is 1.25x input; the 1-hour write (2x) is
+ * not modelled. Cache reads are 0.1x except where a model's row says
+ * otherwise.
+ */
 const ANTHROPIC_CACHE = { cacheRead: 0.1, cacheWrite: 1.25 }
 
 const PRICE_PER_1K: Record<string, ModelPrice> = {
+  // OpenAI, standard processing, short context.
   'gpt-6-astra': { in: 0.01, out: 0.05, ...OPENAI_CACHE },
-  'gpt-5.6-sol': { in: 0.005, out: 0.03, ...OPENAI_CACHE },
+  'gpt-6-sol': { in: 0.002, out: 0.01, ...OPENAI_CACHE },
+  'gpt-6-luna': { in: 0.0001, out: 0.0005, ...OPENAI_CACHE },
+  // Promotional price, stated as available at least through 2026-11-21.
+  'gpt-5.6-sol': { in: 0.004, out: 0.02, ...OPENAI_CACHE },
+  'gpt-5.6-terra': { in: 0.002, out: 0.012, ...OPENAI_CACHE },
   'gpt-5.6-luna': { in: 0.0002, out: 0.0012, ...OPENAI_CACHE },
-  'claude-fable-5-1': { in: 0.01, out: 0.05, ...ANTHROPIC_CACHE },
-  'claude-opus-5': { in: 0.005, out: 0.025, ...ANTHROPIC_CACHE },
-  'claude-sonnet-5': { in: 0.002, out: 0.01, ...ANTHROPIC_CACHE },
   'gpt-5-codex': { in: 0.00125, out: 0.01, ...OPENAI_CACHE },
   'gpt-5': { in: 0.00125, out: 0.01, ...OPENAI_CACHE },
+  // Anthropic. Cache reads are 0.025x on Fable 5.1 and 0.05x on Opus 5.5.
+  'claude-fable-5-1': {
+    in: 0.01,
+    out: 0.05,
+    ...ANTHROPIC_CACHE,
+    cacheRead: 0.025,
+  },
+  'claude-opus-5-5': {
+    in: 0.004,
+    out: 0.02,
+    ...ANTHROPIC_CACHE,
+    cacheRead: 0.05,
+  },
+  'claude-opus-5': { in: 0.005, out: 0.025, ...ANTHROPIC_CACHE },
+  'claude-sonnet-5': { in: 0.002, out: 0.01, ...ANTHROPIC_CACHE },
   'claude-opus-4-6': { in: 0.005, out: 0.025, ...ANTHROPIC_CACHE },
   'claude-sonnet-4-6': { in: 0.003, out: 0.015, ...ANTHROPIC_CACHE },
 }

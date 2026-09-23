@@ -6,6 +6,7 @@ import {
   type ReasoningEffort,
 } from 'ai-sdk-provider-codex-cli'
 
+import { runChild } from '../child.js'
 import { defaultModelFor, resolveEffort } from '../models.js'
 import type {
   AgentCallOptions,
@@ -17,6 +18,58 @@ import type {
 const VALID_EFFORTS = new Set<string>(
   CODEX_REASONING_EFFORTS as readonly string[],
 )
+
+export type CodexAuthMode = 'chatgpt' | 'api-key' | 'unknown'
+
+/**
+ * Whether a reported cache-write count can be believed.
+ *
+ * On a ChatGPT login the server returns `cache_write_tokens: 0` for every
+ * request, including ones that demonstrably wrote the cache: across 330,957
+ * responses on this machine, 2,334 went from nothing cached to a cache hit on
+ * the next call and every one reported 0 writes. Codex maps the field since
+ * 0.145.0; the zero is server-side and out of Codex's scope
+ * (openai/codex#32479). With an API key the value is real.
+ *
+ * So a positive count is always taken, a zero is taken only with an API key,
+ * and otherwise the leg is unknown rather than a zero that prices the 1.25x
+ * write premium out of the estimate.
+ */
+export function codexCacheWriteTokens(
+  reported: number | null | undefined,
+  auth: CodexAuthMode,
+): number | null {
+  if (typeof reported !== 'number') return null
+  if (reported > 0) return reported
+  return auth === 'api-key' ? reported : null
+}
+
+/**
+ * Classify `codex login status` output (codex-rs/cli/src/login.rs).
+ *
+ * Only the two modes whose cache-write behaviour is known are named. Bedrock
+ * keys, access tokens and workload identity fall to `unknown`, which keeps a
+ * zero from being believed without evidence while still taking any positive
+ * count.
+ */
+export function parseCodexAuthMode(statusOutput: string): CodexAuthMode {
+  if (/^Logged in using ChatGPT\b/m.test(statusOutput)) return 'chatgpt'
+  if (/^Logged in using an API key\b/m.test(statusOutput)) return 'api-key'
+  return 'unknown'
+}
+
+let authModePromise: Promise<CodexAuthMode> | null = null
+
+/** Probe the login once per process, through the owned-subprocess path. */
+function codexAuthMode(): Promise<CodexAuthMode> {
+  authModePromise ??= runChild('codex', ['login', 'status'], {
+    timeoutMs: 15000,
+    maxOutputChars: 2000,
+  })
+    .then((res) => parseCodexAuthMode(`${res.stdout}\n${res.stderr}`))
+    .catch(() => 'unknown' as const)
+  return authModePromise
+}
 
 /** Command line or preset table only — see the matching note in claude.ts. */
 function resolveModel(requestedModel: string | null): string {
@@ -113,8 +166,10 @@ export class CodexProvider implements AgentProvider {
       const input = result.usage.inputTokens ?? null
       const output = result.usage.outputTokens ?? null
       const cacheRead = result.usage.inputTokenDetails?.cacheReadTokens ?? null
-      const cacheWrite =
-        result.usage.inputTokenDetails?.cacheWriteTokens ?? null
+      const cacheWrite = codexCacheWriteTokens(
+        result.usage.inputTokenDetails?.cacheWriteTokens,
+        await codexAuthMode(),
+      )
       const nativeModel =
         typeof result.response?.modelId === 'string' &&
         result.response.modelId.length > 0
