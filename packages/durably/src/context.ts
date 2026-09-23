@@ -25,6 +25,8 @@ export function createStepContext(
   step: StepContext
   abortLeaseOwnership(): void
   preserveFailedParallelSteps(): boolean
+  /** The lowest-index step whose failure was recorded under this lease. */
+  firstFailedStep(): { name: string; index: number } | null
   suspension(): string | null
   settleSteps(): Promise<void>
   dispose: () => void
@@ -37,6 +39,17 @@ export function createStepContext(
   const stepParents = new Map<string, string | null>()
   let ambiguousLogScope = false
   let preserveFailedParallelSteps = false
+  // Failures recorded under this lease, by step name. Older leases' failed
+  // checkpoints survive recovery, so attribution must not read them back.
+  const failedSteps = new Map<string, number>()
+  function firstFailedStep(names?: ReadonlySet<string>) {
+    let first: { name: string; index: number } | null = null
+    for (const [name, index] of failedSteps) {
+      if (names && !names.has(name)) continue
+      if (!first || index < first.index) first = { name, index }
+    }
+    return first
+  }
 
   const controller = new AbortController()
 
@@ -312,6 +325,7 @@ export function createStepContext(
 
         // If we reach here, savedStep is truthy — the run is still leased.
         // Cancellation is handled above (persistStep returns null for cancelled runs).
+        if (!isCancelled) failedSteps.set(name, attemptIndex)
         eventEmitter.emit({
           type: 'step:fail',
           error: errorMessage,
@@ -487,17 +501,8 @@ export function createStepContext(
         const byName = new Map(
           rejected.map(({ name, reason }) => [name, reason]),
         )
-        const attempts = await storage.getStepAttempts(run.id)
-        const firstFailed = attempts
-          .filter(
-            (saved) =>
-              saved.leaseGeneration === leaseGeneration &&
-              saved.status === 'failed' &&
-              saved.interruptionReason === null &&
-              byName.has(saved.stepName),
-          )
-          .sort((a, b) => a.stepIndex - b.stepIndex)[0]
-        if (firstFailed) throw byName.get(firstFailed.stepName)
+        const firstFailed = firstFailedStep(new Set(byName.keys()))
+        if (firstFailed) throw byName.get(firstFailed.name)
       }
       if (rejected.length > 0) throw rejected[0].reason
 
@@ -542,6 +547,7 @@ export function createStepContext(
     step,
     abortLeaseOwnership: abortForLeaseLoss,
     preserveFailedParallelSteps: () => preserveFailedParallelSteps,
+    firstFailedStep: () => firstFailedStep(),
     suspension: () => suspensionId,
     async settleSteps() {
       // Rejected illegal waits must not release a slot while a sibling is still running.

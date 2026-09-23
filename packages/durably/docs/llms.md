@@ -428,7 +428,7 @@ For automatic cleanup, use the `retainRuns` option (see Core Concepts). Cleanup 
 
 Subscribe to job execution events. **Listeners run synchronously** in the worker's hot path — keep them fast and non-blocking. Use fire-and-forget (`void asyncFn()`) for expensive work.
 
-Run and step state events are emitted directly after their storage write, with no other storage access in between, so a listener that reads the run sees the new state. Events are in-process only: other runtimes on the same database see state, not events. `log:write` and `run:progress` persist in the background. Maintenance transitions (idle lease release or expiry failure, wait deadline expiry, retention purges) emit no events.
+Run and step state events (`run:*` lifecycle events, `step:start`, `step:complete`, `step:fail`) are emitted directly after their storage write, with no other storage access in between, so a listener that reads the run sees the new state. The reverse is not guaranteed: a poller can read the new state just before the event arrives, so wait for the event when you need its payload. Terminal checkpoint cleanup follows the event. Events are in-process only; other runtimes on the same database see state, not events. `step:cancel` follows a read-back of the run. `run:progress` persists in the background, and `log:write` is stored only with `withLogPersistence()`. Maintenance transitions (idle lease release or expiry failure, wait deadline expiry, retention purges) emit no events.
 
 ```ts
 // Run lifecycle events

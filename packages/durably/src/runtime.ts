@@ -42,14 +42,15 @@ function isoNow(clock: RuntimeClock): string {
 }
 
 /**
- * Execute a leased run using the given job definition.
- * Caller must resolve the job; unknown jobs are handled outside this function.
+ * Execute a leased run using the given job definition. A run whose job is
+ * not registered (`job` undefined) is leased and failed like any other run,
+ * so it goes through the same events.
  */
 export async function executeRun<
   TLabels extends Record<string, string> = Record<string, string>,
 >(
   run: Run<TLabels>,
-  job: RegisteredJob<unknown, unknown>,
+  job: RegisteredJob<unknown, unknown> | undefined,
   config: RuntimeConfig,
   environment: RuntimeEnvironment<TLabels>,
 ): Promise<RuntimeExecutionResult> {
@@ -59,6 +60,7 @@ export async function executeRun<
     step,
     abortLeaseOwnership,
     preserveFailedParallelSteps,
+    firstFailedStep,
     suspension,
     settleSteps,
     dispose,
@@ -176,6 +178,7 @@ export async function executeRun<
       leaseExpiresAt: run.leaseExpiresAt ?? isoNow(clock),
       labels: run.labels,
     })
+    if (!job) throw new Error(`Unknown job: ${run.jobName}`)
     const output = await job.fn(step, run.input)
     await settleSteps()
     if (suspension()) return await suspend()
@@ -226,18 +229,6 @@ export async function executeRun<
     }
 
     const errorMessage = getErrorMessage(error)
-    // Failed checkpoints survive lease recovery. Attribute this error to an
-    // attempt from the current lease, not an older failed branch. Look it up
-    // before failing the run so run:fail follows the write directly.
-    const attempts = await storage.getStepAttempts(run.id)
-    const failedStep = attempts
-      .filter(
-        (entry) =>
-          entry.leaseGeneration === run.leaseGeneration &&
-          entry.status === 'failed' &&
-          entry.interruptionReason === null,
-      )
-      .sort((a, b) => a.stepIndex - b.stepIndex)[0]
     const completedAt = isoNow(clock)
     const failed = await storage.failRun(
       run.id,
@@ -254,7 +245,9 @@ export async function executeRun<
         runId: run.id,
         jobName: run.jobName,
         error: errorMessage,
-        failedStepName: failedStep?.stepName ?? 'unknown',
+        // Only failures recorded under this lease: an older lease's failed
+        // checkpoint survives recovery but did not cause this failure.
+        failedStepName: firstFailedStep()?.name ?? 'unknown',
         labels: run.labels,
       })
       return { kind: 'failed' }

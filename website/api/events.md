@@ -355,12 +355,15 @@ durably.on('run:complete', (e) => {
 
 ## Ordering with persisted state
 
-A run or step state change is written to storage first, and its event is emitted directly after that write, before the runtime touches storage again. A listener that reads the run when its event arrives sees the new state, and code in the same process that observes the new state in storage has already had the event delivered. This covers `run:trigger`, `run:coalesced`, `run:leased`, `run:waiting`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`, `step:start`, `step:complete`, and `step:fail`.
+A run or step state change is written to storage first, and its event is emitted directly after that write, before the runtime touches storage again. A listener that reads the run when its event arrives therefore sees the new state. This covers `run:trigger`, `run:coalesced`, `run:leased`, `run:waiting`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`, `step:start`, `step:complete`, and `step:fail`. With `preserveSteps: false`, checkpoint cleanup for a terminal run happens after its event, so a listener can still read the steps.
+
+The guarantee runs from the write to the event, not the other way. Code that polls storage, such as `getRun()` or `waitForRun()` falling back to polling, can read the new state a moment before the event is delivered. To act on both the state and the event payload, wait for the event.
 
 Limits:
 
 - Events are in-process. Another runtime that shares the database sees the persisted state but receives no events; use `waitForRun()` or the HTTP subscription endpoints there.
-- `log:write` and `run:progress` are emitted when the job calls them; their writes finish in the background, so a listener may briefly read the previous value.
+- `step:cancel` is emitted when a step observes a cancellation made elsewhere, after reading the run back.
+- `log:write` and `run:progress` are emitted when the job calls them. Progress is written in the background; logs are stored only when `withLogPersistence()` is installed, by its `log:write` listener. A listener may briefly read the previous value.
 - Maintenance transitions emit no events: expired leases released or failed during idle maintenance, waits expiring at their deadline, and runs removed by `retainRuns` or `purgeRuns()`.
 
 ## Error Handling
