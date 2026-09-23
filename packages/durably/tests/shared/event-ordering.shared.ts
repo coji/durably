@@ -141,10 +141,22 @@ export function createEventOrderingTests(createDialect: () => Dialect) {
 
     it('failure of a run whose job is not registered', async () => {
       const { durably, trace } = await setup()
-      await durably.storage.enqueue({ jobName: 'not-registered', input: {} })
+      const failures: { error: string; failedStepName: string }[] = []
+      durably.on('run:fail', (event) => failures.push(event))
+      const { run } = await durably.storage.enqueue({
+        jobName: 'not-registered',
+        input: {},
+      })
       await durably.processOne()
       expectEventRightAfter(trace, 'claimNext', 'run:leased')
       expectEventRightAfter(trace, 'failRun', 'run:fail')
+      expect(failures).toEqual([
+        expect.objectContaining({
+          error: 'Unknown job: not-registered',
+          failedStepName: 'unknown',
+        }),
+      ])
+      expect((await durably.getRun(run.id))?.status).toBe('failed')
     })
 
     it('suspension on a durable wait', async () => {

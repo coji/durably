@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 #### @coji/durably
 
-- **Events follow their state writes directly**: `run:fail` and `run:cancel` are now emitted immediately after the status write, as `run:complete` already was. Before, a listener that read the run on these events could run a storage round trip behind. `run:fail` no longer reads step attempts back to name the failed step, so a read error on the failure path cannot leave the run leased. The ordering is documented and tested on SQLite, PostgreSQL and the browser.
-- **Unregistered jobs**: a run whose job is not registered in the worker now emits `run:leased` and `run:fail` (with `failedStepName: 'unknown'`), like any other failed run.
+- **Events follow their state writes directly**: `run:fail` and `run:cancel` are now emitted immediately after the status write, as `run:complete` already was. Before, code polling storage could see `failed` or `cancelled` a storage round trip before the event. `run:fail` now names the failed step from the failures recorded under the current lease instead of reading attempts back, and a step name that fails twice is attributed to its first failure. The ordering is documented and tested on SQLite, PostgreSQL and the browser.
+- **Unregistered jobs**: a run whose job is not registered in the worker now emits `run:leased` and `run:fail` (with `failedStepName: 'unknown'`), like any other failed run. It is also cleaned up like one: with `preserveSteps: false` its checkpoints and logs are deleted.
 - **`cancel()` cleanup**: a failure to delete checkpoints after a committed cancellation is reported as `worker:error` (`context: 'cancel-cleanup'`) instead of rejecting `cancel()`.
 - **Stable run and log ordering**: `getRuns()` and `storage.getLogs()` break creation-time ties by ID, so runs or logs written in the same millisecond keep a deterministic order and `limit`/`offset` pages no longer overlap or skip.
 

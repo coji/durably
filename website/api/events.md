@@ -315,7 +315,7 @@ durably.on('worker:error', (event) => {
   // event: {
   //   type: 'worker:error',
   //   error: string,
-  //   context: string,  // e.g., 'lease-renewal'
+  //   context: string,  // e.g., 'lease-renewal', 'cancel-cleanup'
   //   runId?: string,
   //   timestamp: string,
   //   sequence: number
@@ -355,7 +355,7 @@ durably.on('run:complete', (e) => {
 
 ## Ordering with persisted state
 
-A run or step state change is written to storage first, and its event is emitted directly after that write, before the runtime touches storage again. A listener that reads the run when its event arrives therefore sees the new state. This covers `run:trigger`, `run:coalesced`, `run:leased`, `run:waiting`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`, `step:start`, `step:complete`, and `step:fail`. With `preserveSteps: false`, checkpoint cleanup for a terminal run happens after its event, so a listener can still read the steps.
+A run or step state change is written to storage first, and its event is emitted directly after that write, before the runtime touches storage again. A listener that reads the run when its event arrives therefore sees the new state. This covers `run:trigger`, `run:coalesced`, `run:leased`, `run:waiting`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`, `step:start`, `step:complete`, and `step:fail`. With `preserveSteps: false`, checkpoint and log cleanup for a terminal run starts once listeners have returned. Listeners are not awaited, so an asynchronous listener, or a read on another connection, may find the steps already deleted; set `preserveSteps: true` to read them after a run ends.
 
 The guarantee runs from the write to the event, not the other way. Code that polls storage, such as `getRun()` or `waitForRun()` falling back to polling, can read the new state a moment before the event is delivered. To act on both the state and the event payload, wait for the event.
 

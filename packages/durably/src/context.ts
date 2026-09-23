@@ -325,7 +325,11 @@ export function createStepContext(
 
         // If we reach here, savedStep is truthy — the run is still leased.
         // Cancellation is handled above (persistStep returns null for cancelled runs).
-        if (!isCancelled) failedSteps.set(name, attemptIndex)
+        // Keep a name's first failure: a later retry of the same name must
+        // not hide an earlier, lower-index failure.
+        if (!isCancelled && !failedSteps.has(name)) {
+          failedSteps.set(name, attemptIndex)
+        }
         eventEmitter.emit({
           type: 'step:fail',
           error: errorMessage,

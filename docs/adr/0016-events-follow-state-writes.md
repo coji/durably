@@ -15,7 +15,7 @@ The order between a state write and its event was never specified. `run:complete
 A run or step state event is emitted directly after the storage write that makes the change, before the runtime accesses storage again. This covers `run:trigger`, `run:coalesced`, `run:leased`, `run:waiting`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`, `step:start`, `step:complete`, and `step:fail`.
 
 - Anything an event needs is known before the write or computed without storage. `run:fail` names the failed step from the failures the step context recorded under the current lease instead of reading attempts back.
-- Terminal checkpoint cleanup (`preserveSteps: false`) follows the event for every terminal state. A cleanup failure after a committed cancellation is reported as `worker:error` rather than rejecting `cancel()`.
+- Terminal checkpoint cleanup (`preserveSteps: false`) starts after the event for every terminal state. A cleanup failure after a committed cancellation is reported as `worker:error` rather than rejecting `cancel()`.
 - A run whose job is not registered goes through the runtime kernel like any other run, so it emits `run:leased` and `run:fail`.
 - A shared test records every storage call, resolution and event in one sequence and checks that each event is the next entry after its write, on SQLite, PostgreSQL and the browser.
 
@@ -26,7 +26,7 @@ The guarantee is one-directional and in-process. A concurrent reader can observe
 - A listener that reads the run on a state event sees that state.
 - Code that needs an event's payload must wait for the event, not for the state; the documentation says so.
 - New state transitions must keep lookups and cleanup out of the gap between write and emit, and the ordering test catches a regression deterministically.
-- A listener on `run:cancel` can now read checkpoints that cleanup removes shortly after, as listeners on `run:complete` and `run:fail` already could.
+- Terminal cleanup starts once synchronous listeners return, for `run:cancel` as for `run:complete` and `run:fail`. Listeners are not awaited, so only a read started synchronously may still see the checkpoints; `preserveSteps: true` keeps them.
 
 ## Rejected Alternatives
 
