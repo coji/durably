@@ -79,8 +79,16 @@ async function resolveVersionsUncached(
   return base
 }
 
-export interface ConfigVersionInput {
+/** One role's fixed settings, as they enter the config version. */
+export interface ConfigVersionProfile {
   provider: string
+  requestedModel: string | null
+  requestedEffort: string | null
+  effectiveModel: string | null
+  effectiveEffort: string | null
+}
+
+export interface ConfigVersionInput {
   contextMode: string
   instructionsVersion: string
   maxIterations: number
@@ -92,27 +100,39 @@ export interface ConfigVersionInput {
    */
   agentTimeoutMs: number
   checkTimeoutMs: number
-  code: { model: string | null; effort: string | null }
-  review: { model: string | null; effort: string | null }
+  /** Implementation and repair share one profile. */
+  code: ConfigVersionProfile
+  correctness: ConfigVersionProfile
+  edgeCases: ConfigVersionProfile
+}
+
+function canonicalProfile(p: ConfigVersionProfile): ConfigVersionProfile {
+  return {
+    provider: p.provider,
+    requestedModel: p.requestedModel,
+    requestedEffort: p.requestedEffort,
+    effectiveModel: p.effectiveModel,
+    effectiveEffort: p.effectiveEffort,
+  }
 }
 
 /**
  * Stable hash of the fixed run configuration. Two runs share a config
- * version exactly when their provider, models, efforts, context mode,
- * iteration budget, and instruction set are identical — the unit of a fair
- * comparison. Stored on every LLM attempt as `configVersion`.
+ * version exactly when every role's provider, models and efforts, the context
+ * mode, iteration budget, and instruction set are identical — the unit of a
+ * fair comparison. Stored on every LLM attempt as `configVersion`.
  */
 export function configVersionOf(input: ConfigVersionInput): string {
   const canonical = JSON.stringify({
-    provider: input.provider,
     contextMode: input.contextMode,
     instructionsVersion: input.instructionsVersion,
     maxIterations: input.maxIterations,
     target: input.target,
     agentTimeoutMs: input.agentTimeoutMs,
     checkTimeoutMs: input.checkTimeoutMs,
-    code: { model: input.code.model, effort: input.code.effort },
-    review: { model: input.review.model, effort: input.review.effort },
+    code: canonicalProfile(input.code),
+    correctness: canonicalProfile(input.correctness),
+    edgeCases: canonicalProfile(input.edgeCases),
   })
   return createHash('sha256').update(canonical).digest('hex').slice(0, 16)
 }

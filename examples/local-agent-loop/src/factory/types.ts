@@ -2,7 +2,7 @@
 
 import type { StepContext } from '@coji/durably'
 
-import type { AgentProvider, ProviderName } from '../engine/providers/types.js'
+import type { AgentProvider } from '../engine/providers/types.js'
 import type {
   CandidateRef,
   ContextMode,
@@ -25,9 +25,16 @@ export type StageName =
 
 export type CodeRole = 'implement' | 'repair'
 export type ReviewLens = 'correctness' | 'edge-cases'
+/** The three roles that each get their own provider and profile. */
+export type ProfileRole = 'code' | ReviewLens
+export const PROFILE_ROLES: readonly ProfileRole[] = [
+  'code',
+  'correctness',
+  'edge-cases',
+]
 
 export interface FactorySetup {
-  provider: ProviderName
+  /** True when every role runs the fake provider. Roles never mix the two. */
   fake: boolean
   contextMode: ContextMode
   /** What this run is pointed at; rebuilt into a live Target on every replay. */
@@ -36,10 +43,12 @@ export interface FactorySetup {
   instructionsVersion: string
   /** Hash of the fixed profile; equal across runs that are fair to compare. */
   configVersion: string
-  profiles: {
-    code: ResolvedProfile
-    review: ResolvedProfile
-  }
+  /**
+   * One fixed profile per role. Implementation and repair share `code`; the
+   * two reviewers each have their own, so a reviewer can run on a different
+   * provider or model than the code it judges.
+   */
+  profiles: Record<ProfileRole, ResolvedProfile>
   maxIterations: number
   agentTimeoutMs: number
   /**
@@ -115,7 +124,8 @@ export interface StageDecision {
 }
 
 export interface FactoryServices {
-  provider: AgentProvider
+  /** One provider per role, rebuilt from `setup.profiles` on every replay. */
+  providers: Record<ProfileRole, AgentProvider>
   /** Rebuilt from `setup.target` on every replay. */
   target: Target
 }

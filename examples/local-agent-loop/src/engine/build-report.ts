@@ -3,6 +3,7 @@ import type { AnyDurably } from '@coji/durably'
 
 import { PRICE_BASIS } from './pricing.js'
 import {
+  roleUsage,
   stageTimings,
   stageUsage,
   stageVisits,
@@ -10,7 +11,62 @@ import {
   totalStageMs,
   toAttemptRow,
   type LoopReport,
+  type ReportDelivery,
+  type ReportInputFile,
+  type ReportInputs,
+  type RoleProfileRow,
 } from './report.js'
+
+interface PersistedProfile {
+  provider?: string
+  requestedModel?: string | null
+  requestedEffort?: string | null
+}
+
+interface PersistedInput {
+  provider?: string
+  model?: string
+  effort?: string
+  profiles?: Record<string, PersistedProfile>
+  target?: {
+    inputFiles?: Record<string, ReportInputFile | null>
+  }
+}
+
+const ROLES = ['code', 'correctness', 'edge-cases'] as const
+
+/**
+ * Each role's requested settings, read from the run input. A run triggered
+ * without per-role profiles used the single provider, model and effort for
+ * every role.
+ */
+function profileRows(input: PersistedInput | null): RoleProfileRow[] {
+  return ROLES.map((role) => {
+    const p = input?.profiles?.[role]
+    return p
+      ? {
+          role,
+          provider: p.provider ?? null,
+          requestedModel: p.requestedModel ?? null,
+          requestedEffort: p.requestedEffort ?? null,
+        }
+      : {
+          role,
+          provider: input?.provider ?? null,
+          requestedModel: input?.model ?? null,
+          requestedEffort: input?.effort ?? null,
+        }
+  })
+}
+
+function inputHashes(input: PersistedInput | null): ReportInputs {
+  const files = input?.target?.inputFiles
+  return {
+    task: files?.['task'] ?? null,
+    spec: files?.['spec'] ?? null,
+    dispositions: files?.['dispositions'] ?? null,
+  }
+}
 
 export async function buildReport(
   durably: Pick<AnyDurably, 'getRun' | 'getStepAttempts' | 'getWaits'>,
@@ -20,12 +76,13 @@ export async function buildReport(
   if (!run) throw new Error(`run not found: ${runId}`)
   const attempts = await durably.getStepAttempts(runId)
   const waits = await durably.getWaits(runId)
-  const input = run.input as { provider?: string } | null
+  const input = run.input as PersistedInput | null
   const fake = (input?.provider ?? '') === 'fake'
   const output = run.output as {
     fake?: boolean
     conclusion?: string
     approved?: boolean
+    delivery?: Partial<ReportDelivery> | null
   } | null
   const isFake = output?.fake ?? fake
   const notes: string[] = []
@@ -127,6 +184,16 @@ export async function buildReport(
   }))
   const usage = stageUsage(rows)
   const visits = stageVisits(rows)
+  const recorded = output?.delivery
+  const delivery: ReportDelivery | null = recorded
+    ? {
+        kind: recorded.kind ?? 'unknown',
+        location: recorded.location ?? '',
+        summary: recorded.summary ?? '',
+        branch: recorded.branch ?? null,
+        commit: recorded.commit ?? null,
+      }
+    : null
   return {
     runId,
     jobName: run.jobName,
@@ -146,6 +213,9 @@ export async function buildReport(
       stageVisits: visits,
     }),
     stageUsage: usage,
+    roleUsage: roleUsage(rows, profileRows(input)),
+    inputs: inputHashes(input),
+    delivery,
     stageVisits: visits,
     realLlmCallCount,
     fullLoopVerified,

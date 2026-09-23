@@ -48,6 +48,12 @@ export interface RepoTargetConfig {
   checkTimeoutMs: number
   /** Task text handed to the implementer (an issue body, or free text). */
   task: string
+  /** Specification text handed to the implementer and both reviewers. */
+  spec: string | null
+  /** Prior review dispositions, handed to the reviewers only. */
+  dispositions: string | null
+  /** Where each input file came from and what it hashed to at trigger time. */
+  inputFiles: InputFiles
   /** Source issue, when the task came from one. */
   issue: { number: number; title: string; url: string } | null
   /** Where the delivered patch is written. */
@@ -58,12 +64,42 @@ export interface RepoTargetConfig {
 
 export type TargetConfig = SubjectTargetConfig | RepoTargetConfig
 
+/**
+ * An input file as it was read when the run was triggered. The content itself
+ * is carried in the target config; this records where it came from and the
+ * SHA-256 of the bytes that were read, so a report can name exactly what the
+ * run was given even after the file on disk has changed.
+ */
+export interface InputFileRef {
+  path: string
+  sha256: string
+}
+
+export interface InputFiles {
+  task: InputFileRef | null
+  spec: InputFileRef | null
+  dispositions: InputFileRef | null
+}
+
+/**
+ * Text that came from whoever started the run rather than from the factory.
+ * Prompts fence it off as data, so nothing inside it reads as an instruction.
+ */
+export interface UntrustedInput {
+  label: 'TASK' | 'SPEC' | 'DISPOSITIONS'
+  content: string
+}
+
 /** What the human receives when a run finishes. */
 export interface Delivery {
   kind: 'snapshot' | 'patch' | 'pull-request'
   /** Directory, patch file, or pull request URL. */
   location: string
   summary: string
+  /** Branch holding the delivered commit; null when there is no branch. */
+  branch: string | null
+  /** Commit sha of the delivered candidate; null when it is not a commit. */
+  commit: string | null
 }
 
 export interface SealArgs {
@@ -97,6 +133,12 @@ export interface Target {
   taskBrief(): string
   /** Constraints appended to the implementation prompt. */
   implementationRules(): string[]
+  /**
+   * Caller-supplied text a role is shown, fenced off as data. The implementer
+   * gets the task and the spec; each reviewer gets the task, the spec and the
+   * dispositions.
+   */
+  untrustedInputs(role: 'code' | 'correctness' | 'edge-cases'): UntrustedInput[]
   /**
    * What each reviewer is asked to check. Reviewers see only the candidate
    * and the trusted context, so the questions have to come from whoever knows

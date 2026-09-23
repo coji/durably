@@ -17,6 +17,7 @@ import {
   resolveCommit,
 } from '../engine/git.js'
 import type {
+  InputFiles,
   RepoTargetConfig,
   Target,
   TargetConfig,
@@ -37,8 +38,13 @@ export interface PrepareRepoArgs {
   /** Ref the work starts from. */
   baseRef: string
   branch: string
+  /** Run directory under the fixed state root; never inside the repository. */
   root: string
+  /** Fixed at trigger time; the source files are never read again. */
   task: string
+  spec: string | null
+  dispositions: string | null
+  inputFiles: InputFiles
   issue: { number: number; title: string; url: string } | null
   checkCommand: string[]
   setupCommand: string[] | null
@@ -94,6 +100,9 @@ export async function prepareRepoTarget(
     checkCommand: args.checkCommand,
     checkTimeoutMs: args.checkTimeoutMs,
     task: args.task,
+    spec: args.spec,
+    dispositions: args.dispositions,
+    inputFiles: args.inputFiles,
     issue: args.issue,
     deliveryDir: join(args.root, 'delivery'),
     publish: args.publish,

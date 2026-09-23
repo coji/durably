@@ -1,3 +1,4 @@
+# Left over from before runs moved to ~/.local/state/local-agent-loop.
 local-agent-loop.db
 local-agent-loop.db-*
 runs/

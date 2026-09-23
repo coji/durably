@@ -22,10 +22,9 @@ async function waitFor(
 describe('candidate-bound approval', { timeout: 180000 }, () => {
   it('returns the reviewed candidate even when the editable workdir changes', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'candidate-approval-'))
-    process.env.DURABLY_DB = join(dir, 'run.db')
     process.env.FAKE_FAIL_FIRST = '0'
     delete process.env.FAKE_REVIEW_SEQUENCE
-    const durably = createAgentDurably()
+    const durably = createAgentDurably({ stateRoot: dir })
     await durably.init()
     try {
       const run = await durably.jobs.agentLoop.trigger({
@@ -75,10 +74,9 @@ describe('candidate-bound approval', { timeout: 180000 }, () => {
 
   it('fails when the candidate itself changes during approval wait', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'candidate-tamper-'))
-    process.env.DURABLY_DB = join(dir, 'run.db')
     process.env.FAKE_FAIL_FIRST = '0'
     delete process.env.FAKE_REVIEW_SEQUENCE
-    const durably = createAgentDurably()
+    const durably = createAgentDurably({ stateRoot: dir })
     await durably.init()
     try {
       const run = await durably.jobs.agentLoop.trigger({

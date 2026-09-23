@@ -125,29 +125,62 @@ Candidate IDを読み、signal payloadにも同じIDを入れます。拒否は 
 
 ## 実リポジトリに対して動かす
 
-同梱の題材ではなく、実際のリポジトリのissueを働かせる場合です。
+同梱の題材ではなく、実際のリポジトリの作業を渡す場合です。リポジトリごとに変わらない
+設定は、対象リポジトリ直下の `factory.json` で管理します。
+
+```json
+{
+  "check": ["pnpm", "validate"],
+  "setup": ["pnpm", "install", "--frozen-lockfile"],
+  "base": "main",
+  "profiles": {
+    "code": { "provider": "codex", "model": "gpt-5.6-sol", "effort": "medium" },
+    "review": {
+      "correctness": { "provider": "codex", "model": "gpt-5.6-terra" },
+      "edge-cases": { "provider": "claude", "model": "claude-sonnet-5" }
+    }
+  }
+}
+```
+
+これがあれば、作業内容を書いたファイルを渡すだけで起動できます。
 
 ```bash
 pnpm --filter example-local-agent-loop demo trigger \
-  --provider codex --repo ~/progs/myapp --issue 234 \
-  --check "pnpm validate" --setup "pnpm install --frozen-lockfile"
+  --repo ~/progs/myapp --task-file ~/work/task.md \
+  [--spec-file ~/work/spec.md] [--dispositions-file ~/work/dispositions.md]
 ```
 
 - `--repo` のリポジトリから `git worktree` を切り、その中だけで作業します。
   あなたが開いているcheckoutは一切動きません。
-- `--issue` は `gh issue view` で本文を取り、実装promptのTASKにします。
-  issueの代わりに `--task "..."` を直接渡すこともできます。
-- `--check` は**エージェントが走り出す前に固定される採点コマンド**です。argvとして
-  そのまま実行するのでshellではありません。これを渡さないと起動しません。
+- 作業内容は `--task-file`、`--task "..."`、`--issue 234` のどれか一つで渡します。
+  `--issue` は `gh issue view` で本文を取ります。
+- `--spec-file` は実装とレビュー二つの全員に、`--dispositions-file`（過去の
+  レビュー指摘をどう扱ったか）はレビューだけに渡ります。どれも中身を解釈しない
+  UTF-8テキストです。promptでは「信頼しないデータ」として区切った区画に入り、
+  factoryの指示や出力形式とは混ざりません。
+- `check` は**エージェントが走り出す前に固定される採点コマンド**です。argvとして
+  そのまま実行するのでshellではありません。configにもフラグにも無ければ起動しません。
   何を直せば通るのかが決まっていない依頼は、そもそもファクトリーに向きません。
-- `--setup` は新しいworktreeに依存をインストールするためのものです。省略すると
-  installなしで `--check` が走ります。
+- `setup` は新しいworktreeに依存をインストールするためのものです。省略すると
+  installなしで `check` が走ります。`base` の既定は `HEAD` です。
+- `--check`、`--setup`、`--base` を付けるとconfigの値より優先します。別の場所の
+  configは `--config <path>` で選べます。相対パスはCLIプロセスのcwdから解決します。
+  `pnpm --filter` はpackageのディレクトリでCLIを動かすので、パスは絶対パスで
+  渡してください。
+- `profiles` は `code`（実装と修正）、`review.correctness`、`review.edge-cases` の
+  三役割を別々に指定できます。configが省いた役割と、役割の中で省いた項目だけを
+  `--provider`、`--model`、`--effort` とpresetで補います。明示した役割の値が他の
+  役割やフラグで上書きされることはありません。fakeと実providerを役割ごとに混ぜる
+  ことはできません。
 - timeoutの既定値はターゲットで変わります。実リポジトリはagent呼び出し30分、
   検査15分。同梱題材はそれぞれ5分と2分です。`AGENT_TIMEOUT_MS` と
   `TEST_TIMEOUT_MS` で上書きできます。
 - 反復ごとにcommitして封印します。検証・レビュー・成果物は同じcommitを見ます。
-- 既定の成果物は `runs/<runId>/delivery/<candidate>.patch` です。
-  `--publish` を付けるとブランチをpushしてDraft PRを作ります。
+- 既定の成果物は `~/.local/state/local-agent-loop/runs/<runId>/delivery/<candidate>.patch`
+  です。issueなしのrunのbranchは `factory/<runId>` で、承認されたcommitはこの
+  branchに残ります。`status` とreportがbranch名とcommit SHAを表示します。
+  `--publish` を付けるとbranchをpushしてDraft PRを作ります。
 
 `--publish` を付けない限り、外向きの操作は起きません。まずpatchで確かめてから
 PRに進むのが安全です。
@@ -155,6 +188,68 @@ PRに進むのが安全です。
 人間の承認待ちは、実リポジトリでは既定で入りません。Draft PR自体が人間の
 レビュー対象で、マージするのも人間だからです。`--approve manual` で
 同梱題材と同じ承認waitを挟めます。
+
+### trigger時点で固定されるもの
+
+`factory.json`、task、spec、dispositionsは `trigger` の時点で一度だけ読みます。
+フラグとpresetを適用した後の設定と入力ファイルの本文をrun inputに保存し、各入力
+ファイルのSHA-256も記録します。workerは元のファイルを読み直さないので、trigger後に
+ファイルを書き換えても、そのrunの設定とpromptは変わりません。reportには各入力
+ファイルのpathとSHA-256が出ます。
+
+### durably checkoutを固定して呼ぶ
+
+コードを対象リポジトリへコピーせず、durablyのcheckoutを特定のcommitに固定して
+そのまま呼ぶこともできます。
+
+```bash
+git -C ~/src/durably fetch
+git -C ~/src/durably checkout <commit>
+pnpm -C ~/src/durably install --frozen-lockfile
+pnpm -C ~/src/durably --filter example-local-agent-loop demo worker     # Terminal 1
+pnpm -C ~/src/durably --filter example-local-agent-loop demo trigger \
+  --repo "$PWD" --task-file "$PWD/task.md"                                # Terminal 2
+```
+
+対象リポジトリに置くのは `factory.json` と作業内容のファイルだけです。固定する
+commitは利用側で記録し、上げるときは意図してcheckoutし直します。コピーする方式との
+比較は [docs/porting.md](docs/porting.md) にあります。
+
+### DBと作業物の置き場所
+
+DBと全runのデータは `~/.local/state/local-agent-loop/` に置きます。
+
+```text
+~/.local/state/local-agent-loop/
+  local-agent-loop.db              run、step、attempt、wait
+  runs/<runId>/
+    work/                          worktree（同梱題材ではコピー）
+    operation-checkpoints/         LLM呼び出しと検証のcheckpoint
+    verification-scratch/          検証用の一時領域
+    delivery/<candidate>.patch     成果物
+```
+
+worker、trigger、status、waits、approve、report、compareはすべて引数なしで同じDBを
+見ます。ディレクトリが無ければDBを開く前に作ります。durablyのcheckoutの中にも、対象
+リポジトリの中にも、DBや `runs/` は作りません。checkoutをどのcommitに切り替えても、
+過去のrunはそのまま読めます。置き場所を変える引数や環境変数はありません。二つの
+プロセスが別のDBを見ると、runが黙って見えなくなるからです。
+
+### 使用量の責任範囲
+
+factoryが責任を持つのは、factoryのDBと `report --format json` までです。利用側で
+使用量の台帳をつけている場合は、run終了後に利用側がreportを読んで取り込みます。
+factoryから台帳へ書き込むことはしません。
+
+```bash
+pnpm --filter example-local-agent-loop demo report --run <runId> --format json \
+  | jq '{runId, configVersion, inputs, delivery, roleUsage, summary}'
+```
+
+`roleUsage` は `code`、`correctness`、`edge-cases` の三行で、それぞれrequested
+provider/model/effort、invocation数、token内訳、合計token、cost、`complete` を
+持ちます。fake providerのようにusageを返さない呼び出しは0にせず、tokenとcostを
+`null`、`complete` を `false` にします。
 
 ## reuse / fresh 比較
 
@@ -202,8 +297,8 @@ startだけが残った場合の扱いは、その仕事を送り直して良い
   Candidateを読み、scratchディレクトリへ書くだけなので、再実行は無料で同じ
   判定になります。workerを `kill -9` する再開デモを恒久的に詰まらせません。
 
-作業物とcheckpointは `runs/<runId>/` に残ります。独自daemonや送信管理DBは
-ありません。
+作業物とcheckpointは `~/.local/state/local-agent-loop/runs/<runId>/` に
+残ります。独自daemonや送信管理DBはありません。
 
 この契約は「結果受信後、Durably checkpoint前」の重複を防ぎます。一方、CLIが
 作業を終えた直後かつcomplete checkpoint前にプロセスを強制終了した場合は未確定
@@ -218,7 +313,8 @@ LLM呼び出しはすべて `src/engine/runner.ts` を通り、attempt metadata�
 - 通常input、cache read、cache write、output、total token
 - usageの単位（このサンプルは一provider invocation）と取得元
 - elapsed、result、error、interruption reason、API換算参考価格とmeter別内訳
-- `configVersion`（provider、model、effort、context、指示版、反復上限のhash）
+- `configVersion`（三役割それぞれのprovider、model、effort、context、指示版、
+  反復上限、対象、timeoutのhash）
 
 providerが返すusageは、一回の呼び出しの**全モデル応答の合計**でなければいけません。
 エージェントCLIは一回の呼び出しの中で何十回もモデルを呼ぶので、最後の応答だけでは
@@ -260,9 +356,14 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
 - **Summary**: run 1本を1行に畳んだ値。success、lead time（trigger→終了）、
   work（工程実作業の合計）、human wait とその lead time 比、LLM呼び出し数、
   total tokens、cost、cost per success（成功したrunだけ）、repairs、review rounds
+- **Inputs / Delivery**: task、spec、dispositionsの各ファイルのSHA-256と、
+  成果物の場所、branch名、commit SHA
 - **Stage usage**: 工程ごとの visits / reworked（同じ工程への再突入＝手戻り）、
   invocation数、in / cache-read / cache-write / out / total、cost。
   いずれかの呼び出しが未計上なら PARTIAL、価格不明なら unknown
+- **Role usage**: `code`、`correctness`、`edge-cases` ごとのrequested
+  provider/model/effort、invocation数、token、cost、完全性。二つのレビューを
+  別の行に分けるので、役割ごとに違うmodelを使ったrunでも内訳が混ざりません
 - **Timing / Attempts / Waits**: 従来どおりの工程別 work / wall 時間、
   呼び出しごとの生データ、承認待ちの inputWait / executionSlotWait
 
@@ -321,8 +422,10 @@ repairs の中央値を見ます。unknown は統計から外して件数だけ�
   ありません。
 - 同じsessionへ並列送信しません。並列なのは新規sessionを使う二つのreviewだけ
   です。
-- model、effort、指示版、tool、cwdを途中で替えるhandoffは未実装です。初版では
-  setup時に解決したprofileをrun中固定します。
+- model、effort、指示版、tool、cwdを途中で替えるhandoffは未実装です。
+  trigger時に解決した三役割のprofileをrun中固定します。
+- 実装と修正のsession継続は、`code` 役割のprovider、profile ID、cwd、指示版が
+  一致するときだけです。レビューのprofileは関係しません。
 - fake providerは決定的なローカル練習用で、実LLM検証として数えません。
 
 ## fake mode
@@ -361,7 +464,7 @@ src/
     types.ts        CandidateRef / SessionRef / ResolvedProfile
   factory/          工程のつなぎ方（何を作るかは知らない）
     target.ts       Targetインターフェース：targetsとの境界
-    job.ts          decision保存とStage dispatch
+    job.ts          役割別profileの固定、decision保存とStage dispatch
     stages.ts       code / verify / review / approve / finish / stop
     policy.ts       次に実行する工程の決定
     prompts.ts      promptの骨格（TASKとRULESはtargetが埋める）
@@ -370,9 +473,9 @@ src/
     subject.ts      同梱の題材。固定テストで採点、成果物はディレクトリ
     repo.ts         実リポジトリ。worktreeで作業、commitで封印、patch/PRを出す
     index.ts        setup時のprepareと、replay時のcreateTarget
-  cli.ts, durably.ts  配線
+  cli.ts            factory.jsonと入力ファイルの読み込み、trigger時の固定
+  durably.ts        固定state directoryのDB
 subject/            変更しないバグ入り題材
-runs/, local-agent-loop.db   gitignored runtime data
 ```
 
 境界の形は `engine/verification.ts` と `factory/target.ts` によく出ています。

@@ -86,6 +86,53 @@ export interface StageVisits {
   reworked: number
 }
 
+/** A role's requested settings, as fixed when the run was triggered. */
+export interface RoleProfileRow {
+  role: string
+  provider: string | null
+  requestedModel: string | null
+  requestedEffort: string | null
+}
+
+/**
+ * Token and cost consumption of one role (code, correctness, edge-cases),
+ * counted once per invocation. Unlike `StageUsage`, the two reviewers are
+ * separate rows, because they may run on different providers or models.
+ */
+export interface RoleUsage extends RoleProfileRow {
+  invocations: number
+  inputTokens: number | null
+  cacheReadTokens: number | null
+  cacheWriteTokens: number | null
+  outputTokens: number | null
+  totalTokens: number | null
+  /** Sum of stored per-invocation estimates; null when any is unpriced. */
+  costUsd: number | null
+  /** False when any invocation lacks usage or a priced leg. */
+  complete: boolean
+}
+
+/** An input file the run was given, hashed at trigger time. */
+export interface ReportInputFile {
+  path: string
+  sha256: string
+}
+
+export interface ReportInputs {
+  task: ReportInputFile | null
+  spec: ReportInputFile | null
+  dispositions: ReportInputFile | null
+}
+
+/** What the run delivered, as recorded in its output. */
+export interface ReportDelivery {
+  kind: string
+  location: string
+  summary: string
+  branch: string | null
+  commit: string | null
+}
+
 /** One row per run, the unit that cross-run comparisons operate on. */
 export interface RunSummary {
   /** Terminal completed run whose candidate was approved. */
@@ -120,6 +167,12 @@ export interface LoopReport {
   configVersion: string | null
   summary: RunSummary
   stageUsage: StageUsage[]
+  /** Per-role requested settings and usage: code, correctness, edge-cases. */
+  roleUsage: RoleUsage[]
+  /** SHA-256 of each input file, as read when the run was triggered. */
+  inputs: ReportInputs
+  /** Branch, commit and location of the delivery; null when none was made. */
+  delivery: ReportDelivery | null
   stageVisits: StageVisits[]
   /** Real (non-fake) CLI invocations observed in attempts. */
   realLlmCallCount: number
@@ -240,6 +293,43 @@ function dedupeByInvocation(attempts: AttemptRow[]): AttemptRow[] {
   return [...selected.values()]
 }
 
+interface UsageTotals {
+  invocations: number
+  inputTokens: number | null
+  cacheReadTokens: number | null
+  cacheWriteTokens: number | null
+  outputTokens: number | null
+  totalTokens: number | null
+  costUsd: number | null
+  complete: boolean
+}
+
+/** Sum one group of already-deduped LLM invocations. */
+function usageTotals(list: AttemptRow[]): UsageTotals {
+  const agg = aggregateUsage(
+    list.map((a) => ({
+      attemptId: a.measurement?.invocationId ?? a.attemptId,
+      usage: a.measurement?.usage ?? null,
+      expectsUsage: true,
+    })),
+  )
+  const costs = list.map((a) => a.measurement?.costUsdEstimate ?? null)
+  const costUsd =
+    agg.complete && costs.every((c) => c !== null)
+      ? costs.reduce<number>((sum, c) => sum + (c ?? 0), 0)
+      : null
+  return {
+    invocations: list.length,
+    inputTokens: agg.inputTokens,
+    cacheReadTokens: agg.cacheReadTokens,
+    cacheWriteTokens: agg.cacheWriteTokens,
+    outputTokens: agg.outputTokens,
+    totalTokens: agg.totalTokens,
+    costUsd,
+    complete: agg.complete,
+  }
+}
+
 /** Per-stage token and cost sums, one count per invocation. */
 export function stageUsage(attempts: AttemptRow[]): StageUsage[] {
   const byStage = new Map<string, AttemptRow[]>()
@@ -249,32 +339,38 @@ export function stageUsage(attempts: AttemptRow[]): StageUsage[] {
     byStage.set(stage, [...(byStage.get(stage) ?? []), a])
   }
   const rows: StageUsage[] = []
-  for (const [stage, list] of byStage) {
-    const agg = aggregateUsage(
-      list.map((a) => ({
-        attemptId: a.measurement?.invocationId ?? a.attemptId,
-        usage: a.measurement?.usage ?? null,
-        expectsUsage: true,
-      })),
-    )
-    const costs = list.map((a) => a.measurement?.costUsdEstimate ?? null)
-    const costUsd =
-      agg.complete && costs.every((c) => c !== null)
-        ? costs.reduce<number>((sum, c) => sum + (c ?? 0), 0)
-        : null
-    rows.push({
-      stage,
-      invocations: list.length,
-      inputTokens: agg.inputTokens,
-      cacheReadTokens: agg.cacheReadTokens,
-      cacheWriteTokens: agg.cacheWriteTokens,
-      outputTokens: agg.outputTokens,
-      totalTokens: agg.totalTokens,
-      costUsd,
-      complete: agg.complete,
-    })
-  }
+  for (const [stage, list] of byStage)
+    rows.push({ stage, ...usageTotals(list) })
   return sortStages(rows)
+}
+
+/** The role an LLM step ran as, from its step name. */
+function roleOf(stepName: string): string | null {
+  if (stepName.endsWith(':agent')) return 'code'
+  if (stepName.endsWith(':correctness')) return 'correctness'
+  if (stepName.endsWith(':edge-cases')) return 'edge-cases'
+  return null
+}
+
+/**
+ * Per-role token and cost sums, one count per invocation. Every profile gets
+ * a row even when the role never ran, so a report always shows what each
+ * role was configured to use.
+ */
+export function roleUsage(
+  attempts: AttemptRow[],
+  profiles: RoleProfileRow[],
+): RoleUsage[] {
+  const byRole = new Map<string, AttemptRow[]>()
+  for (const a of dedupeByInvocation(attempts)) {
+    const role = roleOf(a.stepName)
+    if (role === null) continue
+    byRole.set(role, [...(byRole.get(role) ?? []), a])
+  }
+  return profiles.map((profile) => ({
+    ...profile,
+    ...usageTotals(byRole.get(profile.role) ?? []),
+  }))
 }
 
 /**
@@ -468,6 +564,26 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push(`- output: ${JSON.stringify(r.output)}`)
   lines.push(`- config version: ${fmt(r.configVersion)}`)
   lines.push('')
+  lines.push('## Inputs (SHA-256 at trigger)')
+  lines.push('')
+  for (const [name, file] of Object.entries(r.inputs)) {
+    lines.push(
+      `- ${name}: ${file ? `${file.sha256} (${file.path})` : 'not given'}`,
+    )
+  }
+  lines.push('')
+  lines.push('## Delivery')
+  lines.push('')
+  if (r.delivery) {
+    lines.push(`- kind: ${r.delivery.kind}`)
+    lines.push(`- location: ${r.delivery.location}`)
+    lines.push(`- branch: ${fmt(r.delivery.branch)}`)
+    lines.push(`- commit: ${fmt(r.delivery.commit)}`)
+    lines.push(`- summary: ${r.delivery.summary}`)
+  } else {
+    lines.push('- none')
+  }
+  lines.push('')
   lines.push('## Summary (one row per run)')
   lines.push('')
   const s = r.summary
@@ -500,6 +616,18 @@ export function reportToMarkdown(r: LoopReport): string {
     if (r.stageUsage.some((u) => u.stage === v.stage)) continue
     lines.push(
       `| ${v.stage} | ${v.visits} | ${v.reworked} | 0 | - | - | - | - | - | - |`,
+    )
+  }
+  lines.push('')
+  lines.push('## Role usage (deduped by invocation)')
+  lines.push('')
+  lines.push(
+    '| role | provider | model(requested) | effort(requested) | invocations | in | cache-read | cache-write | out | total | cost(USD) | usage |',
+  )
+  lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|')
+  for (const u of r.roleUsage) {
+    lines.push(
+      `| ${u.role} | ${fmt(u.provider)} | ${u.requestedModel ?? '(default)'} | ${u.requestedEffort ?? '(default)'} | ${u.invocations} | ${fmt(u.inputTokens)} | ${fmt(u.cacheReadTokens)} | ${fmt(u.cacheWriteTokens)} | ${fmt(u.outputTokens)} | ${fmt(u.totalTokens)} | ${fmtUsd(u.costUsd)} | ${u.complete ? 'complete' : 'PARTIAL'} |`,
     )
   }
   lines.push('')
