@@ -419,22 +419,13 @@ if (cmd === 'worker') {
   const run = await durably.getRun(runId)
   const attempts = await durably.getStepAttempts(runId)
   const waits = await durably.getWaits(runId)
-  const delivery =
-    (run?.output as { delivery?: Record<string, unknown> | null } | null)
-      ?.delivery ?? null
   console.log(
     JSON.stringify(
       {
-        // Where the work ended up: a repository run that did not publish
-        // leaves its commit on this branch in the source repository.
-        delivery: delivery
-          ? {
-              kind: delivery['kind'],
-              location: delivery['location'],
-              branch: delivery['branch'] ?? null,
-              commit: delivery['commit'] ?? null,
-            }
-          : null,
+        // Where the work ended up, including the branch and commit an
+        // unpublished repository run leaves in the source repository.
+        delivery:
+          (run?.output as { delivery?: unknown } | null)?.delivery ?? null,
         run,
         attempts: attempts.map((x) => ({
           id: x.id,

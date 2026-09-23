@@ -10,14 +10,9 @@ import { SqliteDialect } from 'kysely'
 import { createAgentLoopJob } from './factory/job.js'
 
 /**
- * Where the database and every run's data live.
- *
- * A fixed directory outside both the durably checkout and the repository
- * being worked on, so the worker and every CLI command agree on one database
- * without any argument, and pinning the checkout to another commit neither
- * loses runs nor leaves factory files in a repository's tree. There is
- * deliberately no user-facing override: two processes that disagree about
- * the database silently see different runs.
+ * Where the database and every run's data live: outside both the durably
+ * checkout and the target repository, so every command finds the same
+ * database without arguments. Deliberately not overridable by users.
  */
 export function defaultStateRoot(): string {
   return join(homedir(), '.local', 'state', 'local-agent-loop')

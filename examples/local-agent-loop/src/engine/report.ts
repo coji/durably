@@ -59,10 +59,9 @@ export interface StageTiming {
   complete: boolean
 }
 
-/** Token and cost consumption of one stage, counted once per invocation. */
-export interface StageUsage {
-  stage: string
-  /** LLM invocations that completed in this stage (deduped). */
+/** Token and cost sums over a group of deduped LLM invocations. */
+export interface UsageTotals {
+  /** LLM invocations that completed (deduped). */
   invocations: number
   inputTokens: number | null
   cacheReadTokens: number | null
@@ -73,6 +72,11 @@ export interface StageUsage {
   costUsd: number | null
   /** False when any usage-expecting invocation lacks usage or a priced leg. */
   complete: boolean
+}
+
+/** Token and cost consumption of one stage, counted once per invocation. */
+export interface StageUsage extends UsageTotals {
+  stage: string
 }
 
 /**
@@ -99,18 +103,7 @@ export interface RoleProfileRow {
  * counted once per invocation. Unlike `StageUsage`, the two reviewers are
  * separate rows, because they may run on different providers or models.
  */
-export interface RoleUsage extends RoleProfileRow {
-  invocations: number
-  inputTokens: number | null
-  cacheReadTokens: number | null
-  cacheWriteTokens: number | null
-  outputTokens: number | null
-  totalTokens: number | null
-  /** Sum of stored per-invocation estimates; null when any is unpriced. */
-  costUsd: number | null
-  /** False when any invocation lacks usage or a priced leg. */
-  complete: boolean
-}
+export interface RoleUsage extends RoleProfileRow, UsageTotals {}
 
 /** An input file the run was given, hashed at trigger time. */
 export interface ReportInputFile {
@@ -291,17 +284,6 @@ function dedupeByInvocation(attempts: AttemptRow[]): AttemptRow[] {
       selected.set(key, attempt)
   }
   return [...selected.values()]
-}
-
-interface UsageTotals {
-  invocations: number
-  inputTokens: number | null
-  cacheReadTokens: number | null
-  cacheWriteTokens: number | null
-  outputTokens: number | null
-  totalTokens: number | null
-  costUsd: number | null
-  complete: boolean
 }
 
 /** Sum one group of already-deduped LLM invocations. */
@@ -527,11 +509,7 @@ export function totalStageMs(timings: StageTiming[]): number | null {
  * usage never marks the aggregate incomplete.
  */
 export function attemptExpectsUsage(stepName: string): boolean {
-  return (
-    stepName.endsWith(':agent') ||
-    stepName.endsWith(':correctness') ||
-    stepName.endsWith(':edge-cases')
-  )
+  return roleOf(stepName) !== null
 }
 
 /** Sum the already-priced invocations without applying one model to another. */

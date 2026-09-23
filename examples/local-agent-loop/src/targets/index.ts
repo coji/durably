@@ -17,7 +17,6 @@ import {
   resolveCommit,
 } from '../engine/git.js'
 import type {
-  InputFiles,
   RepoTargetConfig,
   Target,
   TargetConfig,
@@ -44,7 +43,6 @@ export interface PrepareRepoArgs {
   task: string
   spec: string | null
   dispositions: string | null
-  inputFiles: InputFiles
   issue: { number: number; title: string; url: string } | null
   checkCommand: string[]
   setupCommand: string[] | null
@@ -102,7 +100,6 @@ export async function prepareRepoTarget(
     task: args.task,
     spec: args.spec,
     dispositions: args.dispositions,
-    inputFiles: args.inputFiles,
     issue: args.issue,
     deliveryDir: join(args.root, 'delivery'),
     publish: args.publish,

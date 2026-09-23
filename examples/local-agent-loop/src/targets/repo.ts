@@ -38,6 +38,7 @@ import type {
   Target,
   UntrustedInput,
 } from '../factory/target.js'
+import type { ProfileRole } from '../factory/types.js'
 
 /** Hash-free identity of the pinned check, recorded so it cannot drift. */
 export function checkFingerprint(command: string[]): string {
@@ -72,9 +73,7 @@ export class RepoTarget implements Target {
     return `${header}${this.config.task}`
   }
 
-  untrustedInputs(
-    role: 'code' | 'correctness' | 'edge-cases',
-  ): UntrustedInput[] {
+  untrustedInputs(role: ProfileRole): UntrustedInput[] {
     const inputs: UntrustedInput[] = [
       { label: 'TASK', content: this.taskText() },
     ]

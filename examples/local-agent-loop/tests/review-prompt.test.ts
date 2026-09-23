@@ -18,7 +18,6 @@ const repoConfig: RepoTargetConfig = {
   task: 'Support decimal amounts in the invoice total.',
   spec: null,
   dispositions: null,
-  inputFiles: { task: null, spec: null, dispositions: null },
   issue: { number: 234, title: 'Decimal amounts', url: 'https://x/234' },
   deliveryDir: '/tmp/delivery',
   publish: false,

@@ -138,6 +138,15 @@ const outputSchema = z.object({
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const subjectDir = () => join(packageRoot, 'subject')
 
+/** Build one value per role. */
+function byRole<T>(f: (role: ProfileRole) => T): Record<ProfileRole, T> {
+  return {
+    code: f('code'),
+    correctness: f('correctness'),
+    'edge-cases': f('edge-cases'),
+  }
+}
+
 /** A role's settings before a profile id is attached. */
 export type FixedProfile = Omit<ResolvedProfile, 'id'>
 
@@ -240,7 +249,6 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   task: input.target.task,
                   spec: input.target.spec,
                   dispositions: input.target.dispositions,
-                  inputFiles: input.target.inputFiles,
                   issue: input.target.issue,
                   checkCommand: input.target.checkCommand,
                   setupCommand: input.target.setupCommand,
@@ -252,35 +260,25 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             'AGENT_TIMEOUT_MS',
             isRepo ? 1800000 : 300000,
           )
-          const fallback = () =>
-            fixProfile({
+          let fixed = input.profiles
+          if (!fixed) {
+            const shared = fixProfile({
               provider: input.provider,
               model: input.model ?? null,
               effort: input.effort ?? null,
             })
-          const fixed: Record<ProfileRole, FixedProfile> = input.profiles ?? {
-            code: fallback(),
-            correctness: fallback(),
-            'edge-cases': fallback(),
+            fixed = byRole(() => shared)
           }
           assertSingleMode(fixed)
-          const profileOf = (role: ProfileRole): ResolvedProfile => {
-            const p = fixed[role]
-            return {
-              id: [
-                p.provider,
-                p.effectiveModel ?? 'provider-default',
-                p.effectiveEffort ?? 'provider-default',
-                role,
-              ].join(':'),
-              ...p,
-            }
-          }
-          const profiles: Record<ProfileRole, ResolvedProfile> = {
-            code: profileOf('code'),
-            correctness: profileOf('correctness'),
-            'edge-cases': profileOf('edge-cases'),
-          }
+          const profiles = byRole((role): ResolvedProfile => ({
+            id: [
+              fixed[role].provider,
+              fixed[role].effectiveModel ?? 'provider-default',
+              fixed[role].effectiveEffort ?? 'provider-default',
+              role,
+            ].join(':'),
+            ...fixed[role],
+          }))
           const instructionsVersion = 'local-factory.v3'
           const value: FactorySetup = {
             fake: fixed.code.provider === 'fake',
@@ -324,11 +322,9 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       )
 
       const target = createTarget(setup.target)
-      const providers = {
-        code: createProvider(setup.profiles.code.provider),
-        correctness: createProvider(setup.profiles.correctness.provider),
-        'edge-cases': createProvider(setup.profiles['edge-cases'].provider),
-      }
+      const providers = byRole((role) =>
+        createProvider(setup.profiles[role].provider),
+      )
       let state = initialState(setup)
       // Deliberately not a `finally`: `step.waitFor` suspends by throwing, so a
       // finally block would run cleanup every time the run parks on the human

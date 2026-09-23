@@ -15,6 +15,7 @@ import type { CandidateRef } from '../engine/types.js'
  * database to work from.
  */
 import type { GradeResult } from '../engine/verification.js'
+import type { ProfileRole } from './types.js'
 
 export type TargetKind = 'subject' | 'repo'
 
@@ -52,8 +53,6 @@ export interface RepoTargetConfig {
   spec: string | null
   /** Prior review dispositions, handed to the reviewers only. */
   dispositions: string | null
-  /** Where each input file came from and what it hashed to at trigger time. */
-  inputFiles: InputFiles
   /** Source issue, when the task came from one. */
   issue: { number: number; title: string; url: string } | null
   /** Where the delivered patch is written. */
@@ -64,21 +63,10 @@ export interface RepoTargetConfig {
 
 export type TargetConfig = SubjectTargetConfig | RepoTargetConfig
 
-/**
- * An input file as it was read when the run was triggered. The content itself
- * is carried in the target config; this records where it came from and the
- * SHA-256 of the bytes that were read, so a report can name exactly what the
- * run was given even after the file on disk has changed.
- */
+/** An input file's path and the SHA-256 of the bytes read at trigger time. */
 export interface InputFileRef {
   path: string
   sha256: string
-}
-
-export interface InputFiles {
-  task: InputFileRef | null
-  spec: InputFileRef | null
-  dispositions: InputFileRef | null
 }
 
 /**
@@ -138,7 +126,7 @@ export interface Target {
    * gets the task and the spec; each reviewer gets the task, the spec and the
    * dispositions.
    */
-  untrustedInputs(role: 'code' | 'correctness' | 'edge-cases'): UntrustedInput[]
+  untrustedInputs(role: ProfileRole): UntrustedInput[]
   /**
    * What each reviewer is asked to check. Reviewers see only the candidate
    * and the trusted context, so the questions have to come from whoever knows
