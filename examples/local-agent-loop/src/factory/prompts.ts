@@ -124,7 +124,9 @@ function labelValue(text: string, label: string): string {
   let index = -1
   for (const pattern of [
     new RegExp(`^\\s*${label}:(.*)$`, 'i'),
-    new RegExp(`${label}:(.*)$`, 'i'),
+    // The left boundary keeps `FOOTNOTES:` or `REPLAN:` from filling a
+    // missing label.
+    new RegExp(`(?<![A-Za-z])${label}:(.*)$`, 'i'),
   ]) {
     index = lines.findIndex((line) => pattern.test(line))
     if (index >= 0) {
@@ -184,8 +186,15 @@ export function parseReviewOutput(text: string): ParsedReview {
   }
   // Repeating the same verdict is redundant, not contradictory. What follows
   // each marker is still taken whole and validated whole, so an echoed
-  // `DECISION: pass | needsChanges` template stays review-incomplete.
-  const values = [...new Set(anchored.length > 0 ? anchored : inline)]
+  // `DECISION: pass | needsChanges` template stays review-incomplete. An
+  // inline marker that is itself a valid verdict is not narration, though:
+  // if it disagrees with the line-anchored one, the reply is contradictory.
+  const isVerdict = (v: string) => v === 'pass' || v === 'needschanges'
+  const values = [
+    ...new Set(
+      anchored.length > 0 ? [...anchored, ...inline.filter(isVerdict)] : inline,
+    ),
+  ]
   if (values.length === 0) {
     return { ok: false, error: 'no DECISION line in review output' }
   }

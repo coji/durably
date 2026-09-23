@@ -263,6 +263,12 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             'TEST_TIMEOUT_MS',
             isRepo ? 900000 : 120000,
           )
+          // Read before the target is prepared, so a bad value fails before a
+          // worktree or branch exists.
+          const agentTimeoutMs = positiveTimeout(
+            'AGENT_TIMEOUT_MS',
+            isRepo ? 1800000 : 300000,
+          )
           const target: TargetConfig =
             input.target.kind === 'subject'
               ? await prepareSubjectTarget({
@@ -285,10 +291,6 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   publish: input.target.publish,
                   signal,
                 })
-          const agentTimeoutMs = positiveTimeout(
-            'AGENT_TIMEOUT_MS',
-            isRepo ? 1800000 : 300000,
-          )
           const instructionsVersion = 'local-factory.v3'
           const value: FactorySetup = {
             fake: fixed.code.provider === 'fake',

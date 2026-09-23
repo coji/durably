@@ -93,6 +93,27 @@ describe('parseReviewOutput (strict verdicts)', () => {
     if (r.ok) assert.equal(r.notes, 'the real note')
   })
 
+  it('does not read FOOTNOTES or REPLAN as a missing label', () => {
+    const r = parseReviewOutput(
+      'REPLAN: x\nCOUNTEREXAMPLE: y\nDECISION: pass\nNOTES: z',
+    )
+    assert.equal(r.ok, false)
+    assert.match(r.ok ? '' : r.error, /missing PLAN line/)
+    const n = parseReviewOutput(
+      'PLAN: x\nCOUNTEREXAMPLE: y\nDECISION: pass\nFOOTNOTES: z',
+    )
+    assert.equal(n.ok, false)
+    assert.match(n.ok ? '' : n.error, /missing NOTES line/)
+  })
+
+  it('rejects an inline verdict that contradicts the line-anchored one', () => {
+    const r = parseReviewOutput(
+      'PLAN: x\nCOUNTEREXAMPLE: y\nI lean to DECISION: needsChanges\nDECISION: pass\nNOTES: z',
+    )
+    assert.equal(r.ok, false)
+    assert.match(r.ok ? '' : r.error, /contradictory/)
+  })
+
   it('reads a label in the middle of a line when none starts a line', () => {
     const r = parseReviewOutput(
       'I made a PLAN: x and a COUNTEREXAMPLE: y\nDECISION: pass\nSo, NOTES: z',
