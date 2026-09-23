@@ -49,6 +49,11 @@ export interface FactorySetup {
    * provider or model than the code it judges.
    */
   profiles: Record<ProfileRole, ResolvedProfile>
+  /**
+   * Optional shadow-triage profile. Its judgment is recorded only: no stage
+   * or profile depends on it.
+   */
+  triage?: ResolvedProfile | null
   maxIterations: number
   agentTimeoutMs: number
   /**

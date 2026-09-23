@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { describe, it } from 'node:test'
 
 import {
@@ -347,6 +348,93 @@ describe('config version', () => {
       }
     }
   })
+
+  it('keeps the version of a run without triage, and changes with any triage profile', () => {
+    // The hash as it was computed before triage existed.
+    const prior = createHash('sha256')
+      .update(
+        JSON.stringify({
+          contextMode: base.contextMode,
+          instructionsVersion: base.instructionsVersion,
+          maxIterations: base.maxIterations,
+          target: base.target,
+          agentTimeoutMs: base.agentTimeoutMs,
+          checkTimeoutMs: base.checkTimeoutMs,
+          code: profile,
+          correctness: profile,
+          edgeCases: profile,
+        }),
+      )
+      .digest('hex')
+      .slice(0, 16)
+    assert.equal(configVersionOf(base), prior)
+    assert.equal(configVersionOf({ ...base, triage: null }), prior)
+    const withTriage = configVersionOf({ ...base, triage: profile })
+    assert.notEqual(withTriage, prior)
+    for (const change of [
+      { provider: 'claude' },
+      { requestedModel: 'gpt-5.6-terra', effectiveModel: 'gpt-5.6-terra' },
+      { requestedEffort: 'high', effectiveEffort: 'high' },
+    ]) {
+      assert.notEqual(
+        configVersionOf({ ...base, triage: { ...profile, ...change } }),
+        withTriage,
+        JSON.stringify(change),
+      )
+    }
+  })
+})
+
+describe('triage usage', () => {
+  it('counts triage once under its own stage and role, across recovery', () => {
+    const attempts = [
+      row('triage', 't1', { invocationId: 'inv-t', result: 'uncertain' }),
+      row('triage', 't2', {
+        invocationId: 'inv-t',
+        result: 'checkpoint-recovered',
+      }),
+      row('stage:1:code:agent', 'a1'),
+    ]
+    const stages = stageUsage(attempts)
+    assert.deepEqual(
+      stages.map((u) => [u.stage, u.invocations]),
+      [
+        ['triage', 1],
+        ['code', 1],
+      ],
+    )
+    assert.equal(stages[0]?.totalTokens, 150)
+    assert.equal(stages[0]?.costUsd, 0.001)
+    const roles = roleUsage(attempts, [
+      {
+        role: 'code',
+        provider: 'codex',
+        requestedModel: null,
+        requestedEffort: null,
+      },
+      {
+        role: 'triage',
+        provider: 'codex',
+        requestedModel: 'gpt-5.6-sol',
+        requestedEffort: 'low',
+      },
+    ])
+    assert.deepEqual(
+      roles.map((r) => [r.role, r.invocations, r.totalTokens]),
+      [
+        ['code', 1, 150],
+        ['triage', 1, 150],
+      ],
+    )
+    const md = reportToMarkdown(report('t1', { triage: 'probe' }))
+    assert.match(md, /- judgment: probe/)
+    assert.match(md, /- reason: fake probe reason\./)
+    assert.match(md, /\| triage \| n\/a \| n\/a \| 1 \|/)
+    assert.match(
+      reportToMarkdown(report('t2')),
+      /- none \(no triage profile, or triage has not run yet\)/,
+    )
+  })
 })
 
 describe('stage visits (rework)', () => {
@@ -379,10 +467,32 @@ function report(
     codeTokens?: number
     leadTimeMs?: number | null
     inputWaitMs?: number | null
+    triage?: 'routine' | 'probe' | 'unknown'
+    triageCost?: number | null
+    conclusion?: string
+    repaired?: boolean
   } = {},
 ): LoopReport {
   const approved = opts.approved ?? true
   const attempts = [
+    ...(opts.triage
+      ? [
+          row('triage', `${runId}-t`, {
+            usage: usage(10, 5),
+            cost: opts.triageCost === undefined ? 0.0005 : opts.triageCost,
+            result: 'triage-done',
+            configVersion: opts.configVersion,
+          }),
+        ]
+      : []),
+    ...(opts.repaired
+      ? [
+          row('stage:4:code:agent', `${runId}-b`, {
+            cost: 0.01,
+            configVersion: opts.configVersion,
+          }),
+        ]
+      : []),
     row('stage:0:code:agent', `${runId}-a`, {
       cost: opts.codeCost === undefined ? 0.01 : opts.codeCost,
       usage: usage(opts.codeTokens ?? 1000, 100, { read: 500 }),
@@ -400,7 +510,7 @@ function report(
   const status = opts.status ?? 'completed'
   const output = {
     approved,
-    conclusion: approved ? 'approved' : 'rejected',
+    conclusion: opts.conclusion ?? (approved ? 'approved' : 'rejected'),
     reviewRounds: 1,
     fake: false,
   }
@@ -427,6 +537,9 @@ function report(
     output,
     fake: false,
     configVersion: opts.configVersion ?? 'cfg-a',
+    triage: opts.triage
+      ? { judgment: opts.triage, reason: `fake ${opts.triage} reason.` }
+      : null,
     summary: summarizeRun({
       status,
       output,
@@ -594,6 +707,69 @@ describe('cross-run comparison', () => {
     assert.match(md, /## codex\/gpt-5\.6-sol\/low\/reuse — config cfg-a/)
     assert.match(md, /- success: 2\/3 \(67%\)/)
     assert.match(md, /cost USD: unknown \(1 unknown\)/)
+  })
+})
+
+describe('comparison by triage judgment', () => {
+  it('shows outcomes, repairs and costs per judgment, and routine misses', () => {
+    const c = compareReports([
+      report('r1', { triage: 'routine' }),
+      report('r2', { triage: 'routine', repaired: true }),
+      report('r3', {
+        triage: 'routine',
+        approved: false,
+        conclusion: 'review-cap-reached',
+      }),
+      report('p1', {
+        triage: 'probe',
+        approved: false,
+        conclusion: 'verification-failed',
+        repaired: true,
+      }),
+      report('u1', { triage: 'unknown', triageCost: null }),
+    ])
+    assert.equal(c.groups.length, 1)
+    const [routine, probe, unknown] = c.groups[0]?.triage ?? []
+    assert.deepEqual(
+      [
+        routine?.judgment,
+        routine?.runs,
+        routine?.approved,
+        routine?.verificationFailed,
+        routine?.reviewCapReached,
+        routine?.routineNeedingMore,
+      ],
+      ['routine', 3, 2, 0, 1, 2],
+    )
+    assert.deepEqual([routine?.repairs.median, routine?.repairs.max], [0, 1])
+    assert.deepEqual(
+      [probe?.runs, probe?.verificationFailed, probe?.routineNeedingMore],
+      [1, 1, 0],
+    )
+    // An unpriced triage call leaves the run's cost unknown, not zero.
+    assert.equal(unknown?.costUsd.n, 0)
+    assert.equal(unknown?.costUsd.unknown, 1)
+    const md = comparisonToMarkdown(c)
+    assert.match(md, /By triage judgment/)
+    assert.match(
+      md,
+      /\| routine \| 3 \| 2 \| 0 \| 1 \| 0 \[0\.\.1\] \(n=3\) \| .* \| 2 \|/,
+    )
+    assert.match(
+      md,
+      /\| probe \| 1 \| 0 \| 1 \| 0 \| 1 \[1\.\.1\] \(n=1\) \| .* \| - \|/,
+    )
+    assert.match(
+      md,
+      /\| unknown \| 1 \| 1 \| 0 \| 0 \| .* \| unknown \(1 unknown\) \| - \|/,
+    )
+    const json = JSON.parse(JSON.stringify(c)) as typeof c
+    assert.equal(json.groups[0]?.triage[0]?.routineNeedingMore, 2)
+    assert.equal(json.groups[0]?.triage[2]?.costUsd.median, null)
+    // A group without triage gets no rows and no table.
+    const plain = compareReports([report('n1')])
+    assert.deepEqual(plain.groups[0]?.triage, [])
+    assert.doesNotMatch(comparisonToMarkdown(plain), /By triage judgment/)
   })
 })
 

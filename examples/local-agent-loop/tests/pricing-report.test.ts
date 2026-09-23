@@ -14,6 +14,7 @@ function baseReport(): LoopReport {
     output: null,
     fake: true,
     configVersion: null,
+    triage: null,
     summary: {
       success: false,
       conclusion: null,

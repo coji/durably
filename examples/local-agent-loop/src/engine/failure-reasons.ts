@@ -121,11 +121,14 @@ export interface FailureClassification {
  */
 export function uncertainCheckpoints(
   checkpointsDir: string | null,
-  attempts: Pick<StepAttempt, 'metadata'>[],
+  attempts: Pick<StepAttempt, 'metadata' | 'status'>[],
 ): string[] {
   if (!checkpointsDir) return []
   const found = new Set<string>()
   for (const attempt of attempts) {
+    // A completed step never replays its call, so a start it left behind is
+    // not a doubt.
+    if (attempt.status === 'completed') continue
     const m = attempt.metadata as {
       usageScope?: unknown
       operationKey?: unknown

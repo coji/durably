@@ -155,8 +155,16 @@ describe('runner measurement on the real launch path', () => {
     assert.equal(calls, 0, 'the prompt is never resent')
 
     const metadata = attempt.snapshots.at(-1) as unknown as JsonValue
-    const uncertain = uncertainCheckpoints(checkpointsDir, [{ metadata }])
+    const uncertain = uncertainCheckpoints(checkpointsDir, [
+      { metadata, status: 'failed' },
+    ])
     assert.deepEqual(uncertain, [paths.started])
+    // A step that completed anyway (a triage call recorded as unknown) will
+    // not send the call again, so its start is not treated as uncertain.
+    assert.deepEqual(
+      uncertainCheckpoints(checkpointsDir, [{ metadata, status: 'completed' }]),
+      [],
+    )
     const failure = classifyFailure({
       runId: 'r1',
       status: 'failed',
@@ -175,7 +183,10 @@ describe('runner measurement on the real launch path', () => {
     // Once the completion is on disk the call is no longer uncertain, and an
     // unrecognised error is still not called retryable.
     await writeFile(paths.completed, '{}\n')
-    assert.deepEqual(uncertainCheckpoints(checkpointsDir, [{ metadata }]), [])
+    assert.deepEqual(
+      uncertainCheckpoints(checkpointsDir, [{ metadata, status: 'failed' }]),
+      [],
+    )
     const other = classifyFailure({
       runId: 'r1',
       status: 'failed',

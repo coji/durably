@@ -353,3 +353,293 @@ describe('fake runs that stop', { timeout: 180000 }, () => {
     assert.doesNotMatch(res.stdout, /worktree remove/)
   })
 })
+
+describe('shadow triage', { timeout: 300000 }, () => {
+  const fake = {
+    provider: 'fake' as const,
+    requestedModel: null,
+    requestedEffort: null,
+  }
+  const trigger = (
+    durably: ReturnType<typeof createAgentDurably>,
+    triage: boolean,
+  ) =>
+    durably.jobs.agentLoop.trigger({
+      provider: 'fake',
+      profiles: {
+        code: fake,
+        correctness: fake,
+        'edge-cases': fake,
+        ...(triage ? { triage: fake } : {}),
+      },
+      target: { kind: 'subject' as const },
+      maxIterations: 2,
+      context: 'reuse',
+    })
+  it('records each judgment once before code and changes nothing after it', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'e2e-triage-'))
+    const dir = join(home, '.local', 'state', 'local-agent-loop')
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    delete process.env.FAKE_REVIEW_SLOW_MS
+    const durably = createAgentDurably({ stateRoot: dir })
+    await durably.init()
+    const cases = [
+      ['routine', 'routine', /fake triage: a one-line fix/],
+      ['probe', 'probe', /fake triage: treat this task as risky/],
+      ['invalid', 'unknown', /malformed triage: no JUDGMENT/],
+      ['contradictory', 'unknown', /malformed triage: 2 JUDGMENT lines/],
+      ['unsupported', 'unknown', /malformed triage: unsupported/],
+      ['error', 'unknown', /triage call failed: fake triage call failed/],
+    ] as const
+    const ids: Record<string, string> = {}
+    const decisionsOf = async (id: string) =>
+      (await durably.storage.getSteps(id))
+        .filter((s) => s.name.startsWith('decision:'))
+        .map((s) => s.output)
+    const profilesOf = async (id: string) =>
+      (
+        (await durably.storage.getCompletedStep(id, 'setup'))?.output as
+          | { profiles: unknown }
+          | undefined
+      )?.profiles
+    try {
+      let reference: { decisions: unknown; profiles: unknown } | null = null
+      let configVersion: string | null = null
+      for (const [kind, judgment, reason] of cases) {
+        process.env.FAKE_TRIAGE = kind
+        const run = await trigger(durably, true)
+        ids[kind] = run.id
+        await waitFor(
+          async () => (await durably.getRun(run.id))?.status === 'waiting',
+          120000,
+          `${kind} run reaches approval`,
+        )
+        // One triage call, after setup and before the first code call.
+        const attempts = await durably.getStepAttempts(run.id)
+        const triage = attempts.filter((a) => a.stepName === 'triage')
+        assert.equal(triage.length, 1, kind)
+        assert.equal(
+          (triage[0]?.metadata as { role?: string } | undefined)?.role,
+          'triage',
+        )
+        const index = (name: (n: string) => boolean) =>
+          Math.min(
+            ...attempts.filter((a) => name(a.stepName)).map((a) => a.stepIndex),
+          )
+        const at = triage[0]?.stepIndex ?? -1
+        assert.ok(index((n) => n === 'setup') < at, kind)
+        assert.ok(at < index((n) => n.endsWith(':code:agent')), kind)
+
+        // Readable while the run waits for approval.
+        const report = await buildReport(durably, run.id)
+        assert.equal(report.triage?.judgment, judgment, kind)
+        assert.match(report.triage?.reason ?? '', reason)
+        assert.equal(
+          report.stageUsage.find((u) => u.stage === 'triage')?.invocations,
+          1,
+        )
+        assert.equal(
+          report.roleUsage.find((u) => u.role === 'triage')?.invocations,
+          1,
+        )
+        assert.match(
+          reportToMarkdown(report),
+          new RegExp(`- judgment: ${judgment}\\n- reason: `),
+        )
+        const json = JSON.parse(reportToJson(report)) as {
+          triage: { judgment: string; reason: string }
+        }
+        assert.equal(json.triage.judgment, judgment)
+
+        // The same code and review profiles and the same decisions, whatever
+        // triage said.
+        const observed = {
+          decisions: await decisionsOf(run.id),
+          profiles: await profilesOf(run.id),
+        }
+        reference ??= observed
+        assert.deepEqual(observed, reference, kind)
+        configVersion ??= report.configVersion
+        assert.equal(report.configVersion, configVersion)
+      }
+
+      // Without a triage profile: no triage call, the same sequence, and a
+      // different configuration version.
+      const plain = await trigger(durably, false)
+      ids['none'] = plain.id
+      await waitFor(
+        async () => (await durably.getRun(plain.id))?.status === 'waiting',
+        120000,
+        'run without triage reaches approval',
+      )
+      const plainAttempts = await durably.getStepAttempts(plain.id)
+      assert.ok(!plainAttempts.some((a) => a.stepName === 'triage'))
+      assert.ok(
+        !plainAttempts.some(
+          (a) => (a.metadata as { role?: string } | null)?.role === 'triage',
+        ),
+      )
+      assert.deepEqual(await decisionsOf(plain.id), reference?.decisions)
+      const plainReport = await buildReport(durably, plain.id)
+      assert.equal(plainReport.triage, null)
+      assert.ok(!plainReport.roleUsage.some((u) => u.role === 'triage'))
+      assert.notEqual(plainReport.configVersion, configVersion)
+      assert.match(reportToMarkdown(plainReport), /- none \(no triage profile/)
+
+      // Finish the routine run: the judgment is kept in the run output.
+      const routineId = ids['routine'] ?? ''
+      const wait = (await durably.getWaits(routineId)).find((w) =>
+        w.name.includes(':approve:'),
+      )
+      assert.ok(wait)
+      await durably.signal(
+        wait.id,
+        {
+          candidateId: (wait.metadata as { candidateId: string }).candidateId,
+          decision: 'approved',
+        },
+        { signalId: 'triage-approve' },
+      )
+      await waitFor(
+        async () => (await durably.getRun(routineId))?.status === 'completed',
+        60000,
+        'routine run completes',
+      )
+      const output = (await durably.getRun(routineId))?.output as {
+        conclusion: string
+        triage: { judgment: string }
+      }
+      assert.equal(output.conclusion, 'approved')
+      assert.equal(output.triage.judgment, 'routine')
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+      delete process.env.FAKE_TRIAGE
+    }
+
+    const status = async (id: string) => {
+      const res = await runChild(
+        join(packageRoot, 'node_modules', '.bin', 'tsx'),
+        [join(packageRoot, 'src', 'cli.ts'), 'status', '--run', id],
+        {
+          cwd: home,
+          timeoutMs: 60000,
+          maxOutputChars: 10_000_000,
+          env: { HOME: home },
+        },
+      )
+      assert.equal(res.code, 0, res.stderr)
+      return JSON.parse(res.stdout) as {
+        run: { status: string }
+        triage: { judgment: string; reason: string } | null
+      }
+    }
+    const probe = await status(ids['probe'] ?? '')
+    assert.equal(probe.run.status, 'waiting')
+    assert.equal(probe.triage?.judgment, 'probe')
+    assert.match(probe.triage?.reason ?? '', /risky/)
+    const routine = await status(ids['routine'] ?? '')
+    assert.equal(routine.run.status, 'completed')
+    assert.equal(routine.triage?.judgment, 'routine')
+    const unknown = await status(ids['invalid'] ?? '')
+    assert.equal(unknown.triage?.judgment, 'unknown')
+    const none = await status(ids['none'] ?? '')
+    assert.equal(none.triage, null)
+  })
+
+  it('reuses a completed triage checkpoint and stops on a start-only one', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'e2e-triage-replay-'))
+    process.env.FAKE_FAIL_FIRST = '0'
+    // Any triage call that is actually sent fails, so a recovered judgment
+    // can only have come from the checkpoint.
+    process.env.FAKE_TRIAGE = 'error,error,error'
+    const durably = createAgentDurably({ stateRoot: dir })
+    await durably.migrate()
+    const checkpoint = async (runId: string) => {
+      const checkpointsDir = join(dir, 'runs', runId, 'operation-checkpoints')
+      await mkdir(checkpointsDir, { recursive: true })
+      const operationKey = `${runId}/triage/agent`
+      return {
+        paths: checkpointPaths(checkpointsDir, operationKey),
+        operationKey,
+      }
+    }
+    try {
+      const recovered = await trigger(durably, true)
+      const saved = await checkpoint(recovered.id)
+      const startedAt = new Date().toISOString()
+      await writeFile(
+        saved.paths.completed,
+        `${JSON.stringify({
+          operationKey: saved.operationKey,
+          invocationId: 'saved-invocation',
+          status: 'completed',
+          invocationStartedAt: startedAt,
+          invocationCompletedAt: startedAt,
+          result: {
+            text: 'JUDGMENT: probe\nREASON: Recorded before the worker restarted.',
+            session: null,
+            resolvedModel: 'fake-model',
+            resolvedEffort: 'low',
+            reportedModel: 'fake-model',
+            reportedEffort: 'low',
+            usage: null,
+            elapsedMs: 5,
+          },
+        })}\n`,
+      )
+      const uncertain = await trigger(durably, true)
+      const lost = await checkpoint(uncertain.id)
+      await writeFile(
+        lost.paths.started,
+        `${JSON.stringify({
+          operationKey: lost.operationKey,
+          invocationId: 'lost-invocation',
+          status: 'started',
+          invocationStartedAt: startedAt,
+        })}\n`,
+      )
+      await durably.init()
+      await waitFor(
+        async () => (await durably.getRun(recovered.id))?.status === 'waiting',
+        120000,
+        'recovered run reaches approval',
+      )
+      await waitFor(
+        async () => (await durably.getRun(uncertain.id))?.status === 'failed',
+        120000,
+        'uncertain run stops',
+      )
+
+      const report = await buildReport(durably, recovered.id)
+      assert.deepEqual(report.triage, {
+        judgment: 'probe',
+        reason: 'Recorded before the worker restarted.',
+      })
+      const triage = report.attempts.filter((a) => a.stepName === 'triage')
+      assert.equal(triage.length, 1)
+      assert.equal(triage[0]?.measurement?.result, 'checkpoint-recovered')
+      assert.equal(triage[0]?.measurement?.invocationId, 'saved-invocation')
+      assert.equal(
+        report.stageUsage.find((u) => u.stage === 'triage')?.invocations,
+        1,
+      )
+
+      const stopped = await buildReport(durably, uncertain.id)
+      assert.equal(stopped.failure?.kind, 'uncertain-invocation')
+      assert.equal(stopped.triage, null)
+      assert.ok(
+        !stopped.attempts.some((a) => a.stepName.endsWith(':code:agent')),
+      )
+      // Neither run sent a triage prompt.
+      assert.equal(process.env.FAKE_TRIAGE, 'error,error,error')
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+      delete process.env.FAKE_TRIAGE
+    }
+  })
+})

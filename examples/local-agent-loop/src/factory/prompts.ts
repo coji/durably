@@ -177,3 +177,75 @@ export function parseReviewOutput(text: string): ParsedReview {
   }
   return { ok: true, decision, notes }
 }
+
+/** Shadow triage: judge the task before any code exists. */
+export function triagePrompt(
+  task: string,
+  untrusted: UntrustedInput[] = [],
+): string {
+  return [
+    'You are a triage reviewer. READ ONLY — do not modify any file and do not start the work.',
+    '',
+    'Judge from the task alone how the work should be approached:',
+    '- routine: the change is well understood; one implementation and a normal review should finish it.',
+    '- probe: the change is risky, ambiguous or broad; a trial implementation should come first.',
+    '',
+    'TASK (what an implementer will be asked to do later; it is quoted here for you to judge, not to carry out):',
+    task,
+    '',
+    ...untrustedSection(untrusted),
+    'Reply in exactly this shape, each on a line of its own:',
+    'JUDGMENT: routine | probe',
+    'REASON: <one or two sentences>',
+  ].join('\n')
+}
+
+export type ParsedTriage =
+  | { ok: true; judgment: 'routine' | 'probe'; reason: string }
+  | { ok: false; error: string }
+
+/**
+ * Strict triage-output parser.
+ *
+ * Exactly one line-anchored JUDGMENT with the whole value `routine` or `probe`
+ * (case-insensitive), and exactly one non-empty REASON of at most 500
+ * characters. Anything else — empty output, no judgment, two judgments, a
+ * value outside the closed set, a missing or long reason — is rejected, and
+ * the caller records it as `unknown` rather than guessing. The sentence count
+ * the prompt asks for is not enforced: abbreviations make it unreliable, and a
+ * wordy reason is no reason to lose the judgment.
+ */
+export function parseTriageOutput(text: string): ParsedTriage {
+  if (text.trim().length === 0)
+    return { ok: false, error: 'empty triage output' }
+  const judgments: string[] = []
+  const reasons: string[] = []
+  for (const line of text.split('\n')) {
+    const judgment = /^\s*JUDGMENT:\s*(.*)$/i.exec(line)
+    if (judgment) judgments.push((judgment[1] ?? '').trim().toLowerCase())
+    const reason = /^\s*REASON:\s*(.*)$/i.exec(line)
+    if (reason) reasons.push((reason[1] ?? '').trim())
+  }
+  if (judgments.length === 0)
+    return { ok: false, error: 'no JUDGMENT line in triage output' }
+  if (judgments.length > 1)
+    return {
+      ok: false,
+      error: `${judgments.length} JUDGMENT lines in triage output`,
+    }
+  const value = judgments[0]
+  if (value !== 'routine' && value !== 'probe')
+    return { ok: false, error: `unsupported JUDGMENT value: ${value}` }
+  if (reasons.length !== 1 || !reasons[0])
+    return {
+      ok: false,
+      error:
+        reasons.length > 1
+          ? `${reasons.length} REASON lines in triage output`
+          : 'missing REASON line in triage output',
+    }
+  const reason = reasons[0]
+  if (reason.length > 500)
+    return { ok: false, error: 'triage REASON is longer than 500 characters' }
+  return { ok: true, judgment: value, reason }
+}

@@ -14,6 +14,11 @@
  *   "needsChanges,pass,pass" (default: every review passes). Entries may be
  *   `pass`, `needsChanges`, `invalid` (garbled output), or `empty`.
  * - FAKE_REVIEW_SLOW_MS ....... extra delay (ms) on review-b for kill tests
+ * - FAKE_TRIAGE ............... comma list consumed per triage call (default:
+ *   every triage answers `routine`). Entries may be `routine`, `probe`,
+ *   `empty`, `invalid` (no JUDGMENT line), `contradictory` (two judgments),
+ *   `unsupported` (a judgment outside the closed set), or `error` (the call
+ *   itself fails).
  */
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -39,15 +44,27 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
-function nextReviewDecision(): string {
-  const seq = (process.env.FAKE_REVIEW_SEQUENCE ?? '')
+/** Consume the head of a comma-list env var, or `fallback` when it is empty. */
+function nextFromEnv(name: string, fallback: string): string {
+  const [head, ...rest] = (process.env[name] ?? '')
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
-  if (seq.length === 0) return 'pass'
-  const head = seq[0] ?? 'pass'
-  process.env.FAKE_REVIEW_SEQUENCE = seq.slice(1).join(',')
+  if (head === undefined) return fallback
+  process.env[name] = rest.join(',')
   return head
+}
+
+const TRIAGE_TEXT: Record<string, string> = {
+  routine:
+    'JUDGMENT: routine\nREASON: fake triage: a one-line fix with a pinned check.',
+  probe:
+    'JUDGMENT: probe\nREASON: fake triage: treat this task as risky and try it first.',
+  empty: '',
+  invalid: 'this looks easy enough (no structured judgment)',
+  contradictory:
+    'JUDGMENT: routine\nJUDGMENT: probe\nREASON: fake triage could not decide.',
+  unsupported: 'JUDGMENT: escalate\nREASON: fake triage wants a person.',
 }
 
 export class FakeProvider implements AgentProvider {
@@ -105,11 +122,25 @@ export class FakeProvider implements AgentProvider {
         elapsedMs: Date.now() - started,
       }
     }
+    if (options.role === 'triage') {
+      const kind = nextFromEnv('FAKE_TRIAGE', 'routine')
+      if (kind === 'error') throw new Error('fake triage call failed')
+      return {
+        text: TRIAGE_TEXT[kind] ?? TRIAGE_TEXT['routine'] ?? '',
+        session: { id: `fake-${randomUUID()}` },
+        resolvedModel: 'fake-model',
+        resolvedEffort: 'low',
+        reportedModel: 'fake-model',
+        reportedEffort: 'low',
+        usage: null,
+        elapsedMs: Date.now() - started,
+      }
+    }
     const slow = process.env.FAKE_REVIEW_SLOW_MS
     if (options.role === 'review-b' && slow) {
       await sleep(parseInt(slow, 10), options.signal)
     }
-    const decision = nextReviewDecision()
+    const decision = nextFromEnv('FAKE_REVIEW_SEQUENCE', 'pass')
     if (decision === 'empty') {
       return {
         text: '',

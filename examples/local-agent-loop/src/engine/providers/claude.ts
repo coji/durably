@@ -9,7 +9,8 @@
  *   (so the agent can work non-interactively), and pre-approved calls bypass
  *   `canUseTool`; only the hook inspects every call.
  * - Review roles run read-only (`allowedTools: ['Read']`) against a frozen
- *   snapshot directory, never the live workdir.
+ *   snapshot directory, never the live workdir. Triage runs read-only too,
+ *   before any code exists.
  * - Requested effort is applied via the `effort` setting; unsupported values
  *   throw instead of being silently dropped.
  * - Bash containment is best-effort input inspection (documented limits, not
@@ -25,11 +26,11 @@ import {
 } from 'ai-sdk-provider-claude-code'
 
 import { defaultModelFor, resolveEffort } from '../models.js'
-import type {
-  AgentCallOptions,
-  AgentProvider,
-  AgentResult,
-  AgentRole,
+import {
+  READ_ONLY_ROLES,
+  type AgentCallOptions,
+  type AgentProvider,
+  type AgentResult,
 } from './types.js'
 
 const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
@@ -71,11 +72,6 @@ export function resolveClaudeEffort(
     modelId,
   )
 }
-
-const READ_ONLY_ROLES: ReadonlySet<AgentRole> = new Set([
-  'review-a',
-  'review-b',
-])
 
 /** Normalize and resolve a candidate path against the allowed root. */
 function resolveInside(root: string, candidate: string): string {

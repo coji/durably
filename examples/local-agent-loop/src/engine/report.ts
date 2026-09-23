@@ -140,6 +140,17 @@ export interface ReportDelivery {
   commit: string | null
 }
 
+/**
+ * The shadow-triage judgment recorded for a run. `unknown` means triage ran
+ * without a usable answer; a report with no triage at all carries null.
+ */
+export const TRIAGE_JUDGMENTS = ['routine', 'probe', 'unknown'] as const
+
+export interface ReportTriage {
+  judgment: (typeof TRIAGE_JUDGMENTS)[number]
+  reason: string
+}
+
 /** One row per run, the unit that cross-run comparisons operate on. */
 export interface RunSummary {
   /** Terminal completed run whose candidate was approved. */
@@ -173,8 +184,12 @@ export interface LoopReport {
   /** Shared by runs with identical provider/model/effort/context settings. */
   configVersion: string | null
   summary: RunSummary
+  triage: ReportTriage | null
   stageUsage: StageUsage[]
-  /** Per-role requested settings and usage: code, correctness, edge-cases. */
+  /**
+   * Per-role requested settings and usage: code, correctness, edge-cases, and
+   * triage when the run has a triage profile.
+   */
   roleUsage: RoleUsage[]
   /** SHA-256 of each input file's content, as stored in the run. */
   inputs: ReportInputs
@@ -251,6 +266,7 @@ function fmtUsd(v: number | null): string {
 
 const STAGE_ORDER = [
   'setup',
+  'triage',
   'policy',
   'code',
   'verify',
@@ -347,6 +363,7 @@ export function stageUsage(attempts: AttemptRow[]): StageUsage[] {
 
 /** The role an LLM step ran as, from its step name. */
 function roleOf(stepName: string): string | null {
+  if (stepName === 'triage') return 'triage'
   if (stepName.endsWith(':agent')) return 'code'
   if (stepName.endsWith(':correctness')) return 'correctness'
   if (stepName.endsWith(':edge-cases')) return 'edge-cases'
@@ -523,9 +540,9 @@ export function totalStageMs(timings: StageTiming[]): number | null {
 }
 
 /**
- * Only implement/review branches invoke an LLM: every other step (local
- * grading, prepare, policy, snapshots) is out of usage scope, so its null
- * usage never marks the aggregate incomplete.
+ * Only triage and implement/review branches invoke an LLM: every other step
+ * (local grading, prepare, policy, snapshots) is out of usage scope, so its
+ * null usage never marks the aggregate incomplete.
  */
 export function attemptExpectsUsage(stepName: string): boolean {
   return roleOf(stepName) !== null
@@ -560,6 +577,15 @@ export function reportToMarkdown(r: LoopReport): string {
   )
   lines.push(`- output: ${JSON.stringify(r.output)}`)
   lines.push(`- config version: ${fmt(r.configVersion)}`)
+  lines.push('')
+  lines.push('## Triage (shadow mode: recorded, never used to route)')
+  lines.push('')
+  if (r.triage) {
+    lines.push(`- judgment: ${r.triage.judgment}`)
+    lines.push(`- reason: ${r.triage.reason}`)
+  } else {
+    lines.push('- none (no triage profile, or triage has not run yet)')
+  }
   lines.push('')
   lines.push('## Inputs (SHA-256 of stored content)')
   lines.push('')

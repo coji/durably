@@ -14,7 +14,7 @@ import {
   legacyDbWarning,
   type AgentLoopDurably,
 } from './durably.js'
-import { buildReport } from './engine/build-report.js'
+import { buildReport, recordedTriage } from './engine/build-report.js'
 import { killOwnedChildren, runChild } from './engine/child.js'
 import { compareReports, comparisonToMarkdown } from './engine/compare.js'
 import {
@@ -90,6 +90,8 @@ const factoryConfigSchema = z
           })
           .strict()
           .optional(),
+        /** Shadow triage before the code stage; no triage call when absent. */
+        triage: roleConfigSchema.optional(),
       })
       .strict()
       .optional(),
@@ -188,7 +190,7 @@ function splitArgv(value: string): string[] {
 function resolveProfiles(
   a: Record<string, string>,
   config: FactoryConfig | null,
-): Record<ProfileRole, FixedProfile> {
+): { roles: Record<ProfileRole, FixedProfile>; triage: FixedProfile | null } {
   const fallbackProvider = parseProviderName(a['provider'] ?? 'fake')
   const fix = (role: RoleConfig | undefined) => {
     const provider = role?.provider ?? fallbackProvider
@@ -201,13 +203,17 @@ function resolveProfiles(
       effort: role?.effort ?? (inherit ? a['effort'] : undefined) ?? null,
     })
   }
-  const profiles = {
+  const roles = {
     code: fix(config?.profiles?.code),
     correctness: fix(config?.profiles?.review?.correctness),
     'edge-cases': fix(config?.profiles?.review?.['edge-cases']),
   }
-  assertSingleMode(profiles)
-  return profiles
+  // Triage runs only when the config names it; even `{}` turns it on and
+  // takes the fallback settings like any other role.
+  const triageConfig = config?.profiles?.triage
+  const triage = triageConfig ? fix(triageConfig) : null
+  assertSingleMode({ ...roles, ...(triage ? { triage } : {}) })
+  return { roles, triage }
 }
 
 /**
@@ -510,11 +516,14 @@ Commands (run from examples/local-agent-loop):
 Repository config: factory.json at the repository root, or --config <file>:
   { "check": ["pnpm", "validate"], "setup": ["pnpm", "install"], "base": "main",
     "profiles": { "code": { "provider": "codex", "model": "...", "effort": "..." },
-                  "review": { "correctness": { ... }, "edge-cases": { ... } } } }
+                  "review": { "correctness": { ... }, "edge-cases": { ... } },
+                  "triage": { ... } } }
   --check, --setup and --base override the config. A role the config leaves
   out uses --provider/--model/--effort. A field a role leaves out comes from
   --model/--effort when the role uses --provider's provider, and otherwise
-  from that provider's preset defaults.
+  from that provider's preset defaults. "triage" is optional: when present,
+  one read-only call records a routine or probe judgment before the code
+  stage (shadow mode; it changes nothing about the run).
   The config and input files are read once at trigger; the run keeps the
   input file contents, and the report shows each one's SHA-256.
 State: database and run data live in ${dirname(dbPath())}
@@ -533,7 +542,7 @@ resolved effective, and provider-reported settings separate.
 Context defaults to reuse: implementation and repair continue one explicit
 native session. Reviews always use independent new sessions.
 Env: AGENT_TIMEOUT_MS (default 300000), TEST_TIMEOUT_MS (default 120000),
-     FAKE_FAIL_FIRST=0, FAKE_REVIEW_SEQUENCE, FAKE_REVIEW_SLOW_MS
+     FAKE_FAIL_FIRST=0, FAKE_REVIEW_SEQUENCE, FAKE_REVIEW_SLOW_MS, FAKE_TRIAGE
 `)
 }
 
@@ -586,7 +595,7 @@ if (cmd === 'worker') {
   // Everything the run depends on is read and resolved here, before it
   // exists: the worker never reads factory.json or an input file again.
   const { target, config } = await resolveTarget(a)
-  const profiles = resolveProfiles(a, config)
+  const { roles: profiles, triage } = resolveProfiles(a, config)
   const approve = a['approve']
   if (approve !== undefined && approve !== 'auto' && approve !== 'manual')
     throw new Error('--approve must be auto|manual')
@@ -605,6 +614,7 @@ if (cmd === 'worker') {
       code: requested(profiles.code),
       correctness: requested(profiles.correctness),
       'edge-cases': requested(profiles['edge-cases']),
+      ...(triage ? { triage: requested(triage) } : {}),
     },
     target,
     maxIterations,
@@ -673,6 +683,8 @@ if (cmd === 'worker') {
           (run?.output as { delivery?: unknown } | null)?.delivery ?? null,
         candidate:
           (run?.output as { candidate?: unknown } | null)?.candidate ?? null,
+        // Null when the run has no triage profile or has not reached it.
+        triage: run ? await recordedTriage(durably, run) : null,
         run,
         attempts: attempts.map((x) => ({
           id: x.id,

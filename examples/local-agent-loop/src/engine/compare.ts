@@ -8,7 +8,11 @@
  * statistics, never from one report. Unknown values are dropped from the
  * statistic and counted in `unknown`, never treated as zero.
  */
-import type { LoopReport } from './report.js'
+import {
+  TRIAGE_JUDGMENTS,
+  type LoopReport,
+  type ReportTriage,
+} from './report.js'
 
 export interface Stat {
   n: number
@@ -25,6 +29,23 @@ export interface StageStats {
   cacheReadTokens: Stat
   costUsd: Stat
   reworked: Stat
+}
+
+/** Outcomes of the runs in one config group that triage judged the same way. */
+export interface TriageStats {
+  judgment: ReportTriage['judgment']
+  runs: number
+  approved: number
+  verificationFailed: number
+  reviewCapReached: number
+  repairs: Stat
+  costUsd: Stat
+  /**
+   * Runs judged `routine` that still needed a repair or stopped at a cap
+   * (review cap, or the iteration cap as verification-failed). Always 0 on
+   * the other rows.
+   */
+  routineNeedingMore: number
 }
 
 export interface ConfigGroup {
@@ -44,6 +65,8 @@ export interface ConfigGroup {
   costPerSuccessUsd: Stat
   repairs: Stat
   stages: StageStats[]
+  /** One row per triage judgment present; empty when no run had triage. */
+  triage: TriageStats[]
 }
 
 export interface Comparison {
@@ -85,6 +108,35 @@ function labelOf(report: LoopReport): string {
     code?.effectiveEffort ?? input?.effort ?? 'default-effort',
     input?.context ?? 'unknown-context',
   ].join('/')
+}
+
+function triageStats(list: LoopReport[]): TriageStats[] {
+  return TRIAGE_JUDGMENTS.flatMap((judgment) => {
+    const runs = list.filter((r) => r.triage?.judgment === judgment)
+    if (runs.length === 0) return []
+    const concluded = (c: string) =>
+      runs.filter((r) => r.summary.conclusion === c).length
+    return [
+      {
+        judgment,
+        runs: runs.length,
+        approved: runs.filter((r) => r.summary.success).length,
+        verificationFailed: concluded('verification-failed'),
+        reviewCapReached: concluded('review-cap-reached'),
+        repairs: stat(runs.map((r) => r.summary.repairs)),
+        costUsd: stat(runs.map((r) => r.summary.costUsd)),
+        routineNeedingMore:
+          judgment === 'routine'
+            ? runs.filter(
+                (r) =>
+                  r.summary.repairs > 0 ||
+                  r.summary.conclusion === 'review-cap-reached' ||
+                  r.summary.conclusion === 'verification-failed',
+              ).length
+            : 0,
+      },
+    ]
+  })
 }
 
 export function compareReports(reports: LoopReport[]): Comparison {
@@ -137,6 +189,7 @@ export function compareReports(reports: LoopReport[]): Comparison {
       ),
       repairs: stat(list.map((r) => r.summary.repairs)),
       stages,
+      triage: triageStats(list),
     })
   }
   return { groups: out }
@@ -180,6 +233,22 @@ export function comparisonToMarkdown(c: Comparison): string {
       lines.push(
         `| ${s.stage} | ${fmtStat(s.workMs)} | ${fmtStat(s.totalTokens)} | ${fmtStat(s.cacheReadTokens)} | ${fmtStat(s.costUsd, 6)} | ${fmtStat(s.reworked)} |`,
       )
+    }
+    if (g.triage.length > 0) {
+      lines.push('')
+      lines.push(
+        'By triage judgment (shadow mode; the judgment chose nothing):',
+      )
+      lines.push('')
+      lines.push(
+        '| judgment | runs | approved | verification-failed | review-cap-reached | repairs | cost USD | routine needing repair or cap |',
+      )
+      lines.push('|---|---|---|---|---|---|---|---|')
+      for (const t of g.triage) {
+        lines.push(
+          `| ${t.judgment} | ${t.runs} | ${t.approved} | ${t.verificationFailed} | ${t.reviewCapReached} | ${fmtStat(t.repairs)} | ${fmtStat(t.costUsd, 6)} | ${t.judgment === 'routine' ? t.routineNeedingMore : '-'} |`,
+        )
+      }
     }
   }
   lines.push('')

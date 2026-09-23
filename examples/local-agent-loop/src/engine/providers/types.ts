@@ -10,7 +10,20 @@ import type { TokenUsage } from '../usage.js'
 
 export type ProviderName = 'codex' | 'claude' | 'fake'
 
-export type AgentRole = 'implement' | 'repair' | 'review-a' | 'review-b'
+/** `triage` is a read-only, one-shot judgment made before any code is written. */
+export type AgentRole =
+  | 'implement'
+  | 'repair'
+  | 'review-a'
+  | 'review-b'
+  | 'triage'
+
+/** Roles every real provider runs without write access. */
+export const READ_ONLY_ROLES: ReadonlySet<AgentRole> = new Set([
+  'review-a',
+  'review-b',
+  'triage',
+])
 
 export interface NativeSession {
   id: string
