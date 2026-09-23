@@ -109,16 +109,47 @@ export type ParsedReview =
   | { ok: true; decision: 'pass' | 'needsChanges'; notes: string }
   | { ok: false; error: string }
 
-/** The text after `LABEL:` on the first line that starts with it. */
-function lineValue(text: string, label: string): string {
-  const match = new RegExp(`^[ \\t]*${label}:[ \\t]*(.*)$`, 'im').exec(text)
-  return match?.[1]?.trim() ?? ''
+/** A line that starts with one of the reply's labels. */
+const LABEL_LINE = /^\s*(?:PLAN|COUNTEREXAMPLE|DECISION|NOTES):/i
+
+/**
+ * The value of `LABEL:`: the rest of its line plus the following lines up to
+ * the next label, so a value written on the next line or as a bullet list
+ * counts. A label that starts a line wins; only when none does is a label in
+ * the middle of a line read, as for DECISION.
+ */
+function labelValue(text: string, label: string): string {
+  const lines = text.split('\n')
+  let first: string | undefined
+  let index = -1
+  for (const pattern of [
+    new RegExp(`^\\s*${label}:(.*)$`, 'i'),
+    new RegExp(`${label}:(.*)$`, 'i'),
+  ]) {
+    index = lines.findIndex((line) => pattern.test(line))
+    if (index >= 0) {
+      first = pattern.exec(lines[index] as string)?.[1]
+      break
+    }
+  }
+  if (first === undefined) return ''
+  const parts = [first]
+  for (const line of lines.slice(index + 1)) {
+    if (LABEL_LINE.test(line)) break
+    parts.push(line)
+  }
+  return parts
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .join(' ')
 }
 
 /**
  * Strict review-output parser.
  *
- * - PLAN, COUNTEREXAMPLE and NOTES must each start a line and be non-empty.
+ * - PLAN, COUNTEREXAMPLE and NOTES must each be present and non-empty. The
+ *   value may follow on the next lines (a bullet list, say), and a label in
+ *   the middle of a line counts when none starts a line.
  *   A reply without the independent plan and counterexample the prompt asks
  *   for is review-incomplete, whatever its verdict.
  * - Exactly one DECISION line with an exact known value is required. The
@@ -170,10 +201,10 @@ export function parseReviewOutput(text: string): ParsedReview {
   }
   const decision = raw === 'needschanges' ? 'needsChanges' : 'pass'
   for (const label of ['PLAN', 'COUNTEREXAMPLE']) {
-    if (lineValue(text, label).length === 0)
+    if (labelValue(text, label).length === 0)
       return { ok: false, error: `missing ${label} line in review output` }
   }
-  const notes = lineValue(text, 'NOTES').slice(0, 500)
+  const notes = labelValue(text, 'NOTES').slice(0, 500)
   if (notes.length === 0) {
     return { ok: false, error: 'missing NOTES line in review output' }
   }

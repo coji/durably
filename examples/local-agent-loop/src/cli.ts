@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 /** CLI: worker | trigger | status | waits | approve | reject | report | compare */
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -126,6 +126,17 @@ async function readInputFile(
   path: string,
 ): Promise<{ content: string; ref: InputFileRef }> {
   const abs = resolve(path)
+  let size: number
+  try {
+    size = (await stat(abs)).size
+  } catch {
+    throw new Error(`--${flag} ${path}: cannot read file`)
+  }
+  // Check the size before reading, so a huge file is never loaded.
+  if (size > MAX_INPUT_FILE_BYTES)
+    throw new Error(
+      `--${flag} ${path}: file is ${size} bytes; the limit is 256 KiB`,
+    )
   let bytes: Buffer
   try {
     bytes = await readFile(abs)
@@ -155,10 +166,11 @@ function splitArgv(value: string): string[] {
 }
 
 /**
- * Fix each role's settings. A role the config names keeps what it names;
- * each field it leaves out, and every field of a role it does not name, comes
- * from `--provider`, `--model` and `--effort`. Presets are applied here, so a
- * bad effort fails before the run exists.
+ * Fix each role's settings. A role the config names keeps what it names. A
+ * role it does not name uses `--provider`, `--model` and `--effort`. A field a
+ * named role leaves out comes from `--model` / `--effort` when the role uses
+ * the `--provider` provider, and otherwise from that provider's defaults.
+ * Presets are applied here, so a bad effort fails before the run exists.
  */
 function resolveProfiles(
   a: Record<string, string>,
@@ -321,9 +333,11 @@ Repository config: factory.json at the repository root, or --config <file>:
     "profiles": { "code": { "provider": "codex", "model": "...", "effort": "..." },
                   "review": { "correctness": { ... }, "edge-cases": { ... } } } }
   --check, --setup and --base override the config. A role the config leaves
-  out, and any field a role leaves out, comes from --provider/--model/--effort.
-  The config and input files are read once at trigger; the run keeps what was
-  read, with each input file's SHA-256.
+  out uses --provider/--model/--effort. A field a role leaves out comes from
+  --model/--effort when the role uses --provider's provider, and otherwise
+  from that provider's preset defaults.
+  The config and input files are read once at trigger; the run keeps the
+  input file contents, and the report shows each one's SHA-256.
 State: database and run data live in ${dirname(dbPath())}
   (worktrees, checkpoints, verification scratch, delivery patches under runs/<id>/).
 Model presets (--model selects one; effort defaults from the preset and is

@@ -224,6 +224,34 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       const setup = await step.run(
         'setup',
         async (signal) => {
+          // Profiles first: a bad profile fails before any worktree or branch
+          // exists in the target repository.
+          const fixed = byRole((role) => {
+            const requested = input.profiles?.[role]
+            return fixProfile(
+              requested
+                ? {
+                    provider: requested.provider,
+                    model: requested.requestedModel,
+                    effort: requested.requestedEffort,
+                  }
+                : {
+                    provider: input.provider,
+                    model: input.model ?? null,
+                    effort: input.effort ?? null,
+                  },
+            )
+          })
+          assertSingleMode(fixed)
+          const profiles = byRole((role): ResolvedProfile => ({
+            id: [
+              fixed[role].provider,
+              fixed[role].effectiveModel ?? 'provider-default',
+              fixed[role].effectiveEffort ?? 'provider-default',
+              role,
+            ].join(':'),
+            ...fixed[role],
+          }))
           await mkdir(root, { recursive: true })
           // A real repository needs far more room than the bundled sample. The
           // sample is a one-line fix graded by a two-file suite; a repository
@@ -261,32 +289,6 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             'AGENT_TIMEOUT_MS',
             isRepo ? 1800000 : 300000,
           )
-          const fixed = byRole((role) => {
-            const requested = input.profiles?.[role]
-            return fixProfile(
-              requested
-                ? {
-                    provider: requested.provider,
-                    model: requested.requestedModel,
-                    effort: requested.requestedEffort,
-                  }
-                : {
-                    provider: input.provider,
-                    model: input.model ?? null,
-                    effort: input.effort ?? null,
-                  },
-            )
-          })
-          assertSingleMode(fixed)
-          const profiles = byRole((role): ResolvedProfile => ({
-            id: [
-              fixed[role].provider,
-              fixed[role].effectiveModel ?? 'provider-default',
-              fixed[role].effectiveEffort ?? 'provider-default',
-              role,
-            ].join(':'),
-            ...fixed[role],
-          }))
           const instructionsVersion = 'local-factory.v3'
           const value: FactorySetup = {
             fake: fixed.code.provider === 'fake',

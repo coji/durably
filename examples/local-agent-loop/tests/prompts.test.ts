@@ -82,7 +82,7 @@ describe('parseReviewOutput (strict verdicts)', () => {
     }
   })
 
-  it('reads PLAN, COUNTEREXAMPLE and NOTES only at the start of a line', () => {
+  it('prefers PLAN, COUNTEREXAMPLE and NOTES at the start of a line', () => {
     const r = parseReviewOutput(
       'PLAN: update the release notes: add one line\n' +
         'COUNTEREXAMPLE: see footnotes: none\n' +
@@ -91,9 +91,27 @@ describe('parseReviewOutput (strict verdicts)', () => {
     )
     assert.equal(r.ok, true)
     if (r.ok) assert.equal(r.notes, 'the real note')
-    const inline = parseReviewOutput(
-      'I made a PLAN: x and a COUNTEREXAMPLE: y\nDECISION: pass\nNOTES: z',
+  })
+
+  it('reads a label in the middle of a line when none starts a line', () => {
+    const r = parseReviewOutput(
+      'I made a PLAN: x and a COUNTEREXAMPLE: y\nDECISION: pass\nSo, NOTES: z',
     )
-    assert.equal(inline.ok, false)
+    assert.equal(r.ok, true)
+    if (r.ok) assert.equal(r.notes, 'z')
+  })
+
+  it('reads a value written on the following lines, bullets included', () => {
+    const r = parseReviewOutput(
+      'PLAN:\n- change add()\n- leave mul()\n' +
+        'COUNTEREXAMPLE:\n  tried 0.1 + 0.2\n' +
+        'DECISION: needsChanges\n' +
+        'NOTES:\nmul() was touched',
+    )
+    assert.equal(r.ok, true)
+    if (r.ok) {
+      assert.equal(r.decision, 'needsChanges')
+      assert.equal(r.notes, 'mul() was touched')
+    }
   })
 })

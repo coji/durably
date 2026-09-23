@@ -226,6 +226,53 @@ describe('repo target end to end', { timeout: 180000 }, () => {
     }
   })
 
+  it('fails a bad profile before creating a worktree or branch', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-bad-profile-'))
+    const repo = await seedRepo(root)
+    const stateRoot = join(root, 'state')
+    const fake = fixProfile({ provider: 'fake', model: null, effort: null })
+    const durably = createAgentDurably({ stateRoot })
+    await durably.init()
+    try {
+      // A direct trigger that mixes fake and real roles; the CLI refuses this
+      // before the run exists, so only setup can catch it here.
+      const run = await durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        profiles: {
+          code: fake,
+          correctness: fake,
+          'edge-cases': { ...fake, provider: 'codex' as const },
+        },
+        target: {
+          kind: 'repo' as const,
+          repoPath: repo,
+          baseRef: 'HEAD',
+          task: 'Fix add() so decimal inputs are not truncated.',
+          spec: null,
+          dispositions: null,
+          inputFiles: NO_FILES,
+          issue: null,
+          checkCommand: ['node', '--test', 'test/**/*.test.js'],
+          setupCommand: null,
+          publish: false,
+        },
+        maxIterations: 1,
+        context: 'reuse',
+      })
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'failed',
+        60000,
+        'bad-profile run fails',
+      )
+      const branches = await git(repo, ['branch', '--list', 'factory/*'])
+      assert.equal(branches.trim(), '')
+      assert.equal(existsSync(join(stateRoot, 'runs', run.id)), false)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
   it('names the candidate branch and commit when nothing is delivered', async () => {
     const root = await mkdtemp(join(tmpdir(), 'repo-target-unfixed-'))
     const repo = await seedRepo(root)
