@@ -109,25 +109,33 @@ export type ParsedReview =
   | { ok: true; decision: 'pass' | 'needsChanges'; notes: string }
   | { ok: false; error: string }
 
-/** A line that starts with one of the reply's labels. */
-const LABEL_LINE = /^\s*(?:PLAN|COUNTEREXAMPLE|DECISION|NOTES):/i
+const LABELS = ['PLAN', 'COUNTEREXAMPLE', 'DECISION', 'NOTES'] as const
+type Label = (typeof LABELS)[number]
+
+/**
+ * Where a label is recognized. At the start of a line any case counts. In the
+ * middle of a line only the exact upper-case label with no letter or digit
+ * before it counts, so prose such as `release notes:`, `FOOTNOTES:` or
+ * `MYDECISION:` is never read as a label.
+ */
+const atLineStart = (label: Label) => new RegExp(`^\\s*${label}:(.*)$`, 'i')
+const inLine = (label: Label) => new RegExp(`(?<![A-Za-z0-9])${label}:(.*)$`)
+
+/** Any `word:` at the start of a line ends the value before it. */
+const ANY_LABEL_LINE = /^\s*[A-Za-z][\w-]*:/
 
 /**
  * The value of `LABEL:`: the rest of its line plus the following lines up to
- * the next label, so a value written on the next line or as a bullet list
- * counts. A label that starts a line wins; only when none does is a label in
- * the middle of a line read, as for DECISION.
+ * the next line that starts with a label of any kind, so a value written on
+ * the next line or as a bullet list counts, but `PLAN:` followed by
+ * `REPLAN: x` stays empty. A label that starts a line wins; only when none
+ * does is a label in the middle of a line read.
  */
-function labelValue(text: string, label: string): string {
+function labelValue(text: string, label: Label): string {
   const lines = text.split('\n')
   let first: string | undefined
   let index = -1
-  for (const pattern of [
-    new RegExp(`^\\s*${label}:(.*)$`, 'i'),
-    // The left boundary keeps `FOOTNOTES:` or `REPLAN:` from filling a
-    // missing label.
-    new RegExp(`(?<![A-Za-z])${label}:(.*)$`, 'i'),
-  ]) {
+  for (const pattern of [atLineStart(label), inLine(label)]) {
     index = lines.findIndex((line) => pattern.test(line))
     if (index >= 0) {
       first = pattern.exec(lines[index] as string)?.[1]
@@ -137,7 +145,7 @@ function labelValue(text: string, label: string): string {
   if (first === undefined) return ''
   const parts = [first]
   for (const line of lines.slice(index + 1)) {
-    if (LABEL_LINE.test(line)) break
+    if (ANY_LABEL_LINE.test(line)) break
     parts.push(line)
   }
   return parts
@@ -175,14 +183,17 @@ export function parseReviewOutput(text: string): ParsedReview {
   const anchored: string[] = []
   const inline: string[] = []
   for (const line of text.split('\n')) {
-    const atLineStart = /^\s*DECISION:\s*(.*)$/i.exec(line)
-    if (atLineStart?.[1] !== undefined) {
-      anchored.push(atLineStart[1].trim().toLowerCase())
+    const anchoredMatch = atLineStart('DECISION').exec(line)
+    if (anchoredMatch?.[1] !== undefined) {
+      anchored.push(anchoredMatch[1].trim().toLowerCase())
       continue
     }
-    const anywhere = /DECISION:\s*(.*)$/i.exec(line)
-    if (anywhere?.[1] !== undefined)
-      inline.push(anywhere[1].trim().toLowerCase())
+    // A DECISION quoted inside PLAN, COUNTEREXAMPLE or NOTES (a reviewer
+    // reporting steering text, say) is content, not a verdict.
+    if (LABELS.some((label) => atLineStart(label).test(line))) continue
+    const inlineMatch = inLine('DECISION').exec(line)
+    if (inlineMatch?.[1] !== undefined)
+      inline.push(inlineMatch[1].trim().toLowerCase())
   }
   // Repeating the same verdict is redundant, not contradictory. What follows
   // each marker is still taken whole and validated whole, so an echoed
@@ -209,7 +220,7 @@ export function parseReviewOutput(text: string): ParsedReview {
     return { ok: false, error: `invalid DECISION value: ${values[0]}` }
   }
   const decision = raw === 'needschanges' ? 'needsChanges' : 'pass'
-  for (const label of ['PLAN', 'COUNTEREXAMPLE']) {
+  for (const label of ['PLAN', 'COUNTEREXAMPLE'] as const) {
     if (labelValue(text, label).length === 0)
       return { ok: false, error: `missing ${label} line in review output` }
   }

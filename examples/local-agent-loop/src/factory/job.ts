@@ -252,7 +252,6 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             ].join(':'),
             ...fixed[role],
           }))
-          await mkdir(root, { recursive: true })
           // A real repository needs far more room than the bundled sample. The
           // sample is a one-line fix graded by a two-file suite; a repository
           // task means reading the code base and running its whole check, and
@@ -263,12 +262,13 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             'TEST_TIMEOUT_MS',
             isRepo ? 900000 : 120000,
           )
-          // Read before the target is prepared, so a bad value fails before a
-          // worktree or branch exists.
+          // Both timeouts are read before anything is created, so a bad value
+          // leaves no run directory, worktree or branch behind.
           const agentTimeoutMs = positiveTimeout(
             'AGENT_TIMEOUT_MS',
             isRepo ? 1800000 : 300000,
           )
+          await mkdir(root, { recursive: true })
           const target: TargetConfig =
             input.target.kind === 'subject'
               ? await prepareSubjectTarget({

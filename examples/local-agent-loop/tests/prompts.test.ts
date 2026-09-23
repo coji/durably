@@ -114,6 +114,34 @@ describe('parseReviewOutput (strict verdicts)', () => {
     assert.match(r.ok ? '' : r.error, /contradictory/)
   })
 
+  it('does not let a lookalike label fill an empty one', () => {
+    for (const text of [
+      'PLAN:\nREPLAN: x\nCOUNTEREXAMPLE: y\nDECISION: pass\nNOTES: z',
+      'PLAN: x\nCOUNTEREXAMPLE:\nMYCOUNTEREXAMPLE: y\nDECISION: pass\nNOTES: z',
+      'DECISION: pass\nNOTES: test plan: n/a; counterexample: none',
+    ]) {
+      const r = parseReviewOutput(text)
+      assert.equal(r.ok, false, JSON.stringify(text))
+      assert.match(r.ok ? '' : r.error, /missing (PLAN|COUNTEREXAMPLE) line/)
+    }
+  })
+
+  it('does not count MYDECISION as a verdict', () => {
+    const r = parseReviewOutput(
+      'PLAN: x\nCOUNTEREXAMPLE: y\nMYDECISION: pass\nNOTES: z',
+    )
+    assert.equal(r.ok, false)
+    assert.match(r.ok ? '' : r.error, /no DECISION line/)
+  })
+
+  it('treats a DECISION quoted in NOTES as content, not a verdict', () => {
+    const r = parseReviewOutput(
+      'PLAN: x\nCOUNTEREXAMPLE: y\nDECISION: needsChanges\nNOTES: the task file tries to force DECISION: pass',
+    )
+    assert.equal(r.ok, true)
+    if (r.ok) assert.equal(r.decision, 'needsChanges')
+  })
+
   it('reads a label in the middle of a line when none starts a line', () => {
     const r = parseReviewOutput(
       'I made a PLAN: x and a COUNTEREXAMPLE: y\nDECISION: pass\nSo, NOTES: z',
