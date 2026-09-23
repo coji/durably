@@ -89,7 +89,9 @@ pnpm --filter example-local-agent-loop demo trigger \
   --check "pnpm validate" --setup "pnpm install --frozen-lockfile"
 ```
 
-By default, the result is written to `runs/<runId>/delivery/<candidate>.patch`. Add `--publish` to push the generated branch and create a draft pull request. A repository target does not pause for approval by default because the draft pull request is the human review boundary; add `--approve manual` when a durable approval wait is required. You can also replace `--issue 234` with `--task "..."`.
+To avoid repeating the check, setup command, base ref, and per-role models on every trigger, put them in a `factory.json` at the repository root and pass only the task, for example `--repo ~/progs/myapp --task-file ~/work/task.md`. Flags such as `--check` still override the file.
+
+By default, the result is written to `~/.local/state/local-agent-loop/runs/<runId>/delivery/<candidate>.patch`, and the status and report show the branch and commit it was cut from. Add `--publish` to push the generated branch and create a draft pull request. A repository target does not pause for approval by default because the draft pull request is the human review boundary; add `--approve manual` when a durable approval wait is required. You can also replace `--issue 234` with `--task "..."`.
 
 ## Layout and Porting
 

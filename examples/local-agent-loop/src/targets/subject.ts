@@ -21,6 +21,7 @@ import type {
   SealArgs,
   SubjectTargetConfig,
   Target,
+  UntrustedInput,
 } from '../factory/target.js'
 import { runAcceptanceSuite, snapshotAcceptance } from './subject-acceptance.js'
 
@@ -72,6 +73,11 @@ export class SubjectTarget implements Target {
 
   taskBrief(): string {
     return 'Fix src/calc.js add() so decimal inputs are not truncated.'
+  }
+
+  untrustedInputs(): UntrustedInput[] {
+    // The sample's task is written by the factory; nothing comes from outside.
+    return []
   }
 
   implementationRules(): string[] {
@@ -153,6 +159,8 @@ export class SubjectTarget implements Target {
       kind: 'snapshot',
       location: args.candidate.snapshotDir,
       summary: `approved candidate ${args.candidate.id}`,
+      branch: null,
+      commit: null,
     }
   }
 

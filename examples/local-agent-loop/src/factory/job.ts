@@ -7,24 +7,35 @@ import { defineJob, type JsonValue } from '@coji/durably'
 import { z } from 'zod'
 
 import { createProvider } from '../engine/providers/index.js'
+import type { ProviderName } from '../engine/providers/types.js'
+import type { ResolvedProfile } from '../engine/types.js'
 import { configVersionOf } from '../engine/versions.js'
 import {
   createTarget,
   prepareRepoTarget,
   prepareSubjectTarget,
 } from '../targets/index.js'
-import { FactoryEventSchema } from './events.js'
+import { deliverySchema, FactoryEventSchema } from './events.js'
 import { assertAllowedDecision, availableActions, decide } from './policy.js'
 import { reduce } from './reducer.js'
 import { stages } from './stages.js'
 import type { TargetConfig } from './target.js'
-import { initialState, type FactorySetup, type StageDecision } from './types.js'
+import {
+  initialState,
+  PROFILE_ROLES,
+  type FactorySetup,
+  type ProfileRole,
+  type StageDecision,
+} from './types.js'
 
 const issueSchema = z.object({
   number: z.number().int(),
   title: z.string(),
   url: z.string(),
 })
+
+/** Where an input came from. Its hash is taken from the stored content. */
+const inputFileSchema = z.object({ path: z.string().min(1) })
 
 const targetSchema = z
   .discriminatedUnion('kind', [
@@ -35,6 +46,18 @@ const targetSchema = z
       repoPath: z.string().min(1),
       baseRef: z.string().default('HEAD'),
       task: z.string().min(1),
+      /** Handed to the implementer and both reviewers. */
+      spec: z.string().min(1).nullable().default(null),
+      /** Handed to the reviewers only. */
+      dispositions: z.string().min(1).nullable().default(null),
+      /** Where each input came from, when it was read from a file. */
+      inputFiles: z
+        .object({
+          task: inputFileSchema.nullable().default(null),
+          spec: inputFileSchema.nullable().default(null),
+          dispositions: inputFileSchema.nullable().default(null),
+        })
+        .default({ task: null, spec: null, dispositions: null }),
       issue: issueSchema.nullable().default(null),
       /** Pinned before the agent starts, so it cannot redefine grading. */
       checkCommand: z.array(z.string().min(1)).min(1),
@@ -45,12 +68,36 @@ const targetSchema = z
   ])
   .default({ kind: 'subject' })
 
+const providerSchema = z.enum(['codex', 'claude', 'fake'])
+
+/**
+ * One role's requested settings. What is actually applied is resolved from
+ * these in the setup step, never taken from the caller.
+ */
+const requestedProfileSchema = z.object({
+  provider: providerSchema,
+  requestedModel: z.string().min(1).nullable(),
+  requestedEffort: z.string().min(1).nullable(),
+})
+
 const inputSchema = z.object({
-  provider: z.enum(['codex', 'claude', 'fake']),
+  /** The code role's provider; also every role's when `profiles` is absent. */
+  provider: providerSchema,
   maxIterations: z.number().int().min(1).max(3).default(2),
   model: z.string().optional(),
   effort: z.string().optional(),
   context: z.enum(['reuse', 'fresh']).default('reuse'),
+  /**
+   * Per-role requested settings. When absent, every role uses `provider`,
+   * `model` and `effort`. Either way they are resolved in the setup step.
+   */
+  profiles: z
+    .object({
+      code: requestedProfileSchema,
+      correctness: requestedProfileSchema,
+      'edge-cases': requestedProfileSchema,
+    })
+    .optional(),
   target: targetSchema,
   /** Defaults to false for the sample and true for a repository target. */
   autoApprove: z.boolean().optional(),
@@ -61,6 +108,8 @@ const candidateSchema = z.object({
   snapshotDir: z.string(),
   sourceHash: z.string(),
   acceptanceHash: z.string(),
+  branch: z.string().optional(),
+  commit: z.string().optional(),
 })
 
 const outputSchema = z.object({
@@ -83,19 +132,64 @@ const outputSchema = z.object({
   ),
   workdir: z.string(),
   fake: z.boolean(),
-  delivery: z
-    .object({
-      kind: z.enum(['snapshot', 'patch', 'pull-request']),
-      location: z.string(),
-      summary: z.string(),
-    })
-    .nullable(),
+  delivery: deliverySchema.nullable(),
 })
 
 /** Example package root (`src/factory/` -> `src/` -> package). */
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const runRoot = (runId: string) => join(packageRoot, 'runs', runId)
 const subjectDir = () => join(packageRoot, 'subject')
+
+/** Build one value per role. */
+function byRole<T>(f: (role: ProfileRole) => T): Record<ProfileRole, T> {
+  return {
+    code: f('code'),
+    correctness: f('correctness'),
+    'edge-cases': f('edge-cases'),
+  }
+}
+
+/** A role's settings before a profile id is attached. */
+export type FixedProfile = Omit<ResolvedProfile, 'id'>
+
+/**
+ * Resolve one role's requested settings to what will actually be applied.
+ * Throws for an unsupported effort, so a bad profile fails when the run is
+ * triggered rather than part way through it.
+ */
+export function fixProfile(request: {
+  provider: ProviderName
+  model: string | null
+  effort: string | null
+}): FixedProfile {
+  const resolved = createProvider(request.provider).resolveExecution({
+    requestedModel: request.model,
+    requestedEffort: request.effort,
+  })
+  return {
+    provider: request.provider,
+    requestedModel: request.model,
+    requestedEffort: request.effort,
+    effectiveModel: resolved.model,
+    effectiveEffort: resolved.effort,
+  }
+}
+
+/**
+ * A run is either a fake rehearsal or a real one. Mixing the two would leave
+ * `fake` meaning neither, and a report could present fake review verdicts as
+ * part of a real loop.
+ */
+export function assertSingleMode(
+  profiles: Record<ProfileRole, { provider: ProviderName }>,
+): void {
+  const fakes = PROFILE_ROLES.filter(
+    (role) => profiles[role].provider === 'fake',
+  )
+  if (fakes.length > 0 && fakes.length < PROFILE_ROLES.length)
+    throw new Error(
+      `roles cannot mix the fake provider with a real one (fake: ${fakes.join(', ')})`,
+    )
+}
 
 function positiveTimeout(name: string, fallback: number): number {
   const raw = process.env[name]
@@ -114,150 +208,165 @@ function branchFor(
   return issue ? `factory/issue-${issue.number}-${runId}` : `factory/${runId}`
 }
 
-export const agentLoopJob = defineJob({
-  name: 'local-factory.v2',
-  input: inputSchema,
-  output: outputSchema,
-  run: async (step, input) => {
-    const provider = createProvider(input.provider)
-    const root = runRoot(step.runId)
-    const setup = await step.run(
-      'setup',
-      async (signal) => {
-        await mkdir(root, { recursive: true })
-        // A real repository needs far more room than the bundled sample. The
-        // sample is a one-line fix graded by a two-file suite; a repository
-        // task means reading the code base and running its whole check, and
-        // the first real run of this factory died on a five minute agent
-        // timeout before it had finished reading.
-        const isRepo = input.target.kind === 'repo'
-        const testTimeoutMs = positiveTimeout(
-          'TEST_TIMEOUT_MS',
-          isRepo ? 900000 : 120000,
-        )
-        const target: TargetConfig =
-          input.target.kind === 'subject'
-            ? await prepareSubjectTarget({
-                subjectDir: subjectDir(),
-                root,
-                testTimeoutMs,
-              })
-            : await prepareRepoTarget({
-                repoPath: input.target.repoPath,
-                baseRef: input.target.baseRef,
-                branch: branchFor(step.runId, input.target.issue),
-                root,
-                task: input.target.task,
-                issue: input.target.issue,
-                checkCommand: input.target.checkCommand,
-                setupCommand: input.target.setupCommand,
-                checkTimeoutMs: testTimeoutMs,
-                publish: input.target.publish,
-                signal,
-              })
-        const agentTimeoutMs = positiveTimeout(
-          'AGENT_TIMEOUT_MS',
-          isRepo ? 1800000 : 300000,
-        )
-        const resolved = provider.resolveExecution({
-          requestedModel: input.model ?? null,
-          requestedEffort: input.effort ?? null,
-        })
-        const profileId = [
-          input.provider,
-          resolved.model ?? 'provider-default',
-          resolved.effort ?? 'provider-default',
-        ].join(':')
-        const instructionsVersion = 'local-factory.v2'
-        const value: FactorySetup = {
-          provider: input.provider,
-          fake: provider.fake,
-          contextMode: input.context,
-          target,
-          checkpointsDir: join(root, 'operation-checkpoints'),
-          instructionsVersion,
-          configVersion: configVersionOf({
-            provider: input.provider,
-            contextMode: input.context,
-            instructionsVersion,
-            maxIterations: input.maxIterations,
-            target:
-              target.kind === 'subject'
-                ? 'subject'
-                : `repo:${target.checkCommand.join(' ')}`,
-            agentTimeoutMs,
-            checkTimeoutMs: testTimeoutMs,
-            code: { model: resolved.model, effort: resolved.effort },
-            review: { model: resolved.model, effort: resolved.effort },
-          }),
-          profiles: {
-            code: {
-              id: `${profileId}:code`,
-              provider: input.provider,
-              requestedModel: input.model ?? null,
-              requestedEffort: input.effort ?? null,
-              effectiveModel: resolved.model,
-              effectiveEffort: resolved.effort,
-            },
-            review: {
-              id: `${profileId}:review`,
-              provider: input.provider,
-              requestedModel: input.model ?? null,
-              requestedEffort: input.effort ?? null,
-              effectiveModel: resolved.model,
-              effectiveEffort: resolved.effort,
-            },
-          },
-          maxIterations: input.maxIterations,
-          agentTimeoutMs,
-          // A draft pull request is itself what the human reviews, so waiting
-          // for a separate approval signal first would hold a worker for
-          // nothing. The bundled sample keeps the wait: its human-wait timing
-          // is part of what the example measures.
-          autoApprove: input.autoApprove ?? target.kind === 'repo',
-        }
-        return value
-      },
-      {
-        metadata: {
-          stage: 'setup',
-          provider: input.provider,
-          context: input.context,
-          target: input.target.kind,
-        } as unknown as JsonValue,
-      },
-    )
+export interface AgentLoopJobOptions {
+  /** Directory every run's worktree, checkpoints and delivery live under. */
+  stateRoot: string
+}
 
-    const target = createTarget(setup.target)
-    let state = initialState(setup)
-    // Deliberately not a `finally`: `step.waitFor` suspends by throwing, so a
-    // finally block would run cleanup every time the run parks on the human
-    // approval wait, and a target that really removes its worktree would
-    // destroy the work mid-approval.
-    for (let sequence = 0; state.outcome === null; sequence++) {
-      const decision = await step.run(
-        `decision:${sequence}`,
-        async () => decide(state),
+export function createAgentLoopJob(options: AgentLoopJobOptions) {
+  const runRoot = (runId: string) => join(options.stateRoot, 'runs', runId)
+  return defineJob({
+    name: 'local-factory.v2',
+    input: inputSchema,
+    output: outputSchema,
+    run: async (step, input) => {
+      const root = runRoot(step.runId)
+      const setup = await step.run(
+        'setup',
+        async (signal) => {
+          // Profiles first: a bad profile fails before any worktree or branch
+          // exists in the target repository.
+          const fixed = byRole((role) => {
+            const requested = input.profiles?.[role]
+            return fixProfile(
+              requested
+                ? {
+                    provider: requested.provider,
+                    model: requested.requestedModel,
+                    effort: requested.requestedEffort,
+                  }
+                : {
+                    provider: input.provider,
+                    model: input.model ?? null,
+                    effort: input.effort ?? null,
+                  },
+            )
+          })
+          assertSingleMode(fixed)
+          const profiles = byRole((role): ResolvedProfile => ({
+            id: [
+              fixed[role].provider,
+              fixed[role].effectiveModel ?? 'provider-default',
+              fixed[role].effectiveEffort ?? 'provider-default',
+              role,
+            ].join(':'),
+            ...fixed[role],
+          }))
+          // A real repository needs far more room than the bundled sample. The
+          // sample is a one-line fix graded by a two-file suite; a repository
+          // task means reading the code base and running its whole check, and
+          // the first real run of this factory died on a five minute agent
+          // timeout before it had finished reading.
+          const isRepo = input.target.kind === 'repo'
+          const testTimeoutMs = positiveTimeout(
+            'TEST_TIMEOUT_MS',
+            isRepo ? 900000 : 120000,
+          )
+          // Both timeouts are read before anything is created, so a bad value
+          // leaves no run directory, worktree or branch behind.
+          const agentTimeoutMs = positiveTimeout(
+            'AGENT_TIMEOUT_MS',
+            isRepo ? 1800000 : 300000,
+          )
+          await mkdir(root, { recursive: true })
+          const target: TargetConfig =
+            input.target.kind === 'subject'
+              ? await prepareSubjectTarget({
+                  subjectDir: subjectDir(),
+                  root,
+                  testTimeoutMs,
+                })
+              : await prepareRepoTarget({
+                  repoPath: input.target.repoPath,
+                  baseRef: input.target.baseRef,
+                  branch: branchFor(step.runId, input.target.issue),
+                  root,
+                  task: input.target.task,
+                  spec: input.target.spec,
+                  dispositions: input.target.dispositions,
+                  issue: input.target.issue,
+                  checkCommand: input.target.checkCommand,
+                  setupCommand: input.target.setupCommand,
+                  checkTimeoutMs: testTimeoutMs,
+                  publish: input.target.publish,
+                  signal,
+                })
+          const instructionsVersion = 'local-factory.v3'
+          const value: FactorySetup = {
+            fake: fixed.code.provider === 'fake',
+            contextMode: input.context,
+            target,
+            checkpointsDir: join(root, 'operation-checkpoints'),
+            instructionsVersion,
+            configVersion: configVersionOf({
+              contextMode: input.context,
+              instructionsVersion,
+              maxIterations: input.maxIterations,
+              target:
+                target.kind === 'subject'
+                  ? 'subject'
+                  : `repo:${target.checkCommand.join(' ')}`,
+              agentTimeoutMs,
+              checkTimeoutMs: testTimeoutMs,
+              code: profiles.code,
+              correctness: profiles.correctness,
+              edgeCases: profiles['edge-cases'],
+            }),
+            profiles,
+            maxIterations: input.maxIterations,
+            agentTimeoutMs,
+            // A draft pull request is itself what the human reviews, so waiting
+            // for a separate approval signal first would hold a worker for
+            // nothing. The bundled sample keeps the wait: its human-wait timing
+            // is part of what the example measures.
+            autoApprove: input.autoApprove ?? target.kind === 'repo',
+          }
+          return value
+        },
         {
           metadata: {
-            stage: 'decision',
-            sequence,
-            candidates: availableActions(state),
+            stage: 'setup',
+            provider: input.provider,
+            context: input.context,
+            target: input.target.kind,
           } as unknown as JsonValue,
         },
       )
-      assertAllowedDecision(state, decision as StageDecision)
-      const selected = decision as StageDecision
-      const rawEvent = await stages[selected.stage]({
-        step,
-        state,
-        decision: selected,
-        key: `stage:${sequence}:${selected.stage}`,
-        services: { provider, target },
-      })
-      state = reduce(state, FactoryEventSchema.parse(rawEvent))
-    }
-    await target.cleanup()
-    return state.outcome
-  },
-})
+
+      const target = createTarget(setup.target)
+      const providers = byRole((role) =>
+        createProvider(setup.profiles[role].provider),
+      )
+      let state = initialState(setup)
+      // Deliberately not a `finally`: `step.waitFor` suspends by throwing, so a
+      // finally block would run cleanup every time the run parks on the human
+      // approval wait, and a target that really removes its worktree would
+      // destroy the work mid-approval.
+      for (let sequence = 0; state.outcome === null; sequence++) {
+        const decision = await step.run(
+          `decision:${sequence}`,
+          async () => decide(state),
+          {
+            metadata: {
+              stage: 'decision',
+              sequence,
+              candidates: availableActions(state),
+            } as unknown as JsonValue,
+          },
+        )
+        assertAllowedDecision(state, decision as StageDecision)
+        const selected = decision as StageDecision
+        const rawEvent = await stages[selected.stage]({
+          step,
+          state,
+          decision: selected,
+          key: `stage:${sequence}:${selected.stage}`,
+          services: { providers, target },
+        })
+        state = reduce(state, FactoryEventSchema.parse(rawEvent))
+      }
+      await target.cleanup()
+      return state.outcome
+    },
+  })
+}

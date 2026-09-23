@@ -61,9 +61,11 @@ export const codeStage: StageHandler = async ({
   const target = services.target
   const continuedSession =
     state.setup.contextMode === 'reuse' ? state.implementationSession : null
+  // Only the code role's own provider, profile, cwd and instructions decide
+  // whether its session may continue; the reviewers' profiles never do.
   if (
     continuedSession &&
-    (continuedSession.provider !== state.setup.provider ||
+    (continuedSession.provider !== profile.provider ||
       continuedSession.profileId !== profile.id ||
       continuedSession.cwd !== target.workdir ||
       continuedSession.instructionsVersion !== state.setup.instructionsVersion)
@@ -74,14 +76,15 @@ export const codeStage: StageHandler = async ({
     `${key}:agent`,
     (signal, attempt) =>
       runAgentCall(signal, attempt, {
-        provider: services.provider,
-        providerName: state.setup.provider,
+        provider: services.providers.code,
+        providerName: profile.provider,
         prompt: codePrompt({
           role,
           iteration,
           repairNotes: state.repairNotes,
           task: target.taskBrief(),
           rules: target.implementationRules(),
+          untrusted: target.untrustedInputs('code'),
         }),
         workdir: target.workdir,
         timeoutMs: state.setup.agentTimeoutMs,
@@ -111,7 +114,7 @@ export const codeStage: StageHandler = async ({
   const session: SessionRef | null =
     state.setup.contextMode === 'reuse' && call.sessionId
       ? {
-          provider: state.setup.provider,
+          provider: profile.provider,
           nativeId: call.sessionId,
           profileId: profile.id,
           cwd: target.workdir,
@@ -134,7 +137,7 @@ export const verifyStage: StageHandler = async ({
     runVerificationStep(
       attempt,
       {
-        provider: state.setup.provider,
+        provider: state.setup.profiles.code.provider,
         operationKey: `${step.runId}/${key}/acceptance`,
         checkpointsDir: state.setup.checkpointsDir,
         stage: 'verify',
@@ -186,12 +189,19 @@ export const reviewStage: StageHandler = async ({
   const review =
     (lens: ReviewLens) =>
     async (signal: AbortSignal, attempt: StepAttemptContext) => {
-      const profile = state.setup.profiles.review
+      // Each reviewer has its own profile and provider, and always starts a
+      // new session: two branches run in parallel and never share one.
+      const profile = state.setup.profiles[lens]
       const role = lens === 'correctness' ? 'review-a' : 'review-b'
       const result = await runAgentCall(signal, attempt, {
-        provider: services.provider,
-        providerName: state.setup.provider,
-        prompt: reviewPrompt(lens, trustedContext, target.reviewRules(lens)),
+        provider: services.providers[lens],
+        providerName: profile.provider,
+        prompt: reviewPrompt(
+          lens,
+          trustedContext,
+          target.reviewRules(lens),
+          target.untrustedInputs(lens),
+        ),
         workdir: reviewCwd,
         timeoutMs: state.setup.agentTimeoutMs,
         requestedModel: profile.requestedModel,

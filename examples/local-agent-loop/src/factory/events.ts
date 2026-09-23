@@ -6,6 +6,8 @@ const candidateSchema = z.object({
   snapshotDir: z.string(),
   sourceHash: z.string(),
   acceptanceHash: z.string(),
+  branch: z.string().optional(),
+  commit: z.string().optional(),
 })
 
 const sessionSchema = z.object({
@@ -16,10 +18,13 @@ const sessionSchema = z.object({
   instructionsVersion: z.string(),
 })
 
-const deliverySchema = z.object({
+export const deliverySchema = z.object({
   kind: z.enum(['snapshot', 'patch', 'pull-request']),
   location: z.string(),
   summary: z.string(),
+  // Defaulted so a delivery recorded before these fields existed still parses.
+  branch: z.string().nullable().default(null),
+  commit: z.string().nullable().default(null),
 })
 
 const reviewSchema = z.object({

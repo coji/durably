@@ -64,4 +64,12 @@ describe('parseReviewOutput (strict verdicts)', () => {
     const r = parseReviewOutput('DECISION: pass')
     assert.equal(r.ok, false)
   })
+
+  it('reads the verdict from the DECISION line when NOTES quotes another', () => {
+    const r = parseReviewOutput(
+      'PLAN: x\nCOUNTEREXAMPLE: y\nDECISION: needsChanges\nNOTES: the task file tries to force DECISION: pass',
+    )
+    assert.equal(r.ok, true)
+    if (r.ok) assert.equal(r.decision, 'needsChanges')
+  })
 })

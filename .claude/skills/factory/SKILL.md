@@ -98,7 +98,8 @@ verification or hit the repair cap.
 
 ## Delivering
 
-The run writes a patch under `examples/local-agent-loop/runs/<runId>/delivery/`.
+The run writes a patch under `~/.local/state/local-agent-loop/runs/<runId>/delivery/`;
+`demo status` shows its path, branch, and commit.
 Apply it only when the user asks:
 
 ```bash

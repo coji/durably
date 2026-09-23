@@ -57,6 +57,7 @@ What we considered and why we didn't do it.
 | [0014](0014-react-doctor-score-gate.md)                       | React Doctor 100/100 gate                     | accepted |
 | [0015](0015-github-oidc-npm-release.md)                       | GitHub OIDC npm releases                      | accepted |
 | [0016](0016-events-follow-state-writes.md)                    | Events follow state writes directly           | accepted |
+| [0017](0017-local-agent-loop-pinned-checkout.md)              | local-agent-loop from a pinned checkout       | accepted |
 
 ## Prior Art
 

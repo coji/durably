@@ -36,7 +36,9 @@ import type {
   RepoTargetConfig,
   SealArgs,
   Target,
+  UntrustedInput,
 } from '../factory/target.js'
+import type { ProfileRole } from '../factory/types.js'
 
 /** Hash-free identity of the pinned check, recorded so it cannot drift. */
 export function checkFingerprint(command: string[]): string {
@@ -57,11 +59,32 @@ export class RepoTarget implements Target {
   }
 
   taskBrief(): string {
+    return this.config.spec
+      ? 'Carry out the work described in the untrusted TASK block below, as specified by the SPEC block.'
+      : 'Carry out the work described in the untrusted TASK block below.'
+  }
+
+  /** The task as the caller gave it, with the issue header when there is one. */
+  private taskText(): string {
     const issue = this.config.issue
     const header = issue
       ? `Issue #${issue.number}: ${issue.title}\n${issue.url}\n\n`
       : ''
     return `${header}${this.config.task}`
+  }
+
+  untrustedInputs(role: ProfileRole): UntrustedInput[] {
+    const inputs: UntrustedInput[] = [
+      { label: 'TASK', content: this.taskText() },
+    ]
+    if (this.config.spec)
+      inputs.push({ label: 'SPEC', content: this.config.spec })
+    // Dispositions record how earlier review findings were settled. They
+    // matter to a reviewer deciding whether a finding is new, and would only
+    // invite the implementer to argue with its reviewers.
+    if (role !== 'code' && this.config.dispositions)
+      inputs.push({ label: 'DISPOSITIONS', content: this.config.dispositions })
+    return inputs
   }
 
   implementationRules(): string[] {
@@ -96,6 +119,8 @@ export class RepoTarget implements Target {
       snapshotDir: this.config.workdir,
       sourceHash: tree,
       acceptanceHash: checkFingerprint(this.config.checkCommand),
+      branch: this.config.branch,
+      commit: sealed.commit,
     }
   }
 
@@ -171,8 +196,7 @@ export class RepoTarget implements Target {
       `Candidate: ${candidate.id}`,
       `Changed paths: ${changes.length > 0 ? changes.join(', ') : '(none)'}`,
       '',
-      'Task the implementer was given:',
-      this.taskBrief(),
+      'The task the implementer was given is in the untrusted TASK block below.',
     ].join('\n')
   }
 
@@ -190,18 +214,23 @@ export class RepoTarget implements Target {
       patchPath,
     )
     if (!this.config.publish) {
+      // The branch and commit stay in the source repository, so the patch is
+      // not the only way back to the work.
       return {
         kind: 'patch',
         location: patchPath,
         summary: `patch for ${args.candidate.id} against ${this.config.baseCommit.slice(0, 12)}`,
+        branch: this.config.branch,
+        commit: head,
       }
     }
-    return this.publishPullRequest(args, patchPath)
+    return this.publishPullRequest(args, patchPath, head)
   }
 
   private async publishPullRequest(
     args: DeliverArgs,
     patchPath: string,
+    head: string,
   ): Promise<Delivery> {
     await pushBranch(this.config.repoPath, this.config.branch, 'origin', {
       signal: args.signal,
@@ -261,6 +290,8 @@ export class RepoTarget implements Target {
       kind: 'pull-request',
       location: url,
       summary: `draft pull request for ${args.candidate.id} (patch kept at ${patchPath})`,
+      branch: this.config.branch,
+      commit: head,
     }
   }
 

@@ -31,14 +31,13 @@ async function waitFor(
 describe('fake e2e fix loop', { timeout: 180000 }, () => {
   it('tests-pass -> needsChanges -> fix -> re-review pass -> approved', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'e2e-'))
-    process.env.DURABLY_DB = join(dir, 'e2e.db')
     process.env.FAKE_FAIL_FIRST = '0'
     // Round 1: one branch reports needsChanges (which branch wins the race
     // does not matter); round 2 defaults to pass/pass.
     process.env.FAKE_REVIEW_SEQUENCE = 'needsChanges,pass'
     delete process.env.FAKE_REVIEW_SLOW_MS
 
-    const durably = createAgentDurably()
+    const durably = createAgentDurably({ stateRoot: dir })
     await durably.init()
     try {
       const run = await durably.jobs.agentLoop.trigger({
@@ -139,6 +138,28 @@ describe('fake e2e fix loop', { timeout: 180000 }, () => {
         codeSessions[1],
         'repair explicitly resumes the implementation session',
       )
+      // Every review call, in both rounds, started its own new session: the
+      // two parallel reviewers never share one, and none continues the
+      // implementation conversation.
+      const reviewSessions = attempts
+        .map(
+          (attempt) =>
+            attempt.metadata as { role?: string; sessionId?: string } | null,
+        )
+        .filter(
+          (measurement) =>
+            measurement?.role === 'review-a' ||
+            measurement?.role === 'review-b',
+        )
+        .map((measurement) => measurement?.sessionId)
+      assert.equal(reviewSessions.length, 4)
+      assert.equal(new Set(reviewSessions).size, 4)
+      assert.ok(reviewSessions.every((id) => typeof id === 'string'))
+      assert.ok(!reviewSessions.includes(codeSessions[0] as string))
+      // The run's data lives under the state root it was given.
+      const outputDir =
+        (final?.output as { workdir?: string } | undefined)?.workdir ?? ''
+      assert.ok(outputDir.startsWith(join(dir, 'runs', run.id)), outputDir)
     } finally {
       await durably.stop()
       await durably.db.destroy()
@@ -147,10 +168,9 @@ describe('fake e2e fix loop', { timeout: 180000 }, () => {
 
   it('uses a new implementation session for each fresh-mode repair', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'e2e-fresh-'))
-    process.env.DURABLY_DB = join(dir, 'e2e.db')
     process.env.FAKE_FAIL_FIRST = '0'
     process.env.FAKE_REVIEW_SEQUENCE = 'needsChanges,pass'
-    const durably = createAgentDurably()
+    const durably = createAgentDurably({ stateRoot: dir })
     await durably.init()
     try {
       const run = await durably.jobs.agentLoop.trigger({

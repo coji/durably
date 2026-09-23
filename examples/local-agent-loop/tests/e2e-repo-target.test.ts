@@ -8,15 +8,22 @@
  * owner is sitting in must never move.
  */
 import assert from 'node:assert/strict'
-import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { existsSync, readdirSync } from 'node:fs'
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import { createAgentDurably } from '../src/durably.js'
+import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
 import { resolveCommit } from '../src/engine/git.js'
+import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
+import { fixProfile } from '../src/factory/job.js'
+
+const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 const BUGGY = `export function add(a, b) {
   return Math.trunc(a) + Math.trunc(b)
@@ -39,9 +46,14 @@ describe('calc', () => {
 })
 `
 
-async function git(cwd: string, args: string[]): Promise<void> {
+const NO_FILES = { task: null, spec: null, dispositions: null }
+
+const sha256 = (text: string) => createHash('sha256').update(text).digest('hex')
+
+async function git(cwd: string, args: string[]): Promise<string> {
   const res = await runChild('git', args, { cwd, timeoutMs: 60000 })
   if (res.code !== 0) throw new Error(`git ${args.join(' ')}: ${res.stderr}`)
+  return res.stdout
 }
 
 async function seedRepo(root: string): Promise<string> {
@@ -79,12 +91,11 @@ describe('repo target end to end', { timeout: 180000 }, () => {
     const repo = await seedRepo(root)
     const baseBefore = await resolveCommit(repo, 'HEAD')
 
-    process.env.DURABLY_DB = join(root, 'factory.db')
     process.env.FAKE_FAIL_FIRST = '0'
     delete process.env.FAKE_REVIEW_SEQUENCE
     delete process.env.FAKE_REVIEW_SLOW_MS
 
-    const durably = createAgentDurably()
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
     await durably.init()
     try {
       const run = await durably.jobs.agentLoop.trigger({
@@ -94,6 +105,9 @@ describe('repo target end to end', { timeout: 180000 }, () => {
           repoPath: repo,
           baseRef: 'HEAD',
           task: 'Fix add() so decimal inputs are not truncated.',
+          spec: null,
+          dispositions: null,
+          inputFiles: NO_FILES,
           issue: null,
           // Pinned before the agent starts: nothing it edits can change this.
           checkCommand: ['node', '--test', 'test/**/*.test.js'],
@@ -145,7 +159,6 @@ describe('repo target end to end', { timeout: 180000 }, () => {
     } finally {
       await durably.stop()
       await durably.db.destroy()
-      delete process.env.DURABLY_DB
       delete process.env.FAKE_FAIL_FIRST
     }
   })
@@ -155,14 +168,13 @@ describe('repo target end to end', { timeout: 180000 }, () => {
     const repo = await seedRepo(root)
     const baseBefore = await resolveCommit(repo, 'HEAD')
 
-    process.env.DURABLY_DB = join(root, 'factory.db')
     // Iteration 1 leaves the bug in place, so verification fails and the loop
     // repairs. The first candidate therefore seals content identical to the
     // base: an iteration that did no work must not look like progress.
     delete process.env.FAKE_FAIL_FIRST
     delete process.env.FAKE_REVIEW_SEQUENCE
 
-    const durably = createAgentDurably()
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
     await durably.init()
     try {
       const run = await durably.jobs.agentLoop.trigger({
@@ -172,6 +184,9 @@ describe('repo target end to end', { timeout: 180000 }, () => {
           repoPath: repo,
           baseRef: 'HEAD',
           task: 'Fix add() so decimal inputs are not truncated.',
+          spec: null,
+          dispositions: null,
+          inputFiles: NO_FILES,
           issue: null,
           checkCommand: ['node', '--test', 'test/**/*.test.js'],
           setupCommand: null,
@@ -208,19 +223,64 @@ describe('repo target end to end', { timeout: 180000 }, () => {
     } finally {
       await durably.stop()
       await durably.db.destroy()
-      delete process.env.DURABLY_DB
     }
   })
 
-  it('survives a check that leaves untracked build output behind', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'repo-target-dirty-'))
+  it('fails a bad profile before creating a worktree or branch', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-bad-profile-'))
     const repo = await seedRepo(root)
+    const stateRoot = join(root, 'state')
+    const fake = fixProfile({ provider: 'fake', model: null, effort: null })
+    const durably = createAgentDurably({ stateRoot })
+    await durably.init()
+    try {
+      // A direct trigger that mixes fake and real roles; the CLI refuses this
+      // before the run exists, so only setup can catch it here.
+      const run = await durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        profiles: {
+          code: fake,
+          correctness: fake,
+          'edge-cases': { ...fake, provider: 'codex' as const },
+        },
+        target: {
+          kind: 'repo' as const,
+          repoPath: repo,
+          baseRef: 'HEAD',
+          task: 'Fix add() so decimal inputs are not truncated.',
+          spec: null,
+          dispositions: null,
+          inputFiles: NO_FILES,
+          issue: null,
+          checkCommand: ['node', '--test', 'test/**/*.test.js'],
+          setupCommand: null,
+          publish: false,
+        },
+        maxIterations: 1,
+        context: 'reuse',
+      })
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'failed',
+        60000,
+        'bad-profile run fails',
+      )
+      const branches = await git(repo, ['branch', '--list', 'factory/*'])
+      assert.equal(branches.trim(), '')
+      assert.equal(existsSync(join(stateRoot, 'runs', run.id)), false)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
 
-    process.env.DURABLY_DB = join(root, 'factory.db')
-    process.env.FAKE_FAIL_FIRST = '0'
+  it('names the candidate branch and commit when nothing is delivered', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-unfixed-'))
+    const repo = await seedRepo(root)
+    // One iteration that leaves the bug: verification fails, no delivery.
+    delete process.env.FAKE_FAIL_FIRST
     delete process.env.FAKE_REVIEW_SEQUENCE
 
-    const durably = createAgentDurably()
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
     await durably.init()
     try {
       const run = await durably.jobs.agentLoop.trigger({
@@ -230,6 +290,64 @@ describe('repo target end to end', { timeout: 180000 }, () => {
           repoPath: repo,
           baseRef: 'HEAD',
           task: 'Fix add() so decimal inputs are not truncated.',
+          spec: null,
+          dispositions: null,
+          inputFiles: NO_FILES,
+          issue: null,
+          checkCommand: ['node', '--test', 'test/**/*.test.js'],
+          setupCommand: null,
+          publish: false,
+        },
+        maxIterations: 1,
+        context: 'reuse',
+      })
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        150000,
+        'unfixed run completes',
+      )
+      const output = (await durably.getRun(run.id))?.output as {
+        conclusion: string
+        delivery: unknown
+      }
+      assert.equal(output.conclusion, 'verification-failed')
+      assert.equal(output.delivery, null)
+
+      const branch = `factory/${run.id}`
+      const commit = await resolveCommit(repo, branch)
+      const report = await buildReport(durably, run.id)
+      assert.equal(report.candidate?.branch, branch)
+      assert.equal(report.candidate?.commit, commit)
+      for (const text of [reportToMarkdown(report), reportToJson(report)]) {
+        assert.ok(text.includes(branch))
+        assert.ok(text.includes(commit))
+      }
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  it('survives a check that leaves untracked build output behind', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-dirty-'))
+    const repo = await seedRepo(root)
+
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        target: {
+          kind: 'repo' as const,
+          repoPath: repo,
+          baseRef: 'HEAD',
+          task: 'Fix add() so decimal inputs are not truncated.',
+          spec: null,
+          dispositions: null,
+          inputFiles: NO_FILES,
           issue: null,
           // Real checks write build output: .turbo/, *.tsbuildinfo, coverage.
           // None of it is in the commit the candidate names, so a passing
@@ -259,7 +377,250 @@ describe('repo target end to end', { timeout: 180000 }, () => {
     } finally {
       await durably.stop()
       await durably.db.destroy()
-      delete process.env.DURABLY_DB
+      delete process.env.FAKE_FAIL_FIRST
+    }
+  })
+
+  it('runs each role on its own profile and delivers an issue-free branch and commit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-roles-'))
+    const repo = await seedRepo(root)
+    const stateRoot = join(root, 'state')
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+
+    const a = { provider: 'fake' as const, model: 'model-a', effort: 'low' }
+    const b = { provider: 'fake' as const, model: 'model-b', effort: 'high' }
+    const durably = createAgentDurably({ stateRoot })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        profiles: {
+          // Effective values from the caller are ignored: setup resolves
+          // them from the requested ones.
+          code: {
+            ...fixProfile(a),
+            effectiveModel: 'forged',
+            effectiveEffort: 'forged',
+          } as ReturnType<typeof fixProfile>,
+          correctness: fixProfile(a),
+          'edge-cases': fixProfile(b),
+        },
+        target: {
+          kind: 'repo' as const,
+          repoPath: repo,
+          baseRef: 'HEAD',
+          task: 'Fix add() so decimal inputs are not truncated.',
+          spec: 'add() returns the exact floating point sum.',
+          dispositions: null,
+          inputFiles: {
+            task: { path: '/work/task.md' },
+            spec: { path: '/work/spec.md' },
+            dispositions: null,
+          },
+          issue: null,
+          checkCommand: ['node', '--test', 'test/**/*.test.js'],
+          setupCommand: null,
+          publish: false,
+        },
+        maxIterations: 2,
+        context: 'reuse',
+      })
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        150000,
+        'role-profile run completes',
+      )
+      const output = (await durably.getRun(run.id))?.output as {
+        conclusion: string
+        workdir: string
+        delivery: {
+          kind: string
+          location: string
+          summary: string
+          branch: string | null
+          commit: string | null
+        }
+      }
+      assert.equal(output.conclusion, 'approved')
+      const setupStep = (await durably.storage.getSteps(run.id)).find(
+        (x) => x.name === 'setup',
+      )?.output as { profiles: Record<string, { effectiveModel: string }> }
+      assert.equal(setupStep.profiles['code']?.effectiveModel, 'fake-model')
+
+      // Each LLM call carried its own role's requested settings.
+      const attempts = await durably.getStepAttempts(run.id)
+      const requested = (suffix: string) =>
+        attempts
+          .filter((x) => x.stepName.endsWith(suffix))
+          .map(
+            (x) => (x.metadata as { requestedModel?: string }).requestedModel,
+          )
+      assert.deepEqual([...new Set(requested(':agent'))], ['model-a'])
+      assert.deepEqual([...new Set(requested(':correctness'))], ['model-a'])
+      assert.deepEqual([...new Set(requested(':edge-cases'))], ['model-b'])
+
+      // Issue-free naming: the branch is factory/<runId> and carries the
+      // delivered commit; nothing the factory wrote names an issue.
+      const branch = `factory/${run.id}`
+      assert.equal(output.delivery.kind, 'patch')
+      assert.equal(output.delivery.branch, branch)
+      assert.equal(output.delivery.commit, await resolveCommit(repo, branch))
+      const messages = await git(repo, [
+        'log',
+        '--format=%B',
+        `HEAD..${branch}`,
+      ])
+      assert.ok(messages.trim().length > 0)
+      assert.doesNotMatch(messages, /issue|#\d/i)
+      assert.doesNotMatch(basename(output.delivery.location), /issue/i)
+      assert.doesNotMatch(output.delivery.summary, /issue|#\d/i)
+      assert.doesNotMatch(branch, /issue/)
+
+      // The report splits the roles and names the inputs and the delivery.
+      const report = await buildReport(durably, run.id)
+      assert.deepEqual(
+        report.roleUsage.map((r) => [
+          r.role,
+          r.provider,
+          r.requestedModel,
+          r.requestedEffort,
+        ]),
+        [
+          ['code', 'fake', 'model-a', 'low'],
+          ['correctness', 'fake', 'model-a', 'low'],
+          ['edge-cases', 'fake', 'model-b', 'high'],
+        ],
+      )
+      for (const role of report.roleUsage) {
+        assert.ok(role.invocations > 0, role.role)
+        // Fake calls report no usage: unknown, never zero.
+        assert.equal(role.totalTokens, null, role.role)
+        assert.equal(role.complete, false, role.role)
+      }
+      // Hashed from the content the run stored, not taken from the caller.
+      const taskHash = sha256('Fix add() so decimal inputs are not truncated.')
+      assert.equal(report.inputs.task?.sha256, taskHash)
+      assert.equal(
+        report.inputs.spec?.sha256,
+        sha256('add() returns the exact floating point sum.'),
+      )
+      assert.equal(report.inputs.dispositions, null)
+      assert.equal(report.delivery?.branch, branch)
+      assert.equal(report.delivery?.commit, output.delivery.commit)
+      const md = reportToMarkdown(report)
+      const json = reportToJson(report)
+      for (const text of [md, json]) {
+        assert.ok(text.includes(branch))
+        assert.ok(text.includes(output.delivery.commit ?? 'missing'))
+        assert.ok(text.includes(taskHash))
+        assert.doesNotMatch(text, /issue-\d|issues\/\d|#\d/)
+      }
+      assert.match(md, /\| edge-cases \| fake \| model-b \| high \| \d+ \|/)
+      assert.match(md, /\| correctness \| fake \| model-a \| low \| \d+ \|/)
+
+      // Every piece of run data is under the state root: nothing in the
+      // repository and nothing in the checkout.
+      const runDir = join(stateRoot, 'runs', run.id)
+      assert.ok(output.workdir.startsWith(runDir), output.workdir)
+      assert.ok(output.delivery.location.startsWith(runDir))
+      assert.ok(existsSync(join(runDir, 'operation-checkpoints')))
+      // Verification scratch is derived from the checkpoint directory, so it
+      // lands beside it; the repo target grades in its worktree and needs none.
+      assert.equal(existsSync(join(repo, 'runs')), false)
+      assert.deepEqual(
+        readdirSync(repo).filter((name) => name.endsWith('.db')),
+        [],
+      )
+      assert.equal(existsSync(join(packageRoot, 'runs', run.id)), false)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+  })
+
+  it('opens the draft pull request exactly once when publishing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-publish-'))
+    const repo = await seedRepo(root)
+    const remote = join(root, 'remote.git')
+    await git(root, ['init', '--bare', '--initial-branch=main', remote])
+    await git(repo, ['remote', 'add', 'origin', remote])
+    await git(repo, ['push', 'origin', 'main'])
+    // A stand-in `gh` that records each call instead of reaching GitHub.
+    const bin = join(root, 'bin')
+    await mkdir(bin)
+    const ghLog = join(root, 'gh.log')
+    await writeFile(
+      join(bin, 'gh'),
+      `#!/bin/sh\necho "$*" >> "${ghLog}"\necho https://example.invalid/pull/1\n`,
+    )
+    await chmod(join(bin, 'gh'), 0o755)
+    const savedPath = process.env.PATH
+    process.env.PATH = `${bin}:${savedPath ?? ''}`
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        profiles: {
+          code: fixProfile({
+            provider: 'fake',
+            model: 'model-a',
+            effort: null,
+          }),
+          correctness: fixProfile({
+            provider: 'fake',
+            model: 'model-b',
+            effort: null,
+          }),
+          'edge-cases': fixProfile({
+            provider: 'fake',
+            model: 'model-c',
+            effort: null,
+          }),
+        },
+        target: {
+          kind: 'repo' as const,
+          repoPath: repo,
+          baseRef: 'HEAD',
+          task: 'Fix add() so decimal inputs are not truncated.',
+          spec: null,
+          dispositions: null,
+          inputFiles: NO_FILES,
+          issue: null,
+          checkCommand: ['node', '--test', 'test/**/*.test.js'],
+          setupCommand: null,
+          publish: true,
+        },
+        maxIterations: 2,
+        context: 'reuse',
+      })
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        150000,
+        'publish run completes',
+      )
+      const output = (await durably.getRun(run.id))?.output as {
+        delivery: { kind: string; location: string; branch: string | null }
+      }
+      assert.equal(output.delivery.kind, 'pull-request')
+      assert.equal(output.delivery.location, 'https://example.invalid/pull/1')
+      assert.equal(output.delivery.branch, `factory/${run.id}`)
+      const calls = (await readFile(ghLog, 'utf8'))
+        .split('\n')
+        .filter((line) => line.startsWith('pr create'))
+      assert.equal(calls.length, 1)
+      assert.ok(
+        (await git(remote, ['branch', '--list', `factory/${run.id}`])).trim(),
+      )
+    } finally {
+      process.env.PATH = savedPath
+      await durably.stop()
+      await durably.db.destroy()
       delete process.env.FAKE_FAIL_FIRST
     }
   })

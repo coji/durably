@@ -1,12 +1,23 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
+import { FactoryEventSchema } from '../src/factory/events.js'
 import { decide } from '../src/factory/policy.js'
 import { reduce } from '../src/factory/reducer.js'
 import { initialState, type FactorySetup } from '../src/factory/types.js'
 
+function profile(role: string, provider: 'fake', model: string) {
+  return {
+    id: `${provider}:${model}:low:${role}`,
+    provider,
+    requestedModel: model,
+    requestedEffort: 'low',
+    effectiveModel: 'fake-model',
+    effectiveEffort: 'low',
+  }
+}
+
 const setup: FactorySetup = {
-  provider: 'fake',
   fake: true,
   contextMode: 'reuse',
   target: {
@@ -20,25 +31,12 @@ const setup: FactorySetup = {
     testTimeoutMs: 1,
   },
   checkpointsDir: '/tmp/checkpoints',
-  instructionsVersion: 'v2',
+  instructionsVersion: 'v3',
   configVersion: 'cfg-test',
   profiles: {
-    code: {
-      id: 'fake:code',
-      provider: 'fake',
-      requestedModel: null,
-      requestedEffort: null,
-      effectiveModel: null,
-      effectiveEffort: null,
-    },
-    review: {
-      id: 'fake:review',
-      provider: 'fake',
-      requestedModel: null,
-      requestedEffort: null,
-      effectiveModel: null,
-      effectiveEffort: null,
-    },
+    code: profile('code', 'fake', 'model-a'),
+    correctness: profile('correctness', 'fake', 'model-a'),
+    'edge-cases': profile('edge-cases', 'fake', 'model-b'),
   },
   maxIterations: 2,
   agentTimeoutMs: 1,
@@ -143,5 +141,75 @@ describe('factory reducer and policy', () => {
         }),
       /stale/,
     )
+  })
+
+  it('keeps the per-role profiles in the setup it carries', () => {
+    const state = initialState(setup)
+    assert.equal(state.setup.profiles.correctness.requestedModel, 'model-a')
+    assert.equal(state.setup.profiles['edge-cases'].requestedModel, 'model-b')
+    assert.notEqual(
+      state.setup.profiles.correctness.id,
+      state.setup.profiles['edge-cases'].id,
+    )
+  })
+
+  it('persists the delivered branch and commit with the approved candidate', () => {
+    let state = initialState(setup)
+    state = reduce(state, {
+      type: 'code.completed',
+      role: 'implement',
+      candidate,
+      session: null,
+    })
+    const event = FactoryEventSchema.parse(
+      JSON.parse(
+        JSON.stringify({
+          type: 'factory.finished',
+          outcome: {
+            approved: true,
+            conclusion: 'approved',
+            candidate,
+            iterations: 1,
+            reviewRounds: 1,
+            reviews: [],
+            workdir: '/tmp/work',
+            fake: true,
+            delivery: {
+              kind: 'patch',
+              location: '/tmp/delivery/candidate-1.patch',
+              summary: 'patch for candidate-1',
+              branch: 'factory/run-1',
+              commit: 'c'.repeat(40),
+            },
+          },
+        }),
+      ),
+    )
+    state = reduce(state, event)
+    assert.deepEqual(state.outcome?.candidate, candidate)
+    assert.equal(state.outcome?.delivery?.branch, 'factory/run-1')
+    assert.equal(state.outcome?.delivery?.commit, 'c'.repeat(40))
+  })
+
+  it('reads a delivery recorded without branch and commit as null', () => {
+    const event = FactoryEventSchema.parse({
+      type: 'factory.finished',
+      outcome: {
+        approved: true,
+        conclusion: 'approved',
+        candidate,
+        iterations: 1,
+        reviewRounds: 1,
+        reviews: [],
+        workdir: '/tmp/work',
+        fake: true,
+        delivery: { kind: 'snapshot', location: '/tmp/c', summary: 's' },
+      },
+    })
+    assert.equal(event.type, 'factory.finished')
+    if (event.type === 'factory.finished') {
+      assert.equal(event.outcome.delivery?.branch, null)
+      assert.equal(event.outcome.delivery?.commit, null)
+    }
   })
 })

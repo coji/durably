@@ -15,6 +15,7 @@ import type { CandidateRef } from '../engine/types.js'
  * database to work from.
  */
 import type { GradeResult } from '../engine/verification.js'
+import type { ProfileRole } from './types.js'
 
 export type TargetKind = 'subject' | 'repo'
 
@@ -48,6 +49,10 @@ export interface RepoTargetConfig {
   checkTimeoutMs: number
   /** Task text handed to the implementer (an issue body, or free text). */
   task: string
+  /** Specification text handed to the implementer and both reviewers. */
+  spec: string | null
+  /** Prior review dispositions, handed to the reviewers only. */
+  dispositions: string | null
   /** Source issue, when the task came from one. */
   issue: { number: number; title: string; url: string } | null
   /** Where the delivered patch is written. */
@@ -58,12 +63,30 @@ export interface RepoTargetConfig {
 
 export type TargetConfig = SubjectTargetConfig | RepoTargetConfig
 
+/** Where an input file was read from at trigger time. */
+export interface InputFileRef {
+  path: string
+}
+
+/**
+ * Text that came from whoever started the run rather than from the factory.
+ * Prompts fence it off as data, so nothing inside it reads as an instruction.
+ */
+export interface UntrustedInput {
+  label: 'TASK' | 'SPEC' | 'DISPOSITIONS'
+  content: string
+}
+
 /** What the human receives when a run finishes. */
 export interface Delivery {
   kind: 'snapshot' | 'patch' | 'pull-request'
   /** Directory, patch file, or pull request URL. */
   location: string
   summary: string
+  /** Branch holding the delivered commit; null when there is no branch. */
+  branch: string | null
+  /** Commit sha of the delivered candidate; null when it is not a commit. */
+  commit: string | null
 }
 
 export interface SealArgs {
@@ -97,6 +120,12 @@ export interface Target {
   taskBrief(): string
   /** Constraints appended to the implementation prompt. */
   implementationRules(): string[]
+  /**
+   * Caller-supplied text a role is shown, fenced off as data. The implementer
+   * gets the task and the spec; each reviewer gets the task, the spec and the
+   * dispositions.
+   */
+  untrustedInputs(role: ProfileRole): UntrustedInput[]
   /**
    * What each reviewer is asked to check. Reviewers see only the candidate
    * and the trusted context, so the questions have to come from whoever knows

@@ -9,6 +9,7 @@ import {
 import { PRICE_BASIS, estimateCostBreakdown } from '../src/engine/pricing.js'
 import {
   reportToMarkdown,
+  roleUsage,
   toAttemptRow,
   stageUsage,
   stageVisits,
@@ -17,6 +18,10 @@ import {
   type LoopReport,
 } from '../src/engine/report.js'
 import type { TokenUsage } from '../src/engine/usage.js'
+import {
+  configVersionOf,
+  type ConfigVersionInput,
+} from '../src/engine/versions.js'
 
 function usage(
   input: number,
@@ -196,6 +201,154 @@ describe('stage usage', () => {
   })
 })
 
+describe('role usage', () => {
+  const profiles = [
+    {
+      role: 'code',
+      provider: 'fake',
+      requestedModel: 'model-a',
+      requestedEffort: 'low',
+    },
+    {
+      role: 'correctness',
+      provider: 'fake',
+      requestedModel: 'model-a',
+      requestedEffort: 'low',
+    },
+    {
+      role: 'edge-cases',
+      provider: 'fake',
+      requestedModel: 'model-b',
+      requestedEffort: 'high',
+    },
+  ]
+
+  it('splits the two reviewers and keeps each requested profile', () => {
+    const rows = roleUsage(
+      [
+        row('stage:0:code:agent', 'a1', { invocationId: 'inv-1' }),
+        row('stage:0:code:agent', 'a2', {
+          invocationId: 'inv-1',
+          result: 'checkpoint-recovered',
+        }),
+        row('stage:2:code:agent', 'a3', { cost: 0.004 }),
+        row('stage:4:review:correctness', 'b1', { cost: 0.002 }),
+        row('stage:4:review:edge-cases', 'b2', {
+          usage: usage(10, 5),
+          cost: 0.003,
+        }),
+        row('stage:1:verify:acceptance', 'c1', { usage: null, cost: null }),
+      ],
+      profiles,
+    )
+    assert.deepEqual(
+      rows.map((r) => [
+        r.role,
+        r.requestedModel,
+        r.requestedEffort,
+        r.invocations,
+      ]),
+      [
+        ['code', 'model-a', 'low', 2],
+        ['correctness', 'model-a', 'low', 1],
+        ['edge-cases', 'model-b', 'high', 1],
+      ],
+    )
+    const [code, correctness, edge] = rows
+    // The recovery attempt re-reads inv-1 and adds nothing.
+    assert.equal(code?.totalTokens, 300)
+    assert.ok(Math.abs((code?.costUsd ?? 0) - 0.005) < 1e-9)
+    assert.equal(correctness?.totalTokens, 150)
+    assert.equal(edge?.totalTokens, 15)
+    assert.equal(edge?.costUsd, 0.003)
+    assert.ok(rows.every((r) => r.complete))
+  })
+
+  it('keeps a role without usage unknown instead of zero', () => {
+    const [code, correctness] = roleUsage(
+      [
+        row('stage:0:code:agent', 'a1', { usage: null, cost: null }),
+        row('stage:2:review:correctness', 'b1', { usage: null, cost: null }),
+      ],
+      profiles,
+    )
+    assert.equal(code?.invocations, 1)
+    assert.equal(code?.totalTokens, null)
+    assert.equal(code?.costUsd, null)
+    assert.equal(code?.complete, false)
+    assert.equal(correctness?.complete, false)
+  })
+
+  it('keeps cost incomplete when tokens are complete but a model is unpriced', () => {
+    const [code] = roleUsage(
+      [row('stage:0:code:agent', 'a1', { cost: null })],
+      profiles,
+    )
+    assert.equal(code?.totalTokens, 150)
+    assert.equal(code?.complete, true)
+    assert.equal(code?.costUsd, null)
+    assert.equal(code?.costComplete, false)
+    const md = reportToMarkdown({ ...report('r6'), roleUsage: [code!] })
+    assert.match(md, /\| unknown \| complete \| PARTIAL \|/)
+  })
+
+  it('renders one row per role with requested settings', () => {
+    const md = reportToMarkdown(report('r5'))
+    assert.match(md, /## Role usage/)
+    assert.match(
+      md,
+      /\| code \| codex \| gpt-5\.6-sol \| low \| 1 \| 1000 \| 500 \| unknown \| 100 \| 1100 \| 0\.010000 \| complete \| complete \|/,
+    )
+    assert.match(
+      md,
+      /\| edge-cases \| claude \| claude-sonnet-5 \| \(default\) \| 1 \|/,
+    )
+    assert.match(md, /- task: a{64} \(\/tmp\/task\.md\)/)
+    assert.match(md, /- spec: not given/)
+    assert.match(md, /- branch: factory\/r5/)
+    assert.match(md, /- commit: c{40}/)
+  })
+})
+
+describe('config version', () => {
+  const profile = {
+    provider: 'codex',
+    requestedModel: 'gpt-5.6-sol',
+    requestedEffort: null,
+    effectiveModel: 'gpt-5.6-sol',
+    effectiveEffort: 'low',
+  }
+  const base: ConfigVersionInput = {
+    contextMode: 'reuse',
+    instructionsVersion: 'v',
+    maxIterations: 2,
+    target: 'subject',
+    agentTimeoutMs: 1,
+    checkTimeoutMs: 1,
+    code: profile,
+    correctness: profile,
+    edgeCases: profile,
+  }
+
+  it('changes when any role changes provider, model or effort', () => {
+    const reference = configVersionOf(base)
+    assert.equal(configVersionOf({ ...base }), reference)
+    for (const role of ['code', 'correctness', 'edgeCases'] as const) {
+      for (const change of [
+        { provider: 'claude' },
+        { requestedModel: 'gpt-5.6-terra', effectiveModel: 'gpt-5.6-terra' },
+        { requestedEffort: 'high', effectiveEffort: 'high' },
+      ]) {
+        assert.notEqual(
+          configVersionOf({ ...base, [role]: { ...profile, ...change } }),
+          reference,
+          `${role} ${JSON.stringify(change)}`,
+        )
+      }
+    }
+  })
+})
+
 describe('stage visits (rework)', () => {
   it('counts distinct sequence entries per stage; extra visits are rework', () => {
     const visits = stageVisits([
@@ -285,6 +438,39 @@ function report(
       stageVisits: sv,
     }),
     stageUsage: su,
+    roleUsage: roleUsage(attempts, [
+      {
+        role: 'code',
+        provider: 'codex',
+        requestedModel: 'gpt-5.6-sol',
+        requestedEffort: 'low',
+      },
+      {
+        role: 'correctness',
+        provider: 'codex',
+        requestedModel: 'gpt-5.6-sol',
+        requestedEffort: 'low',
+      },
+      {
+        role: 'edge-cases',
+        provider: 'claude',
+        requestedModel: 'claude-sonnet-5',
+        requestedEffort: null,
+      },
+    ]),
+    inputs: {
+      task: { path: '/tmp/task.md', sha256: 'a'.repeat(64) },
+      spec: null,
+      dispositions: null,
+    },
+    candidate: null,
+    delivery: {
+      kind: 'patch',
+      location: '/tmp/c.patch',
+      summary: 'patch',
+      branch: `factory/${runId}`,
+      commit: 'c'.repeat(40),
+    },
     stageVisits: sv,
     realLlmCallCount: 3,
     fullLoopVerified: approved,
