@@ -62,6 +62,8 @@ export function createPostgresSchemaResource() {
 export function usePostgresSchemaPerTest() {
   let resource: ReturnType<typeof createPostgresSchemaResource> | undefined
   beforeEach(async () => {
+    // One slot per file: tests that ran concurrently would share it.
+    if (resource) throw new Error('usePostgresSchemaPerTest needs serial tests')
     resource = createPostgresSchemaResource()
     await resource.setup()
   })

@@ -96,7 +96,7 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
         { wait: false },
         { concurrencyKey: 'key' },
       )
-      await app.waitForRun(b.id, { timeout: 2000 })
+      await app.waitForRun(b.id, { timeout: 5_000 })
       await app.stop()
       expect(callback).toHaveBeenCalledTimes(2)
       const [wait] = await app.getWaits(a.id)
@@ -114,7 +114,7 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
         ),
       ).toEqual(receipt)
       app.start()
-      const complete = await app.waitForRun(a.id, { timeout: 2000 })
+      const complete = await app.waitForRun(a.id, { timeout: 5_000 })
       await app.stop()
       expect(complete.output).toEqual({ approved: true })
       expect(callback).toHaveBeenCalledTimes(2)
@@ -179,13 +179,12 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
         Date.parse(initial.deadlineAt!) - Date.parse(initial.createdAt),
       ).toBe(WAIT_DEADLINE_MS)
 
-      await new Promise((resolve) =>
-        setTimeout(
-          resolve,
-          Math.max(0, Date.parse(initial.deadlineAt!) - Date.now() + 10),
-        ),
-      )
-      await app.processOne()
+      // The deadline is in database time, so poll until the database agrees
+      // it has passed rather than sleeping by the host clock.
+      await vi.waitFor(async () => expect(await app.processOne()).toBe(true), {
+        timeout: 5_000,
+        interval: 20,
+      })
       expect((await app.getRun(run.id))?.output).toEqual({ type: 'timeout' })
       expect(after).toHaveBeenCalledExactlyOnceWith({ type: 'timeout' })
       const wait = await app.getWait(initial.id)
@@ -246,11 +245,14 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
       const run = await app.jobs.job.trigger({})
       await app.processOne()
       const [wait] = await app.getWaits(run.id)
-      await new Promise((resolve) =>
-        setTimeout(
-          resolve,
-          Math.max(0, Date.parse(wait.deadlineAt!) - Date.now() + 10),
-        ),
+      // Finalize the timeout without claiming the run, polling by database
+      // time rather than sleeping by the host clock.
+      await vi.waitFor(
+        async () => {
+          await app.storage.expireDueWaits()
+          expect((await app.getWait(wait.id))?.outcome).toBe('timeout')
+        },
+        { timeout: 5_000, interval: 20 },
       )
       await expect(
         app.signal(wait.id, true, { signalId: 'late' }),

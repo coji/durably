@@ -23,24 +23,39 @@ async function waitForPendingRunOnB(b: Durably<any, any>) {
 const createPostgresDialect = usePostgresSchemaPerTest()
 
 /**
- * Hold every storage read the waiter makes until `resume` is called. Deleting
- * a run means completing it first, and a poll that lands between completion
- * and deletion would legitimately resolve with the completed run. Holding the
- * reads across that window makes the next read see the deletion.
+ * Control the storage reads a waiter makes. Deleting a run means completing
+ * it first, and a poll that reads between completion and deletion would
+ * legitimately resolve with the completed run. `pause` holds new reads and
+ * waits for any read already in flight, so the next read the waiter makes
+ * happens after `resume` and sees the deletion.
  */
-function pauseRunReads(durably: Durably<any, any>) {
-  let resume!: () => void
-  const paused = new Promise<void>((r) => {
-    resume = r
-  })
+function controlRunReads(durably: Durably<any, any>) {
   const original = durably.storage.getRun
-  durably.storage.getRun = async (...args) => {
-    await paused
-    return original(...args)
-  }
-  return () => {
-    resume()
-    durably.storage.getRun = original
+  const inFlight = new Set<Promise<unknown>>()
+  let held: Promise<void> | null = null
+  let release = () => {}
+  durably.storage.getRun = (async (...args: Parameters<typeof original>) => {
+    if (held) await held
+    const read = original(...args)
+    inFlight.add(read)
+    try {
+      return await read
+    } finally {
+      inFlight.delete(read)
+    }
+  }) as typeof original
+  return {
+    async pause() {
+      held = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      await Promise.allSettled(inFlight)
+    },
+    restore() {
+      release()
+      held = null
+      durably.storage.getRun = original
+    },
   }
 }
 
@@ -223,6 +238,7 @@ describe(
       await a.migrate()
       await b.migrate()
 
+      const reads = controlRunReads(a)
       const run = await a.jobs.job.trigger({})
       const wait = a.waitForRun(run.id)
       const assertDone = expect(wait).rejects.toThrow(NotFoundError)
@@ -235,11 +251,15 @@ describe(
         },
         { timeout: 5000 },
       )
-      const resumeReads = pauseRunReads(a)
-      release()
-      await process
-      await b.deleteRun(run.id)
-      resumeReads()
+      try {
+        await reads.pause()
+        release()
+        await process
+        await b.deleteRun(run.id)
+      } finally {
+        release()
+        reads.restore()
+      }
       await assertDone
     })
 
@@ -265,6 +285,7 @@ describe(
       await a.migrate()
       await b.migrate()
 
+      const reads = controlRunReads(a)
       const p = a.jobs.job.triggerAndWait({})
       const assertDone = expect(p).rejects.toThrow(NotFoundError)
       await waitForPendingRunOnB(b)
@@ -278,11 +299,15 @@ describe(
       )
       const runs = await b.getRuns({ status: 'leased' })
       const runId = runs[0].id
-      const resumeReads = pauseRunReads(a)
-      release()
-      await process
-      await b.deleteRun(runId)
-      resumeReads()
+      try {
+        await reads.pause()
+        release()
+        await process
+        await b.deleteRun(runId)
+      } finally {
+        release()
+        reads.restore()
+      }
       await assertDone
     })
   },

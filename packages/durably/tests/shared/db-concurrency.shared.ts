@@ -255,42 +255,48 @@ export function createDbConcurrencyTests(
       )
 
       const firstProcessing = runtimeA.processOne({ workerId: 'worker-a' })
+      try {
+        await vi.waitFor(
+          async () => {
+            const run = await runtimeA.jobs.job.getRun(firstRun.id)
+            expect(run?.status).toBe('leased')
+          },
+          { timeout: 5_000 },
+        )
 
-      await vi.waitFor(
-        async () => {
-          const run = await runtimeA.jobs.job.getRun(firstRun.id)
-          expect(run?.status).toBe('leased')
-        },
-        { timeout: 2000 },
-      )
+        const secondRun = await runtimeA.jobs.job.trigger(
+          { id: '2', concurrencyKey: 'group-1' },
+          { concurrencyKey: 'group-1' },
+        )
 
-      const secondRun = await runtimeA.jobs.job.trigger(
-        { id: '2', concurrencyKey: 'group-1' },
-        { concurrencyKey: 'group-1' },
-      )
+        const firstMid = await runtimeA.jobs.job.getRun(firstRun.id)
+        const secondMid = await runtimeA.jobs.job.getRun(secondRun.id)
+        expect(firstMid?.status).toBe('leased')
+        expect(secondMid?.status).toBe('pending')
 
-      const firstMid = await runtimeA.jobs.job.getRun(firstRun.id)
-      const secondMid = await runtimeA.jobs.job.getRun(secondRun.id)
-      expect(firstMid?.status).toBe('leased')
-      expect(secondMid?.status).toBe('pending')
+        const idleWhileBlocked = await runtimeB.processOne({
+          workerId: 'worker-b',
+        })
+        expect(idleWhileBlocked).toBe(false)
 
-      const idleWhileBlocked = await runtimeB.processOne({
-        workerId: 'worker-b',
-      })
-      expect(idleWhileBlocked).toBe(false)
+        releaseFirst()
+        await firstProcessing
 
-      releaseFirst()
-      await firstProcessing
+        const drained = await runtimeA.processUntilIdle({
+          workerId: 'worker-a',
+        })
+        const runs = await runtimeA.jobs.job.getRuns()
 
-      const drained = await runtimeA.processUntilIdle({ workerId: 'worker-a' })
-      const runs = await runtimeA.jobs.job.getRuns()
-
-      expect(drained).toBe(1)
-      expect(runs.every((run) => run.status === 'completed')).toBe(true)
-      expect(overlapDetected).toBe(false)
-      expect(executionOrder).toEqual(['start-1', 'end-1', 'start-2', 'end-2'])
-
-      await Promise.all([runtimeA.db.destroy(), runtimeB.db.destroy()])
+        expect(drained).toBe(1)
+        expect(runs.every((run) => run.status === 'completed')).toBe(true)
+        expect(overlapDetected).toBe(false)
+        expect(executionOrder).toEqual(['start-1', 'end-1', 'start-2', 'end-2'])
+      } finally {
+        // A failed assertion above must not leave run 1 held forever.
+        releaseFirst()
+        await firstProcessing.catch(() => {})
+        await Promise.all([runtimeA.db.destroy(), runtimeB.db.destroy()])
+      }
     })
 
     it('concurrent active triggers across separate runtimes produce no duplicate pending work for the same active scope', async () => {
