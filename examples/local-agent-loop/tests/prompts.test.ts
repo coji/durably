@@ -96,11 +96,12 @@ describe('parseTriageOutput (strict judgments)', () => {
     assert.equal(probe.ok && probe.judgment, 'probe')
   })
 
-  it('treats a repeated identical judgment as one', () => {
+  it('requires exactly one JUDGMENT line', () => {
     const r = parseTriageOutput(
       'JUDGMENT: routine\nJUDGMENT: routine\nREASON: Small change.',
     )
-    assert.equal(r.ok, true)
+    assert.equal(r.ok, false)
+    assert.match(r.ok ? '' : r.error, /2 JUDGMENT lines/)
   })
 
   const rejected: [string, string, RegExp][] = [
@@ -110,7 +111,7 @@ describe('parseTriageOutput (strict judgments)', () => {
     [
       'contradictory',
       'JUDGMENT: routine\nJUDGMENT: probe\nREASON: x.',
-      /contradictory/,
+      /2 JUDGMENT lines/,
     ],
     ['template echo', 'JUDGMENT: routine | probe\nREASON: x.', /unsupported/],
     ['outside the set', 'JUDGMENT: escalate\nREASON: x.', /unsupported/],

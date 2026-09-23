@@ -393,7 +393,7 @@ describe('shadow triage', { timeout: 300000 }, () => {
       ['routine', 'routine', /fake triage: a one-line fix/],
       ['probe', 'probe', /fake triage: treat this task as risky/],
       ['invalid', 'unknown', /malformed triage: no JUDGMENT/],
-      ['contradictory', 'unknown', /malformed triage: contradictory/],
+      ['contradictory', 'unknown', /malformed triage: 2 JUDGMENT lines/],
       ['unsupported', 'unknown', /malformed triage: unsupported/],
       ['error', 'unknown', /triage call failed: fake triage call failed/],
     ] as const

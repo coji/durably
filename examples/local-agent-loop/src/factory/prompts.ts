@@ -230,15 +230,14 @@ export function parseTriageOutput(text: string): ParsedTriage {
     const reason = /^\s*REASON:\s*(.*)$/i.exec(line)
     if (reason?.[1] !== undefined) reasons.push(reason[1].trim())
   }
-  const values = [...new Set(judgments)]
-  if (values.length === 0)
+  if (judgments.length === 0)
     return { ok: false, error: 'no JUDGMENT line in triage output' }
-  if (values.length > 1)
+  if (judgments.length > 1)
     return {
       ok: false,
-      error: `contradictory triage output: ${values.length} JUDGMENT values`,
+      error: `${judgments.length} JUDGMENT lines in triage output`,
     }
-  const value = values[0]
+  const value = judgments[0]
   if (value !== 'routine' && value !== 'probe')
     return { ok: false, error: `unsupported JUDGMENT value: ${value}` }
   if (reasons.length !== 1 || !reasons[0])
