@@ -325,9 +325,13 @@ export function createStepContext(
 
         // If we reach here, savedStep is truthy — the run is still leased.
         // Cancellation is handled above (persistStep returns null for cancelled runs).
-        // Keep a name's first failure: a later retry of the same name must
-        // not hide an earlier, lower-index failure.
-        if (!isCancelled && !failedSteps.has(name)) {
+        // Keep a name's lowest failed index: a retry of the same name, or an
+        // overlapping attempt that finishes later, must not hide it.
+        const recorded = failedSteps.get(name)
+        if (
+          !isCancelled &&
+          (recorded === undefined || attemptIndex < recorded)
+        ) {
           failedSteps.set(name, attemptIndex)
         }
         eventEmitter.emit({
@@ -499,9 +503,9 @@ export function createStepContext(
       }
 
       if (rejected.length > 1) {
-        // run:fail names the lowest-index failed checkpoint. Choose its error
-        // too, because asynchronous setup can assign indexes out of branch
-        // declaration order.
+        // run:fail names the lowest-index step that failed under this lease.
+        // Choose its error too, because asynchronous setup can assign indexes
+        // out of branch declaration order.
         const byName = new Map(
           rejected.map(({ name, reason }) => [name, reason]),
         )

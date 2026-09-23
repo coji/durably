@@ -7,9 +7,9 @@ import { createDurably, defineJob, type Durably } from '../../src'
 /**
  * A state change's event follows its storage write directly: nothing else
  * touches storage between the write resolving and the event being emitted.
- * A listener that reads the run on the event therefore sees the new state,
- * and a caller that sees the new state in storage has already been sent the
- * event within this process.
+ * A listener that reads the run on the event therefore sees the new state.
+ * The reverse is not promised: a concurrent reader may see the new state
+ * just before the event is delivered.
  *
  * The trace records every storage call and resolution plus every event, in
  * order, so a regression shows up as another storage call in between rather
