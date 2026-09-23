@@ -1,12 +1,4 @@
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  describe,
-  expect,
-  it,
-  vi,
-} from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 
 import {
@@ -16,7 +8,7 @@ import {
   NotFoundError,
   type Durably,
 } from '../../src'
-import { createPostgresSchemaResource } from '../helpers/postgres-dialect'
+import { usePostgresSchemaPerTest } from '../helpers/postgres-dialect'
 
 async function waitForPendingRunOnB(b: Durably<any, any>) {
   await vi.waitFor(
@@ -28,15 +20,29 @@ async function waitForPendingRunOnB(b: Durably<any, any>) {
   )
 }
 
-const resource = createPostgresSchemaResource()
+const createPostgresDialect = usePostgresSchemaPerTest()
 
-beforeAll(async () => {
-  await resource.setup()
-})
-
-afterAll(async () => {
-  await resource.cleanup()
-})
+/**
+ * Hold every storage read the waiter makes until `resume` is called. Deleting
+ * a run means completing it first, and a poll that lands between completion
+ * and deletion would legitimately resolve with the completed run. Holding the
+ * reads across that window makes the next read see the deletion.
+ */
+function pauseRunReads(durably: Durably<any, any>) {
+  let resume!: () => void
+  const paused = new Promise<void>((r) => {
+    resume = r
+  })
+  const original = durably.storage.getRun
+  durably.storage.getRun = async (...args) => {
+    await paused
+    return original(...args)
+  }
+  return () => {
+    resume()
+    durably.storage.getRun = original
+  }
+}
 
 describe(
   'waitForRun / triggerAndWait with shared storage (cross-runtime)',
@@ -51,7 +57,7 @@ describe(
     })
 
     function createPair(pollingIntervalMs: number) {
-      const dialect = () => resource.createDialect()
+      const dialect = createPostgresDialect
       const runtimeA = createDurably({
         dialect: dialect(),
         pollingIntervalMs,
@@ -229,9 +235,11 @@ describe(
         },
         { timeout: 5000 },
       )
+      const resumeReads = pauseRunReads(a)
       release()
       await process
       await b.deleteRun(run.id)
+      resumeReads()
       await assertDone
     })
 
@@ -270,9 +278,11 @@ describe(
       )
       const runs = await b.getRuns({ status: 'leased' })
       const runId = runs[0].id
+      const resumeReads = pauseRunReads(a)
       release()
       await process
       await b.deleteRun(runId)
+      resumeReads()
       await assertDone
     })
   },

@@ -39,8 +39,6 @@ describe('step attempt after process termination', () => {
       })
       const runtime = createDurably({
         dialect: createNodeDialectForFile(dbFile),
-        leaseMs: 200,
-        leaseRenewIntervalMs: 10_000,
         preserveSteps: true,
         jobs: { job },
       })
@@ -72,9 +70,19 @@ describe('step attempt after process termination', () => {
       })
       child.kill('SIGKILL')
       await new Promise<void>((resolve) => child.once('exit', () => resolve()))
-      await new Promise((resolve) => setTimeout(resolve, 250))
+      // End the dead child's lease directly instead of sleeping past a short
+      // one: a sleep races the lease clock on a loaded machine, and a short
+      // lease can also expire inside the child before it reports its attempt.
+      await runtime.db
+        .updateTable('durably_runs')
+        .set({ lease_expires_at: new Date(0).toISOString() })
+        .where('id', '=', run.id)
+        .where('status', '=', 'leased')
+        .execute()
 
-      await runtime.processOne({ workerId: 'recovery-worker' })
+      expect(await runtime.processOne({ workerId: 'recovery-worker' })).toBe(
+        true,
+      )
       const attempts = await runtime.getStepAttempts(run.id)
       expect(attempts).toHaveLength(2)
       expect(attempts[0]).toMatchObject({

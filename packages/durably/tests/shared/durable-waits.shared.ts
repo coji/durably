@@ -17,6 +17,11 @@ function gate() {
   return { promise, resolve }
 }
 
+// Long enough that the first `processOne` always suspends the run before the
+// deadline passes, even on a loaded machine; a 100ms deadline could expire
+// between `prepareWait` and `waitFor`, and the run then finished early.
+const WAIT_DEADLINE_MS = 1_000
+
 export function createDurableWaitTests(createDialect: () => Dialect) {
   describe('durable wait runtime', () => {
     let d: Durably
@@ -83,8 +88,9 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
         { concurrencyKey: 'key' },
       )
       app.start()
-      await vi.waitFor(async () =>
-        expect((await app.getRun(a.id))?.status).toBe('waiting'),
+      await vi.waitFor(
+        async () => expect((await app.getRun(a.id))?.status).toBe('waiting'),
+        { timeout: 5_000 },
       )
       const b = await app.jobs.job.trigger(
         { wait: false },
@@ -157,7 +163,7 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
           output: z.unknown(),
           run: async (step) => {
             const wait = await step.prepareWait('approval', {
-              timeoutMs: 100,
+              timeoutMs: WAIT_DEADLINE_MS,
             })
             const result = await step.waitFor(wait)
             await step.run('after', () => after(result))
@@ -171,7 +177,7 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
       const [initial] = await app.getWaits(run.id)
       expect(
         Date.parse(initial.deadlineAt!) - Date.parse(initial.createdAt),
-      ).toBe(100)
+      ).toBe(WAIT_DEADLINE_MS)
 
       await new Promise((resolve) =>
         setTimeout(
@@ -189,7 +195,7 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
         Date.parse(initial.deadlineAt!),
       )
       expect(wait?.inputWaitMs).toBeGreaterThanOrEqual(0)
-      expect(wait?.inputWaitMs).toBeLessThanOrEqual(100)
+      expect(wait?.inputWaitMs).toBeLessThanOrEqual(WAIT_DEADLINE_MS)
       expect(wait?.executionSlotWaitMs).toBeGreaterThanOrEqual(0)
     })
 
@@ -230,7 +236,7 @@ export function createDurableWaitTests(createDialect: () => Dialect) {
           input: z.object({}),
           run: async (step) => {
             const wait = await step.prepareWait('approval', {
-              timeoutMs: 100,
+              timeoutMs: WAIT_DEADLINE_MS,
             })
             await step.waitFor(wait)
             await step.run('after', after)

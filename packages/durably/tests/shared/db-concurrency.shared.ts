@@ -205,6 +205,13 @@ export function createDbConcurrencyTests(
       const activeKeys = new Set<string>()
       const executionOrder: string[] = []
       let overlapDetected = false
+      // Hold the first run until the other runtime has tried to claim. A
+      // fixed sleep let the first run finish early on a slow machine, and the
+      // other runtime then rightly claimed the second run.
+      let releaseFirst!: () => void
+      const firstHeld = new Promise<void>((resolve) => {
+        releaseFirst = resolve
+      })
 
       const concurrencyJob = defineJob({
         name: 'runtime-concurrency',
@@ -219,7 +226,7 @@ export function createDbConcurrencyTests(
           activeKeys.add(input.concurrencyKey)
           executionOrder.push(`start-${input.id}`)
           await step.run('work', async () => {
-            await new Promise((resolve) => setTimeout(resolve, 75))
+            if (input.id === '1') await firstHeld
           })
           executionOrder.push(`end-${input.id}`)
           activeKeys.delete(input.concurrencyKey)
@@ -272,6 +279,7 @@ export function createDbConcurrencyTests(
       })
       expect(idleWhileBlocked).toBe(false)
 
+      releaseFirst()
       await firstProcessing
 
       const drained = await runtimeA.processUntilIdle({ workerId: 'worker-a' })
