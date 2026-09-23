@@ -18,8 +18,9 @@ import { buildReport } from './engine/build-report.js'
 import { killOwnedChildren, runChild } from './engine/child.js'
 import { compareReports, comparisonToMarkdown } from './engine/compare.js'
 import {
-  classifyFailure,
-  uncertainCheckpoints,
+  classifyRun,
+  retryText,
+  type FailureClassification,
 } from './engine/failure-reasons.js'
 import { repoRoot } from './engine/git.js'
 import { parseProviderName } from './engine/providers/index.js'
@@ -332,10 +333,8 @@ interface Diagnosis {
   needsAttention: boolean
   reason: string
   next: string[]
-  /** Set only for a stopped run: whether starting a new one is safe. */
-  retryable?: boolean
-  humanCheck?: string
-  details?: string[]
+  /** Set only for a stopped run. */
+  failure?: FailureClassification
   /** A non-forcing worktree removal, for a finished repo run's worktree. */
   cleanup: string | null
 }
@@ -352,7 +351,6 @@ async function diagnose(
 ): Promise<Diagnosis> {
   const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))
     ?.output as {
-    checkpointsDir?: string
     target?: { kind?: string; repoPath?: string; workdir?: string }
   } | null
   const terminal = ['completed', 'failed', 'cancelled'].includes(run.status)
@@ -398,15 +396,12 @@ async function diagnose(
   if (run.status === 'waiting') {
     const waits = await durably.getWaits(run.id)
     const approval = waits.find(
-      (w) =>
-        w.id === run.waitingOnWaitId &&
-        w.status === 'pending' &&
-        typeof (w.metadata as { candidateId?: unknown } | null)?.candidateId ===
-          'string',
+      (w) => w.id === run.waitingOnWaitId && w.status === 'pending',
     )
-    if (approval) {
-      const candidateId = (approval.metadata as { candidateId: string })
-        .candidateId
+    const candidateId = (
+      approval?.metadata as { candidateId?: unknown } | null | undefined
+    )?.candidateId
+    if (approval && typeof candidateId === 'string') {
       return {
         needsAttention: true,
         reason: `waiting for human approval of candidate ${candidateId}`,
@@ -425,24 +420,13 @@ async function diagnose(
       cleanup,
     }
   }
-  const failure = classifyFailure({
-    runId: run.id,
-    status: run.status,
-    output: run.output,
-    error: run.error,
-    uncertain: uncertainCheckpoints(
-      setup?.checkpointsDir ?? null,
-      await durably.getStepAttempts(run.id),
-    ),
-  })
+  const failure = await classifyRun(durably, run)
   if (failure)
     return {
       needsAttention: true,
       reason: `${failure.kind}: ${failure.reason}`,
       next: failure.next,
-      retryable: failure.retryable,
-      humanCheck: failure.humanCheck,
-      details: failure.details,
+      failure,
       cleanup,
     }
   const conclusion = (run.output as { conclusion?: string } | null)?.conclusion
@@ -457,12 +441,11 @@ async function diagnose(
 function diagnosisLines(run: Run, d: Diagnosis): string[] {
   const lines = [`${run.id}  ${run.status}  (created ${run.createdAt})`]
   lines.push(`  reason:  ${d.reason}`)
-  if (d.retryable !== undefined)
-    lines.push(
-      `  retry:   ${d.retryable ? 'yes: a new run repeats no unresolved agent call (it may still fail the same way)' : 'NO: do not start a new run until a human has checked'}`,
-    )
-  if (d.humanCheck) lines.push(`  check:   ${d.humanCheck}`)
-  for (const detail of d.details ?? []) lines.push(`  detail:  ${detail}`)
+  if (d.failure) {
+    lines.push(`  retry:   ${retryText(d.failure.retryable)}`)
+    lines.push(`  check:   ${d.failure.humanCheck}`)
+    for (const detail of d.failure.details) lines.push(`  detail:  ${detail}`)
+  }
   d.next.forEach((n, i) =>
     lines.push(`  ${i === 0 ? 'next:' : '     '}    ${n}`),
   )

@@ -9,9 +9,9 @@
  */
 import { existsSync } from 'node:fs'
 
-import type { StepAttempt } from '@coji/durably'
+import type { AnyDurably, Run, StepAttempt } from '@coji/durably'
 
-import { checkpointPaths } from './runner.js'
+import { checkpointPaths, UNCERTAIN_INVOCATION_MESSAGE } from './runner.js'
 
 export type FailureKind =
   | 'verification-failed'
@@ -147,7 +147,7 @@ export function classifyFailure(
     // starting over could send that prompt a second time.
     if (
       input.uncertain.length > 0 ||
-      /uncertain external invocation/.test(input.error ?? '')
+      input.error?.includes(UNCERTAIN_INVOCATION_MESSAGE)
     ) {
       kind = 'uncertain-invocation'
       for (const path of input.uncertain)
@@ -162,12 +162,39 @@ export function classifyFailure(
     return null
   }
   const entry = FAILURE_REASONS[kind]
-  return {
-    kind,
-    reason: entry.reason,
-    retryable: entry.retryable,
-    humanCheck: entry.humanCheck,
-    next: entry.next(input.runId),
-    details,
+  return { kind, ...entry, next: entry.next(input.runId), details }
+}
+
+/** One wording for the retry verdict, shared by `status` and `report`. */
+export function retryText(retryable: boolean): string {
+  return retryable
+    ? 'yes: safe to start a new run (no unresolved agent call); it may still fail the same way'
+    : 'NO — do not start a new run until a human has checked'
+}
+
+/**
+ * Classify a stored run. Reads the setup step for the checkpoints directory
+ * (a run that failed before setup finished has none) and only looks for
+ * unresolved calls when the run actually failed or was cancelled.
+ */
+export async function classifyRun(
+  durably: Pick<AnyDurably, 'storage' | 'getStepAttempts'>,
+  run: Pick<Run, 'id' | 'status' | 'output' | 'error'>,
+): Promise<FailureClassification | null> {
+  let uncertain: string[] = []
+  if (run.status === 'failed' || run.status === 'cancelled') {
+    const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))
+      ?.output as { checkpointsDir?: string } | null | undefined
+    uncertain = uncertainCheckpoints(
+      setup?.checkpointsDir ?? null,
+      await durably.getStepAttempts(run.id),
+    )
   }
+  return classifyFailure({
+    runId: run.id,
+    status: run.status,
+    output: run.output,
+    error: run.error,
+    uncertain,
+  })
 }

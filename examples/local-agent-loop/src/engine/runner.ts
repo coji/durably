@@ -60,10 +60,13 @@ interface CompletedCheckpoint {
   invocationCompletedAt: string
 }
 
+/** Prefix of every `UncertainInvocationError` message; the failure table matches it. */
+export const UNCERTAIN_INVOCATION_MESSAGE = 'uncertain external invocation'
+
 export class UncertainInvocationError extends Error {
   constructor(operationKey: string, invocationId: string) {
     super(
-      `uncertain external invocation: ${operationKey} (${invocationId}); ` +
+      `${UNCERTAIN_INVOCATION_MESSAGE}: ${operationKey} (${invocationId}); ` +
         'no completed checkpoint is available, so the prompt was not resent',
     )
     this.name = 'UncertainInvocationError'

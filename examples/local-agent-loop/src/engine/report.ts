@@ -13,7 +13,7 @@
  */
 import type { StepAttempt } from '@coji/durably'
 
-import type { FailureClassification } from './failure-reasons.js'
+import { retryText, type FailureClassification } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import type { AttemptMeasurement } from './providers/types.js'
 import { aggregateUsage } from './usage.js'
@@ -596,9 +596,7 @@ export function reportToMarkdown(r: LoopReport): string {
   if (r.failure) {
     lines.push(`- kind: ${r.failure.kind}`)
     lines.push(`- reason: ${r.failure.reason}`)
-    lines.push(
-      `- retry: ${r.failure.retryable ? 'safe to start a new run (no unresolved agent call); it may still fail the same way' : 'NO — do not start a new run until a human has checked'}`,
-    )
+    lines.push(`- retry: ${retryText(r.failure.retryable)}`)
     lines.push(`- human check: ${r.failure.humanCheck}`)
     for (const d of r.failure.details) lines.push(`- ${d}`)
     for (const n of r.failure.next) lines.push(`- next: ${n}`)
