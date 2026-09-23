@@ -214,5 +214,28 @@ export function createEventOrderingTests(createDialect: () => Dialect) {
         expect.objectContaining({ context: 'cancel-cleanup', runId: run.id }),
       ])
     })
+
+    it('cancel resolves even when reporting the cleanup failure throws', async () => {
+      const { durably } = await setup()
+      durably.on('worker:error', () => {
+        throw new Error('listener failed')
+      })
+      durably.onError(() => {
+        throw new Error('onError failed')
+      })
+      const d = durably.register({
+        job: defineJob({
+          name: 'ordering-cancel-report',
+          input: z.object({}),
+          run: async () => {},
+        }),
+      })
+      const run = await d.jobs.job.trigger({})
+      d.storage.deleteSteps = async () => {
+        throw new Error('cleanup failed')
+      }
+      await expect(d.cancel(run.id)).resolves.toBeUndefined()
+      expect((await d.getRun(run.id))?.status).toBe('cancelled')
+    })
   })
 }
