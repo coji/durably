@@ -1,4 +1,4 @@
-# Fixer Agent (claude code)
+# Fixer Agent
 
 Fix the issues raised in the acceptance testing or supervision.
 

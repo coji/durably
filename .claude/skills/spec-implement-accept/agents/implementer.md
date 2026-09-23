@@ -1,4 +1,4 @@
-# Implementer Agent (cursor)
+# Implementer Agent
 
 Implement according to the task spec (order.md).
 

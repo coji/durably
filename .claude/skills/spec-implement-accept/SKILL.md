@@ -4,8 +4,8 @@ description: >-
   End-to-end autonomous development workflow: spec generation, review loop, implementation,
   acceptance testing loop, code simplification, supervision, documentation, a Draft PR,
   and a verified code-review/fix loop before the PR becomes Ready.
-  Uses codex CLI for spec/review/acceptance/supervision, cursor agent for implementation,
-  and Claude Code agents for fixes/simplify/docs. Includes git branch management, per-phase
+  Uses codex CLI for spec/review/acceptance/supervision; implementation, fixes, simplify,
+  and docs run on the orchestrator's own agent (Claude under Claude Code, Codex under Codex). Includes git branch management, per-phase
   commits, Draft PR creation, and a blocker-free Ready gate without takt. Use this skill when the user wants to implement a
   feature or fix from an issue description, or says "run the full workflow", "spec-implement",
   "implement this issue end-to-end", or similar. Accepts an issue number as argument
@@ -50,6 +50,15 @@ Count every phase transition. Stop with the PR Draft and report the current head
 work if the workflow reaches 35 transitions. Phase 6 may run at most three times; if the same
 finding survives two consecutive supervision rounds, stop rather than cycling back through the
 pipeline.
+
+### Worker agent
+
+Phases that edit the working tree (spec revision, implementation, fixes, simplify, docs, review
+fixes) run on the orchestrator's own agent: a Claude Code subagent (Agent tool) when Claude Code
+orchestrates, a Codex subagent (or Codex itself) when Codex orchestrates. Do not hand these
+phases to another tool. The read-only spec review, acceptance, supervision, and code-review
+tracks stay as written below. Workers edit the working tree and run validation; they never
+commit, push, or change the PR.
 
 ### Phase 0: Setup
 
@@ -112,7 +121,7 @@ Output: `spec-review-report.md` following the output contract in `references/out
 - `ABORT` (fundamentally broken) -> Stop and report to user
 
 **2c. Revise (if needed):**
-Use Claude Code Agent tool with prompt from `agents/spec-reviser.md`.
+Run the worker agent with the prompt from `agents/spec-reviser.md`.
 Pass the current `order.md` and `spec-review-report.md` contents as context. The agent returns a
 complete revised spec; the orchestrator replaces `<task-dir>/order.md` outside the worktree.
 
@@ -125,11 +134,10 @@ stop and request the missing product decision. Never force an implementation fro
 `<task-dir>/order.sha256`. Subagents return content; the orchestrator writes these files outside
 the worktree. Do not commit workflow artifacts.
 
-### Phase 3: Implementation (cursor agent)
+### Phase 3: Implementation (worker)
 
-```bash
-cursor agent -p --yolo "<prompt from agents/implementer.md>"
-```
+Run the worker agent with the prompt from `agents/implementer.md`, with `order.md`
+substituted for `{order_md}` and any spec-review suggestions and orchestrator decisions appended.
 
 **Routing:**
 
@@ -148,7 +156,9 @@ git commit -m "feat: implement <task-name>"
 For each iteration:
 
 **4a. Acceptance test:** Run `pnpm validate` first. Pass its complete output, `base_sha`,
-`order_sha256`, and task context to read-only Codex:
+`order_sha256`, the changed-file list, the full `base...HEAD` diff, and task context to
+read-only Codex. Include the diff itself; a read-only run may not execute git, and without it
+the acceptor can only report criteria as unverifiable:
 
 ```bash
 codex exec -m gpt-6-sol -c model_reasoning_effort=medium -s read-only \
@@ -163,7 +173,7 @@ Output: `acceptance-report.md` following the output contract
 - `REJECT` (issues found) -> Run fix (4c), then loop back to 4a
 
 **4c. Fix (if needed):**
-Use Claude Code Agent tool with prompt from `agents/fixer.md`.
+Run the worker agent with the prompt from `agents/fixer.md`.
 The agent has access to: Read, Glob, Grep, Edit, Write, Bash.
 
 **Convergence check (after threshold of 2 iterations):**
@@ -176,10 +186,10 @@ git add -A
 git commit -m "fix: address acceptance test issues"
 ```
 
-### Phase 5: Simplify (claude)
+### Phase 5: Simplify (worker)
 
-Use Claude Code Agent tool with prompt from `agents/simplifier.md`.
-This invokes the `/simplify` skill internally, then runs `pnpm format:fix && pnpm validate`.
+Run the worker agent with the prompt from `agents/simplifier.md`.
+This invokes the `/simplify` skill where available, then runs `pnpm format:fix && pnpm validate`.
 
 **After Phase 5 completes (if changes were made):**
 
@@ -190,7 +200,8 @@ git commit -m "refactor: simplify implementation"
 
 ### Phase 6: Supervision (codex)
 
-Run `pnpm validate`, then pass its complete output and task context to read-only Codex:
+Run `pnpm validate`, then pass its complete output, the changed-file list, the full
+`base...HEAD` diff, and task context to read-only Codex:
 
 ```bash
 codex exec -m gpt-6-sol -c model_reasoning_effort=medium -s read-only \
@@ -202,7 +213,7 @@ Output: `supervise-report.md` following the output contract
 **Routing:**
 
 - `COMPLETE` -> Phase 7
-- `FIX` -> Run fix via Claude Code Agent, commit if changed, then re-run Phase 6
+- `FIX` -> Run fix via the worker agent, commit if changed, then re-run Phase 6
 - `SPEC_REVIEW` -> Go back to Phase 2
 
 **After Phase 6 fix (if any):**
@@ -212,9 +223,9 @@ git add -A
 git commit -m "fix: address supervision findings"
 ```
 
-### Phase 7: Documentation Update (claude)
+### Phase 7: Documentation Update (worker)
 
-Use Claude Code Agent tool with prompt from `agents/doc-updater.md`.
+Run the worker agent with the prompt from `agents/doc-updater.md`.
 Before deciding whether to run it, compare the approved spec and completed implementation with
 the ADR criteria in `CLAUDE.md`, and inspect `docs/adr/README.md` plus existing `proposed` ADRs.
 Do not infer the need for an ADR solely from changed paths: a relevant proposal may already be on
@@ -367,7 +378,7 @@ If any condition changes or fails, return to Phase 9 and keep the PR Draft.
 
 ## Error Handling
 
-- If any codex/cursor command fails (non-zero exit), read stderr and report to user
+- If any codex command fails (non-zero exit), read stderr and report to user
 - If a phase produces no output, retry once before stopping
 - If validation (`pnpm validate`) fails after implementation or fix, treat as acceptance failure
 - If a reviewer/model/check is unavailable, classify the round `INCOMPLETE`; never infer GO
