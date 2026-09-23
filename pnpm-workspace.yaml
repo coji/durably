@@ -31,3 +31,5 @@ allowBuilds:
   lefthook: true
   protobufjs: true
   ssh2: true
+patchedDependencies:
+  ai-sdk-provider-codex-cli@2.2.1: patches/ai-sdk-provider-codex-cli@2.2.1.patch
