@@ -10,15 +10,25 @@ import {
   type Durably,
   type DurablyEvent,
 } from '../../src'
+import { createDeferred } from '../helpers/sync'
+
+// A test that needs a run to stay leased points this at an unresolved gate;
+// afterEach releases it so the worker can stop
+let workGate: Promise<void> = Promise.resolve()
+let releaseWork: () => void = () => {}
+
+function holdWork() {
+  const gate = createDeferred()
+  workGate = gate.promise
+  releaseWork = () => gate.resolve()
+}
 
 const jobDef = defineJob({
   name: 'coalesce-test',
   input: z.object({ value: z.string() }),
   output: z.object({ result: z.string() }),
   run: async (step, input) => {
-    await step.run('work', async () => {
-      await new Promise((r) => setTimeout(r, 50))
-    })
+    await step.run('work', () => workGate)
     return { result: input.value }
   },
 })
@@ -38,6 +48,9 @@ export function createCoalesceTests(createDialect: () => Dialect) {
     })
 
     afterEach(async () => {
+      releaseWork()
+      workGate = Promise.resolve()
+      releaseWork = () => {}
       await durably.stop()
       await durably.db.destroy()
     })
@@ -75,6 +88,7 @@ export function createCoalesceTests(createDialect: () => Dialect) {
       })
 
       it('allows new pending after first is leased', async () => {
+        holdWork()
         await d.jobs.job.trigger({ value: 'a' }, { concurrencyKey: 'key-1' })
         durably.start()
 
@@ -85,7 +99,7 @@ export function createCoalesceTests(createDialect: () => Dialect) {
               runs.some((r: { status: string }) => r.status === 'leased'),
             ).toBe(true)
           },
-          { timeout: 2000 },
+          { timeout: 5_000 },
         )
 
         const second = await d.jobs.job.trigger(
@@ -97,6 +111,8 @@ export function createCoalesceTests(createDialect: () => Dialect) {
       })
 
       it('throws on third trigger when running + pending exists', async () => {
+        // Keep 'a' leased so 'b' stays pending when 'c' is triggered
+        holdWork()
         await d.jobs.job.trigger({ value: 'a' }, { concurrencyKey: 'key-1' })
         durably.start()
 
@@ -107,7 +123,7 @@ export function createCoalesceTests(createDialect: () => Dialect) {
               runs.some((r: { status: string }) => r.status === 'leased'),
             ).toBe(true)
           },
-          { timeout: 2000 },
+          { timeout: 5_000 },
         )
 
         await d.jobs.job.trigger({ value: 'b' }, { concurrencyKey: 'key-1' })
@@ -1007,7 +1023,7 @@ export function createCoalesceTests(createDialect: () => Dialect) {
             () => {
               expect(activeRuns).toContain('first')
             },
-            { timeout: 3000 },
+            { timeout: 5_000 },
           )
 
           const firstRun = await dMulti.jobs.job.getRun(first.id)
@@ -1032,6 +1048,8 @@ export function createCoalesceTests(createDialect: () => Dialect) {
 
           // Verify trailing run is NOT leased while predecessor holds live lease,
           // even though maxConcurrentRuns is 2 and the second slot is idle.
+          // sleep-ok(negative): gives the idle slot a chance to lease the
+          // trailing run; a slow runner can only hide a bug here
           await new Promise((r) => setTimeout(r, 100))
           const secondCheck = await dMulti.jobs.job.getRun(second.id)
           expect(secondCheck?.status).toBe('pending')

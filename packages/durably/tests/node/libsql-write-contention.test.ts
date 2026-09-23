@@ -44,6 +44,8 @@ describe('libsql write contention', () => {
         output: z.object({ done: z.number() }),
         run: async (step, input) => {
           await step.run('work', async () => {
+            // sleep-ok(work): keeps the worker writing while the test writes; the
+            // assertions only count runs, so the overlap's length does not matter.
             await new Promise((r) => setTimeout(r, 50))
           })
           return { done: input.i }
@@ -81,6 +83,8 @@ describe('libsql write contention', () => {
         output: z.object({ done: z.number() }),
         run: async (step, input) => {
           await step.run('work', async () => {
+            // sleep-ok(work): keeps the worker writing while the test writes; the
+            // assertions only count runs, so the overlap's length does not matter.
             await new Promise((r) => setTimeout(r, 50))
           })
           return { done: input.i }
@@ -116,6 +120,8 @@ describe('libsql write contention', () => {
         output: z.object({ done: z.number() }),
         run: async (step, input) => {
           await step.run('work', async () => {
+            // sleep-ok(work): keeps the worker writing while the test writes; the
+            // assertions only count runs, so the overlap's length does not matter.
             await new Promise((r) => setTimeout(r, 50))
           })
           return { done: input.i }
@@ -184,6 +190,8 @@ describe('libsql write contention', () => {
         output: z.object({ done: z.number() }),
         run: async (step, input) => {
           await step.run('work', async () => {
+            // sleep-ok(work): keeps the worker writing while the test writes; the
+            // assertions only count runs, so the overlap's length does not matter.
             await new Promise((r) => setTimeout(r, 20))
           })
           return { done: input.i }

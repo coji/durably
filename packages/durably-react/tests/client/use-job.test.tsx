@@ -1376,6 +1376,9 @@ describe('useJob (client)', () => {
           }),
         )
       })
+      // sleep-ok(negative): gives triggerAndWait a chance to wrongly settle
+      // with run-b's output before run-a completes; a slow machine can only
+      // hide that bug, not fail the test.
       await new Promise((resolve) => setTimeout(resolve, 75))
 
       act(() => {

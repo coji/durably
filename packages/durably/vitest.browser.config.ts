@@ -4,7 +4,6 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   test: {
     include: ['tests/browser/**/*.test.ts'],
-    retry: 2,
     browser: {
       enabled: true,
       provider: playwright(),

@@ -490,7 +490,7 @@ export function createStepTests(createDialect: () => Dialect) {
           expect(updated?.status).toBe('completed')
           expect(updated?.output).toEqual({ result: 42 })
         },
-        { timeout: 1000 },
+        { timeout: 5_000 },
       )
     })
 
@@ -519,7 +519,7 @@ export function createStepTests(createDialect: () => Dialect) {
           expect(steps[1].status).toBe('completed')
           expect(steps[1].output).toBe('result2')
         },
-        { timeout: 1000 },
+        { timeout: 5_000 },
       )
     })
 
@@ -550,7 +550,7 @@ export function createStepTests(createDialect: () => Dialect) {
             expect(updated?.status).toBe('completed')
             expect(await d.storage.getSteps(run.id)).toHaveLength(0)
           },
-          { timeout: 1000 },
+          { timeout: 5_000 },
         )
       } finally {
         await defaultDurably.stop()
@@ -586,7 +586,7 @@ export function createStepTests(createDialect: () => Dialect) {
             expect(updated?.status).toBe('completed')
             expect(await d.storage.getSteps(run.id)).toHaveLength(0)
           },
-          { timeout: 1000 },
+          { timeout: 5_000 },
         )
       } finally {
         await cleanupDurably.stop()
@@ -615,7 +615,7 @@ export function createStepTests(createDialect: () => Dialect) {
           expect(updated?.status).toBe('failed')
           expect(updated?.error).toContain('Step failed!')
         },
-        { timeout: 1000 },
+        { timeout: 5_000 },
       )
 
       // Check step was recorded as failed
@@ -658,7 +658,7 @@ export function createStepTests(createDialect: () => Dialect) {
           const updated = await d.jobs.job.getRun(run1.id)
           expect(updated?.status).toBe('failed')
         },
-        { timeout: 1000 },
+        { timeout: 5_000 },
       )
 
       expect(step1Calls).toBe(1)
@@ -673,7 +673,7 @@ export function createStepTests(createDialect: () => Dialect) {
           const updated = await d.jobs.job.getRun(run1.id)
           expect(updated?.status).toBe('completed')
         },
-        { timeout: 1000 },
+        { timeout: 5_000 },
       )
 
       // step1 was skipped (still 1), step2 was retried
@@ -719,7 +719,7 @@ export function createStepTests(createDialect: () => Dialect) {
           const updated = await d.jobs.job.getRun(run.id)
           expect(updated?.status).toBe('failed')
         },
-        { timeout: 1000 },
+        { timeout: 5_000 },
       )
 
       expect(step1CallCount).toBe(1)
@@ -737,7 +737,7 @@ export function createStepTests(createDialect: () => Dialect) {
           // The step1Result should be from first call, not recomputed
           expect(updated?.output?.step1Result).toBe('computed-call-1')
         },
-        { timeout: 1000 },
+        { timeout: 5_000 },
       )
 
       // step1 was NOT called again (still 1), step2 was retried
@@ -768,7 +768,7 @@ export function createStepTests(createDialect: () => Dialect) {
           expect(stepEvents[0].stepName).toBe('myStep')
           expect(stepEvents[0].output).toBe('hello')
         },
-        { timeout: 1000 },
+        { timeout: 5_000 },
       )
     })
 
@@ -779,6 +779,8 @@ export function createStepTests(createDialect: () => Dialect) {
         output: z.object({ value: z.string() }),
         run: async (step) => {
           const value = await step.run('async-step', async () => {
+            // sleep-ok(work): makes the step genuinely async; the test waits
+            // for completion however long it takes
             await new Promise((r) => setTimeout(r, 50))
             return 'async-result'
           })
@@ -796,7 +798,7 @@ export function createStepTests(createDialect: () => Dialect) {
           expect(updated?.status).toBe('completed')
           expect(updated?.output).toEqual({ value: 'async-result' })
         },
-        { timeout: 1000 },
+        { timeout: 5_000 },
       )
     })
 
@@ -806,6 +808,8 @@ export function createStepTests(createDialect: () => Dialect) {
         input: z.object({}),
         run: async (step) => {
           await step.run('slow-step', async () => {
+            // sleep-ok(clock): the test asserts the recorded duration is at
+            // least 90ms; a slow runner only makes the step take longer
             await new Promise((r) => setTimeout(r, 100))
             return 'done'
           })
@@ -821,7 +825,7 @@ export function createStepTests(createDialect: () => Dialect) {
           const updated = await d.jobs.job.getRun(run.id)
           expect(updated?.status).toBe('completed')
         },
-        { timeout: 1000 },
+        { timeout: 5_000 },
       )
 
       const steps = await d.storage.getSteps(run.id)
@@ -865,7 +869,7 @@ export function createStepTests(createDialect: () => Dialect) {
           const updated = await d.jobs.job.getRun(run.id)
           expect(updated?.status).toBe('completed')
         },
-        { timeout: 1000 },
+        { timeout: 5_000 },
       )
 
       expect(progressEvents).toHaveLength(3)
@@ -915,7 +919,7 @@ export function createStepTests(createDialect: () => Dialect) {
           expect(updated?.status).toBe('completed')
           expect(updated?.output).toEqual({ aborted: false })
         },
-        { timeout: 1000 },
+        { timeout: 5_000 },
       )
 
       expect(receivedSignal).toBeInstanceOf(AbortSignal)
@@ -943,6 +947,7 @@ export function createStepTests(createDialect: () => Dialect) {
                   resolve()
                   return
                 }
+                // sleep-ok(poll): re-checks the signal until it is aborted
                 setTimeout(check, 10)
               }
               check()
@@ -966,7 +971,7 @@ export function createStepTests(createDialect: () => Dialect) {
         () => {
           expect(signalAbortedDuringStep).toBe(true)
         },
-        { timeout: 2000 },
+        { timeout: 5_000 },
       )
     })
 
@@ -1009,7 +1014,7 @@ export function createStepTests(createDialect: () => Dialect) {
         () => {
           expect(cancelEvents).toHaveLength(1)
         },
-        { timeout: 2000 },
+        { timeout: 5_000 },
       )
 
       expect(cancelEvents[0].stepName).toBe('cancellable-step')
@@ -1042,7 +1047,7 @@ export function createStepTests(createDialect: () => Dialect) {
         () => {
           expect(failEvents).toHaveLength(1)
         },
-        { timeout: 2000 },
+        { timeout: 5_000 },
       )
 
       expect(failEvents[0].stepName).toBe('failing-step')
@@ -1102,7 +1107,7 @@ export function createStepTests(createDialect: () => Dialect) {
           const updated = await d.jobs.job.getRun(run.id)
           expect(updated?.status).toBe('cancelled')
         },
-        { timeout: 2000 },
+        { timeout: 5_000 },
       )
 
       // step2 callback should never have been called

@@ -33,6 +33,8 @@ describe('React StrictMode', () => {
     }
     instances.length = 0
     // Wait for any pending async operations to complete
+    // sleep-ok(yield): settles leftover async work after stop(); every test
+    // uses its own database, so nothing depends on how long this is.
     await new Promise((r) => setTimeout(r, 200))
   })
 
@@ -230,6 +232,8 @@ describe('React StrictMode', () => {
                 if (updated?.status === 'completed') {
                   setResult((updated.output as { processed: string }).processed)
                 } else if (!cleanedUp.current) {
+                  // sleep-ok(poll): re-checks the run until it completes; the
+                  // test's waitFor bounds the total wait.
                   setTimeout(checkCompletion, 50)
                 }
               } catch {
@@ -322,6 +326,8 @@ describe('React StrictMode', () => {
 
     // Wait a bit for any events
     await act(async () => {
+      // sleep-ok(yield): lets the mounts run before unmounting; the assertion
+      // below accepts any event count, so nothing depends on how long this is.
       await new Promise((r) => setTimeout(r, 200))
     })
 

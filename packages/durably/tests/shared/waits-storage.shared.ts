@@ -119,6 +119,8 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
         const resolved = await store.signalWait(slowWait.id, 'approved', {
           signalId: 'slow-signal',
         })
+        // sleep-ok(clock): the measured slot wait is under test; 30ms real
+        // time against a 20ms lower bound leaves margin for timestamp rounding.
         await new Promise((resolve) => setTimeout(resolve, 30))
         expect(
           (
@@ -274,13 +276,17 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
       expect(
         await store.suspendRun(run.id, leased.leaseGeneration, wait.id),
       ).toBe(true)
-      await new Promise((resolve) => setTimeout(resolve, 20))
+      // sleep-ok(clock): the measured input wait is under test; sleeping 30ms
+      // against a 20ms lower bound leaves margin for timestamp rounding.
+      await new Promise((resolve) => setTimeout(resolve, 30))
       await store.signalWait(wait.id, null, { signalId: 'done' })
       expect(
         (await store.getWait(wait.id))?.inputWaitMs,
       ).toBeGreaterThanOrEqual(20)
       expect((await store.getWait(wait.id))?.executionSlotWaitMs).toBeNull()
-      await new Promise((resolve) => setTimeout(resolve, 30))
+      // sleep-ok(clock): the measured slot wait is under test; sleeping 40ms
+      // against a 30ms lower bound leaves margin for timestamp rounding.
+      await new Promise((resolve) => setTimeout(resolve, 40))
       expect(
         (await store.claimNext('next', new Date().toISOString(), 30_000))?.id,
       ).toBe(run.id)
@@ -296,7 +302,9 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
       await store.signalWait(wait.id, null, { signalId: 'early' })
       await store.suspendRun(run.id, leased.leaseGeneration, wait.id)
       expect((await store.getWait(wait.id))?.executionSlotWaitMs).toBeNull()
-      await new Promise((resolve) => setTimeout(resolve, 30))
+      // sleep-ok(clock): the measured slot wait is under test; sleeping 40ms
+      // against a 30ms lower bound leaves margin for timestamp rounding.
+      await new Promise((resolve) => setTimeout(resolve, 40))
       await store.claimNext('next', new Date().toISOString(), 30_000)
       const result = await store.getWait(wait.id)
       expect(result?.inputWaitMs).toBe(0)
@@ -323,12 +331,15 @@ export function createWaitStorageTests(createDialect: () => Dialect) {
     })
 
     it('expires an offline wait at its original deadline and resumes once', async () => {
-      const { store, run, leased, wait } = await liveWait(100)
+      // Long enough that suspension always lands before the deadline.
+      const { store, run, leased, wait } = await liveWait(1_000)
       await store.suspendRun(run.id, leased.leaseGeneration, wait.id)
+      // sleep-ok(clock): the deadline is in database time, so fake timers
+      // cannot advance it; the extra 50ms covers clock skew with the database.
       await new Promise((resolve) =>
         setTimeout(
           resolve,
-          Math.max(0, Date.parse(wait.deadlineAt!) - Date.now() + 10),
+          Math.max(0, Date.parse(wait.deadlineAt!) - Date.now() + 50),
         ),
       )
       expect(await store.expireDueWaits()).toBe(1)

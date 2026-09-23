@@ -19,6 +19,8 @@ const testJob = defineJob({
   input: z.object({ value: z.number() }),
   run: async (context, payload) => {
     await context.run('work', async () => {
+      // sleep-ok(work): tests wait for the runs list itself, not for this
+      // run to be at any particular point.
       await new Promise((r) => setTimeout(r, 50))
       return payload.value * 2
     })
@@ -37,6 +39,8 @@ describe('useRuns', () => {
       }
     }
     instances.length = 0
+    // sleep-ok(yield): settles leftover async work after stop(); every test
+    // uses its own database, so nothing depends on how long this is.
     await new Promise((r) => setTimeout(r, 200))
   })
 
@@ -373,6 +377,8 @@ describe('useRuns', () => {
     await d.jobs.testJobHandle.trigger({ value: 77 })
 
     // Wait a bit - should NOT update automatically
+    // sleep-ok(negative): gives an unwanted realtime refresh a chance to land;
+    // a slow machine can only hide one, not fail the test.
     await new Promise((r) => setTimeout(r, 100))
     expect(result.current.runs.length).toBe(0)
 

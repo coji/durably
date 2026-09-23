@@ -19,7 +19,6 @@ export default defineConfig({
   ],
   test: {
     include: ['tests/react/**/*.test.tsx'],
-    retry: 2,
     browser: {
       enabled: true,
       provider: playwright(),

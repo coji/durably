@@ -135,6 +135,7 @@ function createFakeClock(startMs = 1_700_000_000_000): FakeClock {
   return {
     clock: {
       now: () => now,
+      // sleep-ok(fake): the fake clock's own timer; advance() fires it
       setTimeout(fn, ms) {
         const id = nextId++
         timers.set(id, { fn, due: now + ms })
@@ -263,6 +264,7 @@ describe('executeRun (runtime kernel)', () => {
       run,
       makeJob(async () => {
         await new Promise<void>((resolve) => {
+          // sleep-ok(fake): fake clock timer; the test's advance() fires it
           clock.setTimeout(resolve, 25_000)
         })
         return { ok: true }
@@ -299,6 +301,7 @@ describe('executeRun (runtime kernel)', () => {
       run,
       makeJob(async () => {
         await new Promise<void>((resolve) => {
+          // sleep-ok(fake): fake clock timer; the test's advance() fires it
           clock.setTimeout(resolve, 20_000)
         })
         return { ok: true }
@@ -339,6 +342,7 @@ describe('executeRun (runtime kernel)', () => {
       run,
       makeJob(async () => {
         await new Promise<void>((resolve) => {
+          // sleep-ok(fake): fake clock timer; the test's advance() fires it
           clock.setTimeout(resolve, 20_000)
         })
         return { ok: true }

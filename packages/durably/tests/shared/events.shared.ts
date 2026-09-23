@@ -237,9 +237,12 @@ export function createEventsTests(createDialect: () => Dialect) {
       })
 
       // emit is sync — wait for the microtask to process the rejection
-      await vi.waitFor(() => {
-        expect(errorHandler).toHaveBeenCalledTimes(1)
-      })
+      await vi.waitFor(
+        () => {
+          expect(errorHandler).toHaveBeenCalledTimes(1)
+        },
+        { timeout: 5_000 },
+      )
 
       expect(errorHandler).toHaveBeenCalledWith(
         expect.objectContaining({ message: 'Async listener error' }),
@@ -253,6 +256,8 @@ export function createEventsTests(createDialect: () => Dialect) {
     it('does not await async listeners (emit stays synchronous)', () => {
       let resolved = false
       const asyncListener = vi.fn(async () => {
+        // sleep-ok(negative): the listener must not finish before emit
+        // returns; any timer outlasts a synchronous return
         await new Promise((r) => setTimeout(r, 100))
         resolved = true
       })

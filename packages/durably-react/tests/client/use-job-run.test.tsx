@@ -296,6 +296,8 @@ describe('useJobRun (client)', () => {
     })
 
     // Status should remain 'pending' since event is for a different run
+    // sleep-ok(negative): gives a wrongly accepted event a chance to render; a
+    // slow machine can only hide it, not fail the test.
     await new Promise((r) => setTimeout(r, 50))
     expect(result.current.status).toBe('pending')
   })

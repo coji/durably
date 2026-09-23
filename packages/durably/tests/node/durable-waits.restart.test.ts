@@ -17,7 +17,7 @@ it('recreates a runtime after the deadline and resumes the original run through 
     input: z.object({}),
     output: z.unknown(),
     run: async (step) => {
-      const wait = await step.prepareWait('approval', { timeoutMs: 500 })
+      const wait = await step.prepareWait('approval', { timeoutMs: 1_000 })
       return step.waitFor(wait)
     },
   })
@@ -37,10 +37,13 @@ it('recreates a runtime after the deadline and resumes the original run through 
     await first.db.destroy()
     firstDestroyed = true
 
+    // sleep-ok(clock): the deadline must pass while no runtime is open. The
+    // deadline is in database time, so fake timers cannot advance it; the
+    // extra 50ms covers skew between this clock and the database's.
     await new Promise((resolve) =>
       setTimeout(
         resolve,
-        Math.max(0, Date.parse(wait.deadlineAt!) - Date.now() + 10),
+        Math.max(0, Date.parse(wait.deadlineAt!) - Date.now() + 50),
       ),
     )
     second = createDurably({

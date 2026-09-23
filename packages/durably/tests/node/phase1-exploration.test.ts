@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 import { createDurably, defineJob, type Durably } from '../../src'
 import { createNodeDialect } from '../helpers/node-dialect'
+import { expireLease } from '../helpers/sync'
 
 describe('Phase 1 exploration', () => {
   const runtimes: Array<Durably<any, any>> = []
@@ -54,7 +55,6 @@ describe('Phase 1 exploration', () => {
     const durably = createDurably({
       dialect: createNodeDialect(),
       jobs: { job },
-      leaseMs: 5,
     })
     runtimes.push(durably)
 
@@ -64,11 +64,11 @@ describe('Phase 1 exploration', () => {
     const claimed = await durably.storage.claimNext(
       'stale-worker',
       new Date().toISOString(),
-      5,
+      30_000,
     )
     expect(claimed?.status).toBe('leased')
 
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await expireLease(durably, run.id)
 
     const processed = await durably.processOne({ workerId: 'reclaimer' })
     expect(processed).toBe(true)

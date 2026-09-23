@@ -15,6 +15,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
   describe('Run API', () => {
     function sleepUntilAbort(signal: AbortSignal, ms = 10_000): Promise<void> {
       return new Promise((resolve) => {
+        // sleep-ok(guard): a fallback end for a job that is never aborted;
+        // the tests order on the abort, not on this deadline
         const t = setTimeout(() => resolve(), ms)
         signal.addEventListener(
           'abort',
@@ -85,7 +87,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
-          { timeout: 1000 },
+          { timeout: 5_000 },
         )
 
         // durably.getRun returns unknown output type
@@ -138,7 +140,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             const completed = await d.getRuns({ status: 'completed' })
             expect(completed.length).toBeGreaterThanOrEqual(1)
           },
-          { timeout: 1000 },
+          { timeout: 5_000 },
         )
 
         const pending = await d.getRuns({ status: 'pending' })
@@ -220,8 +222,11 @@ export function createRunApiTests(createDialect: () => Dialect) {
         })
 
         await d.jobs.job.trigger({ order: 1 })
+        // sleep-ok(clock): getRuns orders by created_at alone (ms resolution),
+        // so each trigger needs a later timestamp; a slow runner only widens it
         await new Promise((r) => setTimeout(r, 10))
         await d.jobs.job.trigger({ order: 2 })
+        // sleep-ok(clock): same distinct created_at requirement as above
         await new Promise((r) => setTimeout(r, 10))
         await d.jobs.job.trigger({ order: 3 })
 
@@ -245,6 +250,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
         // Add slight delays to ensure distinct created_at timestamps
         for (let i = 1; i <= 5; i++) {
           await d.jobs.job.trigger({ order: i })
+          // sleep-ok(clock): getRuns orders by created_at alone (ms
+          // resolution); a slow runner only widens the gap between triggers
           if (i < 5) await new Promise((r) => setTimeout(r, 5))
         }
 
@@ -272,6 +279,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
         // Add slight delays to ensure distinct created_at timestamps
         for (let i = 1; i <= 5; i++) {
           await d.jobs.job.trigger({ order: i })
+          // sleep-ok(clock): getRuns orders by created_at alone (ms
+          // resolution); a slow runner only widens the gap between triggers
           if (i < 5) await new Promise((r) => setTimeout(r, 5))
         }
 
@@ -299,6 +308,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
         // Add slight delays to ensure distinct created_at timestamps
         for (let i = 1; i <= 10; i++) {
           await d.jobs.job.trigger({ order: i })
+          // sleep-ok(clock): getRuns orders by created_at alone (ms
+          // resolution); a slow runner only widens the gap between triggers
           if (i < 10) await new Promise((r) => setTimeout(r, 5))
         }
 
@@ -346,6 +357,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
         // Add slight delays to ensure distinct created_at timestamps
         for (let i = 1; i <= 6; i++) {
           await d.jobs.job.trigger({ order: i })
+          // sleep-ok(clock): getRuns orders by created_at alone (ms
+          // resolution); a slow runner only widens the gap between triggers
           if (i < 6) await new Promise((r) => setTimeout(r, 5))
         }
 
@@ -390,6 +403,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             output: z.object({ result: z.number() }),
             run: async (step, input) => {
               await step.run('compute', async () => {
+                // sleep-ok(work): triggerAndWait waits for completion however long this takes
                 await new Promise((r) => setTimeout(r, 50))
               })
               return { result: input.value * 2 }
@@ -465,6 +479,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
             run: async (step) => {
               await step.run('slow-step', async () => {
                 // This step takes longer than the timeout
+                // sleep-ok(work): the worker is never started, so this step
+                // never runs; the timeout fires on an idle pending run
                 await new Promise((r) => setTimeout(r, 500))
               })
               return {}
@@ -581,7 +597,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             const leased = await d.getRuns({ status: 'leased' })
             expect(leased.length).toBe(1)
           },
-          { timeout: 2000 },
+          { timeout: 5_000 },
         )
 
         const run = (await d.getRuns({ status: 'leased' }))[0]
@@ -610,7 +626,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             if (runs.length < 1) throw new Error('pending')
             return runs[0]
           },
-          { timeout: 2000 },
+          { timeout: 5_000 },
         )
 
         await d.cancel(pending.id)
@@ -688,7 +704,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             const leased = await d.getRuns({ status: 'leased' })
             expect(leased.length).toBe(1)
           },
-          { timeout: 2000 },
+          { timeout: 5_000 },
         )
 
         await d.cancel(run.id)
@@ -703,6 +719,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
             input: z.object({}),
             run: async (step) => {
               await step.run('slow', async () => {
+                // sleep-ok(work): the worker is never started, so this step
+                // never runs; waitForRun times out on an idle pending run
                 await new Promise((r) => setTimeout(r, 500))
               })
             },
@@ -725,6 +743,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
               step.progress(1, 2)
               step.log.info('hello')
               await step.run('s', async () => {
+                // sleep-ok(work): waitForRun waits for completion; the events
+                // under test are emitted before this step
                 await new Promise((r) => setTimeout(r, 200))
               })
             },
@@ -771,7 +791,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             const r = await d.getRun(run.id)
             expect(r?.status).toBe('completed')
           },
-          { timeout: 2000 },
+          { timeout: 5_000 },
         )
 
         let progressCalls = 0
@@ -845,7 +865,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             const r = await d.getRun(run.id)
             expect(r?.status).toBe('completed')
           },
-          { timeout: 2000 },
+          { timeout: 5_000 },
         )
 
         const again = await d.waitForRun(run.id)
@@ -1034,6 +1054,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
             run: async (step) => {
               step.progress(50)
               await step.run('step', async () => {
+                // sleep-ok(work): progress is kept after completion, so the
+                // assertions hold whether or not the run is still in flight
                 await new Promise((r) => setTimeout(r, 50))
               })
             },
@@ -1048,7 +1070,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.progress).not.toBeNull()
           },
-          { timeout: 1000 },
+          { timeout: 5_000 },
         )
 
         const midRun = await d.jobs.job.getRun(run.id)
@@ -1063,6 +1085,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
             run: async (step) => {
               step.progress(25, 100, 'Processing items...')
               await step.run('step', async () => {
+                // sleep-ok(work): progress is kept after completion, so the
+                // assertions hold whether or not the run is still in flight
                 await new Promise((r) => setTimeout(r, 50))
               })
             },
@@ -1077,7 +1101,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
             const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.progress).not.toBeNull()
           },
-          { timeout: 1000 },
+          { timeout: 5_000 },
         )
 
         const midRun = await d.jobs.job.getRun(run.id)
@@ -1099,6 +1123,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
               step.progress(75, 100)
               progressSet = true
               await step.run('wait', async () => {
+                // sleep-ok(work): progress is kept after completion, so the
+                // assertions hold whether or not the run is still in flight
                 await new Promise((r) => setTimeout(r, 100))
               })
             },
@@ -1112,15 +1138,18 @@ export function createRunApiTests(createDialect: () => Dialect) {
           async () => {
             expect(progressSet).toBe(true)
           },
-          { timeout: 500 },
+          { timeout: 5_000 },
         )
 
-        // Give time for async progress update
-        await new Promise((r) => setTimeout(r, 50))
-
-        const fetched = await d.getRun(run.id)
-        expect(fetched?.progress?.current).toBe(75)
-        expect(fetched?.progress?.total).toBe(100)
+        // The progress write is async; wait for it to land
+        await vi.waitFor(
+          async () => {
+            const fetched = await d.getRun(run.id)
+            expect(fetched?.progress?.current).toBe(75)
+            expect(fetched?.progress?.total).toBe(100)
+          },
+          { timeout: 5_000 },
+        )
       })
     })
   })

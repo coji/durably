@@ -96,9 +96,7 @@ export function createSSETests(): void {
         const stream = createSSEStreamFromSubscriptions(setup)
         const reader = stream.getReader()
 
-        // Give it time to initialize
-        await new Promise((r) => setTimeout(r, 10))
-
+        // The stream's start() runs setup synchronously during construction.
         expect(setup).toHaveBeenCalledTimes(1)
         expect(setup).toHaveBeenCalledWith(
           expect.objectContaining({
@@ -141,8 +139,6 @@ export function createSSETests(): void {
         })
 
         const reader = stream.getReader()
-        // Start reading to trigger setup
-        await new Promise((r) => setTimeout(r, 10))
 
         // Cancel via reader (which internally cancels the stream)
         await reader.cancel()

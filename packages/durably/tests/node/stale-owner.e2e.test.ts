@@ -12,17 +12,10 @@ import {
   LeaseLostError,
 } from '../../src'
 import { createNodeDialectForFile } from '../helpers/node-dialect'
+import { createDeferred, expireLease } from '../helpers/sync'
 
 describe('stale owner end-to-end', () => {
   const runtimes: Array<Durably<any, any>> = []
-
-  function createDeferred() {
-    let resolve!: () => void
-    const promise = new Promise<void>((innerResolve) => {
-      resolve = innerResolve
-    })
-    return { promise, resolve }
-  }
 
   afterEach(async () => {
     const completed = runtimes.splice(0)
@@ -52,21 +45,6 @@ describe('stale owner end-to-end', () => {
 
     runtimes.push(runtimeA, runtimeB)
     return { runtimeA, runtimeB }
-  }
-
-  /**
-   * End the current lease as if its owner had stalled past `leaseMs`. Setting
-   * the expiry directly, rather than sleeping past a tiny lease, keeps the
-   * owner from losing its lease before the test reaches the point it probes.
-   * The owner's next renewal then fails, as it would after a real expiry.
-   */
-  async function expireLease(runtime: Durably<any, any>, runId: string) {
-    await runtime.db
-      .updateTable('durably_runs')
-      .set({ lease_expires_at: new Date(0).toISOString() })
-      .where('id', '=', runId)
-      .where('status', '=', 'leased')
-      .execute()
   }
 
   it('does not start a callback when cancellation wins before attempt insertion', async () => {
@@ -413,6 +391,7 @@ describe('stale owner end-to-end', () => {
                 resolve()
                 return
               }
+              // sleep-ok(poll): re-checks the abort signal until it is set.
               setTimeout(tick, 5)
             }
             tick()

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 
 import { createDurably, defineJob, type Durably } from '../../src'
+import { createDeferred } from '../helpers/sync'
 
 export function createWorkerTests(createDialect: () => Dialect) {
   describe('Worker', () => {
@@ -40,19 +41,22 @@ export function createWorkerTests(createDialect: () => Dialect) {
             const run = (await d.jobs.job.getRuns())[0]
             expect(run.status).toBe('completed')
           },
-          { timeout: 1000 },
+          { timeout: 5_000 },
         )
       })
 
       it('stops after current run completes when stop() is called', async () => {
         let stepExecuted = false
+        const started = createDeferred()
+        const release = createDeferred()
         const stopTestDef = defineJob({
           name: 'stop-test',
           input: z.object({}),
           run: async (step) => {
             await step.run('step1', async () => {
               stepExecuted = true
-              await new Promise((r) => setTimeout(r, 100))
+              started.resolve()
+              await release.promise
             })
           },
         })
@@ -61,9 +65,11 @@ export function createWorkerTests(createDialect: () => Dialect) {
         await d.jobs.job.trigger({})
         d.start()
 
-        // Wait a bit then stop
-        await new Promise((r) => setTimeout(r, 50))
-        await d.stop()
+        // Stop while the step is held, then let it finish: stop() must wait.
+        await started.promise
+        const stopping = d.stop()
+        release.resolve()
+        await stopping
 
         expect(stepExecuted).toBe(true)
         const run = (await d.jobs.job.getRuns())[0]
@@ -100,6 +106,8 @@ export function createWorkerTests(createDialect: () => Dialect) {
 
         // Let the worker go through at least one idle cycle
         // (processOne returns false → onIdle runs releaseExpiredLeases)
+        // sleep-ok(yield): only gives stop() a chance to overlap idle
+        // maintenance; the assertions hold whether or not a cycle ran
         await new Promise((r) => setTimeout(r, 150))
 
         // stop() should await any in-flight maintenance
@@ -136,7 +144,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
             const updated = await d.jobs.job.getRun(run.id)
             expect(updated?.status).toBe('completed')
           },
-          { timeout: 1000 },
+          { timeout: 5_000 },
         )
 
         expect(states).toEqual(['leased', 'completed'])
@@ -161,7 +169,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
             expect(updated?.status).toBe('failed')
             expect(updated?.error).toContain('Job failed intentionally')
           },
-          { timeout: 1000 },
+          { timeout: 5_000 },
         )
       })
     })
@@ -186,7 +194,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
           async () => {
             expect(receivedInput).toEqual({ value: 'hello' })
           },
-          { timeout: 1000 },
+          { timeout: 5_000 },
         )
       })
 
@@ -208,7 +216,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
             expect(updated?.status).toBe('completed')
             expect(updated?.output).toEqual({ result: 123 })
           },
-          { timeout: 1000 },
+          { timeout: 5_000 },
         )
       })
 
@@ -220,6 +228,8 @@ export function createWorkerTests(createDialect: () => Dialect) {
           input: z.object({ n: z.number() }),
           run: async (_step, input) => {
             order.push(input.n)
+            // sleep-ok(work): a slower job only widens the window in which
+            // a concurrency bug would reorder runs
             await new Promise((r) => setTimeout(r, 20))
           },
         })
@@ -237,7 +247,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
             const allCompleted = runs.every((r) => r.status === 'completed')
             expect(allCompleted).toBe(true)
           },
-          { timeout: 2000 },
+          { timeout: 5_000 },
         )
 
         expect(order).toEqual([1, 2, 3])
@@ -252,6 +262,8 @@ export function createWorkerTests(createDialect: () => Dialect) {
           input: z.object({ n: z.number() }),
           run: async (_step, input) => {
             order.push(input.n)
+            // sleep-ok(work): a slower job only widens the window in which
+            // a concurrency bug would reorder runs
             await new Promise((r) => setTimeout(r, 20))
           },
         })
@@ -266,7 +278,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
             const runs = await d.jobs.job.getRuns()
             expect(runs.every((r) => r.status === 'completed')).toBe(true)
           },
-          { timeout: 2000 },
+          { timeout: 5_000 },
         )
 
         expect(order).toEqual([1, 2])
@@ -275,14 +287,18 @@ export function createWorkerTests(createDialect: () => Dialect) {
       it('runs multiple jobs concurrently when maxConcurrentRuns > 1', async () => {
         let concurrent = 0
         let maxConcurrent = 0
+        // Each run holds until a second run is in flight, so overlap is
+        // required rather than hoped for.
+        const overlapped = createDeferred()
         const parallelDef = defineJob({
           name: 'parallel-test',
           input: z.object({ id: z.number() }),
           run: async (step) => {
             concurrent++
             maxConcurrent = Math.max(maxConcurrent, concurrent)
+            if (concurrent > 1) overlapped.resolve()
             await step.run('work', async () => {
-              await new Promise((r) => setTimeout(r, 80))
+              await overlapped.promise
             })
             concurrent--
           },
@@ -311,6 +327,7 @@ export function createWorkerTests(createDialect: () => Dialect) {
 
           expect(maxConcurrent).toBeGreaterThan(1)
         } finally {
+          overlapped.resolve()
           await dp.stop()
           await d.db.destroy()
         }
@@ -324,6 +341,8 @@ export function createWorkerTests(createDialect: () => Dialect) {
           input: z.object({ phase: z.string() }),
           run: async (_step, input) => {
             order.push(`start-${input.phase}`)
+            // sleep-ok(work): a slower job only widens the window in which
+            // a second run could start before this one ends
             await new Promise((r) => setTimeout(r, 30))
             order.push(`end-${input.phase}`)
           },
@@ -356,11 +375,15 @@ export function createWorkerTests(createDialect: () => Dialect) {
       })
 
       it('stop() waits for all in-flight runs when maxConcurrentRuns > 1', async () => {
+        let started = 0
+        const bothStarted = createDeferred()
+        const release = createDeferred()
         const stopDef = defineJob({
           name: 'stop-parallel',
           input: z.object({ tag: z.string() }),
           run: async () => {
-            await new Promise((r) => setTimeout(r, 120))
+            if (++started === 2) bothStarted.resolve()
+            await release.promise
           },
         })
         const d = createDurably({
@@ -375,12 +398,16 @@ export function createWorkerTests(createDialect: () => Dialect) {
           await dp.jobs.job.trigger({ tag: 'b' })
           dp.start()
 
-          await new Promise((r) => setTimeout(r, 40))
-          await dp.stop()
+          // Stop while both runs are held, then let them finish.
+          await bothStarted.promise
+          const stopping = dp.stop()
+          release.resolve()
+          await stopping
 
           const runs = await dp.jobs.job.getRuns()
           expect(runs.every((r) => r.status === 'completed')).toBe(true)
         } finally {
+          release.resolve()
           await dp.stop()
           await d.db.destroy()
         }

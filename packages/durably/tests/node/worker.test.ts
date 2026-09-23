@@ -51,6 +51,7 @@ describe('createWorker scheduler (direct)', () => {
       inFlight++
       peak = Math.max(peak, inFlight)
       await new Promise<void>((resolve) => {
+        // sleep-ok(fake): vi.useFakeTimers; advanceTimersByTimeAsync drives it
         setTimeout(resolve, 50)
       })
       inFlight--
@@ -72,6 +73,7 @@ describe('createWorker scheduler (direct)', () => {
       calls++
       if (calls === 1) {
         await new Promise<void>((resolve) => {
+          // sleep-ok(fake): vi.useFakeTimers; advanceTimersByTimeAsync drives it
           setTimeout(resolve, 100)
         })
         return true
