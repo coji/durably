@@ -342,6 +342,13 @@ describe('fake runs that stop', { timeout: 180000 }, () => {
     const again = await retrigger(ids['verification'] ?? '')
     assert.equal(again.code, 0, again.stderr)
     assert.match(again.stdout, /^new run \S+ with the input of /)
+    // Pasting the same command again does not start a second run.
+    const twice = await retrigger(ids['verification'] ?? '')
+    assert.equal(twice.code, 0, twice.stderr)
+    assert.match(
+      twice.stdout,
+      /^already retriggered as \S+; nothing new started/,
+    )
     // A subject run has no worktree to remove.
     assert.doesNotMatch(res.stdout, /worktree remove/)
   })

@@ -163,7 +163,8 @@ pnpm --filter example-local-agent-loop demo status
   になります。pushやpull requestの作成が記録前に済んでいる可能性があるので、
   remoteのbranchとpull requestを先に確かめてください。
 - `retry: yes` のrunには `demo retrigger --run <id>` を表示します。止まったrunに
-  保存された入力（task、設定、profile）のまま新しいrunを始めます。`retry: NO` の
+  保存された入力（task、設定、profile）のまま新しいrunを1回だけ始めます。同じコマンドを
+  もう一度打っても、最初に始めたrunを返すだけです。`retry: NO` の
   runや、まだ止まっていないrunには実行を拒みます。素の `demo trigger` は同梱の
   題材で動くので、次の手順には出しません。
 - 終わったrepo runのworktreeが残っていれば、

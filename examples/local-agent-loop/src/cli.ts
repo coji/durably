@@ -504,7 +504,7 @@ Commands (run from examples/local-agent-loop):
   pnpm demo waits --run <id>
   pnpm demo approve --run <id> --wait <waitId>
   pnpm demo reject --run <id> --wait <waitId>
-  pnpm demo retrigger --run <id>             new run with the stored input (only for stops safe to repeat)
+  pnpm demo retrigger --run <id>            new run with the stored input (only for stops safe to repeat)
   pnpm demo report --run <id> [--format json|md] [--out <file>]
   pnpm demo compare --runs <id,id,...> [--format json|md] [--out <file>]
 Repository config: factory.json at the repository root, or --config <file>:
@@ -742,8 +742,17 @@ if (cmd === 'worker') {
     throw new Error(
       `refusing to retrigger ${runId}: ${failure ? failure.reason : `it is ${run.status}, not stopped`}`,
     )
-  const next = await durably.retrigger(runId)
-  console.log(`new run ${next.id} with the input of ${runId}`)
+  // One retry per stopped run: pasting the command again returns the run it
+  // already started instead of paying for another, or pushing twice.
+  const next = await durably.jobs.agentLoop.trigger(
+    run.input as Parameters<typeof durably.jobs.agentLoop.trigger>[0],
+    { idempotencyKey: `retrigger-of-${runId}` },
+  )
+  console.log(
+    next.disposition === 'created'
+      ? `new run ${next.id} with the input of ${runId}`
+      : `already retriggered as ${next.id}; nothing new started`,
+  )
   await durably.db.destroy()
 } else if (cmd === 'report') {
   const a = args()

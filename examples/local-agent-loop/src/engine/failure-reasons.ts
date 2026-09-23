@@ -32,7 +32,7 @@ export const DEMO = 'pnpm --filter example-local-agent-loop demo'
  * run the bundled sample instead, so a retry always goes through here.
  */
 const retrigger = (runId: string) =>
-  `${DEMO} retrigger --run ${runId}  # a new run with the same stored input`
+  `${DEMO} retrigger --run ${runId}  # once, with the same stored input; to change the task or --max-iterations, trigger anew`
 
 interface FailureEntry {
   reason: string
@@ -50,7 +50,7 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
     humanCheck:
       'read the check output in the report and decide whether the task, the check or --max-iterations has to change',
     next: (runId) => [
-      `${DEMO} report --run ${runId}  # the check output`,
+      `${DEMO} report --run ${runId} --format json  # the check output is in the verification attempt`,
       retrigger(runId),
     ],
   },
