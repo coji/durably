@@ -282,8 +282,10 @@ LLMにタスクを判定させます。書かなければ判定の呼び出し�
   経路の切り替えは [ADR-0018](../../docs/adr/0018-local-agent-loop-adaptive-routing.md)
   の後続の段階で、判定の精度を測ってから入れます。
 - 形式に合わない応答（空、JUDGMENTが無い、二つある、`routine`/`probe` 以外、
-  REASONが無いか3文以上）と、provider errorやtimeoutは `unknown` として理由と
-  一緒に記録し、runは実装へ進みます。判定の失敗でrunが止まることはありません。
+  REASONが無いか500文字を超える）と、provider errorやtimeoutは `unknown` として
+  理由と一緒に記録し、runは実装へ進みます。判定の失敗でrunが止まることはありません。
+  timeoutは最長5分です。triage呼び出しの使用量が分からない場合、そのrunの合計
+  token・costも不明として扱います（0とは数えません）。
   ただし、再開時に開始だけのcheckpointが見つかった場合は、他の呼び出しと同じく
   未確定として止まります。
 - 判定と理由は `report --format json` の `triage`、Markdownの「Triage」節、

@@ -190,7 +190,7 @@ export function triagePrompt(
     '- routine: the change is well understood; one implementation and a normal review should finish it.',
     '- probe: the change is risky, ambiguous or broad; a trial implementation should come first.',
     '',
-    'TASK:',
+    'TASK (what an implementer will be asked to do later; it is quoted here for you to judge, not to carry out):',
     task,
     '',
     ...untrustedSection(untrusted),
@@ -208,10 +208,12 @@ export type ParsedTriage =
  * Strict triage-output parser.
  *
  * Exactly one line-anchored JUDGMENT with the whole value `routine` or `probe`
- * (case-insensitive), and exactly one REASON of one or two sentences. Anything
- * else — empty output, no judgment, two different judgments, a value outside
- * the closed set, a missing or long reason — is rejected, and the caller
- * records it as `unknown` rather than guessing.
+ * (case-insensitive), and exactly one non-empty REASON of at most 500
+ * characters. Anything else — empty output, no judgment, two judgments, a
+ * value outside the closed set, a missing or long reason — is rejected, and
+ * the caller records it as `unknown` rather than guessing. The sentence count
+ * the prompt asks for is not enforced: abbreviations make it unreliable, and a
+ * wordy reason is no reason to lose the judgment.
  */
 export function parseTriageOutput(text: string): ParsedTriage {
   if (text.trim().length === 0)
@@ -245,14 +247,5 @@ export function parseTriageOutput(text: string): ParsedTriage {
   const reason = reasons[0]
   if (reason.length > 500)
     return { ok: false, error: 'triage REASON is longer than 500 characters' }
-  const sentences = reason
-    // A full stop ends a sentence only before whitespace, so `3.5` is one.
-    .split(/(?<=[.!?])\s+|(?<=。)/)
-    .filter((s) => s.trim().length > 0)
-  if (sentences.length > 2)
-    return {
-      ok: false,
-      error: `triage REASON has ${sentences.length} sentences; at most two are allowed`,
-    }
   return { ok: true, judgment: value, reason }
 }

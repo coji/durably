@@ -103,6 +103,13 @@ describe('parseTriageOutput (strict judgments)', () => {
     assert.match(r.ok ? '' : r.error, /2 JUDGMENT lines/)
   })
 
+  it('keeps a reason with abbreviations or a third sentence', () => {
+    const r = parseTriageOutput(
+      'JUDGMENT: probe\nREASON: Touches leases, e.g. renewal. Needs a probe. Risky.',
+    )
+    assert.equal(r.ok, true)
+  })
+
   const rejected: [string, string, RegExp][] = [
     ['empty', '  \n', /empty/],
     ['no judgment', 'REASON: looks fine.', /no JUDGMENT/],
@@ -121,11 +128,6 @@ describe('parseTriageOutput (strict judgments)', () => {
       'two reasons',
       'JUDGMENT: probe\nREASON: a.\nREASON: b.',
       /2 REASON lines/,
-    ],
-    [
-      'three sentences',
-      'JUDGMENT: probe\nREASON: One. Two. Three.',
-      /3 sentences/,
     ],
     ['too long', `JUDGMENT: probe\nREASON: ${'x'.repeat(501)}`, /500/],
   ]

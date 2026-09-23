@@ -254,7 +254,9 @@ async function runTriage(
       // reviewers and are not sent.
       prompt: triagePrompt(target.taskBrief(), target.untrustedInputs('code')),
       workdir: target.workdir,
-      timeoutMs: setup.agentTimeoutMs,
+      // A one-line judgment; a hung call should not hold the code stage for
+      // the full repository agent timeout.
+      timeoutMs: Math.min(setup.agentTimeoutMs, TRIAGE_TIMEOUT_MS),
       requestedModel: profile.requestedModel,
       requestedEffort: profile.requestedEffort,
       effectiveModel: profile.effectiveModel,
@@ -280,6 +282,8 @@ async function runTriage(
     }
   }
 }
+
+const TRIAGE_TIMEOUT_MS = 300_000
 
 export interface AgentLoopJobOptions {
   /** Directory every run's worktree, checkpoints and delivery live under. */
