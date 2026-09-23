@@ -368,7 +368,7 @@ Limits:
 
 ## Error Handling
 
-Exceptions thrown in event listeners are caught and forwarded to the error handler — they do not crash the worker, abort the current run, or interrupt subsequent listeners for the same event. An exception thrown by the `onError` handler itself is ignored for the same reason. If a listener returns a rejected Promise (async listener), the rejection is also forwarded to `onError`. Use `onError` to catch both:
+Exceptions thrown in event listeners are caught and forwarded to the error handler — they do not crash the worker, abort the current run, or interrupt subsequent listeners for the same event. An exception thrown by the `onError` handler itself, or a rejected promise returned by an async `onError` handler, is ignored for the same reason. A thrown value that cannot be converted to a string reaches `onError` as an `Error` with the message `Unknown error`. If a listener returns a rejected Promise (async listener), the rejection is also forwarded to `onError`. Use `onError` to catch both:
 
 ```ts
 durably.onError((error, event) => {

@@ -319,6 +319,30 @@ export function createStepTests(createDialect: () => Dialect) {
       ])
     })
 
+    it('fails a run whose error message cannot be read', async () => {
+      const d = durably.register({
+        job: defineJob({
+          name: 'unreadable-message',
+          input: z.object({}),
+          run: async () => {
+            const error = new Error('hidden')
+            Object.defineProperty(error, 'message', {
+              get() {
+                throw new Error('message getter failed')
+              },
+            })
+            throw error
+          },
+        }),
+      })
+      const run = await d.jobs.job.trigger({})
+      await d.processOne()
+      expect(await d.getRun(run.id)).toMatchObject({
+        status: 'failed',
+        error: 'Unknown error',
+      })
+    })
+
     it('fails a run whose thrown value has no string form', async () => {
       const d = durably.register({
         job: defineJob({

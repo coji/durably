@@ -133,7 +133,15 @@ export function createEventOrderingTests(createDialect: () => Dialect) {
           run: async () => {},
         }),
       })
-      await d.jobs.job.batchTrigger([{ n: 1 }, { n: 2 }, { n: 3 }])
+      const emitted: string[] = []
+      durably.on('run:trigger', (event) => emitted.push(event.runId))
+      const results = await d.jobs.job.batchTrigger([
+        { n: 1 },
+        { n: 2 },
+        { n: 3 },
+      ])
+      // Events follow the input order, not just the event count.
+      expect(emitted).toEqual(results.map((result) => result.id))
       const index = trace.lastIndexOf('done:enqueueMany')
       expect(trace.slice(index)).toEqual([
         'done:enqueueMany',
@@ -231,6 +239,30 @@ export function createEventOrderingTests(createDialect: () => Dialect) {
       expect((await d.getRun(run.id))?.status).toBe('cancelled')
       expect(errors).toEqual([
         expect.objectContaining({ context: 'cancel-cleanup', runId: run.id }),
+      ])
+    })
+
+    it('cancel resolves when the cleanup error cannot be printed', async () => {
+      const { durably } = await setup()
+      const errors: { error: string; context: string }[] = []
+      durably.on('worker:error', (event) => errors.push(event))
+      const d = durably.register({
+        job: defineJob({
+          name: 'ordering-cancel-unprintable',
+          input: z.object({}),
+          run: async () => {},
+        }),
+      })
+      const run = await d.jobs.job.trigger({})
+      d.storage.deleteSteps = async () => {
+        throw Object.create(null)
+      }
+      await expect(d.cancel(run.id)).resolves.toBeUndefined()
+      expect(errors).toEqual([
+        expect.objectContaining({
+          error: 'Unknown error',
+          context: 'cancel-cleanup',
+        }),
       ])
     })
 
