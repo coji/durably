@@ -21,17 +21,25 @@ import Database from 'better-sqlite3'
 
 import { createAgentDurably, dbPath } from '../src/durably.js'
 import { runChild } from '../src/engine/child.js'
-import { liveElapsed, stageVisits } from '../src/engine/report.js'
+import {
+  liveElapsed,
+  stageUsage,
+  stageVisits,
+  type AttemptRow,
+  type UsageTotals,
+} from '../src/engine/report.js'
 import { checkpointPaths } from '../src/engine/runner.js'
 import { pollEvery } from '../src/ui/poll.js'
 import {
   derivePipeline,
-  deriveTimeline,
+  deriveTrace,
   runName,
   SUBJECT_RUN_NAME,
   type CompareResponse,
   type RunDetailResponse,
   type RunsResponse,
+  type TraceInput,
+  type TraceNode,
 } from '../src/ui/server.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -134,7 +142,7 @@ describe('liveElapsed', () => {
   })
 })
 
-describe('pipeline and timeline', () => {
+describe('pipeline and trace', () => {
   const t0 = Date.parse('2026-09-24T10:00:00.000Z')
   const iso = (s: number) => new Date(t0 + s * 1000).toISOString()
   const step = (
@@ -274,97 +282,301 @@ describe('pipeline and timeline', () => {
     ])
   })
 
-  it('draws repairs as two bars in one lane, overlapping reviews, and the wait span', () => {
-    const now = t0 + 60_000
-    const t = deriveTimeline({
+  const traceOf = (
+    attempts: AttemptRow[],
+    waits: ReturnType<typeof wait>[],
+    run: Partial<TraceInput['run']> & { status: string },
+    extra: Partial<TraceInput> = {},
+  ) =>
+    deriveTrace({
       run: {
-        status: 'waiting',
-        createdAt: iso(-2),
-        startedAt: iso(0),
-        leaseGeneration: 1,
-      },
-      attempts: repaired,
-      waits: [approval],
-      now,
-    })
-    assert.ok(t)
-    assert.equal(t.startedAt, iso(0))
-    assert.equal(t.spanMs, 60_000)
-    assert.deepEqual(t.lanes, [
-      'code',
-      'verify',
-      'review:correctness',
-      'review:edge-cases',
-      'approve',
-    ])
-    const lane = (name: string) =>
-      t.bars
-        .filter((b) => b.lane === name)
-        .map((b) => [b.startMs, b.endMs, b.open, b.kind])
-    // The agent and candidate steps of one entry are one bar.
-    assert.deepEqual(lane('code'), [
-      [1000, 11_000, false, 'work'],
-      [15_000, 31_000, false, 'work'],
-    ])
-    assert.deepEqual(lane('verify'), [
-      [11_000, 15_000, false, 'work'],
-      [31_000, 35_000, false, 'work'],
-    ])
-    assert.deepEqual(lane('review:correctness'), [
-      [35_000, 50_000, false, 'work'],
-    ])
-    assert.deepEqual(lane('review:edge-cases'), [
-      [35_000, 45_000, false, 'work'],
-    ])
-    // The open approval wait runs to now.
-    assert.deepEqual(lane('approve'), [[51_000, 60_000, true, 'wait']])
-    assert.equal(t.bars.find((b) => b.kind === 'wait')?.durationMs, 9000)
-
-    // A finished run: an attempt left open has an unknown end, never `now`,
-    // and a failed attempt is marked.
-    const stopped = deriveTimeline({
-      run: {
-        status: 'failed',
         createdAt: iso(0),
         startedAt: iso(0),
-        leaseGeneration: 2,
+        completedAt: null,
+        leaseGeneration: 1,
+        ...run,
       },
-      attempts: [
-        step('stage:0:code:agent', 1, null, 'started', 1),
-        step('stage:0:code:agent', 20, 25, 'failed', 2),
-      ],
-      waits: [],
-      now,
+      conclusion: null,
+      attempts,
+      waits,
+      reviews: [],
+      candidate: null,
+      stepOutputs: {},
+      now: t0 + 60_000,
+      ...extra,
     })
-    assert.ok(stopped)
+  /** [label, state, startMs, endMs, open] of each row, children nested. */
+  const shape = (n: TraceNode): unknown[] => [
+    n.label,
+    n.state,
+    n.startMs,
+    n.endMs,
+    n.open,
+    ...(n.children.length > 0 ? [n.children.map(shape)] : []),
+  ]
+
+  it('trace (a) nests a repair as two iterations, with parallel reviews and the open wait running to now', () => {
+    const t = traceOf(
+      repaired,
+      [approval],
+      { status: 'waiting' },
+      {
+        reviews: [
+          { lens: 'correctness', decision: 'pass', notes: 'ok' },
+          { lens: 'edge-cases', decision: 'pass', notes: 'fine' },
+        ],
+        candidate: { id: 'cand-2', branch: null, commit: null },
+      },
+    )
+    assert.equal(t.startedAt, iso(0))
+    assert.equal(t.spanMs, 60_000)
+    assert.equal(t.open, true)
+    assert.deepEqual(shape(t.root), [
+      'run 全体',
+      'waiting',
+      0,
+      60_000,
+      true,
+      [
+        ['setup', 'done', 0, 1000, false],
+        [
+          '1回目',
+          'done',
+          1000,
+          15_000,
+          false,
+          [
+            ['code', 'done', 1000, 11_000, false],
+            ['verify', 'done', 11_000, 15_000, false],
+          ],
+        ],
+        [
+          '2回目',
+          'waiting',
+          15_000,
+          60_000,
+          true,
+          [
+            ['code', 'done', 15_000, 31_000, false],
+            ['verify', 'done', 31_000, 35_000, false],
+            ['review:correctness', 'done', 35_000, 50_000, false],
+            ['review:edge-cases', 'done', 35_000, 45_000, false],
+            ['approve', 'waiting', 51_000, 60_000, true],
+          ],
+        ],
+      ],
+    ])
+    const second = t.root.children[2]
+    assert.ok(second)
+    const [code, , correctness, , approve] = second.children
+    // The last round's verdicts and candidate come from the report.
+    assert.equal(correctness?.review?.notes, 'ok')
+    assert.equal(code?.candidate?.id, 'cand-2')
+    assert.equal(t.root.children[1]?.children[0]?.candidate, null)
+    assert.equal(approve?.durationMs, 9000)
+    assert.deepEqual(approve?.wait, {
+      outcome: null,
+      inputWaitMs: null,
+      executionSlotWaitMs: null,
+    })
+    // Ids stay the same from one refresh to the next.
     assert.deepEqual(
-      stopped.bars.map((b) => [
-        b.startMs,
-        b.endMs,
-        b.durationMs,
-        b.open,
-        b.failed,
+      second.children.map((c) => c.id),
+      [
+        'entry:code#2',
+        'entry:verify#3',
+        'entry:review:correctness#4',
+        'entry:review:edge-cases#4',
+        'entry:approve#5',
+      ],
+    )
+  })
+
+  it('trace (b) marks the verify that failed in a verification-failed run', () => {
+    const failedCheck = {
+      ...step('stage:3:verify:acceptance', 31, 35),
+      measurement: { result: 'fail', usageScope: null } as never,
+    }
+    const t = traceOf(
+      [
+        step('setup', 0, 1),
+        step('stage:0:code:agent', 1, 10),
+        {
+          ...step('stage:1:verify:acceptance', 11, 15),
+          measurement: { result: 'fail', usageScope: null } as never,
+        },
+        step('stage:2:code:agent', 15, 30),
+        failedCheck,
+        step('stage:4:stop:result', 35, 36),
+      ],
+      [],
+      { status: 'completed', completedAt: iso(36) },
+      { conclusion: 'verification-failed' },
+    )
+    assert.equal(t.open, false)
+    assert.equal(t.spanMs, 36_000)
+    assert.equal(t.root.state, 'failed')
+    const [, first, last] = t.root.children
+    assert.deepEqual(
+      last?.children.map((c) => [c.label, c.state, c.checkpoint]),
+      [
+        ['code', 'done', null],
+        ['verify', 'failed', 'completed'],
+        ['stop', 'done', null],
+      ],
+    )
+    assert.equal(last?.state, 'failed')
+    // The earlier iteration's failed check is on its row, not on the iteration.
+    assert.equal(first?.state, 'done')
+    assert.equal(first?.children[1]?.state, 'failed')
+  })
+
+  it('trace (c) lists an attempt retried across lease generations as child attempts', () => {
+    const t = traceOf(
+      [
+        step('stage:0:code:agent', 1, null, 'started', 1),
+        step('stage:0:code:agent', 20, 25, 'completed', 2),
+        step('stage:0:code:candidate', 25, 26, 'completed', 2),
+        step('stage:1:verify:acceptance', 26, null, 'started', 2),
+      ],
+      [],
+      { status: 'leased', leaseGeneration: 2 },
+    )
+    const [code, verify] = t.root.children[0]?.children ?? []
+    assert.ok(code && verify)
+    assert.equal(code.state, 'done')
+    assert.equal(code.attempts, 3)
+    assert.deepEqual(
+      code.children.map((c) => [
+        c.label,
+        c.kind,
+        c.state,
+        c.leaseGeneration,
+        c.startMs,
+        c.endMs,
       ]),
       [
-        [1000, null, null, false, false],
-        [20_000, 25_000, 5000, false, true],
+        // The lost worker's attempt has no end: unknown, never `now`.
+        ['agent 試行 1', 'attempt', 'interrupted', 1, 1000, null],
+        ['agent 試行 2', 'attempt', 'done', 2, 20_000, 25_000],
+        ['candidate 試行 1', 'attempt', 'done', 2, 25_000, 26_000],
       ],
     )
-    assert.equal(stopped.spanMs, 25_000)
-    assert.equal(
-      deriveTimeline({
-        run: {
-          status: 'pending',
-          createdAt: iso(0),
-          startedAt: null,
-          leaseGeneration: 0,
-        },
-        attempts: [],
-        waits: [],
-        now,
-      }),
-      null,
+    assert.deepEqual([code.startMs, code.endMs], [1000, 26_000])
+    // One attempt each: no child rows. The current generation runs to now.
+    assert.deepEqual(verify.children, [])
+    assert.deepEqual(
+      [verify.state, verify.open, verify.endMs],
+      ['running', true, 60_000],
     )
+    assert.equal(t.root.children[0]?.state, 'running')
+    // A finished run's open attempt is not running.
+    const done = traceOf(
+      [step('stage:0:code:agent', 1, null, 'started', 1)],
+      [],
+      { status: 'failed', completedAt: iso(5) },
+    )
+    assert.deepEqual(shape(done.root.children[0]?.children[0] as TraceNode), [
+      'code',
+      'interrupted',
+      1000,
+      null,
+      false,
+    ])
+    // Nothing has run yet: only the run row, from creation to now.
+    const queued = traceOf([], [], {
+      status: 'pending',
+      startedAt: null,
+      leaseGeneration: 0,
+    })
+    assert.deepEqual(shape(queued.root), ['run 全体', 'idle', 0, 60_000, true])
+  })
+
+  it('trace (d) sums per-row tokens and cost to the report stage totals', () => {
+    const measured = (
+      name: string,
+      start: number,
+      invocationId: string,
+      tokens: number | null,
+      cost: number | null,
+      leaseGeneration = 1,
+    ): AttemptRow => ({
+      ...step(name, start, start + 5, 'completed', leaseGeneration),
+      attemptId: `${name}@${start}@${leaseGeneration}`,
+      measurement: {
+        invocationId,
+        usageScope: 'invocation',
+        provider: 'codex',
+        effectiveModel: 'gpt-x',
+        effectiveEffort: 'high',
+        reportedModel: null,
+        result: 'implement-done',
+        usage:
+          tokens === null
+            ? null
+            : {
+                inputTokens: tokens,
+                cachedInputTokens: 0,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                outputTokens: 10,
+                totalTokens: tokens + 10,
+                usageSource: 'provider-final',
+              },
+        costUsdEstimate: cost,
+      } as never,
+    })
+    const attempts = [
+      measured('stage:0:code:agent', 1, 'i1', 100, 0.001),
+      // A recovery attempt re-reads invocation i1: no new tokens.
+      measured('stage:0:code:agent', 7, 'i1', 100, 0.001, 2),
+      measured('stage:2:code:agent', 20, 'i2', 200, 0.002, 2),
+      measured('stage:4:review:correctness', 40, 'i3', 300, 0.003, 2),
+      measured('stage:4:review:edge-cases', 40, 'i4', 400, 0.004, 2),
+    ]
+    const t = traceOf(attempts, [], { status: 'leased', leaseGeneration: 2 })
+    const entries = t.root.children.flatMap((it) => it.children)
+    const expected = stageUsage(attempts)
+    for (const stage of expected) {
+      const rows = entries.filter((e) => e.stage === stage.stage)
+      const sum = (pick: (u: UsageTotals) => number | null) =>
+        rows.reduce((s, r) => s + (r.usage ? (pick(r.usage) ?? 0) : 0), 0)
+      assert.equal(
+        sum((u) => u.totalTokens),
+        stage.totalTokens,
+        stage.stage,
+      )
+      assert.equal(
+        sum((u) => u.inputTokens),
+        stage.inputTokens,
+        stage.stage,
+      )
+      assert.ok(
+        Math.abs(sum((u) => u.costUsd) - (stage.costUsd ?? NaN)) < 1e-12,
+        stage.stage,
+      )
+      assert.equal(
+        rows.reduce((s, r) => s + (r.usage?.invocations ?? 0), 0),
+        stage.invocations,
+      )
+    }
+    assert.equal(t.root.usage?.totalTokens, 1040)
+    assert.deepEqual(entries[0]?.profile, {
+      provider: 'codex',
+      model: 'gpt-x',
+      effort: 'high',
+      reportedModel: null,
+    })
+    // A row whose call reported no usage is unknown, never zero.
+    const unknown = traceOf(
+      [measured('stage:0:code:agent', 1, 'i9', null, null)],
+      [],
+      { status: 'leased' },
+    )
+    const row = unknown.root.children[0]?.children[0]
+    assert.equal(row?.usage?.totalTokens, null)
+    assert.equal(row?.usage?.costUsd, null)
+    assert.equal(row?.usage?.complete, false)
   })
 })
 
@@ -781,13 +993,24 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
         `/api/runs/${ids['approval']}`,
       )
       assert.equal(waiting.name, SUBJECT_RUN_NAME)
-      // The stepper and timeline come from the same stored rows.
+      // The stepper and trace come from the same stored rows.
       assert.equal(
         waiting.pipeline.stages.find((s) => s.stage === 'approve')?.state,
         'waiting',
       )
       assert.deepEqual(waiting.pipeline, row('approval').pipeline)
-      assert.ok(waiting.timeline?.bars.some((b) => b.kind === 'wait' && b.open))
+      const approveRow = waiting.trace.root.children
+        .at(-1)
+        ?.children.find((c) => c.stage === 'approve')
+      assert.equal(approveRow?.state, 'waiting')
+      assert.equal(approveRow?.open, true)
+      // Review verdicts of the waiting run reach its review rows.
+      assert.ok(
+        waiting.trace.root.children
+          .at(-1)
+          ?.children.filter((c) => c.stage === 'review')
+          .every((c) => c.review !== null),
+      )
       assert.equal(
         row('verification').pipeline.stages.find((s) => s.state === 'stopped')
           ?.stage,

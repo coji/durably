@@ -360,6 +360,18 @@ function usageTotals(list: AttemptRow[]): UsageTotals {
   }
 }
 
+/**
+ * Token and cost sums over any group of attempts, with the same dedupe and
+ * scope rules as `stageUsage`; null when none of them invokes an LLM. The
+ * web UI's trace rows use it, so a row never sums usage another way.
+ */
+export function usageOf(attempts: AttemptRow[]): UsageTotals | null {
+  const list = dedupeByInvocation(attempts).filter((a) =>
+    attemptExpectsUsage(a.stepName),
+  )
+  return list.length === 0 ? null : usageTotals(list)
+}
+
 /** Per-stage token and cost sums, one count per invocation. */
 export function stageUsage(attempts: AttemptRow[]): StageUsage[] {
   const byStage = new Map<string, AttemptRow[]>()

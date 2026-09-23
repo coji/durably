@@ -33,10 +33,14 @@ import { compareReports, type Comparison } from '../engine/compare.js'
 import {
   liveElapsed,
   stageOf,
+  usageOf,
   type AttemptRow,
   type LiveElapsed,
   type LoopReport,
+  type ReportCandidate,
+  type ReportReview,
   type ReportTriage,
+  type UsageTotals,
   type WaitRow,
 } from '../engine/report.js'
 import {
@@ -90,8 +94,8 @@ export interface RunDetailResponse {
   needsHuman: boolean
   live: LiveElapsed | null
   pipeline: Pipeline
-  /** Null before any stage has started. */
-  timeline: Timeline | null
+  /** The run as a span tree on one time axis, as of `now`. */
+  trace: Trace
   /** Exactly what `report --run <id> --format json` prints. */
   report: LoopReport
 }
@@ -258,174 +262,508 @@ export function derivePipeline(input: PipelineInput): Pipeline {
   return { stages, label: `工程: ${parts.join('、')}` }
 }
 
-// ---------------------------------------------------------------- timeline
+// ---------------------------------------------------------------- trace
 
-export interface TimelineBar {
-  /** `code`, `verify`, `review:correctness`, `approve`, … */
-  lane: string
-  /** `wait` is the human approval wait; `work` is a stage's step attempts. */
-  kind: 'work' | 'wait'
-  /** Milliseconds from the timeline's start. */
-  startMs: number
-  /** Null when the end was never recorded (an interrupted attempt). */
-  endMs: number | null
-  /** Still running or waiting: the bar ends at `now`. */
+/**
+ * A row's state, always shown in words beside its glyph. `interrupted` is an
+ * attempt a worker lost or gave up; `idle` is an open run between steps.
+ */
+export type TraceState =
+  | 'done'
+  | 'running'
+  | 'waiting'
+  | 'failed'
+  | 'interrupted'
+  | 'idle'
+
+/**
+ * The operation checkpoint as the attempt recorded it: `recovered` reused a
+ * completed call without sending it again; `uncertain` has only a start.
+ */
+export type TraceCheckpoint =
+  | 'completed'
+  | 'recovered'
+  | 'uncertain'
+  | 'running'
+
+export interface TraceProfile {
+  provider: string | null
+  /** The model and effort the call ran with; null is the provider default. */
+  model: string | null
+  effort: string | null
+  /** What the provider itself reported; null when it reported nothing. */
+  reportedModel: string | null
+}
+
+export interface TraceNode {
+  /** Stable across refreshes, so expansion and selection survive a poll. */
+  id: string
+  kind: 'run' | 'iteration' | 'entry' | 'attempt'
+  /** `1回目`, `code`, `review:correctness`, `試行 2`, … */
+  label: string
+  /** The stage of an entry or attempt; null for the run and iterations. */
+  stage: string | null
+  /** Which pass through code the row belongs to; null before the first. */
+  iteration: number | null
+  state: TraceState
+  /** Still running or waiting: the row ends at `now`. */
   open: boolean
-  failed: boolean
-  startedAt: string
-  /** Wall time of the bar; provisional while open, null when unknown. */
+  /** Milliseconds from the trace's start; null when unknown. */
+  startMs: number | null
+  endMs: number | null
+  startedAt: string | null
+  endedAt: string | null
+  /** Wall time; provisional while open, null when unknown. */
   durationMs: number | null
+  /** Step attempts under the row. */
+  attempts: number
+  /** An attempt's lease generation: which worker lease ran it. */
+  leaseGeneration: number | null
+  interruptionReason: string | null
+  profile: TraceProfile | null
+  /** Same sums as the report's stage usage; null when no LLM call is under the row. */
+  usage: UsageTotals | null
+  checkpoint: TraceCheckpoint | null
+  /** A review's verdict, when a stored step output or the report still has it. */
+  review: ReportReview | null
+  /** The candidate a code entry sealed, when still stored. */
+  candidate: ReportCandidate | null
+  wait: Pick<WaitRow, 'outcome' | 'inputWaitMs' | 'executionSlotWaitMs'> | null
+  children: TraceNode[]
 }
 
-export interface Timeline {
+export interface Trace {
+  /** The run's creation: every row's `startMs` counts from here. */
   startedAt: string
-  /** From `startedAt` to the last known end, or to `now` for an open run. */
+  /** To the last known end, or to `now` while the run is open. */
   spanMs: number
-  /** Lanes that have bars, in stage order. */
-  lanes: string[]
-  bars: TimelineBar[]
+  open: boolean
+  root: TraceNode
 }
 
-const TIMELINE_LANES = [
-  'triage',
-  'code',
-  'verify',
-  'review:correctness',
-  'review:edge-cases',
-  'approve',
-]
-
-/** The lane a step runs in, and the stage entry it belongs to. */
-function laneOf(stepName: string): { lane: string; entry: string } | null {
-  if (stepName === 'triage') return { lane: 'triage', entry: 'once' }
-  const [kind, sequence, stage, sub] = stepName.split(':')
-  if (kind !== 'stage' || !sequence) return null
-  if (stage === 'code' || stage === 'verify')
-    return { lane: stage, entry: sequence }
-  if (stage === 'review' && (sub === 'correctness' || sub === 'edge-cases'))
-    return { lane: `review:${sub}`, entry: sequence }
-  return null
-}
-
-export interface TimelineInput {
+export interface TraceInput {
   run: {
     status: string
     createdAt: string
     startedAt: string | null
+    completedAt: string | null
     leaseGeneration: number
   }
-  attempts: Pick<
-    AttemptRow,
-    'stepName' | 'startedAt' | 'completedAt' | 'status' | 'leaseGeneration'
+  conclusion: string | null
+  attempts: AttemptRow[]
+  waits: Pick<
+    WaitRow,
+    | 'id'
+    | 'name'
+    | 'outcome'
+    | 'createdAt'
+    | 'resolvedAt'
+    | 'inputWaitMs'
+    | 'executionSlotWaitMs'
   >[]
-  waits: Pick<WaitRow, 'name' | 'createdAt' | 'resolvedAt'>[]
+  /** The report's last review round and last sealed candidate. */
+  reviews: ReportReview[]
+  candidate: ReportCandidate | null
+  /** Outputs of completed steps still stored; a finished run has none. */
+  stepOutputs: Record<string, unknown>
   now: number
 }
 
+/** The stage entry a stored step or wait name belongs to. */
+function entryOf(
+  name: string,
+): { key: string; stage: string; label: string; seq: number | null } | null {
+  if (name === 'setup' || name === 'triage')
+    return { key: name, stage: name, label: name, seq: null }
+  const [kind, s, stage, sub] = name.split(':')
+  if (kind !== 'stage' || !s || !stage) return null
+  const seq = Number(s)
+  if (!Number.isInteger(seq)) return null
+  if (stage === 'review') {
+    if (sub !== 'correctness' && sub !== 'edge-cases') return null
+    return { key: `review:${sub}#${seq}`, stage, label: `review:${sub}`, seq }
+  }
+  return { key: `${stage}#${seq}`, stage, label: stage, seq }
+}
+
+function checkpointOf(a: AttemptRow, open: boolean): TraceCheckpoint | null {
+  const result = a.measurement?.result ?? null
+  if (result === null) return null
+  if (result === 'checkpoint-recovered') return 'recovered'
+  if (result.endsWith('-done') || result === 'pass' || result === 'fail')
+    return 'completed'
+  return open ? 'running' : 'uncertain'
+}
+
+function profileOf(attempts: AttemptRow[]): TraceProfile | null {
+  const m = [...attempts]
+    .reverse()
+    .find((a) => a.measurement?.usageScope != null)?.measurement
+  return m
+    ? {
+        provider: m.provider,
+        model: m.effectiveModel,
+        effort: m.effectiveEffort,
+        reportedModel: m.reportedModel,
+      }
+    : null
+}
+
+function asReview(value: unknown): ReportReview | null {
+  const v = value as Partial<ReportReview> | null
+  return typeof v?.lens === 'string' &&
+    typeof v.decision === 'string' &&
+    typeof v.notes === 'string'
+    ? { lens: v.lens, decision: v.decision, notes: v.notes }
+    : null
+}
+
+function asCandidate(value: unknown): ReportCandidate | null {
+  const v = value as { id?: string; branch?: string; commit?: string } | null
+  return typeof v?.id === 'string'
+    ? { id: v.id, branch: v.branch ?? null, commit: v.commit ?? null }
+    : null
+}
+
+const iso = (ms: number | null) =>
+  ms === null ? null : new Date(ms).toISOString()
+
 /**
- * One bar per stage entry per lease generation: a stage entered twice (a
- * repair) is two bars in its lane, and a worker that lost its lease leaves
- * a bar of its own. Reviews run in parallel, so their lanes overlap. Only
- * the current lease generation of an open run can still be running; any
- * other missing end stays unknown rather than being drawn to `now`.
+ * The run as a span tree: run → iteration (one per entry into code) → stage
+ * entry → the entry's attempts, listed only when a step was retried. Stage
+ * entries before the first code entry (setup, triage) sit under the run.
+ * Only the current lease generation of an open run can still be running;
+ * any other missing end stays unknown rather than being drawn to `now`.
+ * Each row's usage is `usageOf` its attempts, the report's own sum.
  */
-export function deriveTimeline(input: TimelineInput): Timeline | null {
+export function deriveTrace(input: TraceInput): Trace {
   const { run, now } = input
   const terminal = TERMINAL_STATUSES.includes(run.status)
-  type Raw = Omit<TimelineBar, 'startMs' | 'endMs' | 'durationMs'> & {
-    start: number
+  const created = Date.parse(run.createdAt)
+  const firstStart = Math.min(
+    ...input.attempts
+      .map((a) => Date.parse(a.startedAt))
+      .filter(Number.isFinite),
+    ...input.waits.map((w) => Date.parse(w.createdAt)).filter(Number.isFinite),
+  )
+  const origin = Number.isFinite(created)
+    ? Math.min(created, firstStart)
+    : firstStart
+  const rel = (ms: number | null) =>
+    ms === null || !Number.isFinite(origin) ? null : ms - origin
+  const failedRun =
+    run.status === 'failed' ||
+    input.conclusion === 'verification-failed' ||
+    input.conclusion === 'review-cap-reached'
+
+  type Timed = {
+    start: number | null
     end: number | null
+    open: boolean
   }
-  const groups = new Map<string, Raw>()
-  for (const a of input.attempts) {
-    const where = laneOf(a.stepName)
-    const start = Date.parse(a.startedAt)
-    if (!where || !Number.isFinite(start)) continue
-    const end = a.completedAt ? Date.parse(a.completedAt) : NaN
-    const open =
+  const node = (
+    base: Pick<
+      TraceNode,
+      'id' | 'kind' | 'label' | 'stage' | 'iteration' | 'state'
+    > &
+      Timed &
+      Partial<TraceNode>,
+  ): TraceNode => {
+    const end = base.open ? Math.max(now, base.start ?? now) : base.end
+    return {
+      attempts: 0,
+      leaseGeneration: null,
+      interruptionReason: null,
+      profile: null,
+      usage: null,
+      checkpoint: null,
+      review: null,
+      candidate: null,
+      wait: null,
+      children: [],
+      ...base,
+      startMs: rel(base.start),
+      endMs: rel(end),
+      startedAt: iso(base.start),
+      endedAt: base.open ? null : iso(base.end),
+      durationMs:
+        base.start === null || end === null
+          ? null
+          : Math.max(0, end - base.start),
+    }
+  }
+  const time = (s: string | null) => {
+    const ms = s ? Date.parse(s) : NaN
+    return Number.isFinite(ms) ? ms : null
+  }
+
+  // Attempts and waits grouped by stage entry, in the order entries began.
+  interface Entry {
+    key: string
+    stage: string
+    label: string
+    seq: number | null
+    attempts: AttemptRow[]
+    wait: TraceInput['waits'][number] | null
+    start: number
+  }
+  const entries = new Map<string, Entry>()
+  const add = (name: string, at: number, fill: (e: Entry) => void) => {
+    const where = entryOf(name)
+    if (!where || !Number.isFinite(at)) return
+    const entry = entries.get(where.key) ?? {
+      ...where,
+      attempts: [],
+      wait: null,
+      start: at,
+    }
+    entry.start = Math.min(entry.start, at)
+    fill(entry)
+    entries.set(where.key, entry)
+  }
+  for (const a of input.attempts)
+    add(a.stepName, Date.parse(a.startedAt), (e) => e.attempts.push(a))
+  for (const w of input.waits)
+    if (stageOf(w.name) === 'approve')
+      add(w.name, Date.parse(w.createdAt), (e) => (e.wait = w))
+  const ordered = [...entries.values()].sort(
+    (x, y) => (x.seq ?? -1) - (y.seq ?? -1) || x.start - y.start,
+  )
+
+  const lastReviewSeq = Math.max(
+    -1,
+    ...ordered.filter((e) => e.stage === 'review').map((e) => e.seq ?? -1),
+  )
+  const lastCodeSeq = Math.max(
+    -1,
+    ...ordered.filter((e) => e.stage === 'code').map((e) => e.seq ?? -1),
+  )
+
+  let iteration = 0
+  const iterations: { n: number; rows: TraceNode[] }[] = []
+  const before: TraceNode[] = []
+  for (const e of ordered) {
+    if (e.stage === 'code') {
+      iteration++
+      iterations.push({ n: iteration, rows: [] })
+    }
+    const at = iteration > 0 ? iteration : null
+    const row = e.wait ? waitRow(e, at) : attemptRow(e, at)
+    ;(iterations.at(-1)?.rows ?? before).push(row)
+  }
+
+  function waitRow(e: Entry, at: number | null): TraceNode {
+    const w = e.wait
+    if (!w) throw new Error('not a wait')
+    const open = !terminal && w.resolvedAt === null
+    return node({
+      id: `entry:${e.key}`,
+      kind: 'entry',
+      label: e.label,
+      stage: e.stage,
+      iteration: at,
+      state: open
+        ? 'waiting'
+        : w.outcome === 'timeout'
+          ? 'failed'
+          : w.resolvedAt === null
+            ? 'interrupted'
+            : 'done',
+      start: time(w.createdAt),
+      end: time(w.resolvedAt),
+      open,
+      wait: {
+        outcome: w.outcome,
+        inputWaitMs: w.inputWaitMs,
+        executionSlotWaitMs: w.executionSlotWaitMs,
+      },
+    })
+  }
+
+  function attemptRow(e: Entry, at: number | null): TraceNode {
+    const sorted = [...e.attempts].sort(
+      (x, y) => Date.parse(x.startedAt) - Date.parse(y.startedAt),
+    )
+    const isOpen = (a: AttemptRow) =>
       !terminal &&
       a.completedAt === null &&
       a.status === 'started' &&
       a.leaseGeneration === run.leaseGeneration
-    const key = `${where.lane}#${where.entry}#${a.leaseGeneration}`
-    const bar = groups.get(key)
-    const next: Raw = {
-      lane: where.lane,
-      kind: 'work',
-      start,
-      end: Number.isFinite(end) ? end : null,
+    const stateOf = (a: AttemptRow): TraceState =>
+      isOpen(a)
+        ? 'running'
+        : a.status === 'failed' && !a.interruptionReason
+          ? 'failed'
+          : a.measurement?.result === 'fail'
+            ? 'failed'
+            : a.status === 'completed'
+              ? 'done'
+              : 'interrupted'
+    // The latest attempt of each step decides the entry.
+    const latest = new Map<string, AttemptRow>()
+    for (const a of sorted) latest.set(a.stepName, a)
+    const finals = [...latest.values()]
+    const states = finals.map(stateOf)
+    const state: TraceState = states.includes('running')
+      ? 'running'
+      : states.includes('failed')
+        ? 'failed'
+        : states.includes('interrupted')
+          ? 'interrupted'
+          : 'done'
+    const open = states.includes('running')
+    const ends = finals.map((a) => time(a.completedAt))
+    const known = sorted
+      .map((a) => time(a.completedAt))
+      .filter((v): v is number => v !== null)
+    const suffix = (a: AttemptRow) => a.stepName.split(':')[3]
+    const multiStep = latest.size > 1
+    const retried = sorted.length > latest.size
+    const counters = new Map<string, number>()
+    const children = retried
+      ? sorted.map((a) => {
+          const n = (counters.get(a.stepName) ?? 0) + 1
+          counters.set(a.stepName, n)
+          const aOpen = isOpen(a)
+          return node({
+            id: `attempt:${a.attemptId}`,
+            kind: 'attempt',
+            label: multiStep ? `${suffix(a)} 試行 ${n}` : `試行 ${n}`,
+            stage: e.stage,
+            iteration: at,
+            state: stateOf(a),
+            start: time(a.startedAt),
+            end: time(a.completedAt),
+            open: aOpen,
+            attempts: 1,
+            leaseGeneration: a.leaseGeneration,
+            interruptionReason: a.interruptionReason,
+            profile: profileOf([a]),
+            usage: usageOf([a]),
+            checkpoint: checkpointOf(a, aOpen),
+          })
+        })
+      : []
+    const checked = [...sorted].reverse().find((a) => a.measurement)
+    const lens = e.label.split(':')[1]
+    const reviewStep = e.seq === null ? null : `stage:${e.seq}:review:${lens}`
+    const review =
+      e.stage !== 'review'
+        ? null
+        : (asReview(reviewStep ? input.stepOutputs[reviewStep] : null) ??
+          (e.seq === lastReviewSeq
+            ? (input.reviews.find((r) => r.lens === lens) ?? null)
+            : null))
+    const candidate =
+      e.stage !== 'code'
+        ? null
+        : (asCandidate(input.stepOutputs[`stage:${e.seq}:code:candidate`]) ??
+          (e.seq === lastCodeSeq ? input.candidate : null))
+    return node({
+      id: `entry:${e.key}`,
+      kind: 'entry',
+      label: e.label,
+      stage: e.stage,
+      iteration: at,
+      state,
+      start: time(sorted[0]?.startedAt ?? null),
+      end: ends.includes(null) ? null : Math.max(...known),
       open,
-      failed: a.status === 'failed',
-      startedAt: a.startedAt,
-    }
-    if (!bar) {
-      groups.set(key, next)
-      continue
-    }
-    if (start < bar.start) {
-      bar.start = start
-      bar.startedAt = a.startedAt
-    }
-    // One attempt with no recorded end leaves the whole bar's end unknown.
-    bar.end =
-      bar.end === null || next.end === null ? null : Math.max(bar.end, next.end)
-    bar.open ||= open
-    bar.failed ||= next.failed
-  }
-  const raws = [...groups.values()]
-  for (const w of input.waits) {
-    const start = Date.parse(w.createdAt)
-    if (stageOf(w.name) !== 'approve' || !Number.isFinite(start)) continue
-    const end = w.resolvedAt ? Date.parse(w.resolvedAt) : NaN
-    raws.push({
-      lane: 'approve',
-      kind: 'wait',
-      start,
-      end: Number.isFinite(end) ? end : null,
-      open: !terminal && w.resolvedAt === null,
-      failed: false,
-      startedAt: w.createdAt,
+      attempts: sorted.length,
+      interruptionReason:
+        finals.find((a) => a.interruptionReason)?.interruptionReason ?? null,
+      profile: profileOf(sorted),
+      usage: usageOf(sorted),
+      checkpoint: checked ? checkpointOf(checked, isOpen(checked)) : null,
+      review,
+      candidate,
+      children,
     })
   }
-  if (raws.length === 0) return null
 
-  const runStart = Date.parse(run.startedAt ?? run.createdAt)
-  const origin = Math.min(
-    ...raws.map((r) => r.start),
-    ...(Number.isFinite(runStart) ? [runStart] : []),
-  )
-  const endOf = (r: Raw) => (r.open ? Math.max(now, r.start) : r.end)
-  const ends = raws.map(endOf).filter((e): e is number => e !== null)
-  const last = Math.max(
-    origin,
-    ...raws.map((r) => r.start),
-    ...ends,
-    ...(terminal ? [] : [now]),
-  )
-  const bars = raws
-    .map((r): TimelineBar => {
-      const end = endOf(r)
-      return {
-        lane: r.lane,
-        kind: r.kind,
-        startMs: r.start - origin,
-        endMs: end === null ? null : end - origin,
-        open: r.open,
-        failed: r.failed,
-        startedAt: r.startedAt,
-        durationMs: end === null ? null : Math.max(0, end - r.start),
-      }
+  /** A parent spans its children; its end is unknown when the last one's is. */
+  const span = (rows: TraceNode[]): Timed => {
+    const open = rows.some((r) => r.open)
+    const starts = rows.map((r) => r.startedAt).map(time)
+    const known = starts.filter((v): v is number => v !== null)
+    const last = [...rows]
+      .sort((x, y) => (x.startMs ?? 0) - (y.startMs ?? 0))
+      .at(-1)
+    const ends = rows
+      .map((r) => time(r.endedAt))
+      .filter((v): v is number => v !== null)
+    return {
+      start: known.length > 0 ? Math.min(...known) : null,
+      end:
+        last?.endedAt == null || ends.length === 0 ? null : Math.max(...ends),
+      open,
+    }
+  }
+
+  const iterationRows = iterations.map(({ n, rows }, i) => {
+    const states = rows.map((r) => r.state)
+    const last = i === iterations.length - 1
+    return node({
+      id: `iteration:${n}`,
+      kind: 'iteration',
+      label: `${n}回目`,
+      stage: null,
+      iteration: n,
+      state: states.includes('running')
+        ? 'running'
+        : states.includes('waiting')
+          ? 'waiting'
+          : last && failedRun && states.includes('failed')
+            ? 'failed'
+            : last && !terminal
+              ? 'idle'
+              : 'done',
+      ...span(rows),
+      attempts: rows.reduce((s, r) => s + r.attempts, 0),
+      usage: usageOf(
+        input.attempts.filter((a) => {
+          const where = entryOf(a.stepName)
+          return (
+            where !== null && rows.some((r) => r.id === `entry:${where.key}`)
+          )
+        }),
+      ),
+      children: rows,
     })
-    .sort(
-      (x, y) =>
-        TIMELINE_LANES.indexOf(x.lane) - TIMELINE_LANES.indexOf(y.lane) ||
-        x.startMs - y.startMs,
-    )
+  })
+
+  const top = [...before, ...iterationRows]
+  const topStates = top.map((r) => r.state)
+  const root = node({
+    id: 'run',
+    kind: 'run',
+    label: 'run 全体',
+    stage: null,
+    iteration: null,
+    state: terminal
+      ? failedRun
+        ? 'failed'
+        : run.status === 'cancelled'
+          ? 'interrupted'
+          : 'done'
+      : topStates.includes('running')
+        ? 'running'
+        : topStates.includes('waiting')
+          ? 'waiting'
+          : 'idle',
+    start: Number.isFinite(origin) ? origin : null,
+    end: terminal ? (time(run.completedAt) ?? span(top).end) : null,
+    open: !terminal,
+    attempts: input.attempts.length,
+    usage: usageOf(input.attempts),
+    children: top,
+  })
+  const ends = [root.endMs ?? 0, ...top.map((r) => r.endMs ?? r.startMs ?? 0)]
   return {
-    startedAt: new Date(origin).toISOString(),
-    spanMs: Math.max(1, last - origin),
-    lanes: TIMELINE_LANES.filter((l) => bars.some((b) => b.lane === l)),
-    bars,
+    startedAt: iso(Number.isFinite(origin) ? origin : now) ?? '',
+    spanMs: Math.max(1, ...ends),
+    open: !terminal,
+    root,
   }
 }
 
@@ -518,14 +856,24 @@ function createUiApi() {
     const db = source()
     const found = db ? await orEmpty(db.getRun(id), null) : null
     if (!db || !found) throw new HttpError(404, `no run ${id}`)
-    const seen = await inspect(db, found, now)
+    const [seen, steps] = await Promise.all([
+      inspect(db, found, now),
+      db.storage.getSteps(id),
+    ])
+    const stepOutputs: Record<string, unknown> = {}
+    for (const s of steps)
+      if (s.status === 'completed') stepOutputs[s.name] = s.output
     return {
       now: new Date(now).toISOString(),
       ...seen,
-      timeline: deriveTimeline({
+      trace: deriveTrace({
         run: found,
+        conclusion: seen.report.summary.conclusion,
         attempts: seen.report.attempts,
         waits: seen.report.waits,
+        reviews: seen.report.reviews,
+        candidate: seen.report.candidate,
+        stepOutputs,
         now,
       }),
     }

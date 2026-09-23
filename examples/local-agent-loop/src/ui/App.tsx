@@ -7,14 +7,21 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
+  type KeyboardEvent,
   type ReactNode,
 } from 'react'
 
 import type { Stat } from '../engine/compare'
-import type { LiveElapsed, LoopReport, UsageTotals } from '../engine/report'
+import type {
+  LiveElapsed,
+  LoopReport,
+  ReportCandidate,
+  UsageTotals,
+} from '../engine/report'
 import type { DiagnosisKind } from '../engine/status'
 import { TERMINAL_STATUSES } from '../engine/terminal'
 import { pollJson } from './poll'
@@ -25,8 +32,11 @@ import type {
   RunDetailResponse,
   RunRow,
   RunsResponse,
-  Timeline,
-  TimelineBar,
+  Trace,
+  TraceCheckpoint,
+  TraceNode,
+  TraceProfile,
+  TraceState,
 } from './server'
 
 const REFRESH_MS = 3000
@@ -567,16 +577,21 @@ function Stepper({ pipeline }: { pipeline: Pipeline }) {
 
 /** "0", "30秒", "1分30秒": short enough for an axis tick. */
 function fmtTick(ms: number): string {
+  if (ms === 0) return '0'
+  if (ms < 1000) return `${Math.round(ms)}ms`
   const s = Math.round(ms / 1000)
-  if (s === 0) return '0'
   if (s < 60) return `${s}秒`
   const m = Math.floor(s / 60)
   if (m < 60) return s % 60 ? `${m}分${s % 60}秒` : `${m}分`
   return m % 60 ? `${Math.floor(m / 60)}時間${m % 60}分` : `${m / 60}時間`
 }
 
-const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
-  .map((s) => s * 1000)
+const TICK_STEPS = [10, 20, 50, 100, 200, 500]
+  .concat(
+    [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600].map(
+      (s) => s * 1000,
+    ),
+  )
   .concat([2, 3, 6, 12, 24].map((h) => h * 3_600_000))
 
 /** At most five round ticks from 0 across the span. */
@@ -588,146 +603,841 @@ function ticks(spanMs: number): number[] {
   return out
 }
 
-function barLabel(b: TimelineBar): string {
-  const state = b.open
-    ? b.kind === 'wait'
-      ? '人待ち'
-      : '実行中'
-    : b.failed
-      ? '失敗'
-      : null
-  return [
-    b.lane,
-    `開始 ${timeFmt.format(new Date(b.startedAt))}`,
-    fmtMs(b.durationMs),
-    state,
-  ]
-    .filter(Boolean)
-    .join(' · ')
+// ---------------------------------------------------------------- trace
+
+const TRACE_STATE: Record<TraceState, { label: string; tone: Tone }> = {
+  done: { label: '完了', tone: 'none' },
+  running: { label: '実行中', tone: 'running' },
+  waiting: { label: '人待ち', tone: 'waiting' },
+  failed: { label: '失敗', tone: 'failed' },
+  interrupted: { label: '中断', tone: 'none' },
+  idle: { label: '工程の合間', tone: 'none' },
 }
 
-function barClass(b: TimelineBar): string {
-  if (b.kind === 'wait')
-    return 'border border-dashed border-waiting bg-[repeating-linear-gradient(135deg,var(--state-waiting-bg)_0_4px,transparent_4px_8px)]'
-  if (b.failed) return 'bg-failed'
-  return b.open ? 'bg-fg-2' : 'bg-fg-3/60'
+const TONE_TEXT: Record<Tone, string> = {
+  waiting: 'text-waiting',
+  failed: 'text-failed',
+  running: 'text-running',
+  none: 'text-fg-3',
 }
 
-const pct = (ms: number, span: number) => `${(ms / span) * 100}%`
+const INTERRUPTION_LABEL: Record<string, string> = {
+  'lease-lost': 'worker の lease が切れた',
+  cancelled: '取り消された',
+  unknown: UNKNOWN,
+}
+
+const CHECKPOINT_LABEL: Record<TraceCheckpoint, string> = {
+  completed: '完了を記録',
+  recovered: '記録した結果を再利用',
+  uncertain: '開始だけ記録。結果は不確か',
+  running: '実行中',
+}
+
+/** A 12px glyph per state; the state's word always sits beside it. */
+function StateGlyph({ state }: { state: TraceState }) {
+  const box = 'size-3 shrink-0'
+  switch (state) {
+    case 'running':
+      return (
+        <span
+          aria-hidden
+          className={`${box} text-running grid place-items-center`}
+        >
+          <span className="dot-live size-2 rounded-full bg-current" />
+        </span>
+      )
+    case 'waiting':
+      return (
+        <svg aria-hidden viewBox="0 0 12 12" className={`${box} text-waiting`}>
+          <rect
+            x="3"
+            y="2.5"
+            width="2"
+            height="7"
+            rx="0.5"
+            fill="currentColor"
+          />
+          <rect
+            x="7"
+            y="2.5"
+            width="2"
+            height="7"
+            rx="0.5"
+            fill="currentColor"
+          />
+        </svg>
+      )
+    case 'failed':
+      return (
+        <svg aria-hidden viewBox="0 0 12 12" className={`${box} text-failed`}>
+          <path
+            d="M3 3l6 6M9 3l-6 6"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+          />
+        </svg>
+      )
+    case 'done':
+      return (
+        <svg aria-hidden viewBox="0 0 12 12" className={`${box} text-fg-3`}>
+          <path
+            d="M2.5 6.25l2.25 2.25L9.5 3.5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      )
+    case 'interrupted':
+      return (
+        <svg aria-hidden viewBox="0 0 12 12" className={`${box} text-fg-3`}>
+          <path
+            d="M3 6h6"
+            stroke="currentColor"
+            strokeWidth="1.75"
+            strokeLinecap="round"
+          />
+        </svg>
+      )
+    case 'idle':
+      return (
+        <svg aria-hidden viewBox="0 0 12 12" className={`${box} text-fg-3`}>
+          <circle
+            cx="6"
+            cy="6"
+            r="3.25"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.25"
+          />
+        </svg>
+      )
+  }
+}
 
 /**
- * Each stage entry as a bar on real time from the run's start: a repair is
- * a second bar in its lane, the two reviews overlap, and the approval wait
- * is the hatched span. The drawing is hidden from screen readers, which get
- * the same bars as a table.
+ * The response's `now`, advanced by the time since it arrived, every second
+ * while the run is open. It never reads the browser's wall clock, so a skewed
+ * laptop clock cannot move the bars.
  */
-function TimelineChart({ timeline: t }: { timeline: Timeline }) {
-  const marks = ticks(t.spanMs)
-  const grid =
-    'grid grid-cols-[7.5rem_1fr] items-center gap-3 sm:grid-cols-[9rem_1fr]'
+function useLiveNow(serverNow: string, open: boolean): number {
+  const base = useMemo(
+    () => ({ server: Date.parse(serverNow), client: performance.now() }),
+    [serverNow],
+  )
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    if (!open) return
+    const timer = setInterval(() => setTick((n) => n + 1), 1000)
+    return () => clearInterval(timer)
+  }, [open])
+  return open
+    ? base.server + Math.max(0, performance.now() - base.client)
+    : base.server
+}
+
+interface VisibleRow {
+  node: TraceNode
+  level: number
+  parentId: string | null
+  posinset: number
+  setsize: number
+}
+
+/** Iterations and the run start expanded; retried attempts start folded. */
+function expandedByDefault(node: TraceNode): boolean {
+  return node.kind !== 'entry'
+}
+
+function flatten(
+  node: TraceNode,
+  isExpanded: (n: TraceNode) => boolean,
+): VisibleRow[] {
+  const out: VisibleRow[] = []
+  const walk = (
+    n: TraceNode,
+    level: number,
+    parentId: string | null,
+    posinset: number,
+    setsize: number,
+  ) => {
+    out.push({ node: n, level, parentId, posinset, setsize })
+    if (n.children.length > 0 && isExpanded(n))
+      n.children.forEach((c, i) =>
+        walk(c, level + 1, n.id, i + 1, n.children.length),
+      )
+  }
+  walk(node, 1, null, 1, 1)
+  return out
+}
+
+/** The deepest row still running or waiting, through expanded rows only. */
+function followTarget(
+  root: TraceNode,
+  isExpanded: (n: TraceNode) => boolean,
+): TraceNode | null {
+  let at: TraceNode | null = null
+  let n: TraceNode | undefined = root
+  while (n?.open) {
+    at = n
+    if (!isExpanded(n)) break
+    n = [...n.children].reverse().find((c) => c.open)
+  }
+  return at === root ? null : at
+}
+
+function findNode(root: TraceNode, id: string): TraceNode | null {
+  if (root.id === id) return root
+  for (const c of root.children) {
+    const hit = findNode(c, id)
+    if (hit) return hit
+  }
+  return null
+}
+
+/** A row's times with any open end moved to the live clock. */
+function liveTimes(node: TraceNode, elapsed: number) {
+  const end = node.open ? Math.max(node.endMs ?? elapsed, elapsed) : node.endMs
+  const duration =
+    node.open && node.startMs !== null
+      ? Math.max(node.durationMs ?? 0, elapsed - node.startMs)
+      : node.durationMs
+  return { start: node.startMs, end, duration }
+}
+
+function barClass(node: TraceNode): string {
+  // The run and its iterations are plain spans of what they contain.
+  if (node.kind === 'run' || node.kind === 'iteration')
+    return node.state === 'failed' ? 'bg-failed/50' : 'bg-fg-3/35'
+  if (node.wait)
+    return node.open
+      ? 'bar-hatch border border-dashed border-waiting'
+      : 'bar-hatch-done border border-dashed border-fg-3'
+  if (node.state === 'failed') return 'bg-failed'
+  if (node.open) return 'bg-running bar-live'
+  return 'bg-fg-3/60'
+}
+
+const BAR_HEIGHT: Record<TraceNode['kind'], string> = {
+  run: 'h-1.5',
+  iteration: 'h-1.5',
+  entry: 'h-3',
+  attempt: 'h-2',
+}
+
+/** "+15.0 秒": time from the run's start, tabular for the column. */
+function fmtOffset(ms: number | null): string {
+  return ms === null ? UNKNOWN : `+${fmtMs(ms)}`
+}
+
+function exact(iso: string | null): string | undefined {
+  return iso ? `${new Date(iso).toLocaleString('ja-JP')}  ${iso}` : undefined
+}
+
+const TRACE_COLS =
+  'grid grid-cols-[minmax(8rem,15rem)_5.5rem_minmax(4rem,1fr)] sm:grid-cols-[minmax(12rem,17rem)_7rem_minmax(8rem,1fr)]'
+
+/**
+ * The run as a span tree beside a waterfall on one time axis from the run's
+ * creation, with the selected row's stored details alongside. The tree is a
+ * keyboard treegrid that carries every value in text; the waterfall is a
+ * drawing of the same values and is hidden from screen readers.
+ */
+function TraceView({
+  trace,
+  report,
+  serverNow,
+}: {
+  trace: Trace
+  report: LoopReport
+  serverNow: string
+}) {
+  const liveNow = useLiveNow(serverNow, trace.open)
+  const origin = Date.parse(trace.startedAt)
+  const elapsed = trace.open ? Math.max(0, liveNow - origin) : trace.spanMs
+  // An open run keeps a little room right of `now`, so the line is visible.
+  const axisMs = Math.max(1, trace.open ? elapsed * 1.06 : trace.spanMs)
+
+  const [overrides, setOverrides] = useState<Record<string, boolean>>({})
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [focusedId, setFocusedId] = useState<string>(trace.root.id)
+  const [userScrolled, setUserScrolled] = useState(false)
+  const scroller = useRef<HTMLDivElement | null>(null)
+  const rowRefs = useRef(new Map<string, HTMLDivElement>())
+  const programmatic = useRef(false)
+
+  const isExpanded = useCallback(
+    (n: TraceNode) => overrides[n.id] ?? expandedByDefault(n),
+    [overrides],
+  )
+  const rows = useMemo(
+    () => flatten(trace.root, isExpanded),
+    [trace.root, isExpanded],
+  )
+  const follow = useMemo(
+    () => followTarget(trace.root, isExpanded),
+    [trace.root, isExpanded],
+  )
+  const selected =
+    (selectedId ? findNode(trace.root, selectedId) : null) ??
+    follow ??
+    trace.root
+  const focusIndex = Math.max(
+    0,
+    rows.findIndex((r) => r.node.id === focusedId),
+  )
+  const rovingId = rows[focusIndex]?.node.id ?? trace.root.id
+
+  // Follow the running row until the person scrolls or picks a row.
+  const followId = follow?.id ?? null
+  useEffect(() => {
+    const box = scroller.current
+    const row = followId ? rowRefs.current.get(followId) : null
+    if (!box || !row || userScrolled || selectedId !== null) return
+    const top = row.offsetTop - box.clientHeight / 2
+    if (Math.abs(box.scrollTop - top) < 4) return
+    programmatic.current = true
+    box.scrollTop = Math.max(0, top)
+  }, [followId, serverNow, userScrolled, selectedId])
+
+  const focusRow = (id: string) => {
+    setFocusedId(id)
+    rowRefs.current.get(id)?.focus()
+  }
+  const setExpanded = (id: string, value: boolean) =>
+    setOverrides((o) => ({ ...o, [id]: value }))
+
+  const onKeyDown = (e: KeyboardEvent, row: VisibleRow, i: number) => {
+    const n = row.node
+    const hasChildren = n.children.length > 0
+    const open = hasChildren && isExpanded(n)
+    const go = (index: number) => {
+      const target = rows[Math.min(rows.length - 1, Math.max(0, index))]
+      if (target) focusRow(target.node.id)
+    }
+    switch (e.key) {
+      case 'ArrowDown':
+        go(i + 1)
+        break
+      case 'ArrowUp':
+        go(i - 1)
+        break
+      case 'Home':
+        go(0)
+        break
+      case 'End':
+        go(rows.length - 1)
+        break
+      case 'ArrowRight':
+        if (hasChildren && !open) setExpanded(n.id, true)
+        else if (open) go(i + 1)
+        break
+      case 'ArrowLeft':
+        if (open) setExpanded(n.id, false)
+        else if (row.parentId) focusRow(row.parentId)
+        break
+      case 'Enter':
+      case ' ':
+        setSelectedId(n.id)
+        break
+      default:
+        return
+    }
+    e.preventDefault()
+  }
+
+  const marks = ticks(axisMs)
+  const pctOf = (ms: number) => `${(ms / axisMs) * 100}%`
+
   return (
-    <div>
-      <div aria-hidden className="flex flex-col gap-1">
-        {t.lanes.map((lane) => {
-          const bars = t.bars.filter((b) => b.lane === lane)
-          const open = bars.find((b) => b.open)
-          return (
-            <div key={lane} className={grid}>
-              <span className="flex min-w-0 items-center gap-1 text-xs">
-                <span className="truncate">{lane}</span>
-                {open ? (
-                  <span
-                    className={`inline-flex shrink-0 items-center gap-1 ${open.kind === 'wait' ? 'text-waiting' : 'text-running'}`}
-                  >
-                    {open.kind === 'wait' ? null : (
-                      <span className="dot-live size-1.5 rounded-full bg-current" />
-                    )}
-                    {open.kind === 'wait' ? '人待ち' : '実行中'}
-                  </span>
-                ) : null}
-              </span>
-              <span className="bg-sunken relative h-4 rounded-sm">
+    <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+      <div className="border-line min-w-0 overflow-hidden rounded-md border">
+        <div
+          ref={scroller}
+          onScroll={() => {
+            if (programmatic.current) programmatic.current = false
+            else setUserScrolled(true)
+          }}
+          className="relative max-h-[32rem] overflow-auto"
+        >
+          <div
+            aria-hidden
+            className={`${TRACE_COLS} bg-raised border-line text-fg-2 sticky top-0 z-10 h-7 items-center border-b text-xs`}
+          >
+            <span className="px-2">工程</span>
+            <span className="px-2 text-right">時間</span>
+            <span className="relative h-full tabular-nums">
+              {marks.map((m) => (
+                <span
+                  key={m}
+                  className="absolute top-1/2 -translate-y-1/2 whitespace-nowrap"
+                  style={{
+                    left: pctOf(m),
+                    // The first label starts at 0; one near the edge ends there.
+                    transform:
+                      m === 0
+                        ? 'translateY(-50%)'
+                        : m / axisMs > 0.92
+                          ? 'translate(-100%, -50%)'
+                          : 'translate(-50%, -50%)',
+                  }}
+                >
+                  {fmtTick(m)}
+                </span>
+              ))}
+            </span>
+          </div>
+          <div className="relative">
+            {/* Tick lines and the `now` line, over the waterfall column only. */}
+            <div
+              aria-hidden
+              className={`${TRACE_COLS} pointer-events-none absolute inset-0`}
+            >
+              <span />
+              <span />
+              <span className="relative">
                 {marks.slice(1).map((m) => (
                   <span
                     key={m}
                     className="bg-line absolute inset-y-0 w-px"
-                    style={{ left: pct(m, t.spanMs) }}
+                    style={{ left: pctOf(m) }}
                   />
                 ))}
-                {bars.map((b) =>
-                  b.endMs === null ? (
-                    <span
-                      key={`${b.startedAt}-${b.kind}`}
-                      title={barLabel(b)}
-                      className="border-fg-3 absolute inset-y-0 border-l-2 border-dotted"
-                      style={{ left: pct(b.startMs, t.spanMs) }}
-                    />
-                  ) : (
-                    <span
-                      key={`${b.startedAt}-${b.kind}`}
-                      title={barLabel(b)}
-                      className={`absolute inset-y-0.5 min-w-0.5 rounded-sm ${barClass(b)}`}
-                      style={{
-                        left: pct(b.startMs, t.spanMs),
-                        width: pct(b.endMs - b.startMs, t.spanMs),
-                      }}
-                    />
-                  ),
-                )}
+                {trace.open ? (
+                  <span
+                    className="bg-fg-2 absolute inset-y-0 w-px"
+                    style={{ left: pctOf(elapsed) }}
+                  />
+                ) : null}
               </span>
             </div>
-          )
-        })}
-        <div className={grid}>
-          <span className="text-fg-3 text-xs">開始から</span>
-          <span className="text-fg-2 relative h-4 text-xs tabular-nums">
-            {marks.map((m) => (
-              <span
-                key={m}
-                className="absolute top-0"
-                style={{
-                  left: pct(m, t.spanMs),
-                  transform: m === 0 ? undefined : 'translateX(-50%)',
-                }}
-              >
-                {fmtTick(m)}
-              </span>
-            ))}
-          </span>
+            <div
+              role="treegrid"
+              aria-label="工程の時系列"
+              aria-readonly
+              className="relative"
+            >
+              {rows.map((row, i) => {
+                const n = row.node
+                const t = liveTimes(n, elapsed)
+                const state = TRACE_STATE[n.state]
+                const hasChildren = n.children.length > 0
+                const isOpen = hasChildren && isExpanded(n)
+                const isSelected = selected.id === n.id
+                return (
+                  <div
+                    key={n.id}
+                    ref={(el) => {
+                      if (el) rowRefs.current.set(n.id, el)
+                      else rowRefs.current.delete(n.id)
+                    }}
+                    role="row"
+                    aria-level={row.level}
+                    aria-posinset={row.posinset}
+                    aria-setsize={row.setsize}
+                    aria-expanded={hasChildren ? isOpen : undefined}
+                    aria-selected={isSelected}
+                    tabIndex={n.id === rovingId ? 0 : -1}
+                    onKeyDown={(e) => onKeyDown(e, row, i)}
+                    onFocus={() => setFocusedId(n.id)}
+                    onClick={() => {
+                      setSelectedId(n.id)
+                      setFocusedId(n.id)
+                    }}
+                    className={`${TRACE_COLS} h-7 cursor-default items-center text-sm focus-visible:rounded-none focus-visible:outline-offset-[-2px] ${isSelected ? 'bg-sunken' : 'hover:bg-sunken/60'}`}
+                  >
+                    <span
+                      role="gridcell"
+                      className="flex min-w-0 items-center gap-1.5 pr-2"
+                      style={{ paddingLeft: `${(row.level - 1) * 12 + 4}px` }}
+                    >
+                      {hasChildren ? (
+                        <span
+                          aria-hidden
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setExpanded(n.id, !isOpen)
+                            setFocusedId(n.id)
+                          }}
+                          className="text-fg-3 hover:text-fg grid size-4 shrink-0 cursor-pointer place-items-center"
+                        >
+                          <svg
+                            viewBox="0 0 12 12"
+                            className={`size-3 transition-transform duration-[var(--duration-fast)] ${isOpen ? 'rotate-90' : ''}`}
+                          >
+                            <path
+                              d="M4.5 3l3 3-3 3"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        </span>
+                      ) : (
+                        <span aria-hidden className="size-4 shrink-0" />
+                      )}
+                      <StateGlyph state={n.state} />
+                      <span
+                        className={`truncate ${n.kind === 'iteration' || n.kind === 'run' ? 'font-medium' : ''} ${n.kind === 'attempt' ? 'text-fg-2' : ''}`}
+                      >
+                        {n.label}
+                      </span>
+                      {n.state !== 'done' ? (
+                        <span
+                          className={`shrink-0 text-xs ${TONE_TEXT[state.tone]}`}
+                        >
+                          {state.label}
+                        </span>
+                      ) : (
+                        <span className="sr-only">{state.label}</span>
+                      )}
+                    </span>
+                    <span
+                      role="gridcell"
+                      className="font-code text-fg-2 px-2 text-right text-xs whitespace-nowrap tabular-nums"
+                    >
+                      {fmtMs(t.duration)}
+                      <span className="sr-only">
+                        、開始から {fmtMs(t.start)}
+                      </span>
+                    </span>
+                    <span aria-hidden className="relative h-full">
+                      {t.start === null ? null : t.end === null ? (
+                        <span
+                          title="終了時刻は記録されていない"
+                          className="border-fg-3 absolute inset-y-1.5 border-l-2 border-dotted"
+                          style={{ left: pctOf(t.start) }}
+                        />
+                      ) : (
+                        <span
+                          className={`absolute top-1/2 min-w-0.5 -translate-y-1/2 rounded-sm ${BAR_HEIGHT[n.kind]} ${barClass(n)}`}
+                          style={{
+                            left: pctOf(t.start),
+                            width: pctOf(Math.max(0, t.end - t.start)),
+                          }}
+                        />
+                      )}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
         </div>
       </div>
-      <table className="sr-only">
-        <caption>工程の時系列。{t.startedAt} の run 開始から数える</caption>
-        <thead>
-          <tr>
-            <th scope="col">工程</th>
-            <th scope="col">開始</th>
-            <th scope="col">時間</th>
-            <th scope="col">状態</th>
-          </tr>
-        </thead>
-        <tbody>
-          {t.bars.map((b) => (
-            <tr key={`${b.lane}-${b.startedAt}-${b.kind}`}>
-              <td>{b.lane}</td>
-              <td>{timeFmt.format(new Date(b.startedAt))}</td>
-              <td>{fmtMs(b.durationMs)}</td>
-              <td>
-                {b.open
-                  ? b.kind === 'wait'
-                    ? '人の承認待ち'
-                    : '実行中'
-                  : b.endMs === null
-                    ? '終了時刻不明'
-                    : b.failed
-                      ? '失敗'
-                      : '終了'}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <TraceInspector
+        node={selected}
+        chosen={selectedId !== null}
+        report={report}
+        elapsed={elapsed}
+        origin={trace.startedAt}
+      />
     </div>
+  )
+}
+
+function InspectorField({
+  label,
+  children,
+}: {
+  label: string
+  children: ReactNode
+}) {
+  return (
+    <div className="grid grid-cols-[6.5rem_1fr] gap-2 py-1">
+      <dt className="text-fg-2 text-xs leading-5">{label}</dt>
+      <dd className="min-w-0 text-sm break-words tabular-nums">{children}</dd>
+    </div>
+  )
+}
+
+function Num({ children }: { children: ReactNode }) {
+  return <span className="font-code">{children}</span>
+}
+
+function UsageFields({
+  u,
+}: {
+  u: Pick<UsageTotals, 'totalTokens' | 'costUsd' | 'complete'> & {
+    invocations: number
+    inputTokens?: number | null
+    outputTokens?: number | null
+  }
+}) {
+  const tag = (v: number | null | undefined) =>
+    v == null || u.complete ? null : (
+      <PartialTag title="使用量が分かった呼び出しだけの合計" />
+    )
+  return (
+    <>
+      <InspectorField label="LLM 呼び出し">
+        <Num>{u.invocations}</Num>
+      </InspectorField>
+      <InspectorField label="合計 token">
+        <Num>{fmtInt(u.totalTokens)}</Num>
+        {tag(u.totalTokens)}
+      </InspectorField>
+      {u.inputTokens !== undefined ? (
+        <InspectorField label="入力 / 出力">
+          <Num>
+            {fmtInt(u.inputTokens)} / {fmtInt(u.outputTokens)}
+          </Num>
+          {tag(u.inputTokens ?? u.outputTokens)}
+        </InspectorField>
+      ) : null}
+      <InspectorField label="費用">
+        <span title={COST_NOTE}>
+          <Num>{fmtUsd(u.costUsd)}</Num>
+        </span>
+      </InspectorField>
+    </>
+  )
+}
+
+const REVIEW_LABEL: Record<string, string> = {
+  pass: '通過',
+  needsChanges: '要修正',
+}
+
+/** A time from the run's start; the exact time on hover. */
+function Offset({ ms, iso }: { ms: number | null; iso: string | null }) {
+  return (
+    <span title={exact(iso)} className="font-code">
+      {fmtOffset(ms)}
+    </span>
+  )
+}
+
+/** Stage, pass, attempts, and the row's times. */
+function TimingFields({
+  node: n,
+  elapsed,
+  leadTimeMs,
+}: {
+  node: TraceNode
+  elapsed: number
+  leadTimeMs: number | null
+}) {
+  const t = liveTimes(n, elapsed)
+  const attempts =
+    n.kind === 'attempt' ? (
+      <InspectorField label="lease 世代">
+        <Num>{n.leaseGeneration ?? UNKNOWN}</Num>
+      </InspectorField>
+    ) : n.kind === 'run' || n.wait ? null : (
+      <InspectorField label="試行">
+        <Num>{n.attempts}</Num>
+      </InspectorField>
+    )
+  // A finished run's time is the report's lead time, to the millisecond.
+  const duration = n.kind === 'run' && !n.open ? leadTimeMs : t.duration
+  return (
+    <>
+      {n.stage ? <InspectorField label="工程">{n.stage}</InspectorField> : null}
+      {n.iteration !== null && n.kind !== 'iteration' ? (
+        <InspectorField label="回">{n.iteration}回目</InspectorField>
+      ) : null}
+      {attempts}
+      <InspectorField label="開始">
+        <Offset ms={t.start} iso={n.startedAt} />
+      </InspectorField>
+      <InspectorField label="終了">
+        {n.open ? '終わっていない' : <Offset ms={t.end} iso={n.endedAt} />}
+      </InspectorField>
+      <InspectorField label={n.open ? '経過' : '時間'}>
+        <Num>{fmtMs(duration)}</Num>
+      </InspectorField>
+      {n.interruptionReason ? (
+        <InspectorField label="中断の理由">
+          {INTERRUPTION_LABEL[n.interruptionReason] ?? n.interruptionReason}
+        </InspectorField>
+      ) : null}
+    </>
+  )
+}
+
+function ProfileFields({ profile: p }: { profile: TraceProfile }) {
+  return (
+    <>
+      <InspectorField label="provider">{p.provider ?? UNKNOWN}</InspectorField>
+      <InspectorField label="model">
+        <Num>{p.model ?? '既定'}</Num>
+      </InspectorField>
+      <InspectorField label="effort">
+        <Num>{p.effort ?? '既定'}</Num>
+      </InspectorField>
+      {p.reportedModel && p.reportedModel !== p.model ? (
+        <InspectorField label="報告された model">
+          <Num>{p.reportedModel}</Num>
+        </InspectorField>
+      ) : null}
+    </>
+  )
+}
+
+function CandidateFields({ candidate: c }: { candidate: ReportCandidate }) {
+  return (
+    <>
+      <InspectorField label="candidate">
+        <Num>{c.id}</Num>
+      </InspectorField>
+      <InspectorField label="branch">
+        <Num>{c.branch ?? 'なし'}</Num>
+      </InspectorField>
+      <InspectorField label="commit">
+        <Num>{c.commit?.slice(0, 12) ?? 'なし'}</Num>
+      </InspectorField>
+    </>
+  )
+}
+
+function WaitFields({
+  node: n,
+  wait: w,
+  elapsed,
+}: {
+  node: TraceNode
+  wait: NonNullable<TraceNode['wait']>
+  elapsed: number
+}) {
+  const state = n.open
+    ? '人の判断を待っている'
+    : w.outcome === 'timeout'
+      ? '期限切れ'
+      : w.outcome === 'signal'
+        ? '判断を受け取った'
+        : UNKNOWN
+  return (
+    <>
+      <InspectorField label="承認">{state}</InspectorField>
+      <InspectorField label="人の待ち時間">
+        <Num>
+          {fmtMs(n.open ? liveTimes(n, elapsed).duration : w.inputWaitMs)}
+        </Num>
+      </InspectorField>
+      {n.open ? null : (
+        <InspectorField label="再開までの待ち">
+          <Num>{fmtMs(w.executionSlotWaitMs)}</Num>
+        </InspectorField>
+      )}
+    </>
+  )
+}
+
+function ReviewBlock({ node: n }: { node: TraceNode }) {
+  if (n.review)
+    return (
+      <div className="flex flex-col gap-1">
+        <p className="text-sm">
+          判定{' '}
+          <span className="font-medium" title={n.review.decision}>
+            {REVIEW_LABEL[n.review.decision] ?? n.review.decision}
+          </span>
+        </p>
+        <p className="bg-sunken max-h-48 overflow-auto rounded-md px-3 py-2 text-sm whitespace-pre-wrap">
+          {n.review.notes}
+        </p>
+      </div>
+    )
+  if (n.state !== 'done') return null
+  return (
+    <p className="text-fg-2 text-xs">
+      この回の判定は記録に残っていません。report が残すのは最後の回だけです。
+    </p>
+  )
+}
+
+/** Reserved for the row's agent log; nothing is read into it yet. */
+function LogSlot() {
+  return (
+    <section aria-labelledby="trace-log-slot" className="flex flex-col gap-1">
+      <h4 id="trace-log-slot" className="text-fg-2 text-xs font-medium">
+        ログ
+      </h4>
+      <p className="border-line-strong text-fg-3 rounded-md border border-dashed px-3 py-2 text-xs">
+        この行のログは、まだここに表示しません。
+      </p>
+    </section>
+  )
+}
+
+/** The selected row's stored details, and the slot where logs will go. */
+function TraceInspector({
+  node: n,
+  chosen,
+  report,
+  elapsed,
+  origin,
+}: {
+  node: TraceNode
+  chosen: boolean
+  report: LoopReport
+  elapsed: number
+  origin: string
+}) {
+  const state = TRACE_STATE[n.state]
+  const s = report.summary
+  const heading = chosen
+    ? '選んだ行'
+    : n.open
+      ? '実行中の行'
+      : '行を選ぶと詳細を表示'
+  return (
+    <aside
+      aria-label="選んだ行の詳細"
+      className="border-line flex min-w-0 flex-col gap-3 rounded-md border p-3"
+    >
+      <div className="flex flex-col gap-1">
+        <p className="text-fg-3 text-xs">{heading}</p>
+        <h3 className="flex flex-wrap items-center gap-2 text-base font-semibold">
+          <span className="break-all">{n.label}</span>
+          <StateBadge label={state.label} tone={state.tone} />
+        </h3>
+      </div>
+      <dl className="divide-line flex flex-col divide-y">
+        <TimingFields node={n} elapsed={elapsed} leadTimeMs={s.leadTimeMs} />
+        {n.profile ? <ProfileFields profile={n.profile} /> : null}
+        {n.kind === 'run' ? (
+          // The whole run shows the report's own totals.
+          <UsageFields
+            u={{
+              invocations: s.llmInvocations,
+              totalTokens: s.totalTokens,
+              costUsd: s.costUsd,
+              complete: true,
+            }}
+          />
+        ) : n.usage ? (
+          <UsageFields u={n.usage} />
+        ) : null}
+        {n.checkpoint ? (
+          <InspectorField label="checkpoint">
+            {CHECKPOINT_LABEL[n.checkpoint]}
+          </InspectorField>
+        ) : null}
+        {n.candidate ? <CandidateFields candidate={n.candidate} /> : null}
+        {n.wait ? (
+          <WaitFields node={n} wait={n.wait} elapsed={elapsed} />
+        ) : null}
+      </dl>
+      {n.stage === 'review' && n.kind === 'entry' ? (
+        <ReviewBlock node={n} />
+      ) : null}
+      <LogSlot />
+      <p className="text-fg-3 text-xs">
+        時刻は{' '}
+        <time dateTime={origin} title={exact(origin)}>
+          run 作成
+        </time>{' '}
+        からの経過です。正確な時刻はホバーで出ます。
+      </p>
+    </aside>
   )
 }
 
@@ -1295,11 +2005,9 @@ function RunPage({ data }: { data: RunDetailResponse }) {
 
       <SummaryPanel report={r} />
 
-      {data.timeline ? (
-        <Panel title="工程の時系列">
-          <TimelineChart timeline={data.timeline} />
-        </Panel>
-      ) : null}
+      <Panel title="工程の時系列">
+        <TraceView trace={data.trace} report={r} serverNow={data.now} />
+      </Panel>
 
       <Panel title="工程ごとの時間">
         <StageTimings report={r} />
@@ -1308,8 +2016,6 @@ function RunPage({ data }: { data: RunDetailResponse }) {
       <UsagePanels report={r} />
 
       <ReviewsPanel report={r} />
-
-      {/* A log panel for the agent output belongs here, once logs exist. */}
 
       <RecordPanels report={r} />
     </div>
