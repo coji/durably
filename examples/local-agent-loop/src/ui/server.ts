@@ -32,11 +32,19 @@ import { buildReport } from '../engine/build-report.js'
 import { compareReports, type Comparison } from '../engine/compare.js'
 import {
   liveElapsed,
+  stageOf,
+  type AttemptRow,
   type LiveElapsed,
   type LoopReport,
   type ReportTriage,
+  type WaitRow,
 } from '../engine/report.js'
-import { diagnose, needsHuman, type Diagnosis } from '../engine/status.js'
+import {
+  diagnose,
+  needsHuman,
+  type Diagnosis,
+  type DiagnosisKind,
+} from '../engine/status.js'
 import { TERMINAL_STATUSES } from '../engine/terminal.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -61,6 +69,7 @@ export interface RunRow {
   leadTimeMs: number | null
   costUsd: number | null
   triage: ReportTriage['judgment'] | null
+  pipeline: Pipeline
 }
 
 export interface RunsResponse {
@@ -80,6 +89,9 @@ export interface RunDetailResponse {
   diagnosis: Diagnosis
   needsHuman: boolean
   live: LiveElapsed | null
+  pipeline: Pipeline
+  /** Null before any stage has started. */
+  timeline: Timeline | null
   /** Exactly what `report --run <id> --format json` prints. */
   report: LoopReport
 }
@@ -124,6 +136,299 @@ export function runName(input: unknown): string {
   return line.length > NAME_MAX ? `${line.slice(0, NAME_MAX - 1)}…` : line
 }
 
+// ---------------------------------------------------------------- pipeline
+
+/**
+ * Where a stage stands in a run: `running` / `waiting` / `current` is the
+ * stage the run is at now (a worker on it, a person to decide, or neither);
+ * `stopped` is where a run that did not finish ended.
+ */
+export type PipelineState =
+  | 'done'
+  | 'running'
+  | 'waiting'
+  | 'current'
+  | 'stopped'
+  | 'not-reached'
+
+export interface PipelineStage {
+  stage: string
+  state: PipelineState
+  /** Times the stage was entered; above 1 for a repair loop. */
+  count: number
+}
+
+export interface Pipeline {
+  stages: PipelineStage[]
+  /** The whole stepper in one sentence, for screen readers. */
+  label: string
+}
+
+const PIPELINE_ORDER = [
+  'setup',
+  'triage',
+  'code',
+  'verify',
+  'review',
+  'approve',
+  'finish',
+]
+
+export interface PipelineInput {
+  status: string
+  diagnosisKind: DiagnosisKind
+  live: Pick<LiveElapsed, 'stage'> | null
+  report: Pick<LoopReport, 'attempts' | 'waits' | 'stageVisits' | 'roleUsage'>
+}
+
+/** Stored step or wait name to the stage it belongs to, dated by its start. */
+function pipelineEvents(
+  attempts: Pick<AttemptRow, 'stepName' | 'startedAt'>[],
+  waits: Pick<WaitRow, 'name' | 'createdAt'>[],
+): { stage: string; at: number }[] {
+  return [
+    ...attempts.map((a) => ({
+      stage: stageOf(a.stepName),
+      at: Date.parse(a.startedAt),
+    })),
+    ...waits.map((w) => ({
+      stage: stageOf(w.name),
+      at: Date.parse(w.createdAt),
+    })),
+  ].filter((e) => PIPELINE_ORDER.includes(e.stage))
+}
+
+/**
+ * The fixed stage order with each stage's visit count and state, from the
+ * report's stored attempts, waits and visit counts. Triage appears only
+ * when the run has a triage step or profile. A stop is shown on the stage
+ * the run stopped after, not as a stage of its own.
+ */
+export function derivePipeline(input: PipelineInput): Pipeline {
+  const { report } = input
+  const approvals = report.waits.filter((w) => stageOf(w.name) === 'approve')
+  const counts = new Map<string, number>()
+  for (const v of report.stageVisits) counts.set(v.stage, v.visits)
+  // Approval is a wait, not a step, so it has no attempts to count.
+  counts.set('approve', new Set(approvals.map((w) => w.name)).size)
+  for (const once of ['setup', 'triage'])
+    counts.set(once, report.attempts.some((a) => a.stepName === once) ? 1 : 0)
+  const hasTriage =
+    (counts.get('triage') ?? 0) > 0 ||
+    report.roleUsage.some((r) => r.role === 'triage')
+  const order = PIPELINE_ORDER.filter((s) => s !== 'triage' || hasTriage)
+
+  const events = pipelineEvents(report.attempts, approvals).sort(
+    (x, y) => x.at - y.at,
+  )
+  const last = events.at(-1)?.stage ?? null
+  const terminal = TERMINAL_STATUSES.includes(input.status)
+  let at: string | null
+  let atState: PipelineState
+  if (terminal) {
+    const finished =
+      input.status === 'completed' && (counts.get('finish') ?? 0) > 0
+    at = finished ? null : (last ?? 'setup')
+    atState = 'stopped'
+  } else {
+    const live = input.live?.stage
+    at = live && order.includes(live) ? live : (last ?? 'setup')
+    atState =
+      input.diagnosisKind === 'running'
+        ? 'running'
+        : needsHuman(input.diagnosisKind)
+          ? 'waiting'
+          : 'current'
+  }
+  const stages = order.map((stage) => {
+    const count = counts.get(stage) ?? 0
+    const state: PipelineState =
+      stage === at ? atState : count > 0 ? 'done' : 'not-reached'
+    return { stage, state, count }
+  })
+
+  const parts = stages
+    .filter((s) => s.count > 1)
+    .map((s) => `${s.stage} ${s.count}回`)
+  if (at === null) parts.push('finish まで完了')
+  else if (atState === 'stopped') parts.push(`${at} で停止`)
+  else if (atState === 'running') parts.push(`いまは ${at} を実行中`)
+  else if (atState === 'waiting') parts.push(`いまは ${at} で人待ち`)
+  else parts.push(`いまは ${at}`)
+  return { stages, label: `工程: ${parts.join('、')}` }
+}
+
+// ---------------------------------------------------------------- timeline
+
+export interface TimelineBar {
+  /** `code`, `verify`, `review:correctness`, `approve`, … */
+  lane: string
+  /** `wait` is the human approval wait; `work` is a stage's step attempts. */
+  kind: 'work' | 'wait'
+  /** Milliseconds from the timeline's start. */
+  startMs: number
+  /** Null when the end was never recorded (an interrupted attempt). */
+  endMs: number | null
+  /** Still running or waiting: the bar ends at `now`. */
+  open: boolean
+  failed: boolean
+  startedAt: string
+  /** Wall time of the bar; provisional while open, null when unknown. */
+  durationMs: number | null
+}
+
+export interface Timeline {
+  startedAt: string
+  /** From `startedAt` to the last known end, or to `now` for an open run. */
+  spanMs: number
+  /** Lanes that have bars, in stage order. */
+  lanes: string[]
+  bars: TimelineBar[]
+}
+
+const TIMELINE_LANES = [
+  'triage',
+  'code',
+  'verify',
+  'review:correctness',
+  'review:edge-cases',
+  'approve',
+]
+
+/** The lane a step runs in, and the stage entry it belongs to. */
+function laneOf(stepName: string): { lane: string; entry: string } | null {
+  if (stepName === 'triage') return { lane: 'triage', entry: 'once' }
+  const [kind, sequence, stage, sub] = stepName.split(':')
+  if (kind !== 'stage' || !sequence) return null
+  if (stage === 'code' || stage === 'verify')
+    return { lane: stage, entry: sequence }
+  if (stage === 'review' && (sub === 'correctness' || sub === 'edge-cases'))
+    return { lane: `review:${sub}`, entry: sequence }
+  return null
+}
+
+export interface TimelineInput {
+  run: {
+    status: string
+    createdAt: string
+    startedAt: string | null
+    leaseGeneration: number
+  }
+  attempts: Pick<
+    AttemptRow,
+    'stepName' | 'startedAt' | 'completedAt' | 'status' | 'leaseGeneration'
+  >[]
+  waits: Pick<WaitRow, 'name' | 'createdAt' | 'resolvedAt'>[]
+  now: number
+}
+
+/**
+ * One bar per stage entry per lease generation: a stage entered twice (a
+ * repair) is two bars in its lane, and a worker that lost its lease leaves
+ * a bar of its own. Reviews run in parallel, so their lanes overlap. Only
+ * the current lease generation of an open run can still be running; any
+ * other missing end stays unknown rather than being drawn to `now`.
+ */
+export function deriveTimeline(input: TimelineInput): Timeline | null {
+  const { run, now } = input
+  const terminal = TERMINAL_STATUSES.includes(run.status)
+  type Raw = Omit<TimelineBar, 'startMs' | 'endMs' | 'durationMs'> & {
+    start: number
+    end: number | null
+  }
+  const groups = new Map<string, Raw>()
+  for (const a of input.attempts) {
+    const where = laneOf(a.stepName)
+    const start = Date.parse(a.startedAt)
+    if (!where || !Number.isFinite(start)) continue
+    const end = a.completedAt ? Date.parse(a.completedAt) : NaN
+    const open =
+      !terminal &&
+      a.completedAt === null &&
+      a.status === 'started' &&
+      a.leaseGeneration === run.leaseGeneration
+    const key = `${where.lane}#${where.entry}#${a.leaseGeneration}`
+    const bar = groups.get(key)
+    const next: Raw = {
+      lane: where.lane,
+      kind: 'work',
+      start,
+      end: Number.isFinite(end) ? end : null,
+      open,
+      failed: a.status === 'failed',
+      startedAt: a.startedAt,
+    }
+    if (!bar) {
+      groups.set(key, next)
+      continue
+    }
+    if (start < bar.start) {
+      bar.start = start
+      bar.startedAt = a.startedAt
+    }
+    // One attempt with no recorded end leaves the whole bar's end unknown.
+    bar.end =
+      bar.end === null || next.end === null ? null : Math.max(bar.end, next.end)
+    bar.open ||= open
+    bar.failed ||= next.failed
+  }
+  const raws = [...groups.values()]
+  for (const w of input.waits) {
+    const start = Date.parse(w.createdAt)
+    if (stageOf(w.name) !== 'approve' || !Number.isFinite(start)) continue
+    const end = w.resolvedAt ? Date.parse(w.resolvedAt) : NaN
+    raws.push({
+      lane: 'approve',
+      kind: 'wait',
+      start,
+      end: Number.isFinite(end) ? end : null,
+      open: !terminal && w.resolvedAt === null,
+      failed: false,
+      startedAt: w.createdAt,
+    })
+  }
+  if (raws.length === 0) return null
+
+  const runStart = Date.parse(run.startedAt ?? run.createdAt)
+  const origin = Math.min(
+    ...raws.map((r) => r.start),
+    ...(Number.isFinite(runStart) ? [runStart] : []),
+  )
+  const endOf = (r: Raw) => (r.open ? Math.max(now, r.start) : r.end)
+  const ends = raws.map(endOf).filter((e): e is number => e !== null)
+  const last = Math.max(
+    origin,
+    ...raws.map((r) => r.start),
+    ...ends,
+    ...(terminal ? [] : [now]),
+  )
+  const bars = raws
+    .map((r): TimelineBar => {
+      const end = endOf(r)
+      return {
+        lane: r.lane,
+        kind: r.kind,
+        startMs: r.start - origin,
+        endMs: end === null ? null : end - origin,
+        open: r.open,
+        failed: r.failed,
+        startedAt: r.startedAt,
+        durationMs: end === null ? null : Math.max(0, end - r.start),
+      }
+    })
+    .sort(
+      (x, y) =>
+        TIMELINE_LANES.indexOf(x.lane) - TIMELINE_LANES.indexOf(y.lane) ||
+        x.startMs - y.startMs,
+    )
+  return {
+    startedAt: new Date(origin).toISOString(),
+    spanMs: Math.max(1, last - origin),
+    lanes: TIMELINE_LANES.filter((l) => bars.some((b) => b.lane === l)),
+    bars,
+  }
+}
+
 /** A database that exists but has no tables yet reads as `empty`. */
 function orEmpty<T>(read: Promise<T>, empty: T): Promise<T> {
   return read.catch((error: unknown) => {
@@ -143,12 +448,19 @@ async function inspect(durably: AgentLoopDurably, run: Run, now: number) {
     diagnose(durably, run, now),
     buildReport(durably, run.id),
   ])
+  const live = liveElapsed(run, report.attempts, now)
   return {
     name: runName(run.input),
     createdAt: run.createdAt,
     diagnosis,
     needsHuman: needsHuman(diagnosis.kind),
-    live: liveElapsed(run, report.attempts, now),
+    live,
+    pipeline: derivePipeline({
+      status: run.status,
+      diagnosisKind: diagnosis.kind,
+      live,
+      report,
+    }),
     report,
   }
 }
@@ -206,9 +518,16 @@ function createUiApi() {
     const db = source()
     const found = db ? await orEmpty(db.getRun(id), null) : null
     if (!db || !found) throw new HttpError(404, `no run ${id}`)
+    const seen = await inspect(db, found, now)
     return {
       now: new Date(now).toISOString(),
-      ...(await inspect(db, found, now)),
+      ...seen,
+      timeline: deriveTimeline({
+        run: found,
+        attempts: seen.report.attempts,
+        waits: seen.report.waits,
+        now,
+      }),
     }
   }
 

@@ -21,10 +21,12 @@ import Database from 'better-sqlite3'
 
 import { createAgentDurably, dbPath } from '../src/durably.js'
 import { runChild } from '../src/engine/child.js'
-import { liveElapsed } from '../src/engine/report.js'
+import { liveElapsed, stageVisits } from '../src/engine/report.js'
 import { checkpointPaths } from '../src/engine/runner.js'
 import { pollEvery } from '../src/ui/poll.js'
 import {
+  derivePipeline,
+  deriveTimeline,
   runName,
   SUBJECT_RUN_NAME,
   type CompareResponse,
@@ -129,6 +131,240 @@ describe('liveElapsed', () => {
         liveElapsed({ ...pending, status }, [attempt('setup', 0, null)], t0),
         null,
       )
+  })
+})
+
+describe('pipeline and timeline', () => {
+  const t0 = Date.parse('2026-09-24T10:00:00.000Z')
+  const iso = (s: number) => new Date(t0 + s * 1000).toISOString()
+  const step = (
+    stepName: string,
+    start: number,
+    end: number | null,
+    status = end === null ? 'started' : 'completed',
+    leaseGeneration = 1,
+  ) => ({
+    stepName,
+    stepIndex: 0,
+    attemptId: `${stepName}@${start}`,
+    leaseGeneration,
+    status,
+    startedAt: iso(start),
+    completedAt: end === null ? null : iso(end),
+    interruptionReason: null,
+    measurement: null,
+  })
+  const wait = (name: string, created: number, resolved: number | null) => ({
+    id: name,
+    name,
+    outcome: resolved === null ? null : 'signal',
+    createdAt: iso(created),
+    suspendedAt: iso(created),
+    resolvedAt: resolved === null ? null : iso(resolved),
+    inputWaitMs: resolved === null ? null : (resolved - created) * 1000,
+    executionSlotWaitMs: null,
+  })
+  const report = (
+    attempts: ReturnType<typeof step>[],
+    waits: ReturnType<typeof wait>[] = [],
+    roles: string[] = ['code', 'correctness', 'edge-cases'],
+  ) => ({
+    attempts,
+    waits,
+    stageVisits: stageVisits(attempts),
+    roleUsage: roles.map((role) => ({ role })) as never,
+  })
+  const stagesOf = (p: ReturnType<typeof derivePipeline>) =>
+    p.stages.map((s) => [s.stage, s.state, s.count])
+
+  // Implemented, failed the check, repaired, passed, reviewed, and now waits.
+  const repaired = [
+    step('setup', 0, 1),
+    step('decision:0', 1, 1),
+    step('stage:0:code:agent', 1, 10),
+    step('stage:0:code:candidate', 10, 11),
+    step('stage:1:verify:acceptance', 11, 15),
+    step('stage:2:code:agent', 15, 30),
+    step('stage:2:code:candidate', 30, 31),
+    step('stage:3:verify:acceptance', 31, 35),
+    step('stage:4:review:correctness', 35, 50),
+    step('stage:4:review:edge-cases', 35, 45),
+  ]
+  const approval = wait('stage:5:approve:cand-2', 51, null)
+
+  it('(a) counts a repair loop and puts a waiting run on approve', () => {
+    const p = derivePipeline({
+      status: 'waiting',
+      diagnosisKind: 'approval',
+      live: null,
+      report: report(repaired, [approval]),
+    })
+    assert.deepEqual(stagesOf(p), [
+      ['setup', 'done', 1],
+      ['code', 'done', 2],
+      ['verify', 'done', 2],
+      ['review', 'done', 1],
+      ['approve', 'waiting', 1],
+      ['finish', 'not-reached', 0],
+    ])
+    assert.equal(p.label, '工程: code 2回、verify 2回、いまは approve で人待ち')
+  })
+
+  it('(b) stops a verification-failed run at verify', () => {
+    const p = derivePipeline({
+      status: 'completed',
+      diagnosisKind: 'stopped',
+      live: null,
+      report: report([
+        step('setup', 0, 1),
+        step('stage:0:code:agent', 1, 10),
+        step('stage:1:verify:acceptance', 11, 15),
+        step('stage:2:code:agent', 15, 30),
+        step('stage:3:verify:acceptance', 31, 35),
+        step('stage:4:stop:result', 35, 36),
+      ]),
+    })
+    assert.deepEqual(stagesOf(p), [
+      ['setup', 'done', 1],
+      ['code', 'done', 2],
+      ['verify', 'stopped', 2],
+      ['review', 'not-reached', 0],
+      ['approve', 'not-reached', 0],
+      ['finish', 'not-reached', 0],
+    ])
+    assert.equal(p.label, '工程: code 2回、verify 2回、verify で停止')
+  })
+
+  it('(c) shows triage only for a run with triage, and the running stage', () => {
+    const attempts = [
+      step('setup', 0, 1),
+      step('triage', 1, 5),
+      step('stage:0:code:agent', 5, null),
+    ]
+    const p = derivePipeline({
+      status: 'leased',
+      diagnosisKind: 'running',
+      live: { stage: 'code' },
+      report: report(
+        attempts,
+        [],
+        ['code', 'correctness', 'edge-cases', 'triage'],
+      ),
+    })
+    assert.deepEqual(stagesOf(p), [
+      ['setup', 'done', 1],
+      ['triage', 'done', 1],
+      ['code', 'running', 1],
+      ['verify', 'not-reached', 0],
+      ['review', 'not-reached', 0],
+      ['approve', 'not-reached', 0],
+      ['finish', 'not-reached', 0],
+    ])
+    assert.equal(p.label, '工程: いまは code を実行中')
+    // A triage profile alone is enough to show the stage, not yet reached.
+    const queued = derivePipeline({
+      status: 'pending',
+      diagnosisKind: 'pending',
+      live: null,
+      report: report([], [], ['code', 'triage']),
+    })
+    assert.deepEqual(stagesOf(queued).slice(0, 2), [
+      ['setup', 'current', 0],
+      ['triage', 'not-reached', 0],
+    ])
+  })
+
+  it('draws repairs as two bars in one lane, overlapping reviews, and the wait span', () => {
+    const now = t0 + 60_000
+    const t = deriveTimeline({
+      run: {
+        status: 'waiting',
+        createdAt: iso(-2),
+        startedAt: iso(0),
+        leaseGeneration: 1,
+      },
+      attempts: repaired,
+      waits: [approval],
+      now,
+    })
+    assert.ok(t)
+    assert.equal(t.startedAt, iso(0))
+    assert.equal(t.spanMs, 60_000)
+    assert.deepEqual(t.lanes, [
+      'code',
+      'verify',
+      'review:correctness',
+      'review:edge-cases',
+      'approve',
+    ])
+    const lane = (name: string) =>
+      t.bars
+        .filter((b) => b.lane === name)
+        .map((b) => [b.startMs, b.endMs, b.open, b.kind])
+    // The agent and candidate steps of one entry are one bar.
+    assert.deepEqual(lane('code'), [
+      [1000, 11_000, false, 'work'],
+      [15_000, 31_000, false, 'work'],
+    ])
+    assert.deepEqual(lane('verify'), [
+      [11_000, 15_000, false, 'work'],
+      [31_000, 35_000, false, 'work'],
+    ])
+    assert.deepEqual(lane('review:correctness'), [
+      [35_000, 50_000, false, 'work'],
+    ])
+    assert.deepEqual(lane('review:edge-cases'), [
+      [35_000, 45_000, false, 'work'],
+    ])
+    // The open approval wait runs to now.
+    assert.deepEqual(lane('approve'), [[51_000, 60_000, true, 'wait']])
+    assert.equal(t.bars.find((b) => b.kind === 'wait')?.durationMs, 9000)
+
+    // A finished run: an attempt left open has an unknown end, never `now`,
+    // and a failed attempt is marked.
+    const stopped = deriveTimeline({
+      run: {
+        status: 'failed',
+        createdAt: iso(0),
+        startedAt: iso(0),
+        leaseGeneration: 2,
+      },
+      attempts: [
+        step('stage:0:code:agent', 1, null, 'started', 1),
+        step('stage:0:code:agent', 20, 25, 'failed', 2),
+      ],
+      waits: [],
+      now,
+    })
+    assert.ok(stopped)
+    assert.deepEqual(
+      stopped.bars.map((b) => [
+        b.startMs,
+        b.endMs,
+        b.durationMs,
+        b.open,
+        b.failed,
+      ]),
+      [
+        [1000, null, null, false, false],
+        [20_000, 25_000, 5000, false, true],
+      ],
+    )
+    assert.equal(stopped.spanMs, 25_000)
+    assert.equal(
+      deriveTimeline({
+        run: {
+          status: 'pending',
+          createdAt: iso(0),
+          startedAt: null,
+          leaseGeneration: 0,
+        },
+        attempts: [],
+        waits: [],
+        now,
+      }),
+      null,
+    )
   })
 })
 
@@ -545,6 +781,18 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
         `/api/runs/${ids['approval']}`,
       )
       assert.equal(waiting.name, SUBJECT_RUN_NAME)
+      // The stepper and timeline come from the same stored rows.
+      assert.equal(
+        waiting.pipeline.stages.find((s) => s.stage === 'approve')?.state,
+        'waiting',
+      )
+      assert.deepEqual(waiting.pipeline, row('approval').pipeline)
+      assert.ok(waiting.timeline?.bars.some((b) => b.kind === 'wait' && b.open))
+      assert.equal(
+        row('verification').pipeline.stages.find((s) => s.state === 'stopped')
+          ?.stage,
+        'verify',
+      )
       assert.equal(waiting.report.reviews.length, 2)
       assert.ok(waiting.report.reviews.every((r) => r.notes.length > 0))
       assert.ok(waiting.report.candidate?.id)

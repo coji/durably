@@ -20,9 +20,13 @@ import { TERMINAL_STATUSES } from '../engine/terminal'
 import { pollJson } from './poll'
 import type {
   CompareResponse,
+  Pipeline,
+  PipelineState,
   RunDetailResponse,
   RunRow,
   RunsResponse,
+  Timeline,
+  TimelineBar,
 } from './server'
 
 const REFRESH_MS = 3000
@@ -508,6 +512,218 @@ function RunLink({ id, name }: { id: string; name: string }) {
   )
 }
 
+// ---------------------------------------------------------------- pipeline
+
+const STAGE_CLASS: Record<PipelineState, string> = {
+  done: 'text-fg',
+  running: 'bg-running-bg text-running rounded-sm px-1 font-medium',
+  waiting: 'bg-waiting-bg text-waiting rounded-sm px-1 font-medium',
+  current: 'bg-sunken text-fg rounded-sm px-1 font-medium',
+  stopped: 'bg-failed-bg text-failed rounded-sm px-1 font-medium',
+  'not-reached': 'text-fg-3',
+}
+
+/** Words beside the stage name, so a state never rests on color alone. */
+const STAGE_SUFFIX: Partial<Record<PipelineState, string>> = {
+  running: '実行中',
+  waiting: '人待ち',
+  stopped: '停止',
+}
+
+/**
+ * The run's stages in their fixed order, on one line where it fits. Screen
+ * readers hear the server's one-sentence summary instead of the chips.
+ */
+function Stepper({ pipeline }: { pipeline: Pipeline }) {
+  return (
+    <div className="text-xs leading-5">
+      <p className="sr-only">{pipeline.label}</p>
+      <ol aria-hidden className="flex flex-wrap items-center gap-x-1 gap-y-1">
+        {pipeline.stages.map((s, i) => (
+          <li key={s.stage} className="inline-flex items-center gap-1">
+            {i > 0 ? <span className="text-fg-3">›</span> : null}
+            <span
+              className={`inline-flex items-center gap-1 whitespace-nowrap ${STAGE_CLASS[s.state]}`}
+            >
+              {s.state === 'running' ? (
+                <span className="dot-live size-1.5 rounded-full bg-current" />
+              ) : null}
+              {s.stage}
+              {s.count > 1 ? (
+                <span className="tabular-nums">×{s.count}</span>
+              ) : null}
+              {STAGE_SUFFIX[s.state] ? (
+                <span className="font-normal">{STAGE_SUFFIX[s.state]}</span>
+              ) : null}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
+}
+
+/** "0", "30秒", "1分30秒": short enough for an axis tick. */
+function fmtTick(ms: number): string {
+  const s = Math.round(ms / 1000)
+  if (s === 0) return '0'
+  if (s < 60) return `${s}秒`
+  const m = Math.floor(s / 60)
+  if (m < 60) return s % 60 ? `${m}分${s % 60}秒` : `${m}分`
+  return m % 60 ? `${Math.floor(m / 60)}時間${m % 60}分` : `${m / 60}時間`
+}
+
+const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
+  .map((s) => s * 1000)
+  .concat([2, 3, 6, 12, 24].map((h) => h * 3_600_000))
+
+/** At most five round ticks from 0 across the span. */
+function ticks(spanMs: number): number[] {
+  const step =
+    TICK_STEPS.find((t) => spanMs / t <= 5) ?? TICK_STEPS.at(-1) ?? spanMs
+  const out: number[] = []
+  for (let t = 0; t < spanMs; t += step) out.push(t)
+  return out
+}
+
+function barLabel(b: TimelineBar): string {
+  const state = b.open
+    ? b.kind === 'wait'
+      ? '（人待ち）'
+      : '（実行中）'
+    : b.failed
+      ? '（失敗）'
+      : ''
+  return `${b.lane} · 開始 ${timeFmt.format(new Date(b.startedAt))} · ${fmtMs(b.durationMs)}${state}`
+}
+
+function barClass(b: TimelineBar): string {
+  if (b.kind === 'wait')
+    return 'border border-dashed border-waiting bg-[repeating-linear-gradient(135deg,var(--state-waiting-bg)_0_4px,transparent_4px_8px)]'
+  if (b.failed) return 'bg-failed'
+  return b.open ? 'bg-fg-2' : 'bg-fg-3/60'
+}
+
+const pct = (ms: number, span: number) => `${(ms / span) * 100}%`
+
+/**
+ * Each stage entry as a bar on real time from the run's start: a repair is
+ * a second bar in its lane, the two reviews overlap, and the approval wait
+ * is the hatched span. The drawing is hidden from screen readers, which get
+ * the same bars as a table.
+ */
+function TimelineChart({ timeline: t }: { timeline: Timeline }) {
+  const marks = ticks(t.spanMs)
+  const grid =
+    'grid grid-cols-[7.5rem_1fr] items-center gap-3 sm:grid-cols-[9rem_1fr]'
+  return (
+    <div>
+      <div aria-hidden className="flex flex-col gap-1">
+        {t.lanes.map((lane) => {
+          const bars = t.bars.filter((b) => b.lane === lane)
+          const open = bars.find((b) => b.open)
+          return (
+            <div key={lane} className={grid}>
+              <span className="flex min-w-0 items-center gap-1 text-xs">
+                <span className="truncate">{lane}</span>
+                {open ? (
+                  <span
+                    className={`inline-flex shrink-0 items-center gap-1 ${open.kind === 'wait' ? 'text-waiting' : 'text-running'}`}
+                  >
+                    {open.kind === 'wait' ? null : (
+                      <span className="dot-live size-1.5 rounded-full bg-current" />
+                    )}
+                    {open.kind === 'wait' ? '人待ち' : '実行中'}
+                  </span>
+                ) : null}
+              </span>
+              <span className="bg-sunken relative h-4 rounded-sm">
+                {marks.slice(1).map((m) => (
+                  <span
+                    key={m}
+                    className="bg-line absolute inset-y-0 w-px"
+                    style={{ left: pct(m, t.spanMs) }}
+                  />
+                ))}
+                {bars.map((b) =>
+                  b.endMs === null ? (
+                    <span
+                      key={`${b.startedAt}-${b.kind}`}
+                      title={barLabel(b)}
+                      className="border-fg-3 absolute inset-y-0 border-l-2 border-dotted"
+                      style={{ left: pct(b.startMs, t.spanMs) }}
+                    />
+                  ) : (
+                    <span
+                      key={`${b.startedAt}-${b.kind}`}
+                      title={barLabel(b)}
+                      className={`absolute inset-y-0.5 min-w-0.5 rounded-sm ${barClass(b)}`}
+                      style={{
+                        left: pct(b.startMs, t.spanMs),
+                        width: pct(b.endMs - b.startMs, t.spanMs),
+                      }}
+                    />
+                  ),
+                )}
+              </span>
+            </div>
+          )
+        })}
+        <div className={grid}>
+          <span className="text-fg-3 text-xs">開始から</span>
+          <span className="text-fg-2 relative h-4 text-xs tabular-nums">
+            {marks.map((m) => (
+              <span
+                key={m}
+                className="absolute top-0"
+                style={{
+                  left: pct(m, t.spanMs),
+                  transform: m === 0 ? undefined : 'translateX(-50%)',
+                }}
+              >
+                {fmtTick(m)}
+              </span>
+            ))}
+          </span>
+        </div>
+      </div>
+      <table className="sr-only">
+        <caption>工程の時系列（run の開始 {t.startedAt} から）</caption>
+        <thead>
+          <tr>
+            <th scope="col">工程</th>
+            <th scope="col">開始</th>
+            <th scope="col">時間</th>
+            <th scope="col">状態</th>
+          </tr>
+        </thead>
+        <tbody>
+          {t.bars.map((b) => (
+            <tr key={`${b.lane}-${b.startedAt}-${b.kind}`}>
+              <td>
+                {b.kind === 'wait' ? `${b.lane}（人の承認待ち）` : b.lane}
+              </td>
+              <td>{timeFmt.format(new Date(b.startedAt))}</td>
+              <td>{fmtMs(b.durationMs)}</td>
+              <td>
+                {b.open
+                  ? b.kind === 'wait'
+                    ? '人待ち'
+                    : '実行中'
+                  : b.endMs === null
+                    ? '終了時刻不明'
+                    : b.failed
+                      ? '失敗'
+                      : '終了'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------- run list
 
 /** The running stage, on a line of its own; the rest as secondary text. */
@@ -557,6 +773,7 @@ function OpenRun({ run, now }: { run: RunRow; now: string }) {
           <Ago iso={run.createdAt} now={now} prefix="作成 " />
         </span>
       </div>
+      <Stepper pipeline={run.pipeline} />
       {running ? <LiveProgress live={run.live} extra={progress} /> : null}
       <p className="text-fg-2 text-sm">{run.diagnosis.reason}</p>
       {!running && progress ? (
@@ -623,8 +840,9 @@ function FinishedTable({ runs, now }: { runs: RunRow[]; now: string }) {
             return (
               <tr key={run.id}>
                 <Td>
-                  <span className="block max-w-md">
+                  <span className="flex max-w-md flex-col gap-1">
                     <RunLink id={run.id} name={run.name} />
+                    <Stepper pipeline={run.pipeline} />
                   </span>
                 </Td>
                 <Td>
@@ -1031,11 +1249,18 @@ function RunPage({ data }: { data: RunDetailResponse }) {
           />
           <CopyAnnouncer copied={copied} />
         </div>
+        <Stepper pipeline={data.pipeline} />
       </div>
 
       <StatusPanel data={data} />
 
       <SummaryPanel report={r} />
+
+      {data.timeline ? (
+        <Panel title="工程の時系列">
+          <TimelineChart timeline={data.timeline} />
+        </Panel>
+      ) : null}
 
       <Panel title="工程ごとの時間">
         <StageTimings report={r} />
