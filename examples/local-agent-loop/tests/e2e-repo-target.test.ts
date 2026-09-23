@@ -8,6 +8,7 @@
  * owner is sitting in must never move.
  */
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { existsSync, readdirSync } from 'node:fs'
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -46,6 +47,8 @@ describe('calc', () => {
 `
 
 const NO_FILES = { task: null, spec: null, dispositions: null }
+
+const sha256 = (text: string) => createHash('sha256').update(text).digest('hex')
 
 async function git(cwd: string, args: string[]): Promise<string> {
   const res = await runChild('git', args, { cwd, timeoutMs: 60000 })
@@ -223,6 +226,61 @@ describe('repo target end to end', { timeout: 180000 }, () => {
     }
   })
 
+  it('names the candidate branch and commit when nothing is delivered', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-unfixed-'))
+    const repo = await seedRepo(root)
+    // One iteration that leaves the bug: verification fails, no delivery.
+    delete process.env.FAKE_FAIL_FIRST
+    delete process.env.FAKE_REVIEW_SEQUENCE
+
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        target: {
+          kind: 'repo' as const,
+          repoPath: repo,
+          baseRef: 'HEAD',
+          task: 'Fix add() so decimal inputs are not truncated.',
+          spec: null,
+          dispositions: null,
+          inputFiles: NO_FILES,
+          issue: null,
+          checkCommand: ['node', '--test', 'test/**/*.test.js'],
+          setupCommand: null,
+          publish: false,
+        },
+        maxIterations: 1,
+        context: 'reuse',
+      })
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        150000,
+        'unfixed run completes',
+      )
+      const output = (await durably.getRun(run.id))?.output as {
+        conclusion: string
+        delivery: unknown
+      }
+      assert.equal(output.conclusion, 'verification-failed')
+      assert.equal(output.delivery, null)
+
+      const branch = `factory/${run.id}`
+      const commit = await resolveCommit(repo, branch)
+      const report = await buildReport(durably, run.id)
+      assert.equal(report.candidate?.branch, branch)
+      assert.equal(report.candidate?.commit, commit)
+      for (const text of [reportToMarkdown(report), reportToJson(report)]) {
+        assert.ok(text.includes(branch))
+        assert.ok(text.includes(commit))
+      }
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
   it('survives a check that leaves untracked build output behind', async () => {
     const root = await mkdtemp(join(tmpdir(), 'repo-target-dirty-'))
     const repo = await seedRepo(root)
@@ -291,7 +349,13 @@ describe('repo target end to end', { timeout: 180000 }, () => {
       const run = await durably.jobs.agentLoop.trigger({
         provider: 'fake',
         profiles: {
-          code: fixProfile(a),
+          // Effective values from the caller are ignored: setup resolves
+          // them from the requested ones.
+          code: {
+            ...fixProfile(a),
+            effectiveModel: 'forged',
+            effectiveEffort: 'forged',
+          } as ReturnType<typeof fixProfile>,
           correctness: fixProfile(a),
           'edge-cases': fixProfile(b),
         },
@@ -303,8 +367,8 @@ describe('repo target end to end', { timeout: 180000 }, () => {
           spec: 'add() returns the exact floating point sum.',
           dispositions: null,
           inputFiles: {
-            task: { path: '/work/task.md', sha256: 'a'.repeat(64) },
-            spec: { path: '/work/spec.md', sha256: 'b'.repeat(64) },
+            task: { path: '/work/task.md' },
+            spec: { path: '/work/spec.md' },
             dispositions: null,
           },
           issue: null,
@@ -332,6 +396,10 @@ describe('repo target end to end', { timeout: 180000 }, () => {
         }
       }
       assert.equal(output.conclusion, 'approved')
+      const setupStep = (await durably.storage.getSteps(run.id)).find(
+        (x) => x.name === 'setup',
+      )?.output as { profiles: Record<string, { effectiveModel: string }> }
+      assert.equal(setupStep.profiles['code']?.effectiveModel, 'fake-model')
 
       // Each LLM call carried its own role's requested settings.
       const attempts = await durably.getStepAttempts(run.id)
@@ -383,8 +451,13 @@ describe('repo target end to end', { timeout: 180000 }, () => {
         assert.equal(role.totalTokens, null, role.role)
         assert.equal(role.complete, false, role.role)
       }
-      assert.equal(report.inputs.task?.sha256, 'a'.repeat(64))
-      assert.equal(report.inputs.spec?.sha256, 'b'.repeat(64))
+      // Hashed from the content the run stored, not taken from the caller.
+      const taskHash = sha256('Fix add() so decimal inputs are not truncated.')
+      assert.equal(report.inputs.task?.sha256, taskHash)
+      assert.equal(
+        report.inputs.spec?.sha256,
+        sha256('add() returns the exact floating point sum.'),
+      )
       assert.equal(report.inputs.dispositions, null)
       assert.equal(report.delivery?.branch, branch)
       assert.equal(report.delivery?.commit, output.delivery.commit)
@@ -393,7 +466,7 @@ describe('repo target end to end', { timeout: 180000 }, () => {
       for (const text of [md, json]) {
         assert.ok(text.includes(branch))
         assert.ok(text.includes(output.delivery.commit ?? 'missing'))
-        assert.ok(text.includes('a'.repeat(64)))
+        assert.ok(text.includes(taskHash))
         assert.doesNotMatch(text, /issue-\d|issues\/\d|#\d/)
       }
       assert.match(md, /\| edge-cases \| fake \| model-b \| high \| \d+ \|/)

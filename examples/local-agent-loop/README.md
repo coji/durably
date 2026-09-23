@@ -157,7 +157,7 @@ pnpm --filter example-local-agent-loop demo trigger \
   `--issue` は `gh issue view` で本文を取ります。
 - `--spec-file` は実装とレビュー二つの全員に、`--dispositions-file`（過去の
   レビュー指摘をどう扱ったか）はレビューだけに渡ります。どれも中身を解釈しない
-  UTF-8テキストです。promptでは「信頼しないデータ」として区切った区画に入り、
+  UTF-8テキストで、1ファイル256 KiBまでです。promptでは「信頼しないデータ」として区切った区画に入り、
   factoryの指示や出力形式とは混ざりません。
 - `check` は**エージェントが走り出す前に固定される採点コマンド**です。argvとして
   そのまま実行するのでshellではありません。configにもフラグにも無ければ起動しません。
@@ -170,8 +170,10 @@ pnpm --filter example-local-agent-loop demo trigger \
   渡してください。
 - `profiles` は `code`（実装と修正）、`review.correctness`、`review.edge-cases` の
   三役割を別々に指定できます。configが省いた役割と、役割の中で省いた項目だけを
-  `--provider`、`--model`、`--effort` とpresetで補います。明示した役割の値が他の
-  役割やフラグで上書きされることはありません。fakeと実providerを役割ごとに混ぜる
+  `--provider`、`--model`、`--effort` とpresetで補います。ただし `--provider` と
+  違うproviderを指定した役割は `--model` と `--effort` を引き継がず、そのproviderの
+  既定presetを使います。明示した役割の値が他の役割やフラグで上書きされることは
+  ありません。fakeと実providerを役割ごとに混ぜる
   ことはできません。
 - timeoutの既定値はターゲットで変わります。実リポジトリはagent呼び出し30分、
   検査15分。同梱題材はそれぞれ5分と2分です。`AGENT_TIMEOUT_MS` と
@@ -179,7 +181,9 @@ pnpm --filter example-local-agent-loop demo trigger \
 - 反復ごとにcommitして封印します。検証・レビュー・成果物は同じcommitを見ます。
 - 既定の成果物は `~/.local/state/local-agent-loop/runs/<runId>/delivery/<candidate>.patch`
   です。issueなしのrunのbranchは `factory/<runId>` で、承認されたcommitはこの
-  branchに残ります。`status` とreportがbranch名とcommit SHAを表示します。
+  branchに残ります。`status` とreportがbranch名とcommit SHAを表示します。承認されず
+  成果物が無いrun（却下、検証失敗、レビュー上限）でも、最後に封印したcandidateの
+  branchとcommitを `candidate` として表示します。
   `--publish` を付けるとbranchをpushしてDraft PRを作ります。
 
 `--publish` を付けない限り、外向きの操作は起きません。まずpatchで確かめてから
@@ -192,10 +196,11 @@ PRに進むのが安全です。
 ### trigger時点で固定されるもの
 
 `factory.json`、task、spec、dispositionsは `trigger` の時点で一度だけ読みます。
-フラグとpresetを適用した後の設定と入力ファイルの本文をrun inputに保存し、各入力
-ファイルのSHA-256も記録します。workerは元のファイルを読み直さないので、trigger後に
-ファイルを書き換えても、そのrunの設定とpromptは変わりません。reportには各入力
-ファイルのpathとSHA-256が出ます。
+フラグを適用した後の各役割のrequested設定と、入力ファイルのpathと本文をrun inputに
+保存します。実際に使うmodelとeffortは、workerがそのrequested設定からproviderの
+presetで解決します。workerは元のファイルを読み直さないので、trigger後にファイルを
+書き換えても、そのrunの設定とpromptは変わりません。reportには各入力ファイルの
+pathと、保存した本文から計算したSHA-256が出ます。
 
 ### durably checkoutを固定して呼ぶ
 
@@ -235,6 +240,16 @@ worker、trigger、status、waits、approve、report、compareはすべて引数
 過去のrunはそのまま読めます。置き場所を変える引数や環境変数はありません。二つの
 プロセスが別のDBを見ると、runが黙って見えなくなるからです。
 
+### 以前の版からの移行 (Upgrading)
+
+以前の版はDBを `examples/local-agent-loop/local-agent-loop.db`（または `DURABLY_DB`
+の指す場所）に、作業物を `examples/local-agent-loop/runs/` に置いていました。
+この版はそれらを読まず、移行もしません。checkoutに古いDBが残っていると、
+workerとCLIは起動時にその場所と新しい場所をstderrに一度警告します。承認待ちや
+実行中のrunが残っているなら、上げる前に以前の版で終わらせるか破棄してください。
+その後、古いDBと `runs/` は消して構いません。worktreeを消したときは、対象
+リポジトリで `git worktree prune` を実行します。
+
 ### 使用量の責任範囲
 
 factoryが責任を持つのは、factoryのDBと `report --format json` までです。利用側で
@@ -247,9 +262,10 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format json \
 ```
 
 `roleUsage` は `code`、`correctness`、`edge-cases` の三行で、それぞれrequested
-provider/model/effort、invocation数、token内訳、合計token、cost、`complete` を
-持ちます。fake providerのようにusageを返さない呼び出しは0にせず、tokenとcostを
-`null`、`complete` を `false` にします。
+provider/model/effort、invocation数、token内訳、合計token、cost、`complete`、
+`costComplete` を持ちます。fake providerのようにusageを返さない呼び出しは0にせず、
+tokenとcostを `null`、`complete` を `false` にします。tokenがそろっていても価格表に
+無いmodelならcostは `null`、`costComplete` は `false` です。
 
 ## reuse / fresh 比較
 
@@ -356,13 +372,13 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
 - **Summary**: run 1本を1行に畳んだ値。success、lead time（trigger→終了）、
   work（工程実作業の合計）、human wait とその lead time 比、LLM呼び出し数、
   total tokens、cost、cost per success（成功したrunだけ）、repairs、review rounds
-- **Inputs / Delivery**: task、spec、dispositionsの各ファイルのSHA-256と、
-  成果物の場所、branch名、commit SHA
+- **Inputs / Candidate / Delivery**: task、spec、dispositionsの各ファイルの
+  SHA-256、最後に封印したcandidateのbranchとcommit、成果物の場所、branch名、commit SHA
 - **Stage usage**: 工程ごとの visits / reworked（同じ工程への再突入＝手戻り）、
   invocation数、in / cache-read / cache-write / out / total、cost。
   いずれかの呼び出しが未計上なら PARTIAL、価格不明なら unknown
 - **Role usage**: `code`、`correctness`、`edge-cases` ごとのrequested
-  provider/model/effort、invocation数、token、cost、完全性。二つのレビューを
+  provider/model/effort、invocation数、token、cost、usageとcostそれぞれの完全性。二つのレビューを
   別の行に分けるので、役割ごとに違うmodelを使ったrunでも内訳が混ざりません
 - **Timing / Attempts / Waits**: 従来どおりの工程別 work / wall 時間、
   呼び出しごとの生データ、承認待ちの inputWait / executionSlotWait

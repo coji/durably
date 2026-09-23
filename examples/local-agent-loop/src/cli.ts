@@ -1,6 +1,5 @@
 #!/usr/bin/env tsx
 /** CLI: worker | trigger | status | waits | approve | reject | report | compare */
-import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
@@ -8,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 import { z } from 'zod'
 
-import { createAgentDurably, dbPath } from './durably.js'
+import { createAgentDurably, dbPath, legacyDbWarning } from './durably.js'
 import { buildReport } from './engine/build-report.js'
 import { killOwnedChildren, runChild } from './engine/child.js'
 import { compareReports, comparisonToMarkdown } from './engine/compare.js'
@@ -113,10 +112,14 @@ async function loadConfig(
   return parsed.data
 }
 
+/** Input files are stored in the run and sent in every prompt, so keep them small. */
+const MAX_INPUT_FILE_BYTES = 256 * 1024
+
 /**
  * Read one input file once, here, before the run exists. The worker only ever
  * sees the content stored in the run input, so editing the file afterwards
- * changes nothing about the run. The content is not parsed.
+ * changes nothing about the run. The content is not parsed. Its SHA-256 is
+ * computed from the stored content when the report is built.
  */
 async function readInputFile(
   flag: string,
@@ -129,21 +132,22 @@ async function readInputFile(
   } catch {
     throw new Error(`--${flag} ${path}: cannot read file`)
   }
+  if (bytes.length > MAX_INPUT_FILE_BYTES)
+    throw new Error(
+      `--${flag} ${path}: file is ${bytes.length} bytes; the limit is 256 KiB`,
+    )
   let content: string
   try {
-    content = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    // Keep a byte order mark, so the stored text hashes like the file does.
+    content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+      bytes,
+    )
   } catch {
     throw new Error(`--${flag} ${path}: not UTF-8 text`)
   }
   if (content.trim().length === 0)
     throw new Error(`--${flag} ${path}: file is empty`)
-  return {
-    content,
-    ref: {
-      path: abs,
-      sha256: createHash('sha256').update(bytes).digest('hex'),
-    },
-  }
+  return { content, ref: { path: abs } }
 }
 
 function splitArgv(value: string): string[] {
@@ -161,12 +165,17 @@ function resolveProfiles(
   config: FactoryConfig | null,
 ): Record<ProfileRole, FixedProfile> {
   const fallbackProvider = parseProviderName(a['provider'] ?? 'fake')
-  const fix = (role: RoleConfig | undefined) =>
-    fixProfile({
-      provider: role?.provider ?? fallbackProvider,
-      model: role?.model ?? a['model'] ?? null,
-      effort: role?.effort ?? a['effort'] ?? null,
+  const fix = (role: RoleConfig | undefined) => {
+    const provider = role?.provider ?? fallbackProvider
+    // --model and --effort name the fallback provider's settings; a role on
+    // another provider gets that provider's own default instead.
+    const inherit = provider === fallbackProvider
+    return fixProfile({
+      provider,
+      model: role?.model ?? (inherit ? a['model'] : undefined) ?? null,
+      effort: role?.effort ?? (inherit ? a['effort'] : undefined) ?? null,
     })
+  }
   const profiles = {
     code: fix(config?.profiles?.code),
     correctness: fix(config?.profiles?.review?.correctness),
@@ -341,6 +350,9 @@ if (!cmd || cmd === '--help' || cmd === '-h') {
   process.exit(0)
 }
 
+const legacyWarning = legacyDbWarning()
+if (legacyWarning) console.error(legacyWarning)
+
 if (cmd === 'worker') {
   const durably = createAgentDurably()
   durably.on('run:leased', (e) =>
@@ -387,9 +399,20 @@ if (cmd === 'worker') {
     throw new Error('--approve must be auto|manual')
   const durably = createAgentDurably()
   await durably.migrate()
+  // Only the requested settings go into the run; the worker resolves them
+  // again, the same way, so no stored effective value can disagree.
+  const requested = (p: FixedProfile) => ({
+    provider: p.provider,
+    requestedModel: p.requestedModel,
+    requestedEffort: p.requestedEffort,
+  })
   const run = await durably.jobs.agentLoop.trigger({
     provider: profiles.code.provider,
-    profiles,
+    profiles: {
+      code: requested(profiles.code),
+      correctness: requested(profiles.correctness),
+      'edge-cases': requested(profiles['edge-cases']),
+    },
     target,
     maxIterations,
     model: a['model'],
@@ -422,10 +445,12 @@ if (cmd === 'worker') {
   console.log(
     JSON.stringify(
       {
-        // Where the work ended up, including the branch and commit an
-        // unpublished repository run leaves in the source repository.
+        // Where the work ended up. The sealed candidate names the branch and
+        // commit a repository run leaves behind, whatever its conclusion.
         delivery:
           (run?.output as { delivery?: unknown } | null)?.delivery ?? null,
+        candidate:
+          (run?.output as { candidate?: unknown } | null)?.candidate ?? null,
         run,
         attempts: attempts.map((x) => ({
           id: x.id,

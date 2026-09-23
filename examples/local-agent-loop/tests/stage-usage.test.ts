@@ -279,12 +279,25 @@ describe('role usage', () => {
     assert.equal(correctness?.complete, false)
   })
 
+  it('keeps cost incomplete when tokens are complete but a model is unpriced', () => {
+    const [code] = roleUsage(
+      [row('stage:0:code:agent', 'a1', { cost: null })],
+      profiles,
+    )
+    assert.equal(code?.totalTokens, 150)
+    assert.equal(code?.complete, true)
+    assert.equal(code?.costUsd, null)
+    assert.equal(code?.costComplete, false)
+    const md = reportToMarkdown({ ...report('r6'), roleUsage: [code!] })
+    assert.match(md, /\| unknown \| complete \| PARTIAL \|/)
+  })
+
   it('renders one row per role with requested settings', () => {
     const md = reportToMarkdown(report('r5'))
     assert.match(md, /## Role usage/)
     assert.match(
       md,
-      /\| code \| codex \| gpt-5\.6-sol \| low \| 1 \| 1000 \| 500 \| unknown \| 100 \| 1100 \| 0\.010000 \| complete \|/,
+      /\| code \| codex \| gpt-5\.6-sol \| low \| 1 \| 1000 \| 500 \| unknown \| 100 \| 1100 \| 0\.010000 \| complete \| complete \|/,
     )
     assert.match(
       md,
@@ -450,6 +463,7 @@ function report(
       spec: null,
       dispositions: null,
     },
+    candidate: null,
     delivery: {
       kind: 'patch',
       location: '/tmp/c.patch',

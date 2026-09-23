@@ -135,7 +135,7 @@ export class FakeProvider implements AgentProvider {
       }
     }
     return {
-      text: `DECISION: ${decision}\nNOTES: fake ${options.role ?? 'review'} deterministic ${decision}`,
+      text: `PLAN: fake plan\nCOUNTEREXAMPLE: fake counterexample, none found\nDECISION: ${decision}\nNOTES: fake ${options.role ?? 'review'} deterministic ${decision}`,
       session: { id: `fake-${randomUUID()}` },
       resolvedModel: 'fake-model',
       resolvedEffort: 'low',

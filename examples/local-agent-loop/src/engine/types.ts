@@ -40,4 +40,7 @@ export interface CandidateRef {
   snapshotDir: string
   sourceHash: string
   acceptanceHash: string
+  /** Branch and commit holding a repository candidate; absent otherwise. */
+  branch?: string
+  commit?: string
 }

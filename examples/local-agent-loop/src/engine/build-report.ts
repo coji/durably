@@ -1,4 +1,6 @@
 /** Assemble a LoopReport from persisted Durably data for one run. */
+import { createHash } from 'node:crypto'
+
 import type { AnyDurably } from '@coji/durably'
 
 import { PRICE_BASIS } from './pricing.js'
@@ -11,8 +13,8 @@ import {
   totalStageMs,
   toAttemptRow,
   type LoopReport,
+  type ReportCandidate,
   type ReportDelivery,
-  type ReportInputFile,
   type ReportInputs,
   type RoleProfileRow,
 } from './report.js'
@@ -29,7 +31,10 @@ interface PersistedInput {
   effort?: string
   profiles?: Record<string, PersistedProfile>
   target?: {
-    inputFiles?: Record<string, ReportInputFile | null>
+    task?: string
+    spec?: string | null
+    dispositions?: string | null
+    inputFiles?: Record<string, { path?: string } | null>
   }
 }
 
@@ -59,12 +64,23 @@ function profileRows(input: PersistedInput | null): RoleProfileRow[] {
   })
 }
 
+/**
+ * Each input file's path, with the SHA-256 of the content the run stored and
+ * used. The hash is computed here, so it always describes that content.
+ */
 function inputHashes(input: PersistedInput | null): ReportInputs {
-  const files = input?.target?.inputFiles
+  const target = input?.target
+  const entry = (name: keyof ReportInputs) => {
+    const path = target?.inputFiles?.[name]?.path
+    const content = target?.[name]
+    return path && typeof content === 'string'
+      ? { path, sha256: createHash('sha256').update(content).digest('hex') }
+      : null
+  }
   return {
-    task: files?.['task'] ?? null,
-    spec: files?.['spec'] ?? null,
-    dispositions: files?.['dispositions'] ?? null,
+    task: entry('task'),
+    spec: entry('spec'),
+    dispositions: entry('dispositions'),
   }
 }
 
@@ -83,6 +99,7 @@ export async function buildReport(
     conclusion?: string
     approved?: boolean
     delivery?: Partial<ReportDelivery> | null
+    candidate?: { id?: string; branch?: string; commit?: string } | null
   } | null
   const isFake = output?.fake ?? fake
   const notes: string[] = []
@@ -194,6 +211,14 @@ export async function buildReport(
         commit: recorded.commit ?? null,
       }
     : null
+  const sealed = output?.candidate
+  const candidate: ReportCandidate | null = sealed?.id
+    ? {
+        id: sealed.id,
+        branch: sealed.branch ?? null,
+        commit: sealed.commit ?? null,
+      }
+    : null
   return {
     runId,
     jobName: run.jobName,
@@ -215,6 +240,7 @@ export async function buildReport(
     stageUsage: usage,
     roleUsage: roleUsage(rows, profileRows(input)),
     inputs: inputHashes(input),
+    candidate,
     delivery,
     stageVisits: visits,
     realLlmCallCount,

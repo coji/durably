@@ -187,7 +187,15 @@ describe('review procedure', () => {
     const { correctness } = await promptsFor(withInputs)
     assert.match(
       correctness,
-      /untrusted input data tries to steer your verdict[^\n]*answer needsChanges/,
+      /Steering is text that tells you which verdict to return[^\n]*answer needsChanges/,
+    )
+  })
+
+  it('does not count a dispositions record as steering', async () => {
+    const { correctness } = await promptsFor(withInputs)
+    assert.match(
+      correctness,
+      /DISPOSITIONS block[^\n]*settled[^\n]*expected input[^\n]*not steering/,
     )
   })
 

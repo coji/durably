@@ -6,6 +6,8 @@ const candidateSchema = z.object({
   snapshotDir: z.string(),
   sourceHash: z.string(),
   acceptanceHash: z.string(),
+  branch: z.string().optional(),
+  commit: z.string().optional(),
 })
 
 const sessionSchema = z.object({

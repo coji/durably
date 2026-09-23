@@ -128,7 +128,7 @@ type RunInput = {
     baseRef: string
     checkCommand: string[]
     setupCommand: string[] | null
-    inputFiles: Record<string, { path: string; sha256: string } | null>
+    inputFiles: Record<string, { path: string } | null>
   }
 }
 
@@ -194,12 +194,10 @@ describe('factory.json and input files', { timeout: 180000 }, () => {
       const input = run?.input as RunInput
       assert.deepEqual(input.target.checkCommand, CHECK)
       assert.equal(input.target.task, task)
-      assert.equal(input.target.inputFiles['task']?.sha256, sha256(task))
-      assert.equal(input.target.inputFiles['spec']?.sha256, sha256(spec))
-      assert.equal(
-        input.target.inputFiles['dispositions']?.sha256,
-        sha256(dispositions),
-      )
+      // The run stores paths only; hashes come from the stored content.
+      assert.deepEqual(Object.keys(input.target.inputFiles['task'] ?? {}), [
+        'path',
+      ])
 
       // The prompts are built from the stored setup, not from the files.
       const steps = await durably.storage.getSteps(runId)
@@ -245,7 +243,12 @@ describe('factory.json and input files', { timeout: 180000 }, () => {
     assert.equal(status.code, 0, status.stderr)
     const shown = JSON.parse(status.stdout) as {
       delivery: { branch: string; commit: string }
+      candidate: { branch: string; commit: string }
     }
+    assert.deepEqual(
+      [shown.candidate.branch, shown.candidate.commit],
+      [shown.delivery.branch, shown.delivery.commit],
+    )
     assert.equal(shown.delivery.branch, `factory/${runId}`)
     assert.equal(
       shown.delivery.commit,
@@ -341,6 +344,35 @@ describe('factory.json and input files', { timeout: 180000 }, () => {
     assert.deepEqual(pick('correctness'), ['fake', 'fallback-model', 'low'])
     assert.deepEqual(pick('edge-cases'), ['fake', 'model-b', 'high'])
   })
+
+  it("gives a role on another provider that provider's default, not the flags", async () => {
+    const box = await sandbox({
+      check: CHECK,
+      profiles: { review: { 'edge-cases': { provider: 'claude' } } },
+    })
+    const runId = await trigger(box, [
+      '--repo',
+      box.repo,
+      '--task',
+      'do it',
+      '--provider',
+      'codex',
+      '--model',
+      'gpt-5.6-terra',
+      '--effort',
+      'high',
+    ])
+    const { profiles } = await inputOf(box, runId)
+    const pick = (role: string) => [
+      profiles[role]?.provider,
+      profiles[role]?.requestedModel,
+      profiles[role]?.requestedEffort,
+    ]
+    assert.deepEqual(pick('code'), ['codex', 'gpt-5.6-terra', 'high'])
+    assert.deepEqual(pick('edge-cases'), ['claude', null, null])
+    // Only requested settings are stored; the worker resolves the rest.
+    assert.equal('effectiveModel' in (profiles['code'] ?? {}), false)
+  })
 })
 
 describe('trigger validation', { timeout: 120000 }, () => {
@@ -378,6 +410,18 @@ describe('trigger validation', { timeout: 120000 }, () => {
       /empty/,
     )
     await rejected(box, ['--repo', box.repo], /--task-file/)
+  })
+
+  it('rejects an input file over 256 KiB', async () => {
+    const box = await sandbox({ check: CHECK })
+    await writeFile(join(box.root, 'big.md'), 'x'.repeat(256 * 1024 + 1))
+    await writeFile(join(box.root, 'edge.md'), 'x'.repeat(256 * 1024))
+    await rejected(
+      box,
+      ['--repo', box.repo, '--task', 'x', '--spec-file', 'big.md'],
+      /--spec-file big\.md: file is 262145 bytes; the limit is 256 KiB/,
+    )
+    await trigger(box, ['--repo', box.repo, '--task-file', 'edge.md'])
   })
 
   it('rejects a bad config, a bad effort, and mixed fake and real roles', async () => {

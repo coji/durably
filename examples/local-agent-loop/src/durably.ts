@@ -1,6 +1,7 @@
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { createDurably } from '@coji/durably'
 /** Durably instance (local SQLite via better-sqlite3). */
@@ -20,6 +21,27 @@ export function defaultStateRoot(): string {
 
 export function dbPath(stateRoot: string = defaultStateRoot()): string {
   return join(stateRoot, 'local-agent-loop.db')
+}
+
+/** Where versions before the fixed state root kept the database. */
+export function legacyDbPath(): string {
+  return join(
+    dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'local-agent-loop.db',
+  )
+}
+
+/**
+ * A one-line warning when the checkout still has a database from before the
+ * fixed state root. Runs in it are not read, and are not migrated.
+ */
+export function legacyDbWarning(
+  legacy: string = legacyDbPath(),
+  current: string = dbPath(),
+): string | null {
+  if (!existsSync(legacy)) return null
+  return `warning: ${legacy} is from an older version and is no longer read; the database is now ${current}. Finish or discard runs in the old one with the older version (see README "Upgrading").`
 }
 
 export interface AgentDurablyOptions {

@@ -119,6 +119,8 @@ export class RepoTarget implements Target {
       snapshotDir: this.config.workdir,
       sourceHash: tree,
       acceptanceHash: checkFingerprint(this.config.checkCommand),
+      branch: this.config.branch,
+      commit: sealed.commit,
     }
   }
 

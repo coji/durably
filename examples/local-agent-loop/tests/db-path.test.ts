@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { createAgentDurably, dbPath, defaultStateRoot } from '../src/durably.js'
+import {
+  createAgentDurably,
+  dbPath,
+  defaultStateRoot,
+  legacyDbPath,
+  legacyDbWarning,
+} from '../src/durably.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -57,5 +63,16 @@ describe('database path resolution', () => {
     } finally {
       await durably.db.destroy()
     }
+  })
+
+  it('warns once, naming both files, when the checkout has an old database', async () => {
+    assert.equal(legacyDbPath(), join(packageRoot, 'local-agent-loop.db'))
+    const dir = await mkdtemp(join(tmpdir(), 'legacy-db-'))
+    const legacy = join(dir, 'local-agent-loop.db')
+    assert.equal(legacyDbWarning(legacy, '/new/state.db'), null)
+    await writeFile(legacy, '')
+    const warning = legacyDbWarning(legacy, '/new/state.db')
+    assert.ok(warning?.includes(legacy), warning ?? '')
+    assert.ok(warning?.includes('/new/state.db'), warning ?? '')
   })
 })

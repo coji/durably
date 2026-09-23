@@ -63,10 +63,9 @@ export interface RepoTargetConfig {
 
 export type TargetConfig = SubjectTargetConfig | RepoTargetConfig
 
-/** An input file's path and the SHA-256 of the bytes read at trigger time. */
+/** Where an input file was read from at trigger time. */
 export interface InputFileRef {
   path: string
-  sha256: string
 }
 
 /**

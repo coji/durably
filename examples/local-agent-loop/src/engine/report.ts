@@ -72,6 +72,12 @@ export interface UsageTotals {
   costUsd: number | null
   /** False when any usage-expecting invocation lacks usage or a priced leg. */
   complete: boolean
+  /**
+   * False when `costUsd` is not the whole cost: some invocation had no usage
+   * or no price (an unpriced model). Token counts can be complete while this
+   * is false.
+   */
+  costComplete: boolean
 }
 
 /** Token and cost consumption of one stage, counted once per invocation. */
@@ -105,7 +111,7 @@ export interface RoleProfileRow {
  */
 export interface RoleUsage extends RoleProfileRow, UsageTotals {}
 
-/** An input file the run was given, hashed at trigger time. */
+/** An input file the run was given, with the SHA-256 of the stored content. */
 export interface ReportInputFile {
   path: string
   sha256: string
@@ -115,6 +121,13 @@ export interface ReportInputs {
   task: ReportInputFile | null
   spec: ReportInputFile | null
   dispositions: ReportInputFile | null
+}
+
+/** The last sealed candidate: where a repository run left its work. */
+export interface ReportCandidate {
+  id: string
+  branch: string | null
+  commit: string | null
 }
 
 /** What the run delivered, as recorded in its output. */
@@ -162,8 +175,10 @@ export interface LoopReport {
   stageUsage: StageUsage[]
   /** Per-role requested settings and usage: code, correctness, edge-cases. */
   roleUsage: RoleUsage[]
-  /** SHA-256 of each input file, as read when the run was triggered. */
+  /** SHA-256 of each input file's content, as stored in the run. */
   inputs: ReportInputs
+  /** Last sealed candidate, whatever the conclusion; null before one exists. */
+  candidate: ReportCandidate | null
   /** Branch, commit and location of the delivery; null when none was made. */
   delivery: ReportDelivery | null
   stageVisits: StageVisits[]
@@ -309,6 +324,7 @@ function usageTotals(list: AttemptRow[]): UsageTotals {
     totalTokens: agg.totalTokens,
     costUsd,
     complete: agg.complete,
+    costComplete: costUsd !== null,
   }
 }
 
@@ -542,12 +558,22 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push(`- output: ${JSON.stringify(r.output)}`)
   lines.push(`- config version: ${fmt(r.configVersion)}`)
   lines.push('')
-  lines.push('## Inputs (SHA-256 at trigger)')
+  lines.push('## Inputs (SHA-256 of stored content)')
   lines.push('')
   for (const [name, file] of Object.entries(r.inputs)) {
     lines.push(
       `- ${name}: ${file ? `${file.sha256} (${file.path})` : 'not given'}`,
     )
+  }
+  lines.push('')
+  lines.push('## Candidate')
+  lines.push('')
+  if (r.candidate) {
+    lines.push(`- id: ${r.candidate.id}`)
+    lines.push(`- branch: ${fmt(r.candidate.branch)}`)
+    lines.push(`- commit: ${fmt(r.candidate.commit)}`)
+  } else {
+    lines.push('- none')
   }
   lines.push('')
   lines.push('## Delivery')
@@ -600,12 +626,12 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('## Role usage (deduped by invocation)')
   lines.push('')
   lines.push(
-    '| role | provider | model(requested) | effort(requested) | invocations | in | cache-read | cache-write | out | total | cost(USD) | usage |',
+    '| role | provider | model(requested) | effort(requested) | invocations | in | cache-read | cache-write | out | total | cost(USD) | usage | cost |',
   )
-  lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|')
+  lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|')
   for (const u of r.roleUsage) {
     lines.push(
-      `| ${u.role} | ${fmt(u.provider)} | ${u.requestedModel ?? '(default)'} | ${u.requestedEffort ?? '(default)'} | ${u.invocations} | ${fmt(u.inputTokens)} | ${fmt(u.cacheReadTokens)} | ${fmt(u.cacheWriteTokens)} | ${fmt(u.outputTokens)} | ${fmt(u.totalTokens)} | ${fmtUsd(u.costUsd)} | ${u.complete ? 'complete' : 'PARTIAL'} |`,
+      `| ${u.role} | ${fmt(u.provider)} | ${u.requestedModel ?? '(default)'} | ${u.requestedEffort ?? '(default)'} | ${u.invocations} | ${fmt(u.inputTokens)} | ${fmt(u.cacheReadTokens)} | ${fmt(u.cacheWriteTokens)} | ${fmt(u.outputTokens)} | ${fmt(u.totalTokens)} | ${fmtUsd(u.costUsd)} | ${u.complete ? 'complete' : 'PARTIAL'} | ${u.costComplete ? 'complete' : 'PARTIAL'} |`,
     )
   }
   lines.push('')

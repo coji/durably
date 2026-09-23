@@ -31,6 +31,7 @@ function baseReport(): LoopReport {
     stageUsage: [],
     roleUsage: [],
     inputs: { task: null, spec: null, dispositions: null },
+    candidate: null,
     delivery: null,
     stageVisits: [],
     realLlmCallCount: 0,

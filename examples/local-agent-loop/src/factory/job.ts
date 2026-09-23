@@ -34,10 +34,8 @@ const issueSchema = z.object({
   url: z.string(),
 })
 
-const inputFileSchema = z.object({
-  path: z.string().min(1),
-  sha256: z.string().regex(/^[0-9a-f]{64}$/),
-})
+/** Where an input came from. Its hash is taken from the stored content. */
+const inputFileSchema = z.object({ path: z.string().min(1) })
 
 const targetSchema = z
   .discriminatedUnion('kind', [
@@ -52,7 +50,7 @@ const targetSchema = z
       spec: z.string().min(1).nullable().default(null),
       /** Handed to the reviewers only. */
       dispositions: z.string().min(1).nullable().default(null),
-      /** Where each input came from, hashed when the run was triggered. */
+      /** Where each input came from, when it was read from a file. */
       inputFiles: z
         .object({
           task: inputFileSchema.nullable().default(null),
@@ -72,13 +70,14 @@ const targetSchema = z
 
 const providerSchema = z.enum(['codex', 'claude', 'fake'])
 
-/** One role's settings, resolved once when the run is triggered. */
-const fixedProfileSchema = z.object({
+/**
+ * One role's requested settings. What is actually applied is resolved from
+ * these in the setup step, never taken from the caller.
+ */
+const requestedProfileSchema = z.object({
   provider: providerSchema,
   requestedModel: z.string().min(1).nullable(),
   requestedEffort: z.string().min(1).nullable(),
-  effectiveModel: z.string().nullable(),
-  effectiveEffort: z.string().nullable(),
 })
 
 const inputSchema = z.object({
@@ -89,14 +88,14 @@ const inputSchema = z.object({
   effort: z.string().optional(),
   context: z.enum(['reuse', 'fresh']).default('reuse'),
   /**
-   * Per-role settings fixed at trigger time. When absent, every role uses
-   * `provider`, `model` and `effort`, resolved in the setup step.
+   * Per-role requested settings. When absent, every role uses `provider`,
+   * `model` and `effort`. Either way they are resolved in the setup step.
    */
   profiles: z
     .object({
-      code: fixedProfileSchema,
-      correctness: fixedProfileSchema,
-      'edge-cases': fixedProfileSchema,
+      code: requestedProfileSchema,
+      correctness: requestedProfileSchema,
+      'edge-cases': requestedProfileSchema,
     })
     .optional(),
   target: targetSchema,
@@ -109,6 +108,8 @@ const candidateSchema = z.object({
   snapshotDir: z.string(),
   sourceHash: z.string(),
   acceptanceHash: z.string(),
+  branch: z.string().optional(),
+  commit: z.string().optional(),
 })
 
 const outputSchema = z.object({
@@ -260,15 +261,22 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             'AGENT_TIMEOUT_MS',
             isRepo ? 1800000 : 300000,
           )
-          let fixed = input.profiles
-          if (!fixed) {
-            const shared = fixProfile({
-              provider: input.provider,
-              model: input.model ?? null,
-              effort: input.effort ?? null,
-            })
-            fixed = byRole(() => shared)
-          }
+          const fixed = byRole((role) => {
+            const requested = input.profiles?.[role]
+            return fixProfile(
+              requested
+                ? {
+                    provider: requested.provider,
+                    model: requested.requestedModel,
+                    effort: requested.requestedEffort,
+                  }
+                : {
+                    provider: input.provider,
+                    model: input.model ?? null,
+                    effort: input.effort ?? null,
+                  },
+            )
+          })
           assertSingleMode(fixed)
           const profiles = byRole((role): ResolvedProfile => ({
             id: [
