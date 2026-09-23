@@ -295,7 +295,7 @@ describe('fake runs that stop', { timeout: 180000 }, () => {
           assert.ok(md.includes(heading), heading)
         if (kind === 'uncertain-invocation') {
           assert.ok(md.includes('NO — do not start a new run'))
-          assert.ok(!md.includes('re-run the original trigger'))
+          assert.ok(!md.includes('retrigger'))
         }
       }
       assert.equal(reasons.size, 3)
@@ -327,6 +327,21 @@ describe('fake runs that stop', { timeout: 180000 }, () => {
     assert.match(uncertain, /start checkpoint without completion/)
     // Nothing that would send the lost prompt again.
     assert.doesNotMatch(uncertain, /trigger|demo worker/)
+    assert.match(verification, /demo retrigger --run /)
+    // retrigger refuses a stop that is not safe to repeat, and starts a new
+    // run from the stored input for one that is.
+    const retrigger = (id: string) =>
+      runChild(
+        join(packageRoot, 'node_modules', '.bin', 'tsx'),
+        [join(packageRoot, 'src', 'cli.ts'), 'retrigger', '--run', id],
+        { cwd: home, timeoutMs: 60000, env: { HOME: home } },
+      )
+    const refused = await retrigger(ids['uncertain'] ?? '')
+    assert.notEqual(refused.code, 0)
+    assert.match(refused.stderr, /refusing to retrigger/)
+    const again = await retrigger(ids['verification'] ?? '')
+    assert.equal(again.code, 0, again.stderr)
+    assert.match(again.stdout, /^new run \S+ with the input of /)
     // A subject run has no worktree to remove.
     assert.doesNotMatch(res.stdout, /worktree remove/)
   })

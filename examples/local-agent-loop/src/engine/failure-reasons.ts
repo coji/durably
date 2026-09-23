@@ -28,11 +28,11 @@ export type FailureKind =
 export const DEMO = 'pnpm --filter example-local-agent-loop demo'
 
 /**
- * A bare `demo trigger` would run the bundled sample, not this run's target,
- * so the retry step points at the original command and its stored inputs.
+ * Starts a new run with this run's stored input. A bare `demo trigger` would
+ * run the bundled sample instead, so a retry always goes through here.
  */
-const RETRIGGER =
-  '# re-run the original trigger command; the report JSON `input` shows what it was given'
+const retrigger = (runId: string) =>
+  `${DEMO} retrigger --run ${runId}  # a new run with the same stored input`
 
 interface FailureEntry {
   reason: string
@@ -50,8 +50,8 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
     humanCheck:
       'read the check output in the report and decide whether the task, the check or --max-iterations has to change',
     next: (runId) => [
-      `${DEMO} report --run ${runId}`,
-      `${RETRIGGER}, with a revised task or a higher --max-iterations`,
+      `${DEMO} report --run ${runId}  # the check output`,
+      retrigger(runId),
     ],
   },
   'review-cap-reached': {
@@ -61,8 +61,8 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
     humanCheck:
       'read the reviewer notes in the report; finish the candidate by hand or restate the task',
     next: (runId) => [
-      `${DEMO} report --run ${runId}`,
-      `${RETRIGGER}, or finish the candidate by hand`,
+      `${DEMO} report --run ${runId}  # the reviewer notes`,
+      retrigger(runId),
     ],
   },
   'uncertain-invocation': {
@@ -81,10 +81,7 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
       'the run was cancelled; no agent call was left without a completed checkpoint',
     retryable: true,
     humanCheck: 'confirm the cancel was intended',
-    next: (runId) => [
-      `${DEMO} report --run ${runId}`,
-      `${RETRIGGER}, if the work is still wanted`,
-    ],
+    next: (runId) => [`${DEMO} report --run ${runId}`, retrigger(runId)],
   },
   'cancelled-publish': {
     reason:

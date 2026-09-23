@@ -162,9 +162,10 @@ pnpm --filter example-local-agent-loop demo status
 - `--publish` 付きでcancelされたrunは `cancelled-publish` として `retry: NO`
   になります。pushやpull requestの作成が記録前に済んでいる可能性があるので、
   remoteのbranchとpull requestを先に確かめてください。
-- 新しいrunを勧める場合も、素の `demo trigger` は出しません（同梱の題材で
-  動くため）。元のtriggerコマンドを打ち直します。runに渡した入力はreport JSONの
-  `input` で確かめられます。
+- `retry: yes` のrunには `demo retrigger --run <id>` を表示します。止まったrunに
+  保存された入力（task、設定、profile）のまま新しいrunを始めます。`retry: NO` の
+  runや、まだ止まっていないrunには実行を拒みます。素の `demo trigger` は同梱の
+  題材で動くので、次の手順には出しません。
 - 終わったrepo runのworktreeが残っていれば、
   `git -C '<repo>' worktree remove '<workdir>'` を表示します。setupが記録した
   パスが存在するときだけ出し、強制削除やbranch削除は含みません。変更が残る
