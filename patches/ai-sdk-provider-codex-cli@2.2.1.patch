@@ -1,8 +1,44 @@
 diff --git a/dist/index.js b/dist/index.js
-index 06014caa0d5b0b34ea6ebf197a217c7eca98606b..4f2cd929c928b356803947eac0943701802bfd1e 100644
+index 06014caa0d5b0b34ea6ebf197a217c7eca98606b..93ba919459f19bd6a4fbdb55c83c193a20f3c758 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -3198,7 +3198,14 @@ var TurnStreamController = class {
+@@ -1726,12 +1726,15 @@ var ExecLanguageModel = class {
+     const inputTotal = reported.input_tokens ?? 0;
+     const outputTotal = reported.output_tokens ?? 0;
+     const cachedInputTokens = reported.cached_input_tokens ?? 0;
++    // Local patch: `cache_write_input_tokens` is optional. Absent means "not
++    // reported", which is not the same as zero, so leave it undefined.
++    const cacheWriteTokens = typeof reported.cache_write_input_tokens === "number" ? reported.cache_write_input_tokens : void 0;
+     return {
+       inputTokens: {
+         total: inputTotal,
+-        noCache: inputTotal - cachedInputTokens,
++        noCache: Math.max(0, inputTotal - cachedInputTokens - (cacheWriteTokens ?? 0)),
+         cacheRead: cachedInputTokens,
+-        cacheWrite: 0
++        cacheWrite: cacheWriteTokens
+       },
+       outputTokens: {
+         total: outputTotal,
+@@ -2718,12 +2721,15 @@ function createNotificationHandlers(context) {
+       const event = params;
+       const last = event.tokenUsage?.last;
+       if (!last) return;
++      // Local patch: `cacheWriteInputTokens` is optional in the app-server
++      // protocol. Read it when present; when absent it is unknown, not zero.
++      const cacheWrite = typeof last.cacheWriteInputTokens === "number" ? last.cacheWriteInputTokens : void 0;
+       context.onUsage({
+         inputTokens: {
+           total: last.inputTokens,
+-          noCache: Math.max(0, last.inputTokens - last.cachedInputTokens),
++          noCache: Math.max(0, last.inputTokens - last.cachedInputTokens - (cacheWrite ?? 0)),
+           cacheRead: last.cachedInputTokens,
+-          cacheWrite: 0
++          cacheWrite
+         },
+         outputTokens: {
+           total: last.outputTokens,
+@@ -3198,7 +3204,14 @@ var TurnStreamController = class {
        emitter: this.emitter,
        threadId: this.options.threadId,
        onUsage: (nextUsage) => {
@@ -12,13 +48,13 @@ index 06014caa0d5b0b34ea6ebf197a217c7eca98606b..4f2cd929c928b356803947eac0943701
 +        // the final response of the turn, so an agent loop of 25 responses was
 +        // reported as one. Accumulate across the turn instead. The events are
 +        // already filtered to this turn, and this object is per call, so the
-+        // sum is exactly this invocation — unlike `tokenUsage.total`, which
++        // sum is exactly this invocation, unlike `tokenUsage.total`, which
 +        // spans every turn of a reused thread.
 +        this.usage = accumulateAppServerUsage(this.usage, nextUsage);
        },
        onThreadTurnCompleted: (turn) => {
          this.options.session?.setInactive(turn.id);
-@@ -4761,6 +4768,24 @@ var fileChangeOutputDeltaNotificationSchema = z.object({
+@@ -4761,6 +4774,24 @@ var fileChangeOutputDeltaNotificationSchema = z.object({
    itemId: z.string(),
    delta: z.string()
  }).passthrough();

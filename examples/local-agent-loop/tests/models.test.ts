@@ -3,6 +3,7 @@ import { describe, it } from 'node:test'
 
 import {
   defaultModelFor,
+  MODEL_PRESETS,
   presetForModel,
   resolveEffort,
 } from '../src/engine/models.js'
@@ -48,10 +49,27 @@ describe('model presets', () => {
         `expected ~${expected}, got ${actual}`,
       )
     approx(estimateCostUsd('gpt-6-astra', usage), 0.06)
-    approx(estimateCostUsd('gpt-5.6-sol', usage), 0.035)
+    approx(estimateCostUsd('gpt-6-sol', usage), 0.012)
+    approx(estimateCostUsd('gpt-6-luna', usage), 0.0006)
+    approx(estimateCostUsd('gpt-5.6-sol', usage), 0.024)
+    approx(estimateCostUsd('gpt-5.6-terra', usage), 0.014)
     approx(estimateCostUsd('gpt-5.6-luna', usage), 0.0014)
     approx(estimateCostUsd('claude-fable-5-1', usage), 0.06)
+    // Longest match first: `claude-opus-5-5` must not be priced as Opus 5.
+    approx(estimateCostUsd('claude-opus-5-5', usage), 0.024)
     approx(estimateCostUsd('claude-opus-5', usage), 0.03)
     approx(estimateCostUsd('claude-sonnet-5', usage), 0.012)
+  })
+
+  it('prices every preset model', () => {
+    // A preset without a price row makes every cost for that model unknown,
+    // which would silently blank the column this example exists to fill.
+    for (const preset of MODEL_PRESETS) {
+      assert.notEqual(
+        estimateCostUsd(preset.model, { inputTokens: 1, outputTokens: 1 }),
+        null,
+        `${preset.model} has a preset but no price`,
+      )
+    }
   })
 })

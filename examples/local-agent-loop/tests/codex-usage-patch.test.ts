@@ -21,4 +21,17 @@ describe('codex provider usage accounting', () => {
       'the Codex provider reports only the last response again; see patches/ai-sdk-provider-codex-cli@2.2.1.patch',
     )
   })
+
+  it('reads cache writes instead of claiming zero', async () => {
+    // `cacheWriteInputTokens` is optional in the app-server protocol. The
+    // upstream mapping hard-coded `cacheWrite: 0`, which both discarded a
+    // reported value and asserted zero when nothing was reported.
+    const entry = fileURLToPath(
+      import.meta.resolve('ai-sdk-provider-codex-cli'),
+    )
+    const source = await readFile(entry, 'utf8')
+    assert.doesNotMatch(source, /cacheWrite: 0\b/)
+    assert.match(source, /last\.cacheWriteInputTokens/)
+    assert.match(source, /reported\.cache_write_input_tokens/)
+  })
 })

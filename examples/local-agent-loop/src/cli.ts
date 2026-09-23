@@ -134,8 +134,11 @@ Commands (run from examples/local-agent-loop):
 Model presets (--model selects one; effort defaults from the preset and is
 overridden only by --effort — no environment variable participates, so a run's
 configuration is readable off the command line that started it):
-  codex:  gpt-6-astra (low) | gpt-5.6-sol (low, default) | gpt-5.6-luna (max)
-  claude: claude-fable-5-1 (low) | claude-opus-5 (high) | claude-sonnet-5 (high, default)
+  codex:  gpt-6-astra (low) | gpt-6-sol (medium) | gpt-6-luna (medium)
+          gpt-5.6-sol (low, default) | gpt-5.6-terra (medium) | gpt-5.6-luna (max)
+          (gpt-6-sol and gpt-6-luna need an API key; a ChatGPT login is refused)
+  claude: claude-fable-5-1 (low) | claude-opus-5-5 (medium) | claude-opus-5 (high)
+          claude-sonnet-5 (high, default)
 Note: effort is applied (Codex reasoningEffort / Claude effort setting), not
 just recorded; unsupported values fail fast. Reports keep the raw requested,
 resolved effective, and provider-reported settings separate.

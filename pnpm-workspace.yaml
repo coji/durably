@@ -12,6 +12,11 @@ syncInjectedDepsAfterScripts:
 
 # Remove targeted overrides when the parents ship compatible fixed dependencies.
 overrides:
+  # ai-sdk-provider-claude-code pins its Agent SDK exactly, and even 4.3.2 pins
+  # 0.3.278, whose bundled Claude Code (2.1.278) rejects claude-opus-5-5 with
+  # "version 2.1.280 or newer is required". Same 0.3.x line; drop this once the
+  # provider pins 0.3.280 or later.
+  '@anthropic-ai/claude-agent-sdk': 0.3.280
   # The dialect's owned client is covered by libSQL integration/stress tests.
   '@libsql/kysely-libsql>@libsql/client': 0.18.0
   # Config extraction uses the same Ajv 8 compile/validate API; deployment builds pass.
@@ -33,3 +38,13 @@ allowBuilds:
   ssh2: true
 patchedDependencies:
   ai-sdk-provider-codex-cli@2.2.1: patches/ai-sdk-provider-codex-cli@2.2.1.patch
+minimumReleaseAgeExclude:
+  - '@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.280'
+  - '@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.280'
+  - '@anthropic-ai/claude-agent-sdk-linux-arm64-musl@0.3.280'
+  - '@anthropic-ai/claude-agent-sdk-linux-arm64@0.3.280'
+  - '@anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.280'
+  - '@anthropic-ai/claude-agent-sdk-linux-x64@0.3.280'
+  - '@anthropic-ai/claude-agent-sdk-win32-arm64@0.3.280'
+  - '@anthropic-ai/claude-agent-sdk-win32-x64@0.3.280'
+  - '@anthropic-ai/claude-agent-sdk@0.3.280'
