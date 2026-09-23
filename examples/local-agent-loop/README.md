@@ -227,7 +227,9 @@ providerが返すusageは、一回の呼び出しの**全モデル応答の合�
 - **Claude**: Agent SDKの `result` メッセージの累計をそのまま使います。Claude Codeの
   transcriptに記録された各応答の合計と一致することを確認済みです。
 - **Codex**: `ai-sdk-provider-codex-cli@2.2.1` は応答ごとのイベントで usage を上書き
-  するため、最後の応答分しか返しません。`patches/` のパッチでturn内の合計に直して
+  するため、最後の応答分しか返しません。上流には
+  [ben-vargas/ai-sdk-provider-codex-cli#49](https://github.com/ben-vargas/ai-sdk-provider-codex-cli/issues/49)
+  で報告済みです。`patches/` のパッチでturn内の合計に直して
   います。thread累計の `total` は使いません。`--context reuse` では前回の呼び出し分
   まで含んでしまうからです。修正後の値はCodex自身のセッションログと一致することを
   確認済みです。修正前は、実際には25回応答していた実装工程が1回分として記録され、
