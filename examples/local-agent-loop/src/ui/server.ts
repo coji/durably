@@ -46,7 +46,8 @@ export interface RunRow {
   id: string
   status: string
   createdAt: string
-  title: string
+  /** From the stored input; see `runName`. */
+  name: string
   diagnosis: Diagnosis
   /** Approval, a stop, or an unknown wait: a person decides next. */
   needsHuman: boolean
@@ -73,7 +74,8 @@ export interface RunsResponse {
 
 export interface RunDetailResponse {
   now: string
-  title: string
+  /** From the stored input; see `runName`. */
+  name: string
   createdAt: string
   diagnosis: Diagnosis
   needsHuman: boolean
@@ -88,9 +90,20 @@ export interface CompareResponse {
   comparison: Comparison
 }
 
-function titleOf(run: Run): string {
+/** The heading for the bundled sample, whose task never varies. */
+export const SUBJECT_RUN_NAME = '同梱題材: calc の add を直す'
+
+const NAME_MAX = 80
+
+/**
+ * A person-readable name for a run, from its stored input only: the issue
+ * number and title when the run came from an issue, else the task's first
+ * non-empty line (a leading Markdown heading mark dropped), else the bundled
+ * sample's fixed name. Truncated to 80 characters.
+ */
+export function runName(input: unknown): string {
   const target = (
-    run.input as {
+    input as {
       target?: {
         kind?: string
         task?: string
@@ -98,11 +111,17 @@ function titleOf(run: Run): string {
       }
     } | null
   )?.target
-  if (target?.kind !== 'repo') return 'bundled sample'
-  if (target.issue?.number != null)
-    return `#${target.issue.number} ${target.issue.title ?? ''}`.trim()
-  const line = (target.task ?? '').trim().split('\n')[0] ?? ''
-  return line.length > 80 ? `${line.slice(0, 79)}…` : line || 'task'
+  if (target?.kind !== 'repo') return SUBJECT_RUN_NAME
+  const issue = target.issue
+  const line =
+    issue?.number != null
+      ? `#${issue.number} ${issue.title?.trim() ?? ''}`.trim()
+      : ((target.task ?? '')
+          .split('\n')
+          .map((l) => l.trim().replace(/^#+\s*/, ''))
+          .find((l) => l.length > 0) ?? '')
+  if (line.length === 0) return 'タスク（名前なし）'
+  return line.length > NAME_MAX ? `${line.slice(0, NAME_MAX - 1)}…` : line
 }
 
 /** A database that exists but has no tables yet reads as `empty`. */
@@ -125,7 +144,7 @@ async function inspect(durably: AgentLoopDurably, run: Run, now: number) {
     buildReport(durably, run.id),
   ])
   return {
-    title: titleOf(run),
+    name: runName(run.input),
     createdAt: run.createdAt,
     diagnosis,
     needsHuman: needsHuman(diagnosis.kind),

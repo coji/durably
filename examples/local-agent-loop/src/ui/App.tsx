@@ -34,6 +34,8 @@ interface PollState<T> {
   /** Set while the latest refresh failed; the last data stays on screen. */
   error: string | null
   fetchedAt: Date | null
+  /** Set once a refresh works again after failing, until the next failure. */
+  recovered: boolean
 }
 
 /**
@@ -45,14 +47,21 @@ function usePolled<T>(url: string): PollState<T> {
     data: null,
     error: null,
     fetchedAt: null,
+    recovered: false,
   })
   useEffect(
     () =>
       pollJson<T>(
         url,
         REFRESH_MS,
-        (data) => setState({ data, error: null, fetchedAt: new Date() }),
-        (error) => setState((s) => ({ ...s, error })),
+        (data) =>
+          setState((s) => ({
+            data,
+            error: null,
+            fetchedAt: new Date(),
+            recovered: s.recovered || s.error !== null,
+          })),
+        (error) => setState((s) => ({ ...s, error, recovered: false })),
       ),
     [url],
   )
@@ -102,12 +111,35 @@ function fmtInt(v: number | null | undefined): string {
   return v == null ? UNKNOWN : v.toLocaleString('en-US')
 }
 
-const dateFmt = new Intl.DateTimeFormat('ja-JP', {
-  month: 'numeric',
-  day: 'numeric',
-  hour: '2-digit',
-  minute: '2-digit',
-})
+/** "3分前" relative to the response's `now`; the exact time on hover. */
+function relative(iso: string, now: string): string {
+  const s = Math.max(0, Math.floor((Date.parse(now) - Date.parse(iso)) / 1000))
+  if (!Number.isFinite(s)) return UNKNOWN
+  if (s < 60) return `${s}秒前`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}分前`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}時間前`
+  return `${Math.floor(h / 24)}日前`
+}
+
+function Ago({
+  iso,
+  now,
+  prefix,
+}: {
+  iso: string
+  now: string
+  prefix?: string
+}) {
+  return (
+    <time dateTime={iso} title={iso} className="tabular-nums">
+      {prefix}
+      {relative(iso, now)}
+    </time>
+  )
+}
+
 const timeFmt = new Intl.DateTimeFormat('ja-JP', {
   hour: '2-digit',
   minute: '2-digit',
@@ -167,13 +199,10 @@ const TONE_CLASS: Record<Tone, string> = {
 function StateBadge({ label, tone }: { label: string; tone: Tone }) {
   return (
     <span
-      className={`inline-flex shrink-0 items-center gap-1.5 rounded-sm px-2 py-0.5 text-xs font-medium ${TONE_CLASS[tone]}`}
+      className={`inline-flex shrink-0 items-center gap-2 rounded-sm px-2 py-1 text-xs leading-4 font-medium ${TONE_CLASS[tone]}`}
     >
       {tone === 'running' ? (
-        <span
-          aria-hidden
-          className="dot-live size-1.5 rounded-full bg-current"
-        />
+        <span aria-hidden className="dot-live size-2 rounded-full bg-current" />
       ) : null}
       {label}
     </span>
@@ -202,92 +231,169 @@ async function writeClipboard(text: string): Promise<boolean> {
 }
 
 function useCopy() {
-  const [copied, setCopied] = useState<string | null>(null)
+  const [copied, setCopied] = useState<{ text: string; label: string } | null>(
+    null,
+  )
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => () => clearTimeout(timer.current), [])
-  const copy = useCallback(async (text: string) => {
-    setCopied((await writeClipboard(text)) ? text : null)
+  const copy = useCallback(async (text: string, label: string) => {
+    setCopied((await writeClipboard(text)) ? { text, label } : null)
     clearTimeout(timer.current)
     timer.current = setTimeout(() => setCopied(null), 1600)
   }, [])
   return { copied, copy }
 }
 
-/** One next command: shown in full, copied without its note. */
-function CommandLine({
-  line,
+/** What a copy button says, from the command it copies. */
+function commandLabel(command: string): string {
+  if (/^git .* worktree remove /.test(command))
+    return 'worktree 片付けコマンドをコピー'
+  const sub = /\bdemo (\S+)/.exec(command)?.[1]
+  switch (sub) {
+    case 'approve':
+      return '承認コマンドをコピー'
+    case 'reject':
+      return '却下コマンドをコピー'
+    case 'report':
+      return command.includes('--format json')
+        ? 'report（JSON）をコピー'
+        : 'report をコピー'
+    case 'status':
+      return 'status をコピー'
+    case 'worker':
+      return 'worker 起動コマンドをコピー'
+    case 'retrigger':
+      return 'retrigger コマンドをコピー'
+    case 'waits':
+      return 'waits をコピー'
+    default:
+      return 'コマンドをコピー'
+  }
+}
+
+const BUTTON =
+  'border-line-strong bg-raised text-fg-2 hover:text-fg inline-flex min-h-8 items-center rounded-md border px-3 text-xs transition-colors duration-[var(--duration-fast)] ease-[var(--ease-out)]'
+
+/** A labelled copy button with a short confirmation beside it. */
+function CopyButton({
+  text,
+  label,
   copied,
   onCopy,
 }: {
-  line: string
-  copied: string | null
-  onCopy: (command: string) => void
+  text: string
+  label: string
+  copied: { text: string } | null
+  onCopy: (text: string, label: string) => void
 }) {
-  const { command, note } = splitCommand(line)
   return (
-    <li className="flex items-start gap-2">
-      <div className="min-w-0 flex-1">
-        <code className="bg-sunken font-code text-fg block overflow-x-auto rounded-sm px-2 py-1 text-sm whitespace-pre">
-          {command}
-        </code>
-        {note ? <p className="text-fg-3 mt-0.5 text-xs"># {note}</p> : null}
-      </div>
-      <span className="relative">
-        <button
-          type="button"
-          onClick={() => onCopy(command)}
-          aria-label={`コピー: ${command}`}
-          className="border-line-strong bg-raised text-fg-2 hover:text-fg rounded-md border px-2 py-1 text-xs transition-colors duration-150"
+    <span className="relative">
+      <button
+        type="button"
+        onClick={() => onCopy(text, label)}
+        className={BUTTON}
+      >
+        {label}
+      </button>
+      {copied?.text === text ? (
+        <span
+          aria-hidden
+          className="bg-raised text-fg absolute top-full left-0 z-50 mt-1 rounded-sm px-2 py-1 text-xs whitespace-nowrap shadow-[var(--shadow-pop)]"
         >
-          コピー
-        </button>
-        {copied === command ? (
-          <span className="bg-raised text-fg absolute top-full right-0 z-50 mt-1 rounded-sm px-2 py-1 text-xs whitespace-nowrap shadow-[var(--shadow-pop)]">
-            コピーしました
-          </span>
-        ) : null}
-      </span>
-    </li>
+          コピーしました
+        </span>
+      ) : null}
+    </span>
   )
 }
 
+/** Names what was copied, for screen readers. */
+function CopyAnnouncer({ copied }: { copied: { label: string } | null }) {
+  return (
+    <p className="sr-only" aria-live="polite">
+      {copied ? `${copied.label}しました` : ''}
+    </p>
+  )
+}
+
+/**
+ * Next commands as copy buttons named for what they do. The command text,
+ * which carries IDs such as the wait ID, stays behind a disclosure.
+ */
 function Commands({ lines }: { lines: string[] }) {
   const { copied, copy } = useCopy()
   if (lines.length === 0) return null
+  const parsed = lines.map(splitCommand)
   return (
-    <>
-      <ul className="flex flex-col gap-1.5">
-        {lines.map((line) => (
-          <CommandLine
-            key={line}
-            line={line}
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap gap-2">
+        {parsed.map(({ command }) => (
+          <CopyButton
+            key={command}
+            text={command}
+            label={commandLabel(command)}
             copied={copied}
-            onCopy={(c) => void copy(c)}
+            onCopy={(t, l) => void copy(t, l)}
           />
         ))}
-      </ul>
-      <p className="sr-only" aria-live="polite">
-        {copied ? 'コピーしました' : ''}
-      </p>
-    </>
+      </div>
+      <details className="text-xs">
+        <summary className="text-fg-2 hover:text-fg inline-flex min-h-8 cursor-pointer items-center">
+          コマンド全文
+        </summary>
+        <ul className="mt-1 flex flex-col gap-2">
+          {parsed.map(({ command, note }) => (
+            <li key={command}>
+              <code className="bg-sunken font-code text-fg block overflow-x-auto rounded-sm px-2 py-1 text-sm whitespace-pre">
+                {command}
+              </code>
+              {note ? <p className="text-fg-2 mt-1"># {note}</p> : null}
+            </li>
+          ))}
+        </ul>
+      </details>
+      <CopyAnnouncer copied={copied} />
+    </div>
   )
 }
 
 // ---------------------------------------------------------------- shell
 
+/**
+ * The refresh time is shown but never announced. Screen readers hear only a
+ * change of state: an alert when refreshing starts failing, and a status
+ * line once it works again.
+ */
 function RefreshStatus({ polled }: { polled: PollState<unknown> }) {
   const at = polled.fetchedAt ? timeFmt.format(polled.fetchedAt) : null
-  if (polled.error)
-    return (
-      <p role="status" className="text-failed text-xs">
-        更新失敗（{polled.error}）。{at ? `${at} 時点の表示のままです` : ''}
-      </p>
-    )
+  const failing = polled.error !== null
   return (
-    <p role="status" className="text-fg-3 text-xs">
-      {at ? `${at} 時点 · 3 秒ごとに更新` : '読み込み中…'}
-    </p>
+    <div className="text-fg-2 text-xs">
+      {failing ? (
+        <>
+          <p role="alert" className="sr-only">
+            更新に失敗しました。直近の表示のままです。
+          </p>
+          <p>
+            更新失敗（{polled.error}）。{at ? `${at} 時点の表示のままです` : ''}
+          </p>
+        </>
+      ) : (
+        <p className="tabular-nums">
+          {at ? `${at} 時点 · 3 秒ごとに更新` : '読み込み中…'}
+        </p>
+      )}
+      <p role="status" className="sr-only">
+        {polled.recovered ? '更新が再開しました' : ''}
+      </p>
+    </div>
   )
+}
+
+const PAGE_TITLE_ID = 'page-title'
+
+function focusPageTitle() {
+  document.getElementById(PAGE_TITLE_ID)?.focus()
 }
 
 function Shell({
@@ -303,15 +409,23 @@ function Shell({
     <a
       href={href}
       aria-current={current ? 'page' : undefined}
-      className={`rounded-md px-2 py-1 text-sm ${current ? 'bg-sunken text-fg font-medium' : 'text-fg-2 hover:text-fg'}`}
+      className={`inline-flex min-h-8 items-center rounded-md px-2 text-sm ${current ? 'bg-sunken text-fg font-medium' : 'text-fg-2 hover:text-fg'}`}
     >
       {label}
     </a>
   )
   return (
     <div className="min-h-screen">
+      {/* The hash is the router, so the skip link moves focus itself. */}
+      <button
+        type="button"
+        onClick={focusPageTitle}
+        className="bg-raised text-fg sr-only z-50 rounded-md px-3 py-2 text-sm shadow-[var(--shadow-pop)] focus:not-sr-only focus:fixed focus:top-2 focus:left-2"
+      >
+        本文へ移動
+      </button>
       <header className="border-line bg-canvas sticky top-0 z-20 border-b">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-1 px-4 py-3 sm:px-6">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-1 px-4 py-2 sm:px-6">
           <span className="text-sm font-semibold">local-agent-loop</span>
           <nav aria-label="画面" className="flex gap-1">
             {nav('#/', 'run 一覧', route.page !== 'compare')}
@@ -322,6 +436,19 @@ function Shell({
       </header>
       <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6">{children}</main>
     </div>
+  )
+}
+
+/** The page's one h1; focus lands here when the route changes. */
+function PageTitle({ children }: { children: ReactNode }) {
+  return (
+    <h1
+      id={PAGE_TITLE_ID}
+      tabIndex={-1}
+      className="text-xl font-semibold text-balance focus-visible:outline-none"
+    >
+      {children}
+    </h1>
   )
 }
 
@@ -339,7 +466,7 @@ function Section({
       <h2 className="mb-3 flex items-baseline gap-2 text-lg font-semibold">
         {title}
         {count !== undefined ? (
-          <span className="text-fg-3 text-sm font-normal tabular-nums">
+          <span className="text-fg-2 text-sm font-normal tabular-nums">
             {count}
           </span>
         ) : null}
@@ -357,29 +484,60 @@ function Empty({ children }: { children: ReactNode }) {
   )
 }
 
-function RunLink({ id }: { id: string }) {
+/** The last characters of a run ID: enough to tell runs apart at a glance. */
+function IdSuffix({ id }: { id: string }) {
   return (
-    <a
-      href={`#/runs/${encodeURIComponent(id)}`}
-      className="font-code text-fg decoration-line-strong text-sm underline underline-offset-2 hover:decoration-current"
-    >
-      {id}
-    </a>
+    <span className="font-code text-fg-2 text-xs" title={id}>
+      …{id.slice(-6)}
+    </span>
+  )
+}
+
+/** A run by its name, with the ID suffix as a quiet aside. */
+function RunLink({ id, name }: { id: string; name: string }) {
+  return (
+    <span className="inline-flex min-w-0 items-baseline gap-2">
+      <a
+        href={`#/runs/${encodeURIComponent(id)}`}
+        className="text-fg decoration-line-strong min-w-0 truncate font-medium underline underline-offset-2 hover:decoration-current"
+      >
+        {name}
+      </a>
+      <IdSuffix id={id} />
+    </span>
   )
 }
 
 // ---------------------------------------------------------------- run list
 
-function liveText(live: LiveElapsed | null): string | null {
-  if (!live) return null
-  const stage = live.stage
-    ? `${live.stage} ${fmtMs(live.stageMs)}`
-    : '工程の合間'
-  return `経過（実行中）: 全体 ${fmtMs(live.runMs)} · いまの工程 ${stage}`
+/** The running stage, on a line of its own; the rest as secondary text. */
+function LiveProgress({
+  live,
+  extra,
+}: {
+  live: LiveElapsed | null
+  extra?: string
+}) {
+  const rest = [
+    live ? `全体 ${fmtMs(live.runMs)} 経過（実行中）` : null,
+    extra || null,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="text-fg text-sm font-medium tabular-nums">
+        {live?.stage
+          ? `いまの工程: ${live.stage}（${fmtMs(live.stageMs)} 経過・実行中）`
+          : 'いまの工程: 工程の合間'}
+      </p>
+      {rest ? <p className="text-fg-2 text-xs tabular-nums">{rest}</p> : null}
+    </div>
+  )
 }
 
 /** An open or stopped run, with its reason and next commands. */
-function OpenRun({ run }: { run: RunRow }) {
+function OpenRun({ run, now }: { run: RunRow; now: string }) {
   const kind = KIND_LABEL[run.diagnosis.kind]
   const progress = [
     run.iterations > 0 ? `実装 ${run.iterations} 回目` : null,
@@ -387,22 +545,22 @@ function OpenRun({ run }: { run: RunRow }) {
   ]
     .filter(Boolean)
     .join(' · ')
-  const live = run.diagnosis.kind === 'running' ? liveText(run.live) : null
+  const running = run.diagnosis.kind === 'running'
   return (
     <li className="flex flex-col gap-2 px-4 py-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <StateBadge label={kind.label} tone={kind.tone} />
-        <RunLink id={run.id} />
-        <span className="text-fg-2 min-w-0 truncate text-sm">{run.title}</span>
-        <span className="text-fg-3 ml-auto text-xs tabular-nums">
-          作成 {dateFmt.format(new Date(run.createdAt))}
+        <h3 className="min-w-0 text-sm">
+          <RunLink id={run.id} name={run.name} />
+        </h3>
+        <span className="text-fg-2 ml-auto text-xs">
+          <Ago iso={run.createdAt} now={now} prefix="作成 " />
         </span>
       </div>
+      {running ? <LiveProgress live={run.live} extra={progress} /> : null}
       <p className="text-fg-2 text-sm">{run.diagnosis.reason}</p>
-      {live || progress ? (
-        <p className="text-fg-3 text-xs tabular-nums">
-          {[live, progress].filter(Boolean).join(' · ')}
-        </p>
+      {!running && progress ? (
+        <p className="text-fg-2 text-xs tabular-nums">{progress}</p>
       ) : null}
       {run.diagnosis.failure ? (
         <p className="text-fg-2 text-xs">
@@ -414,11 +572,11 @@ function OpenRun({ run }: { run: RunRow }) {
   )
 }
 
-function OpenList({ runs }: { runs: RunRow[] }) {
+function OpenList({ runs, now }: { runs: RunRow[]; now: string }) {
   return (
     <ul className="divide-line border-line bg-raised divide-y rounded-lg border">
       {runs.map((run) => (
-        <OpenRun key={run.id} run={run} />
+        <OpenRun key={run.id} run={run} now={now} />
       ))}
     </ul>
   )
@@ -428,7 +586,7 @@ function Th({ children, num }: { children: ReactNode; num?: boolean }) {
   return (
     <th
       scope="col"
-      className={`text-fg-3 px-3 py-2 text-xs font-medium ${num ? 'text-right' : 'text-left'}`}
+      className={`text-fg-2 px-3 py-2 text-xs font-medium ${num ? 'text-right' : 'text-left'}`}
     >
       {children}
     </th>
@@ -445,7 +603,7 @@ function Td({ children, num }: { children: ReactNode; num?: boolean }) {
   )
 }
 
-function FinishedTable({ runs }: { runs: RunRow[] }) {
+function FinishedTable({ runs, now }: { runs: RunRow[]; now: string }) {
   return (
     <div className="border-line bg-raised overflow-x-auto rounded-lg border">
       <table className="w-full text-sm">
@@ -465,20 +623,19 @@ function FinishedTable({ runs }: { runs: RunRow[] }) {
             return (
               <tr key={run.id}>
                 <Td>
-                  <RunLink id={run.id} />
-                  <div className="text-fg-3 max-w-xs truncate text-xs">
-                    {run.title}
-                  </div>
+                  <span className="block max-w-md">
+                    <RunLink id={run.id} name={run.name} />
+                  </span>
                 </Td>
                 <Td>
                   <StateBadge label={c.label} tone={c.tone} />
                 </Td>
                 <Td num>{fmtMs(run.leadTimeMs)}</Td>
                 <Td num>{fmtUsd(run.costUsd)}</Td>
-                <Td>{run.triage ?? <span className="text-fg-3">なし</span>}</Td>
+                <Td>{run.triage ?? <span className="text-fg-2">なし</span>}</Td>
                 <Td>
-                  <span className="text-fg-3 text-xs tabular-nums">
-                    {dateFmt.format(new Date(run.createdAt))}
+                  <span className="text-fg-2 text-xs whitespace-nowrap">
+                    <Ago iso={run.createdAt} now={now} />
                   </span>
                 </Td>
               </tr>
@@ -508,21 +665,21 @@ function RunsPage({ data }: { data: RunsResponse }) {
     <>
       <Section title="人の判断が必要" count={human.length}>
         {human.length > 0 ? (
-          <OpenList runs={human} />
+          <OpenList runs={human} now={data.now} />
         ) : (
           <Empty>承認待ちや停止した run はありません。</Empty>
         )}
       </Section>
       <Section title="進行中" count={open.length}>
         {open.length > 0 ? (
-          <OpenList runs={open} />
+          <OpenList runs={open} now={data.now} />
         ) : (
           <Empty>動いている run も、worker を待つ run もありません。</Empty>
         )}
       </Section>
       <Section title="終了した run" count={finished.length}>
         {finished.length > 0 ? (
-          <FinishedTable runs={finished} />
+          <FinishedTable runs={finished} now={data.now} />
         ) : (
           <Empty>終了した run はまだありません。</Empty>
         )}
@@ -535,8 +692,8 @@ function RunsPage({ data }: { data: RunsResponse }) {
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex flex-col gap-0.5">
-      <dt className="text-fg-3 text-xs">{label}</dt>
+    <div className="flex flex-col gap-1">
+      <dt className="text-fg-2 text-xs">{label}</dt>
       <dd className="font-code text-sm break-all tabular-nums">{children}</dd>
     </div>
   )
@@ -631,9 +788,9 @@ function StatusPanel({ data }: { data: RunDetailResponse }) {
     <Panel title="いまの状態と次の手順">
       <p className="mb-3 text-sm">{data.diagnosis.reason}</p>
       {data.diagnosis.kind === 'running' ? (
-        <p className="text-fg-2 mb-3 text-sm tabular-nums">
-          {liveText(data.live)}
-        </p>
+        <div className="mb-3">
+          <LiveProgress live={data.live} />
+        </div>
       ) : null}
       {data.diagnosis.failure ? (
         <dl className="mb-3 flex flex-col gap-2">
@@ -653,7 +810,7 @@ function StatusPanel({ data }: { data: RunDetailResponse }) {
       <Commands lines={data.diagnosis.next} />
       {data.diagnosis.cleanup ? (
         <div className="mt-3">
-          <p className="text-fg-3 mb-1 text-xs">
+          <p className="text-fg-2 mb-2 text-xs">
             worktree の片付け（branch は残る。変更のある worktree は git
             が拒否する）
           </p>
@@ -745,7 +902,7 @@ function UsagePanels({ report: r }: { report: LoopReport }) {
             </tbody>
           </table>
         </div>
-        <p className="text-fg-3 mt-3 text-xs">
+        <p className="text-fg-2 mt-3 text-xs">
           費用は記録した token 数を API
           料金で換算した参考値で、実際の請求額ではありません。「不明」は使用量か価格が分からない呼び出しを含むことを、「（一部）」は分かった分だけの値であることを示します。
         </p>
@@ -831,7 +988,7 @@ function RecordPanels({ report: r }: { report: LoopReport }) {
 
       {r.notes.length > 0 ? (
         <Panel title="注記">
-          <ul className="text-fg-2 flex list-disc flex-col gap-1 pl-5 text-sm">
+          <ul className="text-fg-2 flex list-disc flex-col gap-1 pl-4 text-sm">
             {r.notes.map((n) => (
               <li key={n}>{n}</li>
             ))}
@@ -842,27 +999,38 @@ function RecordPanels({ report: r }: { report: LoopReport }) {
   )
 }
 
+/** Everything under the run's name, which `PolledPage` renders as the h1. */
 function RunPage({ data }: { data: RunDetailResponse }) {
   const r = data.report
   const kind = KIND_LABEL[data.diagnosis.kind]
+  const { copied, copy } = useCopy()
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-2">
-        <a href="#/" className="text-fg-2 hover:text-fg text-sm">
-          ← run 一覧
-        </a>
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="font-code text-xl font-semibold">{r.runId}</h1>
           <StateBadge label={kind.label} tone={kind.tone} />
+          <span className="text-fg-2 text-sm">
+            <Ago iso={data.createdAt} now={data.now} prefix="作成 " />
+          </span>
           {r.fake ? (
-            <span className="text-fg-3 text-xs">
+            <span className="text-fg-2 text-xs">
               fake mode（実 LLM の検証ではない）
             </span>
           ) : null}
         </div>
-        <p className="text-fg-2 text-sm">
-          {data.title} · 作成 {dateFmt.format(new Date(data.createdAt))}
-        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-fg-2 text-xs">run ID</span>
+          <code className="font-code text-fg-2 text-xs break-all">
+            {r.runId}
+          </code>
+          <CopyButton
+            text={r.runId}
+            label="run ID をコピー"
+            copied={copied}
+            onCopy={(t, l) => void copy(t, l)}
+          />
+          <CopyAnnouncer copied={copied} />
+        </div>
       </div>
 
       <StatusPanel data={data} />
@@ -1001,7 +1169,7 @@ function ComparePage({ data }: { data: CompareResponse }) {
           ) : null}
           {g.triage.length > 0 ? (
             <div className="mt-4 overflow-x-auto">
-              <p className="text-fg-3 mb-2 text-xs">
+              <p className="text-fg-2 mb-2 text-xs">
                 triage の判定別（shadow mode: 判定は経路を変えていない）
               </p>
               <table className="w-full text-sm">
@@ -1044,31 +1212,65 @@ function ComparePage({ data }: { data: CompareResponse }) {
 
 // ---------------------------------------------------------------- pages
 
+/**
+ * One polled page under its h1. The h1 stays the same element from loading
+ * to loaded, so focus moved to it on a route change is not lost.
+ */
 function PolledPage<T>({
   route,
   url,
+  heading,
+  back,
   render,
 }: {
   route: Route
   url: string
+  heading: (data: T | null) => ReactNode
+  back?: boolean
   render: (data: T) => ReactNode
 }) {
   const polled = usePolled<T>(url)
   return (
     <Shell route={route} status={<RefreshStatus polled={polled} />}>
+      <div className="mb-6 flex flex-col gap-2">
+        {back ? (
+          <a
+            href="#/"
+            className="text-fg-2 hover:text-fg inline-flex min-h-8 items-center self-start text-sm"
+          >
+            ← run 一覧
+          </a>
+        ) : null}
+        <PageTitle>{heading(polled.data)}</PageTitle>
+      </div>
       {polled.data ? (
         render(polled.data)
       ) : polled.error ? (
         <Empty>読み込めませんでした: {polled.error}</Empty>
       ) : (
-        <p className="text-fg-3 text-sm">読み込み中…</p>
+        <p className="text-fg-2 text-sm">読み込み中…</p>
       )}
     </Shell>
   )
 }
 
+function routeKey(route: Route): string {
+  return route.page === 'run' ? `run:${route.id}` : route.page
+}
+
+/** After a route change (not the first load), focus the new page's h1. */
+function useFocusOnRouteChange(route: Route) {
+  const key = routeKey(route)
+  const previous = useRef<string | null>(null)
+  useEffect(() => {
+    if (previous.current !== null && previous.current !== key) focusPageTitle()
+    previous.current = key
+  }, [key])
+}
+
 export function App() {
   const route = useRoute()
+  useFocusOnRouteChange(route)
   // Keyed by URL, so moving to another page stops the old page's polling
   // and never shows one run's data under another's address.
   if (route.page === 'run') {
@@ -1078,6 +1280,8 @@ export function App() {
         key={url}
         route={route}
         url={url}
+        back
+        heading={(data) => data?.name ?? 'run の詳細'}
         render={(data) => <RunPage data={data} />}
       />
     )
@@ -1088,6 +1292,7 @@ export function App() {
         key="compare"
         route={route}
         url="/api/compare"
+        heading={() => '集計'}
         render={(data) => <ComparePage data={data} />}
       />
     )
@@ -1096,6 +1301,7 @@ export function App() {
       key="runs"
       route={route}
       url="/api/runs"
+      heading={() => 'run 一覧'}
       render={(data) => <RunsPage data={data} />}
     />
   )

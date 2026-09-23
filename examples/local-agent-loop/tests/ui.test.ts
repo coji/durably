@@ -24,14 +24,51 @@ import { runChild } from '../src/engine/child.js'
 import { liveElapsed } from '../src/engine/report.js'
 import { checkpointPaths } from '../src/engine/runner.js'
 import { pollEvery } from '../src/ui/poll.js'
-import type {
-  CompareResponse,
-  RunDetailResponse,
-  RunsResponse,
+import {
+  runName,
+  SUBJECT_RUN_NAME,
+  type CompareResponse,
+  type RunDetailResponse,
+  type RunsResponse,
 } from '../src/ui/server.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const cli = join(packageRoot, 'src', 'cli.ts')
+
+describe('runName', () => {
+  const repo = (extra: Record<string, unknown>) => ({
+    target: { kind: 'repo', task: 'unused', issue: null, ...extra },
+  })
+
+  it('uses the issue number and title when the run came from an issue', () => {
+    assert.equal(
+      runName(
+        repo({
+          task: 'the issue body',
+          issue: { number: 123, title: '  Fix the parser  ', url: 'u' },
+        }),
+      ),
+      '#123 Fix the parser',
+    )
+  })
+
+  it("uses the task's first non-empty line, without a heading mark", () => {
+    assert.equal(
+      runName(repo({ task: '\n\n  ## Add a --dry-run flag  \nmore detail' })),
+      'Add a --dry-run flag',
+    )
+    const long = 'x'.repeat(200)
+    const name = runName(repo({ task: long }))
+    assert.equal(name.length, 80)
+    assert.ok(name.endsWith('…'))
+  })
+
+  it('names the bundled subject in words, and never returns an empty name', () => {
+    assert.equal(runName({ target: { kind: 'subject' } }), SUBJECT_RUN_NAME)
+    assert.equal(SUBJECT_RUN_NAME, '同梱題材: calc の add を直す')
+    assert.notEqual(runName(repo({ task: '   \n ' })), '')
+  })
+})
 
 describe('liveElapsed', () => {
   const t0 = Date.parse('2026-09-24T10:00:00.000Z')
@@ -302,6 +339,8 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
         first.runs.map((r) => [r.id, r.diagnosis.kind, r.needsHuman]),
         [[ids['approval'], 'pending', false]],
       )
+      // Each row carries a name from the stored input, not only its ID.
+      assert.equal(first.runs[0]?.name, SUBJECT_RUN_NAME)
 
       const status = (id: string) => async () =>
         (await durably.getRun(id))?.status
@@ -505,6 +544,7 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
         port,
         `/api/runs/${ids['approval']}`,
       )
+      assert.equal(waiting.name, SUBJECT_RUN_NAME)
       assert.equal(waiting.report.reviews.length, 2)
       assert.ok(waiting.report.reviews.every((r) => r.notes.length > 0))
       assert.ok(waiting.report.candidate?.id)

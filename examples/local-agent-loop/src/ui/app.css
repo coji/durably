@@ -1,6 +1,6 @@
 @import 'tailwindcss';
 
-/* Design tokens: copied as is from .ui-craft/tokens.md. */
+/* Design tokens: copied from .ui-craft/tokens.md, plus --duration-pulse. */
 :root {
   /* primitives */
   --gray-50: oklch(98.5% 0.004 250);
@@ -40,6 +40,12 @@
   --radius-lg: 10px;
   --shadow-pop: 0 4px 12px oklch(0% 0 0 / 0.08), 0 1px 3px oklch(0% 0 0 / 0.06);
   --duration-fast: 150ms;
+  /*
+   * Not in tokens.md: one full cycle of the running dot's slow pulse. It is
+   * the UI's only ambient motion, so it is slow enough to read as "alive"
+   * without drawing the eye; hover and focus changes use --duration-fast.
+   */
+  --duration-pulse: 1.2s;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --z-sticky: 20;
   --z-toast: 50;
@@ -132,7 +138,7 @@ body {
   border-radius: var(--radius-sm);
 }
 
-/* The only motion: the dot of a running run. */
+/* The only ambient motion: the dot of a running run (--duration-pulse). */
 @keyframes blink {
   0%,
   100% {
@@ -143,7 +149,7 @@ body {
   }
 }
 .dot-live {
-  animation: blink 1.2s var(--ease-out) infinite;
+  animation: blink var(--duration-pulse) var(--ease-out) infinite;
 }
 @media (prefers-reduced-motion: reduce) {
   .dot-live {
