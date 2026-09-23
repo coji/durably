@@ -110,6 +110,7 @@ describe('stage timing completeness', () => {
       inputs: { task: null, spec: null, dispositions: null },
       candidate: null,
       delivery: null,
+      failure: null,
       stageVisits: [],
       realLlmCallCount: 1,
       fullLoopVerified: false,

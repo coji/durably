@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 
 import type { AnyDurably } from '@coji/durably'
 
+import { classifyRun } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import {
   roleUsage,
@@ -85,13 +86,17 @@ function inputHashes(input: PersistedInput | null): ReportInputs {
 }
 
 export async function buildReport(
-  durably: Pick<AnyDurably, 'getRun' | 'getStepAttempts' | 'getWaits'>,
+  durably: Pick<
+    AnyDurably,
+    'getRun' | 'getStepAttempts' | 'getWaits' | 'storage'
+  >,
   runId: string,
 ): Promise<LoopReport> {
   const run = await durably.getRun(runId)
   if (!run) throw new Error(`run not found: ${runId}`)
   const attempts = await durably.getStepAttempts(runId)
   const waits = await durably.getWaits(runId)
+  const failure = await classifyRun(durably, run)
   const input = run.input as PersistedInput | null
   const fake = (input?.provider ?? '') === 'fake'
   const output = run.output as {
@@ -242,6 +247,7 @@ export async function buildReport(
     inputs: inputHashes(input),
     candidate,
     delivery,
+    failure,
     stageVisits: visits,
     realLlmCallCount,
     fullLoopVerified,

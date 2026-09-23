@@ -375,6 +375,198 @@ describe('factory.json and input files', { timeout: 180000 }, () => {
   })
 })
 
+async function until(
+  cond: () => Promise<boolean>,
+  label: string,
+): Promise<void> {
+  const deadline = Date.now() + 150000
+  for (;;) {
+    if (await cond()) return
+    if (Date.now() > deadline) throw new Error(`timed out: ${label}`)
+    // sleep-ok(poll): one tick of a loop that re-checks the run state until its deadline
+    await new Promise((r) => setTimeout(r, 500))
+  }
+}
+
+/** The status listing is one block per run, separated by blank lines. */
+function blockOf(stdout: string, runId: string): string {
+  return stdout.split('\n\n').find((b) => b.startsWith(runId)) ?? ''
+}
+
+describe('status without --run', { timeout: 180000 }, () => {
+  it('lists open and stopped runs with the next command, and leftover worktrees', async () => {
+    const box = await sandbox({ check: CHECK })
+    const empty = await demo(box, ['status'])
+    assert.equal(empty.code, 0, empty.stderr)
+    assert.match(empty.stdout, /No runs need attention/)
+
+    // A repository run that finishes (its worktree is kept), and one whose
+    // setup fails before any worktree is recorded.
+    const done = await trigger(box, ['--repo', box.repo, '--task', 'fix add'])
+    const noSetup = await trigger(box, [
+      '--repo',
+      box.repo,
+      '--task',
+      'fix add',
+      '--base',
+      'no-such-ref',
+    ])
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    await durably.migrate()
+    const subject = async () =>
+      (
+        await durably.jobs.agentLoop.trigger({
+          provider: 'fake',
+          target: { kind: 'subject' as const },
+          maxIterations: 2,
+          context: 'reuse',
+        })
+      ).id
+    let waiting = ''
+    let waitId = ''
+    let pending = ''
+    let live = ''
+    let expired = ''
+    let workdir = ''
+    let repoPath = ''
+    try {
+      // The bundled sample waits for a human approval.
+      waiting = await subject()
+      await durably.init()
+      const status = (id: string) => async () =>
+        (await durably.getRun(id))?.status
+      await until(
+        async () => (await status(done)()) === 'completed',
+        'repo run completes',
+      )
+      await until(
+        async () => (await status(noSetup)()) === 'failed',
+        'bad base fails',
+      )
+      await until(
+        async () => (await status(waiting)()) === 'waiting',
+        'sample waits',
+      )
+      await durably.stop()
+      waitId = (await durably.getWaits(waiting)).find(
+        (w) => w.status === 'pending',
+      )?.id as string
+      assert.ok(waitId)
+      const setup = (await durably.storage.getCompletedStep(done, 'setup'))
+        ?.output as FactorySetup
+      assert.equal(setup.target.kind, 'repo')
+      if (setup.target.kind === 'repo') {
+        workdir = setup.target.workdir
+        repoPath = setup.target.repoPath
+      }
+      assert.ok(existsSync(workdir))
+      // With no worker running: one queued run, one held by a live lease and
+      // one whose lease has run out.
+      pending = await subject()
+      live = await subject()
+      expired = await subject()
+      const lease = (id: string, expiresAt: Date) =>
+        durably.db
+          .updateTable('durably_runs')
+          .set({
+            status: 'leased',
+            lease_owner: 'other-worker',
+            lease_expires_at: expiresAt.toISOString(),
+          })
+          .where('id', '=', id)
+          .execute()
+      await lease(live, new Date(Date.now() + 3_600_000))
+      await lease(expired, new Date(Date.now() - 60_000))
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+
+    const res = await demo(box, ['status'])
+    assert.equal(res.code, 0, res.stderr)
+    const out = res.stdout
+    // Printed commands run as pasted from anywhere in the repository; any
+    // explanation follows as a shell comment.
+    const demoCmd = 'pnpm --filter example-local-agent-loop demo'
+    const approve = `${demoCmd} approve --run ${waiting} --wait ${waitId}`
+    const reject = `${demoCmd} reject --run ${waiting} --wait ${waitId}`
+    for (const line of out.split('\n')) {
+      const cmd = line.match(/^ {2}(?:next:| {5}|cleanup:) +(.*)$/)?.[1]
+      if (!cmd) continue
+      assert.ok(
+        cmd.startsWith(`${demoCmd} `) || cmd.startsWith('git -C '),
+        line,
+      )
+      assert.doesNotMatch(cmd.split('  #')[0] ?? '', /[()]/, line)
+    }
+    assert.ok(blockOf(out, waiting).includes(approve), out)
+    assert.ok(blockOf(out, waiting).includes(reject), out)
+    assert.match(blockOf(out, pending), /pending[\s\S]*queued/)
+    assert.match(blockOf(out, live), /a worker is running it/)
+    assert.match(blockOf(out, expired), /lease expired/)
+    assert.match(blockOf(out, expired), /demo worker/)
+    // Only the run with an approval wait is offered approve or reject, and
+    // an open run is never called retryable.
+    for (const id of [pending, live, expired, noSetup, done]) {
+      assert.doesNotMatch(blockOf(out, id), /demo (approve|reject)/)
+    }
+    for (const id of [pending, live, expired])
+      assert.doesNotMatch(blockOf(out, id), /retry:/)
+    assert.match(blockOf(out, noSetup), /unclassified[\s\S]*retry: +NO/)
+    // The finished repository run's worktree is still on disk: offer a
+    // non-forcing removal of exactly that path. The run that failed before
+    // setup and the sample run get none.
+    const remove = `git -C '${repoPath}' worktree remove '${workdir}'`
+    assert.ok(blockOf(out, done).includes(remove), out)
+    assert.doesNotMatch(out, /--force|branch -D/)
+    for (const id of [noSetup, waiting, pending, live, expired])
+      assert.doesNotMatch(blockOf(out, id), /worktree remove/)
+
+    // Once the worktree is gone, the run is not mentioned again.
+    await git(repoPath, ['worktree', 'remove', workdir])
+    const after = await demo(box, ['status'])
+    assert.equal(after.code, 0, after.stderr)
+    assert.equal(blockOf(after.stdout, done), '')
+    assert.doesNotMatch(after.stdout, /worktree remove/)
+
+    // The run-specific view keeps its fields and adds the diagnosis.
+    const one = await demo(box, ['status', '--run', waiting])
+    assert.equal(one.code, 0, one.stderr)
+    const shown = JSON.parse(one.stdout) as Record<string, unknown> & {
+      diagnosis: { next: string[] }
+    }
+    for (const key of [
+      'diagnosis',
+      'delivery',
+      'candidate',
+      'run',
+      'attempts',
+      'waits',
+    ])
+      assert.ok(key in shown, key)
+    assert.ok(shown.diagnosis.next.includes(approve))
+
+    // Once approved, with no worker running, the run is still waiting but
+    // its decision is recorded: no second approve, and a worker resumes it.
+    const approved = await demo(box, [
+      'approve',
+      '--run',
+      waiting,
+      '--wait',
+      waitId,
+    ])
+    assert.equal(approved.code, 0, approved.stderr)
+    const decided = blockOf((await demo(box, ['status'])).stdout, waiting)
+    assert.match(decided, /waiting/)
+    assert.match(decided, /decision on candidate .* is recorded \(approved\)/)
+    assert.match(decided, /demo worker/)
+    assert.doesNotMatch(decided, /demo (approve|reject)|not a candidate/)
+  })
+})
+
 describe('trigger validation', { timeout: 120000 }, () => {
   it('requires a check from the config or the flags', async () => {
     const box = await sandbox()

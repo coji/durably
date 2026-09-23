@@ -86,6 +86,7 @@ and steer it.
 ## Reading a run
 
 ```bash
+pnpm --filter example-local-agent-loop demo status   # runs needing attention and the next command for each
 pnpm --filter example-local-agent-loop demo status --run <runId>
 pnpm --filter example-local-agent-loop demo report --run <runId> --format md
 pnpm --filter example-local-agent-loop demo compare --runs <runId>,<runId>

@@ -58,6 +58,7 @@ Trigger the bundled subject in another terminal, then inspect and approve its du
 pnpm --filter example-local-agent-loop demo trigger \
   --provider codex --context reuse --max-iterations 2
 
+pnpm --filter example-local-agent-loop demo status   # every run that needs attention, with the next command
 pnpm --filter example-local-agent-loop demo status --run <runId>
 pnpm --filter example-local-agent-loop demo waits --run <runId>
 pnpm --filter example-local-agent-loop demo approve --run <runId> --wait <waitId>

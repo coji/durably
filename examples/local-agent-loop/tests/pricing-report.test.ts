@@ -33,6 +33,7 @@ function baseReport(): LoopReport {
     inputs: { task: null, spec: null, dispositions: null },
     candidate: null,
     delivery: null,
+    failure: null,
     stageVisits: [],
     realLlmCallCount: 0,
     fullLoopVerified: false,
