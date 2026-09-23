@@ -307,6 +307,38 @@ export function createEventsTests(createDialect: () => Dialect) {
         }),
       )
     })
+
+    it('keeps delivering when the onError handler itself throws', async () => {
+      const leased = {
+        type: 'run:leased',
+        runId: 'run_1',
+        jobName: 'test-job',
+        input: {},
+        leaseOwner: 'worker-1',
+        leaseExpiresAt: '2024-01-01T00:00:30.000Z',
+        labels: {},
+      } as const
+      const errorHandler = vi.fn(() => {
+        throw new Error('onError failed')
+      })
+      const later = vi.fn()
+      durably.onError(errorHandler)
+      durably.on('run:leased', () => {
+        throw new Error('sync listener failed')
+      })
+      durably.on('run:leased', async () => {
+        throw new Error('async listener failed')
+      })
+      durably.on('run:leased', later)
+
+      expect(() => durably.emit(leased)).not.toThrow()
+      expect(later).toHaveBeenCalledTimes(1)
+      // The async rejection reaches onError, whose throw is contained
+      // rather than becoming an unhandled rejection that fails the run.
+      await vi.waitFor(() => expect(errorHandler).toHaveBeenCalledTimes(2), {
+        timeout: 5_000,
+      })
+    })
   })
 
   describe('core event classification', () => {

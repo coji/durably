@@ -848,17 +848,12 @@ function createDurablyInstance<
         try {
           await storage.deleteSteps(runId)
         } catch (error) {
-          try {
-            eventEmitter.emit({
-              type: 'worker:error',
-              error: getErrorMessage(error),
-              context: 'cancel-cleanup',
-              runId,
-            })
-          } catch {
-            // A throwing listener and onError handler must not turn the
-            // report of a failed cleanup into a rejected cancel.
-          }
+          eventEmitter.emit({
+            type: 'worker:error',
+            error: getErrorMessage(error),
+            context: 'cancel-cleanup',
+            runId,
+          })
         }
       }
     },

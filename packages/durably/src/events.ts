@@ -400,8 +400,15 @@ export function createEventEmitter(): EventEmitter {
         return
       }
 
-      const reportError = (error: unknown) =>
-        errorHandler?.(toError(error), fullEvent)
+      const reportError = (error: unknown) => {
+        try {
+          errorHandler?.(toError(error), fullEvent)
+        } catch {
+          // A throwing error handler must not stop delivery to the remaining
+          // listeners, escape into the code that emitted the event, or
+          // surface as an unhandled rejection from an async listener.
+        }
+      }
 
       for (const listener of typeListeners) {
         try {
