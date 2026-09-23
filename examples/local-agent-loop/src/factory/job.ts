@@ -10,6 +10,11 @@ import {
 } from '@coji/durably'
 import { z } from 'zod'
 
+import {
+  FAKE_REVIEW_DECISIONS,
+  FAKE_TRIAGE_KINDS,
+  FakeRun,
+} from '../engine/providers/fake.js'
 import { createProvider } from '../engine/providers/index.js'
 import type { AgentProvider, ProviderName } from '../engine/providers/types.js'
 import { TRIAGE_JUDGMENTS, type ReportTriage } from '../engine/report.js'
@@ -76,6 +81,26 @@ const targetSchema = z
 
 const providerSchema = z.enum(['codex', 'claude', 'fake'])
 
+const fakeScenarioSchema = z
+  .object({
+    failIterations: z.number().int().min(0).optional(),
+    reviewSequence: z.array(z.enum(FAKE_REVIEW_DECISIONS)).optional(),
+    reviewNotes: z.array(z.string()).optional(),
+    triage: z.array(z.enum(FAKE_TRIAGE_KINDS)).optional(),
+    triageReason: z.string().min(1).max(500).optional(),
+    latencyMs: z
+      .object({
+        min: z.number().int().min(0),
+        max: z.number().int().min(0),
+      })
+      .refine((l) => l.max >= l.min, 'latencyMs.max must be >= min')
+      .optional(),
+    usage: z.enum(['none', 'realistic']).optional(),
+    summary: z.string().optional(),
+    changes: z.record(z.string().min(1), z.string()).optional(),
+  })
+  .strict()
+
 /**
  * One role's requested settings. What is actually applied is resolved from
  * these in the setup step, never taken from the caller.
@@ -109,6 +134,12 @@ const inputSchema = z.object({
   target: targetSchema,
   /** Defaults to false for the sample and true for a repository target. */
   autoApprove: z.boolean().optional(),
+  /**
+   * Demo and test only: per-run behavior of the fake provider, for seeding
+   * runs that behave differently in one worker. Refused unless every role is
+   * fake, and left out of `configVersion`.
+   */
+  fakeScenario: fakeScenarioSchema.optional(),
 })
 
 const candidateSchema = z.object({
@@ -331,6 +362,10 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             ...fixed,
             ...(fixedTriage ? { triage: fixedTriage } : {}),
           })
+          if (input.fakeScenario && fixed.code.provider !== 'fake')
+            throw new Error(
+              'fakeScenario is only for runs on the fake provider',
+            )
           const resolve = (
             role: string,
             profile: FixedProfile,
@@ -429,8 +464,16 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       )
 
       const target = createTarget(setup.target)
+      // One per run, shared by every role, so the scenario's queues are
+      // consumed in call order just like the env knobs.
+      const fakeRun = input.fakeScenario
+        ? new FakeRun(input.fakeScenario)
+        : null
       const providers = byRole((role) =>
-        createProvider(setup.profiles[role].provider),
+        createProvider(setup.profiles[role].provider, {
+          run: fakeRun,
+          requestedModel: setup.profiles[role].requestedModel,
+        }),
       )
       // Shadow mode: the judgment is recorded and nothing below reads it.
       const triageProfile = setup.triage
@@ -443,7 +486,10 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                 operationKey: triageKey,
                 setup,
                 profile: triageProfile,
-                provider: createProvider(triageProfile.provider),
+                provider: createProvider(triageProfile.provider, {
+                  run: fakeRun,
+                  requestedModel: triageProfile.requestedModel,
+                }),
                 target,
               }),
             {

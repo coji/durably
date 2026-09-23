@@ -245,6 +245,46 @@ triage 判定別の結果を表示します。
   には「（一部のみ計測）」を付けます。
 - 集計の統計は不明な値を除いて計算し、除いた数を「不明」の列に出します。
 
+### デモデータ
+
+実際の利用に近い run を並べて web UI を見たいときは `demo seed` を使います。
+実 LLM は呼ばず、すべて fake provider で動きます。
+
+```bash
+pnpm --filter example-local-agent-loop demo seed
+pnpm --filter example-local-agent-loop demo seed --home ~/tmp/factory-demo --latency 3000-15000
+```
+
+- 使い捨ての HOME を OS の一時ディレクトリに作り、その場所を表示します。
+  `--home` には空のディレクトリか、まだ無いパスを渡します。普段の
+  `~/.local/state/local-agent-loop/` には触れません。
+- その HOME に小さな JS プロジェクトの git リポジトリと `factory.json` を作り、
+  日本語のタスクで repo 対象の run を 13 本起動します。固定テストは本物の
+  `node --test` です。
+- `factory.json` の各役割には実際に使いそうな model を書いています。実装と
+  correctness レビューは `gpt-6-sol`、edge-cases レビューは `claude-opus-5-5`、
+  triage は `gpt-6-luna` です。provider は fake なので、これらは requested model
+  として記録され、token 数と費用はその model の価格で計算します。run は fake と
+  表示され、実 LLM 検証には数えません。
+- 結論は一通りそろいます。修正 1 回で承認、初回で承認、レビュー上限、検証失敗、
+  未確定の呼び出し、承認待ち 2 本、却下、triage の routine と probe です。
+- `--latency` は 1 回の呼び出しにかかる時間の範囲で、既定は `20000-90000` ミリ秒
+  です。seed はこの run を同時に進め、承認と却下を `demo approve` / `demo reject`
+  と同じ処理で送り、落ち着くまで待ちます。
+- 最後の 2 本は、1 回の呼び出しに 10〜20 分かかる設定でバックグラウンドの
+  worker に渡します。seed が終わった時点で 1 本は実行中、もう 1 本は worker 待ち
+  です。worker の pid とログの場所を表示します。
+- 作成時刻は実際に seed を動かした時刻です。Durably が時刻を記録し、seed は DB を
+  書き換えないので、数日分の履歴には見えません。
+
+最後に、画面を開くコマンドと、worker を止めたあとで続きを動かすコマンドを
+表示します。
+
+```bash
+HOME=<表示された場所> pnpm --filter example-local-agent-loop demo ui
+HOME=<表示された場所> pnpm --filter example-local-agent-loop demo worker
+```
+
 ## 実リポジトリに対して動かす
 
 同梱の題材ではなく、実際のリポジトリの作業を渡す場合です。リポジトリごとに変わらない
@@ -632,6 +672,16 @@ pnpm --filter example-local-agent-loop demo trigger \
 fakeのtriageは同梱題材ではtriggerのフラグから指定できないので、job inputの
 `profiles.triage` で渡します。
 
+`FAKE_LATENCY_MS=20000-90000` を付けると、各呼び出しがその範囲のランダムな時間
+待ちます。cancel と timeout では待ちを打ち切ります。`FAKE_USAGE=realistic` を
+付けると、役割に応じたそれらしい token 数を返し、requested model の価格で費用を
+計算します。付けなければ、これまでどおり token と費用は不明です。
+
+job input の `fakeScenario` は run ごとに fake の振る舞いを変える、デモとテスト
+専用の欄です。上の環境変数と同じ項目を run ごとに上書きします。すべての役割が
+fake の run でしか受け付けず、`configVersion` にも入りません。`demo seed` が
+これを使います。
+
 ## Layout
 
 コードは三層です。`engine/` はどのリポジトリでも同じもの、`factory/` は工程の
@@ -668,7 +718,10 @@ src/
     repo.ts         実リポジトリ。worktreeで作業、commitで封印、patch/PRを出す
     index.ts        setup時のprepareと、replay時のcreateTarget
   ui/               読み取り専用のweb UI（server.tsとReactの画面）
-  cli.ts            factory.jsonと入力ファイルの読み込み、trigger時の固定
+  cli.ts            コマンドの入口
+  trigger-input.ts  factory.jsonと入力ファイルの読み込み、trigger時の固定
+  approval.ts       candidateに結びつけた承認と却下のsignal
+  demo-seed.ts      demo seedが作るデモ用のリポジトリとrun
   durably.ts        固定state directoryのDB（web UI用の読み取り専用接続を含む）
 subject/            変更しないバグ入り題材
 ```

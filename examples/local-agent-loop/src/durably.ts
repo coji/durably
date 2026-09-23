@@ -50,6 +50,11 @@ export interface AgentDurablyOptions {
    * exposed as a CLI flag or environment variable.
    */
   stateRoot?: string
+  /**
+   * Demo seeding only: runs one worker leases at once. The CLI worker keeps
+   * Durably's default of one.
+   */
+  maxConcurrentRuns?: number
 }
 
 function build(options: AgentDurablyOptions) {
@@ -62,10 +67,14 @@ function build(options: AgentDurablyOptions) {
   // writer locks the whole database, so `demo approve` and `demo report`
   // contend with the worker's 500ms poll and eventually die on SQLITE_BUSY.
   database.pragma('journal_mode = WAL')
-  return withDatabase(database, stateRoot)
+  return withDatabase(database, stateRoot, options.maxConcurrentRuns)
 }
 
-function withDatabase(database: Database.Database, stateRoot: string) {
+function withDatabase(
+  database: Database.Database,
+  stateRoot: string,
+  maxConcurrentRuns?: number,
+) {
   const dialect = new SqliteDialect({ database })
   return createDurably({
     dialect,
@@ -73,6 +82,7 @@ function withDatabase(database: Database.Database, stateRoot: string) {
     leaseRenewIntervalMs: 1000,
     leaseMs: 10000,
     preserveSteps: true,
+    ...(maxConcurrentRuns ? { maxConcurrentRuns } : {}),
     jobs: { agentLoop: createAgentLoopJob({ stateRoot }) },
   })
 }
