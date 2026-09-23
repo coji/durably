@@ -123,6 +123,46 @@ Claudeでは `--provider claude` に替えるだけです。承認CLIはwait met
 Candidate IDを読み、signal payloadにも同じIDを入れます。拒否は `approve` の
 代わりに `reject` を使います。
 
+### 止まったrunと次の手順を見る
+
+`--run` を付けない `status` は、手を打つ必要があるrunを一覧します。対象は
+pending、leased、waiting、failed、cancelled、および検証失敗かレビュー上限で
+終わったcompleted runです。各runに理由と次に打つコマンドを表示します。何も
+なければ「No runs need attention」と表示します。
+
+```bash
+pnpm --filter example-local-agent-loop demo status
+```
+
+```text
+01M375ZAYC...  waiting  (created 2026-09-23T13:06:11.530Z)
+  reason:  waiting for human approval of candidate candidate-1-9958e915bf52
+  next:    pnpm demo report --run 01M375ZAYC... (read the reviews first)
+           pnpm demo approve --run 01M375ZAYC... --wait 01M375ZC2C...
+           pnpm demo reject --run 01M375ZAYC... --wait 01M375ZC2C...
+```
+
+- 承認waitで止まっているrunだけに、そのrun IDとwait IDを入れた `approve` と
+  `reject` を表示します。
+- leasedは、lease期限内なら実行中、期限切れならworkerが止まったものとして
+  区別します。期限切れは失敗ではないので、workerを起動すればcheckpointから
+  再開します。
+- 止まったrunには、理由、再試行の可否（`retry`）、人が確認すべき内容
+  （`check`）を表示します。`retry: yes` は「新しいrunを始めても、結果の
+  分からないagent呼び出しを重ねて送らない」という意味で、同じ入力で成功する
+  保証ではありません。
+- 開始checkpointだけが残ったagent呼び出しは `uncertain-invocation` として
+  `retry: NO` になり、送り直すコマンドは出しません。providerの履歴と作業場所、
+  表示されたcheckpointを人が確かめてください。分類できない失敗も `retry: NO`
+  です。
+- 終わったrepo runのworktreeが残っていれば、
+  `git -C '<repo>' worktree remove '<workdir>'` を表示します。setupが記録した
+  パスが存在するときだけ出し、強制削除やbranch削除は含みません。変更が残る
+  worktreeではgitが削除を拒みます。実行するかどうかは利用者が決めます。
+
+同じ理由と次の手順は、`status --run <runId>` の `diagnosis` と、reportの
+`failure`（JSON）および「Stop reason」節（Markdown）にも出ます。
+
 ## 実リポジトリに対して動かす
 
 同梱の題材ではなく、実際のリポジトリの作業を渡す場合です。リポジトリごとに変わらない

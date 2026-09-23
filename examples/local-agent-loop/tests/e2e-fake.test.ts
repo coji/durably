@@ -7,12 +7,19 @@
  * exercised through durable steps (not mocks).
  */
 import assert from 'node:assert/strict'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import { createAgentDurably } from '../src/durably.js'
+import { buildReport } from '../src/engine/build-report.js'
+import { runChild } from '../src/engine/child.js'
+import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
+import { checkpointPaths } from '../src/engine/runner.js'
+
+const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 async function waitFor(
   cond: () => Promise<boolean>,
@@ -201,5 +208,126 @@ describe('fake e2e fix loop', { timeout: 180000 }, () => {
       await durably.stop()
       await durably.db.destroy()
     }
+  })
+})
+
+describe('fake runs that stop', { timeout: 180000 }, () => {
+  it('shows verification failure, review cap and an uncertain call differently in status and report', async () => {
+    // The CLI resolves the state root from HOME, so put the database there.
+    const home = await mkdtemp(join(tmpdir(), 'e2e-stops-'))
+    const dir = join(home, '.local', 'state', 'local-agent-loop')
+    delete process.env.FAKE_FAIL_FIRST
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    delete process.env.FAKE_REVIEW_SLOW_MS
+
+    const durably = createAgentDurably({ stateRoot: dir })
+    await durably.migrate()
+    const ids: Record<string, string> = {}
+    try {
+      const subject = (maxIterations: number) =>
+        durably.jobs.agentLoop.trigger({
+          provider: 'fake',
+          target: { kind: 'subject' as const },
+          maxIterations,
+          context: 'reuse',
+        })
+      // The first implementation leaves the bug in place and there is no
+      // second iteration, so the pinned check fails for good.
+      ids['verification'] = (await subject(1)).id
+      // A worker died after sending the first implementation prompt: its
+      // start checkpoint exists and its completion does not. Written before
+      // any worker runs, so the run meets it on the first call.
+      const uncertain = await subject(1)
+      ids['uncertain'] = uncertain.id
+      const checkpointsDir = join(
+        dir,
+        'runs',
+        uncertain.id,
+        'operation-checkpoints',
+      )
+      await mkdir(checkpointsDir, { recursive: true })
+      const operationKey = `${uncertain.id}/stage:0:code/agent`
+      await writeFile(
+        checkpointPaths(checkpointsDir, operationKey).started,
+        `${JSON.stringify({
+          operationKey,
+          invocationId: 'lost-invocation',
+          status: 'started',
+          invocationStartedAt: new Date().toISOString(),
+        })}\n`,
+      )
+      await durably.init()
+      const settled = (id: string) => async () => {
+        const s = (await durably.getRun(id))?.status
+        return s === 'completed' || s === 'failed'
+      }
+      await waitFor(settled(ids['verification']), 60000, 'verification run')
+      await waitFor(settled(ids['uncertain']), 60000, 'uncertain run')
+      // The check passes at once, but a reviewer asks for changes and there
+      // is no repair left.
+      process.env.FAKE_FAIL_FIRST = '0'
+      process.env.FAKE_REVIEW_SEQUENCE = 'needsChanges,pass'
+      ids['review'] = (await subject(1)).id
+      await waitFor(settled(ids['review']), 60000, 'review-cap run')
+
+      const expected = {
+        verification: 'verification-failed',
+        review: 'review-cap-reached',
+        uncertain: 'uncertain-invocation',
+      } as const
+      const reasons = new Set<string>()
+      const nexts = new Set<string>()
+      for (const [name, kind] of Object.entries(expected)) {
+        const id = ids[name] ?? ''
+        const report = await buildReport(durably, id)
+        assert.equal(report.failure?.kind, kind, `${name}: ${report.status}`)
+        reasons.add(report.failure?.reason ?? '')
+        nexts.add(JSON.stringify(report.failure?.next))
+        assert.equal(report.failure?.retryable, kind !== 'uncertain-invocation')
+        const json = JSON.parse(reportToJson(report)) as {
+          failure: { kind: string }
+        }
+        assert.equal(json.failure.kind, kind)
+        const md = reportToMarkdown(report)
+        assert.ok(md.includes(`- kind: ${kind}`))
+        // The existing sections stay.
+        for (const heading of ['## Candidate', '## Delivery', '## Summary'])
+          assert.ok(md.includes(heading), heading)
+        if (kind === 'uncertain-invocation') {
+          assert.ok(md.includes('NO — do not start a new run'))
+          assert.ok(!md.includes('- next: then start a new run'))
+        }
+      }
+      assert.equal(reasons.size, 3)
+      assert.equal(nexts.size, 3)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+      delete process.env.FAKE_REVIEW_SEQUENCE
+    }
+
+    const res = await runChild(
+      join(packageRoot, 'node_modules', '.bin', 'tsx'),
+      [join(packageRoot, 'src', 'cli.ts'), 'status'],
+      { cwd: home, timeoutMs: 60000, env: { HOME: home } },
+    )
+    assert.equal(res.code, 0, res.stderr)
+    const blocks = res.stdout.split('\n\n')
+    const block = (id: string) => blocks.find((b) => b.startsWith(id)) ?? ''
+    const verification = block(ids['verification'] ?? '')
+    const review = block(ids['review'] ?? '')
+    const uncertain = block(ids['uncertain'] ?? '')
+    assert.match(verification, /verification-failed:/)
+    assert.match(verification, /retry: +yes/)
+    assert.match(review, /review-cap-reached:/)
+    assert.match(review, /retry: +yes/)
+    assert.match(uncertain, /uncertain-invocation:/)
+    assert.match(uncertain, /retry: +NO/)
+    assert.match(uncertain, /start checkpoint without completion/)
+    // Nothing that would send the lost prompt again.
+    assert.doesNotMatch(uncertain, /trigger|demo worker/)
+    // A subject run has no worktree to remove.
+    assert.doesNotMatch(res.stdout, /worktree remove/)
   })
 })

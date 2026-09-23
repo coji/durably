@@ -471,6 +471,7 @@ function report(
       branch: `factory/${runId}`,
       commit: 'c'.repeat(40),
     },
+    failure: null,
     stageVisits: sv,
     realLlmCallCount: 3,
     fullLoopVerified: approved,

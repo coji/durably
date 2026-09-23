@@ -5,12 +5,22 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import type { Run } from '@coji/durably'
 import { z } from 'zod'
 
-import { createAgentDurably, dbPath, legacyDbWarning } from './durably.js'
+import {
+  createAgentDurably,
+  dbPath,
+  legacyDbWarning,
+  type AgentLoopDurably,
+} from './durably.js'
 import { buildReport } from './engine/build-report.js'
 import { killOwnedChildren, runChild } from './engine/child.js'
 import { compareReports, comparisonToMarkdown } from './engine/compare.js'
+import {
+  classifyFailure,
+  uncertainCheckpoints,
+} from './engine/failure-reasons.js'
 import { repoRoot } from './engine/git.js'
 import { parseProviderName } from './engine/providers/index.js'
 import {
@@ -312,6 +322,157 @@ function args(): Record<string, string> {
   return out
 }
 
+/** Quote for a POSIX shell, so a printed command pastes safely. */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+interface Diagnosis {
+  /** False for a run a human already decided, shown only for its cleanup. */
+  needsAttention: boolean
+  reason: string
+  next: string[]
+  /** Set only for a stopped run: whether starting a new one is safe. */
+  retryable?: boolean
+  humanCheck?: string
+  details?: string[]
+  /** A non-forcing worktree removal, for a finished repo run's worktree. */
+  cleanup: string | null
+}
+
+/**
+ * Say why a run is where it is and what to do next. Open runs are described
+ * from their status, lease and approval wait; stopped runs from the failure
+ * table. Nothing here runs a command or changes the run.
+ */
+async function diagnose(
+  durably: AgentLoopDurably,
+  run: Run,
+  now: number,
+): Promise<Diagnosis> {
+  const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))
+    ?.output as {
+    checkpointsDir?: string
+    target?: { kind?: string; repoPath?: string; workdir?: string }
+  } | null
+  const terminal = ['completed', 'failed', 'cancelled'].includes(run.status)
+  const target = setup?.target
+  // Only the worktree the setup step recorded, and only when it is still
+  // there: a subject run has none, and a run that failed before setup
+  // finished has no record to trust.
+  const cleanup =
+    terminal &&
+    target?.kind === 'repo' &&
+    target.repoPath &&
+    target.workdir &&
+    existsSync(target.workdir)
+      ? `git -C ${shellQuote(target.repoPath)} worktree remove ${shellQuote(target.workdir)}`
+      : null
+  const show = `pnpm demo status --run ${run.id}`
+  if (run.status === 'pending')
+    return {
+      needsAttention: true,
+      reason: 'queued; no worker has picked it up yet',
+      next: ['pnpm demo worker (if none is running)', show],
+      cleanup,
+    }
+  if (run.status === 'leased') {
+    const expires = run.leaseExpiresAt ? Date.parse(run.leaseExpiresAt) : NaN
+    if (Number.isFinite(expires) && expires < now)
+      return {
+        needsAttention: true,
+        reason: `lease expired at ${run.leaseExpiresAt}; the worker holding it stopped or lost contact`,
+        next: [
+          'pnpm demo worker (a worker reclaims the run and resumes it from its checkpoints)',
+          show,
+        ],
+        cleanup,
+      }
+    return {
+      needsAttention: true,
+      reason: `a worker is running it (lease held until ${run.leaseExpiresAt ?? 'unknown'})`,
+      next: [show],
+      cleanup,
+    }
+  }
+  if (run.status === 'waiting') {
+    const waits = await durably.getWaits(run.id)
+    const approval = waits.find(
+      (w) =>
+        w.id === run.waitingOnWaitId &&
+        w.status === 'pending' &&
+        typeof (w.metadata as { candidateId?: unknown } | null)?.candidateId ===
+          'string',
+    )
+    if (approval) {
+      const candidateId = (approval.metadata as { candidateId: string })
+        .candidateId
+      return {
+        needsAttention: true,
+        reason: `waiting for human approval of candidate ${candidateId}`,
+        next: [
+          `pnpm demo report --run ${run.id} (read the reviews first)`,
+          `pnpm demo approve --run ${run.id} --wait ${approval.id}`,
+          `pnpm demo reject --run ${run.id} --wait ${approval.id}`,
+        ],
+        cleanup,
+      }
+    }
+    return {
+      needsAttention: true,
+      reason: 'waiting on an input that is not a candidate approval',
+      next: [`pnpm demo waits --run ${run.id}`],
+      cleanup,
+    }
+  }
+  const failure = classifyFailure({
+    runId: run.id,
+    status: run.status,
+    output: run.output,
+    error: run.error,
+    uncertain: uncertainCheckpoints(
+      setup?.checkpointsDir ?? null,
+      await durably.getStepAttempts(run.id),
+    ),
+  })
+  if (failure)
+    return {
+      needsAttention: true,
+      reason: `${failure.kind}: ${failure.reason}`,
+      next: failure.next,
+      retryable: failure.retryable,
+      humanCheck: failure.humanCheck,
+      details: failure.details,
+      cleanup,
+    }
+  const conclusion = (run.output as { conclusion?: string } | null)?.conclusion
+  return {
+    needsAttention: false,
+    reason: `finished: ${conclusion ?? run.status}`,
+    next: [],
+    cleanup,
+  }
+}
+
+function diagnosisLines(run: Run, d: Diagnosis): string[] {
+  const lines = [`${run.id}  ${run.status}  (created ${run.createdAt})`]
+  lines.push(`  reason:  ${d.reason}`)
+  if (d.retryable !== undefined)
+    lines.push(
+      `  retry:   ${d.retryable ? 'yes: a new run repeats no unresolved agent call (it may still fail the same way)' : 'NO: do not start a new run until a human has checked'}`,
+    )
+  if (d.humanCheck) lines.push(`  check:   ${d.humanCheck}`)
+  for (const detail of d.details ?? []) lines.push(`  detail:  ${detail}`)
+  d.next.forEach((n, i) =>
+    lines.push(`  ${i === 0 ? 'next:' : '     '}    ${n}`),
+  )
+  if (d.cleanup)
+    lines.push(
+      `  cleanup: ${d.cleanup}  (keeps the branch; refuses a worktree with changes)`,
+    )
+  return lines
+}
+
 function usage(): void {
   console.log(`local-agent-loop — Durably local agent demo
 Commands (run from examples/local-agent-loop):
@@ -322,6 +483,7 @@ Commands (run from examples/local-agent-loop):
                         [--spec-file <file>] [--dispositions-file <file>] [--config <file>]
                         [--check "pnpm validate"] [--setup "pnpm install"] [--base <ref>]
                         [--publish] [--approve auto|manual]
+  pnpm demo status                          open and stopped runs: reason and next command
   pnpm demo status --run <id>
   pnpm demo waits --run <id>
   pnpm demo approve --run <id> --wait <waitId>
@@ -447,10 +609,37 @@ if (cmd === 'worker') {
     ),
   )
   await durably.db.destroy()
+} else if (cmd === 'status' && !args()['run']) {
+  const durably = createAgentDurably()
+  await durably.migrate()
+  const now = Date.now()
+  const open: string[][] = []
+  const leftovers: string[][] = []
+  for (const run of await durably.getRuns({
+    jobName: durably.jobs.agentLoop.name,
+  })) {
+    const d = await diagnose(durably, run, now)
+    if (d.needsAttention) open.push(diagnosisLines(run, d))
+    else if (d.cleanup) leftovers.push(diagnosisLines(run, d))
+  }
+  const out: string[] = []
+  if (open.length === 0)
+    out.push(
+      'No runs need attention: nothing is pending, running, waiting or stopped.',
+    )
+  else {
+    out.push(`${open.length} run(s) need attention:`)
+    for (const lines of open) out.push('', ...lines)
+  }
+  if (leftovers.length > 0) {
+    out.push('', 'Finished runs whose worktree is still on disk:')
+    for (const lines of leftovers) out.push('', ...lines)
+  }
+  out.push('', `database: ${dbPath()}`)
+  console.log(out.join('\n'))
+  await durably.db.destroy()
 } else if (cmd === 'status') {
-  const a = args()
-  const runId = a['run']
-  if (!runId) throw new Error('--run <id> required')
+  const runId = args()['run'] as string
   const durably = createAgentDurably()
   await durably.migrate()
   const run = await durably.getRun(runId)
@@ -459,6 +648,8 @@ if (cmd === 'worker') {
   console.log(
     JSON.stringify(
       {
+        // Why the run is where it is, and the next command to run.
+        diagnosis: run ? await diagnose(durably, run, Date.now()) : null,
         // Where the work ended up. The sealed candidate names the branch and
         // commit a repository run leaves behind, whatever its conclusion.
         delivery:

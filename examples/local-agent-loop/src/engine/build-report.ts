@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 
 import type { AnyDurably } from '@coji/durably'
 
+import { classifyFailure, uncertainCheckpoints } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import {
   roleUsage,
@@ -85,13 +86,27 @@ function inputHashes(input: PersistedInput | null): ReportInputs {
 }
 
 export async function buildReport(
-  durably: Pick<AnyDurably, 'getRun' | 'getStepAttempts' | 'getWaits'>,
+  durably: Pick<
+    AnyDurably,
+    'getRun' | 'getStepAttempts' | 'getWaits' | 'storage'
+  >,
   runId: string,
 ): Promise<LoopReport> {
   const run = await durably.getRun(runId)
   if (!run) throw new Error(`run not found: ${runId}`)
   const attempts = await durably.getStepAttempts(runId)
   const waits = await durably.getWaits(runId)
+  // The setup step records where this run keeps its checkpoints; a run that
+  // failed before setup finished has none.
+  const setup = (await durably.storage.getCompletedStep(runId, 'setup'))
+    ?.output as { checkpointsDir?: string } | null | undefined
+  const failure = classifyFailure({
+    runId,
+    status: run.status,
+    output: run.output,
+    error: run.error,
+    uncertain: uncertainCheckpoints(setup?.checkpointsDir ?? null, attempts),
+  })
   const input = run.input as PersistedInput | null
   const fake = (input?.provider ?? '') === 'fake'
   const output = run.output as {
@@ -242,6 +257,7 @@ export async function buildReport(
     inputs: inputHashes(input),
     candidate,
     delivery,
+    failure,
     stageVisits: visits,
     realLlmCallCount,
     fullLoopVerified,

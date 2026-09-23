@@ -70,7 +70,7 @@ export class UncertainInvocationError extends Error {
   }
 }
 
-function checkpointPaths(root: string, operationKey: string) {
+export function checkpointPaths(root: string, operationKey: string) {
   const id = createHash('sha256').update(operationKey).digest('hex')
   return {
     started: join(root, `${id}.started.json`),

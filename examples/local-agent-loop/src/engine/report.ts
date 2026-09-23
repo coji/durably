@@ -13,6 +13,7 @@
  */
 import type { StepAttempt } from '@coji/durably'
 
+import type { FailureClassification } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import type { AttemptMeasurement } from './providers/types.js'
 import { aggregateUsage } from './usage.js'
@@ -181,6 +182,8 @@ export interface LoopReport {
   candidate: ReportCandidate | null
   /** Branch, commit and location of the delivery; null when none was made. */
   delivery: ReportDelivery | null
+  /** Why the run stopped and what to do next; null when it did not stop. */
+  failure: FailureClassification | null
   stageVisits: StageVisits[]
   /** Real (non-fake) CLI invocations observed in attempts. */
   realLlmCallCount: number
@@ -586,6 +589,21 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push(`- summary: ${r.delivery.summary}`)
   } else {
     lines.push('- none')
+  }
+  lines.push('')
+  lines.push('## Stop reason')
+  lines.push('')
+  if (r.failure) {
+    lines.push(`- kind: ${r.failure.kind}`)
+    lines.push(`- reason: ${r.failure.reason}`)
+    lines.push(
+      `- retry: ${r.failure.retryable ? 'safe to start a new run (no unresolved agent call); it may still fail the same way' : 'NO — do not start a new run until a human has checked'}`,
+    )
+    lines.push(`- human check: ${r.failure.humanCheck}`)
+    for (const d of r.failure.details) lines.push(`- ${d}`)
+    for (const n of r.failure.next) lines.push(`- next: ${n}`)
+  } else {
+    lines.push('- none (the run did not stop on a failure)')
   }
   lines.push('')
   lines.push('## Summary (one row per run)')

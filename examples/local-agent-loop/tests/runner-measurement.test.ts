@@ -1,17 +1,27 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
+import type { JsonValue } from '@coji/durably'
+
+import {
+  classifyFailure,
+  uncertainCheckpoints,
+} from '../src/engine/failure-reasons.js'
 import type {
   AgentCallOptions,
   AgentProvider,
   AgentResult,
 } from '../src/engine/providers/types.js'
 import type { AttemptMeasurement } from '../src/engine/providers/types.js'
-import { runAgentCall } from '../src/engine/runner.js'
+import {
+  checkpointPaths,
+  runAgentCall,
+  UncertainInvocationError,
+} from '../src/engine/runner.js'
 import type { TokenUsage } from '../src/engine/usage.js'
 
 interface StubAttempt {
@@ -95,6 +105,86 @@ describe('runner measurement on the real launch path', () => {
     assert.equal(second.invocationId, first.invocationId)
     assert.equal(second.sessionId, 'native-session')
     assert.equal(second.measurement.elapsedMs, 5)
+  })
+
+  it('treats a start checkpoint with no completion as uncertain, not retryable', async () => {
+    const checkpointsDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+    const operationKey = `test/${randomUUID()}`
+    // A worker died after the prompt went out and before the result was
+    // recorded: only the start checkpoint exists.
+    const paths = checkpointPaths(checkpointsDir, operationKey)
+    await writeFile(
+      paths.started,
+      `${JSON.stringify({
+        operationKey,
+        invocationId: randomUUID(),
+        status: 'started',
+        invocationStartedAt: new Date().toISOString(),
+      })}\n`,
+    )
+    let calls = 0
+    const provider = stubProvider(async () => {
+      calls++
+      throw new Error('must not be called')
+    })
+    const attempt = fakeAttempt()
+    const error = await runAgentCall(
+      new AbortController().signal,
+      attempt as never,
+      {
+        provider,
+        providerName: 'codex',
+        prompt: 'p',
+        workdir: '/tmp',
+        timeoutMs: 5000,
+        requestedModel: null,
+        requestedEffort: null,
+        effectiveModel: 'resolved-model',
+        effectiveEffort: 'low',
+        role: 'implement',
+        stage: 'implement',
+        iteration: 1,
+        operationKey,
+        checkpointsDir,
+      },
+    ).then(
+      () => null,
+      (e: unknown) => e as Error,
+    )
+    assert.ok(error instanceof UncertainInvocationError)
+    assert.equal(calls, 0, 'the prompt is never resent')
+
+    const metadata = attempt.snapshots.at(-1) as unknown as JsonValue
+    const uncertain = uncertainCheckpoints(checkpointsDir, [{ metadata }])
+    assert.deepEqual(uncertain, [paths.started])
+    const failure = classifyFailure({
+      runId: 'r1',
+      status: 'failed',
+      output: null,
+      error: error.message,
+      uncertain,
+    })
+    assert.equal(failure?.kind, 'uncertain-invocation')
+    assert.equal(failure?.retryable, false)
+    assert.ok(failure?.details.some((d) => d.includes(paths.started)))
+    assert.ok(
+      failure?.next.every((n) => !n.includes('trigger')),
+      'no command that would send the prompt again',
+    )
+
+    // Once the completion is on disk the call is no longer uncertain, and an
+    // unrecognised error is still not called retryable.
+    await writeFile(paths.completed, '{}\n')
+    assert.deepEqual(uncertainCheckpoints(checkpointsDir, [{ metadata }]), [])
+    const other = classifyFailure({
+      runId: 'r1',
+      status: 'failed',
+      output: null,
+      error: 'something else',
+      uncertain: [],
+    })
+    assert.equal(other?.kind, 'unclassified')
+    assert.equal(other?.retryable, false)
   })
 
   it('keeps requested, effective, and reported settings separate', async () => {
