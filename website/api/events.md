@@ -353,6 +353,16 @@ durably.on('run:complete', (e) => {
 })
 ```
 
+## Ordering with persisted state
+
+A run or step state change is written to storage first, and its event is emitted directly after that write, before the runtime touches storage again. A listener that reads the run when its event arrives sees the new state, and code in the same process that observes the new state in storage has already had the event delivered. This covers `run:trigger`, `run:coalesced`, `run:leased`, `run:waiting`, `run:complete`, `run:fail`, `run:cancel`, `run:delete`, `step:start`, `step:complete`, and `step:fail`.
+
+Limits:
+
+- Events are in-process. Another runtime that shares the database sees the persisted state but receives no events; use `waitForRun()` or the HTTP subscription endpoints there.
+- `log:write` and `run:progress` are emitted when the job calls them; their writes finish in the background, so a listener may briefly read the previous value.
+- Maintenance transitions emit no events: expired leases released or failed during idle maintenance, waits expiring at their deadline, and runs removed by `retainRuns` or `purgeRuns()`.
+
 ## Error Handling
 
 Exceptions thrown in event listeners are caught and forwarded to the error handler — they do not crash the worker, abort the current run, or interrupt subsequent listeners for the same event. If a listener returns a rejected Promise (async listener), the rejection is also forwarded to `onError`. Use `onError` to catch both:

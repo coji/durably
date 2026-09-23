@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 #### @coji/durably
 
+- **Events follow their state writes directly**: `run:fail` and `run:cancel` are now emitted immediately after the status write, as `run:complete` already was. Before, a listener or poller could see `failed` or `cancelled` in storage before the event arrived. The ordering is now documented and tested for every run and step state event.
+- **`run:fail` for unregistered jobs**: a run whose job is not registered in the worker was failed without emitting `run:fail`; it now emits one with `failedStepName: 'unknown'`.
 - **Stable run and log ordering**: `getRuns()` and `storage.getLogs()` break creation-time ties by ID, so runs or logs written in the same millisecond keep a deterministic order and `limit`/`offset` pages no longer overlap or skip.
 
 ## [0.16.0] - 2026-09-21

@@ -226,6 +226,18 @@ export async function executeRun<
     }
 
     const errorMessage = getErrorMessage(error)
+    // Failed checkpoints survive lease recovery. Attribute this error to an
+    // attempt from the current lease, not an older failed branch. Look it up
+    // before failing the run so run:fail follows the write directly.
+    const attempts = await storage.getStepAttempts(run.id)
+    const failedStep = attempts
+      .filter(
+        (entry) =>
+          entry.leaseGeneration === run.leaseGeneration &&
+          entry.status === 'failed' &&
+          entry.interruptionReason === null,
+      )
+      .sort((a, b) => a.stepIndex - b.stepIndex)[0]
     const completedAt = isoNow(clock)
     const failed = await storage.failRun(
       run.id,
@@ -237,17 +249,6 @@ export async function executeRun<
     if (failed) {
       reachedTerminalState = true
       failedTerminalState = true
-      // Failed checkpoints survive lease recovery. Attribute this error to an
-      // attempt from the current lease, not an older failed branch.
-      const attempts = await storage.getStepAttempts(run.id)
-      const failedStep = attempts
-        .filter(
-          (entry) =>
-            entry.leaseGeneration === run.leaseGeneration &&
-            entry.status === 'failed' &&
-            entry.interruptionReason === null,
-        )
-        .sort((a, b) => a.stepIndex - b.stepIndex)[0]
       eventEmitter.emit({
         type: 'run:fail',
         runId: run.id,

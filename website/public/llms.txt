@@ -428,6 +428,8 @@ For automatic cleanup, use the `retainRuns` option (see Core Concepts). Cleanup 
 
 Subscribe to job execution events. **Listeners run synchronously** in the worker's hot path — keep them fast and non-blocking. Use fire-and-forget (`void asyncFn()`) for expensive work.
 
+Run and step state events are emitted directly after their storage write, with no other storage access in between, so a listener that reads the run sees the new state. Events are in-process only: other runtimes on the same database see state, not events. `log:write` and `run:progress` persist in the background. Maintenance transitions (idle lease release or expiry failure, wait deadline expiry, retention purges) emit no events.
+
 ```ts
 // Run lifecycle events
 // Note: run:trigger is NOT emitted on idempotent hits (disposition: 'idempotent')

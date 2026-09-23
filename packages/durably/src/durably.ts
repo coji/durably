@@ -524,12 +524,23 @@ function createDurablyInstance<
   ): Promise<void> {
     const job = jobRegistry.get(run.jobName)
     if (!job) {
-      await storage.failRun(
+      const error = `Unknown job: ${run.jobName}`
+      const failed = await storage.failRun(
         run.id,
         run.leaseGeneration,
-        `Unknown job: ${run.jobName}`,
+        error,
         new Date().toISOString(),
       )
+      if (failed) {
+        eventEmitter.emit({
+          type: 'run:fail',
+          runId: run.id,
+          jobName: run.jobName,
+          error,
+          failedStepName: 'unknown',
+          labels: run.labels,
+        })
+      }
       return
     }
 
@@ -840,19 +851,20 @@ function createDurablyInstance<
         )
       }
 
-      // Cancellation is committed and prevents new checkpoints on every path.
-      // This also covers a leased -> waiting race during cancellation.
-      if (!state.preserveSteps) {
-        await storage.deleteSteps(runId)
-      }
-
-      // Emit run:cancel event
+      // Emit before any further await so listeners learn of the committed
+      // cancellation as soon as the status write is visible.
       eventEmitter.emit({
         type: 'run:cancel',
         runId,
         jobName: run.jobName,
         labels: run.labels,
       })
+
+      // Cancellation is committed and prevents new checkpoints on every path.
+      // This also covers a leased -> waiting race during cancellation.
+      if (!state.preserveSteps) {
+        await storage.deleteSteps(runId)
+      }
     },
 
     async deleteRun(runId: string): Promise<void> {
