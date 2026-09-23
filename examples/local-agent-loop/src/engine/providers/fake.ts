@@ -44,25 +44,14 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
-function nextReviewDecision(): string {
-  const seq = (process.env.FAKE_REVIEW_SEQUENCE ?? '')
+/** Consume the head of a comma-list env var, or `fallback` when it is empty. */
+function nextFromEnv(name: string, fallback: string): string {
+  const [head, ...rest] = (process.env[name] ?? '')
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
-  if (seq.length === 0) return 'pass'
-  const head = seq[0] ?? 'pass'
-  process.env.FAKE_REVIEW_SEQUENCE = seq.slice(1).join(',')
-  return head
-}
-
-function nextTriage(): string {
-  const seq = (process.env.FAKE_TRIAGE ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-  if (seq.length === 0) return 'routine'
-  const head = seq[0] ?? 'routine'
-  process.env.FAKE_TRIAGE = seq.slice(1).join(',')
+  if (head === undefined) return fallback
+  process.env[name] = rest.join(',')
   return head
 }
 
@@ -134,7 +123,7 @@ export class FakeProvider implements AgentProvider {
       }
     }
     if (options.role === 'triage') {
-      const kind = nextTriage()
+      const kind = nextFromEnv('FAKE_TRIAGE', 'routine')
       if (kind === 'error') throw new Error('fake triage call failed')
       return {
         text: TRIAGE_TEXT[kind] ?? TRIAGE_TEXT['routine'] ?? '',
@@ -151,7 +140,7 @@ export class FakeProvider implements AgentProvider {
     if (options.role === 'review-b' && slow) {
       await sleep(parseInt(slow, 10), options.signal)
     }
-    const decision = nextReviewDecision()
+    const decision = nextFromEnv('FAKE_REVIEW_SEQUENCE', 'pass')
     if (decision === 'empty') {
       return {
         text: '',

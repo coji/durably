@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { READ_ONLY_ROLES as CLAUDE_READ_ONLY } from '../src/engine/providers/claude.js'
-import { READ_ONLY_ROLES as CODEX_READ_ONLY } from '../src/engine/providers/codex.js'
+import { READ_ONLY_ROLES } from '../src/engine/providers/types.js'
 import {
   parseReviewOutput,
   parseTriageOutput,
@@ -150,10 +149,9 @@ describe('parseTriageOutput (strict judgments)', () => {
 
 describe('triage permissions', () => {
   it('runs read-only on both real providers, like the reviewers', () => {
-    for (const roles of [CODEX_READ_ONLY, CLAUDE_READ_ONLY]) {
-      assert.ok(roles.has('triage'))
-      assert.ok(roles.has('review-a') && roles.has('review-b'))
-      assert.ok(!roles.has('implement') && !roles.has('repair'))
-    }
+    const roles = READ_ONLY_ROLES
+    assert.ok(roles.has('triage'))
+    assert.ok(roles.has('review-a') && roles.has('review-b'))
+    assert.ok(!roles.has('implement') && !roles.has('repair'))
   })
 })

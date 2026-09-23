@@ -13,6 +13,7 @@ import {
   summarizeRun,
   totalStageMs,
   toAttemptRow,
+  TRIAGE_JUDGMENTS,
   type LoopReport,
   type ReportCandidate,
   type ReportDelivery,
@@ -48,43 +49,29 @@ const ROLES = ['code', 'correctness', 'edge-cases'] as const
  * every role.
  */
 function profileRows(input: PersistedInput | null): RoleProfileRow[] {
-  const triage = input?.profiles?.['triage']
-  const rows = ROLES.map((role) => {
-    const p = input?.profiles?.[role]
-    return p
-      ? {
-          role,
-          provider: p.provider ?? null,
-          requestedModel: p.requestedModel ?? null,
-          requestedEffort: p.requestedEffort ?? null,
-        }
-      : {
-          role,
-          provider: input?.provider ?? null,
-          requestedModel: input?.model ?? null,
-          requestedEffort: input?.effort ?? null,
-        }
+  const row = (role: string, p: PersistedProfile): RoleProfileRow => ({
+    role,
+    provider: p.provider ?? null,
+    requestedModel: p.requestedModel ?? null,
+    requestedEffort: p.requestedEffort ?? null,
   })
+  const fallback: PersistedProfile = {
+    provider: input?.provider,
+    requestedModel: input?.model,
+    requestedEffort: input?.effort,
+  }
+  const rows = ROLES.map((role) =>
+    row(role, input?.profiles?.[role] ?? fallback),
+  )
   // Triage has no fallback: without its own profile it never runs.
-  return triage
-    ? [
-        ...rows,
-        {
-          role: 'triage',
-          provider: triage.provider ?? null,
-          requestedModel: triage.requestedModel ?? null,
-          requestedEffort: triage.requestedEffort ?? null,
-        },
-      ]
-    : rows
+  const triage = input?.profiles?.['triage']
+  return triage ? [...rows, row('triage', triage)] : rows
 }
 
 function asTriage(value: unknown): ReportTriage | null {
-  const v = value as { judgment?: unknown; reason?: unknown } | null
-  return v &&
-    (v.judgment === 'routine' ||
-      v.judgment === 'probe' ||
-      v.judgment === 'unknown') &&
+  const v = value as Partial<ReportTriage> | null
+  return v?.judgment &&
+    TRIAGE_JUDGMENTS.includes(v.judgment) &&
     typeof v.reason === 'string'
     ? { judgment: v.judgment, reason: v.reason }
     : null

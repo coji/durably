@@ -33,15 +33,6 @@ export const PROFILE_ROLES: readonly ProfileRole[] = [
   'edge-cases',
 ]
 
-/**
- * What shadow triage recorded. `unknown` means triage ran but gave no usable
- * judgment; a run without a triage profile records nothing at all.
- */
-export interface TriageResult {
-  judgment: 'routine' | 'probe' | 'unknown'
-  reason: string
-}
-
 export interface FactorySetup {
   /** True when every role runs the fake provider. Roles never mix the two. */
   fake: boolean
@@ -60,7 +51,7 @@ export interface FactorySetup {
   profiles: Record<ProfileRole, ResolvedProfile>
   /**
    * Optional shadow-triage profile. Its judgment is recorded only: no stage
-   * or profile depends on it. Absent in runs set up before triage existed.
+   * or profile depends on it.
    */
   triage?: ResolvedProfile | null
   maxIterations: number

@@ -212,7 +212,7 @@ function resolveProfiles(
   // takes the fallback settings like any other role.
   const triageConfig = config?.profiles?.triage
   const triage = triageConfig ? fix(triageConfig) : null
-  assertSingleMode(roles, triage)
+  assertSingleMode({ ...roles, ...(triage ? { triage } : {}) })
   return { roles, triage }
 }
 
@@ -683,8 +683,7 @@ if (cmd === 'worker') {
           (run?.output as { delivery?: unknown } | null)?.delivery ?? null,
         candidate:
           (run?.output as { candidate?: unknown } | null)?.candidate ?? null,
-        // Shadow-triage judgment and reason; null when the run has no triage
-        // profile or has not reached it. It never chose a stage or profile.
+        // Null when the run has no triage profile or has not reached it.
         triage: run ? await recordedTriage(durably, run) : null,
         run,
         attempts: attempts.map((x) => ({

@@ -8,7 +8,11 @@
  * statistics, never from one report. Unknown values are dropped from the
  * statistic and counted in `unknown`, never treated as zero.
  */
-import type { LoopReport } from './report.js'
+import {
+  TRIAGE_JUDGMENTS,
+  type LoopReport,
+  type ReportTriage,
+} from './report.js'
 
 export interface Stat {
   n: number
@@ -27,13 +31,9 @@ export interface StageStats {
   reworked: Stat
 }
 
-/**
- * Outcomes of the runs in one config group that triage judged the same way.
- * Triage runs in shadow mode, so these rows show how well the judgment would
- * have predicted each run, not a route the run took.
- */
+/** Outcomes of the runs in one config group that triage judged the same way. */
 export interface TriageStats {
-  judgment: 'routine' | 'probe' | 'unknown'
+  judgment: ReportTriage['judgment']
   runs: number
   approved: number
   verificationFailed: number
@@ -110,10 +110,8 @@ function labelOf(report: LoopReport): string {
   ].join('/')
 }
 
-const JUDGMENTS = ['routine', 'probe', 'unknown'] as const
-
 function triageStats(list: LoopReport[]): TriageStats[] {
-  return JUDGMENTS.flatMap((judgment) => {
+  return TRIAGE_JUDGMENTS.flatMap((judgment) => {
     const runs = list.filter((r) => r.triage?.judgment === judgment)
     if (runs.length === 0) return []
     const concluded = (c: string) =>

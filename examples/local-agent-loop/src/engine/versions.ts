@@ -122,7 +122,8 @@ function canonicalProfile(p: ConfigVersionProfile): ConfigVersionProfile {
  * Stable hash of the fixed run configuration. Two runs share a config
  * version exactly when every role's provider, models and efforts, the context
  * mode, iteration budget, instruction set and triage profile (when there is
- * one) are identical — the unit of a fair comparison. Stored on every LLM attempt as `configVersion`.
+ * one) are identical — the unit of a fair comparison. Stored on every LLM
+ * attempt as `configVersion`.
  */
 export function configVersionOf(input: ConfigVersionInput): string {
   const canonical = JSON.stringify({

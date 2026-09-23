@@ -8,11 +8,11 @@ import {
 
 import { runChild } from '../child.js'
 import { defaultModelFor, resolveEffort } from '../models.js'
-import type {
-  AgentCallOptions,
-  AgentProvider,
-  AgentResult,
-  AgentRole,
+import {
+  READ_ONLY_ROLES,
+  type AgentCallOptions,
+  type AgentProvider,
+  type AgentResult,
 } from './types.js'
 
 const VALID_EFFORTS = new Set<string>(
@@ -103,12 +103,6 @@ export function resolveCodexEffort(
     modelId,
   )
 }
-
-export const READ_ONLY_ROLES: ReadonlySet<AgentRole> = new Set([
-  'review-a',
-  'review-b',
-  'triage',
-])
 
 export class CodexProvider implements AgentProvider {
   readonly name = 'codex' as const

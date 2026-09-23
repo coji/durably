@@ -178,10 +178,7 @@ export function parseReviewOutput(text: string): ParsedReview {
   return { ok: true, decision, notes }
 }
 
-/**
- * Shadow triage: judge the task before any code exists. The judgment is only
- * recorded; nothing in the run reads it to choose a stage or a profile.
- */
+/** Shadow triage: judge the task before any code exists. */
 export function triagePrompt(
   task: string,
   untrusted: UntrustedInput[] = [],
@@ -203,10 +200,8 @@ export function triagePrompt(
   ].join('\n')
 }
 
-export type TriageJudgment = 'routine' | 'probe'
-
 export type ParsedTriage =
-  | { ok: true; judgment: TriageJudgment; reason: string }
+  | { ok: true; judgment: 'routine' | 'probe'; reason: string }
   | { ok: false; error: string }
 
 /**
@@ -219,16 +214,15 @@ export type ParsedTriage =
  * records it as `unknown` rather than guessing.
  */
 export function parseTriageOutput(text: string): ParsedTriage {
-  if (!text || text.trim().length === 0)
+  if (text.trim().length === 0)
     return { ok: false, error: 'empty triage output' }
   const judgments: string[] = []
   const reasons: string[] = []
   for (const line of text.split('\n')) {
     const judgment = /^\s*JUDGMENT:\s*(.*)$/i.exec(line)
-    if (judgment?.[1] !== undefined)
-      judgments.push(judgment[1].trim().toLowerCase())
+    if (judgment) judgments.push((judgment[1] ?? '').trim().toLowerCase())
     const reason = /^\s*REASON:\s*(.*)$/i.exec(line)
-    if (reason?.[1] !== undefined) reasons.push(reason[1].trim())
+    if (reason) reasons.push((reason[1] ?? '').trim())
   }
   if (judgments.length === 0)
     return { ok: false, error: 'no JUDGMENT line in triage output' }

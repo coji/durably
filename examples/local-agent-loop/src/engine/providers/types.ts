@@ -18,6 +18,13 @@ export type AgentRole =
   | 'review-b'
   | 'triage'
 
+/** Roles every real provider runs without write access. */
+export const READ_ONLY_ROLES: ReadonlySet<AgentRole> = new Set([
+  'review-a',
+  'review-b',
+  'triage',
+])
+
 export interface NativeSession {
   id: string
 }

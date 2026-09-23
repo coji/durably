@@ -12,6 +12,7 @@ import { z } from 'zod'
 
 import { createProvider } from '../engine/providers/index.js'
 import type { AgentProvider, ProviderName } from '../engine/providers/types.js'
+import { TRIAGE_JUDGMENTS, type ReportTriage } from '../engine/report.js'
 import { runAgentCall, UncertainInvocationError } from '../engine/runner.js'
 import type { ResolvedProfile } from '../engine/types.js'
 import { configVersionOf } from '../engine/versions.js'
@@ -28,11 +29,9 @@ import { stages } from './stages.js'
 import type { Target, TargetConfig } from './target.js'
 import {
   initialState,
-  PROFILE_ROLES,
   type FactorySetup,
   type ProfileRole,
   type StageDecision,
-  type TriageResult,
 } from './types.js'
 
 const issueSchema = z.object({
@@ -145,7 +144,7 @@ const outputSchema = z.object({
   /** Null when the run had no triage profile. */
   triage: z
     .object({
-      judgment: z.enum(['routine', 'probe', 'unknown']),
+      judgment: z.enum(TRIAGE_JUDGMENTS),
       reason: z.string(),
     })
     .nullable(),
@@ -196,13 +195,9 @@ export function fixProfile(request: {
  * part of a real loop.
  */
 export function assertSingleMode(
-  profiles: Record<ProfileRole, { provider: ProviderName }>,
-  triage: { provider: ProviderName } | null = null,
+  profiles: Record<string, { provider: ProviderName }>,
 ): void {
-  const roles = [
-    ...PROFILE_ROLES.map((role) => [role, profiles[role]] as const),
-    ...(triage ? [['triage', triage] as const] : []),
-  ]
+  const roles = Object.entries(profiles)
   const fakes = roles
     .filter(([, profile]) => profile.provider === 'fake')
     .map(([role]) => role)
@@ -243,13 +238,13 @@ async function runTriage(
   signal: AbortSignal,
   attempt: StepAttemptContext,
   args: {
-    runId: string
+    operationKey: string
     setup: FactorySetup
     profile: ResolvedProfile
     provider: AgentProvider
     target: Target
   },
-): Promise<TriageResult> {
+): Promise<ReportTriage> {
   const { setup, profile, target } = args
   try {
     const call = await runAgentCall(signal, attempt, {
@@ -267,7 +262,7 @@ async function runTriage(
       role: 'triage',
       stage: 'triage',
       iteration: 0,
-      operationKey: `${args.runId}/triage/agent`,
+      operationKey: args.operationKey,
       checkpointsDir: setup.checkpointsDir,
       session: null,
       configVersion: setup.configVersion,
@@ -328,7 +323,10 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                 effort: requestedTriage.requestedEffort,
               })
             : null
-          assertSingleMode(fixed, fixedTriage)
+          assertSingleMode({
+            ...fixed,
+            ...(fixedTriage ? { triage: fixedTriage } : {}),
+          })
           const resolve = (
             role: string,
             profile: FixedProfile,
@@ -431,13 +429,14 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
         createProvider(setup.profiles[role].provider),
       )
       // Shadow mode: the judgment is recorded and nothing below reads it.
-      const triageProfile = setup.triage ?? null
+      const triageProfile = setup.triage
+      const triageKey = `${step.runId}/triage/agent`
       const triage = triageProfile
         ? await step.run(
             'triage',
             (signal, attempt) =>
               runTriage(signal, attempt, {
-                runId: step.runId,
+                operationKey: triageKey,
                 setup,
                 profile: triageProfile,
                 provider: createProvider(triageProfile.provider),
@@ -446,7 +445,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             {
               metadata: {
                 stage: 'triage',
-                operationKey: `${step.runId}/triage/agent`,
+                operationKey: triageKey,
               } as unknown as JsonValue,
             },
           )

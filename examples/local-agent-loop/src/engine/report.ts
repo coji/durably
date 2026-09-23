@@ -144,8 +144,10 @@ export interface ReportDelivery {
  * The shadow-triage judgment recorded for a run. `unknown` means triage ran
  * without a usable answer; a report with no triage at all carries null.
  */
+export const TRIAGE_JUDGMENTS = ['routine', 'probe', 'unknown'] as const
+
 export interface ReportTriage {
-  judgment: 'routine' | 'probe' | 'unknown'
+  judgment: (typeof TRIAGE_JUDGMENTS)[number]
   reason: string
 }
 
@@ -182,10 +184,6 @@ export interface LoopReport {
   /** Shared by runs with identical provider/model/effort/context settings. */
   configVersion: string | null
   summary: RunSummary
-  /**
-   * Shadow-triage judgment; null when the run has no triage profile or has
-   * not reached triage yet. Recorded only: it never chose a stage or profile.
-   */
   triage: ReportTriage | null
   stageUsage: StageUsage[]
   /**

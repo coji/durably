@@ -376,11 +376,6 @@ describe('shadow triage', { timeout: 300000 }, () => {
       maxIterations: 2,
       context: 'reuse',
     })
-  const statusOf = async (
-    durably: { getRun: (id: string) => unknown },
-    id: string,
-  ) => ((await durably.getRun(id)) as { status?: string } | null)?.status
-
   it('records each judgment once before code and changes nothing after it', async () => {
     const home = await mkdtemp(join(tmpdir(), 'e2e-triage-'))
     const dir = join(home, '.local', 'state', 'local-agent-loop')
@@ -416,7 +411,7 @@ describe('shadow triage', { timeout: 300000 }, () => {
         const run = await trigger(durably, true)
         ids[kind] = run.id
         await waitFor(
-          async () => (await statusOf(durably, run.id)) === 'waiting',
+          async () => (await durably.getRun(run.id))?.status === 'waiting',
           120000,
           `${kind} run reaches approval`,
         )
@@ -474,7 +469,7 @@ describe('shadow triage', { timeout: 300000 }, () => {
       const plain = await trigger(durably, false)
       ids['none'] = plain.id
       await waitFor(
-        async () => (await statusOf(durably, plain.id)) === 'waiting',
+        async () => (await durably.getRun(plain.id))?.status === 'waiting',
         120000,
         'run without triage reaches approval',
       )
@@ -507,7 +502,7 @@ describe('shadow triage', { timeout: 300000 }, () => {
         { signalId: 'triage-approve' },
       )
       await waitFor(
-        async () => (await statusOf(durably, routineId)) === 'completed',
+        async () => (await durably.getRun(routineId))?.status === 'completed',
         60000,
         'routine run completes',
       )
@@ -608,12 +603,12 @@ describe('shadow triage', { timeout: 300000 }, () => {
       )
       await durably.init()
       await waitFor(
-        async () => (await statusOf(durably, recovered.id)) === 'waiting',
+        async () => (await durably.getRun(recovered.id))?.status === 'waiting',
         120000,
         'recovered run reaches approval',
       )
       await waitFor(
-        async () => (await statusOf(durably, uncertain.id)) === 'failed',
+        async () => (await durably.getRun(uncertain.id))?.status === 'failed',
         120000,
         'uncertain run stops',
       )

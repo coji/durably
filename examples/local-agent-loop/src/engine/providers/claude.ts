@@ -26,11 +26,11 @@ import {
 } from 'ai-sdk-provider-claude-code'
 
 import { defaultModelFor, resolveEffort } from '../models.js'
-import type {
-  AgentCallOptions,
-  AgentProvider,
-  AgentResult,
-  AgentRole,
+import {
+  READ_ONLY_ROLES,
+  type AgentCallOptions,
+  type AgentProvider,
+  type AgentResult,
 } from './types.js'
 
 const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
@@ -72,12 +72,6 @@ export function resolveClaudeEffort(
     modelId,
   )
 }
-
-export const READ_ONLY_ROLES: ReadonlySet<AgentRole> = new Set([
-  'review-a',
-  'review-b',
-  'triage',
-])
 
 /** Normalize and resolve a candidate path against the allowed root. */
 function resolveInside(root: string, candidate: string): string {
