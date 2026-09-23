@@ -150,10 +150,13 @@ const timeFmt = new Intl.DateTimeFormat('ja-JP', {
   second: '2-digit',
 })
 
+const COST_NOTE =
+  '費用は記録した token 数を API 料金で換算した参考値で、実際の請求額ではありません'
+
 function retryLabel(retryable: boolean): string {
   return retryable
-    ? 'できる（結果の分からない呼び出しを重ねない）'
-    : 'しない — 先に人が確認する'
+    ? 'できる。結果の分からない呼び出しは重ねて送らない'
+    : 'しない。先に人が確認する'
 }
 
 /** The command itself, without the CLI's trailing `  # note`. */
@@ -173,7 +176,7 @@ const KIND_LABEL: Record<DiagnosisKind, { label: string; tone: Tone }> = {
   'other-wait': { label: '入力待ち', tone: 'waiting' },
   stopped: { label: '停止', tone: 'failed' },
   running: { label: '実行中', tone: 'running' },
-  pending: { label: '未処理（worker 待ち）', tone: 'none' },
+  pending: { label: 'worker 待ち', tone: 'none' },
   'lease-expired': { label: 'lease 期限切れ', tone: 'none' },
   decided: { label: '判断記録済み・再開待ち', tone: 'none' },
   finished: { label: '終了', tone: 'none' },
@@ -260,7 +263,7 @@ function commandLabel(command: string): string {
       return '却下コマンドをコピー'
     case 'report':
       return command.includes('--format json')
-        ? 'report（JSON）をコピー'
+        ? 'JSON の report をコピー'
         : 'report をコピー'
     case 'status':
       return 'status をコピー'
@@ -378,9 +381,8 @@ function RefreshStatus({ polled }: { polled: PollState<unknown> }) {
           <p role="alert" className="sr-only">
             更新に失敗しました。直近の表示のままです。
           </p>
-          <p>
-            更新失敗（{polled.error}）。{at ? `${at} 時点の表示のままです` : ''}
-          </p>
+          <p>更新に失敗しました。{at ? `${at} 時点の表示のままです。` : ''}</p>
+          <p className="font-code">{polled.error}</p>
         </>
       ) : (
         <p className="tabular-nums">
@@ -589,12 +591,19 @@ function ticks(spanMs: number): number[] {
 function barLabel(b: TimelineBar): string {
   const state = b.open
     ? b.kind === 'wait'
-      ? '（人待ち）'
-      : '（実行中）'
+      ? '人待ち'
+      : '実行中'
     : b.failed
-      ? '（失敗）'
-      : ''
-  return `${b.lane} · 開始 ${timeFmt.format(new Date(b.startedAt))} · ${fmtMs(b.durationMs)}${state}`
+      ? '失敗'
+      : null
+  return [
+    b.lane,
+    `開始 ${timeFmt.format(new Date(b.startedAt))}`,
+    fmtMs(b.durationMs),
+    state,
+  ]
+    .filter(Boolean)
+    .join(' · ')
 }
 
 function barClass(b: TimelineBar): string {
@@ -688,7 +697,7 @@ function TimelineChart({ timeline: t }: { timeline: Timeline }) {
         </div>
       </div>
       <table className="sr-only">
-        <caption>工程の時系列（run の開始 {t.startedAt} から）</caption>
+        <caption>工程の時系列。{t.startedAt} の run 開始から数える</caption>
         <thead>
           <tr>
             <th scope="col">工程</th>
@@ -700,15 +709,13 @@ function TimelineChart({ timeline: t }: { timeline: Timeline }) {
         <tbody>
           {t.bars.map((b) => (
             <tr key={`${b.lane}-${b.startedAt}-${b.kind}`}>
-              <td>
-                {b.kind === 'wait' ? `${b.lane}（人の承認待ち）` : b.lane}
-              </td>
+              <td>{b.lane}</td>
               <td>{timeFmt.format(new Date(b.startedAt))}</td>
               <td>{fmtMs(b.durationMs)}</td>
               <td>
                 {b.open
                   ? b.kind === 'wait'
-                    ? '人待ち'
+                    ? '人の承認待ち'
                     : '実行中'
                   : b.endMs === null
                     ? '終了時刻不明'
@@ -735,7 +742,8 @@ function LiveProgress({
   extra?: string
 }) {
   const rest = [
-    live ? `全体 ${fmtMs(live.runMs)} 経過（実行中）` : null,
+    live?.stage ? `この工程 ${fmtMs(live.stageMs)} 経過` : null,
+    live ? `全体 ${fmtMs(live.runMs)} 経過` : null,
     extra || null,
   ]
     .filter(Boolean)
@@ -743,9 +751,7 @@ function LiveProgress({
   return (
     <div className="flex flex-col gap-1">
       <p className="text-fg text-sm font-medium tabular-nums">
-        {live?.stage
-          ? `いまの工程: ${live.stage}（${fmtMs(live.stageMs)} 経過・実行中）`
-          : 'いまの工程: 工程の合間'}
+        {live?.stage ? `いまの工程: ${live.stage}` : 'いまの工程: 工程の合間'}
       </p>
       {rest ? <p className="text-fg-2 text-xs tabular-nums">{rest}</p> : null}
     </div>
@@ -799,10 +805,19 @@ function OpenList({ runs, now }: { runs: RunRow[]; now: string }) {
   )
 }
 
-function Th({ children, num }: { children: ReactNode; num?: boolean }) {
+function Th({
+  children,
+  num,
+  title,
+}: {
+  children: ReactNode
+  num?: boolean
+  title?: string
+}) {
   return (
     <th
       scope="col"
+      title={title}
       className={`text-fg-2 px-3 py-2 text-xs font-medium ${num ? 'text-right' : 'text-left'}`}
     >
       {children}
@@ -829,7 +844,9 @@ function FinishedTable({ runs, now }: { runs: RunRow[]; now: string }) {
             <Th>run</Th>
             <Th>結論</Th>
             <Th num>所要時間</Th>
-            <Th num>費用（API 換算）</Th>
+            <Th num title={COST_NOTE}>
+              費用
+            </Th>
             <Th>triage</Th>
             <Th>作成</Th>
           </tr>
@@ -869,9 +886,9 @@ function RunsPage({ data }: { data: RunsResponse }) {
   if (!data.exists)
     return (
       <Empty>
-        データベースがまだありません（
-        <span className="font-code">{data.db}</span>）。worker か trigger
-        を実行すると作られ、次の更新で表示されます。
+        データベースがまだありません。worker か trigger を実行すると{' '}
+        <span className="font-code">{data.db}</span>{' '}
+        に作られ、次の更新で表示されます。
       </Empty>
     )
   const human = data.runs.filter((r) => r.needsHuman)
@@ -926,6 +943,15 @@ function Panel({ title, children }: { title: string; children: ReactNode }) {
   )
 }
 
+/** Marks a value that covers only part of what it counts. */
+function PartialTag({ title }: { title: string }) {
+  return (
+    <span title={title} className="text-fg-3 font-ui ml-1 text-xs">
+      一部
+    </span>
+  )
+}
+
 const TOKEN_KEYS = [
   'inputTokens',
   'cacheReadTokens',
@@ -941,9 +967,10 @@ function UsageCells({ u }: { u: UsageTotals }) {
       <Td num>{u.invocations}</Td>
       {TOKEN_KEYS.map((key) => (
         <Td key={key} num>
-          {u[key] == null || u.complete
-            ? fmtInt(u[key])
-            : `${fmtInt(u[key])}（一部）`}
+          {fmtInt(u[key])}
+          {u[key] == null || u.complete ? null : (
+            <PartialTag title="使用量が分かった呼び出しだけの合計" />
+          )}
         </Td>
       ))}
       <Td num>{fmtUsd(u.costUsd)}</Td>
@@ -982,11 +1009,16 @@ function StageTimings({ report }: { report: LoopReport }) {
             />
           </span>
           <span className="font-code text-right text-sm tabular-nums">
-            {t.elapsedMs == null
-              ? UNKNOWN
-              : t.complete
-                ? fmtMs(t.elapsedMs)
-                : `${fmtMs(t.elapsedMs)}（一部のみ計測）`}
+            {t.elapsedMs == null ? (
+              UNKNOWN
+            ) : (
+              <>
+                {fmtMs(t.elapsedMs)}
+                {t.complete ? null : (
+                  <PartialTag title="一部の区間だけを計測した値" />
+                )}
+              </>
+            )}
           </span>
         </li>
       ))}
@@ -1029,8 +1061,8 @@ function StatusPanel({ data }: { data: RunDetailResponse }) {
       {data.diagnosis.cleanup ? (
         <div className="mt-3">
           <p className="text-fg-2 mb-2 text-xs">
-            worktree の片付け（branch は残る。変更のある worktree は git
-            が拒否する）
+            worktree を片付けるコマンドです。branch は残り、変更のある worktree
+            は git が削除を拒否します。
           </p>
           <Commands lines={[data.diagnosis.cleanup]} />
         </div>
@@ -1047,20 +1079,23 @@ function SummaryPanel({ report: r }: { report: LoopReport }) {
         <Field label="結論">
           {s.conclusion ? conclusionOf(s.conclusion).label : 'まだない'}
         </Field>
-        <Field label="所要時間（確定値）">{fmtMs(s.leadTimeMs)}</Field>
+        <Field label="所要時間">{fmtMs(s.leadTimeMs)}</Field>
         <Field label="工程の作業時間">{fmtMs(s.workMs)}</Field>
         <Field label="人の待ち時間">{fmtMs(s.humanWaitMs)}</Field>
         <Field label="合計 token">{fmtInt(s.totalTokens)}</Field>
-        <Field label="費用（API 換算）">{fmtUsd(s.costUsd)}</Field>
+        <Field label="費用">{fmtUsd(s.costUsd)}</Field>
         <Field label="修正 / レビュー回数">
           {s.repairs} / {s.reviewRounds}
         </Field>
-        <Field label="triage（記録のみ）">
-          {r.triage ? r.triage.judgment : 'なし'}
-        </Field>
+        <Field label="triage">{r.triage ? r.triage.judgment : 'なし'}</Field>
       </dl>
       {r.triage ? (
-        <p className="text-fg-2 mt-3 text-sm">{r.triage.reason}</p>
+        <div className="text-fg-2 mt-3 flex flex-col gap-1">
+          <p className="text-sm">{r.triage.reason}</p>
+          <p className="text-xs">
+            triage の判定は記録するだけで、経路は変えません。
+          </p>
+        </div>
       ) : null}
     </Panel>
   )
@@ -1100,7 +1135,7 @@ function UsagePanels({ report: r }: { report: LoopReport }) {
             <thead className="border-line border-b">
               <tr>
                 <Th>役割</Th>
-                <Th>provider / model / effort（指定）</Th>
+                <Th>provider / 指定 model / 指定 effort</Th>
                 {USAGE_HEAD}
               </tr>
             </thead>
@@ -1110,8 +1145,8 @@ function UsagePanels({ report: r }: { report: LoopReport }) {
                   <Td>{u.role}</Td>
                   <Td>
                     <span className="font-code text-xs">
-                      {u.provider ?? UNKNOWN} / {u.requestedModel ?? '（既定）'}{' '}
-                      / {u.requestedEffort ?? '（既定）'}
+                      {u.provider ?? UNKNOWN} / {u.requestedModel ?? '既定'} /{' '}
+                      {u.requestedEffort ?? '既定'}
                     </span>
                   </Td>
                   <UsageCells u={u} />
@@ -1121,8 +1156,8 @@ function UsagePanels({ report: r }: { report: LoopReport }) {
           </table>
         </div>
         <p className="text-fg-2 mt-3 text-xs">
-          費用は記録した token 数を API
-          料金で換算した参考値で、実際の請求額ではありません。「不明」は使用量か価格が分からない呼び出しを含むことを、「（一部）」は分かった分だけの値であることを示します。
+          {COST_NOTE}
+          。「不明」は使用量か価格が分からない呼び出しを含むことを、「一部」の印は分かった分だけの値であることを示します。
         </p>
       </Panel>
     </>
@@ -1139,13 +1174,14 @@ function ReviewsPanel({ report: r }: { report: LoopReport }) {
           {r.reviews.map((review) => (
             <li key={review.lens} className="flex flex-col gap-1">
               <p className="text-sm">
-                <span className="font-medium">{review.lens}</span>{' '}
-                <span className="text-fg-2">
+                <span className="font-medium">{review.lens}</span>
+                <span className="text-fg-2" title={review.decision}>
+                  {' · '}
                   {review.decision === 'pass'
-                    ? '— 通過（pass）'
+                    ? '通過'
                     : review.decision === 'needsChanges'
-                      ? '— 要修正（needsChanges）'
-                      : `— ${review.decision}`}
+                      ? '要修正'
+                      : review.decision}
                 </span>
               </p>
               <p className="bg-sunken rounded-md px-3 py-2 text-sm whitespace-pre-wrap">
@@ -1191,7 +1227,10 @@ function RecordPanels({ report: r }: { report: LoopReport }) {
         </Panel>
       </div>
 
-      <Panel title="入力ファイル（保存した内容の SHA-256）">
+      <Panel title="入力ファイル">
+        <p className="text-fg-2 mb-3 text-xs">
+          値は保存した内容の SHA-256 とファイルの場所です。
+        </p>
         <dl className="flex flex-col gap-2">
           {(['task', 'spec', 'dispositions'] as const).map((name) => {
             const file = r.inputs[name]
@@ -1232,7 +1271,7 @@ function RunPage({ data }: { data: RunDetailResponse }) {
           </span>
           {r.fake ? (
             <span className="text-fg-2 text-xs">
-              fake mode（実 LLM の検証ではない）
+              fake mode の run で、実 LLM の検証ではありません
             </span>
           ) : null}
         </div>
@@ -1320,8 +1359,9 @@ function ComparePage({ data }: { data: CompareResponse }) {
     <div className="flex flex-col gap-6">
       <p className="text-fg-2 text-sm">
         終了した run {data.runIds.length} 件を config version
-        ごとにまとめています。不明な値は統計から除き、「不明」の列に数えます（0
-        として扱いません）。費用は API 換算の参考値です。
+        ごとにまとめています。不明な値は 0
+        として扱わず、統計から除いて「不明」の列に数えます。費用は API
+        換算の参考値です。
       </p>
       {groups.map((g) => (
         <Panel
@@ -1329,8 +1369,8 @@ function ComparePage({ data }: { data: CompareResponse }) {
           title={`${g.label} · config ${g.configVersion ?? 'unversioned'}`}
         >
           <p className="mb-3 text-sm">
-            {g.runs} run · 成功 {g.successes}（
-            {(g.successRate * 100).toFixed(0)}%） ·{' '}
+            {g.runs} run · 成功 {g.successes} · 成功率{' '}
+            {(g.successRate * 100).toFixed(0)}% ·{' '}
             {Object.entries(g.conclusions)
               .map(([c, n]) => `${conclusionOf(c).label} ${n}`)
               .join(' · ')}
@@ -1366,7 +1406,8 @@ function ComparePage({ data }: { data: CompareResponse }) {
                     <Th>工程</Th>
                     <Th num>作業時間 中央値 [最小–最大]</Th>
                     <Th num>費用 中央値 [最小–最大]</Th>
-                    <Th num>不明（時間 / 費用）</Th>
+                    <Th num>時間の不明</Th>
+                    <Th num>費用の不明</Th>
                   </tr>
                 </thead>
                 <tbody className="divide-line divide-y">
@@ -1383,9 +1424,8 @@ function ComparePage({ data }: { data: CompareResponse }) {
                           ? UNKNOWN
                           : `${fmtUsd(st.costUsd.median)} [${fmtUsd(st.costUsd.min)}–${fmtUsd(st.costUsd.max)}]`}
                       </Td>
-                      <Td num>
-                        {st.workMs.unknown} / {st.costUsd.unknown}
-                      </Td>
+                      <Td num>{st.workMs.unknown}</Td>
+                      <Td num>{st.costUsd.unknown}</Td>
                     </tr>
                   ))}
                 </tbody>
@@ -1395,7 +1435,8 @@ function ComparePage({ data }: { data: CompareResponse }) {
           {g.triage.length > 0 ? (
             <div className="mt-4 overflow-x-auto">
               <p className="text-fg-2 mb-2 text-xs">
-                triage の判定別（shadow mode: 判定は経路を変えていない）
+                triage の判定別。shadow mode
+                なので、判定は経路を変えていません。
               </p>
               <table className="w-full text-sm">
                 <thead className="border-line border-b">
