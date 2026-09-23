@@ -1,4 +1,4 @@
-# Spec Reviser Agent (claude code)
+# Spec Reviser Agent
 
 Return a complete revised `order.md` based on review feedback. Do not write files; the orchestrator
 captures the response outside the worktree.

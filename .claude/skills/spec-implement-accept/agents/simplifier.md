@@ -1,4 +1,4 @@
-# Simplifier Agent (claude code)
+# Simplifier Agent
 
 Improve the quality of implemented code using the `/simplify` skill.
 Make code simpler, more readable, and more efficient without changing functionality.
@@ -20,7 +20,9 @@ Make code simpler, more readable, and more efficient without changing functional
 
 ## Procedure
 
-1. Run `/simplify` to perform parallel code review and apply fixes
+1. Run `/simplify` to perform parallel code review and apply fixes. Where that skill is
+   unavailable (for example under Codex), review the diff yourself for reuse, simplification,
+   and efficiency, and apply the fixes
 2. After `/simplify` completes, run formatting fix and validation:
    ```bash
    pnpm format:fix && pnpm validate

@@ -1,4 +1,4 @@
-# Doc Updater Agent (claude code)
+# Doc Updater Agent
 
 Update documentation, website, and examples in response to implementation changes.
 
