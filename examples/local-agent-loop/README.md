@@ -84,7 +84,7 @@ claude --version
 claude auth login
 ```
 
-Codexは `ai-sdk-provider-codex-cli@2.2.1` のapp-server modeを使い、最初の
+Codexは `ai-sdk-provider-codex-cli@2.3.0`（同梱の `@openai/codex` 0.156.1）のapp-server modeを使い、最初の
 呼び出しでpersistent threadを作り、修正時は保存した `threadId` を明示します。
 Claudeは `ai-sdk-provider-claude-code@4.3.1` が返す `sessionId` を保存し、修正時は
 明示的な `resume` を使います。「cwdで最新の会話を選ぶ」動作は使いません。
@@ -540,13 +540,13 @@ providerが返すusageは、一回の呼び出しの**全モデル応答の合�
 
 - **Claude**: Agent SDKの `result` メッセージの累計をそのまま使います。Claude Codeの
   transcriptに記録された各応答の合計と一致することを確認済みです。
-- **Codex**: `ai-sdk-provider-codex-cli@2.2.1` は応答ごとのイベントで usage を上書き
-  するため、最後の応答分しか返しません。上流には
+- **Codex**: `ai-sdk-provider-codex-cli@2.3.0` は応答ごとの `thread/tokenUsage/updated`
+  を turn 内で合計します（2.2.1 は上書きしていたため最後の応答分しか返さず、
   [ben-vargas/ai-sdk-provider-codex-cli#49](https://github.com/ben-vargas/ai-sdk-provider-codex-cli/issues/49)
-  で報告済みです。`patches/` のパッチでturn内の合計に直して
-  います。thread累計の `total` は使いません。`--context reuse` では前回の呼び出し分
-  まで含んでしまうからです。修正後の値はCodex自身のセッションログと一致することを
-  確認済みです。同じパッチで、上流が `0` 固定にしていた cache write も
+  で報告して `patches/` のパッチで直していました。2.3.0 で上流に入ったのでパッチは
+  外しています）。増分は turn 開始前の thread 累計からの差分で求めるので、
+  `--context reuse` でも前回の呼び出し分は含みません。cache write も上流で
+  `0` 固定をやめ、
   app-serverが返す値を読むようにしています。ただしChatGPTログイン（サブスク）では、
   サーバーが実際の書き込みに関係なく常に0を返します
   （[openai/codex#32479](https://github.com/openai/codex/issues/32479)）。この環境の

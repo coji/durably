@@ -36,8 +36,6 @@ allowBuilds:
   lefthook: true
   protobufjs: true
   ssh2: true
-patchedDependencies:
-  ai-sdk-provider-codex-cli@2.2.1: patches/ai-sdk-provider-codex-cli@2.2.1.patch
 minimumReleaseAgeExclude:
   - '@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.280'
   - '@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.280'
