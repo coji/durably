@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { request } from 'node:http'
 import { connect, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -37,6 +37,7 @@ import {
 import { checkpointPaths } from '../src/engine/runner.js'
 import type { DiagnosisKind } from '../src/engine/status.js'
 import {
+  commandNote,
   commandText,
   detailField,
   diagnosisText,
@@ -804,8 +805,15 @@ describe('reads per poll', () => {
       return { runId: id } as LoopReport
     })
     const { db } = counting()
-    const done = { id: 'done', status: 'completed' as const, updatedAt: 't1' }
-    const open = { id: 'open', status: 'leased' as const, updatedAt: 't1' }
+    const done = {
+      id: 'done',
+      status: 'completed' as const,
+      updatedAt: 't1',
+      input: {},
+      output: null,
+      error: null,
+    }
+    const open = { ...done, id: 'open', status: 'leased' as const }
     for (let i = 0; i < 3; i++) {
       await cache.get(db, done)
       await cache.get(db, open)
@@ -818,14 +826,24 @@ describe('reads per poll', () => {
     await cache.get(db, { ...done, updatedAt: 't2' })
     assert.deepEqual(built.slice(4), ['done', 'done'])
     // A failed or cancelled run's failure reads checkpoint files, which can
-    // change after it stops, so its report is never served from the cache.
+    // change after it stops: its report is built once, but every hit
+    // classifies the failure again.
     built.length = 0
     for (const status of ['failed', 'cancelled'] as const) {
-      const stopped = { id: status, status, updatedAt: 't1' }
+      const stopped = {
+        id: status,
+        status,
+        updatedAt: 't1',
+        input: {},
+        output: null,
+        error: null,
+      }
       await cache.get(db, stopped)
-      assert.equal((await cache.get(db, stopped)).fresh, true)
+      const hit = await cache.get(db, stopped)
+      assert.equal(hit.fresh, true)
+      assert.ok('failure' in hit.report)
     }
-    assert.deepEqual(built, ['failed', 'failed', 'cancelled', 'cancelled'])
+    assert.deepEqual(built, ['failed', 'cancelled'])
   })
 })
 
@@ -896,6 +914,30 @@ describe('diagnosis wording on the page', () => {
       assert.equal(plain(label), null, label)
       assert.equal(plain(title), null, title)
     }
+  })
+
+  it('says in Japanese what every next command the CLI annotates does', async () => {
+    const sources = await Promise.all(
+      ['../src/engine/failure-reasons.ts', '../src/engine/status.ts'].map((f) =>
+        readFile(new URL(f, import.meta.url), 'utf8'),
+      ),
+    )
+    const notes = [...sources.join('\n').matchAll(/ {2}# ([^`]+)`/g)].map(
+      (m) => m[1] as string,
+    )
+    assert.ok(notes.length > 5)
+    for (const note of notes) {
+      // The cleanup line is shown on its own and is not a next command.
+      if (note.startsWith('keeps the branch')) continue
+      const ja = commandNote(`pnpm demo x  # ${note}`)
+      assert.ok(ja, note)
+      assert.equal(
+        plain(ja.replace(/--max-iterations|worker|trigger/g, '')),
+        null,
+        ja,
+      )
+    }
+    assert.equal(commandNote('pnpm demo status --run r1'), null)
   })
 
   it('shows a failure detail as a label and its value', () => {

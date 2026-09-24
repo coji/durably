@@ -157,6 +157,47 @@ export function commandText(line: string): string {
   return at < 0 ? line : line.slice(0, at)
 }
 
+/**
+ * The CLI's English note on a next command, in Japanese. The page shows it
+ * under the buttons, so guidance such as "read the reviews first" is not
+ * lost when the note is stripped from the command. Unknown notes are dropped.
+ */
+const COMMAND_NOTES: [string, string][] = [
+  [
+    'read the reviews first',
+    '承認か却下の前に、レビューの判定とメモを読みます。',
+  ],
+  [
+    'once, with the same stored input',
+    '保存済みの入力のまま、1回だけ実行し直します。タスクや --max-iterations を変えたいときは、trigger からやり直します。',
+  ],
+  [
+    'the check output is in the verification attempt',
+    '検証コマンドの出力は、検証の試行に入っています。',
+  ],
+  ['the reviewer notes', 'レビューのメモを読めます。'],
+  [
+    'delivery shows what was recorded',
+    '納品物に記録された内容を確かめられます。',
+  ],
+  ['if none is running', 'worker が動いていなければ起動します。'],
+  [
+    'the reclaimed run stops at that call',
+    '再開した実行は、完了の記録がない呼び出しで止まり、人の確認を待ちます。',
+  ],
+  [
+    'a worker reclaims the run',
+    'worker が実行を引き取り、チェックポイントから再開します。',
+  ],
+]
+
+export function commandNote(line: string): string | null {
+  const at = line.indexOf('  # ')
+  if (at < 0) return null
+  const note = line.slice(at + 4)
+  return COMMAND_NOTES.find(([en]) => note.startsWith(en))?.[1] ?? null
+}
+
 export function humanCheckText(kind: FailureKind): string {
   return FAILURE_TEXT[kind].check
 }
