@@ -150,11 +150,67 @@ export function reviewDecision(decision: string): {
 
 /**
  * The command itself, without the CLI's English `  # …` comment. The page
- * explains each command in Japanese on its button and in the reason text.
+ * explains each command in Japanese on its button, in the note under the
+ * buttons, and in the reason text.
  */
 export function commandText(line: string): string {
+  return splitCommand(line).command
+}
+
+/** A CLI next-command line split into the command and its English note. */
+function splitCommand(line: string): { command: string; note: string | null } {
   const at = line.indexOf('  # ')
-  return at < 0 ? line : line.slice(0, at)
+  return at < 0
+    ? { command: line, note: null }
+    : { command: line.slice(0, at), note: line.slice(at + 4) }
+}
+
+/**
+ * The CLI's English note on a next command, in Japanese. The page shows it
+ * under the buttons, so guidance such as "read the reviews first" is not
+ * lost when the note is stripped from the command. Unknown notes are dropped.
+ */
+const COMMAND_NOTES: [string, string][] = [
+  [
+    'read the reviews first',
+    '承認か却下の前に、レビューの判定とメモを読みます。',
+  ],
+  [
+    'once, with the same stored input; to change the task or --max-iterations, trigger anew',
+    '保存済みの入力のまま、1回だけ実行し直します。タスクや --max-iterations を変えたいときは、trigger からやり直します。',
+  ],
+  [
+    'the check output is in the verification attempt',
+    '検証コマンドの出力は、検証の試行に入っています。',
+  ],
+  ['the reviewer notes', 'レビューのメモを読めます。'],
+  [
+    'delivery shows what was recorded',
+    '納品物に記録された内容を確かめられます。',
+  ],
+  ['if none is running', 'ワーカーが動いていなければ起動します。'],
+]
+
+/**
+ * Notes the page does not repeat under the buttons, because the reason text
+ * above them already says the same thing: the lease-expired run's notes.
+ */
+const SAID_BY_REASON = [
+  'the reclaimed run stops at that call',
+  'a worker reclaims the run',
+]
+
+export function commandNote(line: string): string | null {
+  const { note } = splitCommand(line)
+  if (note === null || SAID_BY_REASON.some((en) => note.startsWith(en)))
+    return null
+  // Whole-note match: a note that gains a clause must get its own translation.
+  return COMMAND_NOTES.find(([en]) => note === en)?.[1] ?? null
+}
+
+/** Is this CLI note one the page deliberately leaves to the reason text? */
+export function noteSaidByReason(note: string): boolean {
+  return SAID_BY_REASON.some((en) => note.startsWith(en))
 }
 
 export function humanCheckText(kind: FailureKind): string {

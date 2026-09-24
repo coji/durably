@@ -25,6 +25,7 @@ import type {
 import type { DiagnosisKind } from '../engine/status'
 import { TERMINAL_STATUSES } from '../engine/terminal'
 import {
+  commandNote,
   commandText,
   detailField,
   diagnosisText,
@@ -179,8 +180,6 @@ function retryLabel(retryable: boolean): string {
     ? 'できる。結果の分からない呼び出しは重ねて送らない'
     : 'しない。先に人が確認する'
 }
-
-/** The command itself, without the CLI's trailing `  # note`. */
 
 // ---------------------------------------------------------------- state labels
 
@@ -346,6 +345,11 @@ function Commands({ lines }: { lines: string[] }) {
   const { copied, copy } = useCopy()
   if (lines.length === 0) return null
   const commands = lines.map(commandText)
+  const notes = lines.flatMap((line, i) => {
+    const note = commandNote(line)
+    const command = commands[i] as string
+    return note ? [{ command, label: commandLabel(command), note }] : []
+  })
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap gap-2">
@@ -359,6 +363,15 @@ function Commands({ lines }: { lines: string[] }) {
           />
         ))}
       </div>
+      {notes.length > 0 && (
+        <ul className="text-fg-2 flex flex-col gap-1 text-xs">
+          {notes.map((n) => (
+            <li key={n.command}>
+              {n.label}：{n.note}
+            </li>
+          ))}
+        </ul>
+      )}
       <details className="text-xs">
         <summary className="text-fg-2 hover:text-fg inline-flex min-h-8 cursor-pointer items-center">
           コマンド全文

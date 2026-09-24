@@ -31,6 +31,7 @@ import {
 } from '../durably.js'
 import { buildReport, type ReportSource } from '../engine/build-report.js'
 import { compareReports, type Comparison } from '../engine/compare.js'
+import { classifyRun } from '../engine/failure-reasons.js'
 import {
   liveElapsed,
   stageOf,
@@ -869,24 +870,32 @@ export function readOnce(db: ReportSource, known: Run[] = []): ReportSource {
 }
 
 /**
- * Reports by run. A completed run never changes again, so its report is
- * built once and reused while the run's row is unchanged. Every other run's
- * is built on every call: a failed or cancelled run's failure also reads
- * checkpoint files, which can still change after the run stops. `fresh`
- * says the report was built by this call.
+ * Reports by run. A finished run's row never changes again, so its report is
+ * built once and reused while the row is unchanged. Only a failed or
+ * cancelled run's `failure` can still change, because it also reads
+ * checkpoint files, so a reused report gets that one field classified again.
+ * Open runs are built on every call. `fresh` says the report's failure was
+ * worked out by this call.
  */
 export function finishedReportCache(build = buildReport) {
   const finished = new Map<string, { updatedAt: string; report: LoopReport }>()
   return {
     async get(
       src: ReportSource,
-      run: Pick<Run, 'id' | 'status' | 'updatedAt'>,
+      run: Pick<
+        Run,
+        'id' | 'status' | 'updatedAt' | 'input' | 'output' | 'error'
+      >,
     ): Promise<{ report: LoopReport; fresh: boolean }> {
       const hit = finished.get(run.id)
-      if (hit?.updatedAt === run.updatedAt)
-        return { report: hit.report, fresh: false }
+      if (hit?.updatedAt === run.updatedAt) {
+        if (run.status === 'completed')
+          return { report: hit.report, fresh: false }
+        const failure = await classifyRun(src, run)
+        return { report: { ...hit.report, failure }, fresh: true }
+      }
       const report = await build(src, run.id)
-      if (run.status === 'completed')
+      if (TERMINAL_STATUSES.includes(run.status))
         finished.set(run.id, { updatedAt: run.updatedAt, report })
       return { report, fresh: true }
     },
@@ -904,7 +913,7 @@ async function inspect(
   run: Run,
   now: number,
   report: LoopReport,
-  /** The report was built in this request, so its failure is current. */
+  /** The report's failure was worked out in this request, so it is current. */
   fresh: boolean,
 ) {
   const { diagnosis, uncertainCall } = await diagnoseRun(
