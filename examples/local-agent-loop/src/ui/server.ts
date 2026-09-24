@@ -913,7 +913,7 @@ async function inspect(
   run: Run,
   now: number,
   report: LoopReport,
-  /** The report was built in this request, so its failure is current. */
+  /** The report's failure was worked out in this request, so it is current. */
   fresh: boolean,
 ) {
   const { diagnosis, uncertainCall } = await diagnoseRun(

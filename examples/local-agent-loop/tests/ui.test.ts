@@ -38,6 +38,7 @@ import { checkpointPaths } from '../src/engine/runner.js'
 import type { DiagnosisKind } from '../src/engine/status.js'
 import {
   commandNote,
+  noteSaidByReason,
   commandText,
   detailField,
   diagnosisText,
@@ -927,15 +928,14 @@ describe('diagnosis wording on the page', () => {
     )
     assert.ok(notes.length > 5)
     for (const note of notes) {
-      // The cleanup line is shown on its own and is not a next command.
-      if (note.startsWith('keeps the branch')) continue
+      // The cleanup line is shown on its own and is not a next command, and
+      // the lease-expired notes repeat what the reason text already says.
+      if (note.startsWith('keeps the branch') || noteSaidByReason(note))
+        continue
       const ja = commandNote(`pnpm demo x  # ${note}`)
       assert.ok(ja, note)
-      assert.equal(
-        plain(ja.replace(/--max-iterations|worker|trigger/g, '')),
-        null,
-        ja,
-      )
+      // Only what the user types may stay in English.
+      assert.equal(plain(ja.replace(/--max-iterations|trigger/g, '')), null, ja)
     }
     assert.equal(commandNote('pnpm demo status --run r1'), null)
   })
