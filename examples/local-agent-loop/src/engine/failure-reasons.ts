@@ -11,6 +11,7 @@ import { existsSync } from 'node:fs'
 
 import type { AnyDurably, Run, StepAttempt } from '@coji/durably'
 
+import { DETAIL_PREFIX } from './failure-details.js'
 import { checkpointPaths, UNCERTAIN_INVOCATION_MESSAGE } from './runner.js'
 
 export type FailureKind =
@@ -177,7 +178,7 @@ export function classifyFailure(
     ) {
       kind = 'uncertain-invocation'
       for (const path of input.uncertain)
-        details.push(`start checkpoint without completion: ${path}`)
+        details.push(`${DETAIL_PREFIX.checkpoint}${path}`)
     } else if (input.status === 'cancelled') {
       // A cancel can land after the push or pull request but before the
       // delivery is recorded; a new run could publish a second time.
@@ -187,7 +188,7 @@ export function classifyFailure(
     }
     if (input.error)
       details.push(
-        `error: ${input.error
+        `${DETAIL_PREFIX.error}${input.error
           .slice(0, 500)
           .trim()
           .replace(/\s*\n\s*/g, ' | ')}`,
@@ -212,7 +213,9 @@ export function retryText(retryable: boolean): string {
  * unresolved calls when the run actually failed or was cancelled.
  */
 export async function classifyRun(
-  durably: Pick<AnyDurably, 'storage' | 'getStepAttempts'>,
+  durably: Pick<AnyDurably, 'getStepAttempts'> & {
+    storage: Pick<AnyDurably['storage'], 'getCompletedStep'>
+  },
   run: Pick<Run, 'id' | 'status' | 'input' | 'output' | 'error'>,
 ): Promise<FailureClassification | null> {
   let uncertain: string[] = []

@@ -33,6 +33,7 @@ function baseReport(): LoopReport {
     roleUsage: [],
     inputs: { task: null, spec: null, dispositions: null },
     candidate: null,
+    reviews: [],
     delivery: null,
     failure: null,
     stageVisits: [],

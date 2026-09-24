@@ -50,6 +50,11 @@ export interface AgentDurablyOptions {
    * exposed as a CLI flag or environment variable.
    */
   stateRoot?: string
+  /**
+   * Demo seeding only: runs one worker leases at once. The CLI worker keeps
+   * Durably's default of one.
+   */
+  maxConcurrentRuns?: number
 }
 
 function build(options: AgentDurablyOptions) {
@@ -62,6 +67,14 @@ function build(options: AgentDurablyOptions) {
   // writer locks the whole database, so `demo approve` and `demo report`
   // contend with the worker's 500ms poll and eventually die on SQLITE_BUSY.
   database.pragma('journal_mode = WAL')
+  return withDatabase(database, stateRoot, options.maxConcurrentRuns)
+}
+
+function withDatabase(
+  database: Database.Database,
+  stateRoot: string,
+  maxConcurrentRuns?: number,
+) {
   const dialect = new SqliteDialect({ database })
   return createDurably({
     dialect,
@@ -69,6 +82,7 @@ function build(options: AgentDurablyOptions) {
     leaseRenewIntervalMs: 1000,
     leaseMs: 10000,
     preserveSteps: true,
+    ...(maxConcurrentRuns ? { maxConcurrentRuns } : {}),
     jobs: { agentLoop: createAgentLoopJob({ stateRoot }) },
   })
 }
@@ -80,4 +94,22 @@ export function createAgentDurably(
   options: AgentDurablyOptions = {},
 ): AgentLoopDurably {
   return build(options)
+}
+
+/**
+ * Open the existing database for reading only, for the web UI. Returns null
+ * when there is no database yet: nothing is created, not even the state
+ * directory. The connection is opened read-only, and the caller must never
+ * call `migrate()` or `init()` on the result.
+ */
+export function openReadOnlyAgentDurably(
+  options: AgentDurablyOptions = {},
+): AgentLoopDurably | null {
+  const stateRoot = options.stateRoot ?? defaultStateRoot()
+  const path = dbPath(stateRoot)
+  if (!existsSync(path)) return null
+  return withDatabase(
+    new Database(path, { readonly: true, fileMustExist: true }),
+    stateRoot,
+  )
 }

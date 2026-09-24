@@ -1,0 +1,15 @@
+{
+  "$schema": "https://react.doctor/schema/config.json",
+  "ignore": {
+    "files": [
+      "src/*.ts",
+      "src/engine/**",
+      "src/factory/**",
+      "src/targets/**",
+      "tests/**",
+      "subject/**",
+      "docs/**",
+      "runs/**"
+    ]
+  }
+}
