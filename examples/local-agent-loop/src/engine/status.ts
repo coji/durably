@@ -63,122 +63,148 @@ export function shellQuote(value: string): string {
  * table. Nothing here runs a command or changes the run.
  */
 export async function diagnose(
-  durably: Pick<AnyDurably, 'storage' | 'getStepAttempts' | 'getWaits'>,
+  durably: DiagnoseSource,
   run: Run,
   now: number,
 ): Promise<Diagnosis> {
-  const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))
-    ?.output as {
-    target?: { kind?: string; repoPath?: string; workdir?: string }
-    checkpointsDir?: string
-  } | null
-  const terminal = TERMINAL_STATUSES.includes(run.status)
-  const target = setup?.target
-  // Only the worktree the setup step recorded, and only when it is still
-  // there: a subject run has none, and a run that failed before setup
-  // finished has no record to trust.
-  const cleanup =
-    terminal &&
-    target?.kind === 'repo' &&
-    target.repoPath &&
-    target.workdir &&
-    existsSync(target.workdir)
-      ? `git -C ${shellQuote(target.repoPath)} worktree remove ${shellQuote(target.workdir)}`
-      : null
-  const show = `${DEMO} status --run ${run.id}`
-  const worker = `${DEMO} worker`
-  if (run.status === 'pending')
-    return {
-      kind: 'pending',
-      reason: 'queued; no worker has picked it up yet',
-      next: [`${worker}  # if none is running`, show],
-      cleanup,
-    }
-  if (run.status === 'leased') {
-    const expires = run.leaseExpiresAt ? Date.parse(run.leaseExpiresAt) : NaN
-    if (Number.isFinite(expires) && expires < now) {
-      const reason = `lease expired at ${run.leaseExpiresAt}; the worker holding it stopped or lost contact`
-      // A reclaimed run refuses an agent call that started without a
-      // completion, so it will stop there rather than resume past it.
-      const uncertain = uncertainCheckpoints(
-        setup?.checkpointsDir ?? null,
-        await durably.getStepAttempts(run.id),
-      )
-      const stuck = uncertain.length > 0
+  return (await diagnoseRun(durably, run, now)).diagnosis
+}
+
+type DiagnoseSource = Pick<AnyDurably, 'getStepAttempts' | 'getWaits'> & {
+  storage: Pick<AnyDurably['storage'], 'getCompletedStep'>
+}
+
+/**
+ * `diagnose`, plus the fact behind a lease-expired reason that the web UI
+ * words for itself: whether an agent call is left without a completion.
+ * `failure` skips classifying the run again when the caller already has it.
+ */
+export async function diagnoseRun(
+  durably: DiagnoseSource,
+  run: Run,
+  now: number,
+  known?: { failure: FailureClassification | null },
+): Promise<{ diagnosis: Diagnosis; uncertainCall: boolean }> {
+  let uncertainCall = false
+  const diagnosis = await describe()
+  return { diagnosis, uncertainCall }
+
+  async function describe(): Promise<Diagnosis> {
+    const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))
+      ?.output as {
+      target?: { kind?: string; repoPath?: string; workdir?: string }
+      checkpointsDir?: string
+    } | null
+    const terminal = TERMINAL_STATUSES.includes(run.status)
+    const target = setup?.target
+    // Only the worktree the setup step recorded, and only when it is still
+    // there: a subject run has none, and a run that failed before setup
+    // finished has no record to trust.
+    const cleanup =
+      terminal &&
+      target?.kind === 'repo' &&
+      target.repoPath &&
+      target.workdir &&
+      existsSync(target.workdir)
+        ? `git -C ${shellQuote(target.repoPath)} worktree remove ${shellQuote(target.workdir)}`
+        : null
+    const show = `${DEMO} status --run ${run.id}`
+    const worker = `${DEMO} worker`
+    if (run.status === 'pending')
       return {
-        kind: 'lease-expired',
-        reason: stuck
-          ? `${reason}; an agent call it started has no completed checkpoint`
-          : reason,
-        next: [
-          stuck
-            ? `${worker}  # the reclaimed run stops at that call for a human to check`
-            : `${worker}  # a worker reclaims the run and resumes it from its checkpoints`,
-          show,
-        ],
+        kind: 'pending',
+        reason: 'queued; no worker has picked it up yet',
+        next: [`${worker}  # if none is running`, show],
         cleanup,
       }
-    }
-    return {
-      kind: 'running',
-      reason: `a worker is running it (lease held until ${run.leaseExpiresAt ?? 'unknown'})`,
-      next: [show],
-      cleanup,
-    }
-  }
-  if (run.status === 'waiting') {
-    const waits = await durably.getWaits(run.id)
-    const wait = waits.find((w) => w.id === run.waitingOnWaitId)
-    const candidateId = (
-      wait?.metadata as { candidateId?: unknown } | null | undefined
-    )?.candidateId
-    if (wait && typeof candidateId === 'string') {
-      // Approved or rejected, but no worker has picked the run up yet.
-      if (wait.status === 'resolved') {
-        const decision = (wait.payload as { decision?: unknown } | null)
-          ?.decision
+    if (run.status === 'leased') {
+      const expires = run.leaseExpiresAt ? Date.parse(run.leaseExpiresAt) : NaN
+      if (Number.isFinite(expires) && expires < now) {
+        const reason = `lease expired at ${run.leaseExpiresAt}; the worker holding it stopped or lost contact`
+        // A reclaimed run refuses an agent call that started without a
+        // completion, so it will stop there rather than resume past it.
+        const uncertain = uncertainCheckpoints(
+          setup?.checkpointsDir ?? null,
+          await durably.getStepAttempts(run.id),
+        )
+        const stuck = uncertain.length > 0
+        uncertainCall = stuck
         return {
-          kind: 'decided',
-          reason: `the decision on candidate ${candidateId} is recorded (${typeof decision === 'string' ? decision : wait.outcome}); a worker resumes the run`,
-          next: [`${worker}  # if none is running`, show],
-          cleanup,
-        }
-      }
-      if (wait.status === 'pending')
-        return {
-          kind: 'approval',
-          reason: `waiting for human approval of candidate ${candidateId}`,
+          kind: 'lease-expired',
+          reason: stuck
+            ? `${reason}; an agent call it started has no completed checkpoint`
+            : reason,
           next: [
-            `${DEMO} report --run ${run.id}  # read the reviews first`,
-            `${DEMO} approve --run ${run.id} --wait ${wait.id}`,
-            `${DEMO} reject --run ${run.id} --wait ${wait.id}`,
+            stuck
+              ? `${worker}  # the reclaimed run stops at that call for a human to check`
+              : `${worker}  # a worker reclaims the run and resumes it from its checkpoints`,
+            show,
           ],
           cleanup,
         }
+      }
+      return {
+        kind: 'running',
+        reason: `a worker is running it (lease held until ${run.leaseExpiresAt ?? 'unknown'})`,
+        next: [show],
+        cleanup,
+      }
     }
+    if (run.status === 'waiting') {
+      const waits = await durably.getWaits(run.id)
+      const wait = waits.find((w) => w.id === run.waitingOnWaitId)
+      const candidateId = (
+        wait?.metadata as { candidateId?: unknown } | null | undefined
+      )?.candidateId
+      if (wait && typeof candidateId === 'string') {
+        // Approved or rejected, but no worker has picked the run up yet.
+        if (wait.status === 'resolved') {
+          const decision = (wait.payload as { decision?: unknown } | null)
+            ?.decision
+          return {
+            kind: 'decided',
+            reason: `the decision on candidate ${candidateId} is recorded (${typeof decision === 'string' ? decision : wait.outcome}); a worker resumes the run`,
+            next: [`${worker}  # if none is running`, show],
+            cleanup,
+          }
+        }
+        if (wait.status === 'pending')
+          return {
+            kind: 'approval',
+            reason: `waiting for human approval of candidate ${candidateId}`,
+            next: [
+              `${DEMO} report --run ${run.id}  # read the reviews first`,
+              `${DEMO} approve --run ${run.id} --wait ${wait.id}`,
+              `${DEMO} reject --run ${run.id} --wait ${wait.id}`,
+            ],
+            cleanup,
+          }
+      }
+      return {
+        kind: 'other-wait',
+        reason: 'waiting on an input that is not a candidate approval',
+        next: [`${DEMO} waits --run ${run.id}`],
+        cleanup,
+      }
+    }
+    const failure = known ? known.failure : await classifyRun(durably, run)
+    if (failure)
+      return {
+        kind: 'stopped',
+        reason: `${failure.kind}: ${failure.reason}`,
+        next: failure.next,
+        failure,
+        // The worktree is evidence a human has to inspect first.
+        cleanup: failure.kind === 'uncertain-invocation' ? null : cleanup,
+      }
+    const conclusion = (run.output as { conclusion?: string } | null)
+      ?.conclusion
     return {
-      kind: 'other-wait',
-      reason: 'waiting on an input that is not a candidate approval',
-      next: [`${DEMO} waits --run ${run.id}`],
+      kind: 'finished',
+      reason: `finished: ${conclusion ?? run.status}`,
+      next: [],
       cleanup,
     }
-  }
-  const failure = await classifyRun(durably, run)
-  if (failure)
-    return {
-      kind: 'stopped',
-      reason: `${failure.kind}: ${failure.reason}`,
-      next: failure.next,
-      failure,
-      // The worktree is evidence a human has to inspect first.
-      cleanup: failure.kind === 'uncertain-invocation' ? null : cleanup,
-    }
-  const conclusion = (run.output as { conclusion?: string } | null)?.conclusion
-  return {
-    kind: 'finished',
-    reason: `finished: ${conclusion ?? run.status}`,
-    next: [],
-    cleanup,
   }
 }
 

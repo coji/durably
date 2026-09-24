@@ -211,6 +211,7 @@ export const reviewStage: StageHandler = async ({
         role,
         stage: `review:${lens}`,
         iteration: state.iteration,
+        reviewRound: state.reviewRounds + 1,
         operationKey: `${step.runId}/${key}/${lens}`,
         checkpointsDir: state.setup.checkpointsDir,
         session: null,

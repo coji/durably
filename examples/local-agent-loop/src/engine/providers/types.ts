@@ -63,6 +63,11 @@ export interface AgentCallOptions {
   requestedModel: string | null
   requestedEffort: string | null
   role: AgentRole
+  /**
+   * A review call's round, from 1. Only the fake provider reads it, to pick
+   * a scripted verdict that does not depend on call order.
+   */
+  reviewRound?: number
   /** Explicit native session to resume. Null always creates a new conversation. */
   sessionId?: string | null
   /** Durably step signal: cancel / lease-loss aborts the call. */

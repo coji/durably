@@ -44,6 +44,14 @@ interface PersistedInput {
 
 const ROLES = ['code', 'correctness', 'edge-cases'] as const
 
+/** The reads a report makes; a caller may pass a per-request cache of them. */
+export type ReportSource = Pick<
+  AnyDurably,
+  'getRun' | 'getStepAttempts' | 'getWaits'
+> & {
+  storage: Pick<AnyDurably['storage'], 'getCompletedStep' | 'getSteps'>
+}
+
 /**
  * Each role's requested settings, read from the run input. A run triggered
  * without per-role profiles used the single provider, model and effort for
@@ -83,7 +91,7 @@ function asTriage(value: unknown): ReportTriage | null {
  * one (running, or waiting for approval) has only the completed triage step.
  */
 export async function recordedTriage(
-  durably: Pick<AnyDurably, 'storage'>,
+  durably: Pick<ReportSource, 'storage'>,
   run: { id: string; output: unknown },
 ): Promise<ReportTriage | null> {
   const fromOutput = asTriage(
@@ -132,7 +140,7 @@ function lastReviews(
  * one has only its completed `stage:<n>:code:candidate` steps.
  */
 async function lastCandidate(
-  durably: Pick<AnyDurably, 'storage'>,
+  durably: Pick<ReportSource, 'storage'>,
   runId: string,
   output: { candidate?: unknown } | null,
 ): Promise<ReportCandidate | null> {
@@ -176,10 +184,7 @@ function inputHashes(input: PersistedInput | null): ReportInputs {
 }
 
 export async function buildReport(
-  durably: Pick<
-    AnyDurably,
-    'getRun' | 'getStepAttempts' | 'getWaits' | 'storage'
-  >,
+  durably: ReportSource,
   runId: string,
 ): Promise<LoopReport> {
   const run = await durably.getRun(runId)

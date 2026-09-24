@@ -30,6 +30,8 @@ export interface AgentCallSpec {
   role: AgentRole
   stage: string
   iteration: number
+  /** A review call's round, from 1; see `AgentCallOptions.reviewRound`. */
+  reviewRound?: number
   operationKey?: string
   checkpointsDir?: string
   session?: SessionRef | null
@@ -282,6 +284,7 @@ export async function runAgentCall(
       requestedModel: spec.effectiveModel,
       requestedEffort: spec.effectiveEffort,
       role: spec.role,
+      reviewRound: spec.reviewRound,
       sessionId: spec.session?.nativeId ?? null,
       signal: linked,
       onPartialUsage: (usage) => {

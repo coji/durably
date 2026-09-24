@@ -18,6 +18,7 @@ import {
 } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { dirname, join } from 'node:path'
+import type { Duplex } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 
 import type { Run } from '@coji/durably'
@@ -28,7 +29,7 @@ import {
   openReadOnlyAgentDurably,
   type AgentLoopDurably,
 } from '../durably.js'
-import { buildReport } from '../engine/build-report.js'
+import { buildReport, type ReportSource } from '../engine/build-report.js'
 import { compareReports, type Comparison } from '../engine/compare.js'
 import {
   liveElapsed,
@@ -44,7 +45,7 @@ import {
   type WaitRow,
 } from '../engine/report.js'
 import {
-  diagnose,
+  diagnoseRun,
   needsHuman,
   type Diagnosis,
   type DiagnosisKind,
@@ -62,6 +63,8 @@ export interface RunRow {
   /** From the stored input; see `runName`. */
   name: string
   diagnosis: Diagnosis
+  /** A lease-expired run left an agent call without a completion. */
+  uncertainCall: boolean
   /** Approval, a stop, or an unknown wait: a person decides next. */
   needsHuman: boolean
   /** Provisional, as of the response's `now`; null for a finished run. */
@@ -92,6 +95,7 @@ export interface RunDetailResponse {
   name: string
   createdAt: string
   diagnosis: Diagnosis
+  uncertainCall: boolean
   needsHuman: boolean
   live: LiveElapsed | null
   pipeline: Pipeline
@@ -255,6 +259,13 @@ export function derivePipeline(input: PipelineInput): Pipeline {
   const parts = stages
     .filter((s) => s.count > 1)
     .map((s) => `${stageName(s.stage)} ${s.count}回`)
+  // Stages the run passed by, such as approval on an auto-approved run.
+  const reached = stages.map((s) => s.state !== 'not-reached').lastIndexOf(true)
+  const skipped = stages
+    .slice(0, reached)
+    .filter((s) => s.state === 'not-reached')
+    .map((s) => stageName(s.stage))
+  if (skipped.length > 0) parts.push(`${skipped.join('と')}は通らず`)
   const name = at === null ? '' : stageName(at)
   if (at === null) parts.push('完了まで終わった')
   else if (atState === 'stopped') parts.push(`${name}で停止`)
@@ -268,7 +279,9 @@ export function derivePipeline(input: PipelineInput): Pipeline {
 
 /**
  * A row's state, always shown in words beside its glyph. `interrupted` is an
- * attempt a worker lost or gave up; `idle` is an open run between steps.
+ * attempt a worker lost or gave up; `lost` is an open run's unfinished
+ * attempt that no live lease holds, so it is not running and its end is
+ * unknown; `idle` is an open run between steps.
  */
 export type TraceState =
   | 'done'
@@ -276,6 +289,7 @@ export type TraceState =
   | 'waiting'
   | 'failed'
   | 'interrupted'
+  | 'lost'
   | 'idle'
 
 /**
@@ -350,6 +364,7 @@ export interface TraceInput {
     startedAt: string | null
     completedAt: string | null
     leaseGeneration: number
+    leaseExpiresAt: string | null
   }
   conclusion: string | null
   attempts: AttemptRow[]
@@ -366,7 +381,7 @@ export interface TraceInput {
   /** The report's last review round and last sealed candidate. */
   reviews: ReportReview[]
   candidate: ReportCandidate | null
-  /** Outputs of completed steps still stored; a finished run has none. */
+  /** Outputs of the run's completed steps, by step name. */
   stepOutputs: Record<string, unknown>
   now: number
 }
@@ -456,13 +471,18 @@ const iso = (ms: number | null) =>
  * The run as a span tree: run → iteration (one per entry into code) → stage
  * entry → the entry's attempts, listed only when a step was retried. Stage
  * entries before the first code entry (setup, triage) sit under the run.
- * Only the current lease generation of an open run can still be running;
- * any other missing end stays unknown rather than being drawn to `now`.
+ * Only the current lease generation of a leased run whose lease has not
+ * expired can still be running; any other missing end stays unknown rather
+ * than being drawn to `now`.
  * Each row's usage is `usageOf` its attempts, the report's own sum.
  */
 export function deriveTrace(input: TraceInput): Trace {
   const { run, now } = input
   const terminal = TERMINAL_STATUSES.includes(run.status)
+  const expires = run.leaseExpiresAt ? Date.parse(run.leaseExpiresAt) : NaN
+  // As `diagnose` decides: an expired lease is not a running worker.
+  const leaseLive =
+    run.status === 'leased' && !(Number.isFinite(expires) && expires < now)
   const created = Date.parse(run.createdAt)
   const firstStart = Math.min(
     ...input.attempts
@@ -609,33 +629,31 @@ export function deriveTrace(input: TraceInput): Trace {
     const sorted = [...e.attempts].sort(
       (x, y) => Date.parse(x.startedAt) - Date.parse(y.startedAt),
     )
+    const unfinished = (a: AttemptRow) =>
+      a.completedAt === null && a.status === 'started'
     const isOpen = (a: AttemptRow) =>
-      !terminal &&
-      a.completedAt === null &&
-      a.status === 'started' &&
-      a.leaseGeneration === run.leaseGeneration
+      leaseLive && unfinished(a) && a.leaseGeneration === run.leaseGeneration
     const stateOf = (a: AttemptRow): TraceState =>
       isOpen(a)
         ? 'running'
-        : a.status === 'failed' && !a.interruptionReason
-          ? 'failed'
-          : a.measurement?.result === 'fail'
+        : !terminal && unfinished(a)
+          ? 'lost'
+          : a.status === 'failed' && !a.interruptionReason
             ? 'failed'
-            : a.status === 'completed'
-              ? 'done'
-              : 'interrupted'
+            : a.measurement?.result === 'fail'
+              ? 'failed'
+              : a.status === 'completed'
+                ? 'done'
+                : 'interrupted'
     // The latest attempt of each step decides the entry.
     const latest = new Map<string, AttemptRow>()
     for (const a of sorted) latest.set(a.stepName, a)
     const finals = [...latest.values()]
     const states = finals.map(stateOf)
-    const state: TraceState = states.includes('running')
-      ? 'running'
-      : states.includes('failed')
-        ? 'failed'
-        : states.includes('interrupted')
-          ? 'interrupted'
-          : 'done'
+    const state: TraceState =
+      (['running', 'failed', 'lost', 'interrupted'] as const).find((x) =>
+        states.includes(x),
+      ) ?? 'done'
     const open = states.includes('running')
     const ends = finals.map((a) => time(a.completedAt))
     const known = sorted
@@ -675,18 +693,21 @@ export function deriveTrace(input: TraceInput): Trace {
     const lens = e.lens
     const reviewStep =
       e.seq === null || lens === null ? null : `stage:${e.seq}:review:${lens}`
+    // The report's last verdicts and candidate belong to the last entry only
+    // once it is done: an entry still at work has sealed nothing yet.
+    const lastDone = state === 'done'
     const review =
       e.stage !== 'review'
         ? null
         : (asReview(reviewStep ? input.stepOutputs[reviewStep] : null) ??
-          (e.seq === lastReviewSeq
+          (lastDone && e.seq === lastReviewSeq
             ? (input.reviews.find((r) => r.lens === lens) ?? null)
             : null))
     const candidate =
       e.stage !== 'code'
         ? null
         : (asCandidate(input.stepOutputs[`stage:${e.seq}:code:candidate`]) ??
-          (e.seq === lastCodeSeq ? input.candidate : null))
+          (lastDone && e.seq === lastCodeSeq ? input.candidate : null))
     return node({
       id: `entry:${e.key}`,
       kind: 'entry',
@@ -741,11 +762,13 @@ export function deriveTrace(input: TraceInput): Trace {
         ? 'running'
         : states.includes('waiting')
           ? 'waiting'
-          : last && failedRun && states.includes('failed')
-            ? 'failed'
-            : last && !terminal
-              ? 'idle'
-              : 'done',
+          : states.includes('lost')
+            ? 'lost'
+            : last && failedRun && states.includes('failed')
+              ? 'failed'
+              : last && !terminal
+                ? 'idle'
+                : 'done',
       ...span(rows),
       attempts: rows.reduce((s, r) => s + r.attempts, 0),
       usage: usageOf(
@@ -778,7 +801,9 @@ export function deriveTrace(input: TraceInput): Trace {
         ? 'running'
         : topStates.includes('waiting')
           ? 'waiting'
-          : 'idle',
+          : topStates.includes('lost')
+            ? 'lost'
+            : 'idle',
     start: Number.isFinite(origin) ? origin : null,
     end: terminal ? (time(run.completedAt) ?? span(top).end) : null,
     open: !terminal,
@@ -808,17 +833,82 @@ async function allRuns(durably: AgentLoopDurably): Promise<Run[]> {
   return runs.sort((x, y) => Date.parse(y.createdAt) - Date.parse(x.createdAt))
 }
 
+/**
+ * One request's reads, each made once however many readers ask for it: the
+ * report, the diagnosis and the trace read the same run's steps and attempts.
+ * `known` runs are already read.
+ */
+export function readOnce(db: ReportSource, known: Run[] = []): ReportSource {
+  const memo = new Map<string, Promise<unknown>>()
+  for (const run of known) memo.set(`run:${run.id}`, Promise.resolve(run))
+  const once = <T>(key: string, read: () => Promise<T>): Promise<T> => {
+    let hit = memo.get(key) as Promise<T> | undefined
+    if (!hit) memo.set(key, (hit = read()))
+    return hit
+  }
+  return {
+    getRun: ((id: string) =>
+      once(`run:${id}`, () => db.getRun(id))) as ReportSource['getRun'],
+    getStepAttempts: (id) =>
+      once(`attempts:${id}`, () => db.getStepAttempts(id)),
+    getWaits: (id) => once(`waits:${id}`, () => db.getWaits(id)),
+    storage: {
+      getSteps: (id) => once(`steps:${id}`, () => db.storage.getSteps(id)),
+      getCompletedStep: (id, name) =>
+        once(`step:${id}:${name}`, () => db.storage.getCompletedStep(id, name)),
+    },
+  }
+}
+
+/**
+ * Reports by run. A finished run never changes again, so its report is built
+ * once and reused while the run's row is unchanged; an open run's is built
+ * on every call. `fresh` says the report was built by this call.
+ */
+export function finishedReportCache(build = buildReport) {
+  const finished = new Map<string, { updatedAt: string; report: LoopReport }>()
+  return {
+    async get(
+      src: ReportSource,
+      run: Pick<Run, 'id' | 'status' | 'updatedAt'>,
+    ): Promise<{ report: LoopReport; fresh: boolean }> {
+      const hit = finished.get(run.id)
+      if (hit?.updatedAt === run.updatedAt)
+        return { report: hit.report, fresh: false }
+      const report = await build(src, run.id)
+      if (TERMINAL_STATUSES.includes(run.status))
+        finished.set(run.id, { updatedAt: run.updatedAt, report })
+      return { report, fresh: true }
+    },
+    /** Drop the reports of runs no longer listed, such as deleted ones. */
+    keep(runs: Pick<Run, 'id'>[]) {
+      const ids = new Set(runs.map((r) => r.id))
+      for (const id of finished.keys()) if (!ids.has(id)) finished.delete(id)
+    },
+  }
+}
+
 /** What both the list row and the detail page read for one run. */
-async function inspect(durably: AgentLoopDurably, run: Run, now: number) {
-  const [diagnosis, report] = await Promise.all([
-    diagnose(durably, run, now),
-    buildReport(durably, run.id),
-  ])
+async function inspect(
+  src: ReportSource,
+  run: Run,
+  now: number,
+  report: LoopReport,
+  /** The report was built in this request, so its failure is current. */
+  fresh: boolean,
+) {
+  const { diagnosis, uncertainCall } = await diagnoseRun(
+    src,
+    run,
+    now,
+    fresh ? { failure: report.failure } : undefined,
+  )
   const live = liveElapsed(run, report.attempts, now)
   return {
     name: runName(run.input),
     createdAt: run.createdAt,
     diagnosis,
+    uncertainCall,
     needsHuman: needsHuman(diagnosis.kind),
     live,
     pipeline: derivePipeline({
@@ -831,12 +921,10 @@ async function inspect(durably: AgentLoopDurably, run: Run, now: number) {
   }
 }
 
-async function runRow(
-  durably: AgentLoopDurably,
+function runRow(
   run: Run,
-  now: number,
-): Promise<RunRow> {
-  const { report, ...seen } = await inspect(durably, run, now)
+  { report, ...seen }: Awaited<ReturnType<typeof inspect>>,
+): RunRow {
   return {
     id: run.id,
     status: run.status,
@@ -866,6 +954,8 @@ function createUiApi() {
   // Opened on first use after the file appears, then kept.
   const source = () => (durably ??= openReadOnlyAgentDurably({ stateRoot }))
 
+  const reports = finishedReportCache()
+
   async function runs(): Promise<RunsResponse> {
     const now = Date.now()
     const base = {
@@ -875,7 +965,14 @@ function createUiApi() {
     const db = source()
     if (!db) return { ...base, exists: false, runs: [] }
     const all = await orEmpty(allRuns(db), [])
-    const rows = await Promise.all(all.map((run) => runRow(db, run, now)))
+    reports.keep(all)
+    const src = readOnce(db, all)
+    const rows = await Promise.all(
+      all.map(async (run) => {
+        const { report, fresh } = await reports.get(src, run)
+        return runRow(run, await inspect(src, run, now, report, fresh))
+      }),
+    )
     return { ...base, exists: true, runs: rows }
   }
 
@@ -884,9 +981,11 @@ function createUiApi() {
     const db = source()
     const found = db ? await orEmpty(db.getRun(id), null) : null
     if (!db || !found) throw new HttpError(404, `no run ${id}`)
+    const src = readOnce(db, [found])
+    const { report, fresh } = await reports.get(src, found)
     const [seen, steps] = await Promise.all([
-      inspect(db, found, now),
-      db.storage.getSteps(id),
+      inspect(src, found, now, report, fresh),
+      src.storage.getSteps(id),
     ])
     const stepOutputs: Record<string, unknown> = {}
     for (const s of steps)
@@ -896,11 +995,11 @@ function createUiApi() {
       ...seen,
       trace: deriveTrace({
         run: found,
-        conclusion: seen.report.summary.conclusion,
-        attempts: seen.report.attempts,
-        waits: seen.report.waits,
-        reviews: seen.report.reviews,
-        candidate: seen.report.candidate,
+        conclusion: report.summary.conclusion,
+        attempts: report.attempts,
+        waits: report.waits,
+        reviews: report.reviews,
+        candidate: report.candidate,
         stepOutputs,
         now,
       }),
@@ -910,15 +1009,16 @@ function createUiApi() {
   async function compare(): Promise<CompareResponse> {
     const db = source()
     if (!db) return { runIds: [], comparison: { groups: [] } }
-    const finished = (await orEmpty(allRuns(db), [])).filter((r) =>
-      TERMINAL_STATUSES.includes(r.status),
-    )
-    const reports = await Promise.all(
-      finished.map((r) => buildReport(db, r.id)),
+    const all = await orEmpty(allRuns(db), [])
+    reports.keep(all)
+    const done = all.filter((r) => TERMINAL_STATUSES.includes(r.status))
+    const src = readOnce(db, done)
+    const built = await Promise.all(
+      done.map(async (r) => (await reports.get(src, r)).report),
     )
     return {
-      runIds: finished.map((r) => r.id),
-      comparison: compareReports(reports),
+      runIds: done.map((r) => r.id),
+      comparison: compareReports(built),
     }
   }
 
@@ -978,6 +1078,14 @@ export async function startUiServer(
     }
   }
   const server = createServer((req, res) => void onRequest(req, res))
+  // `closeAllConnections` does not reach a socket upgraded to a WebSocket,
+  // such as the live-reload socket of an open tab, so those are tracked and
+  // destroyed on close; otherwise Ctrl-C waits until the tab is closed.
+  const upgraded = new Set<Duplex>()
+  server.on('upgrade', (_req, socket: Duplex) => {
+    upgraded.add(socket)
+    socket.once('close', () => upgraded.delete(socket))
+  })
   // Vite's live-reload socket shares this server, so it stays on loopback.
   const vite = await (
     await import('vite')
@@ -1007,8 +1115,9 @@ export async function startUiServer(
         server.close(() => resolve()),
       )
       server.closeAllConnections()
-      await closed
+      for (const socket of upgraded) socket.destroy()
       await vite.close()
+      await closed
       await api.close()
     },
   }

@@ -323,6 +323,8 @@ if (cmd === 'worker') {
   console.log(`database: ${dbPath()}`)
   console.log('Ctrl-C to stop')
   const shutdown = async () => {
+    // Nothing is written, so a close that hangs is safe to cut short.
+    setTimeout(() => process.exit(0), 2000).unref()
     await ui.close()
     process.exit(0)
   }

@@ -21,11 +21,12 @@ import {
   type AgentLoopDurably,
 } from './durably.js'
 import { runChild } from './engine/child.js'
+import { DEMO } from './engine/failure-reasons.js'
 import { parseLatency, type FakeScenario } from './engine/providers/fake.js'
 import { checkpointPaths } from './engine/runner.js'
+import { shellQuote } from './engine/status.js'
+import { TERMINAL_STATUSES } from './engine/terminal.js'
 import { buildTriggerInput } from './trigger-input.js'
-
-const DEMO = 'pnpm --filter example-local-agent-loop demo'
 
 /** A small project with a real `node --test` check that fails on the base. */
 const PROJECT: Record<string, string> = {
@@ -385,8 +386,6 @@ async function createProject(home: string): Promise<string> {
   return repo
 }
 
-const SETTLED = new Set(['completed', 'failed', 'cancelled'])
-
 async function waitUntil(
   cond: () => Promise<boolean>,
   timeoutMs: number,
@@ -406,7 +405,7 @@ async function waitUntil(
 async function parked(durably: AgentLoopDurably, runId: string) {
   const run = await durably.getRun(runId)
   if (!run) return false
-  if (SETTLED.has(run.status)) return true
+  if (TERMINAL_STATUSES.includes(run.status)) return true
   if (run.status !== 'waiting') return false
   const wait = (await durably.getWaits(runId)).find(
     (w) => w.id === run.waitingOnWaitId,
@@ -489,7 +488,10 @@ export async function seed(options: SeedOptions): Promise<SeedResult> {
     for (const r of runs) {
       if (r.ending !== 'approved' && r.ending !== 'rejected') continue
       await waitUntil(
-        async () => SETTLED.has((await durably.getRun(r.runId))?.status ?? ''),
+        async () =>
+          TERMINAL_STATUSES.includes(
+            (await durably.getRun(r.runId))?.status ?? '',
+          ),
         budget,
         r.title,
       )
@@ -560,7 +562,7 @@ export async function seedCommand(a: Record<string, string>): Promise<void> {
     backgroundWorker: true,
     log: (line) => console.log(line),
   })
-  const env = `HOME=${home}`
+  const env = `HOME=${shellQuote(home)}`
   console.log('')
   console.log(`デモデータを作りました: ${home}`)
   console.log('')

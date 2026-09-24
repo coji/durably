@@ -34,13 +34,18 @@ function stubAttempt() {
   }
 }
 
-const review = (signal?: AbortSignal): AgentCallOptions => ({
+const review = (
+  signal?: AbortSignal,
+  role: 'review-a' | 'review-b' = 'review-a',
+  reviewRound = 1,
+): AgentCallOptions => ({
   prompt: 'review',
   workdir: tmpdir(),
   timeoutMs: 60000,
   requestedModel: 'fake-model',
   requestedEffort: 'low',
-  role: 'review-a',
+  role,
+  reviewRound,
   signal,
 })
 
@@ -144,9 +149,56 @@ describe('fake provider realism', () => {
     assert.match(a.text, /DECISION: needsChanges/)
     assert.match(a.text, /NOTES: 日付が 1 日ずれます。/)
     assert.match(b.text, /DECISION: pass/)
-    // The scripted queue is spent; the run falls back to the default.
-    assert.match((await scripted.call(review())).text, /DECISION: pass/)
+    // A round past the script falls back to the default.
+    assert.match(
+      (await scripted.call(review(undefined, 'review-a', 2))).text,
+      /DECISION: pass/,
+    )
     assert.equal(process.env.FAKE_REVIEW_SEQUENCE, undefined)
+  })
+
+  it('answers each lens and round the same whatever the call order or replays', async () => {
+    const run = new FakeRun({
+      reviewSequence: ['needsChanges', 'pass', 'pass', 'needsChanges'],
+      reviewNotes: ['r1 correctness', 'r1 edge', 'r2 correctness', 'r2 edge'],
+    })
+    const provider = new FakeProvider({ run })
+    const verdict = async (role: 'review-a' | 'review-b', round: number) => {
+      const text = (await provider.call(review(undefined, role, round))).text
+      return `${/DECISION: (\S+)/.exec(text)?.[1]} ${/NOTES: (.*)/.exec(text)?.[1]}`
+    }
+    // Edge-cases answers first, then round 2 after a replay skipped round 1.
+    assert.equal(await verdict('review-b', 1), 'pass r1 edge')
+    assert.equal(await verdict('review-a', 1), 'needsChanges r1 correctness')
+    assert.equal(await verdict('review-b', 2), 'needsChanges r2 edge')
+    assert.equal(await verdict('review-a', 2), 'pass r2 correctness')
+    // Asking again, as a restarted worker would, changes nothing.
+    assert.equal(await verdict('review-a', 1), 'needsChanges r1 correctness')
+    const [a, b] = await Promise.all([
+      verdict('review-a', 2),
+      verdict('review-b', 2),
+    ])
+    assert.deepEqual([a, b], ['pass r2 correctness', 'needsChanges r2 edge'])
+  })
+})
+
+describe('fakeScenario on a real provider', () => {
+  it('is refused at trigger, before a run is stored', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'fake-scenario-real-'))
+    const durably = createAgentDurably({ stateRoot: home })
+    try {
+      await durably.migrate()
+      await assert.rejects(
+        durably.jobs.agentLoop.trigger({
+          provider: 'codex',
+          fakeScenario: { failIterations: 0 },
+        } as never),
+        /fakeScenario is only for runs where every role is fake/,
+      )
+      assert.deepEqual(await durably.getRuns(), [])
+    } finally {
+      await durably.db.destroy()
+    }
   })
 })
 

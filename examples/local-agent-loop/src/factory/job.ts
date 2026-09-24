@@ -111,36 +111,49 @@ const requestedProfileSchema = z.object({
   requestedEffort: z.string().min(1).nullable(),
 })
 
-const inputSchema = z.object({
-  /** The code role's provider; also every role's when `profiles` is absent. */
-  provider: providerSchema,
-  maxIterations: z.number().int().min(1).max(3).default(2),
-  model: z.string().optional(),
-  effort: z.string().optional(),
-  context: z.enum(['reuse', 'fresh']).default('reuse'),
-  /**
-   * Per-role requested settings. When absent, every role uses `provider`,
-   * `model` and `effort`. Either way they are resolved in the setup step.
-   */
-  profiles: z
-    .object({
-      code: requestedProfileSchema,
-      correctness: requestedProfileSchema,
-      'edge-cases': requestedProfileSchema,
-      /** Shadow triage before the code stage. Absent: no triage call. */
-      triage: requestedProfileSchema.optional(),
-    })
-    .optional(),
-  target: targetSchema,
-  /** Defaults to false for the sample and true for a repository target. */
-  autoApprove: z.boolean().optional(),
-  /**
-   * Demo and test only: per-run behavior of the fake provider, for seeding
-   * runs that behave differently in one worker. Refused unless every role is
-   * fake, and left out of `configVersion`.
-   */
-  fakeScenario: fakeScenarioSchema.optional(),
-})
+const inputSchema = z
+  .object({
+    /** The code role's provider; also every role's when `profiles` is absent. */
+    provider: providerSchema,
+    maxIterations: z.number().int().min(1).max(3).default(2),
+    model: z.string().optional(),
+    effort: z.string().optional(),
+    context: z.enum(['reuse', 'fresh']).default('reuse'),
+    /**
+     * Per-role requested settings. When absent, every role uses `provider`,
+     * `model` and `effort`. Either way they are resolved in the setup step.
+     */
+    profiles: z
+      .object({
+        code: requestedProfileSchema,
+        correctness: requestedProfileSchema,
+        'edge-cases': requestedProfileSchema,
+        /** Shadow triage before the code stage. Absent: no triage call. */
+        triage: requestedProfileSchema.optional(),
+      })
+      .optional(),
+    target: targetSchema,
+    /** Defaults to false for the sample and true for a repository target. */
+    autoApprove: z.boolean().optional(),
+    /**
+     * Demo and test only: per-run behavior of the fake provider, for seeding
+     * runs that behave differently in one worker. Refused unless every role is
+     * fake, and left out of `configVersion`.
+     */
+    fakeScenario: fakeScenarioSchema.optional(),
+  })
+  // Refused at trigger, so a real run is never stored with a demo scenario.
+  .refine(
+    (input) =>
+      !input.fakeScenario ||
+      [input.provider, ...Object.values(input.profiles ?? {})].every(
+        (p) => (typeof p === 'string' ? p : p?.provider) === 'fake',
+      ),
+    {
+      message: 'fakeScenario is only for runs where every role is fake',
+      path: ['fakeScenario'],
+    },
+  )
 
 const candidateSchema = z.object({
   id: z.string(),
@@ -362,10 +375,6 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             ...fixed,
             ...(fixedTriage ? { triage: fixedTriage } : {}),
           })
-          if (input.fakeScenario && fixed.code.provider !== 'fake')
-            throw new Error(
-              'fakeScenario is only for runs on the fake provider',
-            )
           const resolve = (
             role: string,
             profile: FixedProfile,
@@ -464,8 +473,8 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       )
 
       const target = createTarget(setup.target)
-      // One per run, shared by every role, so the scenario's queues are
-      // consumed in call order just like the env knobs.
+      // One per run, shared by every role. Review verdicts are read by round
+      // and lens, so replaying completed rounds shifts nothing.
       const fakeRun = input.fakeScenario
         ? new FakeRun(input.fakeScenario)
         : null

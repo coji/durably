@@ -24,7 +24,15 @@ import type {
 } from '../engine/report'
 import type { DiagnosisKind } from '../engine/status'
 import { TERMINAL_STATUSES } from '../engine/terminal'
-import { lensName, roleName, stageName, triageName } from './labels'
+import {
+  detailField,
+  diagnosisText,
+  humanCheckText,
+  lensName,
+  roleName,
+  stageName,
+  triageName,
+} from './labels'
 import { pollJson } from './poll'
 import type {
   CompareResponse,
@@ -503,11 +511,7 @@ function Empty({ children }: { children: ReactNode }) {
 
 /** The last characters of a run ID: enough to tell runs apart at a glance. */
 function IdSuffix({ id }: { id: string }) {
-  return (
-    <span className="font-code text-fg-2 text-xs" title={id}>
-      …{id.slice(-6)}
-    </span>
-  )
+  return <span className="font-code text-fg-2 text-xs">…{id.slice(-6)}</span>
 }
 
 /** A run by its name, with the ID suffix as a quiet aside. */
@@ -536,7 +540,10 @@ const STAGE_CLASS: Record<PipelineState, string> = {
   'not-reached': 'text-fg-3',
 }
 
-/** Words beside the stage name, so a state never rests on color alone. */
+/**
+ * Words beside the stage name, so a state never rests on color alone. A
+ * done stage carries a check mark; a stage without one was not reached.
+ */
 const STAGE_SUFFIX: Partial<Record<PipelineState, string>> = {
   running: '実行中',
   waiting: '人待ち',
@@ -561,6 +568,7 @@ function Stepper({ pipeline }: { pipeline: Pipeline }) {
               {s.state === 'running' ? (
                 <span className="dot-live size-1.5 rounded-full bg-current" />
               ) : null}
+              {s.state === 'done' ? <span>✓</span> : null}
               {stageName(s.stage)}
               {s.count > 1 ? (
                 <span className="tabular-nums">×{s.count}</span>
@@ -612,6 +620,7 @@ const TRACE_STATE: Record<TraceState, { label: string; tone: Tone }> = {
   waiting: { label: '人待ち', tone: 'waiting' },
   failed: { label: '失敗', tone: 'failed' },
   interrupted: { label: '中断', tone: 'none' },
+  lost: { label: '担当が途切れた', tone: 'none' },
   idle: { label: '工程の合間', tone: 'none' },
 }
 
@@ -694,6 +703,7 @@ function StateGlyph({ state }: { state: TraceState }) {
         </svg>
       )
     case 'interrupted':
+    case 'lost':
       return (
         <svg aria-hidden viewBox="0 0 12 12" className={`${box} text-fg-3`}>
           <path
@@ -1350,12 +1360,7 @@ function ReviewBlock({ node: n }: { node: TraceNode }) {
         </p>
       </div>
     )
-  if (n.state !== 'done') return null
-  return (
-    <p className="text-fg-2 text-xs">
-      この回の判定は記録に残っていません。実行記録に残るのは最後の回だけです。
-    </p>
-  )
+  return null
 }
 
 /** Reserved for the row's agent log; nothing is read into it yet. */
@@ -1415,7 +1420,7 @@ function TraceInspector({
               invocations: s.llmInvocations,
               totalTokens: s.totalTokens,
               costUsd: s.costUsd,
-              complete: true,
+              complete: tokensComplete(report),
             }}
           />
         ) : n.usage ? (
@@ -1498,7 +1503,9 @@ function OpenRun({ run, now }: { run: RunRow; now: string }) {
       </div>
       <Stepper pipeline={run.pipeline} />
       {running ? <LiveProgress live={run.live} extra={progress} /> : null}
-      <p className="text-fg-2 text-sm">{run.diagnosis.reason}</p>
+      <p className="text-fg-2 text-sm">
+        {diagnosisText(run.diagnosis, run.uncertainCall)}
+      </p>
       {!running && progress ? (
         <p className="text-fg-2 text-xs tabular-nums">{progress}</p>
       ) : null}
@@ -1666,6 +1673,14 @@ function Panel({ title, children }: { title: string; children: ReactNode }) {
   )
 }
 
+/**
+ * Whether the run's token total covers every call: it is the sum of the
+ * stage totals, so it is partial when any stage's is.
+ */
+function tokensComplete(report: LoopReport): boolean {
+  return report.stageUsage.every((u) => u.complete)
+}
+
 /** Marks a value that covers only part of what it counts. */
 function PartialTag({ title }: { title: string }) {
   return (
@@ -1759,7 +1774,9 @@ function StageTimings({ report }: { report: LoopReport }) {
 function StatusPanel({ data }: { data: RunDetailResponse }) {
   return (
     <Panel title="いまの状態と次の手順">
-      <p className="mb-3 text-sm">{data.diagnosis.reason}</p>
+      <p className="mb-3 text-sm">
+        {diagnosisText(data.diagnosis, data.uncertainCall)}
+      </p>
       {data.diagnosis.kind === 'running' ? (
         <div className="mb-3">
           <LiveProgress live={data.live} />
@@ -1771,11 +1788,13 @@ function StatusPanel({ data }: { data: RunDetailResponse }) {
             {retryLabel(data.diagnosis.failure.retryable)}
           </Field>
           <Field label="人が確認すること">
-            <span className="font-ui">{data.diagnosis.failure.humanCheck}</span>
+            <span className="font-ui">
+              {humanCheckText(data.diagnosis.failure.kind)}
+            </span>
           </Field>
-          {data.diagnosis.failure.details.map((d) => (
-            <Field key={d} label="詳細">
-              {d}
+          {data.diagnosis.failure.details.map(detailField).map((d) => (
+            <Field key={d.value} label={d.label}>
+              {d.value}
             </Field>
           ))}
         </dl>
@@ -1805,7 +1824,12 @@ function SummaryPanel({ report: r }: { report: LoopReport }) {
         <Field label="所要時間">{fmtMs(s.leadTimeMs)}</Field>
         <Field label="工程の作業時間">{fmtMs(s.workMs)}</Field>
         <Field label="人の待ち時間">{fmtMs(s.humanWaitMs)}</Field>
-        <Field label="合計トークン">{fmtInt(s.totalTokens)}</Field>
+        <Field label="合計トークン">
+          {fmtInt(s.totalTokens)}
+          {s.totalTokens == null || tokensComplete(r) ? null : (
+            <PartialTag title="使用量が分かった呼び出しだけの合計" />
+          )}
+        </Field>
         <Field label="費用">{fmtUsd(s.costUsd)}</Field>
         <Field label="修正 / レビュー回数">
           {s.repairs} / {s.reviewRounds}

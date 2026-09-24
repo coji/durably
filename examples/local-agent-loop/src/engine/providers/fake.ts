@@ -27,8 +27,9 @@
  *   existing price table prices it. Without it usage stays null, as before.
  *
  * A run can carry a `FakeScenario` in its input (demo seeding only). Its
- * fields override the matching env knob for that run alone, and its queues
- * are consumed per run, so runs in one worker can behave differently.
+ * fields override the matching env knob for that run alone, so runs in one
+ * worker can behave differently. Its review verdicts are read by round and
+ * lens, not consumed, so a replay after a restart gives the same answers.
  */
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -62,8 +63,13 @@ export const FAKE_TRIAGE_KINDS = [
 export interface FakeScenario {
   /** Leading implement iterations that leave the bug in place. */
   failIterations?: number
+  /**
+   * Verdicts in pairs, one pair per review round: correctness, then
+   * edge-cases. Round r's lens l reads entry `2(r-1)+l`, so the verdict never
+   * depends on which lens answers first or on a replay after a restart.
+   */
   reviewSequence?: (typeof FAKE_REVIEW_DECISIONS)[number][]
-  /** NOTES text for successive review calls, consumed with the sequence. */
+  /** NOTES text for each review call, indexed like `reviewSequence`. */
   reviewNotes?: string[]
   triage?: (typeof FAKE_TRIAGE_KINDS)[number][]
   /** REASON text for a `routine` or `probe` triage answer. */
@@ -78,19 +84,17 @@ export interface FakeScenario {
 
 /** Per-run state shared by every fake provider instance of one run. */
 export class FakeRun {
-  private readonly reviews: string[]
-  private readonly notes: string[]
   private readonly triages: string[]
   constructor(readonly scenario: FakeScenario) {
-    this.reviews = [...(scenario.reviewSequence ?? [])]
-    this.notes = [...(scenario.reviewNotes ?? [])]
     this.triages = [...(scenario.triage ?? [])]
   }
-  nextReview(): string | undefined {
-    return this.scenario.reviewSequence ? this.reviews.shift() : undefined
-  }
-  nextNote(): string | undefined {
-    return this.notes.shift()
+  /** The scripted verdict and note for one lens in one round, if any. */
+  review(round: number, role: AgentRole): { decision?: string; note?: string } {
+    const at = 2 * (round - 1) + (role === 'review-b' ? 1 : 0)
+    return {
+      decision: this.scenario.reviewSequence?.[at],
+      note: this.scenario.reviewNotes?.[at],
+    }
   }
   nextTriage(): string | undefined {
     return this.scenario.triage ? this.triages.shift() : undefined
@@ -293,13 +297,14 @@ export class FakeProvider implements AgentProvider {
     if (options.role === 'review-b' && slow) {
       await sleep(parseInt(slow, 10), options.signal)
     }
+    const scripted = this.run?.review(options.reviewRound ?? 1, options.role)
     const decision =
-      this.run?.nextReview() ?? nextFromEnv('FAKE_REVIEW_SEQUENCE', 'pass')
+      scripted?.decision ?? nextFromEnv('FAKE_REVIEW_SEQUENCE', 'pass')
     if (decision === 'empty') return result('')
     if (decision === 'invalid')
       return result('looks good to me, ship it (no structured verdict)')
     const notes =
-      this.run?.nextNote() ??
+      scripted?.note ??
       `fake ${options.role ?? 'review'} deterministic ${decision}`
     return result(
       `PLAN: fake plan\nCOUNTEREXAMPLE: fake counterexample, none found\nDECISION: ${decision}\nNOTES: ${notes}`,

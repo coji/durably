@@ -20,19 +20,29 @@ import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 
 import { createAgentDurably, dbPath } from '../src/durably.js'
+import type { ReportSource } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
+import type {
+  FailureClassification,
+  FailureKind,
+} from '../src/engine/failure-reasons.js'
 import {
   liveElapsed,
   stageUsage,
   stageVisits,
   type AttemptRow,
+  type LoopReport,
   type UsageTotals,
 } from '../src/engine/report.js'
 import { checkpointPaths } from '../src/engine/runner.js'
+import type { DiagnosisKind } from '../src/engine/status.js'
+import { detailField, diagnosisText, humanCheckText } from '../src/ui/labels.js'
 import { pollEvery } from '../src/ui/poll.js'
 import {
   derivePipeline,
   deriveTrace,
+  finishedReportCache,
+  readOnce,
   runName,
   SUBJECT_RUN_NAME,
   type CompareResponse,
@@ -243,6 +253,26 @@ describe('pipeline and trace', () => {
     assert.equal(p.label, '工程: 実装 2回、検証 2回、検証で停止')
   })
 
+  it('(d) names a stage the run passed by, such as approval when auto-approved', () => {
+    const p = derivePipeline({
+      status: 'completed',
+      diagnosisKind: 'finished',
+      live: null,
+      report: report([
+        step('setup', 0, 1),
+        step('stage:0:code:agent', 1, 10),
+        step('stage:1:verify:acceptance', 11, 15),
+        step('stage:2:review:correctness', 15, 20),
+        step('stage:4:finish:deliver', 21, 22),
+      ]),
+    })
+    assert.equal(
+      stagesOf(p).find(([stage]) => stage === 'approve')?.[1],
+      'not-reached',
+    )
+    assert.equal(p.label, '工程: 承認は通らず、完了まで終わった')
+  })
+
   it('(c) shows triage only for a run with triage, and the running stage', () => {
     const attempts = [
       step('setup', 0, 1),
@@ -294,6 +324,7 @@ describe('pipeline and trace', () => {
         startedAt: iso(0),
         completedAt: null,
         leaseGeneration: 1,
+        leaseExpiresAt: null,
         ...run,
       },
       conclusion: null,
@@ -457,7 +488,7 @@ describe('pipeline and trace', () => {
       ]),
       [
         // The lost worker's attempt has no end: unknown, never `now`.
-        ['エージェント 試行 1', 'attempt', 'interrupted', 1, 1000, null],
+        ['エージェント 試行 1', 'attempt', 'lost', 1, 1000, null],
         ['エージェント 試行 2', 'attempt', 'done', 2, 20_000, 25_000],
         ['候補の記録 試行 1', 'attempt', 'done', 2, 25_000, 26_000],
       ],
@@ -490,6 +521,85 @@ describe('pipeline and trace', () => {
       leaseGeneration: 0,
     })
     assert.deepEqual(shape(queued.root), ['実行全体', 'idle', 0, 60_000, true])
+  })
+
+  it('trace (e) never shows an attempt under an expired lease as running', () => {
+    const attempts = [step('setup', 0, 1), step('stage:0:code:agent', 1, null)]
+    const live = traceOf(attempts, [], {
+      status: 'leased',
+      leaseExpiresAt: iso(90),
+    })
+    assert.equal(live.root.children[1]?.children[0]?.state, 'running')
+    // The same attempt once the lease ran out, as `diagnose` says
+    // lease-expired: no worker holds it and its end is unknown.
+    const lost = traceOf(attempts, [], {
+      status: 'leased',
+      leaseExpiresAt: iso(30),
+    })
+    const code = lost.root.children[1]?.children[0]
+    assert.deepEqual(shape(code as TraceNode), [
+      '実装',
+      'lost',
+      1000,
+      null,
+      false,
+    ])
+    assert.equal(lost.root.children[1]?.state, 'lost')
+    assert.equal(lost.root.state, 'lost')
+    // A reclaimed run back in the queue has no running attempt either.
+    const queued = traceOf(attempts, [], { status: 'pending' })
+    assert.equal(queued.root.children[1]?.children[0]?.state, 'lost')
+  })
+
+  it('trace (f) shows no earlier candidate or verdict on a repair still at work', () => {
+    const t = traceOf(
+      [
+        step('setup', 0, 1),
+        step('stage:0:code:agent', 1, 10),
+        step('stage:0:code:candidate', 10, 11),
+        step('stage:1:verify:acceptance', 11, 15),
+        step('stage:2:review:correctness', 15, 20),
+        step('stage:2:review:edge-cases', 15, 20),
+        step('stage:3:code:agent', 21, null),
+      ],
+      [],
+      { status: 'leased' },
+      {
+        // What the report holds for an open run: the previous round's.
+        candidate: { id: 'cand-1', branch: 'b1', commit: 'c1' },
+        reviews: [
+          { lens: 'correctness', decision: 'needsChanges', notes: 'x' },
+        ],
+        stepOutputs: {
+          'stage:0:code:candidate': {
+            id: 'cand-1',
+            branch: 'b1',
+            commit: 'c1',
+          },
+        },
+      },
+    )
+    const [first, second] = t.root.children.slice(1)
+    assert.equal(first?.children[0]?.candidate?.id, 'cand-1')
+    const repair = second?.children[0]
+    assert.equal(repair?.state, 'running')
+    assert.equal(repair?.candidate, null)
+    // The same for a review round still at work.
+    const reviewing = traceOf(
+      [
+        step('stage:0:code:agent', 1, 10),
+        step('stage:1:verify:acceptance', 11, 15),
+        step('stage:2:review:correctness', 15, null),
+      ],
+      [],
+      { status: 'leased' },
+      {
+        reviews: [
+          { lens: 'correctness', decision: 'needsChanges', notes: 'x' },
+        ],
+      },
+    )
+    assert.equal(reviewing.root.children[0]?.children[2]?.review, null)
   })
 
   it('trace (d) sums per-row tokens and cost to the report stage totals', () => {
@@ -577,6 +687,124 @@ describe('pipeline and trace', () => {
     assert.equal(row?.usage?.totalTokens, null)
     assert.equal(row?.usage?.costUsd, null)
     assert.equal(row?.usage?.complete, false)
+  })
+})
+
+describe('reads per poll', () => {
+  const counting = () => {
+    const calls: string[] = []
+    const read =
+      (name: string) =>
+      async (...args: unknown[]) => {
+        calls.push(`${name}:${args.join(':')}`)
+        return name === 'getRun' ? null : []
+      }
+    const db = {
+      getRun: read('getRun'),
+      getStepAttempts: read('getStepAttempts'),
+      getWaits: read('getWaits'),
+      storage: {
+        getSteps: read('getSteps'),
+        getCompletedStep: read('getCompletedStep'),
+      },
+    } as unknown as ReportSource
+    return { db, calls }
+  }
+
+  it('makes each read once per request, however many readers ask', async () => {
+    const { db, calls } = counting()
+    const src = readOnce(db)
+    await Promise.all([src.storage.getSteps('r1'), src.storage.getSteps('r1')])
+    await src.storage.getCompletedStep('r1', 'setup')
+    await src.storage.getCompletedStep('r1', 'setup')
+    await src.storage.getCompletedStep('r1', 'triage')
+    await src.getStepAttempts('r1')
+    await src.getStepAttempts('r2')
+    assert.deepEqual(calls, [
+      'getSteps:r1',
+      'getCompletedStep:r1:setup',
+      'getCompletedStep:r1:triage',
+      'getStepAttempts:r1',
+      'getStepAttempts:r2',
+    ])
+    // A new request reads again.
+    await readOnce(db).storage.getSteps('r1')
+    assert.equal(calls.filter((c) => c === 'getSteps:r1').length, 2)
+  })
+
+  it("builds a finished run's report once, and an open run's every time", async () => {
+    const built: string[] = []
+    const cache = finishedReportCache(async (_src, id) => {
+      built.push(id)
+      return { runId: id } as LoopReport
+    })
+    const { db } = counting()
+    const done = { id: 'done', status: 'completed' as const, updatedAt: 't1' }
+    const open = { id: 'open', status: 'leased' as const, updatedAt: 't1' }
+    for (let i = 0; i < 3; i++) {
+      await cache.get(db, done)
+      await cache.get(db, open)
+    }
+    assert.deepEqual(built, ['done', 'open', 'open', 'open'])
+    assert.equal((await cache.get(db, done)).fresh, false)
+    // A changed row, or a run deleted and seen again, is built anew.
+    await cache.get(db, { ...done, updatedAt: 't2' })
+    cache.keep([])
+    await cache.get(db, { ...done, updatedAt: 't2' })
+    assert.deepEqual(built.slice(4), ['done', 'done'])
+  })
+})
+
+describe('diagnosis wording on the page', () => {
+  const kinds: DiagnosisKind[] = [
+    'pending',
+    'running',
+    'lease-expired',
+    'approval',
+    'decided',
+    'other-wait',
+    'finished',
+  ]
+  const failures: FailureKind[] = [
+    'verification-failed',
+    'review-cap-reached',
+    'uncertain-invocation',
+    'cancelled',
+    'cancelled-publish',
+    'unclassified',
+  ]
+  // What the brief allows in a sentence: Japanese, and an option to type.
+  const plain = (text: string) =>
+    text.replace(/--max-iterations/g, '').match(/[A-Za-z()（）]/g)
+
+  it('says every state and stop in Japanese, without IDs or asides', () => {
+    for (const kind of kinds)
+      for (const uncertain of [false, true]) {
+        const text = diagnosisText({ kind }, uncertain)
+        assert.ok(text.length > 0, kind)
+        assert.equal(plain(text), null, `${kind}: ${text}`)
+      }
+    for (const kind of failures) {
+      const failure = { kind } as FailureClassification
+      const text = diagnosisText({ kind: 'stopped', failure })
+      assert.equal(plain(text), null, `${kind}: ${text}`)
+      assert.equal(plain(humanCheckText(kind)), null, kind)
+    }
+    assert.notEqual(
+      diagnosisText({ kind: 'lease-expired' }, true),
+      diagnosisText({ kind: 'lease-expired' }, false),
+    )
+  })
+
+  it('shows a failure detail as a label and its value', () => {
+    assert.deepEqual(
+      detailField('start checkpoint without completion: /tmp/a.json'),
+      { label: '完了の記録がないチェックポイント', value: '/tmp/a.json' },
+    )
+    assert.deepEqual(detailField('error: boom'), {
+      label: 'エラー',
+      value: 'boom',
+    })
   })
 })
 
@@ -725,6 +953,28 @@ describe('demo ui --port', { timeout: 60000 }, () => {
     const bare = await demo(home, ['ui', '--port'])
     assert.notEqual(bare.code, 0)
     assert.equal(existsSync(join(home, '.local')), false)
+  })
+})
+
+describe('demo ui shutdown', { timeout: 60000 }, () => {
+  it('stops on Ctrl-C at once, even with a live-reload socket open', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'ui-stop-'))
+    const port = await freePort()
+    const ui = await startUi(home, port)
+    // What an open tab holds: Vite's live-reload WebSocket.
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/`, 'vite-hmr')
+    await new Promise<void>((resolve, reject) => {
+      socket.addEventListener('open', () => resolve())
+      socket.addEventListener('error', () => reject(new Error('no socket')))
+    })
+    const exited = new Promise<number>((resolve) =>
+      ui.child.once('exit', () => resolve(Date.now())),
+    )
+    const sent = Date.now()
+    ui.child.kill('SIGINT')
+    const elapsed = (await exited) - sent
+    // Unfixed, it waited until the tab closed; now it exits in seconds.
+    assert.ok(elapsed < 5000, `took ${elapsed} ms`)
   })
 })
 
