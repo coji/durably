@@ -25,10 +25,12 @@ import type {
 import type { DiagnosisKind } from '../engine/status'
 import { TERMINAL_STATUSES } from '../engine/terminal'
 import {
+  commandText,
   detailField,
   diagnosisText,
   humanCheckText,
   lensName,
+  reviewDecision,
   roleName,
   stageName,
   triageName,
@@ -179,12 +181,6 @@ function retryLabel(retryable: boolean): string {
 }
 
 /** The command itself, without the CLI's trailing `  # note`. */
-function splitCommand(line: string): { command: string; note: string | null } {
-  const at = line.indexOf('  # ')
-  return at < 0
-    ? { command: line, note: null }
-    : { command: line.slice(0, at), note: line.slice(at + 4) }
-}
 
 // ---------------------------------------------------------------- state labels
 
@@ -349,11 +345,11 @@ function CopyAnnouncer({ copied }: { copied: { label: string } | null }) {
 function Commands({ lines }: { lines: string[] }) {
   const { copied, copy } = useCopy()
   if (lines.length === 0) return null
-  const parsed = lines.map(splitCommand)
+  const commands = lines.map(commandText)
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap gap-2">
-        {parsed.map(({ command }) => (
+        {commands.map((command) => (
           <CopyButton
             key={command}
             text={command}
@@ -368,12 +364,11 @@ function Commands({ lines }: { lines: string[] }) {
           コマンド全文
         </summary>
         <ul className="mt-1 flex flex-col gap-2">
-          {parsed.map(({ command, note }) => (
+          {commands.map((command) => (
             <li key={command}>
               <code className="bg-sunken font-code text-fg block overflow-x-auto rounded-sm px-2 py-1 text-sm whitespace-pre">
                 {command}
               </code>
-              {note ? <p className="text-fg-2 mt-1"># {note}</p> : null}
             </li>
           ))}
         </ul>
@@ -1211,11 +1206,6 @@ function UsageFields({
   )
 }
 
-const REVIEW_LABEL: Record<string, string> = {
-  pass: '通過',
-  needsChanges: '要修正',
-}
-
 /** A time from the run's start; the exact time on hover. */
 function Offset({ ms, iso }: { ms: number | null; iso: string | null }) {
   return (
@@ -1351,8 +1341,11 @@ function ReviewBlock({ node: n }: { node: TraceNode }) {
       <div className="flex flex-col gap-1">
         <p className="text-sm">
           判定{' '}
-          <span className="font-medium" title={n.review.decision}>
-            {REVIEW_LABEL[n.review.decision] ?? n.review.decision}
+          <span
+            className="font-medium"
+            title={reviewDecision(n.review.decision).title}
+          >
+            {reviewDecision(n.review.decision).label}
           </span>
         </p>
         <p className="bg-sunken max-h-48 overflow-auto rounded-md px-3 py-2 text-sm whitespace-pre-wrap">
@@ -1926,13 +1919,12 @@ function ReviewsPanel({ report: r }: { report: LoopReport }) {
             <li key={review.lens} className="flex flex-col gap-1">
               <p className="text-sm">
                 <span className="font-medium">{lensName(review.lens)}</span>
-                <span className="text-fg-2" title={review.decision}>
+                <span
+                  className="text-fg-2"
+                  title={reviewDecision(review.decision).title}
+                >
                   {' · '}
-                  {review.decision === 'pass'
-                    ? '通過'
-                    : review.decision === 'needsChanges'
-                      ? '要修正'
-                      : review.decision}
+                  {reviewDecision(review.decision).label}
                 </span>
               </p>
               <p className="bg-sunken rounded-md px-3 py-2 text-sm whitespace-pre-wrap">

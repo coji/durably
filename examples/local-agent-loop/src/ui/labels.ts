@@ -111,8 +111,13 @@ const FAILURE_TEXT: Record<FailureKind, { reason: string; check: string }> = {
   },
 }
 
+const DECIDED_TEXT: Record<string, string> = {
+  approved: '承認を記録済みです。ワーカーが実行を再開します。',
+  rejected: '却下を記録済みです。ワーカーが実行を再開します。',
+}
+
 export function diagnosisText(
-  d: Pick<Diagnosis, 'kind' | 'failure'>,
+  d: Pick<Diagnosis, 'kind' | 'failure' | 'decision'>,
   /** A lease-expired run left an agent call without a completion. */
   uncertainCall = false,
 ): string {
@@ -122,7 +127,34 @@ export function diagnosisText(
       : FAILURE_TEXT.unclassified.reason
   if (d.kind === 'lease-expired' && uncertainCall)
     return '担当のワーカーが止まったか、連絡が途切れました。完了の記録がないエージェント呼び出しが残っているので、ワーカーを動かすとそこで止まり、人の確認を待ちます。'
+  if (d.kind === 'decided' && d.decision && DECIDED_TEXT[d.decision])
+    return DECIDED_TEXT[d.decision]
   return DIAGNOSIS_TEXT[d.kind]
+}
+
+const REVIEW_DECISION: Record<string, { label: string; title: string }> = {
+  pass: { label: '通過', title: 'レビューは修正なしで通しました' },
+  needsChanges: { label: '要修正', title: 'レビューは修正を求めました' },
+}
+
+/**
+ * A review verdict's word and hover text. An unknown verdict is data, shown
+ * as stored.
+ */
+export function reviewDecision(decision: string): {
+  label: string
+  title: string
+} {
+  return REVIEW_DECISION[decision] ?? { label: decision, title: decision }
+}
+
+/**
+ * The command itself, without the CLI's English `  # …` comment. The page
+ * explains each command in Japanese on its button and in the reason text.
+ */
+export function commandText(line: string): string {
+  const at = line.indexOf('  # ')
+  return at < 0 ? line : line.slice(0, at)
 }
 
 export function humanCheckText(kind: FailureKind): string {

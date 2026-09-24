@@ -11,7 +11,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { request } from 'node:http'
-import { createServer } from 'node:net'
+import { connect, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -36,7 +36,13 @@ import {
 } from '../src/engine/report.js'
 import { checkpointPaths } from '../src/engine/runner.js'
 import type { DiagnosisKind } from '../src/engine/status.js'
-import { detailField, diagnosisText, humanCheckText } from '../src/ui/labels.js'
+import {
+  commandText,
+  detailField,
+  diagnosisText,
+  humanCheckText,
+  reviewDecision,
+} from '../src/ui/labels.js'
 import { pollEvery } from '../src/ui/poll.js'
 import {
   derivePipeline,
@@ -50,6 +56,7 @@ import {
   type RunsResponse,
   type TraceInput,
   type TraceNode,
+  startUiServer,
 } from '../src/ui/server.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -324,9 +331,10 @@ describe('pipeline and trace', () => {
         startedAt: iso(0),
         completedAt: null,
         leaseGeneration: 1,
-        leaseExpiresAt: null,
         ...run,
       },
+      // A leased run is running unless a test says its lease ran out.
+      diagnosisKind: run.status === 'leased' ? 'running' : 'pending',
       conclusion: null,
       attempts,
       waits,
@@ -525,17 +533,16 @@ describe('pipeline and trace', () => {
 
   it('trace (e) never shows an attempt under an expired lease as running', () => {
     const attempts = [step('setup', 0, 1), step('stage:0:code:agent', 1, null)]
-    const live = traceOf(attempts, [], {
-      status: 'leased',
-      leaseExpiresAt: iso(90),
-    })
+    const live = traceOf(attempts, [], { status: 'leased' })
     assert.equal(live.root.children[1]?.children[0]?.state, 'running')
-    // The same attempt once the lease ran out, as `diagnose` says
-    // lease-expired: no worker holds it and its end is unknown.
-    const lost = traceOf(attempts, [], {
-      status: 'leased',
-      leaseExpiresAt: iso(30),
-    })
+    // The same attempt once `diagnose` says the lease ran out: no worker
+    // holds it and its end is unknown.
+    const lost = traceOf(
+      attempts,
+      [],
+      { status: 'leased' },
+      { diagnosisKind: 'lease-expired' },
+    )
     const code = lost.root.children[1]?.children[0]
     assert.deepEqual(shape(code as TraceNode), [
       '実装',
@@ -600,6 +607,64 @@ describe('pipeline and trace', () => {
       },
     )
     assert.equal(reviewing.root.children[0]?.children[2]?.review, null)
+    // The repair's agent step is done but its candidate step has not begun:
+    // the entry has sealed nothing, so neither the report's candidate nor the
+    // earlier iteration's is shown on it.
+    const unsealed = traceOf(
+      [
+        step('stage:0:code:agent', 1, 10),
+        step('stage:0:code:candidate', 10, 11),
+        step('stage:1:verify:acceptance', 11, 15),
+        step('stage:2:code:agent', 15, 30),
+      ],
+      [],
+      { status: 'leased' },
+      {
+        candidate: { id: 'cand-1', branch: 'b1', commit: 'c1' },
+        stepOutputs: {
+          'stage:0:code:candidate': {
+            id: 'cand-1',
+            branch: 'b1',
+            commit: 'c1',
+          },
+        },
+      },
+    )
+    const [before, after] = unsealed.root.children
+    assert.equal(before?.children[0]?.candidate?.id, 'cand-1')
+    assert.equal(after?.children[0]?.state, 'done')
+    assert.equal(after?.children[0]?.candidate, null)
+    // Once its own candidate step completes, the entry shows that candidate.
+    const sealedNow = traceOf(
+      [
+        step('stage:0:code:agent', 1, 10),
+        step('stage:0:code:candidate', 10, 11),
+        step('stage:1:verify:acceptance', 11, 15),
+        step('stage:2:code:agent', 15, 30),
+        step('stage:2:code:candidate', 30, 31),
+      ],
+      [],
+      { status: 'leased' },
+      {
+        candidate: { id: 'cand-2', branch: 'b2', commit: 'c2' },
+        stepOutputs: {
+          'stage:0:code:candidate': {
+            id: 'cand-1',
+            branch: 'b1',
+            commit: 'c1',
+          },
+          'stage:2:code:candidate': {
+            id: 'cand-2',
+            branch: 'b2',
+            commit: 'c2',
+          },
+        },
+      },
+    )
+    assert.equal(
+      sealedNow.root.children[1]?.children[0]?.candidate?.id,
+      'cand-2',
+    )
   })
 
   it('trace (d) sums per-row tokens and cost to the report stage totals', () => {
@@ -732,7 +797,7 @@ describe('reads per poll', () => {
     assert.equal(calls.filter((c) => c === 'getSteps:r1').length, 2)
   })
 
-  it("builds a finished run's report once, and an open run's every time", async () => {
+  it("builds a completed run's report once, and any other run's every time", async () => {
     const built: string[] = []
     const cache = finishedReportCache(async (_src, id) => {
       built.push(id)
@@ -752,6 +817,15 @@ describe('reads per poll', () => {
     cache.keep([])
     await cache.get(db, { ...done, updatedAt: 't2' })
     assert.deepEqual(built.slice(4), ['done', 'done'])
+    // A failed or cancelled run's failure reads checkpoint files, which can
+    // change after it stops, so its report is never served from the cache.
+    built.length = 0
+    for (const status of ['failed', 'cancelled'] as const) {
+      const stopped = { id: status, status, updatedAt: 't1' }
+      await cache.get(db, stopped)
+      assert.equal((await cache.get(db, stopped)).fresh, true)
+    }
+    assert.deepEqual(built, ['failed', 'failed', 'cancelled', 'cancelled'])
   })
 })
 
@@ -794,6 +868,34 @@ describe('diagnosis wording on the page', () => {
       diagnosisText({ kind: 'lease-expired' }, true),
       diagnosisText({ kind: 'lease-expired' }, false),
     )
+  })
+
+  it('says which decision a decided run recorded', () => {
+    assert.match(
+      diagnosisText({ kind: 'decided', decision: 'approved' }),
+      /^承認を記録済み/,
+    )
+    assert.match(
+      diagnosisText({ kind: 'decided', decision: 'rejected' }),
+      /^却下を記録済み/,
+    )
+  })
+
+  it('shows a command without its English comment, and verdicts in Japanese', () => {
+    for (const line of [
+      'pnpm demo worker  # if none is running',
+      'pnpm demo report --run r1  # read the reviews first',
+      'pnpm demo status --run r1',
+    ]) {
+      const shown = commandText(line)
+      assert.doesNotMatch(shown, / # /, shown)
+      assert.equal(shown, line.split('  # ')[0])
+    }
+    for (const decision of ['pass', 'needsChanges']) {
+      const { label, title } = reviewDecision(decision)
+      assert.equal(plain(label), null, label)
+      assert.equal(plain(title), null, title)
+    }
   })
 
   it('shows a failure detail as a label and its value', () => {
@@ -957,6 +1059,49 @@ describe('demo ui --port', { timeout: 60000 }, () => {
 })
 
 describe('demo ui shutdown', { timeout: 60000 }, () => {
+  it('closes the server with a live-reload socket open, without the forced exit', async () => {
+    const port = await freePort()
+    const ui = await startUiServer({ port })
+    // What an open tab holds: Vite's live-reload socket, which
+    // `closeAllConnections` does not reach. Unfixed, `close()` waited on it
+    // until the tab closed.
+    const tab = connect(port, '127.0.0.1')
+    tab.write(
+      [
+        'GET / HTTP/1.1',
+        `Host: 127.0.0.1:${port}`,
+        'Connection: Upgrade',
+        'Upgrade: websocket',
+        'Sec-WebSocket-Version: 13',
+        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+        'Sec-WebSocket-Protocol: vite-hmr',
+        '',
+        '',
+      ].join('\r\n'),
+    )
+    await new Promise<void>((resolve, reject) => {
+      tab.once('data', (d) =>
+        String(d).startsWith('HTTP/1.1 101')
+          ? resolve()
+          : reject(new Error(String(d))),
+      )
+      tab.once('error', reject)
+    })
+    tab.on('error', () => {})
+    // Well under the CLI's 2 s forced exit: `close()` itself must finish.
+    let timer: NodeJS.Timeout | undefined
+    const outcome = await Promise.race([
+      ui.close().then(() => 'closed'),
+      new Promise((r) => {
+        // sleep-ok(guard): a deadline that fails the test when close() hangs
+        timer = setTimeout(() => r('hung'), 1500)
+      }),
+    ])
+    clearTimeout(timer)
+    tab.destroy()
+    assert.equal(outcome, 'closed')
+  })
+
   it('stops on Ctrl-C at once, even with a live-reload socket open', async () => {
     const home = await mkdtemp(join(tmpdir(), 'ui-stop-'))
     const port = await freePort()
@@ -973,8 +1118,9 @@ describe('demo ui shutdown', { timeout: 60000 }, () => {
     const sent = Date.now()
     ui.child.kill('SIGINT')
     const elapsed = (await exited) - sent
-    // Unfixed, it waited until the tab closed; now it exits in seconds.
-    assert.ok(elapsed < 5000, `took ${elapsed} ms`)
+    // Unfixed, it waited until the tab closed. Under the CLI's 2 s forced
+    // exit, so the exit comes from the close itself.
+    assert.ok(elapsed < 1900, `took ${elapsed} ms`)
   })
 })
 
@@ -1169,6 +1315,8 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
         assert.equal(row(name).diagnosis.kind, kind, name)
         assert.equal(row(name).needsHuman, human, name)
       }
+      // The page can say which decision was recorded.
+      assert.equal(row('decided').diagnosis.decision, 'rejected')
       assert.equal(row('review').diagnosis.failure?.kind, 'review-cap-reached')
       assert.equal(
         row('verification').diagnosis.failure?.kind,

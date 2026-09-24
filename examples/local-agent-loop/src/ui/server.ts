@@ -364,8 +364,9 @@ export interface TraceInput {
     startedAt: string | null
     completedAt: string | null
     leaseGeneration: number
-    leaseExpiresAt: string | null
   }
+  /** The request's diagnosis: only `running` has a live lease. */
+  diagnosisKind: DiagnosisKind
   conclusion: string | null
   attempts: AttemptRow[]
   waits: Pick<
@@ -378,7 +379,10 @@ export interface TraceInput {
     | 'inputWaitMs'
     | 'executionSlotWaitMs'
   >[]
-  /** The report's last review round and last sealed candidate. */
+  /**
+   * The report's last review round and last sealed candidate. The candidate
+   * is shown only on the code entry whose own candidate step completed.
+   */
   reviews: ReportReview[]
   candidate: ReportCandidate | null
   /** Outputs of the run's completed steps, by step name. */
@@ -471,18 +475,16 @@ const iso = (ms: number | null) =>
  * The run as a span tree: run → iteration (one per entry into code) → stage
  * entry → the entry's attempts, listed only when a step was retried. Stage
  * entries before the first code entry (setup, triage) sit under the run.
- * Only the current lease generation of a leased run whose lease has not
- * expired can still be running; any other missing end stays unknown rather
- * than being drawn to `now`.
+ * Only the current lease generation of a run the diagnosis calls `running`
+ * can still be running; any other missing end stays unknown rather than
+ * being drawn to `now`.
  * Each row's usage is `usageOf` its attempts, the report's own sum.
  */
 export function deriveTrace(input: TraceInput): Trace {
   const { run, now } = input
   const terminal = TERMINAL_STATUSES.includes(run.status)
-  const expires = run.leaseExpiresAt ? Date.parse(run.leaseExpiresAt) : NaN
-  // As `diagnose` decides: an expired lease is not a running worker.
-  const leaseLive =
-    run.status === 'leased' && !(Number.isFinite(expires) && expires < now)
+  // `diagnose` decides whether the lease is live; it is not decided twice.
+  const leaseLive = input.diagnosisKind === 'running'
   const created = Date.parse(run.createdAt)
   const firstStart = Math.min(
     ...input.attempts
@@ -693,8 +695,8 @@ export function deriveTrace(input: TraceInput): Trace {
     const lens = e.lens
     const reviewStep =
       e.seq === null || lens === null ? null : `stage:${e.seq}:review:${lens}`
-    // The report's last verdicts and candidate belong to the last entry only
-    // once it is done: an entry still at work has sealed nothing yet.
+    // The report's last verdicts belong to the last entry only once it is
+    // done: an entry still at work has decided nothing yet.
     const lastDone = state === 'done'
     const review =
       e.stage !== 'review'
@@ -703,11 +705,17 @@ export function deriveTrace(input: TraceInput): Trace {
           (lastDone && e.seq === lastReviewSeq
             ? (input.reviews.find((r) => r.lens === lens) ?? null)
             : null))
+    // Only the candidate this entry's own candidate step sealed: between its
+    // agent step and that step, the entry has sealed nothing yet.
+    const candidateStep = `stage:${e.seq}:code:candidate`
+    const sealed = sorted.some(
+      (a) => a.stepName === candidateStep && a.status === 'completed',
+    )
     const candidate =
-      e.stage !== 'code'
+      e.stage !== 'code' || !sealed
         ? null
-        : (asCandidate(input.stepOutputs[`stage:${e.seq}:code:candidate`]) ??
-          (lastDone && e.seq === lastCodeSeq ? input.candidate : null))
+        : (asCandidate(input.stepOutputs[candidateStep]) ??
+          (e.seq === lastCodeSeq ? input.candidate : null))
     return node({
       id: `entry:${e.key}`,
       kind: 'entry',
@@ -861,9 +869,11 @@ export function readOnce(db: ReportSource, known: Run[] = []): ReportSource {
 }
 
 /**
- * Reports by run. A finished run never changes again, so its report is built
- * once and reused while the run's row is unchanged; an open run's is built
- * on every call. `fresh` says the report was built by this call.
+ * Reports by run. A completed run never changes again, so its report is
+ * built once and reused while the run's row is unchanged. Every other run's
+ * is built on every call: a failed or cancelled run's failure also reads
+ * checkpoint files, which can still change after the run stops. `fresh`
+ * says the report was built by this call.
  */
 export function finishedReportCache(build = buildReport) {
   const finished = new Map<string, { updatedAt: string; report: LoopReport }>()
@@ -876,7 +886,7 @@ export function finishedReportCache(build = buildReport) {
       if (hit?.updatedAt === run.updatedAt)
         return { report: hit.report, fresh: false }
       const report = await build(src, run.id)
-      if (TERMINAL_STATUSES.includes(run.status))
+      if (run.status === 'completed')
         finished.set(run.id, { updatedAt: run.updatedAt, report })
       return { report, fresh: true }
     },
@@ -995,6 +1005,7 @@ function createUiApi() {
       ...seen,
       trace: deriveTrace({
         run: found,
+        diagnosisKind: seen.diagnosis.kind,
         conclusion: report.summary.conclusion,
         attempts: report.attempts,
         waits: report.waits,

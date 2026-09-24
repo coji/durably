@@ -48,6 +48,8 @@ export interface Diagnosis {
   next: string[]
   /** Set only for a stopped run. */
   failure?: FailureClassification
+  /** Set only for a decided run: the decision its approval wait recorded. */
+  decision?: string
   /** A non-forcing worktree removal, for a finished repo run's worktree. */
   cleanup: string | null
 }
@@ -163,6 +165,7 @@ export async function diagnoseRun(
             ?.decision
           return {
             kind: 'decided',
+            ...(typeof decision === 'string' ? { decision } : {}),
             reason: `the decision on candidate ${candidateId} is recorded (${typeof decision === 'string' ? decision : wait.outcome}); a worker resumes the run`,
             next: [`${worker}  # if none is running`, show],
             cleanup,
