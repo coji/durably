@@ -50,6 +50,7 @@ import {
   type DiagnosisKind,
 } from '../engine/status.js'
 import { TERMINAL_STATUSES } from '../engine/terminal.js'
+import { lensName, stageName, stepPartName } from './labels.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -136,7 +137,7 @@ export function runName(input: unknown): string {
           .split('\n')
           .map((l) => l.trim().replace(/^#+\s*/, ''))
           .find((l) => l.length > 0) ?? '')
-  if (line.length === 0) return 'タスク（名前なし）'
+  if (line.length === 0) return '名前のないタスク'
   return line.length > NAME_MAX ? `${line.slice(0, NAME_MAX - 1)}…` : line
 }
 
@@ -253,12 +254,13 @@ export function derivePipeline(input: PipelineInput): Pipeline {
 
   const parts = stages
     .filter((s) => s.count > 1)
-    .map((s) => `${s.stage} ${s.count}回`)
-  if (at === null) parts.push('finish まで完了')
-  else if (atState === 'stopped') parts.push(`${at} で停止`)
-  else if (atState === 'running') parts.push(`いまは ${at} を実行中`)
-  else if (atState === 'waiting') parts.push(`いまは ${at} で人待ち`)
-  else parts.push(`いまは ${at}`)
+    .map((s) => `${stageName(s.stage)} ${s.count}回`)
+  const name = at === null ? '' : stageName(at)
+  if (at === null) parts.push('完了まで終わった')
+  else if (atState === 'stopped') parts.push(`${name}で停止`)
+  else if (atState === 'running') parts.push(`いまは${name}を実行中`)
+  else if (atState === 'waiting') parts.push(`いまは${name}で人待ち`)
+  else parts.push(`いまは${name}`)
   return { stages, label: `工程: ${parts.join('、')}` }
 }
 
@@ -299,7 +301,7 @@ export interface TraceNode {
   /** Stable across refreshes, so expansion and selection survive a poll. */
   id: string
   kind: 'run' | 'iteration' | 'entry' | 'attempt'
-  /** `1回目`, `code`, `review:correctness`, `試行 2`, … */
+  /** `1回目`, `実装`, `正しさのレビュー`, `試行 2`, … */
   label: string
   /** The stage of an entry or attempt; null for the run and iterations. */
   stage: string | null
@@ -370,20 +372,42 @@ export interface TraceInput {
 }
 
 /** The stage entry a stored step or wait name belongs to. */
-function entryOf(
-  name: string,
-): { key: string; stage: string; label: string; seq: number | null } | null {
+function entryOf(name: string): {
+  key: string
+  stage: string
+  label: string
+  lens: string | null
+  seq: number | null
+} | null {
   if (name === 'setup' || name === 'triage')
-    return { key: name, stage: name, label: name, seq: null }
+    return {
+      key: name,
+      stage: name,
+      label: stageName(name),
+      lens: null,
+      seq: null,
+    }
   const [kind, s, stage, sub] = name.split(':')
   if (kind !== 'stage' || !s || !stage) return null
   const seq = Number(s)
   if (!Number.isInteger(seq)) return null
   if (stage === 'review') {
     if (sub !== 'correctness' && sub !== 'edge-cases') return null
-    return { key: `review:${sub}#${seq}`, stage, label: `review:${sub}`, seq }
+    return {
+      key: `review:${sub}#${seq}`,
+      stage,
+      label: lensName(sub),
+      lens: sub,
+      seq,
+    }
   }
-  return { key: `${stage}#${seq}`, stage, label: stage, seq }
+  return {
+    key: `${stage}#${seq}`,
+    stage,
+    label: stageName(stage),
+    lens: null,
+    seq,
+  }
 }
 
 function checkpointOf(a: AttemptRow, open: boolean): TraceCheckpoint | null {
@@ -502,6 +526,7 @@ export function deriveTrace(input: TraceInput): Trace {
     key: string
     stage: string
     label: string
+    lens: string | null
     seq: number | null
     attempts: AttemptRow[]
     wait: TraceInput['waits'][number] | null
@@ -628,7 +653,9 @@ export function deriveTrace(input: TraceInput): Trace {
           return node({
             id: `attempt:${a.attemptId}`,
             kind: 'attempt',
-            label: multiStep ? `${suffix(a)} 試行 ${n}` : `試行 ${n}`,
+            label: multiStep
+              ? `${stepPartName(suffix(a) ?? '')} 試行 ${n}`
+              : `試行 ${n}`,
             stage: e.stage,
             iteration: at,
             state: stateOf(a),
@@ -645,8 +672,9 @@ export function deriveTrace(input: TraceInput): Trace {
         })
       : []
     const checked = [...sorted].reverse().find((a) => a.measurement)
-    const lens = e.label.split(':')[1]
-    const reviewStep = e.seq === null ? null : `stage:${e.seq}:review:${lens}`
+    const lens = e.lens
+    const reviewStep =
+      e.seq === null || lens === null ? null : `stage:${e.seq}:review:${lens}`
     const review =
       e.stage !== 'review'
         ? null
@@ -737,7 +765,7 @@ export function deriveTrace(input: TraceInput): Trace {
   const root = node({
     id: 'run',
     kind: 'run',
-    label: 'run 全体',
+    label: '実行全体',
     stage: null,
     iteration: null,
     state: terminal

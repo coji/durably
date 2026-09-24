@@ -215,7 +215,7 @@ describe('pipeline and trace', () => {
       ['approve', 'waiting', 1],
       ['finish', 'not-reached', 0],
     ])
-    assert.equal(p.label, '工程: code 2回、verify 2回、いまは approve で人待ち')
+    assert.equal(p.label, '工程: 実装 2回、検証 2回、いまは承認で人待ち')
   })
 
   it('(b) stops a verification-failed run at verify', () => {
@@ -240,7 +240,7 @@ describe('pipeline and trace', () => {
       ['approve', 'not-reached', 0],
       ['finish', 'not-reached', 0],
     ])
-    assert.equal(p.label, '工程: code 2回、verify 2回、verify で停止')
+    assert.equal(p.label, '工程: 実装 2回、検証 2回、検証で停止')
   })
 
   it('(c) shows triage only for a run with triage, and the running stage', () => {
@@ -268,7 +268,7 @@ describe('pipeline and trace', () => {
       ['approve', 'not-reached', 0],
       ['finish', 'not-reached', 0],
     ])
-    assert.equal(p.label, '工程: いまは code を実行中')
+    assert.equal(p.label, '工程: いまは実装を実行中')
     // A triage profile alone is enough to show the stage, not yet reached.
     const queued = derivePipeline({
       status: 'pending',
@@ -332,13 +332,13 @@ describe('pipeline and trace', () => {
     assert.equal(t.spanMs, 60_000)
     assert.equal(t.open, true)
     assert.deepEqual(shape(t.root), [
-      'run 全体',
+      '実行全体',
       'waiting',
       0,
       60_000,
       true,
       [
-        ['setup', 'done', 0, 1000, false],
+        ['準備', 'done', 0, 1000, false],
         [
           '1回目',
           'done',
@@ -346,8 +346,8 @@ describe('pipeline and trace', () => {
           15_000,
           false,
           [
-            ['code', 'done', 1000, 11_000, false],
-            ['verify', 'done', 11_000, 15_000, false],
+            ['実装', 'done', 1000, 11_000, false],
+            ['検証', 'done', 11_000, 15_000, false],
           ],
         ],
         [
@@ -357,11 +357,11 @@ describe('pipeline and trace', () => {
           60_000,
           true,
           [
-            ['code', 'done', 15_000, 31_000, false],
-            ['verify', 'done', 31_000, 35_000, false],
-            ['review:correctness', 'done', 35_000, 50_000, false],
-            ['review:edge-cases', 'done', 35_000, 45_000, false],
-            ['approve', 'waiting', 51_000, 60_000, true],
+            ['実装', 'done', 15_000, 31_000, false],
+            ['検証', 'done', 31_000, 35_000, false],
+            ['正しさのレビュー', 'done', 35_000, 50_000, false],
+            ['境界条件のレビュー', 'done', 35_000, 45_000, false],
+            ['承認', 'waiting', 51_000, 60_000, true],
           ],
         ],
       ],
@@ -420,9 +420,9 @@ describe('pipeline and trace', () => {
     assert.deepEqual(
       last?.children.map((c) => [c.label, c.state, c.checkpoint]),
       [
-        ['code', 'done', null],
-        ['verify', 'failed', 'completed'],
-        ['stop', 'done', null],
+        ['実装', 'done', null],
+        ['検証', 'failed', 'completed'],
+        ['停止', 'done', null],
       ],
     )
     assert.equal(last?.state, 'failed')
@@ -457,9 +457,9 @@ describe('pipeline and trace', () => {
       ]),
       [
         // The lost worker's attempt has no end: unknown, never `now`.
-        ['agent 試行 1', 'attempt', 'interrupted', 1, 1000, null],
-        ['agent 試行 2', 'attempt', 'done', 2, 20_000, 25_000],
-        ['candidate 試行 1', 'attempt', 'done', 2, 25_000, 26_000],
+        ['エージェント 試行 1', 'attempt', 'interrupted', 1, 1000, null],
+        ['エージェント 試行 2', 'attempt', 'done', 2, 20_000, 25_000],
+        ['候補の記録 試行 1', 'attempt', 'done', 2, 25_000, 26_000],
       ],
     )
     assert.deepEqual([code.startMs, code.endMs], [1000, 26_000])
@@ -477,7 +477,7 @@ describe('pipeline and trace', () => {
       { status: 'failed', completedAt: iso(5) },
     )
     assert.deepEqual(shape(done.root.children[0]?.children[0] as TraceNode), [
-      'code',
+      '実装',
       'interrupted',
       1000,
       null,
@@ -489,7 +489,7 @@ describe('pipeline and trace', () => {
       startedAt: null,
       leaseGeneration: 0,
     })
-    assert.deepEqual(shape(queued.root), ['run 全体', 'idle', 0, 60_000, true])
+    assert.deepEqual(shape(queued.root), ['実行全体', 'idle', 0, 60_000, true])
   })
 
   it('trace (d) sums per-row tokens and cost to the report stage totals', () => {

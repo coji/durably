@@ -24,6 +24,7 @@ import type {
 } from '../engine/report'
 import type { DiagnosisKind } from '../engine/status'
 import { TERMINAL_STATUSES } from '../engine/terminal'
+import { lensName, roleName, stageName, triageName } from './labels'
 import { pollJson } from './poll'
 import type {
   CompareResponse,
@@ -161,7 +162,7 @@ const timeFmt = new Intl.DateTimeFormat('ja-JP', {
 })
 
 const COST_NOTE =
-  '費用は記録した token 数を API 料金で換算した参考値で、実際の請求額ではありません'
+  '費用は記録したトークン数を API 料金で換算した参考値で、実際の請求額ではありません'
 
 function retryLabel(retryable: boolean): string {
   return retryable
@@ -186,9 +187,9 @@ const KIND_LABEL: Record<DiagnosisKind, { label: string; tone: Tone }> = {
   'other-wait': { label: '入力待ち', tone: 'waiting' },
   stopped: { label: '停止', tone: 'failed' },
   running: { label: '実行中', tone: 'running' },
-  pending: { label: 'worker 待ち', tone: 'none' },
-  'lease-expired': { label: 'lease 期限切れ', tone: 'none' },
-  decided: { label: '判断記録済み・再開待ち', tone: 'none' },
+  pending: { label: '順番待ち', tone: 'none' },
+  'lease-expired': { label: '担当が途切れた', tone: 'none' },
+  decided: { label: '判断済み・再開待ち', tone: 'none' },
   finished: { label: '終了', tone: 'none' },
 }
 
@@ -264,7 +265,7 @@ function useCopy() {
 /** What a copy button says, from the command it copies. */
 function commandLabel(command: string): string {
   if (/^git .* worktree remove /.test(command))
-    return 'worktree 片付けコマンドをコピー'
+    return '作業ツリーの片付けコマンドをコピー'
   const sub = /\bdemo (\S+)/.exec(command)?.[1]
   switch (sub) {
     case 'approve':
@@ -273,16 +274,16 @@ function commandLabel(command: string): string {
       return '却下コマンドをコピー'
     case 'report':
       return command.includes('--format json')
-        ? 'JSON の report をコピー'
-        : 'report をコピー'
+        ? 'JSON のレポートをコピー'
+        : 'レポートをコピー'
     case 'status':
-      return 'status をコピー'
+      return '状態確認コマンドをコピー'
     case 'worker':
-      return 'worker 起動コマンドをコピー'
+      return 'ワーカー起動コマンドをコピー'
     case 'retrigger':
-      return 'retrigger コマンドをコピー'
+      return '再実行コマンドをコピー'
     case 'waits':
-      return 'waits をコピー'
+      return '待ち一覧コマンドをコピー'
     default:
       return 'コマンドをコピー'
   }
@@ -444,7 +445,7 @@ function Shell({
         <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-1 px-4 py-2 sm:px-6">
           <span className="text-sm font-semibold">local-agent-loop</span>
           <nav aria-label="画面" className="flex gap-1">
-            {nav('#/', 'run 一覧', route.page !== 'compare')}
+            {nav('#/', '実行一覧', route.page !== 'compare')}
             {nav('#/compare', '集計', route.page === 'compare')}
           </nav>
           <div className="ml-auto">{status}</div>
@@ -560,7 +561,7 @@ function Stepper({ pipeline }: { pipeline: Pipeline }) {
               {s.state === 'running' ? (
                 <span className="dot-live size-1.5 rounded-full bg-current" />
               ) : null}
-              {s.stage}
+              {stageName(s.stage)}
               {s.count > 1 ? (
                 <span className="tabular-nums">×{s.count}</span>
               ) : null}
@@ -622,7 +623,7 @@ const TONE_TEXT: Record<Tone, string> = {
 }
 
 const INTERRUPTION_LABEL: Record<string, string> = {
-  'lease-lost': 'worker の lease が切れた',
+  'lease-lost': 'ワーカーの担当期限が切れた',
   cancelled: '取り消された',
   unknown: UNKNOWN,
 }
@@ -1176,10 +1177,10 @@ function UsageFields({
     )
   return (
     <>
-      <InspectorField label="LLM 呼び出し">
+      <InspectorField label="モデル呼び出し">
         <Num>{u.invocations}</Num>
       </InspectorField>
-      <InspectorField label="合計 token">
+      <InspectorField label="合計トークン">
         <Num>{fmtInt(u.totalTokens)}</Num>
         {tag(u.totalTokens)}
       </InspectorField>
@@ -1227,7 +1228,7 @@ function TimingFields({
   const t = liveTimes(n, elapsed)
   const attempts =
     n.kind === 'attempt' ? (
-      <InspectorField label="lease 世代">
+      <InspectorField label="担当の世代">
         <Num>{n.leaseGeneration ?? UNKNOWN}</Num>
       </InspectorField>
     ) : n.kind === 'run' || n.wait ? null : (
@@ -1239,7 +1240,9 @@ function TimingFields({
   const duration = n.kind === 'run' && !n.open ? leadTimeMs : t.duration
   return (
     <>
-      {n.stage ? <InspectorField label="工程">{n.stage}</InspectorField> : null}
+      {n.stage ? (
+        <InspectorField label="工程">{stageName(n.stage)}</InspectorField>
+      ) : null}
       {n.iteration !== null && n.kind !== 'iteration' ? (
         <InspectorField label="回">{n.iteration}回目</InspectorField>
       ) : null}
@@ -1265,15 +1268,17 @@ function TimingFields({
 function ProfileFields({ profile: p }: { profile: TraceProfile }) {
   return (
     <>
-      <InspectorField label="provider">{p.provider ?? UNKNOWN}</InspectorField>
-      <InspectorField label="model">
+      <InspectorField label="プロバイダー">
+        {p.provider ?? UNKNOWN}
+      </InspectorField>
+      <InspectorField label="モデル">
         <Num>{p.model ?? '既定'}</Num>
       </InspectorField>
-      <InspectorField label="effort">
+      <InspectorField label="推論量">
         <Num>{p.effort ?? '既定'}</Num>
       </InspectorField>
       {p.reportedModel && p.reportedModel !== p.model ? (
-        <InspectorField label="報告された model">
+        <InspectorField label="報告されたモデル">
           <Num>{p.reportedModel}</Num>
         </InspectorField>
       ) : null}
@@ -1284,13 +1289,13 @@ function ProfileFields({ profile: p }: { profile: TraceProfile }) {
 function CandidateFields({ candidate: c }: { candidate: ReportCandidate }) {
   return (
     <>
-      <InspectorField label="candidate">
+      <InspectorField label="候補">
         <Num>{c.id}</Num>
       </InspectorField>
-      <InspectorField label="branch">
+      <InspectorField label="ブランチ">
         <Num>{c.branch ?? 'なし'}</Num>
       </InspectorField>
-      <InspectorField label="commit">
+      <InspectorField label="コミット">
         <Num>{c.commit?.slice(0, 12) ?? 'なし'}</Num>
       </InspectorField>
     </>
@@ -1348,7 +1353,7 @@ function ReviewBlock({ node: n }: { node: TraceNode }) {
   if (n.state !== 'done') return null
   return (
     <p className="text-fg-2 text-xs">
-      この回の判定は記録に残っていません。report が残すのは最後の回だけです。
+      この回の判定は記録に残っていません。実行記録に残るのは最後の回だけです。
     </p>
   )
 }
@@ -1417,7 +1422,7 @@ function TraceInspector({
           <UsageFields u={n.usage} />
         ) : null}
         {n.checkpoint ? (
-          <InspectorField label="checkpoint">
+          <InspectorField label="チェックポイント">
             {CHECKPOINT_LABEL[n.checkpoint]}
           </InspectorField>
         ) : null}
@@ -1431,10 +1436,10 @@ function TraceInspector({
       ) : null}
       <LogSlot />
       <p className="text-fg-3 text-xs">
-        時刻は{' '}
+        時刻は
         <time dateTime={origin} title={exact(origin)}>
-          run 作成
-        </time>{' '}
+          実行の開始
+        </time>
         からの経過です。正確な時刻はホバーで出ます。
       </p>
     </aside>
@@ -1461,7 +1466,9 @@ function LiveProgress({
   return (
     <div className="flex flex-col gap-1">
       <p className="text-fg text-sm font-medium tabular-nums">
-        {live?.stage ? `いまの工程: ${live.stage}` : 'いまの工程: 工程の合間'}
+        {live?.stage
+          ? `いまの工程: ${stageName(live.stage)}`
+          : 'いまの工程: 工程の合間'}
       </p>
       {rest ? <p className="text-fg-2 text-xs tabular-nums">{rest}</p> : null}
     </div>
@@ -1486,7 +1493,7 @@ function OpenRun({ run, now }: { run: RunRow; now: string }) {
           <RunLink id={run.id} name={run.name} />
         </h3>
         <span className="text-fg-2 ml-auto text-xs">
-          <Ago iso={run.createdAt} now={now} prefix="作成 " />
+          <Ago iso={run.createdAt} now={now} prefix="開始 " />
         </span>
       </div>
       <Stepper pipeline={run.pipeline} />
@@ -1551,14 +1558,14 @@ function FinishedTable({ runs, now }: { runs: RunRow[]; now: string }) {
       <table className="w-full text-sm">
         <thead className="border-line border-b">
           <tr>
-            <Th>run</Th>
-            <Th>結論</Th>
+            <Th>タスク</Th>
+            <Th>結果</Th>
             <Th num>所要時間</Th>
             <Th num title={COST_NOTE}>
               費用
             </Th>
-            <Th>triage</Th>
-            <Th>作成</Th>
+            <Th>見立て</Th>
+            <Th>開始</Th>
           </tr>
         </thead>
         <tbody className="divide-line divide-y">
@@ -1577,7 +1584,13 @@ function FinishedTable({ runs, now }: { runs: RunRow[]; now: string }) {
                 </Td>
                 <Td num>{fmtMs(run.leadTimeMs)}</Td>
                 <Td num>{fmtUsd(run.costUsd)}</Td>
-                <Td>{run.triage ?? <span className="text-fg-2">なし</span>}</Td>
+                <Td>
+                  {run.triage ? (
+                    triageName(run.triage)
+                  ) : (
+                    <span className="text-fg-2">なし</span>
+                  )}
+                </Td>
                 <Td>
                   <span className="text-fg-2 text-xs whitespace-nowrap">
                     <Ago iso={run.createdAt} now={now} />
@@ -1596,7 +1609,7 @@ function RunsPage({ data }: { data: RunsResponse }) {
   if (!data.exists)
     return (
       <Empty>
-        データベースがまだありません。worker か trigger を実行すると{' '}
+        データベースがまだありません。ワーカーを起動するか実行を登録すると{' '}
         <span className="font-code">{data.db}</span>{' '}
         に作られ、次の更新で表示されます。
       </Empty>
@@ -1608,25 +1621,25 @@ function RunsPage({ data }: { data: RunsResponse }) {
   const finished = data.runs.filter((r) => TERMINAL_STATUSES.includes(r.status))
   return (
     <>
-      <Section title="人の判断が必要" count={human.length}>
+      <Section title="人の手が要る実行" count={human.length}>
         {human.length > 0 ? (
           <OpenList runs={human} now={data.now} />
         ) : (
-          <Empty>承認待ちや停止した run はありません。</Empty>
+          <Empty>承認待ちや停止した実行はありません。</Empty>
         )}
       </Section>
-      <Section title="進行中" count={open.length}>
+      <Section title="動いている実行" count={open.length}>
         {open.length > 0 ? (
           <OpenList runs={open} now={data.now} />
         ) : (
-          <Empty>動いている run も、worker を待つ run もありません。</Empty>
+          <Empty>動いている実行も、順番を待つ実行もありません。</Empty>
         )}
       </Section>
-      <Section title="終了した run" count={finished.length}>
+      <Section title="終わった実行" count={finished.length}>
         {finished.length > 0 ? (
           <FinishedTable runs={finished} now={data.now} />
         ) : (
-          <Empty>終了した run はまだありません。</Empty>
+          <Empty>終わった実行はまだありません。</Empty>
         )}
       </Section>
     </>
@@ -1692,10 +1705,10 @@ const USAGE_HEAD = (
   <>
     <Th num>呼び出し</Th>
     <Th num>入力</Th>
-    <Th num>cache 読み</Th>
-    <Th num>cache 書き</Th>
+    <Th num>キャッシュ読み</Th>
+    <Th num>キャッシュ書き</Th>
     <Th num>出力</Th>
-    <Th num>合計 token</Th>
+    <Th num>合計トークン</Th>
     <Th num>費用</Th>
   </>
 )
@@ -1711,7 +1724,7 @@ function StageTimings({ report }: { report: LoopReport }) {
           key={t.stage}
           className="grid grid-cols-[6rem_1fr_9rem] items-center gap-3"
         >
-          <span className="text-sm">{t.stage}</span>
+          <span className="text-sm">{stageName(t.stage)}</span>
           <span className="bg-sunken h-2 rounded-sm" aria-hidden>
             <span
               className="bg-fg-3/60 block h-full rounded-sm"
@@ -1771,8 +1784,8 @@ function StatusPanel({ data }: { data: RunDetailResponse }) {
       {data.diagnosis.cleanup ? (
         <div className="mt-3">
           <p className="text-fg-2 mb-2 text-xs">
-            worktree を片付けるコマンドです。branch は残り、変更のある worktree
-            は git が削除を拒否します。
+            作業ツリーを片付けるコマンドです。ブランチは残ります。変更が残っている作業ツリーは
+            git が削除を拒否します。
           </p>
           <Commands lines={[data.diagnosis.cleanup]} />
         </div>
@@ -1786,24 +1799,28 @@ function SummaryPanel({ report: r }: { report: LoopReport }) {
   return (
     <Panel title="まとめ">
       <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <Field label="結論">
+        <Field label="結果">
           {s.conclusion ? conclusionOf(s.conclusion).label : 'まだない'}
         </Field>
         <Field label="所要時間">{fmtMs(s.leadTimeMs)}</Field>
         <Field label="工程の作業時間">{fmtMs(s.workMs)}</Field>
         <Field label="人の待ち時間">{fmtMs(s.humanWaitMs)}</Field>
-        <Field label="合計 token">{fmtInt(s.totalTokens)}</Field>
+        <Field label="合計トークン">{fmtInt(s.totalTokens)}</Field>
         <Field label="費用">{fmtUsd(s.costUsd)}</Field>
         <Field label="修正 / レビュー回数">
           {s.repairs} / {s.reviewRounds}
         </Field>
-        <Field label="triage">{r.triage ? r.triage.judgment : 'なし'}</Field>
+        <Field label="見立て">
+          <span className="font-ui">
+            {r.triage ? triageName(r.triage.judgment) : 'なし'}
+          </span>
+        </Field>
       </dl>
       {r.triage ? (
         <div className="text-fg-2 mt-3 flex flex-col gap-1">
           <p className="text-sm">{r.triage.reason}</p>
           <p className="text-xs">
-            triage の判定は記録するだけで、経路は変えません。
+            見立ては記録するだけで、進め方は変えません。
           </p>
         </div>
       ) : null}
@@ -1814,9 +1831,9 @@ function SummaryPanel({ report: r }: { report: LoopReport }) {
 function UsagePanels({ report: r }: { report: LoopReport }) {
   return (
     <>
-      <Panel title="工程ごとの token と費用">
+      <Panel title="工程ごとのトークンと費用">
         {r.stageUsage.length === 0 ? (
-          <Empty>まだ LLM 呼び出しがありません。</Empty>
+          <Empty>まだモデルの呼び出しがありません。</Empty>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -1829,7 +1846,7 @@ function UsagePanels({ report: r }: { report: LoopReport }) {
               <tbody className="divide-line divide-y">
                 {r.stageUsage.map((u) => (
                   <tr key={u.stage}>
-                    <Td>{u.stage}</Td>
+                    <Td>{stageName(u.stage)}</Td>
                     <UsageCells u={u} />
                   </tr>
                 ))}
@@ -1839,20 +1856,20 @@ function UsagePanels({ report: r }: { report: LoopReport }) {
         )}
       </Panel>
 
-      <Panel title="役割ごとの token と費用">
+      <Panel title="役割ごとのトークンと費用">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="border-line border-b">
               <tr>
                 <Th>役割</Th>
-                <Th>provider / 指定 model / 指定 effort</Th>
+                <Th>プロバイダー / 指定モデル / 指定推論量</Th>
                 {USAGE_HEAD}
               </tr>
             </thead>
             <tbody className="divide-line divide-y">
               {r.roleUsage.map((u) => (
                 <tr key={u.role}>
-                  <Td>{u.role}</Td>
+                  <Td>{roleName(u.role)}</Td>
                   <Td>
                     <span className="font-code text-xs">
                       {u.provider ?? UNKNOWN} / {u.requestedModel ?? '既定'} /{' '}
@@ -1884,7 +1901,7 @@ function ReviewsPanel({ report: r }: { report: LoopReport }) {
           {r.reviews.map((review) => (
             <li key={review.lens} className="flex flex-col gap-1">
               <p className="text-sm">
-                <span className="font-medium">{review.lens}</span>
+                <span className="font-medium">{lensName(review.lens)}</span>
                 <span className="text-fg-2" title={review.decision}>
                   {' · '}
                   {review.decision === 'pass'
@@ -1905,34 +1922,40 @@ function ReviewsPanel({ report: r }: { report: LoopReport }) {
   )
 }
 
+const INPUT_NAME = {
+  task: 'タスク',
+  spec: '仕様',
+  dispositions: '指摘の扱い',
+} as const
+
 function RecordPanels({ report: r }: { report: LoopReport }) {
   return (
     <>
       <div className="grid gap-6 md:grid-cols-2">
-        <Panel title="candidate">
+        <Panel title="候補">
           {r.candidate ? (
             <dl className="flex flex-col gap-2">
-              <Field label="id">{r.candidate.id}</Field>
-              <Field label="branch">{r.candidate.branch ?? 'なし'}</Field>
-              <Field label="commit">{r.candidate.commit ?? 'なし'}</Field>
+              <Field label="ID">{r.candidate.id}</Field>
+              <Field label="ブランチ">{r.candidate.branch ?? 'なし'}</Field>
+              <Field label="コミット">{r.candidate.commit ?? 'なし'}</Field>
             </dl>
           ) : (
-            <Empty>まだ candidate がありません。</Empty>
+            <Empty>まだ候補がありません。</Empty>
           )}
         </Panel>
-        <Panel title="delivery">
+        <Panel title="納品物">
           {r.delivery ? (
             <dl className="flex flex-col gap-2">
               <Field label="種類">{r.delivery.kind}</Field>
               <Field label="場所">{r.delivery.location}</Field>
-              <Field label="branch">{r.delivery.branch ?? 'なし'}</Field>
-              <Field label="commit">{r.delivery.commit ?? 'なし'}</Field>
+              <Field label="ブランチ">{r.delivery.branch ?? 'なし'}</Field>
+              <Field label="コミット">{r.delivery.commit ?? 'なし'}</Field>
               <Field label="概要">
                 <span className="font-ui">{r.delivery.summary}</span>
               </Field>
             </dl>
           ) : (
-            <Empty>delivery はありません。</Empty>
+            <Empty>納品物はありません。</Empty>
           )}
         </Panel>
       </div>
@@ -1945,7 +1968,7 @@ function RecordPanels({ report: r }: { report: LoopReport }) {
           {(['task', 'spec', 'dispositions'] as const).map((name) => {
             const file = r.inputs[name]
             return (
-              <Field key={name} label={name}>
+              <Field key={name} label={INPUT_NAME[name]}>
                 {file ? `${file.sha256}  ${file.path}` : '指定なし'}
               </Field>
             )
@@ -1977,22 +2000,22 @@ function RunPage({ data }: { data: RunDetailResponse }) {
         <div className="flex flex-wrap items-center gap-3">
           <StateBadge label={kind.label} tone={kind.tone} />
           <span className="text-fg-2 text-sm">
-            <Ago iso={data.createdAt} now={data.now} prefix="作成 " />
+            <Ago iso={data.createdAt} now={data.now} prefix="開始 " />
           </span>
           {r.fake ? (
             <span className="text-fg-2 text-xs">
-              fake mode の run で、実 LLM の検証ではありません
+              模擬の実行で、実際のモデルでは検証していません
             </span>
           ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-fg-2 text-xs">run ID</span>
+          <span className="text-fg-2 text-xs">実行 ID</span>
           <code className="font-code text-fg-2 text-xs break-all">
             {r.runId}
           </code>
           <CopyButton
             text={r.runId}
-            label="run ID をコピー"
+            label="実行 ID をコピー"
             copied={copied}
             onCopy={(t, l) => void copy(t, l)}
           />
@@ -2058,24 +2081,22 @@ const STAT_HEAD = (
 function ComparePage({ data }: { data: CompareResponse }) {
   const groups = data.comparison.groups
   if (groups.length === 0)
-    return (
-      <Empty>終了した run がまだないので、集計するものがありません。</Empty>
-    )
+    return <Empty>終わった実行がまだないので、集計するものがありません。</Empty>
   return (
     <div className="flex flex-col gap-6">
       <p className="text-fg-2 text-sm">
-        終了した run {data.runIds.length} 件を config version
-        ごとにまとめています。不明な値は 0
+        終わった実行 {data.runIds.length}{' '}
+        件を設定のまとまりごとに集計しています。不明な値は 0
         として扱わず、統計から除いて「不明」の列に数えます。費用は API
         換算の参考値です。
       </p>
       {groups.map((g) => (
         <Panel
           key={g.configVersion ?? g.label}
-          title={`${g.label} · config ${g.configVersion ?? 'unversioned'}`}
+          title={`${g.label} · 設定 ${g.configVersion ?? '版なし'}`}
         >
           <p className="mb-3 text-sm">
-            {g.runs} run · 成功 {g.successes} · 成功率{' '}
+            {g.runs} 件 · 成功 {g.successes} · 成功率{' '}
             {(g.successRate * 100).toFixed(0)}% ·{' '}
             {Object.entries(g.conclusions)
               .map(([c, n]) => `${conclusionOf(c).label} ${n}`)
@@ -2093,7 +2114,7 @@ function ComparePage({ data }: { data: CompareResponse }) {
                 <StatRow label="所要時間" stat={g.leadTimeMs} f={fmtMs} />
                 <StatRow label="工程の作業時間" stat={g.workMs} f={fmtMs} />
                 <StatRow label="人の待ち時間" stat={g.humanWaitMs} f={fmtMs} />
-                <StatRow label="合計 token" stat={g.totalTokens} f={fmtInt} />
+                <StatRow label="合計トークン" stat={g.totalTokens} f={fmtInt} />
                 <StatRow label="費用" stat={g.costUsd} f={fmtUsd} />
                 <StatRow
                   label="成功 1 件の費用"
@@ -2119,7 +2140,7 @@ function ComparePage({ data }: { data: CompareResponse }) {
                 <tbody className="divide-line divide-y">
                   {g.stages.map((st) => (
                     <tr key={st.stage}>
-                      <Td>{st.stage}</Td>
+                      <Td>{stageName(st.stage)}</Td>
                       <Td num>
                         {st.workMs.median === null
                           ? UNKNOWN
@@ -2141,26 +2162,25 @@ function ComparePage({ data }: { data: CompareResponse }) {
           {g.triage.length > 0 ? (
             <div className="mt-4 overflow-x-auto">
               <p className="text-fg-2 mb-2 text-xs">
-                triage の判定別。shadow mode
-                なので、判定は経路を変えていません。
+                見立ての判定別。見立ては記録するだけなので、判定で進め方は変わっていません。
               </p>
               <table className="w-full text-sm">
                 <thead className="border-line border-b">
                   <tr>
                     <Th>判定</Th>
-                    <Th num>run</Th>
+                    <Th num>件数</Th>
                     <Th num>承認</Th>
                     <Th num>検証失敗</Th>
                     <Th num>レビュー上限</Th>
                     <Th num>修正回数 中央値</Th>
                     <Th num>費用 中央値</Th>
-                    <Th num>routine なのに修正か上限</Th>
+                    <Th num>定型なのに修正か上限</Th>
                   </tr>
                 </thead>
                 <tbody className="divide-line divide-y">
                   {g.triage.map((t) => (
                     <tr key={t.judgment}>
-                      <Td>{t.judgment}</Td>
+                      <Td>{triageName(t.judgment)}</Td>
                       <Td num>{t.runs}</Td>
                       <Td num>{t.approved}</Td>
                       <Td num>{t.verificationFailed}</Td>
@@ -2210,7 +2230,7 @@ function PolledPage<T>({
             href="#/"
             className="text-fg-2 hover:text-fg inline-flex min-h-8 items-center self-start text-sm"
           >
-            ← run 一覧
+            ← 実行一覧
           </a>
         ) : null}
         <PageTitle>{heading(polled.data)}</PageTitle>
@@ -2253,7 +2273,7 @@ export function App() {
         route={route}
         url={url}
         back
-        heading={(data) => data?.name ?? 'run の詳細'}
+        heading={(data) => data?.name ?? '実行の詳細'}
         render={(data) => <RunPage data={data} />}
       />
     )
@@ -2273,7 +2293,7 @@ export function App() {
       key="runs"
       route={route}
       url="/api/runs"
-      heading={() => 'run 一覧'}
+      heading={() => '実行一覧'}
       render={(data) => <RunsPage data={data} />}
     />
   )
