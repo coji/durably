@@ -297,6 +297,19 @@ describe('what counts as agent activity on a real provider', () => {
     const init = { type: 'system', subtype: 'init' } as never
     assert.equal(isAgentActivity(assistant), true)
     assert.equal(isAgentActivity(errored), false)
+    // An error that arrives with content or usage comes after work began.
+    const erroredWithContent = {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'working' }] },
+      error: 'authentication_failed',
+    } as never
+    const erroredWithUsage = {
+      type: 'assistant',
+      message: { content: [], usage: { input_tokens: 10, output_tokens: 0 } },
+      error: 'authentication_failed',
+    } as never
+    assert.equal(isAgentActivity(erroredWithContent), true)
+    assert.equal(isAgentActivity(erroredWithUsage), true)
     assert.equal(isAgentActivity(init), false)
   })
 

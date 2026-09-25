@@ -398,13 +398,26 @@ export function claudeRejection(error: unknown): string | null {
 
 /**
  * Whether one Agent SDK message shows the agent at work: an assistant
- * message (text, thinking or a tool call, with its usage) that is not the
- * CLI reporting an error. Every tool call arrives in one, so a tool result
- * never comes first. Session set-up and status messages come before any
- * model request, so they are not activity.
+ * message (text, thinking or a tool call, with its usage). Every tool call
+ * arrives in one, so a tool result never comes first. An assistant message
+ * that only carries a CLI error, with no content and no usage, is not
+ * activity; one that carries an error next to content or usage is, so a
+ * refusal that arrives with work already done stays uncertain. Session
+ * set-up and status messages come before any model request, so they are not
+ * activity.
  */
 export function isAgentActivity(message: SDKMessage): boolean {
-  return message.type === 'assistant' && message.error === undefined
+  if (message.type !== 'assistant') return false
+  if (message.error === undefined) return true
+  const body = message.message as {
+    content?: unknown[]
+    usage?: { input_tokens?: number; output_tokens?: number } | null
+  }
+  const hasContent = Array.isArray(body?.content) && body.content.length > 0
+  const hasUsage =
+    (body?.usage?.input_tokens ?? 0) > 0 ||
+    (body?.usage?.output_tokens ?? 0) > 0
+  return hasContent || hasUsage
 }
 
 export class ClaudeProvider implements AgentProvider {
