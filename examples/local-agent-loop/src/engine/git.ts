@@ -27,10 +27,12 @@ async function git(
     signal?: AbortSignal
     timeoutMs?: number
     maxOutputChars?: number
+    env?: Record<string, string>
   } = {},
 ): Promise<string> {
   const result = await runChild('git', args, {
     cwd,
+    ...(options.env ? { env: options.env } : {}),
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     maxOutputChars: options.maxOutputChars ?? 1_000_000,
     ...(options.signal ? { signal: options.signal } : {}),
@@ -315,6 +317,8 @@ export async function someUntracked(
   signal?: AbortSignal,
 ): Promise<string[]> {
   const out = await git(cwd, ['clean', '-ffdn'], {
+    // The dry run's "Would remove" wording is translated in other locales.
+    env: { LC_ALL: 'C' },
     maxOutputChars: 100_000,
     ...(signal ? { signal } : {}),
   })

@@ -479,10 +479,34 @@ describe('baseline check on the base commit', () => {
           specFor(a.id),
           new AbortController().signal,
         ),
-        /^Error: baseline-check-failed: baseline-mutated: |baseline-check-failed: baseline-mutated: /,
+        (err: Error) => {
+          assert.match(
+            err.message,
+            /^baseline-check-failed: baseline-mutated: /,
+          )
+          return true
+        },
       )
     } finally {
       await chmod(join(repo, 'locked'), 0o700).catch(() => {})
+    }
+  })
+
+  it('finds leftover setup output under a translated git locale', async () => {
+    const { repo } = await baseRepo(`process.exitCode = 0`)
+    await writeFile(join(repo, 'setup.lock'), 'x')
+    const saved = { LC_ALL: process.env.LC_ALL, LANGUAGE: process.env.LANGUAGE }
+    process.env.LC_ALL = 'fr_FR.UTF-8'
+    process.env.LANGUAGE = 'fr'
+    try {
+      await assert.rejects(
+        assertSetupLeftNoUntracked(repo),
+        /setup-untracked: /,
+      )
+    } finally {
+      for (const [k, v] of Object.entries(saved))
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
     }
   })
 
