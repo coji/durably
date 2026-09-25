@@ -13,6 +13,8 @@ import type { Diagnosis, DiagnosisKind } from '../engine/status.js'
 
 const STAGE_NAME: Record<string, string> = {
   setup: '準備',
+  baseline: 'ベースの検証',
+  preflight: '事前確認',
   triage: '見立て',
   policy: '判断',
   code: '実装',
@@ -55,6 +57,7 @@ export function triageName(judgment: string): string {
 const STEP_PART_NAME: Record<string, string> = {
   agent: 'エージェント',
   candidate: '候補の記録',
+  call: '最小の呼び出し',
 }
 
 /** The last part of a step name inside a stage, such as `agent`. */
@@ -80,6 +83,18 @@ const DIAGNOSIS_TEXT: Record<Exclude<DiagnosisKind, 'stopped'>, string> = {
 
 /** Why a stopped run stopped, and what a person checks first. */
 const FAILURE_TEXT: Record<FailureKind, { reason: string; check: string }> = {
+  'baseline-check-failed': {
+    reason:
+      'エージェントを呼ぶ前に、ベースのコミットで固定したチェックがすでに失敗しました。このままでは候補を採点できません。',
+    check:
+      '下に示したログファイルでチェックの出力を全文読み、採点コマンドか環境を直す。',
+  },
+  'preflight-failed': {
+    reason:
+      'ある役割のプロバイダー、モデル、推論の強さの組み合わせが使えません。実装を呼ぶ前に止めました。',
+    check:
+      'エラーに示した役割の設定か、使う実行ファイルの指定を直す。ログインの問題なら、ログインし直してから始め直す。',
+  },
   'verification-failed': {
     reason:
       '最後の修正のあとも、固定したチェックが通りませんでした。修正の回数を使い切っています。',
@@ -193,6 +208,14 @@ const COMMAND_NOTES: [string, string][] = [
     '納品物に記録された内容を確かめられます。',
   ],
   ['if none is running', 'ワーカーが動いていなければ起動します。'],
+  [
+    'the baseline check output',
+    'ベースのコミットでのチェックの結果とログの場所を読めます。',
+  ],
+  [
+    'the preflight result for each role',
+    '役割ごとの事前確認の結果と確認の方法を読めます。',
+  ],
 ]
 
 /**
@@ -228,6 +251,7 @@ const DETAIL_LABEL: Record<keyof typeof DETAIL_PREFIX, string> = {
   checkExitCode: '検証の終了コード',
   checkStdout: '検証の標準出力',
   checkStderr: '検証の標準エラー',
+  checkTimeout: '時間切れまでの時間',
   checkLogWriteError: 'ログの書き込みエラー',
 }
 

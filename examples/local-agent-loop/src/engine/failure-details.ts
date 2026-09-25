@@ -10,6 +10,7 @@ export const DETAIL_PREFIX = {
   checkExitCode: 'check exit code: ',
   checkStdout: 'check stdout log: ',
   checkStderr: 'check stderr log: ',
+  checkTimeout: 'check timed out after: ',
   checkLogWriteError: 'check log write error: ',
 } as const
 

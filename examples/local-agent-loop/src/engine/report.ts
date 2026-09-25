@@ -16,7 +16,7 @@ import type { StepAttempt } from '@coji/durably'
 import { INTERRUPTED_CHECK } from './failure-details.js'
 import { retryText, type FailureClassification } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
-import type { AttemptMeasurement } from './providers/types.js'
+import type { AttemptMeasurement, VerificationLog } from './providers/types.js'
 import { TERMINAL_STATUSES } from './terminal.js'
 import type { CandidateChanges } from './types.js'
 import { aggregateUsage } from './usage.js'
@@ -191,6 +191,43 @@ export interface ReportTriage {
   reason: string
 }
 
+/**
+ * The pinned check on the base commit, run before any agent call when the
+ * repository run asked for it. `passed` is null while no attempt finished.
+ */
+export interface ReportBaseline {
+  passed: boolean | null
+  /** Null when the check was killed before it exited (a timeout). */
+  exitCode: number | null
+  /** Full output of the attempt behind the verdict, or of the last attempt. */
+  log: VerificationLog | null
+  /** The verdict was read back from its checkpoint on a resume. */
+  recovered: boolean
+}
+
+/** One distinct provider, model and effort, checked once for its roles. */
+export interface ReportPreflightCheck {
+  roles: string[]
+  provider: string
+  model: string | null
+  effort: string | null
+  cliPath: string | null
+  cliVersion: string | null
+  /** `unknown`: nothing decided it, such as a call left without an answer. */
+  verdict: 'available' | 'unavailable' | 'unknown'
+  /** The free check's name, or `minimal call` when a call decided it. */
+  method: string
+  detail: string
+  /** A minimal call was made for this check. */
+  called: boolean
+}
+
+export interface ReportPreflight {
+  checks: ReportPreflightCheck[]
+  /** Usage of the minimal calls, as the `preflight` stage; null when none. */
+  usage: UsageTotals | null
+}
+
 /** One row per run, the unit that cross-run comparisons operate on. */
 export interface RunSummary {
   /** Terminal completed run whose candidate was approved. */
@@ -225,6 +262,10 @@ export interface LoopReport {
   configVersion: string | null
   summary: RunSummary
   triage: ReportTriage | null
+  /** Null when the run had no baseline check or has not reached it. */
+  baseline: ReportBaseline | null
+  /** Null for a run from before preflight, or one that has not reached it. */
+  preflight: ReportPreflight | null
   stageUsage: StageUsage[]
   /**
    * Per-role requested settings and usage: code, correctness, edge-cases, and
@@ -318,6 +359,8 @@ function fmtChanges(c: ReportCandidateChanges | null | undefined): string {
 
 const STAGE_ORDER = [
   'setup',
+  'baseline',
+  'preflight',
   'triage',
   'policy',
   'code',
@@ -428,6 +471,8 @@ export function stageUsage(attempts: AttemptRow[]): StageUsage[] {
 /** The role an LLM step ran as, from its step name. */
 function roleOf(stepName: string): string | null {
   if (stepName === 'triage') return 'triage'
+  // The free preflight check is not a call; each minimal call is.
+  if (stepName.startsWith('preflight:call:')) return 'preflight'
   if (stepName.endsWith(':agent')) return 'code'
   if (stepName.endsWith(':correctness')) return 'correctness'
   if (stepName.endsWith(':edge-cases')) return 'edge-cases'
@@ -655,7 +700,8 @@ export function liveElapsed(
 }
 
 /**
- * Only triage and implement/review branches invoke an LLM: every other step
+ * Only triage, preflight calls and implement/review branches invoke an LLM:
+ * every other step
  * (local grading, prepare, policy, snapshots) is out of usage scope, so its
  * null usage never marks the aggregate incomplete.
  */
@@ -700,6 +746,46 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push(`- reason: ${r.triage.reason}`)
   } else {
     lines.push('- none (no triage profile, or triage has not run yet)')
+  }
+  lines.push('')
+  lines.push('## Baseline check (the pinned check on the base commit)')
+  lines.push('')
+  if (r.baseline) {
+    const b = r.baseline
+    lines.push(
+      `- result: ${b.passed === null ? 'not finished' : b.passed ? 'pass' : 'fail'}${b.recovered ? ' (recovered from checkpoint)' : ''}`,
+    )
+    lines.push(
+      `- exit code: ${b.exitCode ?? (b.passed === null ? 'unknown' : `unknown (killed before it exited${b.log?.timedOutAfterMs !== undefined ? `, timed out after ${b.log.timedOutAfterMs}ms` : ''})`)}`,
+    )
+    if (b.log) {
+      if (b.log.interrupted) lines.push(`- attempt: ${INTERRUPTED_CHECK}`)
+      lines.push(`- stdout: ${b.log.stdoutPath}`)
+      lines.push(`- stderr: ${b.log.stderrPath}`)
+      if (b.log.writeError) lines.push(`- log write error: ${b.log.writeError}`)
+    }
+  } else {
+    lines.push('- none (baselineCheck is off, or the run has not reached it)')
+  }
+  lines.push('')
+  lines.push('## Preflight (each distinct provider, model and effort)')
+  lines.push('')
+  if (r.preflight) {
+    for (const c of r.preflight.checks) {
+      lines.push(
+        `- ${c.roles.join(', ')}: ${c.provider} ${fmt(c.model)} effort ${fmt(c.effort)} — ${c.verdict} by ${c.method}${c.called ? ' (paid minimal call)' : ' (free)'}: ${c.detail}`,
+      )
+      if (c.provider !== 'fake')
+        lines.push(`  - cli: ${fmt(c.cliPath)} (${fmt(c.cliVersion)})`)
+    }
+    const u = r.preflight.usage
+    lines.push(
+      u
+        ? `- minimal calls: ${u.invocations}, tokens ${fmt(u.totalTokens)}, cost(USD) ${fmtUsd(u.costUsd)}${u.complete ? '' : ' (PARTIAL)'}`
+        : '- minimal calls: 0 (every setting was decided by a free check)',
+    )
+  } else {
+    lines.push('- none (the run has not reached preflight)')
   }
   lines.push('')
   lines.push('## Inputs (SHA-256 of stored content)')

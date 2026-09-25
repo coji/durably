@@ -33,6 +33,7 @@ import {
   type AgentCallOptions,
   type AgentProvider,
   type AgentResult,
+  type AvailabilityCheck,
 } from './types.js'
 
 const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
@@ -356,9 +357,32 @@ export function buildClaudeSettings(
   }
 }
 
+/**
+ * Error kinds the provider reports when the Claude Code CLI refused a call
+ * outright: the settings or the login are wrong, and nothing was acted on.
+ */
+const REFUSAL_KINDS = new Set([
+  'model_not_found',
+  'authentication_failed',
+  'oauth_org_not_allowed',
+  'account_on_hold',
+  'billing_error',
+])
+
+/** The provider's explicit refusal as one line; null for any other error. */
+export function claudeRejection(error: unknown): string | null {
+  const kind = (error as { data?: { errorKind?: unknown } } | null)?.data
+    ?.errorKind
+  if (typeof kind !== 'string' || !REFUSAL_KINDS.has(kind)) return null
+  const message = error instanceof Error ? error.message : String(error)
+  return `${kind}: ${message.split(' | stderr')[0]?.slice(0, 400) ?? ''}`
+}
+
 export class ClaudeProvider implements AgentProvider {
   readonly name = 'claude' as const
   readonly fake = false
+  /** The Agent SDK's own binary; see `claudeExecutable`. */
+  readonly cliPath = null
   /** Claude Agent SDK reports usage once at completion — no partial snapshots. */
   readonly partialUsage = false
 
@@ -444,5 +468,21 @@ export class ClaudeProvider implements AgentProvider {
             },
       elapsedMs: Date.now() - started,
     }
+  }
+
+  /**
+   * Claude Code has no way to ask whether a model and effort are usable
+   * without sending a prompt, so the answer is always a minimal call.
+   */
+  async checkAvailability(): Promise<AvailabilityCheck> {
+    return {
+      verdict: 'unknown',
+      method: 'none',
+      detail: 'Claude Code offers no check that sends no prompt',
+    }
+  }
+
+  rejectionReason(error: unknown): string | null {
+    return claudeRejection(error)
   }
 }

@@ -2,9 +2,9 @@
  * Build a run's input from trigger flags and the repository's factory.json.
  * Shared by `demo trigger` and `demo seed`, so both fix a run the same way.
  */
-import { existsSync } from 'node:fs'
-import { readFile, stat } from 'node:fs/promises'
-import { isAbsolute, join, resolve } from 'node:path'
+import { constants, existsSync } from 'node:fs'
+import { access, readFile, stat } from 'node:fs/promises'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 import { z } from 'zod'
 
@@ -13,7 +13,10 @@ import { repoRoot } from './engine/git.js'
 import { parseProviderName } from './engine/providers/index.js'
 import {
   assertSingleMode,
+  DEFAULT_TIMEOUTS,
   fixProfile,
+  positiveTimeout,
+  timeoutMsSchema,
   type FixedProfile,
 } from './factory/job.js'
 import type { InputFileRef } from './factory/target.js'
@@ -75,10 +78,23 @@ const factoryConfigSchema = z
       })
       .strict()
       .optional(),
+    /** Run `check` once on the base commit before any agent call. */
+    baselineCheck: z.boolean().optional(),
+    /** The Codex CLI file to launch; relative to this file's directory. */
+    codexPath: z.string().min(1).optional(),
+    /** Milliseconds; win over `TEST_TIMEOUT_MS` / `AGENT_TIMEOUT_MS`. */
+    checkTimeoutMs: timeoutMsSchema.optional(),
+    agentTimeoutMs: timeoutMsSchema.optional(),
   })
   .strict()
 
 type FactoryConfig = z.infer<typeof factoryConfigSchema>
+
+/** A loaded config and the directory its relative paths start from. */
+interface LoadedConfig {
+  config: FactoryConfig
+  path: string
+}
 type RoleConfig = z.infer<typeof roleConfigSchema>
 
 /**
@@ -89,7 +105,7 @@ type RoleConfig = z.infer<typeof roleConfigSchema>
 async function loadConfig(
   root: string,
   explicit: string | undefined,
-): Promise<FactoryConfig | null> {
+): Promise<LoadedConfig | null> {
   const path = explicit ? resolve(explicit) : join(root, 'factory.json')
   if (!existsSync(path)) {
     if (explicit) throw new Error(`--config ${explicit}: file not found`)
@@ -104,7 +120,36 @@ async function loadConfig(
   const parsed = factoryConfigSchema.safeParse(raw)
   if (!parsed.success)
     throw new Error(`${path}: invalid factory config: ${parsed.error.message}`)
-  return parsed.data
+  return { config: parsed.data, path }
+}
+
+/**
+ * The config's `codexPath` as an absolute path, checked once here: a relative
+ * path is taken from the config file's directory, and the file must be an
+ * executable regular file. The run keeps the result, so every preflight,
+ * call and version probe launches this same file.
+ */
+async function resolveCodexPath(
+  loaded: LoadedConfig | null,
+): Promise<string | null> {
+  const raw = loaded?.config.codexPath
+  if (!loaded || raw === undefined) return null
+  const abs = isAbsolute(raw) ? raw : resolve(dirname(loaded.path), raw)
+  const refuse = (why: string) =>
+    new Error(`${loaded.path}: codexPath ${raw}: ${why} (resolved to ${abs})`)
+  let file
+  try {
+    file = await stat(abs)
+  } catch {
+    throw refuse('file not found')
+  }
+  if (!file.isFile()) throw refuse('not a regular file')
+  try {
+    await access(abs, constants.X_OK)
+  } catch {
+    throw refuse('not executable')
+  }
+  return abs
 }
 
 /** Input files are stored in the run and sent in every prompt, so keep them small. */
@@ -217,10 +262,15 @@ export async function resolveTarget(a: Record<string, string>) {
     ]) {
       if (a[flag]) throw new Error(`--${flag} needs --repo <path>`)
     }
-    return { target: { kind: 'subject' as const }, config: null }
+    return {
+      target: { kind: 'subject' as const },
+      config: null,
+      codexPath: null,
+    }
   }
   const repoPath = isAbsolute(repo) ? repo : join(process.cwd(), repo)
-  const config = await loadConfig(await repoRoot(repoPath), a['config'])
+  const loaded = await loadConfig(await repoRoot(repoPath), a['config'])
+  const config = loaded?.config ?? null
   const checkCommand = a['check'] ? splitArgv(a['check']) : config?.check
   if (!checkCommand || checkCommand.length === 0)
     throw new Error(
@@ -272,8 +322,10 @@ export async function resolveTarget(a: Record<string, string>) {
       setupCommand:
         setupCommand && setupCommand.length > 0 ? setupCommand : null,
       publish: a['publish'] === 'true',
+      baselineCheck: config?.baselineCheck ?? false,
     },
     config,
+    codexPath: await resolveCodexPath(loaded),
   }
 }
 
@@ -291,8 +343,17 @@ export async function buildTriggerInput(a: Record<string, string>) {
   if (!/^[1-3]$/.test(rawIterations))
     throw new Error('--max-iterations must be an integer between 1 and 3')
   const maxIterations = Number(rawIterations)
-  const { target, config } = await resolveTarget(a)
+  const { target, config, codexPath } = await resolveTarget(a)
   const { roles: profiles, triage } = resolveProfiles(a, config)
+  // Fixed here, so the worker's environment never changes a stored run: the
+  // config wins, then this process's environment, then the target default.
+  const defaults = DEFAULT_TIMEOUTS[target.kind]
+  const checkTimeoutMs =
+    config?.checkTimeoutMs ??
+    positiveTimeout('TEST_TIMEOUT_MS', defaults.checkTimeoutMs)
+  const agentTimeoutMs =
+    config?.agentTimeoutMs ??
+    positiveTimeout('AGENT_TIMEOUT_MS', defaults.agentTimeoutMs)
   const approve = a['approve']
   if (approve !== undefined && approve !== 'auto' && approve !== 'manual')
     throw new Error('--approve must be auto|manual')
@@ -317,5 +378,8 @@ export async function buildTriggerInput(a: Record<string, string>) {
     effort: a['effort'],
     context: context as 'reuse' | 'fresh',
     ...(approve ? { autoApprove: approve === 'auto' } : {}),
+    checkTimeoutMs,
+    agentTimeoutMs,
+    codexPath,
   }
 }

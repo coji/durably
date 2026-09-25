@@ -26,6 +26,15 @@
  *   its role. The reported model is then the role's requested model, so the
  *   existing price table prices it. Without it usage stays null, as before.
  *
+ * Preflight is decided by the role's requested model, so one run can hold a
+ * usable and an unusable profile:
+ * - `unlisted-*` ............. the free check refuses it, and no call is made
+ * - `probe-*` ................ the free check cannot tell; the minimal call
+ *   answers OK
+ * - `refused-*` .............. the free check cannot tell; the minimal call
+ *   is refused outright, as an unknown model would be
+ * - anything else ............ the free check accepts it
+ *
  * A run can carry a `FakeScenario` in its input (demo seeding only). Its
  * fields override the matching env knob for that run alone, so runs in one
  * worker can behave differently. Its review verdicts are read by round and
@@ -41,6 +50,8 @@ import type {
   AgentProvider,
   AgentResult,
   AgentRole,
+  AvailabilityCheck,
+  AvailabilityRequest,
 } from './types.js'
 
 export const FAKE_REVIEW_DECISIONS = [
@@ -165,6 +176,12 @@ const USAGE_RANGES: Record<
   'review-a': { input: [120_000, 360_000], output: [2_500, 8_000] },
   'review-b': { input: [120_000, 360_000], output: [2_500, 8_000] },
   triage: { input: [7_000, 18_000], output: [250, 900] },
+  preflight: { input: [6_000, 9_000], output: [2, 8] },
+}
+
+/** Thrown by a minimal preflight call on a `refused-*` model. */
+class FakeRefusal extends Error {
+  readonly fakeRefusal = true
 }
 
 /**
@@ -210,6 +227,7 @@ const TRIAGE_TEXT: Record<string, string> = {
 export class FakeProvider implements AgentProvider {
   readonly name = 'fake' as const
   readonly fake = true
+  readonly cliPath = null
   readonly partialUsage = false
   private readonly run: FakeRun | null
   private readonly requestedModel: string | null
@@ -285,6 +303,13 @@ export class FakeProvider implements AgentProvider {
         options.sessionId ?? undefined,
       )
     }
+    if (options.role === 'preflight') {
+      if (this.requestedModel?.startsWith('refused-'))
+        throw new FakeRefusal(
+          `fake: model ${this.requestedModel} is not supported`,
+        )
+      return result('OK')
+    }
     if (options.role === 'triage') {
       const kind =
         this.run?.nextTriage() ?? nextFromEnv('FAKE_TRIAGE', 'routine')
@@ -309,5 +334,29 @@ export class FakeProvider implements AgentProvider {
     return result(
       `PLAN: fake plan\nCOUNTEREXAMPLE: fake counterexample, none found\nDECISION: ${decision}\nNOTES: ${notes}`,
     )
+  }
+
+  async checkAvailability(
+    request: AvailabilityRequest,
+  ): Promise<AvailabilityCheck> {
+    const model = request.requestedModel ?? 'fake-model'
+    const method = 'fake list'
+    if (model.startsWith('unlisted-'))
+      return {
+        verdict: 'unavailable',
+        method,
+        detail: `${model} is not in the fake model list`,
+      }
+    if (model.startsWith('probe-') || model.startsWith('refused-'))
+      return {
+        verdict: 'unknown',
+        method,
+        detail: `the fake list cannot tell about ${model}`,
+      }
+    return { verdict: 'available', method, detail: `${model} is listed` }
+  }
+
+  rejectionReason(error: unknown): string | null {
+    return error instanceof FakeRefusal ? error.message : null
   }
 }

@@ -7,6 +7,7 @@
  * exercised through durable steps (not mocks).
  */
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -681,3 +682,380 @@ describe('shadow triage', { timeout: 300000 }, () => {
     }
   })
 })
+
+describe('preflight before the first agent call', { timeout: 300000 }, () => {
+  const fake = (requestedModel: string | null = null) => ({
+    provider: 'fake' as const,
+    requestedModel,
+    requestedEffort: null,
+  })
+  it('stops on an unusable role before any call, and records a paid check only when the free one cannot tell', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'e2e-preflight-'))
+    const dir = join(home, '.local', 'state', 'local-agent-loop')
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    delete process.env.FAKE_TRIAGE
+    const durably = createAgentDurably({ stateRoot: dir })
+    await durably.migrate()
+    const trigger = (models: {
+      code?: string
+      correctness?: string
+      edgeCases?: string
+      triage?: string
+    }) =>
+      durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        profiles: {
+          code: fake(models.code),
+          correctness: fake(models.correctness),
+          'edge-cases': fake(models.edgeCases),
+          ...(models.triage ? { triage: fake(models.triage) } : {}),
+        },
+        target: { kind: 'subject' as const },
+        maxIterations: 1,
+        context: 'reuse',
+      })
+    const ids: Record<string, string> = {}
+    try {
+      // The free check refuses one reviewer's model: nothing is sent.
+      ids['unlisted'] = (await trigger({ edgeCases: 'unlisted-model' })).id
+      // The free check cannot tell about the triage model, and the minimal
+      // call is refused outright.
+      ids['refused'] = (await trigger({ triage: 'refused-model' })).id
+      // The free check cannot tell, and the minimal call answers.
+      ids['probed'] = (await trigger({ code: 'probe-model' })).id
+      // Every setting is decided by the free check.
+      ids['free'] = (await trigger({})).id
+      // A minimal call that started and never finished, as if the worker
+      // died mid-call.
+      const lost = await trigger({ code: 'probe-model' })
+      ids['lost'] = lost.id
+      const checkpointsDir = join(dir, 'runs', lost.id, 'operation-checkpoints')
+      await mkdir(checkpointsDir, { recursive: true })
+      const operationKey = `${lost.id}/preflight/call:0`
+      await writeFile(
+        checkpointPaths(checkpointsDir, operationKey).started,
+        `${JSON.stringify({
+          operationKey,
+          invocationId: 'lost-preflight',
+          status: 'started',
+          invocationStartedAt: new Date().toISOString(),
+        })}\n`,
+      )
+      await durably.init()
+      for (const [name, id] of Object.entries(ids))
+        await waitFor(
+          async () =>
+            ['completed', 'failed', 'waiting'].includes(
+              (await durably.getRun(id))?.status ?? '',
+            ),
+          120000,
+          `${name} run settles`,
+        )
+
+      const agentSteps = async (id: string) =>
+        (await durably.getStepAttempts(id))
+          .map((a) => a.stepName)
+          .filter((n) => n === 'triage' || n.endsWith(':agent'))
+      const preflightCalls = async (id: string) =>
+        (await durably.getStepAttempts(id)).filter((a) =>
+          a.stepName.startsWith('preflight:call:'),
+        ).length
+
+      const unlisted = await buildReport(durably, ids['unlisted'] ?? '')
+      assert.equal(unlisted.failure?.kind, 'preflight-failed')
+      assert.equal(unlisted.failure?.retryable, true)
+      assert.deepEqual(await agentSteps(ids['unlisted'] ?? ''), [])
+      assert.equal(await preflightCalls(ids['unlisted'] ?? ''), 0)
+      const refusedCheck = unlisted.preflight?.checks.find(
+        (c) => c.verdict === 'unavailable',
+      )
+      assert.deepEqual(refusedCheck?.roles, ['edge-cases'])
+      assert.equal(refusedCheck?.method, 'fake list')
+      assert.equal(refusedCheck?.called, false)
+      assert.equal(unlisted.preflight?.usage, null)
+      assert.match(
+        unlisted.failure?.details.join('\n') ?? '',
+        /preflight-failed: edge-cases \(fake fake-model, effort low\) is not usable; fake list: unlisted-model/,
+      )
+      const md = reportToMarkdown(unlisted)
+      assert.match(md, /## Preflight/)
+      assert.match(
+        md,
+        /- edge-cases: fake fake-model effort low — unavailable by fake list \(free\)/,
+      )
+      assert.match(md, /- kind: preflight-failed/)
+
+      const refused = await buildReport(durably, ids['refused'] ?? '')
+      assert.equal(refused.failure?.kind, 'preflight-failed')
+      assert.deepEqual(await agentSteps(ids['refused'] ?? ''), [])
+      const triageCheck = refused.preflight?.checks.find((c) =>
+        c.roles.includes('triage'),
+      )
+      assert.equal(triageCheck?.verdict, 'unavailable')
+      assert.equal(triageCheck?.method, 'minimal call')
+      assert.equal(triageCheck?.called, true)
+      assert.match(triageCheck?.detail ?? '', /refused-model is not supported/)
+      // The refused call is settled, so the run is safe to start again.
+      assert.equal(refused.failure?.retryable, true)
+      // Its usage is its own stage and role, never folded into another.
+      assert.equal(
+        refused.stageUsage.find((u) => u.stage === 'preflight')?.invocations,
+        1,
+      )
+      assert.equal(
+        refused.roleUsage.find((u) => u.role === 'preflight')?.invocations,
+        1,
+      )
+      assert.equal(refused.preflight?.usage?.invocations, 1)
+      // A refusal reports no usage: unknown, never zero.
+      assert.equal(refused.preflight?.usage?.costUsd, null)
+
+      const probed = await buildReport(durably, ids['probed'] ?? '')
+      assert.equal(probed.status, 'waiting')
+      assert.equal(probed.failure, null)
+      assert.equal(await preflightCalls(ids['probed'] ?? ''), 1)
+      assert.equal(
+        probed.preflight?.checks.find((c) => c.roles.includes('code'))?.verdict,
+        'available',
+      )
+      const json = JSON.parse(reportToJson(probed)) as {
+        preflight: { checks: { method: string }[] }
+      }
+      assert.ok(json.preflight.checks.some((c) => c.method === 'minimal call'))
+
+      // Free checks decide everything: no preflight call, no preflight usage.
+      const free = await buildReport(durably, ids['free'] ?? '')
+      assert.equal(free.status, 'waiting')
+      assert.equal(await preflightCalls(ids['free'] ?? ''), 0)
+      assert.ok(!free.stageUsage.some((u) => u.stage === 'preflight'))
+      assert.ok(!free.roleUsage.some((u) => u.role === 'preflight'))
+      assert.deepEqual(
+        free.preflight?.checks.map((c) => c.roles),
+        [['code', 'correctness', 'edge-cases']],
+      )
+      assert.match(reportToMarkdown(free), /- minimal calls: 0/)
+
+      // A call left without an answer is not sent again.
+      const lostReport = await buildReport(durably, ids['lost'] ?? '')
+      assert.equal(lostReport.failure?.kind, 'uncertain-invocation')
+      assert.equal(lostReport.failure?.retryable, false)
+      assert.deepEqual(await agentSteps(ids['lost'] ?? ''), [])
+      assert.equal(lostReport.preflight?.checks[0]?.verdict, 'unknown')
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+
+    // The CLI says the same.
+    const res = await runChild(
+      join(packageRoot, 'node_modules', '.bin', 'tsx'),
+      [join(packageRoot, 'src', 'cli.ts'), 'status'],
+      { cwd: home, timeoutMs: 60000, env: { HOME: home } },
+    )
+    assert.equal(res.code, 0, res.stderr)
+    const block = (id: string) =>
+      res.stdout.split('\n\n').find((b) => b.startsWith(id)) ?? ''
+    assert.match(
+      block(ids['unlisted'] ?? ''),
+      /preflight-failed:[\s\S]*retry: +yes/,
+    )
+    assert.match(block(ids['unlisted'] ?? ''), /fix the profile of the role/)
+    assert.match(
+      block(ids['lost'] ?? ''),
+      /uncertain-invocation:[\s\S]*retry: +NO/,
+    )
+  })
+})
+
+describe(
+  'baseline check before the first agent call',
+  { timeout: 300000 },
+  () => {
+    /** A repository whose pinned check fails on its base commit. */
+    async function brokenRepo(root: string): Promise<string> {
+      const repo = join(root, 'repo')
+      await mkdir(join(repo, 'src'), { recursive: true })
+      await mkdir(join(repo, 'test'), { recursive: true })
+      await writeFile(
+        join(repo, 'src', 'calc.js'),
+        'export function add(a, b) {\n  return Math.trunc(a) + Math.trunc(b)\n}\n',
+      )
+      await writeFile(
+        join(repo, 'test', 'calc.test.js'),
+        "import assert from 'node:assert/strict'\nimport { it } from 'node:test'\nimport { add } from '../src/calc.js'\nit('adds decimals', () => assert.equal(add(0.1, 0.2), 0.30000000000000004))\n",
+      )
+      await writeFile(join(repo, 'package.json'), '{"type":"module"}\n')
+      for (const args of [
+        ['init', '--initial-branch=main'],
+        ['config', 'user.email', 'test@localhost'],
+        ['config', 'user.name', 'test'],
+        ['add', '-A'],
+        ['commit', '-m', 'base'],
+      ]) {
+        const res = await runChild('git', args, { cwd: repo, timeoutMs: 30000 })
+        if (res.code !== 0)
+          throw new Error(`git ${args.join(' ')}: ${res.stderr}`)
+      }
+      return repo
+    }
+
+    it('stops a failing base before any agent call, and skips the check when it is off', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'e2e-baseline-'))
+      const dir = join(home, '.local', 'state', 'local-agent-loop')
+      const repo = await brokenRepo(home)
+      process.env.FAKE_FAIL_FIRST = '0'
+      delete process.env.FAKE_REVIEW_SEQUENCE
+      const durably = createAgentDurably({ stateRoot: dir })
+      await durably.migrate()
+      const trigger = (baselineCheck?: boolean) =>
+        durably.jobs.agentLoop.trigger({
+          provider: 'fake',
+          profiles: {
+            code: {
+              provider: 'fake',
+              requestedModel: null,
+              requestedEffort: null,
+            },
+            correctness: {
+              provider: 'fake',
+              requestedModel: null,
+              requestedEffort: null,
+            },
+            'edge-cases': {
+              provider: 'fake',
+              requestedModel: null,
+              requestedEffort: null,
+            },
+            triage: {
+              provider: 'fake',
+              requestedModel: null,
+              requestedEffort: null,
+            },
+          },
+          target: {
+            kind: 'repo' as const,
+            repoPath: repo,
+            baseRef: 'HEAD',
+            task: 'Fix add() so decimal inputs are not truncated.',
+            spec: null,
+            dispositions: null,
+            inputFiles: { task: null, spec: null, dispositions: null },
+            issue: null,
+            checkCommand: ['node', '--test', 'test/calc.test.js'],
+            setupCommand: null,
+            publish: false,
+            ...(baselineCheck === undefined ? {} : { baselineCheck }),
+          },
+          maxIterations: 1,
+          context: 'reuse',
+        })
+      const ids: Record<string, string> = {}
+      try {
+        ids['on'] = (await trigger(true)).id
+        ids['off'] = (await trigger(false)).id
+        ids['omitted'] = (await trigger()).id
+        await durably.init()
+        for (const id of Object.values(ids))
+          await waitFor(
+            async () =>
+              ['completed', 'failed'].includes(
+                (await durably.getRun(id))?.status ?? '',
+              ),
+            120000,
+            `run ${id} settles`,
+          )
+
+        // The base fails its own check: no agent call of any kind, triage
+        // included, and no preflight either.
+        const on = await buildReport(durably, ids['on'] ?? '')
+        assert.equal(on.status, 'failed')
+        assert.equal(on.failure?.kind, 'baseline-check-failed')
+        assert.equal(on.failure?.retryable, true)
+        assert.match(
+          on.failure?.humanCheck ?? '',
+          /fix the check command or the environment/,
+        )
+        assert.equal(on.realLlmCallCount, 0)
+        const names = on.attempts.map((a) => a.stepName)
+        assert.ok(names.includes('baseline'))
+        assert.ok(
+          !names.some(
+            (n) =>
+              n === 'triage' ||
+              n.startsWith('preflight') ||
+              n.startsWith('stage:'),
+          ),
+        )
+        assert.equal(on.baseline?.passed, false)
+        assert.equal(on.baseline?.exitCode, 1)
+        const log = on.baseline?.log
+        assert.ok(log)
+        assert.match(await readFile(log.stdoutPath, 'utf8'), /adds decimals/)
+        assert.ok(
+          log.stdoutPath.startsWith(
+            join(dir, 'runs', ids['on'] ?? '', 'baseline-logs'),
+          ),
+        )
+        const details = on.failure?.details ?? []
+        assert.ok(details.includes('check exit code: 1'), details.join('\n'))
+        assert.ok(details.includes(`check stdout log: ${log.stdoutPath}`))
+        assert.ok(details.includes(`check stderr log: ${log.stderrPath}`))
+        const md = reportToMarkdown(on)
+        assert.match(
+          md,
+          /## Baseline check[\s\S]*- result: fail\n- exit code: 1\n- stdout: /,
+        )
+        assert.match(md, /- kind: baseline-check-failed/)
+        const json = JSON.parse(reportToJson(on)) as {
+          baseline: { exitCode: number; log: { stderrPath: string } }
+          failure: { kind: string; retryable: boolean }
+        }
+        assert.equal(json.baseline.exitCode, 1)
+        assert.equal(json.baseline.log.stderrPath, log.stderrPath)
+        assert.deepEqual(
+          [json.failure.kind, json.failure.retryable],
+          ['baseline-check-failed', true],
+        )
+
+        // Off, or left out: the check never runs on the base, and the run goes
+        // on to implement as before.
+        for (const name of ['off', 'omitted']) {
+          const report = await buildReport(durably, ids[name] ?? '')
+          const steps = report.attempts.map((a) => a.stepName)
+          assert.ok(!steps.includes('baseline'), name)
+          assert.equal(report.baseline, null, name)
+          assert.ok(
+            steps.some((n) => n.endsWith(':code:agent')),
+            name,
+          )
+          assert.equal(
+            existsSync(join(dir, 'runs', ids[name] ?? '', 'baseline-logs')),
+            false,
+            name,
+          )
+        }
+      } finally {
+        await durably.stop()
+        await durably.db.destroy()
+        delete process.env.FAKE_FAIL_FIRST
+      }
+
+      const res = await runChild(
+        join(packageRoot, 'node_modules', '.bin', 'tsx'),
+        [join(packageRoot, 'src', 'cli.ts'), 'status'],
+        { cwd: home, timeoutMs: 60000, env: { HOME: home } },
+      )
+      assert.equal(res.code, 0, res.stderr)
+      const block =
+        res.stdout.split('\n\n').find((b) => b.startsWith(ids['on'] ?? '')) ??
+        ''
+      assert.match(block, /baseline-check-failed:/)
+      assert.match(block, /retry: +yes/)
+      assert.match(block, /fix the check command or the environment/)
+      assert.match(block, /check exit code: 1/)
+      assert.match(block, /demo retrigger --run /)
+    })
+  },
+)

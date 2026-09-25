@@ -10,19 +10,25 @@ import type { TokenUsage } from '../usage.js'
 
 export type ProviderName = 'codex' | 'claude' | 'fake'
 
-/** `triage` is a read-only, one-shot judgment made before any code is written. */
+/**
+ * `triage` is a read-only, one-shot judgment made before any code is written.
+ * `preflight` is the smallest call that proves a provider, model and effort
+ * are usable, made only when no free check can tell.
+ */
 export type AgentRole =
   | 'implement'
   | 'repair'
   | 'review-a'
   | 'review-b'
   | 'triage'
+  | 'preflight'
 
 /** Roles every real provider runs without write access. */
 export const READ_ONLY_ROLES: ReadonlySet<AgentRole> = new Set([
   'review-a',
   'review-b',
   'triage',
+  'preflight',
 ])
 
 export interface NativeSession {
@@ -90,10 +96,35 @@ export interface ResolvedExecution {
   effort: string | null
 }
 
+/**
+ * What a free availability check found for one provider, model and effort.
+ * `unknown` means the check cannot tell, and only then is a minimal call
+ * made. `method` names the check, so a report says how the verdict was made.
+ */
+export interface AvailabilityCheck {
+  verdict: 'available' | 'unavailable' | 'unknown'
+  method: string
+  detail: string
+}
+
+export interface AvailabilityRequest {
+  /** The role's requested model; the fake provider reads it, real ones do not. */
+  requestedModel: string | null
+  model: string | null
+  effort: string | null
+  signal?: AbortSignal
+}
+
 /** One provider invocation: run the selected local CLI in workdir. */
 export interface AgentProvider {
   readonly name: ProviderName
   readonly fake: boolean
+  /**
+   * The CLI file the run pinned (`codexPath`), launched by every call and
+   * check of this instance and probed for its version. Null: the provider's
+   * own resolution.
+   */
+  readonly cliPath: string | null
   /** True when this provider streams partial usage via onPartialUsage. */
   readonly partialUsage: boolean
   /**
@@ -106,6 +137,17 @@ export interface AgentProvider {
     requestedEffort: string | null
   }): ResolvedExecution
   call(options: AgentCallOptions): Promise<AgentResult>
+  /**
+   * A check that sends no prompt and costs nothing. It never throws: a check
+   * that fails to run says `unknown`.
+   */
+  checkAvailability(request: AvailabilityRequest): Promise<AvailabilityCheck>
+  /**
+   * The provider's explicit refusal of a call, such as an unknown model or a
+   * failed login, as one line; null for any other error. A refused call was
+   * not acted on, so it is recorded as settled rather than uncertain.
+   */
+  rejectionReason(error: unknown): string | null
 }
 
 /**
@@ -120,6 +162,8 @@ export interface VerificationLog {
   writeError?: string
   /** Cancelled or lease lost mid-check: a partial log, not part of a verdict. */
   interrupted?: true
+  /** Killed at the check timeout after this many milliseconds. */
+  timedOutAfterMs?: number
 }
 
 /** Persisted per-attempt measurement. Missing values stay null (never 0-filled). */

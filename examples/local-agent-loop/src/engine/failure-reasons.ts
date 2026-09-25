@@ -16,12 +16,21 @@ import type { AttemptMeasurement, VerificationLog } from './providers/types.js'
 import { checkpointPaths, UNCERTAIN_INVOCATION_MESSAGE } from './runner.js'
 
 export type FailureKind =
+  | 'baseline-check-failed'
+  | 'preflight-failed'
   | 'verification-failed'
   | 'review-cap-reached'
   | 'uncertain-invocation'
   | 'cancelled'
   | 'cancelled-publish'
   | 'unclassified'
+
+/**
+ * How the job's own stops begin their error, so the table can tell them from
+ * an unrecognised failure.
+ */
+export const BASELINE_FAILED_MESSAGE = 'baseline-check-failed'
+export const PREFLIGHT_FAILED_MESSAGE = 'preflight-failed'
 
 /**
  * The demo CLI as it runs from anywhere in this repository. Every printed
@@ -45,6 +54,28 @@ interface FailureEntry {
 }
 
 const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
+  'baseline-check-failed': {
+    reason:
+      'the pinned check already fails on the base commit, before any agent call; a candidate could not be graded',
+    retryable: true,
+    humanCheck:
+      'read the full check output in the log files named below, then fix the check command or the environment (setup, dependencies, base)',
+    next: (runId) => [
+      `${DEMO} report --run ${runId}  # the baseline check output`,
+      retrigger(runId),
+    ],
+  },
+  'preflight-failed': {
+    reason:
+      "a role's provider, model or effort is not usable; the run stopped before any implementation call",
+    retryable: true,
+    humanCheck:
+      'fix the profile of the role named in the error below, or codexPath, in factory.json; a login problem is fixed in the provider CLI',
+    next: (runId) => [
+      `${DEMO} report --run ${runId}  # the preflight result for each role`,
+      retrigger(runId),
+    ],
+  },
   'verification-failed': {
     reason:
       'the pinned check still failed after the last repair; the repair budget is used up',
@@ -156,6 +187,43 @@ export function stageStep(
 }
 
 /**
+ * The full-output logs of the baseline check, every physical attempt, oldest
+ * first. A replay that read the completed checkpoint adds nothing.
+ */
+export function baselineLogs(
+  attempts: Pick<StepAttempt, 'stepName' | 'startedAt' | 'metadata'>[],
+): VerificationLog[] {
+  const seen = new Set<string>()
+  return attempts
+    .filter((a) => a.stepName === 'baseline')
+    .sort((x, y) => Date.parse(x.startedAt) - Date.parse(y.startedAt))
+    .flatMap((a) => {
+      const log = (a.metadata as AttemptMeasurement | null)?.verificationLog
+      if (!log || seen.has(log.stdoutPath)) return []
+      seen.add(log.stdoutPath)
+      return [log]
+    })
+}
+
+/** One grading attempt's log as detail lines, the same for every check. */
+function logDetails(log: VerificationLog): string[] {
+  return [
+    ...(log.interrupted
+      ? [`${DETAIL_PREFIX.checkAttempt}${INTERRUPTED_CHECK}`]
+      : []),
+    `${DETAIL_PREFIX.checkExitCode}${log.exitCode ?? 'null'}`,
+    ...(log.timedOutAfterMs !== undefined
+      ? [`${DETAIL_PREFIX.checkTimeout}${log.timedOutAfterMs}ms`]
+      : []),
+    `${DETAIL_PREFIX.checkStdout}${log.stdoutPath}`,
+    `${DETAIL_PREFIX.checkStderr}${log.stderrPath}`,
+    ...(log.writeError
+      ? [`${DETAIL_PREFIX.checkLogWriteError}${log.writeError}`]
+      : []),
+  ]
+}
+
+/**
  * The full-output logs of the verification that stopped the run: every
  * physical attempt of the last verify step, oldest first. A replay that read
  * the completed checkpoint points at the same files and adds nothing.
@@ -204,6 +272,8 @@ export interface ClassifyInput {
   uncertain: string[]
   /** From `lastVerificationLogs`: the stopping verification's logs. */
   verificationLogs?: VerificationLog[]
+  /** From `baselineLogs`: the base-commit check's logs. */
+  baselineLogs?: VerificationLog[]
   /** A repo run that pushes and opens a pull request once approved. */
   publish?: boolean
 }
@@ -223,17 +293,7 @@ export function classifyFailure(
     if (conclusion === 'verification-failed') {
       kind = 'verification-failed'
       for (const log of input.verificationLogs ?? [])
-        details.push(
-          ...(log.interrupted
-            ? [`${DETAIL_PREFIX.checkAttempt}${INTERRUPTED_CHECK}`]
-            : []),
-          `${DETAIL_PREFIX.checkExitCode}${log.exitCode ?? 'null'}`,
-          `${DETAIL_PREFIX.checkStdout}${log.stdoutPath}`,
-          `${DETAIL_PREFIX.checkStderr}${log.stderrPath}`,
-          ...(log.writeError
-            ? [`${DETAIL_PREFIX.checkLogWriteError}${log.writeError}`]
-            : []),
-        )
+        details.push(...logDetails(log))
     } else if (conclusion === 'review-cap-reached') kind = 'review-cap-reached'
     else return null
   } else if (input.status === 'failed' || input.status === 'cancelled') {
@@ -250,6 +310,12 @@ export function classifyFailure(
       // A cancel can land after the push or pull request but before the
       // delivery is recorded; a new run could publish a second time.
       kind = input.publish ? 'cancelled-publish' : 'cancelled'
+    } else if (input.error?.startsWith(BASELINE_FAILED_MESSAGE)) {
+      kind = 'baseline-check-failed'
+      for (const log of input.baselineLogs ?? [])
+        details.push(...logDetails(log))
+    } else if (input.error?.startsWith(PREFLIGHT_FAILED_MESSAGE)) {
+      kind = 'preflight-failed'
     } else {
       kind = 'unclassified'
     }
@@ -287,13 +353,13 @@ export async function classifyRun(
 ): Promise<FailureClassification | null> {
   let uncertain: string[] = []
   let verificationLogs: VerificationLog[] = []
+  let baseline: VerificationLog[] = []
   if (run.status === 'failed' || run.status === 'cancelled') {
     const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))
       ?.output as { checkpointsDir?: string } | null | undefined
-    uncertain = uncertainCheckpoints(
-      setup?.checkpointsDir ?? null,
-      await durably.getStepAttempts(run.id),
-    )
+    const attempts = await durably.getStepAttempts(run.id)
+    uncertain = uncertainCheckpoints(setup?.checkpointsDir ?? null, attempts)
+    baseline = baselineLogs(attempts)
   } else if (
     run.status === 'completed' &&
     (run.output as { conclusion?: unknown } | null)?.conclusion ===
@@ -310,6 +376,7 @@ export async function classifyRun(
     error: run.error,
     uncertain,
     verificationLogs,
+    baselineLogs: baseline,
     publish:
       (run.input as { target?: { publish?: unknown } } | null)?.target
         ?.publish === true,

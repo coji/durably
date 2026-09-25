@@ -286,6 +286,74 @@ describe('pipeline and trace', () => {
     assert.equal(p.label, '工程: 承認は通らず、完了まで終わった')
   })
 
+  it('(e) shows the baseline check and preflight only on a run that entered them', () => {
+    const stopped = derivePipeline({
+      status: 'failed',
+      diagnosisKind: 'stopped',
+      live: null,
+      report: report([step('setup', 0, 1), step('baseline', 1, 5)]),
+    })
+    assert.deepEqual(stagesOf(stopped).slice(0, 3), [
+      ['setup', 'done', 1],
+      ['baseline', 'stopped', 1],
+      ['code', 'not-reached', 0],
+    ])
+    assert.equal(stopped.label, '工程: ベースの検証で停止')
+    const refused = derivePipeline({
+      status: 'failed',
+      diagnosisKind: 'stopped',
+      live: null,
+      report: report([
+        step('setup', 0, 1),
+        step('preflight', 1, 2),
+        step('preflight:call:0', 2, 4),
+      ]),
+    })
+    assert.deepEqual(stagesOf(refused).slice(0, 2), [
+      ['setup', 'done', 1],
+      ['preflight', 'stopped', 1],
+    ])
+    // Every preflight step is one trace entry, labeled in Japanese.
+    const trace = deriveTrace({
+      run: {
+        status: 'failed',
+        createdAt: iso(0),
+        startedAt: iso(0),
+        completedAt: iso(4),
+        leaseGeneration: 1,
+      },
+      diagnosisKind: 'stopped',
+      conclusion: null,
+      attempts: [
+        step('setup', 0, 1),
+        step('preflight', 1, 2),
+        step('preflight:call:0', 2, 4),
+      ],
+      waits: [],
+      reviews: [],
+      candidate: null,
+      stepOutputs: {},
+      now: t0 + 10_000,
+    })
+    assert.deepEqual(
+      trace.root.children.map((c) => [c.label, c.attempts]),
+      [
+        ['準備', 1],
+        ['事前確認', 2],
+      ],
+    )
+    // Without either, the stepper is as it was.
+    const plain = derivePipeline({
+      status: 'waiting',
+      diagnosisKind: 'approval',
+      live: null,
+      report: report(repaired, [approval]),
+    })
+    assert.ok(
+      !stagesOf(plain).some(([s]) => s === 'baseline' || s === 'preflight'),
+    )
+  })
+
   it('(c) shows triage only for a run with triage, and the running stage', () => {
     const attempts = [
       step('setup', 0, 1),
@@ -961,6 +1029,8 @@ describe('diagnosis wording on the page', () => {
     'finished',
   ]
   const failures: FailureKind[] = [
+    'baseline-check-failed',
+    'preflight-failed',
     'verification-failed',
     'review-cap-reached',
     'uncertain-invocation',
@@ -989,6 +1059,21 @@ describe('diagnosis wording on the page', () => {
       diagnosisText({ kind: 'lease-expired' }, true),
       diagnosisText({ kind: 'lease-expired' }, false),
     )
+  })
+
+  it('tells a baseline stop to fix the check command or the environment', () => {
+    assert.match(
+      humanCheckText('baseline-check-failed'),
+      /採点コマンドか環境を直す/,
+    )
+    assert.match(
+      diagnosisText({
+        kind: 'stopped',
+        failure: { kind: 'baseline-check-failed' } as FailureClassification,
+      }),
+      /エージェントを呼ぶ前に/,
+    )
+    assert.match(humanCheckText('preflight-failed'), /役割の設定/)
   })
 
   it('says which decision a decided run recorded', () => {
@@ -1069,6 +1154,10 @@ describe('diagnosis wording on the page', () => {
     assert.deepEqual(detailField('check exit code: 1'), {
       label: '検証の終了コード',
       value: '1',
+    })
+    assert.deepEqual(detailField('check timed out after: 905000ms'), {
+      label: '時間切れまでの時間',
+      value: '905000ms',
     })
     // An interrupted attempt says in Japanese that it is not in the verdict.
     assert.deepEqual(

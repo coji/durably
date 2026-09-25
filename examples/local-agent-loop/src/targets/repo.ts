@@ -188,19 +188,55 @@ export class RepoTarget implements Target {
 
   async grade(args: GradeArgs): Promise<GradeResult> {
     await this.assertIntact(args.candidate)
+    return this.runCheck(args.logDir, args.signal)
+  }
+
+  /**
+   * Run the pinned check once on the base commit, before any agent call. The
+   * worktree was just cut from that commit and set up, so it is graded in
+   * place, as a candidate is; it must still be clean and at the base.
+   */
+  async gradeBase(args: {
+    logDir: string
+    signal: AbortSignal
+  }): Promise<GradeResult> {
+    await this.assertAtBase()
+    const result = await this.runCheck(args.logDir, args.signal)
+    // A check that edits tracked files would slip its edits into the first
+    // candidate, so the worktree must come out of it as it went in.
+    await this.assertAtBase()
+    return result
+  }
+
+  private async assertAtBase(): Promise<void> {
+    if (await isDirty(this.config.workdir, { includeUntracked: false }))
+      throw new Error(
+        `baseline-mutated: ${this.config.workdir} has uncommitted changes to tracked files`,
+      )
+    const head = await resolveCommit(this.config.workdir, 'HEAD')
+    if (head !== this.config.baseCommit)
+      throw new Error(
+        `baseline-mutated: ${this.config.workdir} is at ${head.slice(0, 12)}, not the base ${this.config.baseCommit.slice(0, 12)}`,
+      )
+  }
+
+  private async runCheck(
+    logDir: string | undefined,
+    signal: AbortSignal,
+  ): Promise<GradeResult> {
     const started = Date.now()
     const [command, ...rest] = this.config.checkCommand
     if (!command) throw new Error('repo target has an empty check command')
     const killDeadlineMs =
       this.config.checkTimeoutMs +
       Math.min(5000, Math.max(1000, this.config.checkTimeoutMs / 4))
-    const logs = await prepareCheckLogs(args.logDir)
+    const logs = await prepareCheckLogs(logDir)
     try {
       const res = await runChild(command, rest, {
         cwd: this.config.workdir,
         timeoutMs: killDeadlineMs,
         maxOutputChars: 20_000,
-        signal: args.signal,
+        signal,
         ...logs,
       })
       return {
@@ -214,13 +250,14 @@ export class RepoTarget implements Target {
       if (err instanceof Error && err.name === 'SpawnCancelledError')
         throw withPartialLog(err, logAfterError(logs, err))
       if (err instanceof Error && err.message.includes('timed out')) {
+        // What the check printed before the kill is still in the log.
+        const log = logAfterError(logs, err)
         return {
           passed: false,
           stdout: `check timed out: killed after ${killDeadlineMs}ms running ${checkFingerprint(this.config.checkCommand)}`,
           exitCode: null,
           elapsedMs: Date.now() - started,
-          // What the check printed before the kill is still in the log.
-          log: logAfterError(logs, err),
+          log: log ? { ...log, timedOutAfterMs: killDeadlineMs } : null,
         }
       }
       throw err

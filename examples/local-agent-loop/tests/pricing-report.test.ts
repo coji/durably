@@ -15,6 +15,8 @@ function baseReport(): LoopReport {
     fake: true,
     configVersion: null,
     triage: null,
+    baseline: null,
+    preflight: null,
     summary: {
       success: false,
       conclusion: null,

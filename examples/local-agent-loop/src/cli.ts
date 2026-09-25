@@ -5,7 +5,12 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { signalApproval } from './approval.js'
-import { createAgentDurably, dbPath, legacyDbWarning } from './durably.js'
+import {
+  acquireWorkerLock,
+  createAgentDurably,
+  dbPath,
+  legacyDbWarning,
+} from './durably.js'
 import { buildReport, recordedTriage } from './engine/build-report.js'
 import { killOwnedChildren } from './engine/child.js'
 import { compareReports, comparisonToMarkdown } from './engine/compare.js'
@@ -56,6 +61,7 @@ function usage(): void {
   console.log(`local-agent-loop — Durably local agent demo
 Commands (run from examples/local-agent-loop):
   pnpm demo worker                          start worker (long-running; kill -9 to test resume)
+                                            one per state root: a second one is refused
   pnpm demo trigger --provider codex|claude|fake [--context reuse|fresh] [--max-iterations 2] [--model X] [--effort Y]
       bundled sample (default): no further flags
       real repository:  --repo <path> (--issue 234 | --task "..." | --task-file <file>)
@@ -75,6 +81,8 @@ Commands (run from examples/local-agent-loop):
                                             demo data on the fake provider in a throwaway HOME
 Repository config: factory.json at the repository root, or --config <file>:
   { "check": ["pnpm", "validate"], "setup": ["pnpm", "install"], "base": "main",
+    "baselineCheck": false, "codexPath": "<file>",
+    "checkTimeoutMs": 900000, "agentTimeoutMs": 1800000,
     "profiles": { "code": { "provider": "codex", "model": "...", "effort": "..." },
                   "review": { "correctness": { ... }, "edge-cases": { ... } },
                   "triage": { ... } } }
@@ -84,8 +92,18 @@ Repository config: factory.json at the repository root, or --config <file>:
   from that provider's preset defaults. "triage" is optional: when present,
   one read-only call records a routine or probe judgment before the code
   stage (shadow mode; it changes nothing about the run).
+  "baselineCheck": true runs "check" once on the base commit before any
+  agent call and stops the run (baseline-check-failed) when it fails.
+  "codexPath" names the Codex CLI to launch, relative to the config file;
+  without it, the bundled CLI first, then codex on PATH.
+  Timeouts are positive integer milliseconds; without them, the trigger's
+  TEST_TIMEOUT_MS / AGENT_TIMEOUT_MS, then the target's default.
+  Before the first agent call, every role's provider, model and effort is
+  checked once (preflight): free where the provider can tell (Codex model
+  list), otherwise one minimal call, recorded with its usage.
   The config and input files are read once at trigger; the run keeps the
-  input file contents, and the report shows each one's SHA-256.
+  input file contents and the resolved timeouts and codexPath, and the
+  report shows each input file's SHA-256.
 State: database and run data live in ${dirname(dbPath())}
   (worktrees, checkpoints, verification scratch, delivery patches under runs/<id>/).
 Model presets (--model selects one; effort defaults from the preset and is
@@ -101,7 +119,10 @@ just recorded; unsupported values fail fast. Reports keep the raw requested,
 resolved effective, and provider-reported settings separate.
 Context defaults to reuse: implementation and repair continue one explicit
 native session. Reviews always use independent new sessions.
-Env: AGENT_TIMEOUT_MS (default 300000), TEST_TIMEOUT_MS (default 120000),
+Env (read at trigger and stored in the run, never by the worker):
+     AGENT_TIMEOUT_MS (default 300000, repository 1800000),
+     TEST_TIMEOUT_MS (default 120000, repository 900000)
+Env (fake provider, read by the worker):
      FAKE_FAIL_FIRST=0, FAKE_REVIEW_SEQUENCE, FAKE_REVIEW_SLOW_MS, FAKE_TRIAGE,
      FAKE_LATENCY_MS=<min>-<max>, FAKE_USAGE=realistic
 `)
@@ -117,6 +138,19 @@ const legacyWarning = legacyDbWarning()
 if (legacyWarning) console.error(legacyWarning)
 
 if (cmd === 'worker') {
+  // One worker per state root. The lock is the operating system's, so it
+  // ends with this process however the process ends.
+  const lock = acquireWorkerLock()
+  if (!lock.acquired) {
+    const who = lock.holder
+    console.error(
+      who
+        ? `another worker already runs on ${dirname(dbPath())}: pid ${who.pid}, started ${who.startedAt} from ${who.checkout}. Stop it first (kill ${who.pid}); two workers would pick up each other's runs.`
+        : `another worker already runs on ${dirname(dbPath())}; it has not recorded its pid yet. Stop it first.`,
+    )
+    process.exit(1)
+  }
+  process.on('exit', lock.release)
   const durably = createAgentDurably()
   durably.on('run:leased', (e) =>
     console.log(`[run:leased] ${e.jobName} ${e.runId}`),
@@ -129,14 +163,22 @@ if (cmd === 'worker') {
   durably.on('step:complete', (e) =>
     console.log(`[step:complete] ${e.stepName} run=${e.runId}`),
   )
-  await durably.init()
-  console.log('worker running (Ctrl-C to stop; kill -9 <pid> to test resume)')
+  try {
+    await durably.init()
+  } catch (error) {
+    lock.release()
+    throw error
+  }
+  console.log(
+    `worker running, pid ${process.pid} (Ctrl-C to stop; kill -9 <pid> to test resume)`,
+  )
   const shutdown = async () => {
     // Children lead their own process group, so an interrupt reaches the
     // worker but not the agent CLI it launched.
     killOwnedChildren()
     await durably.stop()
     await durably.db.destroy()
+    lock.release()
     process.exit(0)
   }
   process.on('SIGINT', () => void shutdown())

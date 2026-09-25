@@ -7,25 +7,40 @@ import {
   defineJob,
   type JsonValue,
   type StepAttemptContext,
+  type StepContext,
 } from '@coji/durably'
 import { z } from 'zod'
 
+import {
+  BASELINE_FAILED_MESSAGE,
+  PREFLIGHT_FAILED_MESSAGE,
+} from '../engine/failure-reasons.js'
 import {
   FAKE_REVIEW_DECISIONS,
   FAKE_TRIAGE_KINDS,
   FakeRun,
 } from '../engine/providers/fake.js'
 import { createProvider } from '../engine/providers/index.js'
-import type { AgentProvider, ProviderName } from '../engine/providers/types.js'
+import type {
+  AgentProvider,
+  AvailabilityCheck,
+  ProviderName,
+} from '../engine/providers/types.js'
 import { TRIAGE_JUDGMENTS, type ReportTriage } from '../engine/report.js'
 import { runAgentCall, UncertainInvocationError } from '../engine/runner.js'
 import type { ResolvedProfile } from '../engine/types.js'
-import { configVersionOf } from '../engine/versions.js'
+import { runVerificationStep } from '../engine/verification.js'
+import {
+  cliIdentityOf,
+  configVersionOf,
+  resolveVersions,
+} from '../engine/versions.js'
 import {
   createTarget,
   prepareRepoTarget,
   prepareSubjectTarget,
 } from '../targets/index.js'
+import { checkFingerprint, RepoTarget } from '../targets/repo.js'
 import {
   candidateSchema,
   deliverySchema,
@@ -79,9 +94,31 @@ const targetSchema = z
       setupCommand: z.array(z.string().min(1)).nullable().default(null),
       /** Push the branch and open a draft pull request when approved. */
       publish: z.boolean().default(false),
+      /** Run the pinned check on the base commit before any agent call. */
+      baselineCheck: z.boolean().optional(),
     }),
   ])
   .default({ kind: 'subject' })
+
+/** Milliseconds, positive and exact: what a timeout may be. */
+export const timeoutMsSchema = z
+  .number()
+  .int()
+  .positive()
+  .max(Number.MAX_SAFE_INTEGER)
+
+/**
+ * Each target's timeouts when neither `factory.json` nor the trigger's
+ * environment names one. A real repository needs far more room than the
+ * bundled sample. The sample is a one-line fix graded by a two-file suite; a
+ * repository task means reading the code base and running its whole check,
+ * and the first real run of this factory died on a five minute agent timeout
+ * before it had finished reading.
+ */
+export const DEFAULT_TIMEOUTS = {
+  subject: { checkTimeoutMs: 120000, agentTimeoutMs: 300000 },
+  repo: { checkTimeoutMs: 900000, agentTimeoutMs: 1800000 },
+} as const
 
 const providerSchema = z.enum(['codex', 'claude', 'fake'])
 
@@ -139,6 +176,17 @@ const inputSchema = z
     target: targetSchema,
     /** Defaults to false for the sample and true for a repository target. */
     autoApprove: z.boolean().optional(),
+    /**
+     * Fixed at trigger. Absent only on a run stored before they were, which
+     * still reads `TEST_TIMEOUT_MS` / `AGENT_TIMEOUT_MS` in the worker.
+     */
+    checkTimeoutMs: timeoutMsSchema.optional(),
+    agentTimeoutMs: timeoutMsSchema.optional(),
+    /**
+     * The Codex CLI file to launch, resolved and checked at trigger. Null or
+     * absent: the bundled CLI first, then `codex` on PATH.
+     */
+    codexPath: z.string().min(1).nullable().optional(),
     /**
      * Demo and test only: per-run behavior of the fake provider, for seeding
      * runs that behave differently in one worker. Refused unless every role is
@@ -246,7 +294,12 @@ export function assertSingleMode(
     )
 }
 
-function positiveTimeout(name: string, fallback: number): number {
+/**
+ * A timeout environment variable as milliseconds, or `fallback` when it is
+ * unset. Anything but a positive safe integer is refused: `0`, a sign, a
+ * fraction, `NaN`, `Infinity` and values past `Number.MAX_SAFE_INTEGER`.
+ */
+export function positiveTimeout(name: string, fallback: number): number {
   const raw = process.env[name]
   if (raw === undefined) return fallback
   if (!/^\d+$/.test(raw)) throw new Error(`${name} must be a positive integer`)
@@ -324,6 +377,154 @@ async function runTriage(
 
 const TRIAGE_TIMEOUT_MS = 300_000
 
+/** A reply of one word: the call proves the settings work, and no more. */
+const PREFLIGHT_PROMPT =
+  'This is a connectivity check. Reply with the single word OK. Do not read files or run tools.'
+const PREFLIGHT_TIMEOUT_MS = 120_000
+
+/** One distinct provider, model and effort, and every role that uses it. */
+export interface PreflightCheck {
+  roles: string[]
+  provider: ProviderName
+  requestedModel: string | null
+  model: string | null
+  effort: string | null
+  /** The CLI file this check and the role's calls launch; null for fake. */
+  cliPath: string | null
+  cliVersion: string | null
+  /** The free check's answer; `unknown` leads to a minimal call. */
+  free: AvailabilityCheck
+}
+
+/** What a minimal call proved about one `PreflightCheck`. */
+export interface PreflightCallResult {
+  verdict: 'available' | 'unavailable'
+  detail: string
+}
+
+function describeCheck(check: PreflightCheck): string {
+  return `${check.roles.join(', ')} (${check.provider} ${check.model ?? 'provider-default'}, effort ${check.effort ?? 'provider-default'})`
+}
+
+/**
+ * Prove every role's provider, model and effort usable before the first
+ * agent call. Each distinct setting is checked once, for all its roles. The
+ * free checks run in one step; a setting they cannot decide gets one minimal
+ * call, in its own step through the common checkpoint and measurement path,
+ * so a replay reads the answer back and an unanswered call stops the run as
+ * uncertain. The first unusable setting stops the run before anything else
+ * is sent.
+ */
+async function runPreflight(
+  step: StepContext,
+  setup: FactorySetup,
+  target: Target,
+  fakeRun: FakeRun | null,
+): Promise<void> {
+  const roles: [string, ResolvedProfile][] = [
+    ['code', setup.profiles.code],
+    ['correctness', setup.profiles.correctness],
+    ['edge-cases', setup.profiles['edge-cases']],
+    ...(setup.triage
+      ? [['triage', setup.triage] as [string, ResolvedProfile]]
+      : []),
+  ]
+  const providerFor = (
+    profile: Pick<ResolvedProfile, 'provider' | 'requestedModel'>,
+  ) =>
+    createProvider(profile.provider, {
+      run: fakeRun,
+      requestedModel: profile.requestedModel,
+      codexPath: setup.codexPath ?? null,
+    })
+  const plan = await step.run(
+    'preflight',
+    async (signal) => {
+      const distinct = new Map<string, [string[], ResolvedProfile]>()
+      for (const [role, profile] of roles) {
+        // The requested model is part of the key only for the fake provider,
+        // whose effective model is always the same label.
+        const key = [
+          profile.provider,
+          profile.requestedModel ?? profile.effectiveModel,
+          profile.effectiveEffort,
+        ].join('|')
+        const entry = distinct.get(key)
+        if (entry) entry[0].push(role)
+        else distinct.set(key, [[role], profile])
+      }
+      const checks: PreflightCheck[] = []
+      for (const [names, profile] of distinct.values()) {
+        const provider = providerFor(profile)
+        const cli = cliIdentityOf(
+          profile.provider,
+          await resolveVersions(profile.provider, provider.cliPath),
+        )
+        checks.push({
+          roles: names,
+          provider: profile.provider,
+          requestedModel: profile.requestedModel,
+          model: profile.effectiveModel,
+          effort: profile.effectiveEffort,
+          cliPath: cli?.path ?? null,
+          cliVersion: cli?.version ?? null,
+          free: await provider.checkAvailability({
+            requestedModel: profile.requestedModel,
+            model: profile.effectiveModel,
+            effort: profile.effectiveEffort,
+            signal,
+          }),
+        })
+      }
+      return { checks }
+    },
+    { metadata: { stage: 'preflight' } as unknown as JsonValue },
+  )
+  const refused = plan.checks.find((c) => c.free.verdict === 'unavailable')
+  if (refused)
+    throw new Error(
+      `${PREFLIGHT_FAILED_MESSAGE}: ${describeCheck(refused)} is not usable; ${refused.free.method}: ${refused.free.detail}`,
+    )
+  for (const [index, check] of plan.checks.entries()) {
+    if (check.free.verdict !== 'unknown') continue
+    const operationKey = `${step.runId}/preflight/call:${index}`
+    const answer: PreflightCallResult = await step.run(
+      `preflight:call:${index}`,
+      async (signal, attempt) => {
+        const call = await runAgentCall(signal, attempt, {
+          provider: providerFor(check),
+          providerName: check.provider,
+          prompt: PREFLIGHT_PROMPT,
+          workdir: target.workdir,
+          timeoutMs: Math.min(setup.agentTimeoutMs, PREFLIGHT_TIMEOUT_MS),
+          requestedModel: check.requestedModel,
+          requestedEffort: check.effort,
+          effectiveModel: check.model,
+          effectiveEffort: check.effort,
+          role: 'preflight',
+          stage: 'preflight',
+          iteration: 0,
+          operationKey,
+          checkpointsDir: setup.checkpointsDir,
+          session: null,
+          configVersion: setup.configVersion,
+          acceptRejection: true,
+        })
+        return call.rejection === null
+          ? { verdict: 'available', detail: 'the minimal call was answered' }
+          : { verdict: 'unavailable', detail: call.rejection }
+      },
+      {
+        metadata: { stage: 'preflight', operationKey } as unknown as JsonValue,
+      },
+    )
+    if (answer.verdict === 'unavailable')
+      throw new Error(
+        `${PREFLIGHT_FAILED_MESSAGE}: ${describeCheck(check)} is not usable; minimal call refused: ${answer.detail}`,
+      )
+  }
+}
+
 export interface AgentLoopJobOptions {
   /** Directory every run's worktree, checkpoints and delivery live under. */
   stateRoot: string
@@ -384,22 +585,39 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           })
           const profiles = byRole((role) => resolve(role, fixed[role]))
           const triage = fixedTriage ? resolve('triage', fixedTriage) : null
-          // A real repository needs far more room than the bundled sample. The
-          // sample is a one-line fix graded by a two-file suite; a repository
-          // task means reading the code base and running its whole check, and
-          // the first real run of this factory died on a five minute agent
-          // timeout before it had finished reading.
-          const isRepo = input.target.kind === 'repo'
-          const testTimeoutMs = positiveTimeout(
-            'TEST_TIMEOUT_MS',
-            isRepo ? 900000 : 120000,
-          )
+          // A run triggered from the CLI carries both timeouts. Only a run
+          // stored before they were fixed reads the worker's environment.
+          const defaults = DEFAULT_TIMEOUTS[input.target.kind]
+          const testTimeoutMs =
+            input.checkTimeoutMs ??
+            positiveTimeout('TEST_TIMEOUT_MS', defaults.checkTimeoutMs)
           // Both timeouts are read before anything is created, so a bad value
           // leaves no run directory, worktree or branch behind.
-          const agentTimeoutMs = positiveTimeout(
-            'AGENT_TIMEOUT_MS',
-            isRepo ? 1800000 : 300000,
+          const agentTimeoutMs =
+            input.agentTimeoutMs ??
+            positiveTimeout('AGENT_TIMEOUT_MS', defaults.agentTimeoutMs)
+          const codexPath = input.codexPath ?? null
+          // The path and version of every real CLI the roles launch, so runs
+          // on different builds never share a config version.
+          const cli: Record<string, string | null> = {}
+          const used = new Set(
+            [
+              ...Object.values(fixed),
+              ...(fixedTriage ? [fixedTriage] : []),
+            ].map((p) => p.provider),
           )
+          for (const provider of used) {
+            const identity = cliIdentityOf(
+              provider,
+              await resolveVersions(
+                provider,
+                provider === 'codex' ? codexPath : null,
+              ),
+            )
+            if (!identity) continue
+            cli[`${provider}CliPath`] = identity.path
+            cli[`${provider}Cli`] = identity.version
+          }
           await mkdir(root, { recursive: true })
           const target: TargetConfig =
             input.target.kind === 'subject'
@@ -444,11 +662,16 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               correctness: profiles.correctness,
               edgeCases: profiles['edge-cases'],
               triage,
+              cli,
             }),
             profiles,
             triage,
             maxIterations: input.maxIterations,
             agentTimeoutMs,
+            baselineCheck:
+              input.target.kind === 'repo' &&
+              input.target.baselineCheck === true,
+            codexPath,
             // A draft pull request is itself what the human reviews, so waiting
             // for a separate approval signal first would hold a worker for
             // nothing. The bundled sample keeps the wait: its human-wait timing
@@ -468,15 +691,51 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       )
 
       const target = createTarget(setup.target)
+      // The pinned check must pass on the base commit, or no candidate could
+      // be graded: stop before paying for any agent call. The same checkpoint
+      // pair as verification, so a completed result is read back on resume
+      // and an interrupted check is graded again.
+      if (setup.baselineCheck && target instanceof RepoTarget) {
+        const baseline = await step.run('baseline', (signal, attempt) =>
+          runVerificationStep(
+            attempt,
+            {
+              provider: setup.profiles.code.provider,
+              operationKey: `${step.runId}/baseline`,
+              checkpointsDir: setup.checkpointsDir,
+              stage: 'baseline',
+              iteration: 0,
+              grade: (graderSignal) =>
+                target.gradeBase({
+                  // Keyed by the step attempt, as a verification log is.
+                  logDir: join(
+                    setup.checkpointsDir,
+                    '..',
+                    'baseline-logs',
+                    attempt.id,
+                  ),
+                  signal: graderSignal,
+                }),
+            },
+            signal,
+          ),
+        )
+        if (!baseline.passed && setup.target.kind === 'repo')
+          throw new Error(
+            `${BASELINE_FAILED_MESSAGE}: \`${checkFingerprint(setup.target.checkCommand)}\` failed on the base commit ${setup.target.baseCommit.slice(0, 12)} (exit code ${baseline.exitCode ?? 'unknown'}) before any agent call`,
+          )
+      }
       // One per run, shared by every role. Review verdicts are read by round
       // and lens, so replaying completed rounds shifts nothing.
       const fakeRun = input.fakeScenario
         ? new FakeRun(input.fakeScenario)
         : null
+      await runPreflight(step, setup, target, fakeRun)
       const providers = byRole((role) =>
         createProvider(setup.profiles[role].provider, {
           run: fakeRun,
           requestedModel: setup.profiles[role].requestedModel,
+          codexPath: setup.codexPath ?? null,
         }),
       )
       // Shadow mode: the judgment is recorded and nothing below reads it.
@@ -493,6 +752,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                 provider: createProvider(triageProfile.provider, {
                   run: fakeRun,
                   requestedModel: triageProfile.requestedModel,
+                  codexPath: setup.codexPath ?? null,
                 }),
                 target,
               }),

@@ -39,6 +39,12 @@ export interface AgentCallSpec {
   session?: SessionRef | null
   requireSession?: boolean
   configVersion?: string | null
+  /**
+   * Settle an explicit refusal from the provider (`rejectionReason`) as a
+   * completed call instead of an error. Only the preflight call asks for it:
+   * a refused preflight is an answer, not a doubt.
+   */
+  acceptRejection?: boolean
 }
 
 export interface AgentCallOutcome {
@@ -47,6 +53,8 @@ export interface AgentCallOutcome {
   invocationId: string
   recovered: boolean
   measurement: AttemptMeasurement
+  /** The provider's refusal, when `acceptRejection` settled one; else null. */
+  rejection: string | null
 }
 
 interface StartedCheckpoint {
@@ -60,7 +68,10 @@ interface CompletedCheckpoint {
   operationKey: string
   invocationId: string
   status: 'completed'
-  result: AgentResult
+  /** Null only for a call the provider refused; see `rejection`. */
+  result: AgentResult | null
+  /** Why the provider refused the call outright; absent otherwise. */
+  rejection?: string
   invocationStartedAt: string
   invocationCompletedAt: string
 }
@@ -134,7 +145,12 @@ export async function runAgentCall(
   spec: AgentCallSpec,
 ): Promise<AgentCallOutcome> {
   const startedAt = Date.now()
-  const versions = await resolveVersions(spec.providerName)
+  // The provider launches its pinned CLI, so the version on record is of
+  // that same file.
+  const versions = await resolveVersions(
+    spec.providerName,
+    spec.provider.cliPath,
+  )
   const operationKey = spec.operationKey ?? `attempt/${attempt.id}`
   const checkpointsDir =
     spec.checkpointsDir ?? join(spec.workdir, '.operation-checkpoints')
@@ -223,7 +239,49 @@ export async function runAgentCall(
       invocationId,
       recovered,
       measurement,
+      rejection: null,
     }
+  }
+
+  /** A refused call: settled, with nothing to read and nothing to resend. */
+  const finishRejected = async (
+    checkpoint: CompletedCheckpoint & { rejection: string },
+    recovered: boolean,
+  ): Promise<AgentCallOutcome> => {
+    invocationId = checkpoint.invocationId
+    await settleMeasurement()
+    measurement = await writeMeasurement(attempt, measurement, {
+      invocationId,
+      elapsedMs:
+        Date.parse(checkpoint.invocationCompletedAt) -
+        Date.parse(checkpoint.invocationStartedAt),
+      invocationStartedAt: checkpoint.invocationStartedAt,
+      invocationCompletedAt: checkpoint.invocationCompletedAt,
+      recovered,
+      result: 'rejected',
+      error: checkpoint.rejection,
+    })
+    return {
+      text: '',
+      sessionId: null,
+      invocationId,
+      recovered,
+      measurement,
+      rejection: checkpoint.rejection,
+    }
+  }
+  const settled = (
+    checkpoint: CompletedCheckpoint,
+    recovered: boolean,
+  ): Promise<AgentCallOutcome> => {
+    if (typeof checkpoint.rejection === 'string')
+      return finishRejected(
+        { ...checkpoint, rejection: checkpoint.rejection },
+        recovered,
+      )
+    if (!checkpoint.result)
+      throw new Error('operation checkpoint has neither a result nor a refusal')
+    return finish(checkpoint.result, recovered, checkpoint)
   }
 
   const assertResolvedSettings = (result: AgentResult) => {
@@ -240,8 +298,8 @@ export async function runAgentCall(
   if (saved) {
     if (saved.operationKey !== operationKey)
       throw new Error('operation checkpoint key mismatch')
-    assertResolvedSettings(saved.result)
-    return finish(saved.result, true, saved)
+    if (saved.result) assertResolvedSettings(saved.result)
+    return settled(saved, true)
   }
   if (existingStart)
     throw new UncertainInvocationError(operationKey, invocationId)
@@ -259,7 +317,7 @@ export async function runAgentCall(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
       const raced = await readJson<CompletedCheckpoint>(paths.completed)
-      if (raced) return finish(raced.result, true, raced)
+      if (raced) return settled(raced, true)
       const start = await readJson<StartedCheckpoint>(paths.started)
       throw new UncertainInvocationError(
         operationKey,
@@ -333,6 +391,24 @@ export async function runAgentCall(
     // reads the checkpoint's value, and the two must agree.
     return finish(result, false, completed)
   } catch (error) {
+    // An explicit refusal was not acted on, so it is recorded as the call's
+    // completed answer: a replay reads it back and nothing is sent again. A
+    // cancel or a timeout is never a refusal, whatever its message says.
+    const rejection =
+      spec.acceptRejection && !signal.aborted && !timeout.signal.aborted
+        ? spec.provider.rejectionReason(error)
+        : null
+    if (rejection !== null) {
+      const refused: CompletedCheckpoint & { rejection: string } = {
+        ...startRecord,
+        status: 'completed',
+        result: null,
+        rejection,
+        invocationCompletedAt: new Date().toISOString(),
+      }
+      await writeJsonAtomic(paths.completed, refused, attempt.id)
+      return finishRejected(refused, false)
+    }
     const message = error instanceof Error ? error.message : String(error)
     await settleMeasurement()
     measurement = await writeMeasurement(attempt, measurement, {

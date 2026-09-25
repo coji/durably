@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -48,13 +49,21 @@ function fakeAttempt(): StubAttempt {
 
 function stubProvider(
   behavior: (options: AgentCallOptions) => Promise<AgentResult>,
+  rejectionReason: (error: unknown) => string | null = () => null,
 ): AgentProvider {
   return {
     name: 'codex',
     fake: false,
+    cliPath: null,
     partialUsage: false,
     resolveExecution: () => ({ model: 'resolved-model', effort: 'low' }),
     call: behavior,
+    checkAvailability: async () => ({
+      verdict: 'unknown',
+      method: 'stub',
+      detail: 'stub',
+    }),
+    rejectionReason,
   }
 }
 
@@ -566,6 +575,76 @@ describe('logs of the verification that stopped the run', () => {
         verify(4, '2026-01-01T00:01:00Z', null),
       ]),
       [],
+    )
+  })
+})
+
+describe('a refused preflight call is settled, not uncertain', () => {
+  it('records an explicit refusal as completed and reads it back without resending', async () => {
+    const checkpointsDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+    let calls = 0
+    const provider = stubProvider(
+      async () => {
+        calls++
+        throw new Error('400: model is not supported')
+      },
+      (error) =>
+        error instanceof Error && error.message.startsWith('400')
+          ? error.message
+          : null,
+    )
+    const spec = {
+      ...baseSpec(provider, checkpointsDir),
+      role: 'preflight' as const,
+      stage: 'preflight',
+      acceptRejection: true,
+    }
+    const first = fakeAttempt()
+    const refused = await runAgentCall(
+      new AbortController().signal,
+      first as never,
+      spec,
+    )
+    assert.equal(refused.rejection, '400: model is not supported')
+    assert.equal(first.snapshots.at(-1)?.result, 'rejected')
+    const paths = checkpointPaths(checkpointsDir, spec.operationKey)
+    assert.ok(existsSync(paths.completed))
+    // A replay reads the refusal back and sends nothing.
+    const replay = fakeAttempt()
+    const again = await runAgentCall(
+      new AbortController().signal,
+      replay as never,
+      spec,
+    )
+    assert.equal(again.rejection, refused.rejection)
+    assert.equal(again.recovered, true)
+    assert.equal(calls, 1)
+  })
+
+  it('leaves any other error uncertain, so the run stops instead of resending', async () => {
+    const checkpointsDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+    const provider = stubProvider(
+      async () => {
+        throw new Error('connection reset')
+      },
+      () => null,
+    )
+    const spec = {
+      ...baseSpec(provider, checkpointsDir),
+      role: 'preflight' as const,
+      stage: 'preflight',
+      acceptRejection: true,
+    }
+    await assert.rejects(
+      runAgentCall(new AbortController().signal, fakeAttempt() as never, spec),
+      /connection reset/,
+    )
+    const paths = checkpointPaths(checkpointsDir, spec.operationKey)
+    assert.ok(existsSync(paths.started))
+    assert.equal(existsSync(paths.completed), false)
+    await assert.rejects(
+      runAgentCall(new AbortController().signal, fakeAttempt() as never, spec),
+      UncertainInvocationError,
     )
   })
 })

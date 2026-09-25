@@ -284,3 +284,121 @@ describe('verification logs', () => {
     assert.equal(await readFile(lostLog, 'utf8'), 'STARTED\n')
   })
 })
+
+/** A one-commit repository and a repo target at its base, graded by `script`. */
+async function baseRepo(script: string, checkTimeoutMs = 60000) {
+  const root = await mkdtemp(join(tmpdir(), 'baseline-'))
+  const repo = join(root, 'repo')
+  await mkdir(repo)
+  const git = async (args: string[]) => {
+    const res = await runChild('git', args, { cwd: repo, timeoutMs: 30000 })
+    if (res.code !== 0) throw new Error(`git ${args.join(' ')}: ${res.stderr}`)
+  }
+  await git(['init', '--initial-branch=main'])
+  await git(['config', 'user.email', 'test@localhost'])
+  await git(['config', 'user.name', 'test'])
+  await writeFile(join(repo, 'check.cjs'), script)
+  await git(['add', '-A'])
+  await git(['commit', '-m', 'base'])
+  const target = new RepoTarget({
+    kind: 'repo',
+    repoPath: repo,
+    baseCommit: await resolveCommit(repo, 'HEAD'),
+    branch: 'main',
+    workdir: repo,
+    setupCommand: null,
+    checkCommand: [process.execPath, 'check.cjs'],
+    checkTimeoutMs,
+    task: 'task',
+    spec: null,
+    dispositions: null,
+    issue: null,
+    deliveryDir: join(root, 'delivery'),
+    candidatesDir: join(root, 'candidates'),
+    publish: false,
+  })
+  const logDirFor = (attemptId: string) =>
+    join(root, 'baseline-logs', attemptId)
+  // The baseline step as the job runs it: the verification checkpoint pair
+  // around `gradeBase`, a log directory per physical attempt.
+  const specFor = (attemptId: string) => ({
+    provider: 'fake' as const,
+    operationKey: 'run/baseline',
+    checkpointsDir: join(root, 'checkpoints'),
+    stage: 'baseline',
+    iteration: 0,
+    grade: (signal: AbortSignal) =>
+      target.gradeBase({ logDir: logDirFor(attemptId), signal }),
+  })
+  return { root, repo, specFor, logDirFor }
+}
+
+describe('baseline check on the base commit', () => {
+  it('records the failing exit code and the full log, and reads the verdict back on resume', async () => {
+    const { specFor, logDirFor } = await baseRepo(`
+      process.stdout.write('BASE-OUT\\n')
+      process.stderr.write('BASE-ERR\\n')
+      process.exitCode = 3
+    `)
+    const first = attempt()
+    const graded = await runVerificationStep(
+      first as never,
+      specFor(first.id),
+      new AbortController().signal,
+    )
+    assert.equal(graded.passed, false)
+    assert.equal(graded.exitCode, 3)
+    assert.equal(graded.log?.exitCode, 3)
+    assert.equal(
+      await readFile(graded.log?.stdoutPath ?? '', 'utf8'),
+      'BASE-OUT\n',
+    )
+    assert.equal(
+      await readFile(graded.log?.stderrPath ?? '', 'utf8'),
+      'BASE-ERR\n',
+    )
+    assert.equal(first.snapshots.at(-1)?.stage, 'baseline')
+    // A resumed worker reads the completed verdict: no second check.
+    const replay = attempt()
+    const replayed = await runVerificationStep(
+      replay as never,
+      specFor(replay.id),
+      new AbortController().signal,
+    )
+    assert.deepEqual(replayed, graded)
+    assert.equal(replay.snapshots.at(-1)?.result, 'checkpoint-recovered')
+    assert.equal(existsSync(logDirFor(replay.id)), false)
+  })
+
+  it('records a timeout with no exit code, and how long the check ran', async () => {
+    const { specFor } = await baseRepo(
+      `process.stdout.write('HUNG\\n'); setInterval(() => {}, 1000)`,
+      300,
+    )
+    const a = attempt()
+    const graded = await runVerificationStep(
+      a as never,
+      specFor(a.id),
+      new AbortController().signal,
+    )
+    assert.equal(graded.passed, false)
+    assert.equal(graded.exitCode, null)
+    assert.equal(graded.log?.exitCode, null)
+    assert.ok((graded.log?.timedOutAfterMs ?? 0) >= 300)
+    assert.equal(await readFile(graded.log?.stdoutPath ?? '', 'utf8'), 'HUNG\n')
+  })
+
+  it('refuses a worktree that is no longer the clean base commit', async () => {
+    const { repo, specFor } = await baseRepo(`process.exitCode = 0`)
+    await writeFile(join(repo, 'check.cjs'), 'process.exitCode = 1\n')
+    const a = attempt()
+    await assert.rejects(
+      runVerificationStep(
+        a as never,
+        specFor(a.id),
+        new AbortController().signal,
+      ),
+      /baseline-mutated/,
+    )
+  })
+})
