@@ -1078,7 +1078,7 @@ describe('diagnosis wording on the page', () => {
     )
     assert.match(
       humanCheckText('baseline-check-failed', { setupUntracked: true }),
-      /setup が \.gitignore にないファイルを作っている[\s\S]*baselineCheck を外/,
+      /準備のコマンドが \.gitignore にないファイルを作っている[\s\S]*baselineCheck を外/,
     )
     assert.match(humanCheckText('preflight-failed'), /役割の設定/)
     // A config fix is retried with the settings read again.

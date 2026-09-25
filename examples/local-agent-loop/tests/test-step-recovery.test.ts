@@ -453,12 +453,46 @@ describe('baseline check on the base commit', () => {
     )
   })
 
+  it('stops as a baseline failure when the cleanup cannot remove the check output', async () => {
+    const { repo, specFor } = await baseRepo(
+      `require('node:fs').writeFileSync('out.txt', 'x')`,
+    )
+    // An untracked file in a directory the clean cannot write to: git either
+    // fails or leaves it behind, and both must stop as a baseline failure
+    // rather than an unclassified one.
+    const { chmod } = await import('node:fs/promises')
+    await mkdir(join(repo, 'locked'))
+    await writeFile(join(repo, 'locked', 'keep.txt'), 'x')
+    await chmod(join(repo, 'locked'), 0o500)
+    try {
+      const a = attempt()
+      await assert.rejects(
+        runVerificationStep(
+          a as never,
+          specFor(a.id),
+          new AbortController().signal,
+        ),
+        (err: Error) => {
+          assert.match(
+            err.message,
+            /^baseline-check-failed: baseline-mutated: /,
+          )
+          return true
+        },
+      )
+    } finally {
+      await chmod(join(repo, 'locked'), 0o700)
+    }
+  })
+
   it('stops before the check when setup leaves files .gitignore does not cover', async () => {
     const { repo } = await baseRepo(`process.exitCode = 0`)
     await writeFile(join(repo, '.git', 'info', 'exclude'), 'node_modules/\n')
     await mkdir(join(repo, 'node_modules'))
     await writeFile(join(repo, 'node_modules', 'dep.js'), 'x')
-    // Ignored output only: setup may leave it.
+    // Ignored output only: setup may leave it. So may an empty directory,
+    // which can never be staged.
+    await mkdir(join(repo, 'tmp'))
     await assertSetupLeftNoUntracked(repo)
 
     await mkdir(join(repo, 'generated'))

@@ -254,7 +254,7 @@ const PREFLIGHT_WITHOUT_CONFIG_TEXT =
 
 /** Baseline check text when setup left files .gitignore does not cover. */
 const SETUP_UNTRACKED_TEXT =
-  'setup が .gitignore にないファイルを作っているので、下に示したファイルを .gitignore に入れるか、factory.json の baselineCheck を外して設定を読み直す再実行を使う。'
+  '準備のコマンドが .gitignore にないファイルを作っているので、下に示したファイルを .gitignore に入れるか、factory.json の baselineCheck を外して設定を読み直す再実行を使う。'
 
 /**
  * What a person checks first. `failure` carries the server's own verdicts:
@@ -280,7 +280,7 @@ const DETAIL_LABEL: Record<keyof typeof DETAIL_PREFIX, string> = {
   checkStderr: '検証の標準エラー',
   checkTimeout: '時間切れまでの時間',
   checkLogWriteError: 'ログの書き込みエラー',
-  setupUntracked: 'setup が残したファイル',
+  setupUntracked: '準備が残したファイル',
 }
 
 /** Shown for an exit code the check never returned. */

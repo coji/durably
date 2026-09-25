@@ -233,7 +233,14 @@ export class RepoTarget implements Target {
       `the check changed tracked files in ${workdir}; it must leave the base commit as it found it`,
     )
     if (result.passed) {
-      await cleanUntracked(workdir, args.signal)
+      try {
+        await cleanUntracked(workdir, args.signal)
+      } catch (err) {
+        if (args.signal.aborted) throw err
+        throw new Error(
+          `${BASELINE_FAILED_MESSAGE}: baseline-mutated: the check's untracked output could not be removed (${(err as Error).message}); stopped before any agent call`,
+        )
+      }
       // Whatever the clean could not remove would reach `git add -A` at the
       // first sealing, so the worktree must come out empty of it.
       const left = await someUntracked(workdir, 5, args.signal)
