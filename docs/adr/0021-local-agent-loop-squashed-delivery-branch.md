@@ -22,7 +22,7 @@ Delivery is a durable step. A worker can be killed after it made a branch or ope
 ## Consequences
 
 - An approved repository run leaves two branches in the source repository. The squashed one is ready to merge as one commit; the iteration one keeps the record.
-- The status output, the report and the web UI name the squashed branch and commit. A delivery recorded before this change shows them as null.
+- The status output and the report name the squashed branch and commit; the web UI names only the squashed branch. A delivery recorded before this change shows them as null.
 - A leftover `factory/<runId>-squashed` branch that is not this run's squash, for example one edited by hand, stops delivery until a person removes or renames it.
 
 ## Rejected Alternatives

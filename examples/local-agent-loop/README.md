@@ -410,11 +410,13 @@ pnpm --filter example-local-agent-loop demo trigger \
   candidateと同じtreeを持つcommitが1つだけ乗ったbranchです。candidateがbaseと
   同じtreeでも空のcommitを1つ作るので、baseからのcommit数は常に1です。refだけで
   作るので、元のbranch、worktree、あなたのcheckoutは動きません。成果物を作る
-  stepが途中で止まって再実行されたときは、既にあるこのbranchがbaseの上の1 commitで
-  同じtreeなら使い回し、違えば上書きせずにそのrunを止めます。承認されなかったrunには
-  作りません。branch名とcommit SHAは `delivery.squashedBranch` と
-  `delivery.squashedCommit` に記録し、`status --run`、reportのJSONとMarkdown、
-  web UIの納品物に出ます。この記録が無い以前のrunでは `null` です。
+  stepが途中で止まって再実行されたときは、まず `git commit-tree` で期待する
+  commitを組み立て、既にあるこのbranchがそのcommitを指しているときだけ使い回します。
+  author、message、親、treeのすべてが一致している必要があります。それ以外の
+  branchは拒否し、手を付けずに残します。承認されなかったrunには作りません。
+  branch名とcommit SHAは `delivery.squashedBranch` と `delivery.squashedCommit`
+  に記録し、`status --run` のJSONとreportのJSON・Markdownに出ます。web UIの
+  納品物はbranch名だけ表示します。この記録が無い以前のrunでは `null` です。
 - `--publish` を付けると反復履歴のあるbranchをpushしてDraft PRを作ります。
   `commit.publishSquashed` が `true` のときだけ、代わりにsquash branchをpushして
   Draft PRのheadにします。どちらの場合も、同じheadで開いているPRが既にあれば
