@@ -776,6 +776,85 @@ describe('a refused call after preflight stops the run, settled', () => {
     )
   })
 
+  it('keeps a refusal after agent activity uncertain, except in preflight', async () => {
+    /** Works on the call first, then fails with an error that reads as a refusal. */
+    const actsThenRefuses = stubProvider(
+      async (options) => {
+        options.onActivity?.()
+        throw new Error('401: login expired')
+      },
+      (error) =>
+        error instanceof Error && error.message.startsWith('401')
+          ? error.message
+          : null,
+    )
+    for (const role of ['implement', 'repair', 'review-a', 'triage'] as const) {
+      const checkpointsDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+      const spec = {
+        ...baseSpec(actsThenRefuses, checkpointsDir),
+        role,
+        stage: role,
+      }
+      const attempt = fakeAttempt()
+      const error = await runAgentCall(
+        new AbortController().signal,
+        attempt as never,
+        spec,
+      ).catch((e: unknown) => e)
+      assert.ok(!(error instanceof RejectedInvocationError), role)
+      assert.equal(attempt.snapshots.at(-1)?.result, 'uncertain', role)
+      const paths = checkpointPaths(checkpointsDir, spec.operationKey)
+      assert.equal(existsSync(paths.completed), false, role)
+      // The resume never resends it: it stops as uncertain.
+      await assert.rejects(
+        runAgentCall(
+          new AbortController().signal,
+          fakeAttempt() as never,
+          spec,
+        ),
+        UncertainInvocationError,
+      )
+    }
+    // Preflight asks for a reply only, so its refusal still settles the call.
+    const preflightDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+    const outcome = await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      {
+        ...baseSpec(actsThenRefuses, preflightDir),
+        role: 'preflight',
+        stage: 'preflight',
+        acceptRejection: true,
+      },
+    )
+    assert.equal(outcome.rejection, '401: login expired')
+  })
+
+  it('treats reported partial usage as activity', async () => {
+    const checkpointsDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+    const provider = stubProvider(
+      async (options) => {
+        options.onPartialUsage?.({
+          inputTokens: 10,
+          cachedInputTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+          outputTokens: 1,
+          totalTokens: 11,
+          usageSource: 'provider-partial',
+        })
+        throw new Error('401: login expired')
+      },
+      (error) => (error instanceof Error ? error.message : null),
+    )
+    const error = await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      baseSpec(provider, checkpointsDir),
+    ).catch((e: unknown) => e)
+    assert.ok(!(error instanceof RejectedInvocationError))
+  })
+
   it('classifies the stop as rejected-invocation, retryable, with the refusal and the reload retry', () => {
     const error =
       'rejected-invocation: the review-a call (codex gpt-5.6-sol) was refused: 401: login expired'

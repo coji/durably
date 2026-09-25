@@ -1454,6 +1454,10 @@ describe('triage calibration counting', () => {
       '- [ ] parses a heading',
       '- [x] Parses   a heading',
       '- counts once',
+      '- [ ]',
+      '* * *',
+      '- - -',
+      '___',
       '',
       '### Edge cases',
       '',
@@ -1475,7 +1479,8 @@ describe('triage calibration counting', () => {
     const c = triageCalibration('task', spec)
     assert.equal(c.specChars, [...spec].length)
     // parses a heading (twice, once after normalizing), counts once, the
-    // subheading's item, and the Japanese section's item.
+    // subheading's item, and the Japanese section's item. The empty checkbox
+    // and the thematic breaks are not items.
     assert.equal(c.acceptanceCriteria, 4)
     // src/a.ts, src/b.ts, docs/x.md; src/c.ts is nested.
     assert.equal(c.plannedFiles, 3)

@@ -260,7 +260,8 @@ const PLANNED_FILE_HEADINGS = [
  *   together.
  * - An item is a list line (`-`, `*`, `+`, or `1.` / `1)`) that starts at
  *   the beginning of the line, with an optional `[ ]` / `[x]` checkbox.
- *   Indented lines, nested items among them, belong to the item above them
+ *   A checkbox with no text, and a thematic break such as `* * *`, is not
+ *   an item. Indented lines, nested items among them, belong to the item above them
  *   and are not counted again.
  * - Fenced code blocks are skipped, headings inside them included.
  *
@@ -302,8 +303,12 @@ function sectionItems(spec: string, titles: string[]): string[] | null {
       continue
     }
     if (level === null) continue
-    const item = /^(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?(.*\S)/.exec(line)
-    if (item?.[1]) items.push(item[1])
+    // A thematic break (`---`, `* * *`) looks like a list line but is not.
+    if (/^\s{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/.test(line)) continue
+    const item = /^(?:[-*+]|\d+[.)])\s+(.*\S)/
+      .exec(line)?.[1]
+      ?.replace(/^\[[ xX]\](?:\s+|$)/, '')
+    if (item) items.push(item)
   }
   return found ? items : null
 }

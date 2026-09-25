@@ -26,6 +26,7 @@ import {
   claudeCode,
   isAuthenticationError,
   type ClaudeCodeSettings,
+  type SDKMessage,
 } from 'ai-sdk-provider-claude-code'
 
 import { defaultModelFor, resolveEffort } from '../models.js'
@@ -395,6 +396,17 @@ export function claudeRejection(error: unknown): string | null {
   return null
 }
 
+/**
+ * Whether one Agent SDK message shows the agent at work: an assistant
+ * message (text, thinking or a tool call, with its usage) that is not the
+ * CLI reporting an error. Every tool call arrives in one, so a tool result
+ * never comes first. Session set-up and status messages come before any
+ * model request, so they are not activity.
+ */
+export function isAgentActivity(message: SDKMessage): boolean {
+  return message.type === 'assistant' && message.error === undefined
+}
+
 export class ClaudeProvider implements AgentProvider {
   readonly name = 'claude' as const
   readonly fake = false
@@ -423,16 +435,23 @@ export class ClaudeProvider implements AgentProvider {
     const { model: modelId, effort } = this.resolveExecution(options)
     const modelIdResolved = modelId ?? defaultModelFor('claude')
     const readOnly = READ_ONLY_ROLES.has(options.role)
-    const model = claudeCode(
-      modelIdResolved,
-      buildClaudeSettings(
+    const onActivity = options.onActivity
+    const model = claudeCode(modelIdResolved, {
+      ...buildClaudeSettings(
         options.workdir,
         readOnly,
         effort,
         options.sessionId,
         options.readableFiles,
       ),
-    )
+      ...(onActivity
+        ? {
+            onSdkMessage: (message: SDKMessage) => {
+              if (isAgentActivity(message)) onActivity()
+            },
+          }
+        : {}),
+    })
     const reported = await generateText({
       model,
       prompt: options.prompt,

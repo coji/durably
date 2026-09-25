@@ -171,7 +171,10 @@ pnpm --filter example-local-agent-loop demo status
   `rejected-invocation` として `retry: yes` で止まります。拒否は呼び出しの
   完了checkpointとして記録するので、再開しても送り直さず、同じ拒否理由を
   表示します（`refusal: ...`）。拒否と判定するのはproviderが明示した場合だけで、
-  timeout、cancel、接続断、判定できないerrorは拒否として扱いません。startだけの
+  timeout、cancel、接続断、判定できないerrorは拒否として扱いません。
+  preflight以外では、その呼び出しでagentが動いた後（文章、推論、tool呼び出し、
+  usageの報告のどれかが届いた後）のerrorも、すでに何かを実行した可能性があるので
+  拒否とせず `uncertain-invocation` として止めます。startだけの
   checkpointが残っていれば、拒否より先に `uncertain-invocation` として扱います。
 - `--publish` 付きでcancelされたrunは `cancelled-publish` として `retry: NO`
   になります。pushやpull requestの作成が記録前に済んでいる可能性があるので、
@@ -376,7 +379,8 @@ pnpm --filter example-local-agent-loop demo trigger \
 - `profiles` は `code`（実装と、`repair` が無ければ修正も）、`review.correctness`、
   `review.edge-cases` の三役割を別々に指定できます。修正だけを別の設定にする
   `repair` と、事前判定の `triage` は任意です（下の節を参照）。configが省いた役割と、役割の中で省いた項目だけを
-  `--provider`、`--model`、`--effort` とpresetで補います。ただし `--provider` と
+  `--provider`、`--model`、`--effort` とpresetで補います（`repair` で省いた項目は
+  `code` から補います）。ただし `--provider` と
   違うproviderを指定した役割は `--model` と `--effort` を引き継がず、そのproviderの
   既定presetを使います。明示した役割の値が他の役割やフラグで上書きされることは
   ありません。fakeと実providerを役割ごとに混ぜる
@@ -578,7 +582,11 @@ LLMにタスクを判定させます。書かなければ判定の呼び出し�
 
 - 書かなければ、修正は従来どおり `code` の設定で動き、`--context reuse` では
   実装のsessionを継続します。`configVersion` も変わりません。
-- 項目の補い方、fakeと実providerを混ぜられない規則、preflightの対象になることは
+- 書かなかった項目は、フラグやpresetではなく解決済みの `code` から補います。
+  `"repair": { "effort": "high" }` なら、providerとmodelは `code` のまま、effortだけ
+  変わります。providerを `code` と違うものにした場合は、`code` のmodelとeffortは
+  使わず、そのproviderの既定presetで補います。
+- fakeと実providerを混ぜられない規則、preflightの対象になることは
   他の役割と同じです。preflightは同じ設定を一度だけ確かめるので、`code` と同じ
   設定の `repair` は追加の確認をしません。
 - `repair` のprovider、model、effortが `code` と同じなら、書かなかった場合と同じ

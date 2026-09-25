@@ -96,7 +96,9 @@ Repository config: factory.json at the repository root, or --config <file>:
   one read-only call records a routine or probe judgment before the code
   stage (shadow mode; it changes nothing about the run), with the task and
   spec sizes the report and compare set beside it. "repair" is optional:
-  without it, repair runs on the "code" profile; with a different provider,
+  without it, repair runs on the "code" profile. A field "repair" leaves out
+  comes from the resolved "code" profile, not from the flags (on another
+  provider, from that provider's defaults). With a different provider,
   model or effort, every repair starts a new session on it and is sent the
   task, the spec and the repair notes.
   "baselineCheck": true runs "check" once on the base commit before any

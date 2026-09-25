@@ -223,6 +223,7 @@ function splitArgv(value: string): string[] {
  * role it does not name uses `--provider`, `--model` and `--effort`. A field a
  * named role leaves out comes from `--model` / `--effort` when the role uses
  * the `--provider` provider, and otherwise from that provider's defaults.
+ * Repair is the exception: what it leaves out comes from the code profile.
  * Presets are applied here, so a bad effort fails before the run exists.
  */
 export function resolveProfiles(
@@ -255,9 +256,24 @@ export function resolveProfiles(
   const triageConfig = config?.profiles?.triage
   const triage = triageConfig ? fix(triageConfig) : null
   // Repair has its own profile only when the config names one; otherwise it
-  // runs on code's, continuing the implementation session in reuse mode.
+  // runs on code's, continuing the implementation session in reuse mode. A
+  // field it leaves out comes from the resolved code profile, not from the
+  // flags, so `{ "effort": "high" }` changes the effort and nothing else. On
+  // another provider, code's model and effort do not apply, and that
+  // provider's defaults fill in.
   const repairConfig = config?.profiles?.repair
-  const repair = repairConfig ? fix(repairConfig) : null
+  const repairProvider = repairConfig?.provider ?? roles.code.provider
+  const sameAsCode = repairProvider === roles.code.provider
+  const repair = repairConfig
+    ? fixProfile({
+        provider: repairProvider,
+        model:
+          repairConfig.model ?? (sameAsCode ? roles.code.requestedModel : null),
+        effort:
+          repairConfig.effort ??
+          (sameAsCode ? roles.code.requestedEffort : null),
+      })
+    : null
   assertSingleMode({
     ...roles,
     ...(triage ? { triage } : {}),

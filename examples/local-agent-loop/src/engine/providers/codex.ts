@@ -317,6 +317,59 @@ export function resolveCodexEffort(
   )
 }
 
+/**
+ * Stream parts that are not the agent at work: protocol set-up, the closing
+ * summary, raw chunks and the error itself.
+ */
+const NOT_ACTIVITY = new Set([
+  'stream-start',
+  'response-metadata',
+  'finish',
+  'error',
+  'raw',
+])
+
+interface StreamingModel {
+  doStream(
+    options: unknown,
+  ): Promise<{ stream: ReadableStream<{ type: string }> }>
+}
+
+/**
+ * The same model, with `onActivity` called on the first part of its stream
+ * that shows the agent at work. The app-server model builds its
+ * `doGenerate` answer from `this.doStream`, so an own `doStream` on the
+ * instance also sees what `generateText` reads. The model is made for this
+ * one call, so replacing the method touches nothing else.
+ */
+export function watchActivity<M extends object>(
+  model: M,
+  onActivity: (() => void) | undefined,
+): M {
+  if (!onActivity) return model
+  const target = model as unknown as StreamingModel
+  const original = target.doStream.bind(target)
+  let seen = false
+  target.doStream = async (streamOptions) => {
+    const response = await original(streamOptions)
+    return {
+      ...response,
+      stream: response.stream.pipeThrough(
+        new TransformStream<{ type: string }, { type: string }>({
+          transform(part, controller) {
+            if (!seen && !NOT_ACTIVITY.has(part.type)) {
+              seen = true
+              onActivity()
+            }
+            controller.enqueue(part)
+          },
+        }),
+      ),
+    }
+  }
+  return model
+}
+
 export class CodexProvider implements AgentProvider {
   readonly name = 'codex' as const
   readonly fake = false
@@ -357,7 +410,7 @@ export class CodexProvider implements AgentProvider {
     })
     try {
       const result = await generateText({
-        model: provider(modelId),
+        model: watchActivity(provider(modelId), options.onActivity),
         prompt: options.prompt,
         providerOptions: {
           'codex-app-server': options.sessionId

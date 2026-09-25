@@ -145,6 +145,14 @@ function fmtInt(v: number | null | undefined): string {
   return v == null ? UNKNOWN : v.toLocaleString('en-US')
 }
 
+/**
+ * A count statistic, rounded as `demo compare` rounds it (`toFixed(0)`), so
+ * a median of an even number of runs reads the same on both.
+ */
+function fmtCount(v: number | null | undefined): string {
+  return v == null ? UNKNOWN : fmtInt(Number(v.toFixed(0)))
+}
+
 /** "3分前" relative to the response's `now`; the exact time on hover. */
 function relative(iso: string, now: string): string {
   const s = Math.max(0, Math.floor((Date.parse(now) - Date.parse(iso)) / 1000))
@@ -2327,7 +2335,7 @@ function StatRow({
 function CalibrationStat({ stat }: { stat: Stat }) {
   return (
     <span className="flex flex-col items-end">
-      <span>{fmtInt(stat.median)}</span>
+      <span>{fmtCount(stat.median)}</span>
       {stat.unknown > 0 ? (
         <span className="text-fg-2 text-xs">不明 {stat.unknown} 件</span>
       ) : null}
@@ -2381,14 +2389,18 @@ function ComparePage({ data }: { data: CompareResponse }) {
                 <StatRow label="所要時間" stat={g.leadTimeMs} f={fmtMs} />
                 <StatRow label="工程の作業時間" stat={g.workMs} f={fmtMs} />
                 <StatRow label="人の待ち時間" stat={g.humanWaitMs} f={fmtMs} />
-                <StatRow label="合計トークン" stat={g.totalTokens} f={fmtInt} />
+                <StatRow
+                  label="合計トークン"
+                  stat={g.totalTokens}
+                  f={fmtCount}
+                />
                 <StatRow label="費用" stat={g.costUsd} f={fmtUsd} />
                 <StatRow
                   label="成功 1 件の費用"
                   stat={g.costPerSuccessUsd}
                   f={fmtUsd}
                 />
-                <StatRow label="修正回数" stat={g.repairs} f={fmtInt} />
+                <StatRow label="修正回数" stat={g.repairs} f={fmtCount} />
               </tbody>
             </table>
           </div>

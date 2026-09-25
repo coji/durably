@@ -45,7 +45,8 @@ export interface AgentCallSpec {
    * call's outcome instead of throwing `RejectedInvocationError`. Only the
    * preflight call asks for it: a refused preflight is an answer about the
    * settings, not a stop of its own. Either way the refusal is saved as a
-   * completed checkpoint and never resent.
+   * completed checkpoint and never resent. Without it, an error after any
+   * agent activity on the call is never read as a refusal.
    */
   acceptRejection?: boolean
 }
@@ -371,6 +372,8 @@ export async function runAgentCall(
     timerDelay(spec.timeoutMs),
   )
   const linked = AbortSignal.any([signal, timeout.signal])
+  // Whether the agent was seen at work on this call; see `onActivity`.
+  let active = false
   try {
     const result = await spec.provider.call({
       prompt: spec.prompt,
@@ -383,7 +386,11 @@ export async function runAgentCall(
       reviewRound: spec.reviewRound,
       sessionId: spec.session?.nativeId ?? null,
       signal: linked,
+      onActivity: () => {
+        active = true
+      },
       onPartialUsage: (usage) => {
+        active = true
         partialWrites = partialWrites
           .then(async () => {
             if (finalized) return
@@ -429,9 +436,15 @@ export async function runAgentCall(
     // An explicit refusal was not acted on, so it is recorded as the call's
     // completed answer: a replay reads it back and nothing is sent again. A
     // cancel or a timeout is never a refusal, whatever its message says, and
-    // neither is an error the provider does not recognise as one.
+    // neither is an error the provider does not recognise as one. Outside
+    // preflight, an error that follows any agent activity (text, a tool
+    // call, usage) is not one either: the agent may already have acted, so
+    // the outcome stays uncertain. Preflight asks for a reply and nothing
+    // else, so its refusal is read as before.
     const rejection =
-      !signal.aborted && !timeout.signal.aborted
+      !signal.aborted &&
+      !timeout.signal.aborted &&
+      (spec.acceptRejection === true || !active)
         ? spec.provider.rejectionReason(error)
         : null
     if (rejection !== null) {

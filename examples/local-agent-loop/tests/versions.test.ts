@@ -5,6 +5,7 @@ import { chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import {
   createAPICallError,
@@ -14,6 +15,7 @@ import {
 import {
   claudeExecutable,
   claudeRejection,
+  isAgentActivity,
 } from '../src/engine/providers/claude.js'
 import {
   CodexProvider,
@@ -21,6 +23,7 @@ import {
   codexRejection,
   codexStartFailure,
   judgeCodexModelList,
+  watchActivity,
 } from '../src/engine/providers/codex.js'
 import { createProvider } from '../src/engine/providers/index.js'
 import type { AttemptMeasurement } from '../src/engine/providers/types.js'
@@ -28,6 +31,7 @@ import { runAgentCall } from '../src/engine/runner.js'
 import type { ResolvedProfile } from '../src/engine/types.js'
 import { configVersionOf, resolveVersions } from '../src/engine/versions.js'
 import { separateRepairProfile } from '../src/factory/types.js'
+import { resolveProfiles } from '../src/trigger-input.js'
 
 describe('recorded CLI versions', { timeout: 60000 }, () => {
   it('names the Codex CLI the provider launches, not one on PATH', async () => {
@@ -279,6 +283,96 @@ describe('preflight verdicts', () => {
       claudeRejection(createAPICallError({ message: 'socket hang up' })),
       null,
     )
+  })
+})
+
+describe('what counts as agent activity on a real provider', () => {
+  it('Claude: an assistant message counts, the CLI error message and set-up do not', () => {
+    const assistant = { type: 'assistant', message: {} } as never
+    const errored = {
+      type: 'assistant',
+      message: {},
+      error: 'authentication_failed',
+    } as never
+    const init = { type: 'system', subtype: 'init' } as never
+    assert.equal(isAgentActivity(assistant), true)
+    assert.equal(isAgentActivity(errored), false)
+    assert.equal(isAgentActivity(init), false)
+  })
+
+  it('Codex: the first part that shows work fires once; set-up and the error do not', async () => {
+    const parts = (types: string[]) =>
+      new ReadableStream<{ type: string }>({
+        start(controller) {
+          for (const type of types) controller.enqueue({ type })
+          controller.close()
+        },
+      })
+    // Mirrors the app-server model: `doGenerate` reads `this.doStream`.
+    const model = (types: string[]) => ({
+      doStream: async () => ({ stream: parts(types) }),
+      async doGenerate() {
+        const { stream } = await this.doStream()
+        const reader = stream.getReader()
+        while (!(await reader.read()).done);
+      },
+    })
+    let fired = 0
+    await watchActivity(
+      model(['stream-start', 'response-metadata', 'error', 'raw', 'finish']),
+      () => fired++,
+    ).doGenerate()
+    assert.equal(fired, 0)
+    await watchActivity(
+      model(['stream-start', 'tool-call', 'text-delta', 'error']),
+      () => fired++,
+    ).doGenerate()
+    assert.equal(fired, 1)
+  })
+
+  it('Codex: the app-server model still builds doGenerate from this.doStream', async () => {
+    // `watchActivity` relies on this; a provider update that stops it would
+    // silently read every mid-turn error as a refusal.
+    const entry = fileURLToPath(
+      import.meta.resolve('ai-sdk-provider-codex-cli'),
+    )
+    const source = await readFile(entry, 'utf8')
+    const start = source.indexOf('var AppServerLanguageModel = class')
+    assert.ok(start >= 0)
+    const body = source.slice(start, source.indexOf('\nvar ', start + 1))
+    assert.match(
+      body,
+      /async doGenerate\(options\) \{\s*const \{ stream, request \} = await this\.doStream\(/,
+    )
+  })
+})
+
+describe('a partial repair profile', () => {
+  it('fills what it leaves out from the resolved code profile, not the flags', () => {
+    const flags = { provider: 'codex', model: 'gpt-flag', effort: 'low' }
+    const code = {
+      provider: 'codex' as const,
+      model: 'gpt-code',
+      effort: 'medium',
+    }
+    const { repair } = resolveProfiles(flags, {
+      profiles: { code, repair: { effort: 'high' } },
+    } as never)
+    assert.equal(repair?.provider, 'codex')
+    assert.equal(repair?.requestedModel, 'gpt-code')
+    assert.equal(repair?.requestedEffort, 'high')
+    // Code that leaves a field to the flags passes the flag's value on.
+    const onFlags = resolveProfiles(flags, {
+      profiles: { repair: { effort: 'high' } },
+    } as never).repair
+    assert.equal(onFlags?.requestedModel, 'gpt-flag')
+    // On another provider, code's settings do not apply.
+    const other = resolveProfiles(flags, {
+      profiles: { code, repair: { provider: 'claude' } },
+    } as never).repair
+    assert.equal(other?.provider, 'claude')
+    assert.equal(other?.requestedModel, null)
+    assert.equal(other?.requestedEffort, null)
   })
 })
 
