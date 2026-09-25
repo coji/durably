@@ -136,8 +136,14 @@ export interface ConfigVersionInput {
    */
   agentTimeoutMs: number
   checkTimeoutMs: number
-  /** Implementation and repair share one profile. */
+  /** Implementation, and repair unless `repair` is given. */
   code: ConfigVersionProfile
+  /**
+   * The repair profile, only when it differs from `code`; left out of the
+   * hash otherwise, so a run without one keeps the version it had before
+   * repair profiles existed.
+   */
+  repair?: ConfigVersionProfile | null
   correctness: ConfigVersionProfile
   edgeCases: ConfigVersionProfile
   /** Shadow triage; left out of the hash entirely when not configured. */
@@ -161,7 +167,8 @@ function canonicalProfile(p: ConfigVersionProfile): ConfigVersionProfile {
 
 /**
  * Stable hash of the fixed run configuration. Two runs share a config
- * version exactly when every role's provider, models and efforts, the context
+ * version exactly when every role's provider, models and efforts (a repair
+ * profile's only when it differs from code's), the context
  * mode, iteration budget, instruction set, triage profile (when there is
  * one) and the path and version of every real CLI launched are identical —
  * the unit of a fair comparison. Stored on every LLM attempt as
@@ -176,6 +183,7 @@ export function configVersionOf(input: ConfigVersionInput): string {
     agentTimeoutMs: input.agentTimeoutMs,
     checkTimeoutMs: input.checkTimeoutMs,
     code: canonicalProfile(input.code),
+    ...(input.repair ? { repair: canonicalProfile(input.repair) } : {}),
     correctness: canonicalProfile(input.correctness),
     edgeCases: canonicalProfile(input.edgeCases),
     // Only present when configured, so a run without triage keeps the version

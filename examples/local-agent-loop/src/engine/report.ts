@@ -189,6 +189,151 @@ export const TRIAGE_JUDGMENTS = ['routine', 'probe', 'unknown'] as const
 export interface ReportTriage {
   judgment: (typeof TRIAGE_JUDGMENTS)[number]
   reason: string
+  /**
+   * What the triage record measured from the stored task and spec, to set
+   * against the judgment. Absent on a record from before it was kept; every
+   * reader treats that as all unknown.
+   */
+  calibration?: TriageCalibration
+}
+
+/**
+ * Sizes of a run's stored task and spec, recorded with its triage judgment.
+ * A value is null when it is unknown: the spec's three when there is no spec,
+ * a count when the spec has no section for it. Never zero-filled.
+ */
+export interface TriageCalibration {
+  /** Characters (Unicode code points) in the task as stored. */
+  taskChars: number | null
+  /** Characters (Unicode code points) in the spec as stored. */
+  specChars: number | null
+  /** Distinct items under the spec's acceptance-criteria headings. */
+  acceptanceCriteria: number | null
+  /** Distinct file paths under the spec's files-to-change headings. */
+  plannedFiles: number | null
+}
+
+/** Every calibration value unknown: a record that predates them. */
+export const UNKNOWN_CALIBRATION: TriageCalibration = {
+  taskChars: null,
+  specChars: null,
+  acceptanceCriteria: null,
+  plannedFiles: null,
+}
+
+/** Headings whose section lists acceptance criteria, compared whole. */
+const ACCEPTANCE_HEADINGS = [
+  'acceptance criteria',
+  'completion criteria',
+  '受け入れ基準',
+  '完了条件',
+  '完了基準',
+]
+
+/** Headings whose section lists the files the change will touch. */
+const PLANNED_FILE_HEADINGS = [
+  'files to change',
+  'files to modify',
+  'changed files',
+  '変更するファイル',
+  '変更予定のファイル',
+  '変更対象のファイル',
+]
+
+/**
+ * The top-level list items under the spec's headings named in `titles`.
+ *
+ * The rule, one for both counts:
+ * - A heading is an ATX heading (`#` to `######`). Its title is compared
+ *   whole and case-insensitively, after trailing `#`s and a trailing colon
+ *   are removed.
+ * - Its section runs to the next heading of the same or a higher level, so
+ *   its subheadings belong to it. Several matching headings are read
+ *   together.
+ * - An item is a list line (`-`, `*`, `+`, or `1.` / `1)`) that starts at
+ *   the beginning of the line, with an optional `[ ]` / `[x]` checkbox.
+ *   Indented lines, nested items among them, belong to the item above them
+ *   and are not counted again.
+ * - Fenced code blocks are skipped, headings inside them included.
+ *
+ * Null when no heading matches: the spec does not say, which is not zero.
+ */
+function sectionItems(spec: string, titles: string[]): string[] | null {
+  let found = false
+  let level: number | null = null
+  let fence: string | null = null
+  const items: string[] = []
+  for (const line of spec.split(/\r?\n/)) {
+    const fenceMark = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1]
+    if (fence) {
+      if (
+        fenceMark &&
+        fenceMark[0] === fence[0] &&
+        fenceMark.length >= fence.length
+      )
+        fence = null
+      continue
+    }
+    if (fenceMark) {
+      fence = fenceMark
+      continue
+    }
+    const heading = /^\s{0,3}(#{1,6})\s+(.*)$/.exec(line)
+    if (heading) {
+      const depth = heading[1]?.length ?? 1
+      if (level !== null && depth <= level) level = null
+      const title = (heading[2] ?? '')
+        .replace(/\s+#+\s*$/, '')
+        .replace(/[:：]\s*$/, '')
+        .trim()
+        .toLowerCase()
+      if (level === null && titles.includes(title)) {
+        level = depth
+        found = true
+      }
+      continue
+    }
+    if (level === null) continue
+    const item = /^(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?(.*\S)/.exec(line)
+    if (item?.[1]) items.push(item[1])
+  }
+  return found ? items : null
+}
+
+/** Distinct values, so the same criterion or file listed twice counts once. */
+function distinctCount(values: string[]): number {
+  return new Set(values).size
+}
+
+/** A file item's path: its first code span, else its first word. */
+function plannedPath(item: string): string {
+  const code = /`([^`]+)`/.exec(item)?.[1]
+  const word = item.split(/\s+/)[0] ?? item
+  return (code ?? word).trim().replace(/[:：,、]+$/, '')
+}
+
+/**
+ * The calibration of one run, from its task and spec as stored. See
+ * `sectionItems` for how criteria and files are found and counted.
+ */
+export function triageCalibration(
+  task: string,
+  spec: string | null,
+): TriageCalibration {
+  if (spec === null)
+    return { ...UNKNOWN_CALIBRATION, taskChars: [...task].length }
+  const criteria = sectionItems(spec, ACCEPTANCE_HEADINGS)
+  const files = sectionItems(spec, PLANNED_FILE_HEADINGS)
+  return {
+    taskChars: [...task].length,
+    specChars: [...spec].length,
+    acceptanceCriteria: criteria
+      ? distinctCount(
+          criteria.map((c) => c.replace(/\s+/g, ' ').trim().toLowerCase()),
+        )
+      : null,
+    plannedFiles: files ? distinctCount(files.map(plannedPath)) : null,
+  }
 }
 
 /**
@@ -268,8 +413,8 @@ export interface LoopReport {
   preflight: ReportPreflight | null
   stageUsage: StageUsage[]
   /**
-   * Per-role requested settings and usage: code, correctness, edge-cases, and
-   * triage when the run has a triage profile.
+   * Per-role requested settings and usage: code, repair, correctness,
+   * edge-cases, and triage when the run has a triage profile.
    */
   roleUsage: RoleUsage[]
   /** SHA-256 of each input file's content, as stored in the run. */
@@ -468,6 +613,17 @@ export function stageUsage(attempts: AttemptRow[]): StageUsage[] {
   return sortStages(rows)
 }
 
+/**
+ * The usage role of one attempt: its step's role, except that a code step's
+ * repair call is `repair`, so repair never counts toward `code`.
+ */
+function usageRoleOf(attempt: AttemptRow): string | null {
+  const role = roleOf(attempt.stepName)
+  return role === 'code' && attempt.measurement?.role === 'repair'
+    ? 'repair'
+    : role
+}
+
 /** The role an LLM step ran as, from its step name. */
 function roleOf(stepName: string): string | null {
   if (stepName === 'triage') return 'triage'
@@ -490,7 +646,7 @@ export function roleUsage(
 ): RoleUsage[] {
   const byRole = new Map<string, AttemptRow[]>()
   for (const a of dedupeByInvocation(attempts)) {
-    const role = roleOf(a.stepName)
+    const role = usageRoleOf(a)
     if (role === null) continue
     byRole.set(role, [...(byRole.get(role) ?? []), a])
   }
@@ -741,8 +897,13 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('## Triage (shadow mode: recorded, never used to route)')
   lines.push('')
   if (r.triage) {
+    const c = r.triage.calibration ?? UNKNOWN_CALIBRATION
     lines.push(`- judgment: ${r.triage.judgment}`)
     lines.push(`- reason: ${r.triage.reason}`)
+    lines.push(`- task characters: ${fmt(c.taskChars)}`)
+    lines.push(`- spec characters: ${fmt(c.specChars)}`)
+    lines.push(`- acceptance criteria in spec: ${fmt(c.acceptanceCriteria)}`)
+    lines.push(`- planned files in spec: ${fmt(c.plannedFiles)}`)
   } else {
     lines.push('- none (no triage profile, or triage has not run yet)')
   }

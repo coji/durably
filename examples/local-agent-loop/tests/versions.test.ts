@@ -25,7 +25,9 @@ import {
 import { createProvider } from '../src/engine/providers/index.js'
 import type { AttemptMeasurement } from '../src/engine/providers/types.js'
 import { runAgentCall } from '../src/engine/runner.js'
-import { resolveVersions } from '../src/engine/versions.js'
+import type { ResolvedProfile } from '../src/engine/types.js'
+import { configVersionOf, resolveVersions } from '../src/engine/versions.js'
+import { separateRepairProfile } from '../src/factory/types.js'
 
 describe('recorded CLI versions', { timeout: 60000 }, () => {
   it('names the Codex CLI the provider launches, not one on PATH', async () => {
@@ -277,5 +279,59 @@ describe('preflight verdicts', () => {
       claudeRejection(createAPICallError({ message: 'socket hang up' })),
       null,
     )
+  })
+})
+
+describe('the repair profile in the config version', () => {
+  const profile = (model: string | null, effort = 'low'): ResolvedProfile => ({
+    id: `codex:${model ?? 'default'}:${effort}`,
+    provider: 'codex',
+    requestedModel: model,
+    requestedEffort: effort,
+    effectiveModel: model ?? 'gpt-5.6-sol',
+    effectiveEffort: effort,
+  })
+  const base = {
+    contextMode: 'reuse',
+    instructionsVersion: 'local-factory.v3',
+    maxIterations: 2,
+    target: 'subject',
+    agentTimeoutMs: 300000,
+    checkTimeoutMs: 120000,
+    code: profile(null),
+    correctness: profile(null),
+    edgeCases: profile(null),
+  }
+  /** The version the job computes: repair counts only when it differs. */
+  const versionWith = (repair: ResolvedProfile | null) =>
+    configVersionOf({
+      ...base,
+      repair: separateRepairProfile({
+        repair,
+        profiles: {
+          code: base.code,
+          correctness: base.correctness,
+          'edge-cases': base.edgeCases,
+        },
+      }),
+    })
+
+  it('keeps the version without one, or with one that makes the same call as code', () => {
+    const prior = configVersionOf(base)
+    assert.equal(versionWith(null), prior)
+    // The default model named explicitly is still the same call.
+    assert.equal(versionWith(profile('gpt-5.6-sol')), prior)
+    assert.equal(versionWith(profile(null)), prior)
+  })
+
+  it('changes with a different provider, model or effort', () => {
+    const prior = configVersionOf(base)
+    const versions = [
+      versionWith(profile('gpt-5.6-terra')),
+      versionWith(profile(null, 'high')),
+      versionWith({ ...profile(null), provider: 'claude' }),
+    ]
+    for (const version of versions) assert.notEqual(version, prior)
+    assert.equal(new Set(versions).size, versions.length)
   })
 })

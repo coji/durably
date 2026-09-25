@@ -1033,6 +1033,7 @@ describe('diagnosis wording on the page', () => {
   const failures: FailureKind[] = [
     'baseline-check-failed',
     'preflight-failed',
+    'rejected-invocation',
     'verification-failed',
     'review-cap-reached',
     'uncertain-invocation',
@@ -1128,6 +1129,47 @@ describe('diagnosis wording on the page', () => {
     const flagged = reloadLine(stop('flags-win'))
     assert.match(flagged, /--check, --setup or --base given at trigger/)
     assert.match(commandNote(flagged) ?? '', /優先されるので/)
+  })
+
+  it('tells a refused call to fix the setting first, then retry with the settings read again', () => {
+    const stop = (reload: ReturnType<typeof reloadAdvice>) =>
+      classifyFailure({
+        runId: 'r1',
+        status: 'failed',
+        output: null,
+        error:
+          'rejected-invocation: the repair call (codex gpt-5.6-sol) was refused: 401: login expired',
+        uncertain: [],
+        reload,
+      })
+    const repo = stop('config')
+    assert.equal(repo?.kind, 'rejected-invocation')
+    assert.match(
+      diagnosisText({ kind: 'stopped', failure: repo ?? undefined }),
+      /はっきり断りました/,
+    )
+    const check = humanCheckText('rejected-invocation', repo ?? undefined)
+    assert.match(check, /^下の拒否の理由を読み/)
+    assert.match(check, /設定を読み直す再実行/)
+    // The refusal is data under its own label.
+    assert.deepEqual(detailField('refusal: 401: login expired'), {
+      label: '拒否の理由',
+      value: '401: login expired',
+    })
+    // The next commands, each explained in Japanese.
+    const reload = repo?.next.find((c) => c.includes('--reload-config')) ?? ''
+    assert.match(commandNote(reload) ?? '', /^factory\.json を直してから/)
+    const report = repo?.next.find((c) => c.includes(' report ')) ?? ''
+    assert.match(commandNote(report) ?? '', /断られた呼び出し/)
+    // A run with no factory.json is told to trigger anew instead.
+    const sample = stop('none')
+    assert.ok(!sample?.next.some((c) => c.includes('--reload-config')))
+    const sampleText = humanCheckText(
+      'rejected-invocation',
+      sample ?? undefined,
+    )
+    assert.doesNotMatch(sampleText, /factory\.json|設定を読み直す/)
+    assert.equal(plain(sampleText.replace(/trigger/g, '')), null, sampleText)
   })
 
   it('says which decision a decided run recorded', () => {
@@ -1576,6 +1618,29 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
         await until(settled(uncertain), 'uncertain run')
         process.env.FAKE_FAIL_FIRST = '0'
 
+        // Triage recorded, then a reviewer's provider refuses the call.
+        const fake = (requestedModel: string | null = null) => ({
+          provider: 'fake' as const,
+          requestedModel,
+          requestedEffort: null,
+        })
+        ids['rejected'] = (
+          await durably.jobs.agentLoop.trigger({
+            provider: 'fake',
+            profiles: {
+              code: fake(),
+              correctness: fake('rejects-review'),
+              'edge-cases': fake(),
+              triage: fake(),
+            },
+            target: { kind: 'subject' as const },
+            maxIterations: 1,
+            context: 'reuse',
+            fakeScenario: { failIterations: 0, triage: ['routine'] },
+          })
+        ).id
+        await until(settled(ids['rejected'] ?? ''), 'rejected run')
+
         // Decided with no worker to resume it.
         ids['decided'] = await subject()
         await until(
@@ -1629,6 +1694,7 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
         review: ['stopped', true],
         verification: ['stopped', true],
         uncertain: ['stopped', true],
+        rejected: ['stopped', true],
         decided: ['decided', false],
         pending: ['pending', false],
         running: ['running', false],
@@ -1648,6 +1714,16 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
       assert.equal(
         row('uncertain').diagnosis.failure?.kind,
         'uncertain-invocation',
+      )
+      assert.equal(
+        row('rejected').diagnosis.failure?.kind,
+        'rejected-invocation',
+      )
+      assert.equal(row('rejected').diagnosis.failure?.retryable, true)
+      assert.ok(
+        row('rejected').diagnosis.failure?.details.includes(
+          'refusal: fake: the review-a call on rejects-review is refused',
+        ),
       )
       assert.equal(row('approved').conclusion, 'approved')
       // Nothing that would send the lost prompt again.
@@ -1673,6 +1749,7 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
         'review',
         'verification',
         'uncertain',
+        'rejected',
         'pending',
         'expired',
         'decided',
@@ -1694,6 +1771,7 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
         'review',
         'verification',
         'uncertain',
+        'rejected',
       ]) {
         const detail = await api<RunDetailResponse>(
           port,
@@ -1796,6 +1874,23 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
       assert.equal(counts['approved'], 1)
       assert.equal(counts['review-cap-reached'], 1)
       assert.equal(counts['verification-failed'], 1)
+      // The triage row sets the calibration and the stop beside the
+      // judgment, as `compare` does; the sample's spec values are unknown.
+      const judged = compared.comparison.groups.flatMap((g) => g.triage)
+      assert.equal(judged.length, 1)
+      assert.deepEqual(judged[0]?.stops, { 'rejected-invocation': 1 })
+      assert.equal(judged[0]?.calibration.taskChars.median, 58)
+      assert.equal(judged[0]?.calibration.plannedFiles.unknown, 1)
+      const rejectedDetail = await api<RunDetailResponse>(
+        port,
+        `/api/runs/${ids['rejected']}`,
+      )
+      assert.deepEqual(rejectedDetail.report.triage?.calibration, {
+        taskChars: 58,
+        specChars: null,
+        acceptanceCriteria: null,
+        plannedFiles: null,
+      })
 
       // Reading, repeatedly, changed nothing in the database.
       for (let i = 0; i < 3; i++) {

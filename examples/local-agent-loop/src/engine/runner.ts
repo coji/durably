@@ -41,9 +41,11 @@ export interface AgentCallSpec {
   requireSession?: boolean
   configVersion?: string | null
   /**
-   * Settle an explicit refusal from the provider (`rejectionReason`) as a
-   * completed call instead of an error. Only the preflight call asks for it:
-   * a refused preflight is an answer, not a doubt.
+   * Return an explicit refusal from the provider (`rejectionReason`) as the
+   * call's outcome instead of throwing `RejectedInvocationError`. Only the
+   * preflight call asks for it: a refused preflight is an answer about the
+   * settings, not a stop of its own. Either way the refusal is saved as a
+   * completed checkpoint and never resent.
    */
   acceptRejection?: boolean
 }
@@ -75,6 +77,34 @@ interface CompletedCheckpoint {
   rejection?: string
   invocationStartedAt: string
   invocationCompletedAt: string
+}
+
+/** Prefix of every `RejectedInvocationError` message; the failure table matches it. */
+export const REJECTED_INVOCATION_MESSAGE = 'rejected-invocation'
+
+/** How a rejection error names the refusal; the failure table reads it back. */
+export const REFUSAL_MARKER = ' was refused: '
+
+/**
+ * The provider explicitly refused a call after preflight, such as a revoked
+ * login or a spent quota. The refusal is saved as the call's completed
+ * checkpoint, so the call is settled: nothing is resent, and a replay throws
+ * this again with the same reason.
+ */
+export class RejectedInvocationError extends Error {
+  constructor(
+    readonly rejection: string,
+    call: {
+      role: string
+      providerName: string
+      effectiveModel: string | null
+    },
+  ) {
+    super(
+      `${REJECTED_INVOCATION_MESSAGE}: the ${call.role} call (${call.providerName} ${call.effectiveModel ?? 'provider-default'})${REFUSAL_MARKER}${rejection}`,
+    )
+    this.name = 'RejectedInvocationError'
+  }
 }
 
 /** Prefix of every `UncertainInvocationError` message; the failure table matches it. */
@@ -244,7 +274,11 @@ export async function runAgentCall(
     }
   }
 
-  /** A refused call: settled, with nothing to read and nothing to resend. */
+  /**
+   * A refused call: settled, with nothing to read and nothing to resend.
+   * Only preflight takes it as an answer; every other caller gets
+   * `RejectedInvocationError`, first time and on replay alike.
+   */
   const finishRejected = async (
     rejection: string,
     checkpoint: CompletedCheckpoint,
@@ -263,6 +297,8 @@ export async function runAgentCall(
       result: 'rejected',
       error: rejection,
     })
+    if (!spec.acceptRejection)
+      throw new RejectedInvocationError(rejection, spec)
     return {
       text: '',
       sessionId: null,
@@ -392,9 +428,10 @@ export async function runAgentCall(
   } catch (error) {
     // An explicit refusal was not acted on, so it is recorded as the call's
     // completed answer: a replay reads it back and nothing is sent again. A
-    // cancel or a timeout is never a refusal, whatever its message says.
+    // cancel or a timeout is never a refusal, whatever its message says, and
+    // neither is an error the provider does not recognise as one.
     const rejection =
-      spec.acceptRejection && !signal.aborted && !timeout.signal.aborted
+      !signal.aborted && !timeout.signal.aborted
         ? spec.provider.rejectionReason(error)
         : null
     if (rejection !== null) {

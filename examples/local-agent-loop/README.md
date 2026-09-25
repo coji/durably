@@ -166,6 +166,13 @@ pnpm --filter example-local-agent-loop demo status
   `retry: NO` になり、送り直すコマンドは出しません。providerの履歴と作業場所、
   表示されたcheckpointを人が確かめてください。このrunにはworktreeの削除
   コマンドも出しません。分類できない失敗も `retry: NO` です。
+- preflightを通った後で、providerが実装、修正、レビュー、triageの呼び出しを
+  明示的に拒否した場合（login切れ、利用上限、使えなくなったmodelなど）は
+  `rejected-invocation` として `retry: yes` で止まります。拒否は呼び出しの
+  完了checkpointとして記録するので、再開しても送り直さず、同じ拒否理由を
+  表示します（`refusal: ...`）。拒否と判定するのはproviderが明示した場合だけで、
+  timeout、cancel、接続断、判定できないerrorは拒否として扱いません。startだけの
+  checkpointが残っていれば、拒否より先に `uncertain-invocation` として扱います。
 - `--publish` 付きでcancelされたrunは `cancelled-publish` として `retry: NO`
   になります。pushやpull requestの作成が記録前に済んでいる可能性があるので、
   remoteのbranchとpull requestを先に確かめてください。
@@ -174,8 +181,8 @@ pnpm --filter example-local-agent-loop demo status
   もう一度打っても、最初に始めたrunを返すだけです。`retry: NO` の
   runや、まだ止まっていないrunには実行を拒みます。素の `demo trigger` は同梱の
   題材で動くので、次の手順には出しません。
-- `baseline-check-failed` と `preflight-failed` には、`demo retrigger --run <id>
---reload-config` も表示します。`factory.json` を直してから打つコマンドです。
+- `baseline-check-failed`、`preflight-failed`、`rejected-invocation` には、
+  `demo retrigger --run <id> --reload-config` も表示します。`factory.json` を直してから打つコマンドです。
   保存したtask、spec、dispositions、issue、対象リポジトリはそのままで、
   `factory.json` だけを読み直します。読み直すのはtrigger時に `--config` で
   渡したファイルで、渡していなければリポジトリ直下の `factory.json` です。
@@ -244,7 +251,9 @@ run は保存済みの入力から付けた名前で並びます。issue から�
 付けます。状態の区分と次のコマンドは `demo status` と同じ関数（`src/engine/status.ts`）から
 作るので、同じ時点の `demo status --run <id>` と一致します。説明文は区分と停止の種類から
 画面用の日本語で出し、CLI の英語の reason は表示しません。未確定の外部呼び出しで
-止まった run には、再実行を促すコマンドを出しません。工程の並びでは、通った工程に ✓ を
+止まった run には、再実行を促すコマンドを出しません。provider に呼び出しを
+拒否されて止まった run には、拒否の理由を停止理由の欄に出し、設定を読み直す再実行と
+通常の再実行のコマンドをコピーできる形で出します。工程の並びでは、通った工程に ✓ を
 付けます。
 
 実行中の run の「全体 … 経過」は run の開始（lease 取得、まだなら作成）から、
@@ -264,7 +273,8 @@ SHA-256 です。工程の時系列で行を選ぶと、実装の行には封印
 
 **集計**は終了した run だけを `demo compare` と同じ処理にかけ、config version ごとに
 結果別の件数、所要時間・作業時間・費用などの中央値、最小、最大、件数、不明の数、
-見立て（triage 判定）別の結果を表示します。
+見立て（triage 判定）別の結果と停止理由の件数、判定別の較正材料の中央値を表示します。
+実行の詳細の「まとめ」にも、見立てと一緒に四つの較正材料を出します。
 
 表示値の読み方：
 
@@ -363,8 +373,9 @@ pnpm --filter example-local-agent-loop demo trigger \
   configは `--config <path>` で選べます。相対パスはCLIプロセスのcwdから解決します。
   `pnpm --filter` はpackageのディレクトリでCLIを動かすので、パスは絶対パスで
   渡してください。
-- `profiles` は `code`（実装と修正）、`review.correctness`、`review.edge-cases` の
-  三役割を別々に指定できます。configが省いた役割と、役割の中で省いた項目だけを
+- `profiles` は `code`（実装と、`repair` が無ければ修正も）、`review.correctness`、
+  `review.edge-cases` の三役割を別々に指定できます。修正だけを別の設定にする
+  `repair` と、事前判定の `triage` は任意です（下の節を参照）。configが省いた役割と、役割の中で省いた項目だけを
   `--provider`、`--model`、`--effort` とpresetで補います。ただし `--provider` と
   違うproviderを指定した役割は `--model` と `--effort` を引き継がず、そのproviderの
   既定presetを使います。明示した役割の値が他の役割やフラグで上書きされることは
@@ -522,6 +533,67 @@ LLMにタスクを判定させます。書かなければ判定の呼び出し�
 - `profiles.triage` の有無と中身は `configVersion` に入ります。triageの無いrunの
   `configVersion` は以前と変わりません。
 
+- triageの完了記録には、判定と理由と一緒に、保存済みのtaskとspecから測った
+  較正材料を残します。taskの文字数、specの文字数、specの受け入れ基準の項目数、
+  specが挙げる変更予定ファイルの数の四つです。文字数はUnicodeのcode pointで
+  数えます。項目数とファイル数は、次の一つの規則で数えます。
+  - `#` 〜 `######` の見出しのうち、題が `Acceptance Criteria`、
+    `Completion Criteria`、`受け入れ基準`、`完了条件`、`完了基準` のもの
+    （受け入れ基準）と、`Files to Change`、`Files to Modify`、`Changed Files`、
+    `変更するファイル`、`変更予定のファイル`、`変更対象のファイル` のもの
+    （変更予定ファイル）を対象にします。題は大文字小文字と末尾のコロンを
+    区別しません。
+  - 節は次の同じか上の階層の見出しまでで、その中の小見出しも含みます。
+  - 数えるのは行頭から始まる箇条書き（`-`、`*`、`+`、`1.`、`1)`。
+    `[ ]` / `[x]` 付きも可）だけで、字下げした入れ子は上の項目の一部として
+    数えません。fenced code blockの中は読みません。
+  - 同じ記述は一度だけ数えます。受け入れ基準は空白をまとめて小文字にした
+    本文で、変更予定ファイルは項目の最初の `` `code` ``（無ければ最初の語）の
+    pathで比べます。
+  - specが無いrunでは、spec由来の三つは「不明」（`null`）です。specに該当する
+    見出しが無い場合も、その値は「不明」にします。0とは数えません。この値の
+    無い古いtriage記録も「不明」として読みます。
+    較正材料は、承認待ちの途中のreport（triageの完了step）と、終わった後のreport
+    （run output）に同じ値で出ます。
+- triageの呼び出しをproviderが明示的に拒否した場合は、`unknown` として
+  進まずに `rejected-invocation` で止まります。
+
+### 修正専用のprofile（profiles.repair）
+
+`factory.json` の `profiles.repair` を書くと、修正（検証の失敗やレビューの
+指摘を受けた2回目以降の実装）だけを別のprovider、model、effortで動かせます。
+
+```json
+{
+  "profiles": {
+    "code": { "provider": "codex", "model": "gpt-5.6-sol", "effort": "medium" },
+    "repair": {
+      "provider": "codex",
+      "model": "gpt-5.6-terra",
+      "effort": "high"
+    }
+  }
+}
+```
+
+- 書かなければ、修正は従来どおり `code` の設定で動き、`--context reuse` では
+  実装のsessionを継続します。`configVersion` も変わりません。
+- 項目の補い方、fakeと実providerを混ぜられない規則、preflightの対象になることは
+  他の役割と同じです。preflightは同じ設定を一度だけ確かめるので、`code` と同じ
+  設定の `repair` は追加の確認をしません。
+- `repair` のprovider、model、effortが `code` と同じなら、書かなかった場合と同じ
+  です。sessionを継続し、`configVersion` も変わりません。
+- 違う場合は、修正のたびに新しいsessionを始めます。promptには保存済みのtask、
+  spec、実装の規則と、検証・レビューから得た修正の指示を渡し、前の実装が
+  作業場所に残っていることを伝えます。`configVersion` はこの設定を含むので、
+  `repair` の無いrunとは別のグループとして比較されます。
+- `--context fresh` の修正は、`repair` の有無にかかわらず毎回新しいsessionです。
+- 修正の呼び出しと使用量は、reportの役割別集計で `code` ではなく `repair` の
+  行に入ります。
+- 修正の呼び出しをproviderが明示的に拒否すると `rejected-invocation` で止まります。
+  `factory.json` の `repair` を直してから `demo retrigger --run <id>
+--reload-config` でやり直します。
+
 ### durably checkoutを固定して呼ぶ
 
 コードを対象リポジトリへコピーせず、durablyのcheckoutを特定のcommitに固定して
@@ -675,7 +747,8 @@ LLM呼び出しはすべて `src/engine/runner.ts` を通り、attempt metadata�
 - usageの単位（このサンプルは一provider invocation）と取得元
 - elapsed、result、error、interruption reason、API換算参考価格とmeter別内訳
 - `configVersion`（三役割それぞれのprovider、model、effort、context、指示版、
-  反復上限、対象、timeoutのhash。triage profileがあればそれも含む）
+  反復上限、対象、timeoutのhash。triage profileと、`code` と違うrepair profileが
+  あればそれも含む）
 
 providerが返すusageは、一回の呼び出しの**全モデル応答の合計**でなければいけません。
 エージェントCLIは一回の呼び出しの中で何十回もモデルを呼ぶので、最後の応答だけでは
@@ -739,13 +812,13 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
   全試行の終了コードとログのパスを `failure.details` にも載せます
   （`check attempt: `、`check exit code: `、`check stdout log: `、
   `check stderr log: `、`check log write error: `）
-- **Triage**: 事前判定（`routine` / `probe` / `unknown`）とその理由。判定の無い
-  runは `none`
+- **Triage**: 事前判定（`routine` / `probe` / `unknown`）とその理由、四つの
+  較正材料（不明なら `unknown`）。判定の無いrunは `none`
 - **Stage usage**: 工程ごとの visits / reworked（同じ工程への再突入＝手戻り）、
   invocation数、in / cache-read / cache-write / out / total、cost。
   いずれかの呼び出しが未計上なら PARTIAL、価格不明なら unknown
-- **Role usage**: `code`、`correctness`、`edge-cases`（triage profileがあれば
-  `triage` も）ごとのrequested
+- **Role usage**: `code`、`correctness`、`edge-cases`（修正を呼んだかrepair
+  profileがあれば `repair`、triage profileがあれば `triage` も）ごとのrequested
   provider/model/effort、invocation数、token、cost、usageとcostそれぞれの完全性。二つのレビューを
   別の行に分けるので、役割ごとに違うmodelを使ったrunでも内訳が混ざりません
 - **Timing / Attempts / Waits**: 従来どおりの工程別 work / wall 時間、
@@ -807,7 +880,10 @@ cost per success、repairs、工程別の work / tokens / cache-read / cost / re
 `unknown`）ごとの表が付きます。列は run 数、approved、verification-failed、
 review-cap-reached、repairs と cost の統計、そして `routine` と判定されたのに
 修正が要った、または上限（review cap か、検証失敗で終わった反復上限）に達した
-run の数です。最後の列が判定の見逃しで、shadow mode で測りたい値です。cost
+run の数と、停止理由（`rejected-invocation`、`uncertain-invocation` など）ごとの
+run 数です。`routine` の列が判定の見逃しで、shadow mode で測りたい値です。
+続く表は、同じ判定ごとに四つの較正材料（task と spec の文字数、受け入れ基準の
+項目数、変更予定ファイルの数）の統計を並べます。cost や較正材料が
 不明の run は統計から外して unknown 件数に数えます。triage 呼び出しのtokenと
 costは `triage` 工程と `triage` 役割に1回ずつ計上します。
 
@@ -827,7 +903,8 @@ repairs の中央値を見ます。unknown は統計から外して件数だけ�
 - model、effort、指示版、tool、cwdを途中で替えるhandoffは未実装です。
   trigger時に解決した三役割のprofileをrun中固定します。
 - 実装と修正のsession継続は、`code` 役割のprovider、profile ID、cwd、指示版が
-  一致するときだけです。レビューのprofileは関係しません。
+  一致するときだけです。レビューのprofileは関係しません。`code` と違う
+  `repair` profileの修正は、実装のsessionを継続しません。
 - fake providerは決定的なローカル練習用で、実LLM検証として数えません。
 
 ## fake mode
@@ -847,7 +924,9 @@ fakeのtriageは同梱題材ではtriggerのフラグから指定できないの
 
 fakeのpreflightはrequested modelの名前で決まります。`unlisted-*` は無料の確認で
 拒否、`probe-*` は無料の確認では決まらず最小の呼び出しが通り、`refused-*` は最小の
-呼び出しが明示的に拒否されます。それ以外は無料の確認で通ります。
+呼び出しが明示的に拒否されます。`rejects-*` は無料の確認で通り、その後の
+実装、修正、レビュー、triageの呼び出しがすべて明示的に拒否されます。それ以外は
+無料の確認で通ります。
 
 `FAKE_LATENCY_MS=20000-90000` を付けると、各呼び出しがその範囲のランダムな時間
 待ちます。cancel と timeout では待ちを打ち切ります。`FAKE_USAGE=realistic` を

@@ -10,8 +10,10 @@
  */
 import {
   TRIAGE_JUDGMENTS,
+  UNKNOWN_CALIBRATION,
   type LoopReport,
   type ReportTriage,
+  type TriageCalibration,
 } from './report.js'
 
 export interface Stat {
@@ -40,6 +42,17 @@ export interface TriageStats {
   reviewCapReached: number
   repairs: Stat
   costUsd: Stat
+  /**
+   * The calibration recorded with each judgment, one statistic per value.
+   * A run whose value is unknown (no spec, an older record) counts under
+   * `unknown`, never as zero.
+   */
+  calibration: Record<keyof TriageCalibration, Stat>
+  /**
+   * Runs per stop reason (`failure.kind`), such as `rejected-invocation` or
+   * `uncertain-invocation`. Runs that did not stop are not counted.
+   */
+  stops: Record<string, number>
   /**
    * Runs judged `routine` that still needed a repair or stopped at a cap
    * (review cap, or the iteration cap as verification-failed). Always 0 on
@@ -115,6 +128,30 @@ function labelOf(report: LoopReport): string {
   ].join('/')
 }
 
+/** The calibration values, in the order every table shows them. */
+export const CALIBRATION_KEYS = [
+  'taskChars',
+  'specChars',
+  'acceptanceCriteria',
+  'plannedFiles',
+] as const satisfies readonly (keyof TriageCalibration)[]
+
+function calibrationStats(
+  runs: LoopReport[],
+): Record<keyof TriageCalibration, Stat> {
+  const of = (r: LoopReport) => r.triage?.calibration ?? UNKNOWN_CALIBRATION
+  return Object.fromEntries(
+    CALIBRATION_KEYS.map((key) => [key, stat(runs.map((r) => of(r)[key]))]),
+  ) as Record<keyof TriageCalibration, Stat>
+}
+
+function stopCounts(runs: LoopReport[]): Record<string, number> {
+  const stops: Record<string, number> = {}
+  for (const r of runs)
+    if (r.failure) stops[r.failure.kind] = (stops[r.failure.kind] ?? 0) + 1
+  return stops
+}
+
 function triageStats(list: LoopReport[]): TriageStats[] {
   return TRIAGE_JUDGMENTS.flatMap((judgment) => {
     const runs = list.filter((r) => r.triage?.judgment === judgment)
@@ -130,6 +167,8 @@ function triageStats(list: LoopReport[]): TriageStats[] {
         reviewCapReached: concluded('review-cap-reached'),
         repairs: stat(runs.map((r) => r.summary.repairs)),
         costUsd: stat(runs.map((r) => r.summary.costUsd)),
+        calibration: calibrationStats(runs),
+        stops: stopCounts(runs),
         routineNeedingMore:
           judgment === 'routine'
             ? runs.filter(
@@ -213,6 +252,13 @@ function fmtStat(s: Stat, digits = 0): string {
   return `${f(s.median)} [${f(s.min)}..${f(s.max)}] (n=${s.n}${tail})`
 }
 
+function fmtStops(stops: Record<string, number>): string {
+  const entries = Object.entries(stops)
+  return entries.length === 0
+    ? 'none'
+    : entries.map(([kind, n]) => `${kind} ${n}`).join(', ')
+}
+
 export function comparisonToMarkdown(c: Comparison): string {
   const lines: string[] = []
   lines.push('# Run comparison')
@@ -257,12 +303,26 @@ export function comparisonToMarkdown(c: Comparison): string {
       )
       lines.push('')
       lines.push(
-        '| judgment | runs | approved | verification-failed | review-cap-reached | repairs | cost USD | routine needing repair or cap |',
+        '| judgment | runs | approved | verification-failed | review-cap-reached | repairs | cost USD | routine needing repair or cap | stops |',
       )
-      lines.push('|---|---|---|---|---|---|---|---|')
+      lines.push('|---|---|---|---|---|---|---|---|---|')
       for (const t of g.triage) {
         lines.push(
-          `| ${t.judgment} | ${t.runs} | ${t.approved} | ${t.verificationFailed} | ${t.reviewCapReached} | ${fmtStat(t.repairs)} | ${fmtStat(t.costUsd, 6)} | ${t.judgment === 'routine' ? t.routineNeedingMore : '-'} |`,
+          `| ${t.judgment} | ${t.runs} | ${t.approved} | ${t.verificationFailed} | ${t.reviewCapReached} | ${fmtStat(t.repairs)} | ${fmtStat(t.costUsd, 6)} | ${t.judgment === 'routine' ? t.routineNeedingMore : '-'} | ${fmtStops(t.stops)} |`,
+        )
+      }
+      lines.push('')
+      lines.push(
+        'Calibration by triage judgment (from the stored task and spec):',
+      )
+      lines.push('')
+      lines.push(
+        '| judgment | task chars | spec chars | acceptance criteria | planned files |',
+      )
+      lines.push('|---|---|---|---|---|')
+      for (const t of g.triage) {
+        lines.push(
+          `| ${t.judgment} | ${CALIBRATION_KEYS.map((k) => fmtStat(t.calibration[k])).join(' | ')} |`,
         )
       }
     }

@@ -39,9 +39,14 @@ export function lensName(lens: string): string {
   return LENS_NAME[lens] ?? lens
 }
 
-/** A usage role: `code`, `triage`, or a review lens. */
+/** Usage roles that are not a stage or a lens. */
+const ROLE_NAME: Record<string, string> = {
+  repair: '修正',
+}
+
+/** A usage role: `code`, `repair`, `triage`, or a review lens. */
 export function roleName(role: string): string {
-  return LENS_NAME[role] ?? STAGE_NAME[role] ?? role
+  return ROLE_NAME[role] ?? LENS_NAME[role] ?? STAGE_NAME[role] ?? role
 }
 
 const TRIAGE_NAME: Record<string, string> = {
@@ -95,6 +100,12 @@ const FAILURE_TEXT: Record<FailureKind, { reason: string; check: string }> = {
     check:
       'エラーに示した役割の設定か、使う実行ファイルの指定を factory.json で直し、設定を読み直す再実行を使う。ログインの問題なら、ログインし直してから通常の再実行を使う。',
   },
+  'rejected-invocation': {
+    reason:
+      '事前確認のあと、プロバイダーがエージェントの呼び出しをはっきり断りました。断られたことを呼び出しの答えとして記録したので、結果の分からない呼び出しは残っていません。',
+    check:
+      '下の拒否の理由を読み、その役割の設定か使う実行ファイルの指定を factory.json で直して、設定を読み直す再実行を使う。ログインや利用上限の問題なら、プロバイダー側で直してから通常の再実行を使う。',
+  },
   'verification-failed': {
     reason:
       '最後の修正のあとも、固定したチェックが通りませんでした。修正の回数を使い切っています。',
@@ -128,6 +139,23 @@ const FAILURE_TEXT: Record<FailureKind, { reason: string; check: string }> = {
     reason: '記録からは分からない理由で止まりました。',
     check: 'もう一度始める前に、実行のエラーと試行を読む。',
   },
+}
+
+/** A stop reason in a few words, for a count such as a comparison's. */
+const STOP_NAME: Record<FailureKind, string> = {
+  'baseline-check-failed': 'ベースの検証失敗',
+  'preflight-failed': '事前確認で停止',
+  'rejected-invocation': '呼び出しの拒否',
+  'verification-failed': '検証失敗',
+  'review-cap-reached': 'レビュー上限',
+  'uncertain-invocation': '結果が不明な呼び出し',
+  cancelled: '取り消し',
+  'cancelled-publish': '公開中の取り消し',
+  unclassified: '分類できない停止',
+}
+
+export function stopName(kind: string): string {
+  return STOP_NAME[kind as FailureKind] ?? kind
 }
 
 const DECIDED_TEXT: Record<string, string> = {
@@ -221,6 +249,10 @@ const COMMAND_NOTES: [string, string][] = [
     'ベースのコミットでのチェックの結果とログの場所を読めます。',
   ],
   [
+    'the refused call and its reason',
+    '断られた呼び出しと、その理由を読めます。',
+  ],
+  [
     'the preflight result for each role',
     '役割ごとの事前確認の結果と確認の方法を読めます。',
   ],
@@ -252,6 +284,10 @@ export function noteSaidByReason(note: string): boolean {
 const PREFLIGHT_WITHOUT_CONFIG_TEXT =
   'エラーに示した役割のプロバイダー、モデル、推論の強さを直し、trigger からやり直す。ログインの問題なら、ログインし直してから通常の再実行を使う。'
 
+/** Rejected-call check text for a run with no factory.json to fix. */
+const REJECTED_WITHOUT_CONFIG_TEXT =
+  '下の拒否の理由を読み、その役割のプロバイダー、モデル、推論の強さを直して trigger からやり直す。ログインや利用上限の問題なら、プロバイダー側で直してから通常の再実行を使う。'
+
 /** Baseline check text when setup left files .gitignore does not cover. */
 const SETUP_UNTRACKED_TEXT =
   '準備のコマンドが .gitignore にないファイルを作っているので、下に示したファイルを .gitignore に入れるか、factory.json の baselineCheck を外して設定を読み直す再実行を使う。'
@@ -268,12 +304,15 @@ export function humanCheckText(
     return SETUP_UNTRACKED_TEXT
   if (kind === 'preflight-failed' && failure?.reload === 'none')
     return PREFLIGHT_WITHOUT_CONFIG_TEXT
+  if (kind === 'rejected-invocation' && failure?.reload === 'none')
+    return REJECTED_WITHOUT_CONFIG_TEXT
   return FAILURE_TEXT[kind].check
 }
 
 const DETAIL_LABEL: Record<keyof typeof DETAIL_PREFIX, string> = {
   checkpoint: '完了の記録がないチェックポイント',
   error: 'エラー',
+  refusal: '拒否の理由',
   checkAttempt: '検証の試行',
   checkExitCode: '検証の終了コード',
   checkStdout: '検証の標準出力',

@@ -17,8 +17,14 @@ import { fileURLToPath } from 'node:url'
 import { createAgentDurably } from '../src/durably.js'
 import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
-import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
+import { compareReports, comparisonToMarkdown } from '../src/engine/compare.js'
+import {
+  reportToJson,
+  reportToMarkdown,
+  triageCalibration,
+} from '../src/engine/report.js'
 import { checkpointPaths } from '../src/engine/runner.js'
+import { codePrompt } from '../src/factory/prompts.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -653,9 +659,20 @@ describe('shadow triage', { timeout: 300000 }, () => {
       )
 
       const report = await buildReport(durably, recovered.id)
+      // The calibration is measured from the stored task, not from the
+      // call, so a recovered judgment carries it too. The sample has no
+      // spec: its three values are unknown, never zero.
       assert.deepEqual(report.triage, {
         judgment: 'probe',
         reason: 'Recorded before the worker restarted.',
+        calibration: {
+          taskChars: [
+            ...'Fix src/calc.js add() so decimal inputs are not truncated.',
+          ].length,
+          specChars: null,
+          acceptanceCriteria: null,
+          plannedFiles: null,
+        },
       })
       const triage = report.attempts.filter((a) => a.stepName === 'triage')
       assert.equal(triage.length, 1)
@@ -1094,3 +1111,380 @@ describe(
     })
   },
 )
+
+describe('refused calls and the repair profile', { timeout: 300000 }, () => {
+  const fake = (requestedModel: string | null = null) => ({
+    provider: 'fake' as const,
+    requestedModel,
+    requestedEffort: null,
+  })
+  it('stops every refused stage as rejected-invocation, and repairs on its own profile in a new session', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'e2e-rejected-'))
+    const dir = join(home, '.local', 'state', 'local-agent-loop')
+    delete process.env.FAKE_FAIL_FIRST
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    delete process.env.FAKE_TRIAGE
+    const durably = createAgentDurably({ stateRoot: dir })
+    await durably.migrate()
+    const trigger = (args: {
+      code?: string
+      correctness?: string
+      triage?: string
+      repair?: string | null
+      /** Implement iterations that leave the bug, so a repair follows. */
+      failIterations?: number
+      context?: 'reuse' | 'fresh'
+      triageKinds?: ('routine' | 'probe' | 'invalid')[]
+    }) =>
+      durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        profiles: {
+          code: fake(args.code),
+          correctness: fake(args.correctness),
+          'edge-cases': fake(),
+          ...(args.triage !== undefined ? { triage: fake(args.triage) } : {}),
+          ...(args.repair !== undefined ? { repair: fake(args.repair) } : {}),
+        },
+        target: { kind: 'subject' as const },
+        maxIterations: 2,
+        context: args.context ?? 'reuse',
+        fakeScenario: {
+          failIterations: args.failIterations ?? 0,
+          ...(args.triageKinds ? { triage: args.triageKinds } : {}),
+        },
+      })
+    const ids: Record<string, string> = {}
+    try {
+      ids['implement'] = (
+        await trigger({ code: 'rejects-code', triage: 'triage-model' })
+      ).id
+      ids['review'] = (await trigger({ correctness: 'rejects-review' })).id
+      ids['triage'] = (await trigger({ triage: 'rejects-triage' })).id
+      ids['repair'] = (
+        await trigger({ repair: 'rejects-repair', failIterations: 1 })
+      ).id
+      ids['omitted'] = (await trigger({ failIterations: 1 })).id
+      ids['same'] = (await trigger({ repair: null, failIterations: 1 })).id
+      ids['separate'] = (
+        await trigger({ repair: 'repair-model', failIterations: 1 })
+      ).id
+      ids['fresh'] = (await trigger({ context: 'fresh', failIterations: 1 })).id
+      ids['fresh-separate'] = (
+        await trigger({
+          context: 'fresh',
+          repair: 'repair-model',
+          failIterations: 1,
+        })
+      ).id
+      for (const kind of ['routine', 'probe', 'invalid'] as const)
+        ids[`judged-${kind}`] = (
+          await trigger({
+            triage: 'triage-model',
+            repair: 'repair-model',
+            failIterations: 1,
+            triageKinds: [kind],
+          })
+        ).id
+      await durably.init()
+      for (const [name, id] of Object.entries(ids))
+        await waitFor(
+          async () =>
+            ['completed', 'failed', 'waiting'].includes(
+              (await durably.getRun(id))?.status ?? '',
+            ),
+          120000,
+          `${name} run settles`,
+        )
+
+      // Every refused stage stops the same way: settled, safe to retry, with
+      // the provider's reason, and the call was sent once.
+      for (const [name, role] of [
+        ['implement', 'implement'],
+        ['review', 'review-a'],
+        ['triage', 'triage'],
+        ['repair', 'repair'],
+      ] as const) {
+        const id = ids[name] ?? ''
+        const report = await buildReport(durably, id)
+        assert.equal(report.status, 'failed', name)
+        assert.equal(report.failure?.kind, 'rejected-invocation', name)
+        assert.equal(report.failure?.retryable, true, name)
+        assert.ok(
+          report.failure?.details.includes(
+            `refusal: fake: the ${role} call on rejects-${name === 'implement' ? 'code' : name} is refused`,
+          ),
+          `${name}: ${report.failure?.details.join('\n')}`,
+        )
+        const refused = report.attempts.filter(
+          (a) =>
+            a.measurement?.role === role && a.measurement.result === 'rejected',
+        )
+        assert.equal(refused.length, 1, name)
+        const key = refused[0]?.measurement?.operationKey ?? ''
+        const paths = checkpointPaths(
+          join(dir, 'runs', id, 'operation-checkpoints'),
+          key,
+        )
+        const saved = JSON.parse(await readFile(paths.completed, 'utf8')) as {
+          status: string
+          rejection?: string
+        }
+        assert.equal(saved.status, 'completed', name)
+        assert.match(saved.rejection ?? '', /is refused/, name)
+        // The sample reads no factory.json, so no reload is offered.
+        assert.ok(
+          !report.failure?.next.some((n) => n.includes('--reload-config')),
+          name,
+        )
+        assert.match(reportToMarkdown(report), /- kind: rejected-invocation/)
+      }
+      // A refused triage stops the run instead of recording `unknown`.
+      const triageStop = await buildReport(durably, ids['triage'] ?? '')
+      assert.equal(triageStop.triage, null)
+      assert.ok(
+        !triageStop.attempts.some((a) => a.stepName.endsWith(':code:agent')),
+      )
+
+      /** The implement and repair calls, in order, as the report has them. */
+      const codeCalls = async (name: string) =>
+        (await buildReport(durably, ids[name] ?? '')).attempts
+          .filter((a) => a.stepName.endsWith(':code:agent') && a.measurement)
+          .map((a) => ({
+            role: a.measurement?.role,
+            session: a.measurement?.sessionId,
+            model: a.measurement?.requestedModel,
+          }))
+
+      // Without a repair profile, or with one equal to code's, reuse keeps
+      // one session on the code profile.
+      for (const name of ['omitted', 'same']) {
+        const [implement, repair] = await codeCalls(name)
+        assert.equal(repair?.role, 'repair', name)
+        assert.equal(repair?.session, implement?.session, name)
+        assert.equal(repair?.model, null, name)
+      }
+      // A different repair profile repairs on it, in a new session.
+      const [implement, repair] = await codeCalls('separate')
+      assert.equal(repair?.role, 'repair')
+      assert.equal(repair?.model, 'repair-model')
+      assert.notEqual(repair?.session, implement?.session)
+      // Fresh starts a new session for every repair, with or without one.
+      for (const name of ['fresh', 'fresh-separate']) {
+        const [first, second] = await codeCalls(name)
+        assert.notEqual(second?.session, first?.session, name)
+      }
+
+      // The repair profile is preflighted once per distinct setting.
+      const separate = await buildReport(durably, ids['separate'] ?? '')
+      assert.deepEqual(
+        separate.preflight?.checks.map((c) => c.roles),
+        [['code', 'correctness', 'edge-cases'], ['repair']],
+      )
+      const same = await buildReport(durably, ids['same'] ?? '')
+      assert.deepEqual(
+        same.preflight?.checks.map((c) => c.roles),
+        [['code', 'correctness', 'edge-cases', 'repair']],
+      )
+      // Repair calls and usage are their own role, never code's.
+      for (const report of [separate, same]) {
+        const role = (name: string) =>
+          report.roleUsage.find((u) => u.role === name)
+        assert.equal(role('code')?.invocations, 1)
+        assert.equal(role('repair')?.invocations, 1)
+      }
+      assert.equal(
+        separate.roleUsage.find((u) => u.role === 'repair')?.requestedModel,
+        'repair-model',
+      )
+      // An equal repair profile keeps the version a run without one has; a
+      // different one does not.
+      const omitted = await buildReport(durably, ids['omitted'] ?? '')
+      assert.equal(same.configVersion, omitted.configVersion)
+      assert.notEqual(separate.configVersion, omitted.configVersion)
+
+      // The judgment is recorded and routes nothing: the same steps, roles
+      // and models whatever it says.
+      const path = async (name: string) =>
+        (await buildReport(durably, ids[name] ?? '')).attempts
+          .filter((a) => a.stepName !== 'triage')
+          .map((a) =>
+            [
+              a.stepName,
+              a.measurement?.role ?? '',
+              a.measurement?.requestedModel ?? '',
+            ].join('/'),
+          )
+      const routine = await path('judged-routine')
+      assert.deepEqual(await path('judged-probe'), routine)
+      assert.deepEqual(await path('judged-invalid'), routine)
+      const judged = await buildReport(durably, ids['judged-invalid'] ?? '')
+      assert.equal(judged.triage?.judgment, 'unknown')
+      assert.equal(judged.triage?.calibration?.specChars, null)
+
+      // The open run reads the calibration from its triage step; once it
+      // finishes, from its output. Both are the same record.
+      const openRun = ids['judged-routine'] ?? ''
+      const before = await buildReport(durably, openRun)
+      const calibration = {
+        taskChars: [
+          ...'Fix src/calc.js add() so decimal inputs are not truncated.',
+        ].length,
+        specChars: null,
+        acceptanceCriteria: null,
+        plannedFiles: null,
+      }
+      assert.deepEqual(before.triage?.calibration, calibration)
+      assert.match(
+        reportToMarkdown(before),
+        /- task characters: 58\n- spec characters: unknown/,
+      )
+      const wait = (await durably.getWaits(openRun)).find((w) =>
+        w.name.includes(':approve:'),
+      )
+      assert.ok(wait)
+      await durably.signal(
+        wait.id,
+        {
+          candidateId: (wait.metadata as { candidateId: string }).candidateId,
+          decision: 'approved',
+        },
+        { signalId: 'approve-judged-routine' },
+      )
+      await waitFor(
+        async () => (await durably.getRun(openRun))?.status === 'completed',
+        60000,
+        'the approved run finishes',
+      )
+      const after = await buildReport(durably, openRun)
+      assert.deepEqual(
+        (after.output as { triage?: { calibration?: unknown } }).triage
+          ?.calibration,
+        calibration,
+      )
+      assert.deepEqual(after.triage, before.triage)
+
+      // Compare sets the calibration and the stop beside the judgment,
+      // with unknown values counted as unknown.
+      const stopped = await buildReport(durably, ids['implement'] ?? '')
+      assert.equal(stopped.triage?.judgment, 'routine')
+      const [row] = compareReports([stopped]).groups[0]?.triage ?? []
+      assert.deepEqual(row?.stops, { 'rejected-invocation': 1 })
+      assert.equal(row?.calibration.taskChars.median, 58)
+      assert.deepEqual(
+        [row?.calibration.specChars.n, row?.calibration.specChars.unknown],
+        [0, 1],
+      )
+      const md = comparisonToMarkdown(compareReports([stopped]))
+      assert.match(md, /\| rejected-invocation 1 \|/)
+      assert.match(
+        md,
+        /\| routine \| 58 \[58\.\.58\] \(n=1\) \| unknown \(1 unknown\) \|/,
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+
+    // The CLI status names the refusal and says it is safe to retry.
+    const res = await runChild(
+      join(packageRoot, 'node_modules', '.bin', 'tsx'),
+      [join(packageRoot, 'src', 'cli.ts'), 'status'],
+      { cwd: home, timeoutMs: 60000, env: { HOME: home } },
+    )
+    assert.equal(res.code, 0, res.stderr)
+    const block =
+      res.stdout.split('\n\n').find((b) => b.startsWith(ids['review'] ?? '')) ??
+      ''
+    assert.match(block, /rejected-invocation:[\s\S]*retry: +yes/)
+    assert.match(
+      block,
+      /refusal: fake: the review-a call on rejects-review is refused/,
+    )
+    assert.match(block, /demo retrigger --run /)
+  })
+
+  it('hands a new repair session the task, the spec and the repair notes', () => {
+    const prompt = codePrompt({
+      role: 'repair',
+      iteration: 2,
+      repairNotes: ['acceptance: add(0.1, 0.2) returned 0'],
+      task: 'Carry out the work described in the untrusted TASK block below, as specified by the SPEC block.',
+      rules: ['Keep the change minimal.'],
+      untrusted: [
+        { label: 'TASK', content: 'Fix add().' },
+        { label: 'SPEC', content: 'add() returns the exact sum.' },
+      ],
+      newSession: true,
+    })
+    assert.match(prompt, /starting a new session \(iteration 2\)/)
+    assert.doesNotMatch(prompt, /continuing the/)
+    assert.match(prompt, /Fix add\(\)\./)
+    assert.match(prompt, /add\(\) returns the exact sum\./)
+    assert.match(
+      prompt,
+      /Verified feedback to address:\n- acceptance: add\(0\.1, 0\.2\) returned 0/,
+    )
+  })
+})
+
+describe('triage calibration counting', () => {
+  it('counts the task and spec in code points, and unknown without a spec', () => {
+    assert.deepEqual(triageCalibration('直して ok', null), {
+      taskChars: 6,
+      specChars: null,
+      acceptanceCriteria: null,
+      plannedFiles: null,
+    })
+  })
+
+  it('counts top-level items under the named headings once each', () => {
+    const spec = [
+      '# Feature',
+      '',
+      '## Files to Change',
+      '',
+      '- `src/a.ts` — the parser.',
+      '- `src/a.ts` — named again, counted once.',
+      '* src/b.ts: the writer',
+      '  - `src/c.ts` nested under b, not its own item',
+      '1. `docs/x.md`',
+      '',
+      '## Completion Criteria',
+      '',
+      '- [ ] parses a heading',
+      '- [x] Parses   a heading',
+      '- counts once',
+      '',
+      '### Edge cases',
+      '',
+      '- a subheading belongs to its section',
+      '',
+      '```md',
+      '## Acceptance criteria',
+      '- inside a fence, never counted',
+      '```',
+      '',
+      '## Out of Scope',
+      '',
+      '- not a criterion',
+      '',
+      '## 受け入れ基準:',
+      '',
+      '- 見出しが別でも同じ規則で数える',
+    ].join('\n')
+    const c = triageCalibration('task', spec)
+    assert.equal(c.specChars, [...spec].length)
+    // parses a heading (twice, once after normalizing), counts once, the
+    // subheading's item, and the Japanese section's item.
+    assert.equal(c.acceptanceCriteria, 4)
+    // src/a.ts, src/b.ts, docs/x.md; src/c.ts is nested.
+    assert.equal(c.plannedFiles, 3)
+  })
+
+  it('leaves a count unknown when the spec has no section for it', () => {
+    const c = triageCalibration('task', '# Plan\n\n- just prose items\n')
+    assert.equal(c.specChars, [...'# Plan\n\n- just prose items\n'].length)
+    assert.equal(c.acceptanceCriteria, null)
+    assert.equal(c.plannedFiles, null)
+  })
+})
