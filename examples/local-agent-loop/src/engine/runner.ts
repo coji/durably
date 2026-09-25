@@ -245,7 +245,8 @@ export async function runAgentCall(
 
   /** A refused call: settled, with nothing to read and nothing to resend. */
   const finishRejected = async (
-    checkpoint: CompletedCheckpoint & { rejection: string },
+    rejection: string,
+    checkpoint: CompletedCheckpoint,
     recovered: boolean,
   ): Promise<AgentCallOutcome> => {
     invocationId = checkpoint.invocationId
@@ -259,7 +260,7 @@ export async function runAgentCall(
       invocationCompletedAt: checkpoint.invocationCompletedAt,
       recovered,
       result: 'rejected',
-      error: checkpoint.rejection,
+      error: rejection,
     })
     return {
       text: '',
@@ -267,7 +268,7 @@ export async function runAgentCall(
       invocationId,
       recovered,
       measurement,
-      rejection: checkpoint.rejection,
+      rejection,
     }
   }
   const settled = (
@@ -275,10 +276,7 @@ export async function runAgentCall(
     recovered: boolean,
   ): Promise<AgentCallOutcome> => {
     if (typeof checkpoint.rejection === 'string')
-      return finishRejected(
-        { ...checkpoint, rejection: checkpoint.rejection },
-        recovered,
-      )
+      return finishRejected(checkpoint.rejection, checkpoint, recovered)
     if (!checkpoint.result)
       throw new Error('operation checkpoint has neither a result nor a refusal')
     return finish(checkpoint.result, recovered, checkpoint)
@@ -399,7 +397,7 @@ export async function runAgentCall(
         ? spec.provider.rejectionReason(error)
         : null
     if (rejection !== null) {
-      const refused: CompletedCheckpoint & { rejection: string } = {
+      const refused: CompletedCheckpoint = {
         ...startRecord,
         status: 'completed',
         result: null,
@@ -407,7 +405,7 @@ export async function runAgentCall(
         invocationCompletedAt: new Date().toISOString(),
       }
       await writeJsonAtomic(paths.completed, refused, attempt.id)
-      return finishRejected(refused, false)
+      return finishRejected(rejection, refused, false)
     }
     const message = error instanceof Error ? error.message : String(error)
     await settleMeasurement()

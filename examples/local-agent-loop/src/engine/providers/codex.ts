@@ -145,11 +145,10 @@ function codexAuthMode(pinned?: string | null): Promise<CodexAuthMode> {
 const CODEX_START_FAILURE = 'Failed to initialize codex app-server'
 
 /**
- * A 4xx answer from the Codex backend, such as a model the account cannot
- * use, or a CLI that never started, as its own message; null for anything
- * else. Codex reports it as the
- * JSON error body in the message. A timeout (408) or a rate limit (429) says
- * nothing about the settings, so neither counts.
+ * A 4xx answer from the Codex backend (Codex puts the JSON error body in the
+ * message), such as a model the account cannot use, or a CLI that never
+ * started, as one line; null for anything else. A timeout (408) or a rate
+ * limit (429) says nothing about the settings, so neither counts.
  */
 export function codexRejection(error: unknown): string | null {
   const message = error instanceof Error ? error.message : String(error)

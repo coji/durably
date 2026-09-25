@@ -193,16 +193,14 @@ export function stageStep(
 export function baselineLogs(
   attempts: Pick<StepAttempt, 'stepName' | 'startedAt' | 'metadata'>[],
 ): VerificationLog[] {
-  const seen = new Set<string>()
-  return attempts
-    .filter((a) => a.stepName === 'baseline')
-    .sort((x, y) => Date.parse(x.startedAt) - Date.parse(y.startedAt))
-    .flatMap((a) => {
-      const log = (a.metadata as AttemptMeasurement | null)?.verificationLog
-      if (!log || seen.has(log.stdoutPath)) return []
-      seen.add(log.stdoutPath)
-      return [log]
-    })
+  return distinctLogs(
+    attempts
+      .filter((a) => a.stepName === 'baseline')
+      .map((a) => ({
+        startedAt: a.startedAt,
+        log: (a.metadata as AttemptMeasurement | null)?.verificationLog,
+      })),
+  )
 }
 
 /** One grading attempt's log as detail lines, the same for every check. */
@@ -249,17 +247,23 @@ export function lastVerificationLogs(
   // (a checkpoint written before logs existed), an earlier step's logs would
   // name output that did not stop the run.
   const last = Math.max(-1, ...verify.map((a) => a.sequence))
+  return distinctLogs(verify.filter((a) => a.sequence === last))
+}
+
+/**
+ * Logs oldest first. A replay that read the completed checkpoint points at
+ * the same files as the attempt that wrote it, so it adds nothing.
+ */
+function distinctLogs(
+  attempts: { startedAt: string; log: VerificationLog | null | undefined }[],
+): VerificationLog[] {
   const seen = new Set<string>()
-  return verify
-    .filter(
-      (a): a is typeof a & { log: VerificationLog } =>
-        a.sequence === last && a.log !== null,
-    )
+  return [...attempts]
     .sort((x, y) => Date.parse(x.startedAt) - Date.parse(y.startedAt))
-    .flatMap((a) => {
-      if (seen.has(a.log.stdoutPath)) return []
-      seen.add(a.log.stdoutPath)
-      return [a.log]
+    .flatMap(({ log }) => {
+      if (!log || seen.has(log.stdoutPath)) return []
+      seen.add(log.stdoutPath)
+      return [log]
     })
 }
 

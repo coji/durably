@@ -150,6 +150,7 @@ if (cmd === 'worker') {
     )
     process.exit(1)
   }
+  // Every way out, a failed init or a shutdown, passes through 'exit'.
   process.on('exit', lock.release)
   const durably = createAgentDurably()
   durably.on('run:leased', (e) =>
@@ -163,12 +164,7 @@ if (cmd === 'worker') {
   durably.on('step:complete', (e) =>
     console.log(`[step:complete] ${e.stepName} run=${e.runId}`),
   )
-  try {
-    await durably.init()
-  } catch (error) {
-    lock.release()
-    throw error
-  }
+  await durably.init()
   console.log(
     `worker running, pid ${process.pid} (Ctrl-C to stop; kill -9 <pid> to test resume)`,
   )
@@ -178,7 +174,6 @@ if (cmd === 'worker') {
     killOwnedChildren()
     await durably.stop()
     await durably.db.destroy()
-    lock.release()
     process.exit(0)
   }
   process.on('SIGINT', () => void shutdown())

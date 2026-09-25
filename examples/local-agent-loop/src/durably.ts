@@ -65,7 +65,7 @@ export type WorkerLockResult =
   | { acquired: false; holder: WorkerLockHolder | null }
 
 /** The file the operating system locks, and the note beside it. */
-export function workerLockPaths(stateRoot: string = defaultStateRoot()) {
+function workerLockPaths(stateRoot: string = defaultStateRoot()) {
   return {
     lock: join(stateRoot, 'worker.lock'),
     holder: join(stateRoot, 'worker.json'),

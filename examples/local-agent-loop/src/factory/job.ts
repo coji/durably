@@ -115,7 +115,7 @@ export const timeoutMsSchema = z
  * and the first real run of this factory died on a five minute agent timeout
  * before it had finished reading.
  */
-export const DEFAULT_TIMEOUTS = {
+const DEFAULT_TIMEOUTS = {
   subject: { checkTimeoutMs: 120000, agentTimeoutMs: 300000 },
   repo: { checkTimeoutMs: 900000, agentTimeoutMs: 1800000 },
 } as const
@@ -299,7 +299,7 @@ export function assertSingleMode(
  * unset. Anything but a positive safe integer is refused: `0`, a sign, a
  * fraction, `NaN`, `Infinity` and values past `Number.MAX_SAFE_INTEGER`.
  */
-export function positiveTimeout(name: string, fallback: number): number {
+function positiveTimeout(name: string, fallback: number): number {
   const raw = process.env[name]
   if (raw === undefined) return fallback
   if (!/^\d+$/.test(raw)) throw new Error(`${name} must be a positive integer`)
@@ -307,6 +307,25 @@ export function positiveTimeout(name: string, fallback: number): number {
   if (!Number.isSafeInteger(value) || value <= 0)
     throw new Error(`${name} must be a positive integer`)
   return value
+}
+
+/**
+ * A run's two timeouts: each fixed value first, then `TEST_TIMEOUT_MS` /
+ * `AGENT_TIMEOUT_MS` in this process's environment, then the target default.
+ */
+export function resolveTimeouts(
+  kind: keyof typeof DEFAULT_TIMEOUTS,
+  fixed: { checkTimeoutMs?: number; agentTimeoutMs?: number } | null,
+): { checkTimeoutMs: number; agentTimeoutMs: number } {
+  const defaults = DEFAULT_TIMEOUTS[kind]
+  return {
+    checkTimeoutMs:
+      fixed?.checkTimeoutMs ??
+      positiveTimeout('TEST_TIMEOUT_MS', defaults.checkTimeoutMs),
+    agentTimeoutMs:
+      fixed?.agentTimeoutMs ??
+      positiveTimeout('AGENT_TIMEOUT_MS', defaults.agentTimeoutMs),
+  }
 }
 
 function branchFor(
@@ -377,6 +396,10 @@ async function runTriage(
 
 const TRIAGE_TIMEOUT_MS = 300_000
 
+type ProviderFor = (
+  profile: Pick<ResolvedProfile, 'provider' | 'requestedModel'>,
+) => AgentProvider
+
 /** A reply of one word: the call proves the settings work, and no more. */
 const PREFLIGHT_PROMPT =
   'This is a connectivity check. Reply with the single word OK. Do not read files or run tools.'
@@ -419,27 +442,17 @@ async function runPreflight(
   step: StepContext,
   setup: FactorySetup,
   target: Target,
-  fakeRun: FakeRun | null,
+  providerFor: ProviderFor,
 ): Promise<void> {
   const roles: [string, ResolvedProfile][] = [
-    ['code', setup.profiles.code],
-    ['correctness', setup.profiles.correctness],
-    ['edge-cases', setup.profiles['edge-cases']],
+    ...Object.entries(byRole((role) => setup.profiles[role])),
     ...(setup.triage
       ? [['triage', setup.triage] as [string, ResolvedProfile]]
       : []),
   ]
-  const providerFor = (
-    profile: Pick<ResolvedProfile, 'provider' | 'requestedModel'>,
-  ) =>
-    createProvider(profile.provider, {
-      run: fakeRun,
-      requestedModel: profile.requestedModel,
-      codexPath: setup.codexPath ?? null,
-    })
   const plan = await step.run(
     'preflight',
-    async (signal) => {
+    async () => {
       const distinct = new Map<string, [string[], ResolvedProfile]>()
       for (const [role, profile] of roles) {
         // The requested model is part of the key only for the fake provider,
@@ -453,29 +466,33 @@ async function runPreflight(
         if (entry) entry[0].push(role)
         else distinct.set(key, [[role], profile])
       }
-      const checks: PreflightCheck[] = []
-      for (const [names, profile] of distinct.values()) {
-        const provider = providerFor(profile)
-        const cli = cliIdentityOf(
-          profile.provider,
-          await resolveVersions(profile.provider, provider.cliPath),
-        )
-        checks.push({
-          roles: names,
-          provider: profile.provider,
-          requestedModel: profile.requestedModel,
-          model: profile.effectiveModel,
-          effort: profile.effectiveEffort,
-          cliPath: cli?.path ?? null,
-          cliVersion: cli?.version ?? null,
-          free: await provider.checkAvailability({
-            requestedModel: profile.requestedModel,
-            model: profile.effectiveModel,
-            effort: profile.effectiveEffort,
-            signal,
-          }),
-        })
-      }
+      // Free checks send nothing, so they run side by side.
+      const checks = await Promise.all(
+        [...distinct.values()].map(
+          async ([names, profile]): Promise<PreflightCheck> => {
+            const provider = providerFor(profile)
+            const [versions, free] = await Promise.all([
+              resolveVersions(profile.provider, provider.cliPath),
+              provider.checkAvailability({
+                requestedModel: profile.requestedModel,
+                model: profile.effectiveModel,
+                effort: profile.effectiveEffort,
+              }),
+            ])
+            const cli = cliIdentityOf(profile.provider, versions)
+            return {
+              roles: names,
+              provider: profile.provider,
+              requestedModel: profile.requestedModel,
+              model: profile.effectiveModel,
+              effort: profile.effectiveEffort,
+              cliPath: cli?.path ?? null,
+              cliVersion: cli?.version ?? null,
+              free,
+            }
+          },
+        ),
+      )
       return { checks }
     },
     { metadata: { stage: 'preflight' } as unknown as JsonValue },
@@ -587,15 +604,10 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           const triage = fixedTriage ? resolve('triage', fixedTriage) : null
           // A run triggered from the CLI carries both timeouts. Only a run
           // stored before they were fixed reads the worker's environment.
-          const defaults = DEFAULT_TIMEOUTS[input.target.kind]
-          const testTimeoutMs =
-            input.checkTimeoutMs ??
-            positiveTimeout('TEST_TIMEOUT_MS', defaults.checkTimeoutMs)
-          // Both timeouts are read before anything is created, so a bad value
-          // leaves no run directory, worktree or branch behind.
-          const agentTimeoutMs =
-            input.agentTimeoutMs ??
-            positiveTimeout('AGENT_TIMEOUT_MS', defaults.agentTimeoutMs)
+          // Both are read before anything is created, so a bad value leaves
+          // no run directory, worktree or branch behind.
+          const { checkTimeoutMs: testTimeoutMs, agentTimeoutMs } =
+            resolveTimeouts(input.target.kind, input)
           const codexPath = input.codexPath ?? null
           // The path and version of every real CLI the roles launch, so runs
           // on different builds never share a config version.
@@ -606,18 +618,16 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               ...(fixedTriage ? [fixedTriage] : []),
             ].map((p) => p.provider),
           )
-          for (const provider of used) {
-            const identity = cliIdentityOf(
-              provider,
-              await resolveVersions(
-                provider,
-                provider === 'codex' ? codexPath : null,
-              ),
-            )
-            if (!identity) continue
-            cli[`${provider}CliPath`] = identity.path
-            cli[`${provider}Cli`] = identity.version
-          }
+          await Promise.all(
+            [...used].map(async (provider) => {
+              // Only the Codex version reads the pinned path.
+              const versions = await resolveVersions(provider, codexPath)
+              const identity = cliIdentityOf(provider, versions)
+              if (!identity) return
+              cli[`${provider}CliPath`] = identity.path
+              cli[`${provider}Cli`] = identity.version
+            }),
+          )
           await mkdir(root, { recursive: true })
           const target: TargetConfig =
             input.target.kind === 'subject'
@@ -730,14 +740,15 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       const fakeRun = input.fakeScenario
         ? new FakeRun(input.fakeScenario)
         : null
-      await runPreflight(step, setup, target, fakeRun)
-      const providers = byRole((role) =>
-        createProvider(setup.profiles[role].provider, {
+      // Every provider launches the run's pinned Codex CLI, if it has one.
+      const providerFor: ProviderFor = (profile) =>
+        createProvider(profile.provider, {
           run: fakeRun,
-          requestedModel: setup.profiles[role].requestedModel,
+          requestedModel: profile.requestedModel,
           codexPath: setup.codexPath ?? null,
-        }),
-      )
+        })
+      await runPreflight(step, setup, target, providerFor)
+      const providers = byRole((role) => providerFor(setup.profiles[role]))
       // Shadow mode: the judgment is recorded and nothing below reads it.
       const triageProfile = setup.triage
       const triageKey = `${step.runId}/triage/agent`
@@ -749,11 +760,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                 operationKey: triageKey,
                 setup,
                 profile: triageProfile,
-                provider: createProvider(triageProfile.provider, {
-                  run: fakeRun,
-                  requestedModel: triageProfile.requestedModel,
-                  codexPath: setup.codexPath ?? null,
-                }),
+                provider: providerFor(triageProfile),
                 target,
               }),
             {

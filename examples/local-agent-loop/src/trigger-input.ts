@@ -13,9 +13,8 @@ import { repoRoot } from './engine/git.js'
 import { parseProviderName } from './engine/providers/index.js'
 import {
   assertSingleMode,
-  DEFAULT_TIMEOUTS,
   fixProfile,
-  positiveTimeout,
+  resolveTimeouts,
   timeoutMsSchema,
   type FixedProfile,
 } from './factory/job.js'
@@ -347,13 +346,10 @@ export async function buildTriggerInput(a: Record<string, string>) {
   const { roles: profiles, triage } = resolveProfiles(a, config)
   // Fixed here, so the worker's environment never changes a stored run: the
   // config wins, then this process's environment, then the target default.
-  const defaults = DEFAULT_TIMEOUTS[target.kind]
-  const checkTimeoutMs =
-    config?.checkTimeoutMs ??
-    positiveTimeout('TEST_TIMEOUT_MS', defaults.checkTimeoutMs)
-  const agentTimeoutMs =
-    config?.agentTimeoutMs ??
-    positiveTimeout('AGENT_TIMEOUT_MS', defaults.agentTimeoutMs)
+  const { checkTimeoutMs, agentTimeoutMs } = resolveTimeouts(
+    target.kind,
+    config,
+  )
   const approve = a['approve']
   if (approve !== undefined && approve !== 'auto' && approve !== 'manual')
     throw new Error('--approve must be auto|manual')

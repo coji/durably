@@ -701,9 +701,8 @@ export function liveElapsed(
 
 /**
  * Only triage, preflight calls and implement/review branches invoke an LLM:
- * every other step
- * (local grading, prepare, policy, snapshots) is out of usage scope, so its
- * null usage never marks the aggregate incomplete.
+ * every other step (local grading, prepare, policy, snapshots) is out of
+ * usage scope, so its null usage never marks the aggregate incomplete.
  */
 export function attemptExpectsUsage(stepName: string): boolean {
   return roleOf(stepName) !== null
@@ -755,9 +754,11 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push(
       `- result: ${b.passed === null ? 'not finished' : b.passed ? 'pass' : 'fail'}${b.recovered ? ' (recovered from checkpoint)' : ''}`,
     )
-    lines.push(
-      `- exit code: ${b.exitCode ?? (b.passed === null ? 'unknown' : `unknown (killed before it exited${b.log?.timedOutAfterMs !== undefined ? `, timed out after ${b.log.timedOutAfterMs}ms` : ''})`)}`,
-    )
+    const timedOut = b.log?.timedOutAfterMs
+    let exit = String(b.exitCode ?? 'unknown')
+    if (b.exitCode === null && b.passed !== null)
+      exit += ` (killed before it exited${timedOut === undefined ? '' : `, timed out after ${timedOut}ms`})`
+    lines.push(`- exit code: ${exit}`)
     if (b.log) {
       if (b.log.interrupted) lines.push(`- attempt: ${INTERRUPTED_CHECK}`)
       lines.push(`- stdout: ${b.log.stdoutPath}`)

@@ -172,12 +172,9 @@ export class RepoTarget implements Target {
     // commit the candidate names, so a passing check would otherwise fail the
     // run every time. Tracked changes still do count: those would mean the
     // sealed content moved.
-    if (await isDirty(this.config.workdir, { includeUntracked: false })) {
-      throw new Error(
-        `candidate-mutated: ${candidate.id} has uncommitted changes to tracked files in ${this.config.workdir}`,
-      )
-    }
-    const head = await resolveCommit(this.config.workdir, 'HEAD')
+    const head = await this.cleanHead(
+      `candidate-mutated: ${candidate.id} has uncommitted changes to tracked files in ${this.config.workdir}`,
+    )
     const tree = await treeOf(this.config.repoPath, head)
     if (tree !== candidate.sourceHash) {
       throw new Error(
@@ -208,12 +205,17 @@ export class RepoTarget implements Target {
     return result
   }
 
-  private async assertAtBase(): Promise<void> {
+  /** HEAD of a worktree with no tracked changes; `dirty` is the error. */
+  private async cleanHead(dirty: string): Promise<string> {
     if (await isDirty(this.config.workdir, { includeUntracked: false }))
-      throw new Error(
-        `baseline-mutated: ${this.config.workdir} has uncommitted changes to tracked files`,
-      )
-    const head = await resolveCommit(this.config.workdir, 'HEAD')
+      throw new Error(dirty)
+    return resolveCommit(this.config.workdir, 'HEAD')
+  }
+
+  private async assertAtBase(): Promise<void> {
+    const head = await this.cleanHead(
+      `baseline-mutated: ${this.config.workdir} has uncommitted changes to tracked files`,
+    )
     if (head !== this.config.baseCommit)
       throw new Error(
         `baseline-mutated: ${this.config.workdir} is at ${head.slice(0, 12)}, not the base ${this.config.baseCommit.slice(0, 12)}`,

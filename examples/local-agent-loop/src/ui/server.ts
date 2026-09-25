@@ -219,6 +219,8 @@ function pipelineEvents(
 
 /** Stages that run at most once and appear only on a run that reached them. */
 const OPTIONAL_ONCE = ['baseline', 'preflight']
+/** Stages that run at most once per run. */
+const ONCE_STAGES = ['setup', 'triage', ...OPTIONAL_ONCE]
 
 /**
  * The fixed stage order with each stage's visit count and state, from the
@@ -234,7 +236,7 @@ export function derivePipeline(input: PipelineInput): Pipeline {
   for (const v of report.stageVisits) counts.set(v.stage, v.visits)
   // Approval is a wait, not a step, so it has no attempts to count.
   counts.set('approve', new Set(approvals.map((w) => w.name)).size)
-  for (const once of ['setup', 'triage', ...OPTIONAL_ONCE])
+  for (const once of ONCE_STAGES)
     counts.set(
       once,
       report.attempts.some((a) => stageOf(a.stepName) === once) ? 1 : 0,
@@ -434,7 +436,7 @@ function entryOf(name: string): {
   // Once-per-run stages; every preflight step, the free check and each
   // minimal call, is one entry.
   const once = stageOf(name)
-  if (['setup', 'triage', 'baseline', 'preflight'].includes(once))
+  if (ONCE_STAGES.includes(once))
     return {
       key: once,
       stage: once,
@@ -704,12 +706,13 @@ export function deriveTrace(input: TraceInput): Trace {
           const n = (counters.get(a.stepName) ?? 0) + 1
           counters.set(a.stepName, n)
           const aOpen = isOpen(a)
+          const part = suffix(a)
           return node({
             id: `attempt:${a.attemptId}`,
             kind: 'attempt',
             label:
-              multiStep && suffix(a)
-                ? `${stepPartName(suffix(a) ?? '')} 試行 ${n}`
+              multiStep && part
+                ? `${stepPartName(part)} 試行 ${n}`
                 : `試行 ${n}`,
             stage: e.stage,
             iteration: at,

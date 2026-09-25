@@ -112,7 +112,6 @@ export interface AvailabilityRequest {
   requestedModel: string | null
   model: string | null
   effort: string | null
-  signal?: AbortSignal
 }
 
 /** One provider invocation: run the selected local CLI in workdir. */

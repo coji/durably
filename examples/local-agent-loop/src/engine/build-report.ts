@@ -333,23 +333,18 @@ function preflightOf(
       cliVersion: c.cliVersion ?? null,
       called,
     }
-    if (answer)
+    if (answer || called)
       return {
         ...base,
-        verdict: verdict(answer.verdict),
+        verdict: verdict(answer?.verdict),
         method: 'minimal call',
-        detail: answer.detail ?? '',
-      }
-    if (called)
-      return {
-        ...base,
-        verdict: 'unknown',
-        method: 'minimal call',
-        detail: 'the minimal call has no completed answer',
+        detail: answer
+          ? (answer.detail ?? '')
+          : 'the minimal call has no completed answer',
       }
     return {
       ...base,
-      verdict: free.verdict === 'unknown' ? 'unknown' : verdict(free.verdict),
+      verdict: verdict(free.verdict),
       method: free.method ?? 'unknown',
       detail:
         free.verdict === 'unknown'
