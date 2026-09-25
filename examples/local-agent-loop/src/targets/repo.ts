@@ -32,6 +32,7 @@ import type { CandidateChanges, CandidateRef } from '../engine/types.js'
 import {
   checkLog,
   prepareCheckLogs,
+  withPartialLog,
   type GradeResult,
 } from '../engine/verification.js'
 import { changedPathsLine } from '../factory/prompts.js'
@@ -206,10 +207,11 @@ export class RepoTarget implements Target {
         stdout: `${res.stdout}${res.stderr}`.slice(-8000),
         exitCode: res.code,
         elapsedMs: Date.now() - started,
-        log: checkLog(logs, res.code),
+        log: checkLog(logs, res.code, res.logError),
       }
     } catch (err) {
-      if (err instanceof Error && err.name === 'SpawnCancelledError') throw err
+      if (err instanceof Error && err.name === 'SpawnCancelledError')
+        throw withPartialLog(err, checkLog(logs, null))
       if (err instanceof Error && err.message.includes('timed out')) {
         return {
           passed: false,

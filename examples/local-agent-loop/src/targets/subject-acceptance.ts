@@ -27,7 +27,11 @@ import { join } from 'node:path'
 import { runChild } from '../engine/child.js'
 import type { VerificationLog } from '../engine/providers/types.js'
 import { hashDir, readTree } from '../engine/tree.js'
-import { checkLog, prepareCheckLogs } from '../engine/verification.js'
+import {
+  checkLog,
+  prepareCheckLogs,
+  withPartialLog,
+} from '../engine/verification.js'
 
 /** Snapshot the pristine subject tests for this run. */
 export async function snapshotAcceptance(
@@ -165,10 +169,11 @@ export async function runAcceptanceSuite(
       stdout: `${res.stdout}${res.stderr}`.slice(-8000),
       exitCode: res.code,
       elapsedMs: Date.now() - started,
-      log: checkLog(logs, res.code),
+      log: checkLog(logs, res.code, res.logError),
     }
   } catch (err) {
-    if (err instanceof Error && err.name === 'SpawnCancelledError') throw err
+    if (err instanceof Error && err.name === 'SpawnCancelledError')
+      throw withPartialLog(err, checkLog(logs, null))
     if (err instanceof Error && err.message.includes('timed out')) {
       return {
         passed: false,

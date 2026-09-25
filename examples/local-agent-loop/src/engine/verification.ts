@@ -61,18 +61,42 @@ export async function prepareCheckLogs(
   }
 }
 
-/** The recorded log of a grading attempt that ended with `exitCode`. */
+/**
+ * The recorded log of a grading attempt that ended with `exitCode`. A log
+ * write failure is noted beside the paths; it never changes the verdict.
+ */
 export function checkLog(
   files: { stdoutFile: string; stderrFile: string } | null,
   exitCode: number | null,
+  writeError: string | null = null,
 ): VerificationLog | null {
   return files
     ? {
         stdoutPath: files.stdoutFile,
         stderrPath: files.stderrFile,
         exitCode,
+        ...(writeError ? { writeError } : {}),
       }
     : null
+}
+
+/**
+ * Mark an interrupted grade's error with the log it left. A cancel or a lost
+ * lease produces no verdict, but what the check printed before the kill is on
+ * disk, and the attempt measurement should point at it.
+ */
+export function withPartialLog<E extends Error>(
+  error: E,
+  log: VerificationLog | null,
+): E {
+  return Object.assign(error, { verificationLog: log })
+}
+
+function partialLog(error: unknown): VerificationLog | null {
+  return (
+    (error as { verificationLog?: VerificationLog | null } | null)
+      ?.verificationLog ?? null
+  )
 }
 
 export async function runVerificationStep(
@@ -246,6 +270,7 @@ export async function runVerificationStep(
         : interrupted
           ? 'timeout'
           : null,
+      verificationLog: partialLog(err),
     })
     throw err
   }

@@ -70,19 +70,20 @@ export function codePrompt(args: CodePromptArgs): string {
 export const CHANGED_PATHS_INLINE_LIMIT = 50
 
 /**
- * The `Changed paths:` line of a trusted review context. Capped so a huge
- * change cannot flood the prompt; `fullListPath` names the complete list.
+ * The `Changed paths:` line of a trusted review context. With `fullListPath`
+ * naming the complete list, a huge change is capped inline so it cannot
+ * flood the prompt. Without one, every path is listed: the prompt is then the
+ * reviewer's only complete record of what changed.
  */
 export function changedPathsLine(
   changes: string[],
   fullListPath?: string,
 ): string {
   if (changes.length === 0) return 'Changed paths: (none)'
-  const shown = changes.slice(0, CHANGED_PATHS_INLINE_LIMIT).join(', ')
   const rest = changes.length - CHANGED_PATHS_INLINE_LIMIT
-  if (rest <= 0) return `Changed paths: ${shown}`
-  const where = fullListPath ? ` — see ${fullListPath}` : ''
-  return `Changed paths: ${shown}, and ${rest} more${where}`
+  if (!fullListPath || rest <= 0) return `Changed paths: ${changes.join(', ')}`
+  const shown = changes.slice(0, CHANGED_PATHS_INLINE_LIMIT).join(', ')
+  return `Changed paths: ${shown}, and ${rest} more — see ${fullListPath}`
 }
 
 /**

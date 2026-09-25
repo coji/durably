@@ -163,21 +163,30 @@ export function stageStep(
 export function lastVerificationLogs(
   attempts: Pick<StepAttempt, 'stepName' | 'startedAt' | 'metadata'>[],
 ): VerificationLog[] {
-  const graded = attempts
-    .map((a) => ({
-      step: a.stepName,
-      startedAt: a.startedAt,
-      log: (a.metadata as AttemptMeasurement | null)?.verificationLog ?? null,
-    }))
+  const verify = attempts.flatMap((a) => {
+    const step = stageStep(a.stepName)
+    return step?.stage === 'verify'
+      ? [
+          {
+            sequence: step.sequence,
+            startedAt: a.startedAt,
+            log:
+              (a.metadata as AttemptMeasurement | null)?.verificationLog ??
+              null,
+          },
+        ]
+      : []
+  })
+  // The last verify step is chosen before looking for logs: when it has none
+  // (a checkpoint written before logs existed), an earlier step's logs would
+  // name output that did not stop the run.
+  const last = Math.max(-1, ...verify.map((a) => a.sequence))
+  const seen = new Set<string>()
+  return verify
     .filter(
       (a): a is typeof a & { log: VerificationLog } =>
-        a.log !== null && stageStep(a.step)?.stage === 'verify',
+        a.sequence === last && a.log !== null,
     )
-  const sequence = (step: string) => stageStep(step)?.sequence ?? -1
-  const last = Math.max(-1, ...graded.map((a) => sequence(a.step)))
-  const seen = new Set<string>()
-  return graded
-    .filter((a) => sequence(a.step) === last)
     .sort((x, y) => Date.parse(x.startedAt) - Date.parse(y.startedAt))
     .flatMap((a) => {
       if (seen.has(a.log.stdoutPath)) return []

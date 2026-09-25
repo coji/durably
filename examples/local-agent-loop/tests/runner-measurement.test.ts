@@ -9,6 +9,7 @@ import type { JsonValue } from '@coji/durably'
 
 import {
   classifyFailure,
+  lastVerificationLogs,
   uncertainCheckpoints,
 } from '../src/engine/failure-reasons.js'
 import type {
@@ -473,5 +474,43 @@ describe('partial usage snapshots never outrank the terminal write', () => {
     assert.equal(attempt.snapshots.length, settled)
     assert.equal(attempt.snapshots.at(-1)?.result, 'implement-done')
     assert.equal(attempt.snapshots.at(-1)?.usage?.inputTokens, 100)
+  })
+})
+
+describe('logs of the verification that stopped the run', () => {
+  const log = (name: string) => ({
+    stdoutPath: `/logs/${name}/stdout.log`,
+    stderrPath: `/logs/${name}/stderr.log`,
+    exitCode: 1,
+  })
+  const verify = (
+    sequence: number,
+    startedAt: string,
+    verificationLog: ReturnType<typeof log> | null,
+  ) => ({
+    stepName: `stage:${sequence}:verify:acceptance`,
+    startedAt,
+    metadata: { verificationLog } as never,
+  })
+
+  it('reports every attempt of the last verify step, oldest first', () => {
+    assert.deepEqual(
+      lastVerificationLogs([
+        verify(2, '2026-01-01T00:00:00Z', log('early')),
+        verify(4, '2026-01-01T00:02:00Z', log('retry')),
+        verify(4, '2026-01-01T00:01:00Z', log('first')),
+      ]),
+      [log('first'), log('retry')],
+    )
+  })
+
+  it("reports none when the last verify step has no log, not an earlier step's", () => {
+    assert.deepEqual(
+      lastVerificationLogs([
+        verify(2, '2026-01-01T00:00:00Z', log('early')),
+        verify(4, '2026-01-01T00:01:00Z', null),
+      ]),
+      [],
+    )
   })
 })

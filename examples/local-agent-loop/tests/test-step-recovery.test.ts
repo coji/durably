@@ -248,6 +248,11 @@ describe('verification logs', () => {
     }
     controller.abort()
     await assert.rejects(grading, /cancelled/)
+    // The interrupted attempt's measurement points at its partial log.
+    const lostMeasurement = lost.snapshots.at(-1)
+    assert.equal(lostMeasurement?.interruptionReason, 'cancelled-or-lease-lost')
+    assert.equal(lostMeasurement?.verificationLog?.stdoutPath, lostLog)
+    assert.equal(lostMeasurement?.verificationLog?.exitCode, null)
     await writeFile(join(root, 'gate'), '')
     const retry = attempt()
     const graded = await runVerificationStep(

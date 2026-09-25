@@ -86,6 +86,8 @@ function prefersMusl(): boolean {
   return report != null && report.header?.glibcVersionRuntime === undefined
 }
 
+let cachedClaudeExecutable: string | null | undefined
+
 /**
  * The Claude Code binary the Agent SDK launches: the native build shipped in
  * its platform package, never a `claude` on PATH. Resolved the way the SDK
@@ -94,6 +96,14 @@ function prefersMusl(): boolean {
  * be found.
  */
 export function claudeExecutable(): string | null {
+  // The installed binary cannot change within a process, and on Linux the
+  // libc test builds a full diagnostic report, so resolve it once.
+  if (cachedClaudeExecutable === undefined)
+    cachedClaudeExecutable = resolveClaudeExecutable()
+  return cachedClaudeExecutable
+}
+
+function resolveClaudeExecutable(): string | null {
   try {
     const provider = createRequire(import.meta.url).resolve(
       'ai-sdk-provider-claude-code',

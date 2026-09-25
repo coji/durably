@@ -25,6 +25,7 @@ const verificationLogSchema = z.object({
   stdoutPath: z.string(),
   stderrPath: z.string(),
   exitCode: z.number().nullable(),
+  writeError: z.string().optional(),
 })
 
 const sessionSchema = z.object({

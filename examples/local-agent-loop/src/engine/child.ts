@@ -1,6 +1,7 @@
 /** Cancel-aware subprocess execution for the process that spawned it. */
 import { spawn, type SpawnOptions } from 'node:child_process'
-import { createWriteStream, type WriteStream } from 'node:fs'
+import { createWriteStream } from 'node:fs'
+import type { Readable, Writable } from 'node:stream'
 import { StringDecoder } from 'node:string_decoder'
 
 const owned = new Set<number>()
@@ -31,6 +32,11 @@ export interface SpawnResult {
   stderr: string
   elapsedMs: number
   killed: boolean
+  /**
+   * Why `stdoutFile` / `stderrFile` could not be written in full, or null. A
+   * log failure never replaces the child's own exit code.
+   */
+  logError: string | null
 }
 
 export class SpawnCancelledError extends Error {
@@ -54,17 +60,26 @@ export interface RunChildOptions extends SpawnOptions {
   stderrFile?: string
 }
 
-/** A raw byte log that reports its own write error instead of crashing. */
-function openLog(path: string | undefined) {
-  if (!path) return null
+/**
+ * A raw byte log fed from `source`. It honours the file's backpressure: when a
+ * write fills the stream's buffer, `source` is paused until the file drains,
+ * so a child that prints faster than the disk writes cannot grow memory
+ * without bound. A write error is reported instead of crashing, and `source`
+ * is resumed so the child is never left blocked on a full pipe.
+ */
+export function teeLog(source: Readable | null, stream: Writable) {
   let failure: Error | null = null
-  const stream: WriteStream = createWriteStream(path)
+  const resume = () => source?.resume()
   stream.on('error', (error) => {
     failure ??= error
+    stream.off('drain', resume)
+    resume()
   })
   return {
     write: (chunk: Buffer) => {
-      if (!failure) stream.write(chunk)
+      if (failure || stream.write(chunk)) return
+      source?.pause()
+      stream.once('drain', resume)
     },
     close: () =>
       new Promise<Error | null>((resolve) => {
@@ -117,8 +132,12 @@ export async function runChild(
     ...(ownsProcessGroup ? { detached: true } : {}),
   })
   if (child.pid !== undefined) owned.add(child.pid)
-  const outLog = openLog(stdoutFile)
-  const errLog = openLog(stderrFile)
+  const outLog = stdoutFile
+    ? teeLog(child.stdout, createWriteStream(stdoutFile))
+    : null
+  const errLog = stderrFile
+    ? teeLog(child.stderr, createWriteStream(stderrFile))
+    : null
   const closeLogs = async (): Promise<Error | null> => {
     const [outError, errError] = await Promise.all([
       outLog?.close() ?? null,
@@ -185,13 +204,13 @@ export async function runChild(
         stderr = appendTail(stderr, errDecoder.end(), maxOutputChars)
         void closeLogs().then((logError) => {
           if (terminationError) return reject(terminationError)
-          if (logError) return reject(logError)
           resolve({
             code,
             stdout,
             stderr,
             elapsedMs: Date.now() - started,
             killed,
+            logError: logError?.message ?? null,
           })
         })
       })

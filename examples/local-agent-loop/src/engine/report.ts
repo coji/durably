@@ -773,6 +773,7 @@ export function reportToMarkdown(r: LoopReport): string {
       )
       lines.push(`  - stdout: ${log.stdoutPath}`)
       lines.push(`  - stderr: ${log.stderrPath}`)
+      if (log.writeError) lines.push(`  - log write error: ${log.writeError}`)
     }
   } else {
     lines.push('- none')

@@ -116,6 +116,8 @@ export interface VerificationLog {
   stdoutPath: string
   stderrPath: string
   exitCode: number | null
+  /** Why the log files may be incomplete; absent when they were written. */
+  writeError?: string
 }
 
 /** Persisted per-attempt measurement. Missing values stay null (never 0-filled). */

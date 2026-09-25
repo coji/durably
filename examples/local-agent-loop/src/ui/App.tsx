@@ -1426,33 +1426,35 @@ function LogSlot({ log }: { log: VerificationLog | null }) {
         ログ
       </h4>
       {log ? (
-        <dl className="divide-line flex flex-col divide-y">
-          <InspectorField label="終了コード">
-            <span
-              className="font-code"
-              title={log.exitCode === null ? NO_EXIT_CODE : undefined}
-            >
-              {log.exitCode ?? 'null'}
-            </span>
-          </InspectorField>
-          <InspectorField label="標準出力">
-            <PathValue
-              path={log.stdoutPath}
-              label="標準出力のパスをコピー"
-              copied={copied}
-              onCopy={onCopy}
-            />
-          </InspectorField>
-          <InspectorField label="標準エラー">
-            <PathValue
-              path={log.stderrPath}
-              label="標準エラーのパスをコピー"
-              copied={copied}
-              onCopy={onCopy}
-            />
-          </InspectorField>
+        <>
+          <dl className="divide-line flex flex-col divide-y">
+            <InspectorField label="終了コード">
+              <span
+                className="font-code"
+                title={log.exitCode === null ? NO_EXIT_CODE : undefined}
+              >
+                {log.exitCode ?? 'null'}
+              </span>
+            </InspectorField>
+            <InspectorField label="標準出力">
+              <PathValue
+                path={log.stdoutPath}
+                label="標準出力のパスをコピー"
+                copied={copied}
+                onCopy={onCopy}
+              />
+            </InspectorField>
+            <InspectorField label="標準エラー">
+              <PathValue
+                path={log.stderrPath}
+                label="標準エラーのパスをコピー"
+                copied={copied}
+                onCopy={onCopy}
+              />
+            </InspectorField>
+          </dl>
           <CopyAnnouncer copied={copied} />
-        </dl>
+        </>
       ) : (
         <p className="border-line-strong text-fg-3 rounded-md border border-dashed px-3 py-2 text-xs">
           この行のログは、まだここに表示しません。
@@ -1882,34 +1884,36 @@ function StatusPanel({ data }: { data: RunDetailResponse }) {
         </div>
       ) : null}
       {data.diagnosis.failure ? (
-        <dl className="mb-3 flex flex-col gap-2">
-          <Field label="再実行">
-            {retryLabel(data.diagnosis.failure.retryable)}
-          </Field>
-          <Field label="人が確認すること">
-            <span className="font-ui">
-              {humanCheckText(data.diagnosis.failure.kind)}
-            </span>
-          </Field>
-          {detailRows(data.diagnosis.failure.details).map(({ line, key }) => {
-            const d = detailField(line)
-            return (
-              <Field key={key} label={d.label}>
-                {isPathDetail(line) ? (
-                  <PathValue
-                    path={d.value}
-                    label={`${d.label}のパスをコピー`}
-                    copied={copied}
-                    onCopy={(t, l) => void copy(t, l)}
-                  />
-                ) : (
-                  d.value
-                )}
-              </Field>
-            )
-          })}
+        <>
+          <dl className="mb-3 flex flex-col gap-2">
+            <Field label="再実行">
+              {retryLabel(data.diagnosis.failure.retryable)}
+            </Field>
+            <Field label="人が確認すること">
+              <span className="font-ui">
+                {humanCheckText(data.diagnosis.failure.kind)}
+              </span>
+            </Field>
+            {detailRows(data.diagnosis.failure.details).map(({ line, key }) => {
+              const d = detailField(line)
+              return (
+                <Field key={key} label={d.label}>
+                  {isPathDetail(line) ? (
+                    <PathValue
+                      path={d.value}
+                      label={`${d.label}のパスをコピー`}
+                      copied={copied}
+                      onCopy={(t, l) => void copy(t, l)}
+                    />
+                  ) : (
+                    d.value
+                  )}
+                </Field>
+              )
+            })}
+          </dl>
           <CopyAnnouncer copied={copied} />
-        </dl>
+        </>
       ) : null}
       <Commands lines={data.diagnosis.next} />
       {data.diagnosis.cleanup ? (

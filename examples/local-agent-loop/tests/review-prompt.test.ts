@@ -329,4 +329,14 @@ describe('trusted context changed-path line', () => {
       line,
     )
   })
+
+  it('lists every path of a large change when no full list file exists', () => {
+    const paths = Array.from(
+      { length: CHANGED_PATHS_INLINE_LIMIT + 7 },
+      (_, i) => `added: f${i}`,
+    )
+    const line = changedPathsLine(paths)
+    assert.equal(line, `Changed paths: ${paths.join(', ')}`)
+    assert.ok(!line.includes('more'))
+  })
 })
