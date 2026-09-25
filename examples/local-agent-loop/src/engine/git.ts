@@ -203,17 +203,13 @@ export async function ensureSquashedBranch(
   const tree = await treeOf(spec.repo, spec.sourceCommit)
   const existing = await branchCommit(spec.repo, spec.branch)
   if (existing) {
-    const [, ...parents] = (
-      await git(spec.repo, ['rev-list', '--parents', '-n', '1', existing])
+    // Parents on the first line, the tree on the second.
+    const [parents, existingTree] = (
+      await git(spec.repo, ['log', '-1', '--format=%P%n%T', existing])
     )
-      .trim()
-      .split(' ')
-    const existingTree = await treeOf(spec.repo, existing)
-    if (
-      parents.length !== 1 ||
-      parents[0] !== spec.baseCommit ||
-      existingTree !== tree
-    )
+      .trimEnd()
+      .split('\n')
+    if (parents !== spec.baseCommit || existingTree !== tree)
       throw new Error(
         `squashed branch ${spec.branch} already exists at ${existing.slice(0, 12)} and is not one commit on ${spec.baseCommit.slice(0, 12)} with tree ${tree.slice(0, 12)}; it was left as it is`,
       )
