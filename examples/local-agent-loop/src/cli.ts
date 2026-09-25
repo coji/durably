@@ -88,13 +88,19 @@ Repository config: factory.json at the repository root, or --config <file>:
     "checkTimeoutMs": 900000, "agentTimeoutMs": 1800000,
     "profiles": { "code": { "provider": "codex", "model": "...", "effort": "..." },
                   "review": { "correctness": { ... }, "edge-cases": { ... } },
-                  "triage": { ... } } }
+                  "repair": { ... }, "triage": { ... } } }
   --check, --setup and --base override the config. A role the config leaves
   out uses --provider/--model/--effort. A field a role leaves out comes from
   --model/--effort when the role uses --provider's provider, and otherwise
   from that provider's preset defaults. "triage" is optional: when present,
   one read-only call records a routine or probe judgment before the code
-  stage (shadow mode; it changes nothing about the run).
+  stage (shadow mode; it changes nothing about the run), with the task and
+  spec sizes the report and compare set beside it. "repair" is optional:
+  without it, repair runs on the "code" profile. A field "repair" leaves out
+  comes from the resolved "code" profile, not from the flags (on another
+  provider, from that provider's defaults). With a different provider,
+  model or effort, every repair starts a new session on it and is sent the
+  task, the spec and the repair notes.
   "baselineCheck": true runs "check" once on the base commit before any
   agent call and stops the run (baseline-check-failed) when it fails.
   "codexPath" names the Codex CLI to launch, relative to the config file;
@@ -121,7 +127,12 @@ Note: effort is applied (Codex reasoningEffort / Claude effort setting), not
 just recorded; unsupported values fail fast. Reports keep the raw requested,
 resolved effective, and provider-reported settings separate.
 Context defaults to reuse: implementation and repair continue one explicit
-native session. Reviews always use independent new sessions.
+native session, unless "repair" names a different profile, which starts a
+new session for each repair. Context fresh starts a new session for every
+implementation and repair. Reviews always use independent new sessions.
+A call the provider explicitly refuses after preflight stops the run as
+rejected-invocation (safe to retry): fix the setting and retrigger with
+--reload-config, or fix the login and retrigger without it.
 Env (read at trigger and stored in the run, never by the worker):
      AGENT_TIMEOUT_MS (default 300000, repository 1800000),
      TEST_TIMEOUT_MS (default 120000, repository 900000)

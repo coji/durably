@@ -27,8 +27,16 @@ import type {
   AvailabilityCheck,
   ProviderName,
 } from '../engine/providers/types.js'
-import { TRIAGE_JUDGMENTS, type ReportTriage } from '../engine/report.js'
-import { runAgentCall, UncertainInvocationError } from '../engine/runner.js'
+import {
+  TRIAGE_JUDGMENTS,
+  triageCalibration,
+  type ReportTriage,
+} from '../engine/report.js'
+import {
+  RejectedInvocationError,
+  runAgentCall,
+  UncertainInvocationError,
+} from '../engine/runner.js'
 import type { ResolvedProfile } from '../engine/types.js'
 import { runVerificationStep } from '../engine/verification.js'
 import {
@@ -57,7 +65,9 @@ import { reduce } from './reducer.js'
 import { stages } from './stages.js'
 import type { Target, TargetConfig } from './target.js'
 import {
+  executionKey,
   initialState,
+  separateRepairProfile,
   type FactorySetup,
   type ProfileRole,
   type StageDecision,
@@ -152,6 +162,7 @@ const requestedProfileSchema = z.object({
   requestedModel: z.string().min(1).nullable(),
   requestedEffort: z.string().min(1).nullable(),
 })
+type RequestedProfile = z.infer<typeof requestedProfileSchema>
 
 const inputSchema = z
   .object({
@@ -172,6 +183,8 @@ const inputSchema = z
         'edge-cases': requestedProfileSchema,
         /** Shadow triage before the code stage. Absent: no triage call. */
         triage: requestedProfileSchema.optional(),
+        /** Repair's own settings. Absent: repair runs on `code`. */
+        repair: requestedProfileSchema.optional(),
       })
       .optional(),
     target: targetSchema,
@@ -253,6 +266,15 @@ const outputSchema = z.object({
     .object({
       judgment: z.enum(TRIAGE_JUDGMENTS),
       reason: z.string(),
+      /** Measured from the stored task and spec; null where unknown. */
+      calibration: z
+        .object({
+          taskChars: z.number().int().nullable(),
+          specChars: z.number().int().nullable(),
+          acceptanceCriteria: z.number().int().nullable(),
+          plannedFiles: z.number().int().nullable(),
+        })
+        .optional(),
     })
     .nullable(),
 })
@@ -364,7 +386,10 @@ function branchFor(
  * error or a timeout is recorded as `unknown` and the run carries on; the call
  * is not resent, because this step completes with that record. Only what the
  * other calls also stop on still stops the run: a start-only checkpoint met
- * on replay, and a lost lease or cancel.
+ * on replay, an explicit refusal by the provider, and a lost lease or cancel.
+ *
+ * The record carries the calibration measured from the stored task and spec,
+ * whatever the judgment, so a later comparison can set the two side by side.
  */
 async function runTriage(
   signal: AbortSignal,
@@ -378,6 +403,11 @@ async function runTriage(
   },
 ): Promise<ReportTriage> {
   const { setup, profile, target } = args
+  const stored = setup.target.kind === 'repo' ? setup.target : null
+  const calibration = triageCalibration(
+    stored ? stored.task : target.taskBrief(),
+    stored ? stored.spec : null,
+  )
   try {
     const call = await runAgentCall(signal, attempt, {
       provider: args.provider,
@@ -403,14 +433,24 @@ async function runTriage(
     })
     const parsed = parseTriageOutput(call.text)
     return parsed.ok
-      ? { judgment: parsed.judgment, reason: parsed.reason }
-      : { judgment: 'unknown', reason: `malformed triage: ${parsed.error}` }
+      ? { judgment: parsed.judgment, reason: parsed.reason, calibration }
+      : {
+          judgment: 'unknown',
+          reason: `malformed triage: ${parsed.error}`,
+          calibration,
+        }
   } catch (error) {
-    if (error instanceof UncertainInvocationError || signal.aborted) throw error
+    if (
+      error instanceof UncertainInvocationError ||
+      error instanceof RejectedInvocationError ||
+      signal.aborted
+    )
+      throw error
     const message = error instanceof Error ? error.message : String(error)
     return {
       judgment: 'unknown',
       reason: `triage call failed: ${message.slice(0, 500)}`,
+      calibration,
     }
   }
 }
@@ -467,6 +507,9 @@ async function runPreflight(
 ): Promise<void> {
   const roles: [string, ResolvedProfile][] = [
     ...Object.entries(byRole((role) => setup.profiles[role])),
+    ...(setup.repair
+      ? [['repair', setup.repair] as [string, ResolvedProfile]]
+      : []),
     ...(setup.triage
       ? [['triage', setup.triage] as [string, ResolvedProfile]]
       : []),
@@ -476,13 +519,7 @@ async function runPreflight(
     async () => {
       const distinct = new Map<string, [string[], ResolvedProfile]>()
       for (const [role, profile] of roles) {
-        // The requested model is part of the key only for the fake provider,
-        // whose effective model is always the same label.
-        const key = [
-          profile.provider,
-          profile.requestedModel ?? profile.effectiveModel,
-          profile.effectiveEffort,
-        ].join('|')
+        const key = executionKey(profile)
         const entry = distinct.get(key)
         if (entry) entry[0].push(role)
         else distinct.set(key, [[role], profile])
@@ -581,33 +618,34 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
         async (signal) => {
           // Profiles first: a bad profile fails before any worktree or branch
           // exists in the target repository.
+          const fixRequested = (requested: RequestedProfile) =>
+            fixProfile({
+              provider: requested.provider,
+              model: requested.requestedModel,
+              effort: requested.requestedEffort,
+            })
           const fixed = byRole((role) => {
             const requested = input.profiles?.[role]
-            return fixProfile(
-              requested
-                ? {
-                    provider: requested.provider,
-                    model: requested.requestedModel,
-                    effort: requested.requestedEffort,
-                  }
-                : {
-                    provider: input.provider,
-                    model: input.model ?? null,
-                    effort: input.effort ?? null,
-                  },
-            )
+            return requested
+              ? fixRequested(requested)
+              : fixProfile({
+                  provider: input.provider,
+                  model: input.model ?? null,
+                  effort: input.effort ?? null,
+                })
           })
           const requestedTriage = input.profiles?.triage
           const fixedTriage = requestedTriage
-            ? fixProfile({
-                provider: requestedTriage.provider,
-                model: requestedTriage.requestedModel,
-                effort: requestedTriage.requestedEffort,
-              })
+            ? fixRequested(requestedTriage)
+            : null
+          const requestedRepair = input.profiles?.repair
+          const fixedRepair = requestedRepair
+            ? fixRequested(requestedRepair)
             : null
           assertSingleMode({
             ...fixed,
             ...(fixedTriage ? { triage: fixedTriage } : {}),
+            ...(fixedRepair ? { repair: fixedRepair } : {}),
           })
           const resolve = (
             role: string,
@@ -623,6 +661,10 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           })
           const profiles = byRole((role) => resolve(role, fixed[role]))
           const triage = fixedTriage ? resolve('triage', fixedTriage) : null
+          const repair = fixedRepair ? resolve('repair', fixedRepair) : null
+          // A repair profile that makes the same call as code is code: the
+          // run keeps its session and its config version.
+          const ownRepair = separateRepairProfile({ repair, profiles })
           // A run triggered from the CLI carries both timeouts. Only a run
           // stored before they were fixed reads the worker's environment.
           // Both are read before anything is created, so a bad value leaves
@@ -637,6 +679,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             [
               ...Object.values(fixed),
               ...(fixedTriage ? [fixedTriage] : []),
+              ...(ownRepair ? [ownRepair] : []),
             ].map((p) => p.provider),
           )
           await Promise.all(
@@ -698,12 +741,14 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               agentTimeoutMs,
               checkTimeoutMs: testTimeoutMs,
               code: profiles.code,
+              repair: ownRepair,
               correctness: profiles.correctness,
               edgeCases: profiles['edge-cases'],
               triage,
               cli,
             }),
             profiles,
+            repair,
             triage,
             maxIterations: input.maxIterations,
             agentTimeoutMs,
@@ -775,7 +820,12 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           codexPath: setup.codexPath ?? null,
         })
       await runPreflight(step, setup, target, providerFor)
-      const providers = byRole((role) => providerFor(setup.profiles[role]))
+      const roleProviders = byRole((role) => providerFor(setup.profiles[role]))
+      const ownRepair = separateRepairProfile(setup)
+      const providers = {
+        ...roleProviders,
+        repair: ownRepair ? providerFor(ownRepair) : roleProviders.code,
+      }
       // Shadow mode: the judgment is recorded and nothing below reads it.
       const triageProfile = setup.triage
       const triageKey = `${step.runId}/triage/agent`

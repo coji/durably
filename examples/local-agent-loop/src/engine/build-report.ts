@@ -14,7 +14,9 @@ import {
   summarizeRun,
   totalStageMs,
   toAttemptRow,
+  CALIBRATION_KEYS,
   TRIAGE_JUDGMENTS,
+  UNKNOWN_CALIBRATION,
   usageOf,
   type AttemptRow,
   type LoopReport,
@@ -30,6 +32,7 @@ import {
   type ReportSealedCandidate,
   type ReportTriage,
   type RoleProfileRow,
+  type TriageCalibration,
 } from './report.js'
 
 interface PersistedProfile {
@@ -66,7 +69,10 @@ export type ReportSource = Pick<
  * without per-role profiles used the single provider, model and effort for
  * every role.
  */
-function profileRows(input: PersistedInput | null): RoleProfileRow[] {
+function profileRows(
+  input: PersistedInput | null,
+  repaired: boolean,
+): RoleProfileRow[] {
   const row = (role: string, p: PersistedProfile): RoleProfileRow => ({
     role,
     provider: p.provider ?? null,
@@ -81,17 +87,42 @@ function profileRows(input: PersistedInput | null): RoleProfileRow[] {
   const rows = ROLES.map((role) =>
     row(role, input?.profiles?.[role] ?? fallback),
   )
+  // Repair runs on code's settings unless it has its own. Its usage is its
+  // own row after code's, never folded into it, once it has a profile or has run.
+  const repairProfile = input?.profiles?.['repair']
+  if (repairProfile) rows.splice(1, 0, row('repair', repairProfile))
+  else if (repaired && rows[0])
+    rows.splice(1, 0, { ...rows[0], role: 'repair' })
   // Triage has no fallback: without its own profile it never runs.
   const triage = input?.profiles?.['triage']
   return triage ? [...rows, row('triage', triage)] : rows
 }
 
+/** A stored calibration; a value missing from an older record is unknown. */
+function asCalibration(value: unknown): TriageCalibration {
+  if (!value || typeof value !== 'object') return { ...UNKNOWN_CALIBRATION }
+  const v = value as Record<string, unknown>
+  return Object.fromEntries(
+    CALIBRATION_KEYS.map((key) => {
+      const n = v[key]
+      return [
+        key,
+        typeof n === 'number' && Number.isInteger(n) && n >= 0 ? n : null,
+      ]
+    }),
+  ) as unknown as TriageCalibration
+}
+
 function asTriage(value: unknown): ReportTriage | null {
-  const v = value as Partial<ReportTriage> | null
+  const v = value as (Partial<ReportTriage> & { calibration?: unknown }) | null
   return v?.judgment &&
     TRIAGE_JUDGMENTS.includes(v.judgment) &&
     typeof v.reason === 'string'
-    ? { judgment: v.judgment, reason: v.reason }
+    ? {
+        judgment: v.judgment,
+        reason: v.reason,
+        calibration: asCalibration(v.calibration),
+      }
     : null
 }
 
@@ -517,7 +548,10 @@ export async function buildReport(
       (preflight?.checks ?? []).filter((c) => c.called).map((c) => c.provider),
     ),
   ]
-  const profiles = profileRows(input)
+  const profiles = profileRows(
+    input,
+    rows.some((r) => r.measurement?.role === 'repair'),
+  )
   if (preflightProviders.length > 0)
     profiles.push({
       role: 'preflight',

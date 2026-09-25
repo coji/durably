@@ -13,11 +13,17 @@ import type { AnyDurably, Run, StepAttempt } from '@coji/durably'
 
 import { DETAIL_PREFIX, INTERRUPTED_CHECK } from './failure-details.js'
 import type { AttemptMeasurement, VerificationLog } from './providers/types.js'
-import { checkpointPaths, UNCERTAIN_INVOCATION_MESSAGE } from './runner.js'
+import {
+  checkpointPaths,
+  REFUSAL_MARKER,
+  REJECTED_INVOCATION_MESSAGE,
+  UNCERTAIN_INVOCATION_MESSAGE,
+} from './runner.js'
 
 export type FailureKind =
   | 'baseline-check-failed'
   | 'preflight-failed'
+  | 'rejected-invocation'
   | 'verification-failed'
   | 'review-cap-reached'
   | 'uncertain-invocation'
@@ -109,6 +115,16 @@ export function reloadAdvice(input: unknown): ReloadAdvice {
 const SETUP_UNTRACKED_CHECK =
   'setup creates files that .gitignore does not cover (listed below); add them to .gitignore on the base, or turn baselineCheck off in factory.json and retry with --reload-config. A passing baseline would delete them, so the run does not start with them'
 
+/** The refusal a `RejectedInvocationError` message names, if any. */
+function refusalOf(error: string): string | null {
+  const at = error.indexOf(REFUSAL_MARKER)
+  return at < 0 ? null : error.slice(at + REFUSAL_MARKER.length)
+}
+
+/** The rejected-call check for a run with no factory.json to fix. */
+const REJECTED_WITHOUT_CONFIG =
+  'read the refusal below; fix the provider, model or effort of that role and trigger anew, or fix a login or quota problem in the provider CLI and retry with retrigger'
+
 /** The preflight check for a run with no factory.json to fix. */
 const PREFLIGHT_WITHOUT_CONFIG =
   'fix the provider, model or effort of the role named in the error below and trigger anew; a login problem is fixed in the provider CLI and retried with retrigger'
@@ -142,6 +158,18 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
       'fix the profile of the role named in the error below, or codexPath, in factory.json and retry with --reload-config; a login problem is fixed in the provider CLI and retried without it',
     next: (runId, reload) => [
       `${DEMO} report --run ${runId}  # the preflight result for each role`,
+      ...retriggerReloaded(runId, reload),
+      retrigger(runId),
+    ],
+  },
+  'rejected-invocation': {
+    reason:
+      "the provider explicitly refused an agent call after preflight; the refusal is recorded as that call's answer, so no call was left with an unknown outcome",
+    retryable: true,
+    humanCheck:
+      'read the refusal below; fix the profile of that role, or codexPath, in factory.json and retry with --reload-config, or fix a login or quota problem in the provider CLI and retry without it',
+    next: (runId, reload) => [
+      `${DEMO} report --run ${runId}  # the refused call and its reason`,
       ...retriggerReloaded(runId, reload),
       retrigger(runId),
     ],
@@ -400,6 +428,10 @@ export function classifyFailure(
         details.push(...logDetails(log))
     } else if (input.error?.startsWith(PREFLIGHT_FAILED_MESSAGE)) {
       kind = 'preflight-failed'
+    } else if (input.error?.startsWith(REJECTED_INVOCATION_MESSAGE)) {
+      kind = 'rejected-invocation'
+      const refusal = refusalOf(input.error)
+      if (refusal) details.push(`${DETAIL_PREFIX.refusal}${refusal}`)
     } else {
       kind = 'unclassified'
     }
@@ -420,6 +452,9 @@ export function classifyFailure(
     ...entry,
     ...(kind === 'preflight-failed' && reload === 'none'
       ? { humanCheck: PREFLIGHT_WITHOUT_CONFIG }
+      : {}),
+    ...(kind === 'rejected-invocation' && reload === 'none'
+      ? { humanCheck: REJECTED_WITHOUT_CONFIG }
       : {}),
     ...(setupPaths ? { humanCheck: SETUP_UNTRACKED_CHECK } : {}),
     next: entry.next(input.runId, reload),

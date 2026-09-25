@@ -33,6 +33,9 @@
  *   answers OK
  * - `refused-*` .............. the free check cannot tell; the minimal call
  *   is refused outright, as an unknown model would be
+ * - `rejects-*` .............. the free check accepts it, and every later
+ *   call (implement, repair, review or triage) is refused outright, as a
+ *   revoked login or a spent quota would be
  * - anything else ............ the free check accepts it
  *
  * A run can carry a `FakeScenario` in its input (demo seeding only). Its
@@ -179,7 +182,10 @@ const USAGE_RANGES: Record<
   preflight: { input: [6_000, 9_000], output: [2, 8] },
 }
 
-/** Thrown by a minimal preflight call on a `refused-*` model. */
+/**
+ * Thrown by a minimal preflight call on a `refused-*` model, and by every
+ * call after preflight on a `rejects-*` model.
+ */
 class FakeRefusal extends Error {
   readonly fakeRefusal = true
 }
@@ -254,6 +260,13 @@ export class FakeProvider implements AgentProvider {
     const reportedModel = realistic
       ? (this.requestedModel ?? 'fake-model')
       : 'fake-model'
+    if (
+      options.role !== 'preflight' &&
+      this.requestedModel?.startsWith('rejects-')
+    )
+      throw new FakeRefusal(
+        `fake: the ${options.role} call on ${this.requestedModel} is refused`,
+      )
     const result = (text: string, sessionId?: string): AgentResult => ({
       text,
       session: { id: sessionId ?? `fake-${randomUUID()}` },

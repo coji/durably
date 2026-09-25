@@ -14,13 +14,14 @@ import { runAgentCall } from '../engine/runner.js'
 import { runVerificationStep } from '../engine/verification.js'
 import { codePrompt, parseReviewOutput, reviewPrompt } from './prompts.js'
 import type { Delivery } from './target.js'
-import type {
-  FactoryOutcome,
-  ReviewLens,
-  ReviewVerdict,
-  SessionRef,
-  StageArgs,
-  StageHandler,
+import {
+  separateRepairProfile,
+  type FactoryOutcome,
+  type ReviewLens,
+  type ReviewVerdict,
+  type SessionRef,
+  type StageArgs,
+  type StageHandler,
 } from './types.js'
 
 function requireCandidate(state: StageArgs['state']) {
@@ -57,10 +58,15 @@ export const codeStage: StageHandler = async ({
   const role = decision.role
   if (!role) throw new Error('code stage requires a role')
   const iteration = state.iteration + 1
-  const profile = state.setup.profiles.code
   const target = services.target
-  const continuedSession =
-    state.setup.contextMode === 'reuse' ? state.implementationSession : null
+  // A repair on its own profile starts a new session with the task, the spec
+  // and the repair notes; a repair on the code profile continues as before.
+  const repairOwn =
+    role === 'repair' ? separateRepairProfile(state.setup) : null
+  const separateRepair = repairOwn !== null
+  const profile = repairOwn ?? state.setup.profiles.code
+  const reuse = state.setup.contextMode === 'reuse' && !separateRepair
+  const continuedSession = reuse ? state.implementationSession : null
   // Only the code role's own provider, profile, cwd and instructions decide
   // whether its session may continue; the reviewers' profiles never do.
   if (
@@ -76,7 +82,9 @@ export const codeStage: StageHandler = async ({
     `${key}:agent`,
     (signal, attempt) =>
       runAgentCall(signal, attempt, {
-        provider: services.providers.code,
+        provider: separateRepair
+          ? services.providers.repair
+          : services.providers.code,
         providerName: profile.provider,
         prompt: codePrompt({
           role,
@@ -85,6 +93,7 @@ export const codeStage: StageHandler = async ({
           task: target.taskBrief(),
           rules: target.implementationRules(),
           untrusted: target.untrustedInputs('code'),
+          newSession: separateRepair,
         }),
         workdir: target.workdir,
         timeoutMs: state.setup.agentTimeoutMs,
@@ -98,7 +107,7 @@ export const codeStage: StageHandler = async ({
         operationKey: `${step.runId}/${key}/agent`,
         checkpointsDir: state.setup.checkpointsDir,
         session: continuedSession,
-        requireSession: state.setup.contextMode === 'reuse',
+        requireSession: reuse,
         configVersion: state.setup.configVersion,
       }),
     {
@@ -111,8 +120,11 @@ export const codeStage: StageHandler = async ({
   const candidate = await step.run(`${key}:candidate`, (signal, attempt) =>
     target.seal({ iteration, attemptId: attempt.id, signal }),
   )
-  const session: SessionRef | null =
-    state.setup.contextMode === 'reuse' && call.sessionId
+  // A separate repair session is not the implementation session: the one on
+  // record stays, and the next repair starts new again.
+  const session: SessionRef | null = separateRepair
+    ? state.implementationSession
+    : reuse && call.sessionId
       ? {
           provider: profile.provider,
           nativeId: call.sessionId,

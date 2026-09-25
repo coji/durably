@@ -22,6 +22,7 @@ import type {
   LoopReport,
   ReportCandidate,
   ReportCandidateChanges,
+  TriageCalibration,
   UsageTotals,
 } from '../engine/report'
 import type { DiagnosisKind } from '../engine/status'
@@ -40,6 +41,7 @@ import {
   reviewDecision,
   roleName,
   stageName,
+  stopName,
   triageName,
 } from './labels'
 import { pollJson } from './poll'
@@ -141,6 +143,14 @@ function fmtUsd(v: number | null | undefined): string {
 
 function fmtInt(v: number | null | undefined): string {
   return v == null ? UNKNOWN : v.toLocaleString('en-US')
+}
+
+/**
+ * A count statistic, rounded as `demo compare` rounds it (`toFixed(0)`), so
+ * a median of an even number of runs reads the same on both.
+ */
+function fmtCount(v: number | null | undefined): string {
+  return v == null ? UNKNOWN : fmtInt(Number(v.toFixed(0)))
 }
 
 /** "3分前" relative to the response's `now`; the exact time on hover. */
@@ -1966,6 +1976,17 @@ function StatusPanel({ data }: { data: RunDetailResponse }) {
   )
 }
 
+/**
+ * What the triage record measured, in the order the CLI's report and compare
+ * list it.
+ */
+const CALIBRATION_ROWS: [keyof TriageCalibration, string][] = [
+  ['taskChars', 'タスクの文字数'],
+  ['specChars', '仕様の文字数'],
+  ['acceptanceCriteria', '仕様の受け入れ基準の数'],
+  ['plannedFiles', '仕様が挙げる変更予定ファイルの数'],
+]
+
 function SummaryPanel({ report: r }: { report: LoopReport }) {
   const s = r.summary
   return (
@@ -1999,6 +2020,13 @@ function SummaryPanel({ report: r }: { report: LoopReport }) {
           <p className="text-xs">
             見立ては記録するだけで、進め方は変えません。
           </p>
+          <dl className="mt-2 grid grid-cols-2 gap-4 sm:grid-cols-4">
+            {CALIBRATION_ROWS.map(([key, label]) => (
+              <Field key={key} label={label}>
+                {fmtInt(r.triage?.calibration?.[key])}
+              </Field>
+            ))}
+          </dl>
         </div>
       ) : null}
     </Panel>
@@ -2303,6 +2331,18 @@ function StatRow({
   )
 }
 
+/** A calibration median with how many runs did not know the value. */
+function CalibrationStat({ stat }: { stat: Stat }) {
+  return (
+    <span className="flex flex-col items-end">
+      <span>{fmtCount(stat.median)}</span>
+      {stat.unknown > 0 ? (
+        <span className="text-fg-2 text-xs">不明 {stat.unknown} 件</span>
+      ) : null}
+    </span>
+  )
+}
+
 const STAT_HEAD = (
   <>
     <Th num>中央値</Th>
@@ -2349,14 +2389,18 @@ function ComparePage({ data }: { data: CompareResponse }) {
                 <StatRow label="所要時間" stat={g.leadTimeMs} f={fmtMs} />
                 <StatRow label="工程の作業時間" stat={g.workMs} f={fmtMs} />
                 <StatRow label="人の待ち時間" stat={g.humanWaitMs} f={fmtMs} />
-                <StatRow label="合計トークン" stat={g.totalTokens} f={fmtInt} />
+                <StatRow
+                  label="合計トークン"
+                  stat={g.totalTokens}
+                  f={fmtCount}
+                />
                 <StatRow label="費用" stat={g.costUsd} f={fmtUsd} />
                 <StatRow
                   label="成功 1 件の費用"
                   stat={g.costPerSuccessUsd}
                   f={fmtUsd}
                 />
-                <StatRow label="修正回数" stat={g.repairs} f={fmtInt} />
+                <StatRow label="修正回数" stat={g.repairs} f={fmtCount} />
               </tbody>
             </table>
           </div>
@@ -2410,6 +2454,7 @@ function ComparePage({ data }: { data: CompareResponse }) {
                     <Th num>修正回数 中央値</Th>
                     <Th num>費用 中央値</Th>
                     <Th num>定型なのに修正か上限</Th>
+                    <Th>停止の理由</Th>
                   </tr>
                 </thead>
                 <tbody className="divide-line divide-y">
@@ -2425,6 +2470,38 @@ function ComparePage({ data }: { data: CompareResponse }) {
                       <Td num>
                         {t.judgment === 'routine' ? t.routineNeedingMore : '–'}
                       </Td>
+                      <Td>
+                        {Object.entries(t.stops)
+                          .map(([kind, n]) => `${stopName(kind)} ${n}`)
+                          .join(' · ') || 'なし'}
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="text-fg-2 mt-4 mb-2 text-xs">
+                見立ての判定別に、保存したタスクと仕様から測った値の中央値です。仕様がない実行や古い記録の値は不明に数えます。
+              </p>
+              <table className="w-full text-sm">
+                <thead className="border-line border-b">
+                  <tr>
+                    <Th>判定</Th>
+                    {CALIBRATION_ROWS.map(([key, label]) => (
+                      <Th key={key} num>
+                        {label}
+                      </Th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-line divide-y">
+                  {g.triage.map((t) => (
+                    <tr key={t.judgment}>
+                      <Td>{triageName(t.judgment)}</Td>
+                      {CALIBRATION_ROWS.map(([key]) => (
+                        <Td key={key} num>
+                          <CalibrationStat stat={t.calibration[key]} />
+                        </Td>
+                      ))}
                     </tr>
                   ))}
                 </tbody>

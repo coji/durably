@@ -44,6 +44,11 @@ export interface CodePromptArgs {
   rules: string[]
   /** Caller-supplied task and spec, fenced off as data. */
   untrusted?: UntrustedInput[]
+  /**
+   * A repair on its own profile, in a session that has not seen the
+   * implementation: it is told the earlier attempt is in the working tree.
+   */
+  newSession?: boolean
 }
 
 export function codePrompt(args: CodePromptArgs): string {
@@ -51,8 +56,16 @@ export function codePrompt(args: CodePromptArgs): string {
     args.repairNotes.length > 0
       ? `\nVerified feedback to address:\n${args.repairNotes.map((n) => `- ${n}`).join('\n')}`
       : ''
+  const opening = args.newSession
+    ? [
+        `You are the repair owner, starting a new session (iteration ${args.iteration}).`,
+        'An earlier implementation of this task is already in the working directory. Read it, then change it so the verified feedback at the end is addressed.',
+      ]
+    : [
+        `You are the implementation owner continuing the ${args.role} conversation (iteration ${args.iteration}).`,
+      ]
   return [
-    `You are the implementation owner continuing the ${args.role} conversation (iteration ${args.iteration}).`,
+    ...opening,
     '',
     'TASK:',
     args.task,

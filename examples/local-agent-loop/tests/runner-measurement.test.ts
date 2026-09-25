@@ -22,6 +22,7 @@ import type {
 import type { AttemptMeasurement } from '../src/engine/providers/types.js'
 import {
   checkpointPaths,
+  RejectedInvocationError,
   runAgentCall,
   UncertainInvocationError,
 } from '../src/engine/runner.js'
@@ -646,5 +647,246 @@ describe('a refused preflight call is settled, not uncertain', () => {
       runAgentCall(new AbortController().signal, fakeAttempt() as never, spec),
       UncertainInvocationError,
     )
+  })
+})
+
+describe('a refused call after preflight stops the run, settled', () => {
+  /** A provider whose every call is refused; `calls` counts what was sent. */
+  function refusing() {
+    const sent = { calls: 0 }
+    const provider = stubProvider(
+      async () => {
+        sent.calls++
+        throw new Error('401: login expired')
+      },
+      (error) =>
+        error instanceof Error && error.message.startsWith('401')
+          ? error.message
+          : null,
+    )
+    return { provider, sent }
+  }
+
+  for (const role of ['implement', 'repair', 'review-a', 'triage'] as const) {
+    it(`saves the ${role} refusal as completed and throws it again on replay without resending`, async () => {
+      const checkpointsDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+      const { provider, sent } = refusing()
+      const spec = { ...baseSpec(provider, checkpointsDir), role, stage: role }
+      const first = fakeAttempt()
+      const error = await runAgentCall(
+        new AbortController().signal,
+        first as never,
+        spec,
+      ).catch((e: unknown) => e)
+      assert.ok(error instanceof RejectedInvocationError)
+      assert.equal(error.rejection, '401: login expired')
+      assert.match(
+        error.message,
+        new RegExp(
+          `^rejected-invocation: the ${role} call \\(codex resolved-model\\) was refused: 401: login expired$`,
+        ),
+      )
+      assert.equal(first.snapshots.at(-1)?.result, 'rejected')
+      assert.equal(first.snapshots.at(-1)?.error, '401: login expired')
+      const paths = checkpointPaths(checkpointsDir, spec.operationKey)
+      assert.ok(existsSync(paths.completed))
+      // The resume reads the saved refusal: the same reason, nothing sent.
+      const replay = fakeAttempt()
+      const again = await runAgentCall(
+        new AbortController().signal,
+        replay as never,
+        spec,
+      ).catch((e: unknown) => e)
+      assert.ok(again instanceof RejectedInvocationError)
+      assert.equal(again.message, error.message)
+      assert.equal(replay.snapshots.at(-1)?.recovered, true)
+      assert.equal(sent.calls, 1)
+    })
+  }
+
+  it('stops as uncertain on a start-only checkpoint, even with a provider that refuses', async () => {
+    const checkpointsDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+    const { provider, sent } = refusing()
+    const spec = baseSpec(provider, checkpointsDir)
+    const paths = checkpointPaths(checkpointsDir, spec.operationKey)
+    await writeFile(
+      paths.started,
+      `${JSON.stringify({
+        operationKey: spec.operationKey,
+        invocationId: 'lost',
+        status: 'started',
+        invocationStartedAt: new Date().toISOString(),
+      })}\n`,
+    )
+    await assert.rejects(
+      runAgentCall(new AbortController().signal, fakeAttempt() as never, spec),
+      UncertainInvocationError,
+    )
+    assert.equal(sent.calls, 0)
+  })
+
+  it('never reads a timeout or a cancel as a refusal, whatever the provider says', async () => {
+    const provider = stubProvider(
+      (options) =>
+        new Promise((_, reject) => {
+          const refuse = () => reject(new Error('401: login expired'))
+          if (options.signal?.aborted) refuse()
+          else options.signal?.addEventListener('abort', refuse)
+        }),
+      (error) => (error instanceof Error ? error.message : null),
+    )
+    // Timed out.
+    const timedOutDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+    const timedOut = { ...baseSpec(provider, timedOutDir), timeoutMs: 10 }
+    const error = await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      timedOut,
+    ).catch((e: unknown) => e)
+    assert.ok(!(error instanceof RejectedInvocationError))
+    assert.equal(
+      existsSync(checkpointPaths(timedOutDir, timedOut.operationKey).completed),
+      false,
+    )
+    // Cancelled.
+    const cancelledDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+    const cancelled = baseSpec(provider, cancelledDir)
+    const controller = new AbortController()
+    const pending = runAgentCall(
+      controller.signal,
+      fakeAttempt() as never,
+      cancelled,
+    ).catch((e: unknown) => e)
+    controller.abort(new Error('cancelled'))
+    assert.ok(!((await pending) instanceof RejectedInvocationError))
+    assert.equal(
+      existsSync(
+        checkpointPaths(cancelledDir, cancelled.operationKey).completed,
+      ),
+      false,
+    )
+    // Both are left start-only: a resume stops as uncertain, never resends.
+    await assert.rejects(
+      runAgentCall(
+        new AbortController().signal,
+        fakeAttempt() as never,
+        timedOut,
+      ),
+      UncertainInvocationError,
+    )
+  })
+
+  it('keeps a refusal after agent activity uncertain, except in preflight', async () => {
+    /** Works on the call first, then fails with an error that reads as a refusal. */
+    const actsThenRefuses = stubProvider(
+      async (options) => {
+        options.onActivity?.()
+        throw new Error('401: login expired')
+      },
+      (error) =>
+        error instanceof Error && error.message.startsWith('401')
+          ? error.message
+          : null,
+    )
+    for (const role of ['implement', 'repair', 'review-a', 'triage'] as const) {
+      const checkpointsDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+      const spec = {
+        ...baseSpec(actsThenRefuses, checkpointsDir),
+        role,
+        stage: role,
+      }
+      const attempt = fakeAttempt()
+      const error = await runAgentCall(
+        new AbortController().signal,
+        attempt as never,
+        spec,
+      ).catch((e: unknown) => e)
+      assert.ok(!(error instanceof RejectedInvocationError), role)
+      assert.equal(attempt.snapshots.at(-1)?.result, 'uncertain', role)
+      const paths = checkpointPaths(checkpointsDir, spec.operationKey)
+      assert.equal(existsSync(paths.completed), false, role)
+      // The resume never resends it: it stops as uncertain.
+      await assert.rejects(
+        runAgentCall(
+          new AbortController().signal,
+          fakeAttempt() as never,
+          spec,
+        ),
+        UncertainInvocationError,
+      )
+    }
+    // Preflight asks for a reply only, so its refusal still settles the call.
+    const preflightDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+    const outcome = await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      {
+        ...baseSpec(actsThenRefuses, preflightDir),
+        role: 'preflight',
+        stage: 'preflight',
+        acceptRejection: true,
+      },
+    )
+    assert.equal(outcome.rejection, '401: login expired')
+  })
+
+  it('treats reported partial usage as activity', async () => {
+    const checkpointsDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+    const provider = stubProvider(
+      async (options) => {
+        options.onPartialUsage?.({
+          inputTokens: 10,
+          cachedInputTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+          outputTokens: 1,
+          totalTokens: 11,
+          usageSource: 'provider-partial',
+        })
+        throw new Error('401: login expired')
+      },
+      (error) => (error instanceof Error ? error.message : null),
+    )
+    const error = await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      baseSpec(provider, checkpointsDir),
+    ).catch((e: unknown) => e)
+    assert.ok(!(error instanceof RejectedInvocationError))
+  })
+
+  it('classifies the stop as rejected-invocation, retryable, with the refusal and the reload retry', () => {
+    const error =
+      'rejected-invocation: the review-a call (codex gpt-5.6-sol) was refused: 401: login expired'
+    const base = {
+      runId: 'run-1',
+      status: 'failed',
+      output: null,
+      error,
+      uncertain: [],
+    }
+    const repo = classifyFailure({ ...base, reload: 'config' })
+    assert.equal(repo?.kind, 'rejected-invocation')
+    assert.equal(repo?.retryable, true)
+    assert.ok(repo?.details.includes('refusal: 401: login expired'))
+    assert.ok(
+      repo?.next.some((n) =>
+        n.startsWith(
+          'pnpm --filter example-local-agent-loop demo retrigger --run run-1 --reload-config  # after fixing factory.json',
+        ),
+      ),
+    )
+    const flags = classifyFailure({ ...base, reload: 'flags-win' })
+    assert.ok(
+      flags?.next.some((n) => /--reload-config .*still wins over it/.test(n)),
+    )
+    // The bundled sample has no factory.json: no reload, its own check.
+    const sample = classifyFailure({ ...base, reload: 'none' })
+    assert.ok(!sample?.next.some((n) => n.includes('--reload-config')))
+    assert.match(sample?.humanCheck ?? '', /trigger anew/)
+    // An unresolved call still outranks the refusal.
+    const both = classifyFailure({ ...base, uncertain: ['/tmp/x.started'] })
+    assert.equal(both?.kind, 'uncertain-invocation')
+    assert.equal(both?.retryable, false)
   })
 })

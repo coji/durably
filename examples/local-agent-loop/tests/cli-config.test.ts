@@ -923,6 +923,91 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
 })
 
 describe('retrigger --reload-config', { timeout: 240000 }, () => {
+  it('fixes an optional repair profile at trigger, and reloads a fixed one after a refused repair', async () => {
+    // Without "repair" the run stores none: repair runs on code's profile.
+    const plain = await sandbox({ check: CHECK })
+    const plainRun = await trigger(plain, ['--repo', plain.repo, '--task', 'x'])
+    assert.equal('repair' in (await inputOf(plain, plainRun)).profiles, false)
+    // It is held to the same rules as any other role.
+    const mixed = await sandbox({
+      check: CHECK,
+      profiles: { repair: { provider: 'codex' } },
+    })
+    await rejected(
+      mixed,
+      ['--repo', mixed.repo, '--task', 'x', '--provider', 'fake'],
+      /cannot mix the fake provider/,
+    )
+
+    const box = await sandbox({
+      check: CHECK,
+      profiles: { repair: { model: 'rejects-repair' } },
+    })
+    const stopped = await trigger(box, [
+      '--repo',
+      box.repo,
+      '--task',
+      'the stored task',
+      '--effort',
+      'low',
+    ])
+    assert.deepEqual((await inputOf(box, stopped)).profiles['repair'], {
+      provider: 'fake',
+      requestedModel: 'rejects-repair',
+      requestedEffort: 'low',
+    })
+    // The first implementation leaves the bug, so a repair is called, and
+    // its profile refuses it.
+    delete process.env.FAKE_FAIL_FIRST
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    await durably.init()
+    try {
+      await until(
+        async () => (await durably.getRun(stopped))?.status === 'failed',
+        'the refused repair stops the run',
+      )
+      const report = await buildReport(durably, stopped)
+      assert.equal(report.failure?.kind, 'rejected-invocation')
+      assert.equal(report.failure?.retryable, true)
+      assert.ok(
+        report.failure?.next.some((n) =>
+          n.includes(`retrigger --run ${stopped} --reload-config`),
+        ),
+      )
+      assert.match(reportToMarkdown(report), /- refusal: fake: the repair call/)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+    const status = blockOf((await demo(box, ['status'])).stdout, stopped)
+    assert.match(status, /rejected-invocation:[\s\S]*retry: +yes/)
+    assert.match(status, /refusal: fake: the repair call on rejects-repair/)
+    assert.match(
+      status,
+      new RegExp(`retrigger --run ${stopped} --reload-config`),
+    )
+
+    // The person fixes the repair profile; the reload reads it.
+    await writeFile(
+      join(box.repo, 'factory.json'),
+      JSON.stringify({
+        check: CHECK,
+        profiles: { repair: { model: 'fixed-repair' } },
+      }),
+    )
+    const created = await demo(box, [
+      'retrigger',
+      '--run',
+      stopped,
+      '--reload-config',
+    ])
+    assert.equal(created.code, 0, created.stderr)
+    const nextId = /^new run (\S+)/.exec(created.stdout)?.[1] ?? ''
+    const next = await inputOf(box, nextId)
+    assert.equal(next.profiles['repair']?.requestedModel, 'fixed-repair')
+    assert.equal(next.target.task, 'the stored task')
+  })
+
   it('reads factory.json again, keeps the stored task, and starts one run per config version', async () => {
     const box = await sandbox({
       check: CHECK,

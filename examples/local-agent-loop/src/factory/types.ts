@@ -47,11 +47,19 @@ export interface FactorySetup {
   /** Hash of the fixed profile; equal across runs that are fair to compare. */
   configVersion: string
   /**
-   * One fixed profile per role. Implementation and repair share `code`; the
-   * two reviewers each have their own, so a reviewer can run on a different
-   * provider or model than the code it judges.
+   * One fixed profile per role. Implementation uses `code`, and so does
+   * repair unless `repair` is set; the two reviewers each have their own, so
+   * a reviewer can run on a different provider or model than the code it
+   * judges.
    */
   profiles: Record<ProfileRole, ResolvedProfile>
+  /**
+   * The repair profile the run named. Null or absent, or one that makes the
+   * same call as `code` (see `executionKey`): repair runs on `code`,
+   * continuing the implementation session in reuse mode, as before repair
+   * profiles existed. Otherwise every repair runs on it in a new session.
+   */
+  repair?: ResolvedProfile | null
   /**
    * Optional shadow-triage profile. Its judgment is recorded only: no stage
    * or profile depends on it.
@@ -143,9 +151,44 @@ export interface StageDecision {
   reason: string
 }
 
+/**
+ * What makes two profiles the same call: provider, model and effort. The
+ * requested model stands in for the fake provider's, whose effective model
+ * is always the same label. Preflight checks each key once, and a repair
+ * profile with the code profile's key is the code profile.
+ */
+export function executionKey(
+  profile: Pick<
+    ResolvedProfile,
+    'provider' | 'requestedModel' | 'effectiveModel' | 'effectiveEffort'
+  >,
+): string {
+  return [
+    profile.provider,
+    profile.requestedModel ?? profile.effectiveModel,
+    profile.effectiveEffort,
+  ].join('|')
+}
+
+/**
+ * The repair profile when it makes a different call from `code`; null when
+ * repair runs on `code`.
+ */
+export function separateRepairProfile(
+  setup: Pick<FactorySetup, 'repair' | 'profiles'>,
+): ResolvedProfile | null {
+  const repair = setup.repair ?? null
+  return repair && executionKey(repair) !== executionKey(setup.profiles.code)
+    ? repair
+    : null
+}
+
 export interface FactoryServices {
-  /** One provider per role, rebuilt from `setup.profiles` on every replay. */
-  providers: Record<ProfileRole, AgentProvider>
+  /**
+   * One provider per role, rebuilt from `setup.profiles` on every replay;
+   * `repair` is `code`'s unless `separateRepairProfile(setup)` names one.
+   */
+  providers: Record<ProfileRole | 'repair', AgentProvider>
   /** Rebuilt from `setup.target` on every replay. */
   target: Target
 }

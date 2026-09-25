@@ -89,6 +89,13 @@ export interface AgentCallOptions {
    * instead of fabricating numbers.
    */
   onPartialUsage?: (usage: TokenUsage) => void
+  /**
+   * Called when the provider sees the agent at work on this call: text,
+   * reasoning, a tool call or a tool result. Protocol set-up and the error
+   * itself are not activity. After any activity, an error is never read as a
+   * refusal, since the agent may already have acted.
+   */
+  onActivity?: () => void
 }
 
 export interface ResolvedExecution {

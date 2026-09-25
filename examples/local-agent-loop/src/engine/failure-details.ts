@@ -6,6 +6,7 @@
 export const DETAIL_PREFIX = {
   checkpoint: 'start checkpoint without completion: ',
   error: 'error: ',
+  refusal: 'refusal: ',
   checkAttempt: 'check attempt: ',
   checkExitCode: 'check exit code: ',
   checkStdout: 'check stdout log: ',

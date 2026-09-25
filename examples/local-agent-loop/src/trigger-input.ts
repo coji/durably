@@ -75,6 +75,8 @@ const factoryConfigSchema = z
           .optional(),
         /** Shadow triage before the code stage; no triage call when absent. */
         triage: roleConfigSchema.optional(),
+        /** Repair's own settings; repair runs on `code` when absent. */
+        repair: roleConfigSchema.optional(),
       })
       .strict()
       .optional(),
@@ -221,12 +223,17 @@ function splitArgv(value: string): string[] {
  * role it does not name uses `--provider`, `--model` and `--effort`. A field a
  * named role leaves out comes from `--model` / `--effort` when the role uses
  * the `--provider` provider, and otherwise from that provider's defaults.
+ * Repair is the exception: what it leaves out comes from the code profile.
  * Presets are applied here, so a bad effort fails before the run exists.
  */
 export function resolveProfiles(
   a: Record<string, string>,
   config: FactoryConfig | null,
-): { roles: Record<ProfileRole, FixedProfile>; triage: FixedProfile | null } {
+): {
+  roles: Record<ProfileRole, FixedProfile>
+  triage: FixedProfile | null
+  repair: FixedProfile | null
+} {
   const fallbackProvider = parseProviderName(a['provider'] ?? 'fake')
   const fix = (role: RoleConfig | undefined) => {
     const provider = role?.provider ?? fallbackProvider
@@ -248,8 +255,31 @@ export function resolveProfiles(
   // takes the fallback settings like any other role.
   const triageConfig = config?.profiles?.triage
   const triage = triageConfig ? fix(triageConfig) : null
-  assertSingleMode({ ...roles, ...(triage ? { triage } : {}) })
-  return { roles, triage }
+  // Repair has its own profile only when the config names one; otherwise it
+  // runs on code's, continuing the implementation session in reuse mode. A
+  // field it leaves out comes from the resolved code profile, not from the
+  // flags, so `{ "effort": "high" }` changes the effort and nothing else. On
+  // another provider, code's model and effort do not apply, and that
+  // provider's defaults fill in.
+  const repairConfig = config?.profiles?.repair
+  const repairProvider = repairConfig?.provider ?? roles.code.provider
+  const sameAsCode = repairProvider === roles.code.provider
+  const repair = repairConfig
+    ? fixProfile({
+        provider: repairProvider,
+        model:
+          repairConfig.model ?? (sameAsCode ? roles.code.requestedModel : null),
+        effort:
+          repairConfig.effort ??
+          (sameAsCode ? roles.code.requestedEffort : null),
+      })
+    : null
+  assertSingleMode({
+    ...roles,
+    ...(triage ? { triage } : {}),
+    ...(repair ? { repair } : {}),
+  })
+  return { roles, triage, repair }
 }
 
 /** The trigger flags a config can be overridden by, kept for a reload. */
@@ -406,7 +436,7 @@ function assembleInput(a: Record<string, string>, resolved: ResolvedTarget) {
     throw new Error('--max-iterations must be an integer between 1 and 3')
   const maxIterations = Number(rawIterations)
   const { target, config, codexPath, configSource } = resolved
-  const { roles: profiles, triage } = resolveProfiles(a, config)
+  const { roles: profiles, triage, repair } = resolveProfiles(a, config)
   // Fixed here, so the worker's environment never changes a stored run: the
   // config wins, then this process's environment, then the target default.
   const { checkTimeoutMs, agentTimeoutMs } = resolveTimeouts(
@@ -430,6 +460,7 @@ function assembleInput(a: Record<string, string>, resolved: ResolvedTarget) {
       correctness: requested(profiles.correctness),
       'edge-cases': requested(profiles['edge-cases']),
       ...(triage ? { triage: requested(triage) } : {}),
+      ...(repair ? { repair: requested(repair) } : {}),
     },
     target,
     maxIterations,
