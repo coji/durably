@@ -37,6 +37,17 @@ async function emit(text: string, out: string | undefined): Promise<void> {
   }
 }
 
+/** A recorded delivery with the squashed branch and commit always named. */
+function withSquashedFields(delivery: unknown): unknown {
+  if (!delivery || typeof delivery !== 'object') return delivery
+  const d = delivery as { squashedBranch?: unknown; squashedCommit?: unknown }
+  return {
+    ...d,
+    squashedBranch: d.squashedBranch ?? null,
+    squashedCommit: d.squashedCommit ?? null,
+  }
+}
+
 function args(): Record<string, string> {
   const out: Record<string, string> = {}
   const raw = process.argv.slice(3)
@@ -86,6 +97,8 @@ Repository config: factory.json at the repository root, or --config <file>:
   { "check": ["pnpm", "validate"], "setup": ["pnpm", "install"], "base": "main",
     "baselineCheck": false, "codexPath": "<file>",
     "checkTimeoutMs": 900000, "agentTimeoutMs": 1800000,
+    "commit": { "authorName": "...", "authorEmail": "...",
+                "messageTemplate": "...", "publishSquashed": false },
     "profiles": { "code": { "provider": "codex", "model": "...", "effort": "..." },
                   "review": { "correctness": { ... }, "edge-cases": { ... } },
                   "repair": { ... }, "triage": { ... } } }
@@ -105,6 +118,18 @@ Repository config: factory.json at the repository root, or --config <file>:
   agent call and stops the run (baseline-check-failed) when it fails.
   "codexPath" names the Codex CLI to launch, relative to the config file;
   without it, the bundled CLI first, then codex on PATH.
+  "commit" sets the author (name and email) of every factory commit and a
+  message template in which {iteration}, {runId} and {task} (the task's first
+  line) are replaced; each field is optional and none may be empty. Without
+  them, iteration commits are by durably-factory <durably-factory@localhost>
+  with "factory iteration <n>", and the squashed commit says
+  "factory run <runId>". An approved repository run leaves two branches:
+  factory/<runId> (factory/issue-<n>-<runId> for an issue) with one commit per
+  iteration, and factory/<runId>-squashed with the approved tree as a single
+  commit on the base, whose {iteration} is the one that sealed it. --publish
+  pushes and opens the draft pull request from the first, or from the
+  squashed branch when "publishSquashed" is true; without --publish neither
+  is pushed.
   Timeouts are positive integer milliseconds, at most 2147483647; without them, the trigger's
   TEST_TIMEOUT_MS / AGENT_TIMEOUT_MS, then the target's default.
   Before the first agent call, every role's provider, model and effort is
@@ -254,8 +279,11 @@ if (cmd === 'worker') {
         diagnosis: run ? await diagnose(durably, run, Date.now()) : null,
         // Where the work ended up. The sealed candidate names the branch and
         // commit a repository run leaves behind, whatever its conclusion.
-        delivery:
+        // A delivery recorded before the squashed branch existed shows it
+        // as null rather than leaving the field out.
+        delivery: withSquashedFields(
           (run?.output as { delivery?: unknown } | null)?.delivery ?? null,
+        ),
         candidate:
           (run?.output as { candidate?: unknown } | null)?.candidate ?? null,
         // Null when the run has no triage profile or has not reached it.

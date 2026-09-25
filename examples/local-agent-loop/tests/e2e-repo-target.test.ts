@@ -19,9 +19,16 @@ import { fileURLToPath } from 'node:url'
 import { createAgentDurably } from '../src/durably.js'
 import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
-import { describeCommitChanges, resolveCommit } from '../src/engine/git.js'
+import {
+  branchCommit,
+  describeCommitChanges,
+  resolveCommit,
+  treeOf,
+} from '../src/engine/git.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
 import { fixProfile } from '../src/factory/job.js'
+import type { FactorySetup } from '../src/factory/types.js'
+import { createTarget } from '../src/targets/index.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -83,6 +90,59 @@ async function waitFor(
     // sleep-ok(poll): one tick of a loop that re-checks the run state until its deadline
     await new Promise((r) => setTimeout(r, 500))
   }
+}
+
+/** Commits from `from` (exclusive) to `to`, newest first, as author and message. */
+async function commitsBetween(repo: string, from: string, to: string) {
+  const out = await git(repo, [
+    'log',
+    '--format=%an <%ae>|%cn <%ce>|%s',
+    `${from}..${to}`,
+  ])
+  return out
+    .trim()
+    .split('\n')
+    .filter((line) => line.length > 0)
+}
+
+/**
+ * A stand-in `gh` on PATH that logs each call. `pr list` answers with the
+ * pull request once `pr create` has made it, as GitHub would.
+ */
+async function fakeGh(root: string): Promise<{ log: string; bin: string }> {
+  const bin = join(root, 'bin')
+  await mkdir(bin)
+  const log = join(root, 'gh.log')
+  const made = join(root, 'gh-pr-made')
+  await writeFile(
+    join(bin, 'gh'),
+    [
+      '#!/bin/sh',
+      `echo "$*" >> "${log}"`,
+      'case "$1 $2" in',
+      `  "pr list") if [ -f "${made}" ]; then echo '[{"url":"https://example.invalid/pull/1"}]'; else echo '[]'; fi ;;`,
+      `  "pr create") touch "${made}"; echo https://example.invalid/pull/1 ;;`,
+      'esac',
+      '',
+    ].join('\n'),
+  )
+  await chmod(join(bin, 'gh'), 0o755)
+  return { log, bin }
+}
+
+async function ghCalls(log: string, prefix: string): Promise<string[]> {
+  if (!existsSync(log)) return []
+  return (await readFile(log, 'utf8'))
+    .split('\n')
+    .filter((line) => line.startsWith(prefix))
+}
+
+async function withBare(root: string, repo: string): Promise<string> {
+  const remote = join(root, 'remote.git')
+  await git(root, ['init', '--bare', '--initial-branch=main', remote])
+  await git(repo, ['remote', 'add', 'origin', remote])
+  await git(repo, ['push', 'origin', 'main'])
+  return remote
 }
 
 describe('repo target end to end', { timeout: 180000 }, () => {
@@ -356,6 +416,8 @@ describe('repo target end to end', { timeout: 180000 }, () => {
 
       const branch = `factory/${run.id}`
       const commit = await resolveCommit(repo, branch)
+      // Nothing was delivered, so nothing was squashed.
+      assert.equal(await branchCommit(repo, `factory/${run.id}-squashed`), null)
       const report = await buildReport(durably, run.id)
       assert.equal(report.candidate?.branch, branch)
       assert.equal(report.candidate?.commit, commit)
@@ -543,6 +605,36 @@ describe('repo target end to end', { timeout: 180000 }, () => {
       assert.doesNotMatch(output.delivery.summary, /issue|#\d/i)
       assert.doesNotMatch(branch, /issue/)
 
+      // Without commit settings: the factory's own author and messages, and
+      // beside the iteration branch, one squashed commit on the base.
+      const base = (
+        await runChild('git', ['rev-parse', 'main'], {
+          cwd: repo,
+          timeoutMs: 30000,
+        })
+      ).stdout.trim()
+      const factory = 'durably-factory <durably-factory@localhost>'
+      assert.deepEqual(await commitsBetween(repo, base, branch), [
+        `${factory}|${factory}|factory iteration 1`,
+      ])
+      const squashed = `factory/${run.id}-squashed`
+      const squashedDelivery = output.delivery as typeof output.delivery & {
+        squashedBranch: string | null
+        squashedCommit: string | null
+      }
+      assert.equal(squashedDelivery.squashedBranch, squashed)
+      assert.equal(
+        squashedDelivery.squashedCommit,
+        await branchCommit(repo, squashed),
+      )
+      assert.deepEqual(await commitsBetween(repo, base, squashed), [
+        `${factory}|${factory}|factory run ${run.id}`,
+      ])
+      assert.equal(
+        await treeOf(repo, squashed),
+        await treeOf(repo, output.delivery.commit ?? ''),
+      )
+
       // The report splits the roles and names the inputs and the delivery.
       const report = await buildReport(durably, run.id)
       assert.deepEqual(
@@ -574,14 +666,21 @@ describe('repo target end to end', { timeout: 180000 }, () => {
       assert.equal(report.inputs.dispositions, null)
       assert.equal(report.delivery?.branch, branch)
       assert.equal(report.delivery?.commit, output.delivery.commit)
+      assert.equal(report.delivery?.squashedBranch, squashed)
+      assert.equal(
+        report.delivery?.squashedCommit,
+        squashedDelivery.squashedCommit,
+      )
       const md = reportToMarkdown(report)
       const json = reportToJson(report)
       for (const text of [md, json]) {
         assert.ok(text.includes(branch))
         assert.ok(text.includes(output.delivery.commit ?? 'missing'))
         assert.ok(text.includes(taskHash))
+        assert.ok(text.includes(squashed))
         assert.doesNotMatch(text, /issue-\d|issues\/\d|#\d/)
       }
+      assert.ok(md.includes(`- squashed branch: ${squashed}`))
       assert.match(md, /\| edge-cases \| fake \| model-b \| high \| \d+ \|/)
       assert.match(md, /\| correctness \| fake \| model-a \| low \| \d+ \|/)
 
@@ -609,21 +708,10 @@ describe('repo target end to end', { timeout: 180000 }, () => {
   it('opens the draft pull request exactly once when publishing', async () => {
     const root = await mkdtemp(join(tmpdir(), 'repo-target-publish-'))
     const repo = await seedRepo(root)
-    const remote = join(root, 'remote.git')
-    await git(root, ['init', '--bare', '--initial-branch=main', remote])
-    await git(repo, ['remote', 'add', 'origin', remote])
-    await git(repo, ['push', 'origin', 'main'])
-    // A stand-in `gh` that records each call instead of reaching GitHub.
-    const bin = join(root, 'bin')
-    await mkdir(bin)
-    const ghLog = join(root, 'gh.log')
-    await writeFile(
-      join(bin, 'gh'),
-      `#!/bin/sh\necho "$*" >> "${ghLog}"\necho https://example.invalid/pull/1\n`,
-    )
-    await chmod(join(bin, 'gh'), 0o755)
+    const remote = await withBare(root, repo)
+    const gh = await fakeGh(root)
     const savedPath = process.env.PATH
-    process.env.PATH = `${bin}:${savedPath ?? ''}`
+    process.env.PATH = `${gh.bin}:${savedPath ?? ''}`
     process.env.FAKE_FAIL_FIRST = '0'
     delete process.env.FAKE_REVIEW_SEQUENCE
 
@@ -671,17 +759,250 @@ describe('repo target end to end', { timeout: 180000 }, () => {
         'publish run completes',
       )
       const output = (await durably.getRun(run.id))?.output as {
-        delivery: { kind: string; location: string; branch: string | null }
+        delivery: {
+          kind: string
+          location: string
+          branch: string | null
+          squashedBranch: string | null
+        }
       }
       assert.equal(output.delivery.kind, 'pull-request')
       assert.equal(output.delivery.location, 'https://example.invalid/pull/1')
       assert.equal(output.delivery.branch, `factory/${run.id}`)
-      const calls = (await readFile(ghLog, 'utf8'))
-        .split('\n')
-        .filter((line) => line.startsWith('pr create'))
+      // The squashed branch is made, but publishSquashed is off: the
+      // iteration branch is pushed and is the pull request's head.
+      assert.equal(output.delivery.squashedBranch, `factory/${run.id}-squashed`)
+      const calls = await ghCalls(gh.log, 'pr create')
       assert.equal(calls.length, 1)
+      assert.match(calls[0] ?? '', new RegExp(`--head factory/${run.id} `))
       assert.ok(
         (await git(remote, ['branch', '--list', `factory/${run.id}`])).trim(),
+      )
+      assert.equal(
+        (
+          await git(remote, ['branch', '--list', `factory/${run.id}-squashed`])
+        ).trim(),
+        '',
+      )
+    } finally {
+      process.env.PATH = savedPath
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+  })
+
+  it('applies the commit settings to every commit, keeps the checkout, and pushes nothing without --publish', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-commit-'))
+    const repo = await seedRepo(root)
+    const remote = await withBare(root, repo)
+    const gh = await fakeGh(root)
+    const baseBefore = await resolveCommit(repo, 'HEAD')
+    const savedPath = process.env.PATH
+    process.env.PATH = `${gh.bin}:${savedPath ?? ''}`
+    // Iteration 1 changes nothing and fails the check; iteration 2 fixes it.
+    delete process.env.FAKE_FAIL_FIRST
+    delete process.env.FAKE_REVIEW_SEQUENCE
+
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        target: {
+          kind: 'repo' as const,
+          repoPath: repo,
+          baseRef: 'HEAD',
+          task: 'Fix add() for decimals\n\nInputs must not be truncated.',
+          spec: null,
+          dispositions: null,
+          inputFiles: NO_FILES,
+          issue: { number: 7, title: 'add truncates', url: 'https://x/7' },
+          checkCommand: ['node', '--test', 'test/**/*.test.js'],
+          setupCommand: null,
+          publish: false,
+          commit: {
+            authorName: 'Factory Bot',
+            authorEmail: 'bot@example.com',
+            messageTemplate: 'fix: {task} ({runId} #{iteration})',
+            // Without --publish this pushes nothing.
+            publishSquashed: true,
+          },
+        },
+        maxIterations: 2,
+        context: 'reuse',
+      })
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        150000,
+        'commit-settings run completes',
+      )
+      const output = (await durably.getRun(run.id))?.output as {
+        conclusion: string
+        iterations: number
+        delivery: {
+          kind: string
+          branch: string
+          commit: string
+          squashedBranch: string
+          squashedCommit: string
+        }
+      }
+      assert.equal(output.conclusion, 'approved')
+      assert.equal(output.iterations, 2)
+      const bot = 'Factory Bot <bot@example.com>'
+      const branch = `factory/issue-7-${run.id}`
+      assert.equal(output.delivery.branch, branch)
+      // The idle first iteration made no commit; the second is in the
+      // template, by the configured author.
+      assert.deepEqual(await commitsBetween(repo, baseBefore, branch), [
+        `${bot}|${bot}|fix: Fix add() for decimals (${run.id} #2)`,
+      ])
+      // An issue run's squashed branch has the plain name, and its message
+      // takes the iteration that sealed the last candidate.
+      const squashed = `factory/${run.id}-squashed`
+      assert.equal(output.delivery.squashedBranch, squashed)
+      assert.deepEqual(await commitsBetween(repo, baseBefore, squashed), [
+        `${bot}|${bot}|fix: Fix add() for decimals (${run.id} #2)`,
+      ])
+      assert.equal(
+        (await git(repo, ['rev-parse', `${squashed}^`])).trim(),
+        baseBefore,
+      )
+      assert.equal(
+        await treeOf(repo, squashed),
+        await treeOf(repo, output.delivery.commit),
+      )
+      // Nothing checked out moved, and nothing left the machine.
+      assert.equal(await resolveCommit(repo, 'HEAD'), baseBefore)
+      assert.equal(
+        (await git(repo, ['symbolic-ref', '--short', 'HEAD'])).trim(),
+        'main',
+      )
+      assert.equal(output.delivery.kind, 'patch')
+      assert.equal(
+        (await git(remote, ['branch', '--list', 'factory/*'])).trim(),
+        '',
+      )
+      assert.deepEqual(await ghCalls(gh.log, ''), [])
+    } finally {
+      process.env.PATH = savedPath
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  it('publishes the squashed branch when asked, and a replayed delivery reuses its branch and pull request', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-squash-pr-'))
+    const repo = await seedRepo(root)
+    const remote = await withBare(root, repo)
+    const gh = await fakeGh(root)
+    const savedPath = process.env.PATH
+    process.env.PATH = `${gh.bin}:${savedPath ?? ''}`
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        target: {
+          kind: 'repo' as const,
+          repoPath: repo,
+          baseRef: 'HEAD',
+          task: 'Fix add() so decimal inputs are not truncated.',
+          spec: null,
+          dispositions: null,
+          inputFiles: NO_FILES,
+          issue: null,
+          checkCommand: ['node', '--test', 'test/**/*.test.js'],
+          setupCommand: null,
+          publish: true,
+          commit: {
+            authorName: null,
+            authorEmail: null,
+            messageTemplate: null,
+            publishSquashed: true,
+          },
+        },
+        maxIterations: 2,
+        context: 'reuse',
+      })
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        150000,
+        'squash-publish run completes',
+      )
+      const output = (await durably.getRun(run.id))?.output as {
+        iterations: number
+        candidate: Parameters<
+          ReturnType<typeof createTarget>['deliver']
+        >[0]['candidate']
+        reviews: { lens: string; decision: string; notes: string }[]
+        delivery: {
+          kind: string
+          location: string
+          branch: string
+          commit: string
+          squashedBranch: string
+          squashedCommit: string
+        }
+      }
+      const squashed = `factory/${run.id}-squashed`
+      assert.equal(output.delivery.kind, 'pull-request')
+      assert.equal(output.delivery.location, 'https://example.invalid/pull/1')
+      // The iteration branch is still what `branch` names; the squashed one
+      // is what was pushed and opened.
+      assert.equal(output.delivery.branch, `factory/${run.id}`)
+      assert.equal(output.delivery.squashedBranch, squashed)
+      const creates = await ghCalls(gh.log, 'pr create')
+      assert.equal(creates.length, 1)
+      assert.match(creates[0] ?? '', new RegExp(`--head ${squashed} `))
+      assert.equal(
+        (await git(remote, ['rev-parse', squashed])).trim(),
+        output.delivery.squashedCommit,
+      )
+      assert.equal(
+        (await git(remote, ['branch', '--list', `factory/${run.id}`])).trim(),
+        '',
+      )
+
+      // The delivery step again, as after a crash between opening the pull
+      // request and recording the step: the same commit, branch and pull
+      // request, and no second `gh pr create`.
+      const setup = (await durably.storage.getSteps(run.id)).find(
+        (x) => x.name === 'setup',
+      )?.output as FactorySetup
+      const target = createTarget(setup.target)
+      const deliver = () =>
+        target.deliver({
+          candidate: output.candidate,
+          iteration: output.iterations,
+          runId: run.id,
+          reviews: output.reviews,
+          signal: new AbortController().signal,
+        })
+      const replayed = await deliver()
+      assert.equal(replayed.location, output.delivery.location)
+      assert.equal(replayed.squashedCommit, output.delivery.squashedCommit)
+      assert.equal(replayed.commit, output.delivery.commit)
+      assert.equal(await branchCommit(repo, squashed), replayed.squashedCommit)
+      assert.equal((await ghCalls(gh.log, 'pr create')).length, 1)
+
+      // A branch by that name that is not this squash is never overwritten:
+      // the delivery stops before pushing or opening anything.
+      await git(repo, ['branch', '-f', squashed, 'main'])
+      const listed = (await ghCalls(gh.log, '')).length
+      await assert.rejects(deliver(), /already exists .* left as it is/)
+      assert.equal(
+        await branchCommit(repo, squashed),
+        await resolveCommit(repo, 'main'),
+      )
+      assert.equal((await ghCalls(gh.log, '')).length, listed)
+      assert.equal(
+        (await git(remote, ['rev-parse', squashed])).trim(),
+        output.delivery.squashedCommit,
       )
     } finally {
       process.env.PATH = savedPath

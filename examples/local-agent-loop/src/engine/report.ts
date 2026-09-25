@@ -178,6 +178,12 @@ export interface ReportDelivery {
   summary: string
   branch: string | null
   commit: string | null
+  /**
+   * Branch with the candidate's tree as one commit on the base; null when
+   * none was made, including every delivery recorded before it existed.
+   */
+  squashedBranch: string | null
+  squashedCommit: string | null
 }
 
 /**
@@ -1044,6 +1050,8 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push(`- location: ${r.delivery.location}`)
     lines.push(`- branch: ${fmt(r.delivery.branch)}`)
     lines.push(`- commit: ${fmt(r.delivery.commit)}`)
+    lines.push(`- squashed branch: ${r.delivery.squashedBranch ?? 'none'}`)
+    lines.push(`- squashed commit: ${r.delivery.squashedCommit ?? 'none'}`)
     lines.push(`- summary: ${r.delivery.summary}`)
   } else {
     lines.push('- none')

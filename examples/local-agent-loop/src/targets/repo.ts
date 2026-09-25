@@ -24,15 +24,18 @@ import {
 import {
   cleanUntracked,
   commitAll,
+  DEFAULT_COMMIT_AUTHOR,
   defaultBranch,
   describeCommitChanges,
   diffStat,
+  ensureSquashedBranch,
   isDirty,
   writePatch,
   pushBranch,
   resolveCommit,
   someUntracked,
   treeOf,
+  type CommitAuthor,
 } from '../engine/git.js'
 import type { CandidateChanges, CandidateRef } from '../engine/types.js'
 import {
@@ -43,16 +46,52 @@ import {
   type GradeResult,
 } from '../engine/verification.js'
 import { changedPathsLine } from '../factory/prompts.js'
-import type {
-  Delivery,
-  DeliverArgs,
-  GradeArgs,
-  RepoTargetConfig,
-  SealArgs,
-  Target,
-  UntrustedInput,
+import {
+  DEFAULT_COMMIT_SETTINGS,
+  type CommitSettings,
+  type Delivery,
+  type DeliverArgs,
+  type GradeArgs,
+  type RepoTargetConfig,
+  type SealArgs,
+  type Target,
+  type UntrustedInput,
 } from '../factory/target.js'
 import type { ProfileRole } from '../factory/types.js'
+
+/** The branch holding a run's approved candidate as one commit on the base. */
+export function squashedBranchFor(runId: string): string {
+  return `factory/${runId}-squashed`
+}
+
+/**
+ * A commit message from the run's template: `{iteration}`, `{runId}` and
+ * `{task}` (the stored task's first line) are replaced in one pass, so text
+ * the task brings in is never expanded again.
+ */
+export function renderCommitMessage(
+  template: string,
+  values: { iteration: number; runId: string; task: string },
+): string {
+  const task = values.task.trim().split('\n')[0]?.trim() ?? ''
+  return template.replace(
+    /\{(iteration|runId|task)\}/g,
+    (_, name: 'iteration' | 'runId' | 'task') =>
+      name === 'iteration'
+        ? String(values.iteration)
+        : name === 'runId'
+          ? values.runId
+          : task,
+  )
+}
+
+/** The author a run's commits carry, each field falling back on its own. */
+export function commitAuthorOf(settings: CommitSettings): CommitAuthor {
+  return {
+    name: settings.authorName ?? DEFAULT_COMMIT_AUTHOR.name,
+    email: settings.authorEmail ?? DEFAULT_COMMIT_AUTHOR.email,
+  }
+}
 
 /** Hash-free identity of the pinned check, recorded so it cannot drift. */
 export function checkFingerprint(command: string[]): string {
@@ -66,6 +105,26 @@ export class RepoTarget implements Target {
 
   get workdir(): string {
     return this.config.workdir
+  }
+
+  private get commitSettings(): CommitSettings {
+    return this.config.commit ?? DEFAULT_COMMIT_SETTINGS
+  }
+
+  /** An iteration commit's message, or the squash commit's when `squash`. */
+  private commitMessage(
+    iteration: number,
+    runId: string,
+    squash = false,
+  ): string {
+    const template = this.commitSettings.messageTemplate
+    if (template)
+      return renderCommitMessage(template, {
+        iteration,
+        runId,
+        task: this.config.task,
+      })
+    return squash ? `factory run ${runId}` : `factory iteration ${iteration}`
   }
 
   checkDescription(): string {
@@ -123,8 +182,8 @@ export class RepoTarget implements Target {
   async seal(args: SealArgs): Promise<CandidateRef> {
     const sealed = await commitAll(
       this.config.workdir,
-      `factory iteration ${args.iteration}`,
-      { signal: args.signal },
+      this.commitMessage(args.iteration, args.runId),
+      { signal: args.signal, author: commitAuthorOf(this.commitSettings) },
     )
     const tree = await treeOf(this.config.repoPath, sealed.commit)
     const id = `candidate-${args.iteration}-${tree.slice(0, 12)}`
@@ -349,28 +408,61 @@ export class RepoTarget implements Target {
       head,
       patchPath,
     )
+    // The candidate's tree as one commit on the base, beside the branch that
+    // keeps every iteration. Built from refs alone, so no checkout moves; a
+    // replay finds the branch it made and keeps it.
+    const squashedBranch = squashedBranchFor(args.runId)
+    const squashed = await ensureSquashedBranch({
+      repo: this.config.repoPath,
+      branch: squashedBranch,
+      baseCommit: this.config.baseCommit,
+      sourceCommit: head,
+      message: this.commitMessage(args.iteration, args.runId, true),
+      author: commitAuthorOf(this.commitSettings),
+      signal: args.signal,
+    })
+    const recorded = {
+      branch: this.config.branch,
+      commit: head,
+      squashedBranch,
+      squashedCommit: squashed.commit,
+    }
     if (!this.config.publish) {
-      // The branch and commit stay in the source repository, so the patch is
-      // not the only way back to the work.
+      // The branches and commits stay in the source repository, so the patch
+      // is not the only way back to the work.
       return {
         kind: 'patch',
         location: patchPath,
         summary: `patch for ${args.candidate.id} against ${this.config.baseCommit.slice(0, 12)}`,
-        branch: this.config.branch,
-        commit: head,
+        ...recorded,
       }
     }
-    return this.publishPullRequest(args, patchPath, head)
+    const published = this.commitSettings.publishSquashed
+      ? squashedBranch
+      : this.config.branch
+    const url = await this.publishPullRequest(args, published)
+    return {
+      kind: 'pull-request',
+      location: url,
+      summary: `draft pull request for ${args.candidate.id} from ${published} (patch kept at ${patchPath})`,
+      ...recorded,
+    }
   }
 
+  /**
+   * Push `head` and open a draft pull request from it, or return the open one
+   * a run interrupted after creating it left behind, so a replay never opens
+   * a second.
+   */
   private async publishPullRequest(
     args: DeliverArgs,
-    patchPath: string,
     head: string,
-  ): Promise<Delivery> {
-    await pushBranch(this.config.repoPath, this.config.branch, 'origin', {
+  ): Promise<string> {
+    await pushBranch(this.config.repoPath, head, 'origin', {
       signal: args.signal,
     })
+    const existing = await this.openPullRequest(head, args.signal)
+    if (existing) return existing
     const issue = this.config.issue
     const title = issue
       ? `${issue.title} (#${issue.number})`
@@ -404,7 +496,7 @@ export class RepoTarget implements Target {
         '--base',
         await this.baseBranch(),
         '--head',
-        this.config.branch,
+        head,
         '--title',
         title,
         '--body',
@@ -421,14 +513,46 @@ export class RepoTarget implements Target {
         `gh pr create failed (${res.code ?? 'null'}): ${res.stderr.slice(-1000)}`,
       )
     }
-    const url = res.stdout.trim().split('\n').at(-1) ?? ''
-    return {
-      kind: 'pull-request',
-      location: url,
-      summary: `draft pull request for ${args.candidate.id} (patch kept at ${patchPath})`,
-      branch: this.config.branch,
-      commit: head,
+    return res.stdout.trim().split('\n').at(-1) ?? ''
+  }
+
+  /** URL of the open pull request from `head`, or null when there is none. */
+  private async openPullRequest(
+    head: string,
+    signal: AbortSignal,
+  ): Promise<string | null> {
+    const res = await runChild(
+      'gh',
+      [
+        'pr',
+        'list',
+        '--head',
+        head,
+        '--state',
+        'open',
+        '--json',
+        'url',
+        '--limit',
+        '1',
+      ],
+      { cwd: this.config.repoPath, timeoutMs: 120_000, signal },
+    )
+    // Opening a pull request without knowing none is open could make a
+    // second one, so a failed lookup stops the delivery.
+    if (res.code !== 0)
+      throw new Error(
+        `gh pr list failed (${res.code ?? 'null'}): ${res.stderr.slice(-1000)}`,
+      )
+    let found: unknown
+    try {
+      found = JSON.parse(res.stdout)
+    } catch {
+      throw new Error(`gh pr list printed no JSON: ${res.stdout.slice(0, 200)}`)
     }
+    const url = Array.isArray(found)
+      ? (found[0] as { url?: unknown } | undefined)?.url
+      : undefined
+    return typeof url === 'string' && url.length > 0 ? url : null
   }
 
   private async baseBranch(): Promise<string> {

@@ -50,6 +50,7 @@ import {
   humanCheckText,
   isPathDetail,
   reviewDecision,
+  squashedBranchField,
 } from '../src/ui/labels.js'
 import { pollEvery } from '../src/ui/poll.js'
 import {
@@ -1272,6 +1273,27 @@ describe('diagnosis wording on the page', () => {
     assert.equal(isPathDetail('check stderr log: /runs/r1/stderr.log'), true)
     assert.equal(isPathDetail('check exit code: 1'), false)
     assert.equal(isPathDetail('error: boom'), false)
+  })
+})
+
+describe('the delivery on the page', () => {
+  it('names the squashed branch in Japanese, as the report recorded it, with a copy button', () => {
+    const field = squashedBranchField({
+      squashedBranch: 'factory/run-1-squashed',
+    })
+    assert.deepEqual(field, {
+      label: '1コミットにまとめたブランチ',
+      value: 'factory/run-1-squashed',
+      copyLabel: 'まとめたブランチ名をコピー',
+    })
+    // No parenthetical asides, and no English word where Japanese fits.
+    for (const text of [field.label, field.copyLabel])
+      assert.doesNotMatch(text, /[()（）]|[A-Za-z]/)
+  })
+
+  it('shows no name for a delivery recorded before the squashed branch existed', () => {
+    assert.equal(squashedBranchField({}).value, null)
+    assert.equal(squashedBranchField({ squashedBranch: null }).value, null)
   })
 })
 

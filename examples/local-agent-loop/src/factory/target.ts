@@ -31,6 +31,27 @@ export interface SubjectTargetConfig {
   testTimeoutMs: number
 }
 
+/**
+ * How a repository run's commits are made, fixed at trigger from
+ * `factory.json`'s `commit`. Null fields keep the factory's own author and
+ * messages.
+ */
+export interface CommitSettings {
+  authorName: string | null
+  authorEmail: string | null
+  /** `{iteration}`, `{runId}` and `{task}` are replaced. */
+  messageTemplate: string | null
+  /** With `--publish`, push the squashed branch and open the PR from it. */
+  publishSquashed: boolean
+}
+
+export const DEFAULT_COMMIT_SETTINGS: CommitSettings = {
+  authorName: null,
+  authorEmail: null,
+  messageTemplate: null,
+  publishSquashed: false,
+}
+
 /** A real repository: a git worktree graded by the repository's own check. */
 export interface RepoTargetConfig {
   kind: 'repo'
@@ -64,6 +85,8 @@ export interface RepoTargetConfig {
   candidatesDir?: string
   /** Push the branch and open a draft pull request on delivery. */
   publish: boolean
+  /** Absent on a run set up before it existed; the defaults apply. */
+  commit?: CommitSettings
 }
 
 export type TargetConfig = SubjectTargetConfig | RepoTargetConfig
@@ -92,10 +115,18 @@ export interface Delivery {
   branch: string | null
   /** Commit sha of the delivered candidate; null when it is not a commit. */
   commit: string | null
+  /**
+   * Branch holding the candidate's tree as one commit on the base; null when
+   * the target makes none.
+   */
+  squashedBranch: string | null
+  /** That one commit's sha; null when there is no squashed branch. */
+  squashedCommit: string | null
 }
 
 export interface SealArgs {
   iteration: number
+  runId: string
   attemptId: string
   signal: AbortSignal
 }
@@ -114,6 +145,8 @@ export interface GradeArgs {
 
 export interface DeliverArgs {
   candidate: CandidateRef
+  /** The iteration that sealed `candidate`. */
+  iteration: number
   runId: string
   /** Review notes, for the pull request body. */
   reviews: { lens: string; decision: string; notes: string }[]

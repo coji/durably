@@ -27,6 +27,7 @@ import {
 } from '../src/factory/prompts.js'
 import type { FactorySetup } from '../src/factory/types.js'
 import { createTarget } from '../src/targets/index.js'
+import { reloadTriggerInput } from '../src/trigger-input.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const tsx = join(packageRoot, 'node_modules', '.bin', 'tsx')
@@ -153,6 +154,12 @@ type RunInput = {
     setupCommand: string[] | null
     inputFiles: Record<string, { path: string } | null>
     baselineCheck?: boolean
+    commit?: {
+      authorName: string | null
+      authorEmail: string | null
+      messageTemplate: string | null
+      publishSquashed: boolean
+    }
   }
 }
 
@@ -740,6 +747,25 @@ describe('trigger validation', { timeout: 120000 }, () => {
     )
   })
 
+  it('rejects commit settings of the wrong type, empty, or unknown', async () => {
+    for (const commit of [
+      { authorName: '' },
+      { authorEmail: '   ' },
+      { messageTemplate: '' },
+      { authorName: 3 },
+      { publishSquashed: 'yes' },
+      { authorname: 'typo' },
+      'Factory Bot',
+    ]) {
+      const box = await sandbox({ check: CHECK, commit })
+      await rejected(
+        box,
+        ['--repo', box.repo, '--task', 'x'],
+        /invalid factory config[\s\S]*commit/,
+      )
+    }
+  })
+
   it('does not document DURABLY_DB', async () => {
     const box = await sandbox()
     const res = await demo(box, ['--help'])
@@ -854,6 +880,123 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
           { [name]: bad },
         )
     }
+  })
+
+  it('fixes the commit settings at trigger, applies them, and reads them again only on a reload', async () => {
+    const commit = {
+      authorName: 'Factory Bot',
+      authorEmail: 'bot@example.com',
+      messageTemplate: 'fix: {task} ({iteration})',
+    }
+    const box = await sandbox({ check: CHECK, commit })
+    const runId = await trigger(box, [
+      '--repo',
+      box.repo,
+      '--task',
+      'Fix add() for decimals\nThey must not be truncated.',
+    ])
+    const stored = await inputOf(box, runId)
+    assert.deepEqual(stored.target.commit, {
+      ...commit,
+      publishSquashed: false,
+    })
+    // Edited after the trigger: the run keeps what it stored.
+    const changed = {
+      authorName: 'Someone Else',
+      authorEmail: 'else@example.com',
+      messageTemplate: 'chore: {runId}',
+      publishSquashed: true,
+    }
+    await writeFile(
+      join(box.repo, 'factory.json'),
+      JSON.stringify({ check: CHECK, commit: changed }),
+    )
+
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    await durably.init()
+    let squashedCommit = ''
+    try {
+      await until(
+        async () => (await durably.getRun(runId))?.status === 'completed',
+        'commit-settings run completes',
+      )
+      const run = await durably.getRun(runId)
+      const output = run?.output as {
+        conclusion: string
+        delivery: { squashedBranch: string; squashedCommit: string }
+      }
+      assert.equal(output.conclusion, 'approved')
+      const setup = (await durably.storage.getSteps(runId)).find(
+        (x) => x.name === 'setup',
+      )?.output as FactorySetup
+      assert.equal(setup.target.kind, 'repo')
+      if (setup.target.kind === 'repo')
+        assert.deepEqual(setup.target.commit, stored.target.commit)
+      const log = (ref: string) =>
+        git(box.repo, ['log', '--format=%an <%ae>|%s', `main..${ref}`])
+      const expected =
+        'Factory Bot <bot@example.com>|fix: Fix add() for decimals (1)\n'
+      assert.equal(await log(`factory/${runId}`), expected)
+      const squashed = `factory/${runId}-squashed`
+      assert.equal(output.delivery.squashedBranch, squashed)
+      assert.equal(await log(squashed), expected)
+      squashedCommit = output.delivery.squashedCommit
+
+      const report = await buildReport(durably, runId)
+      assert.equal(report.delivery?.squashedBranch, squashed)
+      assert.ok(
+        reportToMarkdown(report).includes(`- squashed branch: ${squashed}`),
+      )
+      const json = JSON.parse(reportToJson(report)) as {
+        delivery: { squashedBranch: string; squashedCommit: string }
+      }
+      assert.deepEqual(
+        [json.delivery.squashedBranch, json.delivery.squashedCommit],
+        [squashed, squashedCommit],
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+
+    const status = await demo(box, ['status', '--run', runId])
+    assert.equal(status.code, 0, status.stderr)
+    const shown = JSON.parse(status.stdout) as {
+      delivery: { squashedBranch: string; squashedCommit: string }
+    }
+    assert.deepEqual(
+      [shown.delivery.squashedBranch, shown.delivery.squashedCommit],
+      [`factory/${runId}-squashed`, squashedCommit],
+    )
+
+    // A reload reads the edited file; the stored run is untouched.
+    const reloaded = await reloadTriggerInput(
+      stored as unknown as Parameters<typeof reloadTriggerInput>[0],
+    )
+    assert.deepEqual(
+      (reloaded.input.target as { commit?: unknown }).commit,
+      changed,
+    )
+    assert.deepEqual((await inputOf(box, runId)).target.commit, {
+      ...commit,
+      publishSquashed: false,
+    })
+
+    // Left out: every field at its default.
+    const plain = await sandbox({ check: CHECK })
+    const plainInput = await inputOf(
+      plain,
+      await trigger(plain, ['--repo', plain.repo, '--task', 'x']),
+    )
+    assert.deepEqual(plainInput.target.commit, {
+      authorName: null,
+      authorEmail: null,
+      messageTemplate: null,
+      publishSquashed: false,
+    })
   })
 
   it('fixes baselineCheck and a checked, absolute codexPath', async () => {

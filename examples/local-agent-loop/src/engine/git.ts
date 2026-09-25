@@ -122,6 +122,22 @@ export async function removeWorktree(
   }
 }
 
+/** Who a factory commit is by: both its author and its committer. */
+export interface CommitAuthor {
+  name: string
+  email: string
+}
+
+/** The identity factory commits carry when the run names none. */
+export const DEFAULT_COMMIT_AUTHOR: CommitAuthor = {
+  name: 'durably-factory',
+  email: 'durably-factory@localhost',
+}
+
+function identityArgs(author: CommitAuthor): string[] {
+  return ['-c', `user.name=${author.name}`, '-c', `user.email=${author.email}`]
+}
+
 /**
  * Commit everything the agent changed, honouring `.gitignore`.
  *
@@ -133,7 +149,7 @@ export async function removeWorktree(
 export async function commitAll(
   dir: string,
   message: string,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; author?: CommitAuthor } = {},
 ): Promise<{ commit: string; created: boolean }> {
   const pass = options.signal ? { signal: options.signal } : {}
   await git(dir, ['add', '-A'], pass)
@@ -144,10 +160,7 @@ export async function commitAll(
   await git(
     dir,
     [
-      '-c',
-      'user.name=durably-factory',
-      '-c',
-      'user.email=durably-factory@localhost',
+      ...identityArgs(options.author ?? DEFAULT_COMMIT_AUTHOR),
       'commit',
       '--no-verify',
       '--no-gpg-sign',
@@ -157,6 +170,104 @@ export async function commitAll(
     pass,
   )
   return { commit: await resolveCommit(dir, 'HEAD'), created: true }
+}
+
+export interface SquashSpec {
+  repo: string
+  /** Branch to create; an existing one is checked, never moved. */
+  branch: string
+  /** The squash commit's only parent. */
+  baseCommit: string
+  /** The commit whose tree the squash commit carries. */
+  sourceCommit: string
+  message: string
+  author: CommitAuthor
+  signal?: AbortSignal
+}
+
+/**
+ * Put `sourceCommit`'s tree on `branch` as one commit whose only parent is
+ * `baseCommit`, without touching any checkout or worktree.
+ *
+ * The commit is dated from the source commit, so building it again gives the
+ * same sha. A branch that already exists is kept when it is exactly one
+ * commit on the base with the source's tree, which is what a replay after an
+ * interruption finds; any other branch by that name is refused, never
+ * overwritten. The same tree as the base still gets its own commit, so the
+ * branch is always one commit ahead of the base.
+ */
+export async function ensureSquashedBranch(
+  spec: SquashSpec,
+): Promise<{ commit: string; created: boolean }> {
+  const pass = spec.signal ? { signal: spec.signal } : {}
+  const tree = await treeOf(spec.repo, spec.sourceCommit)
+  const existing = await branchCommit(spec.repo, spec.branch)
+  if (existing) {
+    const [, ...parents] = (
+      await git(spec.repo, ['rev-list', '--parents', '-n', '1', existing])
+    )
+      .trim()
+      .split(' ')
+    const existingTree = await treeOf(spec.repo, existing)
+    if (
+      parents.length !== 1 ||
+      parents[0] !== spec.baseCommit ||
+      existingTree !== tree
+    )
+      throw new Error(
+        `squashed branch ${spec.branch} already exists at ${existing.slice(0, 12)} and is not one commit on ${spec.baseCommit.slice(0, 12)} with tree ${tree.slice(0, 12)}; it was left as it is`,
+      )
+    return { commit: existing, created: false }
+  }
+  const date = `${(
+    await git(spec.repo, ['log', '-1', '--format=%ct', spec.sourceCommit])
+  ).trim()} +0000`
+  const commit = (
+    await git(
+      spec.repo,
+      [
+        'commit-tree',
+        '--no-gpg-sign',
+        tree,
+        '-p',
+        spec.baseCommit,
+        '-m',
+        spec.message,
+      ],
+      {
+        ...pass,
+        env: {
+          GIT_AUTHOR_NAME: spec.author.name,
+          GIT_AUTHOR_EMAIL: spec.author.email,
+          GIT_COMMITTER_NAME: spec.author.name,
+          GIT_COMMITTER_EMAIL: spec.author.email,
+          GIT_AUTHOR_DATE: date,
+          GIT_COMMITTER_DATE: date,
+        },
+      },
+    )
+  ).trim()
+  // An empty old value makes the update fail if the branch appeared since.
+  await git(
+    spec.repo,
+    ['update-ref', `refs/heads/${spec.branch}`, commit, ''],
+    pass,
+  )
+  return { commit, created: true }
+}
+
+/** The commit a local branch points at, or null when there is no such branch. */
+export async function branchCommit(
+  repo: string,
+  branch: string,
+): Promise<string | null> {
+  const res = await runChild(
+    'git',
+    ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`],
+    { cwd: repo, timeoutMs: DEFAULT_TIMEOUT_MS },
+  )
+  const out = res.stdout.trim()
+  return res.code === 0 && out.length > 0 ? out : null
 }
 
 /**

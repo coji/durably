@@ -17,6 +17,7 @@ import {
   resolveCommit,
 } from '../engine/git.js'
 import type {
+  CommitSettings,
   RepoTargetConfig,
   Target,
   TargetConfig,
@@ -48,6 +49,8 @@ export interface PrepareRepoArgs {
   setupCommand: string[] | null
   checkTimeoutMs: number
   publish: boolean
+  /** Fixed at trigger; applied to every iteration and the squash commit. */
+  commit: CommitSettings
   signal?: AbortSignal
 }
 
@@ -104,5 +107,6 @@ export async function prepareRepoTarget(
     deliveryDir: join(args.root, 'delivery'),
     candidatesDir: join(args.root, 'candidates'),
     publish: args.publish,
+    commit: args.commit,
   }
 }
