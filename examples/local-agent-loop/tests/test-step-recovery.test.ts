@@ -221,6 +221,19 @@ describe('verification logs', () => {
     assert.equal(a.snapshots.at(-1)?.verificationLog?.exitCode, null)
   })
 
+  it('records no log for an attempt cancelled before the check started', async () => {
+    const { specFor, logDirFor } = await repoWithCheck(`process.exitCode = 0`)
+    const a = attempt()
+    const controller = new AbortController()
+    controller.abort()
+    await assert.rejects(
+      runVerificationStep(a as never, specFor(a.id), controller.signal),
+      /before spawn/,
+    )
+    assert.equal(a.snapshots.at(-1)?.verificationLog, null)
+    assert.equal(existsSync(join(logDirFor(a.id), 'stdout.log')), false)
+  })
+
   it('re-grades a start-only checkpoint into a new log, keeping the old one', async () => {
     // The check hangs until a gate file beside the repository exists.
     const { root, specFor, logDirFor } = await repoWithCheck(`
@@ -253,6 +266,7 @@ describe('verification logs', () => {
     assert.equal(lostMeasurement?.interruptionReason, 'cancelled-or-lease-lost')
     assert.equal(lostMeasurement?.verificationLog?.stdoutPath, lostLog)
     assert.equal(lostMeasurement?.verificationLog?.exitCode, null)
+    assert.equal(lostMeasurement?.verificationLog?.interrupted, true)
     await writeFile(join(root, 'gate'), '')
     const retry = attempt()
     const graded = await runVerificationStep(

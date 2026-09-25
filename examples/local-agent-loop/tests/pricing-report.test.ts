@@ -203,6 +203,40 @@ describe('pricing/report', () => {
     )
   })
 
+  it('labels interrupted verification attempts and log write errors', () => {
+    const known = baseReport().attempts[0]!
+    const verify = (id: string, log: object) => ({
+      ...known,
+      attemptId: id,
+      stepName: 'stage:1:verify:acceptance',
+      measurement: { ...known.measurement!, verificationLog: log as never },
+    })
+    const md = reportToMarkdown({
+      ...baseReport(),
+      attempts: [
+        verify('lost0000', {
+          stdoutPath: '/l/1/stdout.log',
+          stderrPath: '/l/1/stderr.log',
+          exitCode: null,
+          interrupted: true,
+        }),
+        verify('graded00', {
+          stdoutPath: '/l/2/stdout.log',
+          stderrPath: '/l/2/stderr.log',
+          exitCode: 1,
+          writeError: 'ENOSPC',
+        }),
+      ],
+    })
+    assert.ok(
+      md.includes(
+        '(lost0000): exit code null, interrupted, not part of the verdict',
+      ),
+    )
+    assert.ok(md.includes('(graded00): exit code 1\n'))
+    assert.ok(md.includes('  - log write error: ENOSPC'))
+  })
+
   it('adds per-invocation costs across different models', () => {
     const known = baseReport().attempts[0]!
     const invocation = (id: string, cost: number, model: string) => ({

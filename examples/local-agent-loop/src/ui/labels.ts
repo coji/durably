@@ -3,7 +3,11 @@
  * shared by the server's screen-reader sentences and the page. Unknown
  * identifiers pass through unchanged.
  */
-import { DETAIL_PREFIX, PATH_DETAILS } from '../engine/failure-details.js'
+import {
+  DETAIL_PREFIX,
+  INTERRUPTED_CHECK,
+  PATH_DETAILS,
+} from '../engine/failure-details.js'
 import type { FailureKind } from '../engine/failure-reasons.js'
 import type { Diagnosis, DiagnosisKind } from '../engine/status.js'
 
@@ -220,19 +224,46 @@ export function humanCheckText(kind: FailureKind): string {
 const DETAIL_LABEL: Record<keyof typeof DETAIL_PREFIX, string> = {
   checkpoint: '完了の記録がないチェックポイント',
   error: 'エラー',
+  checkAttempt: '検証の試行',
   checkExitCode: '検証の終了コード',
   checkStdout: '検証の標準出力',
   checkStderr: '検証の標準エラー',
+  checkLogWriteError: 'ログの書き込みエラー',
 }
 
-/** A failure detail line as a label and its value, to show as data. */
-export function detailField(line: string): { label: string; value: string } {
-  for (const [key, prefix] of Object.entries(DETAIL_PREFIX))
-    if (line.startsWith(prefix))
-      return {
-        label: DETAIL_LABEL[key as keyof typeof DETAIL_PREFIX],
-        value: line.slice(prefix.length),
-      }
+/** Shown for an exit code the check never returned. */
+export const NO_EXIT_CODE = '終了コードを得る前に打ち切られました'
+
+/** Shown for a cancelled or lease-lost grading attempt. */
+export const INTERRUPTED_CHECK_TEXT = '中断されたため、判定には含まれません'
+
+/** Shown beside a log write error, which is kept as data. */
+export const LOG_WRITE_ERROR_NOTE =
+  'ログファイルへの書き込みに失敗したため、ファイルの中身が欠けているかもしれません。'
+
+/**
+ * A failure detail line as a label and its value, to show as data. `title`
+ * explains a value that needs it on hover; `note` is a sentence to show
+ * above the value.
+ */
+export function detailField(line: string): {
+  label: string
+  value: string
+  title?: string
+  note?: string
+} {
+  for (const [key, prefix] of Object.entries(DETAIL_PREFIX)) {
+    if (!line.startsWith(prefix)) continue
+    const label = DETAIL_LABEL[key as keyof typeof DETAIL_PREFIX]
+    const value = line.slice(prefix.length)
+    if (key === 'checkAttempt' && value === INTERRUPTED_CHECK)
+      return { label, value: INTERRUPTED_CHECK_TEXT }
+    if (key === 'checkExitCode' && value === 'null')
+      return { label, value, title: NO_EXIT_CODE }
+    if (key === 'checkLogWriteError')
+      return { label, value, note: LOG_WRITE_ERROR_NOTE }
+    return { label, value }
+  }
   return { label: '記録', value: line }
 }
 

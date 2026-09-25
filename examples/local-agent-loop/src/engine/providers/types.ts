@@ -118,6 +118,8 @@ export interface VerificationLog {
   exitCode: number | null
   /** Why the log files may be incomplete; absent when they were written. */
   writeError?: string
+  /** Cancelled or lease lost mid-check: a partial log, not part of a verdict. */
+  interrupted?: true
 }
 
 /** Persisted per-attempt measurement. Missing values stay null (never 0-filled). */

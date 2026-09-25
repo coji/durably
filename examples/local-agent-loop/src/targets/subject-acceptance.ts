@@ -29,6 +29,7 @@ import type { VerificationLog } from '../engine/providers/types.js'
 import { hashDir, readTree } from '../engine/tree.js'
 import {
   checkLog,
+  logAfterError,
   prepareCheckLogs,
   withPartialLog,
 } from '../engine/verification.js'
@@ -173,7 +174,7 @@ export async function runAcceptanceSuite(
     }
   } catch (err) {
     if (err instanceof Error && err.name === 'SpawnCancelledError')
-      throw withPartialLog(err, checkLog(logs, null))
+      throw withPartialLog(err, logAfterError(logs, err))
     if (err instanceof Error && err.message.includes('timed out')) {
       return {
         passed: false,
@@ -184,7 +185,7 @@ export async function runAcceptanceSuite(
         exitCode: null,
         elapsedMs: Date.now() - started,
         // What the suite printed before the kill is still in the log.
-        log: checkLog(logs, null),
+        log: logAfterError(logs, err),
       }
     }
     throw err

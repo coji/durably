@@ -20,6 +20,7 @@ import { join } from 'node:path'
  */
 import type { StepAttemptContext } from '@coji/durably'
 
+import { childLogError, SpawnCancelledError } from './child.js'
 import type { ProviderName, VerificationLog } from './providers/types.js'
 import { UncertainInvocationError, writeMeasurement } from './runner.js'
 
@@ -78,6 +79,22 @@ export function checkLog(
         ...(writeError ? { writeError } : {}),
       }
     : null
+}
+
+/**
+ * The log a grade left when `error` ended it with no result: a timeout keeps
+ * a plain log, a cancel marks it interrupted. Null when the child was never
+ * spawned, so no file exists to point at.
+ */
+export function logAfterError(
+  files: { stdoutFile: string; stderrFile: string } | null,
+  error: unknown,
+): VerificationLog | null {
+  if (error instanceof SpawnCancelledError && !error.spawned) return null
+  const log = checkLog(files, null, childLogError(error))
+  return log && error instanceof SpawnCancelledError
+    ? { ...log, interrupted: true }
+    : log
 }
 
 /**

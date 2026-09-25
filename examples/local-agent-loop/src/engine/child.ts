@@ -40,10 +40,21 @@ export interface SpawnResult {
 }
 
 export class SpawnCancelledError extends Error {
-  constructor(message: string) {
+  /** False when the signal was already aborted: no child, no log files. */
+  readonly spawned: boolean
+  constructor(message: string, spawned = true) {
     super(message)
     this.name = 'SpawnCancelledError'
+    this.spawned = spawned
   }
+}
+
+/**
+ * The log write error carried by a timeout or cancel rejection from
+ * `runChild`, so the incomplete log is still flagged when there is no result.
+ */
+export function childLogError(error: unknown): string | null {
+  return (error as { logError?: string | null } | null)?.logError ?? null
 }
 
 export interface RunChildOptions extends SpawnOptions {
@@ -116,7 +127,8 @@ export async function runChild(
     env: explicitEnv,
     ...spawnOptions
   } = options
-  if (signal?.aborted) throw new SpawnCancelledError('aborted before spawn')
+  if (signal?.aborted)
+    throw new SpawnCancelledError('aborted before spawn', false)
   const started = Date.now()
   const childEnv: NodeJS.ProcessEnv = { ...process.env, ...explicitEnv }
   for (const key of Object.keys(childEnv)) {
@@ -203,7 +215,12 @@ export async function runChild(
         stdout = appendTail(stdout, outDecoder.end(), maxOutputChars)
         stderr = appendTail(stderr, errDecoder.end(), maxOutputChars)
         void closeLogs().then((logError) => {
-          if (terminationError) return reject(terminationError)
+          if (terminationError)
+            return reject(
+              Object.assign(terminationError, {
+                logError: logError?.message ?? null,
+              }),
+            )
           resolve({
             code,
             stdout,

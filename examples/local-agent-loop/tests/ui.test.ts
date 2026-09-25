@@ -41,6 +41,9 @@ import {
   noteSaidByReason,
   commandText,
   detailField,
+  INTERRUPTED_CHECK_TEXT,
+  LOG_WRITE_ERROR_NOTE,
+  NO_EXIT_CODE,
   diagnosisText,
   humanCheckText,
   isPathDetail,
@@ -1057,10 +1060,29 @@ describe('diagnosis wording on the page', () => {
       label: '検証の標準エラー',
       value: '/runs/r1/stderr.log',
     })
+    // No exit code gets the same hover text as the trace's log slot.
     assert.deepEqual(detailField('check exit code: null'), {
       label: '検証の終了コード',
       value: 'null',
+      title: NO_EXIT_CODE,
     })
+    assert.deepEqual(detailField('check exit code: 1'), {
+      label: '検証の終了コード',
+      value: '1',
+    })
+    // An interrupted attempt says in Japanese that it is not in the verdict.
+    assert.deepEqual(
+      detailField('check attempt: interrupted, not part of the verdict'),
+      { label: '検証の試行', value: INTERRUPTED_CHECK_TEXT },
+    )
+    // A log write error warns that the file may be incomplete and keeps the
+    // error itself as data.
+    assert.deepEqual(detailField('check log write error: ENOSPC: disk full'), {
+      label: 'ログの書き込みエラー',
+      value: 'ENOSPC: disk full',
+      note: LOG_WRITE_ERROR_NOTE,
+    })
+    assert.match(LOG_WRITE_ERROR_NOTE, /欠けているかもしれません/)
     assert.equal(isPathDetail('check stdout log: /runs/r1/stdout.log'), true)
     assert.equal(isPathDetail('check stderr log: /runs/r1/stderr.log'), true)
     assert.equal(isPathDetail('check exit code: 1'), false)

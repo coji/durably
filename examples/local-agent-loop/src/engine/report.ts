@@ -13,6 +13,7 @@
  */
 import type { StepAttempt } from '@coji/durably'
 
+import { INTERRUPTED_CHECK } from './failure-details.js'
 import { retryText, type FailureClassification } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import type { AttemptMeasurement } from './providers/types.js'
@@ -769,7 +770,7 @@ export function reportToMarkdown(r: LoopReport): string {
   if (graded.length > 0) {
     for (const { a, log } of graded) {
       lines.push(
-        `- ${a.stepName} (${a.attemptId.slice(0, 8)}): exit code ${log.exitCode ?? 'null'}${a.measurement?.result === 'checkpoint-recovered' ? ', recovered from checkpoint' : ''}`,
+        `- ${a.stepName} (${a.attemptId.slice(0, 8)}): exit code ${log.exitCode ?? 'null'}${log.interrupted ? `, ${INTERRUPTED_CHECK}` : ''}${a.measurement?.result === 'checkpoint-recovered' ? ', recovered from checkpoint' : ''}`,
       )
       lines.push(`  - stdout: ${log.stdoutPath}`)
       lines.push(`  - stderr: ${log.stderrPath}`)

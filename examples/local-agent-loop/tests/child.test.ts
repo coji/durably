@@ -7,6 +7,7 @@ import { Readable, Writable } from 'node:stream'
 import { describe, it } from 'node:test'
 
 import {
+  childLogError,
   ownedChildPids,
   runChild,
   SpawnCancelledError,
@@ -67,7 +68,8 @@ describe('cancel-aware subprocess', () => {
         timeoutMs: 10000,
         signal: controller.signal,
       }),
-      SpawnCancelledError,
+      (error: unknown) =>
+        error instanceof SpawnCancelledError && !error.spawned,
     )
     assert.equal(ownedChildPids().length, 0)
   })
@@ -198,5 +200,18 @@ describe('full-output log files', () => {
     assert.equal(res.code, 3)
     assert.equal(res.stdout, 'out\n')
     assert.match(res.logError ?? '', /ENOENT/)
+  })
+
+  it('keeps the log write error when the child also times out', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'child-log-'))
+    await assert.rejects(
+      runChild('sh', ['-c', 'echo out; sleep 5'], {
+        timeoutMs: 300,
+        stdoutFile: join(dir, 'missing', 'stdout.log'),
+      }),
+      (error: unknown) =>
+        /timed out/.test((error as Error).message) &&
+        /ENOENT/.test(childLogError(error) ?? ''),
+    )
   })
 })

@@ -11,7 +11,7 @@ import { existsSync } from 'node:fs'
 
 import type { AnyDurably, Run, StepAttempt } from '@coji/durably'
 
-import { DETAIL_PREFIX } from './failure-details.js'
+import { DETAIL_PREFIX, INTERRUPTED_CHECK } from './failure-details.js'
 import type { AttemptMeasurement, VerificationLog } from './providers/types.js'
 import { checkpointPaths, UNCERTAIN_INVOCATION_MESSAGE } from './runner.js'
 
@@ -224,9 +224,15 @@ export function classifyFailure(
       kind = 'verification-failed'
       for (const log of input.verificationLogs ?? [])
         details.push(
+          ...(log.interrupted
+            ? [`${DETAIL_PREFIX.checkAttempt}${INTERRUPTED_CHECK}`]
+            : []),
           `${DETAIL_PREFIX.checkExitCode}${log.exitCode ?? 'null'}`,
           `${DETAIL_PREFIX.checkStdout}${log.stdoutPath}`,
           `${DETAIL_PREFIX.checkStderr}${log.stderrPath}`,
+          ...(log.writeError
+            ? [`${DETAIL_PREFIX.checkLogWriteError}${log.writeError}`]
+            : []),
         )
     } else if (conclusion === 'review-cap-reached') kind = 'review-cap-reached'
     else return null

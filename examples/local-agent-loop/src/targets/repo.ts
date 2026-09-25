@@ -31,6 +31,7 @@ import {
 import type { CandidateChanges, CandidateRef } from '../engine/types.js'
 import {
   checkLog,
+  logAfterError,
   prepareCheckLogs,
   withPartialLog,
   type GradeResult,
@@ -211,7 +212,7 @@ export class RepoTarget implements Target {
       }
     } catch (err) {
       if (err instanceof Error && err.name === 'SpawnCancelledError')
-        throw withPartialLog(err, checkLog(logs, null))
+        throw withPartialLog(err, logAfterError(logs, err))
       if (err instanceof Error && err.message.includes('timed out')) {
         return {
           passed: false,
@@ -219,7 +220,7 @@ export class RepoTarget implements Target {
           exitCode: null,
           elapsedMs: Date.now() - started,
           // What the check printed before the kill is still in the log.
-          log: checkLog(logs, null),
+          log: logAfterError(logs, err),
         }
       }
       throw err

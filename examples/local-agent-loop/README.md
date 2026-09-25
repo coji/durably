@@ -454,6 +454,11 @@ DBと全runのデータは `~/.local/state/local-agent-loop/` に置きます。
   残します。完了checkpointから復旧した試行は採点をやり直さず、元の試行のログと
   終了コードを指します。開始checkpointだけが残った試行は採点し直し、新しい試行の
   ログを別のディレクトリに書きます。止まった試行のログも消しません。
+  キャンセルやリースの喪失で中断した試行も、終了コードを `null` として途中までの
+  ログを記録し、`interrupted: true` を付けます。この試行は判定を出していないので、
+  検証の結果には数えません。子プロセスを起動する前に中断した試行はログを記録しません。
+  ログファイルへの書き込みに失敗しても検証の結果は変えず、エラーを
+  `writeError` に残します。そのログファイルは中身が欠けているかもしれません。
 - **候補の差分**: repo runでは候補を封印するたびに、記録済みのbase commitと候補
   commitの差分を `candidates/<candidate>/` に書き出します。worktreeの外なので、
   agentが書き換えることはできません。検証で止まってレビューに進まなかった候補にも
@@ -613,9 +618,14 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
   途中で止まった回には、終わったレビュアーの分だけが入ります。`reviews` は従来どおり
   最後の回です
 - **Verification logs**: 検証の試行ごとの終了コードと、`stdout.log` / `stderr.log` の
-  パス。JSONでは `attempts[].measurement.verificationLog` です。検証失敗で止まった
-  runでは、最後の検証の全試行の終了コードとログのパスを `failure.details` にも
-  載せます（`check exit code: `、`check stdout log: `、`check stderr log: `）
+  パス。JSONでは `attempts[].measurement.verificationLog` で、`exitCode`、
+  `stdoutPath`、`stderrPath` に加え、中断した試行には `interrupted: true`、
+  書き込みに失敗したログには `writeError` が入ります。Markdownでは中断した試行の
+  行に `interrupted, not part of the verdict` を付け、書き込みエラーを
+  `log write error:` の行に出します。検証失敗で止まったrunでは、最後の検証の
+  全試行の終了コードとログのパスを `failure.details` にも載せます
+  （`check attempt: `、`check exit code: `、`check stdout log: `、
+  `check stderr log: `、`check log write error: `）
 - **Triage**: 事前判定（`routine` / `probe` / `unknown`）とその理由。判定の無い
   runは `none`
 - **Stage usage**: 工程ごとの visits / reworked（同じ工程への再突入＝手戻り）、

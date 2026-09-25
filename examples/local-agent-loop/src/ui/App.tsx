@@ -32,8 +32,11 @@ import {
   detailField,
   diagnosisText,
   humanCheckText,
+  INTERRUPTED_CHECK_TEXT,
   isPathDetail,
   lensName,
+  LOG_WRITE_ERROR_NOTE,
+  NO_EXIT_CODE,
   reviewDecision,
   roleName,
   stageName,
@@ -1410,8 +1413,16 @@ function ReviewBlock({ node: n }: { node: TraceNode }) {
   return null
 }
 
-/** Shown for an exit code the check never returned. */
-const NO_EXIT_CODE = '終了コードを得る前に打ち切られました'
+/** A log write error: a sentence saying the file may be incomplete, then
+ * the error itself as data. */
+function LogWriteError({ error }: { error: string }) {
+  return (
+    <span className="flex flex-col gap-1">
+      <span className="font-ui text-sm">{LOG_WRITE_ERROR_NOTE}</span>
+      <span className="font-code text-xs break-all">{error}</span>
+    </span>
+  )
+}
 
 /**
  * The row's log: a verification row's full check output as file paths, or
@@ -1428,6 +1439,11 @@ function LogSlot({ log }: { log: VerificationLog | null }) {
       {log ? (
         <>
           <dl className="divide-line flex flex-col divide-y">
+            {log.interrupted ? (
+              <InspectorField label="試行">
+                {INTERRUPTED_CHECK_TEXT}
+              </InspectorField>
+            ) : null}
             <InspectorField label="終了コード">
               <span
                 className="font-code"
@@ -1452,6 +1468,11 @@ function LogSlot({ log }: { log: VerificationLog | null }) {
                 onCopy={onCopy}
               />
             </InspectorField>
+            {log.writeError ? (
+              <InspectorField label="書き込みエラー">
+                <LogWriteError error={log.writeError} />
+              </InspectorField>
+            ) : null}
           </dl>
           <CopyAnnouncer copied={copied} />
         </>
@@ -1905,8 +1926,19 @@ function StatusPanel({ data }: { data: RunDetailResponse }) {
                       copied={copied}
                       onCopy={(t, l) => void copy(t, l)}
                     />
+                  ) : d.note ? (
+                    <LogWriteError error={d.value} />
                   ) : (
-                    d.value
+                    <span
+                      title={d.title}
+                      className={
+                        d.value === INTERRUPTED_CHECK_TEXT
+                          ? 'font-ui'
+                          : undefined
+                      }
+                    >
+                      {d.value}
+                    </span>
                   )}
                 </Field>
               )
