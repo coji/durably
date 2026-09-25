@@ -410,7 +410,7 @@ export function claudeRejection(error: unknown): string | null {
 export function isAgentActivity(message: SDKMessage): boolean {
   if (message.type !== 'assistant') return false
   if (message.error === undefined) return true
-  const body = message.message as {
+  const body = message.message as unknown as {
     model?: string
     usage?: Record<string, unknown> | null
   }
