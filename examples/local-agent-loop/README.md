@@ -177,10 +177,14 @@ pnpm --filter example-local-agent-loop demo status
 - `baseline-check-failed` と `preflight-failed` には、`demo retrigger --run <id>
 --reload-config` も表示します。`factory.json` を直してから打つコマンドです。
   保存したtask、spec、dispositions、issue、対象リポジトリはそのままで、
-  `factory.json` だけを読み直します。読み直すのはtrigger時に読んだファイルで、
-  そのときファイルが無ければリポジトリ直下の `factory.json` です。profile、`check`、
-  `setup`、`base`、`codexPath`、timeout、`baselineCheck` は `trigger` と同じ規則で
-  解決・検証し、trigger時の `--check` などのフラグは引き続き設定より優先します。
+  `factory.json` だけを読み直します。読み直すのはtrigger時に `--config` で
+  渡したファイルで、渡していなければリポジトリ直下の `factory.json` です。
+  直下の `factory.json` を消した場合は、設定なしのtriggerと同じに扱います。
+  profile、`check`、`setup`、`base`、`codexPath`、timeout、`baselineCheck` は
+  `trigger` と同じ規則で解決・検証し、trigger時の `--check`、`--setup`、`--base`
+  は引き続き設定より優先します。そのrunでは、次の手順の注記にもそう表示します。
+  これらを変えるときは `trigger` からやり直します。同梱の題材のrunは
+  `factory.json` を読まないので、`--reload-config` は表示しません。
   timeoutを設定に書いていなければ、`retrigger` を打ったプロセスの環境変数、
   それも無ければ既定値を使います。ファイルの中身が同じ間は、何度打っても最初に
   始めたrunを返します。書き換えれば、その版で1回だけ新しいrunを始めます。
@@ -407,10 +411,11 @@ PRに進むのが安全です。
 - setupや採点がworktreeのtracked fileを書き換えた場合は、最初のcandidateに
   混ざるので `baseline-check-failed` で止め、エラーにその旨を出します。採点
   コマンドが起動できない場合（コマンドが見つからないなど）も同じ分類で止めます。
-- 採点が通ったら、採点が残した未追跡のファイルのうち `.gitignore` の対象外の
-  ものを消します（`git clean -fd`）。カバレッジやテスト結果のファイルが最初の
-  candidateに入らないようにするためです。ignore対象のファイル（`node_modules`
-  など）は残します。
+- 採点が通ったら、採点が新しく残した未追跡のファイルのうち `.gitignore` の
+  対象外のものを消します。採点の直前に未追跡のファイルを一覧にしておき、
+  採点のあとに増えたものだけを消します。カバレッジやテスト結果のファイルが
+  最初のcandidateに入らないようにするためです。setupが作ったファイルと、
+  ignore対象のファイル（`node_modules` など）は残します。
 
 ### 設定の事前確認（preflight）
 
@@ -422,7 +427,9 @@ baselineの後、triageを含む最初のエージェント呼び出しの前に
   使えるmodelと、そのmodelが受け付けるeffortを確かめます。一覧にあるmodelが
   そのeffortを受け付けなければ、promptを送らずに止めます。app serverが起動
   しない（CLIが見つからない、`app-server` に対応しない古い版、初期化の失敗）
-  場合も、promptを送らずに止めます。一覧は隠しmodelを含まないので、一覧に無い
+  場合も、promptを送らずに止めます。初期化が時間切れになっただけの場合は起動が
+  遅いだけかもしれないので、止めずに最小の呼び出しで確かめます。一覧は1ページ目だけを
+  読みます。一覧は隠しmodelを含まないので、一覧に無い
   modelは使えないとは決めず、一覧が読めないときと同じく最小の呼び出しで確かめます。
   一覧は同じCLIファイルにつき1回だけ読みます。
 - Claude Codeにはpromptを送らずに確かめる手段が無いので、組み合わせごとに

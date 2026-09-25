@@ -226,6 +226,12 @@ describe('preflight verdicts', () => {
       assert.equal(codexStartFailure(new Error(start)), start, start)
     }
     assert.equal(codexStartFailure(new Error('socket hang up')), null)
+    // A handshake that only timed out may be a slow start, not a bad setting.
+    const slow = new Error(
+      "Failed to initialize codex app-server: Request timed out for method 'initialize'",
+    )
+    assert.equal(codexStartFailure(slow), null)
+    assert.equal(codexRejection(slow), null)
     for (const status of [408, 429, 500])
       assert.equal(
         codexRejection(new Error(JSON.stringify({ status, error: {} }))),

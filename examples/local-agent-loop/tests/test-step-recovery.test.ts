@@ -407,7 +407,7 @@ describe('baseline check on the base commit', () => {
     )
   })
 
-  it('removes what a passing check leaves untracked, and keeps ignored files', async () => {
+  it('removes what a passing check leaves untracked, and keeps ignored files and setup output', async () => {
     const { repo, specFor } = await baseRepo(`
       const { mkdirSync, writeFileSync } = require('node:fs')
       mkdirSync('coverage', { recursive: true })
@@ -416,6 +416,9 @@ describe('baseline check on the base commit', () => {
       writeFileSync('cache.log', 'x')
     `)
     await writeFile(join(repo, '.git', 'info', 'exclude'), '*.log\n')
+    // Written by setup, before the check: the candidates' checks need it.
+    await mkdir(join(repo, 'generated'))
+    await writeFile(join(repo, 'generated', 'schema.ts'), 'x')
     const a = attempt()
     const graded = await runVerificationStep(
       a as never,
@@ -424,9 +427,10 @@ describe('baseline check on the base commit', () => {
     )
     assert.equal(graded.passed, true)
     // Nothing the check wrote reaches `git add -A` at the first sealing.
-    assert.equal(existsSync(join(repo, 'coverage')), false)
+    assert.equal(existsSync(join(repo, 'coverage', 'lcov.info')), false)
     assert.equal(existsSync(join(repo, 'junit.xml')), false)
     assert.equal(existsSync(join(repo, 'cache.log')), true)
+    assert.equal(existsSync(join(repo, 'generated', 'schema.ts')), true)
   })
 
   it('stops as a baseline failure when the check changes tracked files or cannot start', async () => {

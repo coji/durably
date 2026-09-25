@@ -6,6 +6,9 @@
  * Nothing here interprets a repository's contents; it only creates isolated
  * worktrees, seals work as commits, and reads back what changed.
  */
+import { rm } from 'node:fs/promises'
+import { join } from 'node:path'
+
 import { runChild } from './child.js'
 
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -289,15 +292,33 @@ export async function discardWorktree(
   }
 }
 
-/**
- * Remove untracked files and directories that `.gitignore` does not cover.
- * Ignored files, such as installed dependencies, stay.
- */
-export async function cleanUntracked(
+/** Untracked files that `.gitignore` does not cover, relative to `cwd`. */
+export async function listUntracked(
   cwd: string,
   signal?: AbortSignal,
+): Promise<Set<string>> {
+  const out = await git(
+    cwd,
+    ['ls-files', '--others', '--exclude-standard', '-z'],
+    signal ? { signal } : {},
+  )
+  return new Set(out.split('\0').filter(Boolean))
+}
+
+/**
+ * Remove the untracked, non-ignored files that are not in `keep`, so only
+ * what appeared after the snapshot goes. Ignored files, such as installed
+ * dependencies, stay. Directories left empty stay too; git does not track
+ * them.
+ */
+export async function removeNewUntracked(
+  cwd: string,
+  keep: ReadonlySet<string>,
+  signal?: AbortSignal,
 ): Promise<void> {
-  await git(cwd, ['clean', '-fd'], signal ? { signal } : {})
+  for (const path of await listUntracked(cwd, signal)) {
+    if (!keep.has(path)) await rm(join(cwd, path), { force: true })
+  }
 }
 
 /** Read one file's contents at a commit without checking it out. */

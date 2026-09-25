@@ -22,9 +22,11 @@ import Database from 'better-sqlite3'
 import { createAgentDurably, dbPath } from '../src/durably.js'
 import type { ReportSource } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
-import type {
-  FailureClassification,
-  FailureKind,
+import {
+  classifyFailure,
+  reloadAdvice,
+  type FailureClassification,
+  type FailureKind,
 } from '../src/engine/failure-reasons.js'
 import {
   liveElapsed,
@@ -1041,7 +1043,7 @@ describe('diagnosis wording on the page', () => {
   // What the brief allows in a sentence: Japanese, an option to type, and a
   // file name.
   const plain = (text: string) =>
-    text.replace(/--max-iterations|factory\.json/g, '').match(/[A-Za-z()（）]/g)
+    text.replace(/--[a-z][a-z-]*|factory\.json/g, '').match(/[A-Za-z()（）]/g)
 
   it('says every state and stop in Japanese, without IDs or asides', () => {
     for (const kind of kinds)
@@ -1078,6 +1080,50 @@ describe('diagnosis wording on the page', () => {
     // A config fix is retried with the settings read again.
     for (const kind of ['baseline-check-failed', 'preflight-failed'] as const)
       assert.match(humanCheckText(kind), /設定を読み直す再実行/)
+  })
+
+  it('offers the config reload only where factory.json decides the setting', () => {
+    const stop = (reload: ReturnType<typeof reloadAdvice>) =>
+      classifyFailure({
+        runId: 'r1',
+        status: 'failed',
+        output: null,
+        error: 'preflight-failed: code is not usable',
+        uncertain: [],
+        reload,
+      })
+    // The bundled sample reads no factory.json: no reload, no config advice.
+    const bundled = { target: { kind: 'subject' } }
+    assert.equal(reloadAdvice(bundled), 'none')
+    const sample = stop('none')
+    assert.ok(!sample?.next.some((c) => c.includes('--reload-config')))
+    assert.ok(sample?.next.some((c) => c.includes('retrigger --run r1')))
+    assert.doesNotMatch(sample?.humanCheck ?? '', /factory\.json/)
+    const sampleText = humanCheckText('preflight-failed', sample?.next)
+    assert.doesNotMatch(sampleText, /factory\.json|設定を読み直す/)
+    assert.equal(plain(sampleText.replace(/trigger/g, '')), null, sampleText)
+
+    const repo = { target: { kind: 'repo' }, configSource: { flags: {} } }
+    assert.equal(reloadAdvice(repo), 'config')
+    const reloadLine = (r: FailureClassification | null) =>
+      r?.next.find((c) => c.includes('--reload-config')) ?? ''
+    assert.match(
+      commandNote(reloadLine(stop('config'))) ?? '',
+      /^factory\.json を直してから/,
+    )
+
+    // A check, setup or base given as a flag wins over factory.json.
+    for (const flag of ['check', 'setup', 'base']) {
+      const flagged = { ...repo, configSource: { flags: { [flag]: 'x' } } }
+      assert.equal(reloadAdvice(flagged), 'flags-win', flag)
+    }
+    assert.equal(
+      reloadAdvice({ ...repo, configSource: { flags: { provider: 'fake' } } }),
+      'config',
+    )
+    const flagged = reloadLine(stop('flags-win'))
+    assert.match(flagged, /--check, --setup or --base given at trigger/)
+    assert.match(commandNote(flagged) ?? '', /優先されるので/)
   })
 
   it('says which decision a decided run recorded', () => {

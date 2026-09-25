@@ -8,10 +8,12 @@ import { describe, it } from 'node:test'
 
 import {
   childLogError,
+  MAX_TIMEOUT_MS,
   ownedChildPids,
   runChild,
   SpawnCancelledError,
   teeLog,
+  timerDelay,
 } from '../src/engine/child.js'
 
 function isAlive(pid: number): boolean {
@@ -213,5 +215,18 @@ describe('full-output log files', () => {
         /timed out/.test((error as Error).message) &&
         /ENOENT/.test(childLogError(error) ?? ''),
     )
+  })
+
+  it('keeps a timeout past the timer limit from firing at once', async () => {
+    // The largest accepted check timeout plus the kill grace the check adds.
+    const timeoutMs = MAX_TIMEOUT_MS + 5000
+    assert.equal(timerDelay(timeoutMs), MAX_TIMEOUT_MS)
+    const res = await runChild('sh', ['-c', 'sleep 0.3; echo done'], {
+      timeoutMs,
+      maxOutputChars: 1000,
+    })
+    assert.equal(res.code, 0)
+    assert.equal(res.killed, false)
+    assert.equal(res.stdout, 'done\n')
   })
 })

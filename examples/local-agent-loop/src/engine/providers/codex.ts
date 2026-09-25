@@ -153,9 +153,19 @@ const CODEX_START_FAILURES = [
   'codex app-server version ',
 ] as const
 
-/** The start failure `error` reports, as one line; null for anything else. */
+/**
+ * An `initialize` handshake that timed out: the app server may only be slow
+ * to come up, so it says nothing about the settings.
+ */
+const CODEX_START_TIMEOUT = "Request timed out for method 'initialize'"
+
+/**
+ * The start failure `error` reports, as one line; null for anything else,
+ * including a handshake that only timed out.
+ */
 export function codexStartFailure(error: unknown): string | null {
   const message = error instanceof Error ? error.message : String(error)
+  if (message.includes(CODEX_START_TIMEOUT)) return null
   return CODEX_START_FAILURES.some((prefix) => message.startsWith(prefix))
     ? message.slice(0, 500)
     : null
@@ -243,8 +253,10 @@ export function judgeCodexModelList(
 }
 
 /**
- * Every page of one CLI's model list, read once per CLI file however many
- * roles are checked against it. A failed read is not kept, so a later
+ * The first page of one CLI's model list, read once per CLI file however
+ * many roles are checked against it. The provider's `listModels` takes no
+ * cursor, so a model on a later page reads as missing, which is `unknown`
+ * and left to the minimal call. A failed read is not kept, so a later
  * preflight asks again.
  */
 const modelCatalogs = new Map<string, Promise<ListedModel[]>>()

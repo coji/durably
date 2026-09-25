@@ -1016,6 +1016,56 @@ describe('retrigger --reload-config', { timeout: 240000 }, () => {
     assert.notEqual(invalid.code, 0)
     assert.match(invalid.stderr, /invalid factory config[\s\S]*agentTimeoutMs/)
   })
+
+  it('says a check flag wins over factory.json, and reads a removed default factory.json as none', async () => {
+    const box = await sandbox()
+    const config = join(box.repo, 'factory.json')
+    await writeFile(
+      config,
+      JSON.stringify({
+        profiles: { code: { provider: 'fake', model: 'unlisted-model' } },
+      }),
+    )
+    const flagCheck = ['node', '--test', 'test/calc.test.js']
+    const stopped = await trigger(box, [
+      '--repo',
+      box.repo,
+      '--task',
+      'the stored task',
+      '--check',
+      flagCheck.join(' '),
+    ])
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    await durably.init()
+    try {
+      await until(
+        async () => (await durably.getRun(stopped))?.status === 'failed',
+        'preflight stops the run',
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+    assert.match(
+      (await demo(box, ['status'])).stdout,
+      /--reload-config {2}# after fixing factory\.json; the --check, --setup or --base given at trigger still wins over it/,
+    )
+
+    // The run read the default factory.json, which is now gone: the reload
+    // carries on without a config, as a trigger would.
+    await rm(config)
+    const created = await demo(box, [
+      'retrigger',
+      '--run',
+      stopped,
+      '--reload-config',
+    ])
+    assert.equal(created.code, 0, created.stderr)
+    const nextId = /^new run (\S+)/.exec(created.stdout)?.[1] ?? ''
+    const next = await inputOf(box, nextId)
+    assert.deepEqual(next.target.checkCommand, flagCheck)
+    assert.notEqual(next.profiles['code']?.requestedModel, 'unlisted-model')
+  })
 })
 
 describe('one worker per state root', { timeout: 240000 }, () => {

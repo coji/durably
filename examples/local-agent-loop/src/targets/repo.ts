@@ -19,7 +19,8 @@ import { dirname, join } from 'node:path'
 import { runChild } from '../engine/child.js'
 import { BASELINE_FAILED_MESSAGE } from '../engine/failure-reasons.js'
 import {
-  cleanUntracked,
+  listUntracked,
+  removeNewUntracked,
   commitAll,
   defaultBranch,
   describeCommitChanges,
@@ -197,8 +198,9 @@ export class RepoTarget implements Target {
    *
    * Every way the base cannot be graded stops the run as a baseline failure:
    * setup or the check leaving tracked changes, and a check that cannot
-   * start. A passing check's untracked output is removed, so none of it is
-   * sealed into the first candidate.
+   * start. After a passing check, the untracked files it added are removed,
+   * so none of its output is sealed into the first candidate; untracked
+   * files setup wrote stay.
    */
   async gradeBase(args: {
     logDir: string
@@ -208,6 +210,8 @@ export class RepoTarget implements Target {
     await this.assertAtBase(
       `setup left uncommitted changes to tracked files in ${workdir} before the check`,
     )
+    // Setup's untracked output stays; only what the check adds is removed.
+    const beforeCheck = await listUntracked(workdir, args.signal)
     let result: GradeResult
     try {
       result = await this.runCheck(args.logDir, args.signal)
@@ -225,7 +229,8 @@ export class RepoTarget implements Target {
     await this.assertAtBase(
       `the check changed tracked files in ${workdir}; it must leave the base commit as it found it`,
     )
-    if (result.passed) await cleanUntracked(workdir, args.signal)
+    if (result.passed)
+      await removeNewUntracked(workdir, beforeCheck, args.signal)
     return result
   }
 

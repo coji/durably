@@ -5,6 +5,7 @@ import { join } from 'node:path'
 
 import type { JsonValue, StepAttemptContext } from '@coji/durably'
 
+import { timerDelay } from './child.js'
 import { estimateCostBreakdown } from './pricing.js'
 import type {
   AgentProvider,
@@ -331,7 +332,7 @@ export async function runAgentCall(
   const timeout = new AbortController()
   const timer = setTimeout(
     () => timeout.abort(new Error('agent call timeout')),
-    spec.timeoutMs,
+    timerDelay(spec.timeoutMs),
   )
   const linked = AbortSignal.any([signal, timeout.signal])
   try {

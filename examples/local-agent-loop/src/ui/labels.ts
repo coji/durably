@@ -203,6 +203,10 @@ const COMMAND_NOTES: [string, string][] = [
     'factory.json を直してから実行します。保存済みのタスクのまま設定を読み直し、ファイルの版ごとに1回だけ実行します。',
   ],
   [
+    'after fixing factory.json; the --check, --setup or --base given at trigger still wins over it, so to change those, trigger anew',
+    'factory.json を直してから実行します。trigger で指定した --check、--setup、--base は factory.json より優先されるので、それらを変えたいときは trigger からやり直します。',
+  ],
+  [
     'the check output is in the verification attempt',
     '検証コマンドの出力は、検証の試行に入っています。',
   ],
@@ -244,7 +248,21 @@ export function noteSaidByReason(note: string): boolean {
   return SAID_BY_REASON.some((en) => note.startsWith(en))
 }
 
-export function humanCheckText(kind: FailureKind): string {
+/** Preflight check text for a run with no factory.json to fix. */
+const PREFLIGHT_WITHOUT_CONFIG_TEXT =
+  'エラーに示した役割のプロバイダー、モデル、推論の強さを直し、trigger からやり直す。ログインの問題なら、ログインし直してから通常の再実行を使う。'
+
+/**
+ * What a person checks first. `next` is the failure's next commands: a
+ * preflight stop without the config-reload retry has no factory.json to fix.
+ */
+export function humanCheckText(kind: FailureKind, next?: string[]): string {
+  if (
+    kind === 'preflight-failed' &&
+    next &&
+    !next.some((command) => command.includes('--reload-config'))
+  )
+    return PREFLIGHT_WITHOUT_CONFIG_TEXT
   return FAILURE_TEXT[kind].check
 }
 

@@ -50,15 +50,51 @@ const retrigger = (runId: string) =>
  * stop that editing the config fixes. The plain retry keeps the stored
  * settings and suits a fix to the environment only.
  */
-const retriggerReloaded = (runId: string) =>
-  `${DEMO} retrigger --run ${runId} --reload-config  # after fixing factory.json; the stored task with the settings read again, once per version of the file`
+const retriggerReloaded = (runId: string, reload: ReloadAdvice): string[] =>
+  reload === 'none'
+    ? []
+    : reload === 'config'
+      ? [
+          `${DEMO} retrigger --run ${runId} --reload-config  # after fixing factory.json; the stored task with the settings read again, once per version of the file`,
+        ]
+      : [
+          `${DEMO} retrigger --run ${runId} --reload-config  # after fixing factory.json; the --check, --setup or --base given at trigger still wins over it, so to change those, trigger anew`,
+        ]
+
+/**
+ * Whether a config-fix retry applies to a run: `config` for a repository
+ * run, `flags-win` when its check, setup or base came from a trigger flag
+ * that a reload keeps, and `none` for the bundled sample, which reads no
+ * factory.json.
+ */
+export type ReloadAdvice = 'config' | 'flags-win' | 'none'
+
+/** The flags a reload keeps over the settings factory.json gives. */
+const PINNING_FLAGS = ['check', 'setup', 'base'] as const
+
+/** The `ReloadAdvice` for a stored run input. */
+export function reloadAdvice(input: unknown): ReloadAdvice {
+  const stored = input as {
+    target?: { kind?: unknown }
+    configSource?: { flags?: Record<string, unknown> }
+  } | null
+  if (stored?.target?.kind !== 'repo') return 'none'
+  const flags = stored.configSource?.flags ?? {}
+  return PINNING_FLAGS.some((flag) => typeof flags[flag] === 'string')
+    ? 'flags-win'
+    : 'config'
+}
+
+/** The preflight check for a run with no factory.json to fix. */
+const PREFLIGHT_WITHOUT_CONFIG =
+  'fix the provider, model or effort of the role named in the error below and trigger anew; a login problem is fixed in the provider CLI and retried with retrigger'
 
 interface FailureEntry {
   reason: string
   retryable: boolean
   /** What a person has to look at before doing anything else. */
   humanCheck: string
-  next: (runId: string) => string[]
+  next: (runId: string, reload: ReloadAdvice) => string[]
 }
 
 const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
@@ -68,9 +104,9 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
     retryable: true,
     humanCheck:
       'read the full check output in the log files named below, then fix the check command or the environment (setup, dependencies, base); retry with --reload-config after editing factory.json, without it after fixing only the environment',
-    next: (runId) => [
+    next: (runId, reload) => [
       `${DEMO} report --run ${runId}  # the baseline check output`,
-      retriggerReloaded(runId),
+      ...retriggerReloaded(runId, reload),
       retrigger(runId),
     ],
   },
@@ -80,9 +116,9 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
     retryable: true,
     humanCheck:
       'fix the profile of the role named in the error below, or codexPath, in factory.json and retry with --reload-config; a login problem is fixed in the provider CLI and retried without it',
-    next: (runId) => [
+    next: (runId, reload) => [
       `${DEMO} report --run ${runId}  # the preflight result for each role`,
-      retriggerReloaded(runId),
+      ...retriggerReloaded(runId, reload),
       retrigger(runId),
     ],
   },
@@ -290,6 +326,8 @@ export interface ClassifyInput {
   baselineLogs?: VerificationLog[]
   /** A repo run that pushes and opens a pull request once approved. */
   publish?: boolean
+  /** From `reloadAdvice`; a repository run with no flags when omitted. */
+  reload?: ReloadAdvice
 }
 
 /**
@@ -344,7 +382,16 @@ export function classifyFailure(
     return null
   }
   const entry = FAILURE_REASONS[kind]
-  return { kind, ...entry, next: entry.next(input.runId), details }
+  const reload = input.reload ?? 'config'
+  return {
+    kind,
+    ...entry,
+    ...(kind === 'preflight-failed' && reload === 'none'
+      ? { humanCheck: PREFLIGHT_WITHOUT_CONFIG }
+      : {}),
+    next: entry.next(input.runId, reload),
+    details,
+  }
 }
 
 /** One wording for the retry verdict, shared by `status` and `report`. */
@@ -394,5 +441,6 @@ export async function classifyRun(
     publish:
       (run.input as { target?: { publish?: unknown } } | null)?.target
         ?.publish === true,
+    reload: reloadAdvice(run.input),
   })
 }

@@ -861,7 +861,12 @@ describe('preflight before the first agent call', { timeout: 300000 }, () => {
       block(ids['unlisted'] ?? ''),
       /preflight-failed:[\s\S]*retry: +yes/,
     )
-    assert.match(block(ids['unlisted'] ?? ''), /fix the profile of the role/)
+    // A bundled-sample run has no factory.json to fix or reload.
+    assert.match(
+      block(ids['unlisted'] ?? ''),
+      /fix the provider, model or effort of the role/,
+    )
+    assert.doesNotMatch(block(ids['unlisted'] ?? ''), /--reload-config/)
     assert.match(
       block(ids['lost'] ?? ''),
       /uncertain-invocation:[\s\S]*retry: +NO/,

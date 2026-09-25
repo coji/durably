@@ -461,9 +461,10 @@ interface StoredInput {
  * A new run input for `retrigger --reload-config`: the stored run's task,
  * spec, dispositions, issue and repository, with everything the config
  * decides read again from the current config file and resolved and checked
- * as at trigger. The file is the one the run read, or `factory.json` at the
- * repository root when it read none. `configSha256` names the config
- * version, so each version starts at most one run.
+ * as at trigger. The file is the one the run read with `--config`;
+ * otherwise `factory.json` at the repository root, if there is one now.
+ * `configSha256` names the config version, so each version starts at most
+ * one run.
  */
 export async function reloadTriggerInput(stored: StoredInput): Promise<{
   input: ReturnType<typeof assembleInput> & { fakeScenario?: unknown }
@@ -490,9 +491,14 @@ export async function reloadTriggerInput(stored: StoredInput): Promise<{
       : {}),
   }
   const repoPath = stored.target.repoPath
-  const loaded = source.path
-    ? await loadConfig(repoPath, source.path)
-    : await loadConfig(await repoRoot(repoPath), undefined)
+  const root = await repoRoot(repoPath)
+  // The default factory.json is read as a trigger reads it, so one removed
+  // since means no config rather than a missing --config file.
+  const explicit =
+    source.path && source.path !== join(root, 'factory.json')
+      ? source.path
+      : undefined
+  const loaded = await loadConfig(root, explicit)
   const { settings, codexPath, configSource } = await repoSettings(a, loaded)
   const input = assembleInput(a, {
     target: {

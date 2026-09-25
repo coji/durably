@@ -1914,7 +1914,10 @@ function StatusPanel({ data }: { data: RunDetailResponse }) {
             </Field>
             <Field label="人が確認すること">
               <span className="font-ui">
-                {humanCheckText(data.diagnosis.failure.kind)}
+                {humanCheckText(
+                  data.diagnosis.failure.kind,
+                  data.diagnosis.failure.next,
+                )}
               </span>
             </Field>
             {detailRows(data.diagnosis.failure.details).map(({ line, key }) => {

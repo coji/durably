@@ -11,6 +11,7 @@ import {
 } from '@coji/durably'
 import { z } from 'zod'
 
+import { MAX_TIMEOUT_MS } from '../engine/child.js'
 import {
   BASELINE_FAILED_MESSAGE,
   PREFLIGHT_FAILED_MESSAGE,
@@ -99,12 +100,6 @@ const targetSchema = z
     }),
   ])
   .default({ kind: 'subject' })
-
-/**
- * The longest delay Node's timers keep: a larger one fires after about 1 ms,
- * which would abort a call right after its start checkpoint.
- */
-export const MAX_TIMEOUT_MS = 2_147_483_647
 
 /** Milliseconds, positive and exact: what a timeout may be. */
 export const timeoutMsSchema = z.number().int().positive().max(MAX_TIMEOUT_MS)
