@@ -45,6 +45,14 @@ export const DEMO = 'pnpm --filter example-local-agent-loop demo'
 const retrigger = (runId: string) =>
   `${DEMO} retrigger --run ${runId}  # once, with the same stored input; to change the task or --max-iterations, trigger anew`
 
+/**
+ * The same, with the settings read again from the run's factory.json: for a
+ * stop that editing the config fixes. The plain retry keeps the stored
+ * settings and suits a fix to the environment only.
+ */
+const retriggerReloaded = (runId: string) =>
+  `${DEMO} retrigger --run ${runId} --reload-config  # after fixing factory.json; the stored task with the settings read again, once per version of the file`
+
 interface FailureEntry {
   reason: string
   retryable: boolean
@@ -59,9 +67,10 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
       'the pinned check already fails on the base commit, before any agent call; a candidate could not be graded',
     retryable: true,
     humanCheck:
-      'read the full check output in the log files named below, then fix the check command or the environment (setup, dependencies, base)',
+      'read the full check output in the log files named below, then fix the check command or the environment (setup, dependencies, base); retry with --reload-config after editing factory.json, without it after fixing only the environment',
     next: (runId) => [
       `${DEMO} report --run ${runId}  # the baseline check output`,
+      retriggerReloaded(runId),
       retrigger(runId),
     ],
   },
@@ -70,9 +79,10 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
       "a role's provider, model or effort is not usable; the run stopped before any implementation call",
     retryable: true,
     humanCheck:
-      'fix the profile of the role named in the error below, or codexPath, in factory.json; a login problem is fixed in the provider CLI',
+      'fix the profile of the role named in the error below, or codexPath, in factory.json and retry with --reload-config; a login problem is fixed in the provider CLI and retried without it',
     next: (runId) => [
       `${DEMO} report --run ${runId}  # the preflight result for each role`,
+      retriggerReloaded(runId),
       retrigger(runId),
     ],
   },

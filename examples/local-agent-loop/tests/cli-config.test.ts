@@ -823,7 +823,8 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
   })
 
   it('refuses a timeout that is not a positive safe integer', async () => {
-    for (const bad of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 2]) {
+    // 2^31 ms and up overflow Node's timers and fire after about 1 ms.
+    for (const bad of [0, -1, 1.5, 2 ** 31, Number.MAX_SAFE_INTEGER + 2]) {
       for (const key of ['checkTimeoutMs', 'agentTimeoutMs']) {
         const box = await sandbox({ check: CHECK, [key]: bad })
         await rejected(
@@ -840,6 +841,7 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
       '1.5',
       'NaN',
       'Infinity',
+      '2147483648',
       '9007199254740993',
       '',
     ]) {
@@ -916,6 +918,103 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
         why,
       )
     }
+  })
+})
+
+describe('retrigger --reload-config', { timeout: 240000 }, () => {
+  it('reads factory.json again, keeps the stored task, and starts one run per config version', async () => {
+    const box = await sandbox({
+      check: CHECK,
+      profiles: { code: { provider: 'fake', model: 'unlisted-model' } },
+    })
+    const config = join(box.repo, 'factory.json')
+    const stopped = await trigger(box, [
+      '--repo',
+      box.repo,
+      '--task',
+      'the stored task',
+    ])
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    await durably.init()
+    try {
+      await until(
+        async () => (await durably.getRun(stopped))?.status === 'failed',
+        'preflight stops the run',
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+    const first = await inputOf(box, stopped)
+    assert.match(
+      (await demo(box, ['status'])).stdout,
+      new RegExp(`retrigger --run ${stopped} --reload-config`),
+    )
+
+    // The person fixes the profile and the check in factory.json.
+    const fixedCheck = ['node', '--test', 'test/calc.test.js']
+    await writeFile(
+      config,
+      JSON.stringify({
+        check: fixedCheck,
+        profiles: { code: { provider: 'fake', model: 'fixed-model' } },
+      }),
+    )
+    const reload = () =>
+      demo(box, ['retrigger', '--run', stopped, '--reload-config'])
+    const created = await reload()
+    assert.equal(created.code, 0, created.stderr)
+    const nextId = /^new run (\S+) with the input of /.exec(created.stdout)?.[1]
+    assert.ok(nextId, created.stdout)
+    const next = await inputOf(box, nextId)
+    assert.deepEqual(next.target.checkCommand, fixedCheck)
+    assert.equal(next.profiles['code']?.requestedModel, 'fixed-model')
+    // Not the config: the stored task, and the roles it leaves out.
+    assert.equal(next.target.task, 'the stored task')
+    assert.equal(next.target.task, first.target.task)
+    assert.deepEqual(
+      next.profiles['correctness'],
+      first.profiles['correctness'],
+    )
+
+    // The same config again: the run it already started, nothing new.
+    const again = await reload()
+    assert.equal(again.code, 0, again.stderr)
+    assert.match(
+      again.stdout,
+      new RegExp(`^already retriggered as ${nextId} with this version of `),
+    )
+
+    // Without the flag the stored settings stay, for an environment fix.
+    const plain = await demo(box, ['retrigger', '--run', stopped])
+    assert.equal(plain.code, 0, plain.stderr)
+    const plainId = /^new run (\S+)/.exec(plain.stdout)?.[1] ?? ''
+    const kept = await inputOf(box, plainId)
+    assert.deepEqual(kept.target.checkCommand, CHECK)
+    assert.equal(kept.profiles['code']?.requestedModel, 'unlisted-model')
+
+    // Another edit is another version: one more run, resolved and checked
+    // as at trigger.
+    await writeFile(
+      config,
+      JSON.stringify({
+        check: fixedCheck,
+        checkTimeoutMs: 45000,
+        profiles: { code: { provider: 'fake', model: 'fixed-model' } },
+      }),
+    )
+    const edited = await reload()
+    assert.equal(edited.code, 0, edited.stderr)
+    const editedId = /^new run (\S+)/.exec(edited.stdout)?.[1] ?? ''
+    assert.notEqual(editedId, nextId)
+    assert.equal((await inputOf(box, editedId)).checkTimeoutMs, 45000)
+    await writeFile(
+      config,
+      JSON.stringify({ check: CHECK, agentTimeoutMs: 2 ** 31 }),
+    )
+    const invalid = await reload()
+    assert.notEqual(invalid.code, 0)
+    assert.match(invalid.stderr, /invalid factory config[\s\S]*agentTimeoutMs/)
   })
 })
 

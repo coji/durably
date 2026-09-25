@@ -7,6 +7,11 @@ import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
 import {
+  createAPICallError,
+  createAuthenticationError,
+} from 'ai-sdk-provider-claude-code'
+
+import {
   claudeExecutable,
   claudeRejection,
 } from '../src/engine/providers/claude.js'
@@ -14,6 +19,7 @@ import {
   CodexProvider,
   codexExecutable,
   codexRejection,
+  codexStartFailure,
   judgeCodexModelList,
 } from '../src/engine/providers/codex.js'
 import { createProvider } from '../src/engine/providers/index.js'
@@ -93,16 +99,36 @@ describe('a pinned codexPath', { timeout: 120000 }, () => {
 
     const provider = createProvider('codex', { codexPath: stub.path })
     assert.equal(provider.cliPath, stub.path)
-    // The free check asks the pinned CLI's app server; this one cannot
-    // answer, so the check cannot tell.
+    // The free check asks the pinned CLI's app server; this one never
+    // starts, which the free check already knows to be a refusal.
     const check = await provider.checkAvailability({
       requestedModel: null,
       model: 'gpt-5.6-sol',
       effort: 'low',
     })
-    assert.equal(check.verdict, 'unknown')
+    assert.equal(check.verdict, 'unavailable')
+    assert.equal(codexStartFailure(new Error(check.detail)), check.detail)
     assert.equal(check.method, 'codex model/list')
     assert.ok((await stub.launches()).some((l) => l.startsWith('app-server')))
+    // Roles checked side by side, as one preflight does, share one read of
+    // the catalog per CLI file.
+    const appServers = async () =>
+      (await stub.launches()).filter((l) => l.startsWith('app-server')).length
+    const listed = await appServers()
+    const side = await Promise.all(
+      ['low', 'medium', 'high'].map((effort) =>
+        provider.checkAvailability({
+          requestedModel: null,
+          model: 'gpt-5.6-sol',
+          effort,
+        }),
+      ),
+    )
+    assert.deepEqual(
+      side.map((c) => c.verdict),
+      ['unavailable', 'unavailable', 'unavailable'],
+    )
+    assert.equal((await appServers()) - listed, 1)
 
     // The real call path launches it too, and records its version.
     const before = (await stub.launches()).length
@@ -160,20 +186,18 @@ describe('preflight verdicts', () => {
       },
     ]
     assert.equal(
-      judgeCodexModelList(models, true, 'gpt-a', 'low').verdict,
+      judgeCodexModelList(models, 'gpt-a', 'low').verdict,
       'available',
     )
-    const effort = judgeCodexModelList(models, true, 'gpt-a', 'max')
+    const effort = judgeCodexModelList(models, 'gpt-a', 'max')
     assert.equal(effort.verdict, 'unavailable')
     assert.match(effort.detail, /does not offer effort max/)
-    const missing = judgeCodexModelList(models, true, 'gpt-b', 'low')
-    assert.equal(missing.verdict, 'unavailable')
+    // The list leaves out hidden models, so absence proves nothing and a
+    // minimal call decides.
+    const missing = judgeCodexModelList(models, 'gpt-b', 'low')
+    assert.equal(missing.verdict, 'unknown')
     assert.match(missing.detail, /gpt-b is not in the model list/)
-    // A list that continues elsewhere cannot prove a model absent.
-    assert.equal(
-      judgeCodexModelList(models, false, 'gpt-b', 'low').verdict,
-      'unknown',
-    )
+    assert.match(missing.detail, /hidden/)
   })
 
   it('tells an explicit refusal from any other error', () => {
@@ -191,11 +215,17 @@ describe('preflight verdicts', () => {
       codexRejection(codex400) ?? '',
       /^400: The 'x' model is not supported/,
     )
-    assert.ok(
-      codexRejection(
-        new Error('Failed to initialize codex app-server: exited'),
-      ),
-    )
+    // Every way the app server fails to come up: no thread, no prompt.
+    for (const start of [
+      'Failed to initialize codex app-server: exited',
+      "codex app-server requires codex CLI >= 0.156.0. Run 'codex --version' to check.",
+      'codex app-server failed to start: codex executable not found (ENOENT). Check that the codex CLI is installed',
+      "codex app-server version '0.100.0' is below required minimum '0.156.0'.",
+    ]) {
+      assert.equal(codexRejection(new Error(start)), start, start)
+      assert.equal(codexStartFailure(new Error(start)), start, start)
+    }
+    assert.equal(codexStartFailure(new Error('socket hang up')), null)
     for (const status of [408, 429, 500])
       assert.equal(
         codexRejection(new Error(JSON.stringify({ status, error: {} }))),
@@ -215,5 +245,31 @@ describe('preflight verdicts', () => {
       data: { errorKind: 'overloaded' },
     })
     assert.equal(claudeRejection(overloaded), null)
+    // Recognised from text by the provider, with no structured kind.
+    const loggedOut = createAuthenticationError({
+      message: 'Invalid API key · Please run /login',
+    })
+    assert.match(
+      claudeRejection(loggedOut) ?? '',
+      /^authentication_failed: Invalid API key/,
+    )
+    const exit401 = createAPICallError({
+      message: 'Claude Code process exited with code 1',
+      exitCode: 401,
+    })
+    assert.match(claudeRejection(exit401) ?? '', /^authentication_failed: /)
+    const noSuchModel = createAPICallError({
+      message:
+        "no such model: claude-x. The requested model was not found. Verify the model id passed to the provider (e.g. 'fable', 'opus', 'sonnet', 'haiku', or a full model name) and that your account has access to it.",
+      isRetryable: false,
+    })
+    assert.match(
+      claudeRejection(noSuchModel) ?? '',
+      /^model_not_found: no such model: claude-x/,
+    )
+    assert.equal(
+      claudeRejection(createAPICallError({ message: 'socket hang up' })),
+      null,
+    )
   })
 })

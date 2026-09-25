@@ -8,6 +8,7 @@ import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { runChild } from '../src/engine/child.js'
+import { classifyFailure } from '../src/engine/failure-reasons.js'
 import { resolveCommit } from '../src/engine/git.js'
 import type { AttemptMeasurement } from '../src/engine/providers/types.js'
 import { runVerificationStep } from '../src/engine/verification.js'
@@ -286,7 +287,11 @@ describe('verification logs', () => {
 })
 
 /** A one-commit repository and a repo target at its base, graded by `script`. */
-async function baseRepo(script: string, checkTimeoutMs = 60000) {
+async function baseRepo(
+  script: string,
+  checkTimeoutMs = 60000,
+  checkCommand = [process.execPath, 'check.cjs'],
+) {
   const root = await mkdtemp(join(tmpdir(), 'baseline-'))
   const repo = join(root, 'repo')
   await mkdir(repo)
@@ -307,7 +312,7 @@ async function baseRepo(script: string, checkTimeoutMs = 60000) {
     branch: 'main',
     workdir: repo,
     setupCommand: null,
-    checkCommand: [process.execPath, 'check.cjs'],
+    checkCommand,
     checkTimeoutMs,
     task: 'task',
     spec: null,
@@ -398,7 +403,70 @@ describe('baseline check on the base commit', () => {
         specFor(a.id),
         new AbortController().signal,
       ),
-      /baseline-mutated/,
+      /baseline-check-failed: baseline-mutated: setup left uncommitted changes/,
+    )
+  })
+
+  it('removes what a passing check leaves untracked, and keeps ignored files', async () => {
+    const { repo, specFor } = await baseRepo(`
+      const { mkdirSync, writeFileSync } = require('node:fs')
+      mkdirSync('coverage', { recursive: true })
+      writeFileSync('coverage/lcov.info', 'x')
+      writeFileSync('junit.xml', 'x')
+      writeFileSync('cache.log', 'x')
+    `)
+    await writeFile(join(repo, '.git', 'info', 'exclude'), '*.log\n')
+    const a = attempt()
+    const graded = await runVerificationStep(
+      a as never,
+      specFor(a.id),
+      new AbortController().signal,
+    )
+    assert.equal(graded.passed, true)
+    // Nothing the check wrote reaches `git add -A` at the first sealing.
+    assert.equal(existsSync(join(repo, 'coverage')), false)
+    assert.equal(existsSync(join(repo, 'junit.xml')), false)
+    assert.equal(existsSync(join(repo, 'cache.log')), true)
+  })
+
+  it('stops as a baseline failure when the check changes tracked files or cannot start', async () => {
+    const mutating = await baseRepo(
+      `require('node:fs').appendFileSync('check.cjs', '// edited\\n')`,
+    )
+    const a = attempt()
+    await assert.rejects(
+      runVerificationStep(
+        a as never,
+        mutating.specFor(a.id),
+        new AbortController().signal,
+      ),
+      /baseline-check-failed: baseline-mutated: the check changed tracked files/,
+    )
+    const missing = await baseRepo('', 60000, ['no-such-check-command-xyz'])
+    const b = attempt()
+    await assert.rejects(
+      runVerificationStep(
+        b as never,
+        missing.specFor(b.id),
+        new AbortController().signal,
+      ),
+      (err: Error) => {
+        assert.match(
+          err.message,
+          /^baseline-check-failed: `no-such-check-command-xyz` could not run on the base commit [0-9a-f]{12} \(.*ENOENT.*\)/,
+        )
+        assert.equal(
+          classifyFailure({
+            runId: 'r',
+            status: 'failed',
+            output: null,
+            error: err.message,
+            uncertain: [],
+          })?.kind,
+          'baseline-check-failed',
+        )
+        return true
+      },
     )
   })
 })

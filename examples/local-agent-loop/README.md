@@ -174,6 +174,18 @@ pnpm --filter example-local-agent-loop demo status
   もう一度打っても、最初に始めたrunを返すだけです。`retry: NO` の
   runや、まだ止まっていないrunには実行を拒みます。素の `demo trigger` は同梱の
   題材で動くので、次の手順には出しません。
+- `baseline-check-failed` と `preflight-failed` には、`demo retrigger --run <id>
+--reload-config` も表示します。`factory.json` を直してから打つコマンドです。
+  保存したtask、spec、dispositions、issue、対象リポジトリはそのままで、
+  `factory.json` だけを読み直します。読み直すのはtrigger時に読んだファイルで、
+  そのときファイルが無ければリポジトリ直下の `factory.json` です。profile、`check`、
+  `setup`、`base`、`codexPath`、timeout、`baselineCheck` は `trigger` と同じ規則で
+  解決・検証し、trigger時の `--check` などのフラグは引き続き設定より優先します。
+  timeoutを設定に書いていなければ、`retrigger` を打ったプロセスの環境変数、
+  それも無ければ既定値を使います。ファイルの中身が同じ間は、何度打っても最初に
+  始めたrunを返します。書き換えれば、その版で1回だけ新しいrunを始めます。
+  環境だけを直した場合（依存のインストール、providerへのログインなど）は、
+  `--reload-config` なしの `retrigger` を使います。
 - 終わったrepo runのworktreeが残っていれば、
   `git -C '<repo>' worktree remove '<workdir>'` を表示します。setupが記録した
   パスが存在するときだけ出し、強制削除やbranch削除は含みません。変更が残る
@@ -356,8 +368,9 @@ pnpm --filter example-local-agent-loop demo trigger \
   検査15分。同梱題材はそれぞれ5分と2分です。`factory.json` の
   `agentTimeoutMs` と `checkTimeoutMs`（ミリ秒）が最優先で、無ければ `trigger`
   を実行したプロセスの `AGENT_TIMEOUT_MS` と `TEST_TIMEOUT_MS`、それも無ければ
-  既定値を使います。どれも正の安全な整数に限り、`0`、負数、小数、`NaN`、
-  `Infinity`、`Number.MAX_SAFE_INTEGER` 超は `trigger` の時点で拒否します。
+  既定値を使います。どれも2147483647以下の正の整数に限り、`0`、負数、小数、
+  `NaN`、`Infinity`、2147483647超は `trigger` の時点で拒否します。これより大きい
+  値はNodeのtimerがあふれて約1ミリ秒で発火し、呼び出しを始めた直後に打ち切るからです。
   解決した値はrun inputに保存し、workerの環境変数は読みません（この変更より前に
   保存されたrunだけは、従来どおりworkerの環境変数を読みます）。
 - 反復ごとにcommitして封印します。検証・レビュー・成果物は同じcommitを見ます。
@@ -391,8 +404,13 @@ PRに進むのが安全です。
 - 検証と同じcheckpointで記録します。完了した結果はworker再開時に読み戻して
   再実行せず、途中で止まった採点はやり直します。中断した試行の部分ログは
   合否の根拠にしません。
-- 採点がworktreeのtracked fileを書き換えた場合は、最初のcandidateに混ざるので
-  runを止めます。
+- setupや採点がworktreeのtracked fileを書き換えた場合は、最初のcandidateに
+  混ざるので `baseline-check-failed` で止め、エラーにその旨を出します。採点
+  コマンドが起動できない場合（コマンドが見つからないなど）も同じ分類で止めます。
+- 採点が通ったら、採点が残した未追跡のファイルのうち `.gitignore` の対象外の
+  ものを消します（`git clean -fd`）。カバレッジやテスト結果のファイルが最初の
+  candidateに入らないようにするためです。ignore対象のファイル（`node_modules`
+  など）は残します。
 
 ### 設定の事前確認（preflight）
 
@@ -401,16 +419,20 @@ baselineの後、triageを含む最初のエージェント呼び出しの前に
 同じ組み合わせは一度だけ確かめ、使う役割すべてに結果を対応付けます。
 
 - Codexは無料の `model/list`（固定したCodex CLIのapp server）で、そのloginで
-  使えるmodelと、そのmodelが受け付けるeffortを確かめます。一覧に無い、または
-  effortが無ければ、promptを送らずに止めます。一覧が読めないときだけ最小の
-  呼び出しにします。
+  使えるmodelと、そのmodelが受け付けるeffortを確かめます。一覧にあるmodelが
+  そのeffortを受け付けなければ、promptを送らずに止めます。app serverが起動
+  しない（CLIが見つからない、`app-server` に対応しない古い版、初期化の失敗）
+  場合も、promptを送らずに止めます。一覧は隠しmodelを含まないので、一覧に無い
+  modelは使えないとは決めず、一覧が読めないときと同じく最小の呼び出しで確かめます。
+  一覧は同じCLIファイルにつき1回だけ読みます。
 - Claude Codeにはpromptを送らずに確かめる手段が無いので、組み合わせごとに
   最小の呼び出し（「OK」とだけ返させる読み取り専用の呼び出し）を1回します。
 - 最小の呼び出しは通常の呼び出しと同じcheckpointと計測を通り、使用量と推定費用は
   stage・roleとも `preflight` として別に集計します（code/reviewには混ぜません）。
   providerが明示的に拒否した場合（未知のmodel、使えないmodel、login切れ、
   Codex CLIが起動しないなど）は完了として記録し、`preflight-failed`（`retry: yes`）
-  で止まります。送ったかどうか分からない呼び出しは送り直さず、
+  で止まります。Claude Codeのlogin切れやmodelの誤りは、providerが構造化した
+  種別を付けずに本文から判定することもあり、その場合も拒否として扱います。送ったかどうか分からない呼び出しは送り直さず、
   `uncertain-invocation`（`retry: NO`）になります。
 - 使えない組み合わせがあると、実装の呼び出し前に `preflight-failed` で止まり、
   役割、設定、確認方法、原因をエラーに出します。reportの `preflight`（JSON）と
@@ -435,7 +457,9 @@ PATHの `codex` を使います。CLIのpathと版はreportの「Versions」と�
 presetで解決します。workerは元のファイルを読み直さないので、trigger後にファイルを
 書き換えても、そのrunの設定とpromptは変わりません。timeout、`codexPath`、
 `baselineCheck` も同じく解決済みの値をrun inputに保存します。reportには各入力ファイルの
-pathと、保存した本文から計算したSHA-256が出ます。
+pathと、保存した本文から計算したSHA-256が出ます。設定を直した後に同じtaskで
+やり直すには、`demo retrigger --run <id> --reload-config` を使います（上の
+「止まったrunと次の手順を見る」を参照）。
 
 ### タスクの事前判定（shadow mode）
 

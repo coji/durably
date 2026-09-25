@@ -17,7 +17,9 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 import { runChild } from '../engine/child.js'
+import { BASELINE_FAILED_MESSAGE } from '../engine/failure-reasons.js'
 import {
+  cleanUntracked,
   commitAll,
   defaultBranch,
   describeCommitChanges,
@@ -192,16 +194,38 @@ export class RepoTarget implements Target {
    * Run the pinned check once on the base commit, before any agent call. The
    * worktree was just cut from that commit and set up, so it is graded in
    * place, as a candidate is; it must still be clean and at the base.
+   *
+   * Every way the base cannot be graded stops the run as a baseline failure:
+   * setup or the check leaving tracked changes, and a check that cannot
+   * start. A passing check's untracked output is removed, so none of it is
+   * sealed into the first candidate.
    */
   async gradeBase(args: {
     logDir: string
     signal: AbortSignal
   }): Promise<GradeResult> {
-    await this.assertAtBase()
-    const result = await this.runCheck(args.logDir, args.signal)
+    const { workdir } = this.config
+    await this.assertAtBase(
+      `setup left uncommitted changes to tracked files in ${workdir} before the check`,
+    )
+    let result: GradeResult
+    try {
+      result = await this.runCheck(args.logDir, args.signal)
+    } catch (err) {
+      // A cancel or lost lease is not a verdict on the base.
+      if (args.signal.aborted || (err as Error).name === 'SpawnCancelledError')
+        throw err
+      throw new Error(
+        `${BASELINE_FAILED_MESSAGE}: \`${checkFingerprint(this.config.checkCommand)}\` could not run on the base commit ${this.config.baseCommit.slice(0, 12)} (${(err as Error).message}) before any agent call`,
+        { cause: err },
+      )
+    }
     // A check that edits tracked files would slip its edits into the first
     // candidate, so the worktree must come out of it as it went in.
-    await this.assertAtBase()
+    await this.assertAtBase(
+      `the check changed tracked files in ${workdir}; it must leave the base commit as it found it`,
+    )
+    if (result.passed) await cleanUntracked(workdir, args.signal)
     return result
   }
 
@@ -212,13 +236,15 @@ export class RepoTarget implements Target {
     return resolveCommit(this.config.workdir, 'HEAD')
   }
 
-  private async assertAtBase(): Promise<void> {
-    const head = await this.cleanHead(
-      `baseline-mutated: ${this.config.workdir} has uncommitted changes to tracked files`,
-    )
+  private async assertAtBase(changed: string): Promise<void> {
+    const stop = (why: string) =>
+      `${BASELINE_FAILED_MESSAGE}: baseline-mutated: ${why}; stopped before any agent call`
+    const head = await this.cleanHead(stop(changed))
     if (head !== this.config.baseCommit)
       throw new Error(
-        `baseline-mutated: ${this.config.workdir} is at ${head.slice(0, 12)}, not the base ${this.config.baseCommit.slice(0, 12)}`,
+        stop(
+          `${this.config.workdir} is at ${head.slice(0, 12)}, not the base ${this.config.baseCommit.slice(0, 12)}`,
+        ),
       )
   }
 

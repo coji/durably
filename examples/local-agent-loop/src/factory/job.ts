@@ -100,12 +100,14 @@ const targetSchema = z
   ])
   .default({ kind: 'subject' })
 
+/**
+ * The longest delay Node's timers keep: a larger one fires after about 1 ms,
+ * which would abort a call right after its start checkpoint.
+ */
+export const MAX_TIMEOUT_MS = 2_147_483_647
+
 /** Milliseconds, positive and exact: what a timeout may be. */
-export const timeoutMsSchema = z
-  .number()
-  .int()
-  .positive()
-  .max(Number.MAX_SAFE_INTEGER)
+export const timeoutMsSchema = z.number().int().positive().max(MAX_TIMEOUT_MS)
 
 /**
  * Each target's timeouts when neither `factory.json` nor the trigger's
@@ -187,6 +189,24 @@ const inputSchema = z
      * absent: the bundled CLI first, then `codex` on PATH.
      */
     codexPath: z.string().min(1).nullable().optional(),
+    /**
+     * Repository runs: the config file the settings came from (null: none)
+     * and the flags that won over it, for `retrigger --reload-config`. The
+     * worker never reads it.
+     */
+    configSource: z
+      .object({
+        path: z.string().min(1).nullable(),
+        flags: z
+          .object({
+            provider: z.string().optional(),
+            check: z.string().optional(),
+            setup: z.string().optional(),
+            base: z.string().optional(),
+          })
+          .strict(),
+      })
+      .optional(),
     /**
      * Demo and test only: per-run behavior of the fake provider, for seeding
      * runs that behave differently in one worker. Refused unless every role is
@@ -296,16 +316,17 @@ export function assertSingleMode(
 
 /**
  * A timeout environment variable as milliseconds, or `fallback` when it is
- * unset. Anything but a positive safe integer is refused: `0`, a sign, a
- * fraction, `NaN`, `Infinity` and values past `Number.MAX_SAFE_INTEGER`.
+ * unset. Held to `timeoutMsSchema`, as a config value is: `0`, a sign, a
+ * fraction, `NaN`, `Infinity` and values past `MAX_TIMEOUT_MS` are refused.
  */
 function positiveTimeout(name: string, fallback: number): number {
   const raw = process.env[name]
   if (raw === undefined) return fallback
-  if (!/^\d+$/.test(raw)) throw new Error(`${name} must be a positive integer`)
-  const value = Number(raw)
-  if (!Number.isSafeInteger(value) || value <= 0)
-    throw new Error(`${name} must be a positive integer`)
+  const value = /^\d+$/.test(raw) ? Number(raw) : Number.NaN
+  if (!timeoutMsSchema.safeParse(value).success)
+    throw new Error(
+      `${name} must be a positive integer of at most ${MAX_TIMEOUT_MS} ms`,
+    )
   return value
 }
 

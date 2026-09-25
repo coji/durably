@@ -289,6 +289,17 @@ export async function discardWorktree(
   }
 }
 
+/**
+ * Remove untracked files and directories that `.gitignore` does not cover.
+ * Ignored files, such as installed dependencies, stay.
+ */
+export async function cleanUntracked(
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await git(cwd, ['clean', '-fd'], signal ? { signal } : {})
+}
+
 /** Read one file's contents at a commit without checking it out. */
 export async function readFileAt(
   repo: string,

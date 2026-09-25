@@ -24,6 +24,7 @@ import { isAbsolute, normalize, relative, resolve, sep } from 'node:path'
 import { generateText } from 'ai'
 import {
   claudeCode,
+  isAuthenticationError,
   type ClaudeCodeSettings,
 } from 'ai-sdk-provider-claude-code'
 
@@ -369,13 +370,29 @@ const REFUSAL_KINDS = new Set([
   'billing_error',
 ])
 
-/** The provider's explicit refusal as one line; null for any other error. */
+/**
+ * The sentence the provider appends when it recognised a missing model from
+ * the CLI's text rather than from a structured error kind.
+ */
+const MODEL_NOT_FOUND_TEXT = 'The requested model was not found.'
+
+/**
+ * The provider's explicit refusal as one line; null for any other error.
+ * The provider does not always attach a structured kind: a login problem
+ * seen in the CLI's text or its 401 exit comes back as the provider's
+ * authentication error, and a missing model seen in its text carries the
+ * provider's model-not-found sentence. Both are refusals all the same.
+ */
 export function claudeRejection(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error)
+  const line = message.split(' | stderr')[0]?.slice(0, 400) ?? ''
   const kind = (error as { data?: { errorKind?: unknown } } | null)?.data
     ?.errorKind
-  if (typeof kind !== 'string' || !REFUSAL_KINDS.has(kind)) return null
-  const message = error instanceof Error ? error.message : String(error)
-  return `${kind}: ${message.split(' | stderr')[0]?.slice(0, 400) ?? ''}`
+  if (typeof kind === 'string' && REFUSAL_KINDS.has(kind))
+    return `${kind}: ${line}`
+  if (isAuthenticationError(error)) return `authentication_failed: ${line}`
+  if (message.includes(MODEL_NOT_FOUND_TEXT)) return `model_not_found: ${line}`
+  return null
 }
 
 export class ClaudeProvider implements AgentProvider {

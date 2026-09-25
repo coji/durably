@@ -21,7 +21,7 @@ import {
   type LoopReport,
 } from './engine/report.js'
 import { diagnose, diagnosisLines } from './engine/status.js'
-import { buildTriggerInput } from './trigger-input.js'
+import { buildTriggerInput, reloadTriggerInput } from './trigger-input.js'
 
 async function emit(text: string, out: string | undefined): Promise<void> {
   if (out) {
@@ -74,6 +74,9 @@ Commands (run from examples/local-agent-loop):
   pnpm demo approve --run <id> --wait <waitId>
   pnpm demo reject --run <id> --wait <waitId>
   pnpm demo retrigger --run <id>            new run with the stored input (only for stops safe to repeat)
+  pnpm demo retrigger --run <id> --reload-config
+                                            the stored task and inputs, settings read again from
+                                            the run's factory.json (once per version of the file)
   pnpm demo report --run <id> [--format json|md] [--out <file>]
   pnpm demo compare --runs <id,id,...> [--format json|md] [--out <file>]
   pnpm demo ui [--port 4380]                read-only web UI on 127.0.0.1 (runs, reports, comparison)
@@ -96,7 +99,7 @@ Repository config: factory.json at the repository root, or --config <file>:
   agent call and stops the run (baseline-check-failed) when it fails.
   "codexPath" names the Codex CLI to launch, relative to the config file;
   without it, the bundled CLI first, then codex on PATH.
-  Timeouts are positive integer milliseconds; without them, the trigger's
+  Timeouts are positive integer milliseconds, at most 2147483647; without them, the trigger's
   TEST_TIMEOUT_MS / AGENT_TIMEOUT_MS, then the target's default.
   Before the first agent call, every role's provider, model and effort is
   checked once (preflight): free where the provider can tell (Codex model
@@ -288,7 +291,8 @@ if (cmd === 'worker') {
   console.log(JSON.stringify(receipt, null, 2))
   await durably.db.destroy()
 } else if (cmd === 'retrigger') {
-  const runId = args()['run']
+  const a = args()
+  const runId = a['run']
   if (!runId) throw new Error('--run <id> required')
   const durably = createAgentDurably()
   await durably.migrate()
@@ -302,17 +306,35 @@ if (cmd === 'worker') {
     throw new Error(
       `refusing to retrigger ${runId}: ${failure ? failure.reason : `it is ${run.status}, not stopped`}`,
     )
-  // One retry per stopped run: pasting the command again returns the run it
-  // already started instead of paying for another, or pushing twice.
-  const next = await durably.jobs.agentLoop.trigger(
-    run.input as Parameters<typeof durably.jobs.agentLoop.trigger>[0],
-    { idempotencyKey: `retrigger-of-${runId}` },
-  )
-  console.log(
-    next.disposition === 'created'
-      ? `new run ${next.id} with the input of ${runId}`
-      : `already retriggered as ${next.id}; nothing new started`,
-  )
+  type Input = Parameters<typeof durably.jobs.agentLoop.trigger>[0]
+  if (a['reload-config'] === 'true') {
+    // The stored task and inputs, with the settings read again from the
+    // current config. One run per config version: pasting the command again
+    // without editing the file returns the run it already started.
+    const { input, configSha256 } = await reloadTriggerInput(
+      run.input as Parameters<typeof reloadTriggerInput>[0],
+    )
+    const next = await durably.jobs.agentLoop.trigger(input as Input, {
+      idempotencyKey: `retrigger-of-${runId}-config-${configSha256 ?? 'none'}`,
+    })
+    const from = input.configSource?.path ?? 'no config file'
+    console.log(
+      next.disposition === 'created'
+        ? `new run ${next.id} with the input of ${runId} and the settings of ${from}`
+        : `already retriggered as ${next.id} with this version of ${from}; nothing new started`,
+    )
+  } else {
+    // One retry per stopped run: pasting the command again returns the run
+    // it already started instead of paying for another, or pushing twice.
+    const next = await durably.jobs.agentLoop.trigger(run.input as Input, {
+      idempotencyKey: `retrigger-of-${runId}`,
+    })
+    console.log(
+      next.disposition === 'created'
+        ? `new run ${next.id} with the input of ${runId}`
+        : `already retriggered as ${next.id}; nothing new started`,
+    )
+  }
   await durably.db.destroy()
 } else if (cmd === 'report') {
   const a = args()

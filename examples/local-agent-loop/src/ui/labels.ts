@@ -87,13 +87,13 @@ const FAILURE_TEXT: Record<FailureKind, { reason: string; check: string }> = {
     reason:
       'エージェントを呼ぶ前に、ベースのコミットで固定したチェックがすでに失敗しました。このままでは候補を採点できません。',
     check:
-      '下に示したログファイルでチェックの出力を全文読み、採点コマンドか環境を直す。',
+      '下に示したログファイルでチェックの出力を全文読み、採点コマンドか環境を直す。factory.json を直したときは設定を読み直す再実行を、環境だけを直したときは通常の再実行を使う。',
   },
   'preflight-failed': {
     reason:
       'ある役割のプロバイダー、モデル、推論の強さの組み合わせが使えません。実装を呼ぶ前に止めました。',
     check:
-      'エラーに示した役割の設定か、使う実行ファイルの指定を直す。ログインの問題なら、ログインし直してから始め直す。',
+      'エラーに示した役割の設定か、使う実行ファイルの指定を factory.json で直し、設定を読み直す再実行を使う。ログインの問題なら、ログインし直してから通常の再実行を使う。',
   },
   'verification-failed': {
     reason:
@@ -197,6 +197,10 @@ const COMMAND_NOTES: [string, string][] = [
   [
     'once, with the same stored input; to change the task or --max-iterations, trigger anew',
     '保存済みの入力のまま、1回だけ実行し直します。タスクや --max-iterations を変えたいときは、trigger からやり直します。',
+  ],
+  [
+    'after fixing factory.json; the stored task with the settings read again, once per version of the file',
+    'factory.json を直してから実行します。保存済みのタスクのまま設定を読み直し、ファイルの版ごとに1回だけ実行します。',
   ],
   [
     'the check output is in the verification attempt',

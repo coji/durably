@@ -1038,9 +1038,10 @@ describe('diagnosis wording on the page', () => {
     'cancelled-publish',
     'unclassified',
   ]
-  // What the brief allows in a sentence: Japanese, and an option to type.
+  // What the brief allows in a sentence: Japanese, an option to type, and a
+  // file name.
   const plain = (text: string) =>
-    text.replace(/--max-iterations/g, '').match(/[A-Za-z()（）]/g)
+    text.replace(/--max-iterations|factory\.json/g, '').match(/[A-Za-z()（）]/g)
 
   it('says every state and stop in Japanese, without IDs or asides', () => {
     for (const kind of kinds)
@@ -1074,6 +1075,9 @@ describe('diagnosis wording on the page', () => {
       /エージェントを呼ぶ前に/,
     )
     assert.match(humanCheckText('preflight-failed'), /役割の設定/)
+    // A config fix is retried with the settings read again.
+    for (const kind of ['baseline-check-failed', 'preflight-failed'] as const)
+      assert.match(humanCheckText(kind), /設定を読み直す再実行/)
   })
 
   it('says which decision a decided run recorded', () => {
@@ -1122,7 +1126,7 @@ describe('diagnosis wording on the page', () => {
       const ja = commandNote(`pnpm demo x  # ${note}`)
       assert.ok(ja, note)
       // Only what the user types may stay in English.
-      assert.equal(plain(ja.replace(/--max-iterations|trigger/g, '')), null, ja)
+      assert.equal(plain(ja.replace(/trigger/g, '')), null, ja)
     }
     assert.equal(commandNote('pnpm demo status --run r1'), null)
   })

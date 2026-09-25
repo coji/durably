@@ -290,7 +290,9 @@ function commandLabel(command: string): string {
     case 'worker':
       return 'ワーカー起動コマンドをコピー'
     case 'retrigger':
-      return '再実行コマンドをコピー'
+      return command.includes('--reload-config')
+        ? '設定を読み直す再実行コマンドをコピー'
+        : '再実行コマンドをコピー'
     case 'waits':
       return '待ち一覧コマンドをコピー'
     default:
