@@ -144,6 +144,17 @@ export function uncertainCheckpoints(
   return [...found]
 }
 
+/** `stage:<sequence>:<stage>:<part>` split up; null for other step names. */
+export function stageStep(
+  name: string,
+): { sequence: number; stage: string; part: string } | null {
+  const [kind, seq, stage, part] = name.split(':')
+  const sequence = Number(seq)
+  return kind === 'stage' && Number.isInteger(sequence) && stage && part
+    ? { sequence, stage, part }
+    : null
+}
+
 /**
  * The full-output logs of the verification that stopped the run: every
  * physical attempt of the last verify step, oldest first. A replay that read
@@ -160,9 +171,9 @@ export function lastVerificationLogs(
     }))
     .filter(
       (a): a is typeof a & { log: VerificationLog } =>
-        a.log !== null && a.step.split(':')[2] === 'verify',
+        a.log !== null && stageStep(a.step)?.stage === 'verify',
     )
-  const sequence = (step: string) => Number(step.split(':')[1])
+  const sequence = (step: string) => stageStep(step)?.sequence ?? -1
   const last = Math.max(-1, ...graded.map((a) => sequence(a.step)))
   const seen = new Set<string>()
   return graded

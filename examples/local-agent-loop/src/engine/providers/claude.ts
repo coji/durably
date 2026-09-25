@@ -326,18 +326,17 @@ export function buildClaudeSettings(
   sessionId: string | null = null,
   readableFiles: readonly string[] = [],
 ): ClaudeCodeSettings {
-  // Extra readable files widen reads for a read-only role only; a writing
-  // role stays confined to its workdir.
-  const readable = readOnly ? readableFiles : []
   const executable = claudeExecutable()
   return {
     cwd: workdir,
     settingSources: [],
     permissionMode: 'default',
     allowedTools: readOnly ? ['Read'] : ['Read', 'Edit', 'Write', 'Bash'],
-    canUseTool: workdirGuard(workdir, readOnly, readable),
+    canUseTool: workdirGuard(workdir, readOnly, readableFiles),
     hooks: {
-      PreToolUse: [{ hooks: [preToolUseHook(workdir, readOnly, readable)] }],
+      PreToolUse: [
+        { hooks: [preToolUseHook(workdir, readOnly, readableFiles)] },
+      ],
     },
     // Pinned to the binary whose version is recorded, so the two cannot
     // name different CLIs. Unresolved, the SDK reports its own error.

@@ -23,8 +23,6 @@ import type { StepAttemptContext } from '@coji/durably'
 import type { ProviderName, VerificationLog } from './providers/types.js'
 import { UncertainInvocationError, writeMeasurement } from './runner.js'
 
-export type { VerificationLog }
-
 export interface VerificationOutcome {
   passed: boolean
   /** Tail of the output, for the report excerpt and the repair prompt. */

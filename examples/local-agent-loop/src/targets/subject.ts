@@ -14,6 +14,7 @@ import { assertCandidateIntact, createCandidate } from '../engine/candidate.js'
 import { describeTreeChanges, hashDir } from '../engine/tree.js'
 import type { CandidateRef } from '../engine/types.js'
 import type { GradeResult } from '../engine/verification.js'
+import { changedPathsLine } from '../factory/prompts.js'
 import type {
   Delivery,
   DeliverArgs,
@@ -147,7 +148,7 @@ export class SubjectTarget implements Target {
     )
     return [
       'TRUSTED BASELINE CONTEXT:',
-      `Changed paths: ${changes.length > 0 ? changes.join(', ') : '(none)'}`,
+      changedPathsLine(changes),
       'Original src/calc.js:',
       '```js',
       original,

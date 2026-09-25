@@ -17,6 +17,7 @@ import { retryText, type FailureClassification } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import type { AttemptMeasurement } from './providers/types.js'
 import { TERMINAL_STATUSES } from './terminal.js'
+import type { CandidateChanges } from './types.js'
 import { aggregateUsage } from './usage.js'
 
 export interface AttemptRow {
@@ -125,17 +126,8 @@ export interface ReportInputs {
   dispositions: ReportInputFile | null
 }
 
-/**
- * A repository candidate's size against the base commit, and where its full
- * diff and changed-file list were written when it was sealed.
- */
-export interface ReportCandidateChanges {
-  files: number
-  additions: number
-  deletions: number
-  diffPath: string
-  changedFilesPath: string
-}
+/** A repository candidate's size and where its diff and file list live. */
+export type ReportCandidateChanges = CandidateChanges
 
 /** The last sealed candidate: where a repository run left its work. */
 export interface ReportCandidate {
@@ -767,13 +759,15 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push('- none')
   }
   lines.push('')
-  const graded = r.attempts.filter((a) => a.measurement?.verificationLog)
+  const graded = r.attempts.flatMap((a) =>
+    a.measurement?.verificationLog
+      ? [{ a, log: a.measurement.verificationLog }]
+      : [],
+  )
   lines.push('## Verification logs (full check output per attempt)')
   lines.push('')
   if (graded.length > 0) {
-    for (const a of graded) {
-      const log = a.measurement?.verificationLog
-      if (!log) continue
+    for (const { a, log } of graded) {
       lines.push(
         `- ${a.stepName} (${a.attemptId.slice(0, 8)}): exit code ${log.exitCode ?? 'null'}${a.measurement?.result === 'checkpoint-recovered' ? ', recovered from checkpoint' : ''}`,
       )

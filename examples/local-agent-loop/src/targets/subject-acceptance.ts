@@ -25,12 +25,9 @@ import { cp, mkdir, rm, symlink } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { runChild } from '../engine/child.js'
+import type { VerificationLog } from '../engine/providers/types.js'
 import { hashDir, readTree } from '../engine/tree.js'
-import {
-  checkLog,
-  prepareCheckLogs,
-  type VerificationLog,
-} from '../engine/verification.js'
+import { checkLog, prepareCheckLogs } from '../engine/verification.js'
 
 /** Snapshot the pristine subject tests for this run. */
 export async function snapshotAcceptance(

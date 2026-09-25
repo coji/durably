@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 
 import type { AnyDurably } from '@coji/durably'
 
-import { classifyRun } from './failure-reasons.js'
+import { classifyRun, stageStep } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import {
   roleUsage,
@@ -177,17 +177,6 @@ export function asReportCandidate(value: unknown): ReportCandidate | null {
     : null
 }
 
-/** `stage:<sequence>:<stage>:<part>` split up; null for other step names. */
-function stageStep(
-  name: string,
-): { sequence: number; stage: string; part: string } | null {
-  const [kind, seq, stage, part] = name.split(':')
-  const sequence = Number(seq)
-  return kind === 'stage' && Number.isInteger(sequence) && stage && part
-    ? { sequence, stage, part }
-    : null
-}
-
 /** Every completed `stage:<n>:code:candidate` step, in sealing order. */
 function sealedCandidates(steps: StoredStep[]): ReportSealedCandidate[] {
   const sealed = steps
@@ -232,14 +221,7 @@ function reviewRoundsOf(
       return {
         round: i + 1,
         sequence,
-        candidate: reviewed
-          ? {
-              id: reviewed.id,
-              branch: reviewed.branch,
-              commit: reviewed.commit,
-              changes: reviewed.changes ?? null,
-            }
-          : null,
+        candidate: reviewed ? toReportCandidate(reviewed) : null,
         reviews: [...byLens.values()].sort(
           (x, y) => lensOrder.indexOf(x.lens) - lensOrder.indexOf(y.lens),
         ),
@@ -257,14 +239,16 @@ function lastCandidate(
 ): ReportCandidate | null {
   if (output != null) return asReportCandidate(output.candidate)
   const last = candidates.at(-1)
-  return last
-    ? {
-        id: last.id,
-        branch: last.branch,
-        commit: last.commit,
-        changes: last.changes ?? null,
-      }
-    : null
+  return last ? toReportCandidate(last) : null
+}
+
+function toReportCandidate({
+  id,
+  branch,
+  commit,
+  changes,
+}: ReportSealedCandidate): ReportCandidate {
+  return { id, branch, commit, changes }
 }
 
 /**

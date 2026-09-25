@@ -5,7 +5,12 @@ import {
   buildClaudeSettings,
   decideToolPermission,
 } from '../src/engine/providers/claude.js'
-import { codePrompt, reviewPrompt } from '../src/factory/prompts.js'
+import {
+  CHANGED_PATHS_INLINE_LIMIT,
+  changedPathsLine,
+  codePrompt,
+  reviewPrompt,
+} from '../src/factory/prompts.js'
 import type { RepoTargetConfig, Target } from '../src/factory/target.js'
 import { RepoTarget } from '../src/targets/repo.js'
 import { SubjectTarget } from '../src/targets/subject.js'
@@ -299,5 +304,29 @@ describe('reviewers read the candidate diff in full', () => {
     ) => Promise<{ behavior: string }>
     const decision = await guard('Write', { file_path: changes.diffPath })
     assert.equal(decision.behavior, 'deny')
+  })
+})
+
+describe('trusted context changed-path line', () => {
+  it('lists every path when the change is small', () => {
+    assert.equal(changedPathsLine([]), 'Changed paths: (none)')
+    assert.equal(
+      changedPathsLine(['added: a', 'modified: b']),
+      'Changed paths: added: a, modified: b',
+    )
+  })
+
+  it('caps a large change inline and points at the full list', () => {
+    const paths = Array.from(
+      { length: CHANGED_PATHS_INLINE_LIMIT + 7 },
+      (_, i) => `added: f${i}`,
+    )
+    const line = changedPathsLine(paths, '/runs/r1/changed-files.txt')
+    assert.ok(line.includes(`f${CHANGED_PATHS_INLINE_LIMIT - 1}`))
+    assert.ok(!line.includes(`f${CHANGED_PATHS_INLINE_LIMIT},`))
+    assert.ok(
+      line.endsWith(', and 7 more — see /runs/r1/changed-files.txt'),
+      line,
+    )
   })
 })

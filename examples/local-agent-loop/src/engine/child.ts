@@ -183,8 +183,6 @@ export async function runChild(
         cleanup()
         stdout = appendTail(stdout, outDecoder.end(), maxOutputChars)
         stderr = appendTail(stderr, errDecoder.end(), maxOutputChars)
-        // The logs are flushed before the caller hears anything, so a timeout
-        // or a cancel never races the last bytes the child printed.
         void closeLogs().then((logError) => {
           if (terminationError) return reject(terminationError)
           if (logError) return reject(logError)

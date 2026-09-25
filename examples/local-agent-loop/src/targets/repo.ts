@@ -34,6 +34,7 @@ import {
   prepareCheckLogs,
   type GradeResult,
 } from '../engine/verification.js'
+import { changedPathsLine } from '../factory/prompts.js'
 import type {
   Delivery,
   DeliverArgs,
@@ -150,18 +151,17 @@ export class RepoTarget implements Target {
     const diffPath = join(dir, 'changes.diff')
     const changedFilesPath = join(dir, 'changed-files.txt')
     const { repoPath, baseCommit } = this.config
-    await writePatch(repoPath, baseCommit, commit, diffPath)
-    const lines = await describeCommitChanges(repoPath, baseCommit, commit)
+    const [, lines, stat] = await Promise.all([
+      writePatch(repoPath, baseCommit, commit, diffPath),
+      describeCommitChanges(repoPath, baseCommit, commit),
+      diffStat(repoPath, baseCommit, commit),
+    ])
     await writeFile(
       changedFilesPath,
       lines.map((line) => `${line}\n`).join(''),
       'utf8',
     )
-    return {
-      diffPath,
-      changedFilesPath,
-      ...(await diffStat(repoPath, baseCommit, commit)),
-    }
+    return { diffPath, changedFilesPath, ...stat }
   }
 
   async assertIntact(candidate: CandidateRef): Promise<void> {
@@ -239,7 +239,7 @@ export class RepoTarget implements Target {
       'TRUSTED CONTEXT (produced by the factory, not by the implementer):',
       `Base commit: ${this.config.baseCommit}`,
       `Candidate: ${candidate.id}`,
-      `Changed paths: ${changes.length > 0 ? changes.join(', ') : '(none)'}`,
+      changedPathsLine(changes, candidate.changes?.changedFilesPath),
       '',
       'The task the implementer was given is in the untrusted TASK block below.',
     ].join('\n')

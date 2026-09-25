@@ -116,8 +116,9 @@ let authModePromise: Promise<CodexAuthMode> | null = null
 
 /** Probe the login once per process, through the owned-subprocess path. */
 function codexAuthMode(): Promise<CodexAuthMode> {
+  if (authModePromise) return authModePromise
   const exe = codexExecutable()
-  authModePromise ??= runChild(exe.command, [...exe.args, 'login', 'status'], {
+  authModePromise = runChild(exe.command, [...exe.args, 'login', 'status'], {
     timeoutMs: 15000,
     maxOutputChars: 2000,
   })

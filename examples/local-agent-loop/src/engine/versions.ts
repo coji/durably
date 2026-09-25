@@ -47,11 +47,8 @@ async function cliVersion(
  * provider's CLI is probed — the unselected CLI is never required to be
  * installed or authenticated.
  *
- * The CLI is the one the provider launches, found by the same function the
- * provider uses: the Codex package the Codex provider resolves (or `codex`
- * on PATH when there is none), and the native binary the Claude Agent SDK
- * ships. `codexCliPath` / `claudeCliPath` name that file; a path or version
- * that cannot be found is null, never a guess from another install.
+ * The CLI probed is the file the provider launches (`codexCliPath` /
+ * `claudeCliPath`); what cannot be found is null, never another install.
  */
 export async function resolveVersions(
   provider: 'codex' | 'claude' | 'fake',

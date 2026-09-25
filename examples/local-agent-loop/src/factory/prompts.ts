@@ -66,6 +66,25 @@ export function codePrompt(args: CodePromptArgs): string {
   ].join('\n')
 }
 
+/** Changed paths the trusted context lists inline; the rest go to the file. */
+export const CHANGED_PATHS_INLINE_LIMIT = 50
+
+/**
+ * The `Changed paths:` line of a trusted review context. Capped so a huge
+ * change cannot flood the prompt; `fullListPath` names the complete list.
+ */
+export function changedPathsLine(
+  changes: string[],
+  fullListPath?: string,
+): string {
+  if (changes.length === 0) return 'Changed paths: (none)'
+  const shown = changes.slice(0, CHANGED_PATHS_INLINE_LIMIT).join(', ')
+  const rest = changes.length - CHANGED_PATHS_INLINE_LIMIT
+  if (rest <= 0) return `Changed paths: ${shown}`
+  const where = fullListPath ? ` — see ${fullListPath}` : ''
+  return `Changed paths: ${shown}, and ${rest} more${where}`
+}
+
 /**
  * The candidate's diff and changed-file list, written by the factory from the
  * recorded base commit and the candidate commit. Reviewers are told to read
