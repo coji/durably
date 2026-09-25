@@ -290,15 +290,15 @@ export async function discardWorktree(
 }
 
 /**
- * Remove untracked files and directories that `.gitignore` does not cover.
- * Ignored files, such as installed dependencies, stay, and git leaves nested
- * repositories alone.
+ * Remove untracked files and directories that `.gitignore` does not cover,
+ * including nested repositories (the second `-f`). Ignored files, such as
+ * installed dependencies, stay.
  */
 export async function cleanUntracked(
   cwd: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  await git(cwd, ['clean', '-fd'], signal ? { signal } : {})
+  await git(cwd, ['clean', '-ffd'], signal ? { signal } : {})
 }
 
 /**

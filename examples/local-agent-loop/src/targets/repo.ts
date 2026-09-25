@@ -232,7 +232,16 @@ export class RepoTarget implements Target {
     await this.assertAtBase(
       `the check changed tracked files in ${workdir}; it must leave the base commit as it found it`,
     )
-    if (result.passed) await cleanUntracked(workdir, args.signal)
+    if (result.passed) {
+      await cleanUntracked(workdir, args.signal)
+      // Whatever the clean could not remove would reach `git add -A` at the
+      // first sealing, so the worktree must come out empty of it.
+      const left = await someUntracked(workdir, 5, args.signal)
+      if (left.length > 0)
+        throw new Error(
+          `${BASELINE_FAILED_MESSAGE}: baseline-mutated: the check left untracked files that could not be removed (${left.join(', ')}); stopped before any agent call`,
+        )
+    }
     return result
   }
 

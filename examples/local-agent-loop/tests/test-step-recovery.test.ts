@@ -415,6 +415,13 @@ describe('baseline check on the base commit', () => {
       writeFileSync('coverage/lcov.info', 'x')
       writeFileSync('junit.xml', 'x')
       writeFileSync('cache.log', 'x')
+      // A nested repository with a commit, which plain \`git clean -fd\` skips.
+      const { execFileSync } = require('node:child_process')
+      mkdirSync('fixture-repo')
+      execFileSync('git', ['init', '-q'], { cwd: 'fixture-repo' })
+      writeFileSync('fixture-repo/a.txt', 'x')
+      execFileSync('git', ['add', '.'], { cwd: 'fixture-repo' })
+      execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'x'], { cwd: 'fixture-repo' })
     `)
     await writeFile(
       join(repo, '.git', 'info', 'exclude'),
@@ -438,6 +445,7 @@ describe('baseline check on the base commit', () => {
     assert.equal(existsSync(join(repo, 'coverage', 'lcov.info')), false)
     assert.equal(existsSync(join(repo, 'junit.xml')), false)
     assert.equal(existsSync(join(repo, 'test-results')), false)
+    assert.equal(existsSync(join(repo, 'fixture-repo')), false)
     assert.equal(existsSync(join(repo, 'cache.log')), true)
     assert.equal(
       existsSync(join(repo, 'node_modules', 'dep', 'index.js')),
