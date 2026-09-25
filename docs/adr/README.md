@@ -59,6 +59,7 @@ What we considered and why we didn't do it.
 | [0016](0016-events-follow-state-writes.md)                    | Events follow state writes directly           | accepted |
 | [0017](0017-local-agent-loop-pinned-checkout.md)              | local-agent-loop from a pinned checkout       | accepted |
 | [0018](0018-local-agent-loop-adaptive-routing.md)             | local-agent-loop adaptive routing             | proposed |
+| [0019](0019-local-agent-loop-stop-before-llm.md)              | local-agent-loop stops before any LLM call    | accepted |
 
 ## Prior Art
 

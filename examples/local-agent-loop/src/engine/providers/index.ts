@@ -4,23 +4,31 @@ import { CodexProvider } from './codex.js'
 import { FakeProvider, type FakeProviderOptions } from './fake.js'
 import type { AgentProvider, ProviderName } from './types.js'
 
+export interface ProviderOptions extends FakeProviderOptions {
+  /** The run's pinned `codexPath`; only the Codex provider reads it. */
+  codexPath?: string | null
+}
+
 const factories: Record<
   ProviderName,
-  (fake?: FakeProviderOptions) => AgentProvider
+  (options?: ProviderOptions) => AgentProvider
 > = {
-  codex: () => new CodexProvider(),
+  codex: (options) => new CodexProvider(options?.codexPath ?? null),
   claude: () => new ClaudeProvider(),
   fake: (fake) => new FakeProvider(fake),
 }
 
-/** `fake` options reach only the fake provider; real providers ignore them. */
+/**
+ * Fake options reach only the fake provider, and `codexPath` only the Codex
+ * one; the others ignore what they do not use.
+ */
 export function createProvider(
   name: ProviderName,
-  fake?: FakeProviderOptions,
+  options?: ProviderOptions,
 ): AgentProvider {
   const factory = factories[name]
   if (!factory) throw new Error(`Unknown provider: ${name}`)
-  return factory(fake)
+  return factory(options)
 }
 
 export function parseProviderName(value: string): ProviderName {

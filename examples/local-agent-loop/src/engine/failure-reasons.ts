@@ -16,12 +16,41 @@ import type { AttemptMeasurement, VerificationLog } from './providers/types.js'
 import { checkpointPaths, UNCERTAIN_INVOCATION_MESSAGE } from './runner.js'
 
 export type FailureKind =
+  | 'baseline-check-failed'
+  | 'preflight-failed'
   | 'verification-failed'
   | 'review-cap-reached'
   | 'uncertain-invocation'
   | 'cancelled'
   | 'cancelled-publish'
   | 'unclassified'
+
+/**
+ * How the job's own stops begin their error, so the table can tell them from
+ * an unrecognised failure.
+ */
+export const BASELINE_FAILED_MESSAGE = 'baseline-check-failed'
+export const PREFLIGHT_FAILED_MESSAGE = 'preflight-failed'
+
+/** A baseline stop because setup left files `.gitignore` does not cover. */
+const SETUP_UNTRACKED = `${BASELINE_FAILED_MESSAGE}: setup-untracked: `
+
+/** The error for that stop; the paths are kept as JSON to read back. */
+export function setupUntrackedError(workdir: string, paths: string[]): string {
+  return `${SETUP_UNTRACKED}setup left untracked files that .gitignore does not cover in ${workdir}, first ${JSON.stringify(paths)}; stopped before the baseline check and any agent call`
+}
+
+/** The paths named by a `setupUntrackedError`, or null for any other error. */
+function setupUntrackedPaths(error: string | null): string[] | null {
+  if (!error?.startsWith(SETUP_UNTRACKED)) return null
+  const listed = / first (\[.*\]); stopped before /.exec(error)?.[1]
+  try {
+    const paths: unknown = listed ? JSON.parse(listed) : []
+    return Array.isArray(paths) ? paths.map(String) : []
+  } catch {
+    return []
+  }
+}
 
 /**
  * The demo CLI as it runs from anywhere in this repository. Every printed
@@ -36,15 +65,87 @@ export const DEMO = 'pnpm --filter example-local-agent-loop demo'
 const retrigger = (runId: string) =>
   `${DEMO} retrigger --run ${runId}  # once, with the same stored input; to change the task or --max-iterations, trigger anew`
 
+/**
+ * The same, with the settings read again from the run's factory.json: for a
+ * stop that editing the config fixes. The plain retry keeps the stored
+ * settings and suits a fix to the environment only.
+ */
+const retriggerReloaded = (runId: string, reload: ReloadAdvice): string[] =>
+  reload === 'none'
+    ? []
+    : reload === 'config'
+      ? [
+          `${DEMO} retrigger --run ${runId} --reload-config  # after fixing factory.json; the stored task with the settings read again, once per version of the file`,
+        ]
+      : [
+          `${DEMO} retrigger --run ${runId} --reload-config  # after fixing factory.json; the --check, --setup or --base given at trigger still wins over it, so to change those, trigger anew`,
+        ]
+
+/**
+ * Whether a config-fix retry applies to a run: `config` for a repository
+ * run, `flags-win` when its check, setup or base came from a trigger flag
+ * that a reload keeps, and `none` for the bundled sample, which reads no
+ * factory.json.
+ */
+export type ReloadAdvice = 'config' | 'flags-win' | 'none'
+
+/** The flags a reload keeps over the settings factory.json gives. */
+const PINNING_FLAGS = ['check', 'setup', 'base'] as const
+
+/** The `ReloadAdvice` for a stored run input. */
+export function reloadAdvice(input: unknown): ReloadAdvice {
+  const stored = input as {
+    target?: { kind?: unknown }
+    configSource?: { flags?: Record<string, unknown> }
+  } | null
+  if (stored?.target?.kind !== 'repo') return 'none'
+  const flags = stored.configSource?.flags ?? {}
+  return PINNING_FLAGS.some((flag) => typeof flags[flag] === 'string')
+    ? 'flags-win'
+    : 'config'
+}
+
+/** The baseline check when setup left files `.gitignore` does not cover. */
+const SETUP_UNTRACKED_CHECK =
+  'setup creates files that .gitignore does not cover (listed below); add them to .gitignore on the base, or turn baselineCheck off in factory.json and retry with --reload-config. A passing baseline would delete them, so the run does not start with them'
+
+/** The preflight check for a run with no factory.json to fix. */
+const PREFLIGHT_WITHOUT_CONFIG =
+  'fix the provider, model or effort of the role named in the error below and trigger anew; a login problem is fixed in the provider CLI and retried with retrigger'
+
 interface FailureEntry {
   reason: string
   retryable: boolean
   /** What a person has to look at before doing anything else. */
   humanCheck: string
-  next: (runId: string) => string[]
+  next: (runId: string, reload: ReloadAdvice) => string[]
 }
 
 const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
+  'baseline-check-failed': {
+    reason:
+      'the pinned check already fails on the base commit, before any agent call; a candidate could not be graded',
+    retryable: true,
+    humanCheck:
+      'read the full check output in the log files named below, then fix the check command or the environment (setup, dependencies, base); retry with --reload-config after editing factory.json, without it after fixing only the environment',
+    next: (runId, reload) => [
+      `${DEMO} report --run ${runId}  # the baseline check output`,
+      ...retriggerReloaded(runId, reload),
+      retrigger(runId),
+    ],
+  },
+  'preflight-failed': {
+    reason:
+      "a role's provider, model or effort is not usable; the run stopped before any implementation call",
+    retryable: true,
+    humanCheck:
+      'fix the profile of the role named in the error below, or codexPath, in factory.json and retry with --reload-config; a login problem is fixed in the provider CLI and retried without it',
+    next: (runId, reload) => [
+      `${DEMO} report --run ${runId}  # the preflight result for each role`,
+      ...retriggerReloaded(runId, reload),
+      retrigger(runId),
+    ],
+  },
   'verification-failed': {
     reason:
       'the pinned check still failed after the last repair; the repair budget is used up',
@@ -113,6 +214,10 @@ export interface FailureClassification {
   next: string[]
   /** Run-specific facts behind the classification: an error, a checkpoint. */
   details: string[]
+  /** Whether `next` offers the config-reload retry, and why not. */
+  reload: ReloadAdvice
+  /** A baseline stop because setup left files `.gitignore` does not cover. */
+  setupUntracked: boolean
 }
 
 /**
@@ -156,6 +261,41 @@ export function stageStep(
 }
 
 /**
+ * The full-output logs of the baseline check, every physical attempt, oldest
+ * first. A replay that read the completed checkpoint adds nothing.
+ */
+export function baselineLogs(
+  attempts: Pick<StepAttempt, 'stepName' | 'startedAt' | 'metadata'>[],
+): VerificationLog[] {
+  return distinctLogs(
+    attempts
+      .filter((a) => a.stepName === 'baseline')
+      .map((a) => ({
+        startedAt: a.startedAt,
+        log: (a.metadata as AttemptMeasurement | null)?.verificationLog,
+      })),
+  )
+}
+
+/** One grading attempt's log as detail lines, the same for every check. */
+function logDetails(log: VerificationLog): string[] {
+  return [
+    ...(log.interrupted
+      ? [`${DETAIL_PREFIX.checkAttempt}${INTERRUPTED_CHECK}`]
+      : []),
+    `${DETAIL_PREFIX.checkExitCode}${log.exitCode ?? 'null'}`,
+    ...(log.timedOutAfterMs !== undefined
+      ? [`${DETAIL_PREFIX.checkTimeout}${log.timedOutAfterMs}ms`]
+      : []),
+    `${DETAIL_PREFIX.checkStdout}${log.stdoutPath}`,
+    `${DETAIL_PREFIX.checkStderr}${log.stderrPath}`,
+    ...(log.writeError
+      ? [`${DETAIL_PREFIX.checkLogWriteError}${log.writeError}`]
+      : []),
+  ]
+}
+
+/**
  * The full-output logs of the verification that stopped the run: every
  * physical attempt of the last verify step, oldest first. A replay that read
  * the completed checkpoint points at the same files and adds nothing.
@@ -181,17 +321,23 @@ export function lastVerificationLogs(
   // (a checkpoint written before logs existed), an earlier step's logs would
   // name output that did not stop the run.
   const last = Math.max(-1, ...verify.map((a) => a.sequence))
+  return distinctLogs(verify.filter((a) => a.sequence === last))
+}
+
+/**
+ * Logs oldest first. A replay that read the completed checkpoint points at
+ * the same files as the attempt that wrote it, so it adds nothing.
+ */
+function distinctLogs(
+  attempts: { startedAt: string; log: VerificationLog | null | undefined }[],
+): VerificationLog[] {
   const seen = new Set<string>()
-  return verify
-    .filter(
-      (a): a is typeof a & { log: VerificationLog } =>
-        a.sequence === last && a.log !== null,
-    )
+  return [...attempts]
     .sort((x, y) => Date.parse(x.startedAt) - Date.parse(y.startedAt))
-    .flatMap((a) => {
-      if (seen.has(a.log.stdoutPath)) return []
-      seen.add(a.log.stdoutPath)
-      return [a.log]
+    .flatMap(({ log }) => {
+      if (!log || seen.has(log.stdoutPath)) return []
+      seen.add(log.stdoutPath)
+      return [log]
     })
 }
 
@@ -204,8 +350,12 @@ export interface ClassifyInput {
   uncertain: string[]
   /** From `lastVerificationLogs`: the stopping verification's logs. */
   verificationLogs?: VerificationLog[]
+  /** From `baselineLogs`: the base-commit check's logs. */
+  baselineLogs?: VerificationLog[]
   /** A repo run that pushes and opens a pull request once approved. */
   publish?: boolean
+  /** From `reloadAdvice`; a repository run with no flags when omitted. */
+  reload?: ReloadAdvice
 }
 
 /**
@@ -219,21 +369,12 @@ export function classifyFailure(
     ?.conclusion
   let kind: FailureKind
   const details: string[] = []
+  let setupPaths: string[] | null = null
   if (input.status === 'completed') {
     if (conclusion === 'verification-failed') {
       kind = 'verification-failed'
       for (const log of input.verificationLogs ?? [])
-        details.push(
-          ...(log.interrupted
-            ? [`${DETAIL_PREFIX.checkAttempt}${INTERRUPTED_CHECK}`]
-            : []),
-          `${DETAIL_PREFIX.checkExitCode}${log.exitCode ?? 'null'}`,
-          `${DETAIL_PREFIX.checkStdout}${log.stdoutPath}`,
-          `${DETAIL_PREFIX.checkStderr}${log.stderrPath}`,
-          ...(log.writeError
-            ? [`${DETAIL_PREFIX.checkLogWriteError}${log.writeError}`]
-            : []),
-        )
+        details.push(...logDetails(log))
     } else if (conclusion === 'review-cap-reached') kind = 'review-cap-reached'
     else return null
   } else if (input.status === 'failed' || input.status === 'cancelled') {
@@ -250,6 +391,15 @@ export function classifyFailure(
       // A cancel can land after the push or pull request but before the
       // delivery is recorded; a new run could publish a second time.
       kind = input.publish ? 'cancelled-publish' : 'cancelled'
+    } else if (input.error?.startsWith(BASELINE_FAILED_MESSAGE)) {
+      kind = 'baseline-check-failed'
+      setupPaths = setupUntrackedPaths(input.error)
+      for (const path of setupPaths ?? [])
+        details.push(`${DETAIL_PREFIX.setupUntracked}${path}`)
+      for (const log of input.baselineLogs ?? [])
+        details.push(...logDetails(log))
+    } else if (input.error?.startsWith(PREFLIGHT_FAILED_MESSAGE)) {
+      kind = 'preflight-failed'
     } else {
       kind = 'unclassified'
     }
@@ -264,7 +414,19 @@ export function classifyFailure(
     return null
   }
   const entry = FAILURE_REASONS[kind]
-  return { kind, ...entry, next: entry.next(input.runId), details }
+  const reload = input.reload ?? 'config'
+  return {
+    kind,
+    ...entry,
+    ...(kind === 'preflight-failed' && reload === 'none'
+      ? { humanCheck: PREFLIGHT_WITHOUT_CONFIG }
+      : {}),
+    ...(setupPaths ? { humanCheck: SETUP_UNTRACKED_CHECK } : {}),
+    next: entry.next(input.runId, reload),
+    details,
+    reload,
+    setupUntracked: setupPaths !== null,
+  }
 }
 
 /** One wording for the retry verdict, shared by `status` and `report`. */
@@ -287,13 +449,13 @@ export async function classifyRun(
 ): Promise<FailureClassification | null> {
   let uncertain: string[] = []
   let verificationLogs: VerificationLog[] = []
+  let baseline: VerificationLog[] = []
   if (run.status === 'failed' || run.status === 'cancelled') {
     const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))
       ?.output as { checkpointsDir?: string } | null | undefined
-    uncertain = uncertainCheckpoints(
-      setup?.checkpointsDir ?? null,
-      await durably.getStepAttempts(run.id),
-    )
+    const attempts = await durably.getStepAttempts(run.id)
+    uncertain = uncertainCheckpoints(setup?.checkpointsDir ?? null, attempts)
+    baseline = baselineLogs(attempts)
   } else if (
     run.status === 'completed' &&
     (run.output as { conclusion?: unknown } | null)?.conclusion ===
@@ -310,8 +472,10 @@ export async function classifyRun(
     error: run.error,
     uncertain,
     verificationLogs,
+    baselineLogs: baseline,
     publish:
       (run.input as { target?: { publish?: unknown } } | null)?.target
         ?.publish === true,
+    reload: reloadAdvice(run.input),
   })
 }

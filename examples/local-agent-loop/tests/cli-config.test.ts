@@ -7,9 +7,10 @@
  * user's own database is never read or written.
  */
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync } from 'node:fs'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -86,7 +87,11 @@ async function sandbox(config?: unknown): Promise<Sandbox> {
   }
 }
 
-async function demo(box: Sandbox, args: string[]) {
+async function demo(
+  box: Sandbox,
+  args: string[],
+  env: Record<string, string> = {},
+) {
   return runChild(tsx, [cli, ...args], {
     cwd: box.root,
     timeoutMs: 60000,
@@ -95,20 +100,30 @@ async function demo(box: Sandbox, args: string[]) {
       HOME: box.home,
       // Must not move the database anywhere.
       DURABLY_DB: join(box.root, 'durably-db-override.db'),
+      ...env,
     },
   })
 }
 
-async function trigger(box: Sandbox, args: string[]): Promise<string> {
-  const res = await demo(box, ['trigger', ...args])
+async function trigger(
+  box: Sandbox,
+  args: string[],
+  env: Record<string, string> = {},
+): Promise<string> {
+  const res = await demo(box, ['trigger', ...args], env)
   assert.equal(res.code, 0, res.stderr)
   const out = JSON.parse(res.stdout) as { runId: string; db: string }
   assert.equal(out.db, dbPath(box.stateRoot))
   return out.runId
 }
 
-async function rejected(box: Sandbox, args: string[], message: RegExp) {
-  const res = await demo(box, ['trigger', ...args])
+async function rejected(
+  box: Sandbox,
+  args: string[],
+  message: RegExp,
+  env: Record<string, string> = {},
+) {
+  const res = await demo(box, ['trigger', ...args], env)
   assert.notEqual(res.code, 0, `expected failure for ${args.join(' ')}`)
   assert.match(res.stderr, message)
   // Validation happens before the run, and before the database, exist.
@@ -117,6 +132,10 @@ async function rejected(box: Sandbox, args: string[], message: RegExp) {
 
 type RunInput = {
   provider: string
+  checkTimeoutMs?: number
+  agentTimeoutMs?: number
+  codexPath?: string | null
+  configSource?: { path: string | null; explicit?: boolean }
   profiles: Record<
     string,
     {
@@ -133,6 +152,7 @@ type RunInput = {
     checkCommand: string[]
     setupCommand: string[] | null
     inputFiles: Record<string, { path: string } | null>
+    baselineCheck?: boolean
   }
 }
 
@@ -727,5 +747,487 @@ describe('trigger validation', { timeout: 120000 }, () => {
     assert.doesNotMatch(res.stdout, /DURABLY_DB/)
     assert.match(res.stdout, /\.local\/state\/local-agent-loop/)
     assert.match(res.stdout, /factory\.json/)
+  })
+})
+
+describe('settings fixed at trigger', { timeout: 180000 }, () => {
+  it('stores the timeouts: config first, then the trigger environment, then the default', async () => {
+    const box = await sandbox({
+      check: CHECK,
+      checkTimeoutMs: 45000,
+      agentTimeoutMs: 600000,
+    })
+    const fromConfig = await trigger(box, ['--repo', box.repo, '--task', 'x'], {
+      TEST_TIMEOUT_MS: '1',
+      AGENT_TIMEOUT_MS: '1',
+    })
+    const configured = await inputOf(box, fromConfig)
+    assert.equal(configured.checkTimeoutMs, 45000)
+    assert.equal(configured.agentTimeoutMs, 600000)
+
+    const plain = await sandbox({ check: CHECK })
+    const fromEnv = await trigger(
+      plain,
+      ['--repo', plain.repo, '--task', 'x'],
+      {
+        TEST_TIMEOUT_MS: '30000',
+        AGENT_TIMEOUT_MS: '400000',
+      },
+    )
+    const env = await inputOf(plain, fromEnv)
+    assert.equal(env.checkTimeoutMs, 30000)
+    assert.equal(env.agentTimeoutMs, 400000)
+    // Neither: the target's own default, fixed all the same.
+    const byDefault = await inputOf(
+      plain,
+      await trigger(plain, ['--repo', plain.repo, '--task', 'x']),
+    )
+    assert.equal(byDefault.checkTimeoutMs, 900000)
+    assert.equal(byDefault.agentTimeoutMs, 1800000)
+    const subject = await inputOf(plain, await trigger(plain, []))
+    assert.equal(subject.checkTimeoutMs, 120000)
+    assert.equal(subject.agentTimeoutMs, 300000)
+
+    // The worker's environment no longer reaches a stored run: a 1 ms agent
+    // timeout would fail every call, and the run still completes with the
+    // values fixed at trigger.
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    process.env.TEST_TIMEOUT_MS = '1'
+    process.env.AGENT_TIMEOUT_MS = '1'
+    const durably = createAgentDurably({ stateRoot: plain.stateRoot })
+    await durably.init()
+    try {
+      await until(
+        async () =>
+          ['completed', 'failed'].includes(
+            (await durably.getRun(fromEnv))?.status ?? '',
+          ),
+        'run with fixed timeouts settles',
+      )
+      const run = await durably.getRun(fromEnv)
+      assert.equal(run?.status, 'completed', run?.error ?? '')
+      const setup = (await durably.storage.getCompletedStep(fromEnv, 'setup'))
+        ?.output as FactorySetup
+      assert.equal(setup.agentTimeoutMs, 400000)
+      assert.equal(
+        setup.target.kind === 'repo' ? setup.target.checkTimeoutMs : null,
+        30000,
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+      delete process.env.TEST_TIMEOUT_MS
+      delete process.env.AGENT_TIMEOUT_MS
+    }
+  })
+
+  it('refuses a timeout that is not a positive safe integer', async () => {
+    // 2^31 ms and up overflow Node's timers and fire after about 1 ms.
+    for (const bad of [0, -1, 1.5, 2 ** 31, Number.MAX_SAFE_INTEGER + 2]) {
+      for (const key of ['checkTimeoutMs', 'agentTimeoutMs']) {
+        const box = await sandbox({ check: CHECK, [key]: bad })
+        await rejected(
+          box,
+          ['--repo', box.repo, '--task', 'x'],
+          new RegExp(`invalid factory config[\\s\\S]*${key}`),
+        )
+      }
+    }
+    const box = await sandbox({ check: CHECK })
+    for (const bad of [
+      '0',
+      '-5',
+      '1.5',
+      'NaN',
+      'Infinity',
+      '2147483648',
+      '9007199254740993',
+      '',
+    ]) {
+      for (const name of ['TEST_TIMEOUT_MS', 'AGENT_TIMEOUT_MS'])
+        await rejected(
+          box,
+          ['--repo', box.repo, '--task', 'x'],
+          new RegExp(`${name} must be a positive integer`),
+          { [name]: bad },
+        )
+    }
+  })
+
+  it('fixes baselineCheck and a checked, absolute codexPath', async () => {
+    const box = await sandbox()
+    await mkdir(join(box.root, 'config', 'bin'), { recursive: true })
+    const codex = join(box.root, 'config', 'bin', 'codex')
+    await writeFile(codex, '#!/bin/sh\nexit 0\n')
+    await chmod(codex, 0o755)
+    const config = join(box.root, 'config', 'factory.json')
+    await writeFile(
+      config,
+      JSON.stringify({
+        check: CHECK,
+        baselineCheck: true,
+        codexPath: 'bin/codex',
+      }),
+    )
+    const runId = await trigger(box, [
+      '--repo',
+      box.repo,
+      '--task',
+      'x',
+      '--config',
+      config,
+    ])
+    const input = await inputOf(box, runId)
+    // Relative to the config file, not to where the command ran.
+    assert.equal(input.codexPath, codex)
+    assert.equal(input.target.baselineCheck, true)
+
+    // Left out: no pin, so the bundled CLI and PATH fallback stay, and no
+    // baseline check.
+    const plain = await sandbox({ check: CHECK })
+    const plainInput = await inputOf(
+      plain,
+      await trigger(plain, ['--repo', plain.repo, '--task', 'x']),
+    )
+    assert.equal(plainInput.codexPath, null)
+    assert.equal(plainInput.target.baselineCheck, false)
+
+    // A path that is missing, a directory, or not executable fails before
+    // the run exists.
+    const text = join(box.root, 'config', 'bin', 'notes.txt')
+    await writeFile(text, 'not a program\n')
+    for (const [path, why] of [
+      ['bin/missing', /file not found/],
+      ['bin', /not a regular file/],
+      ['bin/notes.txt', /not executable/],
+    ] as const) {
+      const bad = await sandbox()
+      const badConfig = join(
+        box.root,
+        'config',
+        `bad-${why.source.length}.json`,
+      )
+      await writeFile(
+        badConfig,
+        JSON.stringify({ check: CHECK, codexPath: path }),
+      )
+      await rejected(
+        bad,
+        ['--repo', bad.repo, '--task', 'x', '--config', badConfig],
+        why,
+      )
+    }
+  })
+})
+
+describe('retrigger --reload-config', { timeout: 240000 }, () => {
+  it('reads factory.json again, keeps the stored task, and starts one run per config version', async () => {
+    const box = await sandbox({
+      check: CHECK,
+      profiles: { code: { provider: 'fake', model: 'unlisted-model' } },
+    })
+    const config = join(box.repo, 'factory.json')
+    const stopped = await trigger(box, [
+      '--repo',
+      box.repo,
+      '--task',
+      'the stored task',
+    ])
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    await durably.init()
+    try {
+      await until(
+        async () => (await durably.getRun(stopped))?.status === 'failed',
+        'preflight stops the run',
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+    const first = await inputOf(box, stopped)
+    assert.match(
+      (await demo(box, ['status'])).stdout,
+      new RegExp(`retrigger --run ${stopped} --reload-config`),
+    )
+
+    // The person fixes the profile and the check in factory.json.
+    const fixedCheck = ['node', '--test', 'test/calc.test.js']
+    await writeFile(
+      config,
+      JSON.stringify({
+        check: fixedCheck,
+        profiles: { code: { provider: 'fake', model: 'fixed-model' } },
+      }),
+    )
+    const reload = () =>
+      demo(box, ['retrigger', '--run', stopped, '--reload-config'])
+    const created = await reload()
+    assert.equal(created.code, 0, created.stderr)
+    const nextId = /^new run (\S+) with the input of /.exec(created.stdout)?.[1]
+    assert.ok(nextId, created.stdout)
+    const next = await inputOf(box, nextId)
+    assert.deepEqual(next.target.checkCommand, fixedCheck)
+    assert.equal(next.profiles['code']?.requestedModel, 'fixed-model')
+    // Not the config: the stored task, and the roles it leaves out.
+    assert.equal(next.target.task, 'the stored task')
+    assert.equal(next.target.task, first.target.task)
+    assert.deepEqual(
+      next.profiles['correctness'],
+      first.profiles['correctness'],
+    )
+
+    // The same config again: the run it already started, nothing new.
+    const again = await reload()
+    assert.equal(again.code, 0, again.stderr)
+    assert.match(
+      again.stdout,
+      new RegExp(`^already retriggered as ${nextId} with this version of `),
+    )
+
+    // Without the flag the stored settings stay, for an environment fix.
+    const plain = await demo(box, ['retrigger', '--run', stopped])
+    assert.equal(plain.code, 0, plain.stderr)
+    const plainId = /^new run (\S+)/.exec(plain.stdout)?.[1] ?? ''
+    const kept = await inputOf(box, plainId)
+    assert.deepEqual(kept.target.checkCommand, CHECK)
+    assert.equal(kept.profiles['code']?.requestedModel, 'unlisted-model')
+
+    // Another edit is another version: one more run, resolved and checked
+    // as at trigger.
+    await writeFile(
+      config,
+      JSON.stringify({
+        check: fixedCheck,
+        checkTimeoutMs: 45000,
+        profiles: { code: { provider: 'fake', model: 'fixed-model' } },
+      }),
+    )
+    const edited = await reload()
+    assert.equal(edited.code, 0, edited.stderr)
+    const editedId = /^new run (\S+)/.exec(edited.stdout)?.[1] ?? ''
+    assert.notEqual(editedId, nextId)
+    assert.equal((await inputOf(box, editedId)).checkTimeoutMs, 45000)
+    await writeFile(
+      config,
+      JSON.stringify({ check: CHECK, agentTimeoutMs: 2 ** 31 }),
+    )
+    const invalid = await reload()
+    assert.notEqual(invalid.code, 0)
+    assert.match(invalid.stderr, /invalid factory config[\s\S]*agentTimeoutMs/)
+  })
+
+  it('says a check flag wins over factory.json, reads a removed default factory.json as none, and refuses a removed --config file', async () => {
+    const box = await sandbox()
+    const config = join(box.repo, 'factory.json')
+    await writeFile(
+      config,
+      JSON.stringify({
+        profiles: { code: { provider: 'fake', model: 'unlisted-model' } },
+      }),
+    )
+    const flagCheck = ['node', '--test', 'test/calc.test.js']
+    const args = [
+      '--repo',
+      box.repo,
+      '--task',
+      'the stored task',
+      '--check',
+      flagCheck.join(' '),
+    ]
+    const stopped = await trigger(box, args)
+    // The same file, named by --config: a reload must find it again.
+    const named = await trigger(box, [...args, '--config', config])
+    assert.equal((await inputOf(box, named)).configSource?.explicit, true)
+    assert.equal((await inputOf(box, stopped)).configSource?.explicit, false)
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    await durably.init()
+    try {
+      await until(
+        async () =>
+          (await durably.getRun(stopped))?.status === 'failed' &&
+          (await durably.getRun(named))?.status === 'failed',
+        'preflight stops both runs',
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+    assert.match(
+      (await demo(box, ['status'])).stdout,
+      /--reload-config {2}# after fixing factory\.json; the --check, --setup or --base given at trigger still wins over it/,
+    )
+
+    // The run read the default factory.json, which is now gone: the reload
+    // carries on without a config, as a trigger would.
+    await rm(config)
+    const created = await demo(box, [
+      'retrigger',
+      '--run',
+      stopped,
+      '--reload-config',
+    ])
+    assert.equal(created.code, 0, created.stderr)
+    const nextId = /^new run (\S+)/.exec(created.stdout)?.[1] ?? ''
+    const next = await inputOf(box, nextId)
+    assert.deepEqual(next.target.checkCommand, flagCheck)
+    assert.notEqual(next.profiles['code']?.requestedModel, 'unlisted-model')
+
+    // The file the other run named with --config is gone: an error, not a
+    // silent fallback to no config.
+    const missing = await demo(box, [
+      'retrigger',
+      '--run',
+      named,
+      '--reload-config',
+    ])
+    assert.notEqual(missing.code, 0)
+    assert.match(missing.stderr, /--config .*factory\.json: file not found/)
+  })
+})
+
+describe('one worker per state root', { timeout: 240000 }, () => {
+  /** A worker process, with its output so far. */
+  function startWorker(box: Sandbox, env: Record<string, string> = {}) {
+    const child = spawn(tsx, [cli, 'worker'], {
+      cwd: box.root,
+      env: { ...process.env, HOME: box.home, FAKE_FAIL_FIRST: '0', ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let out = ''
+    child.stdout.on('data', (d: Buffer) => (out += d.toString()))
+    child.stderr.on('data', (d: Buffer) => (out += d.toString()))
+    const exited = new Promise<number | null>((resolve) =>
+      child.once('exit', (code) => resolve(code)),
+    )
+    // tsx runs the worker in a child of its own, so signals go to the pid
+    // the worker prints, the process that holds the lock.
+    const pid = () => Number(/worker running, pid (\d+)/.exec(out)?.[1])
+    return {
+      child,
+      exited,
+      output: () => out,
+      pid,
+      running: () =>
+        until(async () => Number.isInteger(pid()), 'worker starts'),
+      kill: (signal: NodeJS.Signals) => {
+        try {
+          process.kill(pid(), signal)
+        } catch {
+          // Already gone.
+        }
+      },
+    }
+  }
+
+  it('refuses a second worker, lets another root run, and survives kill -9 without rerunning a finished baseline', async () => {
+    // The check reads gate files beside the repository: while `slow-base`
+    // exists it hangs on the base commit, and while `slow-verify` exists it
+    // hangs on a fixed candidate. Otherwise it passes at once.
+    const box = await sandbox()
+    const gates = join(box.root, 'gates')
+    await mkdir(gates)
+    const script = join(box.root, 'check.cjs')
+    await writeFile(
+      script,
+      `const { existsSync, readFileSync } = require('node:fs')
+const fixed = !readFileSync('src/calc.js', 'utf8').includes('Math.trunc')
+const gate = ${JSON.stringify(gates)} + (fixed ? '/slow-verify' : '/slow-base')
+process.stdout.write(fixed ? 'candidate\\n' : 'base\\n')
+// Hang while the gate exists, so a worker can be killed mid-check; the
+// orphaned check then ends on its own once the gate is gone.
+const wait = setInterval(() => existsSync(gate) || clearInterval(wait), 100)
+`,
+    )
+    await writeFile(
+      join(box.repo, 'factory.json'),
+      JSON.stringify({ check: ['node', script], baselineCheck: true }),
+    )
+    await git(box.repo, ['add', '-A'])
+    await git(box.repo, ['commit', '-m', 'config'])
+    await writeFile(join(gates, 'slow-base'), '')
+    const runId = await trigger(box, ['--repo', box.repo, '--task', 'fix add'])
+    const db = createAgentDurably({ stateRoot: box.stateRoot })
+    await db.migrate()
+    const attempts = async (name: string) =>
+      (await db.getStepAttempts(runId)).filter((a) => a.stepName === name)
+    const other = await sandbox()
+    const workers: ReturnType<typeof startWorker>[] = []
+    try {
+      const first = startWorker(box)
+      workers.push(first)
+      await first.running()
+
+      // Same state root: refused, naming the running worker.
+      const second = startWorker(box)
+      workers.push(second)
+      assert.notEqual(await second.exited, 0)
+      assert.match(second.output(), new RegExp(`pid ${first.pid()}\\b`))
+      assert.ok(second.output().includes(packageRoot), second.output())
+      // Another state root: no conflict.
+      const elsewhere = startWorker(other)
+      workers.push(elsewhere)
+      await elsewhere.running()
+      elsewhere.kill('SIGTERM')
+      assert.equal(await elsewhere.exited, 0)
+
+      // The first worker dies mid-baseline. Its note stays behind, but the
+      // lock went with the process: the next worker starts.
+      await until(
+        async () => (await attempts('baseline')).length === 1,
+        'baseline starts',
+      )
+      first.kill('SIGKILL')
+      await first.exited
+      assert.ok(existsSync(join(box.stateRoot, 'worker.json')))
+      await rm(join(gates, 'slow-base'))
+      await writeFile(join(gates, 'slow-verify'), '')
+      const third = startWorker(box)
+      workers.push(third)
+      await third.running()
+      // It reclaims the run, grades the base again, and dies mid-verify.
+      await until(
+        async () =>
+          (await db.getStepAttempts(runId)).some((a) =>
+            /^stage:\d+:verify:acceptance$/.test(a.stepName),
+          ),
+        'verify starts',
+      )
+      third.kill('SIGKILL')
+      await third.exited
+      await rm(join(gates, 'slow-verify'))
+      const fourth = startWorker(box)
+      workers.push(fourth)
+      await fourth.running()
+      await until(
+        async () =>
+          ['completed', 'failed'].includes(
+            (await db.getRun(runId))?.status ?? '',
+          ),
+        'run finishes',
+      )
+      const run = await db.getRun(runId)
+      assert.equal(run?.status, 'completed', run?.error ?? '')
+      // Graded twice on the base (the first cut off), and not again after
+      // it completed.
+      const baseline = await attempts('baseline')
+      assert.equal(baseline.length, 2)
+      const report = await buildReport(db, runId)
+      assert.equal(report.baseline?.passed, true)
+      assert.ok(
+        report.baseline?.log?.stdoutPath.includes(baseline[1]?.id ?? '?'),
+      )
+      fourth.kill('SIGTERM')
+      assert.equal(await fourth.exited, 0)
+      // A worker that stopped cleanly leaves no note.
+      assert.equal(existsSync(join(box.stateRoot, 'worker.json')), false)
+    } finally {
+      for (const w of workers) {
+        w.kill('SIGKILL')
+        w.child.kill('SIGKILL')
+      }
+      await db.db.destroy()
+    }
   })
 })

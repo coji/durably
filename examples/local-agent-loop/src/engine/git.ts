@@ -27,10 +27,12 @@ async function git(
     signal?: AbortSignal
     timeoutMs?: number
     maxOutputChars?: number
+    env?: Record<string, string>
   } = {},
 ): Promise<string> {
   const result = await runChild('git', args, {
     cwd,
+    ...(options.env ? { env: options.env } : {}),
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     maxOutputChars: options.maxOutputChars ?? 1_000_000,
     ...(options.signal ? { signal: options.signal } : {}),
@@ -287,6 +289,46 @@ export async function discardWorktree(
       // Nothing to remove; a fresh run takes this path every time.
     }
   }
+}
+
+/**
+ * Remove untracked files and directories that `.gitignore` does not cover,
+ * including nested repositories (the second `-f`). Ignored files, such as
+ * installed dependencies, stay.
+ */
+export async function cleanUntracked(
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await git(cwd, ['clean', '-ffd'], signal ? { signal } : {})
+}
+
+/**
+ * Up to `limit` paths that `cleanUntracked` would remove, as `git clean`
+ * itself reports them in a dry run. Using the same command keeps this check
+ * and the clean in step: an empty directory counts, a directory holding only
+ * ignored files does not, and a nested repository does. Empty when the clean
+ * would remove nothing; only that and the first few names matter, so a long
+ * listing is not read in full.
+ */
+export async function someUntracked(
+  cwd: string,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const out = await git(cwd, ['clean', '-ffdn'], {
+    // The dry run's "Would remove" wording is translated in other locales.
+    env: { LC_ALL: 'C' },
+    maxOutputChars: 100_000,
+    ...(signal ? { signal } : {}),
+  })
+  const lines = out.split('\n')
+  // A capped listing keeps its end, so its first line may be cut short.
+  if (out.length >= 100_000) lines.shift()
+  return lines
+    .map((line) => /^Would remove (.+)$/.exec(line)?.[1])
+    .filter((path): path is string => path !== undefined)
+    .slice(0, limit)
 }
 
 /** Read one file's contents at a commit without checking it out. */

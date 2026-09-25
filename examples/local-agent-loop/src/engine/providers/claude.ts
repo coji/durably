@@ -24,6 +24,7 @@ import { isAbsolute, normalize, relative, resolve, sep } from 'node:path'
 import { generateText } from 'ai'
 import {
   claudeCode,
+  isAuthenticationError,
   type ClaudeCodeSettings,
 } from 'ai-sdk-provider-claude-code'
 
@@ -33,6 +34,7 @@ import {
   type AgentCallOptions,
   type AgentProvider,
   type AgentResult,
+  type AvailabilityCheck,
 } from './types.js'
 
 const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
@@ -356,9 +358,48 @@ export function buildClaudeSettings(
   }
 }
 
+/**
+ * Error kinds the provider reports when the Claude Code CLI refused a call
+ * outright: the settings or the login are wrong, and nothing was acted on.
+ */
+const REFUSAL_KINDS = new Set([
+  'model_not_found',
+  'authentication_failed',
+  'oauth_org_not_allowed',
+  'account_on_hold',
+  'billing_error',
+])
+
+/**
+ * The sentence the provider appends when it recognised a missing model from
+ * the CLI's text rather than from a structured error kind.
+ */
+const MODEL_NOT_FOUND_TEXT = 'The requested model was not found.'
+
+/**
+ * The provider's explicit refusal as one line; null for any other error.
+ * The provider does not always attach a structured kind: a login problem
+ * seen in the CLI's text or its 401 exit comes back as the provider's
+ * authentication error, and a missing model seen in its text carries the
+ * provider's model-not-found sentence. Both are refusals all the same.
+ */
+export function claudeRejection(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error)
+  const line = message.split(' | stderr')[0]?.slice(0, 400) ?? ''
+  const kind = (error as { data?: { errorKind?: unknown } } | null)?.data
+    ?.errorKind
+  if (typeof kind === 'string' && REFUSAL_KINDS.has(kind))
+    return `${kind}: ${line}`
+  if (isAuthenticationError(error)) return `authentication_failed: ${line}`
+  if (message.includes(MODEL_NOT_FOUND_TEXT)) return `model_not_found: ${line}`
+  return null
+}
+
 export class ClaudeProvider implements AgentProvider {
   readonly name = 'claude' as const
   readonly fake = false
+  /** The Agent SDK's own binary; see `claudeExecutable`. */
+  readonly cliPath = null
   /** Claude Agent SDK reports usage once at completion — no partial snapshots. */
   readonly partialUsage = false
 
@@ -444,5 +485,21 @@ export class ClaudeProvider implements AgentProvider {
             },
       elapsedMs: Date.now() - started,
     }
+  }
+
+  /**
+   * Claude Code has no way to ask whether a model and effort are usable
+   * without sending a prompt, so the answer is always a minimal call.
+   */
+  async checkAvailability(): Promise<AvailabilityCheck> {
+    return {
+      verdict: 'unknown',
+      method: 'none',
+      detail: 'Claude Code offers no check that sends no prompt',
+    }
+  }
+
+  rejectionReason(error: unknown): string | null {
+    return claudeRejection(error)
   }
 }

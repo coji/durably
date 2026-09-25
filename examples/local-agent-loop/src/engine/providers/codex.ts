@@ -7,6 +7,7 @@ import { generateText } from 'ai'
 import {
   CODEX_REASONING_EFFORTS,
   createCodexAppServer,
+  listModels,
   type ReasoningEffort,
 } from 'ai-sdk-provider-codex-cli'
 
@@ -17,6 +18,8 @@ import {
   type AgentCallOptions,
   type AgentProvider,
   type AgentResult,
+  type AvailabilityCheck,
+  type AvailabilityRequest,
 } from './types.js'
 
 const VALID_EFFORTS = new Set<string>(
@@ -92,14 +95,19 @@ function onPath(name: string): string | null {
 }
 
 /**
- * The Codex CLI the provider launches. `ai-sdk-provider-codex-cli` prefers
- * the `@openai/codex` package it can resolve itself, run as
- * `node <package>/bin/codex.js`, and falls back to `codex` on PATH. This
- * repeats that resolution from the provider's own location, and the provider
- * is then handed the result explicitly, so the version on record and the
- * CLI that runs are the same file.
+ * The Codex CLI the provider launches. A run that pinned `codexPath` launches
+ * that file, a script through `node` the way the provider does. Otherwise
+ * `ai-sdk-provider-codex-cli` prefers the `@openai/codex` package it can
+ * resolve itself, run as `node <package>/bin/codex.js`, and falls back to
+ * `codex` on PATH. This repeats that resolution from the provider's own
+ * location, and the provider is then handed the result explicitly, so the
+ * version on record and the CLI that runs are the same file.
  */
-export function codexExecutable(): CodexExecutable {
+export function codexExecutable(pinned?: string | null): CodexExecutable {
+  if (pinned)
+    return /\.[cm]?js$/i.test(pinned)
+      ? { command: 'node', args: [pinned], path: pinned }
+      : { command: pinned, args: [], path: pinned }
   try {
     const provider = createRequire(import.meta.url).resolve(
       'ai-sdk-provider-codex-cli/package.json',
@@ -112,19 +120,168 @@ export function codexExecutable(): CodexExecutable {
   }
 }
 
-let authModePromise: Promise<CodexAuthMode> | null = null
+const authModes = new Map<string, Promise<CodexAuthMode>>()
 
-/** Probe the login once per process, through the owned-subprocess path. */
-function codexAuthMode(): Promise<CodexAuthMode> {
-  if (authModePromise) return authModePromise
-  const exe = codexExecutable()
-  authModePromise = runChild(exe.command, [...exe.args, 'login', 'status'], {
+/**
+ * Probe the login once per process and CLI, through the owned-subprocess
+ * path. A pinned CLI may keep its login elsewhere, so each file is asked.
+ */
+function codexAuthMode(pinned?: string | null): Promise<CodexAuthMode> {
+  const key = pinned ?? ''
+  const cached = authModes.get(key)
+  if (cached) return cached
+  const exe = codexExecutable(pinned)
+  const probe = runChild(exe.command, [...exe.args, 'login', 'status'], {
     timeoutMs: 15000,
     maxOutputChars: 2000,
   })
     .then((res) => parseCodexAuthMode(`${res.stdout}\n${res.stderr}`))
     .catch(() => 'unknown' as const)
-  return authModePromise
+  authModes.set(key, probe)
+  return probe
+}
+
+/**
+ * How the provider reports an app server that never came up: it could not
+ * be spawned, is too old for `app-server`, or failed its `initialize`
+ * handshake. Each is thrown before a thread exists, so no prompt was sent.
+ */
+const CODEX_START_FAILURES = [
+  'Failed to initialize codex app-server',
+  'codex app-server failed to start',
+  'codex app-server requires codex CLI >=',
+  'codex app-server version ',
+] as const
+
+/**
+ * An `initialize` handshake that timed out: the app server may only be slow
+ * to come up, so it says nothing about the settings.
+ */
+const CODEX_START_TIMEOUT = "Request timed out for method 'initialize'"
+
+/**
+ * The start failure `error` reports, as one line; null for anything else,
+ * including a handshake that only timed out.
+ */
+export function codexStartFailure(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error)
+  if (message.includes(CODEX_START_TIMEOUT)) return null
+  return CODEX_START_FAILURES.some((prefix) => message.startsWith(prefix))
+    ? message.slice(0, 500)
+    : null
+}
+
+/**
+ * A 4xx answer from the Codex backend (Codex puts the JSON error body in the
+ * message), such as a model the account cannot use, or a CLI that never
+ * started, as one line; null for anything else. A timeout (408) or a rate
+ * limit (429) says nothing about the settings, so neither counts.
+ */
+export function codexRejection(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error)
+  // The CLI never came up, so no prompt can have reached it: a broken
+  // `codexPath` or install is a refusal, not a doubt.
+  const start = codexStartFailure(error)
+  if (start) return start
+  try {
+    const body = JSON.parse(message) as {
+      status?: unknown
+      error?: { message?: unknown }
+    }
+    const status = typeof body.status === 'number' ? body.status : null
+    if (status === null || status < 400 || status >= 500) return null
+    if (status === 408 || status === 429) return null
+    const detail =
+      typeof body.error?.message === 'string' ? body.error.message : message
+    return `${status}: ${detail}`.slice(0, 500)
+  } catch {
+    return null
+  }
+}
+
+/** A model entry of `model/list`, with only the fields the check reads. */
+interface ListedModel {
+  id?: unknown
+  model?: unknown
+  supportedReasoningEfforts?: unknown
+}
+
+/**
+ * Judge one model and effort against the Codex model list. An effort a
+ * listed model does not offer is refused without sending a prompt. A model
+ * the list leaves out proves nothing: `model/list` omits hidden models, and
+ * the provider has no option to include them, so absence says `unknown` and
+ * a minimal call decides.
+ */
+export function judgeCodexModelList(
+  models: ListedModel[],
+  model: string,
+  effort: string | null,
+): AvailabilityCheck {
+  const method = 'codex model/list'
+  const entry = models.find((m) => m.id === model || m.model === model)
+  if (!entry)
+    return {
+      verdict: 'unknown',
+      method,
+      detail: `${model} is not in the model list, which leaves out hidden models`,
+    }
+  const efforts = Array.isArray(entry.supportedReasoningEfforts)
+    ? entry.supportedReasoningEfforts.flatMap((e) => {
+        const value = (e as { reasoningEffort?: unknown } | null)
+          ?.reasoningEffort
+        return typeof value === 'string' ? [value] : []
+      })
+    : null
+  if (effort !== null && efforts !== null && !efforts.includes(effort))
+    return {
+      verdict: 'unavailable',
+      method,
+      detail: `${model} does not offer effort ${effort} (offers: ${efforts.join(', ')})`,
+    }
+  if (effort !== null && efforts === null)
+    return {
+      verdict: 'unknown',
+      method,
+      detail: `${model} is listed without its efforts`,
+    }
+  return {
+    verdict: 'available',
+    method,
+    detail: `${model} is listed${effort ? ` with effort ${effort}` : ''}`,
+  }
+}
+
+/**
+ * The first page of one CLI's model list, read once per CLI file however
+ * many roles are checked against it. The provider's `listModels` takes no
+ * cursor, so a model on a later page reads as missing, which is `unknown`
+ * and left to the minimal call. A failed read is not kept, so a later
+ * preflight asks again.
+ */
+const modelCatalogs = new Map<string, Promise<ListedModel[]>>()
+
+function codexModelCatalog(pinned: string | null): Promise<ListedModel[]> {
+  const executable = codexExecutable(pinned).path
+  const key = executable ?? ''
+  const cached = modelCatalogs.get(key)
+  if (cached) return cached
+  const read = (async () => {
+    const listed = await listModels({
+      ...(executable ? { codexPath: executable } : {}),
+      connectionTimeoutMs: 30000,
+      requestTimeoutMs: 30000,
+    })
+    return listed.models as ListedModel[]
+  })()
+  modelCatalogs.set(key, read)
+  // Dropped once settled: the next preflight reads the catalog again, so a
+  // model the account gains or loses is seen by the next run.
+  void read.then(
+    () => modelCatalogs.delete(key),
+    () => modelCatalogs.delete(key),
+  )
+  return read
 }
 
 /** Command line or preset table only — see the matching note in claude.ts. */
@@ -165,6 +322,8 @@ export class CodexProvider implements AgentProvider {
   readonly fake = false
   readonly partialUsage = false
 
+  constructor(readonly cliPath: string | null = null) {}
+
   resolveExecution(requested: {
     requestedModel: string | null
     requestedEffort: string | null
@@ -185,7 +344,7 @@ export class CodexProvider implements AgentProvider {
     const { model, effort } = this.resolveExecution(options)
     const modelId = model ?? defaultModelFor('codex')
     const readOnly = READ_ONLY_ROLES.has(options.role)
-    const executable = codexExecutable().path
+    const executable = codexExecutable(this.cliPath).path
     const provider = createCodexAppServer({
       defaultSettings: {
         ...(executable ? { codexPath: executable } : {}),
@@ -221,7 +380,7 @@ export class CodexProvider implements AgentProvider {
       const cacheRead = result.usage.inputTokenDetails?.cacheReadTokens ?? null
       const cacheWrite = codexCacheWriteTokens(
         result.usage.inputTokenDetails?.cacheWriteTokens,
-        await codexAuthMode(),
+        await codexAuthMode(this.cliPath),
       )
       const nativeModel =
         typeof result.response?.modelId === 'string' &&
@@ -255,5 +414,36 @@ export class CodexProvider implements AgentProvider {
     } finally {
       await provider.close()
     }
+  }
+
+  /**
+   * `model/list` through the pinned CLI: free, and sends no prompt. A CLI
+   * that does not start is refused here, as the minimal call would be.
+   */
+  async checkAvailability(
+    request: AvailabilityRequest,
+  ): Promise<AvailabilityCheck> {
+    const model = request.model ?? defaultModelFor('codex')
+    const method = 'codex model/list'
+    try {
+      return judgeCodexModelList(
+        await codexModelCatalog(this.cliPath),
+        model,
+        request.effort,
+      )
+    } catch (error) {
+      const start = codexStartFailure(error)
+      if (start) return { verdict: 'unavailable', method, detail: start }
+      const message = error instanceof Error ? error.message : String(error)
+      return {
+        verdict: 'unknown',
+        method,
+        detail: `the model list could not be read: ${message.slice(0, 300)}`,
+      }
+    }
+  }
+
+  rejectionReason(error: unknown): string | null {
+    return codexRejection(error)
   }
 }

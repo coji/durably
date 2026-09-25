@@ -183,6 +183,8 @@ export interface Pipeline {
 
 const PIPELINE_ORDER = [
   'setup',
+  'baseline',
+  'preflight',
   'triage',
   'code',
   'verify',
@@ -215,10 +217,16 @@ function pipelineEvents(
   ].filter((e) => PIPELINE_ORDER.includes(e.stage))
 }
 
+/** Stages that run at most once and appear only on a run that reached them. */
+const OPTIONAL_ONCE = ['baseline', 'preflight']
+/** Stages that run at most once per run. */
+const ONCE_STAGES = ['setup', 'triage', ...OPTIONAL_ONCE]
+
 /**
  * The fixed stage order with each stage's visit count and state, from the
  * report's stored attempts, waits and visit counts. Triage appears only
- * when the run has a triage step or profile. A stop is shown on the stage
+ * when the run has a triage step or profile; the baseline check and
+ * preflight only once the run has entered them. A stop is shown on the stage
  * the run stopped after, not as a stage of its own.
  */
 export function derivePipeline(input: PipelineInput): Pipeline {
@@ -228,12 +236,19 @@ export function derivePipeline(input: PipelineInput): Pipeline {
   for (const v of report.stageVisits) counts.set(v.stage, v.visits)
   // Approval is a wait, not a step, so it has no attempts to count.
   counts.set('approve', new Set(approvals.map((w) => w.name)).size)
-  for (const once of ['setup', 'triage'])
-    counts.set(once, report.attempts.some((a) => a.stepName === once) ? 1 : 0)
+  for (const once of ONCE_STAGES)
+    counts.set(
+      once,
+      report.attempts.some((a) => stageOf(a.stepName) === once) ? 1 : 0,
+    )
   const hasTriage =
     (counts.get('triage') ?? 0) > 0 ||
     report.roleUsage.some((r) => r.role === 'triage')
-  const order = PIPELINE_ORDER.filter((s) => s !== 'triage' || hasTriage)
+  const order = PIPELINE_ORDER.filter(
+    (s) =>
+      (s !== 'triage' || hasTriage) &&
+      (!OPTIONAL_ONCE.includes(s) || (counts.get(s) ?? 0) > 0),
+  )
 
   const events = pipelineEvents(report.attempts, approvals).sort(
     (x, y) => x.at - y.at,
@@ -418,11 +433,14 @@ function entryOf(name: string): {
   lens: string | null
   seq: number | null
 } | null {
-  if (name === 'setup' || name === 'triage')
+  // Once-per-run stages; every preflight step, the free check and each
+  // minimal call, is one entry.
+  const once = stageOf(name)
+  if (ONCE_STAGES.includes(once))
     return {
-      key: name,
-      stage: name,
-      label: stageName(name),
+      key: once,
+      stage: once,
+      label: stageName(once),
       lens: null,
       seq: null,
     }
@@ -675,7 +693,11 @@ export function deriveTrace(input: TraceInput): Trace {
     const known = sorted
       .map((a) => time(a.completedAt))
       .filter((v): v is number => v !== null)
-    const suffix = (a: AttemptRow) => a.stepName.split(':')[3]
+    // `stage:<n>:<stage>:<part>`, or `preflight:call:<i>`.
+    const suffix = (a: AttemptRow) => {
+      const parts = a.stepName.split(':')
+      return parts[0] === 'stage' ? parts[3] : parts[1]
+    }
     const multiStep = latest.size > 1
     const retried = sorted.length > latest.size
     const counters = new Map<string, number>()
@@ -684,12 +706,14 @@ export function deriveTrace(input: TraceInput): Trace {
           const n = (counters.get(a.stepName) ?? 0) + 1
           counters.set(a.stepName, n)
           const aOpen = isOpen(a)
+          const part = suffix(a)
           return node({
             id: `attempt:${a.attemptId}`,
             kind: 'attempt',
-            label: multiStep
-              ? `${stepPartName(suffix(a) ?? '')} 試行 ${n}`
-              : `試行 ${n}`,
+            label:
+              multiStep && part
+                ? `${stepPartName(part)} 試行 ${n}`
+                : `試行 ${n}`,
             stage: e.stage,
             iteration: at,
             state: stateOf(a),

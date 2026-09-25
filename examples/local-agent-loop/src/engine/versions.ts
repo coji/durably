@@ -48,25 +48,29 @@ async function cliVersion(
  * installed or authenticated.
  *
  * The CLI probed is the file the provider launches (`codexCliPath` /
- * `claudeCliPath`); what cannot be found is null, never another install.
+ * `claudeCliPath`), the run's pinned `codexPath` when it has one; what cannot
+ * be found is null, never another install.
  */
 export async function resolveVersions(
   provider: 'codex' | 'claude' | 'fake',
+  cliPath: string | null = null,
 ): Promise<Record<string, string | null>> {
-  const cached = versionCache.get(provider)
+  const key = `${provider}:${provider === 'codex' ? (cliPath ?? '') : ''}`
+  const cached = versionCache.get(key)
   if (cached) return cached
   // Drop a rejected probe from the cache: caching it would make one transient
   // failure permanent for the life of the worker.
-  const pending = resolveVersionsUncached(provider).catch((error) => {
-    versionCache.delete(provider)
+  const pending = resolveVersionsUncached(provider, cliPath).catch((error) => {
+    versionCache.delete(key)
     throw error
   })
-  versionCache.set(provider, pending)
+  versionCache.set(key, pending)
   return pending
 }
 
 async function resolveVersionsUncached(
   provider: 'codex' | 'claude' | 'fake',
+  cliPath: string | null,
 ): Promise<Record<string, string | null>> {
   const base = {
     ai: packageVersion('ai'),
@@ -76,7 +80,7 @@ async function resolveVersionsUncached(
     ),
   }
   if (provider === 'codex') {
-    const exe = codexExecutable()
+    const exe = codexExecutable(cliPath)
     return {
       ...base,
       codexCli: exe.path
@@ -94,6 +98,21 @@ async function resolveVersionsUncached(
     }
   }
   return base
+}
+
+/**
+ * The path and version of one provider's CLI, from `resolveVersions`: what
+ * a preflight record and the config version name. Null for the fake one.
+ */
+export function cliIdentityOf(
+  provider: 'codex' | 'claude' | 'fake',
+  versions: Record<string, string | null>,
+): { path: string | null; version: string | null } | null {
+  if (provider === 'fake') return null
+  return {
+    path: versions[`${provider}CliPath`] ?? null,
+    version: versions[`${provider}Cli`] ?? null,
+  }
 }
 
 /** One role's fixed settings, as they enter the config version. */
@@ -123,6 +142,11 @@ export interface ConfigVersionInput {
   edgeCases: ConfigVersionProfile
   /** Shadow triage; left out of the hash entirely when not configured. */
   triage?: ConfigVersionProfile | null
+  /**
+   * Path and version of each real CLI the roles launch, from
+   * `resolveVersions`. Left out when empty, so a fake run keeps its version.
+   */
+  cli?: Record<string, string | null> | null
 }
 
 function canonicalProfile(p: ConfigVersionProfile): ConfigVersionProfile {
@@ -138,9 +162,10 @@ function canonicalProfile(p: ConfigVersionProfile): ConfigVersionProfile {
 /**
  * Stable hash of the fixed run configuration. Two runs share a config
  * version exactly when every role's provider, models and efforts, the context
- * mode, iteration budget, instruction set and triage profile (when there is
- * one) are identical — the unit of a fair comparison. Stored on every LLM
- * attempt as `configVersion`.
+ * mode, iteration budget, instruction set, triage profile (when there is
+ * one) and the path and version of every real CLI launched are identical —
+ * the unit of a fair comparison. Stored on every LLM attempt as
+ * `configVersion`.
  */
 export function configVersionOf(input: ConfigVersionInput): string {
   const canonical = JSON.stringify({
@@ -156,6 +181,14 @@ export function configVersionOf(input: ConfigVersionInput): string {
     // Only present when configured, so a run without triage keeps the version
     // it had before triage existed.
     ...(input.triage ? { triage: canonicalProfile(input.triage) } : {}),
+    // Two runs on different CLI builds are not one population.
+    ...(input.cli && Object.keys(input.cli).length > 0
+      ? {
+          cli: Object.fromEntries(
+            Object.entries(input.cli).sort(([x], [y]) => x.localeCompare(y)),
+          ),
+        }
+      : {}),
   })
   return createHash('sha256').update(canonical).digest('hex').slice(0, 16)
 }

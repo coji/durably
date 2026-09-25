@@ -60,6 +60,16 @@ export interface FactorySetup {
   maxIterations: number
   agentTimeoutMs: number
   /**
+   * Run the pinned check once on the base commit before any agent call.
+   * Repository targets only; absent on a run set up before it existed.
+   */
+  baselineCheck?: boolean
+  /**
+   * The Codex CLI file the run pinned at trigger. Null or absent: the bundled
+   * CLI first, then `codex` on PATH, as before `codexPath` existed.
+   */
+  codexPath?: string | null
+  /**
    * Skip the human approval wait and deliver as soon as the reviews pass.
    * Appropriate when the delivery is itself reviewable, such as a draft pull
    * request the human still has to merge.

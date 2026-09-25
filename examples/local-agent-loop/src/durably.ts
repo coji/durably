@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -42,6 +49,84 @@ export function legacyDbWarning(
 ): string | null {
   if (!existsSync(legacy)) return null
   return `warning: ${legacy} is from an older version and is no longer read; the database is now ${current}. Finish or discard runs in the old one with the older version (see README "Upgrading").`
+}
+
+/** Who holds a state root's worker lock, as that worker recorded it. */
+export interface WorkerLockHolder {
+  pid: number
+  /** The checkout the worker was started from. */
+  checkout: string
+  startedAt: string
+}
+
+export type WorkerLockResult =
+  | { acquired: true; release: () => void }
+  /** Held by a live worker; `holder` is null when it has not said who it is. */
+  | { acquired: false; holder: WorkerLockHolder | null }
+
+/** The file the operating system locks, and the note beside it. */
+function workerLockPaths(stateRoot: string = defaultStateRoot()) {
+  return {
+    lock: join(stateRoot, 'worker.lock'),
+    holder: join(stateRoot, 'worker.json'),
+  }
+}
+
+/**
+ * Take the state root's worker lock: one worker per database. The lock is an
+ * exclusive SQLite transaction on a file of its own, which SQLite holds with
+ * the operating system's file lock, so it lasts exactly as long as the
+ * process: a worker killed with `kill -9` leaves no lock behind, only its
+ * note, which the next worker overwrites. The note says who holds the lock,
+ * because a locked file cannot be read.
+ */
+export function acquireWorkerLock(
+  stateRoot: string = defaultStateRoot(),
+  checkout: string = join(dirname(fileURLToPath(import.meta.url)), '..'),
+): WorkerLockResult {
+  mkdirSync(stateRoot, { recursive: true })
+  const paths = workerLockPaths(stateRoot)
+  // No busy wait: a second worker is told at once.
+  const lock = new Database(paths.lock, { timeout: 0 })
+  try {
+    lock.exec('BEGIN EXCLUSIVE')
+  } catch (error) {
+    lock.close()
+    if ((error as { code?: unknown }).code !== 'SQLITE_BUSY') throw error
+    return { acquired: false, holder: readHolder(paths.holder) }
+  }
+  const holder: WorkerLockHolder = {
+    pid: process.pid,
+    checkout,
+    startedAt: new Date().toISOString(),
+  }
+  const temporary = `${paths.holder}.${process.pid}.tmp`
+  writeFileSync(temporary, `${JSON.stringify(holder)}\n`)
+  renameSync(temporary, paths.holder)
+  let held = true
+  return {
+    acquired: true,
+    release: () => {
+      if (!held) return
+      held = false
+      // Only this worker's own note; a note is never left pointing at a
+      // worker that has let go.
+      if (readHolder(paths.holder)?.pid === process.pid)
+        rmSync(paths.holder, { force: true })
+      lock.close()
+    },
+  }
+}
+
+function readHolder(path: string): WorkerLockHolder | null {
+  try {
+    const v = JSON.parse(readFileSync(path, 'utf8')) as WorkerLockHolder
+    return typeof v.pid === 'number' && typeof v.checkout === 'string'
+      ? v
+      : null
+  } catch {
+    return null
+  }
 }
 
 export interface AgentDurablyOptions {

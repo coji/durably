@@ -5,6 +5,7 @@ import type { AnyDurably } from '@coji/durably'
 
 import { classifyRun, stageStep } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
+import type { VerificationLog } from './providers/types.js'
 import {
   roleUsage,
   stageTimings,
@@ -14,11 +15,16 @@ import {
   totalStageMs,
   toAttemptRow,
   TRIAGE_JUDGMENTS,
+  usageOf,
+  type AttemptRow,
   type LoopReport,
+  type ReportBaseline,
   type ReportCandidate,
   type ReportCandidateChanges,
   type ReportDelivery,
   type ReportInputs,
+  type ReportPreflight,
+  type ReportPreflightCheck,
   type ReportReview,
   type ReportReviewRound,
   type ReportSealedCandidate,
@@ -252,6 +258,107 @@ function toReportCandidate({
 }
 
 /**
+ * The base-commit check: the completed step's verdict and the log it cites,
+ * or, while no attempt has finished, the last attempt's log without one.
+ */
+function baselineOf(
+  steps: StoredStep[],
+  rows: AttemptRow[],
+): ReportBaseline | null {
+  const attempts = rows.filter((r) => r.stepName === 'baseline')
+  const done = steps.find((s) => s.name === 'baseline')
+  const output = done?.status === 'completed' ? done.output : null
+  const verdict = output as {
+    passed?: unknown
+    exitCode?: unknown
+    log?: VerificationLog | null
+  } | null
+  if (verdict && typeof verdict.passed === 'boolean')
+    return {
+      passed: verdict.passed,
+      exitCode: typeof verdict.exitCode === 'number' ? verdict.exitCode : null,
+      log: verdict.log ?? null,
+      recovered: attempts.some(
+        (a) => a.measurement?.result === 'checkpoint-recovered',
+      ),
+    }
+  if (attempts.length === 0) return null
+  return {
+    passed: null,
+    exitCode: null,
+    log: attempts.at(-1)?.measurement?.verificationLog ?? null,
+    recovered: false,
+  }
+}
+
+interface StoredPreflightCheck {
+  roles?: string[]
+  provider?: string
+  model?: string | null
+  effort?: string | null
+  cliPath?: string | null
+  cliVersion?: string | null
+  free?: { verdict?: string; method?: string; detail?: string }
+}
+
+/**
+ * Each preflight check with what decided it: the free check, or the minimal
+ * call's stored answer. A call that was attempted and left no answer is
+ * `unknown`; its usage is still in the stage's sums.
+ */
+function preflightOf(
+  steps: StoredStep[],
+  rows: AttemptRow[],
+): ReportPreflight | null {
+  const plan = steps.find((s) => s.name === 'preflight')
+  const stored = (plan?.status === 'completed' ? plan.output : null) as {
+    checks?: StoredPreflightCheck[]
+  } | null
+  if (!Array.isArray(stored?.checks)) return null
+  const checks = stored.checks.map((c, index): ReportPreflightCheck => {
+    const name = `preflight:call:${index}`
+    const called = rows.some((r) => r.stepName === name)
+    const answer = steps.find(
+      (s) => s.name === name && s.status === 'completed',
+    )?.output as { verdict?: string; detail?: string } | undefined
+    const free = c.free ?? {}
+    const verdict = (v: unknown) =>
+      v === 'available' || v === 'unavailable' ? v : 'unknown'
+    const base = {
+      roles: c.roles ?? [],
+      provider: c.provider ?? 'unknown',
+      model: c.model ?? null,
+      effort: c.effort ?? null,
+      cliPath: c.cliPath ?? null,
+      cliVersion: c.cliVersion ?? null,
+      called,
+    }
+    if (answer || called)
+      return {
+        ...base,
+        verdict: verdict(answer?.verdict),
+        method: 'minimal call',
+        detail: answer
+          ? (answer.detail ?? '')
+          : 'the minimal call has no completed answer',
+      }
+    return {
+      ...base,
+      verdict: verdict(free.verdict),
+      method: free.method ?? 'unknown',
+      detail:
+        free.verdict === 'unknown'
+          ? `${free.detail ?? ''}; not called, the run stopped first`
+          : (free.detail ?? ''),
+    }
+  })
+  return {
+    checks,
+    usage: usageOf(rows.filter((r) => r.stepName.startsWith('preflight:'))),
+  }
+}
+
+/**
  * Each input file's path, with the SHA-256 of the content the run stored and
  * used. The hash is computed here, so it always describes that content.
  */
@@ -402,6 +509,25 @@ export async function buildReport(
   const steps = await durably.storage.getSteps(runId)
   const candidates = sealedCandidates(steps)
   const candidate = lastCandidate(output, candidates)
+  const preflight = preflightOf(steps, rows)
+  // Minimal preflight calls get a role row of their own, never folded into
+  // the roles whose settings they checked.
+  const preflightProviders = [
+    ...new Set(
+      (preflight?.checks ?? []).filter((c) => c.called).map((c) => c.provider),
+    ),
+  ]
+  const profiles = profileRows(input)
+  if (preflightProviders.length > 0)
+    profiles.push({
+      role: 'preflight',
+      provider:
+        preflightProviders.length === 1
+          ? (preflightProviders[0] ?? null)
+          : null,
+      requestedModel: null,
+      requestedEffort: null,
+    })
   return {
     runId,
     jobName: run.jobName,
@@ -421,8 +547,10 @@ export async function buildReport(
       stageVisits: visits,
     }),
     triage: await recordedTriage(durably, run),
+    baseline: baselineOf(steps, rows),
+    preflight,
     stageUsage: usage,
-    roleUsage: roleUsage(rows, profileRows(input)),
+    roleUsage: roleUsage(rows, profiles),
     inputs: inputHashes(input),
     candidate,
     candidates,

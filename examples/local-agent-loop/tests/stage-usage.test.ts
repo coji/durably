@@ -540,6 +540,8 @@ function report(
     triage: opts.triage
       ? { judgment: opts.triage, reason: `fake ${opts.triage} reason.` }
       : null,
+    baseline: null,
+    preflight: null,
     summary: summarizeRun({
       status,
       output,

@@ -5,7 +5,12 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { signalApproval } from './approval.js'
-import { createAgentDurably, dbPath, legacyDbWarning } from './durably.js'
+import {
+  acquireWorkerLock,
+  createAgentDurably,
+  dbPath,
+  legacyDbWarning,
+} from './durably.js'
 import { buildReport, recordedTriage } from './engine/build-report.js'
 import { killOwnedChildren } from './engine/child.js'
 import { compareReports, comparisonToMarkdown } from './engine/compare.js'
@@ -16,7 +21,7 @@ import {
   type LoopReport,
 } from './engine/report.js'
 import { diagnose, diagnosisLines } from './engine/status.js'
-import { buildTriggerInput } from './trigger-input.js'
+import { buildTriggerInput, reloadTriggerInput } from './trigger-input.js'
 
 async function emit(text: string, out: string | undefined): Promise<void> {
   if (out) {
@@ -56,6 +61,7 @@ function usage(): void {
   console.log(`local-agent-loop — Durably local agent demo
 Commands (run from examples/local-agent-loop):
   pnpm demo worker                          start worker (long-running; kill -9 to test resume)
+                                            one per state root: a second one is refused
   pnpm demo trigger --provider codex|claude|fake [--context reuse|fresh] [--max-iterations 2] [--model X] [--effort Y]
       bundled sample (default): no further flags
       real repository:  --repo <path> (--issue 234 | --task "..." | --task-file <file>)
@@ -68,6 +74,9 @@ Commands (run from examples/local-agent-loop):
   pnpm demo approve --run <id> --wait <waitId>
   pnpm demo reject --run <id> --wait <waitId>
   pnpm demo retrigger --run <id>            new run with the stored input (only for stops safe to repeat)
+  pnpm demo retrigger --run <id> --reload-config
+                                            the stored task and inputs, settings read again from
+                                            the run's factory.json (once per version of the file)
   pnpm demo report --run <id> [--format json|md] [--out <file>]
   pnpm demo compare --runs <id,id,...> [--format json|md] [--out <file>]
   pnpm demo ui [--port 4380]                read-only web UI on 127.0.0.1 (runs, reports, comparison)
@@ -75,6 +84,8 @@ Commands (run from examples/local-agent-loop):
                                             demo data on the fake provider in a throwaway HOME
 Repository config: factory.json at the repository root, or --config <file>:
   { "check": ["pnpm", "validate"], "setup": ["pnpm", "install"], "base": "main",
+    "baselineCheck": false, "codexPath": "<file>",
+    "checkTimeoutMs": 900000, "agentTimeoutMs": 1800000,
     "profiles": { "code": { "provider": "codex", "model": "...", "effort": "..." },
                   "review": { "correctness": { ... }, "edge-cases": { ... } },
                   "triage": { ... } } }
@@ -84,8 +95,18 @@ Repository config: factory.json at the repository root, or --config <file>:
   from that provider's preset defaults. "triage" is optional: when present,
   one read-only call records a routine or probe judgment before the code
   stage (shadow mode; it changes nothing about the run).
+  "baselineCheck": true runs "check" once on the base commit before any
+  agent call and stops the run (baseline-check-failed) when it fails.
+  "codexPath" names the Codex CLI to launch, relative to the config file;
+  without it, the bundled CLI first, then codex on PATH.
+  Timeouts are positive integer milliseconds, at most 2147483647; without them, the trigger's
+  TEST_TIMEOUT_MS / AGENT_TIMEOUT_MS, then the target's default.
+  Before the first agent call, every role's provider, model and effort is
+  checked once (preflight): free where the provider can tell (Codex model
+  list), otherwise one minimal call, recorded with its usage.
   The config and input files are read once at trigger; the run keeps the
-  input file contents, and the report shows each one's SHA-256.
+  input file contents and the resolved timeouts and codexPath, and the
+  report shows each input file's SHA-256.
 State: database and run data live in ${dirname(dbPath())}
   (worktrees, checkpoints, verification scratch, delivery patches under runs/<id>/).
 Model presets (--model selects one; effort defaults from the preset and is
@@ -101,7 +122,10 @@ just recorded; unsupported values fail fast. Reports keep the raw requested,
 resolved effective, and provider-reported settings separate.
 Context defaults to reuse: implementation and repair continue one explicit
 native session. Reviews always use independent new sessions.
-Env: AGENT_TIMEOUT_MS (default 300000), TEST_TIMEOUT_MS (default 120000),
+Env (read at trigger and stored in the run, never by the worker):
+     AGENT_TIMEOUT_MS (default 300000, repository 1800000),
+     TEST_TIMEOUT_MS (default 120000, repository 900000)
+Env (fake provider, read by the worker):
      FAKE_FAIL_FIRST=0, FAKE_REVIEW_SEQUENCE, FAKE_REVIEW_SLOW_MS, FAKE_TRIAGE,
      FAKE_LATENCY_MS=<min>-<max>, FAKE_USAGE=realistic
 `)
@@ -117,6 +141,20 @@ const legacyWarning = legacyDbWarning()
 if (legacyWarning) console.error(legacyWarning)
 
 if (cmd === 'worker') {
+  // One worker per state root. The lock is the operating system's, so it
+  // ends with this process however the process ends.
+  const lock = acquireWorkerLock()
+  if (!lock.acquired) {
+    const who = lock.holder
+    console.error(
+      who
+        ? `another worker already runs on ${dirname(dbPath())}: pid ${who.pid}, started ${who.startedAt} from ${who.checkout}. Stop it first (kill ${who.pid}); two workers would pick up each other's runs.`
+        : `another worker already runs on ${dirname(dbPath())}; it has not recorded its pid yet. Stop it first.`,
+    )
+    process.exit(1)
+  }
+  // Every way out, a failed init or a shutdown, passes through 'exit'.
+  process.on('exit', lock.release)
   const durably = createAgentDurably()
   durably.on('run:leased', (e) =>
     console.log(`[run:leased] ${e.jobName} ${e.runId}`),
@@ -130,7 +168,9 @@ if (cmd === 'worker') {
     console.log(`[step:complete] ${e.stepName} run=${e.runId}`),
   )
   await durably.init()
-  console.log('worker running (Ctrl-C to stop; kill -9 <pid> to test resume)')
+  console.log(
+    `worker running, pid ${process.pid} (Ctrl-C to stop; kill -9 <pid> to test resume)`,
+  )
   const shutdown = async () => {
     // Children lead their own process group, so an interrupt reaches the
     // worker but not the agent CLI it launched.
@@ -251,7 +291,8 @@ if (cmd === 'worker') {
   console.log(JSON.stringify(receipt, null, 2))
   await durably.db.destroy()
 } else if (cmd === 'retrigger') {
-  const runId = args()['run']
+  const a = args()
+  const runId = a['run']
   if (!runId) throw new Error('--run <id> required')
   const durably = createAgentDurably()
   await durably.migrate()
@@ -265,17 +306,35 @@ if (cmd === 'worker') {
     throw new Error(
       `refusing to retrigger ${runId}: ${failure ? failure.reason : `it is ${run.status}, not stopped`}`,
     )
-  // One retry per stopped run: pasting the command again returns the run it
-  // already started instead of paying for another, or pushing twice.
-  const next = await durably.jobs.agentLoop.trigger(
-    run.input as Parameters<typeof durably.jobs.agentLoop.trigger>[0],
-    { idempotencyKey: `retrigger-of-${runId}` },
-  )
-  console.log(
-    next.disposition === 'created'
-      ? `new run ${next.id} with the input of ${runId}`
-      : `already retriggered as ${next.id}; nothing new started`,
-  )
+  type Input = Parameters<typeof durably.jobs.agentLoop.trigger>[0]
+  if (a['reload-config'] === 'true') {
+    // The stored task and inputs, with the settings read again from the
+    // current config. One run per config version: pasting the command again
+    // without editing the file returns the run it already started.
+    const { input, configSha256 } = await reloadTriggerInput(
+      run.input as Parameters<typeof reloadTriggerInput>[0],
+    )
+    const next = await durably.jobs.agentLoop.trigger(input as Input, {
+      idempotencyKey: `retrigger-of-${runId}-config-${configSha256 ?? 'none'}`,
+    })
+    const from = input.configSource?.path ?? 'no config file'
+    console.log(
+      next.disposition === 'created'
+        ? `new run ${next.id} with the input of ${runId} and the settings of ${from}`
+        : `already retriggered as ${next.id} with this version of ${from}; nothing new started`,
+    )
+  } else {
+    // One retry per stopped run: pasting the command again returns the run
+    // it already started instead of paying for another, or pushing twice.
+    const next = await durably.jobs.agentLoop.trigger(run.input as Input, {
+      idempotencyKey: `retrigger-of-${runId}`,
+    })
+    console.log(
+      next.disposition === 'created'
+        ? `new run ${next.id} with the input of ${runId}`
+        : `already retriggered as ${next.id}; nothing new started`,
+    )
+  }
   await durably.db.destroy()
 } else if (cmd === 'report') {
   const a = args()

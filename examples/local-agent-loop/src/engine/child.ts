@@ -4,6 +4,17 @@ import { createWriteStream } from 'node:fs'
 import type { Readable, Writable } from 'node:stream'
 import { StringDecoder } from 'node:string_decoder'
 
+/**
+ * The longest delay Node's timers keep: a larger one fires after about 1 ms,
+ * which would kill a child or abort a call right after its start.
+ */
+export const MAX_TIMEOUT_MS = 2_147_483_647
+
+/** A delay every timer can take: callers that add grace cannot overflow it. */
+export function timerDelay(ms: number): number {
+  return Math.min(ms, MAX_TIMEOUT_MS)
+}
+
 const owned = new Set<number>()
 
 export function ownedChildPids(): number[] {
@@ -236,7 +247,7 @@ export async function runChild(
           `${command} timed out after ${timeoutMs}ms (child killed)`,
         )
         kill()
-      }, timeoutMs)
+      }, timerDelay(timeoutMs))
       timer.unref?.()
       signal?.addEventListener('abort', onAbort, { once: true })
     })

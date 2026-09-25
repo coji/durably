@@ -97,17 +97,22 @@ Terminal 1:
 pnpm --filter example-local-agent-loop demo worker
 ```
 
-workerは1つだけ動かしてください。同じDBを見るworkerを複数起動すると、どれがrunを
-拾うか分かりません。leaseがあるので壊れはしませんが、環境変数はworkerごとに違うので、
-`AGENT_TIMEOUT_MS` を変えたつもりが古いworkerに拾われる、という形で黙って効きません。
+workerはstate rootごとに1つだけ動きます。workerは起動時に
+`~/.local/state/local-agent-loop/worker.lock` をOSのファイルロック（SQLiteの排他
+トランザクション）で握り、同じstate rootで2つ目を起動すると、動いているworkerの
+pidと起動元のcheckoutを表示して終了コード1で拒否します。
 
-```bash
-pgrep -f 'local-agent-loop.*cli.ts worker' | wc -l   # 1 であること
+```text
+another worker already runs on ~/.local/state/local-agent-loop: pid 41234, started 2026-09-25T01:02:03.000Z from /Users/me/src/durably/examples/local-agent-loop. Stop it first (kill 41234); two workers would pick up each other's runs.
 ```
 
-数えるのはpnpmのラッパーではなく実体のプロセスです。`pnpm demo worker` と
-`pnpm worker` のどちらで起動しても同じ1つとして数えます。残ってしまったworkerは
-`pkill -f 'local-agent-loop.*cli.ts worker'` で片付きます。
+- ロックはプロセスと一緒に消えます。Ctrl-C、SIGTERM、初期化の失敗では自分で
+  解放し、`kill -9` やクラッシュではOSが解放します。pidを書いた
+  `worker.json` が残っていても、次のworkerはロックを取り直して上書きするので、
+  古い情報だけで起動を拒むことはありません。
+- 別のstate root（`HOME` が違う環境）のworker同士は互いを拒みません。
+- timeoutは `trigger` の時点でrun inputに固定されるので、workerの環境変数で
+  既存runの値が変わることはありません（「trigger時点で固定されるもの」）。
 
 Terminal 2:
 
@@ -169,6 +174,24 @@ pnpm --filter example-local-agent-loop demo status
   もう一度打っても、最初に始めたrunを返すだけです。`retry: NO` の
   runや、まだ止まっていないrunには実行を拒みます。素の `demo trigger` は同梱の
   題材で動くので、次の手順には出しません。
+- `baseline-check-failed` と `preflight-failed` には、`demo retrigger --run <id>
+--reload-config` も表示します。`factory.json` を直してから打つコマンドです。
+  保存したtask、spec、dispositions、issue、対象リポジトリはそのままで、
+  `factory.json` だけを読み直します。読み直すのはtrigger時に `--config` で
+  渡したファイルで、渡していなければリポジトリ直下の `factory.json` です。
+  直下の `factory.json` を消した場合は、設定なしのtriggerと同じに扱います。
+  `--config` で渡したファイル（パスが直下の `factory.json` でも）が無くなって
+  いれば、設定なしとはみなさずエラーにします。
+  profile、`check`、`setup`、`base`、`codexPath`、timeout、`baselineCheck` は
+  `trigger` と同じ規則で解決・検証し、trigger時の `--check`、`--setup`、`--base`
+  は引き続き設定より優先します。そのrunでは、次の手順の注記にもそう表示します。
+  これらを変えるときは `trigger` からやり直します。同梱の題材のrunは
+  `factory.json` を読まないので、`--reload-config` は表示しません。
+  timeoutを設定に書いていなければ、`retrigger` を打ったプロセスの環境変数、
+  それも無ければ既定値を使います。ファイルの中身が同じ間は、何度打っても最初に
+  始めたrunを返します。書き換えれば、その版で1回だけ新しいrunを始めます。
+  環境だけを直した場合（依存のインストール、providerへのログインなど）は、
+  `--reload-config` なしの `retrigger` を使います。
 - 終わったrepo runのworktreeが残っていれば、
   `git -C '<repo>' worktree remove '<workdir>'` を表示します。setupが記録した
   パスが存在するときだけ出し、強制削除やbranch削除は含みません。変更が残る
@@ -302,6 +325,9 @@ HOME=<表示された場所> pnpm --filter example-local-agent-loop demo worker
   "check": ["pnpm", "validate"],
   "setup": ["pnpm", "install", "--frozen-lockfile"],
   "base": "main",
+  "baselineCheck": true,
+  "checkTimeoutMs": 900000,
+  "agentTimeoutMs": 1800000,
   "profiles": {
     "code": { "provider": "codex", "model": "gpt-5.6-sol", "effort": "medium" },
     "review": {
@@ -345,8 +371,14 @@ pnpm --filter example-local-agent-loop demo trigger \
   ありません。fakeと実providerを役割ごとに混ぜる
   ことはできません。
 - timeoutの既定値はターゲットで変わります。実リポジトリはagent呼び出し30分、
-  検査15分。同梱題材はそれぞれ5分と2分です。`AGENT_TIMEOUT_MS` と
-  `TEST_TIMEOUT_MS` で上書きできます。
+  検査15分。同梱題材はそれぞれ5分と2分です。`factory.json` の
+  `agentTimeoutMs` と `checkTimeoutMs`（ミリ秒）が最優先で、無ければ `trigger`
+  を実行したプロセスの `AGENT_TIMEOUT_MS` と `TEST_TIMEOUT_MS`、それも無ければ
+  既定値を使います。どれも2147483647以下の正の整数に限り、`0`、負数、小数、
+  `NaN`、`Infinity`、2147483647超は `trigger` の時点で拒否します。これより大きい
+  値はNodeのtimerがあふれて約1ミリ秒で発火し、呼び出しを始めた直後に打ち切るからです。
+  解決した値はrun inputに保存し、workerの環境変数は読みません（この変更より前に
+  保存されたrunだけは、従来どおりworkerの環境変数を読みます）。
 - 反復ごとにcommitして封印します。検証・レビュー・成果物は同じcommitを見ます。
 - 既定の成果物は `~/.local/state/local-agent-loop/runs/<runId>/delivery/<candidate>.patch`
   です。issueなしのrunのbranchは `factory/<runId>` で、承認されたcommitはこの
@@ -362,14 +394,95 @@ PRに進むのが安全です。
 レビュー対象で、マージするのも人間だからです。`--approve manual` で
 同梱題材と同じ承認waitを挟めます。
 
+### baseの採点を先に確かめる（baselineCheck）
+
+`factory.json` に `"baselineCheck": true` を書くと、setupが終わった直後、
+エージェントを呼ぶ前に、base commitのworktreeで固定した `check` を一度だけ
+実行します。既定は `false` で、そのときは実行しません。repo targetだけの設定です。
+
+- baseで `check` が失敗したら `baseline-check-failed` で止まります。エージェント
+  呼び出し（triageとpreflightを含む）は0回です。`retry: yes` で、次の手順は
+  「採点コマンドか環境（setup、依存、base）を直す」です。
+- 終了コードと、stdout・stderrの全文ログのpath（`runs/<id>/baseline-logs/<attempt>/`）
+  を `status`、reportのJSON（`baseline`、`failure.details`）とMarkdown
+  （「Baseline check」節）、web UIの停止理由に出します。timeoutで打ち切られた
+  ときは終了コードを不明（`unknown`）とし、打ち切りまでの時間を出します。
+- 検証と同じcheckpointで記録します。完了した結果はworker再開時に読み戻して
+  再実行せず、途中で止まった採点はやり直します。中断した試行の部分ログは
+  合否の根拠にしません。
+- setupや採点がworktreeのtracked fileを書き換えた場合は、最初のcandidateに
+  混ざるので `baseline-check-failed` で止め、エラーにその旨を出します。採点
+  コマンドが起動できない場合（コマンドが見つからないなど）も同じ分類で止めます。
+- setupは、`.gitignore` の対象外の未追跡ファイルを残してはいけません。空の
+  ディレクトリも同じです。採点後の片付けで消えてしまうからです。判定には
+  片付けと同じ `git clean -ffdn` の結果を使うので、無視されたファイルだけが
+  入ったディレクトリは残してかまいません。
+  `baselineCheck` がオンのときは、setupの直後、採点の前に確かめます。残って
+  いれば採点もエージェント呼び出しもせずに `baseline-check-failed` で止め、
+  最初の数件のpathを `failure.details` に出します。次の手順は「setupが
+  `.gitignore` にないファイルを作っているので、そのファイルを `.gitignore` に
+  入れるか `baselineCheck` を外す」です。ignore対象のファイル（`node_modules`
+  など）は残してかまいません。
+- 採点が通ったら `git clean -ffd` で、`.gitignore` の対象外の未追跡ファイルを
+  入れ子のgitリポジトリも含めてすべて消します。カバレッジやテスト結果の
+  ファイルが最初のcandidateに入らないようにするためです。上の前提があるので、
+  消えるのは採点が残したものだけです。途中で止まった採点をworker再開時に
+  やり直した場合も、前の試行が残したファイルごと消えます。ignore対象の
+  ファイルは残ります。消したあとも対象外の未追跡ファイルが残っていれば、
+  `baseline-check-failed` で止めます。
+
+### 設定の事前確認（preflight）
+
+baselineの後、triageを含む最初のエージェント呼び出しの前に、全役割
+（code、二つのreview、設定したtriage）のprovider、model、effortを確かめます。
+同じ組み合わせは一度だけ確かめ、使う役割すべてに結果を対応付けます。
+
+- Codexは無料の `model/list`（固定したCodex CLIのapp server）で、そのloginで
+  使えるmodelと、そのmodelが受け付けるeffortを確かめます。一覧にあるmodelが
+  そのeffortを受け付けなければ、promptを送らずに止めます。app serverが起動
+  しない（CLIが見つからない、`app-server` に対応しない古い版、初期化の失敗）
+  場合も、promptを送らずに止めます。初期化が時間切れになっただけの場合は起動が
+  遅いだけかもしれないので、止めずに最小の呼び出しで確かめます。最小の呼び出しの
+  初期化も時間切れになった場合は、送ったかどうか分からない呼び出しとして
+  `uncertain-invocation`（`retry: NO`）で止まります。一覧は1ページ目だけを
+  読みます。一覧は隠しmodelを含まないので、一覧に無い
+  modelは使えないとは決めず、一覧が読めないときと同じく最小の呼び出しで確かめます。
+  一覧は同じCLIファイルにつき1回だけ読みます。
+- Claude Codeにはpromptを送らずに確かめる手段が無いので、組み合わせごとに
+  最小の呼び出し（「OK」とだけ返させる読み取り専用の呼び出し）を1回します。
+- 最小の呼び出しは通常の呼び出しと同じcheckpointと計測を通り、使用量と推定費用は
+  stage・roleとも `preflight` として別に集計します（code/reviewには混ぜません）。
+  providerが明示的に拒否した場合（未知のmodel、使えないmodel、login切れ、
+  Codex CLIが起動しないなど）は完了として記録し、`preflight-failed`（`retry: yes`）
+  で止まります。Claude Codeのlogin切れやmodelの誤りは、providerが構造化した
+  種別を付けずに本文から判定することもあり、その場合も拒否として扱います。送ったかどうか分からない呼び出しは送り直さず、
+  `uncertain-invocation`（`retry: NO`）になります。
+- 使えない組み合わせがあると、実装の呼び出し前に `preflight-failed` で止まり、
+  役割、設定、確認方法、原因をエラーに出します。reportの `preflight`（JSON）と
+  「Preflight」節には、役割ごとの結果、確認方法、CLIのpathと版、最小の呼び出しの
+  使用量と費用（分からなければ `unknown`）が残ります。
+
+### Codex CLIを固定する（codexPath）
+
+`factory.json` の `"codexPath"` で起動するCodex CLIを指定できます。相対パスは
+`factory.json` のあるディレクトリから解決し、実行可能な通常ファイルでなければ
+`trigger` が失敗します。解決した絶対パスをrun inputに固定し、preflight、本番の
+呼び出し、版の取得はすべてそのファイルを使います。`.js` などのscriptは `node`
+で起動します。省略時は従来どおり、同梱の `@openai/codex` を優先し、無ければ
+PATHの `codex` を使います。CLIのpathと版はreportの「Versions」と「Preflight」に
+出て、`configVersion` にも入るので、違うCLIで動いたrunは別の設定として比較されます。
+
 ### trigger時点で固定されるもの
 
 `factory.json`、task、spec、dispositionsは `trigger` の時点で一度だけ読みます。
 フラグを適用した後の各役割のrequested設定と、入力ファイルのpathと本文をrun inputに
 保存します。実際に使うmodelとeffortは、workerがそのrequested設定からproviderの
 presetで解決します。workerは元のファイルを読み直さないので、trigger後にファイルを
-書き換えても、そのrunの設定とpromptは変わりません。reportには各入力ファイルの
-pathと、保存した本文から計算したSHA-256が出ます。
+書き換えても、そのrunの設定とpromptは変わりません。timeout、`codexPath`、
+`baselineCheck` も同じく解決済みの値をrun inputに保存します。reportには各入力ファイルの
+pathと、保存した本文から計算したSHA-256が出ます。設定を直した後に同じtaskで
+やり直すには、`demo retrigger --run <id> --reload-config` を使います（上の
+「止まったrunと次の手順を見る」を参照）。
 
 ### タスクの事前判定（shadow mode）
 
@@ -731,6 +844,10 @@ pnpm --filter example-local-agent-loop demo trigger \
 `empty`、`invalid`、`contradictory`、`unsupported`、`error`。既定は `routine`）。
 fakeのtriageは同梱題材ではtriggerのフラグから指定できないので、job inputの
 `profiles.triage` で渡します。
+
+fakeのpreflightはrequested modelの名前で決まります。`unlisted-*` は無料の確認で
+拒否、`probe-*` は無料の確認では決まらず最小の呼び出しが通り、`refused-*` は最小の
+呼び出しが明示的に拒否されます。それ以外は無料の確認で通ります。
 
 `FAKE_LATENCY_MS=20000-90000` を付けると、各呼び出しがその範囲のランダムな時間
 待ちます。cancel と timeout では待ちを打ち切ります。`FAKE_USAGE=realistic` を

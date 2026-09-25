@@ -34,7 +34,7 @@ and steer it.
 
 ## Starting a run
 
-1. Confirm exactly one worker is running:
+1. Confirm a worker is running:
 
    ```bash
    pgrep -f "local-agent-loop.*cli.ts worker" | wc -l
@@ -51,11 +51,12 @@ and steer it.
    pnpm --filter example-local-agent-loop demo worker
    ```
 
-   If the count is above 1, say so and stop. Leases keep concurrent workers
-   safe, but each carries its own environment, so which one picks up the run
-   decides which timeouts apply. Stray workers from earlier experiments are
-   the usual cause; `pkill -f "local-agent-loop.*cli.ts worker"` clears them,
-   after which the user starts one again.
+   A second worker on the same state root refuses to start and prints the
+   running one's pid and checkout, so a count above 1 means a worker from a
+   version before that lock is still running. Say so and stop; the user
+   stops the old one (`kill <pid>`). Which worker picks up a run no longer
+   matters for its settings: the timeouts and the Codex CLI are fixed in the
+   run when it is triggered, never read from the worker's environment.
 
 2. Confirm the repository is clean. The factory cuts a worktree from a
    commit, so uncommitted work would not be included and the user should know

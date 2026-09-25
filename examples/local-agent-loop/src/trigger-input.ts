@@ -2,9 +2,10 @@
  * Build a run's input from trigger flags and the repository's factory.json.
  * Shared by `demo trigger` and `demo seed`, so both fix a run the same way.
  */
-import { existsSync } from 'node:fs'
-import { readFile, stat } from 'node:fs/promises'
-import { isAbsolute, join, resolve } from 'node:path'
+import { createHash } from 'node:crypto'
+import { constants, existsSync } from 'node:fs'
+import { access, readFile, stat } from 'node:fs/promises'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 import { z } from 'zod'
 
@@ -14,6 +15,8 @@ import { parseProviderName } from './engine/providers/index.js'
 import {
   assertSingleMode,
   fixProfile,
+  resolveTimeouts,
+  timeoutMsSchema,
   type FixedProfile,
 } from './factory/job.js'
 import type { InputFileRef } from './factory/target.js'
@@ -75,10 +78,28 @@ const factoryConfigSchema = z
       })
       .strict()
       .optional(),
+    /** Run `check` once on the base commit before any agent call. */
+    baselineCheck: z.boolean().optional(),
+    /** The Codex CLI file to launch; relative to this file's directory. */
+    codexPath: z.string().min(1).optional(),
+    /** Milliseconds; win over `TEST_TIMEOUT_MS` / `AGENT_TIMEOUT_MS`. */
+    checkTimeoutMs: timeoutMsSchema.optional(),
+    agentTimeoutMs: timeoutMsSchema.optional(),
   })
   .strict()
 
 type FactoryConfig = z.infer<typeof factoryConfigSchema>
+
+/**
+ * A loaded config, the file it came from, whether `--config` named that
+ * file, and the file's SHA-256.
+ */
+interface LoadedConfig {
+  config: FactoryConfig
+  path: string
+  explicit: boolean
+  sha256: string
+}
 type RoleConfig = z.infer<typeof roleConfigSchema>
 
 /**
@@ -89,22 +110,57 @@ type RoleConfig = z.infer<typeof roleConfigSchema>
 async function loadConfig(
   root: string,
   explicit: string | undefined,
-): Promise<FactoryConfig | null> {
+): Promise<LoadedConfig | null> {
   const path = explicit ? resolve(explicit) : join(root, 'factory.json')
   if (!existsSync(path)) {
     if (explicit) throw new Error(`--config ${explicit}: file not found`)
     return null
   }
+  const text = await readFile(path, 'utf8')
   let raw: unknown
   try {
-    raw = JSON.parse(await readFile(path, 'utf8'))
+    raw = JSON.parse(text)
   } catch (error) {
     throw new Error(`${path}: not valid JSON (${(error as Error).message})`)
   }
   const parsed = factoryConfigSchema.safeParse(raw)
   if (!parsed.success)
     throw new Error(`${path}: invalid factory config: ${parsed.error.message}`)
-  return parsed.data
+  return {
+    config: parsed.data,
+    path,
+    explicit: Boolean(explicit),
+    sha256: createHash('sha256').update(text).digest('hex'),
+  }
+}
+
+/**
+ * The config's `codexPath` as an absolute path, checked once here: a relative
+ * path is taken from the config file's directory, and the file must be an
+ * executable regular file. The run keeps the result, so every preflight,
+ * call and version probe launches this same file.
+ */
+async function resolveCodexPath(
+  loaded: LoadedConfig | null,
+): Promise<string | null> {
+  const raw = loaded?.config.codexPath
+  if (!loaded || raw === undefined) return null
+  const abs = isAbsolute(raw) ? raw : resolve(dirname(loaded.path), raw)
+  const refuse = (why: string) =>
+    new Error(`${loaded.path}: codexPath ${raw}: ${why} (resolved to ${abs})`)
+  let file
+  try {
+    file = await stat(abs)
+  } catch {
+    throw refuse('file not found')
+  }
+  if (!file.isFile()) throw refuse('not a regular file')
+  try {
+    await access(abs, constants.X_OK)
+  } catch {
+    throw refuse('not executable')
+  }
+  return abs
 }
 
 /** Input files are stored in the run and sent in every prompt, so keep them small. */
@@ -196,6 +252,63 @@ export function resolveProfiles(
   return { roles, triage }
 }
 
+/** The trigger flags a config can be overridden by, kept for a reload. */
+const CONFIG_FLAGS = ['provider', 'check', 'setup', 'base'] as const
+
+/**
+ * Where a repository run's settings came from: the config file it read, or
+ * null when there was none, whether `--config` named it, and the flags that
+ * won over it. A reload reads the file again and applies the same flags.
+ */
+export interface ConfigSource {
+  path: string | null
+  /** Named by `--config`, so a reload that cannot find it fails. */
+  explicit?: boolean
+  flags: Partial<Record<(typeof CONFIG_FLAGS)[number], string>>
+}
+
+/**
+ * Everything a repository run takes from the config and the flags that
+ * override it. Shared by trigger and `retrigger --reload-config`, so both
+ * resolve and validate the same way.
+ */
+async function repoSettings(
+  a: Record<string, string>,
+  loaded: LoadedConfig | null,
+) {
+  const config = loaded?.config ?? null
+  const checkCommand = a['check'] ? splitArgv(a['check']) : config?.check
+  if (!checkCommand || checkCommand.length === 0)
+    throw new Error(
+      'a check command is required for --repo: set "check" in factory.json or pass --check "<command>". It is the pinned check that decides pass or fail',
+    )
+  const setupCommand = a['setup'] ? splitArgv(a['setup']) : config?.setup
+  return {
+    settings: {
+      baseRef: a['base'] ?? config?.base ?? 'HEAD',
+      checkCommand,
+      setupCommand:
+        setupCommand && setupCommand.length > 0 ? setupCommand : null,
+      baselineCheck: config?.baselineCheck ?? false,
+    },
+    codexPath: await resolveCodexPath(loaded),
+    configSource: {
+      path: loaded?.path ?? null,
+      explicit: loaded?.explicit ?? false,
+      flags: {
+        ...Object.fromEntries(
+          CONFIG_FLAGS.flatMap((flag) =>
+            a[flag] === undefined ? [] : [[flag, a[flag]]],
+          ),
+        ),
+        // The fallback provider as applied, so a reload fills the roles the
+        // config leaves out the same way.
+        provider: a['provider'] ?? 'fake',
+      },
+    } satisfies ConfigSource,
+  }
+}
+
 /**
  * Build the job's target from the flags and the repository's config.
  *
@@ -217,15 +330,16 @@ export async function resolveTarget(a: Record<string, string>) {
     ]) {
       if (a[flag]) throw new Error(`--${flag} needs --repo <path>`)
     }
-    return { target: { kind: 'subject' as const }, config: null }
+    return {
+      target: { kind: 'subject' as const },
+      config: null,
+      codexPath: null,
+      configSource: null,
+    }
   }
   const repoPath = isAbsolute(repo) ? repo : join(process.cwd(), repo)
-  const config = await loadConfig(await repoRoot(repoPath), a['config'])
-  const checkCommand = a['check'] ? splitArgv(a['check']) : config?.check
-  if (!checkCommand || checkCommand.length === 0)
-    throw new Error(
-      'a check command is required for --repo: set "check" in factory.json or pass --check "<command>". It is the pinned check that decides pass or fail',
-    )
+  const loaded = await loadConfig(await repoRoot(repoPath), a['config'])
+  const { settings, codexPath, configSource } = await repoSettings(a, loaded)
   const sources = ['issue', 'task', 'task-file'].filter((flag) => a[flag])
   if (sources.length > 1)
     throw new Error(
@@ -251,12 +365,10 @@ export async function resolveTarget(a: Record<string, string>) {
   const task = issue ? issue.body : (taskFile?.content ?? a['task'])
   if (!task || task.trim().length === 0)
     throw new Error('the task is empty; there is nothing to implement')
-  const setupCommand = a['setup'] ? splitArgv(a['setup']) : config?.setup
   return {
     target: {
       kind: 'repo' as const,
       repoPath,
-      baseRef: a['base'] ?? config?.base ?? 'HEAD',
       task,
       spec: specFile?.content ?? null,
       dispositions: dispositionsFile?.content ?? null,
@@ -268,20 +380,22 @@ export async function resolveTarget(a: Record<string, string>) {
       issue: issue
         ? { number: issue.number, title: issue.title, url: issue.url }
         : null,
-      checkCommand,
-      setupCommand:
-        setupCommand && setupCommand.length > 0 ? setupCommand : null,
       publish: a['publish'] === 'true',
+      ...settings,
     },
-    config,
+    config: loaded?.config ?? null,
+    codexPath,
+    configSource,
   }
 }
 
+type ResolvedTarget = Awaited<ReturnType<typeof resolveTarget>>
+
 /**
- * Everything the run depends on, read and resolved before it exists: the
- * worker never reads factory.json or an input file again.
+ * The run input from a resolved target and the flags that are not about the
+ * repository. Trigger and reload both end here.
  */
-export async function buildTriggerInput(a: Record<string, string>) {
+function assembleInput(a: Record<string, string>, resolved: ResolvedTarget) {
   const context = a['context'] ?? 'reuse'
   if (context !== 'reuse' && context !== 'fresh')
     throw new Error('--context must be reuse|fresh')
@@ -291,8 +405,14 @@ export async function buildTriggerInput(a: Record<string, string>) {
   if (!/^[1-3]$/.test(rawIterations))
     throw new Error('--max-iterations must be an integer between 1 and 3')
   const maxIterations = Number(rawIterations)
-  const { target, config } = await resolveTarget(a)
+  const { target, config, codexPath, configSource } = resolved
   const { roles: profiles, triage } = resolveProfiles(a, config)
+  // Fixed here, so the worker's environment never changes a stored run: the
+  // config wins, then this process's environment, then the target default.
+  const { checkTimeoutMs, agentTimeoutMs } = resolveTimeouts(
+    target.kind,
+    config,
+  )
   const approve = a['approve']
   if (approve !== undefined && approve !== 'auto' && approve !== 'manual')
     throw new Error('--approve must be auto|manual')
@@ -317,5 +437,94 @@ export async function buildTriggerInput(a: Record<string, string>) {
     effort: a['effort'],
     context: context as 'reuse' | 'fresh',
     ...(approve ? { autoApprove: approve === 'auto' } : {}),
+    checkTimeoutMs,
+    agentTimeoutMs,
+    codexPath,
+    ...(configSource ? { configSource } : {}),
+  }
+}
+
+/**
+ * Everything the run depends on, read and resolved before it exists: the
+ * worker never reads factory.json or an input file again.
+ */
+export async function buildTriggerInput(a: Record<string, string>) {
+  return assembleInput(a, await resolveTarget(a))
+}
+
+/** The parts of a stored run input a reload reads. */
+interface StoredInput {
+  provider: string
+  model?: string
+  effort?: string
+  context?: string
+  maxIterations?: number
+  autoApprove?: boolean
+  fakeScenario?: unknown
+  configSource?: ConfigSource
+  target: { kind: string; repoPath?: string }
+}
+
+/**
+ * A new run input for `retrigger --reload-config`: the stored run's task,
+ * spec, dispositions, issue and repository, with everything the config
+ * decides read again from the current config file and resolved and checked
+ * as at trigger. The file is the one the run read with `--config`;
+ * otherwise `factory.json` at the repository root, if there is one now.
+ * `configSha256` names the config version, so each version starts at most
+ * one run.
+ */
+export async function reloadTriggerInput(stored: StoredInput): Promise<{
+  input: ReturnType<typeof assembleInput> & { fakeScenario?: unknown }
+  configSha256: string | null
+}> {
+  if (stored.target.kind !== 'repo' || !stored.target.repoPath)
+    throw new Error(
+      '--reload-config needs a repository run; the bundled sample reads no factory.json',
+    )
+  const source = stored.configSource ?? { path: null, flags: {} }
+  const a: Record<string, string> = {
+    // Only a run stored before the flags were kept lacks `provider`; its
+    // code role's provider is what the flag would have been.
+    provider: stored.provider,
+    ...source.flags,
+    ...(stored.model !== undefined ? { model: stored.model } : {}),
+    ...(stored.effort !== undefined ? { effort: stored.effort } : {}),
+    ...(stored.context !== undefined ? { context: stored.context } : {}),
+    ...(stored.maxIterations !== undefined
+      ? { 'max-iterations': String(stored.maxIterations) }
+      : {}),
+    ...(stored.autoApprove !== undefined
+      ? { approve: stored.autoApprove ? 'auto' : 'manual' }
+      : {}),
+  }
+  const repoPath = stored.target.repoPath
+  const root = await repoRoot(repoPath)
+  // A file named by --config must still exist. The default factory.json is
+  // read as a trigger reads it, so one removed since means no config. A run
+  // stored before `explicit` was kept counts any other path as named.
+  const named =
+    source.explicit ??
+    (source.path !== null && source.path !== join(root, 'factory.json'))
+  const explicit = named && source.path ? source.path : undefined
+  const loaded = await loadConfig(root, explicit)
+  const { settings, codexPath, configSource } = await repoSettings(a, loaded)
+  const input = assembleInput(a, {
+    target: {
+      ...(stored.target as Extract<ResolvedTarget['target'], { kind: 'repo' }>),
+      ...settings,
+    },
+    config: loaded?.config ?? null,
+    codexPath,
+    configSource,
+  })
+  return {
+    input: {
+      ...input,
+      ...(stored.fakeScenario !== undefined
+        ? { fakeScenario: stored.fakeScenario }
+        : {}),
+    },
+    configSha256: loaded?.sha256 ?? null,
   }
 }

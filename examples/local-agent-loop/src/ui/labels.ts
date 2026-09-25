@@ -8,11 +8,13 @@ import {
   INTERRUPTED_CHECK,
   PATH_DETAILS,
 } from '../engine/failure-details.js'
-import type { FailureKind } from '../engine/failure-reasons.js'
+import type { FailureKind, ReloadAdvice } from '../engine/failure-reasons.js'
 import type { Diagnosis, DiagnosisKind } from '../engine/status.js'
 
 const STAGE_NAME: Record<string, string> = {
   setup: '準備',
+  baseline: 'ベースの検証',
+  preflight: '事前確認',
   triage: '見立て',
   policy: '判断',
   code: '実装',
@@ -55,6 +57,7 @@ export function triageName(judgment: string): string {
 const STEP_PART_NAME: Record<string, string> = {
   agent: 'エージェント',
   candidate: '候補の記録',
+  call: '最小の呼び出し',
 }
 
 /** The last part of a step name inside a stage, such as `agent`. */
@@ -80,6 +83,18 @@ const DIAGNOSIS_TEXT: Record<Exclude<DiagnosisKind, 'stopped'>, string> = {
 
 /** Why a stopped run stopped, and what a person checks first. */
 const FAILURE_TEXT: Record<FailureKind, { reason: string; check: string }> = {
+  'baseline-check-failed': {
+    reason:
+      'エージェントを呼ぶ前に、ベースのコミットで固定したチェックがすでに失敗しました。このままでは候補を採点できません。',
+    check:
+      '下に示したログファイルでチェックの出力を全文読み、採点コマンドか環境を直す。factory.json を直したときは設定を読み直す再実行を、環境だけを直したときは通常の再実行を使う。',
+  },
+  'preflight-failed': {
+    reason:
+      'ある役割のプロバイダー、モデル、推論の強さの組み合わせが使えません。実装を呼ぶ前に止めました。',
+    check:
+      'エラーに示した役割の設定か、使う実行ファイルの指定を factory.json で直し、設定を読み直す再実行を使う。ログインの問題なら、ログインし直してから通常の再実行を使う。',
+  },
   'verification-failed': {
     reason:
       '最後の修正のあとも、固定したチェックが通りませんでした。修正の回数を使い切っています。',
@@ -184,6 +199,14 @@ const COMMAND_NOTES: [string, string][] = [
     '保存済みの入力のまま、1回だけ実行し直します。タスクや --max-iterations を変えたいときは、trigger からやり直します。',
   ],
   [
+    'after fixing factory.json; the stored task with the settings read again, once per version of the file',
+    'factory.json を直してから実行します。保存済みのタスクのまま設定を読み直し、ファイルの版ごとに1回だけ実行します。',
+  ],
+  [
+    'after fixing factory.json; the --check, --setup or --base given at trigger still wins over it, so to change those, trigger anew',
+    'factory.json を直してから実行します。trigger で指定した --check、--setup、--base は factory.json より優先されるので、それらを変えたいときは trigger からやり直します。',
+  ],
+  [
     'the check output is in the verification attempt',
     '検証コマンドの出力は、検証の試行に入っています。',
   ],
@@ -193,6 +216,14 @@ const COMMAND_NOTES: [string, string][] = [
     '納品物に記録された内容を確かめられます。',
   ],
   ['if none is running', 'ワーカーが動いていなければ起動します。'],
+  [
+    'the baseline check output',
+    'ベースのコミットでのチェックの結果とログの場所を読めます。',
+  ],
+  [
+    'the preflight result for each role',
+    '役割ごとの事前確認の結果と確認の方法を読めます。',
+  ],
 ]
 
 /**
@@ -217,7 +248,26 @@ export function noteSaidByReason(note: string): boolean {
   return SAID_BY_REASON.some((en) => note.startsWith(en))
 }
 
-export function humanCheckText(kind: FailureKind): string {
+/** Preflight check text for a run with no factory.json to fix. */
+const PREFLIGHT_WITHOUT_CONFIG_TEXT =
+  'エラーに示した役割のプロバイダー、モデル、推論の強さを直し、trigger からやり直す。ログインの問題なら、ログインし直してから通常の再実行を使う。'
+
+/** Baseline check text when setup left files .gitignore does not cover. */
+const SETUP_UNTRACKED_TEXT =
+  '準備のコマンドが .gitignore にないファイルを作っているので、下に示したファイルを .gitignore に入れるか、factory.json の baselineCheck を外して設定を読み直す再実行を使う。'
+
+/**
+ * What a person checks first. `failure` carries the server's own verdicts:
+ * whether the config-reload retry applies, and whether setup left files.
+ */
+export function humanCheckText(
+  kind: FailureKind,
+  failure?: { reload?: ReloadAdvice; setupUntracked?: boolean },
+): string {
+  if (kind === 'baseline-check-failed' && failure?.setupUntracked)
+    return SETUP_UNTRACKED_TEXT
+  if (kind === 'preflight-failed' && failure?.reload === 'none')
+    return PREFLIGHT_WITHOUT_CONFIG_TEXT
   return FAILURE_TEXT[kind].check
 }
 
@@ -228,7 +278,9 @@ const DETAIL_LABEL: Record<keyof typeof DETAIL_PREFIX, string> = {
   checkExitCode: '検証の終了コード',
   checkStdout: '検証の標準出力',
   checkStderr: '検証の標準エラー',
+  checkTimeout: '時間切れまでの時間',
   checkLogWriteError: 'ログの書き込みエラー',
+  setupUntracked: '準備が残したファイル',
 }
 
 /** Shown for an exit code the check never returned. */

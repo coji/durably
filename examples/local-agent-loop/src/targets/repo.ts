@@ -18,6 +18,11 @@ import { dirname, join } from 'node:path'
 
 import { runChild } from '../engine/child.js'
 import {
+  BASELINE_FAILED_MESSAGE,
+  setupUntrackedError,
+} from '../engine/failure-reasons.js'
+import {
+  cleanUntracked,
   commitAll,
   defaultBranch,
   describeCommitChanges,
@@ -26,6 +31,7 @@ import {
   writePatch,
   pushBranch,
   resolveCommit,
+  someUntracked,
   treeOf,
 } from '../engine/git.js'
 import type { CandidateChanges, CandidateRef } from '../engine/types.js'
@@ -172,12 +178,9 @@ export class RepoTarget implements Target {
     // commit the candidate names, so a passing check would otherwise fail the
     // run every time. Tracked changes still do count: those would mean the
     // sealed content moved.
-    if (await isDirty(this.config.workdir, { includeUntracked: false })) {
-      throw new Error(
-        `candidate-mutated: ${candidate.id} has uncommitted changes to tracked files in ${this.config.workdir}`,
-      )
-    }
-    const head = await resolveCommit(this.config.workdir, 'HEAD')
+    const head = await this.cleanHead(
+      `candidate-mutated: ${candidate.id} has uncommitted changes to tracked files in ${this.config.workdir}`,
+    )
     const tree = await treeOf(this.config.repoPath, head)
     if (tree !== candidate.sourceHash) {
       throw new Error(
@@ -188,19 +191,103 @@ export class RepoTarget implements Target {
 
   async grade(args: GradeArgs): Promise<GradeResult> {
     await this.assertIntact(args.candidate)
+    return this.runCheck(args.logDir, args.signal)
+  }
+
+  /**
+   * Run the pinned check once on the base commit, before any agent call. The
+   * worktree was just cut from that commit and set up, so it is graded in
+   * place, as a candidate is; it must still be clean and at the base.
+   *
+   * Every way the base cannot be graded stops the run as a baseline failure:
+   * setup or the check leaving tracked changes, and a check that cannot
+   * start. After a passing check, every untracked file `.gitignore` does not
+   * cover is removed, so none of its output is sealed into the first
+   * candidate. Setup is not allowed to leave such files (see
+   * `assertSetupLeftNoUntracked`), so this removes only what the check wrote,
+   * including on a resume after an interrupted check.
+   */
+  async gradeBase(args: {
+    logDir: string
+    signal: AbortSignal
+  }): Promise<GradeResult> {
+    const { workdir } = this.config
+    await this.assertAtBase(
+      `setup left uncommitted changes to tracked files in ${workdir} before the check`,
+    )
+    let result: GradeResult
+    try {
+      result = await this.runCheck(args.logDir, args.signal)
+    } catch (err) {
+      // A cancel or lost lease is not a verdict on the base.
+      if (args.signal.aborted || (err as Error).name === 'SpawnCancelledError')
+        throw err
+      throw new Error(
+        `${BASELINE_FAILED_MESSAGE}: \`${checkFingerprint(this.config.checkCommand)}\` could not run on the base commit ${this.config.baseCommit.slice(0, 12)} (${(err as Error).message}) before any agent call`,
+        { cause: err },
+      )
+    }
+    // A check that edits tracked files would slip its edits into the first
+    // candidate, so the worktree must come out of it as it went in.
+    await this.assertAtBase(
+      `the check changed tracked files in ${workdir}; it must leave the base commit as it found it`,
+    )
+    if (result.passed) {
+      try {
+        await cleanUntracked(workdir, args.signal)
+      } catch (err) {
+        if (args.signal.aborted) throw err
+        throw new Error(
+          `${BASELINE_FAILED_MESSAGE}: baseline-mutated: the check's untracked output could not be removed (${[(err as Error).message, (err as { stderr?: string }).stderr].filter(Boolean).join(': ')}); stopped before any agent call`,
+        )
+      }
+      // Whatever the clean could not remove would reach `git add -A` at the
+      // first sealing, so the worktree must come out empty of it.
+      const left = await someUntracked(workdir, 5, args.signal)
+      if (left.length > 0)
+        throw new Error(
+          `${BASELINE_FAILED_MESSAGE}: baseline-mutated: the check left untracked files that could not be removed (${left.join(', ')}); stopped before any agent call`,
+        )
+    }
+    return result
+  }
+
+  /** HEAD of a worktree with no tracked changes; `dirty` is the error. */
+  private async cleanHead(dirty: string): Promise<string> {
+    if (await isDirty(this.config.workdir, { includeUntracked: false }))
+      throw new Error(dirty)
+    return resolveCommit(this.config.workdir, 'HEAD')
+  }
+
+  private async assertAtBase(changed: string): Promise<void> {
+    const stop = (why: string) =>
+      `${BASELINE_FAILED_MESSAGE}: baseline-mutated: ${why}; stopped before any agent call`
+    const head = await this.cleanHead(stop(changed))
+    if (head !== this.config.baseCommit)
+      throw new Error(
+        stop(
+          `${this.config.workdir} is at ${head.slice(0, 12)}, not the base ${this.config.baseCommit.slice(0, 12)}`,
+        ),
+      )
+  }
+
+  private async runCheck(
+    logDir: string | undefined,
+    signal: AbortSignal,
+  ): Promise<GradeResult> {
     const started = Date.now()
     const [command, ...rest] = this.config.checkCommand
     if (!command) throw new Error('repo target has an empty check command')
     const killDeadlineMs =
       this.config.checkTimeoutMs +
       Math.min(5000, Math.max(1000, this.config.checkTimeoutMs / 4))
-    const logs = await prepareCheckLogs(args.logDir)
+    const logs = await prepareCheckLogs(logDir)
     try {
       const res = await runChild(command, rest, {
         cwd: this.config.workdir,
         timeoutMs: killDeadlineMs,
         maxOutputChars: 20_000,
-        signal: args.signal,
+        signal,
         ...logs,
       })
       return {
@@ -214,13 +301,14 @@ export class RepoTarget implements Target {
       if (err instanceof Error && err.name === 'SpawnCancelledError')
         throw withPartialLog(err, logAfterError(logs, err))
       if (err instanceof Error && err.message.includes('timed out')) {
+        // What the check printed before the kill is still in the log.
+        const log = logAfterError(logs, err)
         return {
           passed: false,
           stdout: `check timed out: killed after ${killDeadlineMs}ms running ${checkFingerprint(this.config.checkCommand)}`,
           exitCode: null,
           elapsedMs: Date.now() - started,
-          // What the check printed before the kill is still in the log.
-          log: logAfterError(logs, err),
+          log: log ? { ...log, timedOutAfterMs: killDeadlineMs } : null,
         }
       }
       throw err
@@ -350,4 +438,19 @@ export class RepoTarget implements Target {
   async cleanup(): Promise<void> {
     // The worktree and branch are intentionally kept: they are the delivery.
   }
+}
+
+/**
+ * With the baseline check on, setup must not leave untracked files that
+ * `.gitignore` does not cover. A passing baseline removes every such file,
+ * so setup output there would be deleted before the first agent call; and
+ * the baseline could not tell it from the check's own output. Stops the run
+ * as a baseline failure, naming the first few paths, before the check runs.
+ */
+export async function assertSetupLeftNoUntracked(
+  workdir: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const paths = await someUntracked(workdir, 5, signal)
+  if (paths.length > 0) throw new Error(setupUntrackedError(workdir, paths))
 }
