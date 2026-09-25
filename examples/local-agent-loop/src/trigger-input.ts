@@ -15,6 +15,7 @@ import { parseProviderName } from './engine/providers/index.js'
 import {
   assertSingleMode,
   fixProfile,
+  nonBlank,
   resolveTimeouts,
   timeoutMsSchema,
   type FixedProfile,
@@ -53,11 +54,6 @@ const roleConfigSchema = z
     effort: z.string().min(1).optional(),
   })
   .strict()
-
-/** Text that is more than whitespace: an empty value names nothing. */
-const nonBlank = z
-  .string()
-  .refine((value) => value.trim().length > 0, 'must not be empty')
 
 /** How the run's commits are made; every field optional. */
 const commitConfigSchema = z

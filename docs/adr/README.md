@@ -61,6 +61,7 @@ What we considered and why we didn't do it.
 | [0018](0018-local-agent-loop-adaptive-routing.md)             | local-agent-loop adaptive routing             | proposed |
 | [0019](0019-local-agent-loop-stop-before-llm.md)              | local-agent-loop stops before any LLM call    | accepted |
 | [0020](0020-local-agent-loop-rejected-invocations.md)         | local-agent-loop rejected invocations         | accepted |
+| [0021](0021-local-agent-loop-squashed-delivery-branch.md)     | local-agent-loop squashed delivery branch     | accepted |
 
 ## Prior Art
 

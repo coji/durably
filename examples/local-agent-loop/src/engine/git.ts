@@ -134,8 +134,24 @@ export const DEFAULT_COMMIT_AUTHOR: CommitAuthor = {
   email: 'durably-factory@localhost',
 }
 
-function identityArgs(author: CommitAuthor): string[] {
-  return ['-c', `user.name=${author.name}`, '-c', `user.email=${author.email}`]
+/**
+ * Child environment that makes `author` both author and committer of a commit.
+ *
+ * git reads `GIT_AUTHOR_*` and `GIT_COMMITTER_*` before `user.name` and
+ * `user.email`, so setting identity through `-c` would lose to variables the
+ * worker happened to inherit. Setting the variables themselves always wins.
+ */
+function identityEnv(
+  author: CommitAuthor,
+  date?: string,
+): Record<string, string> {
+  return {
+    GIT_AUTHOR_NAME: author.name,
+    GIT_AUTHOR_EMAIL: author.email,
+    GIT_COMMITTER_NAME: author.name,
+    GIT_COMMITTER_EMAIL: author.email,
+    ...(date ? { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } : {}),
+  }
 }
 
 /**
@@ -157,18 +173,10 @@ export async function commitAll(
   if (staged.trim().length === 0) {
     return { commit: await resolveCommit(dir, 'HEAD'), created: false }
   }
-  await git(
-    dir,
-    [
-      ...identityArgs(options.author ?? DEFAULT_COMMIT_AUTHOR),
-      'commit',
-      '--no-verify',
-      '--no-gpg-sign',
-      '-m',
-      message,
-    ],
-    pass,
-  )
+  await git(dir, ['commit', '--no-verify', '--no-gpg-sign', '-m', message], {
+    ...pass,
+    env: identityEnv(options.author ?? DEFAULT_COMMIT_AUTHOR),
+  })
   return { commit: await resolveCommit(dir, 'HEAD'), created: true }
 }
 
@@ -190,31 +198,19 @@ export interface SquashSpec {
  * `baseCommit`, without touching any checkout or worktree.
  *
  * The commit is dated from the source commit, so building it again gives the
- * same sha. A branch that already exists is kept when it is exactly one
- * commit on the base with the source's tree, which is what a replay after an
- * interruption finds; any other branch by that name is refused, never
- * overwritten. The same tree as the base still gets its own commit, so the
- * branch is always one commit ahead of the base.
+ * same sha. The expected commit is always written first (`commit-tree` adds an
+ * object but no ref); a branch that already exists is kept only when it points
+ * at exactly that commit, which is what a replay after an interruption finds.
+ * Any other branch by that name, even one with the same parent and tree but a
+ * different author or message, is refused, never overwritten. The same tree
+ * as the base still gets its own commit, so the branch is always one commit
+ * ahead of the base.
  */
 export async function ensureSquashedBranch(
   spec: SquashSpec,
 ): Promise<{ commit: string; created: boolean }> {
   const pass = spec.signal ? { signal: spec.signal } : {}
   const tree = await treeOf(spec.repo, spec.sourceCommit)
-  const existing = await branchCommit(spec.repo, spec.branch)
-  if (existing) {
-    // Parents on the first line, the tree on the second.
-    const [parents, existingTree] = (
-      await git(spec.repo, ['log', '-1', '--format=%P%n%T', existing])
-    )
-      .trimEnd()
-      .split('\n')
-    if (parents !== spec.baseCommit || existingTree !== tree)
-      throw new Error(
-        `squashed branch ${spec.branch} already exists at ${existing.slice(0, 12)} and is not one commit on ${spec.baseCommit.slice(0, 12)} with tree ${tree.slice(0, 12)}; it was left as it is`,
-      )
-    return { commit: existing, created: false }
-  }
   const date = `${(
     await git(spec.repo, ['log', '-1', '--format=%ct', spec.sourceCommit])
   ).trim()} +0000`
@@ -230,19 +226,17 @@ export async function ensureSquashedBranch(
         '-m',
         spec.message,
       ],
-      {
-        ...pass,
-        env: {
-          GIT_AUTHOR_NAME: spec.author.name,
-          GIT_AUTHOR_EMAIL: spec.author.email,
-          GIT_COMMITTER_NAME: spec.author.name,
-          GIT_COMMITTER_EMAIL: spec.author.email,
-          GIT_AUTHOR_DATE: date,
-          GIT_COMMITTER_DATE: date,
-        },
-      },
+      { ...pass, env: identityEnv(spec.author, date) },
     )
   ).trim()
+  const existing = await branchCommit(spec.repo, spec.branch)
+  if (existing) {
+    if (existing !== commit)
+      throw new Error(
+        `squashed branch ${spec.branch} already exists at ${existing.slice(0, 12)}, not at the expected squash ${commit.slice(0, 12)} on ${spec.baseCommit.slice(0, 12)}; it was left as it is`,
+      )
+    return { commit: existing, created: false }
+  }
   // An empty old value makes the update fail if the branch appeared since.
   await git(
     spec.repo,

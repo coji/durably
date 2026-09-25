@@ -2188,7 +2188,7 @@ const INPUT_NAME = {
 
 function RecordPanels({ report: r }: { report: LoopReport }) {
   const { copied, copy } = useCopy()
-  const squashed = r.delivery ? squashedBranchField(r.delivery) : null
+  const squashed = squashedBranchField(r.delivery ?? {})
   return (
     <>
       <CopyAnnouncer copied={copied} />
@@ -2217,20 +2217,18 @@ function RecordPanels({ report: r }: { report: LoopReport }) {
               <Field label="場所">{r.delivery.location}</Field>
               <Field label="ブランチ">{r.delivery.branch ?? 'なし'}</Field>
               <Field label="コミット">{r.delivery.commit ?? 'なし'}</Field>
-              {squashed ? (
-                <Field label={squashed.label}>
-                  {squashed.value ? (
-                    <PathValue
-                      path={squashed.value}
-                      label={squashed.copyLabel}
-                      copied={copied}
-                      onCopy={(t, l) => void copy(t, l)}
-                    />
-                  ) : (
-                    'なし'
-                  )}
-                </Field>
-              ) : null}
+              <Field label={squashed.label}>
+                {squashed.value ? (
+                  <PathValue
+                    path={squashed.value}
+                    label={squashed.copyLabel}
+                    copied={copied}
+                    onCopy={(t, l) => void copy(t, l)}
+                  />
+                ) : (
+                  'なし'
+                )}
+              </Field>
               <Field label="概要">
                 <span className="font-ui">{r.delivery.summary}</span>
               </Field>

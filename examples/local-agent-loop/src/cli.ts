@@ -21,6 +21,7 @@ import {
   type LoopReport,
 } from './engine/report.js'
 import { diagnose, diagnosisLines } from './engine/status.js'
+import { deliverySchema } from './factory/events.js'
 import { buildTriggerInput, reloadTriggerInput } from './trigger-input.js'
 
 async function emit(text: string, out: string | undefined): Promise<void> {
@@ -39,13 +40,8 @@ async function emit(text: string, out: string | undefined): Promise<void> {
 
 /** A recorded delivery with the squashed branch and commit always named. */
 function withSquashedFields(delivery: unknown): unknown {
-  if (!delivery || typeof delivery !== 'object') return delivery
-  const d = delivery as { squashedBranch?: unknown; squashedCommit?: unknown }
-  return {
-    ...d,
-    squashedBranch: d.squashedBranch ?? null,
-    squashedCommit: d.squashedCommit ?? null,
-  }
+  const parsed = deliverySchema.safeParse(delivery)
+  return parsed.success ? parsed.data : delivery
 }
 
 function args(): Record<string, string> {

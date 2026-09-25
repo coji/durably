@@ -84,12 +84,12 @@ const issueSchema = z.object({
 })
 
 /** Non-empty text, whitespace alone included in what is refused. */
-const nonBlank = z
+export const nonBlank = z
   .string()
   .refine((value) => value.trim().length > 0, 'must not be empty')
 
 /** How the run's commits are made, as `factory.json`'s `commit` resolved at trigger. */
-export const commitSettingsSchema = z
+const commitSettingsSchema = z
   .object({
     authorName: nonBlank.nullable().default(null),
     authorEmail: nonBlank.nullable().default(null),
