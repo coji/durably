@@ -399,26 +399,36 @@ export function claudeRejection(error: unknown): string | null {
 /**
  * Whether one Agent SDK message shows the agent at work: an assistant
  * message (text, thinking or a tool call, with its usage). Every tool call
- * arrives in one, so a tool result never comes first. An assistant message
- * that only carries a CLI error, with no content and no usage, is not
- * activity; one that carries an error next to content or usage is, so a
- * refusal that arrives with work already done stays uncertain. Session
- * set-up and status messages come before any model request, so they are not
- * activity.
+ * arrives in one, so a tool result never comes first. When the CLI reports
+ * an API refusal it sends a synthetic assistant message: model
+ * `<synthetic>`, the error text as content and zero usage. That frame is not
+ * activity. An errored message from a real model, or one that reports any
+ * usage (cache tokens included), is: work may already have begun, so the
+ * call stays uncertain. Session set-up and status messages come before any
+ * model request, so they are not activity.
  */
 export function isAgentActivity(message: SDKMessage): boolean {
   if (message.type !== 'assistant') return false
   if (message.error === undefined) return true
   const body = message.message as {
-    content?: unknown[]
-    usage?: { input_tokens?: number; output_tokens?: number } | null
+    model?: string
+    usage?: Record<string, unknown> | null
   }
-  const hasContent = Array.isArray(body?.content) && body.content.length > 0
-  const hasUsage =
-    (body?.usage?.input_tokens ?? 0) > 0 ||
-    (body?.usage?.output_tokens ?? 0) > 0
-  return hasContent || hasUsage
+  const usage = body?.usage ?? {}
+  const anyUsage = [
+    'input_tokens',
+    'output_tokens',
+    'cache_creation_input_tokens',
+    'cache_read_input_tokens',
+  ].some((key) => {
+    const value = usage[key]
+    return typeof value === 'number' && value > 0
+  })
+  return body?.model !== SYNTHETIC_MODEL || anyUsage
 }
+
+/** The model name the Claude CLI puts on the frames it makes up itself. */
+const SYNTHETIC_MODEL = '<synthetic>'
 
 export class ClaudeProvider implements AgentProvider {
   readonly name = 'claude' as const

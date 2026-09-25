@@ -289,27 +289,43 @@ describe('preflight verdicts', () => {
 describe('what counts as agent activity on a real provider', () => {
   it('Claude: an assistant message counts, the CLI error message and set-up do not', () => {
     const assistant = { type: 'assistant', message: {} } as never
+    // What the CLI actually sends for an API refusal: a synthetic frame with
+    // the error text as content and zero usage.
+    const zero = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    }
     const errored = {
       type: 'assistant',
-      message: {},
+      message: {
+        model: '<synthetic>',
+        content: [{ type: 'text', text: 'Invalid API key' }],
+        usage: zero,
+      },
       error: 'authentication_failed',
     } as never
     const init = { type: 'system', subtype: 'init' } as never
     assert.equal(isAgentActivity(assistant), true)
     assert.equal(isAgentActivity(errored), false)
-    // An error that arrives with content or usage comes after work began.
-    const erroredWithContent = {
+    // An error on a real model's frame, or with any usage, comes after work began.
+    const erroredFromModel = {
       type: 'assistant',
-      message: { content: [{ type: 'text', text: 'working' }] },
+      message: { model: 'claude-opus-5-5', content: [], usage: zero },
       error: 'authentication_failed',
     } as never
-    const erroredWithUsage = {
+    const erroredWithCacheUsage = {
       type: 'assistant',
-      message: { content: [], usage: { input_tokens: 10, output_tokens: 0 } },
+      message: {
+        model: '<synthetic>',
+        content: [],
+        usage: { ...zero, cache_read_input_tokens: 1200 },
+      },
       error: 'authentication_failed',
     } as never
-    assert.equal(isAgentActivity(erroredWithContent), true)
-    assert.equal(isAgentActivity(erroredWithUsage), true)
+    assert.equal(isAgentActivity(erroredFromModel), true)
+    assert.equal(isAgentActivity(erroredWithCacheUsage), true)
     assert.equal(isAgentActivity(init), false)
   })
 
