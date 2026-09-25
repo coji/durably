@@ -238,7 +238,7 @@ export class RepoTarget implements Target {
       } catch (err) {
         if (args.signal.aborted) throw err
         throw new Error(
-          `${BASELINE_FAILED_MESSAGE}: baseline-mutated: the check's untracked output could not be removed (${(err as Error).message}); stopped before any agent call`,
+          `${BASELINE_FAILED_MESSAGE}: baseline-mutated: the check's untracked output could not be removed (${[(err as Error).message, (err as { stderr?: string }).stderr].filter(Boolean).join(': ')}); stopped before any agent call`,
         )
       }
       // Whatever the clean could not remove would reach `git add -A` at the

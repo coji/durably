@@ -413,7 +413,8 @@ PRに進むのが安全です。
 - setupや採点がworktreeのtracked fileを書き換えた場合は、最初のcandidateに
   混ざるので `baseline-check-failed` で止め、エラーにその旨を出します。採点
   コマンドが起動できない場合（コマンドが見つからないなど）も同じ分類で止めます。
-- setupは、`.gitignore` の対象外の未追跡ファイルを残してはいけません。
+- setupは、`.gitignore` の対象外の未追跡ファイルを残してはいけません。空の
+  ディレクトリも同じです。採点後の片付けで消えてしまうからです。
   `baselineCheck` がオンのときは、setupの直後、採点の前に確かめます。残って
   いれば採点もエージェント呼び出しもせずに `baseline-check-failed` で止め、
   最初の数件のpathを `failure.details` に出します。次の手順は「setupが

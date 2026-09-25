@@ -313,15 +313,7 @@ export async function someUntracked(
 ): Promise<string[]> {
   const out = await git(
     cwd,
-    [
-      'ls-files',
-      '--others',
-      '--exclude-standard',
-      '--directory',
-      // An empty directory can never be staged, so it is not setup output.
-      '--no-empty-directory',
-      '-z',
-    ],
+    ['ls-files', '--others', '--exclude-standard', '--directory', '-z'],
     { maxOutputChars: 100_000, ...(signal ? { signal } : {}) },
   )
   // A capped listing keeps its end, so its first entry may be cut short.

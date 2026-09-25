@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rmdir,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -454,16 +461,16 @@ describe('baseline check on the base commit', () => {
   })
 
   it('stops as a baseline failure when the cleanup cannot remove the check output', async () => {
-    const { repo, specFor } = await baseRepo(
-      `require('node:fs').writeFileSync('out.txt', 'x')`,
-    )
-    // An untracked file in a directory the clean cannot write to: git either
-    // fails or leaves it behind, and both must stop as a baseline failure
-    // rather than an unclassified one.
+    // The check itself leaves output in a directory the clean cannot write
+    // to: git either fails or leaves it behind, and both must stop as a
+    // baseline failure rather than an unclassified one.
+    const { repo, specFor } = await baseRepo(`
+      const { chmodSync, mkdirSync, writeFileSync } = require('node:fs')
+      mkdirSync('locked')
+      writeFileSync('locked/keep.txt', 'x')
+      chmodSync('locked', 0o500)
+    `)
     const { chmod } = await import('node:fs/promises')
-    await mkdir(join(repo, 'locked'))
-    await writeFile(join(repo, 'locked', 'keep.txt'), 'x')
-    await chmod(join(repo, 'locked'), 0o500)
     try {
       const a = attempt()
       await assert.rejects(
@@ -472,16 +479,10 @@ describe('baseline check on the base commit', () => {
           specFor(a.id),
           new AbortController().signal,
         ),
-        (err: Error) => {
-          assert.match(
-            err.message,
-            /^baseline-check-failed: baseline-mutated: /,
-          )
-          return true
-        },
+        /^Error: baseline-check-failed: baseline-mutated: |baseline-check-failed: baseline-mutated: /,
       )
     } finally {
-      await chmod(join(repo, 'locked'), 0o700)
+      await chmod(join(repo, 'locked'), 0o700).catch(() => {})
     }
   })
 
@@ -490,10 +491,13 @@ describe('baseline check on the base commit', () => {
     await writeFile(join(repo, '.git', 'info', 'exclude'), 'node_modules/\n')
     await mkdir(join(repo, 'node_modules'))
     await writeFile(join(repo, 'node_modules', 'dep.js'), 'x')
-    // Ignored output only: setup may leave it. So may an empty directory,
-    // which can never be staged.
-    await mkdir(join(repo, 'tmp'))
+    // Ignored output only: setup may leave it.
     await assertSetupLeftNoUntracked(repo)
+    // Not even an empty directory: the clean after a passing check would
+    // remove it before any agent sees it.
+    await mkdir(join(repo, 'tmp'))
+    await assert.rejects(assertSetupLeftNoUntracked(repo), /setup-untracked: /)
+    await rmdir(join(repo, 'tmp'))
 
     await mkdir(join(repo, 'generated'))
     await writeFile(join(repo, 'generated', 'schema.ts'), 'x')
