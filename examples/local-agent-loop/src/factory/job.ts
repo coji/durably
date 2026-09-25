@@ -26,7 +26,11 @@ import {
   prepareRepoTarget,
   prepareSubjectTarget,
 } from '../targets/index.js'
-import { deliverySchema, FactoryEventSchema } from './events.js'
+import {
+  candidateSchema,
+  deliverySchema,
+  FactoryEventSchema,
+} from './events.js'
 import { assertAllowedDecision, availableActions, decide } from './policy.js'
 import { parseTriageOutput, triagePrompt } from './prompts.js'
 import { reduce } from './reducer.js'
@@ -154,15 +158,6 @@ const inputSchema = z
       path: ['fakeScenario'],
     },
   )
-
-const candidateSchema = z.object({
-  id: z.string(),
-  snapshotDir: z.string(),
-  sourceHash: z.string(),
-  acceptanceHash: z.string(),
-  branch: z.string().optional(),
-  commit: z.string().optional(),
-})
 
 const outputSchema = z.object({
   approved: z.boolean(),

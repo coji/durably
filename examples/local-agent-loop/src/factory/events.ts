@@ -1,13 +1,31 @@
 /** Persistable stage results consumed by the pure reducer. */
 import { z } from 'zod'
 
-const candidateSchema = z.object({
+/** A repository candidate's diff files and size, written when it was sealed. */
+export const candidateChangesSchema = z.object({
+  diffPath: z.string(),
+  changedFilesPath: z.string(),
+  files: z.number(),
+  additions: z.number(),
+  deletions: z.number(),
+})
+
+export const candidateSchema = z.object({
   id: z.string(),
   snapshotDir: z.string(),
   sourceHash: z.string(),
   acceptanceHash: z.string(),
   branch: z.string().optional(),
   commit: z.string().optional(),
+  changes: candidateChangesSchema.optional(),
+})
+
+/** Where one grading attempt left the check's full output. */
+const verificationLogSchema = z.object({
+  stdoutPath: z.string(),
+  stderrPath: z.string(),
+  exitCode: z.number().nullable(),
+  writeError: z.string().optional(),
 })
 
 const sessionSchema = z.object({
@@ -46,6 +64,8 @@ export const FactoryEventSchema = z.discriminatedUnion('type', [
     passed: z.boolean(),
     stdout: z.string(),
     exitCode: z.number().nullable(),
+    // Optional so a verification recorded before logs existed still parses.
+    log: verificationLogSchema.nullable().optional(),
   }),
   z.object({
     type: z.literal('review.completed'),

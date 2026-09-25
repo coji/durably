@@ -6,4 +6,15 @@
 export const DETAIL_PREFIX = {
   checkpoint: 'start checkpoint without completion: ',
   error: 'error: ',
+  checkAttempt: 'check attempt: ',
+  checkExitCode: 'check exit code: ',
+  checkStdout: 'check stdout log: ',
+  checkStderr: 'check stderr log: ',
+  checkLogWriteError: 'check log write error: ',
 } as const
+
+/** The `checkAttempt` value of a cancelled or lease-lost grading attempt. */
+export const INTERRUPTED_CHECK = 'interrupted, not part of the verdict'
+
+/** Detail kinds whose value is a file path a person may want to copy. */
+export const PATH_DETAILS = ['checkStdout', 'checkStderr'] as const

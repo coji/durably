@@ -229,8 +229,13 @@ run は保存済みの入力から付けた名前で並びます。issue から�
 report の確定値（所要時間、工程ごとの時間）とは別に扱い、確定値には混ぜません。
 
 **実行の詳細**は `demo report --run <id> --format json` と同じ値を表示します。工程ごとの
-時間（横棒）、工程別・役割別の token と費用、レビューの判定とメモ、候補（candidate）、
-納品物（delivery）、入力ファイルの SHA-256 です。承認待ちの run では、レビューの判定とメモは
+時間（横棒）、工程別・役割別の token と費用、レビューの全回の判定とメモ、候補（candidate）
+と候補ごとの変更ファイル数・追加行数・削除行数、納品物（delivery）、入力ファイルの
+SHA-256 です。工程の時系列で行を選ぶと、実装の行には封印した候補の規模を、レビューの
+行にはその回の判定とメモを、検証の行には終了コードと検証ログのパスを出します。
+検証失敗で止まった run では、停止理由の欄にも同じログのパスと終了コードを出します。
+パスは「〜のパスをコピー」ボタンでコピーできます。ログの中身は画面に出さないので、
+コピーしたパスをエディタや `less` で開いてください。承認待ちの run では、レビューの判定とメモは
 承認 wait の metadata から、candidate は保存済みの candidate step から読みます
 （report の `reviews` と `candidate` にも同じ値が入ります）。
 
@@ -433,8 +438,33 @@ DBと全runのデータは `~/.local/state/local-agent-loop/` に置きます。
     work/                          worktree（同梱題材ではコピー）
     operation-checkpoints/         LLM呼び出しと検証のcheckpoint
     verification-scratch/          検証用の一時領域
+    verification-logs/<candidate>/<attempt>/
+      stdout.log                   検証コマンドの標準出力（全文）
+      stderr.log                   検証コマンドの標準エラー（全文）
+    candidates/<candidate>/        repo runの候補ごと
+      changes.diff                 base commitから候補commitまでの全差分
+      changed-files.txt            変更ファイルの一覧（1行1ファイル）
     delivery/<candidate>.patch     成果物
 ```
+
+- **検証ログ**: 採点コマンドの出力は、検証の物理的な試行（step attempt）ごとに
+  `verification-logs/` へ切り詰めずに保存します。reportの抜粋や修正promptに渡す
+  出力は従来どおり末尾だけですが、ログファイルには途中の失敗箇所も残ります。
+  タイムアウトで打ち切った試行は終了コードを `null` とし、打ち切りまでの出力を
+  残します。完了checkpointから復旧した試行は採点をやり直さず、元の試行のログと
+  終了コードを指します。開始checkpointだけが残った試行は採点し直し、新しい試行の
+  ログを別のディレクトリに書きます。止まった試行のログも消しません。
+  キャンセルやリースの喪失で中断した試行も、終了コードを `null` として途中までの
+  ログを記録し、`interrupted: true` を付けます。この試行は判定を出していないので、
+  検証の結果には数えません。子プロセスを起動する前に中断した試行はログを記録しません。
+  ログファイルへの書き込みに失敗しても検証の結果は変えず、エラーを
+  `writeError` に残します。そのログファイルは中身が欠けているかもしれません。
+- **候補の差分**: repo runでは候補を封印するたびに、記録済みのbase commitと候補
+  commitの差分を `candidates/<candidate>/` に書き出します。worktreeの外なので、
+  agentが書き換えることはできません。検証で止まってレビューに進まなかった候補にも
+  書きます。両方のレビュアーのpromptにはこの二つのファイルの絶対パスが入り、
+  全文を読むよう指示します。Claudeのレビュアーは、作業場所の外ではこの二つの
+  ファイルだけを読め、書き込みはできません。
 
 worker、trigger、status、waits、approve、report、compareはすべて引数なしで同じDBを
 見ます。ディレクトリが無ければDBを開く前に作ります。durablyのcheckoutの中にも、対象
@@ -576,6 +606,26 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
   total tokens、cost、cost per success（成功したrunだけ）、repairs、review rounds
 - **Inputs / Candidate / Delivery**: task、spec、dispositionsの各ファイルの
   SHA-256、最後に封印したcandidateのbranchとcommit、成果物の場所、branch名、commit SHA
+- **Candidates**: 封印したすべての候補（JSONの `candidates`）。候補ごとに
+  何回目の実装か、branch、commit、変更ファイル数、追加行数、削除行数、差分ファイルと
+  変更一覧のパス（`changes`）を持ちます。改名は1ファイル、バイナリファイルは
+  変更ファイル数にだけ数え、行数にはgitが報告するテキスト行だけを足します。
+  変更のない候補はすべて0です。同梱題材の候補は規模を記録しないので `changes` は
+  `null` です。`candidate` は従来どおり最後の候補です
+- **Review rounds**: レビューの全回（JSONの `reviewRounds`）。回ごとにレビューした
+  候補と、両レビュアーの判定とメモを回順に持ちます。保存済みのレビューstepの出力から
+  組み立てるので、実行中、承認待ち、修正後に止まったrunでも終わった回が出ます。
+  途中で止まった回には、終わったレビュアーの分だけが入ります。`reviews` は従来どおり
+  最後の回です
+- **Verification logs**: 検証の試行ごとの終了コードと、`stdout.log` / `stderr.log` の
+  パス。JSONでは `attempts[].measurement.verificationLog` で、`exitCode`、
+  `stdoutPath`、`stderrPath` に加え、中断した試行には `interrupted: true`、
+  書き込みに失敗したログには `writeError` が入ります。Markdownでは中断した試行の
+  行に `interrupted, not part of the verdict` を付け、書き込みエラーを
+  `log write error:` の行に出します。検証失敗で止まったrunでは、最後の検証の
+  全試行の終了コードとログのパスを `failure.details` にも載せます
+  （`check attempt: `、`check exit code: `、`check stdout log: `、
+  `check stderr log: `、`check log write error: `）
 - **Triage**: 事前判定（`routine` / `probe` / `unknown`）とその理由。判定の無い
   runは `none`
 - **Stage usage**: 工程ごとの visits / reworked（同じ工程への再突入＝手戻り）、
@@ -587,6 +637,14 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
   別の行に分けるので、役割ごとに違うmodelを使ったrunでも内訳が混ざりません
 - **Timing / Attempts / Waits**: 従来どおりの工程別 work / wall 時間、
   呼び出しごとの生データ、承認待ちの inputWait / executionSlotWait
+- **Versions**: `ai` と provider パッケージの版に加え、providerが実際に起動した
+  CLIの版とパス。Codexは `codexCli` / `codexCliPath`、Claudeは `claudeCli` /
+  `claudeCliPath` です。Codex providerは自分で解決できる `@openai/codex` を
+  `node <パッケージ>/bin/codex.js` として起動し、無いときだけPATH上の `codex` を
+  使います。Claude Agent SDKは同梱のネイティブバイナリを起動し、PATH上の `claude`
+  は使いません。factoryは同じ解決を行い、その実行ファイルをproviderに明示して
+  渡すので、記録した版と起動したCLIは同じファイルです。見つからない値は `null`
+  にし、別のインストールから推測しません
 
 価格はsubscription請求額ではなく、各呼び出し時に保存した
 `api-equivalent-estimate` の参考値です。AI SDK v7 の usage 契約に合わせ、

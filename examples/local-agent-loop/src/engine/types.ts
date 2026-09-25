@@ -28,6 +28,21 @@ export interface SessionRef {
 }
 
 /**
+ * What a repository candidate changed against the recorded base commit,
+ * written when it is sealed. The files live outside the worktree, so the
+ * agent cannot edit what its reviewers read.
+ */
+export interface CandidateChanges {
+  /** Full unified diff, base commit to candidate commit. */
+  diffPath: string
+  /** One `added:` / `modified:` / … line per changed file. */
+  changedFilesPath: string
+  files: number
+  additions: number
+  deletions: number
+}
+
+/**
  * A sealed copy of the work at one point in time.
  *
  * Verification, review and approval all address the candidate by id, so they
@@ -43,4 +58,6 @@ export interface CandidateRef {
   /** Branch and commit holding a repository candidate; absent otherwise. */
   branch?: string
   commit?: string
+  /** Size and diff files of a repository candidate; absent otherwise. */
+  changes?: CandidateChanges
 }

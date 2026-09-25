@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 
 import type { AnyDurably } from '@coji/durably'
 
-import { classifyRun } from './failure-reasons.js'
+import { classifyRun, stageStep } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import {
   roleUsage,
@@ -16,9 +16,12 @@ import {
   TRIAGE_JUDGMENTS,
   type LoopReport,
   type ReportCandidate,
+  type ReportCandidateChanges,
   type ReportDelivery,
   type ReportInputs,
   type ReportReview,
+  type ReportReviewRound,
+  type ReportSealedCandidate,
   type ReportTriage,
   type RoleProfileRow,
 } from './report.js'
@@ -135,32 +138,117 @@ function lastReviews(
   return []
 }
 
+type StoredStep = Awaited<
+  ReturnType<ReportSource['storage']['getSteps']>
+>[number]
+
+function asChanges(value: unknown): ReportCandidateChanges | null {
+  const v = value as Partial<ReportCandidateChanges> | null | undefined
+  return typeof v?.files === 'number' &&
+    typeof v.additions === 'number' &&
+    typeof v.deletions === 'number' &&
+    typeof v.diffPath === 'string' &&
+    typeof v.changedFilesPath === 'string'
+    ? {
+        files: v.files,
+        additions: v.additions,
+        deletions: v.deletions,
+        diffPath: v.diffPath,
+        changedFilesPath: v.changedFilesPath,
+      }
+    : null
+}
+
+/** A stored candidate, as the report shows it; null when it has no id. */
+export function asReportCandidate(value: unknown): ReportCandidate | null {
+  const v = value as {
+    id?: unknown
+    branch?: unknown
+    commit?: unknown
+    changes?: unknown
+  } | null
+  return typeof v?.id === 'string'
+    ? {
+        id: v.id,
+        branch: typeof v.branch === 'string' ? v.branch : null,
+        commit: typeof v.commit === 'string' ? v.commit : null,
+        changes: asChanges(v.changes),
+      }
+    : null
+}
+
+/** Every completed `stage:<n>:code:candidate` step, in sealing order. */
+function sealedCandidates(steps: StoredStep[]): ReportSealedCandidate[] {
+  const sealed = steps
+    .flatMap((s) => {
+      const where = stageStep(s.name)
+      const candidate = asReportCandidate(s.output)
+      return s.status === 'completed' &&
+        where?.stage === 'code' &&
+        where.part === 'candidate' &&
+        candidate
+        ? [{ ...candidate, sequence: where.sequence }]
+        : []
+    })
+    .sort((x, y) => x.sequence - y.sequence)
+  return sealed.map((c, i) => ({ ...c, iteration: i + 1 }))
+}
+
+/**
+ * Every review round, from the stored review step outputs. Each round is
+ * paired with the last candidate sealed before it, which is the candidate
+ * the review stage checked.
+ */
+function reviewRoundsOf(
+  steps: StoredStep[],
+  candidates: ReportSealedCandidate[],
+): ReportReviewRound[] {
+  const rounds = new Map<number, Map<string, ReportReview>>()
+  for (const s of steps) {
+    const where = stageStep(s.name)
+    if (s.status !== 'completed' || where?.stage !== 'review') continue
+    const [review] = asReviews([s.output]) ?? []
+    if (!review || review.lens !== where.part) continue
+    const round = rounds.get(where.sequence) ?? new Map()
+    round.set(review.lens, review)
+    rounds.set(where.sequence, round)
+  }
+  const lensOrder = ['correctness', 'edge-cases']
+  return [...rounds]
+    .sort(([x], [y]) => x - y)
+    .map(([sequence, byLens], i) => {
+      const reviewed = candidates.filter((c) => c.sequence < sequence).at(-1)
+      return {
+        round: i + 1,
+        sequence,
+        candidate: reviewed ? toReportCandidate(reviewed) : null,
+        reviews: [...byLens.values()].sort(
+          (x, y) => lensOrder.indexOf(x.lens) - lensOrder.indexOf(y.lens),
+        ),
+      }
+    })
+}
+
 /**
  * The last sealed candidate. A run with an output carries it there; an open
  * one has only its completed `stage:<n>:code:candidate` steps.
  */
-async function lastCandidate(
-  durably: Pick<ReportSource, 'storage'>,
-  runId: string,
+function lastCandidate(
   output: { candidate?: unknown } | null,
-): Promise<ReportCandidate | null> {
-  const sealed = (
-    output != null
-      ? output.candidate
-      : (await durably.storage.getSteps(runId))
-          .filter(
-            (s) => s.status === 'completed' && s.name.endsWith(':candidate'),
-          )
-          .sort((x, y) => x.index - y.index)
-          .at(-1)?.output
-  ) as { id?: string; branch?: string; commit?: string } | null | undefined
-  return sealed?.id
-    ? {
-        id: sealed.id,
-        branch: sealed.branch ?? null,
-        commit: sealed.commit ?? null,
-      }
-    : null
+  candidates: ReportSealedCandidate[],
+): ReportCandidate | null {
+  if (output != null) return asReportCandidate(output.candidate)
+  const last = candidates.at(-1)
+  return last ? toReportCandidate(last) : null
+}
+
+function toReportCandidate({
+  id,
+  branch,
+  commit,
+  changes,
+}: ReportSealedCandidate): ReportCandidate {
+  return { id, branch, commit, changes }
 }
 
 /**
@@ -311,7 +399,9 @@ export async function buildReport(
         commit: recorded.commit ?? null,
       }
     : null
-  const candidate = await lastCandidate(durably, runId, output)
+  const steps = await durably.storage.getSteps(runId)
+  const candidates = sealedCandidates(steps)
+  const candidate = lastCandidate(output, candidates)
   return {
     runId,
     jobName: run.jobName,
@@ -335,7 +425,9 @@ export async function buildReport(
     roleUsage: roleUsage(rows, profileRows(input)),
     inputs: inputHashes(input),
     candidate,
+    candidates,
     reviews: lastReviews(run.output, waits),
+    reviewRounds: reviewRoundsOf(steps, candidates),
     delivery,
     failure,
     stageVisits: visits,

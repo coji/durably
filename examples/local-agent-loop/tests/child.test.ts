@@ -3,12 +3,15 @@ import { existsSync } from 'node:fs'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Readable, Writable } from 'node:stream'
 import { describe, it } from 'node:test'
 
 import {
+  childLogError,
   ownedChildPids,
   runChild,
   SpawnCancelledError,
+  teeLog,
 } from '../src/engine/child.js'
 
 function isAlive(pid: number): boolean {
@@ -65,7 +68,8 @@ describe('cancel-aware subprocess', () => {
         timeoutMs: 10000,
         signal: controller.signal,
       }),
-      SpawnCancelledError,
+      (error: unknown) =>
+        error instanceof SpawnCancelledError && !error.spawned,
     )
     assert.equal(ownedChildPids().length, 0)
   })
@@ -131,5 +135,83 @@ describe('cancel-aware subprocess', () => {
       if (prev === undefined) delete process.env['NODE_TEST_CONTEXT']
       else process.env['NODE_TEST_CONTEXT'] = prev
     }
+  })
+})
+
+describe('full-output log files', () => {
+  it('pauses the source while the log sink is full, so buffering stays bounded', async () => {
+    const chunk = Buffer.alloc(64 * 1024, 0x61)
+    const total = 200
+    let produced = 0
+    // A source that can always supply more, faster than the sink drains.
+    const source = new Readable({
+      read() {
+        this.push(produced++ < total ? chunk : null)
+      },
+    })
+    const highWaterMark = 16 * 1024
+    let received = 0
+    let maxBuffered = 0
+    const sink = new Writable({
+      highWaterMark,
+      write(data: Buffer, _encoding, done) {
+        received += data.length
+        setImmediate(done)
+      },
+    })
+    const log = teeLog(source, sink)
+    source.on('data', (data: Buffer) => {
+      log.write(data)
+      maxBuffered = Math.max(maxBuffered, sink.writableLength)
+    })
+    await new Promise((resolve) => source.once('end', resolve))
+    assert.equal(await log.close(), null)
+    assert.equal(received, chunk.length * total)
+    // One chunk may land past the mark before the source pauses; without
+    // backpressure the whole stream would queue in memory.
+    assert.ok(
+      maxBuffered <= highWaterMark + chunk.length,
+      `buffered ${maxBuffered} bytes`,
+    )
+  })
+
+  it('keeps every byte of a large output on disk', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'child-log-'))
+    const stdoutFile = join(dir, 'stdout.log')
+    const size = 8 * 1024 * 1024
+    const res = await runChild(
+      'node',
+      ['-e', `process.stdout.write('x'.repeat(${size}) + 'END')`],
+      { timeoutMs: 30000, stdoutFile },
+    )
+    assert.equal(res.code, 0)
+    assert.equal(res.logError, null)
+    const written = await readFile(stdoutFile, 'utf8')
+    assert.equal(written.length, size + 3)
+    assert.ok(written.endsWith('END'))
+  })
+
+  it('keeps the exit code when a log file cannot be written', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'child-log-'))
+    const res = await runChild('sh', ['-c', 'echo out; exit 3'], {
+      timeoutMs: 10000,
+      stdoutFile: join(dir, 'missing', 'stdout.log'),
+    })
+    assert.equal(res.code, 3)
+    assert.equal(res.stdout, 'out\n')
+    assert.match(res.logError ?? '', /ENOENT/)
+  })
+
+  it('keeps the log write error when the child also times out', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'child-log-'))
+    await assert.rejects(
+      runChild('sh', ['-c', 'echo out; sleep 5'], {
+        timeoutMs: 300,
+        stdoutFile: join(dir, 'missing', 'stdout.log'),
+      }),
+      (error: unknown) =>
+        /timed out/.test((error as Error).message) &&
+        /ENOENT/.test(childLogError(error) ?? ''),
+    )
   })
 })

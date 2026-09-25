@@ -13,10 +13,12 @@
  */
 import type { StepAttempt } from '@coji/durably'
 
+import { INTERRUPTED_CHECK } from './failure-details.js'
 import { retryText, type FailureClassification } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import type { AttemptMeasurement } from './providers/types.js'
 import { TERMINAL_STATUSES } from './terminal.js'
+import type { CandidateChanges } from './types.js'
 import { aggregateUsage } from './usage.js'
 
 export interface AttemptRow {
@@ -125,11 +127,24 @@ export interface ReportInputs {
   dispositions: ReportInputFile | null
 }
 
+/** A repository candidate's size and where its diff and file list live. */
+export type ReportCandidateChanges = CandidateChanges
+
 /** The last sealed candidate: where a repository run left its work. */
 export interface ReportCandidate {
   id: string
   branch: string | null
   commit: string | null
+  /** Null for a candidate that records no size, such as the bundled sample's. */
+  changes?: ReportCandidateChanges | null
+}
+
+/** One sealed candidate, in sealing order. */
+export interface ReportSealedCandidate extends ReportCandidate {
+  /** Which pass through code sealed it, from 1. */
+  iteration: number
+  /** The stage sequence of the code entry that sealed it. */
+  sequence: number
 }
 
 /**
@@ -140,6 +155,20 @@ export interface ReportReview {
   lens: string
   decision: string
   notes: string
+}
+
+/**
+ * One finished review round, from the stored review step outputs. A round
+ * the run stopped in part way lists only the verdicts that completed.
+ */
+export interface ReportReviewRound {
+  /** From 1, in the order the rounds ran. */
+  round: number
+  /** The stage sequence of the review entry. */
+  sequence: number
+  /** The candidate the round reviewed; null when it is not stored. */
+  candidate: ReportCandidate | null
+  reviews: ReportReview[]
 }
 
 /** What the run delivered, as recorded in its output. */
@@ -206,8 +235,12 @@ export interface LoopReport {
   inputs: ReportInputs
   /** Last sealed candidate, whatever the conclusion; null before one exists. */
   candidate: ReportCandidate | null
+  /** Every sealed candidate with its size, oldest first. */
+  candidates: ReportSealedCandidate[]
   /** Last review round; empty before a review round has finished. */
   reviews: ReportReview[]
+  /** Every review round with both verdicts and notes, oldest first. */
+  reviewRounds: ReportReviewRound[]
   /** Branch, commit and location of the delivery; null when none was made. */
   delivery: ReportDelivery | null
   /** Why the run stopped and what to do next; null when it did not stop. */
@@ -275,6 +308,12 @@ function fmtMs(v: number | null): string {
 
 function fmtUsd(v: number | null): string {
   return v === null ? 'unknown' : v.toFixed(6)
+}
+
+function fmtChanges(c: ReportCandidateChanges | null | undefined): string {
+  return c
+    ? `${c.files} files, +${c.additions} / -${c.deletions} lines`
+    : 'not recorded'
 }
 
 const STAGE_ORDER = [
@@ -677,6 +716,23 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push(`- id: ${r.candidate.id}`)
     lines.push(`- branch: ${fmt(r.candidate.branch)}`)
     lines.push(`- commit: ${fmt(r.candidate.commit)}`)
+    lines.push(`- changes: ${fmtChanges(r.candidate.changes)}`)
+  } else {
+    lines.push('- none')
+  }
+  lines.push('')
+  lines.push('## Candidates (every sealed candidate, oldest first)')
+  lines.push('')
+  if (r.candidates.length > 0) {
+    for (const c of r.candidates) {
+      lines.push(
+        `- iteration ${c.iteration}: ${c.id} — ${fmtChanges(c.changes)}`,
+      )
+      if (c.changes) {
+        lines.push(`  - diff: ${c.changes.diffPath}`)
+        lines.push(`  - changed files: ${c.changes.changedFilesPath}`)
+      }
+    }
   } else {
     lines.push('- none')
   }
@@ -688,6 +744,40 @@ export function reportToMarkdown(r: LoopReport): string {
       lines.push(`- ${review.lens}: ${review.decision} — ${review.notes}`)
   } else {
     lines.push('- none (no review round has finished)')
+  }
+  lines.push('')
+  lines.push('## Review rounds')
+  lines.push('')
+  if (r.reviewRounds.length > 0) {
+    for (const round of r.reviewRounds) {
+      lines.push(
+        `- round ${round.round}: ${round.candidate?.id ?? 'candidate unknown'}`,
+      )
+      for (const review of round.reviews)
+        lines.push(`  - ${review.lens}: ${review.decision} — ${review.notes}`)
+    }
+  } else {
+    lines.push('- none')
+  }
+  lines.push('')
+  const graded = r.attempts.flatMap((a) =>
+    a.measurement?.verificationLog
+      ? [{ a, log: a.measurement.verificationLog }]
+      : [],
+  )
+  lines.push('## Verification logs (full check output per attempt)')
+  lines.push('')
+  if (graded.length > 0) {
+    for (const { a, log } of graded) {
+      lines.push(
+        `- ${a.stepName} (${a.attemptId.slice(0, 8)}): exit code ${log.exitCode ?? 'null'}${log.interrupted ? `, ${INTERRUPTED_CHECK}` : ''}${a.measurement?.result === 'checkpoint-recovered' ? ', recovered from checkpoint' : ''}`,
+      )
+      lines.push(`  - stdout: ${log.stdoutPath}`)
+      lines.push(`  - stderr: ${log.stderrPath}`)
+      if (log.writeError) lines.push(`  - log write error: ${log.writeError}`)
+    }
+  } else {
+    lines.push('- none')
   }
   lines.push('')
   lines.push('## Delivery')

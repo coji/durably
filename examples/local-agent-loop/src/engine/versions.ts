@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 
 import { runChild } from './child.js'
+import { claudeExecutable } from './providers/claude.js'
+import { codexExecutable } from './providers/codex.js'
 
 const require = createRequire(import.meta.url)
 const versionCache = new Map<string, Promise<Record<string, string | null>>>()
@@ -44,6 +46,9 @@ async function cliVersion(
  * Resolve the versions used for one provider call. Only the selected
  * provider's CLI is probed — the unselected CLI is never required to be
  * installed or authenticated.
+ *
+ * The CLI probed is the file the provider launches (`codexCliPath` /
+ * `claudeCliPath`); what cannot be found is null, never another install.
  */
 export async function resolveVersions(
   provider: 'codex' | 'claude' | 'fake',
@@ -71,10 +76,22 @@ async function resolveVersionsUncached(
     ),
   }
   if (provider === 'codex') {
-    return { ...base, codexCli: await cliVersion('codex', ['--version']) }
+    const exe = codexExecutable()
+    return {
+      ...base,
+      codexCli: exe.path
+        ? await cliVersion(exe.command, [...exe.args, '--version'])
+        : null,
+      codexCliPath: exe.path,
+    }
   }
   if (provider === 'claude') {
-    return { ...base, claudeCli: await cliVersion('claude', ['--version']) }
+    const path = claudeExecutable()
+    return {
+      ...base,
+      claudeCli: path ? await cliVersion(path, ['--version']) : null,
+      claudeCliPath: path,
+    }
   }
   return base
 }

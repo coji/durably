@@ -25,6 +25,7 @@ export function reduce(state: FactoryState, event: FactoryEvent): FactoryState {
           passed: event.passed,
           stdout: event.stdout,
           exitCode: event.exitCode,
+          log: event.log ?? null,
         },
         repairNotes: event.passed
           ? state.repairNotes

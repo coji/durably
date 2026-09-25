@@ -41,8 +41,12 @@ import {
   noteSaidByReason,
   commandText,
   detailField,
+  INTERRUPTED_CHECK_TEXT,
+  LOG_WRITE_ERROR_NOTE,
+  NO_EXIT_CODE,
   diagnosisText,
   humanCheckText,
+  isPathDetail,
   reviewDecision,
 } from '../src/ui/labels.js'
 import { pollEvery } from '../src/ui/poll.js'
@@ -669,6 +673,104 @@ describe('pipeline and trace', () => {
     )
   })
 
+  it('trace (g) shows each review round, candidate size and check log from the report', () => {
+    const log = (n: number, exitCode: number | null) => ({
+      stdoutPath: `/runs/r1/verification-logs/cand-${n}/a/stdout.log`,
+      stderrPath: `/runs/r1/verification-logs/cand-${n}/a/stderr.log`,
+      exitCode,
+    })
+    const graded = (
+      name: string,
+      start: number,
+      end: number,
+      verificationLog: ReturnType<typeof log>,
+    ): AttemptRow => ({
+      ...step(name, start, end),
+      attemptId: `${name}@${start}`,
+      measurement: {
+        result: verificationLog.exitCode === 0 ? 'pass' : 'fail',
+        verificationLog,
+      } as never,
+    })
+    const changes = (files: number) => ({
+      files,
+      additions: files * 3,
+      deletions: files,
+      diffPath: `/runs/r1/candidates/cand-${files}/changes.diff`,
+      changedFilesPath: `/runs/r1/candidates/cand-${files}/changed-files.txt`,
+    })
+    const verdict = (lens: string, decision: string, notes: string) => ({
+      lens,
+      decision,
+      notes,
+    })
+    const t = traceOf(
+      [
+        step('stage:0:code:agent', 1, 10),
+        step('stage:0:code:candidate', 10, 11),
+        graded('stage:1:verify:acceptance', 11, 15, log(1, 0)),
+        step('stage:2:review:correctness', 15, 20),
+        step('stage:2:review:edge-cases', 15, 20),
+        step('stage:3:code:agent', 21, 30),
+        step('stage:3:code:candidate', 30, 31),
+        graded('stage:4:verify:acceptance', 31, 35, log(2, 1)),
+        graded('stage:4:verify:acceptance', 36, 40, log(2, null)),
+      ],
+      [],
+      { status: 'completed', completedAt: iso(41) },
+      {
+        // Only the report says what each round decided; no step outputs.
+        reviews: [],
+        reviewRounds: [
+          {
+            round: 1,
+            sequence: 2,
+            candidate: null,
+            reviews: [
+              verdict('correctness', 'needsChanges', 'round one fix'),
+              verdict('edge-cases', 'pass', 'round one ok'),
+            ],
+          },
+        ],
+        candidates: [
+          {
+            id: 'cand-1',
+            branch: 'b',
+            commit: 'c1',
+            changes: changes(0),
+            iteration: 1,
+            sequence: 0,
+          },
+          {
+            id: 'cand-2',
+            branch: 'b',
+            commit: 'c2',
+            changes: changes(2),
+            iteration: 2,
+            sequence: 3,
+          },
+        ],
+      },
+    )
+    const [first, second] = t.root.children
+    const [code1, verify1, correctness, edgeCases] = first?.children ?? []
+    assert.deepEqual(code1?.candidate?.changes, changes(0))
+    assert.deepEqual(verify1?.verificationLog, log(1, 0))
+    assert.equal(correctness?.review?.notes, 'round one fix')
+    assert.equal(edgeCases?.review?.decision, 'pass')
+    const [code2, verify2] = second?.children ?? []
+    assert.deepEqual(code2?.candidate?.changes, changes(2))
+    // A retried verification: the entry shows its latest attempt's log, and
+    // each attempt row its own.
+    assert.deepEqual(verify2?.verificationLog, log(2, null))
+    assert.deepEqual(
+      verify2?.children.map((c) => c.verificationLog),
+      [log(2, 1), log(2, null)],
+    )
+    // Rows that are not verifications carry no check log.
+    assert.equal(code2?.verificationLog, null)
+  })
+
   it('trace (d) sums per-row tokens and cost to the report stage totals', () => {
     const measured = (
       name: string,
@@ -949,6 +1051,42 @@ describe('diagnosis wording on the page', () => {
       label: 'エラー',
       value: 'boom',
     })
+    // A check log is a path to copy; its exit code is plain data.
+    assert.deepEqual(detailField('check stdout log: /runs/r1/stdout.log'), {
+      label: '検証の標準出力',
+      value: '/runs/r1/stdout.log',
+    })
+    assert.deepEqual(detailField('check stderr log: /runs/r1/stderr.log'), {
+      label: '検証の標準エラー',
+      value: '/runs/r1/stderr.log',
+    })
+    // No exit code gets the same hover text as the trace's log slot.
+    assert.deepEqual(detailField('check exit code: null'), {
+      label: '検証の終了コード',
+      value: 'null',
+      title: NO_EXIT_CODE,
+    })
+    assert.deepEqual(detailField('check exit code: 1'), {
+      label: '検証の終了コード',
+      value: '1',
+    })
+    // An interrupted attempt says in Japanese that it is not in the verdict.
+    assert.deepEqual(
+      detailField('check attempt: interrupted, not part of the verdict'),
+      { label: '検証の試行', value: INTERRUPTED_CHECK_TEXT },
+    )
+    // A log write error warns that the file may be incomplete and keeps the
+    // error itself as data.
+    assert.deepEqual(detailField('check log write error: ENOSPC: disk full'), {
+      label: 'ログの書き込みエラー',
+      value: 'ENOSPC: disk full',
+      note: LOG_WRITE_ERROR_NOTE,
+    })
+    assert.match(LOG_WRITE_ERROR_NOTE, /欠けているかもしれません/)
+    assert.equal(isPathDetail('check stdout log: /runs/r1/stdout.log'), true)
+    assert.equal(isPathDetail('check stderr log: /runs/r1/stderr.log'), true)
+    assert.equal(isPathDetail('check exit code: 1'), false)
+    assert.equal(isPathDetail('error: boom'), false)
   })
 })
 
@@ -1456,6 +1594,26 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
           ?.stage,
         'verify',
       )
+      // The stopped run names the failing check's log in its stop reason and
+      // on its verification row, with the same path and exit code.
+      const stopped = await api<RunDetailResponse>(
+        port,
+        `/api/runs/${ids['verification']}`,
+      )
+      const lastVerify = stopped.trace.root.children
+        .flatMap((c) => c.children)
+        .filter((c) => c.stage === 'verify')
+        .at(-1)
+      const checkLog = lastVerify?.verificationLog
+      assert.ok(checkLog)
+      const stopDetails = stopped.diagnosis.failure?.details ?? []
+      assert.ok(
+        stopDetails.includes(`check stdout log: ${checkLog.stdoutPath}`),
+      )
+      assert.ok(
+        stopDetails.includes(`check stderr log: ${checkLog.stderrPath}`),
+      )
+      assert.ok(stopDetails.includes(`check exit code: ${checkLog.exitCode}`))
       assert.equal(waiting.report.reviews.length, 2)
       assert.ok(waiting.report.reviews.every((r) => r.notes.length > 0))
       assert.ok(waiting.report.candidate?.id)

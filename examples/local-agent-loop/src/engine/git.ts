@@ -157,19 +157,20 @@ export async function commitAll(
   return { commit: await resolveCommit(dir, 'HEAD'), created: true }
 }
 
-/** `added:`/`modified:`/`deleted:` lines between two commits. */
+/**
+ * `added:`/`modified:`/`deleted:` lines between two commits. Uncapped: a
+ * truncated list would silently hide changed files from whoever reads it.
+ */
 export async function describeCommitChanges(
   repo: string,
   baseCommit: string,
   headCommit: string,
 ): Promise<string[]> {
-  const out = await git(repo, [
-    'diff',
-    '--name-status',
-    '-z',
-    baseCommit,
-    headCommit,
-  ])
+  const out = await git(
+    repo,
+    ['diff', '--name-status', '-z', baseCommit, headCommit],
+    { maxOutputChars: Number.POSITIVE_INFINITY },
+  )
   const fields = out.split('\0').filter((f) => f.length > 0)
   const labels: Record<string, string> = {
     A: 'added',
@@ -193,6 +194,49 @@ export async function describeCommitChanges(
     i += takesTwo ? 3 : 2
   }
   return lines
+}
+
+/** How big a change is, as git counts it. */
+export interface DiffStat {
+  /** Changed files, binary ones included; a rename counts once. */
+  files: number
+  /** Added and deleted text lines; binary files add none. */
+  additions: number
+  deletions: number
+}
+
+/**
+ * Size of the change between two commits, from `git diff --numstat -z`.
+ * NUL separation keeps paths with spaces, tabs or newlines intact, and a
+ * rename record carries its two paths in separate fields.
+ */
+export async function diffStat(
+  repo: string,
+  baseCommit: string,
+  headCommit: string,
+): Promise<DiffStat> {
+  const out = await git(
+    repo,
+    ['diff', '--numstat', '-z', baseCommit, headCommit],
+    { maxOutputChars: Number.POSITIVE_INFINITY },
+  )
+  const fields = out.split('\0')
+  const stat: DiffStat = { files: 0, additions: 0, deletions: 0 }
+  for (let i = 0; i < fields.length;) {
+    const record = fields[i] ?? ''
+    if (record.length === 0) {
+      i++
+      continue
+    }
+    const [added = '', deleted = '', path = ''] = record.split('\t')
+    stat.files++
+    // `-` marks a binary file: counted as changed, with no lines.
+    if (added !== '-') stat.additions += Number(added)
+    if (deleted !== '-') stat.deletions += Number(deleted)
+    // A rename or copy leaves the path empty and puts both paths next.
+    i += path.length === 0 ? 3 : 1
+  }
+  return stat
 }
 
 /**

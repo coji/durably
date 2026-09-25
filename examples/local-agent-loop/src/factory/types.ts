@@ -2,7 +2,10 @@
 
 import type { StepContext } from '@coji/durably'
 
-import type { AgentProvider } from '../engine/providers/types.js'
+import type {
+  AgentProvider,
+  VerificationLog,
+} from '../engine/providers/types.js'
 import type {
   CandidateRef,
   ContextMode,
@@ -69,6 +72,8 @@ export interface VerificationResult {
   passed: boolean
   stdout: string
   exitCode: number | null
+  /** The grading attempt's full output; null when none was recorded. */
+  log: VerificationLog | null
 }
 
 export interface ReviewVerdict {

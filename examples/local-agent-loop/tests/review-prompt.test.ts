@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import { codePrompt, reviewPrompt } from '../src/factory/prompts.js'
+import {
+  buildClaudeSettings,
+  decideToolPermission,
+} from '../src/engine/providers/claude.js'
+import {
+  CHANGED_PATHS_INLINE_LIMIT,
+  changedPathsLine,
+  codePrompt,
+  reviewPrompt,
+} from '../src/factory/prompts.js'
 import type { RepoTargetConfig, Target } from '../src/factory/target.js'
 import { RepoTarget } from '../src/targets/repo.js'
 import { SubjectTarget } from '../src/targets/subject.js'
@@ -215,5 +224,119 @@ describe('review procedure', () => {
       assert.match(prompt, /^COUNTEREXAMPLE: /m)
       assert.match(prompt, /^DECISION: pass \| needsChanges$/m)
     }
+  })
+})
+
+describe('reviewers read the candidate diff in full', () => {
+  const changes = {
+    diffPath: '/state/runs/r1/candidates/candidate-1-abc/changes.diff',
+    changedFilesPath:
+      '/state/runs/r1/candidates/candidate-1-abc/changed-files.txt',
+    files: 3,
+    additions: 10,
+    deletions: 2,
+  }
+
+  it('gives both reviewers the same diff and changed-file list and asks for all of it', () => {
+    for (const lens of ['correctness', 'edge-cases'] as const) {
+      const prompt = reviewPrompt(lens, 'CONTEXT', ['rule'], [], changes)
+      assert.ok(prompt.includes(`Full diff: ${changes.diffPath}`), lens)
+      assert.ok(
+        prompt.includes(`Changed file list: ${changes.changedFilesPath}`),
+        lens,
+      )
+      assert.match(prompt, /Read both files in full, to the last line/)
+      assert.match(prompt, /3 files changed, \+10 \/ -2 lines/)
+      // The files come before the untrusted data, as factory context.
+      assert.ok(prompt.indexOf('CANDIDATE FILES') < prompt.indexOf('Reply in'))
+    }
+    // A candidate without recorded files gets no section.
+    assert.doesNotMatch(
+      reviewPrompt('correctness', 'CONTEXT', ['rule']),
+      /CANDIDATE FILES/,
+    )
+  })
+
+  it('lets a Claude reviewer read exactly those files and nothing else outside its root', async () => {
+    const readable = [changes.diffPath, changes.changedFilesPath]
+    const read = (file_path: string) =>
+      decideToolPermission(
+        '/tmp/repo-work',
+        true,
+        'Read',
+        { file_path },
+        readable,
+      ).allow
+    assert.equal(read(changes.diffPath), true)
+    assert.equal(read(changes.changedFilesPath), true)
+    assert.equal(read('/tmp/repo-work/src/a.ts'), true)
+    // A sibling in the same directory, or a path that only normalizes near
+    // it, stays denied.
+    assert.equal(
+      read('/state/runs/r1/candidates/candidate-1-abc/other.txt'),
+      false,
+    )
+    assert.equal(read('/state/runs/r1/operation-checkpoints/x.json'), false)
+    // Reading is all a reviewer may do with them.
+    for (const tool of ['Write', 'Edit', 'Bash'])
+      assert.equal(
+        decideToolPermission(
+          '/tmp/repo-work',
+          true,
+          tool,
+          { file_path: changes.diffPath, command: `cat ${changes.diffPath}` },
+          readable,
+        ).allow,
+        false,
+        tool,
+      )
+    // The list never widens a writing role's reach.
+    const settings = buildClaudeSettings(
+      '/tmp/repo-work',
+      false,
+      null,
+      null,
+      readable,
+    )
+    const guard = settings.canUseTool as (
+      tool: string,
+      input: Record<string, unknown>,
+    ) => Promise<{ behavior: string }>
+    const decision = await guard('Write', { file_path: changes.diffPath })
+    assert.equal(decision.behavior, 'deny')
+  })
+})
+
+describe('trusted context changed-path line', () => {
+  it('lists every path when the change is small', () => {
+    assert.equal(changedPathsLine([]), 'Changed paths: (none)')
+    assert.equal(
+      changedPathsLine(['added: a', 'modified: b']),
+      'Changed paths: added: a, modified: b',
+    )
+  })
+
+  it('caps a large change inline and points at the full list', () => {
+    const paths = Array.from(
+      { length: CHANGED_PATHS_INLINE_LIMIT + 7 },
+      (_, i) => `added: f${i}`,
+    )
+    const line = changedPathsLine(paths, '/runs/r1/changed-files.txt')
+    assert.ok(line.includes(`f${CHANGED_PATHS_INLINE_LIMIT - 1}`))
+    assert.ok(!line.includes(`f${CHANGED_PATHS_INLINE_LIMIT},`))
+    assert.ok(
+      line.endsWith(', and 7 more — see /runs/r1/changed-files.txt'),
+      line,
+    )
+  })
+
+  it('lists every path of a large change when no full list file exists', () => {
+    const paths = Array.from(
+      { length: CHANGED_PATHS_INLINE_LIMIT + 7 },
+      (_, i) => `added: f${i}`,
+    )
+    const line = changedPathsLine(paths)
+    assert.equal(line, `Changed paths: ${paths.join(', ')}`)
+    assert.ok(!line.includes('more'))
   })
 })

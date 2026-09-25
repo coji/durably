@@ -7,8 +7,10 @@ import { describe, it } from 'node:test'
 
 import type { JsonValue } from '@coji/durably'
 
+import { SpawnCancelledError } from '../src/engine/child.js'
 import {
   classifyFailure,
+  lastVerificationLogs,
   uncertainCheckpoints,
 } from '../src/engine/failure-reasons.js'
 import type {
@@ -23,6 +25,7 @@ import {
   UncertainInvocationError,
 } from '../src/engine/runner.js'
 import type { TokenUsage } from '../src/engine/usage.js'
+import { logAfterError } from '../src/engine/verification.js'
 
 interface StubAttempt {
   id: string
@@ -473,5 +476,96 @@ describe('partial usage snapshots never outrank the terminal write', () => {
     assert.equal(attempt.snapshots.length, settled)
     assert.equal(attempt.snapshots.at(-1)?.result, 'implement-done')
     assert.equal(attempt.snapshots.at(-1)?.usage?.inputTokens, 100)
+  })
+})
+
+describe('logs of the verification that stopped the run', () => {
+  const log = (name: string) => ({
+    stdoutPath: `/logs/${name}/stdout.log`,
+    stderrPath: `/logs/${name}/stderr.log`,
+    exitCode: 1,
+  })
+  const verify = (
+    sequence: number,
+    startedAt: string,
+    verificationLog: ReturnType<typeof log> | null,
+  ) => ({
+    stepName: `stage:${sequence}:verify:acceptance`,
+    startedAt,
+    metadata: { verificationLog } as never,
+  })
+
+  it('reports every attempt of the last verify step, oldest first', () => {
+    assert.deepEqual(
+      lastVerificationLogs([
+        verify(2, '2026-01-01T00:00:00Z', log('early')),
+        verify(4, '2026-01-01T00:02:00Z', log('retry')),
+        verify(4, '2026-01-01T00:01:00Z', log('first')),
+      ]),
+      [log('first'), log('retry')],
+    )
+  })
+
+  it('labels an interrupted attempt and a log write error in the details', () => {
+    const failure = classifyFailure({
+      runId: 'r1',
+      status: 'completed',
+      output: { conclusion: 'verification-failed' },
+      error: null,
+      uncertain: [],
+      verificationLogs: [
+        { ...log('lost'), exitCode: null, interrupted: true },
+        { ...log('graded'), writeError: 'ENOSPC: no space left' },
+      ],
+    })
+    assert.deepEqual(failure?.details, [
+      'check attempt: interrupted, not part of the verdict',
+      'check exit code: null',
+      'check stdout log: /logs/lost/stdout.log',
+      'check stderr log: /logs/lost/stderr.log',
+      'check exit code: 1',
+      'check stdout log: /logs/graded/stdout.log',
+      'check stderr log: /logs/graded/stderr.log',
+      'check log write error: ENOSPC: no space left',
+    ])
+  })
+
+  it('builds the log a grade left from the error that ended it', () => {
+    const files = { stdoutFile: '/l/stdout.log', stderrFile: '/l/stderr.log' }
+    const paths = { stdoutPath: '/l/stdout.log', stderrPath: '/l/stderr.log' }
+    // Never spawned: no files exist, so no log is recorded.
+    assert.equal(
+      logAfterError(files, new SpawnCancelledError('aborted', false)),
+      null,
+    )
+    // Cancelled mid-check: a partial log marked interrupted, keeping the
+    // write error.
+    assert.deepEqual(
+      logAfterError(
+        files,
+        Object.assign(new SpawnCancelledError('cancelled'), {
+          logError: 'EIO',
+        }),
+      ),
+      { ...paths, exitCode: null, writeError: 'EIO', interrupted: true },
+    )
+    // Timed out: graded as a failure, and the write error is kept.
+    assert.deepEqual(
+      logAfterError(
+        files,
+        Object.assign(new Error('timed out'), { logError: 'EIO' }),
+      ),
+      { ...paths, exitCode: null, writeError: 'EIO' },
+    )
+  })
+
+  it("reports none when the last verify step has no log, not an earlier step's", () => {
+    assert.deepEqual(
+      lastVerificationLogs([
+        verify(2, '2026-01-01T00:00:00Z', log('early')),
+        verify(4, '2026-01-01T00:01:00Z', null),
+      ]),
+      [],
+    )
   })
 })

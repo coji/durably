@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { createAgentDurably } from '../src/durably.js'
 import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
-import { resolveCommit } from '../src/engine/git.js'
+import { describeCommitChanges, resolveCommit } from '../src/engine/git.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
 import { fixProfile } from '../src/factory/job.js'
 
@@ -220,6 +220,47 @@ describe('repo target end to end', { timeout: 180000 }, () => {
         })
       ).stdout.trim()
       assert.notEqual(output.candidate?.sourceHash, baseTree)
+
+      // Every candidate's diff and changed-file list sit outside the worktree
+      // and match the recorded base commit and that candidate's commit.
+      const report = await buildReport(durably, run.id)
+      assert.equal(report.candidates.length, 2)
+      const workdir = (await durably.getRun(run.id))?.output as {
+        workdir: string
+      }
+      for (const c of report.candidates) {
+        const changes = c.changes
+        assert.ok(changes && c.commit, c.id)
+        assert.ok(!changes.diffPath.startsWith(workdir.workdir))
+        const expected = await runChild(
+          'git',
+          ['diff', '--binary', '--no-color', baseBefore, c.commit],
+          { cwd: repo, timeoutMs: 30000, maxOutputChars: 10_000_000 },
+        )
+        assert.equal(await readFile(changes.diffPath, 'utf8'), expected.stdout)
+        const list = (await describeCommitChanges(repo, baseBefore, c.commit))
+          .map((line) => `${line}\n`)
+          .join('')
+        assert.equal(await readFile(changes.changedFilesPath, 'utf8'), list)
+      }
+      // The first iteration changed nothing; the repair changed calc.js.
+      const [unchanged, repaired] = report.candidates
+      assert.deepEqual(
+        [
+          unchanged?.changes?.files,
+          unchanged?.changes?.additions,
+          unchanged?.changes?.deletions,
+        ],
+        [0, 0, 0],
+      )
+      assert.equal(repaired?.changes?.files, 1)
+      assert.ok((repaired?.changes?.additions ?? 0) > 0)
+      assert.deepEqual(report.candidate?.changes, repaired?.changes)
+      const md = reportToMarkdown(report)
+      assert.ok(
+        md.includes(`- iteration 1: ${unchanged?.id} — 0 files, +0 / -0 lines`),
+      )
+      assert.ok(md.includes(repaired?.changes?.diffPath ?? '?'))
     } finally {
       await durably.stop()
       await durably.db.destroy()
@@ -322,6 +363,31 @@ describe('repo target end to end', { timeout: 180000 }, () => {
         assert.ok(text.includes(branch))
         assert.ok(text.includes(commit))
       }
+      // A candidate stopped before review still has its size: here nothing
+      // changed, so every count is zero.
+      assert.equal(report.candidates.length, 1)
+      assert.deepEqual(
+        [
+          report.candidate?.changes?.files,
+          report.candidate?.changes?.additions,
+          report.candidate?.changes?.deletions,
+        ],
+        [0, 0, 0],
+      )
+      assert.equal(
+        await readFile(report.candidate?.changes?.diffPath ?? '', 'utf8'),
+        '',
+      )
+      // The stop reason names the failing check's logs and exit code.
+      const details = report.failure?.details ?? []
+      assert.ok(details.includes('check exit code: 1'), details.join('\n'))
+      const stdoutLine = details.find((d) => d.startsWith('check stdout log: '))
+      const stdoutPath = stdoutLine?.slice('check stdout log: '.length) ?? ''
+      assert.match(
+        await readFile(stdoutPath, 'utf8'),
+        /adds decimals without truncation/,
+      )
+      assert.ok(reportToMarkdown(report).includes(`- ${stdoutLine}`))
     } finally {
       await durably.stop()
       await durably.db.destroy()

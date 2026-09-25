@@ -154,6 +154,15 @@ export const verifyStage: StageHandler = async ({
               candidate.id,
               attempt.id,
             ),
+            // Keyed by the step attempt: a worker that dies mid-grading
+            // leaves its partial log, and the re-grade writes a new one.
+            logDir: join(
+              state.setup.checkpointsDir,
+              '..',
+              'verification-logs',
+              candidate.id,
+              attempt.id,
+            ),
             signal: graderSignal,
           }),
       },
@@ -167,6 +176,7 @@ export const verifyStage: StageHandler = async ({
     passed: result.passed,
     stdout: result.stdout,
     exitCode: result.exitCode,
+    log: result.log ?? null,
   }
 }
 
@@ -186,6 +196,12 @@ export const reviewStage: StageHandler = async ({
   await target.assertIntact(candidate)
   const trustedContext = await target.reviewContext(candidate)
   const reviewCwd = target.reviewCwd(candidate)
+  // Both reviewers read the same candidate's diff and changed-file list, and
+  // may read those two files even though they sit outside the review cwd.
+  const changes = candidate.changes ?? null
+  const readableFiles = changes
+    ? [changes.diffPath, changes.changedFilesPath]
+    : []
   const review =
     (lens: ReviewLens) =>
     async (signal: AbortSignal, attempt: StepAttemptContext) => {
@@ -201,8 +217,10 @@ export const reviewStage: StageHandler = async ({
           trustedContext,
           target.reviewRules(lens),
           target.untrustedInputs(lens),
+          changes,
         ),
         workdir: reviewCwd,
+        readableFiles,
         timeoutMs: state.setup.agentTimeoutMs,
         requestedModel: profile.requestedModel,
         requestedEffort: profile.requestedEffort,

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 
 import { z } from 'zod'
 
+import type { CandidateChanges } from '../engine/types.js'
 import type { UntrustedInput } from './target.js'
 
 /**
@@ -65,11 +66,50 @@ export function codePrompt(args: CodePromptArgs): string {
   ].join('\n')
 }
 
+/** Changed paths the trusted context lists inline; the rest go to the file. */
+export const CHANGED_PATHS_INLINE_LIMIT = 50
+
+/**
+ * The `Changed paths:` line of a trusted review context. With `fullListPath`
+ * naming the complete list, a huge change is capped inline so it cannot
+ * flood the prompt. Without one, every path is listed: the prompt is then the
+ * reviewer's only complete record of what changed.
+ */
+export function changedPathsLine(
+  changes: string[],
+  fullListPath?: string,
+): string {
+  if (changes.length === 0) return 'Changed paths: (none)'
+  const rest = changes.length - CHANGED_PATHS_INLINE_LIMIT
+  if (!fullListPath || rest <= 0) return `Changed paths: ${changes.join(', ')}`
+  const shown = changes.slice(0, CHANGED_PATHS_INLINE_LIMIT).join(', ')
+  return `Changed paths: ${shown}, and ${rest} more — see ${fullListPath}`
+}
+
+/**
+ * The candidate's diff and changed-file list, written by the factory from the
+ * recorded base commit and the candidate commit. Reviewers are told to read
+ * both whole: a reviewer that stops at the first screenful passes changes it
+ * never saw.
+ */
+function candidateFilesSection(changes: CandidateChanges | null): string[] {
+  if (!changes) return []
+  return [
+    'CANDIDATE FILES (written by the factory from the base commit and this candidate commit):',
+    `- Full diff: ${changes.diffPath}`,
+    `- Changed file list: ${changes.changedFilesPath}`,
+    `- Size: ${changes.files} files changed, +${changes.additions} / -${changes.deletions} lines`,
+    '- Read both files in full, to the last line, before you decide. If a file is long, read it in parts until you reach its end. They are read-only; do not modify them.',
+    '',
+  ]
+}
+
 export function reviewPrompt(
   lens: 'correctness' | 'edge-cases',
   trustedContext: string,
   rules: string[],
   untrusted: UntrustedInput[] = [],
+  changes: CandidateChanges | null = null,
 ): string {
   const role =
     lens === 'correctness'
@@ -90,6 +130,7 @@ export function reviewPrompt(
     '',
     trustedContext,
     '',
+    ...candidateFilesSection(changes),
     ...untrustedSection(untrusted),
     'Reply in exactly this shape, with DECISION on a line of its own:',
     'PLAN: <your independent plan, one or two sentences>',
