@@ -213,6 +213,14 @@ export interface TriageCalibration {
   plannedFiles: number | null
 }
 
+/** The calibration values, in the order every table shows them. */
+export const CALIBRATION_KEYS = [
+  'taskChars',
+  'specChars',
+  'acceptanceCriteria',
+  'plannedFiles',
+] as const satisfies readonly (keyof TriageCalibration)[]
+
 /** Every calibration value unknown: a record that predates them. */
 export const UNKNOWN_CALIBRATION: TriageCalibration = {
   taskChars: null,
@@ -300,11 +308,6 @@ function sectionItems(spec: string, titles: string[]): string[] | null {
   return found ? items : null
 }
 
-/** Distinct values, so the same criterion or file listed twice counts once. */
-function distinctCount(values: string[]): number {
-  return new Set(values).size
-}
-
 /** A file item's path: its first code span, else its first word. */
 function plannedPath(item: string): string {
   const code = /`([^`]+)`/.exec(item)?.[1]
@@ -320,19 +323,20 @@ export function triageCalibration(
   task: string,
   spec: string | null,
 ): TriageCalibration {
-  if (spec === null)
-    return { ...UNKNOWN_CALIBRATION, taskChars: [...task].length }
+  const taskChars = [...task].length
+  if (spec === null) return { ...UNKNOWN_CALIBRATION, taskChars }
   const criteria = sectionItems(spec, ACCEPTANCE_HEADINGS)
   const files = sectionItems(spec, PLANNED_FILE_HEADINGS)
   return {
-    taskChars: [...task].length,
+    taskChars,
     specChars: [...spec].length,
+    // Distinct, so the same criterion or file listed twice counts once.
     acceptanceCriteria: criteria
-      ? distinctCount(
+      ? new Set(
           criteria.map((c) => c.replace(/\s+/g, ' ').trim().toLowerCase()),
-        )
+        ).size
       : null,
-    plannedFiles: files ? distinctCount(files.map(plannedPath)) : null,
+    plannedFiles: files ? new Set(files.map(plannedPath)).size : null,
   }
 }
 

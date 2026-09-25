@@ -115,9 +115,8 @@ export function reloadAdvice(input: unknown): ReloadAdvice {
 const SETUP_UNTRACKED_CHECK =
   'setup creates files that .gitignore does not cover (listed below); add them to .gitignore on the base, or turn baselineCheck off in factory.json and retry with --reload-config. A passing baseline would delete them, so the run does not start with them'
 
-/** The refusal a `RejectedInvocationError` message names; null for others. */
-function refusalOf(error: string | null): string | null {
-  if (!error?.startsWith(REJECTED_INVOCATION_MESSAGE)) return null
+/** The refusal a `RejectedInvocationError` message names, if any. */
+function refusalOf(error: string): string | null {
   const at = error.indexOf(REFUSAL_MARKER)
   return at < 0 ? null : error.slice(at + REFUSAL_MARKER.length)
 }

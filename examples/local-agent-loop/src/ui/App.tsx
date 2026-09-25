@@ -2459,11 +2459,9 @@ function ComparePage({ data }: { data: CompareResponse }) {
                         {t.judgment === 'routine' ? t.routineNeedingMore : '–'}
                       </Td>
                       <Td>
-                        {Object.keys(t.stops).length === 0
-                          ? 'なし'
-                          : Object.entries(t.stops)
-                              .map(([kind, n]) => `${stopName(kind)} ${n}`)
-                              .join(' · ')}
+                        {Object.entries(t.stops)
+                          .map(([kind, n]) => `${stopName(kind)} ${n}`)
+                          .join(' · ') || 'なし'}
                       </Td>
                     </tr>
                   ))}

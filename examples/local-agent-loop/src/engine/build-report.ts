@@ -14,6 +14,7 @@ import {
   summarizeRun,
   totalStageMs,
   toAttemptRow,
+  CALIBRATION_KEYS,
   TRIAGE_JUDGMENTS,
   UNKNOWN_CALIBRATION,
   usageOf,
@@ -83,18 +84,15 @@ function profileRows(
     requestedModel: input?.model,
     requestedEffort: input?.effort,
   }
-  const [code, ...reviewers] = ROLES.map((role) =>
+  const rows = ROLES.map((role) =>
     row(role, input?.profiles?.[role] ?? fallback),
   )
   // Repair runs on code's settings unless it has its own. Its usage is its
-  // own row, never folded into code's, once it has a profile or has run.
+  // own row after code's, never folded into it, once it has a profile or has run.
   const repairProfile = input?.profiles?.['repair']
-  const repair = repairProfile
-    ? [row('repair', repairProfile)]
-    : repaired
-      ? [{ ...(code as RoleProfileRow), role: 'repair' }]
-      : []
-  const rows = [code as RoleProfileRow, ...repair, ...reviewers]
+  if (repairProfile) rows.splice(1, 0, row('repair', repairProfile))
+  else if (repaired && rows[0])
+    rows.splice(1, 0, { ...rows[0], role: 'repair' })
   // Triage has no fallback: without its own profile it never runs.
   const triage = input?.profiles?.['triage']
   return triage ? [...rows, row('triage', triage)] : rows
@@ -102,19 +100,17 @@ function profileRows(
 
 /** A stored calibration; a value missing from an older record is unknown. */
 function asCalibration(value: unknown): TriageCalibration {
-  const v = (value ?? {}) as Record<string, unknown>
-  const count = (key: keyof TriageCalibration) => {
-    const n = v[key]
-    return typeof n === 'number' && Number.isInteger(n) && n >= 0 ? n : null
-  }
-  return value && typeof value === 'object'
-    ? {
-        taskChars: count('taskChars'),
-        specChars: count('specChars'),
-        acceptanceCriteria: count('acceptanceCriteria'),
-        plannedFiles: count('plannedFiles'),
-      }
-    : { ...UNKNOWN_CALIBRATION }
+  if (!value || typeof value !== 'object') return { ...UNKNOWN_CALIBRATION }
+  const v = value as Record<string, unknown>
+  return Object.fromEntries(
+    CALIBRATION_KEYS.map((key) => {
+      const n = v[key]
+      return [
+        key,
+        typeof n === 'number' && Number.isInteger(n) && n >= 0 ? n : null,
+      ]
+    }),
+  ) as unknown as TriageCalibration
 }
 
 function asTriage(value: unknown): ReportTriage | null {

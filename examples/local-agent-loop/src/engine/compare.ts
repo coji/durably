@@ -9,6 +9,7 @@
  * statistic and counted in `unknown`, never treated as zero.
  */
 import {
+  CALIBRATION_KEYS,
   TRIAGE_JUDGMENTS,
   UNKNOWN_CALIBRATION,
   type LoopReport,
@@ -127,14 +128,6 @@ function labelOf(report: LoopReport): string {
     input?.context ?? 'unknown-context',
   ].join('/')
 }
-
-/** The calibration values, in the order every table shows them. */
-export const CALIBRATION_KEYS = [
-  'taskChars',
-  'specChars',
-  'acceptanceCriteria',
-  'plannedFiles',
-] as const satisfies readonly (keyof TriageCalibration)[]
 
 function calibrationStats(
   runs: LoopReport[],

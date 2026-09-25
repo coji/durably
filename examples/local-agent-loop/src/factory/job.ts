@@ -162,6 +162,7 @@ const requestedProfileSchema = z.object({
   requestedModel: z.string().min(1).nullable(),
   requestedEffort: z.string().min(1).nullable(),
 })
+type RequestedProfile = z.infer<typeof requestedProfileSchema>
 
 const inputSchema = z
   .object({
@@ -617,37 +618,29 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
         async (signal) => {
           // Profiles first: a bad profile fails before any worktree or branch
           // exists in the target repository.
+          const fixRequested = (requested: RequestedProfile) =>
+            fixProfile({
+              provider: requested.provider,
+              model: requested.requestedModel,
+              effort: requested.requestedEffort,
+            })
           const fixed = byRole((role) => {
             const requested = input.profiles?.[role]
-            return fixProfile(
-              requested
-                ? {
-                    provider: requested.provider,
-                    model: requested.requestedModel,
-                    effort: requested.requestedEffort,
-                  }
-                : {
-                    provider: input.provider,
-                    model: input.model ?? null,
-                    effort: input.effort ?? null,
-                  },
-            )
+            return requested
+              ? fixRequested(requested)
+              : fixProfile({
+                  provider: input.provider,
+                  model: input.model ?? null,
+                  effort: input.effort ?? null,
+                })
           })
           const requestedTriage = input.profiles?.triage
           const fixedTriage = requestedTriage
-            ? fixProfile({
-                provider: requestedTriage.provider,
-                model: requestedTriage.requestedModel,
-                effort: requestedTriage.requestedEffort,
-              })
+            ? fixRequested(requestedTriage)
             : null
           const requestedRepair = input.profiles?.repair
           const fixedRepair = requestedRepair
-            ? fixProfile({
-                provider: requestedRepair.provider,
-                model: requestedRepair.requestedModel,
-                effort: requestedRepair.requestedEffort,
-              })
+            ? fixRequested(requestedRepair)
             : null
           assertSingleMode({
             ...fixed,
@@ -827,11 +820,11 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           codexPath: setup.codexPath ?? null,
         })
       await runPreflight(step, setup, target, providerFor)
+      const roleProviders = byRole((role) => providerFor(setup.profiles[role]))
+      const ownRepair = separateRepairProfile(setup)
       const providers = {
-        ...byRole((role) => providerFor(setup.profiles[role])),
-        repair: providerFor(
-          separateRepairProfile(setup) ?? setup.profiles.code,
-        ),
+        ...roleProviders,
+        repair: ownRepair ? providerFor(ownRepair) : roleProviders.code,
       }
       // Shadow mode: the judgment is recorded and nothing below reads it.
       const triageProfile = setup.triage
