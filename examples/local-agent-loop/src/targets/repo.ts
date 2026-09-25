@@ -17,10 +17,12 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 import { runChild } from '../engine/child.js'
-import { BASELINE_FAILED_MESSAGE } from '../engine/failure-reasons.js'
 import {
-  listUntracked,
-  removeNewUntracked,
+  BASELINE_FAILED_MESSAGE,
+  setupUntrackedError,
+} from '../engine/failure-reasons.js'
+import {
+  cleanUntracked,
   commitAll,
   defaultBranch,
   describeCommitChanges,
@@ -29,6 +31,7 @@ import {
   writePatch,
   pushBranch,
   resolveCommit,
+  someUntracked,
   treeOf,
 } from '../engine/git.js'
 import type { CandidateChanges, CandidateRef } from '../engine/types.js'
@@ -198,9 +201,11 @@ export class RepoTarget implements Target {
    *
    * Every way the base cannot be graded stops the run as a baseline failure:
    * setup or the check leaving tracked changes, and a check that cannot
-   * start. After a passing check, the untracked files it added are removed,
-   * so none of its output is sealed into the first candidate; untracked
-   * files setup wrote stay.
+   * start. After a passing check, every untracked file `.gitignore` does not
+   * cover is removed, so none of its output is sealed into the first
+   * candidate. Setup is not allowed to leave such files (see
+   * `assertSetupLeftNoUntracked`), so this removes only what the check wrote,
+   * including on a resume after an interrupted check.
    */
   async gradeBase(args: {
     logDir: string
@@ -210,8 +215,6 @@ export class RepoTarget implements Target {
     await this.assertAtBase(
       `setup left uncommitted changes to tracked files in ${workdir} before the check`,
     )
-    // Setup's untracked output stays; only what the check adds is removed.
-    const beforeCheck = await listUntracked(workdir, args.signal)
     let result: GradeResult
     try {
       result = await this.runCheck(args.logDir, args.signal)
@@ -229,8 +232,7 @@ export class RepoTarget implements Target {
     await this.assertAtBase(
       `the check changed tracked files in ${workdir}; it must leave the base commit as it found it`,
     )
-    if (result.passed)
-      await removeNewUntracked(workdir, beforeCheck, args.signal)
+    if (result.passed) await cleanUntracked(workdir, args.signal)
     return result
   }
 
@@ -420,4 +422,19 @@ export class RepoTarget implements Target {
   async cleanup(): Promise<void> {
     // The worktree and branch are intentionally kept: they are the delivery.
   }
+}
+
+/**
+ * With the baseline check on, setup must not leave untracked files that
+ * `.gitignore` does not cover. A passing baseline removes every such file,
+ * so setup output there would be deleted before the first agent call; and
+ * the baseline could not tell it from the check's own output. Stops the run
+ * as a baseline failure, naming the first few paths, before the check runs.
+ */
+export async function assertSetupLeftNoUntracked(
+  workdir: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const paths = await someUntracked(workdir, 5, signal)
+  if (paths.length > 0) throw new Error(setupUntrackedError(workdir, paths))
 }

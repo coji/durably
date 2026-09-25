@@ -180,6 +180,8 @@ pnpm --filter example-local-agent-loop demo status
   `factory.json` だけを読み直します。読み直すのはtrigger時に `--config` で
   渡したファイルで、渡していなければリポジトリ直下の `factory.json` です。
   直下の `factory.json` を消した場合は、設定なしのtriggerと同じに扱います。
+  `--config` で渡したファイル（パスが直下の `factory.json` でも）が無くなって
+  いれば、設定なしとはみなさずエラーにします。
   profile、`check`、`setup`、`base`、`codexPath`、timeout、`baselineCheck` は
   `trigger` と同じ規則で解決・検証し、trigger時の `--check`、`--setup`、`--base`
   は引き続き設定より優先します。そのrunでは、次の手順の注記にもそう表示します。
@@ -411,11 +413,19 @@ PRに進むのが安全です。
 - setupや採点がworktreeのtracked fileを書き換えた場合は、最初のcandidateに
   混ざるので `baseline-check-failed` で止め、エラーにその旨を出します。採点
   コマンドが起動できない場合（コマンドが見つからないなど）も同じ分類で止めます。
-- 採点が通ったら、採点が新しく残した未追跡のファイルのうち `.gitignore` の
-  対象外のものを消します。採点の直前に未追跡のファイルを一覧にしておき、
-  採点のあとに増えたものだけを消します。カバレッジやテスト結果のファイルが
-  最初のcandidateに入らないようにするためです。setupが作ったファイルと、
-  ignore対象のファイル（`node_modules` など）は残します。
+- setupは、`.gitignore` の対象外の未追跡ファイルを残してはいけません。
+  `baselineCheck` がオンのときは、setupの直後、採点の前に確かめます。残って
+  いれば採点もエージェント呼び出しもせずに `baseline-check-failed` で止め、
+  最初の数件のpathを `failure.details` に出します。次の手順は「setupが
+  `.gitignore` にないファイルを作っているので、そのファイルを `.gitignore` に
+  入れるか `baselineCheck` を外す」です。ignore対象のファイル（`node_modules`
+  など）は残してかまいません。
+- 採点が通ったら `git clean -fd` で、`.gitignore` の対象外の未追跡ファイルを
+  すべて消します。カバレッジやテスト結果のファイルが最初のcandidateに
+  入らないようにするためです。上の前提があるので、消えるのは採点が残した
+  ものだけです。途中で止まった採点をworker再開時にやり直した場合も、前の
+  試行が残したファイルごと消えます。ignore対象のファイルと、入れ子の
+  gitリポジトリは残ります。
 
 ### 設定の事前確認（preflight）
 
@@ -428,7 +438,9 @@ baselineの後、triageを含む最初のエージェント呼び出しの前に
   そのeffortを受け付けなければ、promptを送らずに止めます。app serverが起動
   しない（CLIが見つからない、`app-server` に対応しない古い版、初期化の失敗）
   場合も、promptを送らずに止めます。初期化が時間切れになっただけの場合は起動が
-  遅いだけかもしれないので、止めずに最小の呼び出しで確かめます。一覧は1ページ目だけを
+  遅いだけかもしれないので、止めずに最小の呼び出しで確かめます。最小の呼び出しの
+  初期化も時間切れになった場合は、送ったかどうか分からない呼び出しとして
+  `uncertain-invocation`（`retry: NO`）で止まります。一覧は1ページ目だけを
   読みます。一覧は隠しmodelを含まないので、一覧に無い
   modelは使えないとは決めず、一覧が読めないときと同じく最小の呼び出しで確かめます。
   一覧は同じCLIファイルにつき1回だけ読みます。

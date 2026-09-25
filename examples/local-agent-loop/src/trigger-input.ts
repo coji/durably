@@ -90,10 +90,14 @@ const factoryConfigSchema = z
 
 type FactoryConfig = z.infer<typeof factoryConfigSchema>
 
-/** A loaded config, the file it came from, and that file's SHA-256. */
+/**
+ * A loaded config, the file it came from, whether `--config` named that
+ * file, and the file's SHA-256.
+ */
 interface LoadedConfig {
   config: FactoryConfig
   path: string
+  explicit: boolean
   sha256: string
 }
 type RoleConfig = z.infer<typeof roleConfigSchema>
@@ -125,6 +129,7 @@ async function loadConfig(
   return {
     config: parsed.data,
     path,
+    explicit: Boolean(explicit),
     sha256: createHash('sha256').update(text).digest('hex'),
   }
 }
@@ -252,11 +257,13 @@ const CONFIG_FLAGS = ['provider', 'check', 'setup', 'base'] as const
 
 /**
  * Where a repository run's settings came from: the config file it read, or
- * null when there was none, and the flags that won over it. A reload reads
- * the file again and applies the same flags.
+ * null when there was none, whether `--config` named it, and the flags that
+ * won over it. A reload reads the file again and applies the same flags.
  */
 export interface ConfigSource {
   path: string | null
+  /** Named by `--config`, so a reload that cannot find it fails. */
+  explicit?: boolean
   flags: Partial<Record<(typeof CONFIG_FLAGS)[number], string>>
 }
 
@@ -287,6 +294,7 @@ async function repoSettings(
     codexPath: await resolveCodexPath(loaded),
     configSource: {
       path: loaded?.path ?? null,
+      explicit: loaded?.explicit ?? false,
       flags: {
         ...Object.fromEntries(
           CONFIG_FLAGS.flatMap((flag) =>
@@ -492,12 +500,13 @@ export async function reloadTriggerInput(stored: StoredInput): Promise<{
   }
   const repoPath = stored.target.repoPath
   const root = await repoRoot(repoPath)
-  // The default factory.json is read as a trigger reads it, so one removed
-  // since means no config rather than a missing --config file.
-  const explicit =
-    source.path && source.path !== join(root, 'factory.json')
-      ? source.path
-      : undefined
+  // A file named by --config must still exist. The default factory.json is
+  // read as a trigger reads it, so one removed since means no config. A run
+  // stored before `explicit` was kept counts any other path as named.
+  const named =
+    source.explicit ??
+    (source.path !== null && source.path !== join(root, 'factory.json'))
+  const explicit = named && source.path ? source.path : undefined
   const loaded = await loadConfig(root, explicit)
   const { settings, codexPath, configSource } = await repoSettings(a, loaded)
   const input = assembleInput(a, {

@@ -41,7 +41,11 @@ import {
   prepareRepoTarget,
   prepareSubjectTarget,
 } from '../targets/index.js'
-import { checkFingerprint, RepoTarget } from '../targets/repo.js'
+import {
+  assertSetupLeftNoUntracked,
+  checkFingerprint,
+  RepoTarget,
+} from '../targets/repo.js'
 import {
   candidateSchema,
   deliverySchema,
@@ -192,6 +196,7 @@ const inputSchema = z
     configSource: z
       .object({
         path: z.string().min(1).nullable(),
+        explicit: z.boolean().optional(),
         flags: z
           .object({
             provider: z.string().optional(),
@@ -667,6 +672,14 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   publish: input.target.publish,
                   signal,
                 })
+          const baselineCheck =
+            input.target.kind === 'repo' && input.target.baselineCheck === true
+          // A passing baseline removes every untracked file .gitignore does
+          // not cover, so setup must not leave any. Checked here, in the
+          // step that ran setup, so a resumed baseline never mistakes the
+          // check's own output for setup's.
+          if (baselineCheck && target.kind === 'repo')
+            await assertSetupLeftNoUntracked(target.workdir, signal)
           const instructionsVersion = 'local-factory.v3'
           const value: FactorySetup = {
             fake: fixed.code.provider === 'fake',
@@ -694,9 +707,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             triage,
             maxIterations: input.maxIterations,
             agentTimeoutMs,
-            baselineCheck:
-              input.target.kind === 'repo' &&
-              input.target.baselineCheck === true,
+            baselineCheck,
             codexPath,
             // A draft pull request is itself what the human reviews, so waiting
             // for a separate approval signal first would hold a worker for

@@ -914,7 +914,10 @@ describe(
       delete process.env.FAKE_REVIEW_SEQUENCE
       const durably = createAgentDurably({ stateRoot: dir })
       await durably.migrate()
-      const trigger = (baselineCheck?: boolean) =>
+      const trigger = (
+        baselineCheck?: boolean,
+        setupCommand: string[] | null = null,
+      ) =>
         durably.jobs.agentLoop.trigger({
           provider: 'fake',
           profiles: {
@@ -949,7 +952,7 @@ describe(
             inputFiles: { task: null, spec: null, dispositions: null },
             issue: null,
             checkCommand: ['node', '--test', 'test/calc.test.js'],
-            setupCommand: null,
+            setupCommand,
             publish: false,
             ...(baselineCheck === undefined ? {} : { baselineCheck }),
           },
@@ -961,6 +964,14 @@ describe(
         ids['on'] = (await trigger(true)).id
         ids['off'] = (await trigger(false)).id
         ids['omitted'] = (await trigger()).id
+        // Setup writes a file .gitignore does not cover.
+        ids['setup'] = (
+          await trigger(true, [
+            'node',
+            '-e',
+            "require('node:fs').writeFileSync('setup.out', 'x')",
+          ])
+        ).id
         await durably.init()
         for (const id of Object.values(ids))
           await waitFor(
@@ -1022,6 +1033,25 @@ describe(
         assert.deepEqual(
           [json.failure.kind, json.failure.retryable],
           ['baseline-check-failed', true],
+        )
+
+        // Setup left a file a passing baseline would remove: stopped before
+        // the check, with that file named and its own next step.
+        const setupStop = await buildReport(durably, ids['setup'] ?? '')
+        assert.equal(setupStop.status, 'failed')
+        assert.equal(setupStop.failure?.kind, 'baseline-check-failed')
+        assert.equal(setupStop.failure?.setupUntracked, true)
+        assert.match(setupStop.failure?.humanCheck ?? '', /\.gitignore/)
+        assert.ok(
+          setupStop.failure?.details.includes(
+            'untracked setup output: setup.out',
+          ),
+          setupStop.failure?.details.join('\n'),
+        )
+        assert.equal(setupStop.realLlmCallCount, 0)
+        assert.ok(
+          !setupStop.attempts.some((a) => a.stepName === 'baseline'),
+          'the check never ran',
         )
 
         // Off, or left out: the check never runs on the base, and the run goes

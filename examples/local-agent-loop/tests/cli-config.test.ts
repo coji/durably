@@ -135,6 +135,7 @@ type RunInput = {
   checkTimeoutMs?: number
   agentTimeoutMs?: number
   codexPath?: string | null
+  configSource?: { path: string | null; explicit?: boolean }
   profiles: Record<
     string,
     {
@@ -1017,7 +1018,7 @@ describe('retrigger --reload-config', { timeout: 240000 }, () => {
     assert.match(invalid.stderr, /invalid factory config[\s\S]*agentTimeoutMs/)
   })
 
-  it('says a check flag wins over factory.json, and reads a removed default factory.json as none', async () => {
+  it('says a check flag wins over factory.json, reads a removed default factory.json as none, and refuses a removed --config file', async () => {
     const box = await sandbox()
     const config = join(box.repo, 'factory.json')
     await writeFile(
@@ -1027,20 +1028,27 @@ describe('retrigger --reload-config', { timeout: 240000 }, () => {
       }),
     )
     const flagCheck = ['node', '--test', 'test/calc.test.js']
-    const stopped = await trigger(box, [
+    const args = [
       '--repo',
       box.repo,
       '--task',
       'the stored task',
       '--check',
       flagCheck.join(' '),
-    ])
+    ]
+    const stopped = await trigger(box, args)
+    // The same file, named by --config: a reload must find it again.
+    const named = await trigger(box, [...args, '--config', config])
+    assert.equal((await inputOf(box, named)).configSource?.explicit, true)
+    assert.equal((await inputOf(box, stopped)).configSource?.explicit, false)
     const durably = createAgentDurably({ stateRoot: box.stateRoot })
     await durably.init()
     try {
       await until(
-        async () => (await durably.getRun(stopped))?.status === 'failed',
-        'preflight stops the run',
+        async () =>
+          (await durably.getRun(stopped))?.status === 'failed' &&
+          (await durably.getRun(named))?.status === 'failed',
+        'preflight stops both runs',
       )
     } finally {
       await durably.stop()
@@ -1065,6 +1073,17 @@ describe('retrigger --reload-config', { timeout: 240000 }, () => {
     const next = await inputOf(box, nextId)
     assert.deepEqual(next.target.checkCommand, flagCheck)
     assert.notEqual(next.profiles['code']?.requestedModel, 'unlisted-model')
+
+    // The file the other run named with --config is gone: an error, not a
+    // silent fallback to no config.
+    const missing = await demo(box, [
+      'retrigger',
+      '--run',
+      named,
+      '--reload-config',
+    ])
+    assert.notEqual(missing.code, 0)
+    assert.match(missing.stderr, /--config .*factory\.json: file not found/)
   })
 })
 

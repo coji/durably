@@ -6,9 +6,6 @@
  * Nothing here interprets a repository's contents; it only creates isolated
  * worktrees, seals work as commits, and reads back what changed.
  */
-import { rm } from 'node:fs/promises'
-import { join } from 'node:path'
-
 import { runChild } from './child.js'
 
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -292,33 +289,37 @@ export async function discardWorktree(
   }
 }
 
-/** Untracked files that `.gitignore` does not cover, relative to `cwd`. */
-export async function listUntracked(
+/**
+ * Remove untracked files and directories that `.gitignore` does not cover.
+ * Ignored files, such as installed dependencies, stay, and git leaves nested
+ * repositories alone.
+ */
+export async function cleanUntracked(
   cwd: string,
   signal?: AbortSignal,
-): Promise<Set<string>> {
-  const out = await git(
-    cwd,
-    ['ls-files', '--others', '--exclude-standard', '-z'],
-    signal ? { signal } : {},
-  )
-  return new Set(out.split('\0').filter(Boolean))
+): Promise<void> {
+  await git(cwd, ['clean', '-fd'], signal ? { signal } : {})
 }
 
 /**
- * Remove the untracked, non-ignored files that are not in `keep`, so only
- * what appeared after the snapshot goes. Ignored files, such as installed
- * dependencies, stay. Directories left empty stay too; git does not track
- * them.
+ * Up to `limit` untracked paths that `.gitignore` does not cover, a new
+ * directory as one entry. Empty when there are none; only that and the
+ * first few names matter, so a long listing is not read in full.
  */
-export async function removeNewUntracked(
+export async function someUntracked(
   cwd: string,
-  keep: ReadonlySet<string>,
+  limit: number,
   signal?: AbortSignal,
-): Promise<void> {
-  for (const path of await listUntracked(cwd, signal)) {
-    if (!keep.has(path)) await rm(join(cwd, path), { force: true })
-  }
+): Promise<string[]> {
+  const out = await git(
+    cwd,
+    ['ls-files', '--others', '--exclude-standard', '--directory', '-z'],
+    { maxOutputChars: 100_000, ...(signal ? { signal } : {}) },
+  )
+  // A capped listing keeps its end, so its first entry may be cut short.
+  const paths = out.split('\0').filter(Boolean)
+  if (out.length >= 100_000) paths.shift()
+  return paths.slice(0, limit)
 }
 
 /** Read one file's contents at a commit without checking it out. */

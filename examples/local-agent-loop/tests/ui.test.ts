@@ -1076,6 +1076,10 @@ describe('diagnosis wording on the page', () => {
       }),
       /エージェントを呼ぶ前に/,
     )
+    assert.match(
+      humanCheckText('baseline-check-failed', { setupUntracked: true }),
+      /setup が \.gitignore にないファイルを作っている[\s\S]*baselineCheck を外/,
+    )
     assert.match(humanCheckText('preflight-failed'), /役割の設定/)
     // A config fix is retried with the settings read again.
     for (const kind of ['baseline-check-failed', 'preflight-failed'] as const)
@@ -1099,7 +1103,7 @@ describe('diagnosis wording on the page', () => {
     assert.ok(!sample?.next.some((c) => c.includes('--reload-config')))
     assert.ok(sample?.next.some((c) => c.includes('retrigger --run r1')))
     assert.doesNotMatch(sample?.humanCheck ?? '', /factory\.json/)
-    const sampleText = humanCheckText('preflight-failed', sample?.next)
+    const sampleText = humanCheckText('preflight-failed', sample ?? undefined)
     assert.doesNotMatch(sampleText, /factory\.json|設定を読み直す/)
     assert.equal(plain(sampleText.replace(/trigger/g, '')), null, sampleText)
 

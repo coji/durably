@@ -8,11 +8,12 @@ import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { runChild } from '../src/engine/child.js'
+import { DETAIL_PREFIX } from '../src/engine/failure-details.js'
 import { classifyFailure } from '../src/engine/failure-reasons.js'
 import { resolveCommit } from '../src/engine/git.js'
 import type { AttemptMeasurement } from '../src/engine/providers/types.js'
 import { runVerificationStep } from '../src/engine/verification.js'
-import { RepoTarget } from '../src/targets/repo.js'
+import { assertSetupLeftNoUntracked, RepoTarget } from '../src/targets/repo.js'
 import {
   runAcceptanceSuite,
   snapshotAcceptance,
@@ -407,7 +408,7 @@ describe('baseline check on the base commit', () => {
     )
   })
 
-  it('removes what a passing check leaves untracked, and keeps ignored files and setup output', async () => {
+  it('removes what a passing check leaves untracked, also after a resume, and keeps ignored files', async () => {
     const { repo, specFor } = await baseRepo(`
       const { mkdirSync, writeFileSync } = require('node:fs')
       mkdirSync('coverage', { recursive: true })
@@ -415,10 +416,17 @@ describe('baseline check on the base commit', () => {
       writeFileSync('junit.xml', 'x')
       writeFileSync('cache.log', 'x')
     `)
-    await writeFile(join(repo, '.git', 'info', 'exclude'), '*.log\n')
-    // Written by setup, before the check: the candidates' checks need it.
-    await mkdir(join(repo, 'generated'))
-    await writeFile(join(repo, 'generated', 'schema.ts'), 'x')
+    await writeFile(
+      join(repo, '.git', 'info', 'exclude'),
+      '*.log\nnode_modules/\n',
+    )
+    // Ignored setup output, such as installed dependencies, stays.
+    await mkdir(join(repo, 'node_modules', 'dep'), { recursive: true })
+    await writeFile(join(repo, 'node_modules', 'dep', 'index.js'), 'x')
+    // What an interrupted first attempt of the check left behind: on resume
+    // it is graded again, and its output must not survive either.
+    await mkdir(join(repo, 'test-results'))
+    await writeFile(join(repo, 'test-results', 'partial.xml'), 'x')
     const a = attempt()
     const graded = await runVerificationStep(
       a as never,
@@ -429,8 +437,48 @@ describe('baseline check on the base commit', () => {
     // Nothing the check wrote reaches `git add -A` at the first sealing.
     assert.equal(existsSync(join(repo, 'coverage', 'lcov.info')), false)
     assert.equal(existsSync(join(repo, 'junit.xml')), false)
+    assert.equal(existsSync(join(repo, 'test-results')), false)
     assert.equal(existsSync(join(repo, 'cache.log')), true)
-    assert.equal(existsSync(join(repo, 'generated', 'schema.ts')), true)
+    assert.equal(
+      existsSync(join(repo, 'node_modules', 'dep', 'index.js')),
+      true,
+    )
+  })
+
+  it('stops before the check when setup leaves files .gitignore does not cover', async () => {
+    const { repo } = await baseRepo(`process.exitCode = 0`)
+    await writeFile(join(repo, '.git', 'info', 'exclude'), 'node_modules/\n')
+    await mkdir(join(repo, 'node_modules'))
+    await writeFile(join(repo, 'node_modules', 'dep.js'), 'x')
+    // Ignored output only: setup may leave it.
+    await assertSetupLeftNoUntracked(repo)
+
+    await mkdir(join(repo, 'generated'))
+    await writeFile(join(repo, 'generated', 'schema.ts'), 'x')
+    await writeFile(join(repo, 'setup.lock'), 'x')
+    await assert.rejects(assertSetupLeftNoUntracked(repo), (err: Error) => {
+      assert.match(err.message, /^baseline-check-failed: setup-untracked: /)
+      const failure = classifyFailure({
+        runId: 'r',
+        status: 'failed',
+        output: null,
+        error: err.message,
+        uncertain: [],
+      })
+      assert.equal(failure?.kind, 'baseline-check-failed')
+      assert.equal(failure?.setupUntracked, true)
+      assert.match(failure?.humanCheck ?? '', /\.gitignore[\s\S]*baselineCheck/)
+      assert.deepEqual(
+        failure?.details.filter((d) =>
+          d.startsWith(DETAIL_PREFIX.setupUntracked),
+        ),
+        [
+          `${DETAIL_PREFIX.setupUntracked}generated/`,
+          `${DETAIL_PREFIX.setupUntracked}setup.lock`,
+        ],
+      )
+      return true
+    })
   })
 
   it('stops as a baseline failure when the check changes tracked files or cannot start', async () => {

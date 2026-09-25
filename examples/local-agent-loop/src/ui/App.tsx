@@ -1916,7 +1916,7 @@ function StatusPanel({ data }: { data: RunDetailResponse }) {
               <span className="font-ui">
                 {humanCheckText(
                   data.diagnosis.failure.kind,
-                  data.diagnosis.failure.next,
+                  data.diagnosis.failure,
                 )}
               </span>
             </Field>

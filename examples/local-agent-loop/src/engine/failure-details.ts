@@ -12,6 +12,7 @@ export const DETAIL_PREFIX = {
   checkStderr: 'check stderr log: ',
   checkTimeout: 'check timed out after: ',
   checkLogWriteError: 'check log write error: ',
+  setupUntracked: 'untracked setup output: ',
 } as const
 
 /** The `checkAttempt` value of a cancelled or lease-lost grading attempt. */

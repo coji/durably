@@ -32,6 +32,26 @@ export type FailureKind =
 export const BASELINE_FAILED_MESSAGE = 'baseline-check-failed'
 export const PREFLIGHT_FAILED_MESSAGE = 'preflight-failed'
 
+/** A baseline stop because setup left files `.gitignore` does not cover. */
+const SETUP_UNTRACKED = `${BASELINE_FAILED_MESSAGE}: setup-untracked: `
+
+/** The error for that stop; the paths are kept as JSON to read back. */
+export function setupUntrackedError(workdir: string, paths: string[]): string {
+  return `${SETUP_UNTRACKED}setup left untracked files that .gitignore does not cover in ${workdir}, first ${JSON.stringify(paths)}; stopped before the baseline check and any agent call`
+}
+
+/** The paths named by a `setupUntrackedError`, or null for any other error. */
+function setupUntrackedPaths(error: string | null): string[] | null {
+  if (!error?.startsWith(SETUP_UNTRACKED)) return null
+  const listed = / first (\[.*\]); stopped before /.exec(error)?.[1]
+  try {
+    const paths: unknown = listed ? JSON.parse(listed) : []
+    return Array.isArray(paths) ? paths.map(String) : []
+  } catch {
+    return []
+  }
+}
+
 /**
  * The demo CLI as it runs from anywhere in this repository. Every printed
  * command starts with it, so it pastes and runs as is.
@@ -84,6 +104,10 @@ export function reloadAdvice(input: unknown): ReloadAdvice {
     ? 'flags-win'
     : 'config'
 }
+
+/** The baseline check when setup left files `.gitignore` does not cover. */
+const SETUP_UNTRACKED_CHECK =
+  'setup creates files that .gitignore does not cover (listed below); add them to .gitignore on the base, or turn baselineCheck off in factory.json and retry with --reload-config. A passing baseline would delete them, so the run does not start with them'
 
 /** The preflight check for a run with no factory.json to fix. */
 const PREFLIGHT_WITHOUT_CONFIG =
@@ -190,6 +214,10 @@ export interface FailureClassification {
   next: string[]
   /** Run-specific facts behind the classification: an error, a checkpoint. */
   details: string[]
+  /** Whether `next` offers the config-reload retry, and why not. */
+  reload: ReloadAdvice
+  /** A baseline stop because setup left files `.gitignore` does not cover. */
+  setupUntracked: boolean
 }
 
 /**
@@ -341,6 +369,7 @@ export function classifyFailure(
     ?.conclusion
   let kind: FailureKind
   const details: string[] = []
+  let setupPaths: string[] | null = null
   if (input.status === 'completed') {
     if (conclusion === 'verification-failed') {
       kind = 'verification-failed'
@@ -364,6 +393,9 @@ export function classifyFailure(
       kind = input.publish ? 'cancelled-publish' : 'cancelled'
     } else if (input.error?.startsWith(BASELINE_FAILED_MESSAGE)) {
       kind = 'baseline-check-failed'
+      setupPaths = setupUntrackedPaths(input.error)
+      for (const path of setupPaths ?? [])
+        details.push(`${DETAIL_PREFIX.setupUntracked}${path}`)
       for (const log of input.baselineLogs ?? [])
         details.push(...logDetails(log))
     } else if (input.error?.startsWith(PREFLIGHT_FAILED_MESSAGE)) {
@@ -389,8 +421,11 @@ export function classifyFailure(
     ...(kind === 'preflight-failed' && reload === 'none'
       ? { humanCheck: PREFLIGHT_WITHOUT_CONFIG }
       : {}),
+    ...(setupPaths ? { humanCheck: SETUP_UNTRACKED_CHECK } : {}),
     next: entry.next(input.runId, reload),
     details,
+    reload,
+    setupUntracked: setupPaths !== null,
   }
 }
 
