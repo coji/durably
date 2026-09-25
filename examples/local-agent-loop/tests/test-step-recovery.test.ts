@@ -491,7 +491,14 @@ describe('baseline check on the base commit', () => {
     await writeFile(join(repo, '.git', 'info', 'exclude'), 'node_modules/\n')
     await mkdir(join(repo, 'node_modules'))
     await writeFile(join(repo, 'node_modules', 'dep.js'), 'x')
-    // Ignored output only: setup may leave it.
+    // Ignored output only: setup may leave it, also in a new directory that
+    // holds nothing else, because the clean after the check keeps it too.
+    await writeFile(
+      join(repo, '.git', 'info', 'exclude'),
+      'node_modules/\n*.log\n',
+    )
+    await mkdir(join(repo, 'logs'))
+    await writeFile(join(repo, 'logs', 'setup.log'), 'x')
     await assertSetupLeftNoUntracked(repo)
     // Not even an empty directory: the clean after a passing check would
     // remove it before any agent sees it.

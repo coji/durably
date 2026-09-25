@@ -302,24 +302,29 @@ export async function cleanUntracked(
 }
 
 /**
- * Up to `limit` untracked paths that `.gitignore` does not cover, a new
- * directory as one entry. Empty when there are none; only that and the
- * first few names matter, so a long listing is not read in full.
+ * Up to `limit` paths that `cleanUntracked` would remove, as `git clean`
+ * itself reports them in a dry run. Using the same command keeps this check
+ * and the clean in step: an empty directory counts, a directory holding only
+ * ignored files does not, and a nested repository does. Empty when the clean
+ * would remove nothing; only that and the first few names matter, so a long
+ * listing is not read in full.
  */
 export async function someUntracked(
   cwd: string,
   limit: number,
   signal?: AbortSignal,
 ): Promise<string[]> {
-  const out = await git(
-    cwd,
-    ['ls-files', '--others', '--exclude-standard', '--directory', '-z'],
-    { maxOutputChars: 100_000, ...(signal ? { signal } : {}) },
-  )
-  // A capped listing keeps its end, so its first entry may be cut short.
-  const paths = out.split('\0').filter(Boolean)
-  if (out.length >= 100_000) paths.shift()
-  return paths.slice(0, limit)
+  const out = await git(cwd, ['clean', '-ffdn'], {
+    maxOutputChars: 100_000,
+    ...(signal ? { signal } : {}),
+  })
+  const lines = out.split('\n')
+  // A capped listing keeps its end, so its first line may be cut short.
+  if (out.length >= 100_000) lines.shift()
+  return lines
+    .map((line) => /^Would remove (.+)$/.exec(line)?.[1])
+    .filter((path): path is string => path !== undefined)
+    .slice(0, limit)
 }
 
 /** Read one file's contents at a commit without checking it out. */
