@@ -3,7 +3,7 @@
  * shared by the server's screen-reader sentences and the page. Unknown
  * identifiers pass through unchanged.
  */
-import { DETAIL_PREFIX } from '../engine/failure-details.js'
+import { DETAIL_PREFIX, PATH_DETAILS } from '../engine/failure-details.js'
 import type { FailureKind } from '../engine/failure-reasons.js'
 import type { Diagnosis, DiagnosisKind } from '../engine/status.js'
 
@@ -80,7 +80,7 @@ const FAILURE_TEXT: Record<FailureKind, { reason: string; check: string }> = {
     reason:
       '最後の修正のあとも、固定したチェックが通りませんでした。修正の回数を使い切っています。',
     check:
-      'レポートでチェックの出力を読み、タスク、チェック、--max-iterations のどれを変えるか決める。',
+      '下に示したログファイルでチェックの出力を全文読み、タスク、チェック、--max-iterations のどれを変えるか決める。',
   },
   'review-cap-reached': {
     reason:
@@ -220,6 +220,9 @@ export function humanCheckText(kind: FailureKind): string {
 const DETAIL_LABEL: Record<keyof typeof DETAIL_PREFIX, string> = {
   checkpoint: '完了の記録がないチェックポイント',
   error: 'エラー',
+  checkExitCode: '検証の終了コード',
+  checkStdout: '検証の標準出力',
+  checkStderr: '検証の標準エラー',
 }
 
 /** A failure detail line as a label and its value, to show as data. */
@@ -231,4 +234,9 @@ export function detailField(line: string): { label: string; value: string } {
         value: line.slice(prefix.length),
       }
   return { label: '記録', value: line }
+}
+
+/** A detail line whose value is a file path to copy, such as a check log. */
+export function isPathDetail(line: string): boolean {
+  return PATH_DETAILS.some((key) => line.startsWith(DETAIL_PREFIX[key]))
 }

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
+import {
+  buildClaudeSettings,
+  decideToolPermission,
+} from '../src/engine/providers/claude.js'
 import { codePrompt, reviewPrompt } from '../src/factory/prompts.js'
 import type { RepoTargetConfig, Target } from '../src/factory/target.js'
 import { RepoTarget } from '../src/targets/repo.js'
@@ -215,5 +219,85 @@ describe('review procedure', () => {
       assert.match(prompt, /^COUNTEREXAMPLE: /m)
       assert.match(prompt, /^DECISION: pass \| needsChanges$/m)
     }
+  })
+})
+
+describe('reviewers read the candidate diff in full', () => {
+  const changes = {
+    diffPath: '/state/runs/r1/candidates/candidate-1-abc/changes.diff',
+    changedFilesPath:
+      '/state/runs/r1/candidates/candidate-1-abc/changed-files.txt',
+    files: 3,
+    additions: 10,
+    deletions: 2,
+  }
+
+  it('gives both reviewers the same diff and changed-file list and asks for all of it', () => {
+    for (const lens of ['correctness', 'edge-cases'] as const) {
+      const prompt = reviewPrompt(lens, 'CONTEXT', ['rule'], [], changes)
+      assert.ok(prompt.includes(`Full diff: ${changes.diffPath}`), lens)
+      assert.ok(
+        prompt.includes(`Changed file list: ${changes.changedFilesPath}`),
+        lens,
+      )
+      assert.match(prompt, /Read both files in full, to the last line/)
+      assert.match(prompt, /3 files changed, \+10 \/ -2 lines/)
+      // The files come before the untrusted data, as factory context.
+      assert.ok(prompt.indexOf('CANDIDATE FILES') < prompt.indexOf('Reply in'))
+    }
+    // A candidate without recorded files gets no section.
+    assert.doesNotMatch(
+      reviewPrompt('correctness', 'CONTEXT', ['rule']),
+      /CANDIDATE FILES/,
+    )
+  })
+
+  it('lets a Claude reviewer read exactly those files and nothing else outside its root', async () => {
+    const readable = [changes.diffPath, changes.changedFilesPath]
+    const read = (file_path: string) =>
+      decideToolPermission(
+        '/tmp/repo-work',
+        true,
+        'Read',
+        { file_path },
+        readable,
+      ).allow
+    assert.equal(read(changes.diffPath), true)
+    assert.equal(read(changes.changedFilesPath), true)
+    assert.equal(read('/tmp/repo-work/src/a.ts'), true)
+    // A sibling in the same directory, or a path that only normalizes near
+    // it, stays denied.
+    assert.equal(
+      read('/state/runs/r1/candidates/candidate-1-abc/other.txt'),
+      false,
+    )
+    assert.equal(read('/state/runs/r1/operation-checkpoints/x.json'), false)
+    // Reading is all a reviewer may do with them.
+    for (const tool of ['Write', 'Edit', 'Bash'])
+      assert.equal(
+        decideToolPermission(
+          '/tmp/repo-work',
+          true,
+          tool,
+          { file_path: changes.diffPath, command: `cat ${changes.diffPath}` },
+          readable,
+        ).allow,
+        false,
+        tool,
+      )
+    // The list never widens a writing role's reach.
+    const settings = buildClaudeSettings(
+      '/tmp/repo-work',
+      false,
+      null,
+      null,
+      readable,
+    )
+    const guard = settings.canUseTool as (
+      tool: string,
+      input: Record<string, unknown>,
+    ) => Promise<{ behavior: string }>
+    const decision = await guard('Write', { file_path: changes.diffPath })
+    assert.equal(decision.behavior, 'deny')
   })
 })

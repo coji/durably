@@ -102,6 +102,7 @@ export async function prepareRepoTarget(
     dispositions: args.dispositions,
     issue: args.issue,
     deliveryDir: join(args.root, 'delivery'),
+    candidatesDir: join(args.root, 'candidates'),
     publish: args.publish,
   }
 }

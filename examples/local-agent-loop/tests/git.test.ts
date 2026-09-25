@@ -1,5 +1,13 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
@@ -9,6 +17,7 @@ import {
   addWorktree,
   commitAll,
   describeCommitChanges,
+  diffStat,
   isDirty,
   discardWorktree,
   writePatch,
@@ -153,5 +162,66 @@ describe('git engine', () => {
     // Discarding twice, or discarding what was never created, is a no-op.
     await discardWorktree(repo, wt, branch)
     await discardWorktree(repo, join(root, 'never-made'), 'work/never')
+  })
+
+  it('counts a change by files and text lines, renames and binaries included', async () => {
+    const wt = join(root, 'wt-stat')
+    await addWorktree({ repo, dir: wt, baseCommit: base, branch: 'work/stat' })
+    // Nothing changed yet: every count is zero.
+    assert.deepEqual(await diffStat(repo, base, base), {
+      files: 0,
+      additions: 0,
+      deletions: 0,
+    })
+    const body = Array.from({ length: 20 }, (_, i) => `row ${i}`).join('\n')
+    await writeFile(join(wt, 'a.txt'), 'one\ntwo\nthree\n')
+    await writeFile(join(wt, 'with space\tand tab.txt'), 'x\ny\n')
+    await writeFile(join(wt, 'blob.bin'), Buffer.from([0, 1, 2, 0, 255]))
+    await writeFile(join(wt, 'moved-from.txt'), `${body}\n`)
+    await commitAll(wt, 'stage')
+    const mid = await resolveCommit(wt, 'HEAD')
+    await rename(join(wt, 'moved-from.txt'), join(wt, 'moved to.txt'))
+    const sealed = await commitAll(wt, 'rename')
+    // a.txt: +2 (one kept), the spaced file +2, the binary adds no lines.
+    assert.deepEqual(await diffStat(repo, base, mid), {
+      files: 4,
+      additions: 2 + 2 + 20,
+      deletions: 0,
+    })
+    // A pure rename is one file with no line changes.
+    assert.deepEqual(await diffStat(repo, mid, sealed.commit), {
+      files: 1,
+      additions: 0,
+      deletions: 0,
+    })
+    const renamed = await describeCommitChanges(repo, mid, sealed.commit)
+    assert.deepEqual(renamed, ['renamed: moved-from.txt -> moved to.txt'])
+    await removeWorktree(repo, wt)
+  })
+
+  it('lists every changed file even past the captured-output cap', async () => {
+    const wt = join(root, 'wt-many')
+    await addWorktree({ repo, dir: wt, baseCommit: base, branch: 'work/many' })
+    // Each `A\0<path>\0` record is about 240 characters, so 4,300 of them
+    // run past the 1,000,000-character cap a git call captures by default.
+    const dir = join(wt, 'many')
+    await mkdir(dir)
+    const count = 4300
+    const names = Array.from(
+      { length: count },
+      (_, i) => `f${String(i).padStart(5, '0')}-${'n'.repeat(220)}.txt`,
+    )
+    for (const name of names) await writeFile(join(dir, name), 'x\n')
+    const sealed = await commitAll(wt, 'many')
+    const changes = await describeCommitChanges(repo, base, sealed.commit)
+    assert.ok(changes.join('\0').length > 1_000_000)
+    assert.equal(changes.length, count)
+    assert.equal(changes.at(-1), `added: many/${names.at(-1)}`)
+    assert.deepEqual(await diffStat(repo, base, sealed.commit), {
+      files: count,
+      additions: count,
+      deletions: 0,
+    })
+    await removeWorktree(repo, wt)
   })
 })

@@ -22,6 +22,8 @@ export interface AgentCallSpec {
   providerName: ProviderName
   prompt: string
   workdir: string
+  /** Trusted files outside `workdir` a read-only role may read. */
+  readableFiles?: string[]
   timeoutMs: number
   requestedModel: string | null
   requestedEffort: string | null
@@ -280,6 +282,7 @@ export async function runAgentCall(
     const result = await spec.provider.call({
       prompt: spec.prompt,
       workdir: spec.workdir,
+      ...(spec.readableFiles ? { readableFiles: spec.readableFiles } : {}),
       timeoutMs: spec.timeoutMs,
       requestedModel: spec.effectiveModel,
       requestedEffort: spec.effectiveEffort,

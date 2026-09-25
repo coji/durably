@@ -20,13 +20,21 @@ import { join } from 'node:path'
  */
 import type { StepAttemptContext } from '@coji/durably'
 
-import type { ProviderName } from './providers/types.js'
+import type { ProviderName, VerificationLog } from './providers/types.js'
 import { UncertainInvocationError, writeMeasurement } from './runner.js'
+
+export type { VerificationLog }
 
 export interface VerificationOutcome {
   passed: boolean
+  /** Tail of the output, for the report excerpt and the repair prompt. */
   stdout: string
   exitCode: number | null
+  /**
+   * The full output of the grading attempt that produced this verdict. A
+   * checkpoint written before logs existed has none.
+   */
+  log?: VerificationLog | null
 }
 
 export interface GradeResult extends VerificationOutcome {
@@ -41,6 +49,32 @@ export interface VerificationStepSpec {
   iteration: number
   /** Idempotent grading of the sealed candidate. */
   grade: (signal: AbortSignal) => Promise<GradeResult>
+}
+
+/** Log file paths for one grading attempt, with the directory created. */
+export async function prepareCheckLogs(
+  logDir: string | undefined,
+): Promise<{ stdoutFile: string; stderrFile: string } | null> {
+  if (!logDir) return null
+  await mkdir(logDir, { recursive: true })
+  return {
+    stdoutFile: join(logDir, 'stdout.log'),
+    stderrFile: join(logDir, 'stderr.log'),
+  }
+}
+
+/** The recorded log of a grading attempt that ended with `exitCode`. */
+export function checkLog(
+  files: { stdoutFile: string; stderrFile: string } | null,
+  exitCode: number | null,
+): VerificationLog | null {
+  return files
+    ? {
+        stdoutPath: files.stdoutFile,
+        stderrPath: files.stderrFile,
+        exitCode,
+      }
+    : null
 }
 
 export async function runVerificationStep(
@@ -118,10 +152,13 @@ export async function runVerificationStep(
     {},
   )
   if (saved) {
+    // The recovered verdict points at the logs of the attempt that graded it;
+    // nothing is graded again, so no new log exists.
     await writeMeasurement(attempt, measurement, {
       elapsedMs: saved.elapsedMs,
       recovered: true,
       result: 'checkpoint-recovered',
+      verificationLog: saved.result.log ?? null,
     })
     return saved.result
   }
@@ -154,6 +191,7 @@ export async function runVerificationStep(
           result: 'checkpoint-recovered',
           invocationStartedAt: raced.invocationStartedAt,
           invocationCompletedAt: raced.invocationCompletedAt,
+          verificationLog: raced.result.log ?? null,
         })
         return raced.result
       }
@@ -174,6 +212,7 @@ export async function runVerificationStep(
       passed: res.passed,
       stdout: res.stdout.slice(-4000),
       exitCode: res.exitCode,
+      log: res.log ?? null,
     }
     const completed: Completed = {
       ...startRecord,
@@ -190,6 +229,7 @@ export async function runVerificationStep(
       error: res.passed ? null : res.stdout.slice(-2000),
       invocationStartedAt: startRecord.invocationStartedAt,
       invocationCompletedAt: completed.invocationCompletedAt,
+      verificationLog: result.log,
     })
     void measurement
     return result

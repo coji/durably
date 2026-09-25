@@ -7,7 +7,7 @@
  * exercised through durable steps (not mocks).
  */
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -112,6 +112,31 @@ describe('fake e2e fix loop', { timeout: 180000 }, () => {
         output.reviews.every((r) => r.decision === 'pass'),
         'final round reviews both pass',
       )
+      // The report keeps every round in order, each with both verdicts and
+      // notes and the candidate it reviewed; `reviews` stays the last one.
+      const report = await buildReport(durably, run.id)
+      assert.equal(report.reviewRounds.length, 2)
+      const [round1, round2] = report.reviewRounds
+      assert.deepEqual(
+        report.reviewRounds.map((r) => r.round),
+        [1, 2],
+      )
+      for (const round of report.reviewRounds) {
+        assert.deepEqual(
+          round.reviews.map((r) => r.lens),
+          ['correctness', 'edge-cases'],
+        )
+        assert.ok(round.reviews.every((r) => r.notes.length > 0))
+      }
+      assert.ok(round1?.reviews.some((r) => r.decision === 'needsChanges'))
+      assert.deepEqual(round2?.reviews, report.reviews)
+      assert.equal(round1?.candidate?.id, report.candidates[0]?.id)
+      assert.equal(round2?.candidate?.id, report.candidates[1]?.id)
+      assert.equal(round2?.candidate?.id, report.candidate?.id)
+      const md = reportToMarkdown(report)
+      const roundsAt = md.indexOf('## Review rounds')
+      assert.ok(md.indexOf('- round 1: ', roundsAt) > roundsAt)
+      assert.ok(md.indexOf('- round 2: ', roundsAt) > md.indexOf('- round 1: '))
 
       const attempts = await durably.getStepAttempts(run.id)
       const names = attempts.map((a) => a.stepName)
@@ -296,6 +321,19 @@ describe('fake runs that stop', { timeout: 180000 }, () => {
         if (kind === 'uncertain-invocation') {
           assert.ok(md.includes('NO — do not start a new run'))
           assert.ok(!md.includes('retrigger'))
+        }
+        if (kind === 'verification-failed') {
+          // The failing check's full output is on disk, and the stop reason
+          // names it with its exit code.
+          const details = report.failure?.details ?? []
+          assert.ok(details.includes('check exit code: 1'), details.join('\n'))
+          const path = details
+            .find((d) => d.startsWith('check stdout log: '))
+            ?.slice('check stdout log: '.length)
+          assert.ok(path?.startsWith(join(dir, 'runs', id)), path)
+          if (!path) throw new Error('no stdout log')
+          assert.match(await readFile(path, 'utf8'), /decimal/)
+          assert.ok(md.includes(`check stdout log: ${path}`))
         }
       }
       assert.equal(reasons.size, 3)

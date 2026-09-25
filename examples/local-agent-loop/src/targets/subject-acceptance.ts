@@ -26,6 +26,11 @@ import { join } from 'node:path'
 
 import { runChild } from '../engine/child.js'
 import { hashDir, readTree } from '../engine/tree.js'
+import {
+  checkLog,
+  prepareCheckLogs,
+  type VerificationLog,
+} from '../engine/verification.js'
 
 /** Snapshot the pristine subject tests for this run. */
 export async function snapshotAcceptance(
@@ -72,6 +77,11 @@ export interface AcceptanceRunSpec {
   scratchDir: string
   timeoutMs: number
   signal?: AbortSignal
+  /**
+   * Directory for this grading attempt's full stdout and stderr. Outside the
+   * scratch dir, which is removed after grading.
+   */
+  logDir?: string
 }
 
 export interface AcceptanceRunResult {
@@ -79,6 +89,7 @@ export interface AcceptanceRunResult {
   stdout: string
   exitCode: number | null
   elapsedMs: number
+  log: VerificationLog | null
 }
 
 /**
@@ -134,6 +145,7 @@ export async function runAcceptanceSuite(
   // the kill as the only way out.
   const killDeadlineMs =
     spec.timeoutMs + Math.min(5000, Math.max(1000, spec.timeoutMs / 4))
+  const logs = await prepareCheckLogs(spec.logDir)
   try {
     const res = await runChild(
       process.execPath,
@@ -148,6 +160,7 @@ export async function runAcceptanceSuite(
         timeoutMs: killDeadlineMs,
         env: { NODE_OPTIONS: '' },
         ...(spec.signal ? { signal: spec.signal } : {}),
+        ...logs,
       },
     )
     return {
@@ -155,6 +168,7 @@ export async function runAcceptanceSuite(
       stdout: `${res.stdout}${res.stderr}`.slice(-8000),
       exitCode: res.code,
       elapsedMs: Date.now() - started,
+      log: checkLog(logs, res.code),
     }
   } catch (err) {
     if (err instanceof Error && err.name === 'SpawnCancelledError') throw err
@@ -167,6 +181,8 @@ export async function runAcceptanceSuite(
           'blocked the event loop instead of failing one test.',
         exitCode: null,
         elapsedMs: Date.now() - started,
+        // What the suite printed before the kill is still in the log.
+        log: checkLog(logs, null),
       }
     }
     throw err

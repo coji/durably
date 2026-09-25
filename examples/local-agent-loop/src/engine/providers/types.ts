@@ -68,6 +68,11 @@ export interface AgentCallOptions {
    * a scripted verdict that does not depend on call order.
    */
   reviewRound?: number
+  /**
+   * Files outside `workdir` a read-only role may read: the candidate's diff
+   * and changed-file list, written by the factory. Never writable.
+   */
+  readableFiles?: string[]
   /** Explicit native session to resume. Null always creates a new conversation. */
   sessionId?: string | null
   /** Durably step signal: cancel / lease-loss aborts the call. */
@@ -101,6 +106,16 @@ export interface AgentProvider {
     requestedEffort: string | null
   }): ResolvedExecution
   call(options: AgentCallOptions): Promise<AgentResult>
+}
+
+/**
+ * Where one physical grading attempt left the check's full output. The exit
+ * code is null when the check was killed before it exited (a timeout).
+ */
+export interface VerificationLog {
+  stdoutPath: string
+  stderrPath: string
+  exitCode: number | null
 }
 
 /** Persisted per-attempt measurement. Missing values stay null (never 0-filled). */
@@ -147,4 +162,6 @@ export interface AttemptMeasurement {
   error: string | null
   /** Why the attempt stopped early (cancel / lease-loss / timeout). */
   interruptionReason: string | null
+  /** A verification attempt's full check output; absent on LLM calls. */
+  verificationLog?: VerificationLog | null
 }

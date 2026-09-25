@@ -57,6 +57,11 @@ export interface RepoTargetConfig {
   issue: { number: number; title: string; url: string } | null
   /** Where the delivered patch is written. */
   deliveryDir: string
+  /**
+   * Where each sealed candidate's diff and changed-file list are written.
+   * Absent on a run set up before it existed; the run directory is used.
+   */
+  candidatesDir?: string
   /** Push the branch and open a draft pull request on delivery. */
   publish: boolean
 }
@@ -99,6 +104,11 @@ export interface GradeArgs {
   candidate: CandidateRef
   /** Scratch space outside the agent's workdir, rebuilt per attempt. */
   scratchDir: string
+  /**
+   * Directory for this physical attempt's full check output, outside the
+   * workdir and never reused: a re-grade after a crash gets a new one.
+   */
+  logDir: string
   signal: AbortSignal
 }
 

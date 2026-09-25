@@ -29,9 +29,14 @@ import {
   openReadOnlyAgentDurably,
   type AgentLoopDurably,
 } from '../durably.js'
-import { buildReport, type ReportSource } from '../engine/build-report.js'
+import {
+  asReportCandidate,
+  buildReport,
+  type ReportSource,
+} from '../engine/build-report.js'
 import { compareReports, type Comparison } from '../engine/compare.js'
 import { classifyRun } from '../engine/failure-reasons.js'
+import type { VerificationLog } from '../engine/providers/types.js'
 import {
   liveElapsed,
   stageOf,
@@ -41,6 +46,8 @@ import {
   type LoopReport,
   type ReportCandidate,
   type ReportReview,
+  type ReportReviewRound,
+  type ReportSealedCandidate,
   type ReportTriage,
   type UsageTotals,
   type WaitRow,
@@ -345,6 +352,11 @@ export interface TraceNode {
   review: ReportReview | null
   /** The candidate a code entry sealed, when still stored. */
   candidate: ReportCandidate | null
+  /**
+   * A verification row's full check output: the attempt's own, or the
+   * entry's latest attempt's. Null on every other row.
+   */
+  verificationLog: VerificationLog | null
   wait: Pick<WaitRow, 'outcome' | 'inputWaitMs' | 'executionSlotWaitMs'> | null
   children: TraceNode[]
 }
@@ -386,6 +398,13 @@ export interface TraceInput {
    */
   reviews: ReportReview[]
   candidate: ReportCandidate | null
+  /**
+   * The report's review rounds and sealed candidates. A row whose sequence
+   * is here shows the report's value; the step outputs below only fill in
+   * for a report that does not carry them.
+   */
+  reviewRounds?: ReportReviewRound[]
+  candidates?: ReportSealedCandidate[]
   /** Outputs of the run's completed steps, by step name. */
   stepOutputs: Record<string, unknown>
   now: number
@@ -462,13 +481,6 @@ function asReview(value: unknown): ReportReview | null {
     : null
 }
 
-function asCandidate(value: unknown): ReportCandidate | null {
-  const v = value as { id?: string; branch?: string; commit?: string } | null
-  return typeof v?.id === 'string'
-    ? { id: v.id, branch: v.branch ?? null, commit: v.commit ?? null }
-    : null
-}
-
 const iso = (ms: number | null) =>
   ms === null ? null : new Date(ms).toISOString()
 
@@ -526,6 +538,7 @@ export function deriveTrace(input: TraceInput): Trace {
       checkpoint: null,
       review: null,
       candidate: null,
+      verificationLog: null,
       wait: null,
       children: [],
       ...base,
@@ -689,6 +702,7 @@ export function deriveTrace(input: TraceInput): Trace {
             profile: profileOf([a]),
             usage: usageOf([a]),
             checkpoint: checkpointOf(a, aOpen),
+            verificationLog: a.measurement?.verificationLog ?? null,
           })
         })
       : []
@@ -702,7 +716,10 @@ export function deriveTrace(input: TraceInput): Trace {
     const review =
       e.stage !== 'review'
         ? null
-        : (asReview(reviewStep ? input.stepOutputs[reviewStep] : null) ??
+        : (input.reviewRounds
+            ?.find((r) => r.sequence === e.seq)
+            ?.reviews.find((r) => r.lens === lens) ??
+          asReview(reviewStep ? input.stepOutputs[reviewStep] : null) ??
           (lastDone && e.seq === lastReviewSeq
             ? (input.reviews.find((r) => r.lens === lens) ?? null)
             : null))
@@ -715,7 +732,8 @@ export function deriveTrace(input: TraceInput): Trace {
     const candidate =
       e.stage !== 'code' || !sealed
         ? null
-        : (asCandidate(input.stepOutputs[candidateStep]) ??
+        : (input.candidates?.find((c) => c.sequence === e.seq) ??
+          asReportCandidate(input.stepOutputs[candidateStep]) ??
           (e.seq === lastCodeSeq ? input.candidate : null))
     return node({
       id: `entry:${e.key}`,
@@ -735,6 +753,9 @@ export function deriveTrace(input: TraceInput): Trace {
       checkpoint: checked ? checkpointOf(checked, isOpen(checked)) : null,
       review,
       candidate,
+      verificationLog:
+        [...sorted].reverse().find((a) => a.measurement?.verificationLog)
+          ?.measurement?.verificationLog ?? null,
       children,
     })
   }
@@ -1020,6 +1041,8 @@ function createUiApi() {
         waits: report.waits,
         reviews: report.reviews,
         candidate: report.candidate,
+        reviewRounds: report.reviewRounds,
+        candidates: report.candidates,
         stepOutputs,
         now,
       }),

@@ -12,6 +12,7 @@ import { existsSync } from 'node:fs'
 import type { AnyDurably, Run, StepAttempt } from '@coji/durably'
 
 import { DETAIL_PREFIX } from './failure-details.js'
+import type { AttemptMeasurement, VerificationLog } from './providers/types.js'
 import { checkpointPaths, UNCERTAIN_INVOCATION_MESSAGE } from './runner.js'
 
 export type FailureKind =
@@ -49,7 +50,7 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
       'the pinned check still failed after the last repair; the repair budget is used up',
     retryable: true,
     humanCheck:
-      'read the check output in the report and decide whether the task, the check or --max-iterations has to change',
+      'read the full check output in the log files named below and decide whether the task, the check or --max-iterations has to change',
     next: (runId) => [
       `${DEMO} report --run ${runId} --format json  # the check output is in the verification attempt`,
       retrigger(runId),
@@ -143,6 +144,37 @@ export function uncertainCheckpoints(
   return [...found]
 }
 
+/**
+ * The full-output logs of the verification that stopped the run: every
+ * physical attempt of the last verify step, oldest first. A replay that read
+ * the completed checkpoint points at the same files and adds nothing.
+ */
+export function lastVerificationLogs(
+  attempts: Pick<StepAttempt, 'stepName' | 'startedAt' | 'metadata'>[],
+): VerificationLog[] {
+  const graded = attempts
+    .map((a) => ({
+      step: a.stepName,
+      startedAt: a.startedAt,
+      log: (a.metadata as AttemptMeasurement | null)?.verificationLog ?? null,
+    }))
+    .filter(
+      (a): a is typeof a & { log: VerificationLog } =>
+        a.log !== null && a.step.split(':')[2] === 'verify',
+    )
+  const sequence = (step: string) => Number(step.split(':')[1])
+  const last = Math.max(-1, ...graded.map((a) => sequence(a.step)))
+  const seen = new Set<string>()
+  return graded
+    .filter((a) => sequence(a.step) === last)
+    .sort((x, y) => Date.parse(x.startedAt) - Date.parse(y.startedAt))
+    .flatMap((a) => {
+      if (seen.has(a.log.stdoutPath)) return []
+      seen.add(a.log.stdoutPath)
+      return [a.log]
+    })
+}
+
 export interface ClassifyInput {
   runId: string
   status: string
@@ -150,6 +182,8 @@ export interface ClassifyInput {
   error: string | null
   /** From `uncertainCheckpoints`: start checkpoints with no completion. */
   uncertain: string[]
+  /** From `lastVerificationLogs`: the stopping verification's logs. */
+  verificationLogs?: VerificationLog[]
   /** A repo run that pushes and opens a pull request once approved. */
   publish?: boolean
 }
@@ -166,8 +200,15 @@ export function classifyFailure(
   let kind: FailureKind
   const details: string[] = []
   if (input.status === 'completed') {
-    if (conclusion === 'verification-failed') kind = 'verification-failed'
-    else if (conclusion === 'review-cap-reached') kind = 'review-cap-reached'
+    if (conclusion === 'verification-failed') {
+      kind = 'verification-failed'
+      for (const log of input.verificationLogs ?? [])
+        details.push(
+          `${DETAIL_PREFIX.checkExitCode}${log.exitCode ?? 'null'}`,
+          `${DETAIL_PREFIX.checkStdout}${log.stdoutPath}`,
+          `${DETAIL_PREFIX.checkStderr}${log.stderrPath}`,
+        )
+    } else if (conclusion === 'review-cap-reached') kind = 'review-cap-reached'
     else return null
   } else if (input.status === 'failed' || input.status === 'cancelled') {
     // An unresolved call outranks everything else: whatever else went wrong,
@@ -219,11 +260,20 @@ export async function classifyRun(
   run: Pick<Run, 'id' | 'status' | 'input' | 'output' | 'error'>,
 ): Promise<FailureClassification | null> {
   let uncertain: string[] = []
+  let verificationLogs: VerificationLog[] = []
   if (run.status === 'failed' || run.status === 'cancelled') {
     const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))
       ?.output as { checkpointsDir?: string } | null | undefined
     uncertain = uncertainCheckpoints(
       setup?.checkpointsDir ?? null,
+      await durably.getStepAttempts(run.id),
+    )
+  } else if (
+    run.status === 'completed' &&
+    (run.output as { conclusion?: unknown } | null)?.conclusion ===
+      'verification-failed'
+  ) {
+    verificationLogs = lastVerificationLogs(
       await durably.getStepAttempts(run.id),
     )
   }
@@ -233,6 +283,7 @@ export async function classifyRun(
     output: run.output,
     error: run.error,
     uncertain,
+    verificationLogs,
     publish:
       (run.input as { target?: { publish?: unknown } } | null)?.target
         ?.publish === true,

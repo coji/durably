@@ -121,6 +121,7 @@ export class SubjectTarget implements Target {
         scratchDir: args.scratchDir,
         timeoutMs: this.config.testTimeoutMs,
         signal: args.signal,
+        logDir: args.logDir,
       },
       args.candidate.acceptanceHash,
     )

@@ -1,4 +1,8 @@
 /** Codex app-server provider with explicit persistent thread IDs. */
+import { accessSync, constants } from 'node:fs'
+import { createRequire } from 'node:module'
+import { delimiter, dirname, join } from 'node:path'
+
 import { generateText } from 'ai'
 import {
   CODEX_REASONING_EFFORTS,
@@ -58,11 +62,62 @@ export function parseCodexAuthMode(statusOutput: string): CodexAuthMode {
   return 'unknown'
 }
 
+/** How the provider starts Codex, and the file that command runs. */
+export interface CodexExecutable {
+  command: string
+  args: string[]
+  /** The launched file; null when a PATH lookup finds nothing. */
+  path: string | null
+}
+
+/** First executable `name` on PATH, as the shell would find it. */
+function onPath(name: string): string | null {
+  const exts =
+    process.platform === 'win32'
+      ? (process.env['PATHEXT'] ?? '.EXE;.CMD;.BAT').split(';')
+      : ['']
+  for (const dir of (process.env['PATH'] ?? '').split(delimiter)) {
+    if (!dir) continue
+    for (const ext of exts) {
+      const candidate = join(dir, `${name}${ext}`)
+      try {
+        accessSync(candidate, constants.X_OK)
+        return candidate
+      } catch {
+        // Not here.
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * The Codex CLI the provider launches. `ai-sdk-provider-codex-cli` prefers
+ * the `@openai/codex` package it can resolve itself, run as
+ * `node <package>/bin/codex.js`, and falls back to `codex` on PATH. This
+ * repeats that resolution from the provider's own location, and the provider
+ * is then handed the result explicitly, so the version on record and the
+ * CLI that runs are the same file.
+ */
+export function codexExecutable(): CodexExecutable {
+  try {
+    const provider = createRequire(import.meta.url).resolve(
+      'ai-sdk-provider-codex-cli/package.json',
+    )
+    const pkg = createRequire(provider).resolve('@openai/codex/package.json')
+    const bin = join(dirname(pkg), 'bin', 'codex.js')
+    return { command: 'node', args: [bin], path: bin }
+  } catch {
+    return { command: 'codex', args: [], path: onPath('codex') }
+  }
+}
+
 let authModePromise: Promise<CodexAuthMode> | null = null
 
 /** Probe the login once per process, through the owned-subprocess path. */
 function codexAuthMode(): Promise<CodexAuthMode> {
-  authModePromise ??= runChild('codex', ['login', 'status'], {
+  const exe = codexExecutable()
+  authModePromise ??= runChild(exe.command, [...exe.args, 'login', 'status'], {
     timeoutMs: 15000,
     maxOutputChars: 2000,
   })
@@ -129,8 +184,10 @@ export class CodexProvider implements AgentProvider {
     const { model, effort } = this.resolveExecution(options)
     const modelId = model ?? defaultModelFor('codex')
     const readOnly = READ_ONLY_ROLES.has(options.role)
+    const executable = codexExecutable().path
     const provider = createCodexAppServer({
       defaultSettings: {
+        ...(executable ? { codexPath: executable } : {}),
         cwd: options.workdir,
         approvalPolicy: 'never',
         sandboxPolicy: readOnly ? 'read-only' : 'workspace-write',

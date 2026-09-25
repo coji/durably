@@ -1,5 +1,6 @@
 /** Cancel-aware subprocess execution for the process that spawned it. */
 import { spawn, type SpawnOptions } from 'node:child_process'
+import { createWriteStream, type WriteStream } from 'node:fs'
 import { StringDecoder } from 'node:string_decoder'
 
 const owned = new Set<number>()
@@ -44,6 +45,34 @@ export interface RunChildOptions extends SpawnOptions {
   timeoutMs: number
   killSignal?: NodeJS.Signals
   maxOutputChars?: number
+  /**
+   * Also write every byte of stdout / stderr to these files, uncapped. The
+   * files are complete when the promise settles, including after a timeout
+   * or a cancel, so whatever the child printed before it was killed is kept.
+   */
+  stdoutFile?: string
+  stderrFile?: string
+}
+
+/** A raw byte log that reports its own write error instead of crashing. */
+function openLog(path: string | undefined) {
+  if (!path) return null
+  let failure: Error | null = null
+  const stream: WriteStream = createWriteStream(path)
+  stream.on('error', (error) => {
+    failure ??= error
+  })
+  return {
+    write: (chunk: Buffer) => {
+      if (!failure) stream.write(chunk)
+    },
+    close: () =>
+      new Promise<Error | null>((resolve) => {
+        if (stream.destroyed) return resolve(failure)
+        stream.end(() => resolve(failure))
+        stream.once('error', () => resolve(failure))
+      }),
+  }
 }
 
 function appendTail(current: string, text: string, limit: number): string {
@@ -67,6 +96,8 @@ export async function runChild(
     timeoutMs,
     killSignal = 'SIGKILL',
     maxOutputChars = 8000,
+    stdoutFile,
+    stderrFile,
     env: explicitEnv,
     ...spawnOptions
   } = options
@@ -86,6 +117,15 @@ export async function runChild(
     ...(ownsProcessGroup ? { detached: true } : {}),
   })
   if (child.pid !== undefined) owned.add(child.pid)
+  const outLog = openLog(stdoutFile)
+  const errLog = openLog(stderrFile)
+  const closeLogs = async (): Promise<Error | null> => {
+    const [outError, errError] = await Promise.all([
+      outLog?.close() ?? null,
+      errLog?.close() ?? null,
+    ])
+    return outError ?? errError
+  }
 
   let stdout = ''
   let stderr = ''
@@ -121,7 +161,7 @@ export async function runChild(
         if (settled) return
         settled = true
         cleanup()
-        reject(error)
+        void closeLogs().then(() => reject(error))
       }
       // Decoding each chunk on its own splits any multi-byte character that
       // straddles a chunk boundary into replacement characters, and that text
@@ -129,9 +169,11 @@ export async function runChild(
       const outDecoder = new StringDecoder('utf8')
       const errDecoder = new StringDecoder('utf8')
       child.stdout?.on('data', (chunk: Buffer) => {
+        outLog?.write(chunk)
         stdout = appendTail(stdout, outDecoder.write(chunk), maxOutputChars)
       })
       child.stderr?.on('data', (chunk: Buffer) => {
+        errLog?.write(chunk)
         stderr = appendTail(stderr, errDecoder.write(chunk), maxOutputChars)
       })
       child.once('error', rejectOnce)
@@ -141,13 +183,18 @@ export async function runChild(
         cleanup()
         stdout = appendTail(stdout, outDecoder.end(), maxOutputChars)
         stderr = appendTail(stderr, errDecoder.end(), maxOutputChars)
-        if (terminationError) return reject(terminationError)
-        resolve({
-          code,
-          stdout,
-          stderr,
-          elapsedMs: Date.now() - started,
-          killed,
+        // The logs are flushed before the caller hears anything, so a timeout
+        // or a cancel never races the last bytes the child printed.
+        void closeLogs().then((logError) => {
+          if (terminationError) return reject(terminationError)
+          if (logError) return reject(logError)
+          resolve({
+            code,
+            stdout,
+            stderr,
+            elapsedMs: Date.now() - started,
+            killed,
+          })
         })
       })
       timer = setTimeout(() => {

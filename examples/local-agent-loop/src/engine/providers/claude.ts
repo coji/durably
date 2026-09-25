@@ -17,6 +17,8 @@
  *   a sandbox): statically unresolvable commands are denied; the Codex CLI
  *   sandbox remains the stronger isolation where that matters.
  */
+import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { isAbsolute, normalize, relative, resolve, sep } from 'node:path'
 
 import { generateText } from 'ai'
@@ -73,6 +75,53 @@ export function resolveClaudeEffort(
   )
 }
 
+const AGENT_SDK = '@anthropic-ai/claude-agent-sdk'
+
+/** The Agent SDK's own libc test: a Linux without glibc takes musl first. */
+function prefersMusl(): boolean {
+  if (process.platform !== 'linux') return false
+  const report = process.report?.getReport?.() as {
+    header?: { glibcVersionRuntime?: string }
+  } | null
+  return report != null && report.header?.glibcVersionRuntime === undefined
+}
+
+/**
+ * The Claude Code binary the Agent SDK launches: the native build shipped in
+ * its platform package, never a `claude` on PATH. Resolved the way the SDK
+ * resolves it, from the SDK that `ai-sdk-provider-claude-code` loads, so the
+ * recorded version is of the binary that actually runs. Null when it cannot
+ * be found.
+ */
+export function claudeExecutable(): string | null {
+  try {
+    const provider = createRequire(import.meta.url).resolve(
+      'ai-sdk-provider-claude-code',
+    )
+    const sdk = createRequire(provider).resolve(AGENT_SDK)
+    const load = createRequire(sdk)
+    const { platform, arch } = process
+    const ext = platform === 'win32' ? '.exe' : ''
+    const packages =
+      platform === 'linux'
+        ? prefersMusl()
+          ? [`${AGENT_SDK}-linux-${arch}-musl`, `${AGENT_SDK}-linux-${arch}`]
+          : [`${AGENT_SDK}-linux-${arch}`, `${AGENT_SDK}-linux-${arch}-musl`]
+        : [`${AGENT_SDK}-${platform}-${arch}`]
+    for (const name of packages) {
+      try {
+        const path = load.resolve(`${name}/claude${ext}`)
+        if (existsSync(path)) return path
+      } catch {
+        // Not installed for this platform; try the next.
+      }
+    }
+  } catch {
+    // The provider or the SDK is not installed.
+  }
+  return null
+}
+
 /** Normalize and resolve a candidate path against the allowed root. */
 function resolveInside(root: string, candidate: string): string {
   const base = resolve(root)
@@ -109,6 +158,12 @@ export function decideToolPermission(
   readOnly: boolean,
   toolName: string,
   input: Record<string, unknown>,
+  /**
+   * Exact files outside the root a read-only role may also read: the
+   * candidate's diff and changed-file list. Only whole paths match, so a
+   * directory or a sibling file is not opened up with them.
+   */
+  readableFiles: readonly string[] = [],
 ): ToolDecision {
   if (readOnly) {
     if (toolName !== 'Read') {
@@ -118,7 +173,12 @@ export function decideToolPermission(
       }
     }
     const p = input['file_path']
-    if (typeof p === 'string' && !isInsideWorkdir(allowedRoot, p)) {
+    const trusted =
+      typeof p === 'string' &&
+      readableFiles.some(
+        (file) => resolve(file) === resolveInside(allowedRoot, p),
+      )
+    if (typeof p === 'string' && !trusted && !isInsideWorkdir(allowedRoot, p)) {
       return {
         allow: false,
         reason: `read outside review snapshot denied: ${p}`,
@@ -183,7 +243,11 @@ function bashEscapeReason(root: string, cmd: string): string | null {
  * Tool-permission guard for `canUseTool` (sees only non-pre-approved calls).
  * The `PreToolUse` hook below is the complete enforcement point.
  */
-export function workdirGuard(allowedRoot: string, readOnly: boolean) {
+export function workdirGuard(
+  allowedRoot: string,
+  readOnly: boolean,
+  readableFiles: readonly string[] = [],
+) {
   return async (
     toolName: string,
     input: Record<string, unknown>,
@@ -196,6 +260,7 @@ export function workdirGuard(allowedRoot: string, readOnly: boolean) {
       readOnly,
       toolName,
       input,
+      readableFiles,
     )
     if (!decision.allow) {
       return { behavior: 'deny', message: decision.reason }
@@ -209,7 +274,11 @@ export function workdirGuard(allowedRoot: string, readOnly: boolean) {
  * via `allowedTools` (which bypass `canUseTool` per the Claude Code docs).
  * Denials surface in `providerMetadata['claude-code'].permissionDenials`.
  */
-export function preToolUseHook(allowedRoot: string, readOnly: boolean) {
+export function preToolUseHook(
+  allowedRoot: string,
+  readOnly: boolean,
+  readableFiles: readonly string[] = [],
+) {
   return async (hookInput: unknown) => {
     const record =
       typeof hookInput === 'object' && hookInput !== null
@@ -229,6 +298,7 @@ export function preToolUseHook(allowedRoot: string, readOnly: boolean) {
       readOnly,
       toolName,
       input,
+      readableFiles,
     )
     if (!decision.allow) {
       return {
@@ -254,16 +324,24 @@ export function buildClaudeSettings(
   readOnly: boolean,
   effort: string | null,
   sessionId: string | null = null,
+  readableFiles: readonly string[] = [],
 ): ClaudeCodeSettings {
+  // Extra readable files widen reads for a read-only role only; a writing
+  // role stays confined to its workdir.
+  const readable = readOnly ? readableFiles : []
+  const executable = claudeExecutable()
   return {
     cwd: workdir,
     settingSources: [],
     permissionMode: 'default',
     allowedTools: readOnly ? ['Read'] : ['Read', 'Edit', 'Write', 'Bash'],
-    canUseTool: workdirGuard(workdir, readOnly),
+    canUseTool: workdirGuard(workdir, readOnly, readable),
     hooks: {
-      PreToolUse: [{ hooks: [preToolUseHook(workdir, readOnly)] }],
+      PreToolUse: [{ hooks: [preToolUseHook(workdir, readOnly, readable)] }],
     },
+    // Pinned to the binary whose version is recorded, so the two cannot
+    // name different CLIs. Unresolved, the SDK reports its own error.
+    ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
     ...(sessionId ? { resume: sessionId } : {}),
     ...(effort ? { effort: effort as 'low' } : {}),
   }
@@ -297,7 +375,13 @@ export class ClaudeProvider implements AgentProvider {
     const readOnly = READ_ONLY_ROLES.has(options.role)
     const model = claudeCode(
       modelIdResolved,
-      buildClaudeSettings(options.workdir, readOnly, effort, options.sessionId),
+      buildClaudeSettings(
+        options.workdir,
+        readOnly,
+        effort,
+        options.sessionId,
+        options.readableFiles,
+      ),
     )
     const reported = await generateText({
       model,

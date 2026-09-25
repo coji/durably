@@ -13,22 +13,27 @@
  * still be the candidate's commit. Like the directory-hash check on the sample
  * target, this detects an unintended change; it is not a sandbox.
  */
-import { mkdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 
 import { runChild } from '../engine/child.js'
 import {
   commitAll,
   defaultBranch,
   describeCommitChanges,
+  diffStat,
   isDirty,
   writePatch,
   pushBranch,
   resolveCommit,
   treeOf,
 } from '../engine/git.js'
-import type { CandidateRef } from '../engine/types.js'
-import type { GradeResult } from '../engine/verification.js'
+import type { CandidateChanges, CandidateRef } from '../engine/types.js'
+import {
+  checkLog,
+  prepareCheckLogs,
+  type GradeResult,
+} from '../engine/verification.js'
 import type {
   Delivery,
   DeliverArgs,
@@ -113,14 +118,49 @@ export class RepoTarget implements Target {
       { signal: args.signal },
     )
     const tree = await treeOf(this.config.repoPath, sealed.commit)
+    const id = `candidate-${args.iteration}-${tree.slice(0, 12)}`
     return {
-      id: `candidate-${args.iteration}-${tree.slice(0, 12)}`,
+      id,
       // The worktree holds the sealed content; `assertIntact` keeps it honest.
       snapshotDir: this.config.workdir,
       sourceHash: tree,
       acceptanceHash: checkFingerprint(this.config.checkCommand),
       branch: this.config.branch,
       commit: sealed.commit,
+      changes: await this.writeChanges(id, sealed.commit),
+    }
+  }
+
+  /**
+   * Write the candidate's full diff and changed-file list outside the
+   * worktree, and count its size. Done at sealing, so a candidate that never
+   * reaches review still has them. Rewriting on a replay yields the same
+   * bytes, because both commits are fixed.
+   */
+  private async writeChanges(
+    id: string,
+    commit: string,
+  ): Promise<CandidateChanges> {
+    const dir = join(
+      this.config.candidatesDir ??
+        join(dirname(this.config.deliveryDir), 'candidates'),
+      id,
+    )
+    await mkdir(dir, { recursive: true })
+    const diffPath = join(dir, 'changes.diff')
+    const changedFilesPath = join(dir, 'changed-files.txt')
+    const { repoPath, baseCommit } = this.config
+    await writePatch(repoPath, baseCommit, commit, diffPath)
+    const lines = await describeCommitChanges(repoPath, baseCommit, commit)
+    await writeFile(
+      changedFilesPath,
+      lines.map((line) => `${line}\n`).join(''),
+      'utf8',
+    )
+    return {
+      diffPath,
+      changedFilesPath,
+      ...(await diffStat(repoPath, baseCommit, commit)),
     }
   }
 
@@ -152,18 +192,21 @@ export class RepoTarget implements Target {
     const killDeadlineMs =
       this.config.checkTimeoutMs +
       Math.min(5000, Math.max(1000, this.config.checkTimeoutMs / 4))
+    const logs = await prepareCheckLogs(args.logDir)
     try {
       const res = await runChild(command, rest, {
         cwd: this.config.workdir,
         timeoutMs: killDeadlineMs,
         maxOutputChars: 20_000,
         signal: args.signal,
+        ...logs,
       })
       return {
         passed: res.code === 0,
         stdout: `${res.stdout}${res.stderr}`.slice(-8000),
         exitCode: res.code,
         elapsedMs: Date.now() - started,
+        log: checkLog(logs, res.code),
       }
     } catch (err) {
       if (err instanceof Error && err.name === 'SpawnCancelledError') throw err
@@ -173,6 +216,8 @@ export class RepoTarget implements Target {
           stdout: `check timed out: killed after ${killDeadlineMs}ms running ${checkFingerprint(this.config.checkCommand)}`,
           exitCode: null,
           elapsedMs: Date.now() - started,
+          // What the check printed before the kill is still in the log.
+          log: checkLog(logs, null),
         }
       }
       throw err

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 
 import { z } from 'zod'
 
+import type { CandidateChanges } from '../engine/types.js'
 import type { UntrustedInput } from './target.js'
 
 /**
@@ -65,11 +66,30 @@ export function codePrompt(args: CodePromptArgs): string {
   ].join('\n')
 }
 
+/**
+ * The candidate's diff and changed-file list, written by the factory from the
+ * recorded base commit and the candidate commit. Reviewers are told to read
+ * both whole: a reviewer that stops at the first screenful passes changes it
+ * never saw.
+ */
+function candidateFilesSection(changes: CandidateChanges | null): string[] {
+  if (!changes) return []
+  return [
+    'CANDIDATE FILES (written by the factory from the base commit and this candidate commit):',
+    `- Full diff: ${changes.diffPath}`,
+    `- Changed file list: ${changes.changedFilesPath}`,
+    `- Size: ${changes.files} files changed, +${changes.additions} / -${changes.deletions} lines`,
+    '- Read both files in full, to the last line, before you decide. If a file is long, read it in parts until you reach its end. They are read-only; do not modify them.',
+    '',
+  ]
+}
+
 export function reviewPrompt(
   lens: 'correctness' | 'edge-cases',
   trustedContext: string,
   rules: string[],
   untrusted: UntrustedInput[] = [],
+  changes: CandidateChanges | null = null,
 ): string {
   const role =
     lens === 'correctness'
@@ -90,6 +110,7 @@ export function reviewPrompt(
     '',
     trustedContext,
     '',
+    ...candidateFilesSection(changes),
     ...untrustedSection(untrusted),
     'Reply in exactly this shape, with DECISION on a line of its own:',
     'PLAN: <your independent plan, one or two sentences>',

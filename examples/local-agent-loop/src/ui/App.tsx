@@ -16,10 +16,12 @@ import {
 } from 'react'
 
 import type { Stat } from '../engine/compare'
+import type { VerificationLog } from '../engine/providers/types'
 import type {
   LiveElapsed,
   LoopReport,
   ReportCandidate,
+  ReportCandidateChanges,
   UsageTotals,
 } from '../engine/report'
 import type { DiagnosisKind } from '../engine/status'
@@ -30,6 +32,7 @@ import {
   detailField,
   diagnosisText,
   humanCheckText,
+  isPathDetail,
   lensName,
   reviewDecision,
   roleName,
@@ -1299,6 +1302,11 @@ function ProfileFields({ profile: p }: { profile: TraceProfile }) {
   )
 }
 
+/** A candidate's size as the report recorded it at sealing. */
+function changesText(c: ReportCandidateChanges): string {
+  return `${c.files} ファイル、+${c.additions} 行、−${c.deletions} 行`
+}
+
 function CandidateFields({ candidate: c }: { candidate: ReportCandidate }) {
   return (
     <>
@@ -1311,7 +1319,40 @@ function CandidateFields({ candidate: c }: { candidate: ReportCandidate }) {
       <InspectorField label="コミット">
         <Num>{c.commit?.slice(0, 12) ?? 'なし'}</Num>
       </InspectorField>
+      {c.changes ? (
+        <>
+          <InspectorField label="変更ファイル数">
+            <Num>{c.changes.files}</Num>
+          </InspectorField>
+          <InspectorField label="追加行数">
+            <Num>{c.changes.additions}</Num>
+          </InspectorField>
+          <InspectorField label="削除行数">
+            <Num>{c.changes.deletions}</Num>
+          </InspectorField>
+        </>
+      ) : null}
     </>
+  )
+}
+
+/** A file path as data, with a button that copies it. */
+function PathValue({
+  path,
+  label,
+  copied,
+  onCopy,
+}: {
+  path: string
+  label: string
+  copied: { text: string } | null
+  onCopy: (text: string, label: string) => void
+}) {
+  return (
+    <span className="flex flex-col items-start gap-1">
+      <span className="font-code break-all">{path}</span>
+      <CopyButton text={path} label={label} copied={copied} onCopy={onCopy} />
+    </span>
   )
 }
 
@@ -1369,16 +1410,54 @@ function ReviewBlock({ node: n }: { node: TraceNode }) {
   return null
 }
 
-/** Reserved for the row's agent log; nothing is read into it yet. */
-function LogSlot() {
+/** Shown for an exit code the check never returned. */
+const NO_EXIT_CODE = '終了コードを得る前に打ち切られました'
+
+/**
+ * The row's log: a verification row's full check output as file paths, or
+ * the reserved slot for an agent log, which is not read in yet.
+ */
+function LogSlot({ log }: { log: VerificationLog | null }) {
+  const { copied, copy } = useCopy()
+  const onCopy = (t: string, l: string) => void copy(t, l)
   return (
     <section aria-labelledby="trace-log-slot" className="flex flex-col gap-1">
       <h4 id="trace-log-slot" className="text-fg-2 text-xs font-medium">
         ログ
       </h4>
-      <p className="border-line-strong text-fg-3 rounded-md border border-dashed px-3 py-2 text-xs">
-        この行のログは、まだここに表示しません。
-      </p>
+      {log ? (
+        <dl className="divide-line flex flex-col divide-y">
+          <InspectorField label="終了コード">
+            <span
+              className="font-code"
+              title={log.exitCode === null ? NO_EXIT_CODE : undefined}
+            >
+              {log.exitCode ?? 'null'}
+            </span>
+          </InspectorField>
+          <InspectorField label="標準出力">
+            <PathValue
+              path={log.stdoutPath}
+              label="標準出力のパスをコピー"
+              copied={copied}
+              onCopy={onCopy}
+            />
+          </InspectorField>
+          <InspectorField label="標準エラー">
+            <PathValue
+              path={log.stderrPath}
+              label="標準エラーのパスをコピー"
+              copied={copied}
+              onCopy={onCopy}
+            />
+          </InspectorField>
+          <CopyAnnouncer copied={copied} />
+        </dl>
+      ) : (
+        <p className="border-line-strong text-fg-3 rounded-md border border-dashed px-3 py-2 text-xs">
+          この行のログは、まだここに表示しません。
+        </p>
+      )}
     </section>
   )
 }
@@ -1445,7 +1524,7 @@ function TraceInspector({
       {n.stage === 'review' && n.kind === 'entry' ? (
         <ReviewBlock node={n} />
       ) : null}
-      <LogSlot />
+      <LogSlot log={n.verificationLog} />
       <p className="text-fg-3 text-xs">
         時刻は
         <time dateTime={origin} title={exact(origin)}>
@@ -1777,7 +1856,21 @@ function StageTimings({ report }: { report: LoopReport }) {
   )
 }
 
+/**
+ * Failure detail lines with a stable key each. An exit code line repeats
+ * when several attempts exited the same way, so its occurrence is counted.
+ */
+function detailRows(lines: string[]): { line: string; key: string }[] {
+  const seen = new Map<string, number>()
+  return lines.map((line) => {
+    const n = (seen.get(line) ?? 0) + 1
+    seen.set(line, n)
+    return { line, key: `${line}#${n}` }
+  })
+}
+
 function StatusPanel({ data }: { data: RunDetailResponse }) {
+  const { copied, copy } = useCopy()
   return (
     <Panel title="いまの状態と次の手順">
       <p className="mb-3 text-sm">
@@ -1798,11 +1891,24 @@ function StatusPanel({ data }: { data: RunDetailResponse }) {
               {humanCheckText(data.diagnosis.failure.kind)}
             </span>
           </Field>
-          {data.diagnosis.failure.details.map(detailField).map((d) => (
-            <Field key={d.value} label={d.label}>
-              {d.value}
-            </Field>
-          ))}
+          {detailRows(data.diagnosis.failure.details).map(({ line, key }) => {
+            const d = detailField(line)
+            return (
+              <Field key={key} label={d.label}>
+                {isPathDetail(line) ? (
+                  <PathValue
+                    path={d.value}
+                    label={`${d.label}のパスをコピー`}
+                    copied={copied}
+                    onCopy={(t, l) => void copy(t, l)}
+                  />
+                ) : (
+                  d.value
+                )}
+              </Field>
+            )
+          })}
+          <CopyAnnouncer copied={copied} />
         </dl>
       ) : null}
       <Commands lines={data.diagnosis.next} />
@@ -1921,33 +2027,86 @@ function UsagePanels({ report: r }: { report: LoopReport }) {
   )
 }
 
+function ReviewVerdicts({ reviews }: { reviews: LoopReport['reviews'] }) {
+  return (
+    <ul className="flex flex-col gap-3">
+      {reviews.map((review) => (
+        <li key={review.lens} className="flex flex-col gap-1">
+          <p className="text-sm">
+            <span className="font-medium">{lensName(review.lens)}</span>
+            <span
+              className="text-fg-2"
+              title={reviewDecision(review.decision).title}
+            >
+              {' · '}
+              {reviewDecision(review.decision).label}
+            </span>
+          </p>
+          <p className="bg-sunken rounded-md px-3 py-2 text-sm whitespace-pre-wrap">
+            {review.notes}
+          </p>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/**
+ * Every review round in order, each with the candidate it reviewed. A run
+ * whose report has no rounds shows its last verdicts only.
+ */
 function ReviewsPanel({ report: r }: { report: LoopReport }) {
+  const rounds = r.reviewRounds
+  const sealedAs = (id: string) =>
+    r.candidates.find((c) => c.id === id)?.iteration ?? null
   return (
     <Panel title="レビュー">
-      {r.reviews.length === 0 ? (
+      {rounds.length === 0 && r.reviews.length === 0 ? (
         <Empty>まだ終わったレビューがありません。</Empty>
+      ) : rounds.length === 0 ? (
+        <ReviewVerdicts reviews={r.reviews} />
       ) : (
-        <ul className="flex flex-col gap-3">
-          {r.reviews.map((review) => (
-            <li key={review.lens} className="flex flex-col gap-1">
-              <p className="text-sm">
-                <span className="font-medium">{lensName(review.lens)}</span>
-                <span
-                  className="text-fg-2"
-                  title={reviewDecision(review.decision).title}
-                >
-                  {' · '}
-                  {reviewDecision(review.decision).label}
-                </span>
-              </p>
-              <p className="bg-sunken rounded-md px-3 py-2 text-sm whitespace-pre-wrap">
-                {review.notes}
-              </p>
+        <ol className="flex flex-col gap-5">
+          {rounds.map((round) => (
+            <li key={round.sequence} className="flex flex-col gap-2">
+              <h3 className="flex flex-wrap items-baseline gap-2 text-sm font-semibold">
+                <span>{round.round}回目のレビュー</span>
+                {round.candidate ? (
+                  <span className="text-fg-2 inline-flex items-baseline gap-2 font-normal">
+                    {sealedAs(round.candidate.id) !== null
+                      ? `${sealedAs(round.candidate.id)}回目の候補`
+                      : '候補'}
+                    <IdSuffix id={round.candidate.id} />
+                  </span>
+                ) : null}
+              </h3>
+              <ReviewVerdicts reviews={round.reviews} />
             </li>
           ))}
-        </ul>
+        </ol>
       )}
     </Panel>
+  )
+}
+
+/** Every sealed candidate with its recorded size, oldest first. */
+function CandidateList({ report: r }: { report: LoopReport }) {
+  if (r.candidates.length === 0) return null
+  return (
+    <ol className="border-line mt-3 flex flex-col gap-2 border-t pt-3">
+      {r.candidates.map((c) => (
+        <li
+          key={c.sequence}
+          className="flex flex-wrap items-baseline gap-x-2 text-sm"
+        >
+          <span>{c.iteration}回目の候補</span>
+          <IdSuffix id={c.id} />
+          <span className="text-fg-2 tabular-nums">
+            {c.changes ? changesText(c.changes) : '規模の記録なし'}
+          </span>
+        </li>
+      ))}
+    </ol>
   )
 }
 
@@ -1967,10 +2126,16 @@ function RecordPanels({ report: r }: { report: LoopReport }) {
               <Field label="ID">{r.candidate.id}</Field>
               <Field label="ブランチ">{r.candidate.branch ?? 'なし'}</Field>
               <Field label="コミット">{r.candidate.commit ?? 'なし'}</Field>
+              {r.candidate.changes ? (
+                <Field label="変更の規模">
+                  {changesText(r.candidate.changes)}
+                </Field>
+              ) : null}
             </dl>
           ) : (
             <Empty>まだ候補がありません。</Empty>
           )}
+          <CandidateList report={r} />
         </Panel>
         <Panel title="納品物">
           {r.delivery ? (
