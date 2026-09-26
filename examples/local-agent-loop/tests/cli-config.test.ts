@@ -28,6 +28,7 @@ import {
 import type { FactorySetup } from '../src/factory/types.js'
 import { createTarget } from '../src/targets/index.js'
 import {
+  buildRepairInput,
   reloadTriggerInput,
   repairableCandidate,
 } from '../src/trigger-input.js'
@@ -1565,6 +1566,87 @@ describe('repair', { timeout: 240000 }, () => {
         name,
       )
     assert.throws(() => repairableCandidate(good, null), /setup record/)
+  })
+
+  it('inherits a null or false the parent setup recorded, and falls back only when the setup lacks the value', () => {
+    const commit = 'c'.repeat(40)
+    const profile = (role: string) => ({
+      id: `fake:provider-default:provider-default:${role}`,
+      provider: 'fake',
+      requestedModel: null,
+      requestedEffort: null,
+      effectiveModel: null,
+      effectiveEffort: null,
+    })
+    const storedCommit = {
+      authorName: 'Stored',
+      authorEmail: 'stored@example.com',
+      messageTemplate: null,
+    }
+    const parent = {
+      id: 'p',
+      status: 'completed',
+      input: {
+        provider: 'fake',
+        codexPath: '/stored/codex',
+        target: { kind: 'repo', baselineCheck: true, commit: storedCommit },
+      },
+      output: {
+        approved: true,
+        conclusion: 'approved',
+        candidate: { commit, branch: 'factory/p' },
+        delivery: { commit },
+      },
+    }
+    const setup = {
+      contextMode: 'reuse',
+      maxIterations: 1,
+      agentTimeoutMs: 600000,
+      autoApprove: true,
+      profiles: {
+        code: profile('code'),
+        correctness: profile('correctness'),
+        'edge-cases': profile('edge-cases'),
+      },
+      repair: null,
+      triage: profile('triage'),
+      codexPath: null,
+      baselineCheck: false,
+      target: {
+        kind: 'repo',
+        repoPath: '/repo',
+        task: 'task',
+        spec: null,
+        dispositions: null,
+        issue: null,
+        checkCommand: ['true'],
+        setupCommand: null,
+        checkTimeoutMs: 120000,
+        publish: false,
+        commit: { authorName: null, authorEmail: null, messageTemplate: null },
+      },
+    }
+    const files = {
+      findings: { content: 'FINDING\n', ref: { path: '/f.md' } },
+      dispositions: null,
+    }
+    const { input } = buildRepairInput(parent, setup, files)
+    assert.equal(input.codexPath, null)
+    assert.equal(input.target.baselineCheck, false)
+    assert.deepEqual(input.target.commit, setup.target.commit)
+    assert.deepEqual(input.repairOf.profiles.triage, setup.triage)
+    // A setup from before a value existed takes it from the stored input.
+    const { codexPath: _c, baselineCheck: _b, triage: _t, ...older } = setup
+    const { commit: _m, ...olderTarget } = setup.target
+    const fallback = buildRepairInput(
+      parent,
+      { ...older, target: olderTarget },
+      files,
+    ).input
+    assert.equal(fallback.codexPath, '/stored/codex')
+    assert.equal(fallback.target.baselineCheck, true)
+    assert.deepEqual(fallback.target.commit, storedCommit)
+    assert.equal(fallback.repairOf.profiles.triage, null)
   })
 
   it('starts one child per findings and dispositions content, with the parent settings', async () => {

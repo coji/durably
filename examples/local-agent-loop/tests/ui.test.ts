@@ -2036,6 +2036,7 @@ describe('repair runs on the page', { timeout: 120000 }, () => {
             correctness: profile('correctness'),
             'edge-cases': profile('edge-cases'),
             repair: null,
+            triage: null,
           },
         },
       })

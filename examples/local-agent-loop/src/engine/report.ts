@@ -943,6 +943,8 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push(`- spec characters: ${fmt(c.specChars)}`)
     lines.push(`- acceptance criteria in spec: ${fmt(c.acceptanceCriteria)}`)
     lines.push(`- planned files in spec: ${fmt(c.plannedFiles)}`)
+  } else if (r.lineage.parent) {
+    lines.push('- none (a repair run never runs triage)')
   } else {
     lines.push('- none (no triage profile, or triage has not run yet)')
   }

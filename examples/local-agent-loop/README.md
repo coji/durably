@@ -673,8 +673,10 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   さらにその子を作れます。
 - 起動前に、親の候補commitが対象リポジトリにあり、記録された候補ブランチの先端が
   そのcommitのままであることを確かめます。ブランチが動いていれば何も作りません。
-- 子runは、親が保存したtask、spec、issue、profile（解決済みの値）、check、setup、
-  timeout、`codexPath`、commitとpublishの設定、`--max-iterations` を引き継ぎます。
+- 子runは、親が保存したtask、spec、issue、profile（triageも含む解決済みの値）、
+  check、setup、timeout、`codexPath`、commitとpublishの設定、`--max-iterations` を
+  引き継ぎます。親のsetupが記録した値は `null` でもそのまま使い、setupに項目が
+  無い古い親だけ保存済みの入力から補います。子の子も同じです。
   いまの `factory.json` と環境変数は読みません。`--reload-config` は受け付けません。
   設定を変えたいときは、通常の `trigger` から始めます。
 - 指摘ファイルは必須です。処分ファイルは任意で、指定すると親の処分を置き換え、
@@ -687,7 +689,7 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   squashedブランチは `factory/<子の runId>-squashed` で、差分、patch、squashed
   commitの親はすべて親の候補commitです。
 - 子runでもsetup、preflight、設定していればbaselineCheckを実行します。triageと
-  初回実装は行わず、最初のcode工程を `repair` の1回目として新しいsessionで始め
+  初回実装は行わず（triage profileは記録するだけで、呼び出しも事前確認もしません）、最初のcode工程を `repair` の1回目として新しいsessionで始め
   ます。`profiles.repair` があればそれを使います。そのあとは通常どおり検証、
   両レビュー、承認、納品に進みます。
 - `--max-iterations` は子run自身の修正回数だけを数え、親が使った回数は差し引き

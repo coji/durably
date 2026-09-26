@@ -100,8 +100,9 @@ function profileRows(
   if (repairProfile) rows.splice(1, 0, row('repair', repairProfile))
   else if (repaired && rows[0])
     rows.splice(1, 0, { ...rows[0], role: 'repair' })
-  // Triage has no fallback: without its own profile it never runs.
-  const triage = input?.profiles?.['triage']
+  // Triage has no fallback: without its own profile it never runs. A repair
+  // run keeps its parent's triage profile but never runs it, so it has no row.
+  const triage = input?.repairOf ? undefined : input?.profiles?.['triage']
   return triage ? [...rows, row('triage', triage)] : rows
 }
 

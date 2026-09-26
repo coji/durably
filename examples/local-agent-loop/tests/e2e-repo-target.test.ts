@@ -1169,7 +1169,16 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       )
       // The parent's settings, as it resolved and stored them.
       assert.deepEqual(childSetup.profiles, setup.profiles)
-      assert.equal(childSetup.triage, null)
+      // The parent's triage profile is recorded, never run.
+      assert.ok(setup.triage)
+      assert.deepEqual(
+        input.profiles,
+        (parent.input as { profiles: unknown }).profiles,
+      )
+      assert.ok(input.profiles?.triage)
+      assert.deepEqual(input.repairOf.profiles.triage, setup.triage)
+      assert.deepEqual(childSetup.triage, setup.triage)
+      assert.equal(childSetup.configVersion, setup.configVersion)
       assert.equal(childSetup.agentTimeoutMs, setup.agentTimeoutMs)
       assert.equal(
         childSetup.target.checkTimeoutMs,
@@ -1268,6 +1277,9 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       const md = reportToMarkdown(report)
       assert.ok(md.includes(`- parent: ${parent.id}`))
       assert.ok(md.includes(sha256(findings)))
+      assert.equal(report.triage, null)
+      assert.ok(!report.roleUsage.some((r) => r.role === 'triage'))
+      assert.ok(md.includes('- none (a repair run never runs triage)'))
       const parentReport = await buildReport(durably, parent.id)
       assert.deepEqual(parentReport.lineage.children, [child.id])
       assert.ok(reportToJson(parentReport).includes(child.id))
@@ -1299,6 +1311,47 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       })
       assert.notEqual(second.id, child.id)
       await durably.cancel(second.id)
+
+      // A child of the child inherits the same settings, triage included,
+      // and still runs no triage.
+      const grand = buildRepairInput(
+        done as NonNullable<typeof done>,
+        childSetup,
+        findingsFile('FINDINGS: again\n', join(root, 'again.md')),
+        { failIterations: 0, changes: { 'NOTES.md': 'repaired again\n' } },
+      )
+      assert.deepEqual(grand.input.profiles, input.profiles)
+      assert.deepEqual(grand.input.repairOf.profiles, input.repairOf.profiles)
+      assert.equal(grand.input.codexPath, input.codexPath)
+      assert.equal(grand.input.agentTimeoutMs, input.agentTimeoutMs)
+      assert.equal(grand.input.checkTimeoutMs, input.checkTimeoutMs)
+      assert.equal(grand.input.target.baseRef, output.candidate.commit)
+      const grandRun = await durably.jobs.agentLoop.trigger(grand.input, {
+        idempotencyKey: grand.idempotencyKey,
+      })
+      await waitFor(
+        async () => (await durably.getRun(grandRun.id))?.status === 'completed',
+        150000,
+        'repair of a repair run completes',
+      )
+      const grandOutput = (await durably.getRun(grandRun.id))?.output as {
+        conclusion: string
+        triage: unknown
+      }
+      assert.equal(grandOutput.conclusion, 'approved')
+      assert.equal(grandOutput.triage, null)
+      const grandSetup = (
+        await durably.storage.getCompletedStep(grandRun.id, 'setup')
+      )?.output as FactorySetup
+      assert.deepEqual(grandSetup.profiles, setup.profiles)
+      assert.deepEqual(grandSetup.triage, setup.triage)
+      assert.equal(grandSetup.codexPath, setup.codexPath)
+      assert.equal(grandSetup.configVersion, setup.configVersion)
+      assert.ok(
+        !(await durably.getStepAttempts(grandRun.id)).some(
+          (a) => a.stepName === 'triage',
+        ),
+      )
     } finally {
       await durably.stop()
       await durably.db.destroy()

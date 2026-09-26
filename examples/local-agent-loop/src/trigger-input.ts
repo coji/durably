@@ -764,9 +764,14 @@ export function buildRepairInput(
   const dispositionsRef = files.dispositions
     ? files.dispositions.ref
     : (storedFiles.dispositions ?? null)
-  // The requested settings, for the report's profile rows; the worker uses
-  // the resolved ones in `repairOf`. A repair run has no triage.
-  const { triage: _triage, ...requested } = parentInput.profiles ?? {}
+  // A value the parent's setup recorded is inherited as it is, null
+  // included; only a setup from before the value existed falls back to the
+  // parent's stored input.
+  const recorded = <T extends object, K extends keyof T, V>(
+    record: T,
+    key: K,
+    fallback: () => V,
+  ): T[K] | V => (key in record ? record[key] : fallback())
   const input = {
     provider: (parentInput.provider ??
       stored.profiles.code.provider) as AgentLoopInput['provider'],
@@ -774,8 +779,10 @@ export function buildRepairInput(
     ...(parentInput.effort !== undefined ? { effort: parentInput.effort } : {}),
     context: stored.contextMode,
     maxIterations: stored.maxIterations,
+    // The requested settings, for the report's profile rows; the worker
+    // uses the resolved ones in `repairOf`.
     ...(parentInput.profiles
-      ? { profiles: requested as AgentLoopInput['profiles'] }
+      ? { profiles: parentInput.profiles as AgentLoopInput['profiles'] }
       : {}),
     target: {
       kind: 'repo' as const,
@@ -793,14 +800,25 @@ export function buildRepairInput(
       checkCommand: t.checkCommand,
       setupCommand: t.setupCommand,
       publish: t.publish,
-      commit: t.commit ?? parentInput.target?.commit ?? DEFAULT_COMMIT_SETTINGS,
-      baselineCheck:
-        stored.baselineCheck ?? parentInput.target?.baselineCheck ?? false,
+      commit: recorded(
+        t,
+        'commit',
+        () => parentInput.target?.commit ?? DEFAULT_COMMIT_SETTINGS,
+      ),
+      baselineCheck: recorded(
+        stored,
+        'baselineCheck',
+        () => parentInput.target?.baselineCheck ?? false,
+      ),
     },
     autoApprove: stored.autoApprove,
     checkTimeoutMs: t.checkTimeoutMs,
     agentTimeoutMs: stored.agentTimeoutMs,
-    codexPath: stored.codexPath ?? parentInput.codexPath ?? null,
+    codexPath: recorded(
+      stored,
+      'codexPath',
+      () => parentInput.codexPath ?? null,
+    ),
     ...(fakeScenario !== undefined
       ? { fakeScenario: fakeScenario as AgentLoopInput['fakeScenario'] }
       : {}),
@@ -815,6 +833,9 @@ export function buildRepairInput(
         correctness: stored.profiles.correctness,
         'edge-cases': stored.profiles['edge-cases'],
         repair: stored.repair ?? null,
+        // Recorded like the parent's; the worker never runs it for a
+        // repair run.
+        triage: stored.triage ?? null,
       },
     },
   } satisfies AgentLoopInput

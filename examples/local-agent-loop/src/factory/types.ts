@@ -62,7 +62,8 @@ export interface FactorySetup {
   repair?: ResolvedProfile | null
   /**
    * Optional shadow-triage profile. Its judgment is recorded only: no stage
-   * or profile depends on it.
+   * or profile depends on it. A repair run records its parent's here and
+   * never runs it.
    */
   triage?: ResolvedProfile | null
   maxIterations: number

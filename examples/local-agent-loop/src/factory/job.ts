@@ -221,6 +221,11 @@ const repairOfSchema = z
         correctness: resolvedProfileSchema,
         'edge-cases': resolvedProfileSchema,
         repair: resolvedProfileSchema.nullable(),
+        /**
+         * Kept so the child records the parent's settings and config
+         * version; a repair run never calls it.
+         */
+        triage: resolvedProfileSchema.nullable(),
       })
       .strict(),
   })
@@ -592,7 +597,8 @@ async function runPreflight(
     ...(setup.repair
       ? [['repair', setup.repair] as [string, ResolvedProfile]]
       : []),
-    ...(setup.triage
+    // A repair run never calls triage, so its profile is not checked.
+    ...(setup.triage && !setup.repairOf
       ? [['triage', setup.triage] as [string, ResolvedProfile]]
       : []),
   ]
@@ -760,10 +766,11 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           const repairOf = input.repairOf ?? null
           const { profiles, triage, repair } = repairOf
             ? // A repair run takes the profiles its parent resolved, as they
-              // were, and never runs triage.
+              // were. It records the parent's triage profile but never runs
+              // triage.
               {
                 profiles: byRole((role) => repairOf.profiles[role]),
-                triage: null,
+                triage: repairOf.profiles.triage,
                 repair: repairOf.profiles.repair,
               }
             : resolveInputProfiles(input)
@@ -962,7 +969,8 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
         repair: ownRepair ? providerFor(ownRepair) : roleProviders.code,
       }
       // Shadow mode: the judgment is recorded and nothing below reads it.
-      const triageProfile = setup.triage
+      // A repair run keeps its parent's triage profile but never runs it.
+      const triageProfile = setup.repairOf ? null : setup.triage
       const triageKey = `${step.runId}/triage/agent`
       const triage = triageProfile
         ? await step.run(
