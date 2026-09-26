@@ -825,3 +825,39 @@ export function buildRepairInput(
   ].join('-')
   return { input, idempotencyKey }
 }
+
+/** The reads `startableRepair` makes. */
+export interface RepairSource {
+  getRun(id: string): Promise<RepairParent | null>
+  storage: {
+    getCompletedStep(
+      runId: string,
+      name: string,
+    ): Promise<{ output: unknown } | null>
+  }
+}
+
+/**
+ * Read a parent run, refuse it unless it may be repaired and its candidate
+ * branch is unmoved, and build the child's input. Nothing is triggered.
+ */
+export async function startableRepair(
+  durably: RepairSource,
+  parentId: string,
+  files: RepairFiles,
+  /** Demo and test only: the fake provider's behavior for the child. */
+  fakeScenario?: unknown,
+): Promise<ReturnType<typeof buildRepairInput>> {
+  const parent = await durably.getRun(parentId)
+  if (!parent) throw new Error(`no run ${parentId}`)
+  const setup = (await durably.storage.getCompletedStep(parentId, 'setup'))
+    ?.output
+  const built = buildRepairInput(parent, setup, files, fakeScenario)
+  const { target, repairOf } = built.input
+  await assertCandidateUnmoved(
+    target.repoPath,
+    target.baseRef,
+    repairOf.candidateBranch,
+  )
+  return built
+}

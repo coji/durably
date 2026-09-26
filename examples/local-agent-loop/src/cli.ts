@@ -27,12 +27,10 @@ import {
 import { diagnose, diagnosisLines } from './engine/status.js'
 import { deliverySchema } from './factory/events.js'
 import {
-  assertCandidateUnmoved,
-  buildRepairInput,
   buildTriggerInput,
   readRepairFiles,
   reloadTriggerInput,
-  repairableCandidate,
+  startableRepair,
 } from './trigger-input.js'
 
 async function emit(text: string, out: string | undefined): Promise<void> {
@@ -266,22 +264,12 @@ if (cmd === 'worker') {
   const durably = createAgentDurably()
   await durably.migrate()
   try {
-    const parent = await durably.getRun(runId)
-    if (!parent) throw new Error(`no run ${runId}`)
-    const setup = (await durably.storage.getCompletedStep(runId, 'setup'))
-      ?.output
-    const found = repairableCandidate(parent, setup)
-    await assertCandidateUnmoved(
-      found.setup.target.repoPath,
-      found.commit,
-      found.branch,
+    const { input, idempotencyKey } = await startableRepair(
+      durably,
+      runId,
+      files,
     )
-    const { input, idempotencyKey } = buildRepairInput(parent, setup, files)
-    // The job's schema checks the input; the builder's types are looser.
-    type Input = Parameters<typeof durably.jobs.agentLoop.trigger>[0]
-    const run = await durably.jobs.agentLoop.trigger(input as Input, {
-      idempotencyKey,
-    })
+    const run = await durably.jobs.agentLoop.trigger(input, { idempotencyKey })
     console.log(
       JSON.stringify(
         {
@@ -289,7 +277,7 @@ if (cmd === 'worker') {
           disposition: run.disposition,
           status: run.status,
           parentRunId: runId,
-          baseCommit: found.commit,
+          baseCommit: input.target.baseRef,
           branch: `factory/${run.id}`,
           db: dbPath(),
         },

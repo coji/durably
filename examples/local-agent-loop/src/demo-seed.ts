@@ -26,12 +26,7 @@ import { parseLatency, type FakeScenario } from './engine/providers/fake.js'
 import { checkpointPaths } from './engine/runner.js'
 import { shellQuote } from './engine/status.js'
 import { TERMINAL_STATUSES } from './engine/terminal.js'
-import {
-  assertCandidateUnmoved,
-  buildRepairInput,
-  buildTriggerInput,
-  repairableCandidate,
-} from './trigger-input.js'
+import { buildTriggerInput, startableRepair } from './trigger-input.js'
 
 /** A small project with a real `node --test` check that fails on the base. */
 const PROJECT: Record<string, string> = {
@@ -384,12 +379,6 @@ async function triggerRepair(
   parentId: string,
   latencyMs: { min: number; max: number },
 ) {
-  const parent = await durably.getRun(parentId)
-  if (!parent) throw new Error(`no run ${parentId}`)
-  const setup = (await durably.storage.getCompletedStep(parentId, 'setup'))
-    ?.output
-  const found = repairableCandidate(parent, setup)
-  await assertCandidateUnmoved(repo, found.commit, found.branch)
   const path = join(
     repo,
     '..',
@@ -397,16 +386,16 @@ async function triggerRepair(
     'tasks',
     `${REPAIR.parentSlug}-findings.md`,
   )
-  await writeFile(path, REPAIR.findings)
-  const { input, idempotencyKey } = buildRepairInput(
-    parent,
-    setup,
+  const { input, idempotencyKey } = await startableRepair(
+    durably,
+    parentId,
     {
       findings: { content: REPAIR.findings, ref: { path } },
       dispositions: null,
     },
     { usage: 'realistic', latencyMs, ...REPAIR.scenario },
   )
+  await writeFile(path, REPAIR.findings)
   return durably.jobs.agentLoop.trigger(input, { idempotencyKey })
 }
 
