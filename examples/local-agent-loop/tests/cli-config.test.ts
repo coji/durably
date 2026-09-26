@@ -1493,6 +1493,20 @@ describe('repair', { timeout: 240000 }, () => {
       ['--findings-file', 'ok.md', '--reload-config'],
       /--reload-config is not accepted/,
     )
+    // A flag a repair run would ignore is refused, not dropped silently.
+    for (const flag of [
+      ['--max-iterations', '3'],
+      ['--publish'],
+      ['--check', 'true'],
+      ['--config', 'factory.json'],
+      ['--approve', 'manual'],
+    ])
+      await refused(
+        ['--findings-file', 'ok.md', ...flag],
+        new RegExp(
+          `repair takes only --run, --findings-file and --dispositions-file; not accepted: ${flag[0]}\\.`,
+        ),
+      )
   })
 
   it('refuses every parent that is not an approved, delivered repository run', () => {

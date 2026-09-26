@@ -195,8 +195,11 @@ pnpm --filter example-local-agent-loop demo status
   profile、`check`、`setup`、`base`、`codexPath`、timeout、`baselineCheck` は
   `trigger` と同じ規則で解決・検証し、trigger時の `--check`、`--setup`、`--base`
   は引き続き設定より優先します。そのrunでは、次の手順の注記にもそう表示します。
-  これらを変えるときは `trigger` からやり直します。同梱の題材のrunは
-  `factory.json` を読まないので、`--reload-config` は表示しません。
+  これらを変えるときは `trigger` からやり直します。同梱の題材のrunと
+  外部の指摘からの修正run（`demo repair`）は `factory.json` を読まないので、
+  `--reload-config` は表示しません。修正runの人の確認欄も、設定を変えるときは
+  通常の `trigger` から始めるか、直したあとに承認されたrunから修正をやり直すよう
+  案内します。
   timeoutを設定に書いていなければ、`retrigger` を打ったプロセスの環境変数、
   それも無ければ既定値を使います。ファイルの中身が同じ間は、何度打っても最初に
   始めたrunを返します。書き換えれば、その版で1回だけ新しいrunを始めます。
@@ -673,6 +676,14 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   さらにその子を作れます。
 - 起動前に、親の候補commitが対象リポジトリにあり、記録された候補ブランチの先端が
   そのcommitのままであることを確かめます。ブランチが動いていれば何も作りません。
+  子runのsetupも、CLIの確認、run directory、worktree、ブランチ、`setupCommand` より
+  前に同じ確認をします。`demo repair` の確認のあとで起動までにブランチが動いた
+  場合や、子runを `demo retrigger` した場合も、ここで `candidate-moved`
+  （`retry: yes`）として止まり、agentは呼びません。ブランチを候補commitに戻せば
+  `retrigger` で続けられます。
+- `demo repair` が受け付けるのは `--run`、`--findings-file`、`--dispositions-file`
+  だけです。`--max-iterations`、`--publish`、`--check`、`--config` など、ほかの
+  フラグは黙って無視せずエラーにします。
 - 子runは、親が保存したtask、spec、issue、profile（triageも含む解決済みの値）、
   check、setup、timeout、`codexPath`、commitとpublishの設定、`--max-iterations` を
   引き継ぎます。親のsetupが記録した値は `null` でもそのまま使い、setupに項目が
@@ -683,21 +694,27 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   省略すると親の処分を引き継ぎます。どちらも `--task-file` と同じ検査（256 KiB
   まで、UTF-8、空白だけは不可）を通し、内容と読み込んだパスを子runに保存します。
   指摘は修正担当と両レビュアーに、task、specと同じ信頼しない入力として渡します。
-  処分はこれまでどおり両レビュアーにだけ渡します。
+  処分はこれまでどおり両レビュアーにだけ渡します。レビュアーには、承認済みの候補に
+  対する修正だけの差分を見て、指摘に応えているか、承認済みの候補を壊していないかを
+  判断するよう伝えます。
 - 子runの基点は親の最後の候補commitです。親の元のbaseや、起動時点の `HEAD` は
   使いません。反復のブランチはissueの有無にかかわらず `factory/<子の runId>`、
   squashedブランチは `factory/<子の runId>-squashed` で、差分、patch、squashed
   commitの親はすべて親の候補commitです。
 - 子runでもsetup、preflight、設定していればbaselineCheckを実行します。triageと
-  初回実装は行わず（triage profileは記録するだけで、呼び出しも事前確認もしません）、最初のcode工程を `repair` の1回目として新しいsessionで始め
+  初回実装は行わず（triage profileは記録するだけで、呼び出しも事前確認も、CLIの
+  確認もしません）、最初のcode工程を `repair` の1回目として新しいsessionで始め
   ます。`profiles.repair` があればそれを使います。そのあとは通常どおり検証、
   両レビュー、承認、納品に進みます。
-- `--max-iterations` は子run自身の修正回数だけを数え、親が使った回数は差し引き
+- 親から引き継いだ `--max-iterations` は子run自身の修正回数だけを数え、親が使った回数は差し引き
   ません。最初の修正も修正回数と使用量に入ります。
 - 同じ親、同じ指摘の内容、同じ処分の内容で起動すると、パスが違っても同じ子runを
   返し、runもブランチも増やしません。処分の内容が変われば別の子runです。
 - `--publish` のDraft PRは通常のrunと同じく既定ブランチ向けです。親がまだ
   mergeされていなければ、PRには親の変更も含まれます。
+- 子runは起動するどの経路（`demo repair`、`demo retrigger`、`demo seed`）でも
+  run label `repairOf=<親の runId>` を付けます。親の子一覧はこのlabelの索引で
+  引くので、jobの全runを読み直しません。
 - `report` と `status --run` には親のIDと子のID一覧が、reportには指摘ファイルの
   パスと保存内容のSHA-256も出ます。web UIでは一覧と詳細で、親と子をtaskの名前で
   リンクします。`compare` は通常のrunと子runを別のグループに分け、親の時間、費用、

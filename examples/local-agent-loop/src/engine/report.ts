@@ -200,6 +200,20 @@ export interface ReportDelivery {
 }
 
 /**
+ * The triage profile a run really calls, from the one it records. A repair
+ * run records its parent's profile, so its settings and config version stay
+ * the parent's, but it never runs triage: its answer is null. Setup's CLI
+ * probe, the preflight, the triage step and the report's profile rows all
+ * read this, so none of them has to remember the exception.
+ */
+export function triageThatRuns<T>(
+  run: { repairOf?: unknown } | null | undefined,
+  triage: T | null | undefined,
+): T | null {
+  return run?.repairOf ? null : (triage ?? null)
+}
+
+/**
  * The shadow-triage judgment recorded for a run. `unknown` means triage ran
  * without a usable answer; a report with no triage at all carries null.
  */

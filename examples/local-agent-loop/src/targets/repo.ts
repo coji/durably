@@ -22,6 +22,7 @@ import {
   setupUntrackedError,
 } from '../engine/failure-reasons.js'
 import {
+  branchCommit,
   cleanUntracked,
   commitAll,
   DEFAULT_COMMIT_AUTHOR,
@@ -58,6 +59,38 @@ import {
   type UntrustedInput,
 } from '../factory/target.js'
 import type { ProfileRole } from '../factory/types.js'
+
+/**
+ * The candidate commit must still be in the repository and still be the tip
+ * of the branch the parent recorded. A branch moved since means someone
+ * changed the work after approval, so nothing is started from it. `demo
+ * repair` checks this before it triggers, and a repair run's setup checks it
+ * again before it creates anything, since the branch can move in between and
+ * a retrigger does not go through `demo repair`.
+ */
+export async function assertCandidateUnmoved(
+  repoPath: string,
+  commit: string,
+  branch: string,
+): Promise<void> {
+  let found: string | null
+  try {
+    found = await resolveCommit(repoPath, commit)
+  } catch {
+    found = null
+  }
+  if (found !== commit)
+    throw new Error(
+      `candidate commit ${commit.slice(0, 12)} is not in ${repoPath}`,
+    )
+  const tip = await branchCommit(repoPath, branch)
+  if (tip !== commit)
+    throw new Error(
+      tip
+        ? `candidate branch ${branch} moved to ${tip.slice(0, 12)}; the parent's candidate is ${commit.slice(0, 12)}`
+        : `candidate branch ${branch} no longer exists in ${repoPath}`,
+    )
+}
 
 /** The branch holding a run's approved candidate as one commit on the base. */
 export function squashedBranchFor(runId: string): string {

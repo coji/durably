@@ -251,6 +251,29 @@ describe('a repair run from outside findings', () => {
     }
   })
 
+  it('asks reviewers whether the repair addresses the findings, not to plan the whole task', async () => {
+    for (const lens of ['correctness', 'edge-cases'] as const) {
+      const prompt = reviewPrompt(
+        lens,
+        'TRUSTED CONTEXT',
+        repairRun.reviewRules(lens),
+        repairRun.untrustedInputs(lens),
+        null,
+        true,
+      )
+      assert.match(prompt, /1\. .*which changes the findings call for/)
+      assert.match(prompt, /without regressing what the approved candidate/)
+      assert.doesNotMatch(prompt, /decide from the task alone/)
+      // The findings stay fenced as data, after the procedure.
+      assert.equal(prompt.split(FINDINGS).length, 2)
+      assert.ok(
+        prompt.indexOf(FINDINGS) > prompt.indexOf('UNTRUSTED INPUT DATA:'),
+      )
+    }
+    const { correctness } = await promptsFor(withInputs)
+    assert.match(correctness, /decide from the task alone/)
+  })
+
   it('sends no findings block on a run that is not a repair run', async () => {
     const { code, correctness } = await promptsFor(withInputs)
     assert.equal(blockBody(code, 'FINDINGS'), null)

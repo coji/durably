@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 
 import { createAgentDurably, dbPath } from '../src/durably.js'
-import type { ReportSource } from '../src/engine/build-report.js'
+import { repairLabels, type ReportSource } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
 import {
   classifyFailure,
@@ -51,6 +51,7 @@ import {
   isPathDetail,
   reviewDecision,
   squashedBranchField,
+  stopName,
 } from '../src/ui/labels.js'
 import { pollEvery } from '../src/ui/poll.js'
 import {
@@ -1025,8 +1026,13 @@ describe('reads per poll', () => {
 
   it("reads a finished run's repair children again on every hit", async () => {
     let runs: { id: string; createdAt: string; input: unknown }[] = []
+    const filters: unknown[] = []
+    // Children are asked for by their label, never by scanning every run.
     const db = {
-      getRuns: async () => runs,
+      getRuns: async (filter?: { labels?: Record<string, string> }) => {
+        filters.push(filter)
+        return filter?.labels?.['repairOf'] === 'parent' ? runs : []
+      },
     } as unknown as ReportSource
     const cache = finishedReportCache(
       async (_src, id) =>
@@ -1057,6 +1063,10 @@ describe('reads per poll', () => {
     const hit = await cache.get(db, parent)
     assert.equal(hit.fresh, false)
     assert.deepEqual(hit.report.lineage.children, ['child'])
+    assert.deepEqual(filters.at(-1), {
+      jobName: 'local-factory.v2',
+      labels: { repairOf: 'parent' },
+    })
   })
 })
 
@@ -1073,6 +1083,7 @@ describe('diagnosis wording on the page', () => {
   const failures: FailureKind[] = [
     'baseline-check-failed',
     'preflight-failed',
+    'candidate-moved',
     'rejected-invocation',
     'verification-failed',
     'review-cap-reached',
@@ -1210,6 +1221,48 @@ describe('diagnosis wording on the page', () => {
     )
     assert.doesNotMatch(sampleText, /factory\.json|設定を読み直す/)
     assert.equal(plain(sampleText.replace(/trigger/g, '')), null, sampleText)
+  })
+
+  it('never tells a repair run to reload a config it does not read', () => {
+    const child = {
+      target: { kind: 'repo' },
+      configSource: { flags: {} },
+      repairOf: { runId: 'parent' },
+    }
+    assert.equal(reloadAdvice(child), 'none')
+    const stop = (error: string) =>
+      classifyFailure({
+        runId: 'r1',
+        status: 'failed',
+        output: null,
+        error,
+        uncertain: [],
+        reload: reloadAdvice(child),
+      })
+    for (const error of [
+      'baseline-check-failed: `true` failed on the base commit',
+      'baseline-check-failed: setup-untracked: setup left untracked files that .gitignore does not cover in /w, first ["a"]; stopped before the baseline check and any agent call',
+    ]) {
+      const failure = stop(error)
+      assert.equal(failure?.kind, 'baseline-check-failed')
+      assert.doesNotMatch(failure?.humanCheck ?? '', /--reload-config/)
+      assert.match(failure?.humanCheck ?? '', /start a normal run with trigger/)
+      assert.ok(!failure?.next.some((c) => c.includes('--reload-config')))
+      const text = humanCheckText('baseline-check-failed', failure ?? undefined)
+      assert.doesNotMatch(text, /設定を読み直す/)
+      assert.match(text, /通常の実行を始める/)
+      assert.equal(
+        plain(text.replace(/trigger|\.gitignore|baselineCheck/g, '')),
+        null,
+        text,
+      )
+    }
+    const moved = stop(
+      'candidate-moved: candidate branch factory/p moved to aaaaaaaaaaaa',
+    )
+    assert.equal(moved?.kind, 'candidate-moved')
+    assert.equal(moved?.retryable, true)
+    assert.equal(stopName('candidate-moved'), '修正元の候補の変更')
   })
 
   it('says which decision a decided run recorded', () => {
@@ -2006,10 +2059,10 @@ describe('repair runs on the page', { timeout: 120000 }, () => {
         effectiveEffort: 'low',
       })
       const commit = 'a'.repeat(40)
-      const child = await durably.jobs.agentLoop.trigger({
-        provider: 'fake',
+      const childInput = {
+        provider: 'fake' as const,
         maxIterations: 1,
-        context: 'reuse',
+        context: 'reuse' as const,
         target: {
           kind: 'repo' as const,
           repoPath: join(home, 'repo'),
@@ -2039,6 +2092,9 @@ describe('repair runs on the page', { timeout: 120000 }, () => {
             triage: null,
           },
         },
+      }
+      const child = await durably.jobs.agentLoop.trigger(childInput, {
+        labels: repairLabels(childInput),
       })
       await durably.db.destroy()
 

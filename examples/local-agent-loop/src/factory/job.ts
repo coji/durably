@@ -14,6 +14,7 @@ import { z } from 'zod'
 import { MAX_TIMEOUT_MS } from '../engine/child.js'
 import {
   BASELINE_FAILED_MESSAGE,
+  CANDIDATE_MOVED_MESSAGE,
   PREFLIGHT_FAILED_MESSAGE,
 } from '../engine/failure-reasons.js'
 import {
@@ -30,6 +31,7 @@ import type {
 import {
   TRIAGE_JUDGMENTS,
   triageCalibration,
+  triageThatRuns,
   type ReportTriage,
 } from '../engine/report.js'
 import {
@@ -50,6 +52,7 @@ import {
   prepareSubjectTarget,
 } from '../targets/index.js'
 import {
+  assertCandidateUnmoved,
   assertSetupLeftNoUntracked,
   checkFingerprint,
   RepoTarget,
@@ -597,8 +600,7 @@ async function runPreflight(
     ...(setup.repair
       ? [['repair', setup.repair] as [string, ResolvedProfile]]
       : []),
-    // A repair run never calls triage, so its profile is not checked.
-    ...(setup.triage && !setup.repairOf
+    ...(triageThatRuns(setup, setup.triage)
       ? [['triage', setup.triage] as [string, ResolvedProfile]]
       : []),
   ]
@@ -789,13 +791,28 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           const { checkTimeoutMs: testTimeoutMs, agentTimeoutMs } =
             resolveTimeouts(input.target.kind, input)
           const codexPath = input.codexPath ?? null
+          // The parent's candidate is checked again here, not only by `demo
+          // repair`: its branch can move after that check, and a retrigger
+          // never makes it. Nothing is created and no CLI is probed first.
+          if (repairOf && input.target.kind === 'repo')
+            await assertCandidateUnmoved(
+              input.target.repoPath,
+              repairOf.candidateCommit,
+              repairOf.candidateBranch,
+            ).catch((error: unknown) => {
+              throw new Error(
+                `${CANDIDATE_MOVED_MESSAGE}: ${error instanceof Error ? error.message : String(error)}; the repair of ${repairOf.runId} stopped before creating its worktree or branch and before any agent call`,
+              )
+            })
           // The path and version of every real CLI the roles launch, so runs
-          // on different builds never share a config version.
+          // on different builds never share a config version. A repair run
+          // never launches the triage CLI, so it is not probed.
           const cli: Record<string, string | null> = {}
+          const triageRuns = triageThatRuns(input, triage)
           const used = new Set(
             [
               ...Object.values(profiles),
-              ...(triage ? [triage] : []),
+              ...(triageRuns ? [triageRuns] : []),
               ...(ownRepair ? [ownRepair] : []),
             ].map((p) => p.provider),
           )
@@ -840,14 +857,6 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                     : null,
                   signal,
                 })
-          if (
-            repairOf &&
-            target.kind === 'repo' &&
-            target.baseCommit !== repairOf.candidateCommit
-          )
-            throw new Error(
-              `repair base ${target.baseCommit.slice(0, 12)} is not the candidate ${repairOf.candidateCommit.slice(0, 12)} of ${repairOf.runId}`,
-            )
           const baselineCheck =
             input.target.kind === 'repo' && input.target.baselineCheck === true
           // A passing baseline removes every untracked file .gitignore does
@@ -969,8 +978,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
         repair: ownRepair ? providerFor(ownRepair) : roleProviders.code,
       }
       // Shadow mode: the judgment is recorded and nothing below reads it.
-      // A repair run keeps its parent's triage profile but never runs it.
-      const triageProfile = setup.repairOf ? null : setup.triage
+      const triageProfile = triageThatRuns(setup, setup.triage)
       const triageKey = `${step.runId}/triage/agent`
       const triage = triageProfile
         ? await step.run(

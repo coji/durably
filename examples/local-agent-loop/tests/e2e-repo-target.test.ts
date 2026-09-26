@@ -17,8 +17,9 @@ import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { createAgentDurably } from '../src/durably.js'
-import { buildReport } from '../src/engine/build-report.js'
+import { buildReport, repairLabels } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
+import { classifyRun } from '../src/engine/failure-reasons.js'
 import {
   branchCommit,
   describeCommitChanges,
@@ -29,11 +30,8 @@ import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
 import { fixProfile } from '../src/factory/job.js'
 import type { FactorySetup } from '../src/factory/types.js'
 import { createTarget } from '../src/targets/index.js'
-import {
-  assertCandidateUnmoved,
-  buildRepairInput,
-  type RepairFiles,
-} from '../src/trigger-input.js'
+import { assertCandidateUnmoved } from '../src/targets/repo.js'
+import { buildRepairInput, type RepairFiles } from '../src/trigger-input.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -1116,7 +1114,7 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       )
 
       const findings = 'FINDINGS: the refund path still truncates.\n'
-      const { input, idempotencyKey } = buildRepairInput(
+      const { input, idempotencyKey, labels } = buildRepairInput(
         parent,
         setup,
         findingsFile(findings, join(root, 'findings.md')),
@@ -1127,6 +1125,7 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       process.env.TEST_TIMEOUT_MS = '1234'
       const child = await durably.jobs.agentLoop.trigger(input, {
         idempotencyKey,
+        labels,
       })
       delete process.env.AGENT_TIMEOUT_MS
       delete process.env.TEST_TIMEOUT_MS
@@ -1293,6 +1292,7 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       assert.equal(again.idempotencyKey, idempotencyKey)
       const same = await durably.jobs.agentLoop.trigger(again.input, {
         idempotencyKey: again.idempotencyKey,
+        labels: again.labels,
       })
       assert.equal(same.id, child.id)
       assert.equal(same.disposition, 'idempotent')
@@ -1308,6 +1308,7 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       assert.equal(other.input.target.dispositions, 'CHILD DISPOSITIONS')
       const second = await durably.jobs.agentLoop.trigger(other.input, {
         idempotencyKey: other.idempotencyKey,
+        labels: other.labels,
       })
       assert.notEqual(second.id, child.id)
       await durably.cancel(second.id)
@@ -1328,6 +1329,7 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       assert.equal(grand.input.target.baseRef, output.candidate.commit)
       const grandRun = await durably.jobs.agentLoop.trigger(grand.input, {
         idempotencyKey: grand.idempotencyKey,
+        labels: grand.labels,
       })
       await waitFor(
         async () => (await durably.getRun(grandRun.id))?.status === 'completed',
@@ -1372,7 +1374,7 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
         maxIterations: 1,
       })
       assert.equal((parent.output as { iterations: number }).iterations, 1)
-      const { input, idempotencyKey } = buildRepairInput(
+      const { input, idempotencyKey, labels } = buildRepairInput(
         parent,
         setup,
         findingsFile('FINDINGS: more\n', join(root, 'f.md')),
@@ -1383,6 +1385,7 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       )
       const child = await durably.jobs.agentLoop.trigger(input, {
         idempotencyKey,
+        labels,
       })
       await waitFor(
         async () => (await durably.getRun(child.id))?.status === 'completed',
@@ -1397,6 +1400,88 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       assert.equal(output.iterations, 1)
       const report = await buildReport(durably, child.id)
       assert.equal(report.summary.repairs, 1)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+  })
+
+  it('stops a repair run before anything exists when the candidate branch moved after it was started', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-findings-moved-'))
+    const repo = await seedRepo(root)
+    const stateRoot = join(root, 'state')
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    const durably = createAgentDurably({ stateRoot })
+    await durably.init()
+    try {
+      const { parent, setup } = await approvedParent(durably, repo, {
+        maxIterations: 1,
+      })
+      const { candidate } = parent.output as {
+        candidate: { commit: string; branch: string }
+      }
+      // `demo repair` checked the branch; it moves before the worker's setup.
+      const built = buildRepairInput(
+        parent,
+        setup,
+        findingsFile('FINDINGS: moved\n', join(root, 'f.md')),
+        { failIterations: 0 },
+      )
+      assert.deepEqual(built.labels, { repairOf: parent.id })
+      await git(repo, ['update-ref', `refs/heads/${candidate.branch}`, 'main'])
+      type Input = Parameters<typeof durably.jobs.agentLoop.trigger>[0]
+      const stoppedCleanly = async (runId: string, message: RegExp) => {
+        await waitFor(
+          async () => (await durably.getRun(runId))?.status === 'failed',
+          60000,
+          'repair run stops',
+        )
+        const run = await durably.getRun(runId)
+        assert.ok(run)
+        assert.match(run.error ?? '', message)
+        const failure = await classifyRun(durably, run)
+        assert.equal(failure?.kind, 'candidate-moved')
+        assert.equal(failure?.retryable, true)
+        // Only setup ran: no preflight, no agent call.
+        assert.deepEqual(
+          (await durably.getStepAttempts(runId)).map((a) => a.stepName),
+          ['setup'],
+        )
+        // No branch, worktree or run directory.
+        assert.equal(await branchCommit(repo, `factory/${runId}`), null)
+        assert.equal(existsSync(join(stateRoot, 'runs', runId)), false)
+        return run
+      }
+      const child = await durably.jobs.agentLoop.trigger(built.input, {
+        idempotencyKey: built.idempotencyKey,
+        labels: built.labels,
+      })
+      const stopped = await stoppedCleanly(
+        child.id,
+        /^candidate-moved: candidate branch \S+ moved to [0-9a-f]{12}/,
+      )
+
+      // A retrigger of the child never goes through `demo repair`; its setup
+      // refuses the same way, here with the branch deleted.
+      await git(repo, ['update-ref', '-d', `refs/heads/${candidate.branch}`])
+      const retry = await durably.jobs.agentLoop.trigger(
+        stopped.input as Input,
+        {
+          idempotencyKey: `retrigger-of-${child.id}`,
+          labels: repairLabels(stopped.input),
+        },
+      )
+      await stoppedCleanly(
+        retry.id,
+        /^candidate-moved: candidate branch \S+ no longer exists/,
+      )
+      // Both are found as the parent's children through their label.
+      assert.deepEqual(
+        (await buildReport(durably, parent.id)).lineage.children,
+        [child.id, retry.id],
+      )
     } finally {
       await durably.stop()
       await durably.db.destroy()

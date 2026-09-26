@@ -339,6 +339,37 @@ describe('repair runs from outside findings', () => {
     assert.match(md, /grouped apart from normal runs/)
   })
 
+  it("labels a repair group with the inherited code profile, not the repair profile's", () => {
+    const measured = (role: 'implement' | 'repair', model: string) => ({
+      stepName: 'stage:0:code:agent',
+      measurement: { role, effectiveModel: model, effectiveEffort: 'high' },
+    })
+    const normal = {
+      ...run('parent', null, 1),
+      input: { provider: 'codex', context: 'reuse' },
+      attempts: [measured('implement', 'code-model')],
+    } as unknown as LoopReport
+    const child = {
+      ...run('child', 'parent', 1),
+      input: {
+        provider: 'codex',
+        context: 'reuse',
+        repairOf: {
+          profiles: {
+            code: { effectiveModel: 'code-model', effectiveEffort: 'high' },
+          },
+        },
+      },
+      // Its first code call is the repair, on a repair profile of its own.
+      attempts: [measured('repair', 'repair-model')],
+    } as unknown as LoopReport
+    const labels = compareReports([normal, child]).groups.map((g) => g.label)
+    assert.deepEqual(labels, [
+      'codex/code-model/high/reuse',
+      'codex/code-model/high/reuse',
+    ])
+  })
+
   it('names the parent, the children and the findings in the report', () => {
     const r = {
       ...run('child', 'parent', 1),

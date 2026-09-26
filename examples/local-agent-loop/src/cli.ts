@@ -15,6 +15,7 @@ import {
   buildReport,
   recordedTriage,
   repairChildren,
+  repairLabels,
 } from './engine/build-report.js'
 import { killOwnedChildren } from './engine/child.js'
 import { compareReports, comparisonToMarkdown } from './engine/compare.js'
@@ -143,9 +144,11 @@ Repository config: factory.json at the repository root, or --config <file>:
   commit. The child works on factory/<childRunId> cut from that commit, with
   the parent's stored task, spec, issue, profiles, check, setup, timeouts,
   codexPath, commit and publish settings and max iterations; factory.json
-  and the environment are not read, and --reload-config is refused. It skips
-  triage, starts with a repair in a new session, and --max-iterations counts
-  its own repairs only. The findings file is stored as untrusted input for
+  and the environment are not read, and any other flag is refused. Its setup
+  checks the candidate branch again and stops as candidate-moved, before
+  creating anything, if the branch moved since. It skips
+  triage, starts with a repair in a new session, and the inherited max
+  iterations count its own repairs only. The findings file is stored as untrusted input for
   the repairer and both reviewers; --dispositions-file replaces the parent's
   dispositions (inherited otherwise). The same parent, findings and
   dispositions return the same child run.
@@ -264,12 +267,15 @@ if (cmd === 'worker') {
   const durably = createAgentDurably()
   await durably.migrate()
   try {
-    const { input, idempotencyKey } = await startableRepair(
+    const { input, idempotencyKey, labels } = await startableRepair(
       durably,
       runId,
       files,
     )
-    const run = await durably.jobs.agentLoop.trigger(input, { idempotencyKey })
+    const run = await durably.jobs.agentLoop.trigger(input, {
+      idempotencyKey,
+      labels,
+    })
     console.log(
       JSON.stringify(
         {
@@ -426,9 +432,12 @@ if (cmd === 'worker') {
     )
   } else {
     // One retry per stopped run: pasting the command again returns the run
-    // it already started instead of paying for another, or pushing twice.
+    // it already started instead of paying for another, or pushing twice. A
+    // repair run's retry names the same parent, and its setup checks the
+    // parent's candidate branch again before creating anything.
     const next = await durably.jobs.agentLoop.trigger(run.input as Input, {
       idempotencyKey: `retrigger-of-${runId}`,
+      labels: repairLabels(run.input),
     })
     console.log(
       next.disposition === 'created'

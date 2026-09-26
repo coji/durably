@@ -66,11 +66,11 @@ export const codeStage: StageHandler = async ({
   const separateRepair = repairOwn !== null
   const profile = repairOwn ?? state.setup.profiles.code
   const reuse = state.setup.contextMode === 'reuse' && !separateRepair
-  // A repair run's first repair never continues the parent's session: it
-  // starts one of its own in this run's worktree.
+  // A repair run's first repair addresses the outside findings. It starts a
+  // session of its own: at iteration 0 this run has no session to continue,
+  // and the parent's is never carried over.
   const fromFindings = Boolean(state.setup.repairOf) && state.iteration === 0
-  const continuedSession =
-    reuse && !fromFindings ? state.implementationSession : null
+  const continuedSession = reuse ? state.implementationSession : null
   // Only the code role's own provider, profile, cwd and instructions decide
   // whether its session may continue; the reviewers' profiles never do.
   if (
@@ -240,6 +240,7 @@ export const reviewStage: StageHandler = async ({
           target.reviewRules(lens),
           target.untrustedInputs(lens),
           changes,
+          Boolean(state.setup.repairOf),
         ),
         workdir: reviewCwd,
         readableFiles,

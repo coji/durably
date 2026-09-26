@@ -912,18 +912,11 @@ const runsKey = (filter: RunFilter) => `runs:${JSON.stringify(filter ?? {})}`
 /**
  * One request's reads, each made once however many readers ask for it: the
  * report, the diagnosis and the trace read the same run's steps and attempts.
- * `known` runs are already read, and so are all of `listed`'s job runs, which
- * every report scans for its repair children.
+ * `known` runs are already read.
  */
-export function readOnce(
-  db: ReportSource,
-  known: Run[] = [],
-  listed?: Run[],
-): ReportSource {
+export function readOnce(db: ReportSource, known: Run[] = []): ReportSource {
   const memo = new Map<string, Promise<unknown>>()
   for (const run of known) memo.set(`run:${run.id}`, Promise.resolve(run))
-  const jobName = listed?.[0]?.jobName
-  if (listed && jobName) memo.set(runsKey({ jobName }), Promise.resolve(listed))
   const once = <T>(key: string, read: () => Promise<T>): Promise<T> => {
     let hit = memo.get(key) as Promise<T> | undefined
     if (!hit) memo.set(key, (hit = read()))
@@ -1084,7 +1077,7 @@ function createUiApi() {
     if (!db) return { ...base, exists: false, runs: [] }
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
-    const src = readOnce(db, all, all)
+    const src = readOnce(db, all)
     const rows = await Promise.all(
       all.map(async (run) => {
         const { report, fresh } = await reports.get(src, run)
@@ -1133,7 +1126,7 @@ function createUiApi() {
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
     const done = all.filter((r) => TERMINAL_STATUSES.includes(r.status))
-    const src = readOnce(db, done, all)
+    const src = readOnce(db, done)
     const built = await Promise.all(
       done.map(async (r) => (await reports.get(src, r)).report),
     )

@@ -9,8 +9,9 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 import { z } from 'zod'
 
+import { repairLabels } from './engine/build-report.js'
 import { runChild } from './engine/child.js'
-import { branchCommit, repoRoot, resolveCommit } from './engine/git.js'
+import { repoRoot } from './engine/git.js'
 import { parseProviderName } from './engine/providers/index.js'
 import {
   assertSingleMode,
@@ -28,6 +29,7 @@ import {
   type RepoTargetConfig,
 } from './factory/target.js'
 import type { FactorySetup, ProfileRole } from './factory/types.js'
+import { assertCandidateUnmoved } from './targets/repo.js'
 
 interface IssueRef {
   number: number
@@ -601,10 +603,13 @@ export interface RepairFiles {
   dispositions: { content: string; ref: InputFileRef } | null
 }
 
+/** The only flags `demo repair` takes; every setting is the parent's. */
+const REPAIR_FLAGS = ['run', 'findings-file', 'dispositions-file']
+
 /**
  * Read `demo repair`'s input files once, with the same limits as trigger's:
- * at most 256 KiB, UTF-8, not blank. `--reload-config` is refused: a repair
- * run takes its parent's stored settings, and nothing else.
+ * at most 256 KiB, UTF-8, not blank. Any other flag is refused rather than
+ * ignored: a repair run takes its parent's stored settings, and nothing else.
  */
 export async function readRepairFiles(
   a: Record<string, string>,
@@ -612,6 +617,11 @@ export async function readRepairFiles(
   if (a['reload-config'] !== undefined)
     throw new Error(
       "repair keeps the parent run's stored settings; --reload-config is not accepted. To run with other settings, start a normal run with trigger",
+    )
+  const other = Object.keys(a).filter((flag) => !REPAIR_FLAGS.includes(flag))
+  if (other.length > 0)
+    throw new Error(
+      `repair takes only --run, --findings-file and --dispositions-file; not accepted: ${other.map((f) => `--${f}`).join(', ')}. A repair run keeps the parent run's stored settings; to run with other settings, start a normal run with trigger`,
     )
   const findings = a['findings-file']
   if (!findings) throw new Error('--findings-file <path> required')
@@ -702,37 +712,6 @@ export function repairableCandidate(
   }
 }
 
-/**
- * The candidate commit must still be in the repository and still be the tip
- * of the branch the parent recorded. A branch moved since means someone
- * changed the work after approval, so nothing is started from it.
- */
-export async function assertCandidateUnmoved(
-  repoPath: string,
-  commit: string,
-  branch: string,
-): Promise<void> {
-  let found: string
-  try {
-    found = await resolveCommit(repoPath, commit)
-  } catch {
-    throw new Error(
-      `candidate commit ${commit.slice(0, 12)} is not in ${repoPath}`,
-    )
-  }
-  if (found !== commit)
-    throw new Error(
-      `candidate commit ${commit.slice(0, 12)} is not in ${repoPath}`,
-    )
-  const tip = await branchCommit(repoPath, branch)
-  if (tip !== commit)
-    throw new Error(
-      tip
-        ? `candidate branch ${branch} moved to ${tip.slice(0, 12)}; the parent's candidate is ${commit.slice(0, 12)}`
-        : `candidate branch ${branch} no longer exists in ${repoPath}`,
-    )
-}
-
 const sha256Of = (text: string) =>
   createHash('sha256').update(text).digest('hex')
 
@@ -745,7 +724,8 @@ const sha256Of = (text: string) =>
  * Dispositions replace the parent's when given and are inherited otherwise.
  * The idempotency key names the parent and the SHA-256 of the findings and
  * of the dispositions the child really gets, so the same content from
- * another path returns the same run.
+ * another path returns the same run. The labels name the parent, so the
+ * parent's report finds the child; trigger with both.
  */
 export function buildRepairInput(
   parent: RepairParent,
@@ -844,7 +824,7 @@ export function buildRepairInput(
     `findings-${sha256Of(files.findings.content)}`,
     `dispositions-${dispositions ? sha256Of(dispositions) : 'none'}`,
   ].join('-')
-  return { input, idempotencyKey }
+  return { input, idempotencyKey, labels: repairLabels(input) }
 }
 
 /** The reads `startableRepair` makes. */

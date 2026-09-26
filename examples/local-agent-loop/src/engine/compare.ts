@@ -124,10 +124,22 @@ function labelOf(report: LoopReport): string {
     model?: string
     effort?: string
     context?: string
+    repairOf?: {
+      profiles?: {
+        code?: {
+          effectiveModel?: string | null
+          effectiveEffort?: string | null
+        }
+      }
+    }
   } | null
-  const code = report.attempts.find(
-    (a) => a.stepName.includes(':code:') && a.measurement,
-  )?.measurement
+  // A repair run's first code call is a repair, possibly on its own profile,
+  // so its label takes the code profile it inherited, as a normal run's does.
+  const code = input?.repairOf
+    ? input.repairOf.profiles?.code
+    : report.attempts.find(
+        (a) => a.stepName.includes(':code:') && a.measurement,
+      )?.measurement
   return [
     input?.provider ?? 'unknown',
     code?.effectiveModel ?? input?.model ?? 'default-model',

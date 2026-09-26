@@ -386,7 +386,7 @@ async function triggerRepair(
     'tasks',
     `${REPAIR.parentSlug}-findings.md`,
   )
-  const { input, idempotencyKey } = await startableRepair(
+  const { input, idempotencyKey, labels } = await startableRepair(
     durably,
     parentId,
     {
@@ -396,7 +396,7 @@ async function triggerRepair(
     { usage: 'realistic', latencyMs, ...REPAIR.scenario },
   )
   await writeFile(path, REPAIR.findings)
-  return durably.jobs.agentLoop.trigger(input, { idempotencyKey })
+  return durably.jobs.agentLoop.trigger(input, { idempotencyKey, labels })
 }
 
 export interface SeedOptions {

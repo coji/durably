@@ -16,6 +16,7 @@ import {
   toAttemptRow,
   CALIBRATION_KEYS,
   TRIAGE_JUDGMENTS,
+  triageThatRuns,
   UNKNOWN_CALIBRATION,
   usageOf,
   type AttemptRow,
@@ -101,8 +102,8 @@ function profileRows(
   else if (repaired && rows[0])
     rows.splice(1, 0, { ...rows[0], role: 'repair' })
   // Triage has no fallback: without its own profile it never runs. A repair
-  // run keeps its parent's triage profile but never runs it, so it has no row.
-  const triage = input?.repairOf ? undefined : input?.profiles?.['triage']
+  // run never runs the triage profile it records, so it has no row.
+  const triage = triageThatRuns(input, input?.profiles?.['triage'])
   return triage ? [...rows, row('triage', triage)] : rows
 }
 
@@ -429,19 +430,35 @@ function repairParent(input: PersistedInput | null): ReportLineage['parent'] {
 }
 
 /**
- * The repair runs started from a run, oldest first. Read from the other
- * runs' inputs every time, because a finished run gains children after it
- * finished.
+ * The label every repair run carries, naming the run it repairs. Children are
+ * found through Durably's indexed run labels, so a report never scans the
+ * job's whole history.
+ */
+export const REPAIR_OF_LABEL = 'repairOf'
+
+/**
+ * The labels to trigger a run input with: a repair run names its parent.
+ * Every path that triggers a repair run (`demo repair`, `demo retrigger` and
+ * the seed) passes these, so the parent can find it.
+ */
+export function repairLabels(input: unknown): Record<string, string> {
+  const parent = (input as PersistedInput | null)?.repairOf?.runId
+  return parent ? { [REPAIR_OF_LABEL]: parent } : {}
+}
+
+/**
+ * The repair runs started from a run, oldest first. Read every time, because
+ * a finished run gains children after it finished.
  */
 export async function repairChildren(
   durably: Pick<ReportSource, 'getRuns'>,
   run: { id: string; jobName: string },
 ): Promise<string[]> {
-  const runs = await durably.getRuns({ jobName: run.jobName })
-  return runs
-    .filter(
-      (r) => (r.input as PersistedInput | null)?.repairOf?.runId === run.id,
-    )
+  const runs = await durably.getRuns({
+    jobName: run.jobName,
+    labels: { [REPAIR_OF_LABEL]: run.id },
+  })
+  return [...runs]
     .sort((x, y) => Date.parse(x.createdAt) - Date.parse(y.createdAt))
     .map((r) => r.id)
 }
