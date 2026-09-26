@@ -78,11 +78,24 @@ export interface FactorySetup {
    */
   codexPath?: string | null
   /**
+   * Set on a run that repairs another run's approved candidate from outside
+   * findings: its first code stage is a repair, not an implementation.
+   * Absent on every other run.
+   */
+  repairOf?: RepairOrigin | null
+  /**
    * Skip the human approval wait and deliver as soon as the reviews pass.
    * Appropriate when the delivery is itself reviewable, such as a draft pull
    * request the human still has to merge.
    */
   autoApprove: boolean
+}
+
+/** The run and candidate a repair run starts from. */
+export interface RepairOrigin {
+  runId: string
+  /** The parent's last candidate commit: this run's base. */
+  candidateCommit: string
 }
 
 export interface VerificationResult {

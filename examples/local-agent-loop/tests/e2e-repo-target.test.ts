@@ -29,6 +29,11 @@ import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
 import { fixProfile } from '../src/factory/job.js'
 import type { FactorySetup } from '../src/factory/types.js'
 import { createTarget } from '../src/targets/index.js'
+import {
+  assertCandidateUnmoved,
+  buildRepairInput,
+  type RepairFiles,
+} from '../src/trigger-input.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -1006,6 +1011,340 @@ describe('repo target end to end', { timeout: 180000 }, () => {
       )
     } finally {
       process.env.PATH = savedPath
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+  })
+})
+
+type Durably = ReturnType<typeof createAgentDurably>
+
+/** Trigger a fake repository run and wait until it completes. */
+async function approvedParent(
+  durably: Durably,
+  repo: string,
+  extra: { maxIterations: number },
+) {
+  const run = await durably.jobs.agentLoop.trigger({
+    provider: 'fake',
+    profiles: {
+      code: { provider: 'fake', requestedModel: null, requestedEffort: null },
+      correctness: {
+        provider: 'fake',
+        requestedModel: null,
+        requestedEffort: null,
+      },
+      'edge-cases': {
+        provider: 'fake',
+        requestedModel: null,
+        requestedEffort: null,
+      },
+      triage: { provider: 'fake', requestedModel: null, requestedEffort: null },
+    },
+    target: {
+      kind: 'repo' as const,
+      repoPath: repo,
+      baseRef: 'HEAD',
+      task: 'Fix add() so decimal inputs are not truncated.',
+      spec: 'SPEC: add(0.1, 0.2) is 0.30000000000000004.',
+      dispositions: 'PARENT DISPOSITIONS',
+      inputFiles: NO_FILES,
+      issue: { number: 7, title: 'Decimal add', url: 'https://x/7' },
+      checkCommand: ['node', '--test', 'test/**/*.test.js'],
+      setupCommand: null,
+      publish: false,
+    },
+    maxIterations: extra.maxIterations,
+    context: 'reuse',
+    checkTimeoutMs: 120000,
+    agentTimeoutMs: 600000,
+    codexPath: null,
+  })
+  await waitFor(
+    async () => (await durably.getRun(run.id))?.status === 'completed',
+    150000,
+    'parent run completes',
+  )
+  const parent = await durably.getRun(run.id)
+  assert.ok(parent)
+  const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))
+    ?.output as FactorySetup
+  return { parent, setup }
+}
+
+const findingsFile = (content: string, path: string): RepairFiles => ({
+  findings: { content, ref: { path } },
+  dispositions: null,
+})
+
+describe('repair from outside findings', { timeout: 240000 }, () => {
+  it('repairs an approved candidate in a new run based on that candidate', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-findings-'))
+    const repo = await seedRepo(root)
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const { parent, setup } = await approvedParent(durably, repo, {
+        maxIterations: 2,
+      })
+      const parentOutput = parent.output as {
+        candidate: { commit: string; branch: string }
+        delivery: { commit: string }
+      }
+      const parentCommit = parentOutput.candidate.commit
+      assert.equal(parentOutput.delivery.commit, parentCommit)
+      // The checkout moves on after approval; the repair must not follow it.
+      await writeFile(join(repo, 'OTHER.md'), 'unrelated\n')
+      await git(repo, ['add', '-A'])
+      await git(repo, ['commit', '-m', 'unrelated'])
+      const head = await resolveCommit(repo, 'HEAD')
+      await assertCandidateUnmoved(
+        repo,
+        parentCommit,
+        parentOutput.candidate.branch,
+      )
+      await assert.rejects(
+        assertCandidateUnmoved(
+          repo,
+          'e'.repeat(40),
+          parentOutput.candidate.branch,
+        ),
+        /candidate commit eeeeeeeeeeee is not in/,
+      )
+
+      const findings = 'FINDINGS: the refund path still truncates.\n'
+      const { input, idempotencyKey } = buildRepairInput(
+        parent,
+        setup,
+        findingsFile(findings, join(root, 'findings.md')),
+        { failIterations: 0, changes: { 'NOTES.md': 'repaired\n' } },
+      )
+      // Changing the environment after the input is built changes nothing.
+      process.env.AGENT_TIMEOUT_MS = '1234'
+      process.env.TEST_TIMEOUT_MS = '1234'
+      const child = await durably.jobs.agentLoop.trigger(input, {
+        idempotencyKey,
+      })
+      delete process.env.AGENT_TIMEOUT_MS
+      delete process.env.TEST_TIMEOUT_MS
+      await waitFor(
+        async () => (await durably.getRun(child.id))?.status === 'completed',
+        150000,
+        'repair run completes',
+      )
+      const done = await durably.getRun(child.id)
+      const output = done?.output as {
+        conclusion: string
+        iterations: number
+        candidate: { commit: string; branch: string }
+        delivery: {
+          commit: string
+          squashedBranch: string
+          squashedCommit: string
+        }
+        triage: unknown
+      }
+      assert.equal(output.conclusion, 'approved')
+      assert.equal(output.iterations, 1)
+      assert.equal(output.triage, null)
+
+      // Based on the parent's candidate, not its base and not HEAD.
+      const childSetup = (
+        await durably.storage.getCompletedStep(child.id, 'setup')
+      )?.output as FactorySetup
+      assert.equal(childSetup.target.kind, 'repo')
+      if (childSetup.target.kind !== 'repo' || setup.target.kind !== 'repo')
+        throw new Error('repo targets expected')
+      assert.equal(childSetup.target.baseCommit, parentCommit)
+      assert.notEqual(childSetup.target.baseCommit, head)
+      assert.notEqual(childSetup.target.baseCommit, setup.target.baseCommit)
+      assert.equal(childSetup.target.branch, `factory/${child.id}`)
+      assert.equal(output.candidate.branch, `factory/${child.id}`)
+      assert.equal(
+        (await git(repo, ['rev-parse', `${output.candidate.commit}^`])).trim(),
+        parentCommit,
+      )
+      // The parent's settings, as it resolved and stored them.
+      assert.deepEqual(childSetup.profiles, setup.profiles)
+      assert.equal(childSetup.triage, null)
+      assert.equal(childSetup.agentTimeoutMs, setup.agentTimeoutMs)
+      assert.equal(
+        childSetup.target.checkTimeoutMs,
+        setup.target.checkTimeoutMs,
+      )
+      assert.equal(childSetup.codexPath, setup.codexPath)
+      assert.equal(childSetup.maxIterations, setup.maxIterations)
+      assert.equal(childSetup.target.task, setup.target.task)
+      assert.equal(childSetup.target.spec, setup.target.spec)
+      assert.deepEqual(childSetup.target.issue, setup.target.issue)
+      assert.deepEqual(
+        childSetup.target.checkCommand,
+        setup.target.checkCommand,
+      )
+      assert.equal(childSetup.target.dispositions, 'PARENT DISPOSITIONS')
+      assert.deepEqual(childSetup.repairOf, {
+        runId: parent.id,
+        candidateCommit: parentCommit,
+      })
+
+      // No triage and no implementation: the first agent call is a repair.
+      const attempts = await durably.getStepAttempts(child.id)
+      assert.ok(!attempts.some((a) => a.stepName === 'triage'))
+      const calls = (await buildReport(durably, child.id)).attempts.filter(
+        (a) => /^stage:\d+:code:agent$/.test(a.stepName),
+      )
+      assert.equal(calls.length, 1)
+      assert.equal(calls[0]?.measurement?.role, 'repair')
+      assert.equal(calls[0]?.measurement?.iteration, 1)
+      // A session of its own, never the parent's.
+      const parentSessions = new Set(
+        (await buildReport(durably, parent.id)).attempts
+          .map((a) => a.measurement?.sessionId)
+          .filter(Boolean),
+      )
+      const session = calls[0]?.measurement?.sessionId
+      assert.ok(session)
+      assert.ok(!parentSessions.has(session))
+      for (const stage of ['verify', 'review', 'finish'])
+        assert.ok(
+          attempts.some((a) => a.stepName.includes(`:${stage}:`)),
+          stage,
+        )
+
+      // The squashed commit's only parent is the parent's candidate.
+      const squashedParents = (
+        await git(repo, [
+          'rev-list',
+          '--parents',
+          '-n',
+          '1',
+          output.delivery.squashedCommit,
+        ])
+      )
+        .trim()
+        .split(' ')
+      assert.deepEqual(squashedParents.slice(1), [parentCommit])
+      // Delivery again, as a replay would: the correct branch is reused, a
+      // mismatched one is never overwritten.
+      const target = createTarget(childSetup.target)
+      const deliver = () =>
+        target.deliver({
+          candidate: done?.output
+            ? (done.output as { candidate: never }).candidate
+            : (null as never),
+          iteration: output.iterations,
+          runId: child.id,
+          reviews: [],
+          signal: new AbortController().signal,
+        })
+      assert.equal(
+        (await deliver()).squashedCommit,
+        output.delivery.squashedCommit,
+      )
+      await git(repo, ['branch', '-f', output.delivery.squashedBranch, 'main'])
+      await assert.rejects(deliver(), /already exists .* left as it is/)
+      assert.equal(
+        await branchCommit(repo, output.delivery.squashedBranch),
+        head,
+      )
+
+      // Both reports name each other; the child's findings are hashed and
+      // its first repair is counted.
+      const report = await buildReport(durably, child.id)
+      assert.deepEqual(report.lineage.parent, {
+        runId: parent.id,
+        candidateCommit: parentCommit,
+      })
+      assert.deepEqual(report.inputs.findings, {
+        path: join(root, 'findings.md'),
+        sha256: sha256(findings),
+      })
+      assert.equal(report.summary.repairs, 1)
+      const repairRow = report.roleUsage.find((r) => r.role === 'repair')
+      assert.equal(repairRow?.invocations, 1)
+      const md = reportToMarkdown(report)
+      assert.ok(md.includes(`- parent: ${parent.id}`))
+      assert.ok(md.includes(sha256(findings)))
+      const parentReport = await buildReport(durably, parent.id)
+      assert.deepEqual(parentReport.lineage.children, [child.id])
+      assert.ok(reportToJson(parentReport).includes(child.id))
+
+      // The same content from another path returns the same child.
+      const again = buildRepairInput(
+        parent,
+        setup,
+        findingsFile(findings, join(root, 'elsewhere.md')),
+      )
+      assert.equal(again.idempotencyKey, idempotencyKey)
+      const same = await durably.jobs.agentLoop.trigger(again.input, {
+        idempotencyKey: again.idempotencyKey,
+      })
+      assert.equal(same.id, child.id)
+      assert.equal(same.disposition, 'idempotent')
+      // Other dispositions make another child.
+      const other = buildRepairInput(parent, setup, {
+        ...findingsFile(findings, join(root, 'findings.md')),
+        dispositions: {
+          content: 'CHILD DISPOSITIONS',
+          ref: { path: join(root, 'dispositions.md') },
+        },
+      })
+      assert.notEqual(other.idempotencyKey, idempotencyKey)
+      assert.equal(other.input.target.dispositions, 'CHILD DISPOSITIONS')
+      const second = await durably.jobs.agentLoop.trigger(other.input, {
+        idempotencyKey: other.idempotencyKey,
+      })
+      assert.notEqual(second.id, child.id)
+      await durably.cancel(second.id)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+  })
+
+  it('spends only its own repair budget', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-findings-cap-'))
+    const repo = await seedRepo(root)
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      // The parent used its one iteration; the child still gets one.
+      const { parent, setup } = await approvedParent(durably, repo, {
+        maxIterations: 1,
+      })
+      assert.equal((parent.output as { iterations: number }).iterations, 1)
+      const { input, idempotencyKey } = buildRepairInput(
+        parent,
+        setup,
+        findingsFile('FINDINGS: more\n', join(root, 'f.md')),
+        {
+          failIterations: 0,
+          reviewSequence: ['needsChanges', 'pass', 'needsChanges', 'pass'],
+        },
+      )
+      const child = await durably.jobs.agentLoop.trigger(input, {
+        idempotencyKey,
+      })
+      await waitFor(
+        async () => (await durably.getRun(child.id))?.status === 'completed',
+        150000,
+        'capped repair run completes',
+      )
+      const output = (await durably.getRun(child.id))?.output as {
+        conclusion: string
+        iterations: number
+      }
+      assert.equal(output.conclusion, 'review-cap-reached')
+      assert.equal(output.iterations, 1)
+      const report = await buildReport(durably, child.id)
+      assert.equal(report.summary.repairs, 1)
+    } finally {
       await durably.stop()
       await durably.db.destroy()
       delete process.env.FAKE_FAIL_FIRST

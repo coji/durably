@@ -302,8 +302,8 @@ pnpm --filter example-local-agent-loop demo seed --home ~/tmp/factory-demo --lat
   `--home` には空のディレクトリか、まだ無いパスを渡します。普段の
   `~/.local/state/local-agent-loop/` には触れません。
 - その HOME に小さな JS プロジェクトの git リポジトリと `factory.json` を作り、
-  日本語のタスクで repo 対象の run を 13 本起動します。固定テストは本物の
-  `node --test` です。
+  日本語のタスクで repo 対象の run を 13 本起動します。承認された 1 本には、外部の
+  指摘からの修正 run を 1 本足します。固定テストは本物の `node --test` です。
 - `factory.json` の各役割には実際に使いそうな model を書いています。実装と
   correctness レビューは `gpt-6-sol`、edge-cases レビューは `claude-opus-5-5`、
   triage は `gpt-6-luna` です。provider は fake なので、これらは requested model
@@ -655,6 +655,54 @@ LLMにタスクを判定させます。書かなければ判定の呼び出し�
   `factory.json` の `repair` を直してから `demo retrigger --run <id>
 --reload-config` でやり直します。
 
+### 外部の指摘から修正する（repair）
+
+承認して納品まで終わったrepository runに、あとからUIの確認、正式なレビュー、CIなど
+factoryの外で指摘が見つかったときは、`demo repair` でそのrunの候補を直す子runを
+起動します。終わったrunを再開するのではなく、候補のcommitを引き継ぐ新しいrunとして
+記録するので、修正の時間、費用、回数もfactoryで測れます。
+
+```bash
+pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
+  --findings-file findings.md [--dispositions-file dispositions.md]
+```
+
+- 親にできるのは、`completed` で結論が `approved`、納品が記録され、最後の候補と
+  納品のcommitが一致するrepository runだけです。拒否、上限到達、失敗、取り消し、
+  承認待ちのrunは、候補が残っていても親にできません。子runが同じ条件を満たせば、
+  さらにその子を作れます。
+- 起動前に、親の候補commitが対象リポジトリにあり、記録された候補ブランチの先端が
+  そのcommitのままであることを確かめます。ブランチが動いていれば何も作りません。
+- 子runは、親が保存したtask、spec、issue、profile（解決済みの値）、check、setup、
+  timeout、`codexPath`、commitとpublishの設定、`--max-iterations` を引き継ぎます。
+  いまの `factory.json` と環境変数は読みません。`--reload-config` は受け付けません。
+  設定を変えたいときは、通常の `trigger` から始めます。
+- 指摘ファイルは必須です。処分ファイルは任意で、指定すると親の処分を置き換え、
+  省略すると親の処分を引き継ぎます。どちらも `--task-file` と同じ検査（256 KiB
+  まで、UTF-8、空白だけは不可）を通し、内容と読み込んだパスを子runに保存します。
+  指摘は修正担当と両レビュアーに、task、specと同じ信頼しない入力として渡します。
+  処分はこれまでどおり両レビュアーにだけ渡します。
+- 子runの基点は親の最後の候補commitです。親の元のbaseや、起動時点の `HEAD` は
+  使いません。反復のブランチはissueの有無にかかわらず `factory/<子の runId>`、
+  squashedブランチは `factory/<子の runId>-squashed` で、差分、patch、squashed
+  commitの親はすべて親の候補commitです。
+- 子runでもsetup、preflight、設定していればbaselineCheckを実行します。triageと
+  初回実装は行わず、最初のcode工程を `repair` の1回目として新しいsessionで始め
+  ます。`profiles.repair` があればそれを使います。そのあとは通常どおり検証、
+  両レビュー、承認、納品に進みます。
+- `--max-iterations` は子run自身の修正回数だけを数え、親が使った回数は差し引き
+  ません。最初の修正も修正回数と使用量に入ります。
+- 同じ親、同じ指摘の内容、同じ処分の内容で起動すると、パスが違っても同じ子runを
+  返し、runもブランチも増やしません。処分の内容が変われば別の子runです。
+- `--publish` のDraft PRは通常のrunと同じく既定ブランチ向けです。親がまだ
+  mergeされていなければ、PRには親の変更も含まれます。
+- `report` と `status --run` には親のIDと子のID一覧が、reportには指摘ファイルの
+  パスと保存内容のSHA-256も出ます。web UIでは一覧と詳細で、親と子をtaskの名前で
+  リンクします。`compare` は通常のrunと子runを別のグループに分け、親の時間、費用、
+  工程を子の値に足しません。子run同士は `configVersion` ごとにまとめます。
+- 判断の理由は [ADR-0022](../../docs/adr/0022-local-agent-loop-external-repair-runs.md)
+  にあります。
+
 ### durably checkoutを固定して呼ぶ
 
 コードを対象リポジトリへコピーせず、durablyのcheckoutを特定のcommitに固定して
@@ -948,6 +996,9 @@ run 数です。`routine` の列が判定の見逃しで、shadow mode で測り
 項目数、変更予定ファイルの数）の統計を並べます。cost や較正材料が
 不明の run は統計から外して unknown 件数に数えます。triage 呼び出しのtokenと
 costは `triage` 工程と `triage` 役割に1回ずつ計上します。
+
+外部の指摘からの修正 run（`demo repair`）は、通常の run と別のグループに
+まとめます。子 run の数字はその run 自身のもので、親の時間、費用、工程は足しません。
 
 reuse と fresh を比べるときは、`code` 工程の cache-read 比と
 repairs の中央値を見ます。unknown は統計から外して件数だけ残し、0 として

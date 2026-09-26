@@ -103,8 +103,10 @@ export function reloadAdvice(input: unknown): ReloadAdvice {
   const stored = input as {
     target?: { kind?: unknown }
     configSource?: { flags?: Record<string, unknown> }
+    repairOf?: unknown
   } | null
-  if (stored?.target?.kind !== 'repo') return 'none'
+  // A repair run keeps its parent's settings; it has no config to reload.
+  if (stored?.target?.kind !== 'repo' || stored.repairOf) return 'none'
   const flags = stored.configSource?.flags ?? {}
   return PINNING_FLAGS.some((flag) => typeof flags[flag] === 'string')
     ? 'flags-win'

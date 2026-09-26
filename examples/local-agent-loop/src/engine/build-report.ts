@@ -25,6 +25,7 @@ import {
   type ReportCandidateChanges,
   type ReportDelivery,
   type ReportInputs,
+  type ReportLineage,
   type ReportPreflight,
   type ReportPreflightCheck,
   type ReportReview,
@@ -52,6 +53,12 @@ interface PersistedInput {
     dispositions?: string | null
     inputFiles?: Record<string, { path?: string } | null>
   }
+  repairOf?: {
+    runId?: string
+    candidateCommit?: string
+    findings?: string
+    findingsFile?: { path?: string }
+  }
 }
 
 const ROLES = ['code', 'correctness', 'edge-cases'] as const
@@ -59,7 +66,7 @@ const ROLES = ['code', 'correctness', 'edge-cases'] as const
 /** The reads a report makes; a caller may pass a per-request cache of them. */
 export type ReportSource = Pick<
   AnyDurably,
-  'getRun' | 'getStepAttempts' | 'getWaits'
+  'getRun' | 'getStepAttempts' | 'getWaits' | 'getRuns'
 > & {
   storage: Pick<AnyDurably['storage'], 'getCompletedStep' | 'getSteps'>
 }
@@ -395,18 +402,47 @@ function preflightOf(
  */
 function inputHashes(input: PersistedInput | null): ReportInputs {
   const target = input?.target
-  const entry = (name: keyof ReportInputs) => {
-    const path = target?.inputFiles?.[name]?.path
-    const content = target?.[name]
-    return path && typeof content === 'string'
+  const hashed = (path: string | undefined, content: unknown) =>
+    path && typeof content === 'string'
       ? { path, sha256: createHash('sha256').update(content).digest('hex') }
       : null
-  }
+  const entry = (name: 'task' | 'spec' | 'dispositions') =>
+    hashed(target?.inputFiles?.[name]?.path, target?.[name])
   return {
     task: entry('task'),
     spec: entry('spec'),
     dispositions: entry('dispositions'),
+    findings: hashed(
+      input?.repairOf?.findingsFile?.path,
+      input?.repairOf?.findings,
+    ),
   }
+}
+
+/** The run a repair run repairs, from its stored input. */
+function repairParent(input: PersistedInput | null): ReportLineage['parent'] {
+  const origin = input?.repairOf
+  return origin?.runId && origin.candidateCommit
+    ? { runId: origin.runId, candidateCommit: origin.candidateCommit }
+    : null
+}
+
+/**
+ * The repair runs started from a run, oldest first. Read from the other
+ * runs' inputs every time, because a finished run gains children after it
+ * finished.
+ */
+export async function repairChildren(
+  durably: Pick<ReportSource, 'getRuns'>,
+  run: { id: string; jobName: string },
+): Promise<string[]> {
+  const runs = await durably.getRuns({ jobName: run.jobName })
+  return runs
+    .filter(
+      (r) => (r.input as PersistedInput | null)?.repairOf?.runId === run.id,
+    )
+    .sort((x, y) => Date.parse(x.createdAt) - Date.parse(y.createdAt))
+    .map((r) => r.id)
 }
 
 export async function buildReport(
@@ -581,6 +617,7 @@ export async function buildReport(
       attempts: rows,
       stageUsage: usage,
       stageVisits: visits,
+      repairRun: repairParent(input) !== null,
     }),
     triage: await recordedTriage(durably, run),
     baseline: baselineOf(steps, rows),
@@ -588,6 +625,10 @@ export async function buildReport(
     stageUsage: usage,
     roleUsage: roleUsage(rows, profiles),
     inputs: inputHashes(input),
+    lineage: {
+      parent: repairParent(input),
+      children: await repairChildren(durably, run),
+    },
     candidate,
     candidates,
     reviews: lastReviews(run.output, waits),

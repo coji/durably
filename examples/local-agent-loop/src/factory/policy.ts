@@ -24,6 +24,10 @@ export function decide(state: FactoryState): StageDecision {
   const [stage] = availableActions(state)
   if (!stage) throw new Error('policy has no action for a non-terminal state')
   if (stage === 'code') {
+    // A repair run starts from an approved candidate, so even its first code
+    // stage is a repair; it counts against the run's own budget.
+    if (state.iteration === 0 && state.setup.repairOf)
+      return { stage, role: 'repair', reason: 'repair from outside findings' }
     return {
       stage,
       role: state.iteration === 0 ? 'implement' : 'repair',

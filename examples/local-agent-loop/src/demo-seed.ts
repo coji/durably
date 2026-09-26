@@ -26,7 +26,12 @@ import { parseLatency, type FakeScenario } from './engine/providers/fake.js'
 import { checkpointPaths } from './engine/runner.js'
 import { shellQuote } from './engine/status.js'
 import { TERMINAL_STATUSES } from './engine/terminal.js'
-import { buildTriggerInput } from './trigger-input.js'
+import {
+  assertCandidateUnmoved,
+  buildRepairInput,
+  buildTriggerInput,
+  repairableCandidate,
+} from './trigger-input.js'
 
 /** A small project with a real `node --test` check that fails on the base. */
 const PROJECT: Record<string, string> = {
@@ -348,6 +353,63 @@ export function handlePaymentEvent(event) {
   },
 ]
 
+/**
+ * A repair run from outside findings on one approved run, so the web UI
+ * shows a parent and its child.
+ */
+const REPAIR = {
+  parentSlug: 'login-error-message',
+  title: 'ログイン画面のエラーメッセージを具体的にする',
+  findings:
+    '# UI の確認で見つかったこと\n\n- アカウント未登録のメッセージに、登録画面への導線がない。\n',
+  scenario: {
+    failIterations: 0,
+    summary: '未登録のメッセージに登録画面への案内を足した。',
+    changes: {
+      'src/login-messages.js': `export const LOGIN_ERRORS = {
+  wrongPassword: 'パスワードが違います。',
+  unknownAccount:
+    'このメールアドレスのアカウントは見つかりません。新規登録はこちらから行えます。',
+}
+`,
+    },
+    reviewNotes: PASS_NOTES,
+  } satisfies FakeScenario,
+}
+
+/** Start the seed's repair run from its approved parent. */
+async function triggerRepair(
+  durably: AgentLoopDurably,
+  repo: string,
+  parentId: string,
+  latencyMs: { min: number; max: number },
+) {
+  const parent = await durably.getRun(parentId)
+  if (!parent) throw new Error(`no run ${parentId}`)
+  const setup = (await durably.storage.getCompletedStep(parentId, 'setup'))
+    ?.output
+  const found = repairableCandidate(parent, setup)
+  await assertCandidateUnmoved(repo, found.commit, found.branch)
+  const path = join(
+    repo,
+    '..',
+    '..',
+    'tasks',
+    `${REPAIR.parentSlug}-findings.md`,
+  )
+  await writeFile(path, REPAIR.findings)
+  const { input, idempotencyKey } = buildRepairInput(
+    parent,
+    setup,
+    {
+      findings: { content: REPAIR.findings, ref: { path } },
+      dispositions: null,
+    },
+    { usage: 'realistic', latencyMs, ...REPAIR.scenario },
+  )
+  return durably.jobs.agentLoop.trigger(input, { idempotencyKey })
+}
+
 export interface SeedOptions {
   home: string
   /** Wait per fake call for runs that settle during the seed. */
@@ -495,6 +557,19 @@ export async function seed(options: SeedOptions): Promise<SeedResult> {
         budget,
         r.title,
       )
+    }
+    // One approved run gets outside findings, and a repair run from them.
+    const parent = runs.find((r) => r.title === REPAIR.title)
+    if (parent) {
+      const run = await triggerRepair(
+        durably,
+        repo,
+        parent.runId,
+        options.latencyMs,
+      )
+      runs.push({ title: REPAIR.title, ending: 'settle', runId: run.id })
+      log(`triggered ${run.id}  ${REPAIR.title} の指摘からの修正`)
+      await waitUntil(() => parked(durably, run.id), budget, REPAIR.title)
     }
     await durably.stop()
     for (const task of later) {

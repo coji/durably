@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
+import { compareReports, comparisonToMarkdown } from '../src/engine/compare.js'
 import { PRICE_BASIS, estimateCostUsd } from '../src/engine/pricing.js'
 import { reportToMarkdown } from '../src/engine/report.js'
 import type { LoopReport } from '../src/engine/report.js'
@@ -33,7 +34,8 @@ function baseReport(): LoopReport {
     },
     stageUsage: [],
     roleUsage: [],
-    inputs: { task: null, spec: null, dispositions: null },
+    inputs: { task: null, spec: null, dispositions: null, findings: null },
+    lineage: { parent: null, children: [] },
     candidate: null,
     candidates: [],
     reviews: [],
@@ -273,5 +275,94 @@ describe('pricing/report', () => {
     )
     assert.ok(!md.includes(PRICE_BASIS.checkedAt))
     assert.ok(!md.includes(PRICE_BASIS.source))
+  })
+})
+
+describe('repair runs from outside findings', () => {
+  const run = (
+    runId: string,
+    parent: string | null,
+    costUsd: number,
+    configVersion = 'cfg-1',
+  ): LoopReport => {
+    const r = baseReport()
+    return {
+      ...r,
+      runId,
+      status: 'completed',
+      configVersion,
+      lineage: {
+        parent: parent
+          ? { runId: parent, candidateCommit: 'c'.repeat(40) }
+          : null,
+        children: [],
+      },
+      summary: {
+        ...r.summary,
+        success: true,
+        conclusion: 'approved',
+        leadTimeMs: costUsd * 1000,
+        costUsd,
+        costPerSuccessUsd: costUsd,
+        repairs: parent ? 1 : 0,
+      },
+    }
+  }
+
+  it('groups repair runs apart from normal runs of the same config', () => {
+    const c = compareReports([
+      run('parent', null, 10),
+      run('child-a', 'parent', 1),
+      run('child-b', 'parent', 3),
+      run('child-c', 'parent', 5, 'cfg-2'),
+    ])
+    const normal = c.groups.filter((g) => g.kind === 'normal')
+    const repair = c.groups.filter((g) => g.kind === 'repair')
+    assert.deepEqual(
+      normal.map((g) => g.runIds),
+      [['parent']],
+    )
+    // Repair runs keep their per-config grouping among themselves.
+    assert.deepEqual(
+      repair.map((g) => g.runIds),
+      [['child-a', 'child-b'], ['child-c']],
+    )
+    // Only the children's own numbers: the parent's cost and time never
+    // enter them.
+    const [first] = repair
+    assert.equal(first?.costUsd.median, 2)
+    assert.equal(first?.costUsd.max, 3)
+    assert.equal(first?.leadTimeMs.max, 3000)
+    assert.equal(first?.repairs.median, 1)
+    const md = comparisonToMarkdown(c)
+    assert.match(md, /## repair from findings: .* — config cfg-1/)
+    assert.match(md, /grouped apart from normal runs/)
+  })
+
+  it('names the parent, the children and the findings in the report', () => {
+    const r = {
+      ...run('child', 'parent', 1),
+      inputs: {
+        task: null,
+        spec: null,
+        dispositions: null,
+        findings: { path: '/tmp/findings.md', sha256: 'f'.repeat(64) },
+      },
+    }
+    const md = reportToMarkdown(r)
+    assert.match(
+      md,
+      new RegExp(`- parent: parent \\(candidate ${'c'.repeat(40)}\\)`),
+    )
+    assert.match(md, /- children: none/)
+    assert.match(
+      md,
+      new RegExp(`- findings: ${'f'.repeat(64)} \\(/tmp/findings\\.md\\)`),
+    )
+    const parent = {
+      ...run('parent', null, 1),
+      lineage: { parent: null, children: ['a', 'b'] },
+    }
+    assert.match(reportToMarkdown(parent), /- parent: none\n- children: a, b/)
   })
 })

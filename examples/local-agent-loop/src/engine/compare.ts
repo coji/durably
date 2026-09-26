@@ -62,7 +62,14 @@ export interface TriageStats {
   routineNeedingMore: number
 }
 
+/**
+ * `repair` runs start from an approved candidate and outside findings;
+ * `normal` runs start from the task. The two never share a group.
+ */
+export type RunKind = 'normal' | 'repair'
+
 export interface ConfigGroup {
+  kind: RunKind
   configVersion: string | null
   runIds: string[]
   /** Label reconstructed from the first run's input for readability. */
@@ -176,10 +183,15 @@ function triageStats(list: LoopReport[]): TriageStats[] {
   })
 }
 
+/** Whether a report is of a repair run; its own numbers only, never its parent's. */
+export function runKindOf(report: Pick<LoopReport, 'lineage'>): RunKind {
+  return report.lineage?.parent ? 'repair' : 'normal'
+}
+
 export function compareReports(reports: LoopReport[]): Comparison {
   const groups = new Map<string, LoopReport[]>()
   for (const r of reports) {
-    const key = r.configVersion ?? `unversioned:${labelOf(r)}`
+    const key = `${runKindOf(r)}|${r.configVersion ?? `unversioned:${labelOf(r)}`}`
     groups.set(key, [...(groups.get(key) ?? []), r])
   }
   const out: ConfigGroup[] = []
@@ -213,6 +225,7 @@ export function compareReports(reports: LoopReport[]): Comparison {
       conclusions[key] = (conclusions[key] ?? 0) + 1
     }
     out.push({
+      kind: runKindOf(first),
       configVersion: first.configVersion,
       runIds: list.map((r) => r.runId),
       label: labelOf(first),
@@ -259,9 +272,15 @@ export function comparisonToMarkdown(c: Comparison): string {
   lines.push(
     'median [min..max] (n=known runs); unknown values are excluded, never zero-filled.',
   )
+  lines.push(
+    'Repair runs from outside findings are grouped apart from normal runs; each counts only its own time, cost and stages, never its parent run.',
+  )
   for (const g of c.groups) {
     lines.push('')
-    lines.push(`## ${g.label} — config ${g.configVersion ?? 'unversioned'}`)
+    const kind = g.kind === 'repair' ? 'repair from findings: ' : ''
+    lines.push(
+      `## ${kind}${g.label} — config ${g.configVersion ?? 'unversioned'}`,
+    )
     lines.push('')
     lines.push(`- runs: ${g.runIds.join(', ')}`)
     lines.push(

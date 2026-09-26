@@ -49,6 +49,22 @@ export function roleName(role: string): string {
   return ROLE_NAME[role] ?? LENS_NAME[role] ?? STAGE_NAME[role] ?? role
 }
 
+/** How a comparison group's runs started. */
+const RUN_KIND_NAME: Record<string, string> = {
+  normal: '通常の実行',
+  repair: '外部の指摘からの修正',
+}
+
+export function runKindName(kind: string): string {
+  return RUN_KIND_NAME[kind] ?? kind
+}
+
+/** The two sides of a link between repair runs. */
+export const RELATION_NAME = {
+  parent: '修正元',
+  children: '指摘からの修正',
+} as const
+
 const TRIAGE_NAME: Record<string, string> = {
   routine: '定型',
   probe: '試行が必要',

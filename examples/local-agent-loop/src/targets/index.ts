@@ -51,6 +51,8 @@ export interface PrepareRepoArgs {
   publish: boolean
   /** Fixed at trigger; applied to every iteration and the squash commit. */
   commit: CommitSettings
+  /** A repair run's parent and findings; `baseRef` is then its candidate. */
+  repairOf?: { runId: string; findings: string } | null
   signal?: AbortSignal
 }
 
@@ -108,5 +110,6 @@ export async function prepareRepoTarget(
     candidatesDir: join(args.root, 'candidates'),
     publish: args.publish,
     commit: args.commit,
+    ...(args.repairOf ? { repairOf: args.repairOf } : {}),
   }
 }

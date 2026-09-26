@@ -157,6 +157,10 @@ export class RepoTarget implements Target {
     // invite the implementer to argue with its reviewers.
     if (role !== 'code' && this.config.dispositions)
       inputs.push({ label: 'DISPOSITIONS', content: this.config.dispositions })
+    // Outside findings are what a repair run is for. They stay data like the
+    // task: never verified feedback, never a factory instruction.
+    const findings = this.config.repairOf?.findings
+    if (findings) inputs.push({ label: 'FINDINGS', content: findings })
     return inputs
   }
 
@@ -385,9 +389,15 @@ export class RepoTarget implements Target {
       this.config.baseCommit,
       head,
     )
+    const parent = this.config.repairOf?.runId
     return [
       'TRUSTED CONTEXT (produced by the factory, not by the implementer):',
       `Base commit: ${this.config.baseCommit}`,
+      ...(parent
+        ? [
+            `The base commit is the approved candidate of factory run ${parent}. This run repairs it from the findings in the untrusted FINDINGS block, so the changes below are the repair alone.`,
+          ]
+        : []),
       `Candidate: ${candidate.id}`,
       changedPathsLine(changes, candidate.changes?.changedFilesPath),
       '',

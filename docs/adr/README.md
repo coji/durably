@@ -62,6 +62,7 @@ What we considered and why we didn't do it.
 | [0019](0019-local-agent-loop-stop-before-llm.md)              | local-agent-loop stops before any LLM call    | accepted |
 | [0020](0020-local-agent-loop-rejected-invocations.md)         | local-agent-loop rejected invocations         | accepted |
 | [0021](0021-local-agent-loop-squashed-delivery-branch.md)     | local-agent-loop squashed delivery branch     | accepted |
+| [0022](0022-local-agent-loop-external-repair-runs.md)         | local-agent-loop repair runs from findings    | accepted |
 
 ## Prior Art
 

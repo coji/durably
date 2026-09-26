@@ -125,6 +125,19 @@ export interface ReportInputs {
   task: ReportInputFile | null
   spec: ReportInputFile | null
   dispositions: ReportInputFile | null
+  /** A repair run's outside findings; null on every other run. */
+  findings: ReportInputFile | null
+}
+
+/**
+ * Repair runs linked to this one: the run whose approved candidate it
+ * repairs, and the repair runs started from its own candidate.
+ */
+export interface ReportLineage {
+  /** Null unless this run repairs another run's candidate. */
+  parent: { runId: string; candidateCommit: string } | null
+  /** Repair runs started from this run, oldest first. */
+  children: string[]
 }
 
 /** A repository candidate's size and where its diff and file list live. */
@@ -406,7 +419,10 @@ export interface RunSummary {
   costUsd: number | null
   /** costUsd when the run succeeded, else null: what one success cost. */
   costPerSuccessUsd: number | null
-  /** Times the code stage ran after the first implementation. */
+  /**
+   * Times the code stage ran as a repair: after the first implementation,
+   * or every time on a repair run, whose first code stage is a repair.
+   */
   repairs: number
   reviewRounds: number
 }
@@ -434,6 +450,7 @@ export interface LoopReport {
   roleUsage: RoleUsage[]
   /** SHA-256 of each input file's content, as stored in the run. */
   inputs: ReportInputs
+  lineage: ReportLineage
   /** Last sealed candidate, whatever the conclusion; null before one exists. */
   candidate: ReportCandidate | null
   /** Every sealed candidate with its size, oldest first. */
@@ -702,6 +719,13 @@ export interface SummaryInput {
   attempts: AttemptRow[]
   stageUsage: StageUsage[]
   stageVisits: StageVisits[]
+  /** A repair run: its first code stage is a repair too. */
+  repairRun?: boolean
+}
+
+function repairsOf(visits: StageVisits[], repairRun: boolean): number {
+  const code = visits.find((v) => v.stage === 'code')
+  return (repairRun ? code?.visits : code?.reworked) ?? 0
 }
 
 /** Fold a run into the one-row summary used for cross-run comparison. */
@@ -746,7 +770,7 @@ export function summarizeRun(input: SummaryInput): RunSummary {
     totalTokens: sumLeg((r) => r.totalTokens),
     costUsd,
     costPerSuccessUsd: success ? costUsd : null,
-    repairs: input.stageVisits.find((v) => v.stage === 'code')?.reworked ?? 0,
+    repairs: repairsOf(input.stageVisits, input.repairRun ?? false),
     reviewRounds:
       typeof output?.reviewRounds === 'number'
         ? output.reviewRounds
@@ -972,6 +996,18 @@ export function reportToMarkdown(r: LoopReport): string {
       `- ${name}: ${file ? `${file.sha256} (${file.path})` : 'not given'}`,
     )
   }
+  lines.push('')
+  lines.push('## Repair runs (from outside findings)')
+  lines.push('')
+  const parent = r.lineage.parent
+  lines.push(
+    parent
+      ? `- parent: ${parent.runId} (candidate ${parent.candidateCommit})`
+      : '- parent: none',
+  )
+  lines.push(
+    `- children: ${r.lineage.children.length > 0 ? r.lineage.children.join(', ') : 'none'}`,
+  )
   lines.push('')
   lines.push('## Candidate')
   lines.push('')

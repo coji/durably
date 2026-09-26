@@ -87,6 +87,11 @@ export interface RepoTargetConfig {
   publish: boolean
   /** Absent on a run set up before it existed; the defaults apply. */
   commit?: CommitSettings
+  /**
+   * A repair run's parent and the findings it repairs from. `baseCommit` is
+   * then the parent's approved candidate. Absent on every other run.
+   */
+  repairOf?: { runId: string; findings: string } | null
 }
 
 export type TargetConfig = SubjectTargetConfig | RepoTargetConfig
@@ -101,7 +106,7 @@ export interface InputFileRef {
  * Prompts fence it off as data, so nothing inside it reads as an instruction.
  */
 export interface UntrustedInput {
-  label: 'TASK' | 'SPEC' | 'DISPOSITIONS'
+  label: 'TASK' | 'SPEC' | 'DISPOSITIONS' | 'FINDINGS'
   content: string
 }
 
@@ -166,7 +171,7 @@ export interface Target {
   /**
    * Caller-supplied text a role is shown, fenced off as data. The implementer
    * gets the task and the spec; each reviewer gets the task, the spec and the
-   * dispositions.
+   * dispositions. A repair run's findings go to every role.
    */
   untrustedInputs(role: ProfileRole): UntrustedInput[]
   /**

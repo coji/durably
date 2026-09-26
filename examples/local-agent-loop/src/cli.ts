@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-/** CLI: worker | trigger | status | waits | approve | reject | report | compare | ui | seed */
+/** CLI: worker | trigger | repair | status | waits | approve | reject | report | compare | ui | seed */
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,7 +11,11 @@ import {
   dbPath,
   legacyDbWarning,
 } from './durably.js'
-import { buildReport, recordedTriage } from './engine/build-report.js'
+import {
+  buildReport,
+  recordedTriage,
+  repairChildren,
+} from './engine/build-report.js'
 import { killOwnedChildren } from './engine/child.js'
 import { compareReports, comparisonToMarkdown } from './engine/compare.js'
 import { classifyRun } from './engine/failure-reasons.js'
@@ -22,7 +26,14 @@ import {
 } from './engine/report.js'
 import { diagnose, diagnosisLines } from './engine/status.js'
 import { deliverySchema } from './factory/events.js'
-import { buildTriggerInput, reloadTriggerInput } from './trigger-input.js'
+import {
+  assertCandidateUnmoved,
+  buildRepairInput,
+  buildTriggerInput,
+  readRepairFiles,
+  reloadTriggerInput,
+  repairableCandidate,
+} from './trigger-input.js'
 
 async function emit(text: string, out: string | undefined): Promise<void> {
   if (out) {
@@ -75,6 +86,9 @@ Commands (run from examples/local-agent-loop):
                         [--spec-file <file>] [--dispositions-file <file>] [--config <file>]
                         [--check "pnpm validate"] [--setup "pnpm install"] [--base <ref>]
                         [--publish] [--approve auto|manual]
+  pnpm demo repair --run <id> --findings-file <file> [--dispositions-file <file>]
+                                            new run that repairs an approved, delivered repository
+                                            run's candidate from outside findings (see below)
   pnpm demo status                          open and stopped runs: reason and next command
   pnpm demo status --run <id>
   pnpm demo waits --run <id>
@@ -126,6 +140,17 @@ Repository config: factory.json at the repository root, or --config <file>:
   pushes and opens the draft pull request from the first, or from the
   squashed branch when "publishSquashed" is true; without --publish neither
   is pushed.
+  repair starts a child run from a parent run that completed approved and
+  delivered its last candidate, whose candidate branch still points at that
+  commit. The child works on factory/<childRunId> cut from that commit, with
+  the parent's stored task, spec, issue, profiles, check, setup, timeouts,
+  codexPath, commit and publish settings and max iterations; factory.json
+  and the environment are not read, and --reload-config is refused. It skips
+  triage, starts with a repair in a new session, and --max-iterations counts
+  its own repairs only. The findings file is stored as untrusted input for
+  the repairer and both reviewers; --dispositions-file replaces the parent's
+  dispositions (inherited otherwise). The same parent, findings and
+  dispositions return the same child run.
   Timeouts are positive integer milliseconds, at most 2147483647; without them, the trigger's
   TEST_TIMEOUT_MS / AGENT_TIMEOUT_MS, then the target's default.
   Before the first agent call, every role's provider, model and effort is
@@ -232,6 +257,49 @@ if (cmd === 'worker') {
     ),
   )
   await durably.db.destroy()
+} else if (cmd === 'repair') {
+  const a = args()
+  const runId = a['run']
+  if (!runId) throw new Error('--run <id> required')
+  // Read before the database is opened: a bad file starts nothing.
+  const files = await readRepairFiles(a)
+  const durably = createAgentDurably()
+  await durably.migrate()
+  try {
+    const parent = await durably.getRun(runId)
+    if (!parent) throw new Error(`no run ${runId}`)
+    const setup = (await durably.storage.getCompletedStep(runId, 'setup'))
+      ?.output
+    const found = repairableCandidate(parent, setup)
+    await assertCandidateUnmoved(
+      found.setup.target.repoPath,
+      found.commit,
+      found.branch,
+    )
+    const { input, idempotencyKey } = buildRepairInput(parent, setup, files)
+    // The job's schema checks the input; the builder's types are looser.
+    type Input = Parameters<typeof durably.jobs.agentLoop.trigger>[0]
+    const run = await durably.jobs.agentLoop.trigger(input as Input, {
+      idempotencyKey,
+    })
+    console.log(
+      JSON.stringify(
+        {
+          runId: run.id,
+          disposition: run.disposition,
+          status: run.status,
+          parentRunId: runId,
+          baseCommit: found.commit,
+          branch: `factory/${run.id}`,
+          db: dbPath(),
+        },
+        null,
+        2,
+      ),
+    )
+  } finally {
+    await durably.db.destroy()
+  }
 } else if (cmd === 'status' && !args()['run']) {
   const durably = createAgentDurably()
   await durably.migrate()
@@ -284,6 +352,16 @@ if (cmd === 'worker') {
           (run?.output as { candidate?: unknown } | null)?.candidate ?? null,
         // Null when the run has no triage profile or has not reached it.
         triage: run ? await recordedTriage(durably, run) : null,
+        // The run this one repairs from outside findings, and the repair
+        // runs started from this one.
+        lineage: run
+          ? {
+              parent:
+                (run.input as { repairOf?: { runId?: string } } | null)
+                  ?.repairOf?.runId ?? null,
+              children: await repairChildren(durably, run),
+            }
+          : null,
         run,
         attempts: attempts.map((x) => ({
           id: x.id,

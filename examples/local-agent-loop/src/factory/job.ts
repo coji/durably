@@ -188,6 +188,44 @@ const requestedProfileSchema = z.object({
 })
 type RequestedProfile = z.infer<typeof requestedProfileSchema>
 
+/** A role's settings as resolved at setup, id included. */
+const resolvedProfileSchema = z
+  .object({
+    id: z.string().min(1),
+    provider: providerSchema,
+    requestedModel: z.string().min(1).nullable(),
+    requestedEffort: z.string().min(1).nullable(),
+    effectiveModel: z.string().min(1).nullable(),
+    effectiveEffort: z.string().min(1).nullable(),
+  })
+  .strict()
+
+/**
+ * A run that repairs another run's approved candidate from outside findings.
+ * Built by `demo repair` from the parent's stored input and setup; the
+ * worker never resolves these profiles again.
+ */
+const repairOfSchema = z
+  .object({
+    runId: z.string().min(1),
+    /** The parent's last candidate commit, which is also its delivery. */
+    candidateCommit: z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/),
+    candidateBranch: z.string().min(1),
+    /** Stored once at trigger; its SHA-256 is taken from this content. */
+    findings: nonBlank,
+    findingsFile: inputFileSchema,
+    /** The effective profiles the parent recorded at setup. */
+    profiles: z
+      .object({
+        code: resolvedProfileSchema,
+        correctness: resolvedProfileSchema,
+        'edge-cases': resolvedProfileSchema,
+        repair: resolvedProfileSchema.nullable(),
+      })
+      .strict(),
+  })
+  .strict()
+
 const inputSchema = z
   .object({
     /** The code role's provider; also every role's when `profiles` is absent. */
@@ -250,6 +288,8 @@ const inputSchema = z
      * fake, and left out of `configVersion`.
      */
     fakeScenario: fakeScenarioSchema.optional(),
+    /** Set only on a repair run; see `repairOfSchema`. */
+    repairOf: repairOfSchema.optional(),
   })
   // Refused at trigger, so a real run is never stored with a demo scenario.
   .refine(
@@ -263,6 +303,24 @@ const inputSchema = z
       path: ['fakeScenario'],
     },
   )
+  // A repair run starts from the parent's candidate, with the settings the
+  // parent resolved; nothing about it is left for the worker to decide.
+  .refine(
+    (input) =>
+      !input.repairOf ||
+      (input.target.kind === 'repo' &&
+        input.target.baseRef === input.repairOf.candidateCommit &&
+        input.checkTimeoutMs !== undefined &&
+        input.agentTimeoutMs !== undefined),
+    {
+      message:
+        'a repair run needs a repository target based on the parent candidate commit, and fixed timeouts',
+      path: ['repairOf'],
+    },
+  )
+
+/** A run input as a caller passes it, before defaults are applied. */
+export type AgentLoopInput = z.input<typeof inputSchema>
 
 const outputSchema = z.object({
   approved: z.boolean(),
@@ -624,6 +682,63 @@ async function runPreflight(
   }
 }
 
+/**
+ * Resolve each role's requested settings from a run input to what will
+ * actually be applied, with the profile ids the run records.
+ */
+function resolveInputProfiles(input: {
+  provider: ProviderName
+  model?: string | undefined
+  effort?: string | undefined
+  profiles?:
+    | (Record<ProfileRole, RequestedProfile> & {
+        triage?: RequestedProfile | undefined
+        repair?: RequestedProfile | undefined
+      })
+    | undefined
+}): {
+  profiles: Record<ProfileRole, ResolvedProfile>
+  triage: ResolvedProfile | null
+  repair: ResolvedProfile | null
+} {
+  const fixRequested = (requested: RequestedProfile) =>
+    fixProfile({
+      provider: requested.provider,
+      model: requested.requestedModel,
+      effort: requested.requestedEffort,
+    })
+  const fixed = byRole((role) => {
+    const requested = input.profiles?.[role]
+    return requested
+      ? fixRequested(requested)
+      : fixProfile({
+          provider: input.provider,
+          model: input.model ?? null,
+          effort: input.effort ?? null,
+        })
+  })
+  const requestedTriage = input.profiles?.triage
+  const requestedRepair = input.profiles?.repair
+  const resolve = (role: string, profile: FixedProfile): ResolvedProfile => ({
+    id: [
+      profile.provider,
+      profile.effectiveModel ?? 'provider-default',
+      profile.effectiveEffort ?? 'provider-default',
+      role,
+    ].join(':'),
+    ...profile,
+  })
+  return {
+    profiles: byRole((role) => resolve(role, fixed[role])),
+    triage: requestedTriage
+      ? resolve('triage', fixRequested(requestedTriage))
+      : null,
+    repair: requestedRepair
+      ? resolve('repair', fixRequested(requestedRepair))
+      : null,
+  }
+}
+
 export interface AgentLoopJobOptions {
   /** Directory every run's worktree, checkpoints and delivery live under. */
   stateRoot: string
@@ -642,50 +757,21 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
         async (signal) => {
           // Profiles first: a bad profile fails before any worktree or branch
           // exists in the target repository.
-          const fixRequested = (requested: RequestedProfile) =>
-            fixProfile({
-              provider: requested.provider,
-              model: requested.requestedModel,
-              effort: requested.requestedEffort,
-            })
-          const fixed = byRole((role) => {
-            const requested = input.profiles?.[role]
-            return requested
-              ? fixRequested(requested)
-              : fixProfile({
-                  provider: input.provider,
-                  model: input.model ?? null,
-                  effort: input.effort ?? null,
-                })
-          })
-          const requestedTriage = input.profiles?.triage
-          const fixedTriage = requestedTriage
-            ? fixRequested(requestedTriage)
-            : null
-          const requestedRepair = input.profiles?.repair
-          const fixedRepair = requestedRepair
-            ? fixRequested(requestedRepair)
-            : null
+          const repairOf = input.repairOf ?? null
+          const { profiles, triage, repair } = repairOf
+            ? // A repair run takes the profiles its parent resolved, as they
+              // were, and never runs triage.
+              {
+                profiles: byRole((role) => repairOf.profiles[role]),
+                triage: null,
+                repair: repairOf.profiles.repair,
+              }
+            : resolveInputProfiles(input)
           assertSingleMode({
-            ...fixed,
-            ...(fixedTriage ? { triage: fixedTriage } : {}),
-            ...(fixedRepair ? { repair: fixedRepair } : {}),
+            ...profiles,
+            ...(triage ? { triage } : {}),
+            ...(repair ? { repair } : {}),
           })
-          const resolve = (
-            role: string,
-            profile: FixedProfile,
-          ): ResolvedProfile => ({
-            id: [
-              profile.provider,
-              profile.effectiveModel ?? 'provider-default',
-              profile.effectiveEffort ?? 'provider-default',
-              role,
-            ].join(':'),
-            ...profile,
-          })
-          const profiles = byRole((role) => resolve(role, fixed[role]))
-          const triage = fixedTriage ? resolve('triage', fixedTriage) : null
-          const repair = fixedRepair ? resolve('repair', fixedRepair) : null
           // A repair profile that makes the same call as code is code: the
           // run keeps its session and its config version.
           const ownRepair = separateRepairProfile({ repair, profiles })
@@ -701,8 +787,8 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           const cli: Record<string, string | null> = {}
           const used = new Set(
             [
-              ...Object.values(fixed),
-              ...(fixedTriage ? [fixedTriage] : []),
+              ...Object.values(profiles),
+              ...(triage ? [triage] : []),
               ...(ownRepair ? [ownRepair] : []),
             ].map((p) => p.provider),
           )
@@ -727,7 +813,11 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               : await prepareRepoTarget({
                   repoPath: input.target.repoPath,
                   baseRef: input.target.baseRef,
-                  branch: branchFor(step.runId, input.target.issue),
+                  // A repair run's branch never carries the issue number,
+                  // so it cannot be taken for the parent's.
+                  branch: repairOf
+                    ? `factory/${step.runId}`
+                    : branchFor(step.runId, input.target.issue),
                   root,
                   task: input.target.task,
                   spec: input.target.spec,
@@ -738,8 +828,19 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   checkTimeoutMs: testTimeoutMs,
                   publish: input.target.publish,
                   commit: input.target.commit ?? DEFAULT_COMMIT_SETTINGS,
+                  repairOf: repairOf
+                    ? { runId: repairOf.runId, findings: repairOf.findings }
+                    : null,
                   signal,
                 })
+          if (
+            repairOf &&
+            target.kind === 'repo' &&
+            target.baseCommit !== repairOf.candidateCommit
+          )
+            throw new Error(
+              `repair base ${target.baseCommit.slice(0, 12)} is not the candidate ${repairOf.candidateCommit.slice(0, 12)} of ${repairOf.runId}`,
+            )
           const baselineCheck =
             input.target.kind === 'repo' && input.target.baselineCheck === true
           // A passing baseline removes every untracked file .gitignore does
@@ -750,7 +851,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             await assertSetupLeftNoUntracked(target.workdir, signal)
           const instructionsVersion = 'local-factory.v3'
           const value: FactorySetup = {
-            fake: fixed.code.provider === 'fake',
+            fake: profiles.code.provider === 'fake',
             contextMode: input.context,
             target,
             checkpointsDir: join(root, 'operation-checkpoints'),
@@ -780,6 +881,14 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             agentTimeoutMs,
             baselineCheck,
             codexPath,
+            ...(repairOf
+              ? {
+                  repairOf: {
+                    runId: repairOf.runId,
+                    candidateCommit: repairOf.candidateCommit,
+                  },
+                }
+              : {}),
             // A draft pull request is itself what the human reviews, so waiting
             // for a separate approval signal first would hold a worker for
             // nothing. The bundled sample keeps the wait: its human-wait timing
