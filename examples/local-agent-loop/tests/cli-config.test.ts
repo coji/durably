@@ -27,7 +27,11 @@ import {
 } from '../src/factory/prompts.js'
 import type { FactorySetup } from '../src/factory/types.js'
 import { createTarget } from '../src/targets/index.js'
-import { reloadTriggerInput } from '../src/trigger-input.js'
+import {
+  buildRepairInput,
+  reloadTriggerInput,
+  repairableCandidate,
+} from '../src/trigger-input.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const tsx = join(packageRoot, 'node_modules', '.bin', 'tsx')
@@ -1457,5 +1461,352 @@ const wait = setInterval(() => existsSync(gate) || clearInterval(wait), 100)
       }
       await db.db.destroy()
     }
+  })
+})
+
+describe('repair', { timeout: 240000 }, () => {
+  it('checks the findings and dispositions files before anything exists', async () => {
+    const box = await sandbox({ check: CHECK })
+    await writeFile(join(box.root, 'ok.md'), 'a finding\n')
+    await writeFile(join(box.root, 'empty.md'), ' \n\t\n')
+    await writeFile(join(box.root, 'bad.md'), Buffer.from([0x66, 0xff, 0xfe]))
+    await writeFile(join(box.root, 'big.md'), 'x'.repeat(256 * 1024 + 1))
+    const refused = async (args: string[], message: RegExp) => {
+      const res = await demo(box, ['repair', '--run', 'some-run', ...args])
+      assert.notEqual(res.code, 0, args.join(' '))
+      assert.match(res.stderr, message)
+      assert.equal(existsSync(dbPath(box.stateRoot)), false)
+    }
+    await refused([], /--findings-file <path> required/)
+    await refused(['--findings-file', 'gone.md'], /gone\.md: cannot read file/)
+    await refused(['--findings-file', 'empty.md'], /empty\.md: file is empty/)
+    await refused(['--findings-file', 'bad.md'], /bad\.md: not UTF-8 text/)
+    await refused(
+      ['--findings-file', 'big.md'],
+      /big\.md: file is 262145 bytes; the limit is 256 KiB/,
+    )
+    await refused(
+      ['--findings-file', 'ok.md', '--dispositions-file', 'empty.md'],
+      /--dispositions-file empty\.md: file is empty/,
+    )
+    await refused(
+      ['--findings-file', 'ok.md', '--reload-config'],
+      /--reload-config is not accepted/,
+    )
+    // A flag a repair run would ignore is refused, not dropped silently.
+    for (const flag of [
+      ['--max-iterations', '3'],
+      ['--publish'],
+      ['--check', 'true'],
+      ['--config', 'factory.json'],
+      ['--approve', 'manual'],
+    ])
+      await refused(
+        ['--findings-file', 'ok.md', ...flag],
+        new RegExp(
+          `repair takes only --run, --findings-file and --dispositions-file; not accepted: ${flag[0]}\\.`,
+        ),
+      )
+  })
+
+  it('refuses every parent that is not an approved, delivered repository run', () => {
+    const commit = 'c'.repeat(40)
+    const setup = {
+      target: { kind: 'repo' },
+      profiles: {},
+    }
+    const good = {
+      id: 'p',
+      status: 'completed',
+      input: { target: { kind: 'repo' } },
+      output: {
+        approved: true,
+        conclusion: 'approved',
+        candidate: { commit, branch: 'factory/p' },
+        delivery: { commit },
+      },
+    }
+    assert.equal(repairableCandidate(good, setup).commit, commit)
+    const cases: [string, Partial<typeof good>, RegExp][] = [
+      ['pending', { status: 'pending' }, /it is pending, not completed/],
+      ['leased', { status: 'leased' }, /it is leased, not completed/],
+      ['waiting', { status: 'waiting' }, /it is waiting, not completed/],
+      ['failed', { status: 'failed' }, /it is failed, not completed/],
+      ['cancelled', { status: 'cancelled' }, /it is cancelled, not completed/],
+      [
+        'sample',
+        { input: { target: { kind: 'subject' } } },
+        /not a repository run/,
+      ],
+    ]
+    for (const conclusion of [
+      'rejected',
+      'verification-failed',
+      'review-cap-reached',
+    ])
+      cases.push([
+        conclusion,
+        {
+          output: {
+            ...good.output,
+            approved: false,
+            conclusion,
+            delivery: null as never,
+          },
+        },
+        new RegExp(`its conclusion is ${conclusion}, not approved`),
+      ])
+    cases.push(
+      [
+        'no candidate',
+        { output: { ...good.output, candidate: null as never } },
+        /no candidate commit/,
+      ],
+      [
+        'no delivery',
+        { output: { ...good.output, delivery: null as never } },
+        /no delivery/,
+      ],
+      [
+        'delivery mismatch',
+        { output: { ...good.output, delivery: { commit: 'd'.repeat(40) } } },
+        /delivered commit dddddddddddd is not its last candidate/,
+      ],
+    )
+    for (const [name, change, message] of cases)
+      assert.throws(
+        () => repairableCandidate({ ...good, ...change }, setup),
+        message,
+        name,
+      )
+    assert.throws(() => repairableCandidate(good, null), /setup record/)
+  })
+
+  it('inherits a null or false the parent setup recorded, and falls back only when the setup lacks the value', () => {
+    const commit = 'c'.repeat(40)
+    const profile = (role: string) => ({
+      id: `fake:provider-default:provider-default:${role}`,
+      provider: 'fake',
+      requestedModel: null,
+      requestedEffort: null,
+      effectiveModel: null,
+      effectiveEffort: null,
+    })
+    const storedCommit = {
+      authorName: 'Stored',
+      authorEmail: 'stored@example.com',
+      messageTemplate: null,
+    }
+    const parent = {
+      id: 'p',
+      status: 'completed',
+      input: {
+        provider: 'fake',
+        codexPath: '/stored/codex',
+        target: { kind: 'repo', baselineCheck: true, commit: storedCommit },
+      },
+      output: {
+        approved: true,
+        conclusion: 'approved',
+        candidate: { commit, branch: 'factory/p' },
+        delivery: { commit },
+      },
+    }
+    const setup = {
+      contextMode: 'reuse',
+      maxIterations: 1,
+      agentTimeoutMs: 600000,
+      autoApprove: true,
+      profiles: {
+        code: profile('code'),
+        correctness: profile('correctness'),
+        'edge-cases': profile('edge-cases'),
+      },
+      repair: null,
+      triage: profile('triage'),
+      codexPath: null,
+      baselineCheck: false,
+      target: {
+        kind: 'repo',
+        repoPath: '/repo',
+        task: 'task',
+        spec: null,
+        dispositions: null,
+        issue: null,
+        checkCommand: ['true'],
+        setupCommand: null,
+        checkTimeoutMs: 120000,
+        publish: false,
+        commit: { authorName: null, authorEmail: null, messageTemplate: null },
+      },
+    }
+    const files = {
+      findings: { content: 'FINDING\n', ref: { path: '/f.md' } },
+      dispositions: null,
+    }
+    const { input } = buildRepairInput(parent, setup, files)
+    assert.equal(input.codexPath, null)
+    assert.equal(input.target.baselineCheck, false)
+    assert.deepEqual(input.target.commit, setup.target.commit)
+    assert.deepEqual(input.repairOf.profiles.triage, setup.triage)
+    // A setup from before a value existed takes it from the stored input.
+    const { codexPath: _c, baselineCheck: _b, triage: _t, ...older } = setup
+    const { commit: _m, ...olderTarget } = setup.target
+    const fallback = buildRepairInput(
+      parent,
+      { ...older, target: olderTarget },
+      files,
+    ).input
+    assert.equal(fallback.codexPath, '/stored/codex')
+    assert.equal(fallback.target.baselineCheck, true)
+    assert.deepEqual(fallback.target.commit, storedCommit)
+    assert.equal(fallback.repairOf.profiles.triage, null)
+  })
+
+  it('starts one child per findings and dispositions content, with the parent settings', async () => {
+    const box = await sandbox({
+      check: CHECK,
+      checkTimeoutMs: 150000,
+      agentTimeoutMs: 700000,
+    })
+    const parentId = await trigger(box, [
+      '--repo',
+      box.repo,
+      '--task',
+      'the parent task',
+      '--max-iterations',
+      '1',
+    ])
+    process.env.FAKE_FAIL_FIRST = '0'
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    await durably.init()
+    try {
+      await until(
+        async () => (await durably.getRun(parentId))?.status === 'completed',
+        'the parent completes',
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+    const parent = await inputOf(box, parentId)
+    // Neither the config nor the environment decides anything now.
+    await writeFile(
+      join(box.repo, 'factory.json'),
+      JSON.stringify({ check: ['false'], agentTimeoutMs: 1000 }),
+    )
+    const env = { AGENT_TIMEOUT_MS: '5555', TEST_TIMEOUT_MS: '5555' }
+    await mkdir(join(box.root, 'a'))
+    await mkdir(join(box.root, 'b'))
+    await writeFile(join(box.root, 'a', 'findings.md'), 'FINDING: refunds\n')
+    await writeFile(join(box.root, 'b', 'copy.md'), 'FINDING: refunds\n')
+    await writeFile(join(box.root, 'disp.md'), 'CHILD DISPOSITIONS\n')
+    const repair = async (args: string[]) => {
+      const res = await demo(box, ['repair', '--run', parentId, ...args], env)
+      assert.equal(res.code, 0, res.stderr)
+      return JSON.parse(res.stdout) as {
+        runId: string
+        disposition: string
+        parentRunId: string
+        branch: string
+      }
+    }
+    const first = await repair(['--findings-file', 'a/findings.md'])
+    assert.equal(first.disposition, 'created')
+    assert.equal(first.parentRunId, parentId)
+    assert.equal(first.branch, `factory/${first.runId}`)
+    const again = await repair(['--findings-file', 'b/copy.md'])
+    assert.equal(again.runId, first.runId)
+    assert.equal(again.disposition, 'idempotent')
+    const other = await repair([
+      '--findings-file',
+      'a/findings.md',
+      '--dispositions-file',
+      'disp.md',
+    ])
+    assert.notEqual(other.runId, first.runId)
+
+    type ChildInput = RunInput & {
+      maxIterations: number
+      repairOf: {
+        runId: string
+        findings: string
+        findingsFile: { path: string }
+      }
+    }
+    const child = (await inputOf(box, first.runId)) as ChildInput
+    assert.equal(child.repairOf.runId, parentId)
+    assert.equal(child.repairOf.findings, 'FINDING: refunds\n')
+    assert.ok(
+      child.repairOf.findingsFile.path.endsWith(join('a', 'findings.md')),
+    )
+    assert.equal(child.target.task, parent.target.task)
+    assert.equal(child.target.spec, parent.target.spec)
+    assert.deepEqual(child.target.checkCommand, CHECK)
+    assert.equal(child.checkTimeoutMs, 150000)
+    assert.equal(child.agentTimeoutMs, 700000)
+    assert.equal(child.codexPath, parent.codexPath ?? null)
+    assert.equal(child.maxIterations, 1)
+    assert.equal(child.target.dispositions, null)
+    assert.equal('configSource' in child, false)
+    const withDisp = (await inputOf(box, other.runId)) as ChildInput
+    assert.equal(withDisp.target.dispositions, 'CHILD DISPOSITIONS\n')
+
+    // status --run shows both sides.
+    const parentStatus = await demo(box, ['status', '--run', parentId])
+    assert.deepEqual(
+      (JSON.parse(parentStatus.stdout) as { lineage: unknown }).lineage,
+      { parent: null, children: [first.runId, other.runId] },
+    )
+    const childStatus = await demo(box, ['status', '--run', first.runId])
+    assert.equal(
+      (JSON.parse(childStatus.stdout) as { lineage: { parent: string } })
+        .lineage.parent,
+      parentId,
+    )
+
+    // A candidate branch moved since approval starts nothing.
+    const output = (await (async () => {
+      const d = createAgentDurably({ stateRoot: box.stateRoot })
+      try {
+        await d.migrate()
+        return (await d.getRun(parentId))?.output
+      } finally {
+        await d.db.destroy()
+      }
+    })()) as { candidate: { branch: string } }
+    await git(box.repo, [
+      'update-ref',
+      `refs/heads/${output.candidate.branch}`,
+      'main',
+    ])
+    await writeFile(join(box.root, 'new.md'), 'FINDING: new\n')
+    const moved = await demo(
+      box,
+      ['repair', '--run', parentId, '--findings-file', 'new.md'],
+      env,
+    )
+    assert.notEqual(moved.code, 0)
+    assert.match(moved.stderr, /candidate branch .* moved to/)
+    const d = createAgentDurably({ stateRoot: box.stateRoot })
+    try {
+      await d.migrate()
+      const children = (await d.getRuns()).filter(
+        (r) =>
+          (r.input as { repairOf?: { runId?: string } }).repairOf?.runId ===
+          parentId,
+      )
+      assert.equal(children.length, 2)
+    } finally {
+      await d.db.destroy()
+    }
+    // A stopped child's settings stay its parent's: no config reload.
+    await assert.rejects(
+      reloadTriggerInput(
+        child as unknown as Parameters<typeof reloadTriggerInput>[0],
+      ),
+      /does not apply to a repair run/,
+    )
   })
 })

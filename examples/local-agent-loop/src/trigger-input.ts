@@ -15,13 +15,21 @@ import { parseProviderName } from './engine/providers/index.js'
 import {
   assertSingleMode,
   fixProfile,
+  type AgentLoopInput,
   nonBlank,
   resolveTimeouts,
   timeoutMsSchema,
   type FixedProfile,
 } from './factory/job.js'
-import type { InputFileRef } from './factory/target.js'
-import type { ProfileRole } from './factory/types.js'
+import { repairLabels } from './factory/repair.js'
+import {
+  DEFAULT_COMMIT_SETTINGS,
+  type CommitSettings,
+  type InputFileRef,
+  type RepoTargetConfig,
+} from './factory/target.js'
+import type { FactorySetup, ProfileRole } from './factory/types.js'
+import { assertCandidateUnmoved } from './targets/repo.js'
 
 interface IssueRef {
   number: number
@@ -518,6 +526,7 @@ interface StoredInput {
   fakeScenario?: unknown
   configSource?: ConfigSource
   target: { kind: string; repoPath?: string }
+  repairOf?: unknown
 }
 
 /**
@@ -536,6 +545,10 @@ export async function reloadTriggerInput(stored: StoredInput): Promise<{
   if (stored.target.kind !== 'repo' || !stored.target.repoPath)
     throw new Error(
       '--reload-config needs a repository run; the bundled sample reads no factory.json',
+    )
+  if (stored.repairOf)
+    throw new Error(
+      "--reload-config does not apply to a repair run: it keeps its parent's settings. To run with other settings, start a normal run with trigger",
     )
   const source = stored.configSource ?? { path: null, flags: {} }
   const a: Record<string, string> = {
@@ -582,4 +595,270 @@ export async function reloadTriggerInput(stored: StoredInput): Promise<{
     },
     configSha256: loaded?.sha256 ?? null,
   }
+}
+
+/** The outside findings and optional dispositions a repair run is given. */
+export interface RepairFiles {
+  findings: { content: string; ref: InputFileRef }
+  dispositions: { content: string; ref: InputFileRef } | null
+}
+
+/** The only flags `demo repair` takes; every setting is the parent's. */
+const REPAIR_FLAGS = ['run', 'findings-file', 'dispositions-file']
+
+/**
+ * Read `demo repair`'s input files once, with the same limits as trigger's:
+ * at most 256 KiB, UTF-8, not blank. Any other flag is refused rather than
+ * ignored: a repair run takes its parent's stored settings, and nothing else.
+ */
+export async function readRepairFiles(
+  a: Record<string, string>,
+): Promise<RepairFiles> {
+  if (a['reload-config'] !== undefined)
+    throw new Error(
+      "repair keeps the parent run's stored settings; --reload-config is not accepted. To run with other settings, start a normal run with trigger",
+    )
+  const other = Object.keys(a).filter((flag) => !REPAIR_FLAGS.includes(flag))
+  if (other.length > 0)
+    throw new Error(
+      `repair takes only --run, --findings-file and --dispositions-file; not accepted: ${other.map((f) => `--${f}`).join(', ')}. A repair run keeps the parent run's stored settings; to run with other settings, start a normal run with trigger`,
+    )
+  const findings = a['findings-file']
+  if (!findings) throw new Error('--findings-file <path> required')
+  const dispositions = a['dispositions-file']
+  return {
+    findings: await readInputFile('findings-file', findings),
+    dispositions: dispositions
+      ? await readInputFile('dispositions-file', dispositions)
+      : null,
+  }
+}
+
+/** The parts of a stored parent run a repair run is built from. */
+export interface RepairParent {
+  id: string
+  status: string
+  input: unknown
+  output: unknown
+}
+
+interface StoredRepairInput {
+  provider?: string
+  model?: string
+  effort?: string
+  profiles?: Record<string, unknown>
+  codexPath?: string | null
+  target?: {
+    kind?: string
+    inputFiles?: {
+      task?: InputFileRef | null
+      spec?: InputFileRef | null
+      dispositions?: InputFileRef | null
+    }
+    commit?: CommitSettings
+    baselineCheck?: boolean
+  }
+}
+
+type RepoSetup = FactorySetup & { target: RepoTargetConfig }
+
+interface StoredOutput {
+  approved?: boolean
+  conclusion?: string
+  candidate?: { commit?: string; branch?: string } | null
+  delivery?: { commit?: string | null } | null
+}
+
+/**
+ * The parent's candidate, when the parent may be repaired: a repository run
+ * that completed approved and delivered its last candidate. Anything else,
+ * including a run that stopped with a candidate, is refused.
+ */
+export function repairableCandidate(
+  parent: RepairParent,
+  setup: unknown,
+): {
+  setup: RepoSetup
+  commit: string
+  branch: string
+} {
+  const refuse = (why: string) =>
+    new Error(`refusing to repair ${parent.id}: ${why}`)
+  const input = parent.input as StoredRepairInput | null
+  if (input?.target?.kind !== 'repo') throw refuse('it is not a repository run')
+  if (parent.status !== 'completed')
+    throw refuse(`it is ${parent.status}, not completed`)
+  const output = parent.output as StoredOutput | null
+  if (output?.conclusion !== 'approved' || output.approved !== true)
+    throw refuse(
+      `its conclusion is ${output?.conclusion ?? 'unknown'}, not approved`,
+    )
+  const commit = output.candidate?.commit
+  const branch = output.candidate?.branch
+  if (!commit || !branch) throw refuse('it recorded no candidate commit')
+  const delivered = output.delivery?.commit
+  if (!delivered) throw refuse('it recorded no delivery')
+  if (delivered !== commit)
+    throw refuse(
+      `its delivered commit ${delivered.slice(0, 12)} is not its last candidate ${commit.slice(0, 12)}`,
+    )
+  const stored = setup as Partial<FactorySetup> | null
+  if (stored?.target?.kind !== 'repo' || !stored.profiles)
+    throw refuse('its setup record is missing')
+  return {
+    setup: stored as RepoSetup,
+    commit,
+    branch,
+  }
+}
+
+const sha256Of = (text: string) =>
+  createHash('sha256').update(text).digest('hex')
+
+/**
+ * A repair run's input: everything the parent stored and resolved, based on
+ * its candidate commit, with the findings stored as untrusted input. Nothing
+ * comes from the current factory.json or this process's environment. A value
+ * a parent's setup predates is taken from the parent's stored input.
+ *
+ * Dispositions replace the parent's when given and are inherited otherwise.
+ * The idempotency key names the parent and the SHA-256 of the findings and
+ * of the dispositions the child really gets, so the same content from
+ * another path returns the same run. The labels name the parent, so the
+ * parent's report finds the child; trigger with both.
+ */
+export function buildRepairInput(
+  parent: RepairParent,
+  setup: unknown,
+  files: RepairFiles,
+  /** Demo and test only: the fake provider's behavior for the child. */
+  fakeScenario?: unknown,
+) {
+  const { setup: stored, commit, branch } = repairableCandidate(parent, setup)
+  const parentInput = parent.input as StoredRepairInput
+  const t = stored.target
+  const storedFiles = parentInput.target?.inputFiles ?? {}
+  const dispositions = files.dispositions
+    ? files.dispositions.content
+    : t.dispositions
+  const dispositionsRef = files.dispositions
+    ? files.dispositions.ref
+    : (storedFiles.dispositions ?? null)
+  // A value the parent's setup recorded is inherited as it is, null
+  // included; only a setup from before the value existed falls back to the
+  // parent's stored input.
+  const recorded = <T extends object, K extends keyof T, V>(
+    record: T,
+    key: K,
+    fallback: () => V,
+  ): T[K] | V => (key in record ? record[key] : fallback())
+  const input = {
+    provider: (parentInput.provider ??
+      stored.profiles.code.provider) as AgentLoopInput['provider'],
+    ...(parentInput.model !== undefined ? { model: parentInput.model } : {}),
+    ...(parentInput.effort !== undefined ? { effort: parentInput.effort } : {}),
+    context: stored.contextMode,
+    maxIterations: stored.maxIterations,
+    // The requested settings, for the report's profile rows; the worker
+    // uses the resolved ones in `repairOf`.
+    ...(parentInput.profiles
+      ? { profiles: parentInput.profiles as AgentLoopInput['profiles'] }
+      : {}),
+    target: {
+      kind: 'repo' as const,
+      repoPath: t.repoPath,
+      baseRef: commit,
+      task: t.task,
+      spec: t.spec,
+      dispositions,
+      inputFiles: {
+        task: storedFiles.task ?? null,
+        spec: storedFiles.spec ?? null,
+        dispositions: dispositionsRef,
+      },
+      issue: t.issue,
+      checkCommand: t.checkCommand,
+      setupCommand: t.setupCommand,
+      publish: t.publish,
+      commit: recorded(
+        t,
+        'commit',
+        () => parentInput.target?.commit ?? DEFAULT_COMMIT_SETTINGS,
+      ),
+      baselineCheck: recorded(
+        stored,
+        'baselineCheck',
+        () => parentInput.target?.baselineCheck ?? false,
+      ),
+    },
+    autoApprove: stored.autoApprove,
+    checkTimeoutMs: t.checkTimeoutMs,
+    agentTimeoutMs: stored.agentTimeoutMs,
+    codexPath: recorded(
+      stored,
+      'codexPath',
+      () => parentInput.codexPath ?? null,
+    ),
+    ...(fakeScenario !== undefined
+      ? { fakeScenario: fakeScenario as AgentLoopInput['fakeScenario'] }
+      : {}),
+    repairOf: {
+      runId: parent.id,
+      candidateCommit: commit,
+      candidateBranch: branch,
+      findings: files.findings.content,
+      findingsFile: files.findings.ref,
+      profiles: {
+        code: stored.profiles.code,
+        correctness: stored.profiles.correctness,
+        'edge-cases': stored.profiles['edge-cases'],
+        repair: stored.repair ?? null,
+        // Recorded like the parent's; the worker never runs it for a
+        // repair run.
+        triage: stored.triage ?? null,
+      },
+    },
+  } satisfies AgentLoopInput
+  const idempotencyKey = [
+    `repair-of-${parent.id}`,
+    `findings-${sha256Of(files.findings.content)}`,
+    `dispositions-${dispositions ? sha256Of(dispositions) : 'none'}`,
+  ].join('-')
+  return { input, idempotencyKey, labels: repairLabels(input) }
+}
+
+/** The reads `startableRepair` makes. */
+export interface RepairSource {
+  getRun(id: string): Promise<RepairParent | null>
+  storage: {
+    getCompletedStep(
+      runId: string,
+      name: string,
+    ): Promise<{ output: unknown } | null>
+  }
+}
+
+/**
+ * Read a parent run, refuse it unless it may be repaired and its candidate
+ * branch is unmoved, and build the child's input. Nothing is triggered.
+ */
+export async function startableRepair(
+  durably: RepairSource,
+  parentId: string,
+  files: RepairFiles,
+  /** Demo and test only: the fake provider's behavior for the child. */
+  fakeScenario?: unknown,
+): Promise<ReturnType<typeof buildRepairInput>> {
+  const parent = await durably.getRun(parentId)
+  if (!parent) throw new Error(`no run ${parentId}`)
+  const setup = (await durably.storage.getCompletedStep(parentId, 'setup'))
+    ?.output
+  const built = buildRepairInput(parent, setup, files, fakeScenario)
+  const { target, repairOf } = built.input
+  await assertCandidateUnmoved(
+    target.repoPath,
+    target.baseRef,
+    repairOf.candidateBranch,
+  )
+  return built
 }

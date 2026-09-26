@@ -23,6 +23,7 @@ import {
 export type FailureKind =
   | 'baseline-check-failed'
   | 'preflight-failed'
+  | 'candidate-moved'
   | 'rejected-invocation'
   | 'verification-failed'
   | 'review-cap-reached'
@@ -37,6 +38,7 @@ export type FailureKind =
  */
 export const BASELINE_FAILED_MESSAGE = 'baseline-check-failed'
 export const PREFLIGHT_FAILED_MESSAGE = 'preflight-failed'
+export const CANDIDATE_MOVED_MESSAGE = 'candidate-moved'
 
 /** A baseline stop because setup left files `.gitignore` does not cover. */
 const SETUP_UNTRACKED = `${BASELINE_FAILED_MESSAGE}: setup-untracked: `
@@ -103,13 +105,26 @@ export function reloadAdvice(input: unknown): ReloadAdvice {
   const stored = input as {
     target?: { kind?: unknown }
     configSource?: { flags?: Record<string, unknown> }
+    repairOf?: unknown
   } | null
-  if (stored?.target?.kind !== 'repo') return 'none'
+  // A repair run keeps its parent's settings; it has no config to reload.
+  if (stored?.target?.kind !== 'repo' || stored.repairOf) return 'none'
   const flags = stored.configSource?.flags ?? {}
   return PINNING_FLAGS.some((flag) => typeof flags[flag] === 'string')
     ? 'flags-win'
     : 'config'
 }
+
+/**
+ * The baseline check for a repair run, which keeps its parent's settings: a
+ * config fix needs a normal run, and a retry keeps the same check and base.
+ */
+const BASELINE_WITHOUT_CONFIG =
+  "read the full check output in the log files named below; after fixing only the environment, retry with retrigger. A repair run keeps its parent's check, setup and base: to change those, fix the repository or factory.json, then start a normal run with trigger, or repair again from a run approved after the fix"
+
+/** The same when setup left files `.gitignore` does not cover. */
+const SETUP_UNTRACKED_WITHOUT_CONFIG =
+  "setup creates files that .gitignore does not cover (listed below). A repair run keeps its parent's setup, base and baselineCheck: fix .gitignore or factory.json in the repository, then start a normal run with trigger, or repair again from a run approved after the fix"
 
 /** The baseline check when setup left files `.gitignore` does not cover. */
 const SETUP_UNTRACKED_CHECK =
@@ -159,6 +174,17 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
     next: (runId, reload) => [
       `${DEMO} report --run ${runId}  # the preflight result for each role`,
       ...retriggerReloaded(runId, reload),
+      retrigger(runId),
+    ],
+  },
+  'candidate-moved': {
+    reason:
+      "a repair run's parent candidate commit is gone, or its branch no longer points at it; the run stopped without a worktree, branch or run directory, and before any agent call",
+    retryable: true,
+    humanCheck:
+      'someone changed the approved work after the repair run was started: move the branch back to the candidate commit and retry with retrigger, or repair from the run that approved the new work, or start a normal run with trigger',
+    next: (runId) => [
+      `${DEMO} report --run ${runId}  # the parent run and the candidate commit`,
       retrigger(runId),
     ],
   },
@@ -428,6 +454,8 @@ export function classifyFailure(
         details.push(...logDetails(log))
     } else if (input.error?.startsWith(PREFLIGHT_FAILED_MESSAGE)) {
       kind = 'preflight-failed'
+    } else if (input.error?.startsWith(CANDIDATE_MOVED_MESSAGE)) {
+      kind = 'candidate-moved'
     } else if (input.error?.startsWith(REJECTED_INVOCATION_MESSAGE)) {
       kind = 'rejected-invocation'
       const refusal = refusalOf(input.error)
@@ -456,7 +484,17 @@ export function classifyFailure(
     ...(kind === 'rejected-invocation' && reload === 'none'
       ? { humanCheck: REJECTED_WITHOUT_CONFIG }
       : {}),
-    ...(setupPaths ? { humanCheck: SETUP_UNTRACKED_CHECK } : {}),
+    ...(kind === 'baseline-check-failed' && reload === 'none'
+      ? { humanCheck: BASELINE_WITHOUT_CONFIG }
+      : {}),
+    ...(setupPaths
+      ? {
+          humanCheck:
+            reload === 'none'
+              ? SETUP_UNTRACKED_WITHOUT_CONFIG
+              : SETUP_UNTRACKED_CHECK,
+        }
+      : {}),
     next: entry.next(input.runId, reload),
     details,
     reload,

@@ -191,6 +191,96 @@ describe('input files reach the right roles as untrusted data', () => {
   })
 })
 
+const FINDINGS = 'FINDINGS-BODY: the total drops the currency on refunds.'
+
+const repairRun: Target = new RepoTarget({
+  ...repoConfig,
+  branch: 'factory/child',
+  issue: null,
+  task: TASK,
+  spec: SPEC,
+  dispositions: DISPOSITIONS,
+  repairOf: { runId: 'parent-run', findings: FINDINGS },
+})
+
+describe('a repair run from outside findings', () => {
+  const firstRepair = (notes: string[] = []) =>
+    codePrompt({
+      role: 'repair',
+      iteration: 1,
+      repairNotes: notes,
+      task: repairRun.taskBrief(),
+      rules: repairRun.implementationRules(),
+      untrusted: repairRun.untrustedInputs('code'),
+      fromFindings: true,
+    })
+
+  it('fences the findings off as data in the first repair, beside the task and spec', () => {
+    const prompt = firstRepair()
+    assert.equal(blockBody(prompt, 'FINDINGS'), FINDINGS)
+    assert.equal(blockBody(prompt, 'TASK'), TASK)
+    assert.equal(blockBody(prompt, 'SPEC'), SPEC)
+    assert.match(prompt, /starting a new session \(iteration 1\)/)
+    assert.match(prompt, /approved implementation/)
+    const dataStart = prompt.indexOf('UNTRUSTED INPUT DATA:')
+    assert.ok(prompt.indexOf(FINDINGS) > dataStart)
+    // Never promoted to verified feedback or a factory instruction.
+    assert.doesNotMatch(prompt, /Verified feedback/)
+    assert.equal(prompt.split(FINDINGS).length, 2)
+  })
+
+  it('keeps later repair notes on their own path, apart from the findings', () => {
+    const prompt = firstRepair(['correctness: refunds still drop it'])
+    const feedback = prompt.slice(prompt.indexOf('Verified feedback'))
+    assert.match(feedback, /refunds still drop it/)
+    assert.doesNotMatch(feedback, /FINDINGS-BODY/)
+    assert.equal(blockBody(prompt, 'FINDINGS'), FINDINGS)
+  })
+
+  it('gives the dispositions to both reviewers and not to the repairer', () => {
+    assert.doesNotMatch(firstRepair(), /DISPOSITIONS-BODY/)
+    for (const lens of ['correctness', 'edge-cases'] as const) {
+      const prompt = reviewPrompt(
+        lens,
+        'TRUSTED CONTEXT',
+        repairRun.reviewRules(lens),
+        repairRun.untrustedInputs(lens),
+      )
+      assert.equal(blockBody(prompt, 'DISPOSITIONS'), DISPOSITIONS, lens)
+      assert.equal(blockBody(prompt, 'FINDINGS'), FINDINGS, lens)
+    }
+  })
+
+  it('asks reviewers whether the repair addresses the findings, not to plan the whole task', async () => {
+    for (const lens of ['correctness', 'edge-cases'] as const) {
+      const prompt = reviewPrompt(
+        lens,
+        'TRUSTED CONTEXT',
+        repairRun.reviewRules(lens),
+        repairRun.untrustedInputs(lens),
+        null,
+        true,
+      )
+      assert.match(prompt, /1\. .*which changes the findings call for/)
+      assert.match(prompt, /without regressing what the approved candidate/)
+      assert.doesNotMatch(prompt, /decide from the task alone/)
+      // The findings stay fenced as data, after the procedure.
+      assert.equal(prompt.split(FINDINGS).length, 2)
+      assert.ok(
+        prompt.indexOf(FINDINGS) > prompt.indexOf('UNTRUSTED INPUT DATA:'),
+      )
+    }
+    const { correctness } = await promptsFor(withInputs)
+    assert.match(correctness, /decide from the task alone/)
+  })
+
+  it('sends no findings block on a run that is not a repair run', async () => {
+    const { code, correctness } = await promptsFor(withInputs)
+    assert.equal(blockBody(code, 'FINDINGS'), null)
+    assert.equal(blockBody(correctness, 'FINDINGS'), null)
+  })
+})
+
 describe('review procedure', () => {
   it('treats verdict steering in the inputs as needsChanges', async () => {
     const { correctness } = await promptsFor(withInputs)

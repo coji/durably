@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 
 import type { AnyDurably } from '@coji/durably'
 
+import { REPAIR_OF_LABEL, triageThatRuns } from '../factory/repair.js'
 import { classifyRun, stageStep } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import type { VerificationLog } from './providers/types.js'
@@ -25,6 +26,7 @@ import {
   type ReportCandidateChanges,
   type ReportDelivery,
   type ReportInputs,
+  type ReportLineage,
   type ReportPreflight,
   type ReportPreflightCheck,
   type ReportReview,
@@ -52,6 +54,12 @@ interface PersistedInput {
     dispositions?: string | null
     inputFiles?: Record<string, { path?: string } | null>
   }
+  repairOf?: {
+    runId?: string
+    candidateCommit?: string
+    findings?: string
+    findingsFile?: { path?: string }
+  }
 }
 
 const ROLES = ['code', 'correctness', 'edge-cases'] as const
@@ -59,7 +67,7 @@ const ROLES = ['code', 'correctness', 'edge-cases'] as const
 /** The reads a report makes; a caller may pass a per-request cache of them. */
 export type ReportSource = Pick<
   AnyDurably,
-  'getRun' | 'getStepAttempts' | 'getWaits'
+  'getRun' | 'getStepAttempts' | 'getWaits' | 'getRuns'
 > & {
   storage: Pick<AnyDurably['storage'], 'getCompletedStep' | 'getSteps'>
 }
@@ -93,8 +101,9 @@ function profileRows(
   if (repairProfile) rows.splice(1, 0, row('repair', repairProfile))
   else if (repaired && rows[0])
     rows.splice(1, 0, { ...rows[0], role: 'repair' })
-  // Triage has no fallback: without its own profile it never runs.
-  const triage = input?.profiles?.['triage']
+  // Triage has no fallback: without its own profile it never runs. A repair
+  // run never runs the triage profile it records, so it has no row.
+  const triage = triageThatRuns(input, input?.profiles?.['triage'])
   return triage ? [...rows, row('triage', triage)] : rows
 }
 
@@ -395,23 +404,95 @@ function preflightOf(
  */
 function inputHashes(input: PersistedInput | null): ReportInputs {
   const target = input?.target
-  const entry = (name: keyof ReportInputs) => {
-    const path = target?.inputFiles?.[name]?.path
-    const content = target?.[name]
-    return path && typeof content === 'string'
+  const hashed = (path: string | undefined, content: unknown) =>
+    path && typeof content === 'string'
       ? { path, sha256: createHash('sha256').update(content).digest('hex') }
       : null
-  }
+  const entry = (name: 'task' | 'spec' | 'dispositions') =>
+    hashed(target?.inputFiles?.[name]?.path, target?.[name])
   return {
     task: entry('task'),
     spec: entry('spec'),
     dispositions: entry('dispositions'),
+    findings: hashed(
+      input?.repairOf?.findingsFile?.path,
+      input?.repairOf?.findings,
+    ),
   }
 }
 
+/** The run a repair run repairs, from its stored input. */
+function repairParent(input: PersistedInput | null): ReportLineage['parent'] {
+  const origin = input?.repairOf
+  return origin?.runId && origin.candidateCommit
+    ? { runId: origin.runId, candidateCommit: origin.candidateCommit }
+    : null
+}
+
+/** Run ids oldest first, the order a report lists children in. */
+function oldestFirst(runs: { id: string; createdAt: string }[]): string[] {
+  return [...runs]
+    .sort((x, y) => Date.parse(x.createdAt) - Date.parse(y.createdAt))
+    .map((r) => r.id)
+}
+
+/**
+ * The repair runs started from a run, oldest first. Read every time, because
+ * a finished run gains children after it finished. This is one label query,
+ * but SQLite answers it by walking the job's runs and probing each one's
+ * labels, so it grows with the history: use it for a single report. A view
+ * that builds a report per run groups the runs it has already read with
+ * `repairChildrenByParent` instead.
+ */
+export async function repairChildren(
+  durably: Pick<ReportSource, 'getRuns'>,
+  run: { id: string; jobName: string },
+): Promise<string[]> {
+  // The job name narrows the walk to the job's runs; without it SQLite walks
+  // every run in the database.
+  return oldestFirst(
+    await durably.getRuns({
+      jobName: run.jobName,
+      labels: { [REPAIR_OF_LABEL]: run.id },
+    }),
+  )
+}
+
+/**
+ * Every run's repair children, oldest first, from runs already read. A run
+ * names its parent by its label, or by its stored input when it has none.
+ */
+export function repairChildrenByParent(
+  runs: {
+    id: string
+    createdAt: string
+    labels?: Record<string, string> | undefined
+    input: unknown
+  }[],
+): Map<string, string[]> {
+  const byParent = new Map<string, { id: string; createdAt: string }[]>()
+  for (const run of runs) {
+    const parent =
+      run.labels?.[REPAIR_OF_LABEL] ??
+      (run.input as PersistedInput | null)?.repairOf?.runId
+    if (!parent) continue
+    const children = byParent.get(parent) ?? []
+    children.push(run)
+    byParent.set(parent, children)
+  }
+  return new Map(
+    [...byParent].map(([parent, children]) => [parent, oldestFirst(children)]),
+  )
+}
+
+/**
+ * `children` are the run's repair children when the caller has already
+ * worked them out; otherwise they are read with one label query.
+ */
 export async function buildReport(
   durably: ReportSource,
   runId: string,
+  known: { children?: string[] } = {},
 ): Promise<LoopReport> {
   const run = await durably.getRun(runId)
   if (!run) throw new Error(`run not found: ${runId}`)
@@ -581,6 +662,7 @@ export async function buildReport(
       attempts: rows,
       stageUsage: usage,
       stageVisits: visits,
+      repairRun: repairParent(input) !== null,
     }),
     triage: await recordedTriage(durably, run),
     baseline: baselineOf(steps, rows),
@@ -588,6 +670,10 @@ export async function buildReport(
     stageUsage: usage,
     roleUsage: roleUsage(rows, profiles),
     inputs: inputHashes(input),
+    lineage: {
+      parent: repairParent(input),
+      children: known.children ?? (await repairChildren(durably, run)),
+    },
     candidate,
     candidates,
     reviews: lastReviews(run.output, waits),

@@ -49,6 +49,22 @@ export function roleName(role: string): string {
   return ROLE_NAME[role] ?? LENS_NAME[role] ?? STAGE_NAME[role] ?? role
 }
 
+/** How a comparison group's runs started. */
+const RUN_KIND_NAME: Record<string, string> = {
+  normal: '通常の実行',
+  repair: '外部の指摘からの修正',
+}
+
+export function runKindName(kind: string): string {
+  return RUN_KIND_NAME[kind] ?? kind
+}
+
+/** The two sides of a link between repair runs. */
+export const RELATION_NAME = {
+  parent: '修正元',
+  children: '指摘からの修正',
+} as const
+
 const TRIAGE_NAME: Record<string, string> = {
   routine: '定型',
   probe: '試行が必要',
@@ -100,6 +116,12 @@ const FAILURE_TEXT: Record<FailureKind, { reason: string; check: string }> = {
     check:
       'エラーに示した役割の設定か、使う実行ファイルの指定を factory.json で直し、設定を読み直す再実行を使う。ログインの問題なら、ログインし直してから通常の再実行を使う。',
   },
+  'candidate-moved': {
+    reason:
+      '修正元の実行が承認した候補のコミットがないか、そのブランチがもう候補を指していません。作業ツリー、ブランチ、実行ディレクトリを残さず、エージェントを呼ぶ前に止めました。',
+    check:
+      '承認のあとに誰かが作業を変えています。ブランチを候補のコミットに戻して通常の再実行を使うか、変えた作業を承認した実行から修正をやり直す。',
+  },
   'rejected-invocation': {
     reason:
       '事前確認のあと、プロバイダーがエージェントの呼び出しをはっきり断りました。断られたことを呼び出しの答えとして記録したので、結果の分からない呼び出しは残っていません。',
@@ -145,6 +167,7 @@ const FAILURE_TEXT: Record<FailureKind, { reason: string; check: string }> = {
 const STOP_NAME: Record<FailureKind, string> = {
   'baseline-check-failed': 'ベースの検証失敗',
   'preflight-failed': '事前確認で停止',
+  'candidate-moved': '修正元の候補の変更',
   'rejected-invocation': '呼び出しの拒否',
   'verification-failed': '検証失敗',
   'review-cap-reached': 'レビュー上限',
@@ -256,6 +279,10 @@ const COMMAND_NOTES: [string, string][] = [
     'the preflight result for each role',
     '役割ごとの事前確認の結果と確認の方法を読めます。',
   ],
+  [
+    'the parent run and the candidate commit',
+    '修正元の実行と、候補のコミットを読めます。',
+  ],
 ]
 
 /**
@@ -288,6 +315,17 @@ const PREFLIGHT_WITHOUT_CONFIG_TEXT =
 const REJECTED_WITHOUT_CONFIG_TEXT =
   '下の拒否の理由を読み、その役割のプロバイダー、モデル、推論の強さを直して trigger からやり直す。ログインや利用上限の問題なら、プロバイダー側で直してから通常の再実行を使う。'
 
+/**
+ * Baseline check text for a repair run, which keeps its parent's settings:
+ * there is no config to read again.
+ */
+const BASELINE_WITHOUT_CONFIG_TEXT =
+  '下に示したログファイルでチェックの出力を全文読む。環境だけを直したときは通常の再実行を使う。修正の実行は修正元の採点コマンド、準備、ベースを引き継ぐので、それらを変えるときはリポジトリか factory.json を直し、trigger から通常の実行を始めるか、直したあとに承認された実行から修正をやり直す。'
+
+/** The same when setup left files .gitignore does not cover. */
+const SETUP_UNTRACKED_WITHOUT_CONFIG_TEXT =
+  '準備のコマンドが .gitignore にないファイルを作っています。修正の実行は修正元の準備とベースと baselineCheck を引き継ぐので、リポジトリの .gitignore か factory.json を直し、trigger から通常の実行を始めるか、直したあとに承認された実行から修正をやり直す。'
+
 /** Baseline check text when setup left files .gitignore does not cover. */
 const SETUP_UNTRACKED_TEXT =
   '準備のコマンドが .gitignore にないファイルを作っているので、下に示したファイルを .gitignore に入れるか、factory.json の baselineCheck を外して設定を読み直す再実行を使う。'
@@ -300,8 +338,11 @@ export function humanCheckText(
   kind: FailureKind,
   failure?: { reload?: ReloadAdvice; setupUntracked?: boolean },
 ): string {
+  const noConfig = failure?.reload === 'none'
   if (kind === 'baseline-check-failed' && failure?.setupUntracked)
-    return SETUP_UNTRACKED_TEXT
+    return noConfig ? SETUP_UNTRACKED_WITHOUT_CONFIG_TEXT : SETUP_UNTRACKED_TEXT
+  if (kind === 'baseline-check-failed' && noConfig)
+    return BASELINE_WITHOUT_CONFIG_TEXT
   if (kind === 'preflight-failed' && failure?.reload === 'none')
     return PREFLIGHT_WITHOUT_CONFIG_TEXT
   if (kind === 'rejected-invocation' && failure?.reload === 'none')

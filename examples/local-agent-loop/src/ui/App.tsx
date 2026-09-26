@@ -38,8 +38,10 @@ import {
   lensName,
   LOG_WRITE_ERROR_NOTE,
   NO_EXIT_CODE,
+  RELATION_NAME,
   reviewDecision,
   roleName,
+  runKindName,
   squashedBranchField,
   stageName,
   stopName,
@@ -50,6 +52,7 @@ import type {
   CompareResponse,
   Pipeline,
   PipelineState,
+  Relations,
   RunDetailResponse,
   RunRow,
   RunsResponse,
@@ -553,6 +556,37 @@ function RunLink({ id, name }: { id: string; name: string }) {
       </a>
       <IdSuffix id={id} />
     </span>
+  )
+}
+
+/**
+ * The run a repair run started from, and the repair runs started from this
+ * one, each by its name. Nothing when the run has neither.
+ */
+function RelationLinks({ relations }: { relations: Relations }) {
+  const { parent, children } = relations
+  if (!parent && children.length === 0) return null
+  return (
+    <dl className="flex flex-col gap-1 text-xs">
+      {parent ? (
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+          <dt className="text-fg-2">{RELATION_NAME.parent}</dt>
+          <dd className="min-w-0">
+            <RunLink id={parent.id} name={parent.name} />
+          </dd>
+        </div>
+      ) : null}
+      {children.length > 0 ? (
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+          <dt className="text-fg-2">{RELATION_NAME.children}</dt>
+          <dd className="flex min-w-0 flex-col gap-1">
+            {children.map((c) => (
+              <RunLink key={c.id} id={c.id} name={c.name} />
+            ))}
+          </dd>
+        </div>
+      ) : null}
+    </dl>
   )
 }
 
@@ -1622,6 +1656,7 @@ function OpenRun({ run, now }: { run: RunRow; now: string }) {
           <Ago iso={run.createdAt} now={now} prefix="開始 " />
         </span>
       </div>
+      <RelationLinks relations={run.relations} />
       <Stepper pipeline={run.pipeline} />
       {running ? <LiveProgress live={run.live} extra={progress} /> : null}
       <p className="text-fg-2 text-sm">
@@ -1704,6 +1739,7 @@ function FinishedTable({ runs, now }: { runs: RunRow[]; now: string }) {
                 <Td>
                   <span className="flex max-w-md flex-col gap-1">
                     <RunLink id={run.id} name={run.name} />
+                    <RelationLinks relations={run.relations} />
                     <Stepper pipeline={run.pipeline} />
                   </span>
                 </Td>
@@ -2184,6 +2220,7 @@ const INPUT_NAME = {
   task: 'タスク',
   spec: '仕様',
   dispositions: '指摘の扱い',
+  findings: '外部の指摘',
 } as const
 
 function RecordPanels({ report: r }: { report: LoopReport }) {
@@ -2244,7 +2281,10 @@ function RecordPanels({ report: r }: { report: LoopReport }) {
           値は保存した内容の SHA-256 とファイルの場所です。
         </p>
         <dl className="flex flex-col gap-2">
-          {(['task', 'spec', 'dispositions'] as const).map((name) => {
+          {(r.inputs.findings
+            ? (['task', 'spec', 'dispositions', 'findings'] as const)
+            : (['task', 'spec', 'dispositions'] as const)
+          ).map((name) => {
             const file = r.inputs[name]
             return (
               <Field key={name} label={INPUT_NAME[name]}>
@@ -2300,6 +2340,7 @@ function RunPage({ data }: { data: RunDetailResponse }) {
           />
           <CopyAnnouncer copied={copied} />
         </div>
+        <RelationLinks relations={data.relations} />
         <Stepper pipeline={data.pipeline} />
       </div>
 
@@ -2377,14 +2418,14 @@ function ComparePage({ data }: { data: CompareResponse }) {
     <div className="flex flex-col gap-6">
       <p className="text-fg-2 text-sm">
         終わった実行 {data.runIds.length}{' '}
-        件を設定のまとまりごとに集計しています。不明な値は 0
-        として扱わず、統計から除いて「不明」の列に数えます。費用は API
+        件を設定のまとまりごとに集計しています。外部の指摘からの修正は通常の実行と分け、修正元の時間や費用は含めません。不明な値は
+        0 として扱わず、統計から除いて「不明」の列に数えます。費用は API
         換算の参考値です。
       </p>
       {groups.map((g) => (
         <Panel
-          key={g.configVersion ?? g.label}
-          title={`${g.label} · 設定 ${g.configVersion ?? '版なし'}`}
+          key={`${g.kind}|${g.configVersion ?? g.label}`}
+          title={`${g.kind === 'repair' ? `${runKindName(g.kind)} · ` : ''}${g.label} · 設定 ${g.configVersion ?? '版なし'}`}
         >
           <p className="mb-3 text-sm">
             {g.runs} 件 · 成功 {g.successes} · 成功率{' '}

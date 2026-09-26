@@ -32,6 +32,8 @@ import {
 import {
   asReportCandidate,
   buildReport,
+  repairChildren,
+  repairChildrenByParent,
   type ReportSource,
 } from '../engine/build-report.js'
 import { compareReports, type Comparison } from '../engine/compare.js'
@@ -63,6 +65,22 @@ import { lensName, stageName, stepPartName } from './labels.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
+/** A linked run by its name, for the links between repair runs. */
+export interface RunRef {
+  id: string
+  /** From the stored input; see `runName`. */
+  name: string
+}
+
+/**
+ * The run this one repairs from outside findings, and the repair runs
+ * started from this one, oldest first.
+ */
+export interface Relations {
+  parent: RunRef | null
+  children: RunRef[]
+}
+
 /** One row of the run list. */
 export interface RunRow {
   id: string
@@ -86,6 +104,7 @@ export interface RunRow {
   costUsd: number | null
   triage: ReportTriage['judgment'] | null
   pipeline: Pipeline
+  relations: Relations
 }
 
 export interface RunsResponse {
@@ -107,6 +126,7 @@ export interface RunDetailResponse {
   needsHuman: boolean
   live: LiveElapsed | null
   pipeline: Pipeline
+  relations: Relations
   /** The run as a span tree on one time axis, as of `now`. */
   trace: Trace
   /** Exactly what `report --run <id> --format json` prints. */
@@ -887,6 +907,9 @@ async function allRuns(durably: AgentLoopDurably): Promise<Run[]> {
   return runs.sort((x, y) => Date.parse(y.createdAt) - Date.parse(x.createdAt))
 }
 
+type RunFilter = Parameters<ReportSource['getRuns']>[0]
+const runsKey = (filter: RunFilter) => `runs:${JSON.stringify(filter ?? {})}`
+
 /**
  * One request's reads, each made once however many readers ask for it: the
  * report, the diagnosis and the trace read the same run's steps and attempts.
@@ -906,6 +929,10 @@ export function readOnce(db: ReportSource, known: Run[] = []): ReportSource {
     getStepAttempts: (id) =>
       once(`attempts:${id}`, () => db.getStepAttempts(id)),
     getWaits: (id) => once(`waits:${id}`, () => db.getWaits(id)),
+    getRuns: ((filter?: RunFilter) =>
+      once(runsKey(filter), () =>
+        db.getRuns(filter),
+      )) as ReportSource['getRuns'],
     storage: {
       getSteps: (id) => once(`steps:${id}`, () => db.storage.getSteps(id)),
       getCompletedStep: (id, name) =>
@@ -919,8 +946,11 @@ export function readOnce(db: ReportSource, known: Run[] = []): ReportSource {
  * built once and reused while the row is unchanged. Only a failed or
  * cancelled run's `failure` can still change, because it also reads
  * checkpoint files, so a reused report gets that one field classified again.
- * Open runs are built on every call. `fresh` says the report's failure was
- * worked out by this call.
+ * Its repair children can also be added after it finished, so a reused
+ * report always gets them again: from `children` when the caller worked them
+ * out from the runs it read, otherwise with one label query. Open runs are
+ * built on every call. `fresh` says the report's failure was worked out by
+ * this call.
  */
 export function finishedReportCache(build = buildReport) {
   const finished = new Map<string, { updatedAt: string; report: LoopReport }>()
@@ -929,17 +959,22 @@ export function finishedReportCache(build = buildReport) {
       src: ReportSource,
       run: Pick<
         Run,
-        'id' | 'status' | 'updatedAt' | 'input' | 'output' | 'error'
+        'id' | 'jobName' | 'status' | 'updatedAt' | 'input' | 'output' | 'error'
       >,
+      children?: string[],
     ): Promise<{ report: LoopReport; fresh: boolean }> {
       const hit = finished.get(run.id)
       if (hit?.updatedAt === run.updatedAt) {
+        const lineage = {
+          parent: hit.report.lineage?.parent ?? null,
+          children: children ?? (await repairChildren(src, run)),
+        }
         if (run.status === 'completed')
-          return { report: hit.report, fresh: false }
+          return { report: { ...hit.report, lineage }, fresh: false }
         const failure = await classifyRun(src, run)
-        return { report: { ...hit.report, failure }, fresh: true }
+        return { report: { ...hit.report, lineage, failure }, fresh: true }
       }
-      const report = await build(src, run.id)
+      const report = await build(src, run.id, children ? { children } : {})
       if (TERMINAL_STATUSES.includes(run.status))
         finished.set(run.id, { updatedAt: run.updatedAt, report })
       return { report, fresh: true }
@@ -949,6 +984,42 @@ export function finishedReportCache(build = buildReport) {
       const ids = new Set(runs.map((r) => r.id))
       for (const id of finished.keys()) if (!ids.has(id)) finished.delete(id)
     },
+  }
+}
+
+/**
+ * The reports of `runs`, for a view that lists many. Each run's repair
+ * children come from `all`, the job's runs this request already read, grouped
+ * once, so no report makes its own child query and the view's reads do not
+ * grow with the square of the history.
+ */
+export async function listedReports(
+  cache: ReturnType<typeof finishedReportCache>,
+  src: ReportSource,
+  runs: Run[],
+  all: Run[],
+): Promise<{ run: Run; report: LoopReport; fresh: boolean }[]> {
+  const children = repairChildrenByParent(all)
+  return Promise.all(
+    runs.map(async (run) => ({
+      run,
+      ...(await cache.get(src, run, children.get(run.id) ?? [])),
+    })),
+  )
+}
+
+/** Name the report's parent and children, from their stored inputs. */
+async function relationsOf(
+  src: ReportSource,
+  lineage: LoopReport['lineage'] | undefined,
+): Promise<Relations> {
+  const ref = async (id: string): Promise<RunRef> => {
+    const run = await src.getRun(id)
+    return { id, name: run ? runName(run.input) : '見つからない実行' }
+  }
+  return {
+    parent: lineage?.parent ? await ref(lineage.parent.runId) : null,
+    children: await Promise.all((lineage?.children ?? []).map(ref)),
   }
 }
 
@@ -981,6 +1052,7 @@ async function inspect(
       live,
       report,
     }),
+    relations: await relationsOf(src, report.lineage),
     report,
   }
 }
@@ -1031,11 +1103,11 @@ function createUiApi() {
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
     const src = readOnce(db, all)
+    const built = await listedReports(reports, src, all, all)
     const rows = await Promise.all(
-      all.map(async (run) => {
-        const { report, fresh } = await reports.get(src, run)
-        return runRow(run, await inspect(src, run, now, report, fresh))
-      }),
+      built.map(async ({ run, report, fresh }) =>
+        runRow(run, await inspect(src, run, now, report, fresh)),
+      ),
     )
     return { ...base, exists: true, runs: rows }
   }
@@ -1080,8 +1152,8 @@ function createUiApi() {
     reports.keep(all)
     const done = all.filter((r) => TERMINAL_STATUSES.includes(r.status))
     const src = readOnce(db, done)
-    const built = await Promise.all(
-      done.map(async (r) => (await reports.get(src, r)).report),
+    const built = (await listedReports(reports, src, done, all)).map(
+      (r) => r.report,
     )
     return {
       runIds: done.map((r) => r.id),
