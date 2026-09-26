@@ -458,3 +458,66 @@ describe('the repair profile in the config version', () => {
     assert.equal(new Set(versions).size, versions.length)
   })
 })
+
+describe('commit settings in the config version', () => {
+  const profile: ResolvedProfile = {
+    id: 'fake:fake-model:provider-default:code',
+    provider: 'fake',
+    requestedModel: null,
+    requestedEffort: null,
+    effectiveModel: 'fake-model',
+    effectiveEffort: null,
+  }
+  const base = {
+    contextMode: 'reuse',
+    instructionsVersion: 'local-factory.v3',
+    maxIterations: 2,
+    target: 'repo:node --test',
+    agentTimeoutMs: 1800000,
+    checkTimeoutMs: 900000,
+    code: profile,
+    correctness: profile,
+    edgeCases: profile,
+  }
+  const none = {
+    authorName: null,
+    authorEmail: null,
+    messageTemplate: null,
+  }
+  // The version such a run had before commit settings existed.
+  const PRIOR = '12ea50a6cf90735b'
+
+  it('keeps the prior version when the author and template are left out', () => {
+    assert.equal(configVersionOf(base), PRIOR)
+    assert.equal(configVersionOf({ ...base, commit: null }), PRIOR)
+    assert.equal(configVersionOf({ ...base, commit: none }), PRIOR)
+    // Which branch --publish pushes does not change what runs.
+    assert.equal(
+      configVersionOf({
+        ...base,
+        commit: { ...none, publishSquashed: true } as typeof none,
+      }),
+      PRIOR,
+    )
+  })
+
+  it('changes with each author field and the message template', () => {
+    const versions = [
+      configVersionOf({ ...base, commit: { ...none, authorName: 'Bot' } }),
+      configVersionOf({
+        ...base,
+        commit: { ...none, authorEmail: 'bot@example.com' },
+      }),
+      configVersionOf({
+        ...base,
+        commit: { ...none, messageTemplate: 'fix: {task}' },
+      }),
+      configVersionOf({
+        ...base,
+        commit: { ...none, messageTemplate: 'feat: {task}' },
+      }),
+    ]
+    for (const version of versions) assert.notEqual(version, PRIOR)
+    assert.equal(new Set(versions).size, versions.length)
+  })
+})

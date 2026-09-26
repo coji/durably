@@ -15,6 +15,7 @@ import { parseProviderName } from './engine/providers/index.js'
 import {
   assertSingleMode,
   fixProfile,
+  nonBlank,
   resolveTimeouts,
   timeoutMsSchema,
   type FixedProfile,
@@ -54,6 +55,18 @@ const roleConfigSchema = z
   })
   .strict()
 
+/** How the run's commits are made; every field optional. */
+const commitConfigSchema = z
+  .object({
+    authorName: nonBlank.optional(),
+    authorEmail: nonBlank.optional(),
+    /** `{iteration}`, `{runId}` and `{task}` are replaced. */
+    messageTemplate: nonBlank.optional(),
+    /** With `--publish`, publish the squashed branch instead. */
+    publishSquashed: z.boolean().optional(),
+  })
+  .strict()
+
 /**
  * `factory.json`: what stays the same for every run against one repository.
  * Everything is optional here; `check` is required once flags are applied.
@@ -87,6 +100,8 @@ const factoryConfigSchema = z
     /** Milliseconds; win over `TEST_TIMEOUT_MS` / `AGENT_TIMEOUT_MS`. */
     checkTimeoutMs: timeoutMsSchema.optional(),
     agentTimeoutMs: timeoutMsSchema.optional(),
+    /** Commit author, message template, and the branch `--publish` pushes. */
+    commit: commitConfigSchema.optional(),
   })
   .strict()
 
@@ -313,6 +328,7 @@ async function repoSettings(
       'a check command is required for --repo: set "check" in factory.json or pass --check "<command>". It is the pinned check that decides pass or fail',
     )
   const setupCommand = a['setup'] ? splitArgv(a['setup']) : config?.setup
+  const commit = config?.commit
   return {
     settings: {
       baseRef: a['base'] ?? config?.base ?? 'HEAD',
@@ -320,6 +336,14 @@ async function repoSettings(
       setupCommand:
         setupCommand && setupCommand.length > 0 ? setupCommand : null,
       baselineCheck: config?.baselineCheck ?? false,
+      // Fixed here with every default filled in, so the run never reads
+      // factory.json again and a reload reads it afresh.
+      commit: {
+        authorName: commit?.authorName ?? null,
+        authorEmail: commit?.authorEmail ?? null,
+        messageTemplate: commit?.messageTemplate ?? null,
+        publishSquashed: commit?.publishSquashed ?? false,
+      },
     },
     codexPath: await resolveCodexPath(loaded),
     configSource: {

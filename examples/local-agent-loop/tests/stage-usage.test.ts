@@ -588,6 +588,8 @@ function report(
       summary: 'patch',
       branch: `factory/${runId}`,
       commit: 'c'.repeat(40),
+      squashedBranch: null,
+      squashedCommit: null,
     },
     failure: null,
     stageVisits: sv,

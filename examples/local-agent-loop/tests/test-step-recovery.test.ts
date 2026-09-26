@@ -133,6 +133,7 @@ async function repoWithCheck(script: string, checkTimeoutMs = 60000) {
   })
   const candidate = await target.seal({
     iteration: 1,
+    runId: 'run',
     attemptId: 'seal',
     signal: new AbortController().signal,
   })

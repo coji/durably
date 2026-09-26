@@ -15,7 +15,10 @@ import { after, before, describe, it } from 'node:test'
 import { runChild } from '../src/engine/child.js'
 import {
   addWorktree,
+  branchCommit,
   commitAll,
+  DEFAULT_COMMIT_AUTHOR,
+  ensureSquashedBranch,
   describeCommitChanges,
   diffStat,
   isDirty,
@@ -27,14 +30,24 @@ import {
   resolveCommit,
   treeOf,
 } from '../src/engine/git.js'
+import { renderCommitMessage, squashedBranchFor } from '../src/targets/repo.js'
 
 let root = ''
 let repo = ''
 let base = ''
 
-async function git(cwd: string, args: string[]): Promise<void> {
+async function git(cwd: string, args: string[]): Promise<string> {
   const res = await runChild('git', args, { cwd, timeoutMs: 30000 })
   if (res.code !== 0) throw new Error(`git ${args.join(' ')}: ${res.stderr}`)
+  return res.stdout
+}
+
+/** Author, committer and message of one commit. */
+async function commitInfo(commit: string) {
+  const [author, committer, ...message] = (
+    await git(repo, ['log', '-1', '--format=%an <%ae>%n%cn <%ce>%n%B', commit])
+  ).split('\n')
+  return { author, committer, message: message.join('\n').trim() }
 }
 
 before(async () => {
@@ -223,5 +236,248 @@ describe('git engine', () => {
       deletions: 0,
     })
     await removeWorktree(repo, wt)
+  })
+
+  it('commits as the given author, and as durably-factory without one', async () => {
+    const wt = join(root, 'wt-author')
+    await addWorktree({ repo, dir: wt, baseCommit: base, branch: 'work/au' })
+    await writeFile(join(wt, 'a.txt'), 'by default\n')
+    const plain = await commitAll(wt, 'factory iteration 1')
+    assert.deepEqual(await commitInfo(plain.commit), {
+      author: `${DEFAULT_COMMIT_AUTHOR.name} <${DEFAULT_COMMIT_AUTHOR.email}>`,
+      committer: `${DEFAULT_COMMIT_AUTHOR.name} <${DEFAULT_COMMIT_AUTHOR.email}>`,
+      message: 'factory iteration 1',
+    })
+    await writeFile(join(wt, 'a.txt'), 'by the bot\n')
+    const named = await commitAll(wt, 'fix: add (iteration 2)', {
+      author: { name: 'Factory Bot', email: 'bot@example.com' },
+    })
+    assert.deepEqual(await commitInfo(named.commit), {
+      author: 'Factory Bot <bot@example.com>',
+      committer: 'Factory Bot <bot@example.com>',
+      message: 'fix: add (iteration 2)',
+    })
+    // Nothing changed: no commit, whoever the author would have been.
+    const idle = await commitAll(wt, 'unused', {
+      author: { name: 'Factory Bot', email: 'bot@example.com' },
+    })
+    assert.equal(idle.created, false)
+    assert.equal(idle.commit, named.commit)
+    await removeWorktree(repo, wt)
+  })
+
+  it('keeps the factory identity when the worker inherits GIT_AUTHOR_* and GIT_COMMITTER_*', async () => {
+    const inherited = {
+      GIT_AUTHOR_NAME: 'Someone Else',
+      GIT_AUTHOR_EMAIL: 'someone@elsewhere.test',
+      GIT_COMMITTER_NAME: 'Someone Else',
+      GIT_COMMITTER_EMAIL: 'someone@elsewhere.test',
+    }
+    const saved = Object.fromEntries(
+      Object.keys(inherited).map((k) => [k, process.env[k]]),
+    )
+    Object.assign(process.env, inherited)
+    const wt = join(root, 'wt-env')
+    try {
+      await addWorktree({ repo, dir: wt, baseCommit: base, branch: 'work/env' })
+      const bot = { name: 'Factory Bot', email: 'bot@example.com' }
+      const defaultIdentity = `${DEFAULT_COMMIT_AUTHOR.name} <${DEFAULT_COMMIT_AUTHOR.email}>`
+      await writeFile(join(wt, 'a.txt'), 'env default\n')
+      const plain = await commitAll(wt, 'iteration 1')
+      assert.deepEqual(await commitInfo(plain.commit), {
+        author: defaultIdentity,
+        committer: defaultIdentity,
+        message: 'iteration 1',
+      })
+      await writeFile(join(wt, 'a.txt'), 'env bot\n')
+      const named = await commitAll(wt, 'iteration 2', { author: bot })
+      assert.deepEqual(await commitInfo(named.commit), {
+        author: 'Factory Bot <bot@example.com>',
+        committer: 'Factory Bot <bot@example.com>',
+        message: 'iteration 2',
+      })
+      const spec = {
+        repo,
+        baseCommit: base,
+        sourceCommit: named.commit,
+        message: 'squash',
+      }
+      const squashedBot = await ensureSquashedBranch({
+        ...spec,
+        branch: 'work/env-squashed-bot',
+        author: bot,
+      })
+      assert.deepEqual(await commitInfo(squashedBot.commit), {
+        author: 'Factory Bot <bot@example.com>',
+        committer: 'Factory Bot <bot@example.com>',
+        message: 'squash',
+      })
+      const squashedDefault = await ensureSquashedBranch({
+        ...spec,
+        branch: 'work/env-squashed-default',
+        author: DEFAULT_COMMIT_AUTHOR,
+      })
+      assert.deepEqual(await commitInfo(squashedDefault.commit), {
+        author: defaultIdentity,
+        committer: defaultIdentity,
+        message: 'squash',
+      })
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+      await removeWorktree(repo, wt)
+    }
+  })
+
+  it('squashes a candidate into one commit on the base, once, without moving any checkout', async () => {
+    const wt = join(root, 'wt-squash')
+    await addWorktree({ repo, dir: wt, baseCommit: base, branch: 'work/sq' })
+    await writeFile(join(wt, 'a.txt'), 'first\n')
+    await commitAll(wt, 'iteration 1')
+    await writeFile(join(wt, 'c.txt'), 'second\n')
+    const last = await commitAll(wt, 'iteration 2')
+    const author = { name: 'Factory Bot', email: 'bot@example.com' }
+    const spec = {
+      repo,
+      branch: 'work/sq-squashed',
+      baseCommit: base,
+      sourceCommit: last.commit,
+      message: 'fix: everything at once',
+      author,
+    }
+    const made = await ensureSquashedBranch(spec)
+    assert.equal(made.created, true)
+    assert.equal(await branchCommit(repo, spec.branch), made.commit)
+    // Exactly one commit on the base, carrying the candidate's tree.
+    assert.equal(
+      (
+        await git(repo, ['rev-list', '--count', `${base}..${spec.branch}`])
+      ).trim(),
+      '1',
+    )
+    assert.equal(
+      (await git(repo, ['rev-parse', `${made.commit}^`])).trim(),
+      base,
+    )
+    assert.equal(
+      await treeOf(repo, made.commit),
+      await treeOf(repo, last.commit),
+    )
+    assert.deepEqual(await commitInfo(made.commit), {
+      author: 'Factory Bot <bot@example.com>',
+      committer: 'Factory Bot <bot@example.com>',
+      message: 'fix: everything at once',
+    })
+    // The iteration branch keeps both commits; nothing checked out moved.
+    assert.equal(
+      (await git(repo, ['rev-list', '--count', `${base}..work/sq`])).trim(),
+      '2',
+    )
+    assert.equal(await resolveCommit(repo, 'HEAD'), base)
+    assert.equal(await resolveCommit(wt, 'HEAD'), last.commit)
+    assert.equal(await isDirty(wt), false)
+
+    // Run again, as a replayed delivery would: the same branch and commit.
+    const again = await ensureSquashedBranch(spec)
+    assert.deepEqual(again, { commit: made.commit, created: false })
+    // Dated from the source commit, so building it anew gives the same sha.
+    await git(repo, ['branch', '-D', spec.branch])
+    const rebuilt = await ensureSquashedBranch(spec)
+    assert.deepEqual(rebuilt, { commit: made.commit, created: true })
+    await removeWorktree(repo, wt)
+  })
+
+  it('gives a candidate with the base tree its own single commit', async () => {
+    const made = await ensureSquashedBranch({
+      repo,
+      branch: 'work/empty-squashed',
+      baseCommit: base,
+      sourceCommit: base,
+      message: 'factory run empty',
+      author: DEFAULT_COMMIT_AUTHOR,
+    })
+    assert.notEqual(made.commit, base)
+    assert.equal(await treeOf(repo, made.commit), await treeOf(repo, base))
+    assert.equal(
+      (
+        await git(repo, ['rev-list', '--count', `${base}..work/empty-squashed`])
+      ).trim(),
+      '1',
+    )
+  })
+
+  it('refuses an existing branch that is not the same squash, and leaves it', async () => {
+    const wt = join(root, 'wt-clash')
+    await addWorktree({ repo, dir: wt, baseCommit: base, branch: 'work/cl' })
+    await writeFile(join(wt, 'a.txt'), 'one change\n')
+    const one = await commitAll(wt, 'iteration 1')
+    await writeFile(join(wt, 'd.txt'), 'another\n')
+    const two = await commitAll(wt, 'iteration 2')
+    const spec = {
+      repo,
+      baseCommit: base,
+      sourceCommit: two.commit,
+      message: 'squash',
+      author: DEFAULT_COMMIT_AUTHOR,
+    }
+    // Two commits on the base, though the tip has the right tree.
+    await git(repo, ['branch', 'work/cl-two', two.commit])
+    await assert.rejects(
+      ensureSquashedBranch({ ...spec, branch: 'work/cl-two' }),
+      /already exists .* left as it is/,
+    )
+    assert.equal(await branchCommit(repo, 'work/cl-two'), two.commit)
+    // One commit on the base, with another tree.
+    await git(repo, ['branch', 'work/cl-other', one.commit])
+    await assert.rejects(
+      ensureSquashedBranch({ ...spec, branch: 'work/cl-other' }),
+      /already exists/,
+    )
+    assert.equal(await branchCommit(repo, 'work/cl-other'), one.commit)
+    // One commit on the base with the right tree, but another message or
+    // author: not the squash this run would make.
+    const expected = await ensureSquashedBranch({
+      ...spec,
+      branch: 'work/cl-expected',
+    })
+    for (const [branch, variant] of [
+      ['work/cl-message', { ...spec, message: 'another message' }],
+      [
+        'work/cl-author',
+        { ...spec, author: { name: 'Someone', email: 'someone@example.com' } },
+      ],
+    ] as const) {
+      const made = await ensureSquashedBranch({ ...variant, branch })
+      assert.notEqual(made.commit, expected.commit)
+      assert.equal(
+        await treeOf(repo, made.commit),
+        await treeOf(repo, two.commit),
+      )
+      assert.equal(
+        (await git(repo, ['rev-parse', `${made.commit}^`])).trim(),
+        base,
+      )
+      await assert.rejects(
+        ensureSquashedBranch({ ...spec, branch }),
+        /already exists .* left as it is/,
+      )
+      assert.equal(await branchCommit(repo, branch), made.commit)
+    }
+    await removeWorktree(repo, wt)
+  })
+
+  it('fills a message template once, with the first line of the task', () => {
+    const values = {
+      iteration: 2,
+      runId: 'run-9',
+      task: '\n  Fix add() for {runId} inputs  \n\nMore detail {iteration}.\n',
+    }
+    assert.equal(
+      renderCommitMessage('fix: {task} [{runId}#{iteration}] {other}', values),
+      'fix: Fix add() for {runId} inputs [run-9#2] {other}',
+    )
+    assert.equal(squashedBranchFor('run-9'), 'factory/run-9-squashed')
   })
 })

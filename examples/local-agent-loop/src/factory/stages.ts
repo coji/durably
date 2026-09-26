@@ -118,7 +118,12 @@ export const codeStage: StageHandler = async ({
     },
   )
   const candidate = await step.run(`${key}:candidate`, (signal, attempt) =>
-    target.seal({ iteration, attemptId: attempt.id, signal }),
+    target.seal({
+      iteration,
+      runId: step.runId,
+      attemptId: attempt.id,
+      signal,
+    }),
   )
   // A separate repair session is not the implementation session: the one on
   // record stays, and the next repair starts new again.
@@ -332,6 +337,7 @@ export const finishStage: StageHandler = async ({
     : await step.run(`${key}:deliver`, (signal) =>
         target.deliver({
           candidate,
+          iteration: state.iteration,
           runId: step.runId,
           reviews: state.reviews,
           signal,

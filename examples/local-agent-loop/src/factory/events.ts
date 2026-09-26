@@ -43,6 +43,8 @@ export const deliverySchema = z.object({
   // Defaulted so a delivery recorded before these fields existed still parses.
   branch: z.string().nullable().default(null),
   commit: z.string().nullable().default(null),
+  squashedBranch: z.string().nullable().default(null),
+  squashedCommit: z.string().nullable().default(null),
 })
 
 const reviewSchema = z.object({

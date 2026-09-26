@@ -341,6 +341,10 @@ HOME=<表示された場所> pnpm --filter example-local-agent-loop demo worker
   "baselineCheck": true,
   "checkTimeoutMs": 900000,
   "agentTimeoutMs": 1800000,
+  "commit": {
+    "authorName": "Factory Bot",
+    "authorEmail": "factory-bot@example.com"
+  },
   "profiles": {
     "code": { "provider": "codex", "model": "gpt-5.6-sol", "effort": "medium" },
     "review": {
@@ -396,11 +400,28 @@ pnpm --filter example-local-agent-loop demo trigger \
   保存されたrunだけは、従来どおりworkerの環境変数を読みます）。
 - 反復ごとにcommitして封印します。検証・レビュー・成果物は同じcommitを見ます。
 - 既定の成果物は `~/.local/state/local-agent-loop/runs/<runId>/delivery/<candidate>.patch`
-  です。issueなしのrunのbranchは `factory/<runId>` で、承認されたcommitはこの
-  branchに残ります。`status` とreportがbranch名とcommit SHAを表示します。承認されず
-  成果物が無いrun（却下、検証失敗、レビュー上限）でも、最後に封印したcandidateの
-  branchとcommitを `candidate` として表示します。
-  `--publish` を付けるとbranchをpushしてDraft PRを作ります。
+  です。patchはbase commitと最後のcandidateの差分です。issueなしのrunのbranchは
+  `factory/<runId>`（issue付きは `factory/issue-<番号>-<runId>`）で、反復ごとの
+  commitと承認されたcommitはこのbranchに残ります。`status` とreportがbranch名と
+  commit SHAを表示します。承認されず成果物が無いrun（却下、検証失敗、レビュー上限）
+  でも、最後に封印したcandidateのbranchとcommitを `candidate` として表示します。
+- 承認されて成果物を作るときは、もう一つ `factory/<runId>-squashed` を作ります
+  （issue付きのrunも同じ名前です）。記録したbase commitを唯一の親とし、最後の
+  candidateと同じtreeを持つcommitが1つだけ乗ったbranchです。candidateがbaseと
+  同じtreeでも空のcommitを1つ作るので、baseからのcommit数は常に1です。refだけで
+  作るので、元のbranch、worktree、あなたのcheckoutは動きません。成果物を作る
+  stepが途中で止まって再実行されたときは、まず `git commit-tree` で期待する
+  commitを組み立て、既にあるこのbranchがそのcommitを指しているときだけ使い回します。
+  author、message、親、treeのすべてが一致している必要があります。それ以外の
+  branchは拒否し、手を付けずに残します。承認されなかったrunには作りません。
+  branch名とcommit SHAは `delivery.squashedBranch` と `delivery.squashedCommit`
+  に記録し、`status --run` のJSONとreportのJSON・Markdownに出ます。web UIの
+  納品物はbranch名だけ表示します。この記録が無い以前のrunでは `null` です。
+- `--publish` を付けると反復履歴のあるbranchをpushしてDraft PRを作ります。
+  `commit.publishSquashed` が `true` のときだけ、代わりにsquash branchをpushして
+  Draft PRのheadにします。どちらの場合も、同じheadで開いているPRが既にあれば
+  （PR作成後に記録前で止まったstepの再実行など）新しく作らずにそれを使います。
+  `delivery.location` は実際に公開したbranchのPRのURLです。
 
 `--publish` を付けない限り、外向きの操作は起きません。まずpatchで確かめてから
 PRに進むのが安全です。
@@ -408,6 +429,38 @@ PRに進むのが安全です。
 人間の承認待ちは、実リポジトリでは既定で入りません。Draft PR自体が人間の
 レビュー対象で、マージするのも人間だからです。`--approve manual` で
 同梱題材と同じ承認waitを挟めます。
+
+### commitの作者とメッセージ（commit）
+
+`factory.json` の `commit` で、factoryが作るcommitの作者とメッセージを決められます。
+どの項目も省略でき、文字列は空（空白だけも含む）を `trigger` の時点で拒否します。
+
+```json
+{
+  "commit": {
+    "authorName": "Factory Bot",
+    "authorEmail": "factory-bot@example.com",
+    "messageTemplate": "fix: {task} (factory {runId}, iteration {iteration})",
+    "publishSquashed": true
+  }
+}
+```
+
+- `authorName` と `authorEmail` は反復commitとsquash commitの作者とcommitterに
+  なります。省略した項目は `durably-factory` と `durably-factory@localhost` です。
+- `messageTemplate` の `{iteration}`、`{runId}`、`{task}` を置き換えます。
+  `{task}` は保存したtaskの1行目、`{iteration}` は反復commitではその反復の番号、
+  squash commitでは最後のcandidateを封印した反復の番号です。省略すると反復commitは
+  `factory iteration <番号>`、squash commitは `factory run <runId>` です。
+- 変更の無い反復では、従来どおり空の反復commitを作りません。
+- `publishSquashed` の既定は `false` です。`--publish` が無ければ、この値に
+  かかわらずpushもPR作成もしません。
+- 設定は `trigger` の時点で解決してrun inputに保存します。trigger後に
+  `factory.json` を書き換えても既存のrunは変わらず、`retrigger --reload-config`
+  で作ったrunは書き換えた後の値を使います。
+- 作者とメッセージテンプレートは反復commitとしてworktreeの履歴に残り、エージェントが
+  読めるので `configVersion` に入ります。どちらも省略したrunの版は従来と同じです。
+  `publishSquashed` は `--publish` と同じく公開先を選ぶだけなので入りません。
 
 ### baseの採点を先に確かめる（baselineCheck）
 
@@ -494,7 +547,7 @@ PATHの `codex` を使います。CLIのpathと版はreportの「Versions」と�
 保存します。実際に使うmodelとeffortは、workerがそのrequested設定からproviderの
 presetで解決します。workerは元のファイルを読み直さないので、trigger後にファイルを
 書き換えても、そのrunの設定とpromptは変わりません。timeout、`codexPath`、
-`baselineCheck` も同じく解決済みの値をrun inputに保存します。reportには各入力ファイルの
+`baselineCheck`、`commit` も同じく解決済みの値をrun inputに保存します。reportには各入力ファイルの
 pathと、保存した本文から計算したSHA-256が出ます。設定を直した後に同じtaskで
 やり直すには、`demo retrigger --run <id> --reload-config` を使います（上の
 「止まったrunと次の手順を見る」を参照）。
@@ -799,7 +852,8 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
   work（工程実作業の合計）、human wait とその lead time 比、LLM呼び出し数、
   total tokens、cost、cost per success（成功したrunだけ）、repairs、review rounds
 - **Inputs / Candidate / Delivery**: task、spec、dispositionsの各ファイルの
-  SHA-256、最後に封印したcandidateのbranchとcommit、成果物の場所、branch名、commit SHA
+  SHA-256、最後に封印したcandidateのbranchとcommit、成果物の場所、branch名、commit SHA、
+  squash branchの名前とcommit SHA
 - **Candidates**: 封印したすべての候補（JSONの `candidates`）。候補ごとに
   何回目の実装か、branch、commit、変更ファイル数、追加行数、削除行数、差分ファイルと
   変更一覧のパス（`changes`）を持ちます。改名は1ファイル、バイナリファイルは

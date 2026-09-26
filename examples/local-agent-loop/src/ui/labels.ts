@@ -362,3 +362,18 @@ export function detailField(line: string): {
 export function isPathDetail(line: string): boolean {
   return PATH_DETAILS.some((key) => line.startsWith(DETAIL_PREFIX[key]))
 }
+
+/**
+ * The delivery's squashed branch as the page shows it: its label, the name
+ * the report recorded, and what its copy button says. A delivery recorded
+ * before the branch existed has no name, and the page says so.
+ */
+export function squashedBranchField(delivery: {
+  squashedBranch?: string | null
+}): { label: string; value: string | null; copyLabel: string } {
+  return {
+    label: '1コミットにまとめたブランチ',
+    value: delivery.squashedBranch ?? null,
+    copyLabel: 'まとめたブランチ名をコピー',
+  }
+}

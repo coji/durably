@@ -40,6 +40,7 @@ import {
   NO_EXIT_CODE,
   reviewDecision,
   roleName,
+  squashedBranchField,
   stageName,
   stopName,
   triageName,
@@ -2186,8 +2187,11 @@ const INPUT_NAME = {
 } as const
 
 function RecordPanels({ report: r }: { report: LoopReport }) {
+  const { copied, copy } = useCopy()
+  const squashed = squashedBranchField(r.delivery ?? {})
   return (
     <>
+      <CopyAnnouncer copied={copied} />
       <div className="grid gap-6 md:grid-cols-2">
         <Panel title="候補">
           {r.candidate ? (
@@ -2213,6 +2217,18 @@ function RecordPanels({ report: r }: { report: LoopReport }) {
               <Field label="場所">{r.delivery.location}</Field>
               <Field label="ブランチ">{r.delivery.branch ?? 'なし'}</Field>
               <Field label="コミット">{r.delivery.commit ?? 'なし'}</Field>
+              <Field label={squashed.label}>
+                {squashed.value ? (
+                  <PathValue
+                    path={squashed.value}
+                    label={squashed.copyLabel}
+                    copied={copied}
+                    onCopy={(t, l) => void copy(t, l)}
+                  />
+                ) : (
+                  'なし'
+                )}
+              </Field>
               <Field label="概要">
                 <span className="font-ui">{r.delivery.summary}</span>
               </Field>

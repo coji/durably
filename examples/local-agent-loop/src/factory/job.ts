@@ -63,7 +63,11 @@ import { assertAllowedDecision, availableActions, decide } from './policy.js'
 import { parseTriageOutput, triagePrompt } from './prompts.js'
 import { reduce } from './reducer.js'
 import { stages } from './stages.js'
-import type { Target, TargetConfig } from './target.js'
+import {
+  DEFAULT_COMMIT_SETTINGS,
+  type Target,
+  type TargetConfig,
+} from './target.js'
 import {
   executionKey,
   initialState,
@@ -78,6 +82,21 @@ const issueSchema = z.object({
   title: z.string(),
   url: z.string(),
 })
+
+/** Non-empty text, whitespace alone included in what is refused. */
+export const nonBlank = z
+  .string()
+  .refine((value) => value.trim().length > 0, 'must not be empty')
+
+/** How the run's commits are made, as `factory.json`'s `commit` resolved at trigger. */
+const commitSettingsSchema = z
+  .object({
+    authorName: nonBlank.nullable().default(null),
+    authorEmail: nonBlank.nullable().default(null),
+    messageTemplate: nonBlank.nullable().default(null),
+    publishSquashed: z.boolean().default(false),
+  })
+  .strict()
 
 /** Where an input came from. Its hash is taken from the stored content. */
 const inputFileSchema = z.object({ path: z.string().min(1) })
@@ -109,6 +128,11 @@ const targetSchema = z
       setupCommand: z.array(z.string().min(1)).nullable().default(null),
       /** Push the branch and open a draft pull request when approved. */
       publish: z.boolean().default(false),
+      /**
+       * Commit author, message template and which branch to publish. Absent
+       * on a run stored before it existed: the defaults apply.
+       */
+      commit: commitSettingsSchema.optional(),
       /** Run the pinned check on the base commit before any agent call. */
       baselineCheck: z.boolean().optional(),
     }),
@@ -713,6 +737,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   setupCommand: input.target.setupCommand,
                   checkTimeoutMs: testTimeoutMs,
                   publish: input.target.publish,
+                  commit: input.target.commit ?? DEFAULT_COMMIT_SETTINGS,
                   signal,
                 })
           const baselineCheck =
@@ -746,6 +771,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               edgeCases: profiles['edge-cases'],
               triage,
               cli,
+              commit: target.kind === 'repo' ? (target.commit ?? null) : null,
             }),
             profiles,
             repair,

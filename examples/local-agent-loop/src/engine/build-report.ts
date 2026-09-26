@@ -535,6 +535,8 @@ export async function buildReport(
         summary: recorded.summary ?? '',
         branch: recorded.branch ?? null,
         commit: recorded.commit ?? null,
+        squashedBranch: recorded.squashedBranch ?? null,
+        squashedCommit: recorded.squashedCommit ?? null,
       }
     : null
   const steps = await durably.storage.getSteps(runId)

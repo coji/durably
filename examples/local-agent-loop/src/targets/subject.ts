@@ -163,6 +163,8 @@ export class SubjectTarget implements Target {
       summary: `approved candidate ${args.candidate.id}`,
       branch: null,
       commit: null,
+      squashedBranch: null,
+      squashedCommit: null,
     }
   }
 

@@ -122,6 +122,38 @@ export async function removeWorktree(
   }
 }
 
+/** Who a factory commit is by: both its author and its committer. */
+export interface CommitAuthor {
+  name: string
+  email: string
+}
+
+/** The identity factory commits carry when the run names none. */
+export const DEFAULT_COMMIT_AUTHOR: CommitAuthor = {
+  name: 'durably-factory',
+  email: 'durably-factory@localhost',
+}
+
+/**
+ * Child environment that makes `author` both author and committer of a commit.
+ *
+ * git reads `GIT_AUTHOR_*` and `GIT_COMMITTER_*` before `user.name` and
+ * `user.email`, so setting identity through `-c` would lose to variables the
+ * worker happened to inherit. Setting the variables themselves always wins.
+ */
+function identityEnv(
+  author: CommitAuthor,
+  date?: string,
+): Record<string, string> {
+  return {
+    GIT_AUTHOR_NAME: author.name,
+    GIT_AUTHOR_EMAIL: author.email,
+    GIT_COMMITTER_NAME: author.name,
+    GIT_COMMITTER_EMAIL: author.email,
+    ...(date ? { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } : {}),
+  }
+}
+
 /**
  * Commit everything the agent changed, honouring `.gitignore`.
  *
@@ -133,7 +165,7 @@ export async function removeWorktree(
 export async function commitAll(
   dir: string,
   message: string,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; author?: CommitAuthor } = {},
 ): Promise<{ commit: string; created: boolean }> {
   const pass = options.signal ? { signal: options.signal } : {}
   await git(dir, ['add', '-A'], pass)
@@ -141,22 +173,91 @@ export async function commitAll(
   if (staged.trim().length === 0) {
     return { commit: await resolveCommit(dir, 'HEAD'), created: false }
   }
+  await git(dir, ['commit', '--no-verify', '--no-gpg-sign', '-m', message], {
+    ...pass,
+    env: identityEnv(options.author ?? DEFAULT_COMMIT_AUTHOR),
+  })
+  return { commit: await resolveCommit(dir, 'HEAD'), created: true }
+}
+
+export interface SquashSpec {
+  repo: string
+  /** Branch to create; an existing one is checked, never moved. */
+  branch: string
+  /** The squash commit's only parent. */
+  baseCommit: string
+  /** The commit whose tree the squash commit carries. */
+  sourceCommit: string
+  message: string
+  author: CommitAuthor
+  signal?: AbortSignal
+}
+
+/**
+ * Put `sourceCommit`'s tree on `branch` as one commit whose only parent is
+ * `baseCommit`, without touching any checkout or worktree.
+ *
+ * The commit is dated from the source commit, so building it again gives the
+ * same sha. The expected commit is always written first (`commit-tree` adds an
+ * object but no ref); a branch that already exists is kept only when it points
+ * at exactly that commit, which is what a replay after an interruption finds.
+ * Any other branch by that name, even one with the same parent and tree but a
+ * different author or message, is refused, never overwritten. The same tree
+ * as the base still gets its own commit, so the branch is always one commit
+ * ahead of the base.
+ */
+export async function ensureSquashedBranch(
+  spec: SquashSpec,
+): Promise<{ commit: string; created: boolean }> {
+  const pass = spec.signal ? { signal: spec.signal } : {}
+  const tree = await treeOf(spec.repo, spec.sourceCommit)
+  const date = `${(
+    await git(spec.repo, ['log', '-1', '--format=%ct', spec.sourceCommit])
+  ).trim()} +0000`
+  const commit = (
+    await git(
+      spec.repo,
+      [
+        'commit-tree',
+        '--no-gpg-sign',
+        tree,
+        '-p',
+        spec.baseCommit,
+        '-m',
+        spec.message,
+      ],
+      { ...pass, env: identityEnv(spec.author, date) },
+    )
+  ).trim()
+  const existing = await branchCommit(spec.repo, spec.branch)
+  if (existing) {
+    if (existing !== commit)
+      throw new Error(
+        `squashed branch ${spec.branch} already exists at ${existing.slice(0, 12)}, not at the expected squash ${commit.slice(0, 12)} on ${spec.baseCommit.slice(0, 12)}; it was left as it is`,
+      )
+    return { commit: existing, created: false }
+  }
+  // An empty old value makes the update fail if the branch appeared since.
   await git(
-    dir,
-    [
-      '-c',
-      'user.name=durably-factory',
-      '-c',
-      'user.email=durably-factory@localhost',
-      'commit',
-      '--no-verify',
-      '--no-gpg-sign',
-      '-m',
-      message,
-    ],
+    spec.repo,
+    ['update-ref', `refs/heads/${spec.branch}`, commit, ''],
     pass,
   )
-  return { commit: await resolveCommit(dir, 'HEAD'), created: true }
+  return { commit, created: true }
+}
+
+/** The commit a local branch points at, or null when there is no such branch. */
+export async function branchCommit(
+  repo: string,
+  branch: string,
+): Promise<string | null> {
+  const res = await runChild(
+    'git',
+    ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`],
+    { cwd: repo, timeoutMs: DEFAULT_TIMEOUT_MS },
+  )
+  const out = res.stdout.trim()
+  return res.code === 0 && out.length > 0 ? out : null
 }
 
 /**

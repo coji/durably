@@ -153,6 +153,19 @@ export interface ConfigVersionInput {
    * `resolveVersions`. Left out when empty, so a fake run keeps its version.
    */
   cli?: Record<string, string | null> | null
+  /**
+   * The repository run's commit settings. The author and message template
+   * are in every iteration commit the agent's worktree history shows, so
+   * they enter the hash; `publishSquashed` only picks which branch is
+   * pushed, as `--publish` does, and stays out. Left out entirely when
+   * author and template are both the defaults, so such a run keeps its
+   * version.
+   */
+  commit?: {
+    authorName: string | null
+    authorEmail: string | null
+    messageTemplate: string | null
+  } | null
 }
 
 function canonicalProfile(p: ConfigVersionProfile): ConfigVersionProfile {
@@ -170,11 +183,24 @@ function canonicalProfile(p: ConfigVersionProfile): ConfigVersionProfile {
  * version exactly when every role's provider, models and efforts (a repair
  * profile's only when it differs from code's), the context
  * mode, iteration budget, instruction set, triage profile (when there is
- * one) and the path and version of every real CLI launched are identical —
+ * one), the path and version of every real CLI launched, and the commit
+ * author and message template (when set) are identical —
  * the unit of a fair comparison. Stored on every LLM attempt as
  * `configVersion`.
  */
 export function configVersionOf(input: ConfigVersionInput): string {
+  const commit = input.commit
+  const commitKey =
+    commit &&
+    (commit.authorName !== null ||
+      commit.authorEmail !== null ||
+      commit.messageTemplate !== null)
+      ? {
+          authorName: commit.authorName,
+          authorEmail: commit.authorEmail,
+          messageTemplate: commit.messageTemplate,
+        }
+      : null
   const canonical = JSON.stringify({
     contextMode: input.contextMode,
     instructionsVersion: input.instructionsVersion,
@@ -197,6 +223,7 @@ export function configVersionOf(input: ConfigVersionInput): string {
           ),
         }
       : {}),
+    ...(commitKey ? { commit: commitKey } : {}),
   })
   return createHash('sha256').update(canonical).digest('hex').slice(0, 16)
 }
