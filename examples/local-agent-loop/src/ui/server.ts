@@ -33,6 +33,7 @@ import {
   asReportCandidate,
   buildReport,
   repairChildren,
+  repairChildrenByParent,
   type ReportSource,
 } from '../engine/build-report.js'
 import { compareReports, type Comparison } from '../engine/compare.js'
@@ -946,8 +947,10 @@ export function readOnce(db: ReportSource, known: Run[] = []): ReportSource {
  * cancelled run's `failure` can still change, because it also reads
  * checkpoint files, so a reused report gets that one field classified again.
  * Its repair children can also be added after it finished, so a reused
- * report always gets them read again. Open runs are built on every call.
- * `fresh` says the report's failure was worked out by this call.
+ * report always gets them again: from `children` when the caller worked them
+ * out from the runs it read, otherwise with one label query. Open runs are
+ * built on every call. `fresh` says the report's failure was worked out by
+ * this call.
  */
 export function finishedReportCache(build = buildReport) {
   const finished = new Map<string, { updatedAt: string; report: LoopReport }>()
@@ -958,19 +961,20 @@ export function finishedReportCache(build = buildReport) {
         Run,
         'id' | 'jobName' | 'status' | 'updatedAt' | 'input' | 'output' | 'error'
       >,
+      children?: string[],
     ): Promise<{ report: LoopReport; fresh: boolean }> {
       const hit = finished.get(run.id)
       if (hit?.updatedAt === run.updatedAt) {
         const lineage = {
           parent: hit.report.lineage?.parent ?? null,
-          children: await repairChildren(src, run),
+          children: children ?? (await repairChildren(src, run)),
         }
         if (run.status === 'completed')
           return { report: { ...hit.report, lineage }, fresh: false }
         const failure = await classifyRun(src, run)
         return { report: { ...hit.report, lineage, failure }, fresh: true }
       }
-      const report = await build(src, run.id)
+      const report = await build(src, run.id, children ? { children } : {})
       if (TERMINAL_STATUSES.includes(run.status))
         finished.set(run.id, { updatedAt: run.updatedAt, report })
       return { report, fresh: true }
@@ -981,6 +985,27 @@ export function finishedReportCache(build = buildReport) {
       for (const id of finished.keys()) if (!ids.has(id)) finished.delete(id)
     },
   }
+}
+
+/**
+ * The reports of `runs`, for a view that lists many. Each run's repair
+ * children come from `all`, the job's runs this request already read, grouped
+ * once, so no report makes its own child query and the view's reads do not
+ * grow with the square of the history.
+ */
+export async function listedReports(
+  cache: ReturnType<typeof finishedReportCache>,
+  src: ReportSource,
+  runs: Run[],
+  all: Run[],
+): Promise<{ run: Run; report: LoopReport; fresh: boolean }[]> {
+  const children = repairChildrenByParent(all)
+  return Promise.all(
+    runs.map(async (run) => ({
+      run,
+      ...(await cache.get(src, run, children.get(run.id) ?? [])),
+    })),
+  )
 }
 
 /** Name the report's parent and children, from their stored inputs. */
@@ -1078,11 +1103,11 @@ function createUiApi() {
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
     const src = readOnce(db, all)
+    const built = await listedReports(reports, src, all, all)
     const rows = await Promise.all(
-      all.map(async (run) => {
-        const { report, fresh } = await reports.get(src, run)
-        return runRow(run, await inspect(src, run, now, report, fresh))
-      }),
+      built.map(async ({ run, report, fresh }) =>
+        runRow(run, await inspect(src, run, now, report, fresh)),
+      ),
     )
     return { ...base, exists: true, runs: rows }
   }
@@ -1127,8 +1152,8 @@ function createUiApi() {
     reports.keep(all)
     const done = all.filter((r) => TERMINAL_STATUSES.includes(r.status))
     const src = readOnce(db, done)
-    const built = await Promise.all(
-      done.map(async (r) => (await reports.get(src, r)).report),
+    const built = (await listedReports(reports, src, done, all)).map(
+      (r) => r.report,
     )
     return {
       runIds: done.map((r) => r.id),

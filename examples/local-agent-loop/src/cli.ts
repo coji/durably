@@ -15,7 +15,6 @@ import {
   buildReport,
   recordedTriage,
   repairChildren,
-  repairLabels,
 } from './engine/build-report.js'
 import { killOwnedChildren } from './engine/child.js'
 import { compareReports, comparisonToMarkdown } from './engine/compare.js'
@@ -27,6 +26,7 @@ import {
 } from './engine/report.js'
 import { diagnose, diagnosisLines } from './engine/status.js'
 import { deliverySchema } from './factory/events.js'
+import { repairLabels } from './factory/repair.js'
 import {
   buildTriggerInput,
   readRepairFiles,

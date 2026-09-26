@@ -676,10 +676,12 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   さらにその子を作れます。
 - 起動前に、親の候補commitが対象リポジトリにあり、記録された候補ブランチの先端が
   そのcommitのままであることを確かめます。ブランチが動いていれば何も作りません。
-  子runのsetupも、CLIの確認、run directory、worktree、ブランチ、`setupCommand` より
-  前に同じ確認をします。`demo repair` の確認のあとで起動までにブランチが動いた
-  場合や、子runを `demo retrigger` した場合も、ここで `candidate-moved`
-  （`retry: yes`）として止まり、agentは呼びません。ブランチを候補commitに戻せば
+  子runのsetupも、worktreeとブランチを候補commitから作る直前（CLIの確認のあと、
+  `setupCommand` の前）に同じ確認をします。途中で止まったsetupをやり直すときは、
+  前回のworktreeとブランチを片付けてから確かめます。`demo repair` の確認のあとで
+  ブランチが動いた場合や、子runを `demo retrigger` した場合も、ここで
+  `candidate-moved`（`retry: yes`）として止まります。worktree、ブランチ、
+  run directoryは残さず、agentは呼びません。ブランチを候補commitに戻せば
   `retrigger` で続けられます。
 - `demo repair` が受け付けるのは `--run`、`--findings-file`、`--dispositions-file`
   だけです。`--max-iterations`、`--publish`、`--check`、`--config` など、ほかの
@@ -713,8 +715,11 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
 - `--publish` のDraft PRは通常のrunと同じく既定ブランチ向けです。親がまだ
   mergeされていなければ、PRには親の変更も含まれます。
 - 子runは起動するどの経路（`demo repair`、`demo retrigger`、`demo seed`）でも
-  run label `repairOf=<親の runId>` を付けます。親の子一覧はこのlabelの索引で
-  引くので、jobの全runを読み直しません。
+  run label `repairOf=<親の runId>` を付けます。1件の `report`、`status --run`、
+  CLIの `compare`、web UIの詳細は、このlabelで子を1回問い合わせます。SQLiteは
+  この問い合わせでjobのrunを順に見てlabelを引くので、費用は履歴の長さに比例
+  します。web UIの一覧と比較は、読み込んだ全runのlabel（無ければ入力の
+  `repairOf`）から親ごとの子を一度にまとめ、runごとには問い合わせません。
 - `report` と `status --run` には親のIDと子のID一覧が、reportには指摘ファイルの
   パスと保存内容のSHA-256も出ます。web UIでは一覧と詳細で、親と子をtaskの名前で
   リンクします。`compare` は通常のrunと子runを別のグループに分け、親の時間、費用、

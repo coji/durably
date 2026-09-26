@@ -53,6 +53,11 @@ export interface PrepareRepoArgs {
   commit: CommitSettings
   /** A repair run's parent and findings; `baseRef` is then its candidate. */
   repairOf?: { runId: string; findings: string } | null
+  /**
+   * Runs after an earlier attempt's worktree and branch are discarded and
+   * right before the new ones are created; throwing stops setup there.
+   */
+  beforeCreate?: (repo: string) => Promise<void>
   signal?: AbortSignal
 }
 
@@ -62,13 +67,14 @@ export async function prepareRepoTarget(
   if (args.checkCommand.length === 0)
     throw new Error('a repo target needs a check command to grade candidates')
   const repo = await repoRoot(args.repoPath)
-  const baseCommit = await resolveCommit(repo, args.baseRef)
   const workdir = join(args.root, 'work')
   await mkdir(args.root, { recursive: true })
   // Setup is a durable step, so a worker killed part way through re-runs it.
   // `git worktree add -b` refuses an existing directory or branch, so clear
   // both first. Nothing has been sealed yet, and the branch carries the run id.
   await discardWorktree(repo, workdir, args.branch)
+  await args.beforeCreate?.(repo)
+  const baseCommit = await resolveCommit(repo, args.baseRef)
   await addWorktree({
     repo,
     dir: workdir,

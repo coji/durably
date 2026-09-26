@@ -1,5 +1,5 @@
 /** Durably job: persist a decision, dispatch its stage, reduce the event. */
-import { mkdir } from 'node:fs/promises'
+import { mkdir, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -31,7 +31,6 @@ import type {
 import {
   TRIAGE_JUDGMENTS,
   triageCalibration,
-  triageThatRuns,
   type ReportTriage,
 } from '../engine/report.js'
 import {
@@ -65,6 +64,7 @@ import {
 import { assertAllowedDecision, availableActions, decide } from './policy.js'
 import { parseTriageOutput, triagePrompt } from './prompts.js'
 import { reduce } from './reducer.js'
+import { triageThatRuns } from './repair.js'
 import { stages } from './stages.js'
 import {
   DEFAULT_COMMIT_SETTINGS,
@@ -595,14 +595,13 @@ async function runPreflight(
   target: Target,
   providerFor: ProviderFor,
 ): Promise<void> {
+  const triage = triageThatRuns(setup, setup.triage)
   const roles: [string, ResolvedProfile][] = [
     ...Object.entries(byRole((role) => setup.profiles[role])),
     ...(setup.repair
       ? [['repair', setup.repair] as [string, ResolvedProfile]]
       : []),
-    ...(triageThatRuns(setup, setup.triage)
-      ? [['triage', setup.triage] as [string, ResolvedProfile]]
-      : []),
+    ...(triage ? [['triage', triage] as [string, ResolvedProfile]] : []),
   ]
   const plan = await step.run(
     'preflight',
@@ -791,19 +790,6 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           const { checkTimeoutMs: testTimeoutMs, agentTimeoutMs } =
             resolveTimeouts(input.target.kind, input)
           const codexPath = input.codexPath ?? null
-          // The parent's candidate is checked again here, not only by `demo
-          // repair`: its branch can move after that check, and a retrigger
-          // never makes it. Nothing is created and no CLI is probed first.
-          if (repairOf && input.target.kind === 'repo')
-            await assertCandidateUnmoved(
-              input.target.repoPath,
-              repairOf.candidateCommit,
-              repairOf.candidateBranch,
-            ).catch((error: unknown) => {
-              throw new Error(
-                `${CANDIDATE_MOVED_MESSAGE}: ${error instanceof Error ? error.message : String(error)}; the repair of ${repairOf.runId} stopped before creating its worktree or branch and before any agent call`,
-              )
-            })
           // The path and version of every real CLI the roles launch, so runs
           // on different builds never share a config version. A repair run
           // never launches the triage CLI, so it is not probed.
@@ -855,6 +841,27 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   repairOf: repairOf
                     ? { runId: repairOf.runId, findings: repairOf.findings }
                     : null,
+                  // The parent's candidate is checked again here, not only
+                  // by `demo repair`: its branch can move after that check,
+                  // and a retrigger never makes it. The check runs after a
+                  // replayed setup has discarded its earlier worktree and
+                  // branch and right before the new ones are cut, so a
+                  // refused repair leaves neither, nor a run directory.
+                  ...(repairOf
+                    ? {
+                        beforeCreate: (repo: string) =>
+                          assertCandidateUnmoved(
+                            repo,
+                            repairOf.candidateCommit,
+                            repairOf.candidateBranch,
+                          ).catch(async (error: unknown) => {
+                            await rm(root, { recursive: true, force: true })
+                            throw new Error(
+                              `${CANDIDATE_MOVED_MESSAGE}: ${error instanceof Error ? error.message : String(error)}; the repair of ${repairOf.runId} stopped without a worktree, branch or run directory and before any agent call`,
+                            )
+                          }),
+                      }
+                    : {}),
                   signal,
                 })
           const baselineCheck =

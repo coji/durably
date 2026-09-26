@@ -179,7 +179,7 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
   },
   'candidate-moved': {
     reason:
-      "a repair run's parent candidate commit is gone, or its branch no longer points at it; the run stopped before creating its worktree or branch and before any agent call",
+      "a repair run's parent candidate commit is gone, or its branch no longer points at it; the run stopped without a worktree, branch or run directory, and before any agent call",
     retryable: true,
     humanCheck:
       'someone changed the approved work after the repair run was started: move the branch back to the candidate commit and retry with retrigger, or repair from the run that approved the new work, or start a normal run with trigger',

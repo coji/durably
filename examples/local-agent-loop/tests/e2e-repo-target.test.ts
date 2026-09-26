@@ -17,7 +17,7 @@ import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { createAgentDurably } from '../src/durably.js'
-import { buildReport, repairLabels } from '../src/engine/build-report.js'
+import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
 import { classifyRun } from '../src/engine/failure-reasons.js'
 import {
@@ -28,6 +28,7 @@ import {
 } from '../src/engine/git.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
 import { fixProfile } from '../src/factory/job.js'
+import { repairLabels } from '../src/factory/repair.js'
 import type { FactorySetup } from '../src/factory/types.js'
 import { createTarget } from '../src/targets/index.js'
 import { assertCandidateUnmoved } from '../src/targets/repo.js'
@@ -1407,7 +1408,82 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
     }
   })
 
-  it('stops a repair run before anything exists when the candidate branch moved after it was started', async () => {
+  it('clears what an interrupted setup left before it refuses a moved candidate branch', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-findings-replay-'))
+    const repo = await seedRepo(root)
+    const stateRoot = join(root, 'state')
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    const durably = createAgentDurably({ stateRoot })
+    await durably.init()
+    try {
+      const { parent, setup } = await approvedParent(durably, repo, {
+        maxIterations: 1,
+      })
+      const { candidate } = parent.output as {
+        candidate: { commit: string; branch: string }
+      }
+      // No worker, so the child stays pending while an earlier setup
+      // attempt's leftovers are put in place.
+      await durably.stop()
+      const built = buildRepairInput(
+        parent,
+        setup,
+        findingsFile('FINDINGS: replay\n', join(root, 'f.md')),
+        { failIterations: 0 },
+      )
+      const child = await durably.jobs.agentLoop.trigger(built.input, {
+        idempotencyKey: built.idempotencyKey,
+        labels: built.labels,
+      })
+      // What a worker killed during setup, after `git worktree add`, leaves.
+      const runDir = join(stateRoot, 'runs', child.id)
+      const workdir = join(runDir, 'work')
+      await mkdir(runDir, { recursive: true })
+      await git(repo, [
+        'worktree',
+        'add',
+        '-b',
+        `factory/${child.id}`,
+        workdir,
+        candidate.commit,
+      ])
+      assert.equal(
+        await branchCommit(repo, `factory/${child.id}`),
+        candidate.commit,
+      )
+      // The branch moves before the replay.
+      await git(repo, ['update-ref', `refs/heads/${candidate.branch}`, 'main'])
+      durably.start()
+      await waitFor(
+        async () => (await durably.getRun(child.id))?.status === 'failed',
+        60000,
+        'repair run stops',
+      )
+      const run = await durably.getRun(child.id)
+      assert.match(
+        run?.error ?? '',
+        /^candidate-moved: candidate branch \S+ moved to [0-9a-f]{12}.*without a worktree, branch or run directory/,
+      )
+      assert.deepEqual(
+        (await durably.getStepAttempts(child.id)).map((a) => a.stepName),
+        ['setup'],
+      )
+      // The earlier attempt's branch, worktree and run directory are gone.
+      assert.equal(await branchCommit(repo, `factory/${child.id}`), null)
+      assert.equal(existsSync(runDir), false)
+      assert.doesNotMatch(
+        await git(repo, ['worktree', 'list', '--porcelain']),
+        new RegExp(child.id),
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+  })
+
+  it('stops a repair run, leaving nothing, when the candidate branch moved after it was started', async () => {
     const root = await mkdtemp(join(tmpdir(), 'repo-target-findings-moved-'))
     const repo = await seedRepo(root)
     const stateRoot = join(root, 'state')

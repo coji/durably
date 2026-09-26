@@ -65,8 +65,9 @@ import type { ProfileRole } from '../factory/types.js'
  * of the branch the parent recorded. A branch moved since means someone
  * changed the work after approval, so nothing is started from it. `demo
  * repair` checks this before it triggers, and a repair run's setup checks it
- * again before it creates anything, since the branch can move in between and
- * a retrigger does not go through `demo repair`.
+ * again right before it cuts its worktree and branch, after discarding any an
+ * earlier attempt left, since the branch can move in between and a retrigger
+ * does not go through `demo repair`.
  */
 export async function assertCandidateUnmoved(
   repoPath: string,

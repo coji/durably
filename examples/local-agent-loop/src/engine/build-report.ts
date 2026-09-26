@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 
 import type { AnyDurably } from '@coji/durably'
 
+import { REPAIR_OF_LABEL, triageThatRuns } from '../factory/repair.js'
 import { classifyRun, stageStep } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import type { VerificationLog } from './providers/types.js'
@@ -16,7 +17,6 @@ import {
   toAttemptRow,
   CALIBRATION_KEYS,
   TRIAGE_JUDGMENTS,
-  triageThatRuns,
   UNKNOWN_CALIBRATION,
   usageOf,
   type AttemptRow,
@@ -429,43 +429,70 @@ function repairParent(input: PersistedInput | null): ReportLineage['parent'] {
     : null
 }
 
-/**
- * The label every repair run carries, naming the run it repairs. Children are
- * found through Durably's indexed run labels, so a report never scans the
- * job's whole history.
- */
-export const REPAIR_OF_LABEL = 'repairOf'
-
-/**
- * The labels to trigger a run input with: a repair run names its parent.
- * Every path that triggers a repair run (`demo repair`, `demo retrigger` and
- * the seed) passes these, so the parent can find it.
- */
-export function repairLabels(input: unknown): Record<string, string> {
-  const parent = (input as PersistedInput | null)?.repairOf?.runId
-  return parent ? { [REPAIR_OF_LABEL]: parent } : {}
-}
-
-/**
- * The repair runs started from a run, oldest first. Read every time, because
- * a finished run gains children after it finished.
- */
-export async function repairChildren(
-  durably: Pick<ReportSource, 'getRuns'>,
-  run: { id: string; jobName: string },
-): Promise<string[]> {
-  const runs = await durably.getRuns({
-    jobName: run.jobName,
-    labels: { [REPAIR_OF_LABEL]: run.id },
-  })
+/** Run ids oldest first, the order a report lists children in. */
+function oldestFirst(runs: { id: string; createdAt: string }[]): string[] {
   return [...runs]
     .sort((x, y) => Date.parse(x.createdAt) - Date.parse(y.createdAt))
     .map((r) => r.id)
 }
 
+/**
+ * The repair runs started from a run, oldest first. Read every time, because
+ * a finished run gains children after it finished. This is one label query,
+ * but SQLite answers it by walking the job's runs and probing each one's
+ * labels, so it grows with the history: use it for a single report. A view
+ * that builds a report per run groups the runs it has already read with
+ * `repairChildrenByParent` instead.
+ */
+export async function repairChildren(
+  durably: Pick<ReportSource, 'getRuns'>,
+  run: { id: string; jobName: string },
+): Promise<string[]> {
+  // The job name narrows the walk to the job's runs; without it SQLite walks
+  // every run in the database.
+  return oldestFirst(
+    await durably.getRuns({
+      jobName: run.jobName,
+      labels: { [REPAIR_OF_LABEL]: run.id },
+    }),
+  )
+}
+
+/**
+ * Every run's repair children, oldest first, from runs already read. A run
+ * names its parent by its label, or by its stored input when it has none.
+ */
+export function repairChildrenByParent(
+  runs: {
+    id: string
+    createdAt: string
+    labels?: Record<string, string> | undefined
+    input: unknown
+  }[],
+): Map<string, string[]> {
+  const byParent = new Map<string, { id: string; createdAt: string }[]>()
+  for (const run of runs) {
+    const parent =
+      run.labels?.[REPAIR_OF_LABEL] ??
+      (run.input as PersistedInput | null)?.repairOf?.runId
+    if (!parent) continue
+    const children = byParent.get(parent) ?? []
+    children.push(run)
+    byParent.set(parent, children)
+  }
+  return new Map(
+    [...byParent].map(([parent, children]) => [parent, oldestFirst(children)]),
+  )
+}
+
+/**
+ * `children` are the run's repair children when the caller has already
+ * worked them out; otherwise they are read with one label query.
+ */
 export async function buildReport(
   durably: ReportSource,
   runId: string,
+  known: { children?: string[] } = {},
 ): Promise<LoopReport> {
   const run = await durably.getRun(runId)
   if (!run) throw new Error(`run not found: ${runId}`)
@@ -645,7 +672,7 @@ export async function buildReport(
     inputs: inputHashes(input),
     lineage: {
       parent: repairParent(input),
-      children: await repairChildren(durably, run),
+      children: known.children ?? (await repairChildren(durably, run)),
     },
     candidate,
     candidates,

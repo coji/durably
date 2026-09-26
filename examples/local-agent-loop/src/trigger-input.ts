@@ -9,7 +9,6 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 import { z } from 'zod'
 
-import { repairLabels } from './engine/build-report.js'
 import { runChild } from './engine/child.js'
 import { repoRoot } from './engine/git.js'
 import { parseProviderName } from './engine/providers/index.js'
@@ -22,6 +21,7 @@ import {
   timeoutMsSchema,
   type FixedProfile,
 } from './factory/job.js'
+import { repairLabels } from './factory/repair.js'
 import {
   DEFAULT_COMMIT_SETTINGS,
   type CommitSettings,

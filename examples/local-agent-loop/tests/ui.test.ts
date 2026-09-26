@@ -20,7 +20,10 @@ import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 
 import { createAgentDurably, dbPath } from '../src/durably.js'
-import { repairLabels, type ReportSource } from '../src/engine/build-report.js'
+import {
+  repairChildrenByParent,
+  type ReportSource,
+} from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
 import {
   classifyFailure,
@@ -38,6 +41,7 @@ import {
 } from '../src/engine/report.js'
 import { checkpointPaths } from '../src/engine/runner.js'
 import type { DiagnosisKind } from '../src/engine/status.js'
+import { repairLabels } from '../src/factory/repair.js'
 import {
   commandNote,
   noteSaidByReason,
@@ -58,6 +62,7 @@ import {
   derivePipeline,
   deriveTrace,
   finishedReportCache,
+  listedReports,
   readOnce,
   runName,
   SUBJECT_RUN_NAME,
@@ -1022,6 +1027,23 @@ describe('reads per poll', () => {
       assert.ok('failure' in hit.report)
     }
     assert.deepEqual(built, ['failed', 'cancelled'])
+  })
+
+  it('groups repair children by their label, or by their input without one, oldest first', () => {
+    const at = (s: number) => new Date(s * 1000).toISOString()
+    const byParent = repairChildrenByParent([
+      { id: 'late', createdAt: at(3), labels: { repairOf: 'p' }, input: {} },
+      {
+        id: 'unlabelled',
+        createdAt: at(2),
+        labels: {},
+        input: { repairOf: { runId: 'p' } },
+      },
+      { id: 'early', createdAt: at(1), labels: { repairOf: 'p' }, input: {} },
+      { id: 'p', createdAt: at(0), labels: {}, input: {} },
+    ])
+    assert.deepEqual(byParent.get('p'), ['early', 'unlabelled', 'late'])
+    assert.equal(byParent.has('early'), false)
   })
 
   it("reads a finished run's repair children again on every hit", async () => {
@@ -2021,7 +2043,134 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
   })
 })
 
+/** A repair run's input, as `demo repair` stores it, for a given parent. */
+function repairChildInput(home: string, parentId: string) {
+  const profile = (role: string) => ({
+    id: `fake:fake-model:low:${role}`,
+    provider: 'fake' as const,
+    requestedModel: null,
+    requestedEffort: null,
+    effectiveModel: 'fake-model',
+    effectiveEffort: 'low',
+  })
+  const commit = 'a'.repeat(40)
+  return {
+    provider: 'fake' as const,
+    maxIterations: 1,
+    context: 'reuse' as const,
+    target: {
+      kind: 'repo' as const,
+      repoPath: join(home, 'repo'),
+      baseRef: commit,
+      task: 'Keep the currency on refunds',
+      spec: null,
+      dispositions: null,
+      inputFiles: { task: null, spec: null, dispositions: null },
+      issue: null,
+      checkCommand: ['true'],
+      setupCommand: null,
+      publish: false,
+    },
+    checkTimeoutMs: 1000,
+    agentTimeoutMs: 1000,
+    repairOf: {
+      runId: parentId,
+      candidateCommit: commit,
+      candidateBranch: 'factory/parent',
+      findings: 'the refund total drops the currency',
+      findingsFile: { path: join(home, 'findings.md') },
+      profiles: {
+        code: profile('code'),
+        correctness: profile('correctness'),
+        'edge-cases': profile('edge-cases'),
+        repair: null,
+        triage: null,
+      },
+    },
+  }
+}
+
 describe('repair runs on the page', { timeout: 120000 }, () => {
+  it('lists and compares runs without a child query per run, and still shows a child added after the parent finished', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'ui-repair-list-'))
+    const durably = createAgentDurably({
+      stateRoot: join(home, '.local', 'state', 'local-agent-loop'),
+    })
+    await durably.migrate()
+    try {
+      const parent = await durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        target: { kind: 'subject' as const },
+        maxIterations: 1,
+        context: 'reuse',
+      })
+      await durably.db
+        .updateTable('durably_runs')
+        .set({ status: 'completed', completed_at: new Date().toISOString() })
+        .where('id', '=', parent.id)
+        .execute()
+      for (let i = 0; i < 3; i++)
+        await durably.jobs.agentLoop.trigger({
+          provider: 'fake',
+          target: { kind: 'subject' as const },
+          maxIterations: 1,
+          context: 'reuse',
+        })
+      const filters: unknown[] = []
+      const spy: ReportSource = {
+        getRun: (id) => durably.getRun(id),
+        getStepAttempts: (id) => durably.getStepAttempts(id),
+        getWaits: (id) => durably.getWaits(id),
+        getRuns: ((filter) => {
+          filters.push(filter)
+          return durably.getRuns(filter)
+        }) as ReportSource['getRuns'],
+        storage: durably.storage,
+      }
+      const cache = finishedReportCache()
+      const listed = async () => {
+        const all = await durably.getRuns({
+          jobName: durably.jobs.agentLoop.name,
+        })
+        const byId = new Map(
+          (await listedReports(cache, readOnce(spy, all), all, all)).map(
+            (r) => [r.run.id, r.report.lineage.children],
+          ),
+        )
+        return { all, byId }
+      }
+      const first = await listed()
+      assert.equal(first.all.length, 4)
+      assert.deepEqual(first.byId.get(parent.id), [])
+      // The parent's report is now cached. A child added after it finished
+      // leaves the parent's row as it was, and still shows.
+      const child = await durably.jobs.agentLoop.trigger(
+        repairChildInput(home, parent.id),
+        { labels: repairLabels(repairChildInput(home, parent.id)) },
+      )
+      const second = await listed()
+      assert.deepEqual(second.byId.get(parent.id), [child.id])
+      assert.deepEqual(second.byId.get(child.id), [])
+      // Compare builds the finished runs' reports, with children from every
+      // run the request read.
+      const done = second.all.filter((r) => r.status === 'completed')
+      const compared = await listedReports(
+        cache,
+        readOnce(spy, done),
+        done,
+        second.all,
+      )
+      assert.deepEqual(
+        compared.map((r) => r.report.lineage.children),
+        [[child.id]],
+      )
+      // No report asked the database for its children.
+      assert.deepEqual(filters, [])
+    } finally {
+      await durably.db.destroy()
+    }
+  })
+
   it('links a parent and its repair runs both ways, even after the parent finished', async () => {
     const home = await mkdtemp(join(tmpdir(), 'ui-repair-'))
     const stateRoot = join(home, '.local', 'state', 'local-agent-loop')
@@ -2050,49 +2199,7 @@ describe('repair runs on the page', { timeout: 120000 }, () => {
         parent: null,
         children: [],
       })
-      const profile = (role: string) => ({
-        id: `fake:fake-model:low:${role}`,
-        provider: 'fake' as const,
-        requestedModel: null,
-        requestedEffort: null,
-        effectiveModel: 'fake-model',
-        effectiveEffort: 'low',
-      })
-      const commit = 'a'.repeat(40)
-      const childInput = {
-        provider: 'fake' as const,
-        maxIterations: 1,
-        context: 'reuse' as const,
-        target: {
-          kind: 'repo' as const,
-          repoPath: join(home, 'repo'),
-          baseRef: commit,
-          task: 'Keep the currency on refunds',
-          spec: null,
-          dispositions: null,
-          inputFiles: { task: null, spec: null, dispositions: null },
-          issue: null,
-          checkCommand: ['true'],
-          setupCommand: null,
-          publish: false,
-        },
-        checkTimeoutMs: 1000,
-        agentTimeoutMs: 1000,
-        repairOf: {
-          runId: parent.id,
-          candidateCommit: commit,
-          candidateBranch: 'factory/parent',
-          findings: 'the refund total drops the currency',
-          findingsFile: { path: join(home, 'findings.md') },
-          profiles: {
-            code: profile('code'),
-            correctness: profile('correctness'),
-            'edge-cases': profile('edge-cases'),
-            repair: null,
-            triage: null,
-          },
-        },
-      }
+      const childInput = repairChildInput(home, parent.id)
       const child = await durably.jobs.agentLoop.trigger(childInput, {
         labels: repairLabels(childInput),
       })
