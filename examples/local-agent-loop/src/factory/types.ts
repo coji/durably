@@ -36,10 +36,17 @@ export const PROFILE_ROLES: readonly ProfileRole[] = [
   'edge-cases',
 ]
 
+export const REVIEW_LENSES: readonly ReviewLens[] = [
+  'correctness',
+  'edge-cases',
+]
+
+export const REVIEW_CONTEXTS = ['prompt', 'local-instructions'] as const
 /** Where a reviewer finds its review context. */
-export type ReviewContext = 'prompt' | 'local-instructions'
+export type ReviewContext = (typeof REVIEW_CONTEXTS)[number]
+export const REVIEW_OUTPUTS = ['verdict', 'findings-json'] as const
 /** How a reviewer's reply is read. */
-export type ReviewOutput = 'verdict' | 'findings-json'
+export type ReviewOutput = (typeof REVIEW_OUTPUTS)[number]
 
 /**
  * How one reviewer is called and read, fixed at trigger from `factory.json`.

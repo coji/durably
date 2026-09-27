@@ -450,7 +450,7 @@ function validFinding(
 }
 
 /** A blocker as one repair-notes line: `- [file:line] title — body`. */
-export function findingNote(finding: ReviewFinding): string {
+function findingNote(finding: ReviewFinding): string {
   const where = finding.file
     ? `[${finding.file}${finding.line !== undefined ? `:${finding.line}` : ''}] `
     : ''

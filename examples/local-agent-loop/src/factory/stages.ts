@@ -26,6 +26,7 @@ import {
 } from './prompts.js'
 import type { Delivery } from './target.js'
 import {
+  REVIEW_LENSES,
   reviewInvocationOf,
   separateRepairProfile,
   usesReviewMaterials,
@@ -39,7 +40,7 @@ import {
 } from './types.js'
 
 /** Where a local-instructions review finds its context: the workdir root. */
-export const LOCAL_INSTRUCTIONS_FILE = 'CLAUDE.local.md'
+const LOCAL_INSTRUCTIONS_FILE = 'CLAUDE.local.md'
 
 /**
  * Remove the `CLAUDE.local.md` in `dir` if the factory wrote it, as the
@@ -86,7 +87,7 @@ async function placeLocalInstructions(
 
 /** Whether any reviewer of the run reads local instructions. */
 function usesLocalInstructions(setup: Pick<FactorySetup, 'review'>): boolean {
-  return (['correctness', 'edge-cases'] as const).some(
+  return REVIEW_LENSES.some(
     (lens) => reviewInvocationOf(setup, lens)?.context === 'local-instructions',
   )
 }

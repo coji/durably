@@ -78,6 +78,9 @@ import {
 import {
   executionKey,
   initialState,
+  REVIEW_CONTEXTS,
+  REVIEW_LENSES,
+  REVIEW_OUTPUTS,
   separateRepairProfile,
   usesReviewMaterials,
   type FactorySetup,
@@ -213,9 +216,6 @@ const resolvedProfileSchema = z
   })
   .strict()
 
-export const REVIEW_CONTEXTS = ['prompt', 'local-instructions'] as const
-export const REVIEW_OUTPUTS = ['verdict', 'findings-json'] as const
-
 /** One reviewer's invocation, every field fixed at trigger. */
 const reviewInvocationSchema = z
   .object({
@@ -239,8 +239,6 @@ export interface RequestedReviewInvocation {
   context?: ReviewContext | undefined
   output?: ReviewOutput | undefined
 }
-
-const REVIEW_LENSES: readonly ReviewLens[] = ['correctness', 'edge-cases']
 
 /**
  * Fix each reviewer's invocation, and refuse what cannot run before any LLM

@@ -483,9 +483,12 @@ export function claudeUsageOf(
         )
       : []
   if (models.length === 0) {
-    const { inputTokens: input, outputTokens: output } = reported
-    const { cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite } =
-      reported
+    const {
+      inputTokens: input,
+      outputTokens: output,
+      cacheReadTokens: cacheRead,
+      cacheWriteTokens: cacheWrite,
+    } = reported
     if (input === null && output === null) return null
     return {
       inputTokens: input,

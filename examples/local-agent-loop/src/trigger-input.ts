@@ -16,8 +16,6 @@ import {
   assertSingleMode,
   fixProfile,
   fixReviewInvocations,
-  REVIEW_CONTEXTS,
-  REVIEW_OUTPUTS,
   type AgentLoopInput,
   nonBlank,
   resolveTimeouts,
@@ -31,11 +29,13 @@ import {
   type InputFileRef,
   type RepoTargetConfig,
 } from './factory/target.js'
-import type {
-  FactorySetup,
-  ProfileRole,
-  ReviewInvocation,
-  ReviewLens,
+import {
+  REVIEW_CONTEXTS,
+  REVIEW_OUTPUTS,
+  type FactorySetup,
+  type ProfileRole,
+  type ReviewInvocation,
+  type ReviewLens,
 } from './factory/types.js'
 import { assertCandidateUnmoved } from './targets/repo.js'
 
