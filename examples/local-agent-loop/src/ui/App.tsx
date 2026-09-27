@@ -22,6 +22,7 @@ import type {
   LoopReport,
   ReportCandidate,
   ReportCandidateChanges,
+  ReportReviewFindings,
   TriageCalibration,
   UsageTotals,
 } from '../engine/report'
@@ -1455,6 +1456,7 @@ function ReviewBlock({ node: n }: { node: TraceNode }) {
         <p className="bg-sunken max-h-48 overflow-auto rounded-md px-3 py-2 text-sm whitespace-pre-wrap">
           {n.review.notes}
         </p>
+        <ReviewFindingTitles findings={n.review.findings} />
       </div>
     )
   return null
@@ -2133,6 +2135,61 @@ function UsagePanels({ report: r }: { report: LoopReport }) {
   )
 }
 
+/**
+ * A findings review's count of each kind and the titles the report kept.
+ * The body, file and line of each finding are read in the JSON report.
+ */
+export function ReviewFindingTitles({
+  findings,
+}: {
+  findings: ReportReviewFindings | null
+}) {
+  if (!findings) return null
+  const groups = [
+    {
+      label: '直すべき指摘',
+      kept: findings.blocker,
+      count: findings.counts.blocker,
+    },
+    {
+      label: '助言',
+      kept: findings.nonBlocker,
+      count: findings.counts.nonBlocker,
+    },
+  ].map((g) => ({
+    ...g,
+    // The kept list never changes order, so its position is its identity.
+    titles: g.kept.map((f, at) => ({
+      id: `${f.severity}:${at}`,
+      title: f.title,
+    })),
+  }))
+  return (
+    <div className="flex flex-col gap-2 text-sm">
+      {groups.map((g) => (
+        <div key={g.label} className="flex flex-col gap-1">
+          <p>
+            <span className="font-medium">{g.label}</span>
+            <span className="text-fg-2"> {g.count}件</span>
+          </p>
+          {g.kept.length > 0 ? (
+            <ul className="text-fg-2 flex list-disc flex-col gap-1 pl-4">
+              {g.titles.map((t) => (
+                <li key={t.id}>{t.title}</li>
+              ))}
+            </ul>
+          ) : null}
+          {g.count > g.kept.length ? (
+            <p className="text-fg-2">
+              ほか{g.count - g.kept.length}件はレポートに残していません。
+            </p>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function ReviewVerdicts({ reviews }: { reviews: LoopReport['reviews'] }) {
   return (
     <ul className="flex flex-col gap-3">
@@ -2151,6 +2208,7 @@ function ReviewVerdicts({ reviews }: { reviews: LoopReport['reviews'] }) {
           <p className="bg-sunken rounded-md px-3 py-2 text-sm whitespace-pre-wrap">
             {review.notes}
           </p>
+          <ReviewFindingTitles findings={review.findings} />
         </li>
       ))}
     </ul>

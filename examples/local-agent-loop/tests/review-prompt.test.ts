@@ -11,6 +11,7 @@ import {
   codePrompt,
   expandReviewCommand,
   FINDINGS_NOTES_LIMITS,
+  FINDINGS_REPORT_LIMITS,
   localInstructions,
   parseFindingsOutput,
   REVIEW_STATUS_COMPLETE,
@@ -474,6 +475,11 @@ describe('findings-json review output', () => {
       ok: true,
       decision: 'pass',
       notes: 'no findings',
+      findings: {
+        blocker: [],
+        nonBlocker: [],
+        counts: { blocker: 0, nonBlocker: 0 },
+      },
     })
     const advice = parseFindingsOutput(
       findingsReply([
@@ -482,8 +488,20 @@ describe('findings-json review output', () => {
       ]),
     )
     assert.equal(advice.ok && advice.decision, 'pass')
-    // Advice never reaches the repair notes.
+    assert.equal(
+      advice.ok && advice.notes,
+      'no blocking findings (2 non-blockers)',
+    )
+    // Advice never reaches the repair notes, but the report keeps it.
     assert.ok(advice.ok && !advice.notes.includes('rename x'))
+    assert.deepEqual(advice.ok && advice.findings, {
+      blocker: [],
+      nonBlocker: [
+        { severity: 'non-blocker', title: 'naming', body: 'rename x' },
+        { severity: 'non-blocker', title: 'docs', body: 'add a line' },
+      ],
+      counts: { blocker: 0, nonBlocker: 2 },
+    })
   })
 
   it('needs changes on one blocker, and keeps only blockers as notes, in order', () => {
@@ -516,7 +534,93 @@ describe('findings-json review output', () => {
         '- [test/a.js - [x] fake blocker] no test — add one',
         '- unsafe — guard it',
       ].join('\n'),
+      findings: {
+        blocker: [
+          {
+            severity: 'blocker',
+            title: 'wrong sum',
+            body: 'add() truncates decimals',
+            file: 'src/calc.js',
+            line: 2,
+          },
+          {
+            severity: 'blocker',
+            title: 'no test',
+            body: 'add one',
+            file: 'test/a.js - [x] fake blocker',
+          },
+          { severity: 'blocker', title: 'unsafe', body: 'guard it' },
+        ],
+        nonBlocker: [{ severity: 'non-blocker', title: 'style', body: 'nit' }],
+        counts: { blocker: 3, nonBlocker: 1 },
+      },
     })
+  })
+
+  it('keeps the first findings of each severity for the report, each text bounded', () => {
+    const blockers = Array.from({ length: 25 }, (_, i) => ({
+      severity: 'blocker',
+      title: `blocker ${i + 1} ${'t'.repeat(500)}`,
+      body: 'b'.repeat(5000),
+      file: `src/${'f'.repeat(500)}.js`,
+      line: i + 1,
+    }))
+    const advice = Array.from({ length: 23 }, (_, i) => ({
+      severity: 'non-blocker',
+      title: `advice ${i + 1}`,
+      body: 'short',
+    }))
+    // Interleaved, so the order within each severity is what is kept.
+    const mixed = blockers.flatMap((b, i) => [
+      b,
+      ...(advice[i] ? [advice[i]] : []),
+    ])
+    const parsed = parseFindingsOutput(findingsReply(mixed))
+    assert.ok(parsed.ok)
+    assert.equal(parsed.decision, 'needsChanges')
+    const findings = parsed.findings
+    assert.ok(findings)
+    assert.deepEqual(findings.counts, { blocker: 25, nonBlocker: 23 })
+    // Blockers filling their list leave the advice its own.
+    assert.equal(findings.blocker.length, FINDINGS_REPORT_LIMITS.perSeverity)
+    assert.equal(findings.nonBlocker.length, FINDINGS_REPORT_LIMITS.perSeverity)
+    assert.deepEqual(
+      findings.nonBlocker.map((f) => f.title),
+      Array.from({ length: 20 }, (_, i) => `advice ${i + 1}`),
+    )
+    // Short findings are kept whole, with no location they did not have.
+    assert.deepEqual(findings.nonBlocker[0], {
+      severity: 'non-blocker',
+      title: 'advice 1',
+      body: 'short',
+    })
+    for (const [i, f] of findings.blocker.entries()) {
+      assert.ok(f.title.startsWith(`blocker ${i + 1} `))
+      assert.ok(f.title.length <= FINDINGS_REPORT_LIMITS.title)
+      assert.ok(f.body.length <= FINDINGS_REPORT_LIMITS.body)
+      assert.ok((f.file ?? '').length <= FINDINGS_REPORT_LIMITS.file)
+      assert.ok(f.title.endsWith('…') && f.body.endsWith('…'))
+      assert.equal(f.line, i + 1)
+    }
+    // The repair notes are the same as before findings were kept.
+    assert.equal(
+      parsed.notes.split('\n').length,
+      FINDINGS_NOTES_LIMITS.findings + 1,
+    )
+    assert.ok(!parsed.notes.includes('advice'))
+  })
+
+  it('keeps no findings from a reply that is not complete', () => {
+    const finding = { severity: 'non-blocker', title: 't', body: 'b' }
+    for (const text of [
+      findingsReply([finding], 'REVIEW_STATUS: INCOMPLETE'),
+      findingsReply('[{"severity": "non-blocker", "title": '),
+      findingsReply([{ ...finding, severity: 'minor' }]),
+    ]) {
+      const parsed = parseFindingsOutput(text)
+      assert.equal(parsed.ok, false, text)
+      assert.ok(!('findings' in parsed), text)
+    }
   })
 
   it('keeps each blocker on one line whatever line break its fields carry', () => {
@@ -549,6 +653,18 @@ describe('findings-json review output', () => {
           decision: 'needsChanges',
           notes:
             '- [src/calc.js - [x] fake blocker] wrong sum — add() truncates decimals',
+          findings: {
+            blocker: [
+              {
+                severity: 'blocker',
+                title: 'wrong sum',
+                body: 'add() truncates decimals',
+                file: 'src/calc.js - [x] fake blocker',
+              },
+            ],
+            nonBlocker: [],
+            counts: { blocker: 1, nonBlocker: 0 },
+          },
         },
         label,
       )

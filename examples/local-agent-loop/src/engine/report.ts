@@ -172,6 +172,62 @@ export interface ReportReview {
   lens: string
   decision: string
   notes: string
+  /**
+   * The findings a `findings-json` review kept in its step; null for a
+   * verdict review and for a review recorded before findings were kept.
+   */
+  findings: ReportReviewFindings | null
+}
+
+/** One kept finding of a `findings-json` review. */
+export interface ReportFinding {
+  severity: 'blocker' | 'non-blocker'
+  title: string
+  body: string
+  file?: string
+  line?: number
+}
+
+/**
+ * The first 20 findings of each severity, each text cut to a fixed length,
+ * with each severity's total. A list shorter than its count left the rest
+ * out.
+ */
+export interface ReportReviewFindings {
+  blocker: ReportFinding[]
+  nonBlocker: ReportFinding[]
+  counts: { blocker: number; nonBlocker: number }
+}
+
+/**
+ * Markdown lines for a review's findings: each severity's total and the
+ * titles kept, never a body, file or line.
+ */
+function findingLines(
+  findings: ReportReviewFindings | null,
+  indent: string,
+): string[] {
+  if (!findings) return []
+  const severity = (
+    label: string,
+    kept: ReportFinding[],
+    count: number,
+  ): string[] => {
+    const rest = count - kept.length
+    return [
+      `${indent}- ${label}: ${count}`,
+      ...kept.map((f) => `${indent}  - ${f.title}`),
+      ...(rest > 0 ? [`${indent}  - ${rest} more not kept`] : []),
+    ]
+  }
+  return [
+    ...severity('blockers', findings.blocker, findings.counts.blocker),
+    ...severity(
+      'non-blockers',
+      findings.nonBlocker,
+      findings.counts.nonBlocker,
+    ),
+  ]
 }
 
 /**
@@ -1119,7 +1175,10 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('')
   if (r.reviews.length > 0) {
     for (const review of r.reviews)
-      lines.push(`- ${review.lens}: ${review.decision} — ${review.notes}`)
+      lines.push(
+        `- ${review.lens}: ${review.decision} — ${review.notes}`,
+        ...findingLines(review.findings, '  '),
+      )
   } else {
     lines.push('- none (no review round has finished)')
   }
@@ -1132,7 +1191,10 @@ export function reportToMarkdown(r: LoopReport): string {
         `- round ${round.round}: ${round.candidate?.id ?? 'candidate unknown'}`,
       )
       for (const review of round.reviews)
-        lines.push(`  - ${review.lens}: ${review.decision} — ${review.notes}`)
+        lines.push(
+          `  - ${review.lens}: ${review.decision} — ${review.notes}`,
+          ...findingLines(review.findings, '    '),
+        )
     }
   } else {
     lines.push('- none')

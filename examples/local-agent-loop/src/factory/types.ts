@@ -14,6 +14,7 @@ import type {
   SessionHandling,
   VerificationLog,
 } from '../engine/providers/types.js'
+import type { ReportFinding, ReportReviewFindings } from '../engine/report.js'
 import type {
   CandidateRef,
   ContextMode,
@@ -178,10 +179,21 @@ export interface VerificationResult {
   log: VerificationLog | null
 }
 
+/** One finding of a `findings-json` review, as validated. */
+export type ReviewFinding = ReportFinding
+
+/** The findings of a `findings-json` review as the report keeps them. */
+export type ReviewFindings = ReportReviewFindings
+
 export interface ReviewVerdict {
   lens: ReviewLens
   decision: 'pass' | 'needsChanges'
   notes: string
+  /**
+   * A `findings-json` review's findings; null for a verdict review, absent
+   * on a review recorded before findings were kept.
+   */
+  findings?: ReviewFindings | null
 }
 
 export interface FactoryOutcome {
