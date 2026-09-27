@@ -670,6 +670,9 @@ Claude Code 2.1.280での実測でも、新しいsessionのcache readは0、effo
 
 - `--context reuse`
 - providerが両方ともClaude、実効modelが同じで、実効effortだけが違う
+  （比べるのは実効modelです。`opus` と `claude-opus-5-5` のように指定の書き方が
+  違っても、同じmodelに解決されれば継続します。同じ書き方でも違うmodelに
+  解決されれば新しいsessionです）
 - modelがOpus 5.5（`claude-opus-5-5`）かFable 5.1（`claude-fable-5-1`）
 - Claude Code CLIが2.1.260以降（`claudeCli` の版から読みます。読めなければ継続しません）
 - `CLAUDE_CODE_USE_BEDROCK`、`CLAUDE_CODE_USE_VERTEX`、
@@ -695,7 +698,7 @@ Claude Code 2.1.280での実測でも、新しいsessionのcache readは0、effo
   `effort` に渡して呼びます。promptは新しいsessionとしては書かず、前の会話の
   続きとして書きます。修正が返したsession IDを次の修正のために記録します。
 - 継続してよいかは、provider、実効model、作業場所、指示版の一致で確かめます
-  （effortの一致は求めません）。modelを記録していない古いsessionは、effortを
+  （effortの一致は求めません）。sessionには実効modelを記録します。modelを記録していない古いsessionは、effortを
   またいで継続せず新しいsessionにします。
 - 継続するrunだけ `configVersion` にこの方針が入ります。それ以外のrunの
   `configVersion` は変わりません。
@@ -1309,7 +1312,8 @@ job input の `fakeScenario` は run ごとに fake の振る舞いを変える�
 
 テスト専用の `claudeEffortResume: true` を付けると、fake は「effortを変えて
 sessionを再開してもcacheが残るClaude Code」の代わりをします。呼び出しごとに渡された
-effortをそのまま使い（`low` に固定しません）、実装と修正の呼び出しでは、sessionを
+effortをそのまま使い（`low` に固定しません）、modelも指定どおりに解決します
+（`fake` は `fake-model` の別名で、未指定なら `fake-model`）。実装と修正の呼び出しでは、sessionを
 再開したときにcache readの多いusageを、新しいsessionのときにcache read 0のusageを
 返します。setupもこの欄を読み、effortだけ違う修正でsessionを継続すると判定します。
 その判定の結果は `configVersion` に入ります。実providerには影響しません。

@@ -7,7 +7,6 @@ import type {
   VerificationLog,
 } from '../engine/providers/types.js'
 import {
-  sessionModelOf,
   type CandidateRef,
   type ContextMode,
   type ResolvedProfile,
@@ -345,7 +344,9 @@ export function repairSessionDecision(
   if (input.contextMode !== 'reuse') return no('context is fresh')
   if (repair.provider !== code.provider)
     return no('repair runs on another provider')
-  if (sessionModelOf(repair) !== sessionModelOf(code))
+  // The effective model decides: two spellings of one model are the same
+  // model, and one spelling that resolves to two models is not.
+  if (repair.effectiveModel !== code.effectiveModel)
     return no('repair runs on another model')
   if (repair.effectiveEffort === code.effectiveEffort)
     return no('repair differs from code in more than effort')

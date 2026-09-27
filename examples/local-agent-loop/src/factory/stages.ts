@@ -15,7 +15,7 @@ import type {
   SessionHandling,
 } from '../engine/providers/types.js'
 import { runAgentCall } from '../engine/runner.js'
-import { sessionModelOf, type ReviewSnapshots } from '../engine/types.js'
+import type { ReviewSnapshots } from '../engine/types.js'
 import { runVerificationStep } from '../engine/verification.js'
 import {
   codePrompt,
@@ -96,7 +96,7 @@ export const codeStage: StageHandler = async ({
   const recorded = reuse && !fromFindings ? state.implementationSession : null
   // Only the code role's own provider, profile, cwd and instructions decide
   // whether its session may continue; the reviewers' profiles never do.
-  // Across an effort change the model stands in for the profile. A session
+  // Across an effort change the effective model stands in for the profile. A session
   // recorded without a model is never continued across one: it starts new.
   let handling: SessionHandling = 'fresh'
   if (recorded) {
@@ -110,7 +110,7 @@ export const codeStage: StageHandler = async ({
     else if (
       sameSetup &&
       acrossEffort &&
-      recorded.model === sessionModelOf(profile)
+      recorded.model === profile.effectiveModel
     )
       handling = 'continued-effort-change'
     else
@@ -182,7 +182,7 @@ export const codeStage: StageHandler = async ({
             provider: profile.provider,
             nativeId: call.sessionId,
             profileId: profile.id,
-            model: sessionModelOf(profile),
+            model: profile.effectiveModel,
             cwd: target.workdir,
             instructionsVersion: state.setup.instructionsVersion,
           }

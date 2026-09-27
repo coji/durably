@@ -30,9 +30,12 @@ import {
 } from '../src/engine/report.js'
 import { checkpointPaths } from '../src/engine/runner.js'
 import type { ResolvedProfile, SessionRef } from '../src/engine/types.js'
+import { configVersionOf } from '../src/engine/versions.js'
+import { resolveTimeouts } from '../src/factory/job.js'
 import { codePrompt } from '../src/factory/prompts.js'
 import { codeStage } from '../src/factory/stages.js'
 import {
+  EFFORT_RESUME_POLICY,
   initialState,
   type FactorySetup,
   type FactoryState,
@@ -1452,13 +1455,14 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
     const durably = createAgentDurably({ stateRoot: dir })
     await durably.migrate()
     const trigger = (args: {
+      code?: ReturnType<typeof fake>
       repair: ReturnType<typeof fake> | null
       context?: 'reuse' | 'fresh'
     }) =>
       durably.jobs.agentLoop.trigger({
         provider: 'fake',
         profiles: {
-          code: fake(),
+          code: args.code ?? fake(),
           correctness: fake(),
           'edge-cases': fake(),
           ...(args.repair ? { repair: args.repair } : {}),
@@ -1479,6 +1483,13 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
         await trigger({ repair: fake('repair-model', 'high') })
       ).id
       ids['same'] = (await trigger({ repair: null })).id
+      // Two spellings of one model: `fake` resolves to `fake-model`.
+      ids['alias'] = (
+        await trigger({
+          code: fake('fake'),
+          repair: fake('fake-model', 'high'),
+        })
+      ).id
       await durably.init()
       for (const [name, id] of Object.entries(ids))
         await waitFor(
@@ -1563,6 +1574,43 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
 
       // The policy enters the config version of the run it applies to.
       assert.notEqual(effort.report.configVersion, model.report.configVersion)
+
+      // The requested spellings differ, the effective model is the same: the
+      // repair resumes the implementation session at its own effort, and the
+      // run's config version carries the policy.
+      const alias = await calls('alias')
+      assert.equal(alias.implement?.requestedModel, 'fake')
+      assert.equal(alias.repair?.requestedModel, 'fake-model')
+      assert.equal(alias.implement?.effectiveModel, 'fake-model')
+      assert.equal(alias.repair?.effectiveModel, 'fake-model')
+      assert.equal(alias.repair?.sessionId, alias.implement?.sessionId)
+      assert.equal(alias.repair?.effectiveEffort, 'high')
+      assert.equal(alias.repair?.sessionHandling, 'continued-effort-change')
+      const aliasSetup = (
+        await durably.storage.getCompletedStep(ids['alias'] ?? '', 'setup')
+      )?.output as FactorySetup
+      assert.equal(aliasSetup.repairSession?.resume, true)
+      const versionOf = (repairSession: string | null) =>
+        configVersionOf({
+          contextMode: aliasSetup.contextMode,
+          instructionsVersion: aliasSetup.instructionsVersion,
+          maxIterations: aliasSetup.maxIterations,
+          target: 'subject',
+          agentTimeoutMs: aliasSetup.agentTimeoutMs,
+          checkTimeoutMs: resolveTimeouts('subject', null).checkTimeoutMs,
+          code: aliasSetup.profiles.code,
+          repair: aliasSetup.repair ?? null,
+          repairSession,
+          correctness: aliasSetup.profiles.correctness,
+          edgeCases: aliasSetup.profiles['edge-cases'],
+          triage: null,
+          cli: {},
+          commit: null,
+          review: {},
+        })
+      assert.equal(aliasSetup.configVersion, versionOf(EFFORT_RESUME_POLICY))
+      assert.notEqual(aliasSetup.configVersion, versionOf(null))
+      assert.equal(alias.report.configVersion, aliasSetup.configVersion)
     } finally {
       await durably.stop()
       await durably.db.destroy()
@@ -1731,6 +1779,29 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
     it('stops on a session whose model no longer matches', async () => {
       await assert.rejects(
         repairOnce({ session: { model: 'another-model' } }),
+        /provenance no longer matches/,
+      )
+    })
+
+    it('compares the effective model, not the requested spelling', async () => {
+      // Another spelling of the recorded model resumes, and the session it
+      // returns records the effective model.
+      const spelled = profile(repair.id, 'high', 'fake')
+      const { sent, measurement, event } = await repairOnce({
+        setup: { repair: spelled },
+      })
+      assert.equal(sent?.sessionId, 'implementation-session')
+      assert.equal(measurement?.sessionHandling, 'continued-effort-change')
+      assert.ok(event.type === 'code.completed')
+      if (event.type !== 'code.completed') return
+      assert.equal(event.session?.model, 'fake-model')
+      // A recorded model equal to the requested name, but not to the
+      // effective model, does not match.
+      await assert.rejects(
+        repairOnce({
+          setup: { repair: profile(repair.id, 'high', 'another-model') },
+          session: { model: 'another-model' },
+        }),
         /provenance no longer matches/,
       )
     })

@@ -533,6 +533,24 @@ describe('the repair session policy in the config version', () => {
     assert.notEqual(resumed, '52239366cb61629f')
     assert.notEqual(resumed, versionWith(null))
   })
+
+  it('carries the policy for another spelling of the same effective model', () => {
+    const spelled: ResolvedProfile = {
+      ...claude('claude-opus-5-5', 'high'),
+      requestedModel: 'opus',
+    }
+    const blocked = versionWith(spelled, { CLAUDE_CODE_USE_BEDROCK: '1' })
+    const resumed = versionWith(spelled)
+    assert.notEqual(resumed, blocked)
+    assert.equal(
+      resumed,
+      configVersionOf({
+        ...base,
+        repair: spelled,
+        repairSession: EFFORT_RESUME_POLICY,
+      }),
+    )
+  })
 })
 
 describe('commit settings in the config version', () => {

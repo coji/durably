@@ -594,6 +594,34 @@ describe('whether a repair continues the session across an effort change', () =>
     assert.match(codexRun.reason, /codex/)
   })
 
+  it('compares the effective model, not the requested spelling', () => {
+    const spelled = (
+      requestedModel: string,
+      effectiveModel: string,
+      effort: string,
+    ) => ({
+      provider: 'claude' as const,
+      requestedModel,
+      effectiveModel,
+      effectiveEffort: effort,
+    })
+    // Two spellings of one model continue across the effort change.
+    assert.equal(
+      decide({
+        code: spelled('opus', 'claude-opus-5-5', 'medium'),
+        repair: spelled('claude-opus-5-5', 'claude-opus-5-5', 'high'),
+      }).resume,
+      true,
+    )
+    // One spelling that resolved to two models starts new.
+    const split = decide({
+      code: spelled('opus', 'claude-opus-5-5', 'medium'),
+      repair: spelled('opus', 'claude-fable-5-1', 'high'),
+    })
+    assert.equal(split.resume, false)
+    assert.match(split.reason, /another model/)
+  })
+
   it('starts new on another model family, an unknown or old CLI, or a blocking environment', () => {
     for (const model of [
       'claude-sonnet-5',
@@ -622,10 +650,11 @@ describe('whether a repair continues the session across an effort change', () =>
   })
 
   it('lets the fake provider stand in only when the test switch says so', () => {
+    // With the switch on, the fake resolves the requested model.
     const fake = (model: string | null, effort: string) => ({
       provider: 'fake' as const,
       requestedModel: model,
-      effectiveModel: 'fake-model',
+      effectiveModel: model ?? 'fake-model',
       effectiveEffort: effort,
     })
     const input = {
@@ -635,7 +664,7 @@ describe('whether a repair continues the session across an effort change', () =>
     }
     assert.equal(decide(input).resume, false)
     assert.equal(decide({ ...input, fakeEffortResume: true }).resume, true)
-    // The requested model stands in for the fake's effective one.
+    // Another effective model starts new.
     assert.equal(
       decide({
         ...input,

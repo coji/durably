@@ -21,30 +21,19 @@ export interface ResolvedProfile {
  *
  * `profileId` names the profile of the call that last ran the session; the
  * same profile may always continue it. `model` lets a profile that differs
- * only in effort continue it too, when setup allowed that: provider, model,
- * working directory and instruction set still have to match. A session
- * recorded before `model` existed has none, and is never continued across
- * an effort change.
+ * only in effort continue it too, when setup allowed that: provider,
+ * effective model, working directory and instruction set still have to
+ * match. A session recorded before `model` existed has none, and is never
+ * continued across an effort change.
  */
 export interface SessionRef {
   provider: ProviderName
   nativeId: string
   profileId: string
-  /** The call's model, as `sessionModelOf` gives it; absent on older records. */
+  /** The call's effective model; absent on older records. */
   model?: string | null
   cwd: string
   instructionsVersion: string
-}
-
-/**
- * The model a session runs on, for comparing two profiles. The requested
- * model stands in for the fake provider's, whose effective model is always
- * the same label, as in `executionKey`.
- */
-export function sessionModelOf(
-  profile: Pick<ResolvedProfile, 'requestedModel' | 'effectiveModel'>,
-): string | null {
-  return profile.requestedModel ?? profile.effectiveModel
 }
 
 /**

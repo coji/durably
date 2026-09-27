@@ -41,7 +41,9 @@
  *
  * `claudeEffortResume` (scenario only, tests only) makes the fake stand in for
  * a Claude Code that keeps the prompt cache when a session resumes at another
- * effort: each call honours the effort it is given instead of `low`, and an
+ * effort: each call honours the effort it is given instead of `low`, resolves
+ * its model as Claude Code does (the requested model, with `fake` an alias
+ * of `fake-model`, and `fake-model` when none is requested), and an
  * implement or repair call reports fixed usage whose cache read is high when
  * it resumes a session and zero when it starts one. Setup also reads it, so
  * a repair that differs from code in effort alone continues the session.
@@ -377,6 +379,14 @@ export function realisticUsage(
 }
 
 /**
+ * With `claudeEffortResume`, requested model names that resolve to another
+ * model, as `opus` resolves to `claude-opus-5-5` on Claude Code.
+ */
+const FAKE_MODEL_ALIASES: Readonly<Record<string, string>> = {
+  fake: 'fake-model',
+}
+
+/**
  * Usage of an implement or repair call with `claudeEffortResume`, shaped on
  * a measured Claude Code 2.1.280 call: a new session writes the prompt to
  * the cache and reads none of it; a resumed one reads it back.
@@ -429,8 +439,12 @@ export class FakeProvider implements AgentProvider {
     requestedModel: string | null
     requestedEffort: string | null
   }): { model: string | null; effort: string | null } {
+    const model = requested?.requestedModel ?? null
     return {
-      model: 'fake-model',
+      model:
+        this.effortResume && model !== null
+          ? (FAKE_MODEL_ALIASES[model] ?? model)
+          : 'fake-model',
       effort: (this.effortResume ? requested?.requestedEffort : null) ?? 'low',
     }
   }
@@ -485,12 +499,12 @@ export class FakeProvider implements AgentProvider {
       throw new FakeRefusal(
         `fake: the ${options.role} call on ${this.requestedModel} is refused`,
       )
-    const { effort } = this.resolveExecution(options)
+    const { model: resolvedModel, effort } = this.resolveExecution(options)
     const codeCall = options.role === 'implement' || options.role === 'repair'
     const result = (text: string, sessionId?: string): AgentResult => ({
       text,
       session: { id: sessionId ?? `fake-${randomUUID()}` },
-      resolvedModel: 'fake-model',
+      resolvedModel,
       resolvedEffort: effort,
       reportedModel,
       reportedEffort: effort,
