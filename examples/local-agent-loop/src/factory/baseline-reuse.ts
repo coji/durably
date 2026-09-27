@@ -3,11 +3,12 @@
  *
  * A measured, passing baseline is recorded under the state root: one
  * directory per identity, one file per run, never overwriting another
- * run's file. Pruning keeps only each identity's newest entries. A reuse
- * decision reads that one directory and validates its entries, newest
- * first, against their runs' completed baseline steps, which are the only
- * thing trusted: an entry whose step no longer parses, passed or matches is
- * skipped, and with none left the check runs.
+ * run's file. Pruning keeps each writer's own entry plus each identity's
+ * newest other entries. A reuse decision reads that one directory and
+ * validates its entries, newest first, against their runs' completed
+ * baseline steps, which are the only thing trusted: an entry whose step no
+ * longer parses, passed or matches is skipped, and with none left the check
+ * runs.
  */
 import { createHash, randomUUID } from 'node:crypto'
 import { constants, existsSync } from 'node:fs'
@@ -222,22 +223,23 @@ async function readEntries(
 
 /**
  * Add `record` to the index when it is a measured pass with an identity.
- * The index is append-only: each run writes its own file, through a
- * temporary file and a rename, and never another run's, so concurrent
- * writers cannot lose each other's entries. A replay rewrites the same
- * run's file, which makes up an entry lost to a crash. The write then
- * prunes: it removes this identity's entries that do not parse, keeping
- * only the newest `BASELINE_INDEX_KEEP` by `checkedAt`. A future-dated
- * entry is never pruned for that alone — a concurrent writer's entry can
- * be newer than this writer's sampled clock, and pruning by `now` would
- * risk deleting it. A file a concurrent writer already removed is skipped.
- * Best effort: a failed write only means a later run measures again.
+ * Each run writes only its own file, through a temporary file and a
+ * rename, and never another run's, so concurrent writers cannot lose each
+ * other's entries. A replay rewrites the same run's file, which makes up
+ * an entry lost to a crash. The write then prunes: it always keeps this
+ * writer's own entry, drops this identity's entries that do not parse, and
+ * among the rest keeps only the newest `BASELINE_INDEX_KEEP - 1` by
+ * `checkedAt`. Always keeping the writer's own entry means a run's freshly
+ * written entry is never pruned by its own write, even when
+ * `BASELINE_INDEX_KEEP` or more future-dated entries (as a clock set back
+ * can leave) already fill the identity's directory. A file a concurrent
+ * writer already removed is skipped. Best effort: a failed write only
+ * means a later run measures again.
  */
 export async function recordBaselineInIndex(args: {
   stateRoot: string
   runId: string
   record: BaselineRecord
-  now?: number
 }): Promise<void> {
   const { record } = args
   if (
@@ -261,9 +263,14 @@ export async function recordBaselineInIndex(args: {
     }
     const kept: string[] = []
     const removed: string[] = []
+    let othersKept = 0
     for (const { file, entry: e } of await readEntries(dir)) {
-      if (!e || kept.length >= BASELINE_INDEX_KEEP) removed.push(file)
-      else kept.push(file)
+      if (!e) removed.push(file)
+      else if (e.runId === args.runId) kept.push(file)
+      else if (othersKept < BASELINE_INDEX_KEEP - 1) {
+        kept.push(file)
+        othersKept++
+      } else removed.push(file)
     }
     await Promise.all(
       removed.map((file) => rm(join(dir, file), { force: true })),

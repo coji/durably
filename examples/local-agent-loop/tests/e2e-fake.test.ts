@@ -1736,7 +1736,7 @@ describe('choosing a baseline result to reuse', () => {
   it('indexes only measured passes, one file per run, never overwriting another', async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), 'baseline-index-'))
     const write = (runId: string, r: BaselineRecord) =>
-      recordBaselineInIndex({ stateRoot, runId, record: r, now })
+      recordBaselineInIndex({ stateRoot, runId, record: r })
     await write('failed', record({ passed: false, exitCode: 1 }))
     await write('no-identity', record({ identity: null }))
     await write('no-time', record({ checkedAt: undefined }))
@@ -1772,7 +1772,6 @@ describe('choosing a baseline result to reuse', () => {
         stateRoot,
         runId: `run-${i}`,
         record: record({ checkedAt: at((BASELINE_INDEX_KEEP + 5 - i) * 1000) }),
-        now,
       })
     const [dir] = await readdir(join(stateRoot, 'baseline-index'))
     assert.ok(dir)
@@ -1791,37 +1790,37 @@ describe('choosing a baseline result to reuse', () => {
       stateRoot,
       runId: 'latest',
       record: record({ checkedAt: at(0) }),
-      now,
     })
     const kept = (await entriesOf(stateRoot)).map(([runId]) => runId)
     assert.equal(kept.length, BASELINE_INDEX_KEEP)
     assert.equal(kept[0], 'future')
     assert.equal(kept[1], 'latest')
     assert.ok(!existsSync(join(idDir, 'broken.json')))
-    // The oldest went first; the future entry's extra slot pushes the
-    // cutoff one entry higher than before.
+    // The oldest went first; `latest` was newer than all but `future` among
+    // the entries, so keeping it (as its own writer) makes no difference
+    // here — the cutoff lands where ranking by `checkedAt` alone would put
+    // it.
     for (let i = 0; i < 7; i++)
       assert.ok(!kept.includes(`run-${i}`), `run-${i}`)
     assert.ok(kept.includes('run-7'))
   })
 
-  it('keeps an entry a concurrent writer publishes after the pruner samples its clock', async () => {
-    // Writer A reads `now` before listing the directory. If writer B's
-    // entry, dated after A's `now`, is already on disk by the time A reads
-    // the directory, A's prune must not delete it: it is not stale, just
-    // published after A's clock was sampled.
+  it('keeps a concurrent writer entry among the newest, whether or not it is the pruning writer', async () => {
+    // Writer B's entry, checked after writer A's own, is on disk by the
+    // time A prunes. It survives because it ranks among the newest, the
+    // same rule that keeps any other entry — not because of any special
+    // case for concurrent or future-dated entries.
     const stateRoot = await mkdtemp(join(tmpdir(), 'baseline-index-race-'))
     for (let i = 0; i < BASELINE_INDEX_KEEP; i++)
       await recordBaselineInIndex({
         stateRoot,
         runId: `run-${i}`,
         record: record({ checkedAt: at((BASELINE_INDEX_KEEP - i) * 1000) }),
-        now,
       })
     const [dir] = await readdir(join(stateRoot, 'baseline-index'))
     assert.ok(dir)
     const idDir = join(stateRoot, 'baseline-index', dir)
-    // Writer B publishes its entry, checked after A's sampled `now`.
+    // Writer B publishes its entry, checked after writer A's own.
     await writeFile(
       join(idDir, 'concurrent.json'),
       JSON.stringify({
@@ -1829,15 +1828,60 @@ describe('choosing a baseline result to reuse', () => {
         checkedAt: new Date(now + 5000).toISOString(),
       }),
     )
-    // Writer A's own write and prune, using its earlier-sampled `now`.
+    // Writer A's own write and prune.
     await recordBaselineInIndex({
       stateRoot,
       runId: 'writer-a',
       record: record({ checkedAt: at(0) }),
-      now,
     })
     const kept = (await entriesOf(stateRoot)).map(([runId]) => runId)
     assert.ok(kept.includes('concurrent'))
+  })
+
+  it("keeps the writer's own entry even when 20 future-dated entries fill the pool, and a lookup reuses it", async () => {
+    // A clock rollback can leave `BASELINE_INDEX_KEEP` or more future-dated
+    // entries for one identity. Those entries would otherwise occupy every
+    // kept slot and prune each new, current entry on the writer's own
+    // write, disabling reuse until real time catches up. Dates here are
+    // relative to the real clock, since `reusedBaseline` reads it directly.
+    const stateRoot = await mkdtemp(join(tmpdir(), 'baseline-index-rollback-'))
+    const realNow = Date.now()
+    for (let i = 0; i < BASELINE_INDEX_KEEP; i++)
+      await recordBaselineInIndex({
+        stateRoot,
+        runId: `future-${i}`,
+        record: record({
+          checkedAt: new Date(realNow + (i + 1) * 1000).toISOString(),
+        }),
+      })
+    const writerCheckedAt = new Date(realNow).toISOString()
+    await recordBaselineInIndex({
+      stateRoot,
+      runId: 'writer',
+      record: record({ checkedAt: writerCheckedAt }),
+    })
+    const kept = (await entriesOf(stateRoot)).map(([runId]) => runId)
+    assert.ok(kept.includes('writer'))
+    const reused = await reusedBaseline({
+      stateRoot,
+      runId: 'looker',
+      setup: {
+        baselineIdentity: identity,
+        checkpointsDir: join(stateRoot, 'checkpoints'),
+      } as unknown as FactorySetup,
+      reuse: { maxAgeMs: 600_000 },
+      store: {
+        getCompletedStep: async (runId) =>
+          runId === 'writer'
+            ? { output: measured(), completedAt: writerCheckedAt }
+            : null,
+        getStepAttempts: async () => [],
+      },
+      operationKey: 'looker/baseline',
+    })
+    // The future entries are all skipped; only the writer's own entry
+    // validates.
+    assert.equal(reused?.reusedFrom?.runId, 'writer')
   })
 
   describe('looking a result up in the index', () => {
@@ -1879,7 +1923,6 @@ describe('choosing a baseline result to reuse', () => {
         stateRoot,
         runId,
         record: record({ checkedAt }),
-        now: Date.now() + 3_600_000,
       })
     const step = (checkedAt: string) => ({ ...measured(), checkedAt })
 
