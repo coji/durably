@@ -725,7 +725,8 @@ commit、squash branchには入りません。
   `CLAUDE.local.md` が既にあれば、変更も削除もせず、そのレビューを送らずに止めます。
 - 呼び出しが成功しても、失敗しても、cancelやleaseの喪失で止まっても、書いた
   ファイルを消します。workerが強制終了して残った場合は、runを再開したレビューが
-  書く前に消し、candidateを封印する前にも消します。
+  書く前に消し、candidateを封印する前にも消します。workerがいないままrunを
+  cancelした場合は、cancelした側が消します。
 - 二つのレビューが同じworktreeで別の `CLAUDE.local.md` を読まないよう、どちらかの
   役割が `local-instructions` を使うrunでは、二つのレビューを一つずつ順に呼びます。
   それ以外のrunでは従来どおり並行です。

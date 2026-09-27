@@ -2090,4 +2090,105 @@ describe('configured reviewers', { timeout: 240000 }, () => {
       await durably.db.destroy()
     }
   })
+
+  it('removes instructions a killed worker left when the run is cancelled with no worker, and never a file it did not write', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-review-offline-cancel-'))
+    const repo = await seedRepo(root)
+    const home = join(root, 'home')
+    await mkdir(home)
+    const stateRoot = join(home, '.local', 'state', 'local-agent-loop')
+    // Never init: no worker in this process.
+    const durably = createAgentDurably({ stateRoot })
+    await durably.migrate()
+    const local: ReviewSettings = {
+      command: null,
+      context: 'local-instructions',
+      output: 'findings-json',
+    }
+    const tsx = join(packageRoot, 'node_modules', '.bin', 'tsx')
+    const workers: ReturnType<typeof spawn>[] = []
+    const pids: (() => number)[] = []
+    // Start a worker, wait until its review has written the instructions,
+    // and kill it there.
+    const killMidReview = async (workdir: string) => {
+      const worker = spawn(
+        tsx,
+        [join(packageRoot, 'src', 'cli.ts'), 'worker'],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            HOME: home,
+            FAKE_FAIL_FIRST: '0',
+            FAKE_REVIEW_SLOW_MS: '120000',
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      )
+      workers.push(worker)
+      let out = ''
+      worker.stdout?.on('data', (d: Buffer) => (out += d.toString()))
+      worker.stderr?.on('data', (d: Buffer) => (out += d.toString()))
+      // tsx runs the worker in a child of its own: kill the pid it prints.
+      const pid = () => Number(/worker running, pid (\d+)/.exec(out)?.[1])
+      pids.push(pid)
+      await waitFor(
+        async () =>
+          Number.isInteger(pid()) &&
+          /edge-case reviewer/.test(
+            await readFile(join(workdir, LOCAL), 'utf8').catch(() => ''),
+          ),
+        150000,
+        'the second review is under way in the worker',
+      )
+      process.kill(pid(), 'SIGKILL')
+      worker.kill('SIGKILL')
+      // The worker died mid-call: its instructions are still there.
+      assert.ok(
+        (await readFile(join(workdir, LOCAL), 'utf8')).startsWith(
+          LOCAL_INSTRUCTIONS_MARKER,
+        ),
+      )
+    }
+    try {
+      const marked = await durably.jobs.agentLoop.trigger(
+        configuredRun(repo, { correctness: local, 'edge-cases': local }),
+      )
+      const markedDir = join(stateRoot, 'runs', marked.id, 'work')
+      await killMidReview(markedDir)
+      assert.equal((await durably.getRun(marked.id))?.status, 'leased')
+      await durably.cancel(marked.id)
+      assert.equal((await durably.getRun(marked.id))?.status, 'cancelled')
+      assert.equal(existsSync(join(markedDir, LOCAL)), false)
+      // The cleanup command `status` prints now works as printed.
+      await git(repo, ['worktree', 'remove', markedDir])
+      assert.equal(existsSync(markedDir), false)
+
+      // The same kill, but the file is replaced by one the factory did not
+      // write before the cancel: it stays as it is.
+      const unmarked = await durably.jobs.agentLoop.trigger(
+        configuredRun(repo, { correctness: local, 'edge-cases': local }),
+      )
+      const unmarkedDir = join(stateRoot, 'runs', unmarked.id, 'work')
+      await killMidReview(unmarkedDir)
+      await writeFile(join(unmarkedDir, LOCAL), "the owner's own notes\n")
+      await durably.cancel(unmarked.id)
+      assert.equal((await durably.getRun(unmarked.id))?.status, 'cancelled')
+      assert.equal(
+        await readFile(join(unmarkedDir, LOCAL), 'utf8'),
+        "the owner's own notes\n",
+      )
+    } finally {
+      for (const pid of pids) {
+        try {
+          process.kill(pid(), 'SIGKILL')
+        } catch {
+          // Already gone.
+        }
+      }
+      for (const worker of workers) worker.kill('SIGKILL')
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
 })

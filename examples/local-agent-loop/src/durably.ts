@@ -16,6 +16,7 @@ import Database from 'better-sqlite3'
 import { SqliteDialect } from 'kysely'
 
 import { createAgentLoopJob } from './factory/job.js'
+import { removeOwnLocalInstructions } from './factory/stages.js'
 
 /**
  * Where the database and every run's data live: outside both the durably
@@ -161,7 +162,7 @@ function withDatabase(
   maxConcurrentRuns?: number,
 ) {
   const dialect = new SqliteDialect({ database })
-  return createDurably({
+  const durably = createDurably({
     dialect,
     pollingIntervalMs: 500,
     leaseRenewIntervalMs: 1000,
@@ -170,6 +171,19 @@ function withDatabase(
     ...(maxConcurrentRuns ? { maxConcurrentRuns } : {}),
     jobs: { agentLoop: createAgentLoopJob({ stateRoot }) },
   })
+  // A review's `finally` removes its own `CLAUDE.local.md`, and a replay
+  // removes one a killed worker left. A run cancelled while no worker holds
+  // it reaches neither, so the cancel removes it too. Only a file the
+  // factory marked goes; the cancel has happened, so a failure here is not
+  // reported as a failed cancel.
+  const cancel = durably.cancel.bind(durably)
+  durably.cancel = async (runId: string) => {
+    await cancel(runId)
+    await removeOwnLocalInstructions(
+      join(stateRoot, 'runs', runId, 'work'),
+    ).catch(() => {})
+  }
+  return durably
 }
 
 export type AgentLoopDurably = ReturnType<typeof build>
