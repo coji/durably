@@ -1,17 +1,19 @@
 /**
  * Reusing another run's passing baseline result (ADR-0025).
  *
- * A measured, passing baseline is recorded in an index under the state root,
- * one file per identity, naming the newest such run. A reuse decision reads
- * that one file and then that one run's completed baseline step, which is
- * the only thing trusted: an entry whose step no longer parses, passed or
- * matches is ignored, and the check runs.
+ * A measured, passing baseline is recorded in an append-only index under
+ * the state root: one directory per identity, one file per run. A reuse
+ * decision reads that one directory and validates its entries, newest
+ * first, against their runs' completed baseline steps, which are the only
+ * thing trusted: an entry whose step no longer parses, passed or matches is
+ * skipped, and with none left the check runs.
  */
 import { createHash, randomUUID } from 'node:crypto'
 import { constants, existsSync } from 'node:fs'
 import {
   access,
   mkdir,
+  readdir,
   readFile,
   realpath,
   rename,
@@ -154,41 +156,85 @@ const reusableRecordSchema = z.object({
   log: z.custom<BaselineRecord['log']>().optional(),
 })
 
-/** The index entry for one identity: the newest measured passing result. */
+/**
+ * One index entry: a run whose measured baseline passed under the identity
+ * its directory names, and when that check completed.
+ */
 const indexEntrySchema = z.object({
   runId: z.string().min(1),
-  /** When that run's check completed. */
   checkedAt: z.string().min(1),
-  log: z.object({ stdoutPath: z.string(), stderrPath: z.string() }).nullable(),
 })
 type IndexEntry = z.infer<typeof indexEntrySchema>
 
-function indexPathOf(stateRoot: string, identity: BaselineIdentity): string {
+/**
+ * How many entries one identity keeps. A write removes the rest, oldest
+ * first, so a lookup reads at most this many files, plus any written
+ * concurrently.
+ */
+export const BASELINE_INDEX_KEEP = 20
+
+/** The directory holding one identity's entries, one file per run. */
+function identityDirOf(stateRoot: string, identity: BaselineIdentity): string {
   const id = createHash('sha256').update(identityKey(identity)).digest('hex')
-  return join(baselineIndexDirOf(stateRoot), `${id}.json`)
+  return join(baselineIndexDirOf(stateRoot), id)
 }
 
-async function readIndexEntry(path: string): Promise<IndexEntry | null> {
-  try {
-    const parsed = indexEntrySchema.safeParse(
-      JSON.parse(await readFile(path, 'utf8')),
-    )
-    return parsed.success ? parsed.data : null
-  } catch {
-    return null
-  }
+function entryFileOf(runId: string): string {
+  return `${encodeURIComponent(runId)}.json`
 }
 
 /**
- * Point the index at `record` when it is a measured pass with an identity
- * that is newer than the entry already there. Written through a temporary
- * file and a rename, so a reader sees the old entry or the new one. Best
- * effort: a failed write only means a later run measures again.
+ * The identity's entries, newest first, as files named and dated; an entry
+ * that does not parse or carries no valid time is `null`-dated, so a caller
+ * can prune it. A missing directory is no entries.
+ */
+async function readEntries(
+  dir: string,
+): Promise<{ file: string; entry: IndexEntry | null; at: number }[]> {
+  let files: string[]
+  try {
+    files = (await readdir(dir)).filter((f) => f.endsWith('.json'))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  }
+  const entries = await Promise.all(
+    files.map(async (file) => {
+      let entry: IndexEntry | null = null
+      try {
+        const parsed = indexEntrySchema.safeParse(
+          JSON.parse(await readFile(join(dir, file), 'utf8')),
+        )
+        if (parsed.success) entry = parsed.data
+      } catch {
+        // Unreadable, or removed by a concurrent prune.
+      }
+      const at = entry ? Date.parse(entry.checkedAt) : Number.NaN
+      return { file, entry: Number.isFinite(at) ? entry : null, at }
+    }),
+  )
+  const key = (e: { at: number }) => (Number.isFinite(e.at) ? e.at : -Infinity)
+  return entries.sort((a, b) =>
+    key(a) === key(b) ? 0 : key(b) > key(a) ? 1 : -1,
+  )
+}
+
+/**
+ * Add `record` to the index when it is a measured pass with an identity.
+ * The index is append-only: each run writes its own file, through a
+ * temporary file and a rename, and never another run's, so concurrent
+ * writers cannot lose each other's entries. A replay rewrites the same
+ * run's file, which makes up an entry lost to a crash. The write then
+ * prunes: it removes this identity's entries that do not parse, are dated
+ * after now, or fall outside the newest `BASELINE_INDEX_KEEP`. A file a
+ * concurrent writer already removed is skipped. Best effort: a failed
+ * write only means a later run measures again.
  */
 export async function recordBaselineInIndex(args: {
   stateRoot: string
   runId: string
   record: BaselineRecord
+  now?: number
 }): Promise<void> {
   const { record } = args
   if (
@@ -199,25 +245,10 @@ export async function recordBaselineInIndex(args: {
   )
     return
   try {
-    const path = indexPathOf(args.stateRoot, record.identity)
-    const current = await readIndexEntry(path)
-    if (
-      current &&
-      (current.runId === args.runId ||
-        Date.parse(current.checkedAt) >= Date.parse(record.checkedAt))
-    )
-      return
-    const entry: IndexEntry = {
-      runId: args.runId,
-      checkedAt: record.checkedAt,
-      log: record.log
-        ? {
-            stdoutPath: record.log.stdoutPath,
-            stderrPath: record.log.stderrPath,
-          }
-        : null,
-    }
-    await mkdir(baselineIndexDirOf(args.stateRoot), { recursive: true })
+    const dir = identityDirOf(args.stateRoot, record.identity)
+    const entry: IndexEntry = { runId: args.runId, checkedAt: record.checkedAt }
+    await mkdir(dir, { recursive: true })
+    const path = join(dir, entryFileOf(args.runId))
     const temporary = `${path}.${randomUUID()}.tmp`
     try {
       await writeFile(temporary, `${JSON.stringify(entry)}\n`, 'utf8')
@@ -225,6 +256,17 @@ export async function recordBaselineInIndex(args: {
     } finally {
       await rm(temporary, { force: true })
     }
+    const now = args.now ?? Date.now()
+    const kept: string[] = []
+    const removed: string[] = []
+    for (const { file, entry: e, at } of await readEntries(dir)) {
+      if (!e || at > now || kept.length >= BASELINE_INDEX_KEEP)
+        removed.push(file)
+      else kept.push(file)
+    }
+    await Promise.all(
+      removed.map((file) => rm(join(dir, file), { force: true })),
+    )
   } catch {
     // Best effort.
   }
@@ -281,8 +323,11 @@ export function validReusable(args: {
  * Another run's result this baseline may use, as this step's record, or
  * null to run the check. Null too when this run has already started
  * measuring: an interrupted check is finished, never swapped for a reused
- * result. A failed lookup also runs the check. One index read and one read
- * of the source run's step and attempts; no scan of the history.
+ * result. The lookup reads this identity's index entries, drops those
+ * dated in the future or older than `maxAgeMs`, and validates the rest
+ * newest first against their runs' completed baseline steps, taking the
+ * first that holds. A failed lookup also runs the check. Its cost is
+ * bounded by this identity's entries; there is no scan of the history.
  */
 export async function reusedBaseline(args: {
   stateRoot: string
@@ -298,28 +343,33 @@ export async function reusedBaseline(args: {
   const paths = checkpointPaths(setup.checkpointsDir, args.operationKey)
   if (existsSync(paths.started) || existsSync(paths.completed)) return null
   try {
-    const entry = await readIndexEntry(indexPathOf(args.stateRoot, identity))
-    if (!entry) return null
-    const step = await args.store.getCompletedStep(entry.runId, BASELINE_STEP)
-    const chosen = validReusable({
-      runId: args.runId,
-      identity,
-      maxAgeMs: args.reuse.maxAgeMs,
-      now: Date.now(),
-      source: step ? { runId: entry.runId, ...step } : null,
-    })
-    if (!chosen) return null
-    const attempts = await args.store.getStepAttempts(chosen.runId)
-    return {
-      ...chosen.record,
-      source: 'reused',
-      identity,
-      reusedFrom: {
-        runId: chosen.runId,
-        checkedAt: chosen.checkedAt,
-        recovered: baselineRecoveredOf(attempts.map(toAttemptRow)),
-      },
+    const now = Date.now()
+    const entries = await readEntries(identityDirOf(args.stateRoot, identity))
+    for (const { entry, at } of entries) {
+      if (!entry || entry.runId === args.runId) continue
+      if (at > now || now - at > args.reuse.maxAgeMs) continue
+      const step = await args.store.getCompletedStep(entry.runId, BASELINE_STEP)
+      const chosen = validReusable({
+        runId: args.runId,
+        identity,
+        maxAgeMs: args.reuse.maxAgeMs,
+        now,
+        source: step ? { runId: entry.runId, ...step } : null,
+      })
+      if (!chosen) continue
+      const attempts = await args.store.getStepAttempts(chosen.runId)
+      return {
+        ...chosen.record,
+        source: 'reused',
+        identity,
+        reusedFrom: {
+          runId: chosen.runId,
+          checkedAt: chosen.checkedAt,
+          recovered: baselineRecoveredOf(attempts.map(toAttemptRow)),
+        },
+      }
     }
+    return null
   } catch {
     return null
   }

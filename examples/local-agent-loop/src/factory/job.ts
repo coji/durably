@@ -42,10 +42,7 @@ import {
   UncertainInvocationError,
 } from '../engine/runner.js'
 import type { ResolvedProfile } from '../engine/types.js'
-import {
-  runVerificationStep,
-  verificationCompletedAt,
-} from '../engine/verification.js'
+import { runTimedVerificationStep } from '../engine/verification.js'
 import {
   cliIdentityOf,
   configVersionOf,
@@ -1268,7 +1265,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               await target.assertReadyForBase(signal)
               return reused
             }
-            const measured = await runVerificationStep(
+            const measured = await runTimedVerificationStep(
               attempt,
               {
                 provider: setup.profiles.code.provider,
@@ -1291,21 +1288,17 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               signal,
             )
             return {
-              ...measured,
+              ...measured.result,
               source: 'measured',
               identity: setup.baselineIdentity ?? null,
               // The check's own completion, which a resume that read the
               // verdict back from the checkpoint does not move.
-              checkedAt:
-                (await verificationCompletedAt(
-                  setup.checkpointsDir,
-                  operationKey,
-                )) ?? new Date().toISOString(),
+              checkedAt: measured.completedAt,
             }
           },
         )
         // Also on a replay, so an index write lost to a crash after the
-        // step completed is made up; an older result never replaces a newer.
+        // step completed is made up. Each run writes only its own entry.
         await recordBaselineInIndex({
           stateRoot: options.stateRoot,
           runId: step.runId,

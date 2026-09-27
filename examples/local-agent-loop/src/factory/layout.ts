@@ -11,8 +11,8 @@ export function runRootOf(stateRoot: string, runId: string): string {
 }
 
 /**
- * The baseline reuse index (ADR-0025): one file per baseline identity,
- * naming the newest run whose check passed under it.
+ * The baseline reuse index (ADR-0025): append-only, one directory per
+ * baseline identity and in it one file per run whose check passed under it.
  */
 export function baselineIndexDirOf(stateRoot: string): string {
   return join(stateRoot, 'baseline-index')

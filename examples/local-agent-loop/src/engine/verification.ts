@@ -125,6 +125,19 @@ export async function runVerificationStep(
   spec: VerificationStepSpec,
   signal: AbortSignal,
 ): Promise<VerificationOutcome> {
+  return (await runTimedVerificationStep(attempt, spec, signal)).result
+}
+
+/**
+ * `runVerificationStep`, also giving when the verdict was reached: the
+ * completion its checkpoint records, which a resume that reads the verdict
+ * back does not move.
+ */
+export async function runTimedVerificationStep(
+  attempt: StepAttemptContext,
+  spec: VerificationStepSpec,
+  signal: AbortSignal,
+): Promise<{ result: VerificationOutcome; completedAt: string }> {
   const started = Date.now()
   const { started: startedPath, completed: completedPath } = checkpointPaths(
     spec.checkpointsDir,
@@ -199,7 +212,7 @@ export async function runVerificationStep(
       result: 'checkpoint-recovered',
       verificationLog: saved.result.log ?? null,
     })
-    return saved.result
+    return { result: saved.result, completedAt: saved.invocationCompletedAt }
   }
   // A start-only checkpoint means the worker died mid-grading. Unlike an LLM
   // invocation — which may already have been billed and must never be resent —
@@ -232,7 +245,10 @@ export async function runVerificationStep(
           invocationCompletedAt: raced.invocationCompletedAt,
           verificationLog: raced.result.log ?? null,
         })
-        return raced.result
+        return {
+          result: raced.result,
+          completedAt: raced.invocationCompletedAt,
+        }
       }
       const racedStart = await readCheckpoint<Started>(startedPath)
       throw new UncertainInvocationError(
@@ -271,7 +287,7 @@ export async function runVerificationStep(
       verificationLog: result.log,
     })
     void measurement
-    return result
+    return { result, completedAt: completed.invocationCompletedAt }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     // An interrupted grading produced no verdict, so it is not a failure.
@@ -290,28 +306,5 @@ export async function runVerificationStep(
       verificationLog: partialLog(err),
     })
     throw err
-  }
-}
-
-/**
- * When the verification under `operationKey` completed, from its completed
- * checkpoint; null when there is none.
- */
-export async function verificationCompletedAt(
-  checkpointsDir: string,
-  operationKey: string,
-): Promise<string | null> {
-  try {
-    const saved = JSON.parse(
-      await readFile(
-        checkpointPaths(checkpointsDir, operationKey).completed,
-        'utf8',
-      ),
-    ) as { invocationCompletedAt?: unknown }
-    return typeof saved.invocationCompletedAt === 'string'
-      ? saved.invocationCompletedAt
-      : null
-  } catch {
-    return null
   }
 }

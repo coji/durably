@@ -41,8 +41,11 @@ import { checkpointPaths } from '../src/engine/runner.js'
 import type { ResolvedProfile, SessionRef } from '../src/engine/types.js'
 import { configVersionOf } from '../src/engine/versions.js'
 import {
+  BASELINE_INDEX_KEEP,
+  type BaselineStore,
   baselineIdentityOf,
   recordBaselineInIndex,
+  reusedBaseline,
   validReusable,
 } from '../src/factory/baseline-reuse.js'
 import { resolveTimeouts } from '../src/factory/job.js'
@@ -1285,13 +1288,17 @@ describe(
         )
         // The measured pass is indexed under its identity.
         const indexDir = join(dir, 'baseline-index')
+        // One directory per identity, one file per run.
+        const [identityDir] = await readdir(indexDir)
+        assert.ok(identityDir)
+        const entriesDir = join(indexDir, identityDir)
         const indexEntries = async () =>
           Promise.all(
-            (await readdir(indexDir))
+            (await readdir(entriesDir))
               .filter((f) => f.endsWith('.json'))
               .map(
                 async (f) =>
-                  JSON.parse(await readFile(join(indexDir, f), 'utf8')) as {
+                  JSON.parse(await readFile(join(entriesDir, f), 'utf8')) as {
                     runId: string
                     checkedAt: string
                   },
@@ -1439,15 +1446,14 @@ describe(
         assert.match(gone.baseline?.logMissing ?? '', /no longer at/)
         assert.match(reportToMarkdown(gone), /- log: none \(the log of run /)
 
-        // An index entry whose run's step no longer matches is ignored: here
-        // it names the reusing run, whose result is not a measurement.
-        const [entryFile] = (await readdir(indexDir)).filter((f) =>
-          f.endsWith('.json'),
-        )
-        assert.ok(entryFile)
+        // An index entry whose run's step no longer matches is skipped: here
+        // it names the reusing run, whose result is not a measurement, and
+        // it is the only one left, so the check runs.
+        for (const f of await readdir(entriesDir))
+          await rm(join(entriesDir, f), { force: true })
         await writeFile(
-          join(indexDir, entryFile),
-          `${JSON.stringify({ runId: reused, checkedAt: new Date().toISOString(), log: null })}\n`,
+          join(entriesDir, `${reused}.json`),
+          `${JSON.stringify({ runId: reused, checkedAt: new Date().toISOString() })}\n`,
         )
         const stale = await start({ reuse })
         assert.equal(await settle(stale), 'completed')
@@ -1510,6 +1516,95 @@ describe(
           /baseline-mutated: setup left uncommitted changes to tracked files/,
         )
         assert.equal(await baseChecks(), 5)
+      } finally {
+        await durably.stop()
+        await durably.db.destroy()
+        delete process.env.FAKE_FAIL_FIRST
+      }
+    })
+
+    it("records a resumed check's own completion time, and indexes it under that time", async () => {
+      const home = await mkdtemp(join(tmpdir(), 'e2e-baseline-resume-'))
+      const dir = join(home, '.local', 'state', 'local-agent-loop')
+      const fixture = await passingRepo(home)
+      process.env.FAKE_FAIL_FIRST = '0'
+      delete process.env.FAKE_REVIEW_SEQUENCE
+      const durably = createAgentDurably({ stateRoot: dir })
+      await durably.migrate()
+      const fake = {
+        provider: 'fake' as const,
+        requestedModel: null,
+        requestedEffort: null,
+      }
+      try {
+        const { id } = await durably.jobs.agentLoop.trigger({
+          provider: 'fake',
+          profiles: { code: fake, correctness: fake, 'edge-cases': fake },
+          target: {
+            kind: 'repo' as const,
+            repoPath: fixture.repo,
+            baseRef: 'HEAD',
+            task: 'Add a note.',
+            spec: null,
+            dispositions: null,
+            inputFiles: { task: null, spec: null, dispositions: null },
+            issue: null,
+            publish: false,
+            checkCommand: fixture.checkCommand,
+            setupCommand: fixture.setupCommand,
+            baselineCheck: true,
+            baselineReuse: { maxAgeMs: 600_000 },
+          },
+          maxIterations: 1,
+          context: 'reuse',
+          fakeScenario: { changes: { 'NOTE.md': 'note\n' } },
+        })
+        // The check completed before the worker died, and the step was
+        // never saved: the resume reads the verdict back from the
+        // checkpoint, and its time is the check's, not the resume's.
+        const checkpointsDir = join(dir, 'runs', id, 'operation-checkpoints')
+        await mkdir(checkpointsDir, { recursive: true })
+        const operationKey = `${id}/baseline`
+        const checkedAt = new Date(Date.now() - 120_000).toISOString()
+        await writeFile(
+          checkpointPaths(checkpointsDir, operationKey).completed,
+          `${JSON.stringify({
+            operationKey,
+            invocationId: 'before-restart',
+            invocationStartedAt: checkedAt,
+            invocationCompletedAt: checkedAt,
+            result: { passed: true, stdout: 'ok', exitCode: 0, log: null },
+            elapsedMs: 5,
+          })}\n`,
+        )
+        await durably.init()
+        await waitFor(
+          async () =>
+            ['completed', 'failed'].includes(
+              (await durably.getRun(id))?.status ?? '',
+            ),
+          120000,
+          'resumed run settles',
+        )
+        assert.equal((await durably.getRun(id))?.status, 'completed')
+        assert.deepEqual(
+          (await fixture.lines('checks')).filter((h) => h === fixture.base),
+          [],
+          'the check did not run again',
+        )
+        const output = (await durably.storage.getCompletedStep(id, 'baseline'))
+          ?.output as { checkedAt?: string; source?: string } | undefined
+        assert.equal(output?.source, 'measured')
+        assert.equal(output?.checkedAt, checkedAt)
+        const indexDir = join(dir, 'baseline-index')
+        const [identityDir] = await readdir(indexDir)
+        assert.ok(identityDir)
+        assert.deepEqual(
+          JSON.parse(
+            await readFile(join(indexDir, identityDir, `${id}.json`), 'utf8'),
+          ),
+          { runId: id, checkedAt },
+        )
       } finally {
         await durably.stop()
         await durably.db.destroy()
@@ -1612,33 +1707,36 @@ describe('choosing a baseline result to reuse', () => {
       )
   })
 
-  it('indexes only measured passes, and never an older one over a newer', async () => {
+  const record = (over: Partial<BaselineRecord> = {}): BaselineRecord => ({
+    passed: true,
+    stdout: 'ok',
+    exitCode: 0,
+    log: null,
+    source: 'measured',
+    identity,
+    checkedAt: at(30_000),
+    ...over,
+  })
+  /** Every entry under the index, as [runId, checkedAt], newest first. */
+  const entriesOf = async (stateRoot: string) => {
+    const root = join(stateRoot, 'baseline-index')
+    if (!existsSync(root)) return []
+    const found: [string, string][] = []
+    for (const id of await readdir(root))
+      for (const f of await readdir(join(root, id))) {
+        const e = JSON.parse(await readFile(join(root, id, f), 'utf8')) as {
+          runId: string
+          checkedAt: string
+        }
+        found.push([e.runId, e.checkedAt])
+      }
+    return found.sort((a, b) => Date.parse(b[1]) - Date.parse(a[1]))
+  }
+
+  it('indexes only measured passes, one file per run, never overwriting another', async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), 'baseline-index-'))
-    const entries = async () => {
-      const dir = join(stateRoot, 'baseline-index')
-      if (!existsSync(dir)) return []
-      return Promise.all(
-        (await readdir(dir)).map(
-          async (f) =>
-            JSON.parse(await readFile(join(dir, f), 'utf8')) as {
-              runId: string
-              checkedAt: string
-            },
-        ),
-      )
-    }
-    const record = (over: Partial<BaselineRecord> = {}): BaselineRecord => ({
-      passed: true,
-      stdout: 'ok',
-      exitCode: 0,
-      log: null,
-      source: 'measured',
-      identity,
-      checkedAt: at(30_000),
-      ...over,
-    })
     const write = (runId: string, r: BaselineRecord) =>
-      recordBaselineInIndex({ stateRoot, runId, record: r })
+      recordBaselineInIndex({ stateRoot, runId, record: r, now })
     await write('failed', record({ passed: false, exitCode: 1 }))
     await write('no-identity', record({ identity: null }))
     await write('no-time', record({ checkedAt: undefined }))
@@ -1649,22 +1747,160 @@ describe('choosing a baseline result to reuse', () => {
         reusedFrom: { runId: 'x', checkedAt: at(1000), recovered: false },
       }),
     )
-    assert.deepEqual(await entries(), [])
+    assert.deepEqual(await entriesOf(stateRoot), [])
     await write('measured', record())
-    assert.deepEqual(
-      (await entries()).map((e) => e.runId),
-      ['measured'],
-    )
+    // Written after, but older: both are kept, and neither replaces the
+    // other, whichever order concurrent writers finish in.
     await write('older', record({ checkedAt: at(40_000) }))
-    assert.deepEqual(
-      (await entries()).map((e) => e.runId),
-      ['measured'],
-    )
     await write('newer', record({ checkedAt: at(10_000) }))
-    assert.deepEqual(
-      (await entries()).map((e) => [e.runId, e.checkedAt]),
-      [['newer', at(10_000)]],
+    // A replay rewrites only its own file.
+    await write('measured', record())
+    assert.deepEqual(await entriesOf(stateRoot), [
+      ['newer', at(10_000)],
+      ['measured', at(30_000)],
+      ['older', at(40_000)],
+    ])
+    // Another identity has its own directory.
+    await write('other', record({ identity: { ...identity, node: 'v25.0.0' } }))
+    assert.equal((await readdir(join(stateRoot, 'baseline-index'))).length, 2)
+  })
+
+  it(`prunes to the newest ${BASELINE_INDEX_KEEP} entries, and drops future-dated or unparsable ones`, async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), 'baseline-index-prune-'))
+    for (let i = 0; i < BASELINE_INDEX_KEEP + 5; i++)
+      await recordBaselineInIndex({
+        stateRoot,
+        runId: `run-${i}`,
+        record: record({ checkedAt: at((BASELINE_INDEX_KEEP + 5 - i) * 1000) }),
+        now,
+      })
+    const [dir] = await readdir(join(stateRoot, 'baseline-index'))
+    assert.ok(dir)
+    const idDir = join(stateRoot, 'baseline-index', dir)
+    // Left by a clock set back, and by a writer from elsewhere.
+    await writeFile(
+      join(idDir, 'future.json'),
+      JSON.stringify({
+        runId: 'future',
+        checkedAt: new Date(now + 1).toISOString(),
+      }),
     )
+    await writeFile(join(idDir, 'broken.json'), '{')
+    await recordBaselineInIndex({
+      stateRoot,
+      runId: 'latest',
+      record: record({ checkedAt: at(0) }),
+      now,
+    })
+    const kept = (await entriesOf(stateRoot)).map(([runId]) => runId)
+    assert.equal(kept.length, BASELINE_INDEX_KEEP)
+    assert.equal(kept[0], 'latest')
+    assert.ok(!kept.includes('future'))
+    assert.ok(!existsSync(join(idDir, 'broken.json')))
+    // The oldest went first.
+    for (let i = 0; i < 6; i++)
+      assert.ok(!kept.includes(`run-${i}`), `run-${i}`)
+    assert.ok(kept.includes('run-6'))
+  })
+
+  describe('looking a result up in the index', () => {
+    const realAt = (msAgo: number) => new Date(Date.now() - msAgo).toISOString()
+    /** A store holding the given runs' baseline steps, counting reads. */
+    const storeOf = (steps: Record<string, unknown>) => {
+      const reads: string[] = []
+      const store: BaselineStore = {
+        getCompletedStep: async (runId) => {
+          reads.push(runId)
+          return runId in steps
+            ? { output: steps[runId], completedAt: realAt(0) }
+            : null
+        },
+        getStepAttempts: async () => [],
+      }
+      return { store, reads }
+    }
+    const lookup = async (
+      stateRoot: string,
+      store: BaselineStore,
+      maxAgeMs = 600_000,
+    ) =>
+      (
+        await reusedBaseline({
+          stateRoot,
+          runId: 'current',
+          setup: {
+            baselineIdentity: identity,
+            checkpointsDir: join(stateRoot, 'checkpoints'),
+          } as unknown as FactorySetup,
+          reuse: { maxAgeMs },
+          store,
+          operationKey: 'current/baseline',
+        })
+      )?.reusedFrom?.runId ?? null
+    const index = async (stateRoot: string, runId: string, checkedAt: string) =>
+      recordBaselineInIndex({
+        stateRoot,
+        runId,
+        record: record({ checkedAt }),
+        now: Date.now() + 3_600_000,
+      })
+    const step = (checkedAt: string) => ({ ...measured(), checkedAt })
+
+    it('skips an entry dated in the future and reuses a valid older one', async () => {
+      const stateRoot = await mkdtemp(join(tmpdir(), 'baseline-lookup-'))
+      const future = new Date(Date.now() + 600_000).toISOString()
+      const older = realAt(60_000)
+      await index(stateRoot, 'future', future)
+      await index(stateRoot, 'older', older)
+      const { store, reads } = storeOf({
+        future: step(future),
+        older: step(older),
+      })
+      assert.equal(await lookup(stateRoot, store), 'older')
+      assert.deepEqual(reads, ['older'])
+    })
+
+    it('takes the newest valid entry, whichever was written last', async () => {
+      for (const order of [
+        ['newer', 'older'],
+        ['older', 'newer'],
+      ]) {
+        const stateRoot = await mkdtemp(join(tmpdir(), 'baseline-lookup-'))
+        const times: Record<string, string> = {
+          newer: realAt(10_000),
+          older: realAt(20_000),
+        }
+        for (const runId of order)
+          await index(stateRoot, runId, times[runId] ?? '')
+        const { store } = storeOf({
+          newer: step(times['newer'] ?? ''),
+          older: step(times['older'] ?? ''),
+        })
+        assert.equal(await lookup(stateRoot, store), 'newer', order.join())
+      }
+    })
+
+    it('falls back to the next entry when the newest no longer validates, and measures when none does', async () => {
+      const stateRoot = await mkdtemp(join(tmpdir(), 'baseline-lookup-'))
+      const newest = realAt(5_000)
+      const next = realAt(10_000)
+      const expired = realAt(700_000)
+      await index(stateRoot, 'newest', newest)
+      await index(stateRoot, 'next', next)
+      await index(stateRoot, 'expired', expired)
+      // The newest run's step failed on replay; the next one holds.
+      const fallback = storeOf({
+        newest: { ...step(newest), passed: false },
+        next: step(next),
+        expired: step(expired),
+      })
+      assert.equal(await lookup(stateRoot, fallback.store), 'next')
+      assert.deepEqual(fallback.reads, ['newest', 'next'])
+      // No valid step left: the expired entry is never even read.
+      const none = storeOf({ newest: { ...step(newest), passed: false } })
+      assert.equal(await lookup(stateRoot, none.store), null)
+      assert.deepEqual(none.reads, ['newest', 'next'])
+    })
   })
 })
 
