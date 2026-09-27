@@ -1765,7 +1765,7 @@ describe('choosing a baseline result to reuse', () => {
     assert.equal((await readdir(join(stateRoot, 'baseline-index'))).length, 2)
   })
 
-  it(`prunes to the newest ${BASELINE_INDEX_KEEP} entries, and drops future-dated or unparsable ones`, async () => {
+  it(`prunes to the newest ${BASELINE_INDEX_KEEP} entries by checkedAt, and drops only unparsable ones`, async () => {
     const stateRoot = await mkdtemp(join(tmpdir(), 'baseline-index-prune-'))
     for (let i = 0; i < BASELINE_INDEX_KEEP + 5; i++)
       await recordBaselineInIndex({
@@ -1777,7 +1777,8 @@ describe('choosing a baseline result to reuse', () => {
     const [dir] = await readdir(join(stateRoot, 'baseline-index'))
     assert.ok(dir)
     const idDir = join(stateRoot, 'baseline-index', dir)
-    // Left by a clock set back, and by a writer from elsewhere.
+    // Dated in the future by a clock set back, or by a writer from
+    // elsewhere: still kept, since it is among the newest by checkedAt.
     await writeFile(
       join(idDir, 'future.json'),
       JSON.stringify({
@@ -1794,13 +1795,49 @@ describe('choosing a baseline result to reuse', () => {
     })
     const kept = (await entriesOf(stateRoot)).map(([runId]) => runId)
     assert.equal(kept.length, BASELINE_INDEX_KEEP)
-    assert.equal(kept[0], 'latest')
-    assert.ok(!kept.includes('future'))
+    assert.equal(kept[0], 'future')
+    assert.equal(kept[1], 'latest')
     assert.ok(!existsSync(join(idDir, 'broken.json')))
-    // The oldest went first.
-    for (let i = 0; i < 6; i++)
+    // The oldest went first; the future entry's extra slot pushes the
+    // cutoff one entry higher than before.
+    for (let i = 0; i < 7; i++)
       assert.ok(!kept.includes(`run-${i}`), `run-${i}`)
-    assert.ok(kept.includes('run-6'))
+    assert.ok(kept.includes('run-7'))
+  })
+
+  it('keeps an entry a concurrent writer publishes after the pruner samples its clock', async () => {
+    // Writer A reads `now` before listing the directory. If writer B's
+    // entry, dated after A's `now`, is already on disk by the time A reads
+    // the directory, A's prune must not delete it: it is not stale, just
+    // published after A's clock was sampled.
+    const stateRoot = await mkdtemp(join(tmpdir(), 'baseline-index-race-'))
+    for (let i = 0; i < BASELINE_INDEX_KEEP; i++)
+      await recordBaselineInIndex({
+        stateRoot,
+        runId: `run-${i}`,
+        record: record({ checkedAt: at((BASELINE_INDEX_KEEP - i) * 1000) }),
+        now,
+      })
+    const [dir] = await readdir(join(stateRoot, 'baseline-index'))
+    assert.ok(dir)
+    const idDir = join(stateRoot, 'baseline-index', dir)
+    // Writer B publishes its entry, checked after A's sampled `now`.
+    await writeFile(
+      join(idDir, 'concurrent.json'),
+      JSON.stringify({
+        runId: 'concurrent',
+        checkedAt: new Date(now + 5000).toISOString(),
+      }),
+    )
+    // Writer A's own write and prune, using its earlier-sampled `now`.
+    await recordBaselineInIndex({
+      stateRoot,
+      runId: 'writer-a',
+      record: record({ checkedAt: at(0) }),
+      now,
+    })
+    const kept = (await entriesOf(stateRoot)).map(([runId]) => runId)
+    assert.ok(kept.includes('concurrent'))
   })
 
   describe('looking a result up in the index', () => {

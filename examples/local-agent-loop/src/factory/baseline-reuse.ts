@@ -1,8 +1,9 @@
 /**
  * Reusing another run's passing baseline result (ADR-0025).
  *
- * A measured, passing baseline is recorded in an append-only index under
- * the state root: one directory per identity, one file per run. A reuse
+ * A measured, passing baseline is recorded under the state root: one
+ * directory per identity, one file per run, never overwriting another
+ * run's file. Pruning keeps only each identity's newest entries. A reuse
  * decision reads that one directory and validates its entries, newest
  * first, against their runs' completed baseline steps, which are the only
  * thing trusted: an entry whose step no longer parses, passed or matches is
@@ -225,10 +226,12 @@ async function readEntries(
  * temporary file and a rename, and never another run's, so concurrent
  * writers cannot lose each other's entries. A replay rewrites the same
  * run's file, which makes up an entry lost to a crash. The write then
- * prunes: it removes this identity's entries that do not parse, are dated
- * after now, or fall outside the newest `BASELINE_INDEX_KEEP`. A file a
- * concurrent writer already removed is skipped. Best effort: a failed
- * write only means a later run measures again.
+ * prunes: it removes this identity's entries that do not parse, keeping
+ * only the newest `BASELINE_INDEX_KEEP` by `checkedAt`. A future-dated
+ * entry is never pruned for that alone — a concurrent writer's entry can
+ * be newer than this writer's sampled clock, and pruning by `now` would
+ * risk deleting it. A file a concurrent writer already removed is skipped.
+ * Best effort: a failed write only means a later run measures again.
  */
 export async function recordBaselineInIndex(args: {
   stateRoot: string
@@ -256,12 +259,10 @@ export async function recordBaselineInIndex(args: {
     } finally {
       await rm(temporary, { force: true })
     }
-    const now = args.now ?? Date.now()
     const kept: string[] = []
     const removed: string[] = []
-    for (const { file, entry: e, at } of await readEntries(dir)) {
-      if (!e || at > now || kept.length >= BASELINE_INDEX_KEEP)
-        removed.push(file)
+    for (const { file, entry: e } of await readEntries(dir)) {
+      if (!e || kept.length >= BASELINE_INDEX_KEEP) removed.push(file)
       else kept.push(file)
     }
     await Promise.all(
