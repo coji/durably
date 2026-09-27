@@ -20,6 +20,7 @@ import { createAgentDurably, dbPath } from '../src/durably.js'
 import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
+import { BASELINE_INDEX_PRUNE_AGE_MS } from '../src/factory/baseline-reuse.js'
 import { baselineMaxAgeMsSchema } from '../src/factory/job.js'
 import {
   codePrompt,
@@ -1089,13 +1090,13 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
     )
     assert.equal(plainInput.target.baselineReuse, null)
 
-    // Zero, a sign, a fraction, past the largest safe integer, Infinity
+    // Zero, a sign, a fraction, past the pruning horizon (7 days), Infinity
     // (`1e400` in JSON) and a missing value are refused before the run.
     for (const raw of [
       '0',
       '-1',
       '1.5',
-      String(Number.MAX_SAFE_INTEGER + 2),
+      String(BASELINE_INDEX_PRUNE_AGE_MS + 1),
       '1e400',
       'null',
     ]) {
@@ -1118,12 +1119,19 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
       1.5,
       Number.NaN,
       Number.POSITIVE_INFINITY,
-      Number.MAX_SAFE_INTEGER + 2,
+      BASELINE_INDEX_PRUNE_AGE_MS + 1,
     ])
       assert.equal(baselineMaxAgeMsSchema.safeParse(value).success, false)
+    // Exactly the pruning horizon (7 days) is accepted; one millisecond more
+    // is refused, since an index entry that old is pruned before it could
+    // ever be reused.
     assert.equal(
-      baselineMaxAgeMsSchema.safeParse(Number.MAX_SAFE_INTEGER).success,
+      baselineMaxAgeMsSchema.safeParse(BASELINE_INDEX_PRUNE_AGE_MS).success,
       true,
+    )
+    assert.equal(
+      baselineMaxAgeMsSchema.safeParse(BASELINE_INDEX_PRUNE_AGE_MS + 1).success,
+      false,
     )
 
     // A reload reads the value the file has now, and its absence.

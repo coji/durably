@@ -3,12 +3,12 @@
  *
  * A measured, passing baseline is recorded under the state root: one
  * directory per identity, one file per run, never overwriting another
- * run's file. Pruning keeps each identity's newest current entries, ranking
- * entries dated in the future last. A reuse decision reads that one directory and
- * validates its entries, newest first, against their runs' completed
- * baseline steps, which are the only thing trusted: an entry whose step no
- * longer parses, passed or matches is skipped, and with none left the check
- * runs.
+ * run's file. A write removes entries older than a fixed horizon. A reuse
+ * decision reads that one directory and validates its entries within the
+ * age, newest first, against their runs' completed baseline steps, which are
+ * the only thing trusted: an entry whose step no longer parses, passed or
+ * matches is skipped, and with none left the check runs. Clock changes are
+ * not handled.
  */
 import { createHash, randomUUID } from 'node:crypto'
 import { constants, existsSync } from 'node:fs'
@@ -169,11 +169,10 @@ const indexEntrySchema = z.object({
 type IndexEntry = z.infer<typeof indexEntrySchema>
 
 /**
- * How many entries one identity keeps. A write removes the rest (see
- * `prunedFiles`), so a lookup reads at most this many files, plus any
- * written concurrently.
+ * How old an entry may be before a write removes it: a week, whatever
+ * `maxAgeMs` a reader uses.
  */
-export const BASELINE_INDEX_KEEP = 20
+export const BASELINE_INDEX_PRUNE_AGE_MS = 7 * 24 * 60 * 60_000
 
 /** The directory holding one identity's entries, one file per run. */
 function identityDirOf(stateRoot: string, identity: BaselineIdentity): string {
@@ -186,9 +185,9 @@ function entryFileOf(runId: string): string {
 }
 
 /**
- * The identity's entries, newest first, as files named and dated; an entry
- * that does not parse or carries no valid time is `null`-dated, so a caller
- * can prune it. A missing directory is no entries.
+ * The identity's entry files, each with its entry and time, or a null entry
+ * when it does not parse or carries no valid time. A missing directory is no
+ * entries.
  */
 async function readEntries(
   dir: string,
@@ -200,54 +199,21 @@ async function readEntries(
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
     throw error
   }
-  const entries = await Promise.all(
+  return Promise.all(
     files.map(async (file) => {
-      let entry: IndexEntry | null = null
       try {
         const parsed = indexEntrySchema.safeParse(
           JSON.parse(await readFile(join(dir, file), 'utf8')),
         )
-        if (parsed.success) entry = parsed.data
+        const at = parsed.success ? Date.parse(parsed.data.checkedAt) : NaN
+        if (parsed.success && Number.isFinite(at))
+          return { file, entry: parsed.data, at }
       } catch {
         // Unreadable, or removed by a concurrent prune.
       }
-      const at = entry ? Date.parse(entry.checkedAt) : Number.NaN
-      return { file, entry: Number.isFinite(at) ? entry : null, at }
+      return { file, entry: null, at: NaN }
     }),
   )
-  const key = (e: { at: number }) => (Number.isFinite(e.at) ? e.at : -Infinity)
-  return entries.sort((a, b) =>
-    key(a) === key(b) ? 0 : key(b) > key(a) ? 1 : -1,
-  )
-}
-
-/**
- * How far past the pruning writer's clock an entry may be dated and still
- * rank as current: near-simultaneous writers on slightly different clocks
- * are not treated as dated in the future.
- */
-export const BASELINE_INDEX_FUTURE_TOLERANCE_MS = 5 * 60_000
-
-/**
- * The entries a prune keeps, in rank order, and the files it removes.
- * Usable entries, dated no later than `now` plus the tolerance, rank first,
- * newest `checkedAt` first. Entries dated beyond the tolerance (as a clock
- * set back leaves them) rank last, least in the future first, so they can
- * never crowd out current ones. The first `BASELINE_INDEX_KEEP` are kept;
- * the rest and every entry that does not parse are removed.
- */
-function prunedFiles(
-  entries: { file: string; entry: IndexEntry | null; at: number }[],
-  now: number,
-): string[] {
-  const limit = now + BASELINE_INDEX_FUTURE_TOLERANCE_MS
-  const parsed = entries.filter((e) => e.entry)
-  const usable = parsed.filter((e) => e.at <= limit).sort((a, b) => b.at - a.at)
-  const future = parsed.filter((e) => e.at > limit).sort((a, b) => a.at - b.at)
-  return [
-    ...entries.filter((e) => !e.entry),
-    ...[...usable, ...future].slice(BASELINE_INDEX_KEEP),
-  ].map((e) => e.file)
 }
 
 /**
@@ -255,13 +221,11 @@ function prunedFiles(
  * Each run writes only its own file, through a temporary file and a
  * rename, and never another run's, so concurrent writers cannot lose each
  * other's entries. A replay rewrites the same run's file, which makes up
- * an entry lost to a crash. The write then prunes the identity's
- * directory, reading the clock after reading it, as `prunedFiles` ranks
- * it: current entries, the writer's own and a concurrent writer's among
- * them, outrank any number of entries dated in the future, and a replayed
- * entry ranks by its own, possibly old, `checkedAt`. A file a concurrent
- * writer already removed is skipped. Best effort: a failed write only
- * means a later run measures again.
+ * an entry lost to a crash. The write then removes the identity's entries
+ * older than `BASELINE_INDEX_PRUNE_AGE_MS` and those that do not parse;
+ * nothing younger is removed, so concurrent writers keep each other's
+ * entries. Best effort: a failed write only means a later run measures
+ * again.
  */
 export async function recordBaselineInIndex(args: {
   stateRoot: string
@@ -288,10 +252,12 @@ export async function recordBaselineInIndex(args: {
     } finally {
       await rm(temporary, { force: true })
     }
-    const entries = await readEntries(dir)
-    const removed = prunedFiles(entries, Date.now())
+    const now = Date.now()
+    const stale = (await readEntries(dir)).filter(
+      (e) => !e.entry || now - e.at > BASELINE_INDEX_PRUNE_AGE_MS,
+    )
     await Promise.all(
-      removed.map((file) => rm(join(dir, file), { force: true })),
+      stale.map(({ file }) => rm(join(dir, file), { force: true })),
     )
   } catch {
     // Best effort.
@@ -310,8 +276,7 @@ export interface BaselineStore {
 /**
  * The source run's result as this run may use it, or null: the source's
  * completed baseline step must be a measured pass with an identity equal to
- * `identity`, checked at most `maxAgeMs` before `now` and not after it (as
- * a clock set back can make one).
+ * `identity`, checked at most `maxAgeMs` before `now`.
  */
 export function validReusable(args: {
   runId: string
@@ -335,8 +300,7 @@ export function validReusable(args: {
   const checkedAt = parsed.data.checkedAt ?? source.completedAt
   if (!checkedAt) return null
   const at = Date.parse(checkedAt)
-  if (!Number.isFinite(at) || at > args.now || args.now - at > args.maxAgeMs)
-    return null
+  if (!Number.isFinite(at) || args.now - at > args.maxAgeMs) return null
   const { checkedAt: _measuredAt, ...record } = parsed.data
   return {
     runId: source.runId,
@@ -350,7 +314,7 @@ export function validReusable(args: {
  * null to run the check. Null too when this run has already started
  * measuring: an interrupted check is finished, never swapped for a reused
  * result. The lookup reads this identity's index entries, drops those
- * dated in the future or older than `maxAgeMs`, and validates the rest
+ * older than `maxAgeMs`, and validates the rest
  * newest first against their runs' completed baseline steps, taking the
  * first that holds. A failed lookup also runs the check. Its cost is
  * bounded by this identity's entries; there is no scan of the history.
@@ -370,10 +334,11 @@ export async function reusedBaseline(args: {
   if (existsSync(paths.started) || existsSync(paths.completed)) return null
   try {
     const now = Date.now()
-    const entries = await readEntries(identityDirOf(args.stateRoot, identity))
-    for (const { entry, at } of entries) {
+    const entries = (await readEntries(identityDirOf(args.stateRoot, identity)))
+      .filter((e) => e.entry && now - e.at <= args.reuse.maxAgeMs)
+      .sort((a, b) => b.at - a.at)
+    for (const { entry } of entries) {
       if (!entry || entry.runId === args.runId) continue
-      if (at > now || now - at > args.reuse.maxAgeMs) continue
       const step = await args.store.getCompletedStep(entry.runId, BASELINE_STEP)
       const chosen = validReusable({
         runId: args.runId,

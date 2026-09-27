@@ -60,6 +60,7 @@ import {
   RepoTarget,
 } from '../targets/repo.js'
 import {
+  BASELINE_INDEX_PRUNE_AGE_MS,
   baselineIdentityOf,
   recordBaselineInIndex,
   reusedBaseline,
@@ -137,13 +138,15 @@ const commitSettingsSchema = z
 
 /**
  * How old a reused baseline result may be: a positive integer of
- * milliseconds, at most `Number.MAX_SAFE_INTEGER`.
+ * milliseconds, at most `BASELINE_INDEX_PRUNE_AGE_MS` (7 days) — the
+ * horizon beyond which index entries are pruned, so a longer setting could
+ * never actually hold.
  */
 export const baselineMaxAgeMsSchema = z
   .number()
   .int()
   .positive()
-  .max(Number.MAX_SAFE_INTEGER)
+  .max(BASELINE_INDEX_PRUNE_AGE_MS, 'the maximum is 7 days')
 
 /** `baselineReuse` in a target and in factory.json. */
 export const baselineReuseSchema = z
