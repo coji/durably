@@ -62,7 +62,12 @@ import {
   FactoryEventSchema,
 } from './events.js'
 import { runRootOf, reviewSnapshotsDirOf } from './layout.js'
-import { assertAllowedDecision, availableActions, decide } from './policy.js'
+import {
+  assertAllowedDecision,
+  availableActions,
+  decide,
+  reviewCanFollow,
+} from './policy.js'
 import {
   parseTriageOutput,
   reviewCommandPlaceholders,
@@ -875,7 +880,7 @@ function resolveInputProfiles(input: {
     return requested
       ? fixRequested(requested)
       : fixProfile({
-          provider: inputProviderOf(input, role),
+          provider: input.provider,
           model: input.model ?? null,
           effort: input.effort ?? null,
         })
@@ -1186,7 +1191,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       // finally block would run cleanup every time the run parks on the human
       // approval wait, and a target that really removes its worktree would
       // destroy the work mid-approval. The `catch` below removes only the
-      // review snapshots, which the approval stage has already removed.
+      // review snapshots, which were already removed before the approval stage.
       try {
         for (let sequence = 0; state.outcome === null; sequence++) {
           const decision = await step.run(
@@ -1202,15 +1207,12 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           )
           assertAllowedDecision(state, decision as StageDecision)
           const selected = decision as StageDecision
-          // No candidate is under review outside a review stage, so no
-          // candidate tree or reviewer directory is needed; a worker that
-          // died after a round's reviews were recorded may have left them.
-          // From approval on the base tree is not needed either, so none
-          // waits with the run for a human.
-          if (selected.stage !== 'review')
-            await target.releaseReviewSnapshots?.({
-              base: !['code', 'verify'].includes(selected.stage),
-            })
+          // The review stage removes each round's candidate tree and
+          // reviewer directories itself, on replay too. Once no review can
+          // follow, the base tree goes as well, so none waits with the run
+          // for a human.
+          if (!reviewCanFollow(selected.stage))
+            await target.releaseReviewSnapshots?.({ base: true })
           const rawEvent = await stages[selected.stage]({
             step,
             state,

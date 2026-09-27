@@ -16,6 +16,7 @@ import { createDurably } from '@coji/durably'
 import Database from 'better-sqlite3'
 import { SqliteDialect } from 'kysely'
 
+import { TERMINAL_STATUSES } from './engine/terminal.js'
 import { createAgentLoopJob } from './factory/job.js'
 import { reviewSnapshotsDirOf, runRootOf } from './factory/layout.js'
 import { removeQuietly } from './targets/repo.js'
@@ -187,24 +188,28 @@ function withDatabase(
     await cancel(runId)
     await removeQuietly(reviewSnapshotsDirOf(runRootOf(stateRoot, runId)))
   }
-  return durably
+  // The state root travels with the instance, so a sweep never reads one
+  // database's runs against another root's files.
+  return Object.assign(durably, { stateRoot })
 }
 
 export type AgentLoopDurably = ReturnType<typeof build>
-
-const TERMINAL = new Set(['completed', 'failed', 'cancelled'])
 
 /**
  * Remove the review snapshots of every run that has ended, or no longer
  * exists. The worker calls it at startup: a worker that died, or a cancel
  * from another process that raced an extraction, can leave them behind, and
  * no step of an ended run will run again to remove them. A run that may
- * still run keeps its own. Returns the runs whose snapshots were removed.
+ * still run keeps its own. The runs are those under the instance's own
+ * state root. Only a run directory that still has a `review-snapshots`
+ * entry is looked up, so the cost is one existence check per retained run
+ * and one lookup per run with snapshots. Returns the runs whose snapshots
+ * were removed.
  */
 export async function sweepReviewSnapshots(
   durably: AgentLoopDurably,
-  stateRoot: string = defaultStateRoot(),
 ): Promise<string[]> {
+  const { stateRoot } = durably
   let runIds: string[]
   try {
     runIds = await readdir(join(stateRoot, 'runs'))
@@ -216,7 +221,7 @@ export async function sweepReviewSnapshots(
     const dir = reviewSnapshotsDirOf(runRootOf(stateRoot, runId))
     if (!existsSync(dir)) continue
     const run = await durably.getRun(runId)
-    if (run && !TERMINAL.has(run.status)) continue
+    if (run && !TERMINAL_STATUSES.includes(run.status)) continue
     await removeQuietly(dir)
     swept.push(runId)
   }

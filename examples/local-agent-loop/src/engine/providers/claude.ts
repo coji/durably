@@ -306,19 +306,31 @@ function namesHome(p: string): boolean {
 }
 
 /**
+ * The `Agent` modes a review refuses. This is defence in depth, not the
+ * boundary: a plain subagent keeps the review's permission mode, the review
+ * has no tool that starts teammates (for which `mode` is used), and the
+ * guard still sees every call a subagent makes. Refusing these costs
+ * nothing and keeps a future SDK that honours `mode` from widening a review.
+ */
+const ESCAPING_AGENT_MODES = new Set([
+  'acceptEdits',
+  'auto',
+  'bypassPermissions',
+])
+
+/**
  * Decide one tool call of a command-mode review or any subagent it starts.
  * Only `Read`, `Grep`, `Glob` and `Agent` pass, and every path they name must
- * resolve inside one of `roots`: the candidate worktree and the directories
- * holding its diff, changed-file list and snapshots. A relative path is taken
- * from the first root, the review's cwd. Paths are compared after resolving
- * symbolic links on both sides, so a link inside a root that points out of
- * it is refused, and a `~` path is refused outright. A `Glob` pattern may
- * not climb out with `..`, and its fixed prefix is resolved from its `path`
- * like any other path. An `Agent` call may not ask for isolation. Its `mode`
- * is not checked: the SDK ignores it, and a subagent keeps the review's
- * permission mode unless its definition says otherwise, and definitions
- * come only from the base commit's `.claude/`. Bash and every write tool are
- * refused.
+ * resolve inside one of `roots`. The first root is the review's own working
+ * directory, and a relative path is taken from it; the others are the
+ * candidate worktree and the directories holding its diff, changed-file
+ * list and snapshots. Paths are compared after resolving symbolic links on
+ * both sides, so a link inside a root that points out of it is refused, and
+ * a `~` path is refused outright. A `Glob` pattern may not climb out with
+ * `..`, and its fixed prefix is resolved from its `path` like any other
+ * path. An `Agent` call may not ask for isolation, nor for a permission mode
+ * in `ESCAPING_AGENT_MODES`; subagent definitions come only from the base
+ * commit's `.claude/`. Bash and every write tool are refused.
  */
 export function decideReviewToolPermission(
   roots: readonly string[],
@@ -335,6 +347,12 @@ export function decideReviewToolPermission(
       return {
         allow: false,
         reason: `review subagents run in place (denied isolation ${String(input['isolation'])})`,
+      }
+    const mode = input['mode']
+    if (typeof mode === 'string' && ESCAPING_AGENT_MODES.has(mode))
+      return {
+        allow: false,
+        reason: `review subagents keep the review's permissions (denied mode ${mode})`,
       }
     return { allow: true }
   }
@@ -514,10 +532,13 @@ export function buildClaudeSettings(
     // Claude Code loads the skills, commands and agents of every additional
     // directory. Only the listed tools exist, `dontAsk` refuses anything not
     // pre-approved, and the guard sees every call, a subagent's included. A
-    // review never resumes a session.
+    // review never resumes a session, so none is saved: each call has a
+    // working directory of its own, and a saved session would leave one
+    // more project under ~/.claude/projects/ per call.
     const roots = [workdir, ...review.readableDirs]
     return {
       cwd: workdir,
+      persistSession: false,
       settingSources: ['project', 'local'],
       ...COMMAND_MODE_LOCKDOWN,
       permissionMode: 'dontAsk',

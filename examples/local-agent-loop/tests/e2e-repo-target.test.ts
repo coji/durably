@@ -1746,6 +1746,16 @@ describe('review snapshots', () => {
     running.abort()
     await assert.rejects(pending)
     assert.deepEqual(readdirSync(out), ['base'])
+
+    // A killed attempt's partial tree, index and index lock do not stop the
+    // retry, and none of them is left.
+    const retried = join(out, 'retried')
+    await mkdir(`${retried}.partial`)
+    await writeFile(`${retried}.index`, 'stale')
+    await writeFile(`${retried}.index.lock`, '')
+    await extractCommit(repo, commit, retried, new AbortController().signal)
+    assert.equal(await readFile(join(retried, 'src', 'calc.js'), 'utf8'), BUGGY)
+    assert.deepEqual(readdirSync(out).sort(), ['base', 'retried'])
   })
 })
 
@@ -1771,6 +1781,15 @@ describe('configured reviewers', { timeout: 240000 }, () => {
       join(repo, '.claude', 'commands', 'code-review.md'),
       BASE_COMMAND,
     )
+    // A link that stays in the base is followed; links that leave it, to a
+    // host file or a host directory, are never copied.
+    await symlink(join('..', 'AGENTS.md'), join(repo, '.claude', 'shared.md'))
+    const HOST_SECRET = 'Host secret: never copy this.\n'
+    const hostDir = join(root, 'host')
+    await mkdir(hostDir)
+    await writeFile(join(hostDir, 'secret.md'), HOST_SECRET)
+    await symlink(join(hostDir, 'secret.md'), join(repo, '.claude', 'leak.md'))
+    await symlink(hostDir, join(repo, '.claude', 'leak-dir'))
     await git(repo, ['add', '-A'])
     await git(repo, ['commit', '-m', 'review config'])
     const base = await resolveCommit(repo, 'HEAD')
@@ -1871,10 +1890,17 @@ describe('configured reviewers', { timeout: 240000 }, () => {
         assert.deepEqual(Object.keys(call.workdirFiles).sort(), [
           join('.claude', 'commands', 'code-review.md'),
           join('.claude', 'settings.json'),
+          join('.claude', 'shared.md'),
           LOCAL,
           'CLAUDE.md',
         ])
         assert.equal(call.workdirFiles['CLAUDE.md'], BASE_MEMORY)
+        assert.equal(
+          call.workdirFiles[join('.claude', 'shared.md')],
+          BASE_MEMORY,
+        )
+        for (const content of Object.values(call.workdirFiles))
+          assert.ok(!content.includes('Host secret'), role)
         assert.equal(
           call.workdirFiles[join('.claude', 'settings.json')],
           BASE_SETTINGS,
@@ -2167,6 +2193,34 @@ describe('configured reviewers', { timeout: 240000 }, () => {
       })
       assert.equal(existsSync(join(output.workdir, LOCAL)), false)
       assert.equal(snapshotsLeft(join(root, 'state'), repaired.id), false)
+      // The edge-cases reviewer gets its context in the prompt, which only
+      // the parent session sees. Its directory holds no code, so a short
+      // CLAUDE.local.md there tells every session, subagents included,
+      // where the candidate is.
+      const promptCalls = endedCalls(output.workdir).filter(
+        (c) => c.role === 'review-b',
+      )
+      assert.equal(promptCalls.length, 2)
+      for (const call of promptCalls) {
+        assert.ok(call.input?.startsWith('/review\n\n'), call.input ?? '')
+        const text = call.workdirFiles[LOCAL] ?? ''
+        assert.match(text, /^# Review locations\n/)
+        assert.match(text, /read it where the factory put it, by absolute path/)
+        const [worktree, diffDir, baseDir, headDir] = Object.keys(call.readable)
+        assert.equal(worktree, output.workdir)
+        for (const [label, dir] of [
+          ['Candidate worktree', worktree],
+          ['Full diff', diffDir],
+          ['Changed file list', diffDir],
+          ['Base commit tree', baseDir],
+          ['Candidate commit tree', headDir],
+        ] as const) {
+          const named = new RegExp(`^- ${label}: (\\S+)$`, 'm').exec(text)?.[1]
+          assert.ok(named?.startsWith(dir ?? '?'), `${label}: ${named}`)
+        }
+        // The review's instructions are not in it: they travel in the prompt.
+        assert.doesNotMatch(text, /independent edge-case reviewer/)
+      }
       // A repair of this run calls and reads its reviewers the same way.
       const setup = (
         await durably.storage.getCompletedStep(repaired.id, 'setup')
@@ -2489,7 +2543,7 @@ describe('configured reviewers', { timeout: 240000 }, () => {
       assert.equal(snapshotsLeft(stateRoot, run.id), true)
       // A run that may still run keeps its snapshots through a sweep.
       assert.equal((await durably.getRun(run.id))?.status, 'leased')
-      assert.deepEqual(await sweepReviewSnapshots(durably, stateRoot), [])
+      assert.deepEqual(await sweepReviewSnapshots(durably), [])
       assert.equal(snapshotsLeft(stateRoot, run.id), true)
 
       await durably.cancel(run.id)
@@ -2513,7 +2567,7 @@ describe('configured reviewers', { timeout: 240000 }, () => {
         'src',
       )
       await mkdir(late, { recursive: true })
-      assert.deepEqual(await sweepReviewSnapshots(durably, stateRoot), [run.id])
+      assert.deepEqual(await sweepReviewSnapshots(durably), [run.id])
       assert.equal(snapshotsLeft(stateRoot, run.id), false)
     } finally {
       try {

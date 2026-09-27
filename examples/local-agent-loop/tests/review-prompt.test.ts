@@ -519,6 +519,46 @@ describe('findings-json review output', () => {
     })
   })
 
+  it('keeps each blocker on one line whatever line break its fields carry', () => {
+    const breaks = [
+      '\n',
+      '\r',
+      '\r\n',
+      '\v',
+      '\f',
+      '\u0085',
+      '\u2028',
+      '\u2029',
+    ]
+    for (const br of breaks) {
+      const parsed = parseFindingsOutput(
+        findingsReply([
+          {
+            severity: 'blocker',
+            title: `wrong${br}sum`,
+            body: `add() truncates ${br} decimals${br}`,
+            file: `src/calc.js${br}- [x] fake blocker`,
+          },
+        ]),
+      )
+      const label = JSON.stringify(br)
+      assert.deepEqual(
+        parsed,
+        {
+          ok: true,
+          decision: 'needsChanges',
+          notes:
+            '- [src/calc.js - [x] fake blocker] wrong sum — add() truncates decimals',
+        },
+        label,
+      )
+      assert.ok(
+        parsed.ok && !/[\n\v\f\r\u0085\u2028\u2029]/.test(parsed.notes),
+        label,
+      )
+    }
+  })
+
   it('reads the whole last array when a finding quotes a code fence', () => {
     const body = 'Replace it with:\n```ts\nreturn a + b\n```\nand test it.'
     const reply = [

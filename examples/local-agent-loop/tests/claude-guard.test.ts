@@ -225,6 +225,8 @@ describe('command-mode review guard', () => {
       assert.equal(settings.cwd, ROOT)
       assert.equal(settings.effort, 'high')
       assert.equal(settings.resume, undefined)
+      // Never resumed, so never saved: no project per call piles up.
+      assert.equal(settings.persistSession, false)
       assert.equal(typeof settings.canUseTool, 'function')
       const pre = (settings.hooks as Record<string, unknown> | undefined)?.[
         'PreToolUse'
@@ -252,6 +254,7 @@ describe('command-mode review guard', () => {
       assert.equal(settings.additionalDirectories, undefined)
       assert.equal(settings.settings, undefined)
       assert.equal(settings.strictMcpConfig, undefined)
+      assert.equal(settings.persistSession, undefined)
     }
     assert.equal(buildClaudeSettings(ROOT, true, null).tools, undefined)
     // A refused call makes a configured review incomplete, so a tool it
@@ -330,6 +333,10 @@ describe('command-mode review guard', () => {
     )
     for (const isolation of ['worktree', 'remote'])
       assert.equal(allow({ prompt: 'review', isolation }), false, isolation)
+    // Defence in depth: a mode that would widen a subagent is refused.
+    assert.equal(allow({ prompt: 'review', mode: 'dontAsk' }), true)
+    for (const mode of ['acceptEdits', 'auto', 'bypassPermissions'])
+      assert.equal(allow({ prompt: 'review', mode }), false, mode)
   })
 
   it('counts subagents through modelUsage in command mode only', () => {

@@ -20,6 +20,15 @@ export function availableActions(state: FactoryState): StageName[] {
   return ['finish']
 }
 
+/**
+ * Whether a review can still come after this stage in the run. From
+ * approval, finish or stop on, none does, so nothing a review reads is kept
+ * past that point.
+ */
+export function reviewCanFollow(stage: StageName): boolean {
+  return stage === 'code' || stage === 'verify' || stage === 'review'
+}
+
 export function decide(state: FactoryState): StageDecision {
   const [stage] = availableActions(state)
   if (!stage) throw new Error('policy has no action for a non-terminal state')

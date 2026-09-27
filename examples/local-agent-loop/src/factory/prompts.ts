@@ -237,6 +237,37 @@ export function localInstructions(prompt: string): string {
   return `# Review instructions\n\n${prompt}\n`
 }
 
+/**
+ * The `CLAUDE.local.md` of a command-mode review whose context travels in
+ * the prompt. The call's working directory holds only the base commit's
+ * review configuration, and the prompt reaches the parent session alone, so
+ * this short file tells every session started there, subagents included,
+ * where the code under review is.
+ */
+export function reviewLocations(args: {
+  worktree: string
+  changes: CandidateChanges | null
+  snapshots: ReviewSnapshots
+}): string {
+  const { worktree, changes, snapshots } = args
+  return [
+    '# Review locations',
+    '',
+    'This working directory holds only review configuration. The code under review is not here: read it where the factory put it, by absolute path, and give these paths to any subagent you start. All of them are read-only.',
+    '',
+    `- Candidate worktree: ${worktree}`,
+    ...(changes
+      ? [
+          `- Full diff: ${changes.diffPath}`,
+          `- Changed file list: ${changes.changedFilesPath}`,
+        ]
+      : []),
+    `- Base commit tree: ${snapshots.baseDir}`,
+    `- Candidate commit tree: ${snapshots.headDir}`,
+    '',
+  ].join('\n')
+}
+
 /** The input of a local-instructions review that has no command of its own. */
 export const LOCAL_INSTRUCTIONS_INPUT =
   'Carry out the review described in CLAUDE.local.md at the root of this working directory, and reply in the shape it asks for.'
@@ -418,7 +449,15 @@ function lastJsonArray(
   }
 }
 
-const oneLine = (text: string) => text.trim().replace(/\s*\n\s*/g, ' ')
+/**
+ * Every line break a finding's text can carry: line feed, carriage return,
+ * vertical tab, form feed, next line (U+0085), and the Unicode line and
+ * paragraph separators. Each run of them, with the spaces around it, becomes
+ * one space, so a finding stays one line of the repair notes.
+ */
+const LINE_BREAKS = /[\s\u0085]*[\n\v\f\r\u0085\u2028\u2029][\s\u0085]*/g
+
+const oneLine = (text: string) => text.replace(LINE_BREAKS, ' ').trim()
 
 function validFinding(
   raw: unknown,

@@ -21,6 +21,7 @@ import {
   localInstructions,
   parseFindingsOutput,
   parseReviewOutput,
+  reviewLocations,
   reviewPrompt,
 } from './prompts.js'
 import type { Delivery } from './target.js'
@@ -248,13 +249,18 @@ export const reviewStage: StageHandler = async ({
   // The base and head trees, extracted once for both reviewers of this
   // round when either reads them, and only when a call is about to be made.
   let snapshots: Promise<ReviewSnapshots> | null = null
-  const snapshotsFor = (signal: AbortSignal): Promise<ReviewSnapshots> => {
-    if (!target.prepareReviewSnapshots || !target.prepareReviewWorkdir)
+  const materialsFor = async (signal: AbortSignal) => {
+    const { prepareReviewSnapshots, prepareReviewWorkdir } = target
+    if (!prepareReviewSnapshots || !prepareReviewWorkdir)
       throw new Error(
         'review: a reviewer command or local instructions need a target with review snapshots',
       )
-    snapshots ??= target.prepareReviewSnapshots(candidate, signal)
-    return snapshots
+    snapshots ??= prepareReviewSnapshots.call(target, candidate, signal)
+    return {
+      trees: await snapshots,
+      workdir: (lens: ReviewLens, localFile: string) =>
+        prepareReviewWorkdir.call(target, candidate, lens, localFile),
+    }
   }
   const round = state.reviewRounds + 1
   const reviewOnce = async (
@@ -269,7 +275,8 @@ export const reviewStage: StageHandler = async ({
     const invocation = reviewInvocationOf(setup, lens)
     const output = invocation?.output ?? 'verdict'
     const commandMode = usesReviewMaterials(invocation)
-    const trees = commandMode ? await snapshotsFor(signal) : null
+    const own = commandMode ? await materialsFor(signal) : null
+    const trees = own?.trees ?? null
     const context = reviewPrompt(
       lens,
       trustedContext,
@@ -302,15 +309,22 @@ export const reviewStage: StageHandler = async ({
         : context
     // A command-mode reviewer runs in a working directory the factory made
     // for this call alone: the base commit's CLAUDE.md and .claude/, and its
-    // own CLAUDE.local.md. The candidate is only read, as data.
-    const workdir =
-      trees && target.prepareReviewWorkdir
-        ? await target.prepareReviewWorkdir(
-            candidate,
-            lens,
-            local ? localInstructions(context) : null,
-          )
-        : reviewCwd
+    // own CLAUDE.local.md. That file carries the whole review context, or,
+    // when the context travels in the prompt, where the candidate is, so a
+    // subagent that never sees the prompt still finds the code. The
+    // candidate is only read, as data.
+    const workdir = own
+      ? await own.workdir(
+          lens,
+          local
+            ? localInstructions(context)
+            : reviewLocations({
+                worktree: reviewCwd,
+                changes,
+                snapshots: own.trees,
+              }),
+        )
+      : reviewCwd
     const settings: ReviewCallSettings | null = invocation
       ? {
           command: command !== null,

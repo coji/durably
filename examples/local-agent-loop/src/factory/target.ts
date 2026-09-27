@@ -209,13 +209,13 @@ export interface Target {
   /**
    * Make one configured review call's own working directory, fresh: the
    * base commit's `CLAUDE.md` and `.claude/`, never the candidate's, and
-   * `localInstructions` as `CLAUDE.local.md` when given. Call after
-   * `prepareReviewSnapshots`. Returns its path.
+   * `localFile` as `CLAUDE.local.md`. Call after `prepareReviewSnapshots`.
+   * Returns its path.
    */
   prepareReviewWorkdir?(
     candidate: CandidateRef,
     lens: 'correctness' | 'edge-cases',
-    localInstructions: string | null,
+    localFile: string,
   ): Promise<string>
   /**
    * Remove every candidate's tree and review working directories, and the

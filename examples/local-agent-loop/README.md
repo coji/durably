@@ -694,6 +694,11 @@ effortに加えて、呼び出し方と返答の読み方を役割ごとに書�
   呼び出しのために作る作業ディレクトリ（後述）の `CLAUDE.local.md` に置き、入力は
   `command` だけにします（`command` が無ければ「`CLAUDE.local.md` のレビューを
   する」という短い文です）。candidateのworktreeには何も書きません。
+  `prompt` でも、`command` があれば（コマンドモード）作業ディレクトリに短い
+  `CLAUDE.local.md` を置きます。入力が届くのは親のセッションだけで、作業ディレクトリ
+  にはコードが無いからです。このファイルはcandidateのworktree、差分、変更ファイル一覧、
+  baseとheadのtreeの場所を示し、サブエージェントも含めて、コードをそこから絶対パスで
+  読むよう伝えます。
 - `output` は返答の読み方です。`verdict`（既定）は従来の `DECISION`／`NOTES` です。
   `findings-json` は、返答の最後の ` ```json ` ブロックにある配列を読みます。
   各指摘は `{"severity": "blocker" | "non-blocker", "title": "...", "body": "...",
@@ -706,7 +711,8 @@ effortに加えて、呼び出し方と返答の読み方を役割ごとに書�
   あれば `needsChanges` で、`blocker` だけを `- [file:line] title — body` の形で
   一行ずつnotesにし、修正に渡します。notesの長さには上限があり、各行は
   1,000文字まで、並べるのは最初の20件まで（最大でおよそ20 × 1,000文字）で、残りは
-  件数だけを書きます。`title`、`body`、`file` の改行は空白一つにするので、一件が
+  件数だけを書きます。`title`、`body`、`file` の改行（LF、CR、垂直タブ、改ページ、
+  U+0085、Unicodeの行区切りと段落区切り）は前後の空白ごと空白一つにするので、一件が
   複数行になることはありません。
   空の配列か `non-blocker` だけなら `pass` です。完了行が無い・最終行でない・別の状態、JSONが無い・壊れている、指摘の形が
   違う、Claudeが道具の使用を拒否した、途中で切れた、はどれも `review-incomplete`
@@ -729,27 +735,33 @@ effortに加えて、呼び出し方と返答の読み方を役割ごとに書�
 - `base/`：base commitのtree。runで一度だけ書き出して使い回します。
 - `<candidate>/head/`：candidate commitのtree。
 - `<candidate>/<役割>/cwd/`：その役割のレビューの作業ディレクトリ。base commitの
-  `CLAUDE.md` と `.claude/`（あれば。リンクはたどってコピーします）と、factoryが
-  書く `CLAUDE.local.md`（`local-instructions` のときだけ）を置きます。役割ごとに
-  別なので、二つのレビューが互いの指示を読むことはなく、従来どおり並行して呼びます。
+  `CLAUDE.md` と `.claude/`（あれば）と、factoryが書く `CLAUDE.local.md`
+  （`local-instructions` ならレビューの指示全体、`prompt` ならcandidateの場所）を
+  置きます。リンクは、たどった先がbaseのtreeの中にあるときだけ中身をコピーします。
+  treeの外（ホストのファイルやディレクトリ）を指すリンク、どこも指さないリンク、
+  コピー中のディレクトリに戻るリンクはコピーしません。役割ごとに別なので、
+  二つのレビューが互いの指示を読むことはなく、従来どおり並行して呼びます。
 
 treeは、commitを一時的なindexに読み込んで `git checkout-index` で書き出します。
 `git archive` と違い、`.gitattributes` の `export-ignore` や `export-subst` で
 中身が変わりません（checkoutのfilterや改行の変換はworktreeと同じく効きます）。
 アーカイブファイルは作りません。書き出すgitのプロセスはほかの子プロセスと同じく
 登録するので、cancel、leaseの喪失、workerの停止で止まります。やり直したレビューは、
+中断した書き出しが残した途中のtree、一時的なindex、そのロックファイルを消してから
 足りないtreeを書き出し直し、作業ディレクトリは作り直します。
 
 消すのはworkerです。candidateのtreeと作業ディレクトリは、そのレビューの回が
 終われば（失敗や中断でも、記録済みの結果を読むだけのやり直しでも）消します。
-レビュー以外の工程を始める前にも消し、承認以降の工程の前にはbaseのtreeも消すので、
+もうレビューが来ない工程（承認、完了、停止）の前にはbaseのtreeも消すので、
 workerがレビューの記録の直後に落ちても、承認待ちの間に残りません。runが失敗する、
 cancelされる、終わる、setupをやり直す、のいずれでも全体を消します。失敗とcancelでは、
 jobの中で消し終えてからrunの状態が記録されます。別のプロセスから `demo cancel` した
 ときは、workerにはleaseの喪失としか見えず、ほかのworkerがrunを拾い直す場合に備えて
 workerは消しません。代わりにcancelした側が消しますが、そのときworkerが書き出していた
 treeは残ることがあります。workerは起動時に、終わったrun（完了、失敗、cancel）の
-`review-snapshots/` をすべて消すので、そうした残りも次の起動で消えます。
+`review-snapshots/` をすべて消すので、そうした残りも次の起動で消えます。このとき
+見るのはworker自身のstate rootのrunだけで、データベースを調べるのは
+`review-snapshots/` が残っているrunだけです。
 
 `command` か `local-instructions` を使うClaudeのレビューは、次の設定で動きます。
 通常のClaudeの呼び出しの設定は変わりません。
@@ -782,9 +794,14 @@ treeは残ることがあります。workerは起動時に、終わったrun（�
   指すリンクは通りません。`~` で始まるパスも拒否します。`Grep` と `Glob` がディレクトリを
   たどる途中のリンクは、ツールがリンクをたどらないこと（ripgrepの既定）に頼ります。
 - `Agent` は、`isolation`（`worktree` や `remote`）を指定した呼び出しを拒否します。
-  `mode` は見ません。SDKはこの値を無視し、サブエージェントは親の権限のモードを
-  引き継ぐか、agentの定義の `permissionMode` に従います。その定義はbaseの
-  `.claude/` からしか読みません。
+  `mode` が `acceptEdits`、`auto`、`bypassPermissions` の呼び出しも拒否します。
+  これは念のための防御で、境界そのものではありません。サブエージェントは親の権限の
+  モードを引き継ぐか、agentの定義の `permissionMode` に従い、その定義はbaseの
+  `.claude/` からしか読みません。チームのメンバーを起動する道具も無く、サブエージェントの
+  呼び出しも上の検査を通ります。
+- セッションは保存しません（`persistSession: false`）。レビューは再開せず、呼び出し
+  ごとに作業ディレクトリが違うので、保存すると `~/.claude/projects/` に呼び出しの数だけ
+  項目が増えるからです。
 - 使用量は最終結果の `modelUsage` から、サブエージェントの分も含めて一回分として
   数えます。親の使用量に重ねて足しません。モデルが報告しない項目は不明のままです。
   費用はモデルごとにそのモデルの単価で計算して合計し、単価の分からないモデルが
