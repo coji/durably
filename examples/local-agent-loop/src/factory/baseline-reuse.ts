@@ -3,8 +3,8 @@
  *
  * A measured, passing baseline is recorded under the state root: one
  * directory per identity, one file per run, never overwriting another
- * run's file. Pruning keeps each writer's own entry plus each identity's
- * newest other entries. A reuse decision reads that one directory and
+ * run's file. Pruning keeps each identity's newest current entries, ranking
+ * entries dated in the future last. A reuse decision reads that one directory and
  * validates its entries, newest first, against their runs' completed
  * baseline steps, which are the only thing trusted: an entry whose step no
  * longer parses, passed or matches is skipped, and with none left the check
@@ -169,9 +169,9 @@ const indexEntrySchema = z.object({
 type IndexEntry = z.infer<typeof indexEntrySchema>
 
 /**
- * How many entries one identity keeps. A write removes the rest, oldest
- * first, so a lookup reads at most this many files, plus any written
- * concurrently.
+ * How many entries one identity keeps. A write removes the rest (see
+ * `prunedFiles`), so a lookup reads at most this many files, plus any
+ * written concurrently.
  */
 export const BASELINE_INDEX_KEEP = 20
 
@@ -222,17 +222,44 @@ async function readEntries(
 }
 
 /**
+ * How far past the pruning writer's clock an entry may be dated and still
+ * rank as current: near-simultaneous writers on slightly different clocks
+ * are not treated as dated in the future.
+ */
+export const BASELINE_INDEX_FUTURE_TOLERANCE_MS = 5 * 60_000
+
+/**
+ * The entries a prune keeps, in rank order, and the files it removes.
+ * Usable entries, dated no later than `now` plus the tolerance, rank first,
+ * newest `checkedAt` first. Entries dated beyond the tolerance (as a clock
+ * set back leaves them) rank last, least in the future first, so they can
+ * never crowd out current ones. The first `BASELINE_INDEX_KEEP` are kept;
+ * the rest and every entry that does not parse are removed.
+ */
+function prunedFiles(
+  entries: { file: string; entry: IndexEntry | null; at: number }[],
+  now: number,
+): string[] {
+  const limit = now + BASELINE_INDEX_FUTURE_TOLERANCE_MS
+  const parsed = entries.filter((e) => e.entry)
+  const usable = parsed.filter((e) => e.at <= limit).sort((a, b) => b.at - a.at)
+  const future = parsed.filter((e) => e.at > limit).sort((a, b) => a.at - b.at)
+  return [
+    ...entries.filter((e) => !e.entry),
+    ...[...usable, ...future].slice(BASELINE_INDEX_KEEP),
+  ].map((e) => e.file)
+}
+
+/**
  * Add `record` to the index when it is a measured pass with an identity.
  * Each run writes only its own file, through a temporary file and a
  * rename, and never another run's, so concurrent writers cannot lose each
  * other's entries. A replay rewrites the same run's file, which makes up
- * an entry lost to a crash. The write then prunes: it always keeps this
- * writer's own entry, drops this identity's entries that do not parse, and
- * among the rest keeps only the newest `BASELINE_INDEX_KEEP - 1` by
- * `checkedAt`. Always keeping the writer's own entry means a run's freshly
- * written entry is never pruned by its own write, even when
- * `BASELINE_INDEX_KEEP` or more future-dated entries (as a clock set back
- * can leave) already fill the identity's directory. A file a concurrent
+ * an entry lost to a crash. The write then prunes the identity's
+ * directory, reading the clock after reading it, as `prunedFiles` ranks
+ * it: current entries, the writer's own and a concurrent writer's among
+ * them, outrank any number of entries dated in the future, and a replayed
+ * entry ranks by its own, possibly old, `checkedAt`. A file a concurrent
  * writer already removed is skipped. Best effort: a failed write only
  * means a later run measures again.
  */
@@ -261,17 +288,8 @@ export async function recordBaselineInIndex(args: {
     } finally {
       await rm(temporary, { force: true })
     }
-    const kept: string[] = []
-    const removed: string[] = []
-    let othersKept = 0
-    for (const { file, entry: e } of await readEntries(dir)) {
-      if (!e) removed.push(file)
-      else if (e.runId === args.runId) kept.push(file)
-      else if (othersKept < BASELINE_INDEX_KEEP - 1) {
-        kept.push(file)
-        othersKept++
-      } else removed.push(file)
-    }
+    const entries = await readEntries(dir)
+    const removed = prunedFiles(entries, Date.now())
     await Promise.all(
       removed.map((file) => rm(join(dir, file), { force: true })),
     )
