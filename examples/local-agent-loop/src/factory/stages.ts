@@ -104,19 +104,14 @@ export const codeStage: StageHandler = async ({
       recorded.provider === profile.provider &&
       recorded.cwd === target.workdir &&
       recorded.instructionsVersion === state.setup.instructionsVersion
-    if (sameSetup && recorded.profileId === profile.id) handling = 'continued'
-    else if (sameSetup && acrossEffort && recorded.model === undefined)
-      handling = 'fresh'
-    else if (
-      sameSetup &&
-      acrossEffort &&
-      recorded.model === profile.effectiveModel
-    )
+    const provenanceError = () =>
+      new Error('implementation session provenance no longer matches setup')
+    if (!sameSetup) throw provenanceError()
+    if (recorded.profileId === profile.id) handling = 'continued'
+    else if (acrossEffort && recorded.model === profile.effectiveModel)
       handling = 'continued-effort-change'
-    else
-      throw new Error(
-        'implementation session provenance no longer matches setup',
-      )
+    else if (!(acrossEffort && recorded.model === undefined))
+      throw provenanceError()
   }
   const continuedSession = handling === 'fresh' ? null : recorded
   const call = await step.run(

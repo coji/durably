@@ -6,11 +6,11 @@ import type {
   AgentProvider,
   VerificationLog,
 } from '../engine/providers/types.js'
-import {
-  type CandidateRef,
-  type ContextMode,
-  type ResolvedProfile,
-  type SessionRef,
+import type {
+  CandidateRef,
+  ContextMode,
+  ResolvedProfile,
+  SessionRef,
 } from '../engine/types.js'
 import type { FactoryEvent } from './events.js'
 import type { Delivery, Target, TargetConfig } from './target.js'
@@ -225,18 +225,19 @@ export interface StageDecision {
   reason: string
 }
 
+/** The parts of a profile that decide which call it makes. */
+export type ExecutionProfile = Pick<
+  ResolvedProfile,
+  'provider' | 'requestedModel' | 'effectiveModel' | 'effectiveEffort'
+>
+
 /**
  * What makes two profiles the same call: provider, model and effort. The
  * requested model stands in for the fake provider's, whose effective model
  * is always the same label. Preflight checks each key once, and a repair
  * profile with the code profile's key is the code profile.
  */
-export function executionKey(
-  profile: Pick<
-    ResolvedProfile,
-    'provider' | 'requestedModel' | 'effectiveModel' | 'effectiveEffort'
-  >,
-): string {
+export function executionKey(profile: ExecutionProfile): string {
   return [
     profile.provider,
     profile.requestedModel ?? profile.effectiveModel,
@@ -295,14 +296,8 @@ export const EFFORT_RESUME_POLICY = 'resume-across-effort'
 
 export interface RepairSessionInput {
   contextMode: ContextMode
-  code: Pick<
-    ResolvedProfile,
-    'provider' | 'requestedModel' | 'effectiveModel' | 'effectiveEffort'
-  >
-  repair: Pick<
-    ResolvedProfile,
-    'provider' | 'requestedModel' | 'effectiveModel' | 'effectiveEffort'
-  >
+  code: ExecutionProfile
+  repair: ExecutionProfile
   /** The Claude Code version `resolveVersions` recorded; null when unknown. */
   claudeCliVersion: string | null
   env: Readonly<Record<string, string | undefined>>

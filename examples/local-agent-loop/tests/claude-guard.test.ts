@@ -18,11 +18,11 @@ import {
   reviewPreToolUseHook,
 } from '../src/engine/providers/claude.js'
 import type { ReviewCallSettings } from '../src/engine/providers/types.js'
-import type { ResolvedProfile } from '../src/engine/types.js'
 import {
   EFFORT_RESUME_BLOCKING_ENV,
   parseCliVersion,
   repairSessionDecision,
+  type ExecutionProfile,
   type RepairSessionInput,
 } from '../src/factory/types.js'
 
@@ -534,10 +534,7 @@ describe('whether a repair continues the session across an effort change', () =>
   const claude = (
     effort: string,
     model = 'claude-opus-5-5',
-  ): Pick<
-    ResolvedProfile,
-    'provider' | 'requestedModel' | 'effectiveModel' | 'effectiveEffort'
-  > => ({
+  ): ExecutionProfile => ({
     provider: 'claude',
     requestedModel: model,
     effectiveModel: model,

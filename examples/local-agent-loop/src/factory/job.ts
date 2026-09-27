@@ -892,19 +892,15 @@ function resolveInputProfiles(input: {
       },
       fake,
     )
-  const fixed = byRole((role) => {
-    const requested = input.profiles?.[role]
-    return requested
-      ? fixRequested(requested)
-      : fixProfile(
-          {
-            provider: input.provider,
-            model: input.model ?? null,
-            effort: input.effort ?? null,
-          },
-          fake,
-        )
-  })
+  const fixed = byRole((role) =>
+    fixRequested(
+      input.profiles?.[role] ?? {
+        provider: input.provider,
+        requestedModel: input.model ?? null,
+        requestedEffort: input.effort ?? null,
+      },
+    ),
+  )
   const requestedTriage = input.profiles?.triage
   const requestedRepair = input.profiles?.repair
   const resolve = (role: string, profile: FixedProfile): ResolvedProfile => ({
