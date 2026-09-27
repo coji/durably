@@ -8,6 +8,7 @@
  * owner is sitting in must never move.
  */
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync } from 'node:fs'
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
@@ -26,8 +27,13 @@ import {
   resolveCommit,
   treeOf,
 } from '../src/engine/git.js'
+import { fakeReviewCalls } from '../src/engine/providers/fake.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
 import { fixProfile } from '../src/factory/job.js'
+import {
+  LOCAL_INSTRUCTIONS_MARKER,
+  REVIEW_STATUS_COMPLETE,
+} from '../src/factory/prompts.js'
 import { repairLabels } from '../src/factory/repair.js'
 import type { FactorySetup } from '../src/factory/types.js'
 import { createTarget } from '../src/targets/index.js'
@@ -1562,6 +1568,526 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       await durably.stop()
       await durably.db.destroy()
       delete process.env.FAKE_FAIL_FIRST
+    }
+  })
+})
+
+type ReviewSettings = {
+  command: string | null
+  context: 'prompt' | 'local-instructions'
+  output: 'verdict' | 'findings-json'
+}
+
+/** A fake repository run whose reviewers are configured. */
+function configuredRun(
+  repo: string,
+  review: { correctness?: ReviewSettings; 'edge-cases'?: ReviewSettings },
+  extra: {
+    maxIterations?: number
+    fakeScenario?: Record<string, unknown>
+  } = {},
+) {
+  return {
+    provider: 'fake' as const,
+    target: {
+      kind: 'repo' as const,
+      repoPath: repo,
+      baseRef: 'HEAD',
+      task: 'Fix add() so decimal inputs are not truncated.',
+      spec: 'SPEC: add(0.1, 0.2) is 0.30000000000000004.',
+      dispositions: null,
+      inputFiles: NO_FILES,
+      issue: null,
+      checkCommand: ['node', '--test', 'test/**/*.test.js'],
+      setupCommand: null,
+      publish: false,
+    },
+    maxIterations: extra.maxIterations ?? 2,
+    context: 'reuse' as const,
+    review,
+    ...(extra.fakeScenario ? { fakeScenario: extra.fakeScenario } : {}),
+  }
+}
+
+const LOCAL = 'CLAUDE.local.md'
+
+/** Whether a file is anywhere in a commit's tree. */
+async function inTree(repo: string, commit: string, path: string) {
+  const files = await git(repo, ['ls-tree', '-r', '--name-only', commit])
+  return files.split('\n').some((f) => f === path || f.endsWith(`/${path}`))
+}
+
+/** Every file a range of commits touched. */
+async function touched(repo: string, from: string, to: string) {
+  return (
+    await git(repo, ['log', '--name-only', '--format=', `${from}..${to}`])
+  )
+    .split('\n')
+    .filter((line) => line.length > 0)
+}
+
+const endedCalls = (workdir: string) =>
+  fakeReviewCalls.filter((c) => c.workdir === workdir)
+
+const findings = (list: unknown[]) =>
+  [
+    'PLAN: fake plan',
+    '```json',
+    JSON.stringify(list, null, 2),
+    '```',
+    REVIEW_STATUS_COMPLETE,
+  ].join('\n')
+
+describe('configured reviewers', { timeout: 240000 }, () => {
+  it('calls a command once, serializes local instructions, gives each call its own, and leaves nothing behind', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-review-command-'))
+    const repo = await seedRepo(root)
+    const base = await resolveCommit(repo, 'HEAD')
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    // The second reviewer answers slowly; run side by side, the two calls
+    // would overlap and read each other's instructions.
+    process.env.FAKE_REVIEW_SLOW_MS = '1500'
+    fakeReviewCalls.length = 0
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger(
+        configuredRun(repo, {
+          correctness: {
+            command: '/code-review {base}..{head} --effort {effort}',
+            context: 'local-instructions',
+            output: 'findings-json',
+          },
+          'edge-cases': {
+            command: null,
+            context: 'local-instructions',
+            output: 'findings-json',
+          },
+        }),
+      )
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        150000,
+        'configured run completes',
+      )
+      const output = (await durably.getRun(run.id))?.output as {
+        conclusion: string
+        workdir: string
+        reviewRounds: number
+        candidate: {
+          commit: string
+          changes: {
+            diffPath: string
+            changedFilesPath: string
+            baseSnapshotDir?: string
+            headSnapshotDir?: string
+          }
+        }
+        delivery: { squashedBranch: string; squashedCommit: string }
+      }
+      assert.equal(output.conclusion, 'approved')
+      assert.equal(output.reviewRounds, 1)
+      const head = output.candidate.commit
+
+      // One call per reviewer; the command is sent expanded, as it is.
+      const calls = endedCalls(output.workdir)
+      assert.equal(calls.length, 2)
+      const correctness = calls.find((c) => c.role === 'review-a')
+      const edge = calls.find((c) => c.role === 'review-b')
+      assert.equal(
+        correctness?.input,
+        `/code-review ${base}..${head} --effort low`,
+      )
+      assert.equal(edge?.input, null)
+      // Serialized: the slow second call started after the first ended.
+      const [first, second] = [...calls].sort(
+        (x, y) => x.startedAt - y.startedAt,
+      )
+      assert.ok(first?.endedAt && second && first.endedAt <= second.startedAt)
+      // Each call read its own instructions, from its start to its answer.
+      const own = {
+        'review-a': /independent correctness reviewer/,
+        'review-b': /independent edge-case reviewer/,
+      } as const
+      const other = {
+        'review-a': /independent edge-case reviewer/,
+        'review-b': /independent correctness reviewer/,
+      } as const
+      const changes = output.candidate.changes
+      for (const call of calls) {
+        const role = call.role as 'review-a' | 'review-b'
+        for (const seen of [
+          call.localInstructionsAtStart,
+          call.localInstructionsAtEnd,
+        ]) {
+          assert.equal(seen?.present, true, role)
+          const text = seen?.content ?? ''
+          assert.ok(text.startsWith(LOCAL_INSTRUCTIONS_MARKER), role)
+          assert.match(text, own[role])
+          assert.doesNotMatch(text, other[role])
+          // Trusted context, fenced data, materials and the contract.
+          assert.match(text, /TRUSTED CONTEXT/)
+          assert.match(text, /<<<UNTRUSTED TASK [0-9a-f]{16}>>>/)
+          assert.match(text, /<<<UNTRUSTED SPEC [0-9a-f]{16}>>>/)
+          assert.ok(text.includes(changes.diffPath))
+          assert.ok(text.includes(changes.changedFilesPath))
+          assert.ok(text.includes(changes.baseSnapshotDir ?? '?'))
+          assert.ok(text.includes(changes.headSnapshotDir ?? '?'))
+          assert.ok(text.includes(REVIEW_STATUS_COMPLETE))
+        }
+      }
+
+      // The snapshots are the two commits' trees, outside the worktree.
+      assert.ok(changes.baseSnapshotDir && changes.headSnapshotDir)
+      assert.ok(!changes.baseSnapshotDir.startsWith(output.workdir))
+      assert.equal(
+        await readFile(join(changes.baseSnapshotDir, 'src', 'calc.js'), 'utf8'),
+        BUGGY,
+      )
+      assert.equal(
+        await readFile(join(changes.headSnapshotDir, 'src', 'calc.js'), 'utf8'),
+        await git(repo, ['show', `${head}:src/calc.js`]),
+      )
+
+      // Nothing the review used reaches the worktree, the candidate's diff,
+      // an iteration commit or the squashed branch.
+      assert.equal(existsSync(join(output.workdir, LOCAL)), false)
+      assert.doesNotMatch(
+        await readFile(changes.diffPath, 'utf8'),
+        /CLAUDE\.local|changes\.diff/,
+      )
+      for (const commit of [head, output.delivery.squashedCommit]) {
+        assert.equal(await inTree(repo, commit, LOCAL), false)
+        assert.equal(await inTree(repo, commit, 'changes.diff'), false)
+      }
+      assert.deepEqual(await touched(repo, base, head), ['src/calc.js'])
+      assert.deepEqual(
+        await touched(repo, base, output.delivery.squashedCommit),
+        ['src/calc.js'],
+      )
+
+      // The default reviewers still run side by side.
+      const plain = await durably.jobs.agentLoop.trigger(
+        configuredRun(repo, {}),
+      )
+      await waitFor(
+        async () => (await durably.getRun(plain.id))?.status === 'completed',
+        150000,
+        'default run completes',
+      )
+      const attempts = await durably.getStepAttempts(plain.id)
+      const a = attempts.find((x) => x.stepName.endsWith(':correctness'))
+      const b = attempts.find((x) => x.stepName.endsWith(':edge-cases'))
+      assert.ok(a?.completedAt && b?.startedAt && b.completedAt)
+      assert.ok(Date.parse(b.startedAt) < Date.parse(a.completedAt))
+      assert.ok(Date.parse(a.completedAt) < Date.parse(b.completedAt))
+      const plainOut = (await durably.getRun(plain.id))?.output as {
+        candidate: { changes: { baseSnapshotDir?: string } }
+      }
+      // Without a configured reviewer no tree is extracted.
+      assert.equal(plainOut.candidate.changes.baseSnapshotDir, undefined)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+      delete process.env.FAKE_REVIEW_SLOW_MS
+    }
+  })
+
+  it('reads findings: a blocker needs changes, advice passes, and a broken reply stops without a second call', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-review-findings-'))
+    const repo = await seedRepo(root)
+    delete process.env.FAKE_FAIL_FIRST
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    delete process.env.FAKE_REVIEW_SLOW_MS
+    fakeReviewCalls.length = 0
+    const durably = createAgentDurably({
+      stateRoot: join(root, 'state'),
+      maxConcurrentRuns: 4,
+    })
+    await durably.init()
+    // Correctness reads local instructions; edge-cases gets the prompt.
+    const review = {
+      correctness: {
+        command: null,
+        context: 'local-instructions' as const,
+        output: 'findings-json' as const,
+      },
+      'edge-cases': {
+        command: '/review',
+        context: 'prompt' as const,
+        output: 'findings-json' as const,
+      },
+    }
+    const blocker = {
+      severity: 'blocker',
+      title: 'wrong sum',
+      body: 'add() still truncates',
+      file: 'src/calc.js',
+      line: 2,
+    }
+    const advice = { severity: 'non-blocker', title: 'naming', body: 'rename' }
+    try {
+      const repaired = await durably.jobs.agentLoop.trigger(
+        configuredRun(repo, review, {
+          fakeScenario: {
+            failIterations: 0,
+            reviewOutputs: [
+              findings([blocker, advice]),
+              findings([advice]),
+              findings([]),
+              findings([advice]),
+            ],
+          },
+        }),
+      )
+      const broken = {
+        json: '```json\n[{"severity": "blocker", "title": "x", "body": \n```\nREVIEW_STATUS: COMPLETE',
+        status: findings([]).replace(REVIEW_STATUS_COMPLETE, ''),
+        'status mid-reply': `${findings([])}\nmore text`,
+        severity: findings([{ severity: 'major', title: 't', body: 'b' }]),
+        'cut off': 'PLAN: fake plan\n```json\n[{"severity": "blocker",',
+      }
+      const incomplete = await Promise.all(
+        Object.entries(broken).map(async ([name, text]) => ({
+          name,
+          run: await durably.jobs.agentLoop.trigger(
+            configuredRun(repo, review, {
+              maxIterations: 1,
+              fakeScenario: {
+                failIterations: 0,
+                reviewOutputs: [text, findings([])],
+              },
+            }),
+          ),
+        })),
+      )
+      const settled = async (id: string) =>
+        ['completed', 'failed'].includes(
+          (await durably.getRun(id))?.status ?? '',
+        )
+      await waitFor(
+        async () =>
+          (await settled(repaired.id)) &&
+          (await Promise.all(incomplete.map((i) => settled(i.run.id)))).every(
+            Boolean,
+          ),
+        200000,
+        'findings runs settle',
+      )
+
+      const done = await durably.getRun(repaired.id)
+      const output = done?.output as {
+        conclusion: string
+        iterations: number
+        reviewRounds: number
+        reviews: { lens: string; decision: string; notes: string }[]
+        workdir: string
+      }
+      assert.equal(output.conclusion, 'approved', done?.error ?? '')
+      assert.equal(output.reviewRounds, 2)
+      assert.equal(output.iterations, 2)
+      assert.deepEqual(
+        output.reviews.map((r) => r.decision),
+        ['pass', 'pass'],
+      )
+      // The first round's blocker is the correctness verdict's notes, which
+      // the repair is given; the advice is not.
+      const firstRound = (await durably.getStepAttempts(repaired.id)).find(
+        (a) => /^stage:\d+:review:correctness$/.test(a.stepName),
+      )
+      const verdict = (
+        await durably.storage.getCompletedStep(
+          repaired.id,
+          firstRound?.stepName ?? '?',
+        )
+      )?.output as { decision: string; notes: string }
+      assert.deepEqual(verdict, {
+        lens: 'correctness',
+        decision: 'needsChanges',
+        notes: '- [src/calc.js:2] wrong sum — add() still truncates',
+      })
+      assert.equal(existsSync(join(output.workdir, LOCAL)), false)
+      // A repair of this run calls and reads its reviewers the same way.
+      const setup = (
+        await durably.storage.getCompletedStep(repaired.id, 'setup')
+      )?.output as FactorySetup
+      assert.deepEqual(setup.review, review)
+      const child = buildRepairInput(done as NonNullable<typeof done>, setup, {
+        findings: { content: 'F\n', ref: { path: '/f.md' } },
+        dispositions: null,
+      })
+      assert.deepEqual(child.input.review, review)
+
+      for (const { name, run } of incomplete) {
+        const failed = await durably.getRun(run.id)
+        assert.equal(failed?.status, 'failed', name)
+        assert.match(
+          failed?.error ?? '',
+          /review-incomplete \(correctness\)/,
+          name,
+        )
+        const workdir = join(root, 'state', 'runs', run.id, 'work')
+        // One call, never resent, and no instructions left behind.
+        assert.equal(
+          endedCalls(workdir).filter((c) => c.role === 'review-a').length,
+          1,
+          name,
+        )
+        assert.equal(existsSync(join(workdir, LOCAL)), false, name)
+      }
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  it('never writes over a CLAUDE.local.md it did not write, and removes its own on cancel', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-review-local-'))
+    const repo = await seedRepo(root)
+    await writeFile(join(repo, LOCAL), "the owner's own notes\n")
+    await git(repo, ['add', '-A'])
+    await git(repo, ['commit', '-m', 'local notes'])
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    fakeReviewCalls.length = 0
+    const local: ReviewSettings = {
+      command: '/review',
+      context: 'local-instructions',
+      output: 'verdict',
+    }
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const refused = await durably.jobs.agentLoop.trigger(
+        configuredRun(repo, { correctness: local }),
+      )
+      await waitFor(
+        async () => (await durably.getRun(refused.id))?.status === 'failed',
+        150000,
+        'refused run fails',
+      )
+      const run = await durably.getRun(refused.id)
+      assert.match(
+        run?.error ?? '',
+        /already exists and was not written by the factory/,
+      )
+      const workdir = join(root, 'state', 'runs', refused.id, 'work')
+      assert.equal(
+        await readFile(join(workdir, LOCAL), 'utf8'),
+        "the owner's own notes\n",
+      )
+      assert.equal(
+        endedCalls(workdir).filter((c) => c.role === 'review-a').length,
+        0,
+      )
+
+      // Cancelled mid-call: the instructions go with it.
+      await git(repo, ['rm', '-q', LOCAL])
+      await git(repo, ['commit', '-m', 'drop notes'])
+      process.env.FAKE_REVIEW_SLOW_MS = '60000'
+      const slow = await durably.jobs.agentLoop.trigger(
+        configuredRun(repo, { correctness: local, 'edge-cases': local }),
+      )
+      const slowDir = join(root, 'state', 'runs', slow.id, 'work')
+      await waitFor(
+        async () =>
+          existsSync(join(slowDir, LOCAL)) &&
+          /edge-case reviewer/.test(
+            await readFile(join(slowDir, LOCAL), 'utf8').catch(() => ''),
+          ),
+        150000,
+        'edge-cases review is under way',
+      )
+      await durably.cancel(slow.id)
+      await waitFor(
+        async () =>
+          (await durably.getRun(slow.id))?.status === 'cancelled' &&
+          !existsSync(join(slowDir, LOCAL)),
+        60000,
+        'cancelled review leaves nothing behind',
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+      delete process.env.FAKE_REVIEW_SLOW_MS
+    }
+  })
+
+  it('removes instructions a killed worker left, when the run is picked up again, without resending the call', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-review-resume-'))
+    const repo = await seedRepo(root)
+    const home = join(root, 'home')
+    await mkdir(home)
+    const stateRoot = join(home, '.local', 'state', 'local-agent-loop')
+    fakeReviewCalls.length = 0
+    const durably = createAgentDurably({ stateRoot })
+    await durably.migrate()
+    const local: ReviewSettings = {
+      command: null,
+      context: 'local-instructions',
+      output: 'findings-json',
+    }
+    const run = await durably.jobs.agentLoop.trigger(
+      configuredRun(repo, { correctness: local, 'edge-cases': local }),
+    )
+    const workdir = join(stateRoot, 'runs', run.id, 'work')
+    const tsx = join(packageRoot, 'node_modules', '.bin', 'tsx')
+    const worker = spawn(tsx, [join(packageRoot, 'src', 'cli.ts'), 'worker'], {
+      cwd: root,
+      env: {
+        ...process.env,
+        HOME: home,
+        FAKE_FAIL_FIRST: '0',
+        FAKE_REVIEW_SLOW_MS: '120000',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let out = ''
+    worker.stdout.on('data', (d: Buffer) => (out += d.toString()))
+    worker.stderr.on('data', (d: Buffer) => (out += d.toString()))
+    // tsx runs the worker in a child of its own: kill the pid it prints.
+    const pid = () => Number(/worker running, pid (\d+)/.exec(out)?.[1])
+    try {
+      await waitFor(
+        async () =>
+          Number.isInteger(pid()) &&
+          /edge-case reviewer/.test(
+            await readFile(join(workdir, LOCAL), 'utf8').catch(() => ''),
+          ),
+        150000,
+        'the second review is under way in the worker',
+      )
+      process.kill(pid(), 'SIGKILL')
+      // The worker died mid-call: its instructions are still there.
+      assert.ok(
+        (await readFile(join(workdir, LOCAL), 'utf8')).startsWith(
+          LOCAL_INSTRUCTIONS_MARKER,
+        ),
+      )
+      await durably.init()
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'failed',
+        120000,
+        'the resumed run stops',
+      )
+      const failed = await durably.getRun(run.id)
+      assert.match(failed?.error ?? '', /uncertain external invocation/)
+      assert.equal(existsSync(join(workdir, LOCAL)), false)
+      // Neither review was sent again: the first replays its checkpoint,
+      // the second is uncertain.
+      assert.equal(endedCalls(workdir).length, 0)
+    } finally {
+      try {
+        process.kill(pid(), 'SIGKILL')
+      } catch {
+        // Already gone.
+      }
+      worker.kill('SIGKILL')
+      await durably.stop()
+      await durably.db.destroy()
     }
   })
 })

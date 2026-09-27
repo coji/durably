@@ -31,6 +31,36 @@ export const READ_ONLY_ROLES: ReadonlySet<AgentRole> = new Set([
   'preflight',
 ])
 
+/**
+ * How a review call was configured, for the provider that makes it. A review
+ * without one is the factory's own prompt read as a verdict.
+ */
+export interface ReviewCallSettings {
+  /** True when the input is the role's own command, expanded. */
+  command: boolean
+  /** `local-instructions`: the review context is in `CLAUDE.local.md` at the workdir root. */
+  context: 'prompt' | 'local-instructions'
+  output: 'verdict' | 'findings-json'
+  /**
+   * Directories outside `workdir` the review may read whole: the candidate's
+   * diff, changed-file list and base and head snapshots. Never writable.
+   */
+  readableDirs: string[]
+}
+
+/**
+ * Whether a review call runs in command mode: its own command or local
+ * instructions, read with the project's and the local settings.
+ */
+export function isCommandModeReview(
+  review: ReviewCallSettings | null | undefined,
+): review is ReviewCallSettings {
+  return (
+    review != null &&
+    (review.command || review.context === 'local-instructions')
+  )
+}
+
 export interface NativeSession {
   id: string
 }
@@ -59,6 +89,11 @@ export interface AgentResult {
   reportedEffort: string | null
   usage: TokenUsage | null
   elapsedMs: number | null
+  /**
+   * Tool calls the provider refused during this call, one line each. Absent
+   * when the provider reports none or cannot tell.
+   */
+  permissionDenials?: string[]
 }
 
 export interface AgentCallOptions {
@@ -79,6 +114,8 @@ export interface AgentCallOptions {
    * and changed-file list, written by the factory. Never writable.
    */
   readableFiles?: string[]
+  /** A configured review's settings; absent for every other call. */
+  review?: ReviewCallSettings
   /** Explicit native session to resume. Null always creates a new conversation. */
   sessionId?: string | null
   /** Durably step signal: cancel / lease-loss aborts the call. */

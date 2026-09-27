@@ -15,6 +15,9 @@ import { parseProviderName } from './engine/providers/index.js'
 import {
   assertSingleMode,
   fixProfile,
+  fixReviewInvocations,
+  REVIEW_CONTEXTS,
+  REVIEW_OUTPUTS,
   type AgentLoopInput,
   nonBlank,
   resolveTimeouts,
@@ -28,7 +31,12 @@ import {
   type InputFileRef,
   type RepoTargetConfig,
 } from './factory/target.js'
-import type { FactorySetup, ProfileRole } from './factory/types.js'
+import type {
+  FactorySetup,
+  ProfileRole,
+  ReviewInvocation,
+  ReviewLens,
+} from './factory/types.js'
 import { assertCandidateUnmoved } from './targets/repo.js'
 
 interface IssueRef {
@@ -63,6 +71,20 @@ const roleConfigSchema = z
   })
   .strict()
 
+/**
+ * A reviewer's settings: a role's, plus how it is called and read. `command`
+ * is sent in place of the factory's prompt, with `{effort}`, `{base}` and
+ * `{head}` replaced; `context` says whether the review context goes in that
+ * input or in `CLAUDE.local.md`; `output` says how the reply is read.
+ */
+const reviewRoleConfigSchema = roleConfigSchema
+  .extend({
+    command: nonBlank.optional(),
+    context: z.enum(REVIEW_CONTEXTS).optional(),
+    output: z.enum(REVIEW_OUTPUTS).optional(),
+  })
+  .strict()
+
 /** How the run's commits are made; every field optional. */
 const commitConfigSchema = z
   .object({
@@ -89,8 +111,8 @@ const factoryConfigSchema = z
         code: roleConfigSchema.optional(),
         review: z
           .object({
-            correctness: roleConfigSchema.optional(),
-            'edge-cases': roleConfigSchema.optional(),
+            correctness: reviewRoleConfigSchema.optional(),
+            'edge-cases': reviewRoleConfigSchema.optional(),
           })
           .strict()
           .optional(),
@@ -256,6 +278,7 @@ export function resolveProfiles(
   roles: Record<ProfileRole, FixedProfile>
   triage: FixedProfile | null
   repair: FixedProfile | null
+  review: Partial<Record<ReviewLens, ReviewInvocation>>
 } {
   const fallbackProvider = parseProviderName(a['provider'] ?? 'fake')
   const fix = (role: RoleConfig | undefined) => {
@@ -302,7 +325,10 @@ export function resolveProfiles(
     ...(triage ? { triage } : {}),
     ...(repair ? { repair } : {}),
   })
-  return { roles, triage, repair }
+  // Checked against the resolved profiles, so a Codex reviewer or an
+  // `{effort}` with no effort is refused before the run exists.
+  const review = fixReviewInvocations(config?.profiles?.review, roles)
+  return { roles, triage, repair, review }
 }
 
 /** The trigger flags a config can be overridden by, kept for a reload. */
@@ -468,7 +494,7 @@ function assembleInput(a: Record<string, string>, resolved: ResolvedTarget) {
     throw new Error('--max-iterations must be an integer between 1 and 3')
   const maxIterations = Number(rawIterations)
   const { target, config, codexPath, configSource } = resolved
-  const { roles: profiles, triage, repair } = resolveProfiles(a, config)
+  const { roles: profiles, triage, repair, review } = resolveProfiles(a, config)
   // Fixed here, so the worker's environment never changes a stored run: the
   // config wins, then this process's environment, then the target default.
   const { checkTimeoutMs, agentTimeoutMs } = resolveTimeouts(
@@ -504,6 +530,7 @@ function assembleInput(a: Record<string, string>, resolved: ResolvedTarget) {
     agentTimeoutMs,
     codexPath,
     ...(configSource ? { configSource } : {}),
+    ...(Object.keys(review).length > 0 ? { review } : {}),
   }
 }
 
@@ -801,6 +828,10 @@ export function buildRepairInput(
     ),
     ...(fakeScenario !== undefined
       ? { fakeScenario: fakeScenario as AgentLoopInput['fakeScenario'] }
+      : {}),
+    // The parent's reviewers, called and read as they were.
+    ...(stored.review && Object.keys(stored.review).length > 0
+      ? { review: stored.review }
       : {}),
     repairOf: {
       runId: parent.id,

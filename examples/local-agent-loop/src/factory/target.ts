@@ -85,6 +85,12 @@ export interface RepoTargetConfig {
   candidatesDir?: string
   /** Push the branch and open a draft pull request on delivery. */
   publish: boolean
+  /**
+   * Extract the base and candidate commits' trees beside each candidate's
+   * diff, for a reviewer with its own command or local instructions. Absent
+   * or false: only the diff and changed-file list are written.
+   */
+  reviewSnapshots?: boolean
   /** Absent on a run set up before it existed; the defaults apply. */
   commit?: CommitSettings
   /**

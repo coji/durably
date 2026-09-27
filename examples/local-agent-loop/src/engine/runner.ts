@@ -13,6 +13,7 @@ import type {
   AgentRole,
   AttemptMeasurement,
   ProviderName,
+  ReviewCallSettings,
 } from './providers/types.js'
 import type { SessionRef } from './types.js'
 import { mergeUsage, type TokenUsage } from './usage.js'
@@ -25,6 +26,8 @@ export interface AgentCallSpec {
   workdir: string
   /** Trusted files outside `workdir` a read-only role may read. */
   readableFiles?: string[]
+  /** A configured review's settings; see `AgentCallOptions.review`. */
+  review?: ReviewCallSettings
   timeoutMs: number
   requestedModel: string | null
   requestedEffort: string | null
@@ -59,6 +62,8 @@ export interface AgentCallOutcome {
   measurement: AttemptMeasurement
   /** The provider's refusal, when `acceptRejection` settled one; else null. */
   rejection: string | null
+  /** Tool calls the provider refused during the call; empty when none. */
+  permissionDenials: string[]
 }
 
 interface StartedCheckpoint {
@@ -272,6 +277,7 @@ export async function runAgentCall(
       recovered,
       measurement,
       rejection: null,
+      permissionDenials: result.permissionDenials ?? [],
     }
   }
 
@@ -307,6 +313,7 @@ export async function runAgentCall(
       recovered,
       measurement,
       rejection,
+      permissionDenials: [],
     }
   }
   const settled = (
@@ -379,6 +386,7 @@ export async function runAgentCall(
       prompt: spec.prompt,
       workdir: spec.workdir,
       ...(spec.readableFiles ? { readableFiles: spec.readableFiles } : {}),
+      ...(spec.review ? { review: spec.review } : {}),
       timeoutMs: spec.timeoutMs,
       requestedModel: spec.effectiveModel,
       requestedEffort: spec.effectiveEffort,

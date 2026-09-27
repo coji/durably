@@ -6,23 +6,106 @@
  * from the run's `Target`, so the same stage graph drives the bundled sample
  * and a real repository.
  */
-import { join } from 'node:path'
+import { readFile, rm, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 
 import type { JsonValue, StepAttemptContext } from '@coji/durably'
 
+import type { ReviewCallSettings } from '../engine/providers/types.js'
 import { runAgentCall } from '../engine/runner.js'
 import { runVerificationStep } from '../engine/verification.js'
-import { codePrompt, parseReviewOutput, reviewPrompt } from './prompts.js'
+import {
+  codePrompt,
+  expandReviewCommand,
+  LOCAL_INSTRUCTIONS_INPUT,
+  LOCAL_INSTRUCTIONS_MARKER,
+  localInstructions,
+  parseFindingsOutput,
+  parseReviewOutput,
+  reviewPrompt,
+} from './prompts.js'
 import type { Delivery } from './target.js'
 import {
+  reviewInvocationOf,
   separateRepairProfile,
+  usesReviewMaterials,
   type FactoryOutcome,
+  type FactorySetup,
   type ReviewLens,
   type ReviewVerdict,
   type SessionRef,
   type StageArgs,
   type StageHandler,
 } from './types.js'
+
+/** Where a local-instructions review finds its context: the workdir root. */
+export const LOCAL_INSTRUCTIONS_FILE = 'CLAUDE.local.md'
+
+/**
+ * Remove the `CLAUDE.local.md` in `dir` if the factory wrote it, as the
+ * marker on its first line says; any other file, and a missing one, is left
+ * alone. Used when a review call ends, however it ends, before a review
+ * writes one (an attempt that died part way may have left its own), and
+ * before a candidate is sealed, so none ever reaches a commit.
+ */
+export async function removeOwnLocalInstructions(dir: string): Promise<void> {
+  const path = join(dir, LOCAL_INSTRUCTIONS_FILE)
+  let content: string
+  try {
+    content = await readFile(path, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw error
+  }
+  if (content.startsWith(LOCAL_INSTRUCTIONS_MARKER))
+    await rm(path, { force: true })
+}
+
+/**
+ * Write one review's `CLAUDE.local.md` at the root of `dir`. A file the
+ * factory did not write is never changed or removed: the review is refused
+ * before its call instead.
+ */
+async function placeLocalInstructions(
+  dir: string,
+  content: string,
+  lens: ReviewLens,
+): Promise<void> {
+  await removeOwnLocalInstructions(dir)
+  const path = join(dir, LOCAL_INSTRUCTIONS_FILE)
+  try {
+    await writeFile(path, content, { encoding: 'utf8', flag: 'wx' })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST')
+      throw new Error(
+        `review (${lens}): ${path} already exists and was not written by the factory; local instructions are never written over it, so the review was not sent`,
+      )
+    throw error
+  }
+}
+
+/** Whether any reviewer of the run reads local instructions. */
+function usesLocalInstructions(setup: Pick<FactorySetup, 'review'>): boolean {
+  return (['correctness', 'edge-cases'] as const).some(
+    (lens) => reviewInvocationOf(setup, lens)?.context === 'local-instructions',
+  )
+}
+
+/**
+ * Run the given work one at a time, in the order it arrives. Two reviewers
+ * that read `CLAUDE.local.md` from one worktree must never see each other's.
+ */
+function takeTurns() {
+  let last: Promise<unknown> = Promise.resolve()
+  return <T>(work: () => Promise<T>): Promise<T> => {
+    const mine = last.then(work)
+    last = mine.then(
+      () => undefined,
+      () => undefined,
+    )
+    return mine
+  }
+}
 
 function requireCandidate(state: StageArgs['state']) {
   if (!state.candidate) throw new Error('stage requires a candidate')
@@ -122,6 +205,10 @@ export const codeStage: StageHandler = async ({
       } as unknown as JsonValue,
     },
   )
+  // Review instructions are never part of a candidate, even ones a worker
+  // that died part way through a review left behind.
+  if (usesLocalInstructions(state.setup))
+    await removeOwnLocalInstructions(target.workdir)
   const candidate = await step.run(`${key}:candidate`, (signal, attempt) =>
     target.seal({
       iteration,
@@ -224,27 +311,69 @@ export const reviewStage: StageHandler = async ({
   const readableFiles = changes
     ? [changes.diffPath, changes.changedFilesPath]
     : []
-  const review =
-    (lens: ReviewLens) =>
-    async (signal: AbortSignal, attempt: StepAttemptContext) => {
-      // Each reviewer has its own profile and provider, and always starts a
-      // new session: two branches run in parallel and never share one.
-      const profile = state.setup.profiles[lens]
-      const role = lens === 'correctness' ? 'review-a' : 'review-b'
-      const result = await runAgentCall(signal, attempt, {
+  const setup = state.setup
+  const baseCommit =
+    setup.target.kind === 'repo' ? setup.target.baseCommit : null
+  // Reviewers that read local instructions take turns, and so does every
+  // other reviewer of that round, since a command-mode reviewer reads
+  // `CLAUDE.local.md` too. Otherwise the two run side by side, as before.
+  const turn = usesLocalInstructions(setup) ? takeTurns() : null
+  const reviewOnce = async (
+    lens: ReviewLens,
+    signal: AbortSignal,
+    attempt: StepAttemptContext,
+  ): Promise<ReviewVerdict> => {
+    // Each reviewer has its own profile and provider, and always starts a
+    // new session: two branches never share one.
+    const profile = setup.profiles[lens]
+    const role = lens === 'correctness' ? 'review-a' : 'review-b'
+    const invocation = reviewInvocationOf(setup, lens)
+    const output = invocation?.output ?? 'verdict'
+    const materials = usesReviewMaterials(invocation)
+    const context = reviewPrompt(
+      lens,
+      trustedContext,
+      target.reviewRules(lens),
+      target.untrustedInputs(lens),
+      changes,
+      Boolean(setup.repairOf),
+      { output, snapshots: materials },
+    )
+    // `{base}` and `{head}` are the run's base commit and this candidate's.
+    const command =
+      invocation?.command != null
+        ? expandReviewCommand(invocation.command, {
+            effort: profile.effectiveEffort,
+            base: baseCommit,
+            head: candidate.commit ?? null,
+          })
+        : null
+    const local = invocation?.context === 'local-instructions'
+    const input = local
+      ? (command ?? LOCAL_INSTRUCTIONS_INPUT)
+      : command !== null
+        ? `${command}\n\n${context}`
+        : context
+    const settings: ReviewCallSettings | null = invocation
+      ? {
+          command: command !== null,
+          context: invocation.context,
+          output,
+          readableDirs: materials && changes ? [dirname(changes.diffPath)] : [],
+        }
+      : null
+    if (local)
+      await placeLocalInstructions(reviewCwd, localInstructions(context), lens)
+    let result
+    try {
+      result = await runAgentCall(signal, attempt, {
         provider: services.providers[lens],
         providerName: profile.provider,
-        prompt: reviewPrompt(
-          lens,
-          trustedContext,
-          target.reviewRules(lens),
-          target.untrustedInputs(lens),
-          changes,
-          Boolean(state.setup.repairOf),
-        ),
+        prompt: input,
         workdir: reviewCwd,
         readableFiles,
-        timeoutMs: state.setup.agentTimeoutMs,
+        ...(settings ? { review: settings } : {}),
+        timeoutMs: setup.agentTimeoutMs,
         requestedModel: profile.requestedModel,
         requestedEffort: profile.requestedEffort,
         effectiveModel: profile.effectiveModel,
@@ -254,20 +383,33 @@ export const reviewStage: StageHandler = async ({
         iteration: state.iteration,
         reviewRound: state.reviewRounds + 1,
         operationKey: `${step.runId}/${key}/${lens}`,
-        checkpointsDir: state.setup.checkpointsDir,
+        checkpointsDir: setup.checkpointsDir,
         session: null,
-        configVersion: state.setup.configVersion,
+        configVersion: setup.configVersion,
       })
-      const parsed = parseReviewOutput(result.text)
-      if (!parsed.ok)
-        throw new Error(`review-incomplete (${lens}): ${parsed.error}`)
-      const verdict: ReviewVerdict = {
-        lens,
-        decision: parsed.decision,
-        notes: parsed.notes,
-      }
-      return verdict
+    } finally {
+      // Success, failure, cancel and a lost lease all end here.
+      if (local) await removeOwnLocalInstructions(reviewCwd)
     }
+    // Read only after the completed checkpoint, so a reply that cannot be
+    // read stops the review and is never sent again.
+    if (invocation && result.permissionDenials.length > 0)
+      throw new Error(
+        `review-incomplete (${lens}): ${result.permissionDenials.length} tool call(s) were refused: ${result.permissionDenials.join('; ').slice(0, 500)}`,
+      )
+    const parsed =
+      output === 'findings-json'
+        ? parseFindingsOutput(result.text)
+        : parseReviewOutput(result.text)
+    if (!parsed.ok)
+      throw new Error(`review-incomplete (${lens}): ${parsed.error}`)
+    return { lens, decision: parsed.decision, notes: parsed.notes }
+  }
+  const review =
+    (lens: ReviewLens) => (signal: AbortSignal, attempt: StepAttemptContext) =>
+      turn
+        ? turn(() => reviewOnce(lens, signal, attempt))
+        : reviewOnce(lens, signal, attempt)
   const correctness = `${key}:correctness`
   const edgeCases = `${key}:edge-cases`
   const results = await step.all({

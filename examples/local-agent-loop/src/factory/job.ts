@@ -62,7 +62,11 @@ import {
   FactoryEventSchema,
 } from './events.js'
 import { assertAllowedDecision, availableActions, decide } from './policy.js'
-import { parseTriageOutput, triagePrompt } from './prompts.js'
+import {
+  parseTriageOutput,
+  reviewCommandPlaceholders,
+  triagePrompt,
+} from './prompts.js'
 import { reduce } from './reducer.js'
 import { triageThatRuns } from './repair.js'
 import { stages } from './stages.js'
@@ -75,8 +79,13 @@ import {
   executionKey,
   initialState,
   separateRepairProfile,
+  usesReviewMaterials,
   type FactorySetup,
   type ProfileRole,
+  type ReviewContext,
+  type ReviewInvocation,
+  type ReviewLens,
+  type ReviewOutput,
   type StageDecision,
 } from './types.js'
 
@@ -165,6 +174,7 @@ const fakeScenarioSchema = z
     failIterations: z.number().int().min(0).optional(),
     reviewSequence: z.array(z.enum(FAKE_REVIEW_DECISIONS)).optional(),
     reviewNotes: z.array(z.string()).optional(),
+    reviewOutputs: z.array(z.string()).optional(),
     triage: z.array(z.enum(FAKE_TRIAGE_KINDS)).optional(),
     triageReason: z.string().min(1).max(500).optional(),
     latencyMs: z
@@ -202,6 +212,98 @@ const resolvedProfileSchema = z
     effectiveEffort: z.string().min(1).nullable(),
   })
   .strict()
+
+export const REVIEW_CONTEXTS = ['prompt', 'local-instructions'] as const
+export const REVIEW_OUTPUTS = ['verdict', 'findings-json'] as const
+
+/** One reviewer's invocation, every field fixed at trigger. */
+const reviewInvocationSchema = z
+  .object({
+    command: nonBlank.nullable(),
+    context: z.enum(REVIEW_CONTEXTS),
+    output: z.enum(REVIEW_OUTPUTS),
+  })
+  .strict()
+
+/** The reviewers that were given one; a lens left out uses the defaults. */
+const reviewInvocationsSchema = z
+  .object({
+    correctness: reviewInvocationSchema.optional(),
+    'edge-cases': reviewInvocationSchema.optional(),
+  })
+  .strict()
+
+/** A reviewer's invocation as `factory.json` names it: every field optional. */
+export interface RequestedReviewInvocation {
+  command?: string | null | undefined
+  context?: ReviewContext | undefined
+  output?: ReviewOutput | undefined
+}
+
+const REVIEW_LENSES: readonly ReviewLens[] = ['correctness', 'edge-cases']
+
+/**
+ * Fix each reviewer's invocation, and refuse what cannot run before any LLM
+ * call: a blank command, a placeholder other than `{effort}`, `{base}` and
+ * `{head}` or a brace outside one, `{effort}` on a role that resolves no
+ * effort, and a command or local instructions on a Codex reviewer. A lens
+ * that names none of the three fields is left out and keeps the prompt and
+ * the verdict; one that names any gets all three, defaults filled in.
+ */
+export function fixReviewInvocations(
+  requested:
+    | Partial<Record<ReviewLens, RequestedReviewInvocation | undefined>>
+    | null
+    | undefined,
+  profiles: Record<
+    ReviewLens,
+    { provider: ProviderName; effectiveEffort: string | null }
+  >,
+  where = 'profiles.review',
+): Partial<Record<ReviewLens, ReviewInvocation>> {
+  const fixed: Partial<Record<ReviewLens, ReviewInvocation>> = {}
+  for (const lens of REVIEW_LENSES) {
+    const r = requested?.[lens]
+    if (
+      !r ||
+      ((r.command ?? null) === null &&
+        r.context === undefined &&
+        r.output === undefined)
+    )
+      continue
+    const invocation: ReviewInvocation = {
+      command: r.command ?? null,
+      context: r.context ?? 'prompt',
+      output: r.output ?? 'verdict',
+    }
+    const refuse = (why: string) => new Error(`${where}.${lens}: ${why}`)
+    const { provider, effectiveEffort } = profiles[lens]
+    if (invocation.command !== null && invocation.command.trim() === '')
+      throw refuse('command must not be empty')
+    if (provider === 'codex') {
+      const unsupported = [
+        ...(invocation.command !== null ? ['command'] : []),
+        ...(invocation.context === 'local-instructions'
+          ? ['context: local-instructions']
+          : []),
+      ]
+      if (unsupported.length > 0)
+        throw refuse(
+          `a codex reviewer does not support ${unsupported.join(' or ')}; use a claude reviewer, or leave ${unsupported.length > 1 ? 'them' : 'it'} out`,
+        )
+    }
+    if (invocation.command !== null) {
+      const used = reviewCommandPlaceholders(invocation.command)
+      if (!used.ok) throw refuse(`command: ${used.error}`)
+      if (used.names.has('effort') && effectiveEffort === null)
+        throw refuse(
+          'command uses {effort}, but the role resolves no effort; set "effort" for it',
+        )
+    }
+    fixed[lens] = invocation
+  }
+  return fixed
+}
 
 /**
  * A run that repairs another run's approved candidate from outside findings.
@@ -298,6 +400,11 @@ const inputSchema = z
     fakeScenario: fakeScenarioSchema.optional(),
     /** Set only on a repair run; see `repairOfSchema`. */
     repairOf: repairOfSchema.optional(),
+    /**
+     * Reviewers with their own command, context or output, fixed at
+     * trigger. Absent, or a lens left out: the prompt and the verdict.
+     */
+    review: reviewInvocationsSchema.optional(),
   })
   // Refused at trigger, so a real run is never stored with a demo scenario.
   .refine(
@@ -780,6 +887,12 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             ...(triage ? { triage } : {}),
             ...(repair ? { repair } : {}),
           })
+          // Checked again here, as at trigger, before anything exists.
+          const review = fixReviewInvocations(input.review, profiles, 'review')
+          if (Object.keys(review).length > 0 && input.target.kind !== 'repo')
+            throw new Error(
+              'review: a reviewer command, context or output needs a repository target',
+            )
           // A repair profile that makes the same call as code is code: the
           // run keeps its session and its config version.
           const ownRepair = separateRepairProfile({ repair, profiles })
@@ -813,7 +926,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             }),
           )
           await mkdir(root, { recursive: true })
-          const target: TargetConfig =
+          const prepared: TargetConfig =
             input.target.kind === 'subject'
               ? await prepareSubjectTarget({
                   subjectDir: subjectDir(),
@@ -864,6 +977,13 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                     : {}),
                   signal,
                 })
+          // Only a reviewer with its own command or local instructions reads
+          // the base and head trees, so only then are they extracted.
+          const target: TargetConfig =
+            prepared.kind === 'repo' &&
+            Object.values(review).some((r) => usesReviewMaterials(r ?? null))
+              ? { ...prepared, reviewSnapshots: true }
+              : prepared
           const baselineCheck =
             input.target.kind === 'repo' && input.target.baselineCheck === true
           // A passing baseline removes every untracked file .gitignore does
@@ -896,6 +1016,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               triage,
               cli,
               commit: target.kind === 'repo' ? (target.commit ?? null) : null,
+              review,
             }),
             profiles,
             repair,
@@ -904,6 +1025,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             agentTimeoutMs,
             baselineCheck,
             codexPath,
+            ...(Object.keys(review).length > 0 ? { review } : {}),
             ...(repairOf
               ? {
                   repairOf: {

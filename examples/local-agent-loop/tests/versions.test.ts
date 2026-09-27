@@ -521,3 +521,73 @@ describe('commit settings in the config version', () => {
     assert.equal(new Set(versions).size, versions.length)
   })
 })
+
+describe('reviewer invocations in the config version', () => {
+  const profile: ResolvedProfile = {
+    id: 'fake:fake-model:provider-default:code',
+    provider: 'fake',
+    requestedModel: null,
+    requestedEffort: null,
+    effectiveModel: 'fake-model',
+    effectiveEffort: null,
+  }
+  const base = {
+    contextMode: 'reuse',
+    instructionsVersion: 'local-factory.v3',
+    maxIterations: 2,
+    target: 'repo:node --test',
+    agentTimeoutMs: 1800000,
+    checkTimeoutMs: 900000,
+    code: profile,
+    correctness: profile,
+    edgeCases: profile,
+  }
+  // The same run's version from before reviewer invocations existed.
+  const PRIOR = '12ea50a6cf90735b'
+  const invocation = {
+    command: '/code-review {base}..{head}',
+    context: 'local-instructions',
+    output: 'findings-json',
+  }
+
+  it('keeps the prior version when no reviewer names a command, context or output', () => {
+    assert.equal(configVersionOf({ ...base, review: null }), PRIOR)
+    assert.equal(configVersionOf({ ...base, review: {} }), PRIOR)
+    // A config that leaves every new field out fixes nothing for a lens.
+    const fixed = resolveProfiles({ provider: 'fake' }, {
+      profiles: {
+        review: { correctness: { model: 'm' }, 'edge-cases': {} },
+      },
+    } as Parameters<typeof resolveProfiles>[1])
+    assert.deepEqual(fixed.review, {})
+    assert.equal(configVersionOf({ ...base, review: fixed.review }), PRIOR)
+  })
+
+  it('changes with each fixed field of each configured lens', () => {
+    const versions = [
+      configVersionOf({ ...base, review: { correctness: invocation } }),
+      configVersionOf({ ...base, review: { 'edge-cases': invocation } }),
+      configVersionOf({
+        ...base,
+        review: { correctness: { ...invocation, command: null } },
+      }),
+      configVersionOf({
+        ...base,
+        review: { correctness: { ...invocation, context: 'prompt' } },
+      }),
+      configVersionOf({
+        ...base,
+        review: { correctness: { ...invocation, output: 'verdict' } },
+      }),
+      // Naming the defaults is still naming them.
+      configVersionOf({
+        ...base,
+        review: {
+          correctness: { command: null, context: 'prompt', output: 'verdict' },
+        },
+      }),
+    ]
+    for (const version of versions) assert.notEqual(version, PRIOR)
+    assert.equal(new Set(versions).size, versions.length)
+  })
+})

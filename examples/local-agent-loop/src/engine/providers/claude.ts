@@ -11,6 +11,13 @@
  * - Review roles run read-only (`allowedTools: ['Read']`) against a frozen
  *   snapshot directory, never the live workdir. Triage runs read-only too,
  *   before any code exists.
+ * - A review with its own command or local instructions runs in command
+ *   mode: only `Read`, `Grep`, `Glob` and `Agent` exist, `dontAsk` refuses
+ *   anything else, the project's and local settings are loaded so the
+ *   command and `CLAUDE.local.md` are found, and the same guard checks every
+ *   tool call, a subagent's included, against the readable directories.
+ * - Usage comes from the final result's `modelUsage`, which covers the call
+ *   and every subagent it started, counted once.
  * - Requested effort is applied via the `effort` setting; unsupported values
  *   throw instead of being silently dropped.
  * - Bash containment is best-effort input inspection (documented limits, not
@@ -30,12 +37,15 @@ import {
 } from 'ai-sdk-provider-claude-code'
 
 import { defaultModelFor, resolveEffort } from '../models.js'
+import type { TokenUsage } from '../usage.js'
 import {
+  isCommandModeReview,
   READ_ONLY_ROLES,
   type AgentCallOptions,
   type AgentProvider,
   type AgentResult,
   type AvailabilityCheck,
+  type ReviewCallSettings,
 } from './types.js'
 
 const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
@@ -252,15 +262,56 @@ function bashEscapeReason(root: string, cmd: string): string | null {
   return null
 }
 
+/** The tools a command-mode review has; every other tool does not exist. */
+export const COMMAND_MODE_REVIEW_TOOLS = ['Read', 'Grep', 'Glob', 'Agent']
+
 /**
- * Tool-permission guard for `canUseTool` (sees only non-pre-approved calls).
- * The `PreToolUse` hook below is the complete enforcement point.
+ * Decide one tool call of a command-mode review or any subagent it starts.
+ * Only `Read`, `Grep`, `Glob` and `Agent` pass, and every path they name must
+ * normalize inside one of `roots`: the candidate worktree and the directories
+ * holding its diff, changed-file list and snapshots. A relative path is taken
+ * from the first root, the review's cwd. A `Glob` pattern may not climb out
+ * with `..` or name an absolute path outside the roots. Bash and every write
+ * tool are refused.
  */
-export function workdirGuard(
-  allowedRoot: string,
-  readOnly: boolean,
-  readableFiles: readonly string[] = [],
-) {
+export function decideReviewToolPermission(
+  roots: readonly string[],
+  toolName: string,
+  input: Record<string, unknown>,
+): ToolDecision {
+  if (!COMMAND_MODE_REVIEW_TOOLS.includes(toolName))
+    return {
+      allow: false,
+      reason: `review is read-only (denied ${toolName})`,
+    }
+  const cwd = roots[0] ?? '.'
+  const inside = (p: string) => {
+    const abs = resolveInside(cwd, p)
+    return roots.some((root) => isInsideWorkdir(root, abs))
+  }
+  for (const key of ['file_path', 'path', 'notebook_path'] as const) {
+    const p = input[key]
+    if (typeof p === 'string' && !inside(p))
+      return {
+        allow: false,
+        reason: `read outside the review's directories denied: ${p}`,
+      }
+  }
+  const pattern = input['pattern']
+  if (toolName === 'Glob' && typeof pattern === 'string') {
+    const climbs = pattern.split(/[\\/]/).includes('..')
+    if (climbs || (isAbsolute(pattern) && !inside(pattern)))
+      return {
+        allow: false,
+        reason: `glob outside the review's directories denied: ${pattern}`,
+      }
+  }
+  return { allow: true }
+}
+
+type Decide = (toolName: string, input: Record<string, unknown>) => ToolDecision
+
+function canUseToolWith(decide: Decide) {
   return async (
     toolName: string,
     input: Record<string, unknown>,
@@ -268,13 +319,7 @@ export function workdirGuard(
     | { behavior: 'allow'; updatedInput: Record<string, unknown> }
     | { behavior: 'deny'; message: string }
   > => {
-    const decision = decideToolPermission(
-      allowedRoot,
-      readOnly,
-      toolName,
-      input,
-      readableFiles,
-    )
+    const decision = decide(toolName, input)
     if (!decision.allow) {
       return { behavior: 'deny', message: decision.reason }
     }
@@ -282,16 +327,7 @@ export function workdirGuard(
   }
 }
 
-/**
- * `PreToolUse` hook: inspects EVERY tool call, including ones pre-approved
- * via `allowedTools` (which bypass `canUseTool` per the Claude Code docs).
- * Denials surface in `providerMetadata['claude-code'].permissionDenials`.
- */
-export function preToolUseHook(
-  allowedRoot: string,
-  readOnly: boolean,
-  readableFiles: readonly string[] = [],
-) {
+function preToolUseWith(decide: Decide) {
   return async (hookInput: unknown) => {
     const record =
       typeof hookInput === 'object' && hookInput !== null
@@ -306,13 +342,7 @@ export function preToolUseHook(
       !Array.isArray(rawInput)
         ? (rawInput as Record<string, unknown>)
         : {}
-    const decision = decideToolPermission(
-      allowedRoot,
-      readOnly,
-      toolName,
-      input,
-      readableFiles,
-    )
+    const decision = decide(toolName, input)
     if (!decision.allow) {
       return {
         hookSpecificOutput: {
@@ -331,6 +361,45 @@ export function preToolUseHook(
   }
 }
 
+/**
+ * Tool-permission guard for `canUseTool` (sees only non-pre-approved calls).
+ * The `PreToolUse` hook below is the complete enforcement point.
+ */
+export function workdirGuard(
+  allowedRoot: string,
+  readOnly: boolean,
+  readableFiles: readonly string[] = [],
+) {
+  return canUseToolWith((toolName, input) =>
+    decideToolPermission(allowedRoot, readOnly, toolName, input, readableFiles),
+  )
+}
+
+/**
+ * `PreToolUse` hook: inspects EVERY tool call, including ones pre-approved
+ * via `allowedTools` (which bypass `canUseTool` per the Claude Code docs).
+ * Denials surface in `providerMetadata['claude-code'].permissionDenials`.
+ */
+export function preToolUseHook(
+  allowedRoot: string,
+  readOnly: boolean,
+  readableFiles: readonly string[] = [],
+) {
+  return preToolUseWith((toolName, input) =>
+    decideToolPermission(allowedRoot, readOnly, toolName, input, readableFiles),
+  )
+}
+
+/**
+ * The same guard for a command-mode review. Hooks run for a subagent's tool
+ * calls too, so what a subagent may do is decided here as well.
+ */
+export function reviewPreToolUseHook(roots: readonly string[]) {
+  return preToolUseWith((toolName, input) =>
+    decideReviewToolPermission(roots, toolName, input),
+  )
+}
+
 /** Build the model settings so tests can verify the wiring, not just hope. */
 export function buildClaudeSettings(
   workdir: string,
@@ -338,8 +407,35 @@ export function buildClaudeSettings(
   effort: string | null,
   sessionId: string | null = null,
   readableFiles: readonly string[] = [],
+  review: ReviewCallSettings | null = null,
 ): ClaudeCodeSettings {
   const executable = claudeExecutable()
+  const pinned = {
+    // Pinned to the binary whose version is recorded, so the two cannot
+    // name different CLIs. Unresolved, the SDK reports its own error.
+    ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
+    ...(effort ? { effort: effort as 'low' } : {}),
+  }
+  if (isCommandModeReview(review)) {
+    // The command and CLAUDE.local.md are found through the project's and
+    // the local settings. Only the listed tools exist, `dontAsk` refuses
+    // anything not pre-approved, and the guard sees every call, a
+    // subagent's included. A review never resumes a session.
+    const roots = [workdir, ...review.readableDirs]
+    return {
+      cwd: workdir,
+      settingSources: ['project', 'local'],
+      permissionMode: 'dontAsk',
+      tools: [...COMMAND_MODE_REVIEW_TOOLS],
+      allowedTools: [...COMMAND_MODE_REVIEW_TOOLS],
+      additionalDirectories: roots,
+      canUseTool: canUseToolWith((toolName, input) =>
+        decideReviewToolPermission(roots, toolName, input),
+      ),
+      hooks: { PreToolUse: [{ hooks: [reviewPreToolUseHook(roots)] }] },
+      ...pinned,
+    }
+  }
   return {
     cwd: workdir,
     settingSources: [],
@@ -351,12 +447,101 @@ export function buildClaudeSettings(
         { hooks: [preToolUseHook(workdir, readOnly, readableFiles)] },
       ],
     },
-    // Pinned to the binary whose version is recorded, so the two cannot
-    // name different CLIs. Unresolved, the SDK reports its own error.
-    ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
+    ...pinned,
     ...(sessionId ? { resume: sessionId } : {}),
-    ...(effort ? { effort: effort as 'low' } : {}),
   }
+}
+
+/** The usage the AI SDK reports for the main loop alone. */
+export interface MainLoopUsage {
+  inputTokens: number | null
+  outputTokens: number | null
+  cacheReadTokens: number | null
+  cacheWriteTokens: number | null
+  totalTokens: number | null
+}
+
+/**
+ * One call's usage. The result message's `modelUsage` holds per-model
+ * totals for the whole call: the main loop, every subagent and internal
+ * calls. When it is there it is the call's usage, summed across models once
+ * and never added to the main loop's numbers, which it already contains. A
+ * leg some model does not report stays unknown. Without it, the main loop's
+ * numbers are all there is.
+ */
+export function claudeUsageOf(
+  reported: MainLoopUsage,
+  modelUsage: unknown,
+): TokenUsage | null {
+  const models =
+    modelUsage !== null &&
+    typeof modelUsage === 'object' &&
+    !Array.isArray(modelUsage)
+      ? Object.values(modelUsage as Record<string, unknown>).filter(
+          (m): m is Record<string, unknown> =>
+            m !== null && typeof m === 'object',
+        )
+      : []
+  if (models.length === 0) {
+    const { inputTokens: input, outputTokens: output } = reported
+    const { cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite } =
+      reported
+    if (input === null && output === null) return null
+    return {
+      inputTokens: input,
+      cachedInputTokens:
+        cacheRead !== null || cacheWrite !== null
+          ? (cacheRead ?? 0) + (cacheWrite ?? 0)
+          : null,
+      cacheReadTokens: cacheRead,
+      cacheWriteTokens: cacheWrite,
+      outputTokens: output,
+      totalTokens: reported.totalTokens,
+      usageSource: 'provider-final',
+    }
+  }
+  const sum = (key: string): number | null => {
+    let total = 0
+    for (const model of models) {
+      const value = model[key]
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0)
+        return null
+      total += value
+    }
+    return total
+  }
+  const uncached = sum('inputTokens')
+  const cacheRead = sum('cacheReadInputTokens')
+  const cacheWrite = sum('cacheCreationInputTokens')
+  const output = sum('outputTokens')
+  // AI SDK usage counts the cache legs inside input; modelUsage does not.
+  const input =
+    uncached !== null && cacheRead !== null && cacheWrite !== null
+      ? uncached + cacheRead + cacheWrite
+      : null
+  return {
+    inputTokens: input,
+    cachedInputTokens:
+      cacheRead !== null && cacheWrite !== null ? cacheRead + cacheWrite : null,
+    cacheReadTokens: cacheRead,
+    cacheWriteTokens: cacheWrite,
+    outputTokens: output,
+    totalTokens: input !== null && output !== null ? input + output : null,
+    usageSource: 'provider-final',
+  }
+}
+
+/** The provider's recorded permission denials, one line each. */
+export function permissionDenialsOf(denials: unknown): string[] {
+  if (!Array.isArray(denials)) return []
+  return denials.map((denial) => {
+    const d = (denial ?? {}) as Record<string, unknown>
+    const tool = typeof d['toolName'] === 'string' ? d['toolName'] : 'tool'
+    const agent =
+      typeof d['agentId'] === 'string' ? ` (subagent ${d['agentId']})` : ''
+    const reason = typeof d['reason'] === 'string' ? `: ${d['reason']}` : ''
+    return `${tool}${agent}${reason}`.slice(0, 400)
+  })
 }
 
 /**
@@ -466,6 +651,7 @@ export class ClaudeProvider implements AgentProvider {
         effort,
         options.sessionId,
         options.readableFiles,
+        options.review ?? null,
       ),
       ...(onActivity
         ? {
@@ -482,15 +668,6 @@ export class ClaudeProvider implements AgentProvider {
       timeout: options.timeoutMs,
       maxRetries: 0,
     })
-    const input = reported.usage.inputTokens ?? null
-    const output = reported.usage.outputTokens ?? null
-    const cacheRead = reported.usage.inputTokenDetails?.cacheReadTokens ?? null
-    const cacheWrite =
-      reported.usage.inputTokenDetails?.cacheWriteTokens ?? null
-    const cached =
-      cacheRead !== null || cacheWrite !== null
-        ? (cacheRead ?? 0) + (cacheWrite ?? 0)
-        : null
     // Reported values come ONLY from the native response object. The Agent
     // SDK echoes the resolved id in response.modelId and never reports
     // effort, so reportedEffort stays null — never back-filled from config.
@@ -506,6 +683,7 @@ export class ClaudeProvider implements AgentProvider {
       typeof providerMetadata?.['sessionId'] === 'string'
         ? providerMetadata['sessionId']
         : options.sessionId
+    const denials = permissionDenialsOf(providerMetadata?.['permissionDenials'])
     return {
       text: reported.text,
       session: sessionId ? { id: sessionId } : null,
@@ -513,19 +691,20 @@ export class ClaudeProvider implements AgentProvider {
       resolvedEffort: effort,
       reportedModel: nativeModel,
       reportedEffort: null,
-      usage:
-        input === null && output === null
-          ? null
-          : {
-              inputTokens: input,
-              cachedInputTokens: cached,
-              cacheReadTokens: cacheRead,
-              cacheWriteTokens: cacheWrite,
-              outputTokens: output,
-              totalTokens: reported.usage.totalTokens ?? null,
-              usageSource: 'provider-final',
-            },
+      usage: claudeUsageOf(
+        {
+          inputTokens: reported.usage.inputTokens ?? null,
+          outputTokens: reported.usage.outputTokens ?? null,
+          cacheReadTokens:
+            reported.usage.inputTokenDetails?.cacheReadTokens ?? null,
+          cacheWriteTokens:
+            reported.usage.inputTokenDetails?.cacheWriteTokens ?? null,
+          totalTokens: reported.usage.totalTokens ?? null,
+        },
+        providerMetadata?.['modelUsage'],
+      ),
       elapsedMs: Date.now() - started,
+      ...(denials.length > 0 ? { permissionDenials: denials } : {}),
     }
   }
 

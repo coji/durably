@@ -8,6 +8,7 @@ import {
   stat,
 } from '../src/engine/compare.js'
 import { PRICE_BASIS, estimateCostBreakdown } from '../src/engine/pricing.js'
+import { claudeUsageOf } from '../src/engine/providers/claude.js'
 import {
   reportToMarkdown,
   roleUsage,
@@ -824,5 +825,111 @@ describe('measurement detection', () => {
       },
     } as never)
     assert.equal(row.measurement?.invocationId, 'inv-1')
+  })
+})
+
+describe('Claude usage with subagents', () => {
+  const mainLoop = {
+    inputTokens: 1_000,
+    outputTokens: 100,
+    cacheReadTokens: 800,
+    cacheWriteTokens: 50,
+    totalTokens: 1_100,
+  }
+  const model = (
+    input: number,
+    output: number,
+    read: number,
+    write: number,
+  ) => ({
+    inputTokens: input,
+    outputTokens: output,
+    cacheReadInputTokens: read,
+    cacheCreationInputTokens: write,
+    webSearchRequests: 0,
+    costUSD: 0,
+    contextWindow: 200_000,
+    maxOutputTokens: 32_000,
+  })
+
+  it('counts the call and every subagent once, from modelUsage, and never adds the main loop again', () => {
+    const counted = claudeUsageOf(mainLoop, {
+      // The main loop and a subagent on another model.
+      'claude-opus-5-5': model(150, 100, 800, 50),
+      'claude-fable-5-1': model(40, 30, 2_000, 10),
+    })
+    assert.deepEqual(counted, {
+      inputTokens: 150 + 800 + 50 + 40 + 2_000 + 10,
+      cachedInputTokens: 800 + 50 + 2_000 + 10,
+      cacheReadTokens: 2_800,
+      cacheWriteTokens: 60,
+      outputTokens: 130,
+      totalTokens: 3_050 + 130,
+      usageSource: 'provider-final',
+    })
+    // One invocation, one role row: the recovery attempt adds nothing.
+    const reviewRow = (attemptId: string, result?: string) =>
+      row('stage:4:review:correctness', attemptId, {
+        invocationId: 'inv-review',
+        usage: counted,
+        cost:
+          estimateCostBreakdown('claude-opus-5-5', counted)?.totalUsd ?? null,
+        ...(result ? { result } : {}),
+      })
+    const [, correctness] = roleUsage(
+      [reviewRow('a1'), reviewRow('a2', 'checkpoint-recovered')],
+      [
+        {
+          role: 'code',
+          provider: 'claude',
+          requestedModel: null,
+          requestedEffort: null,
+        },
+        {
+          role: 'correctness',
+          provider: 'claude',
+          requestedModel: 'claude-opus-5-5',
+          requestedEffort: 'high',
+        },
+      ],
+    )
+    assert.equal(correctness?.invocations, 1)
+    assert.equal(correctness?.totalTokens, 3_180)
+    assert.ok((correctness?.costUsd ?? 0) > 0)
+  })
+
+  it('keeps a leg some model does not report unknown, never zero', () => {
+    const partial = claudeUsageOf(mainLoop, {
+      'claude-opus-5-5': model(150, 100, 800, 50),
+      'claude-fable-5-1': { inputTokens: 40, outputTokens: 30 },
+    })
+    assert.equal(partial?.outputTokens, 130)
+    assert.equal(partial?.cacheReadTokens, null)
+    assert.equal(partial?.cacheWriteTokens, null)
+    assert.equal(partial?.inputTokens, null)
+    assert.equal(partial?.totalTokens, null)
+    assert.equal(estimateCostBreakdown('claude-opus-5-5', partial), null)
+  })
+
+  it('falls back to the main loop without modelUsage, and to nothing without either', () => {
+    for (const absent of [undefined, null, {}, []]) {
+      const main = claudeUsageOf(mainLoop, absent)
+      assert.equal(main?.inputTokens, 1_000)
+      assert.equal(main?.cachedInputTokens, 850)
+      assert.equal(main?.totalTokens, 1_100)
+    }
+    assert.equal(
+      claudeUsageOf(
+        {
+          inputTokens: null,
+          outputTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+          totalTokens: null,
+        },
+        undefined,
+      ),
+      null,
+    )
   })
 })

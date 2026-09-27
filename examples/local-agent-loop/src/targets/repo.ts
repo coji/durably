@@ -13,7 +13,7 @@
  * still be the candidate's commit. Like the directory-hash check on the sample
  * target, this detects an unintended change; it is not a sandbox.
  */
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 import { runChild } from '../engine/child.js'
@@ -266,7 +266,21 @@ export class RepoTarget implements Target {
       lines.map((line) => `${line}\n`).join(''),
       'utf8',
     )
-    return { diffPath, changedFilesPath, ...stat }
+    if (!this.config.reviewSnapshots)
+      return { diffPath, changedFilesPath, ...stat }
+    const baseSnapshotDir = join(dir, 'base')
+    const headSnapshotDir = join(dir, 'head')
+    await Promise.all([
+      extractCommit(repoPath, baseCommit, baseSnapshotDir),
+      extractCommit(repoPath, commit, headSnapshotDir),
+    ])
+    return {
+      diffPath,
+      changedFilesPath,
+      ...stat,
+      baseSnapshotDir,
+      headSnapshotDir,
+    }
   }
 
   async assertIntact(candidate: CandidateRef): Promise<void> {
@@ -606,6 +620,38 @@ export class RepoTarget implements Target {
   async cleanup(): Promise<void> {
     // The worktree and branch are intentionally kept: they are the delivery.
   }
+}
+
+/**
+ * Extract one commit's tree into `dir`, outside every worktree. Built from
+ * the commit alone, so a replay yields the same files; a partial extraction
+ * an interrupted attempt left is discarded first.
+ */
+async function extractCommit(
+  repo: string,
+  commit: string,
+  dir: string,
+): Promise<void> {
+  const partial = `${dir}.partial`
+  const archive = `${dir}.tar`
+  await rm(partial, { recursive: true, force: true })
+  await mkdir(partial, { recursive: true })
+  const run = async (command: string, args: string[]) => {
+    const res = await runChild(command, args, {
+      cwd: repo,
+      timeoutMs: 300_000,
+      maxOutputChars: 20_000,
+    })
+    if (res.code !== 0)
+      throw new Error(
+        `${command} ${args.join(' ')} failed (${res.code ?? 'null'}): ${res.stderr.slice(-1000)}`,
+      )
+  }
+  await run('git', ['archive', '--format=tar', `--output=${archive}`, commit])
+  await run('tar', ['-xf', archive, '-C', partial])
+  await rm(archive, { force: true })
+  await rm(dir, { recursive: true, force: true })
+  await rename(partial, dir)
 }
 
 /**

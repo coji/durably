@@ -40,6 +40,13 @@ export interface CandidateChanges {
   files: number
   additions: number
   deletions: number
+  /**
+   * The base commit's and the candidate commit's trees, extracted beside the
+   * diff for reviewers that read the candidate through their own command or
+   * local instructions. Absent when no reviewer does.
+   */
+  baseSnapshotDir?: string
+  headSnapshotDir?: string
 }
 
 /**

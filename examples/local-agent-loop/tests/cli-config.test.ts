@@ -31,6 +31,7 @@ import {
   buildRepairInput,
   reloadTriggerInput,
   repairableCandidate,
+  resolveProfiles,
 } from '../src/trigger-input.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -1808,5 +1809,162 @@ describe('repair', { timeout: 240000 }, () => {
       ),
       /does not apply to a repair run/,
     )
+  })
+})
+
+describe('reviewer command, context and output', { timeout: 120000 }, () => {
+  type Config = Parameters<typeof resolveProfiles>[1]
+  const review = (
+    provider: string,
+    correctness: Record<string, unknown>,
+    edgeCases: Record<string, unknown> = {},
+  ) =>
+    resolveProfiles({ provider }, {
+      profiles: { review: { correctness, 'edge-cases': edgeCases } },
+    } as Config).review
+
+  it('fixes each lens on its own, defaults filled in, and leaves an unnamed lens out', () => {
+    assert.deepEqual(
+      review('fake', {
+        command: '/code-review {base}..{head} {effort}',
+        context: 'local-instructions',
+      }),
+      {
+        correctness: {
+          command: '/code-review {base}..{head} {effort}',
+          context: 'local-instructions',
+          output: 'verdict',
+        },
+      },
+    )
+    assert.deepEqual(review('fake', {}, { output: 'findings-json' }), {
+      'edge-cases': {
+        command: null,
+        context: 'prompt',
+        output: 'findings-json',
+      },
+    })
+    // The findings contract does not depend on the provider.
+    for (const provider of ['codex', 'claude'])
+      assert.deepEqual(review(provider, { output: 'findings-json' }), {
+        correctness: {
+          command: null,
+          context: 'prompt',
+          output: 'findings-json',
+        },
+      })
+    assert.deepEqual(
+      review('claude', { command: '/code-review', model: 'claude-opus-5-5' }),
+      {
+        correctness: {
+          command: '/code-review',
+          context: 'prompt',
+          output: 'verdict',
+        },
+      },
+    )
+  })
+
+  it('refuses a codex reviewer with a command or local instructions, naming the role and the fields', () => {
+    assert.throws(
+      () => review('codex', { command: '/review' }),
+      /profiles\.review\.correctness: a codex reviewer does not support command;/,
+    )
+    assert.throws(
+      () => review('codex', {}, { context: 'local-instructions' }),
+      /profiles\.review\.edge-cases: a codex reviewer does not support context: local-instructions;/,
+    )
+    assert.throws(
+      () =>
+        review(
+          'claude',
+          {},
+          {
+            provider: 'codex',
+            command: '/review',
+            context: 'local-instructions',
+          },
+        ),
+      /edge-cases: a codex reviewer does not support command or context: local-instructions/,
+    )
+  })
+
+  it('refuses unknown or unresolvable placeholders and a blank command', () => {
+    for (const [command, error] of [
+      [
+        '/review {model}',
+        /correctness: command: unknown placeholder \{model\}/,
+      ],
+      ['/review {base', /correctness: command: unclosed "\{"/],
+      ['/review base}', /correctness: command: unmatched "\}"/],
+      ['   ', /correctness: command must not be empty/],
+    ] as const)
+      assert.throws(() => review('fake', { command }), error, command)
+    // A model with no preset resolves no effort, so {effort} has no value.
+    assert.throws(
+      () =>
+        review('claude', { command: '/r {effort}', model: 'claude-unlisted' }),
+      /correctness: command uses \{effort\}, but the role resolves no effort/,
+    )
+    assert.deepEqual(
+      review('claude', {
+        command: '/r {effort}',
+        model: 'claude-unlisted',
+        effort: 'high',
+      }),
+      {
+        correctness: {
+          command: '/r {effort}',
+          context: 'prompt',
+          output: 'verdict',
+        },
+      },
+    )
+  })
+
+  it('refuses a bad setting at trigger before the run exists, and stores a good one', async () => {
+    for (const [provider, correctness, message] of [
+      ['fake', { command: '  ' }, /invalid factory config[\s\S]*command/],
+      ['fake', { context: 'file' }, /invalid factory config[\s\S]*context/],
+      ['fake', { output: 'json' }, /invalid factory config[\s\S]*output/],
+      ['fake', { command: '/r {model}' }, /unknown placeholder \{model\}/],
+      [
+        'codex',
+        { command: '/review' },
+        /profiles\.review\.correctness: a codex reviewer does not support command/,
+      ],
+    ] as const) {
+      const box = await sandbox({
+        check: CHECK,
+        profiles: { review: { correctness } },
+      })
+      await rejected(
+        box,
+        ['--repo', box.repo, '--task', 'x', '--provider', provider],
+        message,
+      )
+    }
+    const box = await sandbox({
+      check: CHECK,
+      profiles: {
+        review: {
+          correctness: {
+            command: '/code-review {head}',
+            context: 'local-instructions',
+          },
+        },
+      },
+    })
+    const runId = await trigger(box, ['--repo', box.repo, '--task', 'x'])
+    const input = (await inputOf(box, runId)) as RunInput & {
+      review?: unknown
+    }
+    assert.deepEqual(input.review, {
+      correctness: {
+        command: '/code-review {head}',
+        context: 'local-instructions',
+        output: 'verdict',
+      },
+    })
   })
 })
