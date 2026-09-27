@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -22,7 +22,11 @@ import type { StepAttemptContext } from '@coji/durably'
 
 import { childLogError, SpawnCancelledError } from './child.js'
 import type { ProviderName, VerificationLog } from './providers/types.js'
-import { UncertainInvocationError, writeMeasurement } from './runner.js'
+import {
+  checkpointPaths,
+  UncertainInvocationError,
+  writeMeasurement,
+} from './runner.js'
 
 export interface VerificationOutcome {
   passed: boolean
@@ -121,14 +125,23 @@ export async function runVerificationStep(
   spec: VerificationStepSpec,
   signal: AbortSignal,
 ): Promise<VerificationOutcome> {
+  return (await runTimedVerificationStep(attempt, spec, signal)).result
+}
+
+/**
+ * `runVerificationStep`, also giving when the verdict was reached: the
+ * completion its checkpoint records, which a resume that reads the verdict
+ * back does not move.
+ */
+export async function runTimedVerificationStep(
+  attempt: StepAttemptContext,
+  spec: VerificationStepSpec,
+  signal: AbortSignal,
+): Promise<{ result: VerificationOutcome; completedAt: string }> {
   const started = Date.now()
-  const checkpointId = createHash('sha256')
-    .update(spec.operationKey)
-    .digest('hex')
-  const startedPath = join(spec.checkpointsDir, `${checkpointId}.started.json`)
-  const completedPath = join(
+  const { started: startedPath, completed: completedPath } = checkpointPaths(
     spec.checkpointsDir,
-    `${checkpointId}.completed.json`,
+    spec.operationKey,
   )
   await mkdir(spec.checkpointsDir, { recursive: true })
   const readCheckpoint = async <T>(path: string): Promise<T | null> => {
@@ -199,7 +212,7 @@ export async function runVerificationStep(
       result: 'checkpoint-recovered',
       verificationLog: saved.result.log ?? null,
     })
-    return saved.result
+    return { result: saved.result, completedAt: saved.invocationCompletedAt }
   }
   // A start-only checkpoint means the worker died mid-grading. Unlike an LLM
   // invocation — which may already have been billed and must never be resent —
@@ -232,7 +245,10 @@ export async function runVerificationStep(
           invocationCompletedAt: raced.invocationCompletedAt,
           verificationLog: raced.result.log ?? null,
         })
-        return raced.result
+        return {
+          result: raced.result,
+          completedAt: raced.invocationCompletedAt,
+        }
       }
       const racedStart = await readCheckpoint<Started>(startedPath)
       throw new UncertainInvocationError(
@@ -271,7 +287,7 @@ export async function runVerificationStep(
       verificationLog: result.log,
     })
     void measurement
-    return result
+    return { result, completedAt: completed.invocationCompletedAt }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     // An interrupted grading produced no verdict, so it is not a failure.

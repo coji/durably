@@ -384,6 +384,19 @@ export class RepoTarget implements Target {
   }
 
   /**
+   * The worktree is as a measured baseline would require it before the
+   * check: at the base commit, with no changes to tracked files and no
+   * untracked file `.gitignore` does not cover. Stops the run as a baseline
+   * failure otherwise. A reused baseline result is taken only after this.
+   */
+  async assertReadyForBase(signal: AbortSignal): Promise<void> {
+    await this.assertAtBase(
+      `setup left uncommitted changes to tracked files in ${this.config.workdir} before the check`,
+    )
+    await assertSetupLeftNoUntracked(this.config.workdir, signal)
+  }
+
+  /**
    * Run the pinned check once on the base commit, before any agent call. The
    * worktree was just cut from that commit and set up, so it is graded in
    * place, as a candidate is; it must still be clean and at the base.

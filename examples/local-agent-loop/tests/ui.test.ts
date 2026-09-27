@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { request } from 'node:http'
 import { connect, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -25,6 +25,7 @@ import { createAgentDurably, dbPath } from '../src/durably.js'
 import {
   repairChildrenByParent,
   type ReportSource,
+  reusedBaselineOf,
 } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
 import {
@@ -44,7 +45,7 @@ import {
 import { checkpointPaths } from '../src/engine/runner.js'
 import type { DiagnosisKind } from '../src/engine/status.js'
 import { repairLabels } from '../src/factory/repair.js'
-import { ReviewFindingTitles } from '../src/ui/App.js'
+import { BaselineSource, ReviewFindingTitles } from '../src/ui/App.js'
 import {
   commandNote,
   noteSaidByReason,
@@ -71,6 +72,7 @@ import {
   SUBJECT_RUN_NAME,
   type CompareResponse,
   type RunDetailResponse,
+  type RunRef,
   type RunsResponse,
   type TraceInput,
   type TraceNode,
@@ -1104,6 +1106,55 @@ describe('reads per poll', () => {
     assert.deepEqual(built, ['failed', 'cancelled'])
   })
 
+  it("checks a reused baseline's source log again on every hit", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ui-reused-log-'))
+    const log = {
+      stdoutPath: join(root, 'stdout.log'),
+      stderrPath: join(root, 'stderr.log'),
+      exitCode: 0,
+    }
+    await writeFile(log.stdoutPath, 'ok\n')
+    await writeFile(log.stderrPath, '')
+    const output = {
+      passed: true,
+      stdout: 'ok',
+      exitCode: 0,
+      log,
+      source: 'reused',
+      reusedFrom: { runId: 'source', checkedAt: 't0', recovered: false },
+    }
+    const db = {
+      getRuns: async () => [],
+      storage: {
+        getCompletedStep: async (_id: string, name: string) =>
+          name === 'baseline' ? { output } : null,
+      },
+    } as unknown as ReportSource
+    const cache = finishedReportCache(
+      async (_src, id) =>
+        ({
+          runId: id,
+          lineage: { parent: null, children: [] },
+          baseline: reusedBaselineOf(output),
+        }) as unknown as LoopReport,
+    )
+    const run = {
+      id: 'reusing',
+      jobName: 'local-factory.v2',
+      status: 'completed' as const,
+      updatedAt: 't1',
+      input: {},
+      output: null,
+      error: null,
+    }
+    assert.equal((await cache.get(db, run)).report.baseline?.logMissing, null)
+    await rm(log.stderrPath)
+    const hit = await cache.get(db, run)
+    assert.equal(hit.fresh, false)
+    assert.equal(hit.report.baseline?.log, null)
+    assert.match(hit.report.baseline?.logMissing ?? '', /no longer at/)
+  })
+
   it('groups repair children by their label, or by their input without one, oldest first', () => {
     const at = (s: number) => new Date(s * 1000).toISOString()
     const byParent = repairChildrenByParent([
@@ -1427,6 +1478,90 @@ describe('diagnosis wording on the page', () => {
       ),
       '',
     )
+  })
+
+  it('says in Japanese where the baseline verdict came from, and which run a reused one is from', () => {
+    const now = '2026-09-27T12:00:00.000Z'
+    const runId = '01REUSEDFROMRUN000000ABCDEF'
+    const base = {
+      passed: true,
+      exitCode: 0,
+      log: null,
+      recovered: false,
+      logMissing: null,
+    }
+    const reusedFrom = {
+      reusedFrom: { runId, checkedAt: '2026-09-27T11:55:00.000Z' },
+    }
+    const render = (
+      baseline: LoopReport['baseline'],
+      source: RunRef | null = null,
+    ) =>
+      renderToStaticMarkup(
+        createElement(BaselineSource, { baseline, source, now }),
+      )
+
+    // Named case: the source run's task name is the primary link text.
+    const sourceName = '検証手順の見直し'
+    const named = render(
+      { ...base, ...reusedFrom },
+      { id: runId, name: sourceName },
+    )
+    const namedText = named.replace(/<[^>]+>/g, '\n')
+    assert.match(namedText, /前の実行の結果を再利用しました/)
+    assert.match(namedText, /再利用元/)
+    assert.match(namedText, /検証日時/)
+    // The source run is a link by its task name, its ID only as a short
+    // suffix, not the generic "前の実行" label.
+    assert.ok(named.includes(`href="#/runs/${runId}"`))
+    assert.ok(namedText.includes(sourceName))
+    const namedLinkText = /<a href="#\/runs\/[^"]+"[^>]*>([^<]+)<\/a>/.exec(
+      named,
+    )?.[1]
+    assert.equal(namedLinkText, sourceName)
+    assert.ok(!namedText.includes(runId))
+    assert.ok(named.includes('dateTime="2026-09-27T11:55:00.000Z"'))
+    assert.ok(!namedText.includes('ログは残っていません'))
+    assert.equal(
+      plain(namedText.replace(/…[0-9A-Z]{6}/g, '').replace(sourceName, '')),
+      null,
+      namedText,
+    )
+
+    // Fallback case: the source run no longer exists, so there is no name.
+    const reused = render({ ...base, ...reusedFrom }, null)
+    const text = reused.replace(/<[^>]+>/g, '\n')
+    assert.match(text, /前の実行の結果を再利用しました/)
+    assert.match(text, /再利用元/)
+    assert.match(text, /検証日時/)
+    assert.ok(reused.includes(`href="#/runs/${runId}"`))
+    assert.ok(text.includes('前の実行'))
+    assert.ok(!text.includes(runId))
+    assert.ok(reused.includes('dateTime="2026-09-27T11:55:00.000Z"'))
+    assert.ok(!text.includes('ログは残っていません'))
+    assert.equal(plain(text.replace(/…[0-9A-Z]{6}/g, '')), null, text)
+
+    const gone = render(
+      {
+        ...base,
+        log: null,
+        ...reusedFrom,
+        logMissing: 'the log is gone',
+      },
+      { id: runId, name: sourceName },
+    ).replace(/<[^>]+>/g, '\n')
+    assert.match(gone, /再利用元のログは残っていません/)
+    assert.ok(!gone.includes('the log is gone'))
+
+    // Measured here, or a record from before reuse existed.
+    const measured = render({ ...base, reusedFrom: null }).replace(
+      /<[^>]+>/g,
+      '',
+    )
+    assert.equal(measured, 'この実行でチェックを実行しました')
+    // No verdict yet, or no baseline: nothing.
+    assert.equal(render({ ...base, passed: null, reusedFrom: null }), '')
+    assert.equal(render(null), '')
   })
 
   it('says in Japanese what every next command the CLI annotates does', async () => {

@@ -42,7 +42,7 @@ import {
   UncertainInvocationError,
 } from '../engine/runner.js'
 import type { ResolvedProfile } from '../engine/types.js'
-import { runVerificationStep } from '../engine/verification.js'
+import { runTimedVerificationStep } from '../engine/verification.js'
 import {
   cliIdentityOf,
   configVersionOf,
@@ -59,6 +59,13 @@ import {
   checkFingerprint,
   RepoTarget,
 } from '../targets/repo.js'
+import {
+  BASELINE_INDEX_PRUNE_AGE_MS,
+  baselineIdentityOf,
+  recordBaselineInIndex,
+  reusedBaseline,
+  type BaselineStore,
+} from './baseline-reuse.js'
 import {
   candidateSchema,
   deliverySchema,
@@ -85,6 +92,7 @@ import {
   type TargetConfig,
 } from './target.js'
 import {
+  BASELINE_STEP,
   EFFORT_RESUME_POLICY,
   executionKey,
   initialState,
@@ -96,6 +104,7 @@ import {
   repairSessionDecision,
   separateRepairProfile,
   usesReviewMaterials,
+  type BaselineRecord,
   type FactorySetup,
   type RepairSessionRecord,
   type ProfileRole,
@@ -125,6 +134,23 @@ const commitSettingsSchema = z
     messageTemplate: nonBlank.nullable().default(null),
     publishSquashed: z.boolean().default(false),
   })
+  .strict()
+
+/**
+ * How old a reused baseline result may be: a positive integer of
+ * milliseconds, at most `BASELINE_INDEX_PRUNE_AGE_MS` (7 days) — the
+ * horizon beyond which index entries are pruned, so a longer setting could
+ * never actually hold.
+ */
+export const baselineMaxAgeMsSchema = z
+  .number()
+  .int()
+  .positive()
+  .max(BASELINE_INDEX_PRUNE_AGE_MS, 'the maximum is 7 days')
+
+/** `baselineReuse` in a target and in factory.json. */
+export const baselineReuseSchema = z
+  .object({ maxAgeMs: baselineMaxAgeMsSchema })
   .strict()
 
 /** Where an input came from. Its hash is taken from the stored content. */
@@ -164,6 +190,11 @@ const targetSchema = z
       commit: commitSettingsSchema.optional(),
       /** Run the pinned check on the base commit before any agent call. */
       baselineCheck: z.boolean().optional(),
+      /**
+       * Use another run's passing baseline result of at most this age
+       * instead of running the check. Read only with `baselineCheck`.
+       */
+      baselineReuse: baselineReuseSchema.nullable().optional(),
     }),
   ])
   .default({ kind: 'subject' })
@@ -948,15 +979,24 @@ function resolveInputProfiles(input: {
   }
 }
 
+/** The job's name, as its runs are stored. */
+export const AGENT_LOOP_JOB_NAME = 'local-factory.v2'
+
 export interface AgentLoopJobOptions {
   /** Directory every run's worktree, checkpoints and delivery live under. */
   stateRoot: string
+  /**
+   * Reads of the state database a baseline reuse decision makes, about the
+   * one run the reuse index names. Absent: every baseline check runs,
+   * whatever `baselineReuse` says.
+   */
+  baselineStore?: BaselineStore
 }
 
 export function createAgentLoopJob(options: AgentLoopJobOptions) {
   const runRoot = (runId: string) => runRootOf(options.stateRoot, runId)
   return defineJob({
-    name: 'local-factory.v2',
+    name: AGENT_LOOP_JOB_NAME,
     input: inputSchema,
     output: outputSchema,
     run: async (step, input) => {
@@ -1091,6 +1131,12 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           // check's own output for setup's.
           if (baselineCheck && target.kind === 'repo')
             await assertSetupLeftNoUntracked(target.workdir, signal)
+          // Resolved here, in the worktree setup prepared, and never again:
+          // a replay compares the values this run was set up with.
+          const baselineIdentity =
+            baselineCheck && target.kind === 'repo'
+              ? await baselineIdentityOf(target)
+              : null
           const instructionsVersion = 'local-factory.v3'
           // Fixed here with the CLI version just recorded, so a restarted
           // worker with another environment never changes how this run's
@@ -1153,6 +1199,13 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             maxIterations: input.maxIterations,
             agentTimeoutMs,
             baselineCheck,
+            // Null, not absent, without the check, so a repair run does not
+            // take the value from this run's input instead.
+            baselineReuse:
+              baselineCheck && input.target.kind === 'repo'
+                ? (input.target.baselineReuse ?? null)
+                : null,
+            ...(baselineCheck ? { baselineIdentity } : {}),
             codexPath,
             ...(Object.keys(review).length > 0 ? { review } : {}),
             ...(repairOf
@@ -1185,33 +1238,76 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       // The pinned check must pass on the base commit, or no candidate could
       // be graded: stop before paying for any agent call. The same checkpoint
       // pair as verification, so a completed result is read back on resume
-      // and an interrupted check is graded again.
-      if (setup.baselineCheck && target instanceof RepoTarget) {
-        const baseline = await step.run('baseline', (signal, attempt) =>
-          runVerificationStep(
-            attempt,
-            {
-              provider: setup.profiles.code.provider,
-              operationKey: `${step.runId}/baseline`,
-              checkpointsDir: setup.checkpointsDir,
-              stage: 'baseline',
-              iteration: 0,
-              grade: (graderSignal) =>
-                target.gradeBase({
-                  // Keyed by the step attempt, as a verification log is.
-                  logDir: join(
-                    setup.checkpointsDir,
-                    '..',
-                    'baseline-logs',
-                    attempt.id,
-                  ),
-                  signal: graderSignal,
-                }),
-            },
-            signal,
-          ),
+      // and an interrupted check is graded again. With `baselineReuse`, a
+      // matching passing result of another run is used instead, once the
+      // worktree is proven to be as the check would need it. The choice is
+      // this step's output, so a replay never looks again.
+      if (
+        setup.baselineCheck &&
+        target instanceof RepoTarget &&
+        setup.target.kind === 'repo'
+      ) {
+        const operationKey = `${step.runId}/baseline`
+        const reuse = setup.baselineReuse ?? null
+        const store = options.baselineStore
+        const baseline = await step.run(
+          BASELINE_STEP,
+          async (signal, attempt): Promise<BaselineRecord> => {
+            const reused =
+              reuse && store
+                ? await reusedBaseline({
+                    stateRoot: options.stateRoot,
+                    runId: step.runId,
+                    setup,
+                    reuse,
+                    store,
+                    operationKey,
+                  })
+                : null
+            if (reused) {
+              await target.assertReadyForBase(signal)
+              return reused
+            }
+            const measured = await runTimedVerificationStep(
+              attempt,
+              {
+                provider: setup.profiles.code.provider,
+                operationKey,
+                checkpointsDir: setup.checkpointsDir,
+                stage: 'baseline',
+                iteration: 0,
+                grade: (graderSignal) =>
+                  target.gradeBase({
+                    // Keyed by the step attempt, as a verification log is.
+                    logDir: join(
+                      setup.checkpointsDir,
+                      '..',
+                      'baseline-logs',
+                      attempt.id,
+                    ),
+                    signal: graderSignal,
+                  }),
+              },
+              signal,
+            )
+            return {
+              ...measured.result,
+              source: 'measured',
+              identity: setup.baselineIdentity ?? null,
+              // The check's own completion, which a resume that read the
+              // verdict back from the checkpoint does not move.
+              checkedAt: measured.completedAt,
+            }
+          },
         )
-        if (!baseline.passed && setup.target.kind === 'repo')
+        // Also on a replay, so an index write lost to a crash after the
+        // step completed is made up. Each run writes only its own entry.
+        await recordBaselineInIndex({
+          stateRoot: options.stateRoot,
+          runId: step.runId,
+          record: baseline,
+        })
+        if (!baseline.passed)
           throw new Error(
             `${BASELINE_FAILED_MESSAGE}: \`${checkFingerprint(setup.target.checkCommand)}\` failed on the base commit ${setup.target.baseCommit.slice(0, 12)} (exit code ${baseline.exitCode ?? 'unknown'}) before any agent call`,
           )

@@ -5,6 +5,7 @@
  * `diagnose`, `buildReport` and `compareReports`; nothing is recomputed here.
  */
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -55,6 +56,7 @@ import type {
   PipelineState,
   Relations,
   RunDetailResponse,
+  RunRef,
   RunRow,
   RunsResponse,
   Trace,
@@ -1887,37 +1889,95 @@ const USAGE_HEAD = (
   </>
 )
 
-function StageTimings({ report }: { report: LoopReport }) {
+/**
+ * Where the baseline verdict came from: the check run here, or another
+ * run's passing result used in its place, with that run and when its check
+ * completed. Nothing while the baseline has no verdict.
+ */
+export function BaselineSource({
+  baseline,
+  source,
+  now,
+}: {
+  baseline: LoopReport['baseline']
+  /** The reused run's name, from the detail response; null if it no longer exists. */
+  source: RunRef | null
+  now: string
+}) {
+  if (!baseline || baseline.passed === null) return null
+  const from = baseline.reusedFrom
+  if (!from)
+    return <p className="text-fg-2 text-xs">この実行でチェックを実行しました</p>
+  return (
+    <div className="text-fg-2 flex flex-col gap-1 text-xs">
+      <p>チェックは実行せず、前の実行の結果を再利用しました</p>
+      <dl className="flex flex-wrap gap-x-4 gap-y-1">
+        <div className="flex min-w-0 items-baseline gap-2">
+          <dt>再利用元</dt>
+          <dd className="min-w-0">
+            <RunLink id={from.runId} name={source?.name ?? '前の実行'} />
+          </dd>
+        </div>
+        <div className="flex items-baseline gap-2">
+          <dt>検証日時</dt>
+          <dd>
+            <Ago iso={from.checkedAt} now={now} />
+          </dd>
+        </div>
+      </dl>
+      {baseline.logMissing ? <p>再利用元のログは残っていません</p> : null}
+    </div>
+  )
+}
+
+function StageTimings({
+  report,
+  baselineSource,
+  now,
+}: {
+  report: LoopReport
+  baselineSource: RunRef | null
+  now: string
+}) {
   const max = Math.max(1, ...report.stageTimings.map((t) => t.elapsedMs ?? 0))
   if (report.stageTimings.length === 0)
     return <Empty>まだ完了した工程がありません。</Empty>
   return (
     <ul className="flex flex-col gap-2">
       {report.stageTimings.map((t) => (
-        <li
-          key={t.stage}
-          className="grid grid-cols-[6rem_1fr_9rem] items-center gap-3"
-        >
-          <span className="text-sm">{stageName(t.stage)}</span>
-          <span className="bg-sunken h-2 rounded-sm" aria-hidden>
-            <span
-              className="bg-fg-3/60 block h-full rounded-sm"
-              style={{ width: `${((t.elapsedMs ?? 0) / max) * 100}%` }}
-            />
-          </span>
-          <span className="font-code text-right text-sm tabular-nums">
-            {t.elapsedMs == null ? (
-              UNKNOWN
-            ) : (
-              <>
-                {fmtMs(t.elapsedMs)}
-                {t.complete ? null : (
-                  <PartialTag title="一部の区間だけを計測した値" />
-                )}
-              </>
-            )}
-          </span>
-        </li>
+        <Fragment key={t.stage}>
+          <li className="grid grid-cols-[6rem_1fr_9rem] items-center gap-3">
+            <span className="text-sm">{stageName(t.stage)}</span>
+            <span className="bg-sunken h-2 rounded-sm" aria-hidden>
+              <span
+                className="bg-fg-3/60 block h-full rounded-sm"
+                style={{ width: `${((t.elapsedMs ?? 0) / max) * 100}%` }}
+              />
+            </span>
+            <span className="font-code text-right text-sm tabular-nums">
+              {t.elapsedMs == null ? (
+                UNKNOWN
+              ) : (
+                <>
+                  {fmtMs(t.elapsedMs)}
+                  {t.complete ? null : (
+                    <PartialTag title="一部の区間だけを計測した値" />
+                  )}
+                </>
+              )}
+            </span>
+          </li>
+          {t.stage === 'baseline' && report.baseline?.passed != null ? (
+            <li className="grid grid-cols-[6rem_1fr] gap-3">
+              <span />
+              <BaselineSource
+                baseline={report.baseline}
+                source={baselineSource}
+                now={now}
+              />
+            </li>
+          ) : null}
+        </Fragment>
       ))}
       <li className="border-line grid grid-cols-[6rem_1fr_9rem] gap-3 border-t pt-2 text-sm">
         <span>工程合計</span>
@@ -2411,7 +2471,11 @@ function RunPage({ data }: { data: RunDetailResponse }) {
       </Panel>
 
       <Panel title="工程ごとの時間">
-        <StageTimings report={r} />
+        <StageTimings
+          report={r}
+          baselineSource={data.baselineSource}
+          now={data.now}
+        />
       </Panel>
 
       <UsagePanels report={r} />

@@ -105,7 +105,8 @@ Commands (run from examples/local-agent-loop):
                                             demo data on the fake provider in a throwaway HOME
 Repository config: factory.json at the repository root, or --config <file>:
   { "check": ["pnpm", "validate"], "setup": ["pnpm", "install"], "base": "main",
-    "baselineCheck": false, "codexPath": "<file>",
+    "baselineCheck": false, "baselineReuse": { "maxAgeMs": 3600000 },
+    "codexPath": "<file>",
     "checkTimeoutMs": 900000, "agentTimeoutMs": 1800000,
     "commit": { "authorName": "...", "authorEmail": "...",
                 "messageTemplate": "...", "publishSquashed": false },
@@ -126,6 +127,11 @@ Repository config: factory.json at the repository root, or --config <file>:
   task, the spec and the repair notes.
   "baselineCheck": true runs "check" once on the base commit before any
   agent call and stops the run (baseline-check-failed) when it fails.
+  "baselineReuse" (with "baselineCheck") uses another run's passing baseline
+  of at most maxAgeMs ms in this state database instead of running "check",
+  when the repository, base commit, check, setup, checkTimeoutMs, Node.js
+  version, platform, architecture and check executable all match. Setup and
+  the clean-worktree checks still run.
   "codexPath" names the Codex CLI to launch, relative to the config file;
   without it, the bundled CLI first, then codex on PATH.
   "commit" sets the author (name and email) of every factory commit and a

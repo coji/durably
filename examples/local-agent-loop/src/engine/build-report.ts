@@ -1,10 +1,12 @@
 /** Assemble a LoopReport from persisted Durably data for one run. */
 import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
 
 import type { AnyDurably } from '@coji/durably'
 
 import { REPAIR_OF_LABEL, triageThatRuns } from '../factory/repair.js'
 import {
+  BASELINE_STEP,
   REPAIR_SESSION_STEP,
   type RepairSessionRecord,
 } from '../factory/types.js'
@@ -387,17 +389,86 @@ function toReportCandidate({
   return { id, branch, commit, changes }
 }
 
+/** A reused result's source, when the stored record names one. */
+function reusedSource(
+  value: unknown,
+): { runId: string; checkedAt: string; recovered: boolean } | null {
+  const v = value as {
+    runId?: unknown
+    checkedAt?: unknown
+    recovered?: unknown
+  } | null
+  return v && typeof v.runId === 'string' && typeof v.checkedAt === 'string'
+    ? {
+        runId: v.runId,
+        checkedAt: v.checkedAt,
+        recovered: v.recovered === true,
+      }
+    : null
+}
+
+/**
+ * Whether a run read its baseline verdict back from its checkpoint: any
+ * baseline attempt recovered it. A reused result copies its source's.
+ */
+export function baselineRecoveredOf(rows: AttemptRow[]): boolean {
+  return rows.some(
+    (r) =>
+      r.stepName === BASELINE_STEP &&
+      r.measurement?.result === 'checkpoint-recovered',
+  )
+}
+
+/**
+ * A completed baseline step's output as the report shows it when the result
+ * was reused, or null for any other output. It cites the source run's log
+ * only while both files are on disk, so it is worked out on every read.
+ */
+export function reusedBaselineOf(output: unknown): ReportBaseline | null {
+  const verdict = output as {
+    passed?: unknown
+    exitCode?: unknown
+    log?: VerificationLog | null
+    source?: unknown
+    reusedFrom?: unknown
+  } | null
+  if (!verdict || typeof verdict.passed !== 'boolean') return null
+  const from =
+    verdict.source === 'reused' ? reusedSource(verdict.reusedFrom) : null
+  if (!from) return null
+  const log = verdict.log ?? null
+  const gone = log
+    ? [log.stdoutPath, log.stderrPath].find((path) => !existsSync(path))
+    : undefined
+  return {
+    passed: verdict.passed,
+    exitCode: typeof verdict.exitCode === 'number' ? verdict.exitCode : null,
+    log: log && !gone ? log : null,
+    recovered: from.recovered,
+    reusedFrom: { runId: from.runId, checkedAt: from.checkedAt },
+    logMissing: !log
+      ? `run ${from.runId} recorded no log`
+      : gone
+        ? `the log of run ${from.runId} is no longer at ${gone}`
+        : null,
+  }
+}
+
 /**
  * The base-commit check: the completed step's verdict and the log it cites,
- * or, while no attempt has finished, the last attempt's log without one.
+ * or, while no attempt has finished, the last attempt's log without one. A
+ * reused result names the run it came from and cites that run's log while
+ * the log is still on disk.
  */
 function baselineOf(
   steps: StoredStep[],
   rows: AttemptRow[],
 ): ReportBaseline | null {
-  const attempts = rows.filter((r) => r.stepName === 'baseline')
-  const done = steps.find((s) => s.name === 'baseline')
+  const attempts = rows.filter((r) => r.stepName === BASELINE_STEP)
+  const done = steps.find((s) => s.name === BASELINE_STEP)
   const output = done?.status === 'completed' ? done.output : null
+  const reused = reusedBaselineOf(output)
+  if (reused) return reused
   const verdict = output as {
     passed?: unknown
     exitCode?: unknown
@@ -408,9 +479,9 @@ function baselineOf(
       passed: verdict.passed,
       exitCode: typeof verdict.exitCode === 'number' ? verdict.exitCode : null,
       log: verdict.log ?? null,
-      recovered: attempts.some(
-        (a) => a.measurement?.result === 'checkpoint-recovered',
-      ),
+      recovered: baselineRecoveredOf(attempts),
+      reusedFrom: null,
+      logMissing: null,
     }
   if (attempts.length === 0) return null
   return {
@@ -418,6 +489,8 @@ function baselineOf(
     exitCode: null,
     log: attempts.at(-1)?.measurement?.verificationLog ?? null,
     recovered: false,
+    reusedFrom: null,
+    logMissing: null,
   }
 }
 

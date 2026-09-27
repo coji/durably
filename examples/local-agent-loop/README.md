@@ -192,8 +192,8 @@ pnpm --filter example-local-agent-loop demo status
   直下の `factory.json` を消した場合は、設定なしのtriggerと同じに扱います。
   `--config` で渡したファイル（パスが直下の `factory.json` でも）が無くなって
   いれば、設定なしとはみなさずエラーにします。
-  profile、`check`、`setup`、`base`、`codexPath`、timeout、`baselineCheck` は
-  `trigger` と同じ規則で解決・検証し、trigger時の `--check`、`--setup`、`--base`
+  profile、`check`、`setup`、`base`、`codexPath`、timeout、`baselineCheck`、
+  `baselineReuse` は `trigger` と同じ規則で解決・検証し、trigger時の `--check`、`--setup`、`--base`
   は引き続き設定より優先します。そのrunでは、次の手順の注記にもそう表示します。
   これらを変えるときは `trigger` からやり直します。同梱の題材のrunと
   外部の指摘からの修正run（`demo repair`）は `factory.json` を読まないので、
@@ -502,6 +502,73 @@ PRに進むのが安全です。
   ファイルは残ります。消したあとも対象外の未追跡ファイルが残っていれば、
   `baseline-check-failed` で止めます。
 
+### baseの採点結果を使い回す（baselineReuse）
+
+同じリポジトリの同じbase commitから続けてrunを始めると、runごとに数分かかる
+baseの採点を繰り返します。`baselineCheck` と一緒に `baselineReuse` を書くと、
+条件が同じで期限内の、ほかのrunの成功した結果を使い、採点を省きます。
+
+```json
+{
+  "baselineCheck": true,
+  "baselineReuse": { "maxAgeMs": 3600000 }
+}
+```
+
+- `maxAgeMs` はミリ秒の正の整数で、上限は7日分のミリ秒です。索引の記録は
+  7日より古くなると消えるため、上限もそれに合わせています。0、負の数、
+  小数、7日を超える値は `trigger` が拒否します。省略すると使い回しは
+  しません。`baselineCheck` がオフのrunでは読みません。
+- 使い回すのは、同じstate DBにある、ほかのrunのbaselineで、そのrun自身が採点して
+  成功した結果だけです。失敗した結果、終わっていない結果、別の結果を使い回した
+  結果、この機能より前の形式の結果は使いません。
+- 次の値がすべて一致する結果だけを使います。リポジトリのルート（シンボリック
+  リンクを解決したpath）、base commit、`check` と `setup` のargv、
+  `checkTimeoutMs`、Node.jsの版、OSのplatform、architecture、`check` の先頭の
+  コマンドが実際に起動するファイル（PATHから探し、シンボリックリンクを解決した
+  path。worktreeの中のファイルはworktreeからの相対path）。起動するファイルは
+  `spawn` と同じ順で探します。PATHの空の要素はworktreeを指します。PATHが
+  未設定のときとWindowsでは分からないものとします。どれかが分からない
+  runは、結果を使わず、ほかのrunに使わせる結果も残しません。
+- これらの値はsetupで一度だけ求めて記録します。setupとbaselineの間でworkerが
+  再起動し、Node.jsやPATHが変わっても、setupで記録した値で照合します。
+- 比べるのはこれだけです。依存パッケージの中身、環境変数、`check` が内部で
+  呼ぶほかのコマンド、ignore対象のファイル（`node_modules` など）は比べません。
+  これらが変わったときは、`baselineReuse` を外すか、期限を短くします。
+- 採点して成功したrunは、state rootの `baseline-index/<条件のSHA-256>/<run ID>.json`
+  に、run IDと採点の完了時刻を書きます。runごとに自分のファイルだけを書き、
+  ほかのrunのファイルは上書きしません。同時に書くrunがあっても、書く操作自体が
+  互いの記録を消すことはありません。
+- 使い回しを判断するときは、条件のディレクトリを1つ読みます。読めない記録と
+  期限切れの記録を除き、残りを新しい順に試します。書かれたrunのbaselineを
+  state DBから読み直し、採点して成功した結果であることと条件の一致を確かめ、最初に通ったものを
+  使います。どれも通らなければ、通常どおり採点します。読むのはその条件の記録
+  だけで、過去のrunを全部は読みません。
+- 自分の記録を書いたあと、その条件の記録のうち `checkedAt` が7日より古いものと
+  読めないものを消します。それより新しい記録は消さないので、同時に書いたrunの
+  記録も残ります。ほかのrunが同時に消していても失敗にしません。`maxAgeMs` の
+  上限は7日なので、期限内の記録が整理で消えることはありません。
+- 期限は、元のrunで採点が完了した時刻（checkpointの記録）から、このrunが
+  使い回しを判断する時刻までで測ります。元のrunが再開後にbaselineを保存して
+  いても、再開の時刻からは測りません。時計の変更は扱いません。起きても、
+  採点が1回増えるか、このマシンの時計で判断した結果を使うだけです。
+- 使い回すときも、setupは毎回実行し、新しいworktreeを作ります。setupの直後の
+  未追跡ファイルの確認も省きません。採点を省く前に、worktreeがbase commitに
+  あること、tracked fileに変更がないこと、`.gitignore` の対象外の未追跡ファイル
+  がないことを確かめ、満たさなければ通常の `baseline-check-failed` で止めます。
+- 使い回しの判断はbaselineの結果として記録します。worker再開時は記録を読み戻し、
+  候補を探し直しません。このrunで採点を始めたあとに再開した場合は、使い回さずに
+  採点をやり直します。
+- 使い回した結果には、ログをコピーせず、元のrunのログのpathを記録します。元の
+  ログが消えていれば、reportのlogは `null` になり、理由を出します。
+  checkpointから読み戻したかどうかの表示は、元のrunの記録に従います。
+- reportのJSON（`baseline.reusedFrom` に元の `runId` と採点の完了時刻
+  `checkedAt`）とMarkdown（「Baseline check」節の `source`）、web UIの
+  「工程ごとの時間」のベースの検証の行に、使い回したかどうかと、使い回した
+  ときの元のrunと時刻を出します。
+- 運用のための最適化で、エージェントに見せるものも採点の基準も変えないので、
+  `configVersion` には入りません。
+
 ### 設定の事前確認（preflight）
 
 baselineの後、triageを含む最初のエージェント呼び出しの前に、全役割
@@ -550,7 +617,7 @@ PATHの `codex` を使います。CLIのpathと版はreportの「Versions」と�
 保存します。実際に使うmodelとeffortは、workerがそのrequested設定からproviderの
 presetで解決します。workerは元のファイルを読み直さないので、trigger後にファイルを
 書き換えても、そのrunの設定とpromptは変わりません。timeout、`codexPath`、
-`baselineCheck`、`commit` も同じく解決済みの値をrun inputに保存します。reportには各入力ファイルの
+`baselineCheck`、`baselineReuse`、`commit` も同じく解決済みの値をrun inputに保存します。reportには各入力ファイルの
 pathと、保存した本文から計算したSHA-256が出ます。設定を直した後に同じtaskで
 やり直すには、`demo retrigger --run <id> --reload-config` を使います（上の
 「止まったrunと次の手順を見る」を参照）。
@@ -946,7 +1013,8 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   使いません。反復のブランチはissueの有無にかかわらず `factory/<子の runId>`、
   squashedブランチは `factory/<子の runId>-squashed` で、差分、patch、squashed
   commitの親はすべて親の候補commitです。
-- 子runでもsetup、preflight、設定していればbaselineCheckを実行します。triageと
+- 子runでもsetup、preflight、設定していればbaselineCheckを実行します。
+  `baselineReuse` も親の設定を引き継ぎます。triageと
   初回実装は行わず（triage profileは記録するだけで、呼び出しも事前確認も、CLIの
   確認もしません）、最初のcode工程を `repair` の1回目として新しいsessionで始め
   ます。`profiles.repair` があればそれを使います。そのあとは通常どおり検証、

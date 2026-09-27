@@ -165,14 +165,25 @@ function withDatabase(
   maxConcurrentRuns?: number,
 ) {
   const dialect = new SqliteDialect({ database })
-  const durably = createDurably({
+  const base = createDurably({
     dialect,
     pollingIntervalMs: 500,
     leaseRenewIntervalMs: 1000,
     leaseMs: 10000,
     preserveSteps: true,
     ...(maxConcurrentRuns ? { maxConcurrentRuns } : {}),
-    jobs: { agentLoop: createAgentLoopJob({ stateRoot }) },
+  })
+  // A baseline reuse decision reads the one run the reuse index names from
+  // this same database.
+  const durably = base.register({
+    agentLoop: createAgentLoopJob({
+      stateRoot,
+      baselineStore: {
+        getCompletedStep: (runId, name) =>
+          base.storage.getCompletedStep(runId, name),
+        getStepAttempts: (runId) => base.getStepAttempts(runId),
+      },
+    }),
   })
   // The worker removes a run's review snapshots itself: after each review
   // round, before every other stage, when the run fails, is cancelled or

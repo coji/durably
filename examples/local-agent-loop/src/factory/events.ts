@@ -51,28 +51,14 @@ export const deliverySchema = z.object({
   squashedCommit: z.string().nullable().default(null),
 })
 
-const findingSchema = z.object({
-  severity: z.enum(['blocker', 'non-blocker']),
-  title: z.string(),
-  body: z.string(),
-  file: z.string().optional(),
-  line: z.number().optional(),
-})
-
-/** A `findings-json` review's findings, as the report keeps them. */
-const findingsSchema = z.object({
-  blocker: z.array(findingSchema),
-  nonBlocker: z.array(findingSchema),
-  counts: z.object({ blocker: z.number(), nonBlocker: z.number() }),
-})
-
 const reviewSchema = z.object({
   lens: z.enum(['correctness', 'edge-cases']),
   decision: z.enum(['pass', 'needsChanges']),
   notes: z.string(),
-  // Optional so a review recorded before findings were kept still parses;
-  // null for a verdict review.
-  findings: findingsSchema.nullable().optional(),
+  // No findings: a review step returns them with its verdict, and parsing
+  // strips them here, so the state, the approval wait's metadata and the
+  // run output keep the verdicts only. The report reads the findings from
+  // the review steps.
 })
 
 export const FactoryEventSchema = z.discriminatedUnion('type', [

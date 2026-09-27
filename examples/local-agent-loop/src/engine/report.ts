@@ -432,10 +432,25 @@ export interface ReportBaseline {
   passed: boolean | null
   /** Null when the check was killed before it exited (a timeout). */
   exitCode: number | null
-  /** Full output of the attempt behind the verdict, or of the last attempt. */
+  /**
+   * Full output of the attempt behind the verdict, or of the last attempt.
+   * A reused result points at the run it came from; null when that run's
+   * log is gone, with the reason in `logMissing`.
+   */
   log: VerificationLog | null
-  /** The verdict was read back from its checkpoint on a resume. */
+  /**
+   * The verdict was read back from its checkpoint on a resume; for a reused
+   * result, as the run it came from recorded it.
+   */
   recovered: boolean
+  /**
+   * Set when this run used another run's passing result instead of running
+   * the check: that run and when its check completed. Null when the check
+   * ran here, or on a record from before results could be reused.
+   */
+  reusedFrom: { runId: string; checkedAt: string } | null
+  /** Why a reused result has no log; null otherwise. */
+  logMissing: string | null
 }
 
 /** One distinct provider, model and effort, checked once for its roles. */
@@ -1084,7 +1099,14 @@ export function reportToMarkdown(r: LoopReport): string {
       lines.push(`- stdout: ${b.log.stdoutPath}`)
       lines.push(`- stderr: ${b.log.stderrPath}`)
       if (b.log.writeError) lines.push(`- log write error: ${b.log.writeError}`)
+    } else if (b.logMissing) {
+      lines.push(`- log: none (${b.logMissing})`)
     }
+    if (b.reusedFrom)
+      lines.push(
+        `- source: reused from run ${b.reusedFrom.runId}, checked at ${b.reusedFrom.checkedAt}; the check did not run in this run`,
+      )
+    else if (b.passed !== null) lines.push('- source: measured in this run')
   } else {
     lines.push('- none (baselineCheck is off, or the run has not reached it)')
   }

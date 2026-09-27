@@ -35,6 +35,7 @@ import {
   buildReport,
   repairChildren,
   repairChildrenByParent,
+  reusedBaselineOf,
   type ReportSource,
 } from '../engine/build-report.js'
 import { compareReports, type Comparison } from '../engine/compare.js'
@@ -62,6 +63,7 @@ import {
   type DiagnosisKind,
 } from '../engine/status.js'
 import { TERMINAL_STATUSES } from '../engine/terminal.js'
+import { BASELINE_STEP } from '../factory/types.js'
 import { lensName, stageName, stepPartName } from './labels.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -128,6 +130,12 @@ export interface RunDetailResponse {
   live: LiveElapsed | null
   pipeline: Pipeline
   relations: Relations
+  /**
+   * The run whose passing baseline check this run reused, named as other
+   * run links are; null when the baseline check ran here or has not
+   * reached it.
+   */
+  baselineSource: RunRef | null
   /** The run as a span tree on one time axis, as of `now`. */
   trace: Trace
   /** Exactly what `report --run <id> --format json` prints. */
@@ -935,9 +943,11 @@ export function readOnce(db: ReportSource, known: Run[] = []): ReportSource {
 
 /**
  * Reports by run. A finished run's row never changes again, so its report is
- * built once and reused while the row is unchanged. Only a failed or
- * cancelled run's `failure` can still change, because it also reads
- * checkpoint files, so a reused report gets that one field classified again.
+ * built once and reused while the row is unchanged. Only two fields read
+ * files that can still change: a failed or cancelled run's `failure` reads
+ * checkpoint files, so a reused report gets it classified again, and a
+ * reused baseline cites another run's log, so it is worked out again from
+ * the stored step to say whether that log is still there.
  * Its repair children can also be added after it finished, so a reused
  * report always gets them again: from `children` when the caller worked them
  * out from the runs it read, otherwise with one label query. Open runs are
@@ -961,10 +971,16 @@ export function finishedReportCache(build = buildReport) {
           parent: hit.report.lineage?.parent ?? null,
           children: children ?? (await repairChildren(src, run)),
         }
-        if (run.status === 'completed')
-          return { report: { ...hit.report, lineage }, fresh: false }
+        const baseline = hit.report.baseline?.reusedFrom
+          ? (reusedBaselineOf(
+              (await src.storage.getCompletedStep(run.id, BASELINE_STEP))
+                ?.output,
+            ) ?? hit.report.baseline)
+          : hit.report.baseline
+        const cached = { ...hit.report, lineage, baseline }
+        if (run.status === 'completed') return { report: cached, fresh: false }
         const failure = await classifyRun(src, run)
-        return { report: { ...hit.report, lineage, failure }, fresh: true }
+        return { report: { ...cached, failure }, fresh: true }
       }
       const report = await build(src, run.id, children ? { children } : {})
       if (TERMINAL_STATUSES.includes(run.status))
@@ -1000,19 +1016,39 @@ export async function listedReports(
   )
 }
 
+/** A run named from its stored input, or `fallback` when its row is gone. */
+async function runRef(
+  src: ReportSource,
+  id: string,
+  fallback: string,
+): Promise<RunRef> {
+  const run = await src.getRun(id)
+  return { id, name: run ? runName(run.input) : fallback }
+}
+
 /** Name the report's parent and children, from their stored inputs. */
 async function relationsOf(
   src: ReportSource,
   lineage: LoopReport['lineage'] | undefined,
 ): Promise<Relations> {
-  const ref = async (id: string): Promise<RunRef> => {
-    const run = await src.getRun(id)
-    return { id, name: run ? runName(run.input) : '見つからない実行' }
-  }
+  const ref = (id: string) => runRef(src, id, '見つからない実行')
   return {
     parent: lineage?.parent ? await ref(lineage.parent.runId) : null,
     children: await Promise.all((lineage?.children ?? []).map(ref)),
   }
+}
+
+/**
+ * The run whose passing baseline check this run reused, named the same way
+ * as repair lineage links. Falls back to a generic label only when that
+ * run's row no longer exists.
+ */
+async function baselineSourceOf(
+  src: ReportSource,
+  baseline: LoopReport['baseline'],
+): Promise<RunRef | null> {
+  const runId = baseline?.reusedFrom?.runId
+  return runId ? runRef(src, runId, '前の実行') : null
 }
 
 /** What both the list row and the detail page read for one run. */
@@ -1111,9 +1147,10 @@ function createUiApi() {
     if (!db || !found) throw new HttpError(404, `no run ${id}`)
     const src = readOnce(db, [found])
     const { report, fresh } = await reports.get(src, found)
-    const [seen, steps] = await Promise.all([
+    const [seen, steps, baselineSource] = await Promise.all([
       inspect(src, found, now, report, fresh),
       src.storage.getSteps(id),
+      baselineSourceOf(src, report.baseline),
     ])
     const stepOutputs: Record<string, unknown> = {}
     for (const s of steps)
@@ -1121,6 +1158,7 @@ function createUiApi() {
     return {
       now: new Date(now).toISOString(),
       ...seen,
+      baselineSource,
       trace: deriveTrace({
         run: found,
         diagnosisKind: seen.diagnosis.kind,

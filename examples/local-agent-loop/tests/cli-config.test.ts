@@ -20,6 +20,8 @@ import { createAgentDurably, dbPath } from '../src/durably.js'
 import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
+import { BASELINE_INDEX_PRUNE_AGE_MS } from '../src/factory/baseline-reuse.js'
+import { baselineMaxAgeMsSchema } from '../src/factory/job.js'
 import {
   codePrompt,
   reviewPrompt,
@@ -159,6 +161,7 @@ type RunInput = {
     setupCommand: string[] | null
     inputFiles: Record<string, { path: string } | null>
     baselineCheck?: boolean
+    baselineReuse?: { maxAgeMs: number } | null
     commit?: {
       authorName: string | null
       authorEmail: string | null
@@ -1068,6 +1071,93 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
       )
     }
   })
+
+  it('fixes baselineReuse at trigger, refuses a bad maxAgeMs, and reloads it', async () => {
+    const box = await sandbox({
+      check: CHECK,
+      baselineCheck: true,
+      baselineReuse: { maxAgeMs: 3_600_000 },
+    })
+    const runId = await trigger(box, ['--repo', box.repo, '--task', 'x'])
+    const input = await inputOf(box, runId)
+    assert.deepEqual(input.target.baselineReuse, { maxAgeMs: 3_600_000 })
+
+    // Left out: none, so every baseline check runs.
+    const plain = await sandbox({ check: CHECK, baselineCheck: true })
+    const plainInput = await inputOf(
+      plain,
+      await trigger(plain, ['--repo', plain.repo, '--task', 'x']),
+    )
+    assert.equal(plainInput.target.baselineReuse, null)
+
+    // Zero, a sign, a fraction, past the pruning horizon (7 days), Infinity
+    // (`1e400` in JSON) and a missing value are refused before the run.
+    for (const raw of [
+      '0',
+      '-1',
+      '1.5',
+      String(BASELINE_INDEX_PRUNE_AGE_MS + 1),
+      '1e400',
+      'null',
+    ]) {
+      const bad = await sandbox()
+      await writeFile(
+        join(bad.repo, 'factory.json'),
+        `{"check":${JSON.stringify(CHECK)},"baselineCheck":true,"baselineReuse":{"maxAgeMs":${raw}}}`,
+      )
+      await rejected(
+        bad,
+        ['--repo', bad.repo, '--task', 'x'],
+        /invalid factory config[\s\S]*maxAgeMs/,
+      )
+    }
+    // NaN and Infinity cannot be written in JSON; a direct trigger's input
+    // is held to the same schema.
+    for (const value of [
+      0,
+      -1,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      BASELINE_INDEX_PRUNE_AGE_MS + 1,
+    ])
+      assert.equal(baselineMaxAgeMsSchema.safeParse(value).success, false)
+    // Exactly the pruning horizon (7 days) is accepted; one millisecond more
+    // is refused, since an index entry that old is pruned before it could
+    // ever be reused.
+    assert.equal(
+      baselineMaxAgeMsSchema.safeParse(BASELINE_INDEX_PRUNE_AGE_MS).success,
+      true,
+    )
+    assert.equal(
+      baselineMaxAgeMsSchema.safeParse(BASELINE_INDEX_PRUNE_AGE_MS + 1).success,
+      false,
+    )
+
+    // A reload reads the value the file has now, and its absence.
+    await writeFile(
+      join(box.repo, 'factory.json'),
+      JSON.stringify({
+        check: CHECK,
+        baselineCheck: true,
+        baselineReuse: { maxAgeMs: 60_000 },
+      }),
+    )
+    const reuseOf = (t: { kind: string }) =>
+      'baselineReuse' in t ? t.baselineReuse : undefined
+    const reloaded = await reloadTriggerInput(
+      input as unknown as Parameters<typeof reloadTriggerInput>[0],
+    )
+    assert.deepEqual(reuseOf(reloaded.input.target), { maxAgeMs: 60_000 })
+    await writeFile(
+      join(box.repo, 'factory.json'),
+      JSON.stringify({ check: CHECK, baselineCheck: true }),
+    )
+    const dropped = await reloadTriggerInput(
+      input as unknown as Parameters<typeof reloadTriggerInput>[0],
+    )
+    assert.equal(reuseOf(dropped.input.target), null)
+  })
 })
 
 describe('retrigger --reload-config', { timeout: 240000 }, () => {
@@ -1604,7 +1694,12 @@ describe('repair', { timeout: 240000 }, () => {
       input: {
         provider: 'fake',
         codexPath: '/stored/codex',
-        target: { kind: 'repo', baselineCheck: true, commit: storedCommit },
+        target: {
+          kind: 'repo',
+          baselineCheck: true,
+          baselineReuse: { maxAgeMs: 7000 },
+          commit: storedCommit,
+        },
       },
       output: {
         approved: true,
@@ -1627,6 +1722,7 @@ describe('repair', { timeout: 240000 }, () => {
       triage: profile('triage'),
       codexPath: null,
       baselineCheck: false,
+      baselineReuse: null,
       target: {
         kind: 'repo',
         repoPath: '/repo',
@@ -1648,10 +1744,26 @@ describe('repair', { timeout: 240000 }, () => {
     const { input } = buildRepairInput(parent, setup, files)
     assert.equal(input.codexPath, null)
     assert.equal(input.target.baselineCheck, false)
+    assert.equal(input.target.baselineReuse, null)
+    // The parent's reuse setting as its setup recorded it.
+    assert.deepEqual(
+      buildRepairInput(
+        parent,
+        { ...setup, baselineCheck: true, baselineReuse: { maxAgeMs: 5000 } },
+        files,
+      ).input.target.baselineReuse,
+      { maxAgeMs: 5000 },
+    )
     assert.deepEqual(input.target.commit, setup.target.commit)
     assert.deepEqual(input.repairOf.profiles.triage, setup.triage)
     // A setup from before a value existed takes it from the stored input.
-    const { codexPath: _c, baselineCheck: _b, triage: _t, ...older } = setup
+    const {
+      codexPath: _c,
+      baselineCheck: _b,
+      baselineReuse: _r,
+      triage: _t,
+      ...older
+    } = setup
     const { commit: _m, ...olderTarget } = setup.target
     const fallback = buildRepairInput(
       parent,
@@ -1660,6 +1772,7 @@ describe('repair', { timeout: 240000 }, () => {
     ).input
     assert.equal(fallback.codexPath, '/stored/codex')
     assert.equal(fallback.target.baselineCheck, true)
+    assert.deepEqual(fallback.target.baselineReuse, { maxAgeMs: 7000 })
     assert.deepEqual(fallback.target.commit, storedCommit)
     assert.equal(fallback.repairOf.profiles.triage, null)
   })

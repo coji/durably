@@ -14,6 +14,7 @@ import { repoRoot } from './engine/git.js'
 import { parseProviderName } from './engine/providers/index.js'
 import {
   assertSingleMode,
+  baselineReuseSchema,
   fixProfile,
   fixReviewInvocations,
   type AgentLoopInput,
@@ -32,6 +33,7 @@ import {
 import {
   REVIEW_CONTEXTS,
   REVIEW_OUTPUTS,
+  type BaselineReuse,
   type FactorySetup,
   type ProfileRole,
   type ReviewInvocation,
@@ -125,6 +127,11 @@ const factoryConfigSchema = z
       .optional(),
     /** Run `check` once on the base commit before any agent call. */
     baselineCheck: z.boolean().optional(),
+    /**
+     * With `baselineCheck`, use another run's passing baseline result of at
+     * most `maxAgeMs` milliseconds instead of running the check.
+     */
+    baselineReuse: baselineReuseSchema.optional(),
     /** The Codex CLI file to launch; relative to this file's directory. */
     codexPath: z.string().min(1).optional(),
     /** Milliseconds; win over `TEST_TIMEOUT_MS` / `AGENT_TIMEOUT_MS`. */
@@ -370,6 +377,7 @@ async function repoSettings(
       setupCommand:
         setupCommand && setupCommand.length > 0 ? setupCommand : null,
       baselineCheck: config?.baselineCheck ?? false,
+      baselineReuse: config?.baselineReuse ?? null,
       // Fixed here with every default filled in, so the run never reads
       // factory.json again and a reload reads it afresh.
       commit: {
@@ -684,6 +692,7 @@ interface StoredRepairInput {
     }
     commit?: CommitSettings
     baselineCheck?: boolean
+    baselineReuse?: BaselineReuse | null
   }
 }
 
@@ -816,6 +825,11 @@ export function buildRepairInput(
         stored,
         'baselineCheck',
         () => parentInput.target?.baselineCheck ?? false,
+      ),
+      baselineReuse: recorded(
+        stored,
+        'baselineReuse',
+        () => parentInput.target?.baselineReuse ?? null,
       ),
     },
     autoApprove: stored.autoApprove,

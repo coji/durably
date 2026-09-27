@@ -212,4 +212,65 @@ describe('factory reducer and policy', () => {
       assert.equal(event.outcome.delivery?.commit, null)
     }
   })
+
+  it('keeps review findings out of the state and the run outcome', () => {
+    const findings = {
+      blocker: [{ severity: 'blocker', title: 'broken', body: 'fix it' }],
+      nonBlocker: [],
+      counts: { blocker: 1, nonBlocker: 0 },
+    }
+    let state = reduce(initialState(setup), {
+      type: 'code.completed',
+      role: 'implement',
+      candidate,
+      session: null,
+    })
+    // What a findings-json review step returns, verdict and findings both.
+    state = reduce(
+      state,
+      FactoryEventSchema.parse({
+        type: 'review.completed',
+        targetId: candidate.id,
+        reviews: [
+          {
+            lens: 'correctness',
+            decision: 'needsChanges',
+            notes: 'broken',
+            findings,
+          },
+          { lens: 'edge-cases', decision: 'pass', notes: 'ok', findings: null },
+        ],
+      }),
+    )
+    // The approval wait's metadata is `state.reviews`, as is the outcome.
+    assert.deepEqual(state.reviews, [
+      { lens: 'correctness', decision: 'needsChanges', notes: 'broken' },
+      { lens: 'edge-cases', decision: 'pass', notes: 'ok' },
+    ])
+    const finished = FactoryEventSchema.parse({
+      type: 'factory.finished',
+      outcome: {
+        approved: false,
+        conclusion: 'review-cap-reached',
+        candidate,
+        iterations: 1,
+        reviewRounds: 1,
+        reviews: [
+          {
+            lens: 'correctness',
+            decision: 'needsChanges',
+            notes: 'broken',
+            findings,
+          },
+        ],
+        workdir: '/tmp/work',
+        fake: true,
+        delivery: null,
+      },
+    })
+    const outcome = reduce(state, finished).outcome
+    assert.deepEqual(outcome?.reviews, [
+      { lens: 'correctness', decision: 'needsChanges', notes: 'broken' },
+    ])
+  })
 })
