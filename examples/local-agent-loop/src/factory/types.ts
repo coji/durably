@@ -260,8 +260,13 @@ export function separateRepairProfile(
 /** Claude Code builds that keep the prompt cache when a session resumes at another effort. */
 export const EFFORT_RESUME_MIN_CLAUDE_CLI = [2, 1, 260] as const
 
-/** Models whose cache Claude Code keeps across an effort change. */
-const EFFORT_RESUME_MODELS = /^claude-(opus-5-5|fable-5-1)(?![0-9])/i
+/**
+ * Models whose cache Claude Code keeps across an effort change: Opus 5.5 or
+ * Fable 5.1, each with an optional `-YYYYMMDD` date suffix and an optional
+ * `[1m]` context suffix that Claude Code reports. Anchored to the whole
+ * effective model string so no other name matches.
+ */
+const EFFORT_RESUME_MODELS = /^claude-(opus-5-5|fable-5-1)(-\d{8})?(\[1m\])?$/i
 
 /**
  * Environment variables that route Claude Code through Bedrock or Vertex,

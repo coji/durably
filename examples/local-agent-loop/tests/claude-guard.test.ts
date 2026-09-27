@@ -568,6 +568,23 @@ describe('whether a repair continues the session across an effort change', () =>
     assert.equal(decide({ claudeCliVersion: '3.0.0' }).resume, true)
   })
 
+  it('continues with an optional date suffix or the [1m] context suffix', () => {
+    assert.equal(
+      decide({
+        code: claude('low', 'claude-opus-5-5[1m]'),
+        repair: claude('high', 'claude-opus-5-5[1m]'),
+      }).resume,
+      true,
+    )
+    assert.equal(
+      decide({
+        code: claude('low', 'claude-fable-5-1-20260901'),
+        repair: claude('high', 'claude-fable-5-1-20260901'),
+      }).resume,
+      true,
+    )
+  })
+
   it('starts new for fresh context, another provider or model, or the same effort', () => {
     assert.match(decide({ contextMode: 'fresh' }).reason, /context is fresh/)
     assert.equal(decide({ contextMode: 'fresh' }).resume, false)
@@ -627,6 +644,8 @@ describe('whether a repair continues the session across an effort change', () =>
       'claude-sonnet-5',
       'claude-opus-5',
       'claude-opus-5-50',
+      'claude-opus-5-5x',
+      'claude-opus-5-5-foo',
     ])
       assert.equal(
         decide({ code: claude('medium', model), repair: claude('high', model) })

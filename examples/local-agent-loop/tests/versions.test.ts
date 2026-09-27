@@ -528,6 +528,38 @@ describe('the repair session policy in the config version', () => {
     )
   })
 
+  it('keeps the pre-policy version for an unlisted model name', () => {
+    // `claude-opus-5-5x` is not Opus 5.5 or Fable 5.1: same effective model
+    // on both sides, different efforts, so the decision never resumes and
+    // never carries the policy into the version.
+    const unlistedCode = claude('claude-opus-5-5x', 'medium')
+    const unlistedRepair = claude('claude-opus-5-5x', 'high')
+    const decision = repairSessionDecision({
+      contextMode: 'reuse',
+      code: unlistedCode,
+      repair: unlistedRepair,
+      claudeCliVersion: base.cli.claudeCli,
+      env: {},
+      fakeEffortResume: false,
+    })
+    assert.equal(decision.resume, false)
+    const withUnlisted = () =>
+      configVersionOf({
+        ...base,
+        code: unlistedCode,
+        repair: unlistedRepair,
+        repairSession: decision.resume ? EFFORT_RESUME_POLICY : null,
+      })
+    const withoutPolicy = () =>
+      configVersionOf({
+        ...base,
+        code: unlistedCode,
+        repair: unlistedRepair,
+        repairSession: null,
+      })
+    assert.equal(withUnlisted(), withoutPolicy())
+  })
+
   it('changes for a repair that continues the session across an effort change', () => {
     const resumed = versionWith(claude('claude-opus-5-5', 'high'))
     assert.notEqual(resumed, '52239366cb61629f')
