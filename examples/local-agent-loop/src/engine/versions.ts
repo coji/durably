@@ -144,6 +144,12 @@ export interface ConfigVersionInput {
    * repair profiles existed.
    */
   repair?: ConfigVersionProfile | null
+  /**
+   * The repair session policy, only when a repair on its own profile
+   * continues the implementation session across an effort change. Left out
+   * otherwise, so every other run keeps the version it had before.
+   */
+  repairSession?: string | null
   correctness: ConfigVersionProfile
   edgeCases: ConfigVersionProfile
   /** Shadow triage; left out of the hash entirely when not configured. */
@@ -192,7 +198,8 @@ function canonicalProfile(p: ConfigVersionProfile): ConfigVersionProfile {
 /**
  * Stable hash of the fixed run configuration. Two runs share a config
  * version exactly when every role's provider, models and efforts (a repair
- * profile's only when it differs from code's), the context
+ * profile's only when it differs from code's, and whether that repair
+ * continues the implementation session across an effort change), the context
  * mode, iteration budget, instruction set, triage profile (when there is
  * one), the path and version of every real CLI launched, the commit
  * author and message template (when set), and each configured reviewer's
@@ -228,6 +235,7 @@ export function configVersionOf(input: ConfigVersionInput): string {
     checkTimeoutMs: input.checkTimeoutMs,
     code: canonicalProfile(input.code),
     ...(input.repair ? { repair: canonicalProfile(input.repair) } : {}),
+    ...(input.repairSession ? { repairSession: input.repairSession } : {}),
     correctness: canonicalProfile(input.correctness),
     edgeCases: canonicalProfile(input.edgeCases),
     // Only present when configured, so a run without triage keeps the version

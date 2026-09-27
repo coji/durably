@@ -6,11 +6,12 @@ import type {
   AgentProvider,
   VerificationLog,
 } from '../engine/providers/types.js'
-import type {
-  CandidateRef,
-  ContextMode,
-  ResolvedProfile,
-  SessionRef,
+import {
+  sessionModelOf,
+  type CandidateRef,
+  type ContextMode,
+  type ResolvedProfile,
+  type SessionRef,
 } from '../engine/types.js'
 import type { FactoryEvent } from './events.js'
 import type { Delivery, Target, TargetConfig } from './target.js'
@@ -95,9 +96,17 @@ export interface FactorySetup {
    * The repair profile the run named. Null or absent, or one that makes the
    * same call as `code` (see `executionKey`): repair runs on `code`,
    * continuing the implementation session in reuse mode, as before repair
-   * profiles existed. Otherwise every repair runs on it in a new session.
+   * profiles existed. Otherwise every repair runs on it, in a new session
+   * unless `repairSession` allows continuing across an effort change.
    */
   repair?: ResolvedProfile | null
+  /**
+   * Whether a repair on its own profile may continue the implementation
+   * session, decided once at setup by `repairSessionDecision` and fixed for
+   * the run. Set only when the repair profile differs from `code`; absent on
+   * a run set up before it existed, which starts every such repair new.
+   */
+  repairSession?: RepairSessionDecision | null
   /**
    * Optional shadow-triage profile. Its judgment is recorded only: no stage
    * or profile depends on it. A repair run records its parent's here and
@@ -247,6 +256,122 @@ export function separateRepairProfile(
   return repair && executionKey(repair) !== executionKey(setup.profiles.code)
     ? repair
     : null
+}
+
+/** Claude Code builds that keep the prompt cache when a session resumes at another effort. */
+export const EFFORT_RESUME_MIN_CLAUDE_CLI = [2, 1, 260] as const
+
+/** Models whose cache Claude Code keeps across an effort change. */
+const EFFORT_RESUME_MODELS = /^claude-(opus-5-5|fable-5-1)(?![0-9])/i
+
+/**
+ * Environment variables that route Claude Code through Bedrock or Vertex,
+ * or turn off its experimental betas. With any of them set, resuming at
+ * another effort is not known to keep the cache, so the repair starts new.
+ */
+export const EFFORT_RESUME_BLOCKING_ENV = [
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
+] as const
+
+/**
+ * Whether a repair on its own profile continues the implementation session.
+ * `resume` is true only when the repair differs from code in effort alone
+ * and the environment is known to keep the cache across that change.
+ */
+export interface RepairSessionDecision {
+  resume: boolean
+  /** Why, in one line, for the setup record. */
+  reason: string
+}
+
+/** The policy value a resuming decision adds to the config version. */
+export const EFFORT_RESUME_POLICY = 'resume-across-effort'
+
+export interface RepairSessionInput {
+  contextMode: ContextMode
+  code: Pick<
+    ResolvedProfile,
+    'provider' | 'requestedModel' | 'effectiveModel' | 'effectiveEffort'
+  >
+  repair: Pick<
+    ResolvedProfile,
+    'provider' | 'requestedModel' | 'effectiveModel' | 'effectiveEffort'
+  >
+  /** The Claude Code version `resolveVersions` recorded; null when unknown. */
+  claudeCliVersion: string | null
+  env: Readonly<Record<string, string | undefined>>
+  /**
+   * Tests only: the fake provider stands in for a Claude Code that keeps the
+   * cache across an effort change (`FakeScenario.claudeEffortResume`).
+   */
+  fakeEffortResume: boolean
+}
+
+/** `major.minor.patch` from a version line such as `2.1.280 (Claude Code)`. */
+export function parseCliVersion(
+  line: string | null,
+): [number, number, number] | null {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(line ?? '')
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
+}
+
+function atLeast(
+  version: readonly number[],
+  minimum: readonly number[],
+): boolean {
+  for (const [i, min] of minimum.entries()) {
+    const v = version[i] ?? 0
+    if (v !== min) return v > min
+  }
+  return true
+}
+
+const no = (reason: string): RepairSessionDecision => ({
+  resume: false,
+  reason,
+})
+
+/**
+ * Decide, from the settings and the environment alone, whether a repair on
+ * its own profile continues the implementation session. Anything that
+ * cannot be confirmed starts a new session.
+ */
+export function repairSessionDecision(
+  input: RepairSessionInput,
+): RepairSessionDecision {
+  const { code, repair } = input
+  if (input.contextMode !== 'reuse') return no('context is fresh')
+  if (repair.provider !== code.provider)
+    return no('repair runs on another provider')
+  if (sessionModelOf(repair) !== sessionModelOf(code))
+    return no('repair runs on another model')
+  if (repair.effectiveEffort === code.effectiveEffort)
+    return no('repair differs from code in more than effort')
+  if (code.provider === 'fake')
+    return input.fakeEffortResume
+      ? { resume: true, reason: 'fake provider standing in for Claude Code' }
+      : no('the fake provider does not change effort mid-session')
+  if (code.provider !== 'claude')
+    return no(`${code.provider} does not continue a session at another effort`)
+  const model = code.effectiveModel ?? ''
+  if (!EFFORT_RESUME_MODELS.test(model))
+    return no(`${model || 'the default model'} is not Opus 5.5 or Fable 5.1`)
+  const version = parseCliVersion(input.claudeCliVersion)
+  const minimum = EFFORT_RESUME_MIN_CLAUDE_CLI.join('.')
+  if (!version)
+    return no(`Claude Code version unknown; ${minimum} or later is needed`)
+  if (!atLeast(version, EFFORT_RESUME_MIN_CLAUDE_CLI))
+    return no(`Claude Code ${version.join('.')} is older than ${minimum}`)
+  const blocking = EFFORT_RESUME_BLOCKING_ENV.find((name) =>
+    Boolean(input.env[name]),
+  )
+  if (blocking) return no(`${blocking} is set`)
+  return {
+    resume: true,
+    reason: `Claude Code ${version.join('.')} on ${model} keeps the cache across an effort change`,
+  }
 }
 
 export interface FactoryServices {

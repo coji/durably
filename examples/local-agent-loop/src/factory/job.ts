@@ -22,7 +22,10 @@ import {
   FAKE_TRIAGE_KINDS,
   FakeRun,
 } from '../engine/providers/fake.js'
-import { createProvider } from '../engine/providers/index.js'
+import {
+  createProvider,
+  type ProviderOptions,
+} from '../engine/providers/index.js'
 import type {
   AgentProvider,
   AvailabilityCheck,
@@ -82,11 +85,13 @@ import {
   type TargetConfig,
 } from './target.js'
 import {
+  EFFORT_RESUME_POLICY,
   executionKey,
   initialState,
   REVIEW_CONTEXTS,
   REVIEW_LENSES,
   REVIEW_OUTPUTS,
+  repairSessionDecision,
   separateRepairProfile,
   usesReviewMaterials,
   type FactorySetup,
@@ -197,6 +202,7 @@ const fakeScenarioSchema = z
     usage: z.enum(['none', 'realistic']).optional(),
     summary: z.string().optional(),
     changes: z.record(z.string().min(1), z.string()).optional(),
+    claudeEffortResume: z.boolean().optional(),
   })
   .strict()
 
@@ -551,12 +557,15 @@ export type FixedProfile = Omit<ResolvedProfile, 'id'>
  * Throws for an unsupported effort, so a bad profile fails when the run is
  * triggered rather than part way through it.
  */
-export function fixProfile(request: {
-  provider: ProviderName
-  model: string | null
-  effort: string | null
-}): FixedProfile {
-  const resolved = createProvider(request.provider).resolveExecution({
+export function fixProfile(
+  request: {
+    provider: ProviderName
+    model: string | null
+    effort: string | null
+  },
+  options?: ProviderOptions,
+): FixedProfile {
+  const resolved = createProvider(request.provider, options).resolveExecution({
     requestedModel: request.model,
     requestedEffort: request.effort,
   })
@@ -858,6 +867,7 @@ function resolveInputProfiles(input: {
   provider: ProviderName
   model?: string | undefined
   effort?: string | undefined
+  fakeScenario?: z.infer<typeof fakeScenarioSchema> | undefined
   profiles?:
     | (Record<ProfileRole, RequestedProfile> & {
         triage?: RequestedProfile | undefined
@@ -869,21 +879,31 @@ function resolveInputProfiles(input: {
   triage: ResolvedProfile | null
   repair: ResolvedProfile | null
 } {
+  // A scenario can make the fake provider honour the requested effort.
+  const fake = input.fakeScenario
+    ? { run: new FakeRun(input.fakeScenario) }
+    : undefined
   const fixRequested = (requested: RequestedProfile) =>
-    fixProfile({
-      provider: requested.provider,
-      model: requested.requestedModel,
-      effort: requested.requestedEffort,
-    })
+    fixProfile(
+      {
+        provider: requested.provider,
+        model: requested.requestedModel,
+        effort: requested.requestedEffort,
+      },
+      fake,
+    )
   const fixed = byRole((role) => {
     const requested = input.profiles?.[role]
     return requested
       ? fixRequested(requested)
-      : fixProfile({
-          provider: input.provider,
-          model: input.model ?? null,
-          effort: input.effort ?? null,
-        })
+      : fixProfile(
+          {
+            provider: input.provider,
+            model: input.model ?? null,
+            effort: input.effort ?? null,
+          },
+          fake,
+        )
   })
   const requestedTriage = input.profiles?.triage
   const requestedRepair = input.profiles?.repair
@@ -1051,6 +1071,20 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           if (baselineCheck && target.kind === 'repo')
             await assertSetupLeftNoUntracked(target.workdir, signal)
           const instructionsVersion = 'local-factory.v3'
+          // Fixed here with the CLI version just recorded, so a restarted
+          // worker with another environment never changes how this run's
+          // repairs treat the implementation session.
+          const repairSession = ownRepair
+            ? repairSessionDecision({
+                contextMode: input.context,
+                code: profiles.code,
+                repair: ownRepair,
+                claudeCliVersion: cli['claudeCli'] ?? null,
+                env: process.env,
+                fakeEffortResume:
+                  input.fakeScenario?.claudeEffortResume === true,
+              })
+            : null
           const value: FactorySetup = {
             fake: profiles.code.provider === 'fake',
             contextMode: input.context,
@@ -1069,6 +1103,9 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               checkTimeoutMs: testTimeoutMs,
               code: profiles.code,
               repair: ownRepair,
+              repairSession: repairSession?.resume
+                ? EFFORT_RESUME_POLICY
+                : null,
               correctness: profiles.correctness,
               edgeCases: profiles['edge-cases'],
               triage,
@@ -1078,6 +1115,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             }),
             profiles,
             repair,
+            ...(repairSession ? { repairSession } : {}),
             triage,
             maxIterations: input.maxIterations,
             agentTimeoutMs,

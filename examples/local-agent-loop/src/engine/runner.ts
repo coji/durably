@@ -17,6 +17,7 @@ import type {
   AttemptMeasurement,
   ProviderName,
   ReviewCallSettings,
+  SessionHandling,
 } from './providers/types.js'
 import type { SessionRef } from './types.js'
 import { mergeUsage, type TokenUsage } from './usage.js'
@@ -45,6 +46,11 @@ export interface AgentCallSpec {
   checkpointsDir?: string
   session?: SessionRef | null
   requireSession?: boolean
+  /**
+   * A repair call's session handling, saved with the first measurement,
+   * before anything is sent, and again on every recovery.
+   */
+  sessionHandling?: SessionHandling
   configVersion?: string | null
   /**
    * Return an explicit refusal from the provider (`rejectionReason`) as the
@@ -212,6 +218,7 @@ export async function runAgentCall(
     operationKey,
     invocationId,
     sessionId: spec.session?.nativeId ?? null,
+    ...(spec.sessionHandling ? { sessionHandling: spec.sessionHandling } : {}),
     recovered: saved !== null,
     usageScope: 'invocation',
     requestedModel: spec.requestedModel,

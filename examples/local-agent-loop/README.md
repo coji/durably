@@ -651,12 +651,63 @@ LLMにタスクを判定させます。書かなければ判定の呼び出し�
   spec、実装の規則と、検証・レビューから得た修正の指示を渡し、前の実装が
   作業場所に残っていることを伝えます。`configVersion` はこの設定を含むので、
   `repair` の無いrunとは別のグループとして比較されます。
+- ただしClaudeでeffortだけが違う場合は、実装のsessionを継続します（次の節）。
 - `--context fresh` の修正は、`repair` の有無にかかわらず毎回新しいsessionです。
 - 修正の呼び出しと使用量は、reportの役割別集計で `code` ではなく `repair` の
   行に入ります。
 - 修正の呼び出しをproviderが明示的に拒否すると `rejected-invocation` で止まります。
   `factory.json` の `repair` を直してから `demo retrigger --run <id>
 --reload-config` でやり直します。
+
+### effortだけ違う修正は実装のsessionを継続する（Claude）
+
+Claude Codeは、再開したsessionのeffortを変えてもprompt cacheを保ちます
+（[公式ドキュメント](https://code.claude.com/docs/en/prompt-caching#changing-effort-level)、
+Claude Code 2.1.280での実測でも、新しいsessionのcache readは0、effortを変えて
+再開したsessionは同じeffortでの再開と同じ43,628 tokenでした）。そこで次の条件を
+すべて満たすときは、`repair` が `code` と違っていても、修正で実装のsessionを
+継続します。
+
+- `--context reuse`
+- providerが両方ともClaude、実効modelが同じで、実効effortだけが違う
+- modelがOpus 5.5（`claude-opus-5-5`）かFable 5.1（`claude-fable-5-1`）
+- Claude Code CLIが2.1.260以降（`claudeCli` の版から読みます。読めなければ継続しません）
+- `CLAUDE_CODE_USE_BEDROCK`、`CLAUDE_CODE_USE_VERTEX`、
+  `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` のどれも設定されていない
+
+```json
+{
+  "profiles": {
+    "code": {
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "medium"
+    },
+    "repair": { "effort": "high" }
+  }
+}
+```
+
+- 判定はsetupで一度だけ行い、runの `setup.repairSession` に結果と理由を記録
+  します。あとでworkerを別の環境変数で起動し直しても、そのrunの扱いは
+  変わりません。
+- 継続する修正は、記録済みのsession IDを `resume` に、`repair` の実効effortを
+  `effort` に渡して呼びます。promptは新しいsessionとしては書かず、前の会話の
+  続きとして書きます。修正が返したsession IDを次の修正のために記録します。
+- 継続してよいかは、provider、実効model、作業場所、指示版の一致で確かめます
+  （effortの一致は求めません）。modelを記録していない古いsessionは、effortを
+  またいで継続せず新しいsessionにします。
+- 継続するrunだけ `configVersion` にこの方針が入ります。それ以外のrunの
+  `configVersion` は変わりません。
+- Codex、providerやmodelが違う修正、`--context fresh`、外部の指摘から始まる子run
+  の最初の修正は、これまでどおり新しいsessionです。子runは親のsessionを
+  引き継ぎません。
+- 環境の判定は環境変数だけを見ます。設定ファイルやgatewayなど、環境変数以外の
+  方法でBedrockやVertexを使っている場合は判定できず、継続してしまうことが
+  あります。そのときはcacheが効かないだけで、結果は変わりません。reportの
+  修正呼び出しごとのcache-read比率で確かめられます。
+- 判断の理由は [ADR-0024](../../docs/adr/0024-local-agent-loop-claude-effort-session-reuse.md)
+  にあります。
 
 ### レビュー役の呼び出しと出力（command、context、output）
 
@@ -1031,12 +1082,14 @@ LLM呼び出しはすべて `src/engine/runner.ts` を通り、attempt metadata�
 
 - requested、effective、provider-reported model/effort（未指定・未報告値は `null`）
 - `sessionId`、`operationKey`、`invocationId`、回収結果かどうか
+- 修正の呼び出しでは、呼び出す前に決めたsessionの扱い（`sessionHandling`：
+  `continued`、`continued-effort-change`、`fresh`）
 - 通常input、cache read、cache write、output、total token
 - usageの単位（このサンプルは一provider invocation）と取得元
 - elapsed、result、error、interruption reason、API換算参考価格とmeter別内訳
 - `configVersion`（三役割それぞれのprovider、model、effort、context、指示版、
   反復上限、対象、timeoutのhash。triage profileと、`code` と違うrepair profileが
-  あればそれも含む）
+  あればそれも含む。effortだけ違う修正でsessionを継続するrunは、その方針も含む）
 
 providerが返すusageは、一回の呼び出しの**全モデル応答の合計**でなければいけません。
 エージェントCLIは一回の呼び出しの中で何十回もモデルを呼ぶので、最後の応答だけでは
@@ -1101,6 +1154,13 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
   全試行の終了コードとログのパスを `failure.details` にも載せます
   （`check attempt: `、`check exit code: `、`check stdout log: `、
   `check stderr log: `、`check log write error: `）
+- **Repair calls**: 修正の呼び出しごとの行（JSONの `repairCalls`）。sessionの扱い
+  （`continued` は同じprofileで継続、`continued-effort-change` はeffortだけ違う
+  profileで継続、`fresh` は新しいsession）、input、cache read、その呼び出しの
+  cache-read比率（`cacheReadTokens / inputTokens`）を持ちます。usageが無いときや
+  inputが0のとき、比率は `null` です。回収した呼び出しも1行で、`(recovered)` を
+  付けます。継続した修正の比率が高く、新しいsessionの修正が0に近ければ、cacheが
+  効いています
 - **Triage**: 事前判定（`routine` / `probe` / `unknown`）とその理由、四つの
   較正材料（不明なら `unknown`）。判定の無いrunは `none`
 - **Stage usage**: 工程ごとの visits / reworked（同じ工程への再突入＝手戻り）、
@@ -1200,7 +1260,9 @@ repairs の中央値を見ます。unknown は統計から外して件数だけ�
   trigger時に解決した三役割のprofileをrun中固定します。
 - 実装と修正のsession継続は、`code` 役割のprovider、profile ID、cwd、指示版が
   一致するときだけです。レビューのprofileは関係しません。`code` と違う
-  `repair` profileの修正は、実装のsessionを継続しません。
+  `repair` profileの修正は、実装のsessionを継続しません。例外はClaudeでeffortだけ
+  が違う場合で、profile IDの代わりに実効modelの一致を確かめて継続します
+  （「effortだけ違う修正は実装のsessionを継続する」の節）。
 - fake providerは決定的なローカル練習用で、実LLM検証として数えません。
 
 ## fake mode
@@ -1244,6 +1306,13 @@ job input の `fakeScenario` は run ごとに fake の振る舞いを変える�
 これらの呼び出しでも edge-cases のレビューを遅らせます。すべての
 役割が fake の run でしか受け付けず、trigger の時点で断ります。`configVersion` にも
 入りません。`demo seed` がこれを使います。
+
+テスト専用の `claudeEffortResume: true` を付けると、fake は「effortを変えて
+sessionを再開してもcacheが残るClaude Code」の代わりをします。呼び出しごとに渡された
+effortをそのまま使い（`low` に固定しません）、実装と修正の呼び出しでは、sessionを
+再開したときにcache readの多いusageを、新しいsessionのときにcache read 0のusageを
+返します。setupもこの欄を読み、effortだけ違う修正でsessionを継続すると判定します。
+その判定の結果は `configVersion` に入ります。実providerには影響しません。
 
 ## Layout
 

@@ -8,6 +8,7 @@ import { classifyRun, stageStep } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import type { VerificationLog } from './providers/types.js'
 import {
+  cacheReadRatio,
   roleUsage,
   stageTimings,
   stageUsage,
@@ -29,6 +30,7 @@ import {
   type ReportLineage,
   type ReportPreflight,
   type ReportPreflightCheck,
+  type ReportRepairCall,
   type ReportReview,
   type ReportReviewRound,
   type ReportSealedCandidate,
@@ -399,6 +401,32 @@ function preflightOf(
 }
 
 /**
+ * Every repair call, one row per invocation in the order they were made. A
+ * recovery attempt reads the same invocation back, so the last attempt of
+ * each is the one shown; its numbers are the call's own, never a sum.
+ */
+export function repairCallsOf(rows: AttemptRow[]): ReportRepairCall[] {
+  const calls = new Map<string, ReportRepairCall>()
+  for (const r of rows) {
+    const m = r.measurement
+    if (m?.role !== 'repair') continue
+    const input = m.usage?.inputTokens ?? null
+    const cacheRead = m.usage?.cacheReadTokens ?? null
+    calls.set(m.invocationId ?? r.attemptId, {
+      stepName: r.stepName,
+      iteration: m.iteration,
+      invocationId: m.invocationId ?? null,
+      sessionHandling: m.sessionHandling ?? null,
+      inputTokens: input,
+      cacheReadTokens: cacheRead,
+      cacheReadRatio: cacheReadRatio(input, cacheRead),
+      recovered: m.recovered === true,
+    })
+  }
+  return [...calls.values()]
+}
+
+/**
  * Each input file's path, with the SHA-256 of the content the run stored and
  * used. The hash is computed here, so it always describes that content.
  */
@@ -676,6 +704,7 @@ export async function buildReport(
     },
     candidate,
     candidates,
+    repairCalls: repairCallsOf(rows),
     reviews: lastReviews(run.output, waits),
     reviewRounds: reviewRoundsOf(steps, candidates),
     delivery,

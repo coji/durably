@@ -30,7 +30,11 @@ import type { AttemptMeasurement } from '../src/engine/providers/types.js'
 import { runAgentCall } from '../src/engine/runner.js'
 import type { ResolvedProfile } from '../src/engine/types.js'
 import { configVersionOf, resolveVersions } from '../src/engine/versions.js'
-import { separateRepairProfile } from '../src/factory/types.js'
+import {
+  EFFORT_RESUME_POLICY,
+  repairSessionDecision,
+  separateRepairProfile,
+} from '../src/factory/types.js'
 import { resolveProfiles } from '../src/trigger-input.js'
 
 describe('recorded CLI versions', { timeout: 60000 }, () => {
@@ -456,6 +460,78 @@ describe('the repair profile in the config version', () => {
     ]
     for (const version of versions) assert.notEqual(version, prior)
     assert.equal(new Set(versions).size, versions.length)
+  })
+})
+
+describe('the repair session policy in the config version', () => {
+  const claude = (model: string, effort: string): ResolvedProfile => ({
+    id: `claude:${model}:${effort}`,
+    provider: 'claude',
+    requestedModel: model,
+    requestedEffort: effort,
+    effectiveModel: model,
+    effectiveEffort: effort,
+  })
+  const code = claude('claude-opus-5-5', 'medium')
+  const base = {
+    contextMode: 'reuse',
+    instructionsVersion: 'local-factory.v3',
+    maxIterations: 2,
+    target: 'subject',
+    agentTimeoutMs: 300000,
+    checkTimeoutMs: 120000,
+    code,
+    correctness: code,
+    edgeCases: code,
+    cli: { claudeCli: '2.1.280 (Claude Code)', claudeCliPath: '/x/claude' },
+  }
+  /** The version the job computes for a repair profile, in `env`. */
+  const versionWith = (
+    repair: ResolvedProfile | null,
+    env: Record<string, string> = {},
+  ) => {
+    const own = separateRepairProfile({
+      repair,
+      profiles: { code, correctness: code, 'edge-cases': code },
+    })
+    const decision = own
+      ? repairSessionDecision({
+          contextMode: base.contextMode as 'reuse',
+          code,
+          repair: own,
+          claudeCliVersion: base.cli.claudeCli,
+          env,
+          fakeEffortResume: false,
+        })
+      : null
+    return configVersionOf({
+      ...base,
+      repair: own,
+      repairSession: decision?.resume ? EFFORT_RESUME_POLICY : null,
+    })
+  }
+
+  it('keeps the versions every other setting had before the policy existed', () => {
+    // Pinned from the version this code computed before the policy existed.
+    assert.equal(versionWith(null), 'a4a5cc94ce08f505')
+    assert.equal(
+      versionWith(claude('claude-sonnet-5', 'high')),
+      '41ef81d9828ab27e',
+    )
+    // The effort change the policy would resume, where the environment
+    // blocks it, keeps its earlier version too.
+    assert.equal(
+      versionWith(claude('claude-opus-5-5', 'high'), {
+        CLAUDE_CODE_USE_BEDROCK: '1',
+      }),
+      '52239366cb61629f',
+    )
+  })
+
+  it('changes for a repair that continues the session across an effort change', () => {
+    const resumed = versionWith(claude('claude-opus-5-5', 'high'))
+    assert.notEqual(resumed, '52239366cb61629f')
+    assert.notEqual(resumed, versionWith(null))
   })
 })
 

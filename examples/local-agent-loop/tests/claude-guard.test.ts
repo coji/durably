@@ -4,8 +4,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
+import { claudeCode } from 'ai-sdk-provider-claude-code'
+
 import {
   buildClaudeSettings,
+  ClaudeProvider,
   claudeCallUsage,
   COMMAND_MODE_LOCKDOWN,
   COMMAND_MODE_REVIEW_TOOLS,
@@ -15,6 +18,13 @@ import {
   reviewPreToolUseHook,
 } from '../src/engine/providers/claude.js'
 import type { ReviewCallSettings } from '../src/engine/providers/types.js'
+import type { ResolvedProfile } from '../src/engine/types.js'
+import {
+  EFFORT_RESUME_BLOCKING_ENV,
+  parseCliVersion,
+  repairSessionDecision,
+  type RepairSessionInput,
+} from '../src/factory/types.js'
 
 const ROOT = '/demo/work'
 
@@ -473,5 +483,172 @@ describe('command-mode review guard', () => {
         .behavior,
       'allow',
     )
+  })
+})
+
+describe('a repair that resumes the implementation session at its own effort', () => {
+  it('passes the session as resume and the repair effort as effort to the Agent SDK', async () => {
+    const workdir = await mkdtemp(join(tmpdir(), 'claude-resume-'))
+    const provider = new ClaudeProvider()
+    // The runner hands the repair profile's effective model and effort to
+    // the call; the provider resolves them to the same values.
+    const { model, effort } = provider.resolveExecution({
+      requestedModel: 'claude-opus-5-5',
+      requestedEffort: 'high',
+    })
+    assert.deepEqual([model, effort], ['claude-opus-5-5', 'high'])
+    const settings = buildClaudeSettings(workdir, false, effort, 'native-1')
+    assert.equal(settings.resume, 'native-1')
+    assert.equal(settings.effort, 'high')
+    // What the provider package actually sends to the Agent SDK's query.
+    const language = claudeCode(model ?? '', {
+      ...settings,
+      logger: false,
+    }) as unknown as {
+      getEffectiveResume: (sdk: undefined) => string | undefined
+      createQueryOptions: (
+        abort: AbortController,
+        options: { prompt: unknown[] },
+        stderr: undefined,
+        sdk: undefined,
+        resume: string | undefined,
+      ) => { resume?: string; effort?: string; model?: string }
+    }
+    const resume = language.getEffectiveResume(undefined)
+    const query = language.createQueryOptions(
+      new AbortController(),
+      { prompt: [] },
+      undefined,
+      undefined,
+      resume,
+    )
+    assert.equal(query.resume, 'native-1')
+    assert.equal(query.effort, 'high')
+    assert.equal(query.model, 'claude-opus-5-5')
+    // A new session names no session to resume.
+    assert.equal(buildClaudeSettings(workdir, false, 'high').resume, undefined)
+  })
+})
+
+describe('whether a repair continues the session across an effort change', () => {
+  const claude = (
+    effort: string,
+    model = 'claude-opus-5-5',
+  ): Pick<
+    ResolvedProfile,
+    'provider' | 'requestedModel' | 'effectiveModel' | 'effectiveEffort'
+  > => ({
+    provider: 'claude',
+    requestedModel: model,
+    effectiveModel: model,
+    effectiveEffort: effort,
+  })
+  const base: RepairSessionInput = {
+    contextMode: 'reuse',
+    code: claude('medium'),
+    repair: claude('high'),
+    claudeCliVersion: '2.1.280 (Claude Code)',
+    env: {},
+    fakeEffortResume: false,
+  }
+  const decide = (patch: Partial<RepairSessionInput>) =>
+    repairSessionDecision({ ...base, ...patch })
+
+  it('continues on Opus 5.5 or Fable 5.1 with Claude Code 2.1.260 or later', () => {
+    assert.equal(decide({}).resume, true)
+    assert.equal(
+      decide({
+        code: claude('low', 'claude-fable-5-1'),
+        repair: claude('high', 'claude-fable-5-1'),
+      }).resume,
+      true,
+    )
+    assert.equal(decide({ claudeCliVersion: '2.1.260' }).resume, true)
+    assert.equal(decide({ claudeCliVersion: '2.2.0' }).resume, true)
+    assert.equal(decide({ claudeCliVersion: '3.0.0' }).resume, true)
+  })
+
+  it('starts new for fresh context, another provider or model, or the same effort', () => {
+    assert.match(decide({ contextMode: 'fresh' }).reason, /context is fresh/)
+    assert.equal(decide({ contextMode: 'fresh' }).resume, false)
+    const codex = {
+      provider: 'codex' as const,
+      requestedModel: 'gpt-6-sol',
+      effectiveModel: 'gpt-6-sol',
+    }
+    assert.equal(
+      decide({ repair: { ...codex, effectiveEffort: 'high' } }).resume,
+      false,
+    )
+    assert.equal(
+      decide({ repair: claude('high', 'claude-fable-5-1') }).resume,
+      false,
+    )
+    assert.equal(decide({ repair: claude('medium') }).resume, false)
+    // Codex never changes effort mid-session here.
+    const codexRun = decide({
+      code: { ...codex, effectiveEffort: 'medium' },
+      repair: { ...codex, effectiveEffort: 'high' },
+    })
+    assert.equal(codexRun.resume, false)
+    assert.match(codexRun.reason, /codex/)
+  })
+
+  it('starts new on another model family, an unknown or old CLI, or a blocking environment', () => {
+    for (const model of [
+      'claude-sonnet-5',
+      'claude-opus-5',
+      'claude-opus-5-50',
+    ])
+      assert.equal(
+        decide({ code: claude('medium', model), repair: claude('high', model) })
+          .resume,
+        false,
+        model,
+      )
+    for (const version of [null, 'unknown', '2.1.259', '2.0.999', '1.9.300'])
+      assert.equal(
+        decide({ claudeCliVersion: version }).resume,
+        false,
+        version ?? 'null',
+      )
+    for (const name of EFFORT_RESUME_BLOCKING_ENV) {
+      const blocked = decide({ env: { [name]: '1' } })
+      assert.equal(blocked.resume, false, name)
+      assert.match(blocked.reason, new RegExp(name))
+    }
+    // An empty value is not set.
+    assert.equal(decide({ env: { CLAUDE_CODE_USE_BEDROCK: '' } }).resume, true)
+  })
+
+  it('lets the fake provider stand in only when the test switch says so', () => {
+    const fake = (model: string | null, effort: string) => ({
+      provider: 'fake' as const,
+      requestedModel: model,
+      effectiveModel: 'fake-model',
+      effectiveEffort: effort,
+    })
+    const input = {
+      code: fake(null, 'low'),
+      repair: fake(null, 'high'),
+      claudeCliVersion: null,
+    }
+    assert.equal(decide(input).resume, false)
+    assert.equal(decide({ ...input, fakeEffortResume: true }).resume, true)
+    // The requested model stands in for the fake's effective one.
+    assert.equal(
+      decide({
+        ...input,
+        repair: fake('other-model', 'high'),
+        fakeEffortResume: true,
+      }).resume,
+      false,
+    )
+  })
+
+  it('reads the version out of the CLI version line', () => {
+    assert.deepEqual(parseCliVersion('2.1.280 (Claude Code)'), [2, 1, 280])
+    assert.equal(parseCliVersion(null), null)
+    assert.equal(parseCliVersion('Claude Code'), null)
   })
 })

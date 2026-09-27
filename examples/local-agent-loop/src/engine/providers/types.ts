@@ -219,6 +219,14 @@ export interface VerificationLog {
   timedOutAfterMs?: number
 }
 
+/**
+ * How a repair call treated the implementation session, decided before the
+ * call: `continued` resumes a session its own profile last ran,
+ * `continued-effort-change` resumes one a profile that differs only in
+ * effort last ran, and `fresh` starts a new one.
+ */
+export type SessionHandling = 'continued' | 'continued-effort-change' | 'fresh'
+
 /** Persisted per-attempt measurement. Missing values stay null (never 0-filled). */
 export interface AttemptMeasurement {
   provider: ProviderName
@@ -230,6 +238,11 @@ export interface AttemptMeasurement {
   operationKey?: string | null
   invocationId?: string | null
   sessionId?: string | null
+  /**
+   * A repair call's session handling, saved before the call is made; absent
+   * on every other call and on a repair recorded before it existed.
+   */
+  sessionHandling?: SessionHandling | null
   /** True when a saved completed invocation was read without sending again. */
   recovered?: boolean
   /** Whether usage is for one provider invocation or a larger CLI session. */

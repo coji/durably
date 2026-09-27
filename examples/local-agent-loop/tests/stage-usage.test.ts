@@ -603,6 +603,7 @@ function report(
     lineage: { parent: null, children: [] },
     candidate: null,
     candidates: [],
+    repairCalls: [],
     reviews: [],
     reviewRounds: [],
     delivery: {
