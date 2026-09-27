@@ -559,6 +559,20 @@ describe('findings-json review output', () => {
     }
   })
 
+  it('normalizes a huge whitespace run in well under a second', () => {
+    // A degenerate field with a long run of plain spaces and no line break:
+    // the old flanked-greedy pattern could backtrack quadratically over a
+    // run like this, unlike a break character surrounded by real breaks.
+    const body = `x${' '.repeat(200_000)}y`
+    const start = performance.now()
+    const parsed = parseFindingsOutput(
+      findingsReply([{ severity: 'blocker', title: 't', body }]),
+    )
+    const elapsedMs = performance.now() - start
+    assert.ok(parsed.ok)
+    assert.ok(elapsedMs < 1000, `took ${elapsedMs}ms`)
+  })
+
   it('reads the whole last array when a finding quotes a code fence', () => {
     const body = 'Replace it with:\n```ts\nreturn a + b\n```\nand test it.'
     const reply = [
@@ -684,6 +698,42 @@ describe('findings-json review output', () => {
           { severity: 'blocker', title: 't', body: 'b', line: null },
         ]),
         /finding 1: line/,
+      ],
+      // `.trim()` alone leaves U+0085 (NEL) in place, so the presence check
+      // must run after `oneLine` normalizes the field, not before it.
+      [
+        'title only NEL',
+        findingsReply([{ severity: 'blocker', title: '\u0085', body: 'b' }]),
+        /finding 1: title/,
+      ],
+      [
+        'body only NEL',
+        findingsReply([{ severity: 'blocker', title: 't', body: '\u0085' }]),
+        /finding 1: body/,
+      ],
+      [
+        'file only NEL',
+        findingsReply([
+          { severity: 'blocker', title: 't', body: 'b', file: '\u0085' },
+        ]),
+        /finding 1: file/,
+      ],
+      [
+        'title only space',
+        findingsReply([{ severity: 'blocker', title: ' ', body: 'b' }]),
+        /finding 1: title/,
+      ],
+      [
+        'body only space',
+        findingsReply([{ severity: 'blocker', title: 't', body: ' ' }]),
+        /finding 1: body/,
+      ],
+      [
+        'file only space',
+        findingsReply([
+          { severity: 'blocker', title: 't', body: 'b', file: ' ' },
+        ]),
+        /finding 1: file/,
       ],
     ]
     for (const [name, text, error] of cases) {

@@ -110,6 +110,27 @@ export function changedPathsLine(
   return `Changed paths: ${shown}, and ${rest} more — see ${fullListPath}`
 }
 
+/** The bare `- Candidate worktree: …` line, shared by every prompt that names it. */
+function worktreeLocationLine(worktree: string): string {
+  return `- Candidate worktree: ${worktree}`
+}
+
+/** The bare `- Full diff: …` / `- Changed file list: …` lines. */
+function diffLocationLines(changes: CandidateChanges): string[] {
+  return [
+    `- Full diff: ${changes.diffPath}`,
+    `- Changed file list: ${changes.changedFilesPath}`,
+  ]
+}
+
+/** The bare `- Base commit tree: …` / `- Candidate commit tree: …` lines. */
+function treeLocationLines(snapshots: ReviewSnapshots): string[] {
+  return [
+    `- Base commit tree: ${snapshots.baseDir}`,
+    `- Candidate commit tree: ${snapshots.headDir}`,
+  ]
+}
+
 /**
  * The candidate's diff and changed-file list, written by the factory from the
  * recorded base commit and the candidate commit. Reviewers are told to read
@@ -124,22 +145,20 @@ function candidateFilesSection(
   if (!changes) return []
   const trees = snapshots
     ? [
-        `- Base commit tree: ${snapshots.baseDir}`,
-        `- Candidate commit tree: ${snapshots.headDir}`,
+        ...treeLocationLines(snapshots),
         '- The two trees are the whole repository at the base commit and at this candidate commit, for comparing code the diff does not show. They are read-only.',
       ]
     : []
   const where = worktree
     ? [
-        `- Candidate worktree: ${worktree}`,
+        worktreeLocationLine(worktree),
         '- Your working directory is not the candidate: the candidate is the worktree above, holding this candidate commit. Read the code there, or in the candidate commit tree. It is read-only.',
       ]
     : []
   return [
     'CANDIDATE FILES (written by the factory from the base commit and this candidate commit):',
     ...where,
-    `- Full diff: ${changes.diffPath}`,
-    `- Changed file list: ${changes.changedFilesPath}`,
+    ...diffLocationLines(changes),
     `- Size: ${changes.files} files changed, +${changes.additions} / -${changes.deletions} lines`,
     '- Read both files in full, to the last line, before you decide. If a file is long, read it in parts until you reach its end. They are read-only; do not modify them.',
     ...trees,
@@ -255,15 +274,9 @@ export function reviewLocations(args: {
     '',
     'This working directory holds only review configuration. The code under review is not here: read it where the factory put it, by absolute path, and give these paths to any subagent you start. All of them are read-only.',
     '',
-    `- Candidate worktree: ${worktree}`,
-    ...(changes
-      ? [
-          `- Full diff: ${changes.diffPath}`,
-          `- Changed file list: ${changes.changedFilesPath}`,
-        ]
-      : []),
-    `- Base commit tree: ${snapshots.baseDir}`,
-    `- Candidate commit tree: ${snapshots.headDir}`,
+    worktreeLocationLine(worktree),
+    ...(changes ? diffLocationLines(changes) : []),
+    ...treeLocationLines(snapshots),
     '',
   ].join('\n')
 }
@@ -452,12 +465,28 @@ function lastJsonArray(
 /**
  * Every line break a finding's text can carry: line feed, carriage return,
  * vertical tab, form feed, next line (U+0085), and the Unicode line and
- * paragraph separators. Each run of them, with the spaces around it, becomes
- * one space, so a finding stays one line of the repair notes.
+ * paragraph separators.
+ *
+ * Matched as one run of `[\s\u0085]+` rather than a break character flanked
+ * by two separately-greedy whitespace classes: the flanked form can
+ * backtrack quadratically over a long whitespace run with no break in it,
+ * since the engine may retry every split between the two `*` classes. A
+ * single greedy run has nothing to backtrack into.
  */
-const LINE_BREAKS = /[\s\u0085]*[\n\v\f\r\u0085\u2028\u2029][\s\u0085]*/g
+const WHITESPACE_RUN = /[\s\u0085]+/g
 
-const oneLine = (text: string) => text.replace(LINE_BREAKS, ' ').trim()
+/** Whether a matched whitespace run contains a character that breaks a line. */
+const hasLineBreak = /[\n\v\f\r\u0085\u2028\u2029]/
+
+/**
+ * Each run of whitespace that contains a line break becomes one space, so a
+ * finding stays one line of the repair notes. A run of plain spaces or tabs
+ * with no break in it is left alone.
+ */
+const oneLine = (text: string) =>
+  text
+    .replace(WHITESPACE_RUN, (run) => (hasLineBreak.test(run) ? ' ' : run))
+    .trim()
 
 function validFinding(
   raw: unknown,
@@ -479,12 +508,22 @@ function validFinding(
     return bad('title must be non-empty text')
   if (typeof body !== 'string' || body.trim().length === 0)
     return bad('body must be non-empty text')
+  // Validated after normalization, not with `.trim()` alone: `.trim()` does
+  // not strip U+0085 (NEL), so a field that is only NEL would pass this
+  // check and then `oneLine` would turn it into empty text further down.
+  const normalizedTitle = oneLine(title)
+  const normalizedBody = oneLine(body)
+  if (normalizedTitle.length === 0) return bad('title must be non-empty text')
+  if (normalizedBody.length === 0) return bad('body must be non-empty text')
   // Presence is checked with `in`, not `?? undefined`: an explicit `null` is
   // a present key with the wrong type, not an absent one, so it must be
   // rejected rather than silently treated as omitted.
   const hasFile = 'file' in f
   const file = f['file']
   if (hasFile && (typeof file !== 'string' || file.trim() === ''))
+    return bad('file must be non-empty text when given')
+  const normalizedFile = hasFile ? oneLine(file as string) : undefined
+  if (hasFile && normalizedFile !== undefined && normalizedFile.length === 0)
     return bad('file must be non-empty text when given')
   const hasLine = 'line' in f
   const line = f['line']
@@ -497,9 +536,9 @@ function validFinding(
     ok: true,
     finding: {
       severity,
-      title: oneLine(title),
-      body: oneLine(body),
-      ...(hasFile ? { file: oneLine(file as string) } : {}),
+      title: normalizedTitle,
+      body: normalizedBody,
+      ...(hasFile ? { file: normalizedFile as string } : {}),
       ...(hasLine ? { line: line as number } : {}),
     },
   }
