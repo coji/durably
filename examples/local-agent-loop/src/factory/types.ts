@@ -179,7 +179,7 @@ export function reviewInvocationOf(
 
 /** `factory.json`'s `baselineReuse`, fixed at trigger. */
 export interface BaselineReuse {
-  /** How old a passing result may be, from its baseline step's completion. */
+  /** How old a passing result may be, from the completion of its check. */
   maxAgeMs: number
 }
 
@@ -215,10 +215,18 @@ export interface BaselineRecord extends VerificationOutcome {
   source: 'measured' | 'reused'
   /** The identity this result was compared by; null when none resolved. */
   identity: BaselineIdentity | null
+  /**
+   * Set on a measured result: when the check completed, from its completed
+   * checkpoint, so a step saved later on a resume does not move it.
+   */
+  checkedAt?: string
   /** Set on a reused result: the run whose measured result it is. */
   reusedFrom?: {
     runId: string
-    /** When that run's baseline step completed: the result's age starts here. */
+    /**
+     * When that run's check completed (its step's completion on a record
+     * from before that was kept): the result's age starts here.
+     */
     checkedAt: string
     /** That run read its verdict back from its checkpoint. */
     recovered: boolean

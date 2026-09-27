@@ -35,6 +35,7 @@ import {
   buildReport,
   repairChildren,
   repairChildrenByParent,
+  reusedBaselineOf,
   type ReportSource,
 } from '../engine/build-report.js'
 import { compareReports, type Comparison } from '../engine/compare.js'
@@ -62,6 +63,7 @@ import {
   type DiagnosisKind,
 } from '../engine/status.js'
 import { TERMINAL_STATUSES } from '../engine/terminal.js'
+import { BASELINE_STEP } from '../factory/types.js'
 import { lensName, stageName, stepPartName } from './labels.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -941,9 +943,11 @@ export function readOnce(db: ReportSource, known: Run[] = []): ReportSource {
 
 /**
  * Reports by run. A finished run's row never changes again, so its report is
- * built once and reused while the row is unchanged. Only a failed or
- * cancelled run's `failure` can still change, because it also reads
- * checkpoint files, so a reused report gets that one field classified again.
+ * built once and reused while the row is unchanged. Only two fields read
+ * files that can still change: a failed or cancelled run's `failure` reads
+ * checkpoint files, so a reused report gets it classified again, and a
+ * reused baseline cites another run's log, so it is worked out again from
+ * the stored step to say whether that log is still there.
  * Its repair children can also be added after it finished, so a reused
  * report always gets them again: from `children` when the caller worked them
  * out from the runs it read, otherwise with one label query. Open runs are
@@ -967,10 +971,16 @@ export function finishedReportCache(build = buildReport) {
           parent: hit.report.lineage?.parent ?? null,
           children: children ?? (await repairChildren(src, run)),
         }
-        if (run.status === 'completed')
-          return { report: { ...hit.report, lineage }, fresh: false }
+        const baseline = hit.report.baseline?.reusedFrom
+          ? (reusedBaselineOf(
+              (await src.storage.getCompletedStep(run.id, BASELINE_STEP))
+                ?.output,
+            ) ?? hit.report.baseline)
+          : hit.report.baseline
+        const cached = { ...hit.report, lineage, baseline }
+        if (run.status === 'completed') return { report: cached, fresh: false }
         const failure = await classifyRun(src, run)
-        return { report: { ...hit.report, lineage, failure }, fresh: true }
+        return { report: { ...cached, failure }, fresh: true }
       }
       const report = await build(src, run.id, children ? { children } : {})
       if (TERMINAL_STATUSES.includes(run.status))

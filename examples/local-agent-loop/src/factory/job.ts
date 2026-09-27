@@ -1,16 +1,6 @@
 /** Durably job: persist a decision, dispatch its stage, reduce the event. */
-import { constants, existsSync } from 'node:fs'
-import { access, mkdir, realpath, rm } from 'node:fs/promises'
-import { arch, platform } from 'node:os'
-import {
-  delimiter,
-  dirname,
-  isAbsolute,
-  join,
-  relative,
-  resolve,
-  sep,
-} from 'node:path'
+import { mkdir, rm } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -47,13 +37,15 @@ import {
   type ReportTriage,
 } from '../engine/report.js'
 import {
-  checkpointPaths,
   RejectedInvocationError,
   runAgentCall,
   UncertainInvocationError,
 } from '../engine/runner.js'
 import type { ResolvedProfile } from '../engine/types.js'
-import { runVerificationStep } from '../engine/verification.js'
+import {
+  runVerificationStep,
+  verificationCompletedAt,
+} from '../engine/verification.js'
 import {
   cliIdentityOf,
   configVersionOf,
@@ -70,6 +62,12 @@ import {
   checkFingerprint,
   RepoTarget,
 } from '../targets/repo.js'
+import {
+  baselineIdentityOf,
+  recordBaselineInIndex,
+  reusedBaseline,
+  type BaselineStore,
+} from './baseline-reuse.js'
 import {
   candidateSchema,
   deliverySchema,
@@ -92,7 +90,6 @@ import { triageThatRuns } from './repair.js'
 import { stages } from './stages.js'
 import {
   DEFAULT_COMMIT_SETTINGS,
-  type RepoTargetConfig,
   type Target,
   type TargetConfig,
 } from './target.js'
@@ -109,9 +106,7 @@ import {
   repairSessionDecision,
   separateRepairProfile,
   usesReviewMaterials,
-  type BaselineIdentity,
   type BaselineRecord,
-  type BaselineReuse,
   type FactorySetup,
   type RepairSessionRecord,
   type ProfileRole,
@@ -984,218 +979,6 @@ function resolveInputProfiles(input: {
   }
 }
 
-/**
- * The file a check command's first word runs, as `spawn` finds it from the
- * worktree: a path relative to the worktree, or the first match on PATH.
- * Symbolic links are resolved, and a file inside the worktree is named
- * relative to it, so runs in different worktrees name the same file alike.
- * Null when it cannot be found or run.
- */
-async function checkExecutableOf(
-  command: string | undefined,
-  workdir: string,
-): Promise<string | null> {
-  if (!command) return null
-  const hasDir = command.includes('/') || command.includes(sep)
-  const candidates = hasDir
-    ? [resolve(workdir, command)]
-    : (process.env['PATH'] ?? '')
-        .split(delimiter)
-        .filter((dir) => dir.length > 0)
-        .map((dir) => resolve(workdir, dir, command))
-  let found: string | null = null
-  for (const candidate of candidates) {
-    try {
-      await access(candidate, constants.X_OK)
-      found = candidate
-      break
-    } catch {
-      // Not here.
-    }
-  }
-  if (!found) return null
-  try {
-    const [file, root] = await Promise.all([realpath(found), realpath(workdir)])
-    const inside = relative(root, file)
-    return inside && !inside.startsWith('..') && !isAbsolute(inside)
-      ? `./${inside}`
-      : file
-  } catch {
-    return null
-  }
-}
-
-/**
- * What a baseline result of this run is valid for, or null when a value
- * cannot be resolved: such a run neither reuses a result nor leaves one
- * another run can reuse.
- */
-export async function baselineIdentityOf(
-  target: RepoTargetConfig,
-): Promise<BaselineIdentity | null> {
-  const checkExecutable = await checkExecutableOf(
-    target.checkCommand[0],
-    target.workdir,
-  )
-  if (!checkExecutable) return null
-  let repoPath: string
-  try {
-    repoPath = await realpath(target.repoPath)
-  } catch {
-    return null
-  }
-  return {
-    repoPath,
-    baseCommit: target.baseCommit,
-    checkCommand: target.checkCommand,
-    setupCommand: target.setupCommand,
-    checkTimeoutMs: target.checkTimeoutMs,
-    node: process.version,
-    platform: platform(),
-    arch: arch(),
-    checkExecutable,
-  }
-}
-
-const baselineIdentitySchema = z
-  .object({
-    repoPath: z.string().min(1),
-    baseCommit: z.string().min(1),
-    checkCommand: z.array(z.string()).min(1),
-    setupCommand: z.array(z.string()).nullable(),
-    checkTimeoutMs: z.number(),
-    node: z.string().min(1),
-    platform: z.string().min(1),
-    arch: z.string().min(1),
-    checkExecutable: z.string().min(1),
-  })
-  .strict()
-
-/**
- * A stored baseline result another run may reuse: measured in its own run,
- * passing, and carrying the identity it was measured under. A failed, a
- * reused or an older record without an identity does not parse.
- */
-const reusableRecordSchema = z.object({
-  source: z.literal('measured'),
-  passed: z.literal(true),
-  identity: baselineIdentitySchema,
-  stdout: z.string(),
-  exitCode: z.number().nullable(),
-  log: z.custom<BaselineRecord['log']>().optional(),
-})
-
-/** The values two identities must share, in one fixed order. */
-function identityKey(identity: BaselineIdentity): string {
-  return JSON.stringify([
-    identity.repoPath,
-    identity.baseCommit,
-    identity.checkCommand,
-    identity.setupCommand,
-    identity.checkTimeoutMs,
-    identity.node,
-    identity.platform,
-    identity.arch,
-    identity.checkExecutable,
-  ])
-}
-
-/** A completed baseline step of some run in the state database. */
-export interface StoredBaseline {
-  runId: string
-  output: unknown
-  /** When the step completed. */
-  completedAt: string | null
-}
-
-/** The reads a run makes to find a baseline result it can reuse. */
-export interface BaselineHistory {
-  /** Every completed baseline step of the other runs in this database. */
-  completed(exceptRunId: string): Promise<StoredBaseline[]>
-  /** Whether the run read its baseline verdict back from its checkpoint. */
-  recovered(runId: string): Promise<boolean>
-}
-
-/**
- * The newest measured, passing result of another run with the same identity
- * that is at most `maxAgeMs` old at `now`, or null. Age runs from the step's
- * completion; a record that completed after `now`, as a clock set back can
- * make one, is not used.
- */
-export function chooseReusableBaseline(args: {
-  runId: string
-  identity: BaselineIdentity
-  maxAgeMs: number
-  now: number
-  stored: StoredBaseline[]
-}): { runId: string; checkedAt: string; record: BaselineRecord } | null {
-  const key = identityKey(args.identity)
-  let best: {
-    runId: string
-    checkedAt: string
-    record: BaselineRecord
-  } | null = null
-  let bestAt = -Infinity
-  for (const s of args.stored) {
-    if (s.runId === args.runId || !s.completedAt) continue
-    const at = Date.parse(s.completedAt)
-    if (!Number.isFinite(at) || at > args.now || args.now - at > args.maxAgeMs)
-      continue
-    const parsed = reusableRecordSchema.safeParse(s.output)
-    if (!parsed.success || identityKey(parsed.data.identity) !== key) continue
-    if (best && bestAt >= at) continue
-    bestAt = at
-    best = {
-      runId: s.runId,
-      checkedAt: s.completedAt,
-      record: { ...parsed.data, log: parsed.data.log ?? null },
-    }
-  }
-  return best
-}
-
-/**
- * Another run's result this baseline may use, as this step's record, or
- * null to run the check. Null too when this run has already started
- * measuring: an interrupted check is finished, never swapped for a reused
- * result. A failed lookup also runs the check.
- */
-async function reusedBaseline(args: {
-  runId: string
-  setup: FactorySetup
-  reuse: BaselineReuse
-  history: BaselineHistory
-  operationKey: string
-}): Promise<BaselineRecord | null> {
-  const { setup } = args
-  const identity = setup.baselineIdentity ?? null
-  if (!identity) return null
-  const paths = checkpointPaths(setup.checkpointsDir, args.operationKey)
-  if (existsSync(paths.started) || existsSync(paths.completed)) return null
-  try {
-    const chosen = chooseReusableBaseline({
-      runId: args.runId,
-      identity,
-      maxAgeMs: args.reuse.maxAgeMs,
-      now: Date.now(),
-      stored: await args.history.completed(args.runId),
-    })
-    if (!chosen) return null
-    return {
-      ...chosen.record,
-      source: 'reused',
-      identity,
-      reusedFrom: {
-        runId: chosen.runId,
-        checkedAt: chosen.checkedAt,
-        recovered: await args.history.recovered(chosen.runId),
-      },
-    }
-  } catch {
-    return null
-  }
-}
-
 /** The job's name, as its runs are stored. */
 export const AGENT_LOOP_JOB_NAME = 'local-factory.v2'
 
@@ -1203,10 +986,11 @@ export interface AgentLoopJobOptions {
   /** Directory every run's worktree, checkpoints and delivery live under. */
   stateRoot: string
   /**
-   * The state database's earlier baseline results. Absent: every baseline
-   * check runs, whatever `baselineReuse` says.
+   * Reads of the state database a baseline reuse decision makes, about the
+   * one run the reuse index names. Absent: every baseline check runs,
+   * whatever `baselineReuse` says.
    */
-  baselineHistory?: BaselineHistory
+  baselineStore?: BaselineStore
 }
 
 export function createAgentLoopJob(options: AgentLoopJobOptions) {
@@ -1415,15 +1199,13 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             maxIterations: input.maxIterations,
             agentTimeoutMs,
             baselineCheck,
-            ...(baselineCheck
-              ? {
-                  baselineReuse:
-                    input.target.kind === 'repo'
-                      ? (input.target.baselineReuse ?? null)
-                      : null,
-                  baselineIdentity,
-                }
-              : {}),
+            // Null, not absent, without the check, so a repair run does not
+            // take the value from this run's input instead.
+            baselineReuse:
+              baselineCheck && input.target.kind === 'repo'
+                ? (input.target.baselineReuse ?? null)
+                : null,
+            ...(baselineCheck ? { baselineIdentity } : {}),
             codexPath,
             ...(Object.keys(review).length > 0 ? { review } : {}),
             ...(repairOf
@@ -1467,17 +1249,18 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       ) {
         const operationKey = `${step.runId}/baseline`
         const reuse = setup.baselineReuse ?? null
-        const history = options.baselineHistory
+        const store = options.baselineStore
         const baseline = await step.run(
           BASELINE_STEP,
           async (signal, attempt): Promise<BaselineRecord> => {
             const reused =
-              reuse && history
+              reuse && store
                 ? await reusedBaseline({
+                    stateRoot: options.stateRoot,
                     runId: step.runId,
                     setup,
                     reuse,
-                    history,
+                    store,
                     operationKey,
                   })
                 : null
@@ -1511,9 +1294,23 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               ...measured,
               source: 'measured',
               identity: setup.baselineIdentity ?? null,
+              // The check's own completion, which a resume that read the
+              // verdict back from the checkpoint does not move.
+              checkedAt:
+                (await verificationCompletedAt(
+                  setup.checkpointsDir,
+                  operationKey,
+                )) ?? new Date().toISOString(),
             }
           },
         )
+        // Also on a replay, so an index write lost to a crash after the
+        // step completed is made up; an older result never replaces a newer.
+        await recordBaselineInIndex({
+          stateRoot: options.stateRoot,
+          runId: step.runId,
+          record: baseline,
+        })
         if (!baseline.passed)
           throw new Error(
             `${BASELINE_FAILED_MESSAGE}: \`${checkFingerprint(setup.target.checkCommand)}\` failed on the base commit ${setup.target.baseCommit.slice(0, 12)} (exit code ${baseline.exitCode ?? 'unknown'}) before any agent call`,

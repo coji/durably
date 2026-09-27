@@ -8,9 +8,17 @@
  */
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
@@ -32,13 +40,19 @@ import {
 import { checkpointPaths } from '../src/engine/runner.js'
 import type { ResolvedProfile, SessionRef } from '../src/engine/types.js'
 import { configVersionOf } from '../src/engine/versions.js'
-import { chooseReusableBaseline, resolveTimeouts } from '../src/factory/job.js'
+import {
+  baselineIdentityOf,
+  recordBaselineInIndex,
+  validReusable,
+} from '../src/factory/baseline-reuse.js'
+import { resolveTimeouts } from '../src/factory/job.js'
 import { codePrompt } from '../src/factory/prompts.js'
 import { codeStage } from '../src/factory/stages.js'
 import {
   EFFORT_RESUME_POLICY,
   initialState,
   type BaselineIdentity,
+  type BaselineRecord,
   REPAIR_SESSION_STEP,
   type RepairSessionRecord,
   type FactorySetup,
@@ -1262,13 +1276,63 @@ describe(
           first,
           'baseline',
         )
-        assert.ok(firstStep?.completedAt)
+        // The check's own completion, from its checkpoint.
+        const checkedAt = (firstStep?.output as { checkedAt?: string } | null)
+          ?.checkedAt
+        assert.ok(checkedAt)
+        assert.ok(
+          Date.parse(checkedAt) <= Date.parse(firstStep?.completedAt ?? ''),
+        )
+        // The measured pass is indexed under its identity.
+        const indexDir = join(dir, 'baseline-index')
+        const indexEntries = async () =>
+          Promise.all(
+            (await readdir(indexDir))
+              .filter((f) => f.endsWith('.json'))
+              .map(
+                async (f) =>
+                  JSON.parse(await readFile(join(indexDir, f), 'utf8')) as {
+                    runId: string
+                    checkedAt: string
+                  },
+              ),
+          )
+        assert.deepEqual(
+          (await indexEntries()).map((e) => [e.runId, e.checkedAt]),
+          [[first, checkedAt]],
+        )
 
         // A matching run sets up, and uses the first result in place of
-        // the check. It waits for approval, to be replayed later.
-        const reused = await start({ reuse, autoApprove: false })
-        assert.equal(await settle(reused, ['waiting', 'failed']), 'waiting')
+        // the check, without reading the run history. It waits for
+        // approval, to be replayed later.
+        let historyReads = 0
+        const getRuns = durably.getRuns
+        const storageGetRuns = durably.storage.getRuns
+        durably.getRuns = ((...args: Parameters<typeof getRuns>) => {
+          historyReads++
+          return getRuns(...args)
+        }) as typeof getRuns
+        durably.storage.getRuns = ((
+          ...args: Parameters<typeof storageGetRuns>
+        ) => {
+          historyReads++
+          return storageGetRuns(...args)
+        }) as typeof storageGetRuns
+        let reused: string
+        try {
+          reused = await start({ reuse, autoApprove: false })
+          assert.equal(await settle(reused, ['waiting', 'failed']), 'waiting')
+        } finally {
+          durably.getRuns = getRuns
+          durably.storage.getRuns = storageGetRuns
+        }
+        assert.equal(historyReads, 0, 'the lookup did not read the history')
         assert.equal(await baseChecks(), 1, 'the check did not run')
+        // A reused result is not indexed.
+        assert.deepEqual(
+          (await indexEntries()).map((e) => e.runId),
+          [first],
+        )
         assert.equal((await fixture.lines('setups')).length, 2)
         assert.equal(
           existsSync(join(dir, 'runs', reused, 'baseline-logs')),
@@ -1297,7 +1361,7 @@ describe(
         assert.equal(report.baseline?.passed, true)
         assert.deepEqual(report.baseline?.reusedFrom, {
           runId: first,
-          checkedAt: firstStep.completedAt,
+          checkedAt,
         })
         assert.equal(report.baseline?.recovered, false)
         assert.equal(
@@ -1308,7 +1372,7 @@ describe(
         const md = reportToMarkdown(report)
         assert.ok(
           md.includes(
-            `- source: reused from run ${first}, checked at ${firstStep.completedAt}; the check did not run in this run`,
+            `- source: reused from run ${first}, checked at ${checkedAt}; the check did not run in this run`,
           ),
           md,
         )
@@ -1317,7 +1381,7 @@ describe(
         }
         assert.deepEqual(json.baseline.reusedFrom, {
           runId: first,
-          checkedAt: firstStep.completedAt,
+          checkedAt,
         })
 
         // The source's stdout removed, stderr still present: missing either
@@ -1375,13 +1439,31 @@ describe(
         assert.match(gone.baseline?.logMissing ?? '', /no longer at/)
         assert.match(reportToMarkdown(gone), /- log: none \(the log of run /)
 
+        // An index entry whose run's step no longer matches is ignored: here
+        // it names the reusing run, whose result is not a measurement.
+        const [entryFile] = (await readdir(indexDir)).filter((f) =>
+          f.endsWith('.json'),
+        )
+        assert.ok(entryFile)
+        await writeFile(
+          join(indexDir, entryFile),
+          `${JSON.stringify({ runId: reused, checkedAt: new Date().toISOString(), log: null })}\n`,
+        )
+        const stale = await start({ reuse })
+        assert.equal(await settle(stale), 'completed')
+        assert.equal(await baseChecks(), 3)
+        assert.equal(
+          (await buildReport(durably, stale)).baseline?.reusedFrom,
+          null,
+        )
+
         // Too old, or another check timeout: the check runs.
         const expired = await start({ reuse: { maxAgeMs: 1 } })
         assert.equal(await settle(expired), 'completed')
-        assert.equal(await baseChecks(), 3)
+        assert.equal(await baseChecks(), 4)
         const timeout = await start({ reuse, checkTimeoutMs: 120_000 })
         assert.equal(await settle(timeout), 'completed')
-        assert.equal(await baseChecks(), 4)
+        assert.equal(await baseChecks(), 5)
         for (const id of [expired, timeout])
           assert.equal(
             (await buildReport(durably, id)).baseline?.reusedFrom,
@@ -1394,7 +1476,7 @@ describe(
         const offReport = await buildReport(durably, off)
         assert.equal(offReport.baseline, null)
         assert.ok(!offReport.attempts.some((a) => a.stepName === 'baseline'))
-        assert.equal(await baseChecks(), 4)
+        assert.equal(await baseChecks(), 5)
 
         // A matching result does not excuse setup's leftovers: an untracked
         // file stops the run in setup, and a tracked edit in the baseline
@@ -1427,7 +1509,7 @@ describe(
           (await durably.getRun(tracked))?.error ?? '',
           /baseline-mutated: setup left uncommitted changes to tracked files/,
         )
-        assert.equal(await baseChecks(), 4)
+        assert.equal(await baseChecks(), 5)
       } finally {
         await durably.stop()
         await durably.db.destroy()
@@ -1459,30 +1541,39 @@ describe('choosing a baseline result to reuse', () => {
     log: null,
     identity: { ...identity, ...over },
   })
-  const choose = (
-    stored: { runId: string; output: unknown; completedAt: string | null }[],
-  ) =>
-    chooseReusableBaseline({
+  const valid = (runId: string, output: unknown, completedAt: string | null) =>
+    validReusable({
       runId: 'current',
       identity,
       maxAgeMs: 60_000,
       now,
-      stored,
+      source: { runId, output, completedAt },
     })?.runId ?? null
 
-  it('takes the newest measured, passing, matching result within the age', () => {
+  it('takes a measured, passing, matching result within the age', () => {
+    assert.equal(valid('recent', measured(), at(10_000)), 'recent')
+    assert.equal(valid('edge', measured(), at(60_000)), 'edge')
+  })
+
+  it("ages a result from its check's completion, not its step's", () => {
+    // Checked long ago, its step saved only now on a resume: too old.
     assert.equal(
-      choose([
-        { runId: 'older', output: measured(), completedAt: at(30_000) },
-        { runId: 'newer', output: measured(), completedAt: at(10_000) },
-        { runId: 'oldest', output: measured(), completedAt: at(50_000) },
-      ]),
-      'newer',
+      valid('resumed', { ...measured(), checkedAt: at(60_001) }, at(0)),
+      null,
     )
-    assert.equal(
-      choose([{ runId: 'edge', output: measured(), completedAt: at(60_000) }]),
-      'edge',
-    )
+    const chosen = validReusable({
+      runId: 'current',
+      identity,
+      maxAgeMs: 60_000,
+      now,
+      source: {
+        runId: 'resumed',
+        output: { ...measured(), checkedAt: at(30_000) },
+        completedAt: at(0),
+      },
+    })
+    assert.equal(chosen?.checkedAt, at(30_000))
+    assert.equal('checkedAt' in (chosen?.record ?? {}), false)
   })
 
   it('never takes a failed, reused, older, unfinished, expired or future result, or its own', () => {
@@ -1498,7 +1589,7 @@ describe('choosing a baseline result to reuse', () => {
       ['future', measured(), new Date(now + 1).toISOString()],
       ['current', measured(), at(1000)],
     ] as const)
-      assert.equal(choose([{ runId, output, completedAt }]), null, runId)
+      assert.equal(valid(runId, output, completedAt), null, runId)
   })
 
   it('never takes a result from another repository, base, setup, check or environment', () => {
@@ -1515,12 +1606,131 @@ describe('choosing a baseline result to reuse', () => {
       { checkExecutable: '/opt/homebrew/bin/pnpm' },
     ] satisfies Partial<BaselineIdentity>[])
       assert.equal(
-        choose([
-          { runId: 'other', output: measured(over), completedAt: at(1000) },
-        ]),
+        valid('other', measured(over), at(1000)),
         null,
         JSON.stringify(over),
       )
+  })
+
+  it('indexes only measured passes, and never an older one over a newer', async () => {
+    const stateRoot = await mkdtemp(join(tmpdir(), 'baseline-index-'))
+    const entries = async () => {
+      const dir = join(stateRoot, 'baseline-index')
+      if (!existsSync(dir)) return []
+      return Promise.all(
+        (await readdir(dir)).map(
+          async (f) =>
+            JSON.parse(await readFile(join(dir, f), 'utf8')) as {
+              runId: string
+              checkedAt: string
+            },
+        ),
+      )
+    }
+    const record = (over: Partial<BaselineRecord> = {}): BaselineRecord => ({
+      passed: true,
+      stdout: 'ok',
+      exitCode: 0,
+      log: null,
+      source: 'measured',
+      identity,
+      checkedAt: at(30_000),
+      ...over,
+    })
+    const write = (runId: string, r: BaselineRecord) =>
+      recordBaselineInIndex({ stateRoot, runId, record: r })
+    await write('failed', record({ passed: false, exitCode: 1 }))
+    await write('no-identity', record({ identity: null }))
+    await write('no-time', record({ checkedAt: undefined }))
+    await write(
+      'reused',
+      record({
+        source: 'reused',
+        reusedFrom: { runId: 'x', checkedAt: at(1000), recovered: false },
+      }),
+    )
+    assert.deepEqual(await entries(), [])
+    await write('measured', record())
+    assert.deepEqual(
+      (await entries()).map((e) => e.runId),
+      ['measured'],
+    )
+    await write('older', record({ checkedAt: at(40_000) }))
+    assert.deepEqual(
+      (await entries()).map((e) => e.runId),
+      ['measured'],
+    )
+    await write('newer', record({ checkedAt: at(10_000) }))
+    assert.deepEqual(
+      (await entries()).map((e) => [e.runId, e.checkedAt]),
+      [['newer', at(10_000)]],
+    )
+  })
+})
+
+describe('the check executable a baseline identity names', () => {
+  it('finds it in the worktree for an empty PATH entry, as spawn does', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'check-executable-'))
+    const workdir = join(root, 'work')
+    const bin = join(root, 'bin')
+    await mkdir(workdir, { recursive: true })
+    await mkdir(bin, { recursive: true })
+    for (const dir of [workdir, bin])
+      await writeFile(join(dir, 'mycheck'), '#!/bin/sh\nexit 0\n', {
+        mode: 0o755,
+      })
+    const identityWith = async (path: string) => {
+      const saved = process.env.PATH
+      process.env.PATH = path
+      try {
+        return await baselineIdentityOf({
+          repoPath: root,
+          workdir,
+          baseCommit: 'a'.repeat(40),
+          checkCommand: ['mycheck'],
+          setupCommand: null,
+          checkTimeoutMs: 1000,
+        } as unknown as Parameters<typeof baselineIdentityOf>[0])
+      } finally {
+        process.env.PATH = saved
+      }
+    }
+    // Leading, middle and trailing empty entries all mean the worktree.
+    for (const path of [
+      `${delimiter}${bin}`,
+      `/nonexistent${delimiter}${delimiter}${bin}`,
+    ])
+      assert.equal(
+        (await identityWith(path))?.checkExecutable,
+        './mycheck',
+        path,
+      )
+    assert.equal(
+      (await identityWith(`${bin}${delimiter}`))?.checkExecutable,
+      await realpath(join(bin, 'mycheck')),
+    )
+    assert.equal(
+      (await identityWith(`/nonexistent${delimiter}`))?.checkExecutable,
+      './mycheck',
+    )
+    // The actual spawn agrees: an empty entry first runs the worktree's file.
+    const saved = process.env.PATH
+    process.env.PATH = `${delimiter}${bin}`
+    try {
+      await writeFile(join(workdir, 'mycheck'), '#!/bin/sh\necho worktree\n', {
+        mode: 0o755,
+      })
+      await writeFile(join(bin, 'mycheck'), '#!/bin/sh\necho bin\n', {
+        mode: 0o755,
+      })
+      const res = await runChild('mycheck', [], {
+        cwd: workdir,
+        timeoutMs: 10000,
+      })
+      assert.equal(res.stdout.trim(), 'worktree')
+    } finally {
+      process.env.PATH = saved
+    }
   })
 })
 

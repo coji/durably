@@ -980,8 +980,6 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
     )
 
     // A reload reads the edited file; the stored run is untouched.
-    const reuseOf = (t: { kind: string }) =>
-      'baselineReuse' in t ? t.baselineReuse : undefined
     const reloaded = await reloadTriggerInput(
       stored as unknown as Parameters<typeof reloadTriggerInput>[0],
     )

@@ -10,6 +10,14 @@ export function runRootOf(stateRoot: string, runId: string): string {
   return join(stateRoot, 'runs', runId)
 }
 
+/**
+ * The baseline reuse index (ADR-0025): one file per baseline identity,
+ * naming the newest run whose check passed under it.
+ */
+export function baselineIndexDirOf(stateRoot: string): string {
+  return join(stateRoot, 'baseline-index')
+}
+
 /** A repository run's worktree, where the agent edits and reviewers read. */
 export function repoWorkdirOf(runRoot: string): string {
   return join(runRoot, 'work')

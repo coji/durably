@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { request } from 'node:http'
 import { connect, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -25,6 +25,7 @@ import { createAgentDurably, dbPath } from '../src/durably.js'
 import {
   repairChildrenByParent,
   type ReportSource,
+  reusedBaselineOf,
 } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
 import {
@@ -1103,6 +1104,55 @@ describe('reads per poll', () => {
       assert.ok('failure' in hit.report)
     }
     assert.deepEqual(built, ['failed', 'cancelled'])
+  })
+
+  it("checks a reused baseline's source log again on every hit", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ui-reused-log-'))
+    const log = {
+      stdoutPath: join(root, 'stdout.log'),
+      stderrPath: join(root, 'stderr.log'),
+      exitCode: 0,
+    }
+    await writeFile(log.stdoutPath, 'ok\n')
+    await writeFile(log.stderrPath, '')
+    const output = {
+      passed: true,
+      stdout: 'ok',
+      exitCode: 0,
+      log,
+      source: 'reused',
+      reusedFrom: { runId: 'source', checkedAt: 't0', recovered: false },
+    }
+    const db = {
+      getRuns: async () => [],
+      storage: {
+        getCompletedStep: async (_id: string, name: string) =>
+          name === 'baseline' ? { output } : null,
+      },
+    } as unknown as ReportSource
+    const cache = finishedReportCache(
+      async (_src, id) =>
+        ({
+          runId: id,
+          lineage: { parent: null, children: [] },
+          baseline: reusedBaselineOf(output),
+        }) as unknown as LoopReport,
+    )
+    const run = {
+      id: 'reusing',
+      jobName: 'local-factory.v2',
+      status: 'completed' as const,
+      updatedAt: 't1',
+      input: {},
+      output: null,
+      error: null,
+    }
+    assert.equal((await cache.get(db, run)).report.baseline?.logMissing, null)
+    await rm(log.stderrPath)
+    const hit = await cache.get(db, run)
+    assert.equal(hit.fresh, false)
+    assert.equal(hit.report.baseline?.log, null)
+    assert.match(hit.report.baseline?.logMissing ?? '', /no longer at/)
   })
 
   it('groups repair children by their label, or by their input without one, oldest first', () => {

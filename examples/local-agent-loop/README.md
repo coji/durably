@@ -525,15 +525,25 @@ baseの採点を繰り返します。`baselineCheck` と一緒に `baselineReuse
   リンクを解決したpath）、base commit、`check` と `setup` のargv、
   `checkTimeoutMs`、Node.jsの版、OSのplatform、architecture、`check` の先頭の
   コマンドが実際に起動するファイル（PATHから探し、シンボリックリンクを解決した
-  path。worktreeの中のファイルはworktreeからの相対path）。どれかが分からない
+  path。worktreeの中のファイルはworktreeからの相対path）。起動するファイルは
+  `spawn` と同じ順で探します。PATHの空の要素はworktreeを指します。PATHが
+  未設定のときとWindowsでは分からないものとします。どれかが分からない
   runは、結果を使わず、ほかのrunに使わせる結果も残しません。
+- これらの値はsetupで一度だけ求めて記録します。setupとbaselineの間でworkerが
+  再起動し、Node.jsやPATHが変わっても、setupで記録した値で照合します。
 - 比べるのはこれだけです。依存パッケージの中身、環境変数、`check` が内部で
   呼ぶほかのコマンド、ignore対象のファイル（`node_modules` など）は比べません。
   これらが変わったときは、`baselineReuse` を外すか、期限を短くします。
-- 期限は、元のrunのbaselineが完了した時刻から、このrunが使い回しを判断する
-  時刻までで測ります。候補が複数あれば、期限内でいちばん新しい結果を使います。
-  判断の時刻より後に完了したことになっている結果（時計のずれ）は使いません。
-  候補を読めなかったときは、通常どおり採点します。
+- 採点して成功したrunは、state rootの `baseline-index/` に、条件ごとに
+  いちばん新しい結果のrun ID、採点の完了時刻、ログのpathを書きます。
+  使い回しを判断するときは、このファイルを1つ読み、そこに書かれたrunの
+  baselineをstate DBから読み直して、採点して成功した結果であることと条件の
+  一致を確かめます。過去のrunを全部は読みません。ファイルが無い、読めない、
+  書かれたrunの結果が条件に合わないときは、通常どおり採点します。
+- 期限は、元のrunで採点が完了した時刻（checkpointの記録）から、このrunが
+  使い回しを判断する時刻までで測ります。元のrunが再開後にbaselineを保存して
+  いても、再開の時刻からは測りません。判断の時刻より後に完了したことに
+  なっている結果（時計のずれ）は使いません。
 - 使い回すときも、setupは毎回実行し、新しいworktreeを作ります。setupの直後の
   未追跡ファイルの確認も省きません。採点を省く前に、worktreeがbase commitに
   あること、tracked fileに変更がないこと、`.gitignore` の対象外の未追跡ファイル

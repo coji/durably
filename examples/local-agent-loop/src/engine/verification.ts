@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -22,7 +22,11 @@ import type { StepAttemptContext } from '@coji/durably'
 
 import { childLogError, SpawnCancelledError } from './child.js'
 import type { ProviderName, VerificationLog } from './providers/types.js'
-import { UncertainInvocationError, writeMeasurement } from './runner.js'
+import {
+  checkpointPaths,
+  UncertainInvocationError,
+  writeMeasurement,
+} from './runner.js'
 
 export interface VerificationOutcome {
   passed: boolean
@@ -122,13 +126,9 @@ export async function runVerificationStep(
   signal: AbortSignal,
 ): Promise<VerificationOutcome> {
   const started = Date.now()
-  const checkpointId = createHash('sha256')
-    .update(spec.operationKey)
-    .digest('hex')
-  const startedPath = join(spec.checkpointsDir, `${checkpointId}.started.json`)
-  const completedPath = join(
+  const { started: startedPath, completed: completedPath } = checkpointPaths(
     spec.checkpointsDir,
-    `${checkpointId}.completed.json`,
+    spec.operationKey,
   )
   await mkdir(spec.checkpointsDir, { recursive: true })
   const readCheckpoint = async <T>(path: string): Promise<T | null> => {
@@ -290,5 +290,28 @@ export async function runVerificationStep(
       verificationLog: partialLog(err),
     })
     throw err
+  }
+}
+
+/**
+ * When the verification under `operationKey` completed, from its completed
+ * checkpoint; null when there is none.
+ */
+export async function verificationCompletedAt(
+  checkpointsDir: string,
+  operationKey: string,
+): Promise<string | null> {
+  try {
+    const saved = JSON.parse(
+      await readFile(
+        checkpointPaths(checkpointsDir, operationKey).completed,
+        'utf8',
+      ),
+    ) as { invocationCompletedAt?: unknown }
+    return typeof saved.invocationCompletedAt === 'string'
+      ? saved.invocationCompletedAt
+      : null
+  } catch {
+    return null
   }
 }

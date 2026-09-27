@@ -11,20 +11,14 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { createDurably, type AnyDurably } from '@coji/durably'
+import { createDurably } from '@coji/durably'
 /** Durably instance (local SQLite via better-sqlite3). */
 import Database from 'better-sqlite3'
 import { SqliteDialect } from 'kysely'
 
-import { toAttemptRow } from './engine/report.js'
 import { TERMINAL_STATUSES } from './engine/terminal.js'
-import {
-  AGENT_LOOP_JOB_NAME,
-  createAgentLoopJob,
-  type BaselineHistory,
-} from './factory/job.js'
+import { createAgentLoopJob } from './factory/job.js'
 import { reviewSnapshotsDirOf, runRootOf } from './factory/layout.js'
-import { BASELINE_STEP } from './factory/types.js'
 import { removeQuietly } from './targets/repo.js'
 
 /**
@@ -165,47 +159,6 @@ function build(options: AgentDurablyOptions) {
   return withDatabase(database, stateRoot, options.maxConcurrentRuns)
 }
 
-/** Earlier baseline results in the database `durably` reads. */
-function baselineHistoryOf(
-  durably: Pick<AnyDurably, 'getRuns' | 'getStepAttempts' | 'storage'>,
-): BaselineHistory {
-  return {
-    completed: async (exceptRunId) => {
-      const runs = await durably.getRuns({ jobName: AGENT_LOOP_JOB_NAME })
-      const stored = await Promise.all(
-        runs
-          .filter(
-            (run) =>
-              run.id !== exceptRunId &&
-              (run.input as { target?: { baselineCheck?: unknown } } | null)
-                ?.target?.baselineCheck === true,
-          )
-          .map(async (run) => {
-            const found = await durably.storage.getCompletedStep(
-              run.id,
-              BASELINE_STEP,
-            )
-            return found
-              ? {
-                  runId: run.id,
-                  output: found.output,
-                  completedAt: found.completedAt,
-                }
-              : null
-          }),
-      )
-      return stored.filter((s) => s !== null)
-    },
-    recovered: async (runId) => {
-      const attempts = await durably.getStepAttempts(runId)
-      return attempts
-        .filter((a) => a.stepName === BASELINE_STEP)
-        .map(toAttemptRow)
-        .some((a) => a.measurement?.result === 'checkpoint-recovered')
-    },
-  }
-}
-
 function withDatabase(
   database: Database.Database,
   stateRoot: string,
@@ -220,11 +173,16 @@ function withDatabase(
     preserveSteps: true,
     ...(maxConcurrentRuns ? { maxConcurrentRuns } : {}),
   })
-  // The job reads this same database's earlier baseline results.
+  // A baseline reuse decision reads the one run the reuse index names from
+  // this same database.
   const durably = base.register({
     agentLoop: createAgentLoopJob({
       stateRoot,
-      baselineHistory: baselineHistoryOf(base),
+      baselineStore: {
+        getCompletedStep: (runId, name) =>
+          base.storage.getCompletedStep(runId, name),
+        getStepAttempts: (runId) => base.getStepAttempts(runId),
+      },
     }),
   })
   // The worker removes a run's review snapshots itself: after each review
