@@ -601,12 +601,45 @@ describe('findings-json review output', () => {
         /finding 1: line/,
       ],
       ['not an object', findingsReply(['blocker']), /finding 1: not an object/],
+      [
+        'trailing space on status line',
+        findingsReply([], `${REVIEW_STATUS_COMPLETE} `),
+        /last line is not/,
+      ],
+      [
+        'trailing tab on status line',
+        findingsReply([], `${REVIEW_STATUS_COMPLETE}\t`),
+        /last line is not/,
+      ],
+      [
+        'null file',
+        findingsReply([
+          { severity: 'blocker', title: 't', body: 'b', file: null },
+        ]),
+        /finding 1: file/,
+      ],
+      [
+        'null line',
+        findingsReply([
+          { severity: 'blocker', title: 't', body: 'b', line: null },
+        ]),
+        /finding 1: line/,
+      ],
     ]
     for (const [name, text, error] of cases) {
       const parsed = parseFindingsOutput(text)
       assert.equal(parsed.ok, false, name)
       assert.match(parsed.ok ? '' : parsed.error, error, name)
     }
+  })
+
+  it('accepts one conventional trailing newline after the status line', () => {
+    const withLf = parseFindingsOutput(`${findingsReply([])}\n`)
+    assert.equal(withLf.ok && withLf.decision, 'pass')
+    const withCrLf = parseFindingsOutput(
+      `${findingsReply([]).replace(/\n/g, '\r\n')}\r\n`,
+    )
+    assert.equal(withCrLf.ok && withCrLf.decision, 'pass')
   })
 })
 

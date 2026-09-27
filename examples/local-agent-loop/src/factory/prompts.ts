@@ -428,12 +428,17 @@ function validFinding(
     return bad('title must be non-empty text')
   if (typeof body !== 'string' || body.trim().length === 0)
     return bad('body must be non-empty text')
-  const file = f['file'] ?? undefined
-  const line = f['line'] ?? undefined
-  if (file !== undefined && (typeof file !== 'string' || file.trim() === ''))
+  // Presence is checked with `in`, not `?? undefined`: an explicit `null` is
+  // a present key with the wrong type, not an absent one, so it must be
+  // rejected rather than silently treated as omitted.
+  const hasFile = 'file' in f
+  const file = f['file']
+  if (hasFile && (typeof file !== 'string' || file.trim() === ''))
     return bad('file must be non-empty text when given')
+  const hasLine = 'line' in f
+  const line = f['line']
   if (
-    line !== undefined &&
+    hasLine &&
     (typeof line !== 'number' || !Number.isInteger(line) || line < 1)
   )
     return bad('line must be a positive integer when given')
@@ -443,8 +448,8 @@ function validFinding(
       severity,
       title: oneLine(title),
       body: oneLine(body),
-      ...(file !== undefined ? { file: file.trim() } : {}),
-      ...(line !== undefined ? { line } : {}),
+      ...(hasFile ? { file: (file as string).trim() } : {}),
+      ...(hasLine ? { line: line as number } : {}),
     },
   }
 }
@@ -471,9 +476,13 @@ function findingNote(finding: ReviewFinding): string {
 export function parseFindingsOutput(text: string): ParsedReview {
   if (!text || text.trim().length === 0)
     return { ok: false, error: 'empty review output' }
-  const lines = text.replace(/\r\n/g, '\n').trimEnd().split('\n')
+  // Only one conventional trailing newline is stripped, not every trailing
+  // whitespace character: the status line itself must match exactly, so a
+  // reply ending in `REVIEW_STATUS: COMPLETE ` (trailing space or tab, or a
+  // second blank line) stays review-incomplete.
+  const lines = text.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n')
   const status = lines.filter((line) => /^\s*REVIEW_STATUS\s*:/i.test(line))
-  const last = (lines.at(-1) ?? '').trimEnd()
+  const last = lines.at(-1) ?? ''
   if (last !== REVIEW_STATUS_COMPLETE)
     return {
       ok: false,

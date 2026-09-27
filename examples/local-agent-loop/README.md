@@ -696,8 +696,11 @@ effortに加えて、呼び出し方と返答の読み方を役割ごとに書�
 - `output` は返答の読み方です。`verdict`（既定）は従来の `DECISION`／`NOTES` です。
   `findings-json` は、返答の最後の ` ```json ` ブロックにある配列を読みます。
   各指摘は `{"severity": "blocker" | "non-blocker", "title": "...", "body": "...",
-"file": "...", "line": 12}` で、`file` と `line` は省けます。返答の最終行は
-  `REVIEW_STATUS: COMPLETE` ちょうどでなければなりません。`blocker` が一件でも
+"file": "...", "line": 12}` で、`file` と `line` は省けます。書く場合は
+  `file` が文字列、`line` が数値でなければならず、`null` は「省いた」扱いにはせず
+  形が違う指摘として止めます。返答の最終行は改行1つ（`\n` または `\r\n`）を
+  除いて `REVIEW_STATUS: COMPLETE` ちょうどでなければならず、末尾の空白や
+  タブがあれば完了行として認めません。`blocker` が一件でも
   あれば `needsChanges` で、`blocker` だけを `- [file:line] title — body` の形で
   一行ずつnotesにし、修正に渡します。空の配列か `non-blocker` だけなら `pass`
   です。完了行が無い・最終行でない・別の状態、JSONが無い・壊れている、指摘の形が
