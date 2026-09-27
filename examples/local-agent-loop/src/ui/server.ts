@@ -31,6 +31,7 @@ import {
 } from '../durably.js'
 import {
   asReportCandidate,
+  asReportReview,
   buildReport,
   repairChildren,
   repairChildrenByParent,
@@ -510,15 +511,6 @@ function profileOf(attempts: AttemptRow[]): TraceProfile | null {
     : null
 }
 
-function asReview(value: unknown): ReportReview | null {
-  const v = value as Partial<ReportReview> | null
-  return typeof v?.lens === 'string' &&
-    typeof v.decision === 'string' &&
-    typeof v.notes === 'string'
-    ? { lens: v.lens, decision: v.decision, notes: v.notes }
-    : null
-}
-
 const iso = (ms: number | null) =>
   ms === null ? null : new Date(ms).toISOString()
 
@@ -763,7 +755,7 @@ export function deriveTrace(input: TraceInput): Trace {
         : (input.reviewRounds
             ?.find((r) => r.sequence === e.seq)
             ?.reviews.find((r) => r.lens === lens) ??
-          asReview(reviewStep ? input.stepOutputs[reviewStep] : null) ??
+          asReportReview(reviewStep ? input.stepOutputs[reviewStep] : null) ??
           (lastDone && e.seq === lastReviewSeq
             ? (input.reviews.find((r) => r.lens === lens) ?? null)
             : null))

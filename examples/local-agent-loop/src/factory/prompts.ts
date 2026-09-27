@@ -5,7 +5,9 @@ import { z } from 'zod'
 
 import type { CandidateChanges, ReviewSnapshots } from '../engine/types.js'
 import type { UntrustedInput } from './target.js'
-import type { ReviewOutput } from './types.js'
+import type { ReviewFinding, ReviewFindings, ReviewOutput } from './types.js'
+
+export type { ReviewFinding, ReviewFindings }
 
 /**
  * Fence caller-supplied text off as data.
@@ -349,7 +351,13 @@ export const reviewVerdictSchema = z.object({
 })
 
 export type ParsedReview =
-  | { ok: true; decision: 'pass' | 'needsChanges'; notes: string }
+  | {
+      ok: true
+      decision: 'pass' | 'needsChanges'
+      notes: string
+      /** Set by `parseFindingsOutput` only. */
+      findings?: ReviewFindings
+    }
   | { ok: false; error: string }
 
 /**
@@ -419,15 +427,6 @@ export function parseReviewOutput(text: string): ParsedReview {
     }
   }
   return { ok: true, decision, notes }
-}
-
-/** One finding of a `findings-json` review, as validated. */
-export interface ReviewFinding {
-  severity: 'blocker' | 'non-blocker'
-  title: string
-  body: string
-  file?: string
-  line?: number
 }
 
 /**
@@ -581,6 +580,57 @@ function blockerNotes(blockers: ReviewFinding[]): string {
   ].join('\n')
 }
 
+/** How much of a review's findings the report keeps; see `reportFindings`. */
+export const FINDINGS_REPORT_LIMITS = {
+  /** Findings kept of each severity; the rest are only counted. */
+  perSeverity: 20,
+  /** Characters kept of a finding's title. */
+  title: 200,
+  /** Characters kept of a finding's file. */
+  file: 200,
+  /** Characters kept of a finding's body. */
+  body: 600,
+} as const
+
+/** `text` cut to at most `max` characters, an ellipsis marking the cut. */
+function capped(text: string, max: number): string {
+  if (text.length <= max) return text
+  let kept = text.slice(0, max - 1)
+  // Never leave half of a surrogate pair at the cut.
+  if (/[\uD800-\uDBFF]$/.test(kept)) kept = kept.slice(0, -1)
+  return `${kept}…`
+}
+
+function reportFinding(finding: ReviewFinding): ReviewFinding {
+  return {
+    severity: finding.severity,
+    title: capped(finding.title, FINDINGS_REPORT_LIMITS.title),
+    body: capped(finding.body, FINDINGS_REPORT_LIMITS.body),
+    ...(finding.file !== undefined
+      ? { file: capped(finding.file, FINDINGS_REPORT_LIMITS.file) }
+      : {}),
+    ...(finding.line !== undefined ? { line: finding.line } : {}),
+  }
+}
+
+/**
+ * The findings as the report keeps them: the first of each severity in
+ * their order, each severity with its own limit so blockers cannot crowd out
+ * the advice, every text cut to a fixed length, and the totals kept apart so
+ * a shortened list is never read as all there was.
+ */
+function reportFindings(findings: ReviewFinding[]): ReviewFindings {
+  const blocker = findings.filter((f) => f.severity === 'blocker')
+  const nonBlocker = findings.filter((f) => f.severity === 'non-blocker')
+  const kept = (list: ReviewFinding[]) =>
+    list.slice(0, FINDINGS_REPORT_LIMITS.perSeverity).map(reportFinding)
+  return {
+    blocker: kept(blocker),
+    nonBlocker: kept(nonBlocker),
+    counts: { blocker: blocker.length, nonBlocker: nonBlocker.length },
+  }
+}
+
 /**
  * Strict `findings-json` parser.
  *
@@ -590,7 +640,8 @@ function blockerNotes(blockers: ReviewFinding[]): string {
  * non-empty title and body. Anything else, a reply cut off part way
  * included, is review-incomplete, never `pass`. One blocker makes the review
  * `needsChanges`, with the blockers as its notes; an empty array or
- * non-blockers alone pass.
+ * non-blockers alone pass. Either way the findings come back as the report
+ * keeps them.
  */
 export function parseFindingsOutput(text: string): ParsedReview {
   if (!text || text.trim().length === 0)
@@ -624,11 +675,13 @@ export function parseFindingsOutput(text: string): ParsedReview {
     findings.push(checked.finding)
   }
   const blockers = findings.filter((f) => f.severity === 'blocker')
+  const kept = reportFindings(findings)
   if (blockers.length > 0)
     return {
       ok: true,
       decision: 'needsChanges',
       notes: blockerNotes(blockers),
+      findings: kept,
     }
   const advice = findings.length
   return {
@@ -638,6 +691,7 @@ export function parseFindingsOutput(text: string): ParsedReview {
       advice === 0
         ? 'no findings'
         : `no blocking findings (${advice} non-blocker${advice === 1 ? '' : 's'})`,
+    findings: kept,
   }
 }
 

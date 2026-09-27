@@ -754,7 +754,7 @@ effortに加えて、呼び出し方と返答の読み方を役割ごとに書�
         "provider": "claude",
         "model": "claude-opus-5-5",
         "effort": "high",
-        "command": "/code-review {base}..{head} --effort {effort}",
+        "command": "/code-review {effort} {base}...{head}",
         "context": "local-instructions",
         "output": "findings-json"
       },
@@ -802,6 +802,11 @@ effortに加えて、呼び出し方と返答の読み方を役割ごとに書�
   で止まり、`pass` にはなりません。同じ呼び出しを自動で送り直すこともしません。
   指摘の本文にコードフェンスがあっても、JSON配列として読める最初の閉じフェンスまでを
   読むので途中で切れません。
+  読めた返答の指摘は、判定とnotesとは別に、レビューstepの出力に構造化して保存し、
+  レポートに出します（後述の **Review rounds**）。`blocker` と `non-blocker` は
+  それぞれ先頭20件までを元の順序で残すので、`blocker` が多くても `non-blocker` は
+  消えません。各指摘の `title` と `file` は200文字、`body` は600文字までに切り、
+  省いた項目は付けません。`review-incomplete` で止まった返答の指摘は保存しません。
 - `findings-json` はproviderを問わず使えます。`command` と `local-instructions` は
   Claudeとfakeのレビューだけが使えます。Codexのレビューに書くと、`trigger` の
   時点で役割名と項目を示して拒否します。CLIを通さずjobを直接 `trigger` した
@@ -1177,7 +1182,17 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
   候補と、両レビュアーの判定とメモを回順に持ちます。保存済みのレビューstepの出力から
   組み立てるので、実行中、承認待ち、修正後に止まったrunでも終わった回が出ます。
   途中で止まった回には、終わったレビュアーの分だけが入ります。`reviews` は従来どおり
-  最後の回です
+  最後の回です。`findings-json` のレビューは、`reviewRounds[].reviews[]` と
+  `reviews[]` の両方に `findings` を持ちます。`findings.blocker` と
+  `findings.nonBlocker` は保存した指摘（`severity`、`title`、`body`、あれば `file`
+  と `line`）の配列で、それぞれ先頭20件までです。`findings.counts` は省いた分も
+  含めたseverityごとの総件数なので、配列の長さではなくこちらを件数として読みます。
+  指摘は完了したチェックポイントの返答をレビューstepが読んだときに保存したもので、
+  レポートを作るときにreviewerを呼び直したり、チェックポイントを読み直したりしません。
+  `verdict` のレビューと、指摘を保存する前のrunのレビューは `findings: null` です。
+  runの出力（`output.reviews`）には指摘を入れません。Markdownと画面には、総件数と
+  保存した指摘のタイトル、省いた件数だけを出し、本文、ファイル、行番号は出しません。
+  notesの表示は変わらないので、`blocker` の場所と本文は従来どおりnotesに出ます
 - **Verification logs**: 検証の試行ごとの終了コードと、`stdout.log` / `stderr.log` の
   パス。JSONでは `attempts[].measurement.verificationLog` で、`exitCode`、
   `stdoutPath`、`stderrPath` に加え、中断した試行には `interrupted: true`、

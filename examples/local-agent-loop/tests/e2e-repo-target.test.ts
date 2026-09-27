@@ -336,6 +336,14 @@ describe('repo target end to end', { timeout: 180000 }, () => {
         md.includes(`- iteration 1: ${unchanged?.id} — 0 files, +0 / -0 lines`),
       )
       assert.ok(md.includes(repaired?.changes?.diffPath ?? '?'))
+      // Verdict reviews keep no findings, and the report reads as before.
+      assert.ok(report.reviewRounds.length > 0)
+      for (const review of [
+        ...report.reviews,
+        ...report.reviewRounds.flatMap((r) => r.reviews),
+      ])
+        assert.equal(review.findings, null, review.lens)
+      assert.ok(!md.includes('- blockers:'))
     } finally {
       await durably.stop()
       await durably.db.destroy()
@@ -2190,7 +2198,47 @@ describe('configured reviewers', { timeout: 240000 }, () => {
         lens: 'correctness',
         decision: 'needsChanges',
         notes: '- [src/calc.js:2] wrong sum — add() still truncates',
+        findings: {
+          blocker: [blocker],
+          nonBlocker: [advice],
+          counts: { blocker: 1, nonBlocker: 1 },
+        },
       })
+      // The run output keeps each verdict and its notes only.
+      for (const r of output.reviews) assert.ok(!('findings' in r), r.lens)
+      // The report reads every round's findings from its review steps.
+      const report = await buildReport(durably, repaired.id)
+      const kept = (b: unknown[], n: unknown[]) => ({
+        blocker: b,
+        nonBlocker: n,
+        counts: { blocker: b.length, nonBlocker: n.length },
+      })
+      assert.deepEqual(
+        report.reviewRounds.map((round) =>
+          round.reviews.map((r) => [r.lens, r.findings]),
+        ),
+        [
+          [
+            ['correctness', kept([blocker], [advice])],
+            ['edge-cases', kept([], [advice])],
+          ],
+          [
+            ['correctness', kept([], [])],
+            ['edge-cases', kept([], [advice])],
+          ],
+        ],
+      )
+      assert.deepEqual(report.reviews, report.reviewRounds[1]?.reviews)
+      assert.deepEqual(
+        JSON.parse(reportToJson(report)).reviewRounds[0].reviews[0].findings,
+        kept([blocker], [advice]),
+      )
+      // Markdown shows the counts and titles; a finding's body, file and
+      // line stay in the JSON report. The blocker's are still in its notes.
+      const md = reportToMarkdown(report)
+      assert.ok(md.includes('    - blockers: 1\n      - wrong sum\n'), md)
+      assert.ok(md.includes('    - non-blockers: 1\n      - naming\n'), md)
+      assert.ok(!md.includes('rename'), md)
       assert.equal(existsSync(join(output.workdir, LOCAL)), false)
       assert.equal(snapshotsLeft(join(root, 'state'), repaired.id), false)
       // The edge-cases reviewer gets its context in the prompt, which only
@@ -2250,6 +2298,14 @@ describe('configured reviewers', { timeout: 240000 }, () => {
         )
         assert.equal(existsSync(join(workdir, LOCAL)), false, name)
         assert.equal(snapshotsLeft(join(root, 'state'), run.id), false, name)
+        // A reply that could not be read is never kept as a review.
+        const stopped = await buildReport(durably, run.id)
+        assert.equal(stopped.reviews.length, 0, name)
+        for (const round of stopped.reviewRounds)
+          assert.ok(
+            round.reviews.every((r) => r.lens !== 'correctness'),
+            name,
+          )
       }
       const denied = incomplete.find((i) => i.name === 'permission denial')
       assert.match(
@@ -2396,6 +2452,21 @@ describe('configured reviewers', { timeout: 240000 }, () => {
       // Neither review was sent again: the first replays its checkpoint,
       // the second is uncertain.
       assert.equal(endedCalls(workdir).length, 0)
+      // The round it stopped in shows the findings of the review that was
+      // recorded, and nothing for the one that was not.
+      const report = await buildReport(durably, run.id)
+      assert.deepEqual(report.reviews, [])
+      const recordedFirst = (await durably.storage.getSteps(run.id)).some(
+        (s) =>
+          /^stage:\d+:review:correctness$/.test(s.name) &&
+          s.status === 'completed',
+      )
+      assert.deepEqual(
+        report.reviewRounds.map((round) =>
+          round.reviews.map((r) => [r.lens, r.findings?.counts]),
+        ),
+        recordedFirst ? [[['correctness', { blocker: 0, nonBlocker: 0 }]]] : [],
+      )
     } finally {
       try {
         process.kill(pid(), 'SIGKILL')
@@ -2487,6 +2558,22 @@ describe('configured reviewers', { timeout: 240000 }, () => {
         endedCalls(join(stateRoot, 'runs', run.id, 'work')).length,
         0,
       )
+      // The report of the run waiting for approval reads the findings the
+      // recorded reviews kept, without calling a reviewer again.
+      const report = await buildReport(durably, run.id)
+      const empty = {
+        blocker: [],
+        nonBlocker: [],
+        counts: { blocker: 0, nonBlocker: 0 },
+      }
+      assert.deepEqual(
+        report.reviews.map((r) => [r.lens, r.decision, r.findings]),
+        [
+          ['correctness', 'pass', empty],
+          ['edge-cases', 'pass', empty],
+        ],
+      )
+      assert.deepEqual(report.reviewRounds.at(-1)?.reviews, report.reviews)
     } finally {
       worker.kill('SIGKILL')
       await durably.stop()

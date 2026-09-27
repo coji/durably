@@ -56,7 +56,13 @@ function outcome(
     candidate: state.candidate,
     iterations: state.iteration,
     reviewRounds: state.reviewRounds,
-    reviews: state.reviews,
+    // The run output keeps each verdict and its notes only: the findings
+    // stay in the review steps, where the report reads them.
+    reviews: state.reviews.map(({ lens, decision, notes }) => ({
+      lens,
+      decision,
+      notes,
+    })),
     workdir,
     fake: state.setup.fake,
     delivery,
@@ -408,7 +414,15 @@ export const reviewStage: StageHandler = async ({
         : parseReviewOutput(result.text)
     if (!parsed.ok)
       throw new Error(`review-incomplete (${lens}): ${parsed.error}`)
-    return { lens, decision: parsed.decision, notes: parsed.notes }
+    // The findings are kept with the verdict in this completed step, so a
+    // report reads them back without calling the reviewer or reading the
+    // checkpoint again.
+    return {
+      lens,
+      decision: parsed.decision,
+      notes: parsed.notes,
+      findings: parsed.findings ?? null,
+    }
   }
   const correctness = `${key}:correctness`
   const edgeCases = `${key}:edge-cases`

@@ -18,6 +18,8 @@ import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import Database from 'better-sqlite3'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 
 import { createAgentDurably, dbPath } from '../src/durably.js'
 import {
@@ -42,6 +44,7 @@ import {
 import { checkpointPaths } from '../src/engine/runner.js'
 import type { DiagnosisKind } from '../src/engine/status.js'
 import { repairLabels } from '../src/factory/repair.js'
+import { ReviewFindingTitles } from '../src/ui/App.js'
 import {
   commandNote,
   noteSaidByReason,
@@ -444,8 +447,18 @@ describe('pipeline and trace', () => {
       { status: 'waiting' },
       {
         reviews: [
-          { lens: 'correctness', decision: 'pass', notes: 'ok' },
-          { lens: 'edge-cases', decision: 'pass', notes: 'fine' },
+          {
+            lens: 'correctness',
+            decision: 'pass',
+            notes: 'ok',
+            findings: null,
+          },
+          {
+            lens: 'edge-cases',
+            decision: 'pass',
+            notes: 'fine',
+            findings: null,
+          },
         ],
         candidate: { id: 'cand-2', branch: null, commit: null },
       },
@@ -658,7 +671,12 @@ describe('pipeline and trace', () => {
         // What the report holds for an open run: the previous round's.
         candidate: { id: 'cand-1', branch: 'b1', commit: 'c1' },
         reviews: [
-          { lens: 'correctness', decision: 'needsChanges', notes: 'x' },
+          {
+            lens: 'correctness',
+            decision: 'needsChanges',
+            notes: 'x',
+            findings: null,
+          },
         ],
         stepOutputs: {
           'stage:0:code:candidate': {
@@ -685,7 +703,12 @@ describe('pipeline and trace', () => {
       { status: 'leased' },
       {
         reviews: [
-          { lens: 'correctness', decision: 'needsChanges', notes: 'x' },
+          {
+            lens: 'correctness',
+            decision: 'needsChanges',
+            notes: 'x',
+            findings: null,
+          },
         ],
       },
     )
@@ -780,6 +803,7 @@ describe('pipeline and trace', () => {
       lens,
       decision,
       notes,
+      findings: null,
     })
     const t = traceOf(
       [
@@ -846,6 +870,57 @@ describe('pipeline and trace', () => {
     )
     // Rows that are not verifications carry no check log.
     assert.equal(code2?.verificationLog, null)
+  })
+
+  it('trace (h) keeps the findings a review step stored, and none from an older step', () => {
+    const findings = {
+      blocker: [
+        {
+          severity: 'blocker',
+          title: 'wrong sum',
+          body: 'add() truncates',
+          file: 'src/calc.js',
+          line: 2,
+        },
+      ],
+      nonBlocker: [],
+      counts: { blocker: 1, nonBlocker: 0 },
+    }
+    const t = traceOf(
+      [
+        step('stage:0:code:agent', 1, 10),
+        step('stage:1:verify:acceptance', 10, 15),
+        step('stage:2:review:correctness', 15, 20),
+        step('stage:2:review:edge-cases', 15, 20),
+      ],
+      [],
+      { status: 'leased' },
+      {
+        // Read straight from the review steps: one kept findings, one was
+        // recorded before findings were kept.
+        stepOutputs: {
+          'stage:2:review:correctness': {
+            lens: 'correctness',
+            decision: 'needsChanges',
+            notes: '- [src/calc.js:2] wrong sum — add() truncates',
+            findings,
+          },
+          'stage:2:review:edge-cases': {
+            lens: 'edge-cases',
+            decision: 'pass',
+            notes: 'fine',
+          },
+        },
+      },
+    )
+    const [, , correctness, edgeCases] = t.root.children[0]?.children ?? []
+    assert.deepEqual(correctness?.review?.findings, findings)
+    assert.equal(
+      correctness?.review?.notes.startsWith('- [src/calc.js:2]'),
+      true,
+    )
+    assert.equal(edgeCases?.review?.findings, null)
+    assert.equal(edgeCases?.review?.notes, 'fine')
   })
 
   it('trace (d) sums per-row tokens and cost to the report stage totals', () => {
@@ -1313,6 +1388,45 @@ describe('diagnosis wording on the page', () => {
       assert.equal(plain(label), null, label)
       assert.equal(plain(title), null, title)
     }
+  })
+
+  it("shows a review's findings as counts and titles in Japanese, never their body or place", () => {
+    const finding = (severity: string, n: number) => ({
+      severity: severity as 'blocker' | 'non-blocker',
+      title: `title-${severity}-${n}`,
+      body: `body-${severity}-${n}`,
+      file: `src/file-${n}.js`,
+      line: 40 + n,
+    })
+    const html = renderToStaticMarkup(
+      createElement(ReviewFindingTitles, {
+        findings: {
+          blocker: [finding('blocker', 1), finding('blocker', 2)],
+          nonBlocker: Array.from({ length: 20 }, (_, i) =>
+            finding('non-blocker', i + 1),
+          ),
+          counts: { blocker: 2, nonBlocker: 23 },
+        },
+      }),
+    )
+    const text = html.replace(/<[^>]+>/g, '\n')
+    assert.match(text, /直すべき指摘\n+ 2件/)
+    assert.match(text, /助言\n+ 23件/)
+    assert.match(text, /ほか3件はレポートに残していません。/)
+    assert.ok(text.includes('title-blocker-2'))
+    assert.ok(text.includes('title-non-blocker-20'))
+    // Only one note of what was left out: every blocker was kept.
+    assert.equal(text.match(/ほか/g)?.length, 1)
+    for (const hidden of ['body-', 'src/file-', '41', '42'])
+      assert.ok(!text.includes(hidden), hidden)
+    assert.equal(plain(text.replace(/title-[a-z-]+-\d+/g, '')), null, text)
+    // A verdict review, or one recorded before findings were kept, shows none.
+    assert.equal(
+      renderToStaticMarkup(
+        createElement(ReviewFindingTitles, { findings: null }),
+      ),
+      '',
+    )
   })
 
   it('says in Japanese what every next command the CLI annotates does', async () => {

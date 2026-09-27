@@ -178,10 +178,35 @@ export interface VerificationResult {
   log: VerificationLog | null
 }
 
+/** One finding of a `findings-json` review, as validated. */
+export interface ReviewFinding {
+  severity: 'blocker' | 'non-blocker'
+  title: string
+  body: string
+  file?: string
+  line?: number
+}
+
+/**
+ * The findings of a `findings-json` review as the report keeps them: the
+ * first of each severity, cut to fixed lengths, with each severity's total.
+ */
+export interface ReviewFindings {
+  blocker: ReviewFinding[]
+  nonBlocker: ReviewFinding[]
+  /** Every finding of each severity, those left out of the lists included. */
+  counts: { blocker: number; nonBlocker: number }
+}
+
 export interface ReviewVerdict {
   lens: ReviewLens
   decision: 'pass' | 'needsChanges'
   notes: string
+  /**
+   * A `findings-json` review's findings; null for a verdict review, absent
+   * on a review recorded before findings were kept.
+   */
+  findings?: ReviewFindings | null
 }
 
 export interface FactoryOutcome {

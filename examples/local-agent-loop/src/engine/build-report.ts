@@ -30,6 +30,7 @@ import {
   type ReportCandidate,
   type ReportCandidateChanges,
   type ReportDelivery,
+  type ReportFinding,
   type ReportInputs,
   type ReportLineage,
   type ReportPreflight,
@@ -37,6 +38,7 @@ import {
   type ReportRepairCall,
   type ReportRepairSession,
   type ReportReview,
+  type ReportReviewFindings,
   type ReportReviewRound,
   type ReportSealedCandidate,
   type ReportTriage,
@@ -159,36 +161,110 @@ export async function recordedTriage(
   )
 }
 
+function asFinding(value: unknown): ReportFinding | null {
+  const f = value as Partial<ReportFinding> | null
+  if (
+    (f?.severity !== 'blocker' && f?.severity !== 'non-blocker') ||
+    typeof f.title !== 'string' ||
+    typeof f.body !== 'string'
+  )
+    return null
+  return {
+    severity: f.severity,
+    title: f.title,
+    body: f.body,
+    ...(typeof f.file === 'string' ? { file: f.file } : {}),
+    ...(typeof f.line === 'number' ? { line: f.line } : {}),
+  }
+}
+
+/** Stored findings; null when none were kept or they are not readable. */
+function asFindings(value: unknown): ReportReviewFindings | null {
+  const v = value as {
+    blocker?: unknown
+    nonBlocker?: unknown
+    counts?: { blocker?: unknown; nonBlocker?: unknown } | null
+  } | null
+  if (
+    !Array.isArray(v?.blocker) ||
+    !Array.isArray(v.nonBlocker) ||
+    typeof v.counts?.blocker !== 'number' ||
+    typeof v.counts.nonBlocker !== 'number'
+  )
+    return null
+  const blocker = v.blocker.map(asFinding)
+  const nonBlocker = v.nonBlocker.map(asFinding)
+  if (blocker.includes(null) || nonBlocker.includes(null)) return null
+  return {
+    blocker: blocker as ReportFinding[],
+    nonBlocker: nonBlocker as ReportFinding[],
+    counts: { blocker: v.counts.blocker, nonBlocker: v.counts.nonBlocker },
+  }
+}
+
+/**
+ * A stored verdict, with the findings its review step kept; null when it is
+ * not one. A verdict recorded before findings were kept has none.
+ */
+export function asReportReview(value: unknown): ReportReview | null {
+  const r = value as (Partial<ReportReview> & { findings?: unknown }) | null
+  return typeof r?.lens === 'string' &&
+    typeof r.decision === 'string' &&
+    typeof r.notes === 'string'
+    ? {
+        lens: r.lens,
+        decision: r.decision,
+        notes: r.notes,
+        findings: asFindings(r.findings),
+      }
+    : null
+}
+
 function asReviews(value: unknown): ReportReview[] | null {
   if (!Array.isArray(value)) return null
   return value.flatMap((v) => {
-    const r = v as Partial<ReportReview> | null
-    return typeof r?.lens === 'string' &&
-      typeof r.decision === 'string' &&
-      typeof r.notes === 'string'
-      ? [{ lens: r.lens, decision: r.decision, notes: r.notes }]
-      : []
+    const review = asReportReview(v)
+    return review ? [review] : []
   })
 }
 
 /**
  * The last review round. A run with an output carries it there; a run
  * waiting for approval has it only in the approval wait's metadata, so the
- * latest wait that recorded reviews is used.
+ * latest wait that recorded reviews is used. Neither place keeps the
+ * findings, so each verdict takes them from its review step: from the
+ * latest round whose verdicts are these.
  */
 function lastReviews(
   output: unknown,
   waits: { metadata: unknown }[],
+  rounds: ReportReviewRound[],
 ): ReportReview[] {
-  if (output != null)
-    return asReviews((output as { reviews?: unknown }).reviews) ?? []
-  for (const wait of [...waits].reverse()) {
-    const fromWait = asReviews(
-      (wait.metadata as { reviews?: unknown } | null)?.reviews,
-    )
-    if (fromWait) return fromWait
+  const recorded = (): ReportReview[] => {
+    if (output != null)
+      return asReviews((output as { reviews?: unknown }).reviews) ?? []
+    for (const wait of [...waits].reverse()) {
+      const fromWait = asReviews(
+        (wait.metadata as { reviews?: unknown } | null)?.reviews,
+      )
+      if (fromWait) return fromWait
+    }
+    return []
   }
-  return []
+  const reviews = recorded()
+  const same = (x: ReportReview, y: ReportReview) =>
+    x.lens === y.lens && x.decision === y.decision && x.notes === y.notes
+  const round = [...rounds]
+    .reverse()
+    .find((r) =>
+      reviews.every((review) => r.reviews.some((kept) => same(kept, review))),
+    )
+  return reviews.map((review) => ({
+    ...review,
+    findings:
+      round?.reviews.find((kept) => same(kept, review))?.findings ??
+      review.findings,
+  }))
 }
 
 type StoredStep = Awaited<
@@ -691,6 +767,7 @@ export async function buildReport(
     : null
   const candidates = sealedCandidates(steps)
   const candidate = lastCandidate(output, candidates)
+  const reviewRounds = reviewRoundsOf(steps, candidates)
   const preflight = preflightOf(steps, rows)
   // Minimal preflight calls get a role row of their own, never folded into
   // the roles whose settings they checked.
@@ -746,8 +823,8 @@ export async function buildReport(
     candidates,
     repairSession: repairSession?.report ?? null,
     repairCalls: repairCallsOf(rows),
-    reviews: lastReviews(run.output, waits),
-    reviewRounds: reviewRoundsOf(steps, candidates),
+    reviews: lastReviews(run.output, waits, reviewRounds),
+    reviewRounds,
     delivery,
     failure,
     stageVisits: visits,
