@@ -51,6 +51,8 @@ export interface AgentCallSpec {
    * before anything is sent, and again on every recovery.
    */
   sessionHandling?: SessionHandling
+  /** Why the call treats the session as `sessionHandling` says. */
+  sessionReason?: string
   configVersion?: string | null
   /**
    * Return an explicit refusal from the provider (`rejectionReason`) as the
@@ -221,6 +223,7 @@ export async function runAgentCall(
     invocationId,
     sessionId: spec.session?.nativeId ?? null,
     ...(spec.sessionHandling ? { sessionHandling: spec.sessionHandling } : {}),
+    ...(spec.sessionReason ? { sessionReason: spec.sessionReason } : {}),
     recovered: saved !== null,
     usageScope: 'invocation',
     requestedModel: spec.requestedModel,

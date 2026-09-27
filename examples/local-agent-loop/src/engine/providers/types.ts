@@ -250,6 +250,8 @@ export interface AttemptMeasurement {
    * on every other call and on a repair recorded before it existed.
    */
   sessionHandling?: SessionHandling | null
+  /** Why, in one line, saved with `sessionHandling`. */
+  sessionReason?: string | null
   /** True when a saved completed invocation was read without sending again. */
   recovered?: boolean
   /** Whether usage is for one provider invocation or a larger CLI session. */

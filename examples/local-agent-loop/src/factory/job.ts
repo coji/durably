@@ -92,10 +92,12 @@ import {
   REVIEW_LENSES,
   REVIEW_OUTPUTS,
   confirmRepairSession,
+  REPAIR_SESSION_STEP,
   repairSessionDecision,
   separateRepairProfile,
   usesReviewMaterials,
   type FactorySetup,
+  type RepairSessionRecord,
   type ProfileRole,
   type ReviewContext,
   type ReviewInvocation,
@@ -1104,13 +1106,10 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   input.fakeScenario?.claudeEffortResume === true,
               })
             : null
-          const value: FactorySetup = {
-            fake: profiles.code.provider === 'fake',
-            contextMode: input.context,
-            target,
-            checkpointsDir: join(root, 'operation-checkpoints'),
-            instructionsVersion,
-            configVersion: configVersionOf({
+          // The version the run takes only once preflight confirms the
+          // continuation; every other run keeps `configVersion`.
+          const versionWith = (policy: string | null) =>
+            configVersionOf({
               contextMode: input.context,
               instructionsVersion,
               maxIterations: input.maxIterations,
@@ -1122,19 +1121,34 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               checkTimeoutMs: testTimeoutMs,
               code: profiles.code,
               repair: ownRepair,
-              repairSession: repairSession?.resume
-                ? EFFORT_RESUME_POLICY
-                : null,
+              repairSession: policy,
               correctness: profiles.correctness,
               edgeCases: profiles['edge-cases'],
               triage,
               cli,
               commit: target.kind === 'repo' ? (target.commit ?? null) : null,
               review,
-            }),
+            })
+          const value: FactorySetup = {
+            fake: profiles.code.provider === 'fake',
+            contextMode: input.context,
+            target,
+            checkpointsDir: join(root, 'operation-checkpoints'),
+            instructionsVersion,
+            configVersion: versionWith(null),
             profiles,
             repair,
-            ...(repairSession ? { repairSession } : {}),
+            ...(repairSession
+              ? {
+                  repairSession: repairSession.eligible
+                    ? {
+                        ...repairSession,
+                        confirmedConfigVersion:
+                          versionWith(EFFORT_RESUME_POLICY),
+                      }
+                    : repairSession,
+                }
+              : {}),
             triage,
             maxIterations: input.maxIterations,
             agentTimeoutMs,
@@ -1223,18 +1237,33 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       const roleProviders = byRole((role) => providerFor(setup.profiles[role]))
       const ownRepair = separateRepairProfile(setup)
       // Setup could not know the model an alias runs; preflight saw it. The
-      // stages read this confirmed decision. It is a pure function of the
-      // setup and preflight step outputs, so every replay reads the same.
+      // stages read this confirmed decision, and every call after preflight
+      // carries the config version it gives. Recorded in its own step, next
+      // to setup's answer, so a report can show why a repair starts new.
       const observedModelOf = (profile: ResolvedProfile) =>
         observedModels.get(executionKey(profile)) ?? null
-      const confirmedRepairSession = ownRepair
-        ? confirmRepairSession({
-            decision: setup.repairSession,
-            provider: setup.profiles.code.provider,
-            codeModel: observedModelOf(setup.profiles.code),
-            repairModel: observedModelOf(ownRepair),
+      const repairSession: RepairSessionRecord | null = ownRepair
+        ? await step.run(REPAIR_SESSION_STEP, async () => {
+            const confirmed = confirmRepairSession({
+              setup: setup.repairSession,
+              provider: setup.profiles.code.provider,
+              codeModel: observedModelOf(setup.profiles.code),
+              repairModel: observedModelOf(ownRepair),
+            })
+            const record: RepairSessionRecord = {
+              setup: setup.repairSession ?? null,
+              confirmed,
+              configVersion:
+                (confirmed.continues
+                  ? setup.repairSession?.confirmedConfigVersion
+                  : undefined) ?? setup.configVersion,
+            }
+            return record
           })
         : null
+      const runSetup: FactorySetup = repairSession
+        ? { ...setup, configVersion: repairSession.configVersion }
+        : setup
       const providers = {
         ...roleProviders,
         repair: ownRepair ? providerFor(ownRepair) : roleProviders.code,
@@ -1248,7 +1277,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             (signal, attempt) =>
               runTriage(signal, attempt, {
                 operationKey: triageKey,
-                setup,
+                setup: runSetup,
                 profile: triageProfile,
                 provider: providerFor(triageProfile),
                 target,
@@ -1261,11 +1290,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             },
           )
         : null
-      let state = initialState(
-        confirmedRepairSession
-          ? { ...setup, repairSession: confirmedRepairSession }
-          : setup,
-      )
+      let state = initialState(runSetup, repairSession?.confirmed ?? null)
       // Deliberately not a `finally`: `step.waitFor` suspends by throwing, so a
       // finally block would run cleanup every time the run parks on the human
       // approval wait, and a target that really removes its worktree would

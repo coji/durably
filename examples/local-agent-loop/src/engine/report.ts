@@ -412,6 +412,8 @@ export interface ReportRepairCall {
   invocationId: string | null
   /** Null for a repair recorded before session handling was. */
   sessionHandling: SessionHandling | null
+  /** Why; null for a repair recorded before the reason was. */
+  sessionReason: string | null
   inputTokens: number | null
   cacheReadTokens: number | null
   /**
@@ -420,6 +422,17 @@ export interface ReportRepairCall {
    */
   cacheReadRatio: number | null
   recovered: boolean
+}
+
+/**
+ * Whether a repair on its own profile continues the implementation session:
+ * setup's answer from the settings and environment, and the decision
+ * preflight confirmed, each with its reason.
+ */
+export interface ReportRepairSession {
+  /** Null on a run set up before setup answered. */
+  setup: { eligible: boolean; reason: string } | null
+  confirmed: { continues: boolean; model: string | null; reason: string }
 }
 
 /** A call's cache-read share of its input; null when it cannot be computed. */
@@ -486,6 +499,12 @@ export interface LoopReport {
   candidate: ReportCandidate | null
   /** Every sealed candidate with its size, oldest first. */
   candidates: ReportSealedCandidate[]
+  /**
+   * Whether a repair on its own profile continues the implementation
+   * session, and why; null when repair runs on `code` or the run has not
+   * passed preflight.
+   */
+  repairSession: ReportRepairSession | null
   /** Every repair call, oldest first, one row per invocation. */
   repairCalls: ReportRepairCall[]
   /** Last review round; empty before a review round has finished. */
@@ -965,6 +984,16 @@ export function reportToMarkdown(r: LoopReport): string {
   )
   lines.push(`- output: ${JSON.stringify(r.output)}`)
   lines.push(`- config version: ${fmt(r.configVersion)}`)
+  if (r.repairSession) {
+    const { setup, confirmed } = r.repairSession
+    lines.push(
+      `- repair session: ${confirmed.continues ? `continues across effort on ${confirmed.model ?? 'unknown'}` : 'starts new'} (${confirmed.reason})`,
+    )
+    if (setup)
+      lines.push(
+        `- repair session at setup: ${setup.eligible ? 'eligible' : 'not eligible'} (${setup.reason})`,
+      )
+  }
   lines.push('')
   lines.push('## Triage (shadow mode: recorded, never used to route)')
   lines.push('')

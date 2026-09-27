@@ -38,6 +38,7 @@ function baseReport(): LoopReport {
     lineage: { parent: null, children: [] },
     candidate: null,
     candidates: [],
+    repairSession: null,
     repairCalls: [],
     reviews: [],
     reviewRounds: [],

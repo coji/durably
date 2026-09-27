@@ -840,13 +840,29 @@ export function observedClaudeModel(message: SDKMessage): string | null {
 export const EFFORT_RESUME_MIN_CLAUDE_CLI = [2, 1, 260] as const
 
 /**
- * Models whose cache Claude Code keeps across an effort change: Opus 5.5 or
- * Fable 5.1, each with an optional `-YYYYMMDD` date suffix and an optional
- * `[1m]` context suffix that Claude Code reports. Anchored to the whole
- * model string so no other name matches. Matched against the model Claude
- * Code reports running, never an alias such as `opus`.
+ * Models whose cache Claude Code keeps across an effort change. Adding one
+ * here is the whole change: the pattern and the wording below follow.
  */
-const EFFORT_RESUME_MODELS = /^claude-(opus-5-5|fable-5-1)(-\d{8})?(\[1m\])?$/i
+const EFFORT_RESUME_MODELS = [
+  { id: 'claude-opus-5-5', label: 'Opus 5.5' },
+  { id: 'claude-fable-5-1', label: 'Fable 5.1' },
+] as const
+
+/**
+ * A listed model id, with an optional `-YYYYMMDD` date suffix and an
+ * optional `[1m]` context suffix that Claude Code reports. Anchored to the
+ * whole model string so no other name matches. Matched against the model
+ * Claude Code reports running, never an alias such as `opus`.
+ */
+const EFFORT_RESUME_MODEL_PATTERN = new RegExp(
+  `^(${EFFORT_RESUME_MODELS.map((m) => m.id).join('|')})(-\\d{8})?(\\[1m\\])?$`,
+  'i',
+)
+
+/** The listed models in words, such as `Opus 5.5 or Fable 5.1`. */
+export const EFFORT_RESUME_MODELS_LABEL = EFFORT_RESUME_MODELS.map(
+  (m) => m.label,
+).join(' or ')
 
 /**
  * Environment variables that route Claude Code through Bedrock or Vertex,
@@ -880,7 +896,7 @@ function atLeast(
 
 /** Whether Claude Code keeps the cache across an effort change on `model`. */
 export function claudeKeepsCacheAcrossEffort(model: string): boolean {
-  return EFFORT_RESUME_MODELS.test(model)
+  return EFFORT_RESUME_MODEL_PATTERN.test(model)
 }
 
 /**

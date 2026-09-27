@@ -85,9 +85,10 @@ export const codeStage: StageHandler = async ({
   const separateRepair = repairOwn !== null
   // The model preflight confirmed code and repair both run on, when a repair
   // may continue the implementation session across an effort change.
-  const repairSession = state.setup.repairSession
-  const effortResumeModel =
-    repairSession?.resume === true ? (repairSession.model ?? null) : null
+  const repairSession = state.repairSession
+  const effortResumeModel = repairSession?.continues
+    ? repairSession.model
+    : null
   const acrossEffort = separateRepair && effortResumeModel !== null
   const profile = repairOwn ?? state.setup.profiles.code
   const reuse =
@@ -99,14 +100,14 @@ export const codeStage: StageHandler = async ({
   // Only the code role's own provider, profile, cwd and instructions decide
   // whether its session may continue; the reviewers' profiles never do.
   const recorded = reuse && !fromFindings ? state.implementationSession : null
-  const handling = sessionHandlingOf({
+  const choice = sessionHandlingOf({
     recorded,
     profile,
     cwd: target.workdir,
     instructionsVersion: state.setup.instructionsVersion,
     acrossEffortModel: acrossEffort ? effortResumeModel : null,
   })
-  const continuedSession = handling === 'fresh' ? null : recorded
+  const continuedSession = choice.handling === 'fresh' ? null : recorded
   const call = await step.run(
     `${key}:agent`,
     (signal, attempt) =>
@@ -140,7 +141,18 @@ export const codeStage: StageHandler = async ({
         checkpointsDir: state.setup.checkpointsDir,
         session: continuedSession,
         requireSession: reuse,
-        ...(role === 'repair' ? { sessionHandling: handling } : {}),
+        ...(role === 'repair'
+          ? {
+              sessionHandling: choice.handling,
+              // A repair on its own profile that may not continue says why
+              // preflight or setup refused it.
+              sessionReason: fromFindings
+                ? "a repair run's first repair never continues the parent's session"
+                : reuse
+                  ? choice.reason
+                  : (repairSession?.reason ?? 'context is fresh'),
+            }
+          : {}),
         configVersion: state.setup.configVersion,
       }),
     {
@@ -170,9 +182,11 @@ export const codeStage: StageHandler = async ({
             provider: profile.provider,
             nativeId: call.sessionId,
             profileId: profile.id,
-            // The concrete model when one was confirmed, so the implement
-            // and repair sessions record the same one.
-            model: effortResumeModel ?? profile.effectiveModel,
+            // The model this call reported running, as Claude Code resolves
+            // an alias, so a repair continues it only when it ran the model
+            // preflight confirmed; the effective model when none was
+            // reported, which an alias never matches.
+            model: call.observedModel ?? profile.effectiveModel,
             cwd: target.workdir,
             instructionsVersion: state.setup.instructionsVersion,
           }

@@ -701,26 +701,36 @@ Claude Code 2.1.280での実測でも、新しいsessionのcache readは0、effo
     `claude-opus-5-5` なら継続します。
   - 報告が無いmodel（報告を記録する前の事前確認を含む）は、分からないものとして
     新しいsessionにします。
-  - `claude-` で始まる完全なmodel IDどうしはClaude Codeがそのまま使うので、
-    違うIDや対象外のIDはsetupの時点で継続しないと決めます。
+  - `claude-` で始まる完全なmodel IDはClaude Codeがそのまま使います。どちらか
+    片方でも対象外の完全なID（`opus` と `claude-sonnet-5` など）なら、また
+    完全なIDどうしが違えば、setupの時点で継続しないと決めます。
 - 判定は二段です。setupで、modelを除く条件（context、provider、effort、CLIの版、
-  環境変数、完全なIDどうしの比較）を一度だけ判定し、runの `setup.repairSession`
-  に結果と理由を記録します。setupが継続を認めても、そこにはmodelが無く、まだ
-  確定ではありません。事前確認のあとで報告されたmodelを確かめて確定します。
-  どちらも記録済みのstep出力だけから決まるので、あとでworkerを別の環境変数で
-  起動し直しても、そのrunの扱いは変わりません。実際の扱いは修正呼び出しごとの
-  `sessionHandling` で確かめられます。
+  環境変数、完全なIDの確認）を一度だけ判定し、runの `setup.repairSession`
+  に候補かどうか（`eligible`）と理由を記録します。候補になっても継続はまだ
+  確定していません。事前確認のあとで報告されたmodelを確かめて確定し、
+  `preflight:repair-session` stepに、setupの判定、確定した判定（`continues` と
+  理由）、runの `configVersion` を記録します。どちらも記録済みのstep出力だけから
+  決まるので、あとでworkerを別の環境変数で起動し直しても、そのrunの扱いは
+  変わりません。
+- 確定した判定と理由は、JSON reportの `repairSession` と、Markdown reportの
+  `repair session` の行に出ます。修正呼び出しごとの扱いは `repairCalls` の
+  `sessionHandling` と `sessionReason` で確かめられます。
 - 継続する修正は、記録済みのsession IDを `resume` に、`repair` の実効effortを
   `effort` に渡して呼びます。promptは新しいsessionとしては書かず、前の会話の
   続きとして書きます。修正が返したsession IDを次の修正のために記録します。
 - 継続してよいかは、provider、事前確認で確かめたmodel、作業場所、指示版の
   一致で確かめます（effortの一致は求めません）。このため実装と修正のsessionには、
-  そのmodelを記録します。modelを記録していない古いsession（`null` を含む）は、
-  effortをまたいで継続せず新しいsessionにします。
-- setupが継続を認めたrunだけ `configVersion` にこの方針が入ります。それ以外の
-  runの `configVersion` は変わりません。別名を含む設定はsetupでmodelが分からない
-  ので、事前確認で継続しないと分かったrun（たとえば `sonnet` どうし）にも方針が
-  入ります。
+  その呼び出しでClaude Codeが報告したmodelを記録します。事前確認と実装の間に
+  Claude Codeが更新されて別名の解決先が変わった場合など、記録したmodelが確定した
+  modelと違えば、止まらずに新しいsessionにし、理由を `sessionReason` に残します。
+  modelを記録していない古いsession（`null` を含む）も、effortをまたいで継続せず
+  新しいsessionにします。
+- 事前確認で継続が確定したrunだけ `configVersion` にこの方針が入ります。setupでは
+  方針を含まない版を記録し、確定したときだけ事前確認のあとの呼び出しとreportが
+  方針を含む版になります。候補になっても確定しなかったrun（たとえば `sonnet`
+  どうしで、Claude Codeが `claude-sonnet-5` を報告した場合）を含め、それ以外の
+  runの `configVersion` は変わりません。事前確認の最小呼び出しの計測には、
+  確定前の版が残ります。
 - Codex、providerやmodelが違う修正、`--context fresh`、外部の指摘から始まる子run
   の最初の修正は、これまでどおり新しいsessionです。子runは親のsessionを
   引き継ぎません。
@@ -1105,13 +1115,14 @@ LLM呼び出しはすべて `src/engine/runner.ts` を通り、attempt metadata�
 - requested、effective、provider-reported model/effort（未指定・未報告値は `null`）
 - `sessionId`、`operationKey`、`invocationId`、回収結果かどうか
 - 修正の呼び出しでは、呼び出す前に決めたsessionの扱い（`sessionHandling`：
-  `continued`、`continued-effort-change`、`fresh`）
+  `continued`、`continued-effort-change`、`fresh`）とその理由（`sessionReason`）
 - 通常input、cache read、cache write、output、total token
 - usageの単位（このサンプルは一provider invocation）と取得元
 - elapsed、result、error、interruption reason、API換算参考価格とmeter別内訳
 - `configVersion`（三役割それぞれのprovider、model、effort、context、指示版、
   反復上限、対象、timeoutのhash。triage profileと、`code` と違うrepair profileが
-  あればそれも含む。effortだけ違う修正でsessionを継続するrunは、その方針も含む）
+  あればそれも含む。effortだけ違う修正でsessionを継続すると事前確認で確定した
+  runは、その方針も含む。事前確認の最小呼び出しには確定前の版が入る）
 
 providerが返すusageは、一回の呼び出しの**全モデル応答の合計**でなければいけません。
 エージェントCLIは一回の呼び出しの中で何十回もモデルを呼ぶので、最後の応答だけでは
@@ -1176,9 +1187,14 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
   全試行の終了コードとログのパスを `failure.details` にも載せます
   （`check attempt: `、`check exit code: `、`check stdout log: `、
   `check stderr log: `、`check log write error: `）
+- **Repair session**: `repair` が `code` と違うrunで、effortをまたいで実装の
+  sessionを継続するか（JSONの `repairSession`、Markdownの `repair session` の行）。
+  setupの判定（`eligible` と理由）と、事前確認のあとに確定した判定（`continues`、
+  model、理由）を持ちます。reportの `configVersion` はこの確定のあとの版です
 - **Repair calls**: 修正の呼び出しごとの行（JSONの `repairCalls`）。sessionの扱い
   （`continued` は同じprofileで継続、`continued-effort-change` はeffortだけ違う
-  profileで継続、`fresh` は新しいsession）、input、cache read、その呼び出しの
+  profileで継続、`fresh` は新しいsession）とその理由（`sessionReason`）、input、
+  cache read、その呼び出しの
   cache-read比率（`cacheReadTokens / inputTokens`）を持ちます。usageが無いときや
   inputが0のとき、比率は `null` です。回収した呼び出しも1行で、`(recovered)` を
   付けます。継続した修正の比率が高く、新しいsessionの修正が0に近ければ、cacheが
