@@ -56,6 +56,7 @@ import type {
   PipelineState,
   Relations,
   RunDetailResponse,
+  RunRef,
   RunRow,
   RunsResponse,
   Trace,
@@ -1895,9 +1896,12 @@ const USAGE_HEAD = (
  */
 export function BaselineSource({
   baseline,
+  source,
   now,
 }: {
   baseline: LoopReport['baseline']
+  /** The reused run's name, from the detail response; null if it no longer exists. */
+  source: RunRef | null
   now: string
 }) {
   if (!baseline || baseline.passed === null) return null
@@ -1911,7 +1915,7 @@ export function BaselineSource({
         <div className="flex min-w-0 items-baseline gap-2">
           <dt>再利用元</dt>
           <dd className="min-w-0">
-            <RunLink id={from.runId} name="前の実行" />
+            <RunLink id={from.runId} name={source?.name ?? '前の実行'} />
           </dd>
         </div>
         <div className="flex items-baseline gap-2">
@@ -1926,7 +1930,15 @@ export function BaselineSource({
   )
 }
 
-function StageTimings({ report, now }: { report: LoopReport; now: string }) {
+function StageTimings({
+  report,
+  baselineSource,
+  now,
+}: {
+  report: LoopReport
+  baselineSource: RunRef | null
+  now: string
+}) {
   const max = Math.max(1, ...report.stageTimings.map((t) => t.elapsedMs ?? 0))
   if (report.stageTimings.length === 0)
     return <Empty>まだ完了した工程がありません。</Empty>
@@ -1958,7 +1970,11 @@ function StageTimings({ report, now }: { report: LoopReport; now: string }) {
           {t.stage === 'baseline' && report.baseline?.passed != null ? (
             <li className="grid grid-cols-[6rem_1fr] gap-3">
               <span />
-              <BaselineSource baseline={report.baseline} now={now} />
+              <BaselineSource
+                baseline={report.baseline}
+                source={baselineSource}
+                now={now}
+              />
             </li>
           ) : null}
         </Fragment>
@@ -2455,7 +2471,11 @@ function RunPage({ data }: { data: RunDetailResponse }) {
       </Panel>
 
       <Panel title="工程ごとの時間">
-        <StageTimings report={r} now={data.now} />
+        <StageTimings
+          report={r}
+          baselineSource={data.baselineSource}
+          now={data.now}
+        />
       </Panel>
 
       <UsagePanels report={r} />

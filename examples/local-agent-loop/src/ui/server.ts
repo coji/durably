@@ -128,6 +128,12 @@ export interface RunDetailResponse {
   live: LiveElapsed | null
   pipeline: Pipeline
   relations: Relations
+  /**
+   * The run whose passing baseline check this run reused, named as other
+   * run links are; null when the baseline check ran here or has not
+   * reached it.
+   */
+  baselineSource: RunRef | null
   /** The run as a span tree on one time axis, as of `now`. */
   trace: Trace
   /** Exactly what `report --run <id> --format json` prints. */
@@ -1015,6 +1021,21 @@ async function relationsOf(
   }
 }
 
+/**
+ * The run whose passing baseline check this run reused, named the same way
+ * as repair lineage links. Falls back to a generic label only when that
+ * run's row no longer exists.
+ */
+async function baselineSourceOf(
+  src: ReportSource,
+  baseline: LoopReport['baseline'],
+): Promise<RunRef | null> {
+  const runId = baseline?.reusedFrom?.runId
+  if (!runId) return null
+  const run = await src.getRun(runId)
+  return { id: runId, name: run ? runName(run.input) : '前の実行' }
+}
+
 /** What both the list row and the detail page read for one run. */
 async function inspect(
   src: ReportSource,
@@ -1111,9 +1132,10 @@ function createUiApi() {
     if (!db || !found) throw new HttpError(404, `no run ${id}`)
     const src = readOnce(db, [found])
     const { report, fresh } = await reports.get(src, found)
-    const [seen, steps] = await Promise.all([
+    const [seen, steps, baselineSource] = await Promise.all([
       inspect(src, found, now, report, fresh),
       src.storage.getSteps(id),
+      baselineSourceOf(src, report.baseline),
     ])
     const stepOutputs: Record<string, unknown> = {}
     for (const s of steps)
@@ -1121,6 +1143,7 @@ function createUiApi() {
     return {
       now: new Date(now).toISOString(),
       ...seen,
+      baselineSource,
       trace: deriveTrace({
         run: found,
         diagnosisKind: seen.diagnosis.kind,

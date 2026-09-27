@@ -71,6 +71,7 @@ import {
   SUBJECT_RUN_NAME,
   type CompareResponse,
   type RunDetailResponse,
+  type RunRef,
   type RunsResponse,
   type TraceInput,
   type TraceNode,
@@ -1439,29 +1440,66 @@ describe('diagnosis wording on the page', () => {
       recovered: false,
       logMissing: null,
     }
-    const render = (baseline: LoopReport['baseline']) =>
-      renderToStaticMarkup(createElement(BaselineSource, { baseline, now }))
-    const reused = render({
-      ...base,
+    const reusedFrom = {
       reusedFrom: { runId, checkedAt: '2026-09-27T11:55:00.000Z' },
-    })
+    }
+    const render = (
+      baseline: LoopReport['baseline'],
+      source: RunRef | null = null,
+    ) =>
+      renderToStaticMarkup(
+        createElement(BaselineSource, { baseline, source, now }),
+      )
+
+    // Named case: the source run's task name is the primary link text.
+    const sourceName = '検証手順の見直し'
+    const named = render(
+      { ...base, ...reusedFrom },
+      { id: runId, name: sourceName },
+    )
+    const namedText = named.replace(/<[^>]+>/g, '\n')
+    assert.match(namedText, /前の実行の結果を再利用しました/)
+    assert.match(namedText, /再利用元/)
+    assert.match(namedText, /検証日時/)
+    // The source run is a link by its task name, its ID only as a short
+    // suffix, not the generic "前の実行" label.
+    assert.ok(named.includes(`href="#/runs/${runId}"`))
+    assert.ok(namedText.includes(sourceName))
+    const namedLinkText = /<a href="#\/runs\/[^"]+"[^>]*>([^<]+)<\/a>/.exec(
+      named,
+    )?.[1]
+    assert.equal(namedLinkText, sourceName)
+    assert.ok(!namedText.includes(runId))
+    assert.ok(named.includes('dateTime="2026-09-27T11:55:00.000Z"'))
+    assert.ok(!namedText.includes('ログは残っていません'))
+    assert.equal(
+      plain(namedText.replace(/…[0-9A-Z]{6}/g, '').replace(sourceName, '')),
+      null,
+      namedText,
+    )
+
+    // Fallback case: the source run no longer exists, so there is no name.
+    const reused = render({ ...base, ...reusedFrom }, null)
     const text = reused.replace(/<[^>]+>/g, '\n')
     assert.match(text, /前の実行の結果を再利用しました/)
     assert.match(text, /再利用元/)
     assert.match(text, /検証日時/)
-    // The source run is a link by name, its ID only as a short suffix.
     assert.ok(reused.includes(`href="#/runs/${runId}"`))
     assert.ok(text.includes('前の実行'))
     assert.ok(!text.includes(runId))
     assert.ok(reused.includes('dateTime="2026-09-27T11:55:00.000Z"'))
     assert.ok(!text.includes('ログは残っていません'))
     assert.equal(plain(text.replace(/…[0-9A-Z]{6}/g, '')), null, text)
-    const gone = render({
-      ...base,
-      log: null,
-      reusedFrom: { runId, checkedAt: '2026-09-27T11:55:00.000Z' },
-      logMissing: 'the log is gone',
-    }).replace(/<[^>]+>/g, '\n')
+
+    const gone = render(
+      {
+        ...base,
+        log: null,
+        ...reusedFrom,
+        logMissing: 'the log is gone',
+      },
+      { id: runId, name: sourceName },
+    ).replace(/<[^>]+>/g, '\n')
     assert.match(gone, /再利用元のログは残っていません/)
     assert.ok(!gone.includes('the log is gone'))
 
