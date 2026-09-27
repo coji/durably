@@ -1006,15 +1006,22 @@ export async function listedReports(
   )
 }
 
+/** A run named from its stored input, or `fallback` when its row is gone. */
+async function runRef(
+  src: ReportSource,
+  id: string,
+  fallback: string,
+): Promise<RunRef> {
+  const run = await src.getRun(id)
+  return { id, name: run ? runName(run.input) : fallback }
+}
+
 /** Name the report's parent and children, from their stored inputs. */
 async function relationsOf(
   src: ReportSource,
   lineage: LoopReport['lineage'] | undefined,
 ): Promise<Relations> {
-  const ref = async (id: string): Promise<RunRef> => {
-    const run = await src.getRun(id)
-    return { id, name: run ? runName(run.input) : '見つからない実行' }
-  }
+  const ref = (id: string) => runRef(src, id, '見つからない実行')
   return {
     parent: lineage?.parent ? await ref(lineage.parent.runId) : null,
     children: await Promise.all((lineage?.children ?? []).map(ref)),
@@ -1031,9 +1038,7 @@ async function baselineSourceOf(
   baseline: LoopReport['baseline'],
 ): Promise<RunRef | null> {
   const runId = baseline?.reusedFrom?.runId
-  if (!runId) return null
-  const run = await src.getRun(runId)
-  return { id: runId, name: run ? runName(run.input) : '前の実行' }
+  return runId ? runRef(src, runId, '前の実行') : null
 }
 
 /** What both the list row and the detail page read for one run. */

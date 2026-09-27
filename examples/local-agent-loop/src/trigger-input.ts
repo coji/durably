@@ -14,7 +14,7 @@ import { repoRoot } from './engine/git.js'
 import { parseProviderName } from './engine/providers/index.js'
 import {
   assertSingleMode,
-  baselineMaxAgeMsSchema,
+  baselineReuseSchema,
   fixProfile,
   fixReviewInvocations,
   type AgentLoopInput,
@@ -131,10 +131,7 @@ const factoryConfigSchema = z
      * With `baselineCheck`, use another run's passing baseline result of at
      * most `maxAgeMs` milliseconds instead of running the check.
      */
-    baselineReuse: z
-      .object({ maxAgeMs: baselineMaxAgeMsSchema })
-      .strict()
-      .optional(),
+    baselineReuse: baselineReuseSchema.optional(),
     /** The Codex CLI file to launch; relative to this file's directory. */
     codexPath: z.string().min(1).optional(),
     /** Milliseconds; win over `TEST_TIMEOUT_MS` / `AGENT_TIMEOUT_MS`. */
@@ -380,9 +377,7 @@ async function repoSettings(
       setupCommand:
         setupCommand && setupCommand.length > 0 ? setupCommand : null,
       baselineCheck: config?.baselineCheck ?? false,
-      baselineReuse: config?.baselineReuse
-        ? { maxAgeMs: config.baselineReuse.maxAgeMs }
-        : null,
+      baselineReuse: config?.baselineReuse ?? null,
       // Fixed here with every default filled in, so the run never reads
       // factory.json again and a reload reads it afresh.
       commit: {

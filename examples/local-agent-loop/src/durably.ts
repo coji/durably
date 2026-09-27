@@ -165,22 +165,12 @@ function build(options: AgentDurablyOptions) {
   return withDatabase(database, stateRoot, options.maxConcurrentRuns)
 }
 
-function withDatabase(
-  database: Database.Database,
-  stateRoot: string,
-  maxConcurrentRuns?: number,
-) {
-  const dialect = new SqliteDialect({ database })
-  // The job reads this same database's earlier baseline results through
-  // the instance it belongs to, which exists once `createDurably` returns.
-  let reader: Pick<
-    AnyDurably,
-    'getRuns' | 'getStepAttempts' | 'storage'
-  > | null = null
-  const baselineHistory: BaselineHistory = {
+/** Earlier baseline results in the database `durably` reads. */
+function baselineHistoryOf(
+  durably: Pick<AnyDurably, 'getRuns' | 'getStepAttempts' | 'storage'>,
+): BaselineHistory {
+  return {
     completed: async (exceptRunId) => {
-      const durably = reader
-      if (!durably) return []
       const runs = await durably.getRuns({ jobName: AGENT_LOOP_JOB_NAME })
       const stored = await Promise.all(
         runs
@@ -196,41 +186,47 @@ function withDatabase(
               BASELINE_STEP,
             )
             return found
-              ? [
-                  {
-                    runId: run.id,
-                    output: found.output,
-                    completedAt: found.completedAt,
-                  },
-                ]
-              : []
+              ? {
+                  runId: run.id,
+                  output: found.output,
+                  completedAt: found.completedAt,
+                }
+              : null
           }),
       )
-      return stored.flat()
+      return stored.filter((s) => s !== null)
     },
     recovered: async (runId) => {
-      const durably = reader
-      if (!durably) return false
       const attempts = await durably.getStepAttempts(runId)
       return attempts
+        .filter((a) => a.stepName === BASELINE_STEP)
         .map(toAttemptRow)
-        .some(
-          (a) =>
-            a.stepName === BASELINE_STEP &&
-            a.measurement?.result === 'checkpoint-recovered',
-        )
+        .some((a) => a.measurement?.result === 'checkpoint-recovered')
     },
   }
-  const durably = createDurably({
+}
+
+function withDatabase(
+  database: Database.Database,
+  stateRoot: string,
+  maxConcurrentRuns?: number,
+) {
+  const dialect = new SqliteDialect({ database })
+  const base = createDurably({
     dialect,
     pollingIntervalMs: 500,
     leaseRenewIntervalMs: 1000,
     leaseMs: 10000,
     preserveSteps: true,
     ...(maxConcurrentRuns ? { maxConcurrentRuns } : {}),
-    jobs: { agentLoop: createAgentLoopJob({ stateRoot, baselineHistory }) },
   })
-  reader = durably
+  // The job reads this same database's earlier baseline results.
+  const durably = base.register({
+    agentLoop: createAgentLoopJob({
+      stateRoot,
+      baselineHistory: baselineHistoryOf(base),
+    }),
+  })
   // The worker removes a run's review snapshots itself: after each review
   // round, before every other stage, when the run fails, is cancelled or
   // finishes, and at startup for runs that have already ended

@@ -27,7 +27,6 @@ import {
   CANDIDATE_MOVED_MESSAGE,
   PREFLIGHT_FAILED_MESSAGE,
 } from '../engine/failure-reasons.js'
-import { isDirty, resolveCommit } from '../engine/git.js'
 import {
   FAKE_REVIEW_DECISIONS,
   FAKE_TRIAGE_KINDS,
@@ -154,6 +153,11 @@ export const baselineMaxAgeMsSchema = z
   .positive()
   .max(Number.MAX_SAFE_INTEGER)
 
+/** `baselineReuse` in a target and in factory.json. */
+export const baselineReuseSchema = z
+  .object({ maxAgeMs: baselineMaxAgeMsSchema })
+  .strict()
+
 /** Where an input came from. Its hash is taken from the stored content. */
 const inputFileSchema = z.object({ path: z.string().min(1) })
 
@@ -195,11 +199,7 @@ const targetSchema = z
        * Use another run's passing baseline result of at most this age
        * instead of running the check. Read only with `baselineCheck`.
        */
-      baselineReuse: z
-        .object({ maxAgeMs: baselineMaxAgeMsSchema })
-        .strict()
-        .nullable()
-        .optional(),
+      baselineReuse: baselineReuseSchema.nullable().optional(),
     }),
   ])
   .default({ kind: 'subject' })
@@ -1133,9 +1133,9 @@ export function chooseReusableBaseline(args: {
   let best: {
     runId: string
     checkedAt: string
-    at: number
     record: BaselineRecord
   } | null = null
+  let bestAt = -Infinity
   for (const s of args.stored) {
     if (s.runId === args.runId || !s.completedAt) continue
     const at = Date.parse(s.completedAt)
@@ -1143,42 +1143,15 @@ export function chooseReusableBaseline(args: {
       continue
     const parsed = reusableRecordSchema.safeParse(s.output)
     if (!parsed.success || identityKey(parsed.data.identity) !== key) continue
-    if (best && best.at >= at) continue
+    if (best && bestAt >= at) continue
+    bestAt = at
     best = {
       runId: s.runId,
       checkedAt: s.completedAt,
-      at,
       record: { ...parsed.data, log: parsed.data.log ?? null },
     }
   }
   return best
-    ? { runId: best.runId, checkedAt: best.checkedAt, record: best.record }
-    : null
-}
-
-/**
- * The worktree is as a measured baseline would require it before the check:
- * at the base commit, with no changes to tracked files and no untracked file
- * `.gitignore` does not cover. Stops the run as a baseline failure otherwise.
- */
-async function assertBaseWorktree(
-  target: RepoTargetConfig,
-  signal: AbortSignal,
-): Promise<void> {
-  const stop = (why: string) =>
-    new Error(
-      `${BASELINE_FAILED_MESSAGE}: baseline-mutated: ${why}; stopped before any agent call`,
-    )
-  if (await isDirty(target.workdir, { includeUntracked: false }))
-    throw stop(
-      `setup left uncommitted changes to tracked files in ${target.workdir} before the check`,
-    )
-  const head = await resolveCommit(target.workdir, 'HEAD')
-  if (head !== target.baseCommit)
-    throw stop(
-      `${target.workdir} is at ${head.slice(0, 12)}, not the base ${target.baseCommit.slice(0, 12)}`,
-    )
-  await assertSetupLeftNoUntracked(target.workdir, signal)
 }
 
 /**
@@ -1492,7 +1465,6 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
         target instanceof RepoTarget &&
         setup.target.kind === 'repo'
       ) {
-        const repoTarget = setup.target
         const operationKey = `${step.runId}/baseline`
         const reuse = setup.baselineReuse ?? null
         const history = options.baselineHistory
@@ -1510,7 +1482,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   })
                 : null
             if (reused) {
-              await assertBaseWorktree(repoTarget, signal)
+              await target.assertReadyForBase(signal)
               return reused
             }
             const measured = await runVerificationStep(
@@ -1542,7 +1514,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             }
           },
         )
-        if (!baseline.passed && setup.target.kind === 'repo')
+        if (!baseline.passed)
           throw new Error(
             `${BASELINE_FAILED_MESSAGE}: \`${checkFingerprint(setup.target.checkCommand)}\` failed on the base commit ${setup.target.baseCommit.slice(0, 12)} (exit code ${baseline.exitCode ?? 'unknown'}) before any agent call`,
           )
