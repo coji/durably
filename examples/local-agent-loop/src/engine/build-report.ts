@@ -231,8 +231,26 @@ function asReviews(value: unknown): ReportReview[] | null {
 /**
  * The last review round. A run with an output carries it there; a run
  * waiting for approval has it only in the approval wait's metadata, so the
- * latest wait that recorded reviews is used. Neither place keeps the
- * findings, so each verdict takes them from its review step: from the
+ * latest wait that recorded reviews is used.
+ */
+function recordedReviews(
+  output: unknown,
+  waits: { metadata: unknown }[],
+): ReportReview[] {
+  if (output != null)
+    return asReviews((output as { reviews?: unknown }).reviews) ?? []
+  for (const wait of [...waits].reverse()) {
+    const fromWait = asReviews(
+      (wait.metadata as { reviews?: unknown } | null)?.reviews,
+    )
+    if (fromWait) return fromWait
+  }
+  return []
+}
+
+/**
+ * The last review round's verdicts. Neither place they are recorded keeps
+ * the findings, so each verdict takes them from its review step: from the
  * latest round whose verdicts are these.
  */
 function lastReviews(
@@ -240,18 +258,7 @@ function lastReviews(
   waits: { metadata: unknown }[],
   rounds: ReportReviewRound[],
 ): ReportReview[] {
-  const recorded = (): ReportReview[] => {
-    if (output != null)
-      return asReviews((output as { reviews?: unknown }).reviews) ?? []
-    for (const wait of [...waits].reverse()) {
-      const fromWait = asReviews(
-        (wait.metadata as { reviews?: unknown } | null)?.reviews,
-      )
-      if (fromWait) return fromWait
-    }
-    return []
-  }
-  const reviews = recorded()
+  const reviews = recordedReviews(output, waits)
   const same = (x: ReportReview, y: ReportReview) =>
     x.lens === y.lens && x.decision === y.decision && x.notes === y.notes
   const round = [...rounds]

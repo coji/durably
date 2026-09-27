@@ -7,8 +7,6 @@ import type { CandidateChanges, ReviewSnapshots } from '../engine/types.js'
 import type { UntrustedInput } from './target.js'
 import type { ReviewFinding, ReviewFindings, ReviewOutput } from './types.js'
 
-export type { ReviewFinding, ReviewFindings }
-
 /**
  * Fence caller-supplied text off as data.
  *

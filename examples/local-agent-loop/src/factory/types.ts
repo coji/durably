@@ -14,6 +14,7 @@ import type {
   SessionHandling,
   VerificationLog,
 } from '../engine/providers/types.js'
+import type { ReportFinding, ReportReviewFindings } from '../engine/report.js'
 import type {
   CandidateRef,
   ContextMode,
@@ -179,24 +180,10 @@ export interface VerificationResult {
 }
 
 /** One finding of a `findings-json` review, as validated. */
-export interface ReviewFinding {
-  severity: 'blocker' | 'non-blocker'
-  title: string
-  body: string
-  file?: string
-  line?: number
-}
+export type ReviewFinding = ReportFinding
 
-/**
- * The findings of a `findings-json` review as the report keeps them: the
- * first of each severity, cut to fixed lengths, with each severity's total.
- */
-export interface ReviewFindings {
-  blocker: ReviewFinding[]
-  nonBlocker: ReviewFinding[]
-  /** Every finding of each severity, those left out of the lists included. */
-  counts: { blocker: number; nonBlocker: number }
-}
+/** The findings of a `findings-json` review as the report keeps them. */
+export type ReviewFindings = ReportReviewFindings
 
 export interface ReviewVerdict {
   lens: ReviewLens
