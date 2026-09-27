@@ -16,7 +16,11 @@ import type { StepAttempt } from '@coji/durably'
 import { INTERRUPTED_CHECK } from './failure-details.js'
 import { retryText, type FailureClassification } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
-import type { AttemptMeasurement, VerificationLog } from './providers/types.js'
+import type {
+  AttemptMeasurement,
+  SessionHandling,
+  VerificationLog,
+} from './providers/types.js'
 import { TERMINAL_STATUSES } from './terminal.js'
 import type { CandidateChanges } from './types.js'
 import { aggregateUsage } from './usage.js'
@@ -401,6 +405,46 @@ export interface ReportPreflight {
   usage: UsageTotals | null
 }
 
+/** One repair call: how it treated the session, and how much it read from cache. */
+export interface ReportRepairCall {
+  stepName: string
+  iteration: number | null
+  invocationId: string | null
+  /** Null for a repair recorded before session handling was. */
+  sessionHandling: SessionHandling | null
+  /** Why; null for a repair recorded before the reason was. */
+  sessionReason: string | null
+  inputTokens: number | null
+  cacheReadTokens: number | null
+  /**
+   * `cacheReadTokens / inputTokens` of this call alone; null when either is
+   * missing or the input is 0.
+   */
+  cacheReadRatio: number | null
+  recovered: boolean
+}
+
+/**
+ * Whether a repair on its own profile continues the implementation session:
+ * setup's answer from the settings and environment, and the decision
+ * preflight confirmed, each with its reason.
+ */
+export interface ReportRepairSession {
+  /** Null on a run set up before setup answered. */
+  setup: { eligible: boolean; reason: string } | null
+  confirmed: { continues: boolean; model: string | null; reason: string }
+}
+
+/** A call's cache-read share of its input; null when it cannot be computed. */
+export function cacheReadRatio(
+  inputTokens: number | null | undefined,
+  cacheReadTokens: number | null | undefined,
+): number | null {
+  if (inputTokens == null || cacheReadTokens == null || inputTokens === 0)
+    return null
+  return cacheReadTokens / inputTokens
+}
+
 /** One row per run, the unit that cross-run comparisons operate on. */
 export interface RunSummary {
   /** Terminal completed run whose candidate was approved. */
@@ -455,6 +499,14 @@ export interface LoopReport {
   candidate: ReportCandidate | null
   /** Every sealed candidate with its size, oldest first. */
   candidates: ReportSealedCandidate[]
+  /**
+   * Whether a repair on its own profile continues the implementation
+   * session, and why; null when repair runs on `code` or the run has not
+   * passed preflight.
+   */
+  repairSession: ReportRepairSession | null
+  /** Every repair call, oldest first, one row per invocation. */
+  repairCalls: ReportRepairCall[]
   /** Last review round; empty before a review round has finished. */
   reviews: ReportReview[]
   /** Every review round with both verdicts and notes, oldest first. */
@@ -932,6 +984,16 @@ export function reportToMarkdown(r: LoopReport): string {
   )
   lines.push(`- output: ${JSON.stringify(r.output)}`)
   lines.push(`- config version: ${fmt(r.configVersion)}`)
+  if (r.repairSession) {
+    const { setup, confirmed } = r.repairSession
+    lines.push(
+      `- repair session: ${confirmed.continues ? `continues across effort on ${confirmed.model ?? 'unknown'}` : 'starts new'} (${confirmed.reason})`,
+    )
+    if (setup)
+      lines.push(
+        `- repair session at setup: ${setup.eligible ? 'eligible' : 'not eligible'} (${setup.reason})`,
+      )
+  }
   lines.push('')
   lines.push('## Triage (shadow mode: recorded, never used to route)')
   lines.push('')
@@ -1034,6 +1096,21 @@ export function reportToMarkdown(r: LoopReport): string {
         lines.push(`  - changed files: ${c.changes.changedFilesPath}`)
       }
     }
+  } else {
+    lines.push('- none')
+  }
+  lines.push('')
+  lines.push('## Repair calls (session handling and cache read per call)')
+  lines.push('')
+  if (r.repairCalls.length > 0) {
+    lines.push(
+      '| step | iteration | invocation | session | in | cache-read | cache-read ratio |',
+    )
+    lines.push('|---|---|---|---|---|---|---|')
+    for (const c of r.repairCalls)
+      lines.push(
+        `| ${c.stepName} | ${fmt(c.iteration)} | ${c.invocationId?.slice(0, 8) ?? 'n/a'} | ${c.sessionHandling ?? 'unknown'}${c.recovered ? ' (recovered)' : ''} | ${fmt(c.inputTokens)} | ${fmt(c.cacheReadTokens)} | ${c.cacheReadRatio === null ? 'null' : c.cacheReadRatio.toFixed(4)} |`,
+      )
   } else {
     lines.push('- none')
   }

@@ -17,6 +17,7 @@ import type {
   AttemptMeasurement,
   ProviderName,
   ReviewCallSettings,
+  SessionHandling,
 } from './providers/types.js'
 import type { SessionRef } from './types.js'
 import { mergeUsage, type TokenUsage } from './usage.js'
@@ -45,6 +46,13 @@ export interface AgentCallSpec {
   checkpointsDir?: string
   session?: SessionRef | null
   requireSession?: boolean
+  /**
+   * A repair call's session handling, saved with the first measurement,
+   * before anything is sent, and again on every recovery.
+   */
+  sessionHandling?: SessionHandling
+  /** Why the call treats the session as `sessionHandling` says. */
+  sessionReason?: string
   configVersion?: string | null
   /**
    * Return an explicit refusal from the provider (`rejectionReason`) as the
@@ -67,6 +75,8 @@ export interface AgentCallOutcome {
   rejection: string | null
   /** Tool calls the provider refused during the call; empty when none. */
   permissionDenials: string[]
+  /** The concrete model the provider reported running; null when none. */
+  observedModel: string | null
 }
 
 interface StartedCheckpoint {
@@ -212,6 +222,8 @@ export async function runAgentCall(
     operationKey,
     invocationId,
     sessionId: spec.session?.nativeId ?? null,
+    ...(spec.sessionHandling ? { sessionHandling: spec.sessionHandling } : {}),
+    ...(spec.sessionReason ? { sessionReason: spec.sessionReason } : {}),
     recovered: saved !== null,
     usageScope: 'invocation',
     requestedModel: spec.requestedModel,
@@ -284,6 +296,7 @@ export async function runAgentCall(
       measurement,
       rejection: null,
       permissionDenials: result.permissionDenials ?? [],
+      observedModel: result.observedModel ?? null,
     }
   }
 
@@ -320,6 +333,7 @@ export async function runAgentCall(
       measurement,
       rejection,
       permissionDenials: [],
+      observedModel: null,
     }
   }
   const settled = (

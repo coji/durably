@@ -4,8 +4,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
+import { claudeCode, type SDKMessage } from 'ai-sdk-provider-claude-code'
+
 import {
   buildClaudeSettings,
+  ClaudeProvider,
+  EFFORT_RESUME_BLOCKING_ENV,
+  EFFORT_RESUME_MODELS_LABEL,
+  observedClaudeModel,
+  parseCliVersion,
   claudeCallUsage,
   COMMAND_MODE_LOCKDOWN,
   COMMAND_MODE_REVIEW_TOOLS,
@@ -15,6 +22,16 @@ import {
   reviewPreToolUseHook,
 } from '../src/engine/providers/claude.js'
 import type { ReviewCallSettings } from '../src/engine/providers/types.js'
+import { fixProfile } from '../src/factory/job.js'
+import {
+  confirmRepairSession,
+  type ConfirmedRepairSession,
+  repairSessionDecision,
+  sessionHandlingOf,
+  type ExecutionProfile,
+  type RepairSessionInput,
+  type SessionRef,
+} from '../src/factory/types.js'
 
 const ROOT = '/demo/work'
 
@@ -473,5 +490,466 @@ describe('command-mode review guard', () => {
         .behavior,
       'allow',
     )
+  })
+})
+
+describe('a repair that resumes the implementation session at its own effort', () => {
+  it('passes the session as resume and the repair effort as effort to the Agent SDK', async () => {
+    const workdir = await mkdtemp(join(tmpdir(), 'claude-resume-'))
+    const provider = new ClaudeProvider()
+    // The runner hands the repair profile's effective model and effort to
+    // the call; the provider resolves them to the same values.
+    const { model, effort } = provider.resolveExecution({
+      requestedModel: 'claude-opus-5-5',
+      requestedEffort: 'high',
+    })
+    assert.deepEqual([model, effort], ['claude-opus-5-5', 'high'])
+    const settings = buildClaudeSettings(workdir, false, effort, 'native-1')
+    assert.equal(settings.resume, 'native-1')
+    assert.equal(settings.effort, 'high')
+    // What the provider package actually sends to the Agent SDK's query.
+    const language = claudeCode(model ?? '', {
+      ...settings,
+      logger: false,
+    }) as unknown as {
+      getEffectiveResume: (sdk: undefined) => string | undefined
+      createQueryOptions: (
+        abort: AbortController,
+        options: { prompt: unknown[] },
+        stderr: undefined,
+        sdk: undefined,
+        resume: string | undefined,
+      ) => { resume?: string; effort?: string; model?: string }
+    }
+    const resume = language.getEffectiveResume(undefined)
+    const query = language.createQueryOptions(
+      new AbortController(),
+      { prompt: [] },
+      undefined,
+      undefined,
+      resume,
+    )
+    assert.equal(query.resume, 'native-1')
+    assert.equal(query.effort, 'high')
+    assert.equal(query.model, 'claude-opus-5-5')
+    // A new session names no session to resume.
+    assert.equal(buildClaudeSettings(workdir, false, 'high').resume, undefined)
+  })
+})
+
+describe('whether a repair continues the session across an effort change', () => {
+  const claude = (
+    effort: string,
+    model = 'claude-opus-5-5',
+  ): ExecutionProfile => ({
+    provider: 'claude',
+    requestedModel: model,
+    effectiveModel: model,
+    effectiveEffort: effort,
+  })
+  const base: RepairSessionInput = {
+    contextMode: 'reuse',
+    code: claude('medium'),
+    repair: claude('high'),
+    claudeCliVersion: '2.1.280 (Claude Code)',
+    env: {},
+    fakeEffortResume: false,
+  }
+  const decide = (patch: Partial<RepairSessionInput>) =>
+    repairSessionDecision({ ...base, ...patch })
+
+  it('allows it at setup on Opus 5.5 or Fable 5.1 with Claude Code 2.1.260 or later, pending the model preflight sees', () => {
+    const allowed = decide({})
+    assert.equal(allowed.eligible, true)
+    assert.equal(EFFORT_RESUME_MODELS_LABEL, 'Opus 5.5 or Fable 5.1')
+    // Setup never confirms a continuation: only preflight does, and the
+    // setup step adds the version the run takes once it has.
+    assert.equal('continues' in allowed, false)
+    assert.equal(allowed.confirmedConfigVersion, undefined)
+    assert.equal(
+      decide({
+        code: claude('low', 'claude-fable-5-1'),
+        repair: claude('high', 'claude-fable-5-1'),
+      }).eligible,
+      true,
+    )
+    assert.equal(decide({ claudeCliVersion: '2.1.260' }).eligible, true)
+    assert.equal(decide({ claudeCliVersion: '2.2.0' }).eligible, true)
+    assert.equal(decide({ claudeCliVersion: '3.0.0' }).eligible, true)
+  })
+
+  it('allows it with an optional date suffix or the [1m] context suffix', () => {
+    assert.equal(
+      decide({
+        code: claude('low', 'claude-opus-5-5[1m]'),
+        repair: claude('high', 'claude-opus-5-5[1m]'),
+      }).eligible,
+      true,
+    )
+    assert.equal(
+      decide({
+        code: claude('low', 'claude-fable-5-1-20260901'),
+        repair: claude('high', 'claude-fable-5-1-20260901'),
+      }).eligible,
+      true,
+    )
+  })
+
+  it('starts new for fresh context, another provider or full model id, or the same effort', () => {
+    assert.match(decide({ contextMode: 'fresh' }).reason, /context is fresh/)
+    assert.equal(decide({ contextMode: 'fresh' }).eligible, false)
+    const codex = {
+      provider: 'codex' as const,
+      requestedModel: 'gpt-6-sol',
+      effectiveModel: 'gpt-6-sol',
+    }
+    assert.equal(
+      decide({ repair: { ...codex, effectiveEffort: 'high' } }).eligible,
+      false,
+    )
+    const other = decide({ repair: claude('high', 'claude-fable-5-1') })
+    assert.equal(other.eligible, false)
+    assert.match(other.reason, /another model/)
+    const sameEffort = decide({ repair: claude('medium', 'claude-fable-5-1') })
+    assert.equal(sameEffort.eligible, false)
+    assert.match(sameEffort.reason, /same effort as code/)
+    // Codex never changes effort mid-session here.
+    const codexRun = decide({
+      code: { ...codex, effectiveEffort: 'medium' },
+      repair: { ...codex, effectiveEffort: 'high' },
+    })
+    assert.equal(codexRun.eligible, false)
+    assert.match(codexRun.reason, /codex/)
+  })
+
+  it('rules out a full model id that is not listed on either side, without waiting for preflight', () => {
+    const alias = (effort: string, model: string): ExecutionProfile => ({
+      ...claude(effort, model),
+      effectiveModel: model,
+    })
+    for (const [code, repair, unlisted] of [
+      [
+        alias('medium', 'opus'),
+        claude('high', 'claude-sonnet-5'),
+        'claude-sonnet-5',
+      ],
+      [
+        claude('medium', 'claude-haiku-4-5'),
+        alias('high', 'opus'),
+        'claude-haiku-4-5',
+      ],
+    ] as const) {
+      const decision = decide({ code, repair })
+      assert.equal(decision.eligible, false, unlisted)
+      assert.equal(
+        decision.reason,
+        `${unlisted} is not ${EFFORT_RESUME_MODELS_LABEL}`,
+      )
+    }
+    // An alias with a listed full id is left to preflight.
+    assert.equal(
+      decide({ code: alias('medium', 'opus'), repair: claude('high') })
+        .eligible,
+      true,
+    )
+  })
+
+  it('says so when the repair differs from code only in how it spells the call', () => {
+    // Another spelling of the same effective model and effort is its own
+    // profile (`executionKey` compares the requested spelling), but nothing
+    // but the spelling differs, and the reason says that.
+    const fake = (requestedModel: string | null) => ({
+      provider: 'fake' as const,
+      requestedModel,
+      effectiveModel: 'fake-model',
+      effectiveEffort: 'low',
+    })
+    const spelled = decide({ code: fake('fake'), repair: fake(null) })
+    assert.equal(spelled.eligible, false)
+    assert.match(spelled.reason, /same model and effort as code/)
+    assert.doesNotMatch(spelled.reason, /more than effort/)
+  })
+
+  it('starts new on another model family, an unknown or old CLI, or a blocking environment', () => {
+    for (const model of [
+      'claude-sonnet-5',
+      'claude-opus-5',
+      'claude-opus-5-50',
+      'claude-opus-5-5x',
+      'claude-opus-5-5-foo',
+    ])
+      assert.equal(
+        decide({ code: claude('medium', model), repair: claude('high', model) })
+          .eligible,
+        false,
+        model,
+      )
+    for (const version of [null, 'unknown', '2.1.259', '2.0.999', '1.9.300'])
+      assert.equal(
+        decide({ claudeCliVersion: version }).eligible,
+        false,
+        version ?? 'null',
+      )
+    for (const name of EFFORT_RESUME_BLOCKING_ENV) {
+      const blocked = decide({ env: { [name]: '1' } })
+      assert.equal(blocked.eligible, false, name)
+      assert.match(blocked.reason, new RegExp(name))
+    }
+    // An empty value is not set.
+    assert.equal(
+      decide({ env: { CLAUDE_CODE_USE_BEDROCK: '' } }).eligible,
+      true,
+    )
+  })
+
+  it('lets the fake provider stand in only when the test switch says so', () => {
+    const fake = (model: string | null, effort: string) => ({
+      provider: 'fake' as const,
+      requestedModel: model,
+      effectiveModel: model ?? 'fake-model',
+      effectiveEffort: effort,
+    })
+    const input = {
+      code: fake(null, 'low'),
+      repair: fake(null, 'high'),
+      claudeCliVersion: null,
+    }
+    assert.equal(decide(input).eligible, false)
+    assert.equal(decide({ ...input, fakeEffortResume: true }).eligible, true)
+  })
+
+  it('reads the version out of the CLI version line', () => {
+    assert.deepEqual(parseCliVersion('2.1.280 (Claude Code)'), [2, 1, 280])
+    assert.equal(parseCliVersion(null), null)
+    assert.equal(parseCliVersion('Claude Code'), null)
+  })
+})
+
+describe('a Claude alias, resolved by the model Claude Code reports', () => {
+  /** A profile as the job fixes it, through the real Claude provider. */
+  const fixed = (model: string, effort: string) =>
+    fixProfile({ provider: 'claude', model, effort })
+  const modelOf = (c: ConfirmedRepairSession) => (c.continues ? c.model : null)
+  /** The Agent SDK init message preflight's minimal call would read. */
+  const init = (model: string) =>
+    ({ type: 'system', subtype: 'init', model }) as unknown as SDKMessage
+  /** Setup's decision, confirmed with what a stub preflight observed. */
+  const decideAndConfirm = (
+    code: ReturnType<typeof fixed>,
+    repair: ReturnType<typeof fixed>,
+    observed: { code: SDKMessage | null; repair: SDKMessage | null },
+  ) => {
+    const setup = repairSessionDecision({
+      contextMode: 'reuse',
+      code,
+      repair,
+      claudeCliVersion: '2.1.280 (Claude Code)',
+      env: {},
+      fakeEffortResume: false,
+    })
+    return {
+      setup,
+      confirmed: confirmRepairSession({
+        setup,
+        provider: 'claude',
+        codeModel: observed.code ? observedClaudeModel(observed.code) : null,
+        repairModel: observed.repair
+          ? observedClaudeModel(observed.repair)
+          : null,
+      }),
+    }
+  }
+
+  it('keeps the alias as the effective model: only the CLI resolves it', () => {
+    const profile = fixed('opus', 'high')
+    assert.equal(profile.requestedModel, 'opus')
+    assert.equal(profile.effectiveModel, 'opus')
+  })
+
+  it('reads the concrete model from the init message, or an assistant message', () => {
+    assert.equal(
+      observedClaudeModel(init('claude-opus-5-5')),
+      'claude-opus-5-5',
+    )
+    const assistant = (model: string) =>
+      ({ type: 'assistant', message: { model } }) as unknown as SDKMessage
+    assert.equal(
+      observedClaudeModel(assistant('claude-fable-5-1')),
+      'claude-fable-5-1',
+    )
+    // The CLI's own made-up frames and other messages name no model.
+    assert.equal(observedClaudeModel(assistant('<synthetic>')), null)
+    assert.equal(
+      observedClaudeModel({
+        type: 'result',
+        subtype: 'success',
+      } as unknown as SDKMessage),
+      null,
+    )
+  })
+
+  it('continues `opus` and `opus` once preflight saw both run on Opus 5.5', () => {
+    const { setup, confirmed } = decideAndConfirm(
+      fixed('opus', 'medium'),
+      fixed('opus', 'high'),
+      { code: init('claude-opus-5-5'), repair: init('claude-opus-5-5') },
+    )
+    assert.equal(setup.eligible, true)
+    assert.equal(confirmed.continues, true)
+    assert.equal(modelOf(confirmed), 'claude-opus-5-5')
+    // The implementation session recorded that model, so the repair
+    // continues it.
+    assert.equal(
+      sessionHandlingOf({
+        recorded: {
+          provider: 'claude',
+          nativeId: 'n',
+          profileId: 'code',
+          model: modelOf(confirmed),
+          cwd: '/w',
+          instructionsVersion: 'v',
+        },
+        profile: { provider: 'claude', id: 'repair' },
+        cwd: '/w',
+        instructionsVersion: 'v',
+        acrossEffortModel: modelOf(confirmed),
+      }).handling,
+      'continued-effort-change',
+    )
+  })
+
+  it('continues `opus` and `claude-opus-5-5` once preflight saw one model', () => {
+    const { confirmed } = decideAndConfirm(
+      fixed('opus', 'medium'),
+      fixed('claude-opus-5-5', 'high'),
+      { code: init('claude-opus-5-5'), repair: init('claude-opus-5-5') },
+    )
+    assert.equal(confirmed.continues, true)
+    assert.equal(modelOf(confirmed), 'claude-opus-5-5')
+  })
+
+  it('starts new when preflight reported no model, another model, or an unlisted one', () => {
+    const unknown = decideAndConfirm(
+      fixed('opus', 'medium'),
+      fixed('opus', 'high'),
+      { code: init('claude-opus-5-5'), repair: null },
+    ).confirmed
+    assert.equal(unknown.continues, false)
+    assert.equal(modelOf(unknown), null)
+    assert.match(unknown.reason, /did not report/)
+    const split = decideAndConfirm(
+      fixed('opus', 'medium'),
+      fixed('claude-opus-5-5', 'high'),
+      { code: init('claude-opus-5-6'), repair: init('claude-opus-5-5') },
+    ).confirmed
+    assert.equal(split.continues, false)
+    assert.match(split.reason, /code runs on claude-opus-5-6/)
+    const sonnet = decideAndConfirm(
+      fixed('sonnet', 'medium'),
+      fixed('sonnet', 'high'),
+      { code: init('claude-sonnet-5'), repair: init('claude-sonnet-5') },
+    ).confirmed
+    assert.equal(sonnet.continues, false)
+    assert.equal(
+      sonnet.reason,
+      `claude-sonnet-5 is not ${EFFORT_RESUME_MODELS_LABEL}`,
+    )
+  })
+
+  it("keeps setup's reason when setup already ruled it out, and refuses a run set up before", () => {
+    assert.deepEqual(
+      confirmRepairSession({
+        setup: { eligible: false, reason: 'context is fresh' },
+        provider: 'claude',
+        codeModel: 'claude-opus-5-5',
+        repairModel: 'claude-opus-5-5',
+      }),
+      { continues: false, reason: 'context is fresh' },
+    )
+    const before = confirmRepairSession({
+      setup: null,
+      provider: 'claude',
+      codeModel: 'claude-opus-5-5',
+      repairModel: 'claude-opus-5-5',
+    })
+    assert.equal(before.continues, false)
+    assert.match(before.reason, /set up before/)
+  })
+})
+
+describe('how a code stage treats the recorded implementation session', () => {
+  const recorded = (patch: Partial<SessionRef> = {}): SessionRef => ({
+    provider: 'claude',
+    nativeId: 'native-1',
+    profileId: 'code',
+    model: 'claude-opus-5-5',
+    cwd: '/w',
+    instructionsVersion: 'v',
+    ...patch,
+  })
+  const handling = (
+    session: SessionRef | null,
+    patch: {
+      id?: string
+      acrossEffortModel?: string | null
+      cwd?: string
+    } = {},
+  ) =>
+    sessionHandlingOf({
+      recorded: session,
+      profile: { provider: 'claude', id: patch.id ?? 'repair' },
+      cwd: patch.cwd ?? '/w',
+      instructionsVersion: 'v',
+      acrossEffortModel:
+        patch.acrossEffortModel === undefined
+          ? 'claude-opus-5-5'
+          : patch.acrossEffortModel,
+    }).handling
+
+  it('starts new with no session on record', () => {
+    assert.equal(handling(null), 'fresh')
+  })
+
+  it('continues its own profile, and another one only on the confirmed model', () => {
+    assert.equal(
+      handling(recorded(), { id: 'code', acrossEffortModel: null }),
+      'continued',
+    )
+    assert.equal(handling(recorded()), 'continued-effort-change')
+  })
+
+  it('starts new on a session recorded without a model, missing or null', () => {
+    assert.equal(handling(recorded({ model: undefined })), 'fresh')
+    assert.equal(handling(recorded({ model: null })), 'fresh')
+  })
+
+  it('starts new, and says why, on a session that ran another model than the confirmed one', () => {
+    // The CLI resolved the alias to another model between preflight and
+    // the implement call.
+    const choice = sessionHandlingOf({
+      recorded: recorded({ model: 'claude-opus-5-6' }),
+      profile: { provider: 'claude', id: 'repair' },
+      cwd: '/w',
+      instructionsVersion: 'v',
+      acrossEffortModel: 'claude-opus-5-5',
+    })
+    assert.equal(choice.handling, 'fresh')
+    assert.match(
+      choice.reason,
+      /ran on claude-opus-5-6, not the confirmed claude-opus-5-5/,
+    )
+  })
+
+  it('stops on another provider, cwd, instructions, or a profile it may not continue', () => {
+    for (const [name, run] of [
+      ['provider', () => handling(recorded({ provider: 'codex' }))],
+      ['cwd', () => handling(recorded(), { cwd: '/other' })],
+      [
+        'instructions',
+        () => handling(recorded({ instructionsVersion: 'old' })),
+      ],
+      ['profile', () => handling(recorded(), { acrossEffortModel: null })],
+    ] as const)
+      assert.throws(run, /provenance no longer matches/, name)
   })
 })

@@ -22,7 +22,10 @@ import {
   FAKE_TRIAGE_KINDS,
   FakeRun,
 } from '../engine/providers/fake.js'
-import { createProvider } from '../engine/providers/index.js'
+import {
+  createProvider,
+  type ProviderOptions,
+} from '../engine/providers/index.js'
 import type {
   AgentProvider,
   AvailabilityCheck,
@@ -82,14 +85,19 @@ import {
   type TargetConfig,
 } from './target.js'
 import {
+  EFFORT_RESUME_POLICY,
   executionKey,
   initialState,
   REVIEW_CONTEXTS,
   REVIEW_LENSES,
   REVIEW_OUTPUTS,
+  confirmRepairSession,
+  REPAIR_SESSION_STEP,
+  repairSessionDecision,
   separateRepairProfile,
   usesReviewMaterials,
   type FactorySetup,
+  type RepairSessionRecord,
   type ProfileRole,
   type ReviewContext,
   type ReviewInvocation,
@@ -197,6 +205,7 @@ const fakeScenarioSchema = z
     usage: z.enum(['none', 'realistic']).optional(),
     summary: z.string().optional(),
     changes: z.record(z.string().min(1), z.string()).optional(),
+    claudeEffortResume: z.boolean().optional(),
   })
   .strict()
 
@@ -551,12 +560,15 @@ export type FixedProfile = Omit<ResolvedProfile, 'id'>
  * Throws for an unsupported effort, so a bad profile fails when the run is
  * triggered rather than part way through it.
  */
-export function fixProfile(request: {
-  provider: ProviderName
-  model: string | null
-  effort: string | null
-}): FixedProfile {
-  const resolved = createProvider(request.provider).resolveExecution({
+export function fixProfile(
+  request: {
+    provider: ProviderName
+    model: string | null
+    effort: string | null
+  },
+  options?: ProviderOptions,
+): FixedProfile {
+  const resolved = createProvider(request.provider, options).resolveExecution({
     requestedModel: request.model,
     requestedEffort: request.effort,
   })
@@ -735,6 +747,12 @@ export interface PreflightCheck {
 export interface PreflightCallResult {
   verdict: 'available' | 'unavailable'
   detail: string
+  /**
+   * The concrete model the call reported running, as Claude Code resolves an
+   * alias such as `opus`; null when it reported none. Absent on a call
+   * recorded before it existed.
+   */
+  model?: string | null
 }
 
 function describeCheck(check: PreflightCheck): string {
@@ -748,14 +766,15 @@ function describeCheck(check: PreflightCheck): string {
  * call, in its own step through the common checkpoint and measurement path,
  * so a replay reads the answer back and an unanswered call stops the run as
  * uncertain. The first unusable setting stops the run before anything else
- * is sent.
+ * is sent. Returns the concrete model each minimal call reported, by
+ * `executionKey`; a setting the free check decided has none.
  */
 async function runPreflight(
   step: StepContext,
   setup: FactorySetup,
   target: Target,
   providerFor: ProviderFor,
-): Promise<void> {
+): Promise<Map<string, string | null>> {
   const triage = triageThatRuns(setup, setup.triage)
   const roles: [string, ResolvedProfile][] = [
     ...Object.entries(byRole((role) => setup.profiles[role])),
@@ -810,6 +829,7 @@ async function runPreflight(
     throw new Error(
       `${PREFLIGHT_FAILED_MESSAGE}: ${describeCheck(refused)} is not usable; ${refused.free.method}: ${refused.free.detail}`,
     )
+  const observed = new Map<string, string | null>()
   for (const [index, check] of plan.checks.entries()) {
     if (check.free.verdict !== 'unknown') continue
     const operationKey = `${step.runId}/preflight/call:${index}`
@@ -836,7 +856,11 @@ async function runPreflight(
           acceptRejection: true,
         })
         return call.rejection === null
-          ? { verdict: 'available', detail: 'the minimal call was answered' }
+          ? {
+              verdict: 'available',
+              detail: 'the minimal call was answered',
+              model: call.observedModel,
+            }
           : { verdict: 'unavailable', detail: call.rejection }
       },
       {
@@ -847,7 +871,17 @@ async function runPreflight(
       throw new Error(
         `${PREFLIGHT_FAILED_MESSAGE}: ${describeCheck(check)} is not usable; minimal call refused: ${answer.detail}`,
       )
+    observed.set(
+      executionKey({
+        provider: check.provider,
+        requestedModel: check.requestedModel,
+        effectiveModel: check.model,
+        effectiveEffort: check.effort,
+      }),
+      answer.model ?? null,
+    )
   }
+  return observed
 }
 
 /**
@@ -858,6 +892,7 @@ function resolveInputProfiles(input: {
   provider: ProviderName
   model?: string | undefined
   effort?: string | undefined
+  fakeScenario?: z.infer<typeof fakeScenarioSchema> | undefined
   profiles?:
     | (Record<ProfileRole, RequestedProfile> & {
         triage?: RequestedProfile | undefined
@@ -869,22 +904,28 @@ function resolveInputProfiles(input: {
   triage: ResolvedProfile | null
   repair: ResolvedProfile | null
 } {
+  // A scenario can make the fake provider honour the requested effort.
+  const fake = input.fakeScenario
+    ? { run: new FakeRun(input.fakeScenario) }
+    : undefined
   const fixRequested = (requested: RequestedProfile) =>
-    fixProfile({
-      provider: requested.provider,
-      model: requested.requestedModel,
-      effort: requested.requestedEffort,
-    })
-  const fixed = byRole((role) => {
-    const requested = input.profiles?.[role]
-    return requested
-      ? fixRequested(requested)
-      : fixProfile({
-          provider: input.provider,
-          model: input.model ?? null,
-          effort: input.effort ?? null,
-        })
-  })
+    fixProfile(
+      {
+        provider: requested.provider,
+        model: requested.requestedModel,
+        effort: requested.requestedEffort,
+      },
+      fake,
+    )
+  const fixed = byRole((role) =>
+    fixRequested(
+      input.profiles?.[role] ?? {
+        provider: input.provider,
+        requestedModel: input.model ?? null,
+        requestedEffort: input.effort ?? null,
+      },
+    ),
+  )
   const requestedTriage = input.profiles?.triage
   const requestedRepair = input.profiles?.repair
   const resolve = (role: string, profile: FixedProfile): ResolvedProfile => ({
@@ -1051,13 +1092,24 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           if (baselineCheck && target.kind === 'repo')
             await assertSetupLeftNoUntracked(target.workdir, signal)
           const instructionsVersion = 'local-factory.v3'
-          const value: FactorySetup = {
-            fake: profiles.code.provider === 'fake',
-            contextMode: input.context,
-            target,
-            checkpointsDir: join(root, 'operation-checkpoints'),
-            instructionsVersion,
-            configVersion: configVersionOf({
+          // Fixed here with the CLI version just recorded, so a restarted
+          // worker with another environment never changes how this run's
+          // repairs treat the implementation session.
+          const repairSession = ownRepair
+            ? repairSessionDecision({
+                contextMode: input.context,
+                code: profiles.code,
+                repair: ownRepair,
+                claudeCliVersion: cli['claudeCli'] ?? null,
+                env: process.env,
+                fakeEffortResume:
+                  input.fakeScenario?.claudeEffortResume === true,
+              })
+            : null
+          // The version the run takes only once preflight confirms the
+          // continuation; every other run keeps `configVersion`.
+          const versionWith = (policy: string | null) =>
+            configVersionOf({
               contextMode: input.context,
               instructionsVersion,
               maxIterations: input.maxIterations,
@@ -1069,15 +1121,34 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               checkTimeoutMs: testTimeoutMs,
               code: profiles.code,
               repair: ownRepair,
+              repairSession: policy,
               correctness: profiles.correctness,
               edgeCases: profiles['edge-cases'],
               triage,
               cli,
               commit: target.kind === 'repo' ? (target.commit ?? null) : null,
               review,
-            }),
+            })
+          const value: FactorySetup = {
+            fake: profiles.code.provider === 'fake',
+            contextMode: input.context,
+            target,
+            checkpointsDir: join(root, 'operation-checkpoints'),
+            instructionsVersion,
+            configVersion: versionWith(null),
             profiles,
             repair,
+            ...(repairSession
+              ? {
+                  repairSession: repairSession.eligible
+                    ? {
+                        ...repairSession,
+                        confirmedConfigVersion:
+                          versionWith(EFFORT_RESUME_POLICY),
+                      }
+                    : repairSession,
+                }
+              : {}),
             triage,
             maxIterations: input.maxIterations,
             agentTimeoutMs,
@@ -1157,9 +1228,42 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           requestedModel: profile.requestedModel,
           codexPath: setup.codexPath ?? null,
         })
-      await runPreflight(step, setup, target, providerFor)
+      const observedModels = await runPreflight(
+        step,
+        setup,
+        target,
+        providerFor,
+      )
       const roleProviders = byRole((role) => providerFor(setup.profiles[role]))
       const ownRepair = separateRepairProfile(setup)
+      // Setup could not know the model an alias runs; preflight saw it. The
+      // stages read this confirmed decision, and every call after preflight
+      // carries the config version it gives. Recorded in its own step, next
+      // to setup's answer, so a report can show why a repair starts new.
+      const observedModelOf = (profile: ResolvedProfile) =>
+        observedModels.get(executionKey(profile)) ?? null
+      const repairSession: RepairSessionRecord | null = ownRepair
+        ? await step.run(REPAIR_SESSION_STEP, async () => {
+            const confirmed = confirmRepairSession({
+              setup: setup.repairSession,
+              provider: setup.profiles.code.provider,
+              codeModel: observedModelOf(setup.profiles.code),
+              repairModel: observedModelOf(ownRepair),
+            })
+            const record: RepairSessionRecord = {
+              setup: setup.repairSession ?? null,
+              confirmed,
+              configVersion:
+                (confirmed.continues
+                  ? setup.repairSession?.confirmedConfigVersion
+                  : undefined) ?? setup.configVersion,
+            }
+            return record
+          })
+        : null
+      const runSetup: FactorySetup = repairSession
+        ? { ...setup, configVersion: repairSession.configVersion }
+        : setup
       const providers = {
         ...roleProviders,
         repair: ownRepair ? providerFor(ownRepair) : roleProviders.code,
@@ -1173,7 +1277,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             (signal, attempt) =>
               runTriage(signal, attempt, {
                 operationKey: triageKey,
-                setup,
+                setup: runSetup,
                 profile: triageProfile,
                 provider: providerFor(triageProfile),
                 target,
@@ -1186,7 +1290,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             },
           )
         : null
-      let state = initialState(setup)
+      let state = initialState(runSetup, repairSession?.confirmed ?? null)
       // Deliberately not a `finally`: `step.waitFor` suspends by throwing, so a
       // finally block would run cleanup every time the run parks on the human
       // approval wait, and a target that really removes its worktree would

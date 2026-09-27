@@ -32,6 +32,10 @@ const sessionSchema = z.object({
   provider: z.enum(['codex', 'claude', 'fake']),
   nativeId: z.string(),
   profileId: z.string(),
+  // Optional so a session recorded before it existed still parses. Such a
+  // session is continued by its own profile only, never across an effort
+  // change.
+  model: z.string().nullable().optional(),
   cwd: z.string(),
   instructionsVersion: z.string(),
 })

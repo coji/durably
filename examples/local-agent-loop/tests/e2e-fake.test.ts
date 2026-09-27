@@ -18,13 +18,30 @@ import { createAgentDurably } from '../src/durably.js'
 import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
 import { compareReports, comparisonToMarkdown } from '../src/engine/compare.js'
+import type {
+  AgentCallOptions,
+  AgentProvider,
+  AttemptMeasurement,
+} from '../src/engine/providers/types.js'
 import {
   reportToJson,
   reportToMarkdown,
   triageCalibration,
 } from '../src/engine/report.js'
 import { checkpointPaths } from '../src/engine/runner.js'
+import type { ResolvedProfile, SessionRef } from '../src/engine/types.js'
+import { configVersionOf } from '../src/engine/versions.js'
+import { resolveTimeouts } from '../src/factory/job.js'
 import { codePrompt } from '../src/factory/prompts.js'
+import { codeStage } from '../src/factory/stages.js'
+import {
+  EFFORT_RESUME_POLICY,
+  initialState,
+  REPAIR_SESSION_STEP,
+  type RepairSessionRecord,
+  type FactorySetup,
+  type FactoryState,
+} from '../src/factory/types.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -1424,6 +1441,501 @@ describe('refused calls and the repair profile', { timeout: 300000 }, () => {
       prompt,
       /Verified feedback to address:\n- acceptance: add\(0\.1, 0\.2\) returned 0/,
     )
+  })
+})
+
+describe('repair across an effort change', { timeout: 300000 }, () => {
+  const fake = (
+    requestedModel: string | null = null,
+    requestedEffort: string | null = null,
+  ) => ({ provider: 'fake' as const, requestedModel, requestedEffort })
+
+  it('continues the implementation session at the repair effort only when setup allows it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'e2e-effort-'))
+    delete process.env.FAKE_FAIL_FIRST
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    const durably = createAgentDurably({ stateRoot: dir })
+    await durably.migrate()
+    const trigger = (args: {
+      code?: ReturnType<typeof fake>
+      repair: ReturnType<typeof fake> | null
+      context?: 'reuse' | 'fresh'
+    }) =>
+      durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        profiles: {
+          code: args.code ?? fake(),
+          correctness: fake(),
+          'edge-cases': fake(),
+          ...(args.repair ? { repair: args.repair } : {}),
+        },
+        target: { kind: 'subject' as const },
+        maxIterations: 2,
+        context: args.context ?? 'reuse',
+        // The first implementation leaves the bug, so one repair follows.
+        fakeScenario: { failIterations: 1, claudeEffortResume: true },
+      })
+    const ids: Record<string, string> = {}
+    try {
+      ids['effort'] = (await trigger({ repair: fake(null, 'high') })).id
+      ids['fresh'] = (
+        await trigger({ repair: fake(null, 'high'), context: 'fresh' })
+      ).id
+      ids['model'] = (
+        await trigger({ repair: fake('repair-model', 'high') })
+      ).id
+      ids['same'] = (await trigger({ repair: null })).id
+      // Two spellings of one model: the fake "CLI" runs `fake` as
+      // `fake-model`, and preflight reads that back.
+      ids['alias'] = (
+        await trigger({
+          code: fake('fake'),
+          repair: fake('fake-model', 'high'),
+        })
+      ).id
+      // A model the fake "CLI" never reports: preflight cannot confirm it.
+      ids['unobserved'] = (
+        await trigger({
+          code: fake('unobserved-model'),
+          repair: fake('unobserved-model', 'high'),
+        })
+      ).id
+      await durably.init()
+      for (const [name, id] of Object.entries(ids))
+        await waitFor(
+          async () =>
+            ['completed', 'failed', 'waiting'].includes(
+              (await durably.getRun(id))?.status ?? '',
+            ),
+          120000,
+          `${name} run settles`,
+        )
+      const calls = async (name: string) => {
+        const report = await buildReport(durably, ids[name] ?? '')
+        assert.equal(report.status, 'waiting', name)
+        const [implement, repair] = report.attempts
+          .filter((a) => a.stepName.endsWith(':code:agent'))
+          .map((a) => a.measurement)
+        assert.equal(implement?.role, 'implement', name)
+        assert.equal(repair?.role, 'repair', name)
+        return { report, implement, repair }
+      }
+
+      // Same model, another effort: the repair resumes the implementation
+      // session, at its own effort, and reads the cache back.
+      const effort = await calls('effort')
+      assert.equal(effort.repair?.sessionId, effort.implement?.sessionId)
+      assert.equal(effort.implement?.effectiveEffort, 'low')
+      assert.equal(effort.repair?.effectiveEffort, 'high')
+      assert.equal(effort.repair?.reportedEffort, 'high')
+      assert.equal(effort.repair?.sessionHandling, 'continued-effort-change')
+      /**
+       * A run's setup, its recorded repair session decision, and the two
+       * versions its settings can take: without the policy, as before it
+       * existed, and with it.
+       */
+      const versionsOf = async (name: string) => {
+        const id = ids[name] ?? ''
+        const setup = (await durably.storage.getCompletedStep(id, 'setup'))
+          ?.output as FactorySetup
+        const record = (
+          await durably.storage.getCompletedStep(id, REPAIR_SESSION_STEP)
+        )?.output as RepairSessionRecord
+        const versionOf = (repairSession: string | null) =>
+          configVersionOf({
+            contextMode: setup.contextMode,
+            instructionsVersion: setup.instructionsVersion,
+            maxIterations: setup.maxIterations,
+            target: 'subject',
+            agentTimeoutMs: setup.agentTimeoutMs,
+            checkTimeoutMs: resolveTimeouts('subject', null).checkTimeoutMs,
+            code: setup.profiles.code,
+            repair: setup.repair ?? null,
+            repairSession,
+            correctness: setup.profiles.correctness,
+            edgeCases: setup.profiles['edge-cases'],
+            triage: null,
+            cli: {},
+            commit: null,
+            review: {},
+          })
+        return {
+          setup,
+          record,
+          prePolicy: versionOf(null),
+          withPolicy: versionOf(EFFORT_RESUME_POLICY),
+        }
+      }
+      const effortVersions = await versionsOf('effort')
+      // Setup finds it eligible and keeps the version without the policy;
+      // preflight confirms it, and the run takes the version with it.
+      assert.equal(effortVersions.setup.repairSession?.eligible, true)
+      assert.equal(effortVersions.setup.configVersion, effortVersions.prePolicy)
+      assert.equal(effortVersions.record.confirmed.continues, true)
+      assert.equal(
+        effortVersions.record.configVersion,
+        effortVersions.withPolicy,
+      )
+      assert.equal(effort.report.configVersion, effortVersions.withPolicy)
+      assert.equal(effort.repair?.configVersion, effortVersions.withPolicy)
+
+      // The same settings in fresh context start a new session, and read
+      // less from cache than the resumed repair did.
+      const fresh = await calls('fresh')
+      assert.notEqual(fresh.repair?.sessionId, fresh.implement?.sessionId)
+      assert.equal(fresh.repair?.sessionHandling, 'fresh')
+      assert.ok(
+        (effort.repair?.usage?.cacheReadTokens ?? 0) >
+          (fresh.repair?.usage?.cacheReadTokens ?? 0),
+      )
+
+      // Another model starts a new session whatever the effort: setup
+      // cannot tell, preflight sees two models.
+      const model = await calls('model')
+      assert.notEqual(model.repair?.sessionId, model.implement?.sessionId)
+      assert.equal(model.repair?.sessionHandling, 'fresh')
+
+      // A repair on the code profile continues as it always did.
+      const same = await calls('same')
+      assert.equal(same.repair?.sessionId, same.implement?.sessionId)
+      assert.equal(same.repair?.sessionHandling, 'continued')
+
+      // Each repair call, with its handling and its own cache-read ratio,
+      // in the JSON and the Markdown report.
+      const [resumed] = effort.report.repairCalls
+      assert.equal(effort.report.repairCalls.length, 1)
+      assert.equal(resumed?.sessionHandling, 'continued-effort-change')
+      assert.equal(resumed?.cacheReadRatio, 43628 / 46000)
+      const [started] = fresh.report.repairCalls
+      assert.equal(started?.sessionHandling, 'fresh')
+      assert.equal(started?.cacheReadRatio, 0)
+      const json = JSON.parse(reportToJson(effort.report)) as {
+        repairCalls: { sessionHandling: string; cacheReadRatio: number }[]
+      }
+      assert.equal(
+        json.repairCalls[0]?.sessionHandling,
+        'continued-effort-change',
+      )
+      assert.equal(json.repairCalls[0]?.cacheReadRatio, 43628 / 46000)
+      const md = reportToMarkdown(effort.report)
+      assert.match(
+        md,
+        /## Repair calls[\s\S]*\| continued-effort-change \| 46000 \| 43628 \| 0\.9484 \|/,
+      )
+      assert.match(reportToMarkdown(same.report), /\| continued \|/)
+
+      // Setup found the other model eligible, as it cannot tell an alias
+      // from a model; preflight saw two models, so the run keeps the
+      // version it had before the policy existed, and says why.
+      const modelVersions = await versionsOf('model')
+      assert.equal(modelVersions.setup.repairSession?.eligible, true)
+      assert.equal(modelVersions.record.confirmed.continues, false)
+      assert.equal(model.report.configVersion, modelVersions.prePolicy)
+      assert.notEqual(model.report.configVersion, modelVersions.withPolicy)
+      assert.equal(model.repair?.configVersion, modelVersions.prePolicy)
+      assert.match(
+        model.report.repairSession?.confirmed.reason ?? '',
+        /code runs on fake-model and repair on repair-model/,
+      )
+      assert.match(
+        model.report.repairCalls[0]?.sessionReason ?? '',
+        /code runs on fake-model and repair on repair-model/,
+      )
+      const modelJson = JSON.parse(reportToJson(model.report)) as {
+        repairSession: {
+          setup: { eligible: boolean }
+          confirmed: { continues: boolean; reason: string }
+        }
+      }
+      assert.equal(modelJson.repairSession.setup.eligible, true)
+      assert.equal(modelJson.repairSession.confirmed.continues, false)
+      assert.match(
+        reportToMarkdown(model.report),
+        /- repair session: starts new \(code runs on fake-model/,
+      )
+
+      // The effective models are spelled differently, as `opus` and
+      // `claude-opus-5-5` are; preflight saw both run as `fake-model`: the
+      // repair resumes the implementation session at its own effort, and
+      // the run's config version carries the policy.
+      const alias = await calls('alias')
+      assert.equal(alias.implement?.requestedModel, 'fake')
+      assert.equal(alias.repair?.requestedModel, 'fake-model')
+      assert.equal(alias.implement?.effectiveModel, 'fake')
+      assert.equal(alias.repair?.effectiveModel, 'fake-model')
+      assert.equal(alias.repair?.sessionId, alias.implement?.sessionId)
+      assert.equal(alias.repair?.effectiveEffort, 'high')
+      assert.equal(alias.repair?.sessionHandling, 'continued-effort-change')
+      const aliasVersions = await versionsOf('alias')
+      assert.equal(aliasVersions.record.confirmed.continues, true)
+      assert.equal(alias.report.configVersion, aliasVersions.withPolicy)
+      assert.notEqual(alias.report.configVersion, aliasVersions.prePolicy)
+      assert.match(
+        reportToMarkdown(alias.report),
+        /- repair session: continues across effort on fake-model/,
+      )
+      // Preflight made a minimal call per setting, as it does for Claude.
+      assert.ok(alias.report.preflight?.checks.every((c) => c.called))
+
+      // A model preflight saw nothing for: a new session, as before.
+      const unobserved = await calls('unobserved')
+      assert.notEqual(
+        unobserved.repair?.sessionId,
+        unobserved.implement?.sessionId,
+      )
+      assert.equal(unobserved.repair?.sessionHandling, 'fresh')
+      // Eligible at setup, never confirmed: the pre-policy version.
+      const unobservedVersions = await versionsOf('unobserved')
+      assert.equal(unobservedVersions.setup.repairSession?.eligible, true)
+      assert.equal(
+        unobserved.report.configVersion,
+        unobservedVersions.prePolicy,
+      )
+      assert.match(
+        unobserved.report.repairSession?.confirmed.reason ?? '',
+        /did not report/,
+      )
+      assert.match(
+        reportToMarkdown(unobserved.report),
+        /## Repair calls[\s\S]*\| fresh \|/,
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  describe('the code stage itself', () => {
+    const profile = (
+      id: string,
+      effort: string,
+      model: string | null = null,
+    ): ResolvedProfile => ({
+      id,
+      provider: 'fake',
+      requestedModel: model,
+      requestedEffort: effort,
+      effectiveModel: 'fake-model',
+      effectiveEffort: effort,
+    })
+    const code = profile('fake:fake-model:low:code', 'low')
+    const repair = profile('fake:fake-model:high:repair', 'high')
+
+    /** Run one repair code stage with a stub provider, and what it was sent. */
+    async function repairOnce(patch: {
+      setup?: Partial<FactorySetup>
+      state?: Partial<FactoryState>
+      session?: Partial<SessionRef> | null
+    }) {
+      const root = await mkdtemp(join(tmpdir(), 'code-stage-'))
+      const setup = {
+        fake: true,
+        contextMode: 'reuse',
+        target: { kind: 'subject' },
+        checkpointsDir: join(root, 'checkpoints'),
+        instructionsVersion: 'v',
+        configVersion: 'cv',
+        profiles: { code, correctness: code, 'edge-cases': code },
+        repair,
+        maxIterations: 2,
+        agentTimeoutMs: 60000,
+        autoApprove: false,
+        ...patch.setup,
+      } as FactorySetup
+      const session: SessionRef | null =
+        patch.session === null
+          ? null
+          : {
+              provider: 'fake',
+              nativeId: 'implementation-session',
+              profileId: code.id,
+              model: 'fake-model',
+              cwd: root,
+              instructionsVersion: 'v',
+              ...patch.session,
+            }
+      const state: FactoryState = {
+        ...initialState(setup, {
+          continues: true,
+          reason: 'test',
+          model: 'fake-model',
+        }),
+        iteration: 1,
+        implementationSession: session,
+        repairNotes: ['acceptance: failed'],
+        ...patch.state,
+      }
+      const sent: AgentCallOptions[] = []
+      const provider: AgentProvider = {
+        name: 'fake',
+        fake: true,
+        cliPath: null,
+        partialUsage: false,
+        resolveExecution: (r) => ({
+          model: r.requestedModel ?? 'fake-model',
+          effort: r.requestedEffort,
+        }),
+        call: async (options) => {
+          sent.push(options)
+          return {
+            text: 'fixed',
+            session: { id: options.sessionId ?? 'new-session' },
+            // As Claude Code: the requested name runs as written.
+            resolvedModel: options.requestedModel ?? 'fake-model',
+            resolvedEffort: options.requestedEffort,
+            reportedModel: null,
+            reportedEffort: null,
+            // As Claude Code, which runs the alias `fake` as `fake-model`.
+            observedModel:
+              (options.requestedModel ?? 'fake-model') === 'fake'
+                ? 'fake-model'
+                : (options.requestedModel ?? 'fake-model'),
+            usage: null,
+            elapsedMs: 1,
+          }
+        },
+        checkAvailability: async () => ({
+          verdict: 'available',
+          method: 'stub',
+          detail: 'stub',
+        }),
+        rejectionReason: () => null,
+      }
+      const measurements: AttemptMeasurement[] = []
+      const step = {
+        runId: 'run-1',
+        run: async (
+          _name: string,
+          fn: (signal: AbortSignal, attempt: unknown) => Promise<unknown>,
+        ) =>
+          fn(new AbortController().signal, {
+            id: randomId(),
+            setMetadata: async (m: unknown) => {
+              measurements.push(m as AttemptMeasurement)
+            },
+          }),
+      }
+      const target = {
+        workdir: root,
+        taskBrief: () => 'Fix add().',
+        implementationRules: () => [],
+        untrustedInputs: () => [],
+        seal: async () => ({
+          id: 'candidate-2',
+          snapshotDir: root,
+          sourceHash: 'h',
+          acceptanceHash: 'h',
+        }),
+      }
+      const event = await codeStage({
+        step: step as never,
+        state,
+        decision: { stage: 'code', role: 'repair', reason: 'test' },
+        key: 'stage:3:code',
+        services: {
+          providers: {
+            code: provider,
+            correctness: provider,
+            'edge-cases': provider,
+            repair: provider,
+          },
+          target: target as never,
+        },
+      })
+      return { sent: sent[0], measurement: measurements.at(-1), event }
+    }
+    let counter = 0
+    const randomId = () => `attempt-${++counter}`
+
+    it('resumes at the repair effort with a continuing prompt, and records the session it returned', async () => {
+      const { sent, measurement, event } = await repairOnce({})
+      assert.equal(sent?.sessionId, 'implementation-session')
+      assert.equal(sent?.requestedEffort, 'high')
+      assert.doesNotMatch(sent?.prompt ?? '', /starting a new session/)
+      assert.match(sent?.prompt ?? '', /continuing the repair conversation/)
+      assert.equal(measurement?.sessionHandling, 'continued-effort-change')
+      assert.ok(event.type === 'code.completed')
+      if (event.type !== 'code.completed') return
+      assert.equal(event.session?.nativeId, 'implementation-session')
+      assert.equal(event.session?.profileId, repair.id)
+      assert.equal(event.session?.model, 'fake-model')
+    })
+
+    it('starts new, and says so, when setup did not allow it or the session predates the model', async () => {
+      for (const [name, patch] of [
+        ['not allowed', { state: { repairSession: null } }],
+        [
+          'refused at preflight',
+          {
+            state: {
+              repairSession: {
+                continues: false,
+                reason: 'preflight did not report the model',
+              },
+            },
+          },
+        ],
+        ['no model on record', { session: { model: undefined } }],
+        ['a null model on record', { session: { model: null } }],
+      ] as const) {
+        const { sent, measurement } = await repairOnce(patch)
+        assert.equal(sent?.sessionId, null, name)
+        assert.match(sent?.prompt ?? '', /starting a new session/, name)
+        assert.equal(measurement?.sessionHandling, 'fresh', name)
+      }
+    })
+
+    it('starts new, and says why, on a session that ran another model than the confirmed one', async () => {
+      const { sent, measurement } = await repairOnce({
+        session: { model: 'another-model' },
+      })
+      assert.equal(sent?.sessionId, null)
+      assert.match(sent?.prompt ?? '', /starting a new session/)
+      assert.equal(measurement?.sessionHandling, 'fresh')
+      assert.match(
+        measurement?.sessionReason ?? '',
+        /ran on another-model, not the confirmed fake-model/,
+      )
+    })
+
+    it('compares the model preflight confirmed, not the profile spelling', async () => {
+      // The repair profile names an alias; preflight confirmed both profiles
+      // run `fake-model`. The session recorded under that model resumes, and
+      // the session the repair returns records it too.
+      const aliased: ResolvedProfile = {
+        ...profile(repair.id, 'high', 'fake'),
+        effectiveModel: 'fake',
+      }
+      const { sent, measurement, event } = await repairOnce({
+        setup: { repair: aliased },
+      })
+      assert.equal(sent?.sessionId, 'implementation-session')
+      assert.equal(measurement?.sessionHandling, 'continued-effort-change')
+      assert.ok(event.type === 'code.completed')
+      if (event.type !== 'code.completed') return
+      // The model the call reported running, not the profile's alias.
+      assert.equal(event.session?.model, 'fake-model')
+      // A session recorded under the alias spelling is not the confirmed
+      // model: a new session.
+      const spelled = await repairOnce({
+        setup: { repair: aliased },
+        session: { model: 'fake' },
+      })
+      assert.equal(spelled.sent?.sessionId, null)
+      assert.equal(spelled.measurement?.sessionHandling, 'fresh')
+    })
+
+    it("never resumes the parent's session in a repair run's first repair", async () => {
+      const { sent, measurement } = await repairOnce({
+        setup: {
+          repairOf: { runId: 'parent', candidateCommit: 'a'.repeat(40) },
+        },
+        state: { iteration: 0 },
+      })
+      assert.equal(sent?.sessionId, null)
+      assert.equal(measurement?.sessionHandling, 'fresh')
+      assert.match(sent?.prompt ?? '', /FINDINGS block/)
+    })
   })
 })
 

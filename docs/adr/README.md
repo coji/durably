@@ -64,6 +64,7 @@ What we considered and why we didn't do it.
 | [0021](0021-local-agent-loop-squashed-delivery-branch.md)       | local-agent-loop squashed delivery branch     | accepted |
 | [0022](0022-local-agent-loop-external-repair-runs.md)           | local-agent-loop repair runs from findings    | accepted |
 | [0023](0023-local-agent-loop-configurable-review-invocation.md) | local-agent-loop configurable reviewers       | accepted |
+| [0024](0024-local-agent-loop-claude-effort-session-reuse.md)    | local-agent-loop effort-only repair sessions  | accepted |
 
 ## Prior Art
 

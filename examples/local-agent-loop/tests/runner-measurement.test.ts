@@ -8,6 +8,7 @@ import { describe, it } from 'node:test'
 
 import type { JsonValue } from '@coji/durably'
 
+import { repairCallsOf } from '../src/engine/build-report.js'
 import { SpawnCancelledError } from '../src/engine/child.js'
 import {
   classifyFailure,
@@ -20,6 +21,7 @@ import type {
   AgentResult,
 } from '../src/engine/providers/types.js'
 import type { AttemptMeasurement } from '../src/engine/providers/types.js'
+import { cacheReadRatio, toAttemptRow } from '../src/engine/report.js'
 import {
   checkpointPaths,
   RejectedInvocationError,
@@ -418,6 +420,184 @@ function baseSpec(provider: AgentProvider, checkpointsDir: string) {
     checkpointsDir,
   }
 }
+
+describe('a repair call records its session handling before it is sent', () => {
+  const usage = (
+    input: number | null,
+    cacheRead: number | null,
+  ): TokenUsage => ({
+    inputTokens: input,
+    cachedInputTokens: cacheRead,
+    cacheReadTokens: cacheRead,
+    cacheWriteTokens: null,
+    outputTokens: 10,
+    totalTokens: input === null ? null : input + 10,
+    usageSource: 'provider-final',
+  })
+  const repairSpec = (
+    provider: AgentProvider,
+    checkpointsDir: string,
+    operationKey: string,
+  ) => ({
+    provider,
+    providerName: 'codex' as const,
+    prompt: 'p',
+    workdir: '/tmp',
+    timeoutMs: 5000,
+    requestedModel: null,
+    requestedEffort: 'high',
+    effectiveModel: 'resolved-model',
+    effectiveEffort: 'low',
+    role: 'repair' as const,
+    stage: 'code',
+    iteration: 2,
+    operationKey,
+    checkpointsDir,
+    session: {
+      provider: 'codex' as const,
+      nativeId: 'native-1',
+      profileId: 'code',
+      model: 'resolved-model',
+      cwd: '/tmp',
+      instructionsVersion: 'v',
+    },
+    requireSession: true,
+    sessionHandling: 'continued-effort-change' as const,
+  })
+  /** A report row from one stub attempt's last measurement. */
+  const row = (attempt: StubAttempt, stepName: string) =>
+    toAttemptRow({
+      stepName,
+      stepIndex: 0,
+      id: attempt.id,
+      leaseGeneration: 1,
+      status: 'completed',
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      interruptionReason: null,
+      metadata: attempt.snapshots.at(-1) as unknown as JsonValue,
+    } as never)
+
+  it('saves it with the first measurement, and a recovery returns the same record and usage', async () => {
+    const checkpointsDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+    const operationKey = `test/${randomUUID()}`
+    let calls = 0
+    let seenBeforeCall: AttemptMeasurement | undefined
+    const first = fakeAttempt()
+    const provider = stubProvider(async (options) => {
+      calls++
+      seenBeforeCall = first.snapshots.at(-1)
+      assert.equal(options.sessionId, 'native-1')
+      return {
+        text: 'fixed',
+        session: { id: 'native-1' },
+        resolvedModel: 'resolved-model',
+        resolvedEffort: 'low',
+        reportedModel: null,
+        reportedEffort: null,
+        usage: usage(46000, 43628),
+        elapsedMs: 5,
+      }
+    })
+    const spec = repairSpec(provider, checkpointsDir, operationKey)
+    const made = await runAgentCall(
+      new AbortController().signal,
+      first as never,
+      spec,
+    )
+    assert.equal(first.snapshots[0]?.sessionHandling, 'continued-effort-change')
+    assert.equal(seenBeforeCall?.sessionHandling, 'continued-effort-change')
+    const second = fakeAttempt()
+    const recovered = await runAgentCall(
+      new AbortController().signal,
+      second as never,
+      spec,
+    )
+    assert.equal(calls, 1, 'the recovery sends nothing')
+    assert.equal(recovered.recovered, true)
+    assert.equal(
+      recovered.measurement.sessionHandling,
+      'continued-effort-change',
+    )
+    assert.deepEqual(recovered.measurement.usage, made.measurement.usage)
+    // One call in the report, with its own ratio, whichever attempt is read.
+    const listed = repairCallsOf([
+      row(first, 'stage:3:code:agent'),
+      row(second, 'stage:3:code:agent'),
+    ])
+    assert.equal(listed.length, 1)
+    assert.equal(listed[0]?.sessionHandling, 'continued-effort-change')
+    assert.equal(listed[0]?.recovered, true)
+    assert.equal(listed[0]?.cacheReadTokens, 43628)
+    assert.equal(listed[0]?.cacheReadRatio, 43628 / 46000)
+  })
+
+  it('never resends from a start-only checkpoint, and keeps the handling on record', async () => {
+    const checkpointsDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+    const operationKey = `test/${randomUUID()}`
+    const paths = checkpointPaths(checkpointsDir, operationKey)
+    await writeFile(
+      paths.started,
+      `${JSON.stringify({
+        operationKey,
+        invocationId: randomUUID(),
+        status: 'started',
+        invocationStartedAt: new Date().toISOString(),
+      })}\n`,
+    )
+    let calls = 0
+    const provider = stubProvider(async () => {
+      calls++
+      throw new Error('must not be called')
+    })
+    const attempt = fakeAttempt()
+    await assert.rejects(
+      runAgentCall(
+        new AbortController().signal,
+        attempt as never,
+        repairSpec(provider, checkpointsDir, operationKey),
+      ),
+      UncertainInvocationError,
+    )
+    assert.equal(calls, 0)
+    assert.equal(
+      attempt.snapshots.at(-1)?.sessionHandling,
+      'continued-effort-change',
+    )
+  })
+
+  it('reports the ratio as null when usage is missing or the input is 0', async () => {
+    assert.equal(cacheReadRatio(null, 10), null)
+    assert.equal(cacheReadRatio(100, null), null)
+    assert.equal(cacheReadRatio(0, 0), null)
+    assert.equal(cacheReadRatio(100, 0), 0)
+    for (const reported of [null, usage(0, 0), usage(null, 5)]) {
+      const attempt = fakeAttempt()
+      const provider = stubProvider(async () => ({
+        text: 'fixed',
+        session: { id: 'native-1' },
+        resolvedModel: 'resolved-model',
+        resolvedEffort: 'low',
+        reportedModel: null,
+        reportedEffort: null,
+        usage: reported,
+        elapsedMs: 5,
+      }))
+      await runAgentCall(
+        new AbortController().signal,
+        attempt as never,
+        repairSpec(
+          provider,
+          await mkdtemp(join(tmpdir(), 'checkpoints-')),
+          `test/${randomUUID()}`,
+        ),
+      )
+      const [call] = repairCallsOf([row(attempt, 'stage:3:code:agent')])
+      assert.equal(call?.cacheReadRatio, null, JSON.stringify(reported))
+      assert.equal(call?.sessionHandling, 'continued-effort-change')
+    }
+  })
+})
 
 describe('partial usage snapshots never outrank the terminal write', () => {
   it('survives a failed snapshot write instead of rejecting the call', async () => {

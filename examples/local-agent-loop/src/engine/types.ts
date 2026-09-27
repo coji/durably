@@ -18,11 +18,20 @@ export interface ResolvedProfile {
  * A provider-native conversation, pinned together with everything that must
  * match before it may be resumed. Continuing a session whose model, working
  * directory or instruction set has changed would silently mix two setups.
+ *
+ * `profileId` names the profile of the call that last ran the session; the
+ * same profile may always continue it. `model` lets a profile that differs
+ * only in effort continue it too, when setup allowed that: provider,
+ * effective model, working directory and instruction set still have to
+ * match. A session recorded before `model` existed has none, and is never
+ * continued across an effort change.
  */
 export interface SessionRef {
   provider: ProviderName
   nativeId: string
   profileId: string
+  /** The call's effective model; absent on older records. */
+  model?: string | null
   cwd: string
   instructionsVersion: string
 }

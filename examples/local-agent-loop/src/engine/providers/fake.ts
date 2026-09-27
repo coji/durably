@@ -39,6 +39,19 @@
  *   revoked login or a spent quota would be
  * - anything else ............ the free check accepts it
  *
+ * `claudeEffortResume` (scenario only, tests only) makes the fake stand in for
+ * a Claude Code that keeps the prompt cache when a session resumes at another
+ * effort. Like `ClaudeProvider`, it passes the requested model through as
+ * the effective model (`fake-model` when none is requested) and leaves any
+ * alias to the "CLI": each call reports the model it ran as
+ * `observedModel`, with `fake` an alias of `fake-model`, and nothing for a
+ * model named `unobserved-*`. Like Claude Code, it has no free availability
+ * check, so preflight makes a minimal call and reads that model. Each call
+ * honours the effort it is given instead of `low`, and an implement or
+ * repair call reports fixed usage whose cache read is high when it resumes a
+ * session and zero when it starts one. Setup also reads it, so a repair that
+ * differs from code in effort alone may continue the session.
+ *
  * A run can carry a `FakeScenario` in its input (demo seeding only). Its
  * fields override the matching env knob for that run alone, so runs in one
  * worker can behave differently. Its review verdicts are read by round and
@@ -121,6 +134,8 @@ export interface FakeScenario {
   summary?: string
   /** Files written into the workdir, relative paths, on a successful implement. */
   changes?: Record<string, string>
+  /** Stand in for a Claude Code that keeps the cache across an effort change. */
+  claudeEffortResume?: boolean
 }
 
 /** Per-run state shared by every fake provider instance of one run. */
@@ -367,6 +382,36 @@ export function realisticUsage(
   }
 }
 
+/**
+ * With `claudeEffortResume`, the model the fake "CLI" reports running for a
+ * model it was asked for, as Claude Code reports `claude-opus-5-5` for
+ * `opus`: `fake` is an alias of `fake-model`, and an `unobserved-*` model
+ * reports none.
+ */
+function fakeObservedModel(model: string): string | null {
+  if (model.startsWith('unobserved-')) return null
+  return model === 'fake' ? 'fake-model' : model
+}
+
+/**
+ * Usage of an implement or repair call with `claudeEffortResume`, shaped on
+ * a measured Claude Code 2.1.280 call: a new session writes the prompt to
+ * the cache and reads none of it; a resumed one reads it back.
+ */
+export function effortResumeUsage(resumed: boolean): TokenUsage {
+  const input = 46_000
+  const cacheRead = resumed ? 43_628 : 0
+  return {
+    inputTokens: input,
+    cachedInputTokens: cacheRead,
+    cacheReadTokens: cacheRead,
+    cacheWriteTokens: resumed ? input - cacheRead : 45_021,
+    outputTokens: 1_000,
+    totalTokens: input + 1_000,
+    usageSource: 'provider-final',
+  }
+}
+
 const TRIAGE_TEXT: Record<string, string> = {
   routine:
     'JUDGMENT: routine\nREASON: fake triage: a one-line fix with a pinned check.',
@@ -392,8 +437,20 @@ export class FakeProvider implements AgentProvider {
     this.requestedModel = options.requestedModel ?? null
   }
 
-  resolveExecution(): { model: string | null; effort: string | null } {
-    return { model: 'fake-model', effort: 'low' }
+  /** True when the run's scenario stands in for an effort-changing Claude Code. */
+  private get effortResume(): boolean {
+    return this.run?.scenario.claudeEffortResume === true
+  }
+
+  resolveExecution(requested?: {
+    requestedModel: string | null
+    requestedEffort: string | null
+  }): { model: string | null; effort: string | null } {
+    const model = requested?.requestedModel ?? null
+    return {
+      model: this.effortResume && model !== null ? model : 'fake-model',
+      effort: (this.effortResume ? requested?.requestedEffort : null) ?? 'low',
+    }
   }
 
   async call(options: AgentCallOptions): Promise<AgentResult> {
@@ -446,18 +503,28 @@ export class FakeProvider implements AgentProvider {
       throw new FakeRefusal(
         `fake: the ${options.role} call on ${this.requestedModel} is refused`,
       )
+    const { model: resolvedModel, effort } = this.resolveExecution(options)
+    const codeCall = options.role === 'implement' || options.role === 'repair'
     const result = (text: string, sessionId?: string): AgentResult => ({
       text,
       session: { id: sessionId ?? `fake-${randomUUID()}` },
-      resolvedModel: 'fake-model',
-      resolvedEffort: 'low',
+      resolvedModel,
+      resolvedEffort: effort,
       reportedModel,
-      reportedEffort: 'low',
-      usage: realistic ? realisticUsage(options.role, reportedModel) : null,
+      reportedEffort: effort,
+      ...(this.effortResume
+        ? { observedModel: fakeObservedModel(resolvedModel ?? 'fake-model') }
+        : {}),
+      usage:
+        this.effortResume && codeCall
+          ? effortResumeUsage(Boolean(options.sessionId))
+          : realistic
+            ? realisticUsage(options.role, reportedModel)
+            : null,
       elapsedMs: Date.now() - started,
     })
 
-    if (options.role === 'implement' || options.role === 'repair') {
+    if (codeCall) {
       const iter = options.prompt.match(/iteration (\d+)/)?.[1] ?? '1'
       const failIterations =
         scenario.failIterations ?? (process.env.FAKE_FAIL_FIRST !== '0' ? 1 : 0)
@@ -557,7 +624,11 @@ export class FakeProvider implements AgentProvider {
         method,
         detail: `${model} is not in the fake model list`,
       }
-    if (model.startsWith('probe-') || model.startsWith('refused-'))
+    if (
+      this.effortResume ||
+      model.startsWith('probe-') ||
+      model.startsWith('refused-')
+    )
       return {
         verdict: 'unknown',
         method,

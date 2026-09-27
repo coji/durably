@@ -29,6 +29,7 @@ import {
   REVIEW_LENSES,
   reviewInvocationOf,
   separateRepairProfile,
+  sessionHandlingOf,
   usesReviewMaterials,
   type FactoryOutcome,
   type ReviewLens,
@@ -74,28 +75,39 @@ export const codeStage: StageHandler = async ({
   const iteration = state.iteration + 1
   const target = services.target
   // A repair on its own profile starts a new session with the task, the spec
-  // and the repair notes; a repair on the code profile continues as before.
+  // and the repair notes, unless setup found it differs from code in effort
+  // alone on a Claude Code that keeps the cache across that change and
+  // preflight saw both run on one model: it then continues the
+  // implementation session at its own effort. A repair on the code profile
+  // continues as before.
   const repairOwn =
     role === 'repair' ? separateRepairProfile(state.setup) : null
   const separateRepair = repairOwn !== null
+  // The model preflight confirmed code and repair both run on, when a repair
+  // may continue the implementation session across an effort change.
+  const repairSession = state.repairSession
+  const effortResumeModel = repairSession?.continues
+    ? repairSession.model
+    : null
+  const acrossEffort = separateRepair && effortResumeModel !== null
   const profile = repairOwn ?? state.setup.profiles.code
-  const reuse = state.setup.contextMode === 'reuse' && !separateRepair
+  const reuse =
+    state.setup.contextMode === 'reuse' && (!separateRepair || acrossEffort)
   // A repair run's first repair addresses the outside findings. It starts a
   // session of its own: at iteration 0 this run has no session to continue,
   // and the parent's is never carried over.
   const fromFindings = Boolean(state.setup.repairOf) && state.iteration === 0
-  const continuedSession = reuse ? state.implementationSession : null
   // Only the code role's own provider, profile, cwd and instructions decide
   // whether its session may continue; the reviewers' profiles never do.
-  if (
-    continuedSession &&
-    (continuedSession.provider !== profile.provider ||
-      continuedSession.profileId !== profile.id ||
-      continuedSession.cwd !== target.workdir ||
-      continuedSession.instructionsVersion !== state.setup.instructionsVersion)
-  ) {
-    throw new Error('implementation session provenance no longer matches setup')
-  }
+  const recorded = reuse && !fromFindings ? state.implementationSession : null
+  const choice = sessionHandlingOf({
+    recorded,
+    profile,
+    cwd: target.workdir,
+    instructionsVersion: state.setup.instructionsVersion,
+    acrossEffortModel: acrossEffort ? effortResumeModel : null,
+  })
+  const continuedSession = choice.handling === 'fresh' ? null : recorded
   const call = await step.run(
     `${key}:agent`,
     (signal, attempt) =>
@@ -111,7 +123,9 @@ export const codeStage: StageHandler = async ({
           task: target.taskBrief(),
           rules: target.implementationRules(),
           untrusted: target.untrustedInputs('code'),
-          newSession: separateRepair,
+          // Told it starts a new session only when it does. A repair on the
+          // code profile keeps the prompt it always had.
+          newSession: separateRepair && continuedSession === null,
           fromFindings,
         }),
         workdir: target.workdir,
@@ -127,6 +141,18 @@ export const codeStage: StageHandler = async ({
         checkpointsDir: state.setup.checkpointsDir,
         session: continuedSession,
         requireSession: reuse,
+        ...(role === 'repair'
+          ? {
+              sessionHandling: choice.handling,
+              // A repair on its own profile that may not continue says why
+              // preflight or setup refused it.
+              sessionReason: fromFindings
+                ? "a repair run's first repair never continues the parent's session"
+                : reuse
+                  ? choice.reason
+                  : (repairSession?.reason ?? 'context is fresh'),
+            }
+          : {}),
         configVersion: state.setup.configVersion,
       }),
     {
@@ -145,18 +171,26 @@ export const codeStage: StageHandler = async ({
     }),
   )
   // A separate repair session is not the implementation session: the one on
-  // record stays, and the next repair starts new again.
-  const session: SessionRef | null = separateRepair
-    ? state.implementationSession
-    : reuse && call.sessionId
-      ? {
-          provider: profile.provider,
-          nativeId: call.sessionId,
-          profileId: profile.id,
-          cwd: target.workdir,
-          instructionsVersion: state.setup.instructionsVersion,
-        }
-      : null
+  // record stays, and the next repair starts new again. A repair that may
+  // continue across an effort change records the session it returned, as
+  // the code profile does.
+  const session: SessionRef | null =
+    separateRepair && !acrossEffort
+      ? state.implementationSession
+      : reuse && call.sessionId
+        ? {
+            provider: profile.provider,
+            nativeId: call.sessionId,
+            profileId: profile.id,
+            // The model this call reported running, as Claude Code resolves
+            // an alias, so a repair continues it only when it ran the model
+            // preflight confirmed; the effective model when none was
+            // reported, which an alias never matches.
+            model: call.observedModel ?? profile.effectiveModel,
+            cwd: target.workdir,
+            instructionsVersion: state.setup.instructionsVersion,
+          }
+        : null
   return { type: 'code.completed', role, candidate, session }
 }
 

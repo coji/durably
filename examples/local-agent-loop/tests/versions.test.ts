@@ -30,7 +30,12 @@ import type { AttemptMeasurement } from '../src/engine/providers/types.js'
 import { runAgentCall } from '../src/engine/runner.js'
 import type { ResolvedProfile } from '../src/engine/types.js'
 import { configVersionOf, resolveVersions } from '../src/engine/versions.js'
-import { separateRepairProfile } from '../src/factory/types.js'
+import {
+  confirmRepairSession,
+  EFFORT_RESUME_POLICY,
+  repairSessionDecision,
+  separateRepairProfile,
+} from '../src/factory/types.js'
 import { resolveProfiles } from '../src/trigger-input.js'
 
 describe('recorded CLI versions', { timeout: 60000 }, () => {
@@ -456,6 +461,167 @@ describe('the repair profile in the config version', () => {
     ]
     for (const version of versions) assert.notEqual(version, prior)
     assert.equal(new Set(versions).size, versions.length)
+  })
+})
+
+describe('the repair session policy in the config version', () => {
+  const claude = (model: string, effort: string): ResolvedProfile => ({
+    id: `claude:${model}:${effort}`,
+    provider: 'claude',
+    requestedModel: model,
+    requestedEffort: effort,
+    effectiveModel: model,
+    effectiveEffort: effort,
+  })
+  const code = claude('claude-opus-5-5', 'medium')
+  const base = {
+    contextMode: 'reuse',
+    instructionsVersion: 'local-factory.v3',
+    maxIterations: 2,
+    target: 'subject',
+    agentTimeoutMs: 300000,
+    checkTimeoutMs: 120000,
+    code,
+    correctness: code,
+    edgeCases: code,
+    cli: { claudeCli: '2.1.280 (Claude Code)', claudeCliPath: '/x/claude' },
+  }
+  /**
+   * The version a run takes, as the job gives it: setup's version has no
+   * policy, and the policy enters only once preflight confirms the
+   * continuation with the models it saw (`observed`, by default each
+   * profile's own name, as Claude Code runs a full id).
+   */
+  const versionWith = (
+    repair: ResolvedProfile | null,
+    options: {
+      code?: ResolvedProfile
+      env?: Record<string, string>
+      observed?: { code: string | null; repair: string | null }
+    } = {},
+  ) => {
+    const codeProfile = options.code ?? code
+    const own = separateRepairProfile({
+      repair,
+      profiles: {
+        code: codeProfile,
+        correctness: codeProfile,
+        'edge-cases': codeProfile,
+      },
+    })
+    const setup = own
+      ? repairSessionDecision({
+          contextMode: base.contextMode as 'reuse',
+          code: codeProfile,
+          repair: own,
+          claudeCliVersion: base.cli.claudeCli,
+          env: options.env ?? {},
+          fakeEffortResume: false,
+        })
+      : null
+    const confirmed = own
+      ? confirmRepairSession({
+          setup,
+          provider: 'claude',
+          codeModel: options.observed?.code ?? codeProfile.effectiveModel,
+          repairModel: options.observed?.repair ?? own.effectiveModel,
+        })
+      : null
+    return configVersionOf({
+      ...base,
+      code: codeProfile,
+      correctness: codeProfile,
+      edgeCases: codeProfile,
+      repair: own,
+      repairSession: confirmed?.continues ? EFFORT_RESUME_POLICY : null,
+    })
+  }
+  /** The version computed with no repair session field at all. */
+  const prePolicy = (codeProfile: ResolvedProfile, repair: ResolvedProfile) =>
+    configVersionOf({
+      ...base,
+      code: codeProfile,
+      correctness: codeProfile,
+      edgeCases: codeProfile,
+      repair,
+    })
+
+  it('keeps the versions every other setting had before the policy existed', () => {
+    // Pinned from the version this code computed before the policy existed.
+    assert.equal(versionWith(null), 'a4a5cc94ce08f505')
+    assert.equal(
+      versionWith(claude('claude-sonnet-5', 'high')),
+      '41ef81d9828ab27e',
+    )
+    // The effort change the policy would resume, where the environment
+    // blocks it, keeps its earlier version too.
+    assert.equal(
+      versionWith(claude('claude-opus-5-5', 'high'), {
+        env: { CLAUDE_CODE_USE_BEDROCK: '1' },
+      }),
+      '52239366cb61629f',
+    )
+  })
+
+  it('keeps the pre-policy version for an unlisted model name', () => {
+    const unlistedCode = claude('claude-opus-5-5x', 'medium')
+    const unlistedRepair = claude('claude-opus-5-5x', 'high')
+    assert.equal(
+      versionWith(unlistedRepair, { code: unlistedCode }),
+      prePolicy(unlistedCode, unlistedRepair),
+    )
+  })
+
+  it('keeps the pre-policy version for aliases preflight sees run on an unlisted model', () => {
+    // `sonnet` and `sonnet` differ only in effort. Setup cannot tell what
+    // they run, so it finds them eligible; preflight sees Sonnet, and the
+    // run keeps the version it had before the policy existed.
+    const sonnetCode = claude('sonnet', 'medium')
+    const sonnetRepair = claude('sonnet', 'high')
+    assert.equal(
+      repairSessionDecision({
+        contextMode: 'reuse',
+        code: sonnetCode,
+        repair: sonnetRepair,
+        claudeCliVersion: base.cli.claudeCli,
+        env: {},
+        fakeEffortResume: false,
+      }).eligible,
+      true,
+    )
+    assert.equal(
+      versionWith(sonnetRepair, {
+        code: sonnetCode,
+        observed: { code: 'claude-sonnet-5', repair: 'claude-sonnet-5' },
+      }),
+      prePolicy(sonnetCode, sonnetRepair),
+    )
+  })
+
+  it('changes for a repair preflight confirms continues across an effort change', () => {
+    const resumed = versionWith(claude('claude-opus-5-5', 'high'))
+    assert.notEqual(resumed, '52239366cb61629f')
+    assert.notEqual(resumed, versionWith(null))
+    // `opus` and `opus`, confirmed on Opus 5.5: the policy is in the
+    // version.
+    const opusCode = claude('opus', 'medium')
+    const opusRepair = claude('opus', 'high')
+    const confirmed = versionWith(opusRepair, {
+      code: opusCode,
+      observed: { code: 'claude-opus-5-5', repair: 'claude-opus-5-5' },
+    })
+    assert.notEqual(confirmed, prePolicy(opusCode, opusRepair))
+    assert.equal(
+      confirmed,
+      configVersionOf({
+        ...base,
+        code: opusCode,
+        correctness: opusCode,
+        edgeCases: opusCode,
+        repair: opusRepair,
+        repairSession: EFFORT_RESUME_POLICY,
+      }),
+    )
   })
 })
 

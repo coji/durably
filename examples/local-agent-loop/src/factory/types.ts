@@ -2,8 +2,16 @@
 
 import type { StepContext } from '@coji/durably'
 
+import {
+  claudeEffortResumeEnvironment,
+  claudeKeepsCacheAcrossEffort,
+  EFFORT_RESUME_MODELS_LABEL,
+  isFullClaudeModelId,
+} from '../engine/providers/claude.js'
 import type {
   AgentProvider,
+  ProviderName,
+  SessionHandling,
   VerificationLog,
 } from '../engine/providers/types.js'
 import type {
@@ -95,9 +103,19 @@ export interface FactorySetup {
    * The repair profile the run named. Null or absent, or one that makes the
    * same call as `code` (see `executionKey`): repair runs on `code`,
    * continuing the implementation session in reuse mode, as before repair
-   * profiles existed. Otherwise every repair runs on it in a new session.
+   * profiles existed. Otherwise every repair runs on it, in a new session
+   * unless `repairSession` allows continuing across an effort change.
    */
   repair?: ResolvedProfile | null
+  /**
+   * Setup's answer to whether a repair on its own profile may continue the
+   * implementation session (`repairSessionDecision`). Never read as a
+   * continuation: the job confirms it with the models preflight saw and the
+   * stages read `FactoryState.repairSession`. Set only when the repair
+   * profile differs from `code`; absent on a run set up before it existed,
+   * which starts every such repair new.
+   */
+  repairSession?: RepairSessionSetup | null
   /**
    * Optional shadow-triage profile. Its judgment is recorded only: no stage
    * or profile depends on it. A repair run records its parent's here and
@@ -191,14 +209,23 @@ export interface FactoryState {
   reviews: ReviewVerdict[]
   reviewRounds: number
   implementationSession: SessionRef | null
+  /**
+   * Whether a repair on its own profile continues the implementation
+   * session, confirmed after preflight; null when repair runs on `code`.
+   */
+  repairSession: ConfirmedRepairSession | null
   repairNotes: string[]
   approval: 'approved' | 'rejected' | null
   outcome: FactoryOutcome | null
 }
 
-export function initialState(setup: FactorySetup): FactoryState {
+export function initialState(
+  setup: FactorySetup,
+  repairSession: ConfirmedRepairSession | null = null,
+): FactoryState {
   return {
     setup,
+    repairSession,
     iteration: 0,
     candidate: null,
     verification: null,
@@ -217,18 +244,19 @@ export interface StageDecision {
   reason: string
 }
 
+/** The parts of a profile that decide which call it makes. */
+export type ExecutionProfile = Pick<
+  ResolvedProfile,
+  'provider' | 'requestedModel' | 'effectiveModel' | 'effectiveEffort'
+>
+
 /**
  * What makes two profiles the same call: provider, model and effort. The
  * requested model stands in for the fake provider's, whose effective model
  * is always the same label. Preflight checks each key once, and a repair
  * profile with the code profile's key is the code profile.
  */
-export function executionKey(
-  profile: Pick<
-    ResolvedProfile,
-    'provider' | 'requestedModel' | 'effectiveModel' | 'effectiveEffort'
-  >,
-): string {
+export function executionKey(profile: ExecutionProfile): string {
   return [
     profile.provider,
     profile.requestedModel ?? profile.effectiveModel,
@@ -247,6 +275,226 @@ export function separateRepairProfile(
   return repair && executionKey(repair) !== executionKey(setup.profiles.code)
     ? repair
     : null
+}
+
+/**
+ * Setup's answer to whether a repair on its own profile may continue the
+ * implementation session, from the settings and the environment alone.
+ * It is never a continuation by itself: Claude Code resolves an alias such
+ * as `opus` itself, so the model a profile runs is known only once
+ * preflight's minimal call reports it. `confirmRepairSession` turns it into
+ * the `ConfirmedRepairSession` the stages read.
+ */
+export interface RepairSessionSetup {
+  /** Nothing in the settings or environment rules it out; preflight decides. */
+  eligible: boolean
+  /** Why, in one line. */
+  reason: string
+  /**
+   * The config version the run takes once preflight confirms the
+   * continuation; set only when `eligible`. The run keeps `configVersion`
+   * otherwise, so a setting that never continues keeps the version it had
+   * before the policy existed.
+   */
+  confirmedConfigVersion?: string
+}
+
+/**
+ * Whether a repair on its own profile continues the implementation session,
+ * confirmed with the model preflight saw each profile run on.
+ */
+export type ConfirmedRepairSession =
+  | {
+      continues: true
+      /** The model preflight saw both profiles run on. */
+      model: string
+      reason: string
+    }
+  | { continues: false; reason: string }
+
+/**
+ * The step, in the preflight stage, that records the confirmed decision and
+ * the config version the run takes with it, next to setup's answer, so a
+ * replay reads the same and a report can show why.
+ */
+export const REPAIR_SESSION_STEP = 'preflight:repair-session'
+
+/** What `REPAIR_SESSION_STEP` stores. */
+export interface RepairSessionRecord {
+  setup: RepairSessionSetup | null
+  confirmed: ConfirmedRepairSession
+  /** The config version the run's calls after preflight carry. */
+  configVersion: string
+}
+
+/** The policy value a confirmed continuation adds to the config version. */
+export const EFFORT_RESUME_POLICY = 'resume-across-effort'
+
+export interface RepairSessionInput {
+  contextMode: ContextMode
+  code: ExecutionProfile
+  repair: ExecutionProfile
+  /** The Claude Code version `resolveVersions` recorded; null when unknown. */
+  claudeCliVersion: string | null
+  env: Readonly<Record<string, string | undefined>>
+  /**
+   * Tests only: the fake provider stands in for a Claude Code that keeps the
+   * cache across an effort change (`FakeScenario.claudeEffortResume`).
+   */
+  fakeEffortResume: boolean
+}
+
+const ineligible = (reason: string): RepairSessionSetup => ({
+  eligible: false,
+  reason,
+})
+const refused = (reason: string): ConfirmedRepairSession => ({
+  continues: false,
+  reason,
+})
+
+/**
+ * Decide at setup, from the settings and the environment alone, whether a
+ * repair on its own profile may continue the implementation session.
+ * Anything that cannot be confirmed starts a new session. Claude Code runs a
+ * full model id as written, so a full id on either side that is not listed,
+ * or two different full ids, rule it out here; a model named by an alias is
+ * left to `confirmRepairSession`. The returned answer has no
+ * `confirmedConfigVersion`: the setup step adds it.
+ */
+export function repairSessionDecision(
+  input: RepairSessionInput,
+): RepairSessionSetup {
+  const { code, repair } = input
+  if (input.contextMode !== 'reuse') return ineligible('context is fresh')
+  if (repair.provider !== code.provider)
+    return ineligible('repair runs on another provider')
+  if (repair.effectiveEffort === code.effectiveEffort)
+    return ineligible(
+      repair.effectiveModel === code.effectiveModel
+        ? 'repair names the same model and effort as code in another spelling; only an effort change continues the session'
+        : 'repair has the same effort as code; only an effort change continues the session',
+    )
+  if (code.provider === 'fake')
+    return input.fakeEffortResume
+      ? {
+          eligible: true,
+          reason:
+            'fake provider standing in for Claude Code; continues once preflight sees one model for both',
+        }
+      : ineligible('the fake provider does not change effort mid-session')
+  if (code.provider !== 'claude')
+    return ineligible(
+      `${code.provider} does not continue a session at another effort`,
+    )
+  const codeModel = code.effectiveModel ?? ''
+  const repairModel = repair.effectiveModel ?? ''
+  const unlisted = [codeModel, repairModel].find(
+    (m) => isFullClaudeModelId(m) && !claudeKeepsCacheAcrossEffort(m),
+  )
+  if (unlisted !== undefined)
+    return ineligible(`${unlisted} is not ${EFFORT_RESUME_MODELS_LABEL}`)
+  if (
+    isFullClaudeModelId(codeModel) &&
+    isFullClaudeModelId(repairModel) &&
+    codeModel !== repairModel
+  )
+    return ineligible('repair runs on another model')
+  const environment = claudeEffortResumeEnvironment(
+    input.claudeCliVersion,
+    input.env,
+  )
+  if (!environment.keeps) return ineligible(environment.reason)
+  return {
+    eligible: true,
+    reason: `Claude Code ${environment.version} keeps the cache across an effort change on ${EFFORT_RESUME_MODELS_LABEL}; continues once preflight sees both profiles run on one of them`,
+  }
+}
+
+/**
+ * Confirm setup's answer with the concrete model preflight saw each profile
+ * run on. Continues only when setup found it eligible and both reported one
+ * model, on Claude one that keeps the cache across an effort change. A model
+ * that was not reported, as on a run whose preflight predates the report,
+ * starts a new session; so does a run set up before setup answered.
+ */
+export function confirmRepairSession(input: {
+  setup: RepairSessionSetup | null | undefined
+  provider: ProviderName
+  codeModel: string | null
+  repairModel: string | null
+}): ConfirmedRepairSession {
+  const { setup, codeModel, repairModel } = input
+  if (!setup) return refused('the run was set up before repairs could continue')
+  if (setup.eligible !== true) return refused(setup.reason)
+  if (codeModel === null || repairModel === null)
+    return refused('preflight did not report the model a profile runs on')
+  if (codeModel !== repairModel)
+    return refused(`code runs on ${codeModel} and repair on ${repairModel}`)
+  if (input.provider === 'claude' && !claudeKeepsCacheAcrossEffort(codeModel))
+    return refused(`${codeModel} is not ${EFFORT_RESUME_MODELS_LABEL}`)
+  return {
+    continues: true,
+    reason: `${setup.reason}: preflight saw ${codeModel} for both`,
+    model: codeModel,
+  }
+}
+
+/** How a code-stage call treats the recorded session, and why. */
+export interface SessionChoice {
+  handling: SessionHandling
+  reason: string
+}
+
+/**
+ * How a code-stage call treats the recorded implementation session. Throws
+ * when the session belongs to another provider, working directory or
+ * instruction version, or to another profile the call may not continue.
+ * `acrossEffortModel` is the confirmed model a repair may continue another
+ * profile's session on; null when it may not. Such a session continues when
+ * the call that last ran it reported that model, and starts new, with the
+ * reason, when it recorded none or another one: the CLI can resolve an
+ * alias differently between preflight and that call.
+ */
+export function sessionHandlingOf(input: {
+  recorded: SessionRef | null
+  profile: Pick<ResolvedProfile, 'provider' | 'id'>
+  cwd: string
+  instructionsVersion: string
+  acrossEffortModel: string | null
+}): SessionChoice {
+  const { recorded, profile, acrossEffortModel } = input
+  if (!recorded)
+    return {
+      handling: 'fresh',
+      reason: 'no implementation session to continue',
+    }
+  const mismatch = new Error(
+    'implementation session provenance no longer matches setup',
+  )
+  if (
+    recorded.provider !== profile.provider ||
+    recorded.cwd !== input.cwd ||
+    recorded.instructionsVersion !== input.instructionsVersion
+  )
+    throw mismatch
+  if (recorded.profileId === profile.id)
+    return { handling: 'continued', reason: 'the same profile ran the session' }
+  if (acrossEffortModel === null) throw mismatch
+  if (recorded.model == null)
+    return {
+      handling: 'fresh',
+      reason: 'the implementation session recorded no model',
+    }
+  if (recorded.model !== acrossEffortModel)
+    return {
+      handling: 'fresh',
+      reason: `the implementation session ran on ${recorded.model}, not the confirmed ${acrossEffortModel}`,
+    }
+  return {
+    handling: 'continued-effort-change',
+    reason: `the implementation session ran on the confirmed ${acrossEffortModel}`,
+  }
 }
 
 export interface FactoryServices {

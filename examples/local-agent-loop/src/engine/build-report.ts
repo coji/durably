@@ -4,10 +4,15 @@ import { createHash } from 'node:crypto'
 import type { AnyDurably } from '@coji/durably'
 
 import { REPAIR_OF_LABEL, triageThatRuns } from '../factory/repair.js'
+import {
+  REPAIR_SESSION_STEP,
+  type RepairSessionRecord,
+} from '../factory/types.js'
 import { classifyRun, stageStep } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import type { VerificationLog } from './providers/types.js'
 import {
+  cacheReadRatio,
   roleUsage,
   stageTimings,
   stageUsage,
@@ -29,6 +34,8 @@ import {
   type ReportLineage,
   type ReportPreflight,
   type ReportPreflightCheck,
+  type ReportRepairCall,
+  type ReportRepairSession,
   type ReportReview,
   type ReportReviewRound,
   type ReportSealedCandidate,
@@ -399,6 +406,61 @@ function preflightOf(
 }
 
 /**
+ * The repair session decision the run recorded after preflight, with the
+ * config version it gave the run; null when none was recorded.
+ */
+function repairSessionOf(
+  steps: StoredStep[],
+): { report: ReportRepairSession; configVersion: string | null } | null {
+  const done = steps.find(
+    (s) => s.name === REPAIR_SESSION_STEP && s.status === 'completed',
+  )
+  const record = (done?.output ?? null) as Partial<RepairSessionRecord> | null
+  const confirmed = record?.confirmed
+  if (!confirmed) return null
+  return {
+    report: {
+      setup: record.setup
+        ? { eligible: record.setup.eligible, reason: record.setup.reason }
+        : null,
+      confirmed: {
+        continues: confirmed.continues,
+        model: confirmed.continues ? confirmed.model : null,
+        reason: confirmed.reason,
+      },
+    },
+    configVersion: record.configVersion ?? null,
+  }
+}
+
+/**
+ * Every repair call, one row per invocation in the order they were made. A
+ * recovery attempt reads the same invocation back, so the last attempt of
+ * each is the one shown; its numbers are the call's own, never a sum.
+ */
+export function repairCallsOf(rows: AttemptRow[]): ReportRepairCall[] {
+  const calls = new Map<string, ReportRepairCall>()
+  for (const r of rows) {
+    const m = r.measurement
+    if (m?.role !== 'repair') continue
+    const input = m.usage?.inputTokens ?? null
+    const cacheRead = m.usage?.cacheReadTokens ?? null
+    calls.set(m.invocationId ?? r.attemptId, {
+      stepName: r.stepName,
+      iteration: m.iteration,
+      invocationId: m.invocationId ?? null,
+      sessionHandling: m.sessionHandling ?? null,
+      sessionReason: m.sessionReason ?? null,
+      inputTokens: input,
+      cacheReadTokens: cacheRead,
+      cacheReadRatio: cacheReadRatio(input, cacheRead),
+      recovered: m.recovered === true,
+    })
+  }
+  return [...calls.values()]
+}
+
+/**
  * Each input file's path, with the SHA-256 of the content the run stored and
  * used. The hash is computed here, so it always describes that content.
  */
@@ -592,10 +654,17 @@ export async function buildReport(
       }
     }
   }
+  const steps = await durably.storage.getSteps(runId)
+  const repairSession = repairSessionOf(steps)
+  // The version the run took after preflight when it recorded one: its
+  // preflight calls carry the version from before the repair session was
+  // confirmed.
   const configVersion =
+    repairSession?.configVersion ??
     rows
       .map((r) => r.measurement?.configVersion ?? null)
-      .find((v): v is string => typeof v === 'string') ?? null
+      .find((v): v is string => typeof v === 'string') ??
+    null
   const waitRows = waits.map((w) => ({
     id: w.id,
     name: w.name,
@@ -620,7 +689,6 @@ export async function buildReport(
         squashedCommit: recorded.squashedCommit ?? null,
       }
     : null
-  const steps = await durably.storage.getSteps(runId)
   const candidates = sealedCandidates(steps)
   const candidate = lastCandidate(output, candidates)
   const preflight = preflightOf(steps, rows)
@@ -676,6 +744,8 @@ export async function buildReport(
     },
     candidate,
     candidates,
+    repairSession: repairSession?.report ?? null,
+    repairCalls: repairCallsOf(rows),
     reviews: lastReviews(run.output, waits),
     reviewRounds: reviewRoundsOf(steps, candidates),
     delivery,
