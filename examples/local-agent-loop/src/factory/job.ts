@@ -243,6 +243,49 @@ export interface RequestedReviewInvocation {
 }
 
 /**
+ * Why a reviewer on `provider` cannot run this invocation, or null when it
+ * can: a Codex reviewer runs neither a command nor local instructions. The
+ * CLI, the job's input schema and setup all refuse through this one check.
+ */
+export function unsupportedReviewSettings(
+  invocation: RequestedReviewInvocation,
+  provider: ProviderName,
+): string | null {
+  if (provider !== 'codex') return null
+  const unsupported = [
+    ...((invocation.command ?? null) !== null ? ['command'] : []),
+    ...(invocation.context === 'local-instructions'
+      ? ['context: local-instructions']
+      : []),
+  ]
+  return unsupported.length > 0
+    ? `a codex reviewer does not support ${unsupported.join(' or ')}; use a claude reviewer, or leave ${unsupported.length > 1 ? 'them' : 'it'} out`
+    : null
+}
+
+/**
+ * The provider a role runs on, as a run input names it: the parent's for a
+ * repair run, otherwise the role's own profile or the run's provider. Setup
+ * resolves each role's profile from the same place.
+ */
+function inputProviderOf(
+  input: {
+    provider: ProviderName
+    profiles?:
+      | Partial<Record<ProfileRole, { provider: ProviderName } | undefined>>
+      | undefined
+    repairOf?:
+      | { profiles: Record<ProfileRole, { provider: ProviderName }> }
+      | undefined
+  },
+  role: ProfileRole,
+): ProviderName {
+  return input.repairOf
+    ? input.repairOf.profiles[role].provider
+    : (input.profiles?.[role]?.provider ?? input.provider)
+}
+
+/**
  * Fix each reviewer's invocation, and refuse what cannot run before any LLM
  * call: a blank command, a placeholder other than `{effort}`, `{base}` and
  * `{head}` or a brace outside one, `{effort}` on a role that resolves no
@@ -280,18 +323,8 @@ export function fixReviewInvocations(
     const { provider, effectiveEffort } = profiles[lens]
     if (invocation.command !== null && invocation.command.trim() === '')
       throw refuse('command must not be empty')
-    if (provider === 'codex') {
-      const unsupported = [
-        ...(invocation.command !== null ? ['command'] : []),
-        ...(invocation.context === 'local-instructions'
-          ? ['context: local-instructions']
-          : []),
-      ]
-      if (unsupported.length > 0)
-        throw refuse(
-          `a codex reviewer does not support ${unsupported.join(' or ')}; use a claude reviewer, or leave ${unsupported.length > 1 ? 'them' : 'it'} out`,
-        )
-    }
+    const unsupported = unsupportedReviewSettings(invocation, provider)
+    if (unsupported) throw refuse(unsupported)
     if (invocation.command !== null) {
       const used = reviewCommandPlaceholders(invocation.command)
       if (!used.ok) throw refuse(`command: ${used.error}`)
@@ -423,16 +456,13 @@ const inputSchema = z
   .superRefine((input, ctx) => {
     for (const lens of REVIEW_LENSES) {
       const r = input.review?.[lens]
-      if (!r || (r.command === null && r.context !== 'local-instructions'))
-        continue
-      const provider =
-        input.repairOf?.profiles[lens].provider ??
-        input.profiles?.[lens]?.provider ??
-        input.provider
-      if (provider === 'codex')
+      const unsupported = r
+        ? unsupportedReviewSettings(r, inputProviderOf(input, lens))
+        : null
+      if (unsupported)
         ctx.addIssue({
           code: 'custom',
-          message: `a codex reviewer does not support a command or context: local-instructions (review.${lens})`,
+          message: `review.${lens}: ${unsupported}`,
           path: ['review', lens],
         })
     }
@@ -845,7 +875,7 @@ function resolveInputProfiles(input: {
     return requested
       ? fixRequested(requested)
       : fixProfile({
-          provider: input.provider,
+          provider: inputProviderOf(input, role),
           model: input.model ?? null,
           effort: input.effort ?? null,
         })
@@ -1155,29 +1185,49 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       // Deliberately not a `finally`: `step.waitFor` suspends by throwing, so a
       // finally block would run cleanup every time the run parks on the human
       // approval wait, and a target that really removes its worktree would
-      // destroy the work mid-approval.
-      for (let sequence = 0; state.outcome === null; sequence++) {
-        const decision = await step.run(
-          `decision:${sequence}`,
-          async () => decide(state),
-          {
-            metadata: {
-              stage: 'decision',
-              sequence,
-              candidates: availableActions(state),
-            } as unknown as JsonValue,
-          },
-        )
-        assertAllowedDecision(state, decision as StageDecision)
-        const selected = decision as StageDecision
-        const rawEvent = await stages[selected.stage]({
-          step,
-          state,
-          decision: selected,
-          key: `stage:${sequence}:${selected.stage}`,
-          services: { providers, target },
-        })
-        state = reduce(state, FactoryEventSchema.parse(rawEvent))
+      // destroy the work mid-approval. The `catch` below removes only the
+      // review snapshots, which the approval stage has already removed.
+      try {
+        for (let sequence = 0; state.outcome === null; sequence++) {
+          const decision = await step.run(
+            `decision:${sequence}`,
+            async () => decide(state),
+            {
+              metadata: {
+                stage: 'decision',
+                sequence,
+                candidates: availableActions(state),
+              } as unknown as JsonValue,
+            },
+          )
+          assertAllowedDecision(state, decision as StageDecision)
+          const selected = decision as StageDecision
+          // No candidate is under review outside a review stage, so no
+          // candidate tree or reviewer directory is needed; a worker that
+          // died after a round's reviews were recorded may have left them.
+          // From approval on the base tree is not needed either, so none
+          // waits with the run for a human.
+          if (selected.stage !== 'review')
+            await target.releaseReviewSnapshots?.({
+              base: !['code', 'verify'].includes(selected.stage),
+            })
+          const rawEvent = await stages[selected.stage]({
+            step,
+            state,
+            decision: selected,
+            key: `stage:${sequence}:${selected.stage}`,
+            services: { providers, target },
+          })
+          state = reduce(state, FactoryEventSchema.parse(rawEvent))
+        }
+      } catch (error) {
+        // A failed or cancelled run never runs again, so its review
+        // snapshots go now, before the failure is recorded. A lost lease is
+        // left alone: the run may be picked up again and read them. A
+        // suspension for approval finds none left.
+        if (!(error instanceof Error && error.name === 'LeaseLostError'))
+          await target.releaseReviewSnapshots?.({ base: true })
+        throw error
       }
       await target.cleanup()
       return { ...state.outcome, triage }

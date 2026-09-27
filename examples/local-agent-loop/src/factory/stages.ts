@@ -6,7 +6,6 @@
  * from the run's `Target`, so the same stage graph drives the bundled sample
  * and a real repository.
  */
-import { open, readFile, rm, type FileHandle } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 import type { JsonValue, StepAttemptContext } from '@coji/durably'
@@ -20,8 +19,6 @@ import {
   expandReviewCommand,
   LOCAL_INSTRUCTIONS_INPUT,
   localInstructions,
-  localInstructionsRunOf,
-  type LocalInstructionsOwner,
   parseFindingsOutput,
   parseReviewOutput,
   reviewPrompt,
@@ -33,101 +30,12 @@ import {
   separateRepairProfile,
   usesReviewMaterials,
   type FactoryOutcome,
-  type FactorySetup,
   type ReviewLens,
   type ReviewVerdict,
   type SessionRef,
   type StageArgs,
   type StageHandler,
 } from './types.js'
-
-/** Where a local-instructions review finds its context: the workdir root. */
-const LOCAL_INSTRUCTIONS_FILE = 'CLAUDE.local.md'
-
-/**
- * Remove the `CLAUDE.local.md` in `dir` if run `runId` wrote it, as the
- * marker on its first line says; a file without the marker, one another run
- * wrote, and a missing one are left alone. Used before a review writes one
- * (an attempt of this run that died part way may have left its own), before
- * a candidate is sealed, so none ever reaches a commit, and when the run is
- * cancelled.
- */
-export async function removeOwnLocalInstructions(
-  dir: string,
-  runId: string,
-): Promise<void> {
-  const path = join(dir, LOCAL_INSTRUCTIONS_FILE)
-  let content: string
-  try {
-    content = await readFile(path, 'utf8')
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
-    throw error
-  }
-  if (localInstructionsRunOf(content) === runId) await rm(path, { force: true })
-}
-
-/**
- * Run `work` with one review's `CLAUDE.local.md` at the root of `dir`, and
- * remove the file when `work` ends, however it ends. The file is created
- * exclusively and written inside the same `try`, so a write that fails part
- * way leaves nothing behind either. A file this run did not write is never
- * changed or removed: the review is refused before its call instead.
- */
-async function withLocalInstructions<T>(
-  dir: string,
-  content: string,
-  owner: LocalInstructionsOwner,
-  work: () => Promise<T>,
-): Promise<T> {
-  await removeOwnLocalInstructions(dir, owner.runId)
-  const path = join(dir, LOCAL_INSTRUCTIONS_FILE)
-  let file: FileHandle | null = null
-  try {
-    try {
-      file = await open(path, 'wx')
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST')
-        throw new Error(
-          `review (${owner.lens}): ${path} already exists and was not written by this run; local instructions are never written over it, so the review was not sent`,
-        )
-      throw error
-    }
-    try {
-      await file.writeFile(content, 'utf8')
-    } finally {
-      await file.close()
-    }
-    return await work()
-  } finally {
-    // Success, failure, cancel and a lost lease all end here. Only a file
-    // this call created is removed.
-    if (file) await rm(path, { force: true })
-  }
-}
-
-/** Whether any reviewer of the run reads local instructions. */
-function usesLocalInstructions(setup: Pick<FactorySetup, 'review'>): boolean {
-  return REVIEW_LENSES.some(
-    (lens) => reviewInvocationOf(setup, lens)?.context === 'local-instructions',
-  )
-}
-
-/**
- * Run the given work one at a time, in the order it arrives. Two reviewers
- * that read `CLAUDE.local.md` from one worktree must never see each other's.
- */
-function takeTurns() {
-  let last: Promise<unknown> = Promise.resolve()
-  return <T>(work: () => Promise<T>): Promise<T> => {
-    const mine = last.then(work)
-    last = mine.then(
-      () => undefined,
-      () => undefined,
-    )
-    return mine
-  }
-}
 
 function requireCandidate(state: StageArgs['state']) {
   if (!state.candidate) throw new Error('stage requires a candidate')
@@ -227,10 +135,6 @@ export const codeStage: StageHandler = async ({
       } as unknown as JsonValue,
     },
   )
-  // Review instructions are never part of a candidate, even ones a worker
-  // that died part way through a review left behind.
-  if (usesLocalInstructions(state.setup))
-    await removeOwnLocalInstructions(target.workdir, step.runId)
   const candidate = await step.run(`${key}:candidate`, (signal, attempt) =>
     target.seal({
       iteration,
@@ -336,15 +240,16 @@ export const reviewStage: StageHandler = async ({
   const setup = state.setup
   const baseCommit =
     setup.target.kind === 'repo' ? setup.target.baseCommit : null
-  // Reviewers that read local instructions take turns, and so does every
-  // other reviewer of that round, since a command-mode reviewer reads
-  // `CLAUDE.local.md` too. Otherwise the two run side by side, as before.
-  const turn = usesLocalInstructions(setup) ? takeTurns() : null
+  // Whether any reviewer of the round reads the base and head trees and
+  // works in a directory of its own.
+  const materials = REVIEW_LENSES.some((lens) =>
+    usesReviewMaterials(reviewInvocationOf(setup, lens)),
+  )
   // The base and head trees, extracted once for both reviewers of this
   // round when either reads them, and only when a call is about to be made.
   let snapshots: Promise<ReviewSnapshots> | null = null
   const snapshotsFor = (signal: AbortSignal): Promise<ReviewSnapshots> => {
-    if (!target.prepareReviewSnapshots)
+    if (!target.prepareReviewSnapshots || !target.prepareReviewWorkdir)
       throw new Error(
         'review: a reviewer command or local instructions need a target with review snapshots',
       )
@@ -363,9 +268,8 @@ export const reviewStage: StageHandler = async ({
     const role = lens === 'correctness' ? 'review-a' : 'review-b'
     const invocation = reviewInvocationOf(setup, lens)
     const output = invocation?.output ?? 'verdict'
-    const trees = usesReviewMaterials(invocation)
-      ? await snapshotsFor(signal)
-      : null
+    const commandMode = usesReviewMaterials(invocation)
+    const trees = commandMode ? await snapshotsFor(signal) : null
     const context = reviewPrompt(
       lens,
       trustedContext,
@@ -373,7 +277,13 @@ export const reviewStage: StageHandler = async ({
       target.untrustedInputs(lens),
       changes,
       Boolean(setup.repairOf),
-      { output, snapshots: trees },
+      {
+        output,
+        snapshots: trees,
+        // A command-mode reviewer works in a directory of its own, so it
+        // is told where the candidate is.
+        worktree: commandMode ? reviewCwd : null,
+      },
     )
     // `{base}` and `{head}` are the run's base commit and this candidate's.
     const command =
@@ -390,6 +300,17 @@ export const reviewStage: StageHandler = async ({
       : command !== null
         ? `${command}\n\n${context}`
         : context
+    // A command-mode reviewer runs in a working directory the factory made
+    // for this call alone: the base commit's CLAUDE.md and .claude/, and its
+    // own CLAUDE.local.md. The candidate is only read, as data.
+    const workdir =
+      trees && target.prepareReviewWorkdir
+        ? await target.prepareReviewWorkdir(
+            candidate,
+            lens,
+            local ? localInstructions(context) : null,
+          )
+        : reviewCwd
     const settings: ReviewCallSettings | null = invocation
       ? {
           command: command !== null,
@@ -397,41 +318,36 @@ export const reviewStage: StageHandler = async ({
           output,
           readableDirs:
             trees && changes
-              ? [dirname(changes.diffPath), trees.baseDir, trees.headDir]
+              ? [
+                  reviewCwd,
+                  dirname(changes.diffPath),
+                  trees.baseDir,
+                  trees.headDir,
+                ]
               : [],
         }
       : null
-    const call = () =>
-      runAgentCall(signal, attempt, {
-        provider: services.providers[lens],
-        providerName: profile.provider,
-        prompt: input,
-        workdir: reviewCwd,
-        readableFiles,
-        ...(settings ? { review: settings } : {}),
-        timeoutMs: setup.agentTimeoutMs,
-        requestedModel: profile.requestedModel,
-        requestedEffort: profile.requestedEffort,
-        effectiveModel: profile.effectiveModel,
-        effectiveEffort: profile.effectiveEffort,
-        role,
-        stage: `review:${lens}`,
-        iteration: state.iteration,
-        reviewRound: round,
-        operationKey: `${step.runId}/${key}/${lens}`,
-        checkpointsDir: setup.checkpointsDir,
-        session: null,
-        configVersion: setup.configVersion,
-      })
-    const owner = { runId: step.runId, lens, round }
-    const result = local
-      ? await withLocalInstructions(
-          reviewCwd,
-          localInstructions(context, owner),
-          owner,
-          call,
-        )
-      : await call()
+    const result = await runAgentCall(signal, attempt, {
+      provider: services.providers[lens],
+      providerName: profile.provider,
+      prompt: input,
+      workdir,
+      readableFiles,
+      ...(settings ? { review: settings } : {}),
+      timeoutMs: setup.agentTimeoutMs,
+      requestedModel: profile.requestedModel,
+      requestedEffort: profile.requestedEffort,
+      effectiveModel: profile.effectiveModel,
+      effectiveEffort: profile.effectiveEffort,
+      role,
+      stage: `review:${lens}`,
+      iteration: state.iteration,
+      reviewRound: round,
+      operationKey: `${step.runId}/${key}/${lens}`,
+      checkpointsDir: setup.checkpointsDir,
+      session: null,
+      configVersion: setup.configVersion,
+    })
     // Read only after the completed checkpoint, so a reply that cannot be
     // read stops the review and is never sent again.
     if (invocation && result.permissionDenials.length > 0)
@@ -446,24 +362,23 @@ export const reviewStage: StageHandler = async ({
       throw new Error(`review-incomplete (${lens}): ${parsed.error}`)
     return { lens, decision: parsed.decision, notes: parsed.notes }
   }
-  const review =
-    (lens: ReviewLens) => (signal: AbortSignal, attempt: StepAttemptContext) =>
-      turn
-        ? turn(() => reviewOnce(lens, signal, attempt))
-        : reviewOnce(lens, signal, attempt)
   const correctness = `${key}:correctness`
   const edgeCases = `${key}:edge-cases`
   let results
   try {
     results = await step.all({
-      [correctness]: review('correctness'),
-      [edgeCases]: review('edge-cases'),
+      [correctness]: (signal, attempt) =>
+        reviewOnce('correctness', signal, attempt),
+      [edgeCases]: (signal, attempt) =>
+        reviewOnce('edge-cases', signal, attempt),
     })
   } finally {
-    // The candidate's tree is read only during its review; a replay that
-    // calls again extracts it again. The base tree is kept for the next
+    // The candidate's tree and the reviewers' directories are read only
+    // during its review, and removed however the round ends, a replay that
+    // only reads checkpoints included: a worker that died after both
+    // reviews were recorded left them. The base tree is kept for the next
     // candidate and removed with the run.
-    if (snapshots) await target.releaseReviewSnapshots?.(candidate)
+    if (materials) await target.releaseReviewSnapshots?.({ base: false })
   }
   await target.assertIntact(candidate)
   return {

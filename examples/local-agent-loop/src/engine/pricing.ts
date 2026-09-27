@@ -77,6 +77,8 @@ const PRICE_PER_1K: Record<string, ModelPrice> = {
   'claude-sonnet-5': { in: 0.002, out: 0.01, ...ANTHROPIC_CACHE },
   'claude-opus-4-6': { in: 0.005, out: 0.025, ...ANTHROPIC_CACHE },
   'claude-sonnet-4-6': { in: 0.003, out: 0.015, ...ANTHROPIC_CACHE },
+  // Claude Code runs some built-in subagents (Explore, for one) on Haiku.
+  'claude-haiku-4-5': { in: 0.001, out: 0.005, ...ANTHROPIC_CACHE },
 }
 
 /**

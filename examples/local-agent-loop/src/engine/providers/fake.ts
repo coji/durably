@@ -47,10 +47,11 @@
  * A configured review (`review` on the call) is served like any other, so
  * tests can check the engine without a real CLI:
  * - while a test records (`recordFakeReviewCalls`), every call is kept: the
- *   input exactly as received when the role has a command, the files under
- *   each readable directory, and for local instructions whether
- *   `CLAUDE.local.md` was at the workdir root, and what it held, both when
- *   the call started and when it answered. Nothing is kept otherwise;
+ *   input exactly as received when the role has a command, its working
+ *   directory and every file in it with its content, the files under each
+ *   readable directory with theirs, and for local instructions whether `CLAUDE.local.md`
+ *   was at the workdir root, and what it held, both when the call started
+ *   and when it answered. Nothing is kept otherwise;
  * - `findings-json` answers with a findings array and the status line built
  *   from the scripted verdict, or with `reviewOutputs[i]` verbatim when the
  *   scenario gives one, broken or cut-off replies included;
@@ -62,13 +63,14 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
 
 import type { TokenUsage } from '../usage.js'
-import type {
-  AgentCallOptions,
-  AgentProvider,
-  AgentResult,
-  AgentRole,
-  AvailabilityCheck,
-  AvailabilityRequest,
+import {
+  isCommandModeReview,
+  type AgentCallOptions,
+  type AgentProvider,
+  type AgentResult,
+  type AgentRole,
+  type AvailabilityCheck,
+  type AvailabilityRequest,
 } from './types.js'
 
 export const FAKE_REVIEW_DECISIONS = [
@@ -159,10 +161,16 @@ export interface FakeReviewCall {
   /** The input exactly as received; null unless the role has a command. */
   input: string | null
   /**
-   * Each readable directory the call was given, with the files under it
-   * (relative, sorted) when the call started; null for one that was absent.
+   * Every file in the working directory when a command-mode call started,
+   * by relative path, with its content; empty for any other call.
    */
-  readable: Record<string, string[] | null>
+  workdirFiles: Record<string, string>
+  /**
+   * Each readable directory the call was given, with every file under it
+   * (relative) and its content when the call started; null for one that was
+   * absent.
+   */
+  readable: Record<string, Record<string, string> | null>
   /** Null unless the call used local instructions. */
   localInstructionsAtStart: LocalInstructionsSnapshot | null
   localInstructionsAtEnd: LocalInstructionsSnapshot | null
@@ -203,6 +211,25 @@ async function filesUnder(dir: string): Promise<string[] | null> {
   } catch {
     return null
   }
+}
+
+/** Every file under `dir`, relative, with its content; null when it is absent. */
+async function filesWithContent(
+  dir: string,
+): Promise<Record<string, string> | null> {
+  const files = await filesUnder(dir)
+  if (files === null) return null
+  return Object.fromEntries(
+    await Promise.all(
+      files.map(
+        async (file) =>
+          [
+            file,
+            await readFile(join(dir, file), 'utf8').catch(() => ''),
+          ] as const,
+      ),
+    ),
+  )
 }
 
 async function readLocalInstructions(
@@ -381,10 +408,13 @@ export class FakeProvider implements AgentProvider {
             round: options.reviewRound ?? 1,
             workdir: options.workdir,
             input: review.command ? options.prompt : null,
+            workdirFiles: isCommandModeReview(review)
+              ? ((await filesWithContent(options.workdir)) ?? {})
+              : {},
             readable: Object.fromEntries(
               await Promise.all(
                 review.readableDirs.map(
-                  async (dir) => [dir, await filesUnder(dir)] as const,
+                  async (dir) => [dir, await filesWithContent(dir)] as const,
                 ),
               ),
             ),

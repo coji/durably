@@ -6,6 +6,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs'
+import { readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,12 +17,7 @@ import Database from 'better-sqlite3'
 import { SqliteDialect } from 'kysely'
 
 import { createAgentLoopJob } from './factory/job.js'
-import {
-  repoWorkdirOf,
-  reviewSnapshotsDirOf,
-  runRootOf,
-} from './factory/layout.js'
-import { removeOwnLocalInstructions } from './factory/stages.js'
+import { reviewSnapshotsDirOf, runRootOf } from './factory/layout.js'
 import { removeQuietly } from './targets/repo.js'
 
 /**
@@ -177,26 +173,55 @@ function withDatabase(
     ...(maxConcurrentRuns ? { maxConcurrentRuns } : {}),
     jobs: { agentLoop: createAgentLoopJob({ stateRoot }) },
   })
-  // A review removes its own `CLAUDE.local.md` when its call ends, and a
-  // replay removes one a killed worker left. A run cancelled while no worker
-  // holds it reaches neither, so the cancel removes it too: only a file
-  // whose marker names this run goes. The cancel also removes the run's
-  // review snapshots, and so does a failure. The cancel has happened, so a
-  // failure here is not reported as a failed cancel.
+  // The worker removes a run's review snapshots itself: after each review
+  // round, before every other stage, when the run fails, is cancelled or
+  // finishes, and at startup for runs that have already ended
+  // (`sweepReviewSnapshots`). A cancel from another process is seen by the
+  // worker only as a lost lease, after which it leaves the trees alone, so
+  // the cancel also removes them here, best effort: an extraction the
+  // worker had under way at that moment can still leave a tree, which the
+  // next worker start removes. The cancel has happened, so a failure here is
+  // not reported as a failed cancel.
   const cancel = durably.cancel.bind(durably)
   durably.cancel = async (runId: string) => {
     await cancel(runId)
-    const root = runRootOf(stateRoot, runId)
-    await removeOwnLocalInstructions(repoWorkdirOf(root), runId).catch(() => {})
-    await removeQuietly(reviewSnapshotsDirOf(root))
+    await removeQuietly(reviewSnapshotsDirOf(runRootOf(stateRoot, runId)))
   }
-  durably.on('run:fail', (event) => {
-    void removeQuietly(reviewSnapshotsDirOf(runRootOf(stateRoot, event.runId)))
-  })
   return durably
 }
 
 export type AgentLoopDurably = ReturnType<typeof build>
+
+const TERMINAL = new Set(['completed', 'failed', 'cancelled'])
+
+/**
+ * Remove the review snapshots of every run that has ended, or no longer
+ * exists. The worker calls it at startup: a worker that died, or a cancel
+ * from another process that raced an extraction, can leave them behind, and
+ * no step of an ended run will run again to remove them. A run that may
+ * still run keeps its own. Returns the runs whose snapshots were removed.
+ */
+export async function sweepReviewSnapshots(
+  durably: AgentLoopDurably,
+  stateRoot: string = defaultStateRoot(),
+): Promise<string[]> {
+  let runIds: string[]
+  try {
+    runIds = await readdir(join(stateRoot, 'runs'))
+  } catch {
+    return []
+  }
+  const swept: string[] = []
+  for (const runId of runIds) {
+    const dir = reviewSnapshotsDirOf(runRootOf(stateRoot, runId))
+    if (!existsSync(dir)) continue
+    const run = await durably.getRun(runId)
+    if (run && !TERMINAL.has(run.status)) continue
+    await removeQuietly(dir)
+    swept.push(runId)
+  }
+  return swept
+}
 
 /** Create a fresh instance per process so worker restarts share only SQLite. */
 export function createAgentDurably(

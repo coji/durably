@@ -12,10 +12,12 @@
  *   snapshot directory, never the live workdir. Triage runs read-only too,
  *   before any code exists.
  * - A review with its own command or local instructions runs in command
- *   mode: only `Read`, `Grep`, `Glob` and `Agent` exist, `dontAsk` refuses
- *   anything else, the project's and local settings are loaded so the
- *   command and `CLAUDE.local.md` are found, and the same guard checks every
- *   tool call, a subagent's included, against the readable directories.
+ *   mode, in a working directory of its own holding the base commit's
+ *   `CLAUDE.md` and `.claude/` and the factory's `CLAUDE.local.md`: only
+ *   `Read`, `Grep`, `Glob` and `Agent` exist, `dontAsk` refuses anything
+ *   else, the project's and local settings are loaded from that directory,
+ *   and the same guard checks every tool call, a subagent's included,
+ *   against it and the candidate's readable directories.
  * - Usage comes from the final result's `modelUsage`, which covers the call
  *   and every subagent it started, counted once.
  * - Requested effort is applied via the `effort` setting; unsupported values
@@ -304,18 +306,6 @@ function namesHome(p: string): boolean {
 }
 
 /**
- * Agent inputs that would take a subagent out of the review's read-only
- * directories: `isolation` makes a git worktree and branch or runs it
- * remotely, and a permission mode other than the parent's would let it act
- * without the guard's approval.
- */
-const ESCAPING_AGENT_MODES = new Set([
-  'acceptEdits',
-  'auto',
-  'bypassPermissions',
-])
-
-/**
  * Decide one tool call of a command-mode review or any subagent it starts.
  * Only `Read`, `Grep`, `Glob` and `Agent` pass, and every path they name must
  * resolve inside one of `roots`: the candidate worktree and the directories
@@ -324,8 +314,11 @@ const ESCAPING_AGENT_MODES = new Set([
  * symbolic links on both sides, so a link inside a root that points out of
  * it is refused, and a `~` path is refused outright. A `Glob` pattern may
  * not climb out with `..`, and its fixed prefix is resolved from its `path`
- * like any other path. An `Agent` call may not ask for isolation or another
- * permission mode. Bash and every write tool are refused.
+ * like any other path. An `Agent` call may not ask for isolation. Its `mode`
+ * is not checked: the SDK ignores it, and a subagent keeps the review's
+ * permission mode unless its definition says otherwise, and definitions
+ * come only from the base commit's `.claude/`. Bash and every write tool are
+ * refused.
  */
 export function decideReviewToolPermission(
   roots: readonly string[],
@@ -342,12 +335,6 @@ export function decideReviewToolPermission(
       return {
         allow: false,
         reason: `review subagents run in place (denied isolation ${String(input['isolation'])})`,
-      }
-    const mode = input['mode']
-    if (typeof mode === 'string' && ESCAPING_AGENT_MODES.has(mode))
-      return {
-        allow: false,
-        reason: `review subagents keep the review's permissions (denied mode ${mode})`,
       }
     return { allow: true }
   }
@@ -484,20 +471,18 @@ export function reviewPreToolUseHook(roots: readonly string[]) {
 }
 
 /**
- * What a command-mode review turns off in the settings it loads. The
- * candidate is the implementer's work, and the project's and local settings
- * are loaded from it, so anything in them that would run a program is off:
- * - `disableAllHooks` in the flag settings layer, which outranks both, turns
- *   off every hook and status line those settings define. The guard is not
- *   one of them: it is passed to the SDK as a callback, not read from a
- *   settings file.
+ * What a command-mode review turns off in the settings it loads. Those
+ * settings are the base commit's, copied into the review's own working
+ * directory; the candidate's are never loaded. The base is code the user
+ * already merged, but a review still runs nothing it did not ask for:
+ * - `disableAllHooks` in the flag settings layer, which outranks the
+ *   project's and local settings, turns off every hook and status line they
+ *   define. The guard is not one of them: it is passed to the SDK as a
+ *   callback, not read from a settings file.
  * - `disableSkillShellExecution` replaces inline shell commands in the
  *   project's commands and skills with a placeholder instead of running them.
  * - `strictMcpConfig` with no `mcpServers` starts no MCP server: `.mcp.json`,
  *   the settings' servers, plugins' and agent frontmatter's are all ignored.
- * CLAUDE.md, CLAUDE.local.md, commands, skills and agent definitions still
- * load; they are instructions, and every tool call they lead to still meets
- * the guard.
  */
 export const COMMAND_MODE_LOCKDOWN = {
   settings: { disableAllHooks: true, disableSkillShellExecution: true },
@@ -522,10 +507,14 @@ export function buildClaudeSettings(
     ...(effort ? { effort: effort as 'low' } : {}),
   }
   if (isCommandModeReview(review)) {
-    // The command and CLAUDE.local.md are found through the project's and
-    // the local settings. Only the listed tools exist, `dontAsk` refuses
-    // anything not pre-approved, and the guard sees every call, a
-    // subagent's included. A review never resumes a session.
+    // `workdir` is the review's own directory: the base commit's CLAUDE.md
+    // and .claude/, and the factory's CLAUDE.local.md, found through the
+    // project's and the local settings. The candidate is only data: it is
+    // read through the guard, and is not an additional directory, since
+    // Claude Code loads the skills, commands and agents of every additional
+    // directory. Only the listed tools exist, `dontAsk` refuses anything not
+    // pre-approved, and the guard sees every call, a subagent's included. A
+    // review never resumes a session.
     const roots = [workdir, ...review.readableDirs]
     return {
       cwd: workdir,
@@ -534,7 +523,6 @@ export function buildClaudeSettings(
       permissionMode: 'dontAsk',
       tools: [...COMMAND_MODE_REVIEW_TOOLS],
       allowedTools: [...COMMAND_MODE_REVIEW_TOOLS],
-      additionalDirectories: roots,
       canUseTool: canUseToolWith((toolName, input) =>
         decideReviewToolPermission(roots, toolName, input),
       ),

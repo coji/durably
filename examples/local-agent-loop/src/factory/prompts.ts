@@ -119,6 +119,7 @@ export function changedPathsLine(
 function candidateFilesSection(
   changes: CandidateChanges | null,
   snapshots: ReviewSnapshots | null,
+  worktree: string | null,
 ): string[] {
   if (!changes) return []
   const trees = snapshots
@@ -128,8 +129,15 @@ function candidateFilesSection(
         '- The two trees are the whole repository at the base commit and at this candidate commit, for comparing code the diff does not show. They are read-only.',
       ]
     : []
+  const where = worktree
+    ? [
+        `- Candidate worktree: ${worktree}`,
+        '- Your working directory is not the candidate: the candidate is the worktree above, holding this candidate commit. Read the code there, or in the candidate commit tree. It is read-only.',
+      ]
+    : []
   return [
     'CANDIDATE FILES (written by the factory from the base commit and this candidate commit):',
+    ...where,
     `- Full diff: ${changes.diffPath}`,
     `- Changed file list: ${changes.changedFilesPath}`,
     `- Size: ${changes.files} files changed, +${changes.additions} / -${changes.deletions} lines`,
@@ -179,6 +187,11 @@ export function reviewPrompt(
     output?: ReviewOutput
     /** The base and head snapshots to list beside the diff. */
     snapshots?: ReviewSnapshots | null
+    /**
+     * The candidate's worktree, for a reviewer whose working directory is
+     * not the candidate.
+     */
+    worktree?: string | null
   } = {},
 ): string {
   const output = options.output ?? 'verdict'
@@ -205,46 +218,23 @@ export function reviewPrompt(
     '',
     trustedContext,
     '',
-    ...candidateFilesSection(changes, options.snapshots ?? null),
+    ...candidateFilesSection(
+      changes,
+      options.snapshots ?? null,
+      options.worktree ?? null,
+    ),
     ...untrustedSection(untrusted),
     ...replyShape(output),
   ].join('\n')
 }
 
-/** Who a `CLAUDE.local.md` the factory writes belongs to. */
-export interface LocalInstructionsOwner {
-  runId: string
-  lens: string
-  round: number
-}
-
-const MARKER_PREFIX = '<!-- local-agent-loop review instructions: run '
-
 /**
- * The first line of a `CLAUDE.local.md` the factory writes. It names the run
- * that wrote it, and the reviewer and round, so only that run ever removes
- * the file; a file without it, or with another run's, is never touched.
+ * The `CLAUDE.local.md` of one reviewer's working directory: its review
+ * context and output contract. The factory writes it into a directory it
+ * made for that one call, never into the candidate's worktree.
  */
-export function localInstructionsMarker(owner: LocalInstructionsOwner): string {
-  return `${MARKER_PREFIX}${owner.runId}, ${owner.lens}, round ${owner.round}; written by the factory for one review call and removed when it ends -->`
-}
-
-/** The run a `CLAUDE.local.md` names on its first line; null for any other file. */
-export function localInstructionsRunOf(content: string): string | null {
-  const first = content.split('\n', 1)[0] ?? ''
-  const match =
-    /^<!-- local-agent-loop review instructions: run ([^,\s]+), [^,]+, round \d+; written by the factory for one review call and removed when it ends -->$/.exec(
-      first,
-    )
-  return match?.[1] ?? null
-}
-
-/** A `CLAUDE.local.md` holding one reviewer's instructions. */
-export function localInstructions(
-  prompt: string,
-  owner: LocalInstructionsOwner,
-): string {
-  return `${localInstructionsMarker(owner)}\n\n# Review instructions\n\n${prompt}\n`
+export function localInstructions(prompt: string): string {
+  return `# Review instructions\n\n${prompt}\n`
 }
 
 /** The input of a local-instructions review that has no command of its own. */
@@ -470,7 +460,7 @@ function validFinding(
       severity,
       title: oneLine(title),
       body: oneLine(body),
-      ...(hasFile ? { file: (file as string).trim() } : {}),
+      ...(hasFile ? { file: oneLine(file as string) } : {}),
       ...(hasLine ? { line: line as number } : {}),
     },
   }

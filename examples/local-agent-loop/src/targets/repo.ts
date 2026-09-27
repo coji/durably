@@ -13,10 +13,17 @@
  * still be the candidate's commit. Like the directory-hash check on the sample
  * target, this detects an unintended change; it is not a sandbox.
  */
-import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import {
+  cp,
+  mkdir,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
+import { basename, dirname, join, resolve } from 'node:path'
 
 import { runChild } from '../engine/child.js'
 import {
@@ -52,6 +59,11 @@ import {
   withPartialLog,
   type GradeResult,
 } from '../engine/verification.js'
+import {
+  reviewBaseTreeOf,
+  reviewHeadTreeOf,
+  reviewWorkdirOf,
+} from '../factory/layout.js'
 import { changedPathsLine } from '../factory/prompts.js'
 import {
   DEFAULT_COMMIT_SETTINGS,
@@ -284,8 +296,8 @@ export class RepoTarget implements Target {
       throw new Error(
         `review snapshots were not set up for ${candidate.id}; no configured reviewer reads them`,
       )
-    const baseDir = join(dir, 'base')
-    const headDir = join(dir, candidate.id)
+    const baseDir = reviewBaseTreeOf(dir)
+    const headDir = reviewHeadTreeOf(dir, candidate.id)
     // One after the other: each already on disk is kept, so the base is
     // extracted once per run and the candidate once per review.
     await extractCommit(
@@ -298,11 +310,47 @@ export class RepoTarget implements Target {
     return { baseDir, headDir }
   }
 
-  async releaseReviewSnapshots(candidate: CandidateRef): Promise<void> {
+  async prepareReviewWorkdir(
+    candidate: CandidateRef,
+    lens: 'correctness' | 'edge-cases',
+    localInstructions: string | null,
+  ): Promise<string> {
+    const dir = this.config.reviewSnapshotsDir
+    if (!dir)
+      throw new Error(
+        `review snapshots were not set up for ${candidate.id}; no configured reviewer reads them`,
+      )
+    const cwd = reviewWorkdirOf(dir, candidate.id, lens)
+    // Whatever an interrupted attempt left is discarded, not trusted.
+    await rm(cwd, { recursive: true, force: true })
+    await mkdir(cwd, { recursive: true })
+    await copyReviewConfig(reviewBaseTreeOf(dir), cwd)
+    if (localInstructions !== null)
+      await writeFile(join(cwd, 'CLAUDE.local.md'), localInstructions, {
+        encoding: 'utf8',
+        flag: 'wx',
+      })
+    return cwd
+  }
+
+  async releaseReviewSnapshots(options: { base: boolean }): Promise<void> {
     const dir = this.config.reviewSnapshotsDir
     if (!dir) return
-    await removeQuietly(join(dir, candidate.id))
-    await removeQuietly(join(dir, `${candidate.id}.partial`))
+    if (options.base) return removeQuietly(dir)
+    const base = basename(reviewBaseTreeOf(dir))
+    let entries: string[]
+    try {
+      entries = await readdir(dir)
+    } catch {
+      return
+    }
+    // The base tree, and a base extraction in progress, stay for the next
+    // candidate; every candidate's tree and working directories go.
+    await Promise.all(
+      entries
+        .filter((name) => name !== base && !name.startsWith(`${base}.`))
+        .map((name) => removeQuietly(join(dir, name))),
+    )
   }
 
   async assertIntact(candidate: CandidateRef): Promise<void> {
@@ -657,15 +705,20 @@ const EXTRACT_TIMEOUT_MS = 300_000
 
 /**
  * Extract one commit's tree into `dir`, outside every worktree, unless it is
- * already there. `git archive` streams straight into `tar`, so no archive
- * file is written. The tree lands in `dir.partial` first and is renamed into
- * place whole, so `dir` either holds the full tree or does not exist; a
- * partial extraction an interrupted attempt left is discarded first. A
- * cancel or lost lease kills both processes.
+ * already there. The commit is read into a temporary index of its own and
+ * checked out from it with `git checkout-index`, so the tree is the commit's
+ * whole tree: `export-ignore` and `export-subst` in its `.gitattributes`,
+ * which `git archive` would honour, change nothing. Checkout filters and
+ * line-ending rules still apply, as they do in the worktree. No archive file
+ * is written. The tree lands in `dir.partial` first and is renamed into place
+ * whole, so `dir` either holds the full tree or does not exist; a partial
+ * extraction an interrupted attempt left is discarded first. Both git
+ * processes are registered like every other child, so a cancel, a lost lease
+ * or the worker's shutdown kills them.
  *
- * Symbolic links in the commit are extracted as links. They may point
- * anywhere, so the review guard resolves every path before it lets a
- * reviewer read it.
+ * Symbolic links in the commit are extracted as links, and git never writes
+ * through one. They may point anywhere, so the review guard resolves every
+ * path before it lets a reviewer read it.
  */
 export async function extractCommit(
   repo: string,
@@ -675,65 +728,69 @@ export async function extractCommit(
 ): Promise<void> {
   if (existsSync(dir)) return
   signal.throwIfAborted()
-  const partial = `${dir}.partial`
+  // Absolute: git runs in the repository, and a relative prefix would land
+  // there.
+  const partial = resolve(`${dir}.partial`)
+  const index = resolve(`${dir}.index`)
   await rm(partial, { recursive: true, force: true })
+  await rm(index, { force: true })
   await mkdir(partial, { recursive: true })
-  const stop = AbortSignal.any([
-    signal,
-    AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
-  ])
-  const archive = spawn('git', ['archive', '--format=tar', commit], {
-    cwd: repo,
-    signal: stop,
-    killSignal: 'SIGKILL',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  const tar = spawn('tar', ['-xf', '-', '-C', partial], {
-    signal: stop,
-    killSignal: 'SIGKILL',
-    stdio: ['pipe', 'ignore', 'pipe'],
-  })
-  // A tar that stops reading early closes the pipe; its exit code says why.
-  tar.stdin.on('error', () => {})
-  archive.stdout.pipe(tar.stdin)
-  const settled = await Promise.allSettled([
-    exitOf(archive, 'git archive'),
-    exitOf(tar, 'tar'),
-  ])
-  const failed = settled.find(
-    (r): r is PromiseRejectedResult => r.status === 'rejected',
-  )
-  if (failed) {
+  const deadline = Date.now() + EXTRACT_TIMEOUT_MS
+  const gitStep = async (args: string[]) => {
+    const res = await runChild('git', args, {
+      cwd: repo,
+      env: { GIT_INDEX_FILE: index },
+      signal,
+      timeoutMs: Math.max(1, deadline - Date.now()),
+    })
+    if (res.code !== 0)
+      throw new Error(
+        `git ${args[0]} of ${commit.slice(0, 12)} failed (${res.code ?? 'null'}): ${res.stderr.slice(-1000)}`,
+      )
+  }
+  try {
+    await gitStep(['read-tree', commit])
+    await gitStep(['checkout-index', '--all', `--prefix=${partial}/`])
+  } catch (error) {
     await rm(partial, { recursive: true, force: true })
     signal.throwIfAborted()
-    throw stop.aborted
-      ? new Error(
-          `extracting ${commit.slice(0, 12)} timed out after ${EXTRACT_TIMEOUT_MS}ms`,
-        )
-      : (failed.reason as Error)
+    throw error
+  } finally {
+    await rm(index, { force: true })
   }
   await rm(dir, { recursive: true, force: true })
   await rename(partial, dir)
 }
 
-/** Resolve when a child exits 0; reject with its stderr tail otherwise. */
-function exitOf(child: ChildProcess, name: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let stderr = ''
-    child.stderr?.on('data', (chunk: Buffer) => {
-      stderr = `${stderr}${chunk.toString('utf8')}`.slice(-1000)
+/**
+ * Copy the base commit's `CLAUDE.md` and `.claude/` from its tree into a
+ * review's working directory, whichever of them exist. The base is code the
+ * user already merged, so links in it are followed: `CLAUDE.md` is often a
+ * link to another file. A link that leads nowhere is left out.
+ */
+async function copyReviewConfig(baseTree: string, cwd: string) {
+  for (const name of ['CLAUDE.md', '.claude']) {
+    const from = join(baseTree, name)
+    try {
+      await stat(from)
+    } catch {
+      continue
+    }
+    await cp(from, join(cwd, name), {
+      recursive: true,
+      dereference: true,
+      errorOnExist: true,
+      force: false,
+      filter: async (source) => {
+        try {
+          await stat(source)
+          return true
+        } catch {
+          return false
+        }
+      },
     })
-    child.once('error', reject)
-    child.once('close', (code, killed) =>
-      code === 0
-        ? resolve()
-        : reject(
-            new Error(
-              `${name} failed (${code ?? killed ?? 'null'}): ${stderr}`,
-            ),
-          ),
-    )
-  })
+  }
 }
 
 /**

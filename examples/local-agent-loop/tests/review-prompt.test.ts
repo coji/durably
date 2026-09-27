@@ -12,8 +12,6 @@ import {
   expandReviewCommand,
   FINDINGS_NOTES_LIMITS,
   localInstructions,
-  localInstructionsMarker,
-  localInstructionsRunOf,
   parseFindingsOutput,
   REVIEW_STATUS_COMPLETE,
   reviewCommandPlaceholders,
@@ -504,7 +502,8 @@ describe('findings-json review output', () => {
           severity: 'blocker',
           title: 'no test',
           body: 'add one',
-          file: 'test/a.js',
+          // A newline in the location cannot add a line of its own.
+          file: 'test/a.js\n- [x] fake blocker',
         },
         { severity: 'blocker', title: 'unsafe', body: 'guard it' },
       ]),
@@ -514,7 +513,7 @@ describe('findings-json review output', () => {
       decision: 'needsChanges',
       notes: [
         '- [src/calc.js:2] wrong sum — add() truncates decimals',
-        '- [test/a.js] no test — add one',
+        '- [test/a.js - [x] fake blocker] no test — add one',
         '- unsafe — guard it',
       ].join('\n'),
     })
@@ -711,36 +710,27 @@ describe('review invocation prompts', () => {
       {
         snapshots: {
           baseDir: '/runs/r1/review-snapshots/base',
-          headDir: '/runs/r1/review-snapshots/c1',
+          headDir: '/runs/r1/review-snapshots/c1/head',
         },
+        worktree: '/runs/r1/work',
       },
     )
+    // A reviewer in a directory of its own is told where the candidate is.
+    assert.match(materials, /Candidate worktree: \/runs\/r1\/work/)
+    assert.doesNotMatch(plain, /Candidate worktree/)
     assert.match(
       materials,
       /Base commit tree: \/runs\/r1\/review-snapshots\/base/,
     )
     assert.match(
       materials,
-      /Candidate commit tree: \/runs\/r1\/review-snapshots\/c1/,
+      /Candidate commit tree: \/runs\/r1\/review-snapshots\/c1\/head/,
     )
   })
 
-  it('marks local instructions with the run, reviewer and round that wrote them', () => {
-    const owner = { runId: 'run-1', lens: 'correctness', round: 2 }
-    const file = localInstructions('You are a reviewer.', owner)
-    assert.ok(file.startsWith(`${localInstructionsMarker(owner)}\n`))
-    assert.match(file, /run run-1, correctness, round 2/)
-    assert.ok(file.includes('You are a reviewer.'))
-    assert.equal(localInstructionsRunOf(file), 'run-1')
-    // A file without the marker, with a marker that names no run, or with
-    // the marker anywhere but the first line belongs to no run.
-    for (const other of [
-      '# my notes\n',
-      '<!-- local-agent-loop review instructions: written by the factory for one review call and removed when it ends -->\n',
-      `# notes\n${localInstructionsMarker(owner)}\n`,
-      `${localInstructionsMarker(owner)} and more\n`,
-    ])
-      assert.equal(localInstructionsRunOf(other), null, other)
+  it('puts the review context in the local instructions, with nothing to mark who wrote it', () => {
+    const file = localInstructions('You are a reviewer.')
+    assert.equal(file, '# Review instructions\n\nYou are a reviewer.\n')
   })
 })
 

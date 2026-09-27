@@ -86,9 +86,10 @@ export interface RepoTargetConfig {
   /** Push the branch and open a draft pull request on delivery. */
   publish: boolean
   /**
-   * Where the base and candidate commits' trees are extracted for a
-   * reviewer with its own command or local instructions. Absent: no reviewer
-   * reads them, and none is extracted.
+   * Where the base and candidate commits' trees are extracted, and each
+   * review call's own working directory is made, for a reviewer with its own
+   * command or local instructions. Absent: no reviewer reads them, and none
+   * is made.
    */
   reviewSnapshotsDir?: string
   /** Absent on a run set up before it existed; the defaults apply. */
@@ -205,8 +206,22 @@ export interface Target {
     candidate: CandidateRef,
     signal: AbortSignal,
   ): Promise<ReviewSnapshots>
-  /** Remove the candidate's tree once its review has ended. Never throws. */
-  releaseReviewSnapshots?(candidate: CandidateRef): Promise<void>
+  /**
+   * Make one configured review call's own working directory, fresh: the
+   * base commit's `CLAUDE.md` and `.claude/`, never the candidate's, and
+   * `localInstructions` as `CLAUDE.local.md` when given. Call after
+   * `prepareReviewSnapshots`. Returns its path.
+   */
+  prepareReviewWorkdir?(
+    candidate: CandidateRef,
+    lens: 'correctness' | 'edge-cases',
+    localInstructions: string | null,
+  ): Promise<string>
+  /**
+   * Remove every candidate's tree and review working directories, and the
+   * base tree too when `base` is true. Never throws.
+   */
+  releaseReviewSnapshots?(options: { base: boolean }): Promise<void>
   /** Turn an approved candidate into something the human can act on. */
   deliver(args: DeliverArgs): Promise<Delivery>
   /** Best-effort cleanup of scratch worktrees. Never throws. */

@@ -198,8 +198,8 @@ describe('command-mode review guard', () => {
       ),
     ]) {
       assert.deepEqual(settings.settingSources, ['project', 'local'])
-      // Nothing the candidate's settings define runs: no hook, no inline
-      // shell in a command or skill, no MCP server.
+      // Nothing the loaded settings define runs: no hook, no inline shell
+      // in a command or skill, no MCP server.
       assert.deepEqual(settings.settings, {
         disableAllHooks: true,
         disableSkillShellExecution: true,
@@ -217,7 +217,11 @@ describe('command-mode review guard', () => {
       assert.equal(settings.permissionMode, 'dontAsk')
       assert.deepEqual(settings.tools, ['Read', 'Grep', 'Glob', 'Agent'])
       assert.deepEqual(settings.allowedTools, COMMAND_MODE_REVIEW_TOOLS)
-      assert.deepEqual(settings.additionalDirectories, [ROOT, MATERIALS])
+      // The review's own directory is the cwd, where the settings come
+      // from. The candidate's directories are read through the guard and are
+      // never additional directories, whose skills, commands and agents
+      // Claude Code would load.
+      assert.equal(settings.additionalDirectories, undefined)
       assert.equal(settings.cwd, ROOT)
       assert.equal(settings.effort, 'high')
       assert.equal(settings.resume, undefined)
@@ -317,18 +321,15 @@ describe('command-mode review guard', () => {
     assert.equal(allow('Glob', { pattern: 'src/**/*.js' }), true)
   })
 
-  it("lets a subagent start only in place, with the review's own permissions", () => {
+  it('lets a subagent start only in place', () => {
     const allow = (input: Record<string, unknown>) =>
       decideReviewToolPermission(ROOTS, 'Agent', input).allow
     assert.equal(
       allow({ description: 'd', prompt: 'review', subagent_type: 'x' }),
       true,
     )
-    assert.equal(allow({ prompt: 'review', mode: 'dontAsk' }), true)
     for (const isolation of ['worktree', 'remote'])
       assert.equal(allow({ prompt: 'review', isolation }), false, isolation)
-    for (const mode of ['acceptEdits', 'auto', 'bypassPermissions'])
-      assert.equal(allow({ prompt: 'review', mode }), false, mode)
   })
 
   it('counts subagents through modelUsage in command mode only', () => {

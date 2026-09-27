@@ -157,6 +157,17 @@ describe('pricing meters', () => {
     assert.ok(Math.abs(output.totalUsd - 25) < 1e-6)
   })
 
+  it('prices Claude Haiku 4.5, which built-in subagents run on', () => {
+    // $1 / $5 per MTok.
+    const model = 'claude-haiku-4-5-20251001'
+    const input = estimateCostBreakdown(model, usage(1_000_000, 0))
+    assert.ok(input)
+    assert.ok(Math.abs(input.totalUsd - 1) < 1e-6)
+    const output = estimateCostBreakdown(model, usage(0, 1_000_000))
+    assert.ok(output)
+    assert.ok(Math.abs(output.totalUsd - 5) < 1e-6)
+  })
+
   it('prices flat and says so when no cache leg was reported', () => {
     const b = estimateCostBreakdown('gpt-5.6-sol', usage(1_000, 1_000))
     assert.ok(b)

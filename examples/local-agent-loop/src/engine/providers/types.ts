@@ -38,12 +38,16 @@ export const READ_ONLY_ROLES: ReadonlySet<AgentRole> = new Set([
 export interface ReviewCallSettings {
   /** True when the input is the role's own command, expanded. */
   command: boolean
-  /** `local-instructions`: the review context is in `CLAUDE.local.md` at the workdir root. */
+  /**
+   * `local-instructions`: the review context is in `CLAUDE.local.md` at the
+   * root of `workdir`, the review's own directory, never the candidate's.
+   */
   context: 'prompt' | 'local-instructions'
   output: 'verdict' | 'findings-json'
   /**
    * Directories outside `workdir` the review may read whole: the candidate's
-   * diff, changed-file list and base and head snapshots. Never writable.
+   * worktree, the directory of its diff and changed-file list, and the base
+   * and head snapshots. Never writable, and never a source of settings.
    */
   readableDirs: string[]
 }
