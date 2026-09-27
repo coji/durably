@@ -566,22 +566,35 @@ describe('the repair session policy in the config version', () => {
     assert.notEqual(resumed, versionWith(null))
   })
 
-  it('carries the policy for another spelling of the same effective model', () => {
-    const spelled: ResolvedProfile = {
-      ...claude('claude-opus-5-5', 'high'),
-      requestedModel: 'opus',
-    }
-    const blocked = versionWith(spelled, { CLAUDE_CODE_USE_BEDROCK: '1' })
-    const resumed = versionWith(spelled)
-    assert.notEqual(resumed, blocked)
-    assert.equal(
-      resumed,
+  it('carries the policy for a Claude alias setup cannot resolve', () => {
+    // `opus` is the effective model the Claude provider fixes for `opus`;
+    // setup cannot tell what it runs, so the policy is in the version and
+    // preflight decides whether a repair continues.
+    const aliased = (effort: string): ResolvedProfile => ({
+      ...claude('opus', effort),
+      effectiveModel: 'opus',
+    })
+    const aliasCode = aliased('medium')
+    const decision = repairSessionDecision({
+      contextMode: 'reuse',
+      code: aliasCode,
+      repair: aliased('high'),
+      claudeCliVersion: base.cli.claudeCli,
+      env: {},
+      fakeEffortResume: false,
+    })
+    assert.equal(decision.resume, true)
+    assert.equal(decision.model, undefined)
+    const version = (repairSession: string | null) =>
       configVersionOf({
         ...base,
-        repair: spelled,
-        repairSession: EFFORT_RESUME_POLICY,
-      }),
-    )
+        code: aliasCode,
+        correctness: aliasCode,
+        edgeCases: aliasCode,
+        repair: aliased('high'),
+        repairSession,
+      })
+    assert.notEqual(version(EFFORT_RESUME_POLICY), version(null))
   })
 })
 

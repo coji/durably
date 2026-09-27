@@ -10,10 +10,7 @@ import { dirname, join } from 'node:path'
 
 import type { JsonValue, StepAttemptContext } from '@coji/durably'
 
-import type {
-  ReviewCallSettings,
-  SessionHandling,
-} from '../engine/providers/types.js'
+import type { ReviewCallSettings } from '../engine/providers/types.js'
 import { runAgentCall } from '../engine/runner.js'
 import type { ReviewSnapshots } from '../engine/types.js'
 import { runVerificationStep } from '../engine/verification.js'
@@ -32,6 +29,7 @@ import {
   REVIEW_LENSES,
   reviewInvocationOf,
   separateRepairProfile,
+  sessionHandlingOf,
   usesReviewMaterials,
   type FactoryOutcome,
   type ReviewLens,
@@ -78,14 +76,19 @@ export const codeStage: StageHandler = async ({
   const target = services.target
   // A repair on its own profile starts a new session with the task, the spec
   // and the repair notes, unless setup found it differs from code in effort
-  // alone on a Claude Code that keeps the cache across that change: it then
-  // continues the implementation session at its own effort. A repair on the
-  // code profile continues as before.
+  // alone on a Claude Code that keeps the cache across that change and
+  // preflight saw both run on one model: it then continues the
+  // implementation session at its own effort. A repair on the code profile
+  // continues as before.
   const repairOwn =
     role === 'repair' ? separateRepairProfile(state.setup) : null
   const separateRepair = repairOwn !== null
-  const acrossEffort =
-    separateRepair && state.setup.repairSession?.resume === true
+  // The model preflight confirmed code and repair both run on, when a repair
+  // may continue the implementation session across an effort change.
+  const repairSession = state.setup.repairSession
+  const effortResumeModel =
+    repairSession?.resume === true ? (repairSession.model ?? null) : null
+  const acrossEffort = separateRepair && effortResumeModel !== null
   const profile = repairOwn ?? state.setup.profiles.code
   const reuse =
     state.setup.contextMode === 'reuse' && (!separateRepair || acrossEffort)
@@ -93,26 +96,16 @@ export const codeStage: StageHandler = async ({
   // session of its own: at iteration 0 this run has no session to continue,
   // and the parent's is never carried over.
   const fromFindings = Boolean(state.setup.repairOf) && state.iteration === 0
-  const recorded = reuse && !fromFindings ? state.implementationSession : null
   // Only the code role's own provider, profile, cwd and instructions decide
   // whether its session may continue; the reviewers' profiles never do.
-  // Across an effort change the effective model stands in for the profile. A session
-  // recorded without a model is never continued across one: it starts new.
-  let handling: SessionHandling = 'fresh'
-  if (recorded) {
-    const sameSetup =
-      recorded.provider === profile.provider &&
-      recorded.cwd === target.workdir &&
-      recorded.instructionsVersion === state.setup.instructionsVersion
-    const provenanceError = () =>
-      new Error('implementation session provenance no longer matches setup')
-    if (!sameSetup) throw provenanceError()
-    if (recorded.profileId === profile.id) handling = 'continued'
-    else if (acrossEffort && recorded.model === profile.effectiveModel)
-      handling = 'continued-effort-change'
-    else if (!(acrossEffort && recorded.model === undefined))
-      throw provenanceError()
-  }
+  const recorded = reuse && !fromFindings ? state.implementationSession : null
+  const handling = sessionHandlingOf({
+    recorded,
+    profile,
+    cwd: target.workdir,
+    instructionsVersion: state.setup.instructionsVersion,
+    acrossEffortModel: acrossEffort ? effortResumeModel : null,
+  })
   const continuedSession = handling === 'fresh' ? null : recorded
   const call = await step.run(
     `${key}:agent`,
@@ -177,7 +170,9 @@ export const codeStage: StageHandler = async ({
             provider: profile.provider,
             nativeId: call.sessionId,
             profileId: profile.id,
-            model: profile.effectiveModel,
+            // The concrete model when one was confirmed, so the implement
+            // and repair sessions record the same one.
+            model: effortResumeModel ?? profile.effectiveModel,
             cwd: target.workdir,
             instructionsVersion: state.setup.instructionsVersion,
           }

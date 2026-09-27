@@ -41,12 +41,16 @@
  *
  * `claudeEffortResume` (scenario only, tests only) makes the fake stand in for
  * a Claude Code that keeps the prompt cache when a session resumes at another
- * effort: each call honours the effort it is given instead of `low`, resolves
- * its model as Claude Code does (the requested model, with `fake` an alias
- * of `fake-model`, and `fake-model` when none is requested), and an
- * implement or repair call reports fixed usage whose cache read is high when
- * it resumes a session and zero when it starts one. Setup also reads it, so
- * a repair that differs from code in effort alone continues the session.
+ * effort. Like `ClaudeProvider`, it passes the requested model through as
+ * the effective model (`fake-model` when none is requested) and leaves any
+ * alias to the "CLI": each call reports the model it ran as
+ * `observedModel`, with `fake` an alias of `fake-model`, and nothing for a
+ * model named `unobserved-*`. Like Claude Code, it has no free availability
+ * check, so preflight makes a minimal call and reads that model. Each call
+ * honours the effort it is given instead of `low`, and an implement or
+ * repair call reports fixed usage whose cache read is high when it resumes a
+ * session and zero when it starts one. Setup also reads it, so a repair that
+ * differs from code in effort alone may continue the session.
  *
  * A run can carry a `FakeScenario` in its input (demo seeding only). Its
  * fields override the matching env knob for that run alone, so runs in one
@@ -379,11 +383,14 @@ export function realisticUsage(
 }
 
 /**
- * With `claudeEffortResume`, requested model names that resolve to another
- * model, as `opus` resolves to `claude-opus-5-5` on Claude Code.
+ * With `claudeEffortResume`, the model the fake "CLI" reports running for a
+ * model it was asked for, as Claude Code reports `claude-opus-5-5` for
+ * `opus`: `fake` is an alias of `fake-model`, and an `unobserved-*` model
+ * reports none.
  */
-const FAKE_MODEL_ALIASES: Readonly<Record<string, string>> = {
-  fake: 'fake-model',
+function fakeObservedModel(model: string): string | null {
+  if (model.startsWith('unobserved-')) return null
+  return model === 'fake' ? 'fake-model' : model
 }
 
 /**
@@ -441,10 +448,7 @@ export class FakeProvider implements AgentProvider {
   }): { model: string | null; effort: string | null } {
     const model = requested?.requestedModel ?? null
     return {
-      model:
-        this.effortResume && model !== null
-          ? (FAKE_MODEL_ALIASES[model] ?? model)
-          : 'fake-model',
+      model: this.effortResume && model !== null ? model : 'fake-model',
       effort: (this.effortResume ? requested?.requestedEffort : null) ?? 'low',
     }
   }
@@ -508,6 +512,9 @@ export class FakeProvider implements AgentProvider {
       resolvedEffort: effort,
       reportedModel,
       reportedEffort: effort,
+      ...(this.effortResume
+        ? { observedModel: fakeObservedModel(resolvedModel ?? 'fake-model') }
+        : {}),
       usage:
         this.effortResume && codeCall
           ? effortResumeUsage(Boolean(options.sessionId))
@@ -617,7 +624,11 @@ export class FakeProvider implements AgentProvider {
         method,
         detail: `${model} is not in the fake model list`,
       }
-    if (model.startsWith('probe-') || model.startsWith('refused-'))
+    if (
+      this.effortResume ||
+      model.startsWith('probe-') ||
+      model.startsWith('refused-')
+    )
       return {
         verdict: 'unknown',
         method,

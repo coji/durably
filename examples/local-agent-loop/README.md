@@ -669,12 +669,13 @@ Claude Code 2.1.280での実測でも、新しいsessionのcache readは0、effo
 継続します。
 
 - `--context reuse`
-- providerが両方ともClaude、実効modelが同じで、実効effortだけが違う
-  （比べるのは実効modelです。`opus` と `claude-opus-5-5` のように指定の書き方が
-  違っても、同じmodelに解決されれば継続します。同じ書き方でも違うmodelに
-  解決されれば新しいsessionです）
-- modelがOpus 5.5（`claude-opus-5-5`）かFable 5.1（`claude-fable-5-1`）
-- Claude Code CLIが2.1.260以降（`claudeCli` の版から読みます。読めなければ継続しません）
+- providerが両方ともClaudeで、実効effortだけが違う
+- 事前確認（preflight）の最小呼び出しで、Claude Codeが報告したmodelが
+  両方で同じ（下の「modelの確かめ方」）
+- そのmodelがOpus 5.5（`claude-opus-5-5`）かFable 5.1（`claude-fable-5-1`）
+- Claude Code CLIが2.1.260以降（`claudeCli` の版から読みます。読めなければ継続しません）。
+  2.1.260は公式ドキュメントが挙げる版で、実測は2.1.280で行いました。
+  なお `claude-opus-5-5` そのものを使うには2.1.280以上が必要です（「モデルの選び方とサブスクでの制約」の節）
 - `CLAUDE_CODE_USE_BEDROCK`、`CLAUDE_CODE_USE_VERTEX`、
   `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` のどれも設定されていない
 
@@ -691,17 +692,35 @@ Claude Code 2.1.280での実測でも、新しいsessionのcache readは0、effo
 }
 ```
 
-- 判定はsetupで一度だけ行い、runの `setup.repairSession` に結果と理由を記録
-  します。あとでworkerを別の環境変数で起動し直しても、そのrunの扱いは
-  変わりません。
+- modelの確かめ方: `opus` のような別名を実際のmodelに解決するのはClaude Code
+  自身で、このサンプルは別名の対応表を持ちません。実効modelは指定どおり
+  （`opus` なら `opus`）です。そこで事前確認の最小呼び出しで、Claude Codeが
+  `init` メッセージで報告したmodel（`opus` なら2.1.280では `claude-opus-5-5`）を
+  読み、`code` と `repair` で比べます。
+  - `opus` と `opus`、`opus` と `claude-opus-5-5` は、両方の報告が
+    `claude-opus-5-5` なら継続します。
+  - 報告が無いmodel（報告を記録する前の事前確認を含む）は、分からないものとして
+    新しいsessionにします。
+  - `claude-` で始まる完全なmodel IDどうしはClaude Codeがそのまま使うので、
+    違うIDや対象外のIDはsetupの時点で継続しないと決めます。
+- 判定は二段です。setupで、modelを除く条件（context、provider、effort、CLIの版、
+  環境変数、完全なIDどうしの比較）を一度だけ判定し、runの `setup.repairSession`
+  に結果と理由を記録します。setupが継続を認めても、そこにはmodelが無く、まだ
+  確定ではありません。事前確認のあとで報告されたmodelを確かめて確定します。
+  どちらも記録済みのstep出力だけから決まるので、あとでworkerを別の環境変数で
+  起動し直しても、そのrunの扱いは変わりません。実際の扱いは修正呼び出しごとの
+  `sessionHandling` で確かめられます。
 - 継続する修正は、記録済みのsession IDを `resume` に、`repair` の実効effortを
   `effort` に渡して呼びます。promptは新しいsessionとしては書かず、前の会話の
   続きとして書きます。修正が返したsession IDを次の修正のために記録します。
-- 継続してよいかは、provider、実効model、作業場所、指示版の一致で確かめます
-  （effortの一致は求めません）。sessionには実効modelを記録します。modelを記録していない古いsessionは、effortを
-  またいで継続せず新しいsessionにします。
-- 継続するrunだけ `configVersion` にこの方針が入ります。それ以外のrunの
-  `configVersion` は変わりません。
+- 継続してよいかは、provider、事前確認で確かめたmodel、作業場所、指示版の
+  一致で確かめます（effortの一致は求めません）。このため実装と修正のsessionには、
+  そのmodelを記録します。modelを記録していない古いsession（`null` を含む）は、
+  effortをまたいで継続せず新しいsessionにします。
+- setupが継続を認めたrunだけ `configVersion` にこの方針が入ります。それ以外の
+  runの `configVersion` は変わりません。別名を含む設定はsetupでmodelが分からない
+  ので、事前確認で継続しないと分かったrun（たとえば `sonnet` どうし）にも方針が
+  入ります。
 - Codex、providerやmodelが違う修正、`--context fresh`、外部の指摘から始まる子run
   の最初の修正は、これまでどおり新しいsessionです。子runは親のsessionを
   引き継ぎません。
@@ -1264,8 +1283,8 @@ repairs の中央値を見ます。unknown は統計から外して件数だけ�
 - 実装と修正のsession継続は、`code` 役割のprovider、profile ID、cwd、指示版が
   一致するときだけです。レビューのprofileは関係しません。`code` と違う
   `repair` profileの修正は、実装のsessionを継続しません。例外はClaudeでeffortだけ
-  が違う場合で、profile IDの代わりに実効modelの一致を確かめて継続します
-  （「effortだけ違う修正は実装のsessionを継続する」の節）。
+  が違う場合で、profile IDの代わりに、事前確認でClaude Codeが報告したmodelの
+  一致を確かめて継続します（「effortだけ違う修正は実装のsessionを継続する」の節）。
 - fake providerは決定的なローカル練習用で、実LLM検証として数えません。
 
 ## fake mode
@@ -1312,11 +1331,14 @@ job input の `fakeScenario` は run ごとに fake の振る舞いを変える�
 
 テスト専用の `claudeEffortResume: true` を付けると、fake は「effortを変えて
 sessionを再開してもcacheが残るClaude Code」の代わりをします。呼び出しごとに渡された
-effortをそのまま使い（`low` に固定しません）、modelも指定どおりに解決します
-（`fake` は `fake-model` の別名で、未指定なら `fake-model`）。実装と修正の呼び出しでは、sessionを
-再開したときにcache readの多いusageを、新しいsessionのときにcache read 0のusageを
-返します。setupもこの欄を読み、effortだけ違う修正でsessionを継続すると判定します。
-その判定の結果は `configVersion` に入ります。実providerには影響しません。
+effortをそのまま使います（`low` に固定しません）。Claude providerと同じく、実効modelは
+指定どおり（未指定なら `fake-model`）で、別名の解決は「CLI」側が行います。各呼び出しは
+実際に動いたmodelを報告し、`fake` は `fake-model` として報告され、`unobserved-*` は
+何も報告しません。Claude Codeと同じく無料の確認が無いので、事前確認は最小呼び出しを
+行ってそのmodelを読みます。実装と修正の呼び出しでは、sessionを再開したときに
+cache readの多いusageを、新しいsessionのときにcache read 0のusageを返します。
+setupもこの欄を読み、effortだけ違う修正は事前確認でmodelを確かめたうえで継続します。
+setupの判定は `configVersion` に入ります。実providerには影響しません。
 
 ## Layout
 

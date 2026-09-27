@@ -91,6 +91,13 @@ export interface AgentResult {
    * back, so real providers leave it null — never back-filled from config.
    */
   reportedEffort: string | null
+  /**
+   * The concrete model the CLI says it ran, where it resolves an alias
+   * itself (Claude Code: the `init` message's model, so `opus` reads
+   * `claude-opus-5-5`). Absent or null when the provider reports none.
+   * Only preflight reads it; it never replaces `resolvedModel`.
+   */
+  observedModel?: string | null
   usage: TokenUsage | null
   /**
    * `usage` split by the model that spent it, when the call ran more than

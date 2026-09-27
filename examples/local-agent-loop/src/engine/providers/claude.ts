@@ -812,6 +812,111 @@ export function isAgentActivity(message: SDKMessage): boolean {
 /** The model name the Claude CLI puts on the frames it makes up itself. */
 const SYNTHETIC_MODEL = '<synthetic>'
 
+/**
+ * The concrete model Claude Code says it runs, from one Agent SDK message:
+ * the `init` message's `model`, or an assistant message's own model when no
+ * `init` came first. The CLI resolves an alias such as `opus` here, to the
+ * id it sends to the API (`claude-opus-5-5` on 2.1.280). Null for any other
+ * message, and for the frames the CLI makes up itself.
+ */
+export function observedClaudeModel(message: SDKMessage): string | null {
+  const model =
+    message.type === 'system' && message.subtype === 'init'
+      ? (message as { model?: unknown }).model
+      : message.type === 'assistant'
+        ? (message.message as unknown as { model?: unknown })?.model
+        : null
+  return typeof model === 'string' &&
+    model.length > 0 &&
+    model !== SYNTHETIC_MODEL
+    ? model
+    : null
+}
+
+/**
+ * The first Claude Code build the prompt caching documentation names as
+ * keeping the cache when a session resumes at another effort.
+ */
+export const EFFORT_RESUME_MIN_CLAUDE_CLI = [2, 1, 260] as const
+
+/**
+ * Models whose cache Claude Code keeps across an effort change: Opus 5.5 or
+ * Fable 5.1, each with an optional `-YYYYMMDD` date suffix and an optional
+ * `[1m]` context suffix that Claude Code reports. Anchored to the whole
+ * model string so no other name matches. Matched against the model Claude
+ * Code reports running, never an alias such as `opus`.
+ */
+const EFFORT_RESUME_MODELS = /^claude-(opus-5-5|fable-5-1)(-\d{8})?(\[1m\])?$/i
+
+/**
+ * Environment variables that route Claude Code through Bedrock or Vertex,
+ * or turn off its experimental betas. With any of them set, resuming at
+ * another effort is not known to keep the cache.
+ */
+export const EFFORT_RESUME_BLOCKING_ENV = [
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
+] as const
+
+/** `major.minor.patch` from a version line such as `2.1.280 (Claude Code)`. */
+export function parseCliVersion(
+  line: string | null,
+): [number, number, number] | null {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(line ?? '')
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
+}
+
+function atLeast(
+  version: readonly number[],
+  minimum: readonly number[],
+): boolean {
+  for (const [i, min] of minimum.entries()) {
+    const v = version[i] ?? 0
+    if (v !== min) return v > min
+  }
+  return true
+}
+
+/** Whether Claude Code keeps the cache across an effort change on `model`. */
+export function claudeKeepsCacheAcrossEffort(model: string): boolean {
+  return EFFORT_RESUME_MODELS.test(model)
+}
+
+/**
+ * Whether a model name is a full Claude model id, which Claude Code runs as
+ * written. Anything else, such as `opus` or `sonnet`, is an alias whose
+ * model only the CLI knows, so it is learned from what the CLI reports.
+ */
+export function isFullClaudeModelId(model: string): boolean {
+  return /^claude-/i.test(model)
+}
+
+/**
+ * Whether this Claude Code build and environment keep the cache across an
+ * effort change, the model aside: `keeps` with the version, or why not.
+ */
+export function claudeEffortResumeEnvironment(
+  cliVersion: string | null,
+  env: Readonly<Record<string, string | undefined>>,
+): { keeps: true; version: string } | { keeps: false; reason: string } {
+  const version = parseCliVersion(cliVersion)
+  const minimum = EFFORT_RESUME_MIN_CLAUDE_CLI.join('.')
+  if (!version)
+    return {
+      keeps: false,
+      reason: `Claude Code version unknown; ${minimum} or later is needed`,
+    }
+  if (!atLeast(version, EFFORT_RESUME_MIN_CLAUDE_CLI))
+    return {
+      keeps: false,
+      reason: `Claude Code ${version.join('.')} is older than ${minimum}`,
+    }
+  const blocking = EFFORT_RESUME_BLOCKING_ENV.find((name) => Boolean(env[name]))
+  if (blocking) return { keeps: false, reason: `${blocking} is set` }
+  return { keeps: true, version: version.join('.') }
+}
+
 export class ClaudeProvider implements AgentProvider {
   readonly name = 'claude' as const
   readonly fake = false
@@ -841,6 +946,9 @@ export class ClaudeProvider implements AgentProvider {
     const modelIdResolved = modelId ?? defaultModelFor('claude')
     const readOnly = READ_ONLY_ROLES.has(options.role)
     const onActivity = options.onActivity
+    // The concrete model the CLI reports, first seen wins: an alias such as
+    // `opus` is resolved by the CLI, never here.
+    let observedModel: string | null = null
     const model = claudeCode(modelIdResolved, {
       ...buildClaudeSettings(
         options.workdir,
@@ -850,13 +958,10 @@ export class ClaudeProvider implements AgentProvider {
         options.readableFiles,
         options.review ?? null,
       ),
-      ...(onActivity
-        ? {
-            onSdkMessage: (message: SDKMessage) => {
-              if (isAgentActivity(message)) onActivity()
-            },
-          }
-        : {}),
+      onSdkMessage: (message: SDKMessage) => {
+        observedModel ??= observedClaudeModel(message)
+        if (onActivity && isAgentActivity(message)) onActivity()
+      },
     })
     const reported = await generateText({
       model,
@@ -901,6 +1006,7 @@ export class ClaudeProvider implements AgentProvider {
       resolvedEffort: effort,
       reportedModel: nativeModel,
       reportedEffort: null,
+      observedModel,
       usage,
       ...(usageByModel ? { usageByModel } : {}),
       elapsedMs: Date.now() - started,

@@ -1483,11 +1483,19 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
         await trigger({ repair: fake('repair-model', 'high') })
       ).id
       ids['same'] = (await trigger({ repair: null })).id
-      // Two spellings of one model: `fake` resolves to `fake-model`.
+      // Two spellings of one model: the fake "CLI" runs `fake` as
+      // `fake-model`, and preflight reads that back.
       ids['alias'] = (
         await trigger({
           code: fake('fake'),
           repair: fake('fake-model', 'high'),
+        })
+      ).id
+      // A model the fake "CLI" never reports: preflight cannot confirm it.
+      ids['unobserved'] = (
+        await trigger({
+          code: fake('unobserved-model'),
+          repair: fake('unobserved-model', 'high'),
         })
       ).id
       await durably.init()
@@ -1522,7 +1530,9 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
       const setup = (
         await durably.storage.getCompletedStep(ids['effort'] ?? '', 'setup')
       )?.output as FactorySetup
+      // Setup allows it; the model is confirmed only after preflight.
       assert.equal(setup.repairSession?.resume, true)
+      assert.equal(setup.repairSession?.model, undefined)
 
       // The same settings in fresh context start a new session, and read
       // less from cache than the resumed repair did.
@@ -1534,14 +1544,11 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
           (fresh.repair?.usage?.cacheReadTokens ?? 0),
       )
 
-      // Another model starts a new session whatever the effort.
+      // Another model starts a new session whatever the effort: setup
+      // cannot tell, preflight sees two models.
       const model = await calls('model')
       assert.notEqual(model.repair?.sessionId, model.implement?.sessionId)
       assert.equal(model.repair?.sessionHandling, 'fresh')
-      const modelSetup = (
-        await durably.storage.getCompletedStep(ids['model'] ?? '', 'setup')
-      )?.output as FactorySetup
-      assert.equal(modelSetup.repairSession?.resume, false)
 
       // A repair on the code profile continues as it always did.
       const same = await calls('same')
@@ -1575,13 +1582,14 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
       // The policy enters the config version of the run it applies to.
       assert.notEqual(effort.report.configVersion, model.report.configVersion)
 
-      // The requested spellings differ, the effective model is the same: the
-      // repair resumes the implementation session at its own effort, and the
-      // run's config version carries the policy.
+      // The effective models are spelled differently, as `opus` and
+      // `claude-opus-5-5` are; preflight saw both run as `fake-model`: the
+      // repair resumes the implementation session at its own effort, and
+      // the run's config version carries the policy.
       const alias = await calls('alias')
       assert.equal(alias.implement?.requestedModel, 'fake')
       assert.equal(alias.repair?.requestedModel, 'fake-model')
-      assert.equal(alias.implement?.effectiveModel, 'fake-model')
+      assert.equal(alias.implement?.effectiveModel, 'fake')
       assert.equal(alias.repair?.effectiveModel, 'fake-model')
       assert.equal(alias.repair?.sessionId, alias.implement?.sessionId)
       assert.equal(alias.repair?.effectiveEffort, 'high')
@@ -1611,6 +1619,20 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
       assert.equal(aliasSetup.configVersion, versionOf(EFFORT_RESUME_POLICY))
       assert.notEqual(aliasSetup.configVersion, versionOf(null))
       assert.equal(alias.report.configVersion, aliasSetup.configVersion)
+      // Preflight made a minimal call per setting, as it does for Claude.
+      assert.ok(alias.report.preflight?.checks.every((c) => c.called))
+
+      // A model preflight saw nothing for: a new session, as before.
+      const unobserved = await calls('unobserved')
+      assert.notEqual(
+        unobserved.repair?.sessionId,
+        unobserved.implement?.sessionId,
+      )
+      assert.equal(unobserved.repair?.sessionHandling, 'fresh')
+      assert.match(
+        reportToMarkdown(unobserved.report),
+        /## Repair calls[\s\S]*\| fresh \|/,
+      )
     } finally {
       await durably.stop()
       await durably.db.destroy()
@@ -1649,7 +1671,7 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
         configVersion: 'cv',
         profiles: { code, correctness: code, 'edge-cases': code },
         repair,
-        repairSession: { resume: true, reason: 'test' },
+        repairSession: { resume: true, reason: 'test', model: 'fake-model' },
         maxIterations: 2,
         agentTimeoutMs: 60000,
         autoApprove: false,
@@ -1681,7 +1703,7 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
         cliPath: null,
         partialUsage: false,
         resolveExecution: (r) => ({
-          model: 'fake-model',
+          model: r.requestedModel ?? 'fake-model',
           effort: r.requestedEffort,
         }),
         call: async (options) => {
@@ -1689,7 +1711,8 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
           return {
             text: 'fixed',
             session: { id: options.sessionId ?? 'new-session' },
-            resolvedModel: 'fake-model',
+            // As Claude Code: the requested name runs as written.
+            resolvedModel: options.requestedModel ?? 'fake-model',
             resolvedEffort: options.requestedEffort,
             reportedModel: null,
             reportedEffort: null,
@@ -1767,7 +1790,12 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
     it('starts new, and says so, when setup did not allow it or the session predates the model', async () => {
       for (const [name, patch] of [
         ['not allowed', { setup: { repairSession: null } }],
+        [
+          'allowed at setup, never confirmed',
+          { setup: { repairSession: { resume: true, reason: 'setup' } } },
+        ],
         ['no model on record', { session: { model: undefined } }],
+        ['a null model on record', { session: { model: null } }],
       ] as const) {
         const { sent, measurement } = await repairOnce(patch)
         assert.equal(sent?.sessionId, null, name)
@@ -1783,25 +1811,26 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
       )
     })
 
-    it('compares the effective model, not the requested spelling', async () => {
-      // Another spelling of the recorded model resumes, and the session it
-      // returns records the effective model.
-      const spelled = profile(repair.id, 'high', 'fake')
+    it('compares the model preflight confirmed, not the profile spelling', async () => {
+      // The repair profile names an alias; preflight confirmed both profiles
+      // run `fake-model`. The session recorded under that model resumes, and
+      // the session the repair returns records it too.
+      const aliased: ResolvedProfile = {
+        ...profile(repair.id, 'high', 'fake'),
+        effectiveModel: 'fake',
+      }
       const { sent, measurement, event } = await repairOnce({
-        setup: { repair: spelled },
+        setup: { repair: aliased },
       })
       assert.equal(sent?.sessionId, 'implementation-session')
       assert.equal(measurement?.sessionHandling, 'continued-effort-change')
       assert.ok(event.type === 'code.completed')
       if (event.type !== 'code.completed') return
       assert.equal(event.session?.model, 'fake-model')
-      // A recorded model equal to the requested name, but not to the
-      // effective model, does not match.
+      // A session recorded under the alias spelling is not the confirmed
+      // model.
       await assert.rejects(
-        repairOnce({
-          setup: { repair: profile(repair.id, 'high', 'another-model') },
-          session: { model: 'another-model' },
-        }),
+        repairOnce({ setup: { repair: aliased }, session: { model: 'fake' } }),
         /provenance no longer matches/,
       )
     })

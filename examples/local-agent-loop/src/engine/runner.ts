@@ -73,6 +73,8 @@ export interface AgentCallOutcome {
   rejection: string | null
   /** Tool calls the provider refused during the call; empty when none. */
   permissionDenials: string[]
+  /** The concrete model the provider reported running; null when none. */
+  observedModel: string | null
 }
 
 interface StartedCheckpoint {
@@ -291,6 +293,7 @@ export async function runAgentCall(
       measurement,
       rejection: null,
       permissionDenials: result.permissionDenials ?? [],
+      observedModel: result.observedModel ?? null,
     }
   }
 
@@ -327,6 +330,7 @@ export async function runAgentCall(
       measurement,
       rejection,
       permissionDenials: [],
+      observedModel: null,
     }
   }
   const settled = (

@@ -91,6 +91,7 @@ import {
   REVIEW_CONTEXTS,
   REVIEW_LENSES,
   REVIEW_OUTPUTS,
+  confirmRepairSession,
   repairSessionDecision,
   separateRepairProfile,
   usesReviewMaterials,
@@ -744,6 +745,12 @@ export interface PreflightCheck {
 export interface PreflightCallResult {
   verdict: 'available' | 'unavailable'
   detail: string
+  /**
+   * The concrete model the call reported running, as Claude Code resolves an
+   * alias such as `opus`; null when it reported none. Absent on a call
+   * recorded before it existed.
+   */
+  model?: string | null
 }
 
 function describeCheck(check: PreflightCheck): string {
@@ -757,14 +764,15 @@ function describeCheck(check: PreflightCheck): string {
  * call, in its own step through the common checkpoint and measurement path,
  * so a replay reads the answer back and an unanswered call stops the run as
  * uncertain. The first unusable setting stops the run before anything else
- * is sent.
+ * is sent. Returns the concrete model each minimal call reported, by
+ * `executionKey`; a setting the free check decided has none.
  */
 async function runPreflight(
   step: StepContext,
   setup: FactorySetup,
   target: Target,
   providerFor: ProviderFor,
-): Promise<void> {
+): Promise<Map<string, string | null>> {
   const triage = triageThatRuns(setup, setup.triage)
   const roles: [string, ResolvedProfile][] = [
     ...Object.entries(byRole((role) => setup.profiles[role])),
@@ -819,6 +827,7 @@ async function runPreflight(
     throw new Error(
       `${PREFLIGHT_FAILED_MESSAGE}: ${describeCheck(refused)} is not usable; ${refused.free.method}: ${refused.free.detail}`,
     )
+  const observed = new Map<string, string | null>()
   for (const [index, check] of plan.checks.entries()) {
     if (check.free.verdict !== 'unknown') continue
     const operationKey = `${step.runId}/preflight/call:${index}`
@@ -845,7 +854,11 @@ async function runPreflight(
           acceptRejection: true,
         })
         return call.rejection === null
-          ? { verdict: 'available', detail: 'the minimal call was answered' }
+          ? {
+              verdict: 'available',
+              detail: 'the minimal call was answered',
+              model: call.observedModel,
+            }
           : { verdict: 'unavailable', detail: call.rejection }
       },
       {
@@ -856,7 +869,17 @@ async function runPreflight(
       throw new Error(
         `${PREFLIGHT_FAILED_MESSAGE}: ${describeCheck(check)} is not usable; minimal call refused: ${answer.detail}`,
       )
+    observed.set(
+      executionKey({
+        provider: check.provider,
+        requestedModel: check.requestedModel,
+        effectiveModel: check.model,
+        effectiveEffort: check.effort,
+      }),
+      answer.model ?? null,
+    )
   }
+  return observed
 }
 
 /**
@@ -1191,9 +1214,27 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           requestedModel: profile.requestedModel,
           codexPath: setup.codexPath ?? null,
         })
-      await runPreflight(step, setup, target, providerFor)
+      const observedModels = await runPreflight(
+        step,
+        setup,
+        target,
+        providerFor,
+      )
       const roleProviders = byRole((role) => providerFor(setup.profiles[role]))
       const ownRepair = separateRepairProfile(setup)
+      // Setup could not know the model an alias runs; preflight saw it. The
+      // stages read this confirmed decision. It is a pure function of the
+      // setup and preflight step outputs, so every replay reads the same.
+      const observedModelOf = (profile: ResolvedProfile) =>
+        observedModels.get(executionKey(profile)) ?? null
+      const confirmedRepairSession = ownRepair
+        ? confirmRepairSession({
+            decision: setup.repairSession,
+            provider: setup.profiles.code.provider,
+            codeModel: observedModelOf(setup.profiles.code),
+            repairModel: observedModelOf(ownRepair),
+          })
+        : null
       const providers = {
         ...roleProviders,
         repair: ownRepair ? providerFor(ownRepair) : roleProviders.code,
@@ -1220,7 +1261,11 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             },
           )
         : null
-      let state = initialState(setup)
+      let state = initialState(
+        confirmedRepairSession
+          ? { ...setup, repairSession: confirmedRepairSession }
+          : setup,
+      )
       // Deliberately not a `finally`: `step.waitFor` suspends by throwing, so a
       // finally block would run cleanup every time the run parks on the human
       // approval wait, and a target that really removes its worktree would
