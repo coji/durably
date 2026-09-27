@@ -7,7 +7,16 @@ import {
   comparisonToMarkdown,
   stat,
 } from '../src/engine/compare.js'
-import { PRICE_BASIS, estimateCostBreakdown } from '../src/engine/pricing.js'
+import {
+  PRICE_BASIS,
+  estimateCostBreakdown,
+  estimateCostBreakdownByModel,
+} from '../src/engine/pricing.js'
+import {
+  claudeUsageByModel,
+  claudeUsageOf,
+} from '../src/engine/providers/claude.js'
+import type { AttemptMeasurement } from '../src/engine/providers/types.js'
 import {
   reportToMarkdown,
   roleUsage,
@@ -18,6 +27,7 @@ import {
   type AttemptRow,
   type LoopReport,
 } from '../src/engine/report.js'
+import { writeMeasurement } from '../src/engine/runner.js'
 import type { TokenUsage } from '../src/engine/usage.js'
 import {
   configVersionOf,
@@ -145,6 +155,17 @@ describe('pricing meters', () => {
     const output = estimateCostBreakdown('claude-opus-4-6', usage(0, 1_000_000))
     assert.ok(output)
     assert.ok(Math.abs(output.totalUsd - 25) < 1e-6)
+  })
+
+  it('prices Claude Haiku 4.5, which built-in subagents run on', () => {
+    // $1 / $5 per MTok.
+    const model = 'claude-haiku-4-5-20251001'
+    const input = estimateCostBreakdown(model, usage(1_000_000, 0))
+    assert.ok(input)
+    assert.ok(Math.abs(input.totalUsd - 1) < 1e-6)
+    const output = estimateCostBreakdown(model, usage(0, 1_000_000))
+    assert.ok(output)
+    assert.ok(Math.abs(output.totalUsd - 5) < 1e-6)
   })
 
   it('prices flat and says so when no cache leg was reported', () => {
@@ -824,5 +845,190 @@ describe('measurement detection', () => {
       },
     } as never)
     assert.equal(row.measurement?.invocationId, 'inv-1')
+  })
+})
+
+describe('Claude usage with subagents', () => {
+  const mainLoop = {
+    inputTokens: 1_000,
+    outputTokens: 100,
+    cacheReadTokens: 800,
+    cacheWriteTokens: 50,
+    totalTokens: 1_100,
+  }
+  const model = (
+    input: number,
+    output: number,
+    read: number,
+    write: number,
+  ) => ({
+    inputTokens: input,
+    outputTokens: output,
+    cacheReadInputTokens: read,
+    cacheCreationInputTokens: write,
+    webSearchRequests: 0,
+    costUSD: 0,
+    contextWindow: 200_000,
+    maxOutputTokens: 32_000,
+  })
+
+  it('counts the call and every subagent once, from modelUsage, and never adds the main loop again', () => {
+    const counted = claudeUsageOf(mainLoop, {
+      // The main loop and a subagent on another model.
+      'claude-opus-5-5': model(150, 100, 800, 50),
+      'claude-fable-5-1': model(40, 30, 2_000, 10),
+    })
+    assert.deepEqual(counted, {
+      inputTokens: 150 + 800 + 50 + 40 + 2_000 + 10,
+      cachedInputTokens: 800 + 50 + 2_000 + 10,
+      cacheReadTokens: 2_800,
+      cacheWriteTokens: 60,
+      outputTokens: 130,
+      totalTokens: 3_050 + 130,
+      usageSource: 'provider-final',
+    })
+    // One invocation, one role row: the recovery attempt adds nothing.
+    const reviewRow = (attemptId: string, result?: string) =>
+      row('stage:4:review:correctness', attemptId, {
+        invocationId: 'inv-review',
+        usage: counted,
+        cost:
+          estimateCostBreakdown('claude-opus-5-5', counted)?.totalUsd ?? null,
+        ...(result ? { result } : {}),
+      })
+    const [, correctness] = roleUsage(
+      [reviewRow('a1'), reviewRow('a2', 'checkpoint-recovered')],
+      [
+        {
+          role: 'code',
+          provider: 'claude',
+          requestedModel: null,
+          requestedEffort: null,
+        },
+        {
+          role: 'correctness',
+          provider: 'claude',
+          requestedModel: 'claude-opus-5-5',
+          requestedEffort: 'high',
+        },
+      ],
+    )
+    assert.equal(correctness?.invocations, 1)
+    assert.equal(correctness?.totalTokens, 3_180)
+    assert.ok((correctness?.costUsd ?? 0) > 0)
+  })
+
+  it("prices each model's tokens at that model's rate, and leaves the cost unknown when one model is unpriced", async () => {
+    const modelUsage = {
+      'claude-opus-5-5': model(150, 100, 800, 50),
+      'claude-fable-5-1': model(40, 30, 2_000, 10),
+    }
+    const byModel = claudeUsageByModel(modelUsage)
+    assert.ok(byModel)
+    const opus = estimateCostBreakdown(
+      'claude-opus-5-5',
+      byModel['claude-opus-5-5'] ?? null,
+    )
+    const fable = estimateCostBreakdown(
+      'claude-fable-5-1',
+      byModel['claude-fable-5-1'] ?? null,
+    )
+    assert.ok(opus && fable)
+    const mixed = estimateCostBreakdownByModel(byModel)
+    assert.ok(mixed)
+    assert.ok(
+      Math.abs(mixed.totalUsd - (opus.totalUsd + fable.totalUsd)) < 1e-12,
+    )
+    for (const meter of ['input_tokens', 'output_tokens'] as const)
+      assert.ok(
+        Math.abs(
+          (mixed.meters[meter] ?? 0) -
+            ((opus.meters[meter] ?? 0) + (fable.meters[meter] ?? 0)),
+        ) < 1e-12,
+      )
+    // Pricing the whole call as the main model would get it wrong: Fable's
+    // tokens cost more than Opus's.
+    const flat = estimateCostBreakdown(
+      'claude-opus-5-5',
+      claudeUsageOf(mainLoop, modelUsage),
+    )
+    assert.ok(flat && flat.totalUsd < mixed.totalUsd)
+    // One unpriced model leaves the whole cost unknown.
+    assert.equal(
+      estimateCostBreakdownByModel(
+        claudeUsageByModel({
+          ...modelUsage,
+          'claude-unknown-9': model(1, 1, 0, 0),
+        }) ?? {},
+      ),
+      null,
+    )
+
+    // The measurement is priced the same way.
+    const written: unknown[] = []
+    const attempt = {
+      setMetadata: async (value: unknown) => {
+        written.push(value)
+      },
+    } as unknown as Parameters<typeof writeMeasurement>[0]
+    const base = row('stage:4:review:correctness', 'a1')
+      .measurement as AttemptMeasurement
+    const priced = await writeMeasurement(
+      attempt,
+      { ...base, reportedModel: 'claude-opus-5-5', usage: null },
+      {
+        usagePatch: claudeUsageOf(mainLoop, modelUsage),
+        usageByModel: byModel,
+      } as Partial<AttemptMeasurement>,
+    )
+    assert.ok(Math.abs((priced.costUsdEstimate ?? 0) - mixed.totalUsd) < 1e-12)
+    const unpriced = await writeMeasurement(
+      attempt,
+      { ...base, reportedModel: 'claude-opus-5-5', usage: null },
+      {
+        usagePatch: claudeUsageOf(mainLoop, modelUsage),
+        usageByModel: {
+          ...byModel,
+          'mystery-model': byModel['claude-opus-5-5'],
+        },
+      } as Partial<AttemptMeasurement>,
+    )
+    assert.equal(unpriced.costUsdEstimate, null)
+    assert.equal(written.length, 2)
+  })
+
+  it('keeps a leg some model does not report unknown, never zero', () => {
+    const partial = claudeUsageOf(mainLoop, {
+      'claude-opus-5-5': model(150, 100, 800, 50),
+      'claude-fable-5-1': { inputTokens: 40, outputTokens: 30 },
+    })
+    assert.equal(partial?.outputTokens, 130)
+    assert.equal(partial?.cacheReadTokens, null)
+    assert.equal(partial?.cacheWriteTokens, null)
+    assert.equal(partial?.inputTokens, null)
+    assert.equal(partial?.totalTokens, null)
+    assert.equal(estimateCostBreakdown('claude-opus-5-5', partial), null)
+  })
+
+  it('falls back to the main loop without modelUsage, and to nothing without either', () => {
+    for (const absent of [undefined, null, {}, []]) {
+      const main = claudeUsageOf(mainLoop, absent)
+      assert.equal(main?.inputTokens, 1_000)
+      assert.equal(main?.cachedInputTokens, 850)
+      assert.equal(main?.totalTokens, 1_100)
+    }
+    assert.equal(
+      claudeUsageOf(
+        {
+          inputTokens: null,
+          outputTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+          totalTokens: null,
+        },
+        undefined,
+      ),
+      null,
+    )
   })
 })

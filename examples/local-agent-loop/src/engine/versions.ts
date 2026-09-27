@@ -166,6 +166,17 @@ export interface ConfigVersionInput {
     authorEmail: string | null
     messageTemplate: string | null
   } | null
+  /**
+   * The fixed command, context and output of each reviewer that named any
+   * of them. A lens that named none is left out, and so is the whole field
+   * when none did, so such a run keeps its version.
+   */
+  review?: Partial<
+    Record<
+      'correctness' | 'edge-cases',
+      { command: string | null; context: string; output: string }
+    >
+  > | null
 }
 
 function canonicalProfile(p: ConfigVersionProfile): ConfigVersionProfile {
@@ -183,8 +194,9 @@ function canonicalProfile(p: ConfigVersionProfile): ConfigVersionProfile {
  * version exactly when every role's provider, models and efforts (a repair
  * profile's only when it differs from code's), the context
  * mode, iteration budget, instruction set, triage profile (when there is
- * one), the path and version of every real CLI launched, and the commit
- * author and message template (when set) are identical —
+ * one), the path and version of every real CLI launched, the commit
+ * author and message template (when set), and each configured reviewer's
+ * command, context and output are identical —
  * the unit of a fair comparison. Stored on every LLM attempt as
  * `configVersion`.
  */
@@ -201,6 +213,12 @@ export function configVersionOf(input: ConfigVersionInput): string {
           messageTemplate: commit.messageTemplate,
         }
       : null
+  const review = (['correctness', 'edge-cases'] as const).flatMap((lens) => {
+    const r = input.review?.[lens]
+    return r
+      ? [[lens, { command: r.command, context: r.context, output: r.output }]]
+      : []
+  })
   const canonical = JSON.stringify({
     contextMode: input.contextMode,
     instructionsVersion: input.instructionsVersion,
@@ -224,6 +242,7 @@ export function configVersionOf(input: ConfigVersionInput): string {
         }
       : {}),
     ...(commitKey ? { commit: commitKey } : {}),
+    ...(review.length > 0 ? { review: Object.fromEntries(review) } : {}),
   })
   return createHash('sha256').update(canonical).digest('hex').slice(0, 16)
 }

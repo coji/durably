@@ -61,8 +61,18 @@ import {
   deliverySchema,
   FactoryEventSchema,
 } from './events.js'
-import { assertAllowedDecision, availableActions, decide } from './policy.js'
-import { parseTriageOutput, triagePrompt } from './prompts.js'
+import { runRootOf, reviewSnapshotsDirOf } from './layout.js'
+import {
+  assertAllowedDecision,
+  availableActions,
+  decide,
+  reviewCanFollow,
+} from './policy.js'
+import {
+  parseTriageOutput,
+  reviewCommandPlaceholders,
+  triagePrompt,
+} from './prompts.js'
 import { reduce } from './reducer.js'
 import { triageThatRuns } from './repair.js'
 import { stages } from './stages.js'
@@ -74,9 +84,17 @@ import {
 import {
   executionKey,
   initialState,
+  REVIEW_CONTEXTS,
+  REVIEW_LENSES,
+  REVIEW_OUTPUTS,
   separateRepairProfile,
+  usesReviewMaterials,
   type FactorySetup,
   type ProfileRole,
+  type ReviewContext,
+  type ReviewInvocation,
+  type ReviewLens,
+  type ReviewOutput,
   type StageDecision,
 } from './types.js'
 
@@ -165,6 +183,8 @@ const fakeScenarioSchema = z
     failIterations: z.number().int().min(0).optional(),
     reviewSequence: z.array(z.enum(FAKE_REVIEW_DECISIONS)).optional(),
     reviewNotes: z.array(z.string()).optional(),
+    reviewOutputs: z.array(z.string()).optional(),
+    reviewDenials: z.array(z.string()).optional(),
     triage: z.array(z.enum(FAKE_TRIAGE_KINDS)).optional(),
     triageReason: z.string().min(1).max(500).optional(),
     latencyMs: z
@@ -202,6 +222,126 @@ const resolvedProfileSchema = z
     effectiveEffort: z.string().min(1).nullable(),
   })
   .strict()
+
+/** One reviewer's invocation, every field fixed at trigger. */
+const reviewInvocationSchema = z
+  .object({
+    command: nonBlank.nullable(),
+    context: z.enum(REVIEW_CONTEXTS),
+    output: z.enum(REVIEW_OUTPUTS),
+  })
+  .strict()
+
+/** The reviewers that were given one; a lens left out uses the defaults. */
+const reviewInvocationsSchema = z
+  .object({
+    correctness: reviewInvocationSchema.optional(),
+    'edge-cases': reviewInvocationSchema.optional(),
+  })
+  .strict()
+
+/** A reviewer's invocation as `factory.json` names it: every field optional. */
+export interface RequestedReviewInvocation {
+  command?: string | null | undefined
+  context?: ReviewContext | undefined
+  output?: ReviewOutput | undefined
+}
+
+/**
+ * Why a reviewer on `provider` cannot run this invocation, or null when it
+ * can: a Codex reviewer runs neither a command nor local instructions. The
+ * CLI, the job's input schema and setup all refuse through this one check.
+ */
+export function unsupportedReviewSettings(
+  invocation: RequestedReviewInvocation,
+  provider: ProviderName,
+): string | null {
+  if (provider !== 'codex') return null
+  const unsupported = [
+    ...((invocation.command ?? null) !== null ? ['command'] : []),
+    ...(invocation.context === 'local-instructions'
+      ? ['context: local-instructions']
+      : []),
+  ]
+  return unsupported.length > 0
+    ? `a codex reviewer does not support ${unsupported.join(' or ')}; use a claude reviewer, or leave ${unsupported.length > 1 ? 'them' : 'it'} out`
+    : null
+}
+
+/**
+ * The provider a role runs on, as a run input names it: the parent's for a
+ * repair run, otherwise the role's own profile or the run's provider. Setup
+ * resolves each role's profile from the same place.
+ */
+function inputProviderOf(
+  input: {
+    provider: ProviderName
+    profiles?:
+      | Partial<Record<ProfileRole, { provider: ProviderName } | undefined>>
+      | undefined
+    repairOf?:
+      | { profiles: Record<ProfileRole, { provider: ProviderName }> }
+      | undefined
+  },
+  role: ProfileRole,
+): ProviderName {
+  return input.repairOf
+    ? input.repairOf.profiles[role].provider
+    : (input.profiles?.[role]?.provider ?? input.provider)
+}
+
+/**
+ * Fix each reviewer's invocation, and refuse what cannot run before any LLM
+ * call: a blank command, a placeholder other than `{effort}`, `{base}` and
+ * `{head}` or a brace outside one, `{effort}` on a role that resolves no
+ * effort, and a command or local instructions on a Codex reviewer. A lens
+ * that names none of the three fields is left out and keeps the prompt and
+ * the verdict; one that names any gets all three, defaults filled in.
+ */
+export function fixReviewInvocations(
+  requested:
+    | Partial<Record<ReviewLens, RequestedReviewInvocation | undefined>>
+    | null
+    | undefined,
+  profiles: Record<
+    ReviewLens,
+    { provider: ProviderName; effectiveEffort: string | null }
+  >,
+  where = 'profiles.review',
+): Partial<Record<ReviewLens, ReviewInvocation>> {
+  const fixed: Partial<Record<ReviewLens, ReviewInvocation>> = {}
+  for (const lens of REVIEW_LENSES) {
+    const r = requested?.[lens]
+    if (
+      !r ||
+      ((r.command ?? null) === null &&
+        r.context === undefined &&
+        r.output === undefined)
+    )
+      continue
+    const invocation: ReviewInvocation = {
+      command: r.command ?? null,
+      context: r.context ?? 'prompt',
+      output: r.output ?? 'verdict',
+    }
+    const refuse = (why: string) => new Error(`${where}.${lens}: ${why}`)
+    const { provider, effectiveEffort } = profiles[lens]
+    if (invocation.command !== null && invocation.command.trim() === '')
+      throw refuse('command must not be empty')
+    const unsupported = unsupportedReviewSettings(invocation, provider)
+    if (unsupported) throw refuse(unsupported)
+    if (invocation.command !== null) {
+      const used = reviewCommandPlaceholders(invocation.command)
+      if (!used.ok) throw refuse(`command: ${used.error}`)
+      if (used.names.has('effort') && effectiveEffort === null)
+        throw refuse(
+          'command uses {effort}, but the role resolves no effort; set "effort" for it',
+        )
+    }
+    fixed[lens] = invocation
+  }
+  return fixed
+}
 
 /**
  * A run that repairs another run's approved candidate from outside findings.
@@ -298,6 +438,11 @@ const inputSchema = z
     fakeScenario: fakeScenarioSchema.optional(),
     /** Set only on a repair run; see `repairOfSchema`. */
     repairOf: repairOfSchema.optional(),
+    /**
+     * Reviewers with their own command, context or output, fixed at
+     * trigger. Absent, or a lens left out: the prompt and the verdict.
+     */
+    review: reviewInvocationsSchema.optional(),
   })
   // Refused at trigger, so a real run is never stored with a demo scenario.
   .refine(
@@ -311,6 +456,22 @@ const inputSchema = z
       path: ['fakeScenario'],
     },
   )
+  // Refused at trigger, like `demo run` refuses it from `factory.json`, so
+  // a direct trigger is never stored with a reviewer that cannot run it.
+  .superRefine((input, ctx) => {
+    for (const lens of REVIEW_LENSES) {
+      const r = input.review?.[lens]
+      const unsupported = r
+        ? unsupportedReviewSettings(r, inputProviderOf(input, lens))
+        : null
+      if (unsupported)
+        ctx.addIssue({
+          code: 'custom',
+          message: `review.${lens}: ${unsupported}`,
+          path: ['review', lens],
+        })
+    }
+  })
   // A repair run starts from the parent's candidate, with the settings the
   // parent resolved; nothing about it is left for the worker to decide.
   .refine(
@@ -752,7 +913,7 @@ export interface AgentLoopJobOptions {
 }
 
 export function createAgentLoopJob(options: AgentLoopJobOptions) {
-  const runRoot = (runId: string) => join(options.stateRoot, 'runs', runId)
+  const runRoot = (runId: string) => runRootOf(options.stateRoot, runId)
   return defineJob({
     name: 'local-factory.v2',
     input: inputSchema,
@@ -780,6 +941,12 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             ...(triage ? { triage } : {}),
             ...(repair ? { repair } : {}),
           })
+          // Checked again here, as at trigger, before anything exists.
+          const review = fixReviewInvocations(input.review, profiles, 'review')
+          if (Object.keys(review).length > 0 && input.target.kind !== 'repo')
+            throw new Error(
+              'review: a reviewer command, context or output needs a repository target',
+            )
           // A repair profile that makes the same call as code is code: the
           // run keeps its session and its config version.
           const ownRepair = separateRepairProfile({ repair, profiles })
@@ -813,7 +980,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             }),
           )
           await mkdir(root, { recursive: true })
-          const target: TargetConfig =
+          const prepared: TargetConfig =
             input.target.kind === 'subject'
               ? await prepareSubjectTarget({
                   subjectDir: subjectDir(),
@@ -864,6 +1031,17 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                     : {}),
                   signal,
                 })
+          // Only a reviewer with its own command or local instructions reads
+          // the base and head trees, so only then are they extracted. Trees
+          // an earlier attempt of this setup left are discarded with its
+          // worktree.
+          const snapshotsDir = reviewSnapshotsDirOf(root)
+          await rm(snapshotsDir, { recursive: true, force: true })
+          const target: TargetConfig =
+            prepared.kind === 'repo' &&
+            Object.values(review).some((r) => usesReviewMaterials(r ?? null))
+              ? { ...prepared, reviewSnapshotsDir: snapshotsDir }
+              : prepared
           const baselineCheck =
             input.target.kind === 'repo' && input.target.baselineCheck === true
           // A passing baseline removes every untracked file .gitignore does
@@ -896,6 +1074,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               triage,
               cli,
               commit: target.kind === 'repo' ? (target.commit ?? null) : null,
+              review,
             }),
             profiles,
             repair,
@@ -904,6 +1083,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             agentTimeoutMs,
             baselineCheck,
             codexPath,
+            ...(Object.keys(review).length > 0 ? { review } : {}),
             ...(repairOf
               ? {
                   repairOf: {
@@ -1010,29 +1190,46 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       // Deliberately not a `finally`: `step.waitFor` suspends by throwing, so a
       // finally block would run cleanup every time the run parks on the human
       // approval wait, and a target that really removes its worktree would
-      // destroy the work mid-approval.
-      for (let sequence = 0; state.outcome === null; sequence++) {
-        const decision = await step.run(
-          `decision:${sequence}`,
-          async () => decide(state),
-          {
-            metadata: {
-              stage: 'decision',
-              sequence,
-              candidates: availableActions(state),
-            } as unknown as JsonValue,
-          },
-        )
-        assertAllowedDecision(state, decision as StageDecision)
-        const selected = decision as StageDecision
-        const rawEvent = await stages[selected.stage]({
-          step,
-          state,
-          decision: selected,
-          key: `stage:${sequence}:${selected.stage}`,
-          services: { providers, target },
-        })
-        state = reduce(state, FactoryEventSchema.parse(rawEvent))
+      // destroy the work mid-approval. The `catch` below removes only the
+      // review snapshots, which were already removed before the approval stage.
+      try {
+        for (let sequence = 0; state.outcome === null; sequence++) {
+          const decision = await step.run(
+            `decision:${sequence}`,
+            async () => decide(state),
+            {
+              metadata: {
+                stage: 'decision',
+                sequence,
+                candidates: availableActions(state),
+              } as unknown as JsonValue,
+            },
+          )
+          assertAllowedDecision(state, decision as StageDecision)
+          const selected = decision as StageDecision
+          // The review stage removes each round's candidate tree and
+          // reviewer directories itself, on replay too. Once no review can
+          // follow, the base tree goes as well, so none waits with the run
+          // for a human.
+          if (!reviewCanFollow(selected.stage))
+            await target.releaseReviewSnapshots?.({ base: true })
+          const rawEvent = await stages[selected.stage]({
+            step,
+            state,
+            decision: selected,
+            key: `stage:${sequence}:${selected.stage}`,
+            services: { providers, target },
+          })
+          state = reduce(state, FactoryEventSchema.parse(rawEvent))
+        }
+      } catch (error) {
+        // A failed or cancelled run never runs again, so its review
+        // snapshots go now, before the failure is recorded. A lost lease is
+        // left alone: the run may be picked up again and read them. A
+        // suspension for approval finds none left.
+        if (!(error instanceof Error && error.name === 'LeaseLostError'))
+          await target.releaseReviewSnapshots?.({ base: true })
+        throw error
       }
       await target.cleanup()
       return { ...state.outcome, triage }

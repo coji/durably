@@ -77,6 +77,8 @@ const PRICE_PER_1K: Record<string, ModelPrice> = {
   'claude-sonnet-5': { in: 0.002, out: 0.01, ...ANTHROPIC_CACHE },
   'claude-opus-4-6': { in: 0.005, out: 0.025, ...ANTHROPIC_CACHE },
   'claude-sonnet-4-6': { in: 0.003, out: 0.015, ...ANTHROPIC_CACHE },
+  // Claude Code runs some built-in subagents (Explore, for one) on Haiku.
+  'claude-haiku-4-5': { in: 0.001, out: 0.005, ...ANTHROPIC_CACHE },
 }
 
 /**
@@ -152,4 +154,31 @@ export function estimateCostUsd(
   usage: PriceableUsage | null,
 ): number | null {
   return estimateCostBreakdown(model, usage)?.totalUsd ?? null
+}
+
+/**
+ * Price usage that several models spent, each model's tokens at that
+ * model's rate, summed per meter. Null when any model is unpriced or any
+ * model's usage cannot be priced: the main model's rate is never assumed
+ * for another model's tokens.
+ */
+export function estimateCostBreakdownByModel(
+  byModel: Record<string, PriceableUsage>,
+): CostBreakdown | null {
+  const entries = Object.entries(byModel)
+  if (entries.length === 0) return null
+  const meters: Partial<Record<PricingMeter, number>> = {}
+  let cacheAware = false
+  for (const [model, usage] of entries) {
+    const part = estimateCostBreakdown(model, usage)
+    if (!part) return null
+    cacheAware ||= part.cacheAware
+    for (const [meter, usd] of Object.entries(part.meters) as [
+      PricingMeter,
+      number,
+    ][])
+      meters[meter] = (meters[meter] ?? 0) + usd
+  }
+  const totalUsd = Object.values(meters).reduce((sum, v) => sum + v, 0)
+  return { totalUsd, meters, cacheAware }
 }

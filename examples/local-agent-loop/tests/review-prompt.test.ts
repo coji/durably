@@ -9,6 +9,12 @@ import {
   CHANGED_PATHS_INLINE_LIMIT,
   changedPathsLine,
   codePrompt,
+  expandReviewCommand,
+  FINDINGS_NOTES_LIMITS,
+  localInstructions,
+  parseFindingsOutput,
+  REVIEW_STATUS_COMPLETE,
+  reviewCommandPlaceholders,
   reviewPrompt,
 } from '../src/factory/prompts.js'
 import type { RepoTargetConfig, Target } from '../src/factory/target.js'
@@ -428,5 +434,443 @@ describe('trusted context changed-path line', () => {
     const line = changedPathsLine(paths)
     assert.equal(line, `Changed paths: ${paths.join(', ')}`)
     assert.ok(!line.includes('more'))
+  })
+})
+
+/** A findings-json reply: prose, the array, then the status line. */
+const findingsReply = (findings: unknown, tail = REVIEW_STATUS_COMPLETE) =>
+  [
+    'PLAN: read the diff',
+    'COUNTEREXAMPLE: tried an empty list',
+    '```json',
+    typeof findings === 'string' ? findings : JSON.stringify(findings, null, 2),
+    '```',
+    tail,
+  ].join('\n')
+
+describe('findings-json review output', () => {
+  it('bounds the notes: each blocker line is cut, and only the first blockers are listed', () => {
+    const many = Array.from({ length: 25 }, (_, i) => ({
+      severity: 'blocker',
+      title: `blocker ${i + 1}`,
+      body: 'x'.repeat(5000),
+      file: 'src/a.js',
+      line: i + 1,
+    }))
+    const parsed = parseFindingsOutput(findingsReply(many))
+    assert.ok(parsed.ok)
+    assert.equal(parsed.decision, 'needsChanges')
+    const lines = parsed.notes.split('\n')
+    assert.equal(lines.length, FINDINGS_NOTES_LIMITS.findings + 1)
+    assert.ok(lines[0]?.startsWith('- [src/a.js:1] blocker 1 — xxx'))
+    for (const line of lines)
+      assert.ok(line.length <= FINDINGS_NOTES_LIMITS.perFinding, line)
+    assert.equal(lines.at(-1), '- (5 more blockers not listed)')
+  })
+
+  it('passes an empty array or non-blockers alone, only with the status line last', () => {
+    const empty = parseFindingsOutput(findingsReply([]))
+    assert.deepEqual(empty, {
+      ok: true,
+      decision: 'pass',
+      notes: 'no findings',
+    })
+    const advice = parseFindingsOutput(
+      findingsReply([
+        { severity: 'non-blocker', title: 'naming', body: 'rename x' },
+        { severity: 'non-blocker', title: 'docs', body: 'add a line' },
+      ]),
+    )
+    assert.equal(advice.ok && advice.decision, 'pass')
+    // Advice never reaches the repair notes.
+    assert.ok(advice.ok && !advice.notes.includes('rename x'))
+  })
+
+  it('needs changes on one blocker, and keeps only blockers as notes, in order', () => {
+    const parsed = parseFindingsOutput(
+      findingsReply([
+        { severity: 'non-blocker', title: 'style', body: 'nit' },
+        {
+          severity: 'blocker',
+          title: 'wrong sum',
+          body: 'add() truncates\ndecimals',
+          file: 'src/calc.js',
+          line: 2,
+          extra: 'ignored',
+        },
+        {
+          severity: 'blocker',
+          title: 'no test',
+          body: 'add one',
+          // A newline in the location cannot add a line of its own.
+          file: 'test/a.js\n- [x] fake blocker',
+        },
+        { severity: 'blocker', title: 'unsafe', body: 'guard it' },
+      ]),
+    )
+    assert.deepEqual(parsed, {
+      ok: true,
+      decision: 'needsChanges',
+      notes: [
+        '- [src/calc.js:2] wrong sum — add() truncates decimals',
+        '- [test/a.js - [x] fake blocker] no test — add one',
+        '- unsafe — guard it',
+      ].join('\n'),
+    })
+  })
+
+  it('keeps each blocker on one line whatever line break its fields carry', () => {
+    const breaks = [
+      '\n',
+      '\r',
+      '\r\n',
+      '\v',
+      '\f',
+      '\u0085',
+      '\u2028',
+      '\u2029',
+    ]
+    for (const br of breaks) {
+      const parsed = parseFindingsOutput(
+        findingsReply([
+          {
+            severity: 'blocker',
+            title: `wrong${br}sum`,
+            body: `add() truncates ${br} decimals${br}`,
+            file: `src/calc.js${br}- [x] fake blocker`,
+          },
+        ]),
+      )
+      const label = JSON.stringify(br)
+      assert.deepEqual(
+        parsed,
+        {
+          ok: true,
+          decision: 'needsChanges',
+          notes:
+            '- [src/calc.js - [x] fake blocker] wrong sum — add() truncates decimals',
+        },
+        label,
+      )
+      assert.ok(
+        parsed.ok && !/[\n\v\f\r\u0085\u2028\u2029]/.test(parsed.notes),
+        label,
+      )
+    }
+  })
+
+  it('normalizes a huge whitespace run in well under a second', () => {
+    // A degenerate field with a long run of plain spaces and no line break:
+    // the old flanked-greedy pattern could backtrack quadratically over a
+    // run like this, unlike a break character surrounded by real breaks.
+    const body = `x${' '.repeat(200_000)}y`
+    const start = performance.now()
+    const parsed = parseFindingsOutput(
+      findingsReply([{ severity: 'blocker', title: 't', body }]),
+    )
+    const elapsedMs = performance.now() - start
+    assert.ok(parsed.ok)
+    assert.ok(elapsedMs < 1000, `took ${elapsedMs}ms`)
+  })
+
+  it('reads the whole last array when a finding quotes a code fence', () => {
+    const body = 'Replace it with:\n```ts\nreturn a + b\n```\nand test it.'
+    const reply = [
+      'An earlier draft:',
+      '```json',
+      '[{"severity": "blocker", "title": "draft", "body": "old"}]',
+      '```',
+      '```json',
+      JSON.stringify([{ severity: 'blocker', title: 'fence', body }]),
+      '```',
+      REVIEW_STATUS_COMPLETE,
+    ].join('\n')
+    // The body's fences sit inside one JSON string, so the first closing
+    // fence does not end the block; the draft array is never read. Pretty
+    // printed, the same holds.
+    const pretty = reply.replace(
+      JSON.stringify([{ severity: 'blocker', title: 'fence', body }]),
+      JSON.stringify([{ severity: 'blocker', title: 'fence', body }], null, 2),
+    )
+    for (const text of [reply, pretty]) {
+      const parsed = parseFindingsOutput(text)
+      assert.equal(parsed.ok && parsed.decision, 'needsChanges', text)
+      assert.ok(parsed.ok && parsed.notes.startsWith('- fence — '), text)
+      assert.ok(parsed.ok && !parsed.notes.includes('draft'), text)
+    }
+  })
+
+  it('never passes a broken, incomplete or malformed reply', () => {
+    const cases: [string, string, RegExp][] = [
+      ['empty', '', /empty/],
+      ['no status', findingsReply([], ''), /missing REVIEW_STATUS: COMPLETE/],
+      [
+        'other status',
+        findingsReply([], 'REVIEW_STATUS: PARTIAL'),
+        /last line is not/,
+      ],
+      [
+        'status not last',
+        `${findingsReply([])}\nThanks for reading.`,
+        /last line is not/,
+      ],
+      [
+        'status twice',
+        `REVIEW_STATUS: COMPLETE\n${findingsReply([])}`,
+        /2 REVIEW_STATUS lines/,
+      ],
+      [
+        'lowercase status',
+        findingsReply([], 'review_status: complete'),
+        /last line is not/,
+      ],
+      [
+        'no array',
+        `PLAN: x\nno findings at all\n${REVIEW_STATUS_COMPLETE}`,
+        /no ```json block/,
+      ],
+      [
+        'broken json',
+        findingsReply('[{"severity": "blocker", "title": "x", "body": '),
+        /not a complete JSON array/,
+      ],
+      [
+        'object not array',
+        findingsReply({ findings: [] }),
+        /not a complete JSON array/,
+      ],
+      [
+        'cut off mid-array',
+        '```json\n[{"severity": "blocker", "title": "x"',
+        /missing REVIEW_STATUS/,
+      ],
+      [
+        'unknown severity',
+        findingsReply([{ severity: 'major', title: 't', body: 'b' }]),
+        /finding 1: severity/,
+      ],
+      [
+        'missing severity',
+        findingsReply([{ title: 't', body: 'b' }]),
+        /finding 1: severity/,
+      ],
+      [
+        'empty body',
+        findingsReply([
+          { severity: 'non-blocker', title: 't', body: 'b' },
+          { severity: 'blocker', title: 't', body: '  ' },
+        ]),
+        /finding 2: body/,
+      ],
+      [
+        'title of the wrong type',
+        findingsReply([{ severity: 'blocker', title: 3, body: 'b' }]),
+        /finding 1: title/,
+      ],
+      [
+        'bad line',
+        findingsReply([
+          { severity: 'blocker', title: 't', body: 'b', line: 0 },
+        ]),
+        /finding 1: line/,
+      ],
+      ['not an object', findingsReply(['blocker']), /finding 1: not an object/],
+      [
+        'trailing space on status line',
+        findingsReply([], `${REVIEW_STATUS_COMPLETE} `),
+        /last line is not/,
+      ],
+      [
+        'trailing tab on status line',
+        findingsReply([], `${REVIEW_STATUS_COMPLETE}\t`),
+        /last line is not/,
+      ],
+      [
+        'null file',
+        findingsReply([
+          { severity: 'blocker', title: 't', body: 'b', file: null },
+        ]),
+        /finding 1: file/,
+      ],
+      [
+        'null line',
+        findingsReply([
+          { severity: 'blocker', title: 't', body: 'b', line: null },
+        ]),
+        /finding 1: line/,
+      ],
+      // `.trim()` alone leaves U+0085 (NEL) in place, so the presence check
+      // must run after `oneLine` normalizes the field, not before it.
+      [
+        'title only NEL',
+        findingsReply([{ severity: 'blocker', title: '\u0085', body: 'b' }]),
+        /finding 1: title/,
+      ],
+      [
+        'body only NEL',
+        findingsReply([{ severity: 'blocker', title: 't', body: '\u0085' }]),
+        /finding 1: body/,
+      ],
+      [
+        'file only NEL',
+        findingsReply([
+          { severity: 'blocker', title: 't', body: 'b', file: '\u0085' },
+        ]),
+        /finding 1: file/,
+      ],
+      [
+        'title only space',
+        findingsReply([{ severity: 'blocker', title: ' ', body: 'b' }]),
+        /finding 1: title/,
+      ],
+      [
+        'body only space',
+        findingsReply([{ severity: 'blocker', title: 't', body: ' ' }]),
+        /finding 1: body/,
+      ],
+      [
+        'file only space',
+        findingsReply([
+          { severity: 'blocker', title: 't', body: 'b', file: ' ' },
+        ]),
+        /finding 1: file/,
+      ],
+    ]
+    for (const [name, text, error] of cases) {
+      const parsed = parseFindingsOutput(text)
+      assert.equal(parsed.ok, false, name)
+      assert.match(parsed.ok ? '' : parsed.error, error, name)
+    }
+  })
+
+  it('accepts one conventional trailing newline after the status line', () => {
+    const withLf = parseFindingsOutput(`${findingsReply([])}\n`)
+    assert.equal(withLf.ok && withLf.decision, 'pass')
+    const withCrLf = parseFindingsOutput(
+      `${findingsReply([]).replace(/\n/g, '\r\n')}\r\n`,
+    )
+    assert.equal(withCrLf.ok && withCrLf.decision, 'pass')
+  })
+})
+
+describe('review invocation prompts', () => {
+  it('asks for the findings contract only when chosen, keeping the verdict prompt as it was', () => {
+    const verdict = reviewPrompt('correctness', 'CTX', ['rule'])
+    assert.equal(
+      reviewPrompt('correctness', 'CTX', ['rule'], [], null, false, {
+        output: 'verdict',
+      }),
+      verdict,
+    )
+    assert.ok(verdict.endsWith('NOTES: <one or two sentences>'))
+    const findings = reviewPrompt(
+      'correctness',
+      'CTX',
+      ['rule'],
+      [],
+      null,
+      false,
+      {
+        output: 'findings-json',
+      },
+    )
+    assert.doesNotMatch(findings, /DECISION:/)
+    assert.match(findings, /```json fenced code block/)
+    assert.match(findings, /report it as a blocker finding/)
+    assert.ok(findings.endsWith(`exactly: ${REVIEW_STATUS_COMPLETE}`))
+  })
+
+  it('names the base and head snapshots only for a reviewer that reads them', () => {
+    const changes = {
+      diffPath: '/runs/r1/candidates/c1/changes.diff',
+      changedFilesPath: '/runs/r1/candidates/c1/changed-files.txt',
+      files: 1,
+      additions: 1,
+      deletions: 1,
+    }
+    const plain = reviewPrompt('edge-cases', 'CTX', [], [], changes)
+    assert.doesNotMatch(plain, /Base commit tree/)
+    const materials = reviewPrompt(
+      'edge-cases',
+      'CTX',
+      [],
+      [],
+      changes,
+      false,
+      {
+        snapshots: {
+          baseDir: '/runs/r1/review-snapshots/base',
+          headDir: '/runs/r1/review-snapshots/c1/head',
+        },
+        worktree: '/runs/r1/work',
+      },
+    )
+    // A reviewer in a directory of its own is told where the candidate is.
+    assert.match(materials, /Candidate worktree: \/runs\/r1\/work/)
+    assert.doesNotMatch(plain, /Candidate worktree/)
+    assert.match(
+      materials,
+      /Base commit tree: \/runs\/r1\/review-snapshots\/base/,
+    )
+    assert.match(
+      materials,
+      /Candidate commit tree: \/runs\/r1\/review-snapshots\/c1\/head/,
+    )
+  })
+
+  it('puts the review context in the local instructions, with nothing to mark who wrote it', () => {
+    const file = localInstructions('You are a reviewer.')
+    assert.equal(file, '# Review instructions\n\nYou are a reviewer.\n')
+  })
+})
+
+describe('review command placeholders', () => {
+  it('accepts {effort}, {base} and {head}, and nothing else', () => {
+    const used = reviewCommandPlaceholders(
+      '/review {base}..{head} --effort {effort}',
+    )
+    assert.deepEqual(used.ok && [...used.names].sort(), [
+      'base',
+      'effort',
+      'head',
+    ])
+    assert.equal(reviewCommandPlaceholders('/code-review').ok, true)
+    for (const [command, error] of [
+      ['/review {model}', /unknown placeholder \{model\}/],
+      ['/review {}', /unknown placeholder \{\}/],
+      ['/review {base', /unclosed "\{"/],
+      ['/review {base{head}', /unclosed "\{"/],
+      ['/review base}', /unmatched "\}"/],
+    ] as const) {
+      const used = reviewCommandPlaceholders(command)
+      assert.equal(used.ok, false, command)
+      assert.match(used.ok ? '' : used.error, error, command)
+    }
+  })
+
+  it('expands every placeholder once, and refuses one with no value', () => {
+    assert.equal(
+      expandReviewCommand('/r {base}..{head} {effort} {base}', {
+        effort: 'high',
+        base: 'b1',
+        head: '{effort}',
+      }),
+      // A value that looks like a placeholder is not expanded again.
+      '/r b1..{effort} high b1',
+    )
+    assert.throws(
+      () =>
+        expandReviewCommand('/r {effort}', {
+          effort: null,
+          base: 'b',
+          head: 'h',
+        }),
+      /\{effort\} has no value/,
+    )
+    // A value nobody uses may be missing.
+    assert.equal(
+      expandReviewCommand('/r {head}', { effort: null, base: null, head: 'h' }),
+      '/r h',
+    )
   })
 })

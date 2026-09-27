@@ -16,6 +16,7 @@ import {
   repoRoot,
   resolveCommit,
 } from '../engine/git.js'
+import { repoWorkdirOf } from '../factory/layout.js'
 import type {
   CommitSettings,
   RepoTargetConfig,
@@ -67,7 +68,7 @@ export async function prepareRepoTarget(
   if (args.checkCommand.length === 0)
     throw new Error('a repo target needs a check command to grade candidates')
   const repo = await repoRoot(args.repoPath)
-  const workdir = join(args.root, 'work')
+  const workdir = repoWorkdirOf(args.root)
   await mkdir(args.root, { recursive: true })
   // Setup is a durable step, so a worker killed part way through re-runs it.
   // `git worktree add -b` refuses an existing directory or branch, so clear

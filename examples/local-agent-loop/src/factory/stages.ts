@@ -6,16 +6,30 @@
  * from the run's `Target`, so the same stage graph drives the bundled sample
  * and a real repository.
  */
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import type { JsonValue, StepAttemptContext } from '@coji/durably'
 
+import type { ReviewCallSettings } from '../engine/providers/types.js'
 import { runAgentCall } from '../engine/runner.js'
+import type { ReviewSnapshots } from '../engine/types.js'
 import { runVerificationStep } from '../engine/verification.js'
-import { codePrompt, parseReviewOutput, reviewPrompt } from './prompts.js'
+import {
+  codePrompt,
+  expandReviewCommand,
+  LOCAL_INSTRUCTIONS_INPUT,
+  localInstructions,
+  parseFindingsOutput,
+  parseReviewOutput,
+  reviewLocations,
+  reviewPrompt,
+} from './prompts.js'
 import type { Delivery } from './target.js'
 import {
+  REVIEW_LENSES,
+  reviewInvocationOf,
   separateRepairProfile,
+  usesReviewMaterials,
   type FactoryOutcome,
   type ReviewLens,
   type ReviewVerdict,
@@ -224,56 +238,162 @@ export const reviewStage: StageHandler = async ({
   const readableFiles = changes
     ? [changes.diffPath, changes.changedFilesPath]
     : []
-  const review =
-    (lens: ReviewLens) =>
-    async (signal: AbortSignal, attempt: StepAttemptContext) => {
-      // Each reviewer has its own profile and provider, and always starts a
-      // new session: two branches run in parallel and never share one.
-      const profile = state.setup.profiles[lens]
-      const role = lens === 'correctness' ? 'review-a' : 'review-b'
-      const result = await runAgentCall(signal, attempt, {
-        provider: services.providers[lens],
-        providerName: profile.provider,
-        prompt: reviewPrompt(
-          lens,
-          trustedContext,
-          target.reviewRules(lens),
-          target.untrustedInputs(lens),
-          changes,
-          Boolean(state.setup.repairOf),
-        ),
-        workdir: reviewCwd,
-        readableFiles,
-        timeoutMs: state.setup.agentTimeoutMs,
-        requestedModel: profile.requestedModel,
-        requestedEffort: profile.requestedEffort,
-        effectiveModel: profile.effectiveModel,
-        effectiveEffort: profile.effectiveEffort,
-        role,
-        stage: `review:${lens}`,
-        iteration: state.iteration,
-        reviewRound: state.reviewRounds + 1,
-        operationKey: `${step.runId}/${key}/${lens}`,
-        checkpointsDir: state.setup.checkpointsDir,
-        session: null,
-        configVersion: state.setup.configVersion,
-      })
-      const parsed = parseReviewOutput(result.text)
-      if (!parsed.ok)
-        throw new Error(`review-incomplete (${lens}): ${parsed.error}`)
-      const verdict: ReviewVerdict = {
-        lens,
-        decision: parsed.decision,
-        notes: parsed.notes,
-      }
-      return verdict
+  const setup = state.setup
+  const baseCommit =
+    setup.target.kind === 'repo' ? setup.target.baseCommit : null
+  // Whether any reviewer of the round reads the base and head trees and
+  // works in a directory of its own.
+  const materials = REVIEW_LENSES.some((lens) =>
+    usesReviewMaterials(reviewInvocationOf(setup, lens)),
+  )
+  // The base and head trees, extracted once for both reviewers of this
+  // round when either reads them, and only when a call is about to be made.
+  let snapshots: Promise<ReviewSnapshots> | null = null
+  const materialsFor = async (signal: AbortSignal) => {
+    const { prepareReviewSnapshots, prepareReviewWorkdir } = target
+    if (!prepareReviewSnapshots || !prepareReviewWorkdir)
+      throw new Error(
+        'review: a reviewer command or local instructions need a target with review snapshots',
+      )
+    snapshots ??= prepareReviewSnapshots.call(target, candidate, signal)
+    return {
+      trees: await snapshots,
+      workdir: (lens: ReviewLens, localFile: string) =>
+        prepareReviewWorkdir.call(target, candidate, lens, localFile),
     }
+  }
+  const round = state.reviewRounds + 1
+  const reviewOnce = async (
+    lens: ReviewLens,
+    signal: AbortSignal,
+    attempt: StepAttemptContext,
+  ): Promise<ReviewVerdict> => {
+    // Each reviewer has its own profile and provider, and always starts a
+    // new session: two branches never share one.
+    const profile = setup.profiles[lens]
+    const role = lens === 'correctness' ? 'review-a' : 'review-b'
+    const invocation = reviewInvocationOf(setup, lens)
+    const output = invocation?.output ?? 'verdict'
+    const commandMode = usesReviewMaterials(invocation)
+    const own = commandMode ? await materialsFor(signal) : null
+    const trees = own?.trees ?? null
+    const context = reviewPrompt(
+      lens,
+      trustedContext,
+      target.reviewRules(lens),
+      target.untrustedInputs(lens),
+      changes,
+      Boolean(setup.repairOf),
+      {
+        output,
+        snapshots: trees,
+        // A command-mode reviewer works in a directory of its own, so it
+        // is told where the candidate is.
+        worktree: commandMode ? reviewCwd : null,
+      },
+    )
+    // `{base}` and `{head}` are the run's base commit and this candidate's.
+    const command =
+      invocation?.command != null
+        ? expandReviewCommand(invocation.command, {
+            effort: profile.effectiveEffort,
+            base: baseCommit,
+            head: candidate.commit ?? null,
+          })
+        : null
+    const local = invocation?.context === 'local-instructions'
+    const input = local
+      ? (command ?? LOCAL_INSTRUCTIONS_INPUT)
+      : command !== null
+        ? `${command}\n\n${context}`
+        : context
+    // A command-mode reviewer runs in a working directory the factory made
+    // for this call alone: the base commit's CLAUDE.md and .claude/, and its
+    // own CLAUDE.local.md. That file carries the whole review context, or,
+    // when the context travels in the prompt, where the candidate is, so a
+    // subagent that never sees the prompt still finds the code. The
+    // candidate is only read, as data.
+    const workdir = own
+      ? await own.workdir(
+          lens,
+          local
+            ? localInstructions(context)
+            : reviewLocations({
+                worktree: reviewCwd,
+                changes,
+                snapshots: own.trees,
+              }),
+        )
+      : reviewCwd
+    const settings: ReviewCallSettings | null = invocation
+      ? {
+          command: command !== null,
+          context: invocation.context,
+          output,
+          readableDirs:
+            trees && changes
+              ? [
+                  reviewCwd,
+                  dirname(changes.diffPath),
+                  trees.baseDir,
+                  trees.headDir,
+                ]
+              : [],
+        }
+      : null
+    const result = await runAgentCall(signal, attempt, {
+      provider: services.providers[lens],
+      providerName: profile.provider,
+      prompt: input,
+      workdir,
+      readableFiles,
+      ...(settings ? { review: settings } : {}),
+      timeoutMs: setup.agentTimeoutMs,
+      requestedModel: profile.requestedModel,
+      requestedEffort: profile.requestedEffort,
+      effectiveModel: profile.effectiveModel,
+      effectiveEffort: profile.effectiveEffort,
+      role,
+      stage: `review:${lens}`,
+      iteration: state.iteration,
+      reviewRound: round,
+      operationKey: `${step.runId}/${key}/${lens}`,
+      checkpointsDir: setup.checkpointsDir,
+      session: null,
+      configVersion: setup.configVersion,
+    })
+    // Read only after the completed checkpoint, so a reply that cannot be
+    // read stops the review and is never sent again.
+    if (invocation && result.permissionDenials.length > 0)
+      throw new Error(
+        `review-incomplete (${lens}): ${result.permissionDenials.length} tool call(s) were refused: ${result.permissionDenials.join('; ').slice(0, 500)}`,
+      )
+    const parsed =
+      output === 'findings-json'
+        ? parseFindingsOutput(result.text)
+        : parseReviewOutput(result.text)
+    if (!parsed.ok)
+      throw new Error(`review-incomplete (${lens}): ${parsed.error}`)
+    return { lens, decision: parsed.decision, notes: parsed.notes }
+  }
   const correctness = `${key}:correctness`
   const edgeCases = `${key}:edge-cases`
-  const results = await step.all({
-    [correctness]: review('correctness'),
-    [edgeCases]: review('edge-cases'),
-  })
+  let results
+  try {
+    results = await step.all({
+      [correctness]: (signal, attempt) =>
+        reviewOnce('correctness', signal, attempt),
+      [edgeCases]: (signal, attempt) =>
+        reviewOnce('edge-cases', signal, attempt),
+    })
+  } finally {
+    // The candidate's tree and the reviewers' directories are read only
+    // during its review, and removed however the round ends, a replay that
+    // only reads checkpoints included: a worker that died after both
+    // reviews were recorded left them. The base tree is kept for the next
+    // candidate and removed with the run.
+    if (materials) await target.releaseReviewSnapshots?.({ base: false })
+  }
   await target.assertIntact(candidate)
   return {
     type: 'review.completed',

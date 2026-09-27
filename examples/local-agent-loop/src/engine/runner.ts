@@ -6,13 +6,17 @@ import { join } from 'node:path'
 import type { JsonValue, StepAttemptContext } from '@coji/durably'
 
 import { timerDelay } from './child.js'
-import { estimateCostBreakdown } from './pricing.js'
+import {
+  estimateCostBreakdown,
+  estimateCostBreakdownByModel,
+} from './pricing.js'
 import type {
   AgentProvider,
   AgentResult,
   AgentRole,
   AttemptMeasurement,
   ProviderName,
+  ReviewCallSettings,
 } from './providers/types.js'
 import type { SessionRef } from './types.js'
 import { mergeUsage, type TokenUsage } from './usage.js'
@@ -25,6 +29,8 @@ export interface AgentCallSpec {
   workdir: string
   /** Trusted files outside `workdir` a read-only role may read. */
   readableFiles?: string[]
+  /** A configured review's settings; see `AgentCallOptions.review`. */
+  review?: ReviewCallSettings
   timeoutMs: number
   requestedModel: string | null
   requestedEffort: string | null
@@ -59,6 +65,8 @@ export interface AgentCallOutcome {
   measurement: AttemptMeasurement
   /** The provider's refusal, when `acceptRejection` settled one; else null. */
   rejection: string | null
+  /** Tool calls the provider refused during the call; empty when none. */
+  permissionDenials: string[]
 }
 
 interface StartedCheckpoint {
@@ -162,7 +170,9 @@ export async function writeMeasurement(
         ? mergeUsage(current.usage, usagePatch)
         : current.usage,
   }
-  const breakdown = estimateCostBreakdown(next.reportedModel, next.usage)
+  const breakdown = next.usageByModel
+    ? estimateCostBreakdownByModel(next.usageByModel)
+    : estimateCostBreakdown(next.reportedModel, next.usage)
   next.costUsdEstimate = breakdown?.totalUsd ?? null
   next.costBasis = next.usage ? 'api-equivalent-estimate' : null
   next.costMeters = breakdown?.meters ?? null
@@ -256,6 +266,7 @@ export async function runAgentCall(
       invocationId,
       sessionId,
       usagePatch: result.usage,
+      ...(result.usageByModel ? { usageByModel: result.usageByModel } : {}),
       elapsedMs: result.elapsedMs,
       invocationStartedAt:
         checkpoint?.invocationStartedAt ?? measurement.invocationStartedAt,
@@ -272,6 +283,7 @@ export async function runAgentCall(
       recovered,
       measurement,
       rejection: null,
+      permissionDenials: result.permissionDenials ?? [],
     }
   }
 
@@ -307,6 +319,7 @@ export async function runAgentCall(
       recovered,
       measurement,
       rejection,
+      permissionDenials: [],
     }
   }
   const settled = (
@@ -379,6 +392,7 @@ export async function runAgentCall(
       prompt: spec.prompt,
       workdir: spec.workdir,
       ...(spec.readableFiles ? { readableFiles: spec.readableFiles } : {}),
+      ...(spec.review ? { review: spec.review } : {}),
       timeoutMs: spec.timeoutMs,
       requestedModel: spec.effectiveModel,
       requestedEffort: spec.effectiveEffort,

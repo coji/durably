@@ -43,6 +43,16 @@ export interface CandidateChanges {
 }
 
 /**
+ * The base commit's and a candidate commit's trees, extracted outside the
+ * worktree for reviewers that read the candidate through their own command
+ * or local instructions. They exist only while that candidate is reviewed.
+ */
+export interface ReviewSnapshots {
+  baseDir: string
+  headDir: string
+}
+
+/**
  * A sealed copy of the work at one point in time.
  *
  * Verification, review and approval all address the candidate by id, so they

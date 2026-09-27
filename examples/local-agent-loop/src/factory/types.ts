@@ -36,6 +36,44 @@ export const PROFILE_ROLES: readonly ProfileRole[] = [
   'edge-cases',
 ]
 
+export const REVIEW_LENSES: readonly ReviewLens[] = [
+  'correctness',
+  'edge-cases',
+]
+
+export const REVIEW_CONTEXTS = ['prompt', 'local-instructions'] as const
+/** Where a reviewer finds its review context. */
+export type ReviewContext = (typeof REVIEW_CONTEXTS)[number]
+export const REVIEW_OUTPUTS = ['verdict', 'findings-json'] as const
+/** How a reviewer's reply is read. */
+export type ReviewOutput = (typeof REVIEW_OUTPUTS)[number]
+
+/**
+ * How one reviewer is called and read, fixed at trigger from `factory.json`.
+ * `command` is the input sent in place of the factory's review prompt, with
+ * its placeholders still unexpanded; null keeps the prompt. A lens without
+ * one of these uses the prompt and the verdict, as before they existed.
+ */
+export interface ReviewInvocation {
+  command: string | null
+  context: ReviewContext
+  output: ReviewOutput
+}
+
+/**
+ * Whether a reviewer reads the candidate through its own command or local
+ * instructions: it then gets the base and head snapshots, and a Claude
+ * reviewer runs with the command-mode settings.
+ */
+export function usesReviewMaterials(
+  invocation: ReviewInvocation | null,
+): boolean {
+  return (
+    invocation !== null &&
+    (invocation.command !== null || invocation.context === 'local-instructions')
+  )
+}
+
 export interface FactorySetup {
   /** True when every role runs the fake provider. Roles never mix the two. */
   fake: boolean
@@ -90,6 +128,20 @@ export interface FactorySetup {
    * request the human still has to merge.
    */
   autoApprove: boolean
+  /**
+   * The reviewers `factory.json` gave a command, context or output. A lens
+   * left out is called and read as before these existed; absent on a run
+   * that configured none.
+   */
+  review?: Partial<Record<ReviewLens, ReviewInvocation>> | null
+}
+
+/** A lens's fixed invocation; null when it uses the defaults. */
+export function reviewInvocationOf(
+  setup: Pick<FactorySetup, 'review'>,
+  lens: ReviewLens,
+): ReviewInvocation | null {
+  return setup.review?.[lens] ?? null
 }
 
 /** The run and candidate a repair run starts from. */

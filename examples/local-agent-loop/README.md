@@ -658,6 +658,161 @@ LLMにタスクを判定させます。書かなければ判定の呼び出し�
   `factory.json` の `repair` を直してから `demo retrigger --run <id>
 --reload-config` でやり直します。
 
+### レビュー役の呼び出しと出力（command、context、output）
+
+`profiles.review.correctness` と `profiles.review.edge-cases` には、provider、model、
+effortに加えて、呼び出し方と返答の読み方を役割ごとに書けます。
+
+```json
+{
+  "profiles": {
+    "review": {
+      "correctness": {
+        "provider": "claude",
+        "model": "claude-opus-5-5",
+        "effort": "high",
+        "command": "/code-review {base}..{head} --effort {effort}",
+        "context": "local-instructions",
+        "output": "findings-json"
+      },
+      "edge-cases": { "provider": "codex", "output": "findings-json" }
+    }
+  }
+}
+```
+
+- `command` は、factoryのレビューpromptの代わりに送る入力です。使える
+  プレースホルダーは `{effort}`（その役割のeffort）、`{base}`（runが固定した
+  base commit）、`{head}`（レビューするcandidateのcommit）の三つだけです。
+  展開した文字列を一度だけ送り、送り直しません。空白だけの値、ほかの `{…}`、
+  閉じていない `{` や対応しない `}`、effortが決まらない役割での `{effort}` は、
+  `trigger` の時点で理由を付けて拒否します。factoryは特定のコマンド名を知りません。
+- `context` はレビューの文脈（確認事項、trusted context、ハッシュ付きの
+  `TASK`／`SPEC`／`DISPOSITIONS`／`FINDINGS`、差分と変更ファイル一覧とスナップ
+  ショットの場所、返答の形）をどこに置くかです。`prompt`（既定）は入力に含めます。
+  `command` があれば、その後ろに続けます。`local-instructions` は、factoryがその
+  呼び出しのために作る作業ディレクトリ（後述）の `CLAUDE.local.md` に置き、入力は
+  `command` だけにします（`command` が無ければ「`CLAUDE.local.md` のレビューを
+  する」という短い文です）。candidateのworktreeには何も書きません。
+  `prompt` でも、`command` があれば（コマンドモード）作業ディレクトリに短い
+  `CLAUDE.local.md` を置きます。入力が届くのは親のセッションだけで、作業ディレクトリ
+  にはコードが無いからです。このファイルはcandidateのworktree、差分、変更ファイル一覧、
+  baseとheadのtreeの場所を示し、サブエージェントも含めて、コードをそこから絶対パスで
+  読むよう伝えます。
+- `output` は返答の読み方です。`verdict`（既定）は従来の `DECISION`／`NOTES` です。
+  `findings-json` は、返答の最後の ` ```json ` ブロックにある配列を読みます。
+  各指摘は `{"severity": "blocker" | "non-blocker", "title": "...", "body": "...",
+"file": "...", "line": 12}` で、`file` と `line` は省けます。書く場合は
+  `file` が空でない文字列、`line` が1以上の整数でなければなりません。ファイル全体への
+  指摘は `line` を省きます（`0` は形が違う指摘です）。`null` は「省いた」扱いにはせず
+  形が違う指摘として止めます。返答の最終行は改行1つ（`\n` または `\r\n`）を
+  除いて `REVIEW_STATUS: COMPLETE` ちょうどでなければならず、末尾の空白や
+  タブがあれば完了行として認めません。`blocker` が一件でも
+  あれば `needsChanges` で、`blocker` だけを `- [file:line] title — body` の形で
+  一行ずつnotesにし、修正に渡します。notesの長さには上限があり、各行は
+  1,000文字まで、並べるのは最初の20件まで（最大でおよそ20 × 1,000文字）で、残りは
+  件数だけを書きます。`title`、`body`、`file` の改行（LF、CR、垂直タブ、改ページ、
+  U+0085、Unicodeの行区切りと段落区切り）は前後の空白ごと空白一つにするので、一件が
+  複数行になることはありません。
+  空の配列か `non-blocker` だけなら `pass` です。完了行が無い・最終行でない・別の状態、JSONが無い・壊れている、指摘の形が
+  違う、Claudeが道具の使用を拒否した、途中で切れた、はどれも `review-incomplete`
+  で止まり、`pass` にはなりません。同じ呼び出しを自動で送り直すこともしません。
+  指摘の本文にコードフェンスがあっても、JSON配列として読める最初の閉じフェンスまでを
+  読むので途中で切れません。
+- `findings-json` はproviderを問わず使えます。`command` と `local-instructions` は
+  Claudeとfakeのレビューだけが使えます。Codexのレビューに書くと、`trigger` の
+  時点で役割名と項目を示して拒否します。CLIを通さずjobを直接 `trigger` した
+  場合も、入力の検査で拒否し、runは作られません。fakeで使えるのはテストのためで、fakeの
+  判定は実LLMの判定として数えません。
+- 三つとも書かない役割は、従来どおりのpromptとverdictで動きます。どれか一つでも
+  書いた役割だけ、三つの確定値が `configVersion` に入ります。どの役割も書かなければ
+  `configVersion` は変わりません。`demo repair` の子runは親の設定をそのまま使います。
+
+`command` か `local-instructions` を使う役割があるrunでは、candidateをレビューする
+直前に、次のものを `runs/<runId>/review-snapshots/` に作ります。どれもworktreeの外に
+あり、候補の差分、反復のcommit、squash branchには入りません。
+
+- `base/`：base commitのtree。runで一度だけ書き出して使い回します。
+- `<candidate>/head/`：candidate commitのtree。
+- `<candidate>/<役割>/cwd/`：その役割のレビューの作業ディレクトリ。base commitの
+  `CLAUDE.md` と `.claude/`（あれば）と、factoryが書く `CLAUDE.local.md`
+  （`local-instructions` ならレビューの指示全体、`prompt` ならcandidateの場所）を
+  置きます。リンクは、たどった先がbaseのtreeの中にあるときだけ中身をコピーします。
+  treeの外（ホストのファイルやディレクトリ）を指すリンク、どこも指さないリンク、
+  コピー中のディレクトリに戻るリンクはコピーしません。役割ごとに別なので、
+  二つのレビューが互いの指示を読むことはなく、従来どおり並行して呼びます。
+
+treeは、commitを一時的なindexに読み込んで `git checkout-index` で書き出します。
+`git archive` と違い、`.gitattributes` の `export-ignore` や `export-subst` で
+中身が変わりません（checkoutのfilterや改行の変換はworktreeと同じく効きます）。
+アーカイブファイルは作りません。書き出すgitのプロセスはほかの子プロセスと同じく
+登録するので、cancel、leaseの喪失、workerの停止で止まります。やり直したレビューは、
+中断した書き出しが残した途中のtree、一時的なindex、そのロックファイルを消してから
+足りないtreeを書き出し直し、作業ディレクトリは作り直します。
+
+消すのはworkerです。candidateのtreeと作業ディレクトリは、そのレビューの回が
+終われば（失敗や中断でも、記録済みの結果を読むだけのやり直しでも）消します。
+もうレビューが来ない工程（承認、完了、停止）の前にはbaseのtreeも消すので、
+workerがレビューの記録の直後に落ちても、承認待ちの間に残りません。runが失敗する、
+cancelされる、終わる、setupをやり直す、のいずれでも全体を消します。失敗とcancelでは、
+jobの中で消し終えてからrunの状態が記録されます。別のプロセスから `demo cancel` した
+ときは、workerにはleaseの喪失としか見えず、ほかのworkerがrunを拾い直す場合に備えて
+workerは消しません。代わりにcancelした側が消しますが、そのときworkerが書き出していた
+treeは残ることがあります。workerは起動時に、終わったrun（完了、失敗、cancel）の
+`review-snapshots/` をすべて消すので、そうした残りも次の起動で消えます。このとき
+見るのはworker自身のstate rootのrunだけで、データベースを調べるのは
+`review-snapshots/` が残っているrunだけです。
+
+`command` か `local-instructions` を使うClaudeのレビューは、次の設定で動きます。
+通常のClaudeの呼び出しの設定は変わりません。
+
+- `cwd` は上の作業ディレクトリです。`settingSources` は `project` と `local` なので、
+  読み込む設定は、base commitの `CLAUDE.md` と `.claude/`（settings、コマンド、skill、
+  agentの定義）と、factoryの `CLAUDE.local.md` だけです。candidateの `CLAUDE.md` や
+  `.claude/` は、実装役が書き換えられるので読み込みません。baseはすでにマージされた
+  コードなので信頼します。`CLAUDE.md` が `@` で取り込む別のファイルは作業ディレクトリに
+  無いので読まれません。Claude Codeはcwdより上のディレクトリの `CLAUDE.md` も読みますが、
+  そこにcandidateのファイルはありません。
+- candidateはデータとしてだけ読みます。worktree、差分・変更ファイル一覧のある
+  ディレクトリ、二つのtreeは `additionalDirectories` にしません。Claude Codeは追加
+  ディレクトリの `.claude/` にあるskill、コマンド、agentの定義を読み込むからです。
+  これらは、許可した道具と下の検査を通して読みます。
+- 使える道具は `Read`、`Grep`、`Glob`、`Agent` だけで、`permissionMode` は `dontAsk`
+  です。
+- 読み込んだ設定のうちプログラムを動かすものは止めます。`--settings` と同じ層
+  （project、localより優先）で `disableAllHooks` と `disableSkillShellExecution` を
+  指定し、settingsやpluginのhookとstatus line、コマンドやskillに埋め込んだshell
+  （`!` の行）を動かしません。`strictMcpConfig` と空の `mcpServers` で、`.mcp.json`
+  やsettingsのMCPサーバーも起動しません。`!` の出力に頼るコマンドは、出力の代わりに
+  プレースホルダーを受け取ります。factoryの検査はSDKに渡すcallbackなので、これらの
+  影響を受けません。baseのsettingsにある `env` や認証用のhelperは、baseを信頼する
+  ので止めていません。
+- 読めるのは作業ディレクトリ、worktree、差分・変更ファイル一覧のあるディレクトリ、
+  二つのtreeだけです。`canUseTool` と `PreToolUse` hookが、サブエージェントの
+  呼び出しも含めて、Bash、書き込み、ほかの場所への読み取りを拒否します。
+  パスはシンボリックリンクを解決してから比べるので、candidateやtreeの中から外を
+  指すリンクは通りません。`~` で始まるパスも拒否します。`Grep` と `Glob` がディレクトリを
+  たどる途中のリンクは、ツールがリンクをたどらないこと（ripgrepの既定）に頼ります。
+- `Agent` は、`isolation`（`worktree` や `remote`）を指定した呼び出しを拒否します。
+  `mode` が `acceptEdits`、`auto`、`bypassPermissions` の呼び出しも拒否します。
+  これは念のための防御で、境界そのものではありません。サブエージェントは親の権限の
+  モードを引き継ぐか、agentの定義の `permissionMode` に従い、その定義はbaseの
+  `.claude/` からしか読みません。チームのメンバーを起動する道具も無く、サブエージェントの
+  呼び出しも上の検査を通ります。
+- セッションは保存しません（`persistSession: false`）。レビューは再開せず、呼び出し
+  ごとに作業ディレクトリが違うので、保存すると `~/.claude/projects/` に呼び出しの数だけ
+  項目が増えるからです。
+- 使用量は最終結果の `modelUsage` から、サブエージェントの分も含めて一回分として
+  数えます。親の使用量に重ねて足しません。モデルが報告しない項目は不明のままです。
+  費用はモデルごとにそのモデルの単価で計算して合計し、単価の分からないモデルが
+  一つでもあれば不明にします。親のモデルの単価で代用しません。
+- これはこのモードのレビューだけです。ほかのClaudeの呼び出し（既定のレビューを
+  含む）の使用量は、従来どおり親のループの値です。
+
+`command` も `local-instructions` も使わず `output: findings-json` だけを書いた
+Claudeのレビューは、道具を `Read` だけにして呼びます。道具の使用を拒否されると
+`review-incomplete` になるので、使えない道具は最初から見せません。
+
 ### 外部の指摘から修正する（repair）
 
 承認して納品まで終わったrepository runに、あとからUIの確認、正式なレビュー、CIなど
@@ -1034,7 +1189,11 @@ repairs の中央値を見ます。unknown は統計から外して件数だけ�
 - triageはCodexではread-only sandbox、ClaudeではReadのみで動きます。
 - Claude reviewはReadのみです。implement/repairは `canUseTool` と `PreToolUse`
   hookの双方でworkdir外パスを拒否します。これは入力検査であり、OS sandboxでは
-  ありません。
+  ありません。`command` か `local-instructions` を使うClaude reviewは `Read`、
+  `Grep`、`Glob`、`Agent` だけで、読める場所は自分の作業ディレクトリ、worktree、
+  レビュー資料のディレクトリです（「レビュー役の呼び出しと出力」を参照）。この
+  reviewが読み込む設定はbase commitの `CLAUDE.md` と `.claude/` だけで、candidateの
+  ものは読みません。hook、コマンド内のshell、MCPサーバーは動かしません。
 - 同じsessionへ並列送信しません。並列なのは新規sessionを使う二つのreviewだけ
   です。
 - model、effort、指示版、tool、cwdを途中で替えるhandoffは未実装です。
@@ -1073,7 +1232,16 @@ fakeのpreflightはrequested modelの名前で決まります。`unlisted-*` は
 job input の `fakeScenario` は run ごとに fake の振る舞いを変える、デモとテスト
 専用の欄です。上の環境変数と同じ項目を run ごとに上書きします。`reviewSequence` と
 `reviewNotes` はレビューの回ごとに correctness、edge-cases の順で2つずつ並べ、回と
-観点で引くので、呼び出しの順番や再起動後のやり直しで判定が入れ替わりません。すべての
+観点で引くので、呼び出しの順番や再起動後のやり直しで判定が入れ替わりません。
+`reviewOutputs` は同じ並びでレビューの返答そのものを指定します（`findings-json` の
+壊れた返答や途中で切れた返答も書けます）。`reviewDenials` は同じ並びで、その呼び出し
+が道具の使用を拒否されたことにします（空文字列なら拒否なし）。テストが記録を
+始めている間（`recordFakeReviewCalls`）だけ、`command`、`context`、`output` を
+設定したレビューの呼び出しについて、受け取った入力、作業ディレクトリとその中の
+ファイル、読めるディレクトリのファイルと中身、呼び出しの開始時と返答時の
+作業ディレクトリの `CLAUDE.local.md` の有無と中身を記録します。記録して
+いないworkerは何も溜めません。`FAKE_REVIEW_SLOW_MS` は
+これらの呼び出しでも edge-cases のレビューを遅らせます。すべての
 役割が fake の run でしか受け付けず、trigger の時点で断ります。`configVersion` にも
 入りません。`demo seed` がこれを使います。
 

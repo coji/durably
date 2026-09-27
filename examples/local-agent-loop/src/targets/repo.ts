@@ -13,8 +13,26 @@
  * still be the candidate's commit. Like the directory-hash check on the sample
  * target, this detects an unintended change; it is not a sandbox.
  */
-import { mkdir, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { constants as fsConstants, existsSync } from 'node:fs'
+import {
+  copyFile,
+  mkdir,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from 'node:path'
 
 import { runChild } from '../engine/child.js'
 import {
@@ -38,7 +56,11 @@ import {
   treeOf,
   type CommitAuthor,
 } from '../engine/git.js'
-import type { CandidateChanges, CandidateRef } from '../engine/types.js'
+import type {
+  CandidateChanges,
+  CandidateRef,
+  ReviewSnapshots,
+} from '../engine/types.js'
 import {
   checkLog,
   logAfterError,
@@ -46,6 +68,11 @@ import {
   withPartialLog,
   type GradeResult,
 } from '../engine/verification.js'
+import {
+  reviewBaseTreeOf,
+  reviewHeadTreeOf,
+  reviewWorkdirOf,
+} from '../factory/layout.js'
 import { changedPathsLine } from '../factory/prompts.js'
 import {
   DEFAULT_COMMIT_SETTINGS,
@@ -267,6 +294,71 @@ export class RepoTarget implements Target {
       'utf8',
     )
     return { diffPath, changedFilesPath, ...stat }
+  }
+
+  async prepareReviewSnapshots(
+    candidate: CandidateRef,
+    signal: AbortSignal,
+  ): Promise<ReviewSnapshots> {
+    const dir = this.config.reviewSnapshotsDir
+    if (!dir || !candidate.commit)
+      throw new Error(
+        `review snapshots were not set up for ${candidate.id}; no configured reviewer reads them`,
+      )
+    const baseDir = reviewBaseTreeOf(dir)
+    const headDir = reviewHeadTreeOf(dir, candidate.id)
+    // One after the other: each already on disk is kept, so the base is
+    // extracted once per run and the candidate once per review.
+    await extractCommit(
+      this.config.repoPath,
+      this.config.baseCommit,
+      baseDir,
+      signal,
+    )
+    await extractCommit(this.config.repoPath, candidate.commit, headDir, signal)
+    return { baseDir, headDir }
+  }
+
+  async prepareReviewWorkdir(
+    candidate: CandidateRef,
+    lens: 'correctness' | 'edge-cases',
+    localFile: string,
+  ): Promise<string> {
+    const dir = this.config.reviewSnapshotsDir
+    if (!dir)
+      throw new Error(
+        `review snapshots were not set up for ${candidate.id}; no configured reviewer reads them`,
+      )
+    const cwd = reviewWorkdirOf(dir, candidate.id, lens)
+    // Whatever an interrupted attempt left is discarded, not trusted.
+    await rm(cwd, { recursive: true, force: true })
+    await mkdir(cwd, { recursive: true })
+    await copyReviewConfig(reviewBaseTreeOf(dir), cwd)
+    await writeFile(join(cwd, 'CLAUDE.local.md'), localFile, {
+      encoding: 'utf8',
+      flag: 'wx',
+    })
+    return cwd
+  }
+
+  async releaseReviewSnapshots(options: { base: boolean }): Promise<void> {
+    const dir = this.config.reviewSnapshotsDir
+    if (!dir) return
+    if (options.base) return removeQuietly(dir)
+    const base = basename(reviewBaseTreeOf(dir))
+    let entries: string[]
+    try {
+      entries = await readdir(dir)
+    } catch {
+      return
+    }
+    // The base tree, and a base extraction in progress, stay for the next
+    // candidate; every candidate's tree and working directories go.
+    await Promise.all(
+      entries
+        .filter((name) => name !== base && !name.startsWith(`${base}.`))
+        .map((name) => removeQuietly(join(dir, name))),
+    )
   }
 
   async assertIntact(candidate: CandidateRef): Promise<void> {
@@ -605,7 +697,127 @@ export class RepoTarget implements Target {
 
   async cleanup(): Promise<void> {
     // The worktree and branch are intentionally kept: they are the delivery.
+    // The review snapshots are not; they are only read during a review.
+    if (this.config.reviewSnapshotsDir)
+      await removeQuietly(this.config.reviewSnapshotsDir)
   }
+}
+
+/** Remove a directory, ignoring every failure; for best-effort cleanup. */
+export async function removeQuietly(dir: string): Promise<void> {
+  await rm(dir, { recursive: true, force: true }).catch(() => {})
+}
+
+/** How long one tree extraction may take before it is killed. */
+const EXTRACT_TIMEOUT_MS = 300_000
+
+/**
+ * Extract one commit's tree into `dir`, outside every worktree, unless it is
+ * already there. The commit is read into a temporary index of its own and
+ * checked out from it with `git checkout-index`, so the tree is the commit's
+ * whole tree: `export-ignore` and `export-subst` in its `.gitattributes`,
+ * which `git archive` would honour, change nothing. Checkout filters and
+ * line-ending rules still apply, as they do in the worktree. No archive file
+ * is written. The tree lands in `dir.partial` first and is renamed into place
+ * whole, so `dir` either holds the full tree or does not exist; a partial
+ * extraction an interrupted attempt left, with its index and the index's
+ * lock, is discarded first. Both git
+ * processes are registered like every other child, so a cancel, a lost lease
+ * or the worker's shutdown kills them.
+ *
+ * Symbolic links in the commit are extracted as links, and git never writes
+ * through one. They may point anywhere, so the review guard resolves every
+ * path before it lets a reviewer read it.
+ */
+export async function extractCommit(
+  repo: string,
+  commit: string,
+  dir: string,
+  signal: AbortSignal,
+): Promise<void> {
+  if (existsSync(dir)) return
+  signal.throwIfAborted()
+  // Absolute: git runs in the repository, and a relative prefix would land
+  // there.
+  const partial = resolve(`${dir}.partial`)
+  const index = resolve(`${dir}.index`)
+  // A git process killed mid-read can also leave the index's lock file,
+  // which would make every retry fail.
+  const discard = () =>
+    Promise.all([
+      rm(index, { force: true }),
+      rm(`${index}.lock`, { force: true }),
+    ])
+  await rm(partial, { recursive: true, force: true })
+  await discard()
+  await mkdir(partial, { recursive: true })
+  const deadline = Date.now() + EXTRACT_TIMEOUT_MS
+  const gitStep = async (args: string[]) => {
+    const res = await runChild('git', args, {
+      cwd: repo,
+      env: { GIT_INDEX_FILE: index },
+      signal,
+      timeoutMs: Math.max(1, deadline - Date.now()),
+    })
+    if (res.code !== 0)
+      throw new Error(
+        `git ${args[0]} of ${commit.slice(0, 12)} failed (${res.code ?? 'null'}): ${res.stderr.slice(-1000)}`,
+      )
+  }
+  try {
+    await gitStep(['read-tree', commit])
+    await gitStep(['checkout-index', '--all', `--prefix=${partial}/`])
+  } catch (error) {
+    await rm(partial, { recursive: true, force: true })
+    signal.throwIfAborted()
+    throw error
+  } finally {
+    await discard()
+  }
+  await rm(dir, { recursive: true, force: true })
+  await rename(partial, dir)
+}
+
+/**
+ * Copy the base commit's `CLAUDE.md` and `.claude/` from its tree into a
+ * review's working directory, whichever of them exist. The base is code the
+ * user already merged, so a link whose target stays inside the base tree is
+ * followed and its content copied: `CLAUDE.md` is often a link to another
+ * file of the repository. A link that leaves the base tree, or leads
+ * nowhere, is left out, so no host file outside the tree reaches the
+ * reviewer's directory through a committed link. A linked directory already
+ * being copied on the same path is left out too, so a link cycle ends.
+ */
+async function copyReviewConfig(baseTree: string, cwd: string) {
+  const root = await realpath(baseTree)
+  const inside = (real: string) => {
+    const rel = relative(root, real)
+    return (
+      rel === '' ||
+      (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel))
+    )
+  }
+  const copy = async (from: string, to: string, open: Set<string>) => {
+    let real: string
+    try {
+      real = await realpath(from)
+    } catch {
+      return
+    }
+    if (!inside(real) || open.has(real)) return
+    const info = await stat(real)
+    if (info.isFile()) {
+      await copyFile(real, to, fsConstants.COPYFILE_EXCL)
+      return
+    }
+    if (!info.isDirectory()) return
+    await mkdir(to)
+    const within = new Set(open).add(real)
+    for (const name of await readdir(real))
+      await copy(join(from, name), join(to, name), within)
+  }
+  for (const name of ['CLAUDE.md', '.claude'])
+    await copy(join(root, name), join(cwd, name), new Set())
 }
 
 /**

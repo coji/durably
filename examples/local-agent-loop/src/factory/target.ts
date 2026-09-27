@@ -1,4 +1,4 @@
-import type { CandidateRef } from '../engine/types.js'
+import type { CandidateRef, ReviewSnapshots } from '../engine/types.js'
 /**
  * What a factory is pointed at.
  *
@@ -85,6 +85,13 @@ export interface RepoTargetConfig {
   candidatesDir?: string
   /** Push the branch and open a draft pull request on delivery. */
   publish: boolean
+  /**
+   * Where the base and candidate commits' trees are extracted, and each
+   * review call's own working directory is made, for a reviewer with its own
+   * command or local instructions. Absent: no reviewer reads them, and none
+   * is made.
+   */
+  reviewSnapshotsDir?: string
   /** Absent on a run set up before it existed; the defaults apply. */
   commit?: CommitSettings
   /**
@@ -190,6 +197,31 @@ export interface Target {
   reviewCwd(candidate: CandidateRef): string
   /** Trusted change summary and originals, for reviewers who see only the candidate. */
   reviewContext(candidate: CandidateRef): Promise<string>
+  /**
+   * Extract the base commit's and the candidate's trees for a configured
+   * reviewer, reusing what is already there: the base once per run, the
+   * candidate once per review. Only a target that has them implements it.
+   */
+  prepareReviewSnapshots?(
+    candidate: CandidateRef,
+    signal: AbortSignal,
+  ): Promise<ReviewSnapshots>
+  /**
+   * Make one configured review call's own working directory, fresh: the
+   * base commit's `CLAUDE.md` and `.claude/`, never the candidate's, and
+   * `localFile` as `CLAUDE.local.md`. Call after `prepareReviewSnapshots`.
+   * Returns its path.
+   */
+  prepareReviewWorkdir?(
+    candidate: CandidateRef,
+    lens: 'correctness' | 'edge-cases',
+    localFile: string,
+  ): Promise<string>
+  /**
+   * Remove every candidate's tree and review working directories, and the
+   * base tree too when `base` is true. Never throws.
+   */
+  releaseReviewSnapshots?(options: { base: boolean }): Promise<void>
   /** Turn an approved candidate into something the human can act on. */
   deliver(args: DeliverArgs): Promise<Delivery>
   /** Best-effort cleanup of scratch worktrees. Never throws. */

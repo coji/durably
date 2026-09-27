@@ -10,6 +10,7 @@ import {
   createAgentDurably,
   dbPath,
   legacyDbWarning,
+  sweepReviewSnapshots,
 } from './durably.js'
 import {
   buildReport,
@@ -226,6 +227,10 @@ if (cmd === 'worker') {
     console.log(`[step:complete] ${e.stepName} run=${e.runId}`),
   )
   await durably.init()
+  // Runs that ended while no worker could clean up after them.
+  const swept = await sweepReviewSnapshots(durably)
+  if (swept.length > 0)
+    console.log(`[sweep] removed review snapshots of ${swept.join(', ')}`)
   console.log(
     `worker running, pid ${process.pid} (Ctrl-C to stop; kill -9 <pid> to test resume)`,
   )
