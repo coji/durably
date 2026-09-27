@@ -8,8 +8,6 @@ export const candidateChangesSchema = z.object({
   files: z.number(),
   additions: z.number(),
   deletions: z.number(),
-  baseSnapshotDir: z.string().optional(),
-  headSnapshotDir: z.string().optional(),
 })
 
 export const candidateSchema = z.object({

@@ -6,7 +6,10 @@ import { join } from 'node:path'
 import type { JsonValue, StepAttemptContext } from '@coji/durably'
 
 import { timerDelay } from './child.js'
-import { estimateCostBreakdown } from './pricing.js'
+import {
+  estimateCostBreakdown,
+  estimateCostBreakdownByModel,
+} from './pricing.js'
 import type {
   AgentProvider,
   AgentResult,
@@ -167,7 +170,9 @@ export async function writeMeasurement(
         ? mergeUsage(current.usage, usagePatch)
         : current.usage,
   }
-  const breakdown = estimateCostBreakdown(next.reportedModel, next.usage)
+  const breakdown = next.usageByModel
+    ? estimateCostBreakdownByModel(next.usageByModel)
+    : estimateCostBreakdown(next.reportedModel, next.usage)
   next.costUsdEstimate = breakdown?.totalUsd ?? null
   next.costBasis = next.usage ? 'api-equivalent-estimate' : null
   next.costMeters = breakdown?.meters ?? null
@@ -261,6 +266,7 @@ export async function runAgentCall(
       invocationId,
       sessionId,
       usagePatch: result.usage,
+      ...(result.usageByModel ? { usageByModel: result.usageByModel } : {}),
       elapsedMs: result.elapsedMs,
       invocationStartedAt:
         checkpoint?.invocationStartedAt ?? measurement.invocationStartedAt,

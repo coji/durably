@@ -7,8 +7,16 @@ import {
   comparisonToMarkdown,
   stat,
 } from '../src/engine/compare.js'
-import { PRICE_BASIS, estimateCostBreakdown } from '../src/engine/pricing.js'
-import { claudeUsageOf } from '../src/engine/providers/claude.js'
+import {
+  PRICE_BASIS,
+  estimateCostBreakdown,
+  estimateCostBreakdownByModel,
+} from '../src/engine/pricing.js'
+import {
+  claudeUsageByModel,
+  claudeUsageOf,
+} from '../src/engine/providers/claude.js'
+import type { AttemptMeasurement } from '../src/engine/providers/types.js'
 import {
   reportToMarkdown,
   roleUsage,
@@ -19,6 +27,7 @@ import {
   type AttemptRow,
   type LoopReport,
 } from '../src/engine/report.js'
+import { writeMeasurement } from '../src/engine/runner.js'
 import type { TokenUsage } from '../src/engine/usage.js'
 import {
   configVersionOf,
@@ -896,6 +905,85 @@ describe('Claude usage with subagents', () => {
     assert.equal(correctness?.invocations, 1)
     assert.equal(correctness?.totalTokens, 3_180)
     assert.ok((correctness?.costUsd ?? 0) > 0)
+  })
+
+  it("prices each model's tokens at that model's rate, and leaves the cost unknown when one model is unpriced", async () => {
+    const modelUsage = {
+      'claude-opus-5-5': model(150, 100, 800, 50),
+      'claude-fable-5-1': model(40, 30, 2_000, 10),
+    }
+    const byModel = claudeUsageByModel(modelUsage)
+    assert.ok(byModel)
+    const opus = estimateCostBreakdown(
+      'claude-opus-5-5',
+      byModel['claude-opus-5-5'] ?? null,
+    )
+    const fable = estimateCostBreakdown(
+      'claude-fable-5-1',
+      byModel['claude-fable-5-1'] ?? null,
+    )
+    assert.ok(opus && fable)
+    const mixed = estimateCostBreakdownByModel(byModel)
+    assert.ok(mixed)
+    assert.ok(
+      Math.abs(mixed.totalUsd - (opus.totalUsd + fable.totalUsd)) < 1e-12,
+    )
+    for (const meter of ['input_tokens', 'output_tokens'] as const)
+      assert.ok(
+        Math.abs(
+          (mixed.meters[meter] ?? 0) -
+            ((opus.meters[meter] ?? 0) + (fable.meters[meter] ?? 0)),
+        ) < 1e-12,
+      )
+    // Pricing the whole call as the main model would get it wrong: Fable's
+    // tokens cost more than Opus's.
+    const flat = estimateCostBreakdown(
+      'claude-opus-5-5',
+      claudeUsageOf(mainLoop, modelUsage),
+    )
+    assert.ok(flat && flat.totalUsd < mixed.totalUsd)
+    // One unpriced model leaves the whole cost unknown.
+    assert.equal(
+      estimateCostBreakdownByModel(
+        claudeUsageByModel({
+          ...modelUsage,
+          'claude-unknown-9': model(1, 1, 0, 0),
+        }) ?? {},
+      ),
+      null,
+    )
+
+    // The measurement is priced the same way.
+    const written: unknown[] = []
+    const attempt = {
+      setMetadata: async (value: unknown) => {
+        written.push(value)
+      },
+    } as unknown as Parameters<typeof writeMeasurement>[0]
+    const base = row('stage:4:review:correctness', 'a1')
+      .measurement as AttemptMeasurement
+    const priced = await writeMeasurement(
+      attempt,
+      { ...base, reportedModel: 'claude-opus-5-5', usage: null },
+      {
+        usagePatch: claudeUsageOf(mainLoop, modelUsage),
+        usageByModel: byModel,
+      } as Partial<AttemptMeasurement>,
+    )
+    assert.ok(Math.abs((priced.costUsdEstimate ?? 0) - mixed.totalUsd) < 1e-12)
+    const unpriced = await writeMeasurement(
+      attempt,
+      { ...base, reportedModel: 'claude-opus-5-5', usage: null },
+      {
+        usagePatch: claudeUsageOf(mainLoop, modelUsage),
+        usageByModel: {
+          ...byModel,
+          'mystery-model': byModel['claude-opus-5-5'],
+        },
+      } as Partial<AttemptMeasurement>,
+    )
+    assert.equal(unpriced.costUsdEstimate, null)
+    assert.equal(written.length, 2)
   })
 
   it('keeps a leg some model does not report unknown, never zero', () => {

@@ -16,7 +16,13 @@ import Database from 'better-sqlite3'
 import { SqliteDialect } from 'kysely'
 
 import { createAgentLoopJob } from './factory/job.js'
+import {
+  repoWorkdirOf,
+  reviewSnapshotsDirOf,
+  runRootOf,
+} from './factory/layout.js'
 import { removeOwnLocalInstructions } from './factory/stages.js'
+import { removeQuietly } from './targets/repo.js'
 
 /**
  * Where the database and every run's data live: outside both the durably
@@ -171,18 +177,22 @@ function withDatabase(
     ...(maxConcurrentRuns ? { maxConcurrentRuns } : {}),
     jobs: { agentLoop: createAgentLoopJob({ stateRoot }) },
   })
-  // A review's `finally` removes its own `CLAUDE.local.md`, and a replay
-  // removes one a killed worker left. A run cancelled while no worker holds
-  // it reaches neither, so the cancel removes it too. Only a file the
-  // factory marked goes; the cancel has happened, so a failure here is not
-  // reported as a failed cancel.
+  // A review removes its own `CLAUDE.local.md` when its call ends, and a
+  // replay removes one a killed worker left. A run cancelled while no worker
+  // holds it reaches neither, so the cancel removes it too: only a file
+  // whose marker names this run goes. The cancel also removes the run's
+  // review snapshots, and so does a failure. The cancel has happened, so a
+  // failure here is not reported as a failed cancel.
   const cancel = durably.cancel.bind(durably)
   durably.cancel = async (runId: string) => {
     await cancel(runId)
-    await removeOwnLocalInstructions(
-      join(stateRoot, 'runs', runId, 'work'),
-    ).catch(() => {})
+    const root = runRootOf(stateRoot, runId)
+    await removeOwnLocalInstructions(repoWorkdirOf(root), runId).catch(() => {})
+    await removeQuietly(reviewSnapshotsDirOf(root))
   }
+  durably.on('run:fail', (event) => {
+    void removeQuietly(reviewSnapshotsDirOf(runRootOf(stateRoot, event.runId)))
+  })
   return durably
 }
 

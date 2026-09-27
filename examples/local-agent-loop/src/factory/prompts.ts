@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 
 import { z } from 'zod'
 
-import type { CandidateChanges } from '../engine/types.js'
+import type { CandidateChanges, ReviewSnapshots } from '../engine/types.js'
 import type { UntrustedInput } from './target.js'
 import type { ReviewOutput } from './types.js'
 
@@ -118,17 +118,16 @@ export function changedPathsLine(
  */
 function candidateFilesSection(
   changes: CandidateChanges | null,
-  snapshots: boolean,
+  snapshots: ReviewSnapshots | null,
 ): string[] {
   if (!changes) return []
-  const trees =
-    snapshots && changes.baseSnapshotDir && changes.headSnapshotDir
-      ? [
-          `- Base commit tree: ${changes.baseSnapshotDir}`,
-          `- Candidate commit tree: ${changes.headSnapshotDir}`,
-          '- The two trees are the whole repository at the base commit and at this candidate commit, for comparing code the diff does not show. They are read-only.',
-        ]
-      : []
+  const trees = snapshots
+    ? [
+        `- Base commit tree: ${snapshots.baseDir}`,
+        `- Candidate commit tree: ${snapshots.headDir}`,
+        '- The two trees are the whole repository at the base commit and at this candidate commit, for comparing code the diff does not show. They are read-only.',
+      ]
+    : []
   return [
     'CANDIDATE FILES (written by the factory from the base commit and this candidate commit):',
     `- Full diff: ${changes.diffPath}`,
@@ -178,8 +177,8 @@ export function reviewPrompt(
   options: {
     /** How the reply is read; the verdict unless the lens chose findings. */
     output?: ReviewOutput
-    /** List the base and head snapshots beside the diff. */
-    snapshots?: boolean
+    /** The base and head snapshots to list beside the diff. */
+    snapshots?: ReviewSnapshots | null
   } = {},
 ): string {
   const output = options.output ?? 'verdict'
@@ -206,23 +205,46 @@ export function reviewPrompt(
     '',
     trustedContext,
     '',
-    ...candidateFilesSection(changes, options.snapshots ?? false),
+    ...candidateFilesSection(changes, options.snapshots ?? null),
     ...untrustedSection(untrusted),
     ...replyShape(output),
   ].join('\n')
 }
 
+/** Who a `CLAUDE.local.md` the factory writes belongs to. */
+export interface LocalInstructionsOwner {
+  runId: string
+  lens: string
+  round: number
+}
+
+const MARKER_PREFIX = '<!-- local-agent-loop review instructions: run '
+
 /**
- * The first line of a `CLAUDE.local.md` the factory writes. A file that
- * starts with it is the factory's own and may be removed; any other file is
- * never touched.
+ * The first line of a `CLAUDE.local.md` the factory writes. It names the run
+ * that wrote it, and the reviewer and round, so only that run ever removes
+ * the file; a file without it, or with another run's, is never touched.
  */
-export const LOCAL_INSTRUCTIONS_MARKER =
-  '<!-- local-agent-loop review instructions: written by the factory for one review call and removed when it ends -->'
+export function localInstructionsMarker(owner: LocalInstructionsOwner): string {
+  return `${MARKER_PREFIX}${owner.runId}, ${owner.lens}, round ${owner.round}; written by the factory for one review call and removed when it ends -->`
+}
+
+/** The run a `CLAUDE.local.md` names on its first line; null for any other file. */
+export function localInstructionsRunOf(content: string): string | null {
+  const first = content.split('\n', 1)[0] ?? ''
+  const match =
+    /^<!-- local-agent-loop review instructions: run ([^,\s]+), [^,]+, round \d+; written by the factory for one review call and removed when it ends -->$/.exec(
+      first,
+    )
+  return match?.[1] ?? null
+}
 
 /** A `CLAUDE.local.md` holding one reviewer's instructions. */
-export function localInstructions(prompt: string): string {
-  return `${LOCAL_INSTRUCTIONS_MARKER}\n\n# Review instructions\n\n${prompt}\n`
+export function localInstructions(
+  prompt: string,
+  owner: LocalInstructionsOwner,
+): string {
+  return `${localInstructionsMarker(owner)}\n\n# Review instructions\n\n${prompt}\n`
 }
 
 /** The input of a local-instructions review that has no command of its own. */
@@ -454,12 +476,41 @@ function validFinding(
   }
 }
 
+/** How much of the blockers the notes keep; see `blockerNotes`. */
+export const FINDINGS_NOTES_LIMITS = {
+  /** Characters kept of one finding's line. */
+  perFinding: 1000,
+  /** Findings listed; the rest are counted. */
+  findings: 20,
+} as const
+
 /** A blocker as one repair-notes line: `- [file:line] title — body`. */
 function findingNote(finding: ReviewFinding): string {
   const where = finding.file
     ? `[${finding.file}${finding.line !== undefined ? `:${finding.line}` : ''}] `
     : ''
-  return `- ${where}${finding.title} — ${finding.body}`
+  const line = `- ${where}${finding.title} — ${finding.body}`
+  return line.length > FINDINGS_NOTES_LIMITS.perFinding
+    ? `${line.slice(0, FINDINGS_NOTES_LIMITS.perFinding - 1)}…`
+    : line
+}
+
+/**
+ * The blockers as repair notes, one line each, bounded like a verdict's
+ * notes are: each line is cut to a fixed length and only the first blockers
+ * are listed, with a count of the rest, so a reviewer cannot grow the repair
+ * prompt and the stored events without limit. Every listed blocker keeps its
+ * place, title and the start of its body, which is what the repair needs.
+ */
+function blockerNotes(blockers: ReviewFinding[]): string {
+  const shown = blockers.slice(0, FINDINGS_NOTES_LIMITS.findings)
+  const rest = blockers.length - shown.length
+  return [
+    ...shown.map(findingNote),
+    ...(rest > 0
+      ? [`- (${rest} more blocker${rest === 1 ? '' : 's'} not listed)`]
+      : []),
+  ].join('\n')
 }
 
 /**
@@ -509,7 +560,7 @@ export function parseFindingsOutput(text: string): ParsedReview {
     return {
       ok: true,
       decision: 'needsChanges',
-      notes: blockers.map(findingNote).join('\n'),
+      notes: blockerNotes(blockers),
     }
   const advice = findings.length
   return {

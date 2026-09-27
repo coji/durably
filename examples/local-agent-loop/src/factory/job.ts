@@ -61,6 +61,7 @@ import {
   deliverySchema,
   FactoryEventSchema,
 } from './events.js'
+import { runRootOf, reviewSnapshotsDirOf } from './layout.js'
 import { assertAllowedDecision, availableActions, decide } from './policy.js'
 import {
   parseTriageOutput,
@@ -178,6 +179,7 @@ const fakeScenarioSchema = z
     reviewSequence: z.array(z.enum(FAKE_REVIEW_DECISIONS)).optional(),
     reviewNotes: z.array(z.string()).optional(),
     reviewOutputs: z.array(z.string()).optional(),
+    reviewDenials: z.array(z.string()).optional(),
     triage: z.array(z.enum(FAKE_TRIAGE_KINDS)).optional(),
     triageReason: z.string().min(1).max(500).optional(),
     latencyMs: z
@@ -416,6 +418,25 @@ const inputSchema = z
       path: ['fakeScenario'],
     },
   )
+  // Refused at trigger, like `demo run` refuses it from `factory.json`, so
+  // a direct trigger is never stored with a reviewer that cannot run it.
+  .superRefine((input, ctx) => {
+    for (const lens of REVIEW_LENSES) {
+      const r = input.review?.[lens]
+      if (!r || (r.command === null && r.context !== 'local-instructions'))
+        continue
+      const provider =
+        input.repairOf?.profiles[lens].provider ??
+        input.profiles?.[lens]?.provider ??
+        input.provider
+      if (provider === 'codex')
+        ctx.addIssue({
+          code: 'custom',
+          message: `a codex reviewer does not support a command or context: local-instructions (review.${lens})`,
+          path: ['review', lens],
+        })
+    }
+  })
   // A repair run starts from the parent's candidate, with the settings the
   // parent resolved; nothing about it is left for the worker to decide.
   .refine(
@@ -857,7 +878,7 @@ export interface AgentLoopJobOptions {
 }
 
 export function createAgentLoopJob(options: AgentLoopJobOptions) {
-  const runRoot = (runId: string) => join(options.stateRoot, 'runs', runId)
+  const runRoot = (runId: string) => runRootOf(options.stateRoot, runId)
   return defineJob({
     name: 'local-factory.v2',
     input: inputSchema,
@@ -976,11 +997,15 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   signal,
                 })
           // Only a reviewer with its own command or local instructions reads
-          // the base and head trees, so only then are they extracted.
+          // the base and head trees, so only then are they extracted. Trees
+          // an earlier attempt of this setup left are discarded with its
+          // worktree.
+          const snapshotsDir = reviewSnapshotsDirOf(root)
+          await rm(snapshotsDir, { recursive: true, force: true })
           const target: TargetConfig =
             prepared.kind === 'repo' &&
             Object.values(review).some((r) => usesReviewMaterials(r ?? null))
-              ? { ...prepared, reviewSnapshots: true }
+              ? { ...prepared, reviewSnapshotsDir: snapshotsDir }
               : prepared
           const baselineCheck =
             input.target.kind === 'repo' && input.target.baselineCheck === true

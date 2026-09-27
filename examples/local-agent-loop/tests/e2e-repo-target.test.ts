@@ -11,10 +11,18 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync } from 'node:fs'
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  symlink,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
-import { describe, it } from 'node:test'
+import { afterEach, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { createAgentDurably } from '../src/durably.js'
@@ -27,17 +35,18 @@ import {
   resolveCommit,
   treeOf,
 } from '../src/engine/git.js'
-import { fakeReviewCalls } from '../src/engine/providers/fake.js'
+import { recordFakeReviewCalls } from '../src/engine/providers/fake.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
 import { fixProfile } from '../src/factory/job.js'
 import {
-  LOCAL_INSTRUCTIONS_MARKER,
+  localInstructionsMarker,
+  localInstructionsRunOf,
   REVIEW_STATUS_COMPLETE,
 } from '../src/factory/prompts.js'
 import { repairLabels } from '../src/factory/repair.js'
 import type { FactorySetup } from '../src/factory/types.js'
 import { createTarget } from '../src/targets/index.js'
-import { assertCandidateUnmoved } from '../src/targets/repo.js'
+import { assertCandidateUnmoved, extractCommit } from '../src/targets/repo.js'
 import { buildRepairInput, type RepairFiles } from '../src/trigger-input.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -52,7 +61,7 @@ export function mul(a, b) {
 `
 
 const SUITE = `import assert from 'node:assert/strict'
-import { describe, it } from 'node:test'
+import { afterEach, describe, it } from 'node:test'
 
 import { add } from '../src/calc.js'
 
@@ -1626,8 +1635,15 @@ async function touched(repo: string, from: string, to: string) {
     .filter((line) => line.length > 0)
 }
 
+/** The configured review calls of the test in progress. */
+let recording: ReturnType<typeof recordFakeReviewCalls> | null = null
+
 const endedCalls = (workdir: string) =>
-  fakeReviewCalls.filter((c) => c.workdir === workdir)
+  (recording?.calls ?? []).filter((c) => c.workdir === workdir)
+
+/** Where a run's review snapshots live, and whether any are left. */
+const snapshotsLeft = (stateRoot: string, runId: string) =>
+  existsSync(join(stateRoot, 'runs', runId, 'review-snapshots'))
 
 const findings = (list: unknown[]) =>
   [
@@ -1638,7 +1654,52 @@ const findings = (list: unknown[]) =>
     REVIEW_STATUS_COMPLETE,
   ].join('\n')
 
+describe('review snapshots', () => {
+  it('streams a commit tree into place, reuses one already there, and stops on cancel leaving nothing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-snapshot-'))
+    const repo = await seedRepo(root)
+    // A link in the commit is extracted as a link; the review guard, not
+    // the extraction, keeps a reviewer from following it out.
+    await symlink('/etc', join(repo, 'escape'))
+    await git(repo, ['add', '-A'])
+    await git(repo, ['commit', '-m', 'link'])
+    const commit = await resolveCommit(repo, 'HEAD')
+    const out = join(root, 'snapshots')
+    await mkdir(out)
+    const dir = join(out, 'base')
+    await extractCommit(repo, commit, dir, new AbortController().signal)
+    assert.equal(await readFile(join(dir, 'src', 'calc.js'), 'utf8'), BUGGY)
+    assert.ok((await lstat(join(dir, 'escape'))).isSymbolicLink())
+    // No archive file was written, and no partial tree is left.
+    assert.deepEqual(readdirSync(out), ['base'])
+    // A tree already in place is kept as it is.
+    await writeFile(join(dir, 'marker'), 'kept\n')
+    await extractCommit(repo, commit, dir, new AbortController().signal)
+    assert.equal(await readFile(join(dir, 'marker'), 'utf8'), 'kept\n')
+
+    // Cancelled before it starts, and while it runs: nothing is left.
+    await assert.rejects(
+      extractCommit(repo, commit, join(out, 'early'), AbortSignal.abort()),
+    )
+    const running = new AbortController()
+    const pending = extractCommit(
+      repo,
+      commit,
+      join(out, 'late'),
+      running.signal,
+    )
+    running.abort()
+    await assert.rejects(pending)
+    assert.deepEqual(readdirSync(out), ['base'])
+  })
+})
+
 describe('configured reviewers', { timeout: 240000 }, () => {
+  afterEach(() => {
+    recording?.stop()
+    recording = null
+  })
+
   it('calls a command once, serializes local instructions, gives each call its own, and leaves nothing behind', async () => {
     const root = await mkdtemp(join(tmpdir(), 'repo-review-command-'))
     const repo = await seedRepo(root)
@@ -1648,7 +1709,7 @@ describe('configured reviewers', { timeout: 240000 }, () => {
     // The second reviewer answers slowly; run side by side, the two calls
     // would overlap and read each other's instructions.
     process.env.FAKE_REVIEW_SLOW_MS = '1500'
-    fakeReviewCalls.length = 0
+    recording = recordFakeReviewCalls()
     const durably = createAgentDurably({ stateRoot: join(root, 'state') })
     await durably.init()
     try {
@@ -1680,8 +1741,6 @@ describe('configured reviewers', { timeout: 240000 }, () => {
           changes: {
             diffPath: string
             changedFilesPath: string
-            baseSnapshotDir?: string
-            headSnapshotDir?: string
           }
         }
         delivery: { squashedBranch: string; squashedCommit: string }
@@ -1723,7 +1782,7 @@ describe('configured reviewers', { timeout: 240000 }, () => {
         ]) {
           assert.equal(seen?.present, true, role)
           const text = seen?.content ?? ''
-          assert.ok(text.startsWith(LOCAL_INSTRUCTIONS_MARKER), role)
+          assert.equal(localInstructionsRunOf(text), run.id, role)
           assert.match(text, own[role])
           assert.doesNotMatch(text, other[role])
           // Trusted context, fenced data, materials and the contract.
@@ -1732,23 +1791,28 @@ describe('configured reviewers', { timeout: 240000 }, () => {
           assert.match(text, /<<<UNTRUSTED SPEC [0-9a-f]{16}>>>/)
           assert.ok(text.includes(changes.diffPath))
           assert.ok(text.includes(changes.changedFilesPath))
-          assert.ok(text.includes(changes.baseSnapshotDir ?? '?'))
-          assert.ok(text.includes(changes.headSnapshotDir ?? '?'))
           assert.ok(text.includes(REVIEW_STATUS_COMPLETE))
         }
+        // The snapshots are the two commits' trees, outside the worktree,
+        // named in the instructions and readable while the call runs.
+        const text = call.localInstructionsAtStart?.content ?? ''
+        const baseDir = /Base commit tree: (\S+)/.exec(text)?.[1] ?? '?'
+        const headDir = /Candidate commit tree: (\S+)/.exec(text)?.[1] ?? '?'
+        assert.ok(!baseDir.startsWith(output.workdir))
+        assert.ok(!headDir.startsWith(output.workdir))
+        assert.deepEqual(Object.keys(call.readable), [
+          dirname(changes.diffPath),
+          baseDir,
+          headDir,
+        ])
+        for (const dir of [baseDir, headDir])
+          assert.ok(call.readable[dir]?.includes(join('src', 'calc.js')), dir)
       }
-
-      // The snapshots are the two commits' trees, outside the worktree.
-      assert.ok(changes.baseSnapshotDir && changes.headSnapshotDir)
-      assert.ok(!changes.baseSnapshotDir.startsWith(output.workdir))
-      assert.equal(
-        await readFile(join(changes.baseSnapshotDir, 'src', 'calc.js'), 'utf8'),
-        BUGGY,
-      )
-      assert.equal(
-        await readFile(join(changes.headSnapshotDir, 'src', 'calc.js'), 'utf8'),
-        await git(repo, ['show', `${head}:src/calc.js`]),
-      )
+      // Both reviewers of the round read the same two trees.
+      const [dirsA, dirsB] = calls.map((c) => Object.keys(c.readable).join(','))
+      assert.equal(dirsA, dirsB)
+      // Once the run has ended, none of them is left.
+      assert.equal(snapshotsLeft(join(root, 'state'), run.id), false)
 
       // Nothing the review used reaches the worktree, the candidate's diff,
       // an iteration commit or the squashed branch.
@@ -1782,16 +1846,52 @@ describe('configured reviewers', { timeout: 240000 }, () => {
       assert.ok(a?.completedAt && b?.startedAt && b.completedAt)
       assert.ok(Date.parse(b.startedAt) < Date.parse(a.completedAt))
       assert.ok(Date.parse(a.completedAt) < Date.parse(b.completedAt))
-      const plainOut = (await durably.getRun(plain.id))?.output as {
-        candidate: { changes: { baseSnapshotDir?: string } }
-      }
       // Without a configured reviewer no tree is extracted.
-      assert.equal(plainOut.candidate.changes.baseSnapshotDir, undefined)
+      assert.equal(
+        endedCalls(join(root, 'state', 'runs', plain.id, 'work')).length,
+        0,
+      )
+      assert.equal(snapshotsLeft(join(root, 'state'), plain.id), false)
     } finally {
       await durably.stop()
       await durably.db.destroy()
       delete process.env.FAKE_FAIL_FIRST
       delete process.env.FAKE_REVIEW_SLOW_MS
+    }
+  })
+
+  it('refuses a codex reviewer with a command or local instructions when triggered directly, before the run exists', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-review-direct-'))
+    const repo = await seedRepo(root)
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.migrate()
+    try {
+      for (const correctness of [
+        { command: '/review', context: 'prompt', output: 'verdict' },
+        { command: null, context: 'local-instructions', output: 'verdict' },
+      ] as const)
+        await assert.rejects(
+          durably.jobs.agentLoop.trigger({
+            ...configuredRun(repo, { correctness }),
+            provider: 'codex',
+          }),
+          /a codex reviewer does not support a command or context: local-instructions \(review\.correctness\)/,
+        )
+      assert.equal((await durably.getRuns()).length, 0)
+      // Findings alone are fine on any provider.
+      const ok = await durably.jobs.agentLoop.trigger({
+        ...configuredRun(repo, {
+          correctness: {
+            command: null,
+            context: 'prompt',
+            output: 'findings-json',
+          },
+        }),
+        provider: 'codex',
+      })
+      assert.ok(ok.id)
+    } finally {
+      await durably.db.destroy()
     }
   })
 
@@ -1801,7 +1901,7 @@ describe('configured reviewers', { timeout: 240000 }, () => {
     delete process.env.FAKE_FAIL_FIRST
     delete process.env.FAKE_REVIEW_SEQUENCE
     delete process.env.FAKE_REVIEW_SLOW_MS
-    fakeReviewCalls.length = 0
+    recording = recordFakeReviewCalls()
     const durably = createAgentDurably({
       stateRoot: join(root, 'state'),
       maxConcurrentRuns: 4,
@@ -1849,16 +1949,33 @@ describe('configured reviewers', { timeout: 240000 }, () => {
         severity: findings([{ severity: 'major', title: 't', body: 'b' }]),
         'cut off': 'PLAN: fake plan\n```json\n[{"severity": "blocker",',
       }
+      const scenarios: [string, Record<string, unknown>][] = [
+        ...Object.entries(broken).map(
+          ([name, text]): [string, Record<string, unknown>] => [
+            name,
+            { reviewOutputs: [text, findings([])] },
+          ],
+        ),
+        // A clean pass, but a tool call was refused on the way: the review
+        // may have missed what that call would have shown.
+        [
+          'permission denial',
+          {
+            reviewOutputs: [findings([]), findings([])],
+            reviewDenials: [
+              "Grep (subagent a1): read outside the review's directories denied: /etc",
+              '',
+            ],
+          },
+        ],
+      ]
       const incomplete = await Promise.all(
-        Object.entries(broken).map(async ([name, text]) => ({
+        scenarios.map(async ([name, scenario]) => ({
           name,
           run: await durably.jobs.agentLoop.trigger(
             configuredRun(repo, review, {
               maxIterations: 1,
-              fakeScenario: {
-                failIterations: 0,
-                reviewOutputs: [text, findings([])],
-              },
+              fakeScenario: { failIterations: 0, ...scenario },
             }),
           ),
         })),
@@ -1909,6 +2026,7 @@ describe('configured reviewers', { timeout: 240000 }, () => {
         notes: '- [src/calc.js:2] wrong sum — add() still truncates',
       })
       assert.equal(existsSync(join(output.workdir, LOCAL)), false)
+      assert.equal(snapshotsLeft(join(root, 'state'), repaired.id), false)
       // A repair of this run calls and reads its reviewers the same way.
       const setup = (
         await durably.storage.getCompletedStep(repaired.id, 'setup')
@@ -1936,7 +2054,17 @@ describe('configured reviewers', { timeout: 240000 }, () => {
           name,
         )
         assert.equal(existsSync(join(workdir, LOCAL)), false, name)
+        await waitFor(
+          async () => !snapshotsLeft(join(root, 'state'), run.id),
+          10000,
+          `${name}: a failed run leaves no snapshots`,
+        )
       }
+      const denied = incomplete.find((i) => i.name === 'permission denial')
+      assert.match(
+        (await durably.getRun(denied?.run.id ?? '?'))?.error ?? '',
+        /1 tool call\(s\) were refused: Grep \(subagent a1\)/,
+      )
     } finally {
       await durably.stop()
       await durably.db.destroy()
@@ -1946,12 +2074,14 @@ describe('configured reviewers', { timeout: 240000 }, () => {
   it('never writes over a CLAUDE.local.md it did not write, and removes its own on cancel', async () => {
     const root = await mkdtemp(join(tmpdir(), 'repo-review-local-'))
     const repo = await seedRepo(root)
-    await writeFile(join(repo, LOCAL), "the owner's own notes\n")
+    // A file that even carries the factory's marker, but another run's.
+    const foreign = `${localInstructionsMarker({ runId: 'another-run', lens: 'correctness', round: 1 })}\nthe owner's own notes\n`
+    await writeFile(join(repo, LOCAL), foreign)
     await git(repo, ['add', '-A'])
     await git(repo, ['commit', '-m', 'local notes'])
     process.env.FAKE_FAIL_FIRST = '0'
     delete process.env.FAKE_REVIEW_SEQUENCE
-    fakeReviewCalls.length = 0
+    recording = recordFakeReviewCalls()
     const local: ReviewSettings = {
       command: '/review',
       context: 'local-instructions',
@@ -1971,13 +2101,10 @@ describe('configured reviewers', { timeout: 240000 }, () => {
       const run = await durably.getRun(refused.id)
       assert.match(
         run?.error ?? '',
-        /already exists and was not written by the factory/,
+        /already exists and was not written by this run/,
       )
       const workdir = join(root, 'state', 'runs', refused.id, 'work')
-      assert.equal(
-        await readFile(join(workdir, LOCAL), 'utf8'),
-        "the owner's own notes\n",
-      )
+      assert.equal(await readFile(join(workdir, LOCAL), 'utf8'), foreign)
       assert.equal(
         endedCalls(workdir).filter((c) => c.role === 'review-a').length,
         0,
@@ -2004,7 +2131,8 @@ describe('configured reviewers', { timeout: 240000 }, () => {
       await waitFor(
         async () =>
           (await durably.getRun(slow.id))?.status === 'cancelled' &&
-          !existsSync(join(slowDir, LOCAL)),
+          !existsSync(join(slowDir, LOCAL)) &&
+          !snapshotsLeft(join(root, 'state'), slow.id),
         60000,
         'cancelled review leaves nothing behind',
       )
@@ -2022,7 +2150,7 @@ describe('configured reviewers', { timeout: 240000 }, () => {
     const home = join(root, 'home')
     await mkdir(home)
     const stateRoot = join(home, '.local', 'state', 'local-agent-loop')
-    fakeReviewCalls.length = 0
+    recording = recordFakeReviewCalls()
     const durably = createAgentDurably({ stateRoot })
     await durably.migrate()
     const local: ReviewSettings = {
@@ -2062,10 +2190,9 @@ describe('configured reviewers', { timeout: 240000 }, () => {
       )
       process.kill(pid(), 'SIGKILL')
       // The worker died mid-call: its instructions are still there.
-      assert.ok(
-        (await readFile(join(workdir, LOCAL), 'utf8')).startsWith(
-          LOCAL_INSTRUCTIONS_MARKER,
-        ),
+      assert.equal(
+        localInstructionsRunOf(await readFile(join(workdir, LOCAL), 'utf8')),
+        run.id,
       )
       await durably.init()
       await waitFor(
@@ -2110,7 +2237,7 @@ describe('configured reviewers', { timeout: 240000 }, () => {
     const pids: (() => number)[] = []
     // Start a worker, wait until its review has written the instructions,
     // and kill it there.
-    const killMidReview = async (workdir: string) => {
+    const killMidReview = async (workdir: string, runId: string) => {
       const worker = spawn(
         tsx,
         [join(packageRoot, 'src', 'cli.ts'), 'worker'],
@@ -2143,41 +2270,46 @@ describe('configured reviewers', { timeout: 240000 }, () => {
       )
       process.kill(pid(), 'SIGKILL')
       worker.kill('SIGKILL')
-      // The worker died mid-call: its instructions are still there.
-      assert.ok(
-        (await readFile(join(workdir, LOCAL), 'utf8')).startsWith(
-          LOCAL_INSTRUCTIONS_MARKER,
-        ),
+      // The worker died mid-call: its instructions and the review
+      // snapshots are still there.
+      assert.equal(
+        localInstructionsRunOf(await readFile(join(workdir, LOCAL), 'utf8')),
+        runId,
       )
+      assert.equal(snapshotsLeft(stateRoot, runId), true)
     }
     try {
       const marked = await durably.jobs.agentLoop.trigger(
         configuredRun(repo, { correctness: local, 'edge-cases': local }),
       )
       const markedDir = join(stateRoot, 'runs', marked.id, 'work')
-      await killMidReview(markedDir)
+      await killMidReview(markedDir, marked.id)
       assert.equal((await durably.getRun(marked.id))?.status, 'leased')
       await durably.cancel(marked.id)
       assert.equal((await durably.getRun(marked.id))?.status, 'cancelled')
       assert.equal(existsSync(join(markedDir, LOCAL)), false)
+      assert.equal(snapshotsLeft(stateRoot, marked.id), false)
       // The cleanup command `status` prints now works as printed.
       await git(repo, ['worktree', 'remove', markedDir])
       assert.equal(existsSync(markedDir), false)
 
-      // The same kill, but the file is replaced by one the factory did not
-      // write before the cancel: it stays as it is.
-      const unmarked = await durably.jobs.agentLoop.trigger(
-        configuredRun(repo, { correctness: local, 'edge-cases': local }),
-      )
-      const unmarkedDir = join(stateRoot, 'runs', unmarked.id, 'work')
-      await killMidReview(unmarkedDir)
-      await writeFile(join(unmarkedDir, LOCAL), "the owner's own notes\n")
-      await durably.cancel(unmarked.id)
-      assert.equal((await durably.getRun(unmarked.id))?.status, 'cancelled')
-      assert.equal(
-        await readFile(join(unmarkedDir, LOCAL), 'utf8'),
+      // The same kill, but the file is replaced before the cancel by one
+      // this run did not write, whether it has no marker or another run's:
+      // it stays as it is.
+      for (const content of [
         "the owner's own notes\n",
-      )
+        `${localInstructionsMarker({ runId: 'another-run', lens: 'edge-cases', round: 1 })}\nnotes\n`,
+      ]) {
+        const unmarked = await durably.jobs.agentLoop.trigger(
+          configuredRun(repo, { correctness: local, 'edge-cases': local }),
+        )
+        const unmarkedDir = join(stateRoot, 'runs', unmarked.id, 'work')
+        await killMidReview(unmarkedDir, unmarked.id)
+        await writeFile(join(unmarkedDir, LOCAL), content)
+        await durably.cancel(unmarked.id)
+        assert.equal((await durably.getRun(unmarked.id))?.status, 'cancelled')
+        assert.equal(await readFile(join(unmarkedDir, LOCAL), 'utf8'), content)
+      }
     } finally {
       for (const pid of pids) {
         try {

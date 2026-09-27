@@ -46,16 +46,19 @@
  *
  * A configured review (`review` on the call) is served like any other, so
  * tests can check the engine without a real CLI:
- * - every call is recorded in `fakeReviewCalls`: the input exactly as
- *   received when the role has a command, and for local instructions whether
+ * - while a test records (`recordFakeReviewCalls`), every call is kept: the
+ *   input exactly as received when the role has a command, the files under
+ *   each readable directory, and for local instructions whether
  *   `CLAUDE.local.md` was at the workdir root, and what it held, both when
- *   the call started and when it answered;
+ *   the call started and when it answered. Nothing is kept otherwise;
  * - `findings-json` answers with a findings array and the status line built
  *   from the scripted verdict, or with `reviewOutputs[i]` verbatim when the
- *   scenario gives one, broken or cut-off replies included.
+ *   scenario gives one, broken or cut-off replies included;
+ * - `reviewDenials[i]`, when non-empty, is reported as a tool call the
+ *   provider refused during that call.
  */
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
 
 import type { TokenUsage } from '../usage.js'
@@ -102,6 +105,11 @@ export interface FakeScenario {
    * formed or not.
    */
   reviewOutputs?: string[]
+  /**
+   * A refused tool call to report for each review call, indexed like
+   * `reviewSequence`; an empty string reports none.
+   */
+  reviewDenials?: string[]
   triage?: (typeof FAKE_TRIAGE_KINDS)[number][]
   /** REASON text for a `routine` or `probe` triage answer. */
   triageReason?: string
@@ -123,12 +131,13 @@ export class FakeRun {
   review(
     round: number,
     role: AgentRole,
-  ): { decision?: string; note?: string; output?: string } {
+  ): { decision?: string; note?: string; output?: string; denial?: string } {
     const at = 2 * (round - 1) + (role === 'review-b' ? 1 : 0)
     return {
       decision: this.scenario.reviewSequence?.[at],
       note: this.scenario.reviewNotes?.[at],
       output: this.scenario.reviewOutputs?.[at],
+      denial: this.scenario.reviewDenials?.[at],
     }
   }
   nextTriage(): string | undefined {
@@ -149,6 +158,11 @@ export interface FakeReviewCall {
   workdir: string
   /** The input exactly as received; null unless the role has a command. */
   input: string | null
+  /**
+   * Each readable directory the call was given, with the files under it
+   * (relative, sorted) when the call started; null for one that was absent.
+   */
+  readable: Record<string, string[] | null>
   /** Null unless the call used local instructions. */
   localInstructionsAtStart: LocalInstructionsSnapshot | null
   localInstructionsAtEnd: LocalInstructionsSnapshot | null
@@ -156,11 +170,40 @@ export interface FakeReviewCall {
   endedAt: number | null
 }
 
+/** The calls of the recording in progress; null when none is. */
+let recording: FakeReviewCall[] | null = null
+
 /**
- * Every configured review call this process made, in call order. Tests read
- * it and empty it; nothing else does.
+ * Keep every configured review call from now until `stop`, in call order.
+ * One recording at a time: starting one ends the one before. Only tests
+ * record, so a long-running fake worker keeps nothing.
  */
-export const fakeReviewCalls: FakeReviewCall[] = []
+export function recordFakeReviewCalls(): {
+  calls: FakeReviewCall[]
+  stop: () => void
+} {
+  const calls: FakeReviewCall[] = []
+  recording = calls
+  return {
+    calls,
+    stop: () => {
+      if (recording === calls) recording = null
+    },
+  }
+}
+
+/** Every file under `dir`, relative and sorted; null when it is absent. */
+async function filesUnder(dir: string): Promise<string[] | null> {
+  try {
+    const entries = await readdir(dir, { recursive: true, withFileTypes: true })
+    return entries
+      .filter((e) => !e.isDirectory())
+      .map((e) => relative(dir, join(e.parentPath, e.name)))
+      .sort()
+  } catch {
+    return null
+  }
+}
 
 async function readLocalInstructions(
   workdir: string,
@@ -331,22 +374,30 @@ export class FakeProvider implements AgentProvider {
     const review = options.review
     // Recorded before anything else, so a call that is then cancelled is on
     // record too.
-    const record: FakeReviewCall | null = review
-      ? {
-          role: options.role,
-          round: options.reviewRound ?? 1,
-          workdir: options.workdir,
-          input: review.command ? options.prompt : null,
-          localInstructionsAtStart:
-            review.context === 'local-instructions'
-              ? await readLocalInstructions(options.workdir)
-              : null,
-          localInstructionsAtEnd: null,
-          startedAt: started,
-          endedAt: null,
-        }
-      : null
-    if (record) fakeReviewCalls.push(record)
+    const record: FakeReviewCall | null =
+      review && recording
+        ? {
+            role: options.role,
+            round: options.reviewRound ?? 1,
+            workdir: options.workdir,
+            input: review.command ? options.prompt : null,
+            readable: Object.fromEntries(
+              await Promise.all(
+                review.readableDirs.map(
+                  async (dir) => [dir, await filesUnder(dir)] as const,
+                ),
+              ),
+            ),
+            localInstructionsAtStart:
+              review.context === 'local-instructions'
+                ? await readLocalInstructions(options.workdir)
+                : null,
+            localInstructionsAtEnd: null,
+            startedAt: started,
+            endedAt: null,
+          }
+        : null
+    if (record) recording?.push(record)
     const scenario = this.run?.scenario ?? {}
     const latency =
       scenario.latencyMs ?? parseLatency(process.env.FAKE_LATENCY_MS)
@@ -450,13 +501,17 @@ export class FakeProvider implements AgentProvider {
         )
       record.endedAt = Date.now()
     }
-    if (scripted?.output !== undefined) return result(scripted.output)
+    const reply = (text: string): AgentResult =>
+      scripted?.denial
+        ? { ...result(text), permissionDenials: [scripted.denial] }
+        : result(text)
+    if (scripted?.output !== undefined) return reply(scripted.output)
     if (review?.output === 'findings-json')
-      return result(findingsReply(decision, notes))
-    if (decision === 'empty') return result('')
+      return reply(findingsReply(decision, notes))
+    if (decision === 'empty') return reply('')
     if (decision === 'invalid')
-      return result('looks good to me, ship it (no structured verdict)')
-    return result(
+      return reply('looks good to me, ship it (no structured verdict)')
+    return reply(
       `PLAN: fake plan\nCOUNTEREXAMPLE: fake counterexample, none found\nDECISION: ${decision}\nNOTES: ${notes}`,
     )
   }

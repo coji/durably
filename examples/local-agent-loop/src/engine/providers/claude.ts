@@ -24,9 +24,18 @@
  *   a sandbox): statically unresolvable commands are denied; the Codex CLI
  *   sandbox remains the stronger isolation where that matters.
  */
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { isAbsolute, normalize, relative, resolve, sep } from 'node:path'
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  normalize,
+  relative,
+  resolve,
+  sep,
+} from 'node:path'
 
 import { generateText } from 'ai'
 import {
@@ -266,13 +275,57 @@ function bashEscapeReason(root: string, cmd: string): string | null {
 export const COMMAND_MODE_REVIEW_TOOLS = ['Read', 'Grep', 'Glob', 'Agent']
 
 /**
+ * An absolute path with every symbolic link on it resolved. A path that
+ * does not exist yet (a Glob pattern, a file a tool would create) keeps its
+ * missing tail, joined onto the resolved longest prefix that does exist.
+ * Null when the path cannot be resolved for any other reason, which the
+ * caller treats as outside.
+ */
+export function realPathOf(abs: string): string | null {
+  const missing: string[] = []
+  let current = abs
+  for (;;) {
+    try {
+      return join(realpathSync.native(current), ...missing.reverse())
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') return null
+      const parent = dirname(current)
+      if (parent === current) return null
+      missing.push(basename(current))
+      current = parent
+    }
+  }
+}
+
+/** Whether a path names a home directory: `~`, `~/…` or `~user/…`. */
+function namesHome(p: string): boolean {
+  return p.startsWith('~')
+}
+
+/**
+ * Agent inputs that would take a subagent out of the review's read-only
+ * directories: `isolation` makes a git worktree and branch or runs it
+ * remotely, and a permission mode other than the parent's would let it act
+ * without the guard's approval.
+ */
+const ESCAPING_AGENT_MODES = new Set([
+  'acceptEdits',
+  'auto',
+  'bypassPermissions',
+])
+
+/**
  * Decide one tool call of a command-mode review or any subagent it starts.
  * Only `Read`, `Grep`, `Glob` and `Agent` pass, and every path they name must
- * normalize inside one of `roots`: the candidate worktree and the directories
+ * resolve inside one of `roots`: the candidate worktree and the directories
  * holding its diff, changed-file list and snapshots. A relative path is taken
- * from the first root, the review's cwd. A `Glob` pattern may not climb out
- * with `..` or name an absolute path outside the roots. Bash and every write
- * tool are refused.
+ * from the first root, the review's cwd. Paths are compared after resolving
+ * symbolic links on both sides, so a link inside a root that points out of
+ * it is refused, and a `~` path is refused outright. A `Glob` pattern may
+ * not climb out with `..`, and its fixed prefix is resolved from its `path`
+ * like any other path. An `Agent` call may not ask for isolation or another
+ * permission mode. Bash and every write tool are refused.
  */
 export function decideReviewToolPermission(
   roots: readonly string[],
@@ -284,10 +337,30 @@ export function decideReviewToolPermission(
       allow: false,
       reason: `review is read-only (denied ${toolName})`,
     }
-  const cwd = roots[0] ?? '.'
-  const inside = (p: string) => {
-    const abs = resolveInside(cwd, p)
-    return roots.some((root) => isInsideWorkdir(root, abs))
+  if (toolName === 'Agent') {
+    if (input['isolation'] !== undefined)
+      return {
+        allow: false,
+        reason: `review subagents run in place (denied isolation ${String(input['isolation'])})`,
+      }
+    const mode = input['mode']
+    if (typeof mode === 'string' && ESCAPING_AGENT_MODES.has(mode))
+      return {
+        allow: false,
+        reason: `review subagents keep the review's permissions (denied mode ${mode})`,
+      }
+    return { allow: true }
+  }
+  const cwd = resolve(roots[0] ?? '.')
+  const realRoots = roots
+    .map((root) => realPathOf(resolve(root)))
+    .filter((root): root is string => root !== null)
+  const inside = (p: string, from = cwd) => {
+    if (namesHome(p)) return false
+    const real = realPathOf(resolveInside(from, p))
+    return (
+      real !== null && realRoots.some((root) => isInsideWorkdir(root, real))
+    )
   }
   for (const key of ['file_path', 'path', 'notebook_path'] as const) {
     const p = input[key]
@@ -299,8 +372,18 @@ export function decideReviewToolPermission(
   }
   const pattern = input['pattern']
   if (toolName === 'Glob' && typeof pattern === 'string') {
+    const searchPath = input['path']
+    const from =
+      typeof searchPath === 'string' ? resolveInside(cwd, searchPath) : cwd
+    // Only the part before the first wildcard names a place; it must stay
+    // inside, links and all.
+    const fixed = pattern.split(/[*?[{]/)[0] ?? ''
     const climbs = pattern.split(/[\\/]/).includes('..')
-    if (climbs || (isAbsolute(pattern) && !inside(pattern)))
+    if (
+      climbs ||
+      namesHome(pattern) ||
+      !inside(fixed === '' ? '.' : fixed, from)
+    )
       return {
         allow: false,
         reason: `glob outside the review's directories denied: ${pattern}`,
@@ -400,6 +483,28 @@ export function reviewPreToolUseHook(roots: readonly string[]) {
   )
 }
 
+/**
+ * What a command-mode review turns off in the settings it loads. The
+ * candidate is the implementer's work, and the project's and local settings
+ * are loaded from it, so anything in them that would run a program is off:
+ * - `disableAllHooks` in the flag settings layer, which outranks both, turns
+ *   off every hook and status line those settings define. The guard is not
+ *   one of them: it is passed to the SDK as a callback, not read from a
+ *   settings file.
+ * - `disableSkillShellExecution` replaces inline shell commands in the
+ *   project's commands and skills with a placeholder instead of running them.
+ * - `strictMcpConfig` with no `mcpServers` starts no MCP server: `.mcp.json`,
+ *   the settings' servers, plugins' and agent frontmatter's are all ignored.
+ * CLAUDE.md, CLAUDE.local.md, commands, skills and agent definitions still
+ * load; they are instructions, and every tool call they lead to still meets
+ * the guard.
+ */
+export const COMMAND_MODE_LOCKDOWN = {
+  settings: { disableAllHooks: true, disableSkillShellExecution: true },
+  strictMcpConfig: true,
+  mcpServers: {},
+} satisfies Partial<ClaudeCodeSettings>
+
 /** Build the model settings so tests can verify the wiring, not just hope. */
 export function buildClaudeSettings(
   workdir: string,
@@ -425,6 +530,7 @@ export function buildClaudeSettings(
     return {
       cwd: workdir,
       settingSources: ['project', 'local'],
+      ...COMMAND_MODE_LOCKDOWN,
       permissionMode: 'dontAsk',
       tools: [...COMMAND_MODE_REVIEW_TOOLS],
       allowedTools: [...COMMAND_MODE_REVIEW_TOOLS],
@@ -440,6 +546,10 @@ export function buildClaudeSettings(
     cwd: workdir,
     settingSources: [],
     permissionMode: 'default',
+    // A configured review that is not in command mode (a findings-only
+    // one) reads a refused tool call as an incomplete review, so it is not
+    // shown any tool it could not use.
+    ...(review ? { tools: ['Read'] } : {}),
     allowedTools: readOnly ? ['Read'] : ['Read', 'Edit', 'Write', 'Bash'],
     canUseTool: workdirGuard(workdir, readOnly, readableFiles),
     hooks: {
@@ -461,27 +571,107 @@ export interface MainLoopUsage {
   totalTokens: number | null
 }
 
+/** The per-model entries of a result message's `modelUsage`, by model. */
+function modelUsageEntries(
+  modelUsage: unknown,
+): [string, Record<string, unknown>][] {
+  if (
+    modelUsage === null ||
+    typeof modelUsage !== 'object' ||
+    Array.isArray(modelUsage)
+  )
+    return []
+  return Object.entries(modelUsage as Record<string, unknown>).filter(
+    (entry): entry is [string, Record<string, unknown>] =>
+      entry[1] !== null && typeof entry[1] === 'object',
+  )
+}
+
+interface UsageLegs {
+  uncached: number | null
+  cacheRead: number | null
+  cacheWrite: number | null
+  output: number | null
+}
+
+/** One model's `modelUsage` legs; a leg it does not report stays unknown. */
+function legsOf(model: Record<string, unknown>): UsageLegs {
+  const leg = (key: string): number | null => {
+    const value = model[key]
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0
+      ? value
+      : null
+  }
+  return {
+    uncached: leg('inputTokens'),
+    cacheRead: leg('cacheReadInputTokens'),
+    cacheWrite: leg('cacheCreationInputTokens'),
+    output: leg('outputTokens'),
+  }
+}
+
+/** Legs summed across models; one unknown leg makes the sum unknown. */
+function sumUsage(legs: UsageLegs[]): TokenUsage {
+  const sum = (key: keyof UsageLegs): number | null => {
+    let total = 0
+    for (const leg of legs) {
+      const value = leg[key]
+      if (value === null) return null
+      total += value
+    }
+    return total
+  }
+  const uncached = sum('uncached')
+  const cacheRead = sum('cacheRead')
+  const cacheWrite = sum('cacheWrite')
+  const output = sum('output')
+  // AI SDK usage counts the cache legs inside input; modelUsage does not.
+  const input =
+    uncached !== null && cacheRead !== null && cacheWrite !== null
+      ? uncached + cacheRead + cacheWrite
+      : null
+  return {
+    inputTokens: input,
+    cachedInputTokens:
+      cacheRead !== null && cacheWrite !== null ? cacheRead + cacheWrite : null,
+    cacheReadTokens: cacheRead,
+    cacheWriteTokens: cacheWrite,
+    outputTokens: output,
+    totalTokens: input !== null && output !== null ? input + output : null,
+    usageSource: 'provider-final',
+  }
+}
+
 /**
- * One call's usage. The result message's `modelUsage` holds per-model
- * totals for the whole call: the main loop, every subagent and internal
- * calls. When it is there it is the call's usage, summed across models once
- * and never added to the main loop's numbers, which it already contains. A
- * leg some model does not report stays unknown. Without it, the main loop's
- * numbers are all there is.
+ * The usage of one model per entry of `modelUsage`, keyed by model, so each
+ * model's tokens can be priced at that model's rate. Null when there is no
+ * `modelUsage`.
+ */
+export function claudeUsageByModel(
+  modelUsage: unknown,
+): Record<string, TokenUsage> | null {
+  const models = modelUsageEntries(modelUsage)
+  if (models.length === 0) return null
+  return Object.fromEntries(
+    models.map(([name, model]) => [name, sumUsage([legsOf(model)])]),
+  )
+}
+
+/**
+ * One call's usage. A command-mode review passes the result message's
+ * `modelUsage`: per-model totals for the whole call, the main loop, every
+ * subagent and internal calls. When it is there it is the call's usage,
+ * summed across models once and never added to the main loop's numbers,
+ * which it already contains. A leg some model does not report stays
+ * unknown. Every other call passes none and keeps the main loop's numbers,
+ * as it always has, so runs with the default settings are measured as
+ * before.
  */
 export function claudeUsageOf(
   reported: MainLoopUsage,
   modelUsage: unknown,
 ): TokenUsage | null {
-  const models =
-    modelUsage !== null &&
-    typeof modelUsage === 'object' &&
-    !Array.isArray(modelUsage)
-      ? Object.values(modelUsage as Record<string, unknown>).filter(
-          (m): m is Record<string, unknown> =>
-            m !== null && typeof m === 'object',
-        )
-      : []
+  const models = modelUsageEntries(modelUsage)
   if (models.length === 0) {
     const {
       inputTokens: input,
@@ -503,34 +693,29 @@ export function claudeUsageOf(
       usageSource: 'provider-final',
     }
   }
-  const sum = (key: string): number | null => {
-    let total = 0
-    for (const model of models) {
-      const value = model[key]
-      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0)
-        return null
-      total += value
-    }
-    return total
-  }
-  const uncached = sum('inputTokens')
-  const cacheRead = sum('cacheReadInputTokens')
-  const cacheWrite = sum('cacheCreationInputTokens')
-  const output = sum('outputTokens')
-  // AI SDK usage counts the cache legs inside input; modelUsage does not.
-  const input =
-    uncached !== null && cacheRead !== null && cacheWrite !== null
-      ? uncached + cacheRead + cacheWrite
-      : null
+  return sumUsage(models.map(([, model]) => legsOf(model)))
+}
+
+/**
+ * The usage one call records. Only a command-mode review counts its
+ * subagents, through `modelUsage`, split by model so each is priced at its
+ * own rate. Every other call keeps the main loop's usage exactly as before,
+ * whatever the result message carries, so runs that configure no reviewer
+ * are measured as they always were.
+ */
+export function claudeCallUsage(
+  review: ReviewCallSettings | null | undefined,
+  reported: MainLoopUsage,
+  modelUsage: unknown,
+): {
+  usage: TokenUsage | null
+  usageByModel: Record<string, TokenUsage> | null
+} {
+  if (!isCommandModeReview(review))
+    return { usage: claudeUsageOf(reported, undefined), usageByModel: null }
   return {
-    inputTokens: input,
-    cachedInputTokens:
-      cacheRead !== null && cacheWrite !== null ? cacheRead + cacheWrite : null,
-    cacheReadTokens: cacheRead,
-    cacheWriteTokens: cacheWrite,
-    outputTokens: output,
-    totalTokens: input !== null && output !== null ? input + output : null,
-    usageSource: 'provider-final',
+    usage: claudeUsageOf(reported, modelUsage),
+    usageByModel: claudeUsageByModel(modelUsage),
   }
 }
 
@@ -687,6 +872,19 @@ export class ClaudeProvider implements AgentProvider {
         ? providerMetadata['sessionId']
         : options.sessionId
     const denials = permissionDenialsOf(providerMetadata?.['permissionDenials'])
+    const { usage, usageByModel } = claudeCallUsage(
+      options.review,
+      {
+        inputTokens: reported.usage.inputTokens ?? null,
+        outputTokens: reported.usage.outputTokens ?? null,
+        cacheReadTokens:
+          reported.usage.inputTokenDetails?.cacheReadTokens ?? null,
+        cacheWriteTokens:
+          reported.usage.inputTokenDetails?.cacheWriteTokens ?? null,
+        totalTokens: reported.usage.totalTokens ?? null,
+      },
+      providerMetadata?.['modelUsage'],
+    )
     return {
       text: reported.text,
       session: sessionId ? { id: sessionId } : null,
@@ -694,18 +892,8 @@ export class ClaudeProvider implements AgentProvider {
       resolvedEffort: effort,
       reportedModel: nativeModel,
       reportedEffort: null,
-      usage: claudeUsageOf(
-        {
-          inputTokens: reported.usage.inputTokens ?? null,
-          outputTokens: reported.usage.outputTokens ?? null,
-          cacheReadTokens:
-            reported.usage.inputTokenDetails?.cacheReadTokens ?? null,
-          cacheWriteTokens:
-            reported.usage.inputTokenDetails?.cacheWriteTokens ?? null,
-          totalTokens: reported.usage.totalTokens ?? null,
-        },
-        providerMetadata?.['modelUsage'],
-      ),
+      usage,
+      ...(usageByModel ? { usageByModel } : {}),
       elapsedMs: Date.now() - started,
       ...(denials.length > 0 ? { permissionDenials: denials } : {}),
     }

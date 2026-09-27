@@ -1,4 +1,4 @@
-import type { CandidateRef } from '../engine/types.js'
+import type { CandidateRef, ReviewSnapshots } from '../engine/types.js'
 /**
  * What a factory is pointed at.
  *
@@ -86,11 +86,11 @@ export interface RepoTargetConfig {
   /** Push the branch and open a draft pull request on delivery. */
   publish: boolean
   /**
-   * Extract the base and candidate commits' trees beside each candidate's
-   * diff, for a reviewer with its own command or local instructions. Absent
-   * or false: only the diff and changed-file list are written.
+   * Where the base and candidate commits' trees are extracted for a
+   * reviewer with its own command or local instructions. Absent: no reviewer
+   * reads them, and none is extracted.
    */
-  reviewSnapshots?: boolean
+  reviewSnapshotsDir?: string
   /** Absent on a run set up before it existed; the defaults apply. */
   commit?: CommitSettings
   /**
@@ -196,6 +196,17 @@ export interface Target {
   reviewCwd(candidate: CandidateRef): string
   /** Trusted change summary and originals, for reviewers who see only the candidate. */
   reviewContext(candidate: CandidateRef): Promise<string>
+  /**
+   * Extract the base commit's and the candidate's trees for a configured
+   * reviewer, reusing what is already there: the base once per run, the
+   * candidate once per review. Only a target that has them implements it.
+   */
+  prepareReviewSnapshots?(
+    candidate: CandidateRef,
+    signal: AbortSignal,
+  ): Promise<ReviewSnapshots>
+  /** Remove the candidate's tree once its review has ended. Never throws. */
+  releaseReviewSnapshots?(candidate: CandidateRef): Promise<void>
   /** Turn an approved candidate into something the human can act on. */
   deliver(args: DeliverArgs): Promise<Delivery>
   /** Best-effort cleanup of scratch worktrees. Never throws. */

@@ -10,8 +10,10 @@ import {
   changedPathsLine,
   codePrompt,
   expandReviewCommand,
-  LOCAL_INSTRUCTIONS_MARKER,
+  FINDINGS_NOTES_LIMITS,
   localInstructions,
+  localInstructionsMarker,
+  localInstructionsRunOf,
   parseFindingsOutput,
   REVIEW_STATUS_COMPLETE,
   reviewCommandPlaceholders,
@@ -449,6 +451,25 @@ const findingsReply = (findings: unknown, tail = REVIEW_STATUS_COMPLETE) =>
   ].join('\n')
 
 describe('findings-json review output', () => {
+  it('bounds the notes: each blocker line is cut, and only the first blockers are listed', () => {
+    const many = Array.from({ length: 25 }, (_, i) => ({
+      severity: 'blocker',
+      title: `blocker ${i + 1}`,
+      body: 'x'.repeat(5000),
+      file: 'src/a.js',
+      line: i + 1,
+    }))
+    const parsed = parseFindingsOutput(findingsReply(many))
+    assert.ok(parsed.ok)
+    assert.equal(parsed.decision, 'needsChanges')
+    const lines = parsed.notes.split('\n')
+    assert.equal(lines.length, FINDINGS_NOTES_LIMITS.findings + 1)
+    assert.ok(lines[0]?.startsWith('- [src/a.js:1] blocker 1 — xxx'))
+    for (const line of lines)
+      assert.ok(line.length <= FINDINGS_NOTES_LIMITS.perFinding, line)
+    assert.equal(lines.at(-1), '- (5 more blockers not listed)')
+  })
+
   it('passes an empty array or non-blockers alone, only with the status line last', () => {
     const empty = parseFindingsOutput(findingsReply([]))
     assert.deepEqual(empty, {
@@ -677,8 +698,6 @@ describe('review invocation prompts', () => {
       files: 1,
       additions: 1,
       deletions: 1,
-      baseSnapshotDir: '/runs/r1/candidates/c1/base',
-      headSnapshotDir: '/runs/r1/candidates/c1/head',
     }
     const plain = reviewPrompt('edge-cases', 'CTX', [], [], changes)
     assert.doesNotMatch(plain, /Base commit tree/)
@@ -690,23 +709,38 @@ describe('review invocation prompts', () => {
       changes,
       false,
       {
-        snapshots: true,
+        snapshots: {
+          baseDir: '/runs/r1/review-snapshots/base',
+          headDir: '/runs/r1/review-snapshots/c1',
+        },
       },
     )
     assert.match(
       materials,
-      /Base commit tree: \/runs\/r1\/candidates\/c1\/base/,
+      /Base commit tree: \/runs\/r1\/review-snapshots\/base/,
     )
     assert.match(
       materials,
-      /Candidate commit tree: \/runs\/r1\/candidates\/c1\/head/,
+      /Candidate commit tree: \/runs\/r1\/review-snapshots\/c1/,
     )
   })
 
-  it("marks local instructions as the factory's own", () => {
-    const file = localInstructions('You are a reviewer.')
-    assert.ok(file.startsWith(LOCAL_INSTRUCTIONS_MARKER))
+  it('marks local instructions with the run, reviewer and round that wrote them', () => {
+    const owner = { runId: 'run-1', lens: 'correctness', round: 2 }
+    const file = localInstructions('You are a reviewer.', owner)
+    assert.ok(file.startsWith(`${localInstructionsMarker(owner)}\n`))
+    assert.match(file, /run run-1, correctness, round 2/)
     assert.ok(file.includes('You are a reviewer.'))
+    assert.equal(localInstructionsRunOf(file), 'run-1')
+    // A file without the marker, with a marker that names no run, or with
+    // the marker anywhere but the first line belongs to no run.
+    for (const other of [
+      '# my notes\n',
+      '<!-- local-agent-loop review instructions: written by the factory for one review call and removed when it ends -->\n',
+      `# notes\n${localInstructionsMarker(owner)}\n`,
+      `${localInstructionsMarker(owner)} and more\n`,
+    ])
+      assert.equal(localInstructionsRunOf(other), null, other)
   })
 })
 

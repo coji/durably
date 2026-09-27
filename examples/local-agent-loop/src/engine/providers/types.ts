@@ -88,6 +88,12 @@ export interface AgentResult {
    */
   reportedEffort: string | null
   usage: TokenUsage | null
+  /**
+   * `usage` split by the model that spent it, when the call ran more than
+   * the main model's loop (a command-mode review's subagents). Each model's
+   * tokens are priced at that model's rate. Absent: `usage` is one model's.
+   */
+  usageByModel?: Record<string, TokenUsage>
   elapsedMs: number | null
   /**
    * Tool calls the provider refused during this call, one line each. Absent
@@ -237,6 +243,11 @@ export interface AttemptMeasurement {
   versions: Record<string, string | null>
   elapsedMs: number | null
   usage: TokenUsage | null
+  /**
+   * `usage` split by model, when the provider reported one; the cost is
+   * then each model's tokens at its own rate, summed. Absent otherwise.
+   */
+  usageByModel?: Record<string, TokenUsage> | null
   /** API-equivalent price estimate; null when usage or pricing unknown. */
   costUsdEstimate: number | null
   costBasis: 'api-equivalent-estimate' | null
