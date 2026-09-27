@@ -434,7 +434,8 @@ function baselineOf(
       verdict.source === 'reused' ? reusedSource(verdict.reusedFrom) : null
     if (from) {
       const log = verdict.log ?? null
-      const kept = log !== null && existsSync(log.stdoutPath)
+      const kept =
+        log !== null && existsSync(log.stdoutPath) && existsSync(log.stderrPath)
       return {
         passed: verdict.passed,
         exitCode,
@@ -444,7 +445,9 @@ function baselineOf(
         logMissing: kept
           ? null
           : log
-            ? `the log of run ${from.runId} is no longer at ${log.stdoutPath}`
+            ? `the log of run ${from.runId} is no longer at ${
+                existsSync(log.stdoutPath) ? log.stderrPath : log.stdoutPath
+              }`
             : `run ${from.runId} recorded no log`,
       }
     }

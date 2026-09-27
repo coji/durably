@@ -1320,7 +1320,52 @@ describe(
           checkedAt: firstStep.completedAt,
         })
 
-        // The source's log removed: no log, and why.
+        // The source's stdout removed, stderr still present: missing either
+        // one counts as missing, and the reason names the removed path.
+        const sourceStdoutPath = firstReport.baseline?.log?.stdoutPath
+        const sourceStderrPath = firstReport.baseline?.log?.stderrPath
+        assert.ok(sourceStdoutPath)
+        assert.ok(sourceStderrPath)
+        await rm(sourceStdoutPath, { force: true })
+        const stdoutGone = await buildReport(durably, reused)
+        assert.equal(stdoutGone.baseline?.log, null)
+        assert.match(stdoutGone.baseline?.logMissing ?? '', /no longer at/)
+        assert.match(
+          stdoutGone.baseline?.logMissing ?? '',
+          new RegExp(sourceStdoutPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+        )
+        assert.match(
+          reportToMarkdown(stdoutGone),
+          /- log: none \(the log of run /,
+        )
+        const stdoutGoneJson = JSON.parse(reportToJson(stdoutGone)) as {
+          baseline: { log: null; logMissing: string }
+        }
+        assert.equal(stdoutGoneJson.baseline.log, null)
+        assert.match(stdoutGoneJson.baseline.logMissing, /no longer at/)
+
+        // Restore stdout, then remove only stderr: still missing, and the
+        // reason now names the stderr path instead.
+        await writeFile(sourceStdoutPath, 'restored stdout\n')
+        await rm(sourceStderrPath, { force: true })
+        const stderrGone = await buildReport(durably, reused)
+        assert.equal(stderrGone.baseline?.log, null)
+        assert.match(stderrGone.baseline?.logMissing ?? '', /no longer at/)
+        assert.match(
+          stderrGone.baseline?.logMissing ?? '',
+          new RegExp(sourceStderrPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+        )
+        assert.match(
+          reportToMarkdown(stderrGone),
+          /- log: none \(the log of run /,
+        )
+        const stderrGoneJson = JSON.parse(reportToJson(stderrGone)) as {
+          baseline: { log: null; logMissing: string }
+        }
+        assert.equal(stderrGoneJson.baseline.log, null)
+        assert.match(stderrGoneJson.baseline.logMissing, /no longer at/)
+
+        // The source's log directory removed entirely: no log, and why.
         await rm(join(dir, 'runs', first, 'baseline-logs'), {
           recursive: true,
           force: true,
