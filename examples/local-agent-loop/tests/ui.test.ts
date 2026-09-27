@@ -44,7 +44,7 @@ import {
 import { checkpointPaths } from '../src/engine/runner.js'
 import type { DiagnosisKind } from '../src/engine/status.js'
 import { repairLabels } from '../src/factory/repair.js'
-import { ReviewFindingTitles } from '../src/ui/App.js'
+import { BaselineSource, ReviewFindingTitles } from '../src/ui/App.js'
 import {
   commandNote,
   noteSaidByReason,
@@ -1427,6 +1427,53 @@ describe('diagnosis wording on the page', () => {
       ),
       '',
     )
+  })
+
+  it('says in Japanese where the baseline verdict came from, and which run a reused one is from', () => {
+    const now = '2026-09-27T12:00:00.000Z'
+    const runId = '01REUSEDFROMRUN000000ABCDEF'
+    const base = {
+      passed: true,
+      exitCode: 0,
+      log: null,
+      recovered: false,
+      logMissing: null,
+    }
+    const render = (baseline: LoopReport['baseline']) =>
+      renderToStaticMarkup(createElement(BaselineSource, { baseline, now }))
+    const reused = render({
+      ...base,
+      reusedFrom: { runId, checkedAt: '2026-09-27T11:55:00.000Z' },
+    })
+    const text = reused.replace(/<[^>]+>/g, '\n')
+    assert.match(text, /前の実行の結果を再利用しました/)
+    assert.match(text, /再利用元/)
+    assert.match(text, /検証日時/)
+    // The source run is a link by name, its ID only as a short suffix.
+    assert.ok(reused.includes(`href="#/runs/${runId}"`))
+    assert.ok(text.includes('前の実行'))
+    assert.ok(!text.includes(runId))
+    assert.ok(reused.includes('dateTime="2026-09-27T11:55:00.000Z"'))
+    assert.ok(!text.includes('ログは残っていません'))
+    assert.equal(plain(text.replace(/…[0-9A-Z]{6}/g, '')), null, text)
+    const gone = render({
+      ...base,
+      log: null,
+      reusedFrom: { runId, checkedAt: '2026-09-27T11:55:00.000Z' },
+      logMissing: 'the log is gone',
+    }).replace(/<[^>]+>/g, '\n')
+    assert.match(gone, /再利用元のログは残っていません/)
+    assert.ok(!gone.includes('the log is gone'))
+
+    // Measured here, or a record from before reuse existed.
+    const measured = render({ ...base, reusedFrom: null }).replace(
+      /<[^>]+>/g,
+      '',
+    )
+    assert.equal(measured, 'この実行でチェックを実行しました')
+    // No verdict yet, or no baseline: nothing.
+    assert.equal(render({ ...base, passed: null, reusedFrom: null }), '')
+    assert.equal(render(null), '')
   })
 
   it('says in Japanese what every next command the CLI annotates does', async () => {

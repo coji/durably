@@ -65,6 +65,7 @@ What we considered and why we didn't do it.
 | [0022](0022-local-agent-loop-external-repair-runs.md)           | local-agent-loop repair runs from findings    | accepted |
 | [0023](0023-local-agent-loop-configurable-review-invocation.md) | local-agent-loop configurable reviewers       | accepted |
 | [0024](0024-local-agent-loop-claude-effort-session-reuse.md)    | local-agent-loop effort-only repair sessions  | accepted |
+| [0025](0025-local-agent-loop-baseline-reuse.md)                 | local-agent-loop baseline result reuse        | accepted |
 
 ## Prior Art
 

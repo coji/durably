@@ -8,12 +8,13 @@
  */
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+import { signalApproval } from '../src/approval.js'
 import { createAgentDurably } from '../src/durably.js'
 import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
@@ -31,12 +32,13 @@ import {
 import { checkpointPaths } from '../src/engine/runner.js'
 import type { ResolvedProfile, SessionRef } from '../src/engine/types.js'
 import { configVersionOf } from '../src/engine/versions.js'
-import { resolveTimeouts } from '../src/factory/job.js'
+import { chooseReusableBaseline, resolveTimeouts } from '../src/factory/job.js'
 import { codePrompt } from '../src/factory/prompts.js'
 import { codeStage } from '../src/factory/stages.js'
 import {
   EFFORT_RESUME_POLICY,
   initialState,
+  type BaselineIdentity,
   REPAIR_SESSION_STEP,
   type RepairSessionRecord,
   type FactorySetup,
@@ -1126,8 +1128,356 @@ describe(
       assert.match(block, /check exit code: 1/)
       assert.match(block, /demo retrigger --run /)
     })
+
+    /**
+     * A repository whose pinned check passes and records the commit it ran
+     * on, and whose setup records each run and, when asked through a flag
+     * file, leaves an untracked file or edits a tracked one.
+     */
+    async function passingRepo(root: string) {
+      const repo = join(root, 'repo')
+      const checks = join(root, 'checks.log')
+      const setups = join(root, 'setups.log')
+      const untrackedFlag = join(root, 'leave-untracked')
+      const trackedFlag = join(root, 'edit-tracked')
+      await mkdir(join(repo, 'src'), { recursive: true })
+      await writeFile(
+        join(repo, 'src', 'calc.js'),
+        'export function add(a, b) {\n  return a + b\n}\n',
+      )
+      await writeFile(
+        join(repo, 'check.mjs'),
+        "import { execFileSync } from 'node:child_process'\nimport { appendFileSync } from 'node:fs'\nconst head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()\nappendFileSync(process.argv[2], head + '\\n')\n",
+      )
+      await writeFile(
+        join(repo, 'setup.mjs'),
+        "import { appendFileSync, existsSync, writeFileSync } from 'node:fs'\nconst [log, untracked, tracked] = process.argv.slice(2)\nappendFileSync(log, 'setup\\n')\nif (existsSync(untracked)) writeFileSync('setup.out', 'x')\nif (existsSync(tracked)) appendFileSync('src/calc.js', '// setup\\n')\n",
+      )
+      await writeFile(join(repo, 'package.json'), '{"type":"module"}\n')
+      for (const args of [
+        ['init', '--initial-branch=main'],
+        ['config', 'user.email', 'test@localhost'],
+        ['config', 'user.name', 'test'],
+        ['add', '-A'],
+        ['commit', '-m', 'base'],
+      ]) {
+        const res = await runChild('git', args, { cwd: repo, timeoutMs: 30000 })
+        if (res.code !== 0)
+          throw new Error(`git ${args.join(' ')}: ${res.stderr}`)
+      }
+      const head = await runChild('git', ['rev-parse', 'HEAD'], {
+        cwd: repo,
+        timeoutMs: 30000,
+      })
+      return {
+        repo,
+        base: head.stdout.trim(),
+        checkCommand: ['node', 'check.mjs', checks],
+        setupCommand: ['node', 'setup.mjs', setups, untrackedFlag, trackedFlag],
+        untrackedFlag,
+        trackedFlag,
+        /** Lines each log holds: one per check or setup that ran. */
+        lines: async (which: 'checks' | 'setups') => {
+          const file = which === 'checks' ? checks : setups
+          return existsSync(file)
+            ? (await readFile(file, 'utf8')).split('\n').filter(Boolean)
+            : []
+        },
+      }
+    }
+
+    it('reuses a matching passing result after setup, and runs the check otherwise', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'e2e-baseline-reuse-'))
+      const dir = join(home, '.local', 'state', 'local-agent-loop')
+      const fixture = await passingRepo(home)
+      process.env.FAKE_FAIL_FIRST = '0'
+      delete process.env.FAKE_REVIEW_SEQUENCE
+      const durably = createAgentDurably({ stateRoot: dir })
+      await durably.init()
+      const fake = {
+        provider: 'fake' as const,
+        requestedModel: null,
+        requestedEffort: null,
+      }
+      const start = async (args: {
+        baselineCheck?: boolean
+        reuse?: { maxAgeMs: number }
+        autoApprove?: boolean
+        checkTimeoutMs?: number
+      }) =>
+        (
+          await durably.jobs.agentLoop.trigger({
+            provider: 'fake',
+            profiles: { code: fake, correctness: fake, 'edge-cases': fake },
+            target: {
+              kind: 'repo' as const,
+              repoPath: fixture.repo,
+              baseRef: 'HEAD',
+              task: 'Add a note.',
+              spec: null,
+              dispositions: null,
+              inputFiles: { task: null, spec: null, dispositions: null },
+              issue: null,
+              publish: false,
+              checkCommand: fixture.checkCommand,
+              setupCommand: fixture.setupCommand,
+              baselineCheck: args.baselineCheck ?? true,
+              ...(args.reuse ? { baselineReuse: args.reuse } : {}),
+            },
+            maxIterations: 1,
+            context: 'reuse',
+            ...(args.autoApprove === false ? { autoApprove: false } : {}),
+            ...(args.checkTimeoutMs
+              ? { checkTimeoutMs: args.checkTimeoutMs }
+              : {}),
+            fakeScenario: { changes: { 'NOTE.md': 'note\n' } },
+          })
+        ).id
+      const settle = async (id: string, statuses = ['completed', 'failed']) => {
+        await waitFor(
+          async () =>
+            statuses.includes((await durably.getRun(id))?.status ?? ''),
+          120000,
+          `run ${id} settles`,
+        )
+        return (await durably.getRun(id))?.status
+      }
+      // Checks that ran on the base commit, not on a candidate.
+      const baseChecks = async () =>
+        (await fixture.lines('checks')).filter((h) => h === fixture.base).length
+      const reuse = { maxAgeMs: 600_000 }
+      try {
+        // The first run has nothing to reuse: it runs the check.
+        const first = await start({ reuse })
+        assert.equal(await settle(first), 'completed')
+        assert.equal(await baseChecks(), 1)
+        const firstReport = await buildReport(durably, first)
+        assert.equal(firstReport.baseline?.passed, true)
+        assert.equal(firstReport.baseline?.reusedFrom, null)
+        assert.match(
+          reportToMarkdown(firstReport),
+          /## Baseline check[\s\S]*- source: measured in this run/,
+        )
+        const firstStep = await durably.storage.getCompletedStep(
+          first,
+          'baseline',
+        )
+        assert.ok(firstStep?.completedAt)
+
+        // A matching run sets up, and uses the first result in place of
+        // the check. It waits for approval, to be replayed later.
+        const reused = await start({ reuse, autoApprove: false })
+        assert.equal(await settle(reused, ['waiting', 'failed']), 'waiting')
+        assert.equal(await baseChecks(), 1, 'the check did not run')
+        assert.equal((await fixture.lines('setups')).length, 2)
+        assert.equal(
+          existsSync(join(dir, 'runs', reused, 'baseline-logs')),
+          false,
+        )
+
+        // Left out: the check runs, and the config version is the same.
+        const omitted = await start({})
+        assert.equal(await settle(omitted), 'completed')
+        assert.equal(await baseChecks(), 2)
+        const omittedReport = await buildReport(durably, omitted)
+        assert.equal(omittedReport.baseline?.reusedFrom, null)
+        assert.equal(omittedReport.configVersion, firstReport.configVersion)
+
+        // Replayed after approval: the completed baseline step is read
+        // back, still naming the first run although a newer result exists,
+        // and the check does not run.
+        const wait = (await durably.getWaits(reused)).find((w) =>
+          w.name.includes(':approve:'),
+        )
+        assert.ok(wait)
+        await signalApproval(durably, reused, wait.id, 'approved')
+        assert.equal(await settle(reused), 'completed')
+        assert.equal(await baseChecks(), 2)
+        const report = await buildReport(durably, reused)
+        assert.equal(report.baseline?.passed, true)
+        assert.deepEqual(report.baseline?.reusedFrom, {
+          runId: first,
+          checkedAt: firstStep.completedAt,
+        })
+        assert.equal(report.baseline?.recovered, false)
+        assert.equal(
+          report.baseline?.log?.stdoutPath,
+          firstReport.baseline?.log?.stdoutPath,
+        )
+        assert.equal(report.configVersion, firstReport.configVersion)
+        const md = reportToMarkdown(report)
+        assert.ok(
+          md.includes(
+            `- source: reused from run ${first}, checked at ${firstStep.completedAt}; the check did not run in this run`,
+          ),
+          md,
+        )
+        const json = JSON.parse(reportToJson(report)) as {
+          baseline: { reusedFrom: { runId: string; checkedAt: string } }
+        }
+        assert.deepEqual(json.baseline.reusedFrom, {
+          runId: first,
+          checkedAt: firstStep.completedAt,
+        })
+
+        // The source's log removed: no log, and why.
+        await rm(join(dir, 'runs', first, 'baseline-logs'), {
+          recursive: true,
+          force: true,
+        })
+        const gone = await buildReport(durably, reused)
+        assert.equal(gone.baseline?.log, null)
+        assert.match(gone.baseline?.logMissing ?? '', /no longer at/)
+        assert.match(reportToMarkdown(gone), /- log: none \(the log of run /)
+
+        // Too old, or another check timeout: the check runs.
+        const expired = await start({ reuse: { maxAgeMs: 1 } })
+        assert.equal(await settle(expired), 'completed')
+        assert.equal(await baseChecks(), 3)
+        const timeout = await start({ reuse, checkTimeoutMs: 120_000 })
+        assert.equal(await settle(timeout), 'completed')
+        assert.equal(await baseChecks(), 4)
+        for (const id of [expired, timeout])
+          assert.equal(
+            (await buildReport(durably, id)).baseline?.reusedFrom,
+            null,
+          )
+
+        // Off: no baseline, whatever baselineReuse says.
+        const off = await start({ baselineCheck: false, reuse })
+        assert.equal(await settle(off), 'completed')
+        const offReport = await buildReport(durably, off)
+        assert.equal(offReport.baseline, null)
+        assert.ok(!offReport.attempts.some((a) => a.stepName === 'baseline'))
+        assert.equal(await baseChecks(), 4)
+
+        // A matching result does not excuse setup's leftovers: an untracked
+        // file stops the run in setup, and a tracked edit in the baseline
+        // step, both before any agent call and without the check.
+        await writeFile(fixture.untrackedFlag, '')
+        const untracked = await start({ reuse })
+        assert.equal(await settle(untracked), 'failed')
+        await rm(fixture.untrackedFlag)
+        await writeFile(fixture.trackedFlag, '')
+        const tracked = await start({ reuse })
+        assert.equal(await settle(tracked), 'failed')
+        await rm(fixture.trackedFlag)
+        for (const id of [untracked, tracked]) {
+          const stopped = await buildReport(durably, id)
+          assert.equal(stopped.failure?.kind, 'baseline-check-failed')
+          assert.ok(
+            !stopped.attempts.some(
+              (a) =>
+                a.stepName.startsWith('preflight') ||
+                a.stepName.startsWith('stage:'),
+            ),
+            id,
+          )
+        }
+        assert.equal(
+          (await buildReport(durably, untracked)).failure?.setupUntracked,
+          true,
+        )
+        assert.match(
+          (await durably.getRun(tracked))?.error ?? '',
+          /baseline-mutated: setup left uncommitted changes to tracked files/,
+        )
+        assert.equal(await baseChecks(), 4)
+      } finally {
+        await durably.stop()
+        await durably.db.destroy()
+        delete process.env.FAKE_FAIL_FIRST
+      }
+    })
   },
 )
+
+describe('choosing a baseline result to reuse', () => {
+  const identity: BaselineIdentity = {
+    repoPath: '/repo',
+    baseCommit: 'a'.repeat(40),
+    checkCommand: ['pnpm', 'validate'],
+    setupCommand: ['pnpm', 'install'],
+    checkTimeoutMs: 900000,
+    node: 'v24.0.0',
+    platform: 'darwin',
+    arch: 'arm64',
+    checkExecutable: '/usr/local/bin/pnpm',
+  }
+  const now = Date.parse('2026-09-27T12:00:00.000Z')
+  const at = (msAgo: number) => new Date(now - msAgo).toISOString()
+  const measured = (over: Partial<BaselineIdentity> = {}, passed = true) => ({
+    source: 'measured',
+    passed,
+    stdout: 'ok',
+    exitCode: passed ? 0 : 1,
+    log: null,
+    identity: { ...identity, ...over },
+  })
+  const choose = (
+    stored: { runId: string; output: unknown; completedAt: string | null }[],
+  ) =>
+    chooseReusableBaseline({
+      runId: 'current',
+      identity,
+      maxAgeMs: 60_000,
+      now,
+      stored,
+    })?.runId ?? null
+
+  it('takes the newest measured, passing, matching result within the age', () => {
+    assert.equal(
+      choose([
+        { runId: 'older', output: measured(), completedAt: at(30_000) },
+        { runId: 'newer', output: measured(), completedAt: at(10_000) },
+        { runId: 'oldest', output: measured(), completedAt: at(50_000) },
+      ]),
+      'newer',
+    )
+    assert.equal(
+      choose([{ runId: 'edge', output: measured(), completedAt: at(60_000) }]),
+      'edge',
+    )
+  })
+
+  it('never takes a failed, reused, older, unfinished, expired or future result, or its own', () => {
+    const { identity: _i, ...legacy } = measured()
+    for (const [runId, output, completedAt] of [
+      ['failed', measured({}, false), at(1000)],
+      ['reused', { ...measured(), source: 'reused' }, at(1000)],
+      ['legacy', legacy, at(1000)],
+      ['older-format', { passed: true, stdout: '', exitCode: 0 }, at(1000)],
+      ['no-identity', { ...measured(), identity: null }, at(1000)],
+      ['unfinished', measured(), null],
+      ['expired', measured(), at(60_001)],
+      ['future', measured(), new Date(now + 1).toISOString()],
+      ['current', measured(), at(1000)],
+    ] as const)
+      assert.equal(choose([{ runId, output, completedAt }]), null, runId)
+  })
+
+  it('never takes a result from another repository, base, setup, check or environment', () => {
+    for (const over of [
+      { repoPath: '/other' },
+      { baseCommit: 'b'.repeat(40) },
+      { checkCommand: ['pnpm', 'test'] },
+      { setupCommand: null },
+      { setupCommand: ['pnpm', 'install', '--frozen-lockfile'] },
+      { checkTimeoutMs: 600000 },
+      { node: 'v24.1.0' },
+      { platform: 'linux' },
+      { arch: 'x64' },
+      { checkExecutable: '/opt/homebrew/bin/pnpm' },
+    ] satisfies Partial<BaselineIdentity>[])
+      assert.equal(
+        choose([
+          { runId: 'other', output: measured(over), completedAt: at(1000) },
+        ]),
+        null,
+        JSON.stringify(over),
+      )
+  })
+})
 
 describe('refused calls and the repair profile', { timeout: 300000 }, () => {
   const fake = (requestedModel: string | null = null) => ({

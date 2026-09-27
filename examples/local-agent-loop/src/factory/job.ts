@@ -1,6 +1,16 @@
 /** Durably job: persist a decision, dispatch its stage, reduce the event. */
-import { mkdir, rm } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { constants, existsSync } from 'node:fs'
+import { access, mkdir, realpath, rm } from 'node:fs/promises'
+import { arch, platform } from 'node:os'
+import {
+  delimiter,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -17,6 +27,7 @@ import {
   CANDIDATE_MOVED_MESSAGE,
   PREFLIGHT_FAILED_MESSAGE,
 } from '../engine/failure-reasons.js'
+import { isDirty, resolveCommit } from '../engine/git.js'
 import {
   FAKE_REVIEW_DECISIONS,
   FAKE_TRIAGE_KINDS,
@@ -37,6 +48,7 @@ import {
   type ReportTriage,
 } from '../engine/report.js'
 import {
+  checkpointPaths,
   RejectedInvocationError,
   runAgentCall,
   UncertainInvocationError,
@@ -81,10 +93,12 @@ import { triageThatRuns } from './repair.js'
 import { stages } from './stages.js'
 import {
   DEFAULT_COMMIT_SETTINGS,
+  type RepoTargetConfig,
   type Target,
   type TargetConfig,
 } from './target.js'
 import {
+  BASELINE_STEP,
   EFFORT_RESUME_POLICY,
   executionKey,
   initialState,
@@ -96,6 +110,9 @@ import {
   repairSessionDecision,
   separateRepairProfile,
   usesReviewMaterials,
+  type BaselineIdentity,
+  type BaselineRecord,
+  type BaselineReuse,
   type FactorySetup,
   type RepairSessionRecord,
   type ProfileRole,
@@ -126,6 +143,16 @@ const commitSettingsSchema = z
     publishSquashed: z.boolean().default(false),
   })
   .strict()
+
+/**
+ * How old a reused baseline result may be: a positive integer of
+ * milliseconds, at most `Number.MAX_SAFE_INTEGER`.
+ */
+export const baselineMaxAgeMsSchema = z
+  .number()
+  .int()
+  .positive()
+  .max(Number.MAX_SAFE_INTEGER)
 
 /** Where an input came from. Its hash is taken from the stored content. */
 const inputFileSchema = z.object({ path: z.string().min(1) })
@@ -164,6 +191,15 @@ const targetSchema = z
       commit: commitSettingsSchema.optional(),
       /** Run the pinned check on the base commit before any agent call. */
       baselineCheck: z.boolean().optional(),
+      /**
+       * Use another run's passing baseline result of at most this age
+       * instead of running the check. Read only with `baselineCheck`.
+       */
+      baselineReuse: z
+        .object({ maxAgeMs: baselineMaxAgeMsSchema })
+        .strict()
+        .nullable()
+        .optional(),
     }),
   ])
   .default({ kind: 'subject' })
@@ -948,15 +984,262 @@ function resolveInputProfiles(input: {
   }
 }
 
+/**
+ * The file a check command's first word runs, as `spawn` finds it from the
+ * worktree: a path relative to the worktree, or the first match on PATH.
+ * Symbolic links are resolved, and a file inside the worktree is named
+ * relative to it, so runs in different worktrees name the same file alike.
+ * Null when it cannot be found or run.
+ */
+async function checkExecutableOf(
+  command: string | undefined,
+  workdir: string,
+): Promise<string | null> {
+  if (!command) return null
+  const hasDir = command.includes('/') || command.includes(sep)
+  const candidates = hasDir
+    ? [resolve(workdir, command)]
+    : (process.env['PATH'] ?? '')
+        .split(delimiter)
+        .filter((dir) => dir.length > 0)
+        .map((dir) => resolve(workdir, dir, command))
+  let found: string | null = null
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, constants.X_OK)
+      found = candidate
+      break
+    } catch {
+      // Not here.
+    }
+  }
+  if (!found) return null
+  try {
+    const [file, root] = await Promise.all([realpath(found), realpath(workdir)])
+    const inside = relative(root, file)
+    return inside && !inside.startsWith('..') && !isAbsolute(inside)
+      ? `./${inside}`
+      : file
+  } catch {
+    return null
+  }
+}
+
+/**
+ * What a baseline result of this run is valid for, or null when a value
+ * cannot be resolved: such a run neither reuses a result nor leaves one
+ * another run can reuse.
+ */
+export async function baselineIdentityOf(
+  target: RepoTargetConfig,
+): Promise<BaselineIdentity | null> {
+  const checkExecutable = await checkExecutableOf(
+    target.checkCommand[0],
+    target.workdir,
+  )
+  if (!checkExecutable) return null
+  let repoPath: string
+  try {
+    repoPath = await realpath(target.repoPath)
+  } catch {
+    return null
+  }
+  return {
+    repoPath,
+    baseCommit: target.baseCommit,
+    checkCommand: target.checkCommand,
+    setupCommand: target.setupCommand,
+    checkTimeoutMs: target.checkTimeoutMs,
+    node: process.version,
+    platform: platform(),
+    arch: arch(),
+    checkExecutable,
+  }
+}
+
+const baselineIdentitySchema = z
+  .object({
+    repoPath: z.string().min(1),
+    baseCommit: z.string().min(1),
+    checkCommand: z.array(z.string()).min(1),
+    setupCommand: z.array(z.string()).nullable(),
+    checkTimeoutMs: z.number(),
+    node: z.string().min(1),
+    platform: z.string().min(1),
+    arch: z.string().min(1),
+    checkExecutable: z.string().min(1),
+  })
+  .strict()
+
+/**
+ * A stored baseline result another run may reuse: measured in its own run,
+ * passing, and carrying the identity it was measured under. A failed, a
+ * reused or an older record without an identity does not parse.
+ */
+const reusableRecordSchema = z.object({
+  source: z.literal('measured'),
+  passed: z.literal(true),
+  identity: baselineIdentitySchema,
+  stdout: z.string(),
+  exitCode: z.number().nullable(),
+  log: z.custom<BaselineRecord['log']>().optional(),
+})
+
+/** The values two identities must share, in one fixed order. */
+function identityKey(identity: BaselineIdentity): string {
+  return JSON.stringify([
+    identity.repoPath,
+    identity.baseCommit,
+    identity.checkCommand,
+    identity.setupCommand,
+    identity.checkTimeoutMs,
+    identity.node,
+    identity.platform,
+    identity.arch,
+    identity.checkExecutable,
+  ])
+}
+
+/** A completed baseline step of some run in the state database. */
+export interface StoredBaseline {
+  runId: string
+  output: unknown
+  /** When the step completed. */
+  completedAt: string | null
+}
+
+/** The reads a run makes to find a baseline result it can reuse. */
+export interface BaselineHistory {
+  /** Every completed baseline step of the other runs in this database. */
+  completed(exceptRunId: string): Promise<StoredBaseline[]>
+  /** Whether the run read its baseline verdict back from its checkpoint. */
+  recovered(runId: string): Promise<boolean>
+}
+
+/**
+ * The newest measured, passing result of another run with the same identity
+ * that is at most `maxAgeMs` old at `now`, or null. Age runs from the step's
+ * completion; a record that completed after `now`, as a clock set back can
+ * make one, is not used.
+ */
+export function chooseReusableBaseline(args: {
+  runId: string
+  identity: BaselineIdentity
+  maxAgeMs: number
+  now: number
+  stored: StoredBaseline[]
+}): { runId: string; checkedAt: string; record: BaselineRecord } | null {
+  const key = identityKey(args.identity)
+  let best: {
+    runId: string
+    checkedAt: string
+    at: number
+    record: BaselineRecord
+  } | null = null
+  for (const s of args.stored) {
+    if (s.runId === args.runId || !s.completedAt) continue
+    const at = Date.parse(s.completedAt)
+    if (!Number.isFinite(at) || at > args.now || args.now - at > args.maxAgeMs)
+      continue
+    const parsed = reusableRecordSchema.safeParse(s.output)
+    if (!parsed.success || identityKey(parsed.data.identity) !== key) continue
+    if (best && best.at >= at) continue
+    best = {
+      runId: s.runId,
+      checkedAt: s.completedAt,
+      at,
+      record: { ...parsed.data, log: parsed.data.log ?? null },
+    }
+  }
+  return best
+    ? { runId: best.runId, checkedAt: best.checkedAt, record: best.record }
+    : null
+}
+
+/**
+ * The worktree is as a measured baseline would require it before the check:
+ * at the base commit, with no changes to tracked files and no untracked file
+ * `.gitignore` does not cover. Stops the run as a baseline failure otherwise.
+ */
+async function assertBaseWorktree(
+  target: RepoTargetConfig,
+  signal: AbortSignal,
+): Promise<void> {
+  const stop = (why: string) =>
+    new Error(
+      `${BASELINE_FAILED_MESSAGE}: baseline-mutated: ${why}; stopped before any agent call`,
+    )
+  if (await isDirty(target.workdir, { includeUntracked: false }))
+    throw stop(
+      `setup left uncommitted changes to tracked files in ${target.workdir} before the check`,
+    )
+  const head = await resolveCommit(target.workdir, 'HEAD')
+  if (head !== target.baseCommit)
+    throw stop(
+      `${target.workdir} is at ${head.slice(0, 12)}, not the base ${target.baseCommit.slice(0, 12)}`,
+    )
+  await assertSetupLeftNoUntracked(target.workdir, signal)
+}
+
+/**
+ * Another run's result this baseline may use, as this step's record, or
+ * null to run the check. Null too when this run has already started
+ * measuring: an interrupted check is finished, never swapped for a reused
+ * result. A failed lookup also runs the check.
+ */
+async function reusedBaseline(args: {
+  runId: string
+  setup: FactorySetup
+  reuse: BaselineReuse
+  history: BaselineHistory
+  operationKey: string
+}): Promise<BaselineRecord | null> {
+  const { setup } = args
+  const identity = setup.baselineIdentity ?? null
+  if (!identity) return null
+  const paths = checkpointPaths(setup.checkpointsDir, args.operationKey)
+  if (existsSync(paths.started) || existsSync(paths.completed)) return null
+  try {
+    const chosen = chooseReusableBaseline({
+      runId: args.runId,
+      identity,
+      maxAgeMs: args.reuse.maxAgeMs,
+      now: Date.now(),
+      stored: await args.history.completed(args.runId),
+    })
+    if (!chosen) return null
+    return {
+      ...chosen.record,
+      source: 'reused',
+      identity,
+      reusedFrom: {
+        runId: chosen.runId,
+        checkedAt: chosen.checkedAt,
+        recovered: await args.history.recovered(chosen.runId),
+      },
+    }
+  } catch {
+    return null
+  }
+}
+
+/** The job's name, as its runs are stored. */
+export const AGENT_LOOP_JOB_NAME = 'local-factory.v2'
+
 export interface AgentLoopJobOptions {
   /** Directory every run's worktree, checkpoints and delivery live under. */
   stateRoot: string
+  /**
+   * The state database's earlier baseline results. Absent: every baseline
+   * check runs, whatever `baselineReuse` says.
+   */
+  baselineHistory?: BaselineHistory
 }
 
 export function createAgentLoopJob(options: AgentLoopJobOptions) {
   const runRoot = (runId: string) => runRootOf(options.stateRoot, runId)
   return defineJob({
-    name: 'local-factory.v2',
+    name: AGENT_LOOP_JOB_NAME,
     input: inputSchema,
     output: outputSchema,
     run: async (step, input) => {
@@ -1091,6 +1374,12 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           // check's own output for setup's.
           if (baselineCheck && target.kind === 'repo')
             await assertSetupLeftNoUntracked(target.workdir, signal)
+          // Resolved here, in the worktree setup prepared, and never again:
+          // a replay compares the values this run was set up with.
+          const baselineIdentity =
+            baselineCheck && target.kind === 'repo'
+              ? await baselineIdentityOf(target)
+              : null
           const instructionsVersion = 'local-factory.v3'
           // Fixed here with the CLI version just recorded, so a restarted
           // worker with another environment never changes how this run's
@@ -1153,6 +1442,15 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             maxIterations: input.maxIterations,
             agentTimeoutMs,
             baselineCheck,
+            ...(baselineCheck
+              ? {
+                  baselineReuse:
+                    input.target.kind === 'repo'
+                      ? (input.target.baselineReuse ?? null)
+                      : null,
+                  baselineIdentity,
+                }
+              : {}),
             codexPath,
             ...(Object.keys(review).length > 0 ? { review } : {}),
             ...(repairOf
@@ -1185,31 +1483,64 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       // The pinned check must pass on the base commit, or no candidate could
       // be graded: stop before paying for any agent call. The same checkpoint
       // pair as verification, so a completed result is read back on resume
-      // and an interrupted check is graded again.
-      if (setup.baselineCheck && target instanceof RepoTarget) {
-        const baseline = await step.run('baseline', (signal, attempt) =>
-          runVerificationStep(
-            attempt,
-            {
-              provider: setup.profiles.code.provider,
-              operationKey: `${step.runId}/baseline`,
-              checkpointsDir: setup.checkpointsDir,
-              stage: 'baseline',
-              iteration: 0,
-              grade: (graderSignal) =>
-                target.gradeBase({
-                  // Keyed by the step attempt, as a verification log is.
-                  logDir: join(
-                    setup.checkpointsDir,
-                    '..',
-                    'baseline-logs',
-                    attempt.id,
-                  ),
-                  signal: graderSignal,
-                }),
-            },
-            signal,
-          ),
+      // and an interrupted check is graded again. With `baselineReuse`, a
+      // matching passing result of another run is used instead, once the
+      // worktree is proven to be as the check would need it. The choice is
+      // this step's output, so a replay never looks again.
+      if (
+        setup.baselineCheck &&
+        target instanceof RepoTarget &&
+        setup.target.kind === 'repo'
+      ) {
+        const repoTarget = setup.target
+        const operationKey = `${step.runId}/baseline`
+        const reuse = setup.baselineReuse ?? null
+        const history = options.baselineHistory
+        const baseline = await step.run(
+          BASELINE_STEP,
+          async (signal, attempt): Promise<BaselineRecord> => {
+            const reused =
+              reuse && history
+                ? await reusedBaseline({
+                    runId: step.runId,
+                    setup,
+                    reuse,
+                    history,
+                    operationKey,
+                  })
+                : null
+            if (reused) {
+              await assertBaseWorktree(repoTarget, signal)
+              return reused
+            }
+            const measured = await runVerificationStep(
+              attempt,
+              {
+                provider: setup.profiles.code.provider,
+                operationKey,
+                checkpointsDir: setup.checkpointsDir,
+                stage: 'baseline',
+                iteration: 0,
+                grade: (graderSignal) =>
+                  target.gradeBase({
+                    // Keyed by the step attempt, as a verification log is.
+                    logDir: join(
+                      setup.checkpointsDir,
+                      '..',
+                      'baseline-logs',
+                      attempt.id,
+                    ),
+                    signal: graderSignal,
+                  }),
+              },
+              signal,
+            )
+            return {
+              ...measured,
+              source: 'measured',
+              identity: setup.baselineIdentity ?? null,
+            }
+          },
         )
         if (!baseline.passed && setup.target.kind === 'repo')
           throw new Error(

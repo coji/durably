@@ -33,7 +33,7 @@ import {
   usesReviewMaterials,
   type FactoryOutcome,
   type ReviewLens,
-  type ReviewVerdict,
+  type ReviewStepResult,
   type SessionRef,
   type StageArgs,
   type StageHandler,
@@ -56,13 +56,7 @@ function outcome(
     candidate: state.candidate,
     iterations: state.iteration,
     reviewRounds: state.reviewRounds,
-    // The run output keeps each verdict and its notes only: the findings
-    // stay in the review steps, where the report reads them.
-    reviews: state.reviews.map(({ lens, decision, notes }) => ({
-      lens,
-      decision,
-      notes,
-    })),
+    reviews: state.reviews,
     workdir,
     fake: state.setup.fake,
     delivery,
@@ -307,7 +301,7 @@ export const reviewStage: StageHandler = async ({
     lens: ReviewLens,
     signal: AbortSignal,
     attempt: StepAttemptContext,
-  ): Promise<ReviewVerdict> => {
+  ): Promise<ReviewStepResult> => {
     // Each reviewer has its own profile and provider, and always starts a
     // new session: two branches never share one.
     const profile = setup.profiles[lens]
@@ -416,7 +410,7 @@ export const reviewStage: StageHandler = async ({
       throw new Error(`review-incomplete (${lens}): ${parsed.error}`)
     // The findings are kept with the verdict in this completed step, so a
     // report reads them back without calling the reviewer or reading the
-    // checkpoint again.
+    // checkpoint again. The review event drops them before the state.
     return {
       lens,
       decision: parsed.decision,

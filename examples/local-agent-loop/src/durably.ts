@@ -11,14 +11,20 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { createDurably } from '@coji/durably'
+import { createDurably, type AnyDurably } from '@coji/durably'
 /** Durably instance (local SQLite via better-sqlite3). */
 import Database from 'better-sqlite3'
 import { SqliteDialect } from 'kysely'
 
+import { toAttemptRow } from './engine/report.js'
 import { TERMINAL_STATUSES } from './engine/terminal.js'
-import { createAgentLoopJob } from './factory/job.js'
+import {
+  AGENT_LOOP_JOB_NAME,
+  createAgentLoopJob,
+  type BaselineHistory,
+} from './factory/job.js'
 import { reviewSnapshotsDirOf, runRootOf } from './factory/layout.js'
+import { BASELINE_STEP } from './factory/types.js'
 import { removeQuietly } from './targets/repo.js'
 
 /**
@@ -165,6 +171,56 @@ function withDatabase(
   maxConcurrentRuns?: number,
 ) {
   const dialect = new SqliteDialect({ database })
+  // The job reads this same database's earlier baseline results through
+  // the instance it belongs to, which exists once `createDurably` returns.
+  let reader: Pick<
+    AnyDurably,
+    'getRuns' | 'getStepAttempts' | 'storage'
+  > | null = null
+  const baselineHistory: BaselineHistory = {
+    completed: async (exceptRunId) => {
+      const durably = reader
+      if (!durably) return []
+      const runs = await durably.getRuns({ jobName: AGENT_LOOP_JOB_NAME })
+      const stored = await Promise.all(
+        runs
+          .filter(
+            (run) =>
+              run.id !== exceptRunId &&
+              (run.input as { target?: { baselineCheck?: unknown } } | null)
+                ?.target?.baselineCheck === true,
+          )
+          .map(async (run) => {
+            const found = await durably.storage.getCompletedStep(
+              run.id,
+              BASELINE_STEP,
+            )
+            return found
+              ? [
+                  {
+                    runId: run.id,
+                    output: found.output,
+                    completedAt: found.completedAt,
+                  },
+                ]
+              : []
+          }),
+      )
+      return stored.flat()
+    },
+    recovered: async (runId) => {
+      const durably = reader
+      if (!durably) return false
+      const attempts = await durably.getStepAttempts(runId)
+      return attempts
+        .map(toAttemptRow)
+        .some(
+          (a) =>
+            a.stepName === BASELINE_STEP &&
+            a.measurement?.result === 'checkpoint-recovered',
+        )
+    },
+  }
   const durably = createDurably({
     dialect,
     pollingIntervalMs: 500,
@@ -172,8 +228,9 @@ function withDatabase(
     leaseMs: 10000,
     preserveSteps: true,
     ...(maxConcurrentRuns ? { maxConcurrentRuns } : {}),
-    jobs: { agentLoop: createAgentLoopJob({ stateRoot }) },
+    jobs: { agentLoop: createAgentLoopJob({ stateRoot, baselineHistory }) },
   })
+  reader = durably
   // The worker removes a run's review snapshots itself: after each review
   // round, before every other stage, when the run fails, is cancelled or
   // finishes, and at startup for runs that have already ended

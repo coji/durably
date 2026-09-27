@@ -21,6 +21,7 @@ import type {
   ResolvedProfile,
   SessionRef,
 } from '../engine/types.js'
+import type { VerificationOutcome } from '../engine/verification.js'
 import type { FactoryEvent } from './events.js'
 import type { Delivery, Target, TargetConfig } from './target.js'
 
@@ -131,6 +132,19 @@ export interface FactorySetup {
    */
   baselineCheck?: boolean
   /**
+   * How long a passing baseline result of another run may be used instead
+   * of running the check, fixed at trigger. Null or absent: every run with
+   * the baseline check runs it. Read only when `baselineCheck` is on.
+   */
+  baselineReuse?: BaselineReuse | null
+  /**
+   * What a baseline result must match to be used by, or taken from, this
+   * run: recorded once at setup, so a replay compares the same values. Null
+   * when a value could not be resolved, which rules reuse out both ways;
+   * absent without the baseline check and on a run set up before it existed.
+   */
+  baselineIdentity?: BaselineIdentity | null
+  /**
    * The Codex CLI file the run pinned at trigger. Null or absent: the bundled
    * CLI first, then `codex` on PATH, as before `codexPath` existed.
    */
@@ -163,6 +177,54 @@ export function reviewInvocationOf(
   return setup.review?.[lens] ?? null
 }
 
+/** `factory.json`'s `baselineReuse`, fixed at trigger. */
+export interface BaselineReuse {
+  /** How old a passing result may be, from its baseline step's completion. */
+  maxAgeMs: number
+}
+
+/**
+ * What a baseline result is valid for. Deliberately narrow: the repository,
+ * the base commit, the pinned setup and check with the check's timeout, and
+ * the Node.js version, platform, architecture and check executable the
+ * worker resolved. Nothing else in the machine's environment is compared.
+ */
+export interface BaselineIdentity {
+  /** The repository root with symbolic links resolved. */
+  repoPath: string
+  baseCommit: string
+  checkCommand: string[]
+  setupCommand: string[] | null
+  checkTimeoutMs: number
+  node: string
+  platform: string
+  arch: string
+  /**
+   * The file the check's first word runs, with symbolic links resolved; a
+   * file inside the worktree is named relative to it, as `./<path>`.
+   */
+  checkExecutable: string
+}
+
+/** The step that runs the pinned check on the base commit, or reuses it. */
+export const BASELINE_STEP = 'baseline'
+
+/** What `BASELINE_STEP` stores. */
+export interface BaselineRecord extends VerificationOutcome {
+  /** `measured`: the check ran in this run; `reused`: another run's result. */
+  source: 'measured' | 'reused'
+  /** The identity this result was compared by; null when none resolved. */
+  identity: BaselineIdentity | null
+  /** Set on a reused result: the run whose measured result it is. */
+  reusedFrom?: {
+    runId: string
+    /** When that run's baseline step completed: the result's age starts here. */
+    checkedAt: string
+    /** That run read its verdict back from its checkpoint. */
+    recovered: boolean
+  }
+}
+
 /** The run and candidate a repair run starts from. */
 export interface RepairOrigin {
   runId: string
@@ -185,15 +247,22 @@ export type ReviewFinding = ReportFinding
 /** The findings of a `findings-json` review as the report keeps them. */
 export type ReviewFindings = ReportReviewFindings
 
+/**
+ * A reviewer's verdict as the state and the run output keep it. The
+ * findings are not part of it: they stay in the review's completed step
+ * (`ReviewStepResult`), where the report reads them, so the approval wait's
+ * metadata and the run output carry the verdicts only.
+ */
 export interface ReviewVerdict {
   lens: ReviewLens
   decision: 'pass' | 'needsChanges'
   notes: string
-  /**
-   * A `findings-json` review's findings; null for a verdict review, absent
-   * on a review recorded before findings were kept.
-   */
-  findings?: ReviewFindings | null
+}
+
+/** What a review step stores: the verdict and its findings. */
+export interface ReviewStepResult extends ReviewVerdict {
+  /** A `findings-json` review's findings; null for a verdict review. */
+  findings: ReviewFindings | null
 }
 
 export interface FactoryOutcome {
