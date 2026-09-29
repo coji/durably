@@ -4,7 +4,7 @@ import { Commands } from '../components/Commands'
 import { EmptyState } from '../components/EmptyState'
 import { Section } from '../components/Layout'
 import { LiveProgress } from '../components/LiveProgress'
-import { IdSuffix } from '../components/RunLink'
+import { IdSuffix, runHref } from '../components/RunLink'
 import { StageTrack } from '../components/StageTrack'
 import { StatusBadge } from '../components/StatusBadge'
 import {
@@ -18,8 +18,6 @@ import { Ago } from '../components/Time'
 import { COMMON, LIST } from '../glossary'
 import { diagnosisText, retryLabel } from '../labels'
 import type { RunRow, RunsResponse } from '../server'
-
-const runHref = (id: string) => `#/runs/${encodeURIComponent(id)}`
 
 /** Every run of a task, oldest first, each by its place in the task. */
 function TaskRuns({

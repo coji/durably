@@ -39,6 +39,7 @@ import {
   repairChildrenByParent,
   repairParentId,
   reusedBaselineOf,
+  taskRunInput,
   type ReportSource,
 } from '../engine/build-report.js'
 import {
@@ -1326,15 +1327,9 @@ function createUiApi() {
       ),
     )
     const tasks = groupTasks(
-      built.map(({ run, report }, i) => ({
-        id: run.id,
-        createdAt: run.createdAt,
-        parentId: repairParentId(run),
-        kind: rows[i]?.diagnosis.kind ?? 'finished',
-        approved: report.summary.success,
-        leadTimeMs: report.summary.leadTimeMs,
-        costUsd: report.summary.costUsd,
-      })),
+      built.map(({ run, report }, i) =>
+        taskRunInput(run, rows[i]?.diagnosis.kind ?? 'finished', report),
+      ),
     )
     return { ...base, exists: true, runs: rows, tasks }
   }
@@ -1416,18 +1411,11 @@ function createUiApi() {
       }),
     )
     const [task] = groupTasks(
-      read.map(({ run: m, report, kind }) => ({
-        id: m.id,
-        createdAt: m.createdAt,
-        parentId: repairParentId(m),
-        kind,
-        approved: report.summary.success,
-        leadTimeMs: report.summary.leadTimeMs,
-        costUsd: report.summary.costUsd,
-      })),
+      read.map(({ run: m, report, kind }) => taskRunInput(m, kind, report)),
     )
+    const byId = new Map(read.map((x) => [x.run.id, x]))
     return (task?.runs ?? []).flatMap((r) => {
-      const hit = read.find((x) => x.run.id === r.id)
+      const hit = byId.get(r.id)
       return hit
         ? [
             {

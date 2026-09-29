@@ -1,5 +1,6 @@
 import { COMMON, LIST } from '../glossary'
 import type { LineageRun } from '../server'
+import { runHref } from './RunLink'
 import { StatusBadge } from './StatusBadge'
 import { runRole, runState } from './TaskRow'
 import { Ago } from './Time'
@@ -40,7 +41,7 @@ export function TaskLineage({
                 </span>
               ) : (
                 <a
-                  href={`#/runs/${encodeURIComponent(r.id)}`}
+                  href={runHref(r.id)}
                   className="text-fg decoration-line-strong underline underline-offset-2 hover:decoration-current"
                 >
                   {runRole(r)}

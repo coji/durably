@@ -1019,7 +1019,7 @@ function repairsOf(visits: StageVisits[], repairRun: boolean): number {
  * A terminal completed run whose candidate was approved: `summary.success`.
  * `demo status` reads it from the stored run, without a report.
  */
-export function isApprovedRun(status: string, output: unknown): boolean {
+function isApprovedRun(status: string, output: unknown): boolean {
   const o = output as { approved?: boolean; conclusion?: string } | null
   return (
     status === 'completed' &&

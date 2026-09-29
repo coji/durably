@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 
-import type { AnyDurably } from '@coji/durably'
+import type { AnyDurably, Run } from '@coji/durably'
 
 import { REPAIR_OF_LABEL, triageThatRuns } from '../factory/repair.js'
 import {
@@ -52,6 +52,7 @@ import {
   type RoleProfileRow,
   type TriageCalibration,
 } from './report.js'
+import type { DiagnosisKind, TaskRunInput } from './status.js'
 
 interface PersistedProfile {
   provider?: string
@@ -823,6 +824,26 @@ export function repairParentId(run: {
     (run.input as PersistedInput | null)?.repairOf?.runId ??
     null
   )
+}
+
+/**
+ * A run as `groupTasks` reads it, from its report and its diagnosis: the one
+ * mapping `demo status` and the web UI share.
+ */
+export function taskRunInput(
+  run: Pick<Run, 'id' | 'createdAt' | 'labels' | 'input'>,
+  kind: DiagnosisKind,
+  report: Pick<LoopReport, 'summary'>,
+): TaskRunInput {
+  return {
+    id: run.id,
+    createdAt: run.createdAt,
+    parentId: repairParentId(run),
+    kind,
+    approved: report.summary.success,
+    leadTimeMs: report.summary.leadTimeMs,
+    costUsd: report.summary.costUsd,
+  }
 }
 
 /**

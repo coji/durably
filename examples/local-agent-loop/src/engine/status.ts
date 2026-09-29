@@ -212,24 +212,18 @@ export function groupTasks(runs: TaskRunInput[]): Task[] {
     const attention =
       ATTENTION_ORDER.find((a) => taskRuns.some((r) => r.attention === a)) ??
       'done'
-    const newest = [...ordered].reverse()
+    const newest = [...taskRuns].reverse()
     const representative =
-      newest.find((run) =>
-        taskRuns.some(
-          (r) =>
-            r.id === run.id &&
-            r.attention === attention &&
-            (attention !== 'done' || !r.superseded),
-        ),
-      ) ??
-      newest[0] ??
-      ordered[0]
+      newest.find(
+        (r) =>
+          r.attention === attention && (attention !== 'done' || !r.superseded),
+      ) ?? newest[0]
     return {
       id,
       attention,
       representative: representative?.id ?? id,
       runs: taskRuns,
-      latestAt: newest[0]?.createdAt ?? '',
+      latestAt: ordered.at(-1)?.createdAt ?? '',
       total: {
         leadTimeMs: sumKnown(ordered.map((r) => r.leadTimeMs)),
         costUsd: sumKnown(ordered.map((r) => r.costUsd)),

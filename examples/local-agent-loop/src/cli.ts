@@ -22,7 +22,7 @@ import {
   recordedTriage,
   repairChildren,
   repairChildrenByParent,
-  repairParentId,
+  taskRunInput,
 } from './engine/build-report.js'
 import { killOwnedChildren, MAX_TIMEOUT_MS } from './engine/child.js'
 import {
@@ -41,6 +41,7 @@ import {
 } from './engine/report.js'
 import {
   diagnose,
+  diagnoseRun,
   diagnosisLines,
   groupTasks,
   lastLeaseRenewal,
@@ -627,39 +628,36 @@ if (cmd === 'worker') {
   const format = args()['format'] ?? 'text'
   if (format !== 'text' && format !== 'json')
     throw new Error('--format must be text or json')
-  const { runName } = await import('./ui/server.js')
+  const { readOnce, runName } = await import('./ui/server.js')
   const durably = createAgentDurably()
   await durably.migrate()
   const now = Date.now()
   const worker = workerStatus()
   const runs = await durably.getRuns({ jobName: durably.jobs.agentLoop.name })
-  // Each run's report too, so a task's time and cost are the list's.
+  // Each run's report too, so a task's time and cost are the list's. The
+  // report and the diagnosis share one read of each run, and the diagnosis
+  // takes the report's failure instead of classifying the run again.
+  const src = readOnce(durably, runs)
   const children = repairChildrenByParent(runs)
-  const seen = new Map<
-    string,
-    { run: Run; diagnosis: Diagnosis; report: LoopReport }
-  >()
-  for (const run of runs)
-    seen.set(run.id, {
-      run,
-      diagnosis: await diagnose(durably, run, now, worker),
-      report: await buildReport(durably, run.id, {
-        children: children.get(run.id) ?? [],
-      }),
+  const read: { run: Run; diagnosis: Diagnosis; report: LoopReport }[] = []
+  for (const run of runs) {
+    const report = await buildReport(src, run.id, {
+      children: children.get(run.id) ?? [],
     })
+    const { diagnosis } = await diagnoseRun(
+      src,
+      run,
+      now,
+      { failure: report.failure },
+      worker,
+    )
+    read.push({ run, diagnosis, report })
+  }
+  const seen = new Map(read.map((r) => [r.run.id, r]))
   const tasks = groupTasks(
-    runs.map((run) => {
-      const s = seen.get(run.id)
-      return {
-        id: run.id,
-        createdAt: run.createdAt,
-        parentId: repairParentId(run),
-        kind: s?.diagnosis.kind ?? 'finished',
-        approved: s?.report.summary.success ?? false,
-        leadTimeMs: s?.report.summary.leadTimeMs ?? null,
-        costUsd: s?.report.summary.costUsd ?? null,
-      }
-    }),
+    read.map(({ run, diagnosis, report }) =>
+      taskRunInput(run, diagnosis.kind, report),
+    ),
   )
   await durably.db.destroy()
   // A task reads as its representative run's block, then the task it
@@ -685,10 +683,9 @@ if (cmd === 'worker') {
   }
   const attention = tasks.filter((t) => needsAttention(t.attention))
   const active = tasks.filter((t) => t.attention === 'active')
-  const leftovers = runs.flatMap((run) => {
-    const d = seen.get(run.id)?.diagnosis
-    return d?.kind === 'finished' && d.cleanup ? [diagnosisLines(run, d)] : []
-  })
+  const leftovers = read.flatMap(({ run, diagnosis: d }) =>
+    d.kind === 'finished' && d.cleanup ? [diagnosisLines(run, d)] : [],
+  )
   const out: string[] = []
   if (attention.length === 0 && active.length === 0)
     out.push(

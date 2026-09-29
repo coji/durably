@@ -153,7 +153,7 @@ type ReportInput = {
  * possibly on its own profile, so it takes the code profile it inherited, as
  * a normal run's does.
  */
-export function codeProfileOf(report: Pick<LoopReport, 'input' | 'attempts'>): {
+function codeProfileOf(report: Pick<LoopReport, 'input' | 'attempts'>): {
   model: string | null
   effort: string | null
 } {
@@ -405,7 +405,7 @@ export function comparisonToMarkdown(c: Comparison): string {
 // ---------------------------------------------------------------- trend
 
 /** The trend's window, in days back from now, unless asked otherwise. */
-export const TREND_DAYS = 30
+const TREND_DAYS = 30
 
 const DAY_MS = 86_400_000
 

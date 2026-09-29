@@ -532,7 +532,6 @@ export const COLUMN = {
 
 export const DETAIL = {
   conclusion: '結論と次の手',
-  next: '次の手',
   noNext: '人がすることはありません。',
   stopRecord: '停止の記録を見る',
   deliveredTo: '納品したブランチ',
@@ -555,7 +554,6 @@ export const DETAIL = {
   usageNote:
     '。「不明」は使用量か価格が分からない呼び出しを含むことを、「一部」の印は分かった分だけの値であることを示します。',
   fake: '模擬の実行で、実際のモデルでは検証していません',
-  runId: '実行 ID',
   timeAndCost: '工程ごとの時間と費用',
   work: '作業時間',
   wall: '所要時間',
