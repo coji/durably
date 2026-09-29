@@ -1061,6 +1061,133 @@ treeは残ることがあります。workerは起動時に、終わったrun（�
 Claudeのレビューは、道具を `Read` だけにして呼びます。道具の使用を拒否されると
 `review-incomplete` になるので、使えない道具は最初から見せません。
 
+### 仕様を先に作ってレビューする（spec）
+
+`factory.json` に `spec` を書くと、`--spec-file` を渡さなかったrepository runは、
+実装の前に仕様を作ってレビューします。`--spec-file` を渡したrunと `spec` の無い
+runは、これまでどおりの工程で動き、`configVersion` も変わりません。
+
+```json
+{
+  "spec": {
+    "template": "docs/spec-template.md",
+    "reviewTemplate": "docs/spec-review.md",
+    "maxRounds": 3,
+    "author": {
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "high"
+    },
+    "fix": { "effort": "medium" },
+    "review": {
+      "product": { "provider": "codex", "output": "findings-json" },
+      "tech": {
+        "provider": "claude",
+        "command": "/spec-review {base} {effort}",
+        "context": "local-instructions",
+        "output": "findings-json"
+      }
+    },
+    "checkFromSpec": ["node", "scripts/check-from-spec.mjs"]
+  }
+}
+```
+
+工程の順番は次のとおりです。
+
+1. 準備（setup）
+2. 事前確認（preflight）。実装やレビューの役割に加えて、仕様の作成、修正、
+   全レビュー役を確かめます。使えない役割があれば、仕様を書き始める前に止まります。
+3. 仕様の作成。`author` がリポジトリを読み、仕様を書きます。
+4. 仕様レビュー。`review` に名前を付けて並べたレビュー役が、同じ仕様を並列に
+   レビューします。一人ずつ別のstepとして記録するので、再開時には済んだレビューを
+   読み戻します。
+5. 仕様の修正。blockerがあれば `fix` が仕様を直し、4に戻ります。blockerが
+   なくなった時点の仕様を確定します。non-blockerは直す条件にしません。
+6. `checkFromSpec` があれば、確定した仕様から採点コマンドを決めます。
+7. ベースの検証（`baselineCheck` のとき）、見立て、実装と続きます。
+
+- 仕様ファイルは `runs/<runId>/spec/spec.md` にあり、worktreeの外です。
+  `author` と `fix` はリポジトリを読めますが、書けるのはこのファイルだけです。
+  Claudeは `Read`、`Grep`、`Glob`、`Edit`、`Write` だけを持ち、`Edit` と `Write` は
+  このファイルに限ります。Codexはこのファイルのディレクトリを作業ディレクトリにして
+  workspace-writeで動かすので、worktreeには書けません。レビュー役は読むだけです。
+- `fix` を書かなければ `author` の設定で直します。`fix` で省いた項目は `author` から
+  補います。`maxRounds` の既定は3で、正の整数に限ります。0、負数、小数、
+  `Number.MAX_SAFE_INTEGER` を超える値は `trigger` で拒否します。
+- `template`（仕様の雛形）と `reviewTemplate`（レビューの指示）は、`factory.json`
+  のあるディレクトリからの相対パスで、`trigger` の時点で一度だけ読みます。中身は
+  run inputに保存し、`configVersion` に含めます。あとでファイルを直しても、
+  始まったrunは変わりません。
+- レビュー役の `command`、`context`、`output` は、候補のレビュー役と同じ規則で
+  読みます（前の節）。違いは、候補がまだ無いので `{head}` を使えないことです。
+  使えるのは `{effort}` と `{base}` だけです。仕様ファイルの場所は、
+  `local-instructions` なら `CLAUDE.local.md` に、`prompt` なら入力に書きます。
+  壊れた `findings-json` は通過にせず、runを止めます。
+- 仕様を直す `fix` には、blockerの指摘、前の回で直した指摘、人のメモを
+  「信頼しないデータ」の区画で渡します。
+- 確定した仕様は、実装とレビューの `SPEC` として渡します。最後の回のnon-blocker
+  （人が承認したときは残ったblockerも）は助言 `SPEC_ADVICE` として、実装だけに
+  「信頼しないデータ」の区画で渡します。
+
+#### 上限の回まで直らなかったとき
+
+`maxRounds` 回レビューしてもblockerが残ると、`spec-wait:<n>` というdurable waitで
+人の判断を待ちます。`status` と `wait` は候補の承認待ちとは別の「仕様の判断待ち」と
+して表示し、次のコマンドを示します。
+
+```bash
+pnpm --filter example-local-agent-loop demo approve --run <id> --wait <waitId>
+pnpm --filter example-local-agent-loop demo spec-revise --run <id> --notes-file notes.md
+pnpm --filter example-local-agent-loop demo reject --run <id> --wait <waitId>
+```
+
+- `approve` はいまの仕様を確定して実装に進みます。
+- `spec-revise` はメモのファイルを読み、その中身をsignalに入れます。仕様の修正と
+  レビューを1回ずつ足し、まだblockerが残れば、もう一度判断を待ちます。メモの
+  ファイルは入力ファイルと同じく、256 KiBまでのUTF-8で、空は拒否します。
+- `reject` は実装を始めずにrunを終えます。結論は `rejected` です。
+- signalには、run ID、待っている仕様のSHA-256、判断が入ります。別のrunや別の
+  版の仕様に向けた判断は受け付けません。再開したworkerは、記録した判断とメモを
+  そのまま使います。
+
+#### 仕様から採点コマンドを決める（checkFromSpec）
+
+`checkFromSpec` はargvです。runが固定した仕様（spec工程で確定した仕様か、
+`--spec-file`）の絶対パスを最後の引数に足し、worktreeで、`checkTimeoutMs` 以内に
+一度だけ実行します。成功したときの標準出力は次の形のJSONに限ります。
+
+```json
+{
+  "check": ["pnpm", "vitest", "run", "src/calc.test.ts"],
+  "notes": "calcだけで足りる"
+}
+```
+
+- `check` は空でない文字列の配列で、`factory.json` の `check` と `--check` の
+  代わりに、ベースの検証、その識別（baselineReuse）、すべての検証で使います。
+  `checkFromSpec` があるとき、`check` は省けます。
+- `notes` は任意で、実装と候補のレビューに `CHECK_NOTES` として「信頼しないデータ」
+  の区画で渡し、reportに残します。
+- 失敗、時間切れ、JSONでない出力、形の違う `check` は `spec-check-failed` で止まり、
+  ベースの検証も実装も始めません。スクリプトを直したら、`retrigger --reload-config`
+  で新しいrunを始めます。同じrunの再開で、スクリプトの結果を読み替えることはしません。
+- `checkFromSpec` があるのに仕様が無い（spec工程も `--spec-file` も無い）runは、
+  `trigger` で拒否します。
+
+#### reportとweb UI
+
+- reportの `specRounds[]` は `reviewRounds[]` と同じ形で、回ごとにレビュー役ごとの
+  結果を持ちます（`lens` はレビュー役の名前です）。済んだstepから読むので、
+  進行中のrunでも出ます。
+- `spec` には、確定した仕様、確定した回、人の判断を経たか、助言、
+  `checkFromSpec` が決めた採点コマンドとnotesが入ります。
+- 使用量は `spec-author`、`spec-fix`、`spec-review:<名前>` の役割で分けて数え、
+  工程の時間は `spec`、`spec-review`、`spec-check` として出します。`compare` にも
+  同じ工程が並びます。
+- web UIは、spec工程があるrunだけ「仕様」「仕様レビュー」を工程に出し、仕様の
+  判断待ちを候補の承認待ちとは別の状態で見せます。
+
 ### 外部の指摘から修正する（repair）
 
 承認して納品まで終わったrepository runに、あとからUIの確認、正式なレビュー、CIなど
@@ -1468,8 +1595,11 @@ repairs の中央値を見ます。unknown は統計から外して件数だけ�
   レビュー資料のディレクトリです（「レビュー役の呼び出しと出力」を参照）。この
   reviewが読み込む設定はbase commitの `CLAUDE.md` と `.claude/` だけで、candidateの
   ものは読みません。hook、コマンド内のshell、MCPサーバーは動かしません。
-- 同じsessionへ並列送信しません。並列なのは新規sessionを使う二つのreviewだけ
-  です。
+- 仕様の作成と修正は、リポジトリを読み、run所有の仕様ファイル
+  （`runs/<runId>/spec/spec.md`）だけを書けます。仕様レビューは読むだけです
+  （「仕様を先に作ってレビューする」の節）。
+- 同じsessionへ並列送信しません。並列なのは新規sessionを使うreviewと仕様レビュー
+  だけです。
 - model、effort、指示版、tool、cwdを途中で替えるhandoffは未実装です。
   trigger時に解決した三役割のprofileをrun中固定します。
 - 実装と修正のsession継続は、`code` 役割のprovider、profile ID、cwd、指示版が

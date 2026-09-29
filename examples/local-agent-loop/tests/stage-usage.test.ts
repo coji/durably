@@ -607,6 +607,8 @@ function report(
     repairCalls: [],
     reviews: [],
     reviewRounds: [],
+    specRounds: [],
+    spec: null,
     delivery: {
       kind: 'patch',
       location: '/tmp/c.patch',
@@ -1031,6 +1033,121 @@ describe('Claude usage with subagents', () => {
         undefined,
       ),
       null,
+    )
+  })
+})
+
+describe('spec stage usage', () => {
+  const profiles = [
+    {
+      role: 'code',
+      provider: 'codex',
+      requestedModel: null,
+      requestedEffort: null,
+    },
+    {
+      role: 'spec-author',
+      provider: 'codex',
+      requestedModel: 'm-a',
+      requestedEffort: 'high',
+    },
+    {
+      role: 'spec-fix',
+      provider: 'codex',
+      requestedModel: 'm-a',
+      requestedEffort: 'high',
+    },
+    {
+      role: 'spec-review:product',
+      provider: 'codex',
+      requestedModel: 'm-p',
+      requestedEffort: null,
+    },
+    {
+      role: 'spec-review:tech',
+      provider: 'codex',
+      requestedModel: 'm-t',
+      requestedEffort: null,
+    },
+  ]
+  const attempts = [
+    row('spec:author', 's1', { invocationId: 'author', cost: 0.01 }),
+    // A replay reads the author's call back: it adds nothing.
+    row('spec:author', 's1b', {
+      invocationId: 'author',
+      cost: 0.01,
+      result: 'checkpoint-recovered',
+    }),
+    row('spec-review:1:product', 'r1', { cost: 0.002 }),
+    row('spec-review:1:tech', 'r2', { cost: 0.003 }),
+    row('spec:fix:1', 'f1', { cost: 0.004 }),
+    row('spec-review:2:product', 'r3', { cost: 0.002 }),
+    row('spec-review:2:tech', 'r4', { cost: 0.003 }),
+    // Neither the confirmation nor the check script calls an LLM.
+    row('spec:final', 'x1', { usage: null, cost: null }),
+    row('spec-check', 'x2', { usage: null, cost: null }),
+    row('stage:1:code:agent', 'c1', { cost: 0.02 }),
+  ]
+
+  it('reports each spec role and reviewer on its own, once per invocation', () => {
+    const rows = roleUsage(attempts, profiles)
+    assert.deepEqual(
+      rows.map((r) => [r.role, r.invocations, r.totalTokens, r.costUsd]),
+      [
+        ['code', 1, 150, 0.02],
+        ['spec-author', 1, 150, 0.01],
+        ['spec-fix', 1, 150, 0.004],
+        ['spec-review:product', 2, 300, 0.004],
+        ['spec-review:tech', 2, 300, 0.006],
+      ],
+    )
+    assert.ok(rows.every((r) => r.complete && r.costComplete))
+    const stages = stageUsage(attempts)
+    assert.deepEqual(
+      stages.map((s) => [s.stage, s.invocations]),
+      [
+        ['spec', 2],
+        ['spec-review', 4],
+        ['code', 1],
+      ],
+    )
+    // The invocations add up across the run: the replay is not counted.
+    assert.equal(
+      stages.reduce((sum, s) => sum + s.invocations, 0),
+      attempts.length - 3,
+    )
+  })
+
+  it('puts the spec stages, the check among them, into the comparison', () => {
+    const withSpec = {
+      ...report('s1', { configVersion: 'cfg-s' }),
+      stageUsage: stageUsage(attempts),
+      stageTimings: [
+        { stage: 'spec', elapsedMs: 900, wallElapsedMs: 900, complete: true },
+        {
+          stage: 'spec-review',
+          elapsedMs: 800,
+          wallElapsedMs: 400,
+          complete: true,
+        },
+        {
+          stage: 'spec-check',
+          elapsedMs: 50,
+          wallElapsedMs: 50,
+          complete: true,
+        },
+        { stage: 'code', elapsedMs: 1000, wallElapsedMs: 1000, complete: true },
+      ],
+    }
+    const [group] = compareReports([withSpec]).groups
+    const byStage = new Map(group?.stages.map((s) => [s.stage, s]))
+    assert.equal(byStage.get('spec')?.workMs.median, 900)
+    assert.equal(byStage.get('spec-review')?.totalTokens.median, 600)
+    assert.equal(byStage.get('spec-check')?.workMs.median, 50)
+    assert.equal(byStage.get('spec-check')?.totalTokens.median, null)
+    assert.match(
+      comparisonToMarkdown(compareReports([withSpec])),
+      /\| spec-review \|/,
     )
   })
 })

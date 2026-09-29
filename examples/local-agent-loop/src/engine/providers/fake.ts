@@ -70,6 +70,14 @@
  *   scenario gives one, broken or cut-off replies included;
  * - `reviewDenials[i]`, when non-empty, is reported as a tool call the
  *   provider refused during that call.
+ *
+ * Spec stages (scenario only):
+ * - a spec author writes `specText` (a fixed sample spec by default) to the
+ *   spec file it was given; a spec fixer appends one revision line to it;
+ * - a spec reviewer answers `specReviews[name][round - 1]`: `pass`,
+ *   `blocker` (one blocking finding), `advice` (one non-blocking finding) or
+ *   `invalid` (a cut-off reply); `pass` when none is scripted. A verdict
+ *   reviewer answers needsChanges for `blocker` and pass otherwise.
  */
 import { randomUUID } from 'node:crypto'
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
@@ -91,6 +99,12 @@ export const FAKE_REVIEW_DECISIONS = [
   'needsChanges',
   'invalid',
   'empty',
+] as const
+export const FAKE_SPEC_REVIEWS = [
+  'pass',
+  'blocker',
+  'advice',
+  'invalid',
 ] as const
 export const FAKE_TRIAGE_KINDS = [
   'routine',
@@ -136,6 +150,10 @@ export interface FakeScenario {
   changes?: Record<string, string>
   /** Stand in for a Claude Code that keeps the cache across an effort change. */
   claudeEffortResume?: boolean
+  /** What a spec author writes; a fixed sample spec when absent. */
+  specText?: string
+  /** Each spec reviewer's reply per round, by reviewer name. */
+  specReviews?: Record<string, (typeof FAKE_SPEC_REVIEWS)[number][]>
 }
 
 /** Per-run state shared by every fake provider instance of one run. */
@@ -156,6 +174,10 @@ export class FakeRun {
       output: this.scenario.reviewOutputs?.[at],
       denial: this.scenario.reviewDenials?.[at],
     }
+  }
+  /** The scripted reply of one spec reviewer in one round, if any. */
+  specReview(name: string, round: number): string | undefined {
+    return this.scenario.specReviews?.[name]?.[round - 1]
   }
   nextTriage(): string | undefined {
     return this.scenario.triage ? this.triages.shift() : undefined
@@ -344,6 +366,61 @@ const USAGE_RANGES: Record<
   'review-b': { input: [120_000, 360_000], output: [2_500, 8_000] },
   triage: { input: [7_000, 18_000], output: [250, 900] },
   preflight: { input: [6_000, 9_000], output: [2, 8] },
+  'spec-author': { input: [150_000, 450_000], output: [4_000, 12_000] },
+  'spec-fix': { input: [80_000, 250_000], output: [2_000, 7_000] },
+  'spec-review': { input: [60_000, 200_000], output: [1_500, 5_000] },
+}
+
+/** What a fake spec author writes when the scenario gives no text. */
+export const FAKE_SPEC_TEXT = [
+  '# Spec',
+  '',
+  '## Behavior',
+  '',
+  '- add(a, b) returns a + b without truncating either input.',
+  '',
+  '## Acceptance criteria',
+  '',
+  '- [ ] add(0.1, 0.2) equals 0.30000000000000004',
+  '',
+].join('\n')
+
+/** A fake spec reviewer's reply for one scripted kind. */
+function specReviewReply(kind: string, output: string): string {
+  if (kind === 'invalid')
+    return output === 'findings-json'
+      ? '```json\n[{"severity": "blocker", "title": "cut off\n```\nREVIEW_STATUS: COMPLETE'
+      : 'the spec reads fine (no structured verdict)'
+  if (output !== 'findings-json')
+    return kind === 'blocker'
+      ? 'PLAN: fake plan\nCOUNTEREXAMPLE: fake gap\nDECISION: needsChanges\nNOTES: fake spec blocker: the spec leaves an input undefined'
+      : 'PLAN: fake plan\nCOUNTEREXAMPLE: none found\nDECISION: pass\nNOTES: fake spec review passes'
+  const findings =
+    kind === 'blocker'
+      ? [
+          {
+            severity: 'blocker',
+            title: 'fake spec blocker',
+            body: 'the spec leaves an input undefined',
+          },
+        ]
+      : kind === 'advice'
+        ? [
+            {
+              severity: 'non-blocker',
+              title: 'fake spec advice',
+              body: 'name the rounding rule explicitly',
+            },
+          ]
+        : []
+  return [
+    'PLAN: fake plan',
+    'COUNTEREXAMPLE: fake counterexample',
+    '```json',
+    JSON.stringify(findings, null, 2),
+    '```',
+    'REVIEW_STATUS: COMPLETE',
+  ].join('\n')
 }
 
 /**
@@ -561,6 +638,30 @@ export class FakeProvider implements AgentProvider {
         scenario.summary ?? 'fake: fixed add() to return a + b',
         options.sessionId ?? undefined,
       )
+    }
+    if (options.role === 'spec-author' || options.role === 'spec-fix') {
+      const file = options.specWrite?.writableFile
+      if (!file)
+        throw new Error(`fake: a ${options.role} call has no spec file`)
+      if (options.role === 'spec-author')
+        await writeFile(file, scenario.specText ?? FAKE_SPEC_TEXT)
+      else {
+        const current = await readFile(file, 'utf8')
+        const revision = (current.match(/^- revision \d+/gm)?.length ?? 0) + 1
+        await writeFile(
+          file,
+          `${current.replace(/\n*$/, '\n')}- revision ${revision}: addressed the findings\n`,
+        )
+      }
+      return result(`fake: wrote the spec (${options.role})`)
+    }
+    if (options.role === 'spec-review') {
+      const kind =
+        this.run?.specReview(
+          options.specReviewer ?? '',
+          options.reviewRound ?? 1,
+        ) ?? 'pass'
+      return result(specReviewReply(kind, options.review?.output ?? 'verdict'))
     }
     if (options.role === 'preflight') {
       if (this.requestedModel?.startsWith('refused-'))

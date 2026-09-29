@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, realpathSync } from 'node:fs'
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -28,7 +28,10 @@ import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
 import { BASELINE_INDEX_PRUNE_AGE_MS } from '../src/factory/baseline-reuse.js'
-import { baselineMaxAgeMsSchema } from '../src/factory/job.js'
+import {
+  baselineMaxAgeMsSchema,
+  specMaxRoundsSchema,
+} from '../src/factory/job.js'
 import {
   codePrompt,
   reviewPrompt,
@@ -164,7 +167,7 @@ type RunInput = {
     spec: string | null
     dispositions: string | null
     baseRef: string
-    checkCommand: string[]
+    checkCommand: string[] | null
     setupCommand: string[] | null
     inputFiles: Record<string, { path: string } | null>
     baselineCheck?: boolean
@@ -2485,6 +2488,154 @@ describe('wait and worker state', { timeout: 300000 }, () => {
         w.child.kill('SIGKILL')
       }
       await durably.db.destroy()
+    }
+  })
+})
+
+describe('spec stages in factory.json', { timeout: 180000 }, () => {
+  const SPEC_CONFIG = {
+    template: 'spec-template.md',
+    reviewTemplate: 'spec-review.md',
+    author: {},
+    review: {
+      product: { output: 'findings-json' },
+      tech: { command: '/spec-review {base} {effort}', effort: 'low' },
+    },
+    checkFromSpec: ['node', 'check-from-spec.mjs'],
+  }
+
+  it('fixes the roles, the templates and checkFromSpec at trigger, and leaves them out with --spec-file', async () => {
+    const box = await sandbox({ spec: SPEC_CONFIG })
+    await writeFile(join(box.repo, 'spec-template.md'), '# Template\n')
+    await writeFile(join(box.repo, 'spec-review.md'), 'Review it.\n')
+    const runId = await trigger(box, ['--repo', box.repo, '--task', 'x'])
+    // Editing the templates or the config afterwards changes nothing.
+    await writeFile(join(box.repo, 'spec-template.md'), 'CHANGED\n')
+    await writeFile(join(box.repo, 'factory.json'), '{"check":["false"]}')
+    const input = (await inputOf(box, runId)) as RunInput & {
+      spec?: {
+        author: unknown
+        fix: unknown
+        reviewers: { name: string; invocation: unknown }[]
+        maxRounds: number
+        template: string | null
+        reviewTemplate: string | null
+        templateFiles: Record<string, { path: string } | null>
+      }
+      target: { checkFromSpec?: string[] | null }
+    }
+    assert.equal(input.target.checkCommand, null)
+    assert.deepEqual(input.target.checkFromSpec, [
+      'node',
+      'check-from-spec.mjs',
+    ])
+    assert.equal(input.spec?.template, '# Template\n')
+    assert.equal(input.spec?.reviewTemplate, 'Review it.\n')
+    assert.equal(
+      input.spec?.templateFiles['template']?.path,
+      join(realpathSync(box.repo), 'spec-template.md'),
+    )
+    assert.equal(input.spec?.maxRounds, 3)
+    assert.equal(input.spec?.fix, null)
+    assert.deepEqual(
+      input.spec?.reviewers.map((r) => [r.name, r.invocation]),
+      [
+        [
+          'product',
+          { command: null, context: 'prompt', output: 'findings-json' },
+        ],
+        [
+          'tech',
+          {
+            command: '/spec-review {base} {effort}',
+            context: 'prompt',
+            output: 'verdict',
+          },
+        ],
+      ],
+    )
+
+    // A spec given at trigger: no spec stages, the check still from it,
+    // and a template that cannot be read is never read.
+    const given = await sandbox({
+      spec: { ...SPEC_CONFIG, template: 'missing.md' },
+    })
+    await writeFile(join(given.root, 'spec.md'), 'SPEC\n')
+    const withSpec = await trigger(given, [
+      '--repo',
+      given.repo,
+      '--task',
+      'x',
+      '--spec-file',
+      'spec.md',
+    ])
+    const stored = (await inputOf(given, withSpec)) as RunInput & {
+      spec?: unknown
+      target: { checkFromSpec?: string[] | null }
+    }
+    assert.equal(stored.spec, undefined)
+    assert.equal(stored.target.spec, 'SPEC\n')
+    assert.deepEqual(stored.target.checkFromSpec, [
+      'node',
+      'check-from-spec.mjs',
+    ])
+  })
+
+  it('refuses a bad round limit, reviewer, template or checkFromSpec before the run exists', async () => {
+    for (const maxRounds of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      const box = await sandbox({ spec: { ...SPEC_CONFIG, maxRounds } })
+      await rejected(
+        box,
+        ['--repo', box.repo, '--task', 'x'],
+        /invalid factory config[\s\S]*maxRounds/,
+      )
+    }
+    for (const value of [Number.NaN, Infinity, -Infinity, 0, 2.5])
+      assert.equal(specMaxRoundsSchema.safeParse(value).success, false)
+    assert.equal(
+      specMaxRoundsSchema.safeParse(Number.MAX_SAFE_INTEGER).success,
+      true,
+    )
+    const { template: _t, reviewTemplate: _r, ...noTemplates } = SPEC_CONFIG
+    for (const [config, message] of [
+      [
+        {
+          spec: {
+            ...noTemplates,
+            review: { tech: { command: '/spec-review {head}' } },
+          },
+        },
+        /spec\.review\.tech: command: \{head\} names a candidate commit/,
+      ],
+      [
+        {
+          spec: {
+            ...noTemplates,
+            review: { tech: { provider: 'codex', command: '/r' } },
+          },
+        },
+        /spec\.review\.tech: a codex reviewer does not support command/,
+      ],
+      [
+        { spec: { ...noTemplates, review: {} } },
+        /spec\.review must name at least one reviewer/,
+      ],
+      [
+        { spec: { ...noTemplates, review: { 'Bad Name': {} } } },
+        /invalid factory config/,
+      ],
+      [{ spec: SPEC_CONFIG }, /spec\.template spec-template\.md: cannot read/],
+      [
+        { spec: { checkFromSpec: ['node', 'x.mjs'] } },
+        /spec\.checkFromSpec reads the run's spec, and this run has none/,
+      ],
+      [
+        { spec: { ...noTemplates, checkFromSpec: undefined } },
+        /a check command is required/,
+      ],
+    ] as const) {
+      const box = await sandbox(config)
+      await rejected(box, ['--repo', box.repo, '--task', 'x'], message)
     }
   })
 })

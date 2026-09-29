@@ -22,6 +22,7 @@ import {
 
 export type FailureKind =
   | 'baseline-check-failed'
+  | 'spec-check-failed'
   | 'preflight-failed'
   | 'candidate-moved'
   | 'rejected-invocation'
@@ -39,6 +40,7 @@ export type FailureKind =
 export const BASELINE_FAILED_MESSAGE = 'baseline-check-failed'
 export const PREFLIGHT_FAILED_MESSAGE = 'preflight-failed'
 export const CANDIDATE_MOVED_MESSAGE = 'candidate-moved'
+export const SPEC_CHECK_FAILED_MESSAGE = 'spec-check-failed'
 
 /** A baseline stop because setup left files `.gitignore` does not cover. */
 const SETUP_UNTRACKED = `${BASELINE_FAILED_MESSAGE}: setup-untracked: `
@@ -161,6 +163,18 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
       'read the full check output in the log files named below, then fix the check command or the environment (setup, dependencies, base); retry with --reload-config after editing factory.json, without it after fixing only the environment',
     next: (runId, reload) => [
       `${DEMO} report --run ${runId}  # the baseline check output`,
+      ...retriggerReloaded(runId, reload),
+      retrigger(runId),
+    ],
+  },
+  'spec-check-failed': {
+    reason:
+      'checkFromSpec failed, timed out or printed something other than {"check": [...], "notes"?: "..."} for the fixed spec; the run stopped before the baseline check and any implementation call',
+    retryable: true,
+    humanCheck:
+      'read the error below; fix the script or checkFromSpec in factory.json and start a new run with --reload-config. The same run never reads the script again, so its result is not re-read on a replay',
+    next: (runId, reload) => [
+      `${DEMO} report --run ${runId}  # the spec the script read`,
       ...retriggerReloaded(runId, reload),
       retrigger(runId),
     ],
@@ -452,6 +466,8 @@ export function classifyFailure(
         details.push(`${DETAIL_PREFIX.setupUntracked}${path}`)
       for (const log of input.baselineLogs ?? [])
         details.push(...logDetails(log))
+    } else if (input.error?.startsWith(SPEC_CHECK_FAILED_MESSAGE)) {
+      kind = 'spec-check-failed'
     } else if (input.error?.startsWith(PREFLIGHT_FAILED_MESSAGE)) {
       kind = 'preflight-failed'
     } else if (input.error?.startsWith(CANDIDATE_MOVED_MESSAGE)) {

@@ -65,8 +65,27 @@ export interface RepoTargetConfig {
   workdir: string
   /** Optional one-time preparation (dependency install) for a fresh worktree. */
   setupCommand: string[] | null
-  /** Pinned check argv. Recorded at setup so the agent cannot redefine it. */
+  /**
+   * Pinned check argv. Recorded at setup so the agent cannot redefine it.
+   * Empty at setup on a run with `checkFromSpec`: the run grades with the
+   * check that script returns, fixed in its own step before the baseline.
+   */
   checkCommand: string[]
+  /**
+   * A script run once on the run's fixed spec, before the baseline, that
+   * returns the check to grade with. Absent or null: `checkCommand` is it.
+   */
+  checkFromSpec?: string[] | null
+  /**
+   * The spec reviewers' advice for the implementer, as untrusted data; set
+   * only once the spec stages confirmed a spec.
+   */
+  specAdvice?: string | null
+  /**
+   * `checkFromSpec`'s notes, as untrusted data for the implementer and the
+   * reviewers; set only once the script ran.
+   */
+  checkNotes?: string | null
   checkTimeoutMs: number
   /** Task text handed to the implementer (an issue body, or free text). */
   task: string
@@ -113,7 +132,16 @@ export interface InputFileRef {
  * Prompts fence it off as data, so nothing inside it reads as an instruction.
  */
 export interface UntrustedInput {
-  label: 'TASK' | 'SPEC' | 'DISPOSITIONS' | 'FINDINGS'
+  label:
+    | 'TASK'
+    | 'SPEC'
+    | 'DISPOSITIONS'
+    | 'FINDINGS'
+    | 'SPEC_ADVICE'
+    | 'CHECK_NOTES'
+    | 'SPEC_FINDINGS'
+    | 'SETTLED_FINDINGS'
+    | 'HUMAN_NOTES'
   content: string
 }
 
@@ -216,6 +244,18 @@ export interface Target {
     candidate: CandidateRef,
     lens: 'correctness' | 'edge-cases',
     localFile: string,
+  ): Promise<string>
+  /**
+   * Make one configured spec review call's own working directory, fresh:
+   * the base commit's `CLAUDE.md` and `.claude/`, extracting the base tree
+   * first when it is not there, and `localFile` as `CLAUDE.local.md`.
+   * Returns its path.
+   */
+  prepareSpecReviewWorkdir?(
+    round: number,
+    name: string,
+    localFile: string,
+    signal: AbortSignal,
   ): Promise<string>
   /**
    * Remove every candidate's tree and review working directories, and the

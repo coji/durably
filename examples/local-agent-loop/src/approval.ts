@@ -1,11 +1,33 @@
-/** Approve or reject a waiting candidate: shared by `demo approve|reject` and `demo seed`. */
+/**
+ * Approve or reject a waiting candidate, or decide on a spec the spec
+ * reviewers still block: shared by `demo approve|reject|spec-revise` and
+ * `demo seed`.
+ */
 import type { AgentLoopDurably } from './durably.js'
 
 export type ApprovalDecision = 'approved' | 'rejected'
 
+/** A decision on a blocked spec: `approve`, `reject`, or `spec-revise`. */
+export type SpecWaitDecision = ApprovalDecision | 'revise'
+
+/** What a spec-blocked wait's metadata names. */
+interface SpecWaitMetadata {
+  kind?: unknown
+  runId?: unknown
+  specSha256?: unknown
+}
+
+/** Whether a wait's metadata is a spec-blocked wait's. */
+export function isSpecWait(metadata: unknown): boolean {
+  return (metadata as SpecWaitMetadata | null)?.kind === 'spec-blocked'
+}
+
 /**
  * Signal the wait with the candidate ID its metadata names, so an approval
- * can never land on a different candidate than the one reviewed.
+ * can never land on a different candidate than the one reviewed. A
+ * spec-blocked wait is signalled with the run and the spec version its
+ * metadata names instead, so a decision can never land on another run or on
+ * a spec other than the one the reviewers blocked.
  */
 export async function signalApproval(
   durably: AgentLoopDurably,
@@ -15,7 +37,10 @@ export async function signalApproval(
   log: (line: string) => void = () => {},
 ) {
   const pending = await durably.getWaits(runId)
-  const target = pending.find((w) => w.id === waitId)?.metadata as {
+  const metadata = pending.find((w) => w.id === waitId)?.metadata
+  if (isSpecWait(metadata))
+    return signalSpecDecision(durably, runId, waitId, decision, null, log)
+  const target = metadata as {
     candidateId?: string
     sourceHash?: string
   } | null
@@ -29,5 +54,56 @@ export async function signalApproval(
     waitId,
     { candidateId: target.candidateId, decision },
     { signalId: `local-${verb}-${Date.now()}` },
+  )
+}
+
+/**
+ * Decide on a spec-blocked wait: approve the spec as it is, reject it and
+ * stop the run, or revise it with `notes`, which the signal carries so the
+ * run reads the same notes on every replay. Refused for any other wait, a
+ * wait of another run, and a revise without notes.
+ */
+export async function signalSpecDecision(
+  durably: AgentLoopDurably,
+  runId: string,
+  waitId: string,
+  decision: SpecWaitDecision,
+  notes: string | null,
+  log: (line: string) => void = () => {},
+) {
+  const pending = await durably.getWaits(runId)
+  const metadata = pending.find((w) => w.id === waitId)?.metadata as
+    | SpecWaitMetadata
+    | null
+    | undefined
+  if (!metadata || !isSpecWait(metadata))
+    throw new Error(
+      `wait ${waitId} of run ${runId} is not a spec-blocked wait; refusing unbound signal`,
+    )
+  if (metadata.runId !== runId || typeof metadata.specSha256 !== 'string')
+    throw new Error(
+      'wait metadata names no run or spec version; refusing unbound signal',
+    )
+  if (decision === 'revise' && !notes?.trim())
+    throw new Error('a spec revise needs notes (--notes-file <path>)')
+  log(
+    `binding the spec decision to run ${runId} and spec ${metadata.specSha256.slice(0, 12)}.`,
+  )
+  const verb =
+    decision === 'approved'
+      ? 'approve'
+      : decision === 'rejected'
+        ? 'reject'
+        : 'revise'
+  return durably.signal(
+    waitId,
+    {
+      kind: 'spec',
+      runId,
+      specSha256: metadata.specSha256,
+      decision,
+      notes: decision === 'revise' ? notes : null,
+    },
+    { signalId: `local-spec-${verb}-${Date.now()}` },
   )
 }

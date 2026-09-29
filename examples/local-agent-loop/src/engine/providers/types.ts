@@ -22,6 +22,9 @@ export type AgentRole =
   | 'review-b'
   | 'triage'
   | 'preflight'
+  | 'spec-author'
+  | 'spec-fix'
+  | 'spec-review'
 
 /** Roles every real provider runs without write access. */
 export const READ_ONLY_ROLES: ReadonlySet<AgentRole> = new Set([
@@ -29,7 +32,24 @@ export const READ_ONLY_ROLES: ReadonlySet<AgentRole> = new Set([
   'review-b',
   'triage',
   'preflight',
+  'spec-review',
 ])
+
+/** The roles that write the run's spec file and nothing else. */
+export const SPEC_WRITER_ROLES: ReadonlySet<AgentRole> = new Set([
+  'spec-author',
+  'spec-fix',
+])
+
+/**
+ * What a spec author or fixer may touch. Its working directory is the
+ * run's own spec directory, outside the worktree: it reads that directory
+ * and `readableDirs` (the worktree), and writes `writableFile` alone.
+ */
+export interface SpecWriteAccess {
+  writableFile: string
+  readableDirs: string[]
+}
 
 /**
  * How a review call was configured, for the provider that makes it. A review
@@ -133,6 +153,13 @@ export interface AgentCallOptions {
   readableFiles?: string[]
   /** A configured review's settings; absent for every other call. */
   review?: ReviewCallSettings
+  /** A spec author's or fixer's access; absent for every other call. */
+  specWrite?: SpecWriteAccess
+  /**
+   * A spec reviewer's name. Only the fake provider reads it, to pick a
+   * scripted reply by reviewer and round.
+   */
+  specReviewer?: string
   /** Explicit native session to resume. Null always creates a new conversation. */
   sessionId?: string | null
   /** Durably step signal: cancel / lease-loss aborts the call. */

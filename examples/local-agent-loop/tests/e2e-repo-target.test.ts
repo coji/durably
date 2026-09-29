@@ -25,6 +25,7 @@ import { basename, dirname, join, sep } from 'node:path'
 import { afterEach, describe, it } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { signalApproval, signalSpecDecision } from '../src/approval.js'
 import { createAgentDurably, sweepReviewSnapshots } from '../src/durably.js'
 import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
@@ -35,11 +36,19 @@ import {
   resolveCommit,
   treeOf,
 } from '../src/engine/git.js'
+import {
+  buildClaudeSettings,
+  decideSpecToolPermission,
+  decideToolPermission,
+} from '../src/engine/providers/claude.js'
 import { recordFakeReviewCalls } from '../src/engine/providers/fake.js'
+import { READ_ONLY_ROLES } from '../src/engine/providers/types.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
+import { checkpointPaths } from '../src/engine/runner.js'
 import { fixProfile } from '../src/factory/job.js'
-import { REVIEW_STATUS_COMPLETE } from '../src/factory/prompts.js'
+import { codePrompt, REVIEW_STATUS_COMPLETE } from '../src/factory/prompts.js'
 import { repairLabels } from '../src/factory/repair.js'
+import { specAdviceText } from '../src/factory/stages.js'
 import type { FactorySetup } from '../src/factory/types.js'
 import { createTarget } from '../src/targets/index.js'
 import { assertCandidateUnmoved, extractCommit } from '../src/targets/repo.js'
@@ -2665,6 +2674,651 @@ describe('configured reviewers', { timeout: 240000 }, () => {
       worker?.kill('SIGKILL')
       await durably.stop()
       await durably.db.destroy()
+    }
+  })
+})
+
+const FAKE_PROFILE = {
+  provider: 'fake' as const,
+  requestedModel: null,
+  requestedEffort: null,
+}
+
+/** A script `checkFromSpec` runs: it reads the spec and prints a check. */
+const CHECK_FROM_SPEC = `import { readFileSync } from 'node:fs'
+const spec = readFileSync(process.argv[2], 'utf8')
+if (!spec.includes('Acceptance criteria')) {
+  console.error('the spec has no acceptance criteria')
+  process.exit(1)
+}
+console.log(JSON.stringify({ check: ['node', 'check-ok.mjs'], notes: 'graded by check-ok.mjs from the spec' }))
+`
+
+/** A repository with the check scripts a spec run reads and runs. */
+async function seedSpecRepo(
+  root: string,
+  script = CHECK_FROM_SPEC,
+): Promise<string> {
+  const repo = await seedRepo(root)
+  await writeFile(join(repo, 'check-from-spec.mjs'), script)
+  await writeFile(join(repo, 'check-ok.mjs'), 'process.exit(0)\n')
+  await git(repo, ['add', '-A'])
+  await git(repo, ['commit', '-m', 'check scripts'])
+  return repo
+}
+
+type SpecReviewerInput = {
+  name: string
+  profile: typeof FAKE_PROFILE
+  invocation: ReviewSettings | null
+}
+
+function specRun(
+  repo: string,
+  extra: {
+    reviewers?: SpecReviewerInput[]
+    maxRounds?: number
+    fakeScenario?: Record<string, unknown>
+    autoApprove?: boolean
+    checkFromSpec?: string[] | null
+    baselineCheck?: boolean
+    spec?: string | null
+    review?: {
+      correctness?: ReviewSettings
+      'edge-cases'?: ReviewSettings
+    }
+    author?:
+      | typeof FAKE_PROFILE
+      | { provider: 'fake'; requestedModel: string; requestedEffort: null }
+    stages?: boolean
+  } = {},
+) {
+  const checkFromSpec =
+    extra.checkFromSpec === undefined
+      ? ['node', 'check-from-spec.mjs']
+      : extra.checkFromSpec
+  return {
+    provider: 'fake' as const,
+    target: {
+      kind: 'repo' as const,
+      repoPath: repo,
+      baseRef: 'HEAD',
+      task: 'Fix add() so decimal inputs are not truncated.',
+      spec: extra.spec ?? null,
+      dispositions: null,
+      inputFiles: NO_FILES,
+      issue: null,
+      checkCommand: checkFromSpec ? null : ['node', 'check-ok.mjs'],
+      checkFromSpec,
+      setupCommand: null,
+      publish: false,
+      baselineCheck: extra.baselineCheck ?? true,
+    },
+    maxIterations: 2,
+    context: 'reuse' as const,
+    ...(extra.autoApprove !== undefined
+      ? { autoApprove: extra.autoApprove }
+      : {}),
+    ...(extra.review ? { review: extra.review } : {}),
+    ...(extra.stages === false
+      ? {}
+      : {
+          spec: {
+            author: extra.author ?? FAKE_PROFILE,
+            fix: null,
+            reviewers: extra.reviewers ?? [
+              {
+                name: 'product',
+                profile: FAKE_PROFILE,
+                invocation: {
+                  command: '/spec-review {base} --effort {effort}',
+                  context: 'local-instructions',
+                  output: 'findings-json',
+                },
+              },
+              { name: 'tech', profile: FAKE_PROFILE, invocation: null },
+            ],
+            maxRounds: extra.maxRounds ?? 3,
+            template: '# Spec template\n\n## Acceptance criteria\n',
+            reviewTemplate: 'Check that every criterion can be tested.\n',
+            templateFiles: { template: null, reviewTemplate: null },
+          },
+        }),
+    fakeScenario: {
+      failIterations: 0,
+      latencyMs: { min: 300, max: 300 },
+      ...extra.fakeScenario,
+    },
+  }
+}
+
+/** The first step name matching each pattern, in the order the run began them. */
+async function firstSteps(
+  durably: ReturnType<typeof createAgentDurably>,
+  runId: string,
+): Promise<string[]> {
+  const attempts = await durably.getStepAttempts(runId)
+  return [...attempts]
+    .sort((x, y) => x.stepIndex - y.stepIndex)
+    .map((a) => a.stepName)
+}
+
+describe('spec stages', { timeout: 240000 }, () => {
+  afterEach(() => {
+    recording?.stop()
+    recording = null
+  })
+
+  it('lets a spec writer read the repository and write the spec file alone, and keeps a spec reviewer read-only', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-spec-guard-'))
+    const specDir = join(root, 'run', 'spec')
+    const worktree = join(root, 'run', 'work')
+    await mkdir(specDir, { recursive: true })
+    await mkdir(join(worktree, 'src'), { recursive: true })
+    const specFile = join(specDir, 'spec.md')
+    await writeFile(specFile, '')
+    await writeFile(join(worktree, 'src', 'calc.js'), BUGGY)
+    await writeFile(join(specDir, 'other.md'), '')
+    // A link inside the spec directory that points into the worktree.
+    await symlink(join(worktree, 'src', 'calc.js'), join(specDir, 'link.js'))
+    const roots = [specDir, worktree]
+    const decide = (tool: string, input: Record<string, unknown>) =>
+      decideSpecToolPermission(roots, specFile, tool, input).allow
+    assert.equal(
+      decide('Read', { file_path: join(worktree, 'src', 'calc.js') }),
+      true,
+    )
+    assert.equal(decide('Grep', { path: worktree, pattern: 'add' }), true)
+    assert.equal(decide('Glob', { path: worktree, pattern: 'src/*.js' }), true)
+    assert.equal(decide('Write', { file_path: specFile }), true)
+    assert.equal(decide('Edit', { file_path: 'spec.md' }), true)
+    for (const [tool, input] of [
+      ['Write', { file_path: join(worktree, 'src', 'calc.js') }],
+      ['Edit', { file_path: join(specDir, 'other.md') }],
+      ['Edit', { file_path: join(specDir, 'link.js') }],
+      ['Write', { file_path: '~/spec.md' }],
+      ['Read', { file_path: join(root, 'elsewhere.md') }],
+      ['Bash', { command: 'echo x > spec.md' }],
+      ['Agent', { prompt: 'write it' }],
+      ['NotebookEdit', { notebook_path: specFile }],
+    ] as const)
+      assert.equal(
+        decide(tool, input),
+        false,
+        `${tool} ${JSON.stringify(input)}`,
+      )
+    const settings = buildClaudeSettings(specDir, false, null, null, [], null, {
+      writableFile: specFile,
+      readableDirs: [worktree],
+    })
+    assert.deepEqual(settings.tools, ['Read', 'Grep', 'Glob', 'Edit', 'Write'])
+    assert.equal(settings.permissionMode, 'dontAsk')
+    assert.deepEqual(settings.settingSources, [])
+    assert.equal(settings.cwd, specDir)
+    // A spec reviewer is read-only: it may read the worktree and the spec
+    // file, and write nothing.
+    assert.ok(READ_ONLY_ROLES.has('spec-review'))
+    const reviewer = (tool: string, input: Record<string, unknown>) =>
+      decideToolPermission(worktree, true, tool, input, [specFile]).allow
+    assert.equal(reviewer('Read', { file_path: specFile }), true)
+    assert.equal(
+      reviewer('Read', { file_path: join(worktree, 'src', 'calc.js') }),
+      true,
+    )
+    assert.equal(reviewer('Write', { file_path: specFile }), false)
+    assert.equal(
+      reviewer('Edit', { file_path: join(worktree, 'src', 'calc.js') }),
+      false,
+    )
+  })
+
+  it('writes, reviews side by side, fixes and confirms the spec, grades with the check chosen from it, and waits for the candidate', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-spec-stages-'))
+    const repo = await seedSpecRepo(root)
+    const base = await resolveCommit(repo, 'HEAD')
+    recording = recordFakeReviewCalls()
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger(
+        specRun(repo, {
+          autoApprove: false,
+          review: {
+            correctness: {
+              command: '/review',
+              context: 'prompt',
+              output: 'verdict',
+            },
+          },
+          fakeScenario: {
+            specReviews: {
+              tech: ['blocker', 'pass'],
+              product: ['pass', 'advice'],
+            },
+          },
+        }),
+      )
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'waiting',
+        150000,
+        'the run waits for the candidate approval',
+      )
+      const waits = await durably.getWaits(run.id)
+      const approval = waits.find(
+        (w) =>
+          typeof (w.metadata as { candidateId?: unknown }).candidateId ===
+          'string',
+      )
+      assert.ok(approval, 'a candidate approval wait')
+      await signalApproval(durably, run.id, approval.id, 'approved')
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        60000,
+        'the run completes',
+      )
+      const finished = await durably.getRun(run.id)
+      const output = finished?.output as {
+        conclusion: string
+        candidate: { acceptanceHash: string }
+      }
+      assert.equal(output.conclusion, 'approved')
+      // Graded with the check the script chose from the confirmed spec.
+      assert.equal(output.candidate.acceptanceHash, 'node check-ok.mjs')
+
+      // Preflight, then the spec stages, the check from the spec, the
+      // baseline, and only then the code.
+      const order = await firstSteps(durably, run.id)
+      const at = (name: string | RegExp) =>
+        order.findIndex((n) =>
+          typeof name === 'string' ? n === name : name.test(n),
+        )
+      assert.ok(at('preflight') >= 0 && at('preflight') < at('spec:author'))
+      assert.ok(at('spec:author') < at(/^spec-review:1:/))
+      assert.ok(at(/^spec-review:1:/) < at('spec:fix:1'))
+      assert.ok(at('spec:fix:1') < at(/^spec-review:2:/))
+      assert.ok(at(/^spec-review:2:/) < at('spec:final'))
+      assert.ok(at('spec:final') < at('spec-check'))
+      assert.ok(at('spec-check') < at('baseline'))
+      assert.ok(at('baseline') < at(/^stage:\d+:code:agent$/))
+      assert.equal(at('spec:fix:2'), -1)
+
+      // The two reviewers of a round ran side by side.
+      const attempts = await durably.getStepAttempts(run.id)
+      const round1 = attempts.filter((a) =>
+        a.stepName.startsWith('spec-review:1:'),
+      )
+      assert.equal(round1.length, 2)
+      const [a, b] = round1
+      assert.ok(a && b && a.completedAt && b.completedAt)
+      assert.ok(
+        Date.parse(a.startedAt) < Date.parse(b.completedAt) &&
+          Date.parse(b.startedAt) < Date.parse(a.completedAt),
+        'the two spec reviews overlap',
+      )
+
+      // The spec lives in the run directory, outside the worktree, and the
+      // report keeps the confirmed spec, both rounds and the advice.
+      const specPath = join(root, 'state', 'runs', run.id, 'spec', 'spec.md')
+      const report = await buildReport(durably, run.id)
+      assert.equal(report.spec?.content, await readFile(specPath, 'utf8'))
+      assert.match(report.spec?.content ?? '', /revision 1/)
+      assert.equal(report.spec?.round, 2)
+      assert.equal(report.spec?.blocked, false)
+      assert.deepEqual(
+        report.spec?.advice.map((f) => [f.severity, f.title]),
+        [['non-blocker', 'fake spec advice']],
+      )
+      assert.deepEqual(report.spec?.check, {
+        command: ['node', 'check-ok.mjs'],
+        notes: 'graded by check-ok.mjs from the spec',
+      })
+      assert.deepEqual(
+        report.specRounds.map((r) =>
+          r.reviews.map((x) => [x.lens, x.decision]),
+        ),
+        [
+          [
+            ['product', 'pass'],
+            ['tech', 'needsChanges'],
+          ],
+          [
+            ['product', 'pass'],
+            ['tech', 'pass'],
+          ],
+        ],
+      )
+      assert.equal(
+        report.specRounds[1]?.reviews[0]?.findings?.counts.nonBlocker,
+        1,
+      )
+      // The baseline and its identity use the chosen check.
+      const baseline = (
+        await durably.storage.getCompletedStep(run.id, 'baseline')
+      )?.output as { passed: boolean; identity: { checkCommand: string[] } }
+      assert.equal(baseline.passed, true)
+      assert.deepEqual(baseline.identity.checkCommand, ['node', 'check-ok.mjs'])
+      // Each spec role has its own usage row, and the stages their timing.
+      const roles = report.roleUsage.map((r) => [r.role, r.invocations])
+      assert.deepEqual(
+        roles.filter(([role]) => String(role).startsWith('spec')),
+        [
+          ['spec-author', 1],
+          ['spec-fix', 1],
+          ['spec-review:product', 2],
+          ['spec-review:tech', 2],
+        ],
+      )
+      for (const stage of ['spec', 'spec-review', 'spec-check'])
+        assert.ok(
+          report.stageTimings.some((t) => t.stage === stage),
+          `timing for ${stage}`,
+        )
+      const markdown = reportToMarkdown(report)
+      assert.match(markdown, /## Spec review rounds/)
+      assert.match(markdown, /check from spec: node check-ok\.mjs/)
+
+      // The command-mode spec reviewer worked in a directory of its own,
+      // with the spec's location in its CLAUDE.local.md and {head} nowhere.
+      const specCalls = recording.calls.filter((c) => c.role === 'spec-review')
+      assert.equal(specCalls.length, 2)
+      for (const call of specCalls) {
+        assert.equal(call.input, `/spec-review ${base} --effort low`)
+        assert.ok(
+          !call.workdir.startsWith(join(root, 'state', 'runs', run.id, 'work')),
+        )
+        assert.match(
+          call.localInstructionsAtStart?.content ?? '',
+          new RegExp(specPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+        )
+        assert.ok(
+          Object.keys(call.readable).includes(dirname(specPath)),
+          'the spec directory is readable',
+        )
+      }
+      // The code reviewer is handed the script's notes as untrusted data.
+      const codeReview = recording.calls.find((c) => c.role === 'review-a')
+      assert.match(
+        codeReview?.input ?? '',
+        /<<<UNTRUSTED CHECK_NOTES [0-9a-f]{16}>>>\ngraded by check-ok\.mjs from the spec/,
+      )
+      assert.match(
+        codeReview?.input ?? '',
+        /UNTRUSTED SPEC [0-9a-f]{16}>>>\n# Spec/,
+      )
+      // The implementer gets the confirmed spec, the advice and the notes,
+      // each fenced off as data; a reviewer gets no advice.
+      const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))
+        ?.output as FactorySetup
+      assert.equal(setup.target.kind === 'repo' && setup.target.spec, null)
+      const fixed = createTarget({
+        ...setup.target,
+        spec: report.spec?.content ?? null,
+        checkCommand: report.spec?.check?.command ?? [],
+        specAdvice: specAdviceText(report.spec?.advice ?? []),
+        checkNotes: report.spec?.check?.notes ?? null,
+      } as FactorySetup['target'])
+      const implement = codePrompt({
+        role: 'implement',
+        iteration: 1,
+        repairNotes: [],
+        task: fixed.taskBrief(),
+        rules: fixed.implementationRules(),
+        untrusted: fixed.untrustedInputs('code'),
+      })
+      assert.match(
+        implement,
+        /<<<UNTRUSTED SPEC_ADVICE [0-9a-f]{16}>>>\n- \[non-blocker\] fake spec advice/,
+      )
+      assert.match(implement, /<<<UNTRUSTED CHECK_NOTES [0-9a-f]{16}>>>/)
+      assert.match(implement, /`node check-ok\.mjs`, chosen from the spec/)
+      assert.ok(
+        !fixed
+          .untrustedInputs('correctness')
+          .some((input) => input.label === 'SPEC_ADVICE'),
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  it('waits on a spec still blocked after the last round: a revise fixes and reviews once more, and an approval goes on with the spec', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-spec-blocked-'))
+    const repo = await seedSpecRepo(root)
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger(
+        specRun(repo, {
+          maxRounds: 1,
+          reviewers: [
+            { name: 'tech', profile: FAKE_PROFILE, invocation: null },
+          ],
+          fakeScenario: { specReviews: { tech: ['blocker', 'blocker'] } },
+        }),
+      )
+      const pendingSpecWait = async () => {
+        const current = await durably.getRun(run.id)
+        if (current?.status !== 'waiting') return null
+        return (
+          (await durably.getWaits(run.id)).find(
+            (w) => w.id === current.waitingOnWaitId && w.status === 'pending',
+          ) ?? null
+        )
+      }
+      await waitFor(
+        async () => (await pendingSpecWait()) !== null,
+        120000,
+        'the run waits on the blocked spec',
+      )
+      const first = await pendingSpecWait()
+      assert.equal(first?.name, 'spec-wait:1')
+      // No implementation began while the spec was blocked.
+      assert.ok(
+        !(await firstSteps(durably, run.id)).some((n) =>
+          n.startsWith('stage:'),
+        ),
+      )
+      const report = await buildReport(durably, run.id)
+      assert.equal(report.specRounds.length, 1)
+      assert.equal(report.spec?.content, null)
+      await signalSpecDecision(
+        durably,
+        run.id,
+        first?.id ?? '',
+        'revise',
+        'Name the rounding rule.',
+      )
+      await waitFor(
+        async () => (await pendingSpecWait())?.name === 'spec-wait:2',
+        120000,
+        'the revised spec is blocked again',
+      )
+      const second = await pendingSpecWait()
+      await signalApproval(durably, run.id, second?.id ?? '', 'approved')
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        120000,
+        'the run completes',
+      )
+      const done = await durably.getRun(run.id)
+      assert.equal(
+        (done?.output as { conclusion?: string } | undefined)?.conclusion,
+        'approved',
+      )
+      const order = await firstSteps(durably, run.id)
+      assert.ok(order.includes('spec:fix:1'))
+      assert.equal(order.filter((n) => n.startsWith('spec-review:')).length, 2)
+      const final = await buildReport(durably, run.id)
+      assert.equal(final.spec?.blocked, true)
+      assert.equal(final.spec?.round, 2)
+      // The blocker a person approved over is handed on as advice.
+      assert.deepEqual(
+        final.spec?.advice.map((f) => [f.severity, f.title]),
+        [['blocker', 'tech']],
+      )
+      assert.equal(final.waits.length, 2)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  it('stops as spec-check-failed before the baseline and the code when the script fails or prints a bad check', async () => {
+    for (const [script, message] of [
+      ['process.exit(3)\n', /exited with 3/],
+      ['console.log(JSON.stringify({ check: [] }))\n', /not \{ "check"/],
+      ['console.log("not json")\n', /printed no JSON/],
+    ] as const) {
+      const root = await mkdtemp(join(tmpdir(), 'repo-spec-check-'))
+      const repo = await seedSpecRepo(root, script)
+      const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+      await durably.init()
+      try {
+        // A spec given at trigger: no spec stages, the check still from it.
+        const run = await durably.jobs.agentLoop.trigger(
+          specRun(repo, { stages: false, spec: 'SPEC: add is exact.' }),
+        )
+        await waitFor(
+          async () => (await durably.getRun(run.id))?.status === 'failed',
+          60000,
+          'the run stops',
+        )
+        const failed = await durably.getRun(run.id)
+        assert.match(failed?.error ?? '', /^spec-check-failed: /)
+        assert.match(failed?.error ?? '', message)
+        const failure = await classifyRun(
+          durably,
+          failed as NonNullable<typeof failed>,
+        )
+        assert.equal(failure?.kind, 'spec-check-failed')
+        assert.equal(failure?.retryable, true)
+        const order = await firstSteps(durably, run.id)
+        assert.ok(order.includes('spec-check'))
+        for (const later of ['baseline', 'preflight'])
+          assert.ok(!order.includes(later), `${later} never ran`)
+        assert.ok(!order.some((n) => n.startsWith('stage:')))
+      } finally {
+        await durably.stop()
+        await durably.db.destroy()
+      }
+    }
+  })
+
+  it('checks every spec role before the first spec call, and never resends a spec call left without a completion', async () => {
+    {
+      const root = await mkdtemp(join(tmpdir(), 'repo-spec-preflight-'))
+      const repo = await seedSpecRepo(root)
+      const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+      await durably.init()
+      try {
+        const run = await durably.jobs.agentLoop.trigger(
+          specRun(repo, {
+            reviewers: [
+              {
+                name: 'tech',
+                profile: {
+                  ...FAKE_PROFILE,
+                  requestedModel: 'unlisted-x',
+                } as never,
+                invocation: null,
+              },
+            ],
+          }),
+        )
+        await waitFor(
+          async () => (await durably.getRun(run.id))?.status === 'failed',
+          60000,
+          'the run stops at preflight',
+        )
+        assert.match(
+          (await durably.getRun(run.id))?.error ?? '',
+          /^preflight-failed: .*spec-review:tech/,
+        )
+        const order = await firstSteps(durably, run.id)
+        assert.ok(!order.some((n) => n.startsWith('spec')))
+      } finally {
+        await durably.stop()
+        await durably.db.destroy()
+      }
+    }
+    {
+      const root = await mkdtemp(join(tmpdir(), 'repo-spec-uncertain-'))
+      const repo = await seedSpecRepo(root)
+      const stateRoot = join(root, 'state')
+      const durably = createAgentDurably({ stateRoot })
+      await durably.migrate()
+      try {
+        const run = await durably.jobs.agentLoop.trigger(specRun(repo))
+        // A worker died after the author's call started.
+        const checkpoints = join(
+          stateRoot,
+          'runs',
+          run.id,
+          'operation-checkpoints',
+        )
+        await mkdir(checkpoints, { recursive: true })
+        const { started } = checkpointPaths(
+          checkpoints,
+          `${run.id}/spec:author`,
+        )
+        await writeFile(
+          started,
+          `${JSON.stringify({ operationKey: `${run.id}/spec:author`, invocationId: 'lost', status: 'started', invocationStartedAt: new Date().toISOString() })}\n`,
+        )
+        await durably.init()
+        await waitFor(
+          async () => (await durably.getRun(run.id))?.status === 'failed',
+          60000,
+          'the run stops at the author',
+        )
+        const failed = await durably.getRun(run.id)
+        assert.match(failed?.error ?? '', /uncertain external invocation/)
+        assert.equal(
+          (await classifyRun(durably, failed as NonNullable<typeof failed>))
+            ?.kind,
+          'uncertain-invocation',
+        )
+        // Nothing was sent, so nothing was written.
+        assert.equal(
+          existsSync(join(stateRoot, 'runs', run.id, 'spec', 'spec.md')),
+          false,
+        )
+      } finally {
+        await durably.stop()
+        await durably.db.destroy()
+      }
+    }
+    {
+      const root = await mkdtemp(join(tmpdir(), 'repo-spec-rejected-'))
+      const repo = await seedSpecRepo(root)
+      const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+      await durably.init()
+      try {
+        const run = await durably.jobs.agentLoop.trigger(
+          specRun(repo, {
+            author: {
+              provider: 'fake',
+              requestedModel: 'rejects-x',
+              requestedEffort: null,
+            },
+          }),
+        )
+        await waitFor(
+          async () => (await durably.getRun(run.id))?.status === 'failed',
+          60000,
+          'the run stops at the refused author call',
+        )
+        const failed = await durably.getRun(run.id)
+        assert.equal(
+          (await classifyRun(durably, failed as NonNullable<typeof failed>))
+            ?.kind,
+          'rejected-invocation',
+        )
+      } finally {
+        await durably.stop()
+        await durably.db.destroy()
+      }
     }
   })
 })

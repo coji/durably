@@ -109,3 +109,52 @@ export const FactoryEventSchema = z.discriminatedUnion('type', [
 ])
 
 export type FactoryEvent = z.infer<typeof FactoryEventSchema>
+
+const specVersionSchema = z.object({
+  content: z.string(),
+  sha256: z.string(),
+})
+
+const specFindingSchema = z.object({
+  severity: z.enum(['blocker', 'non-blocker']),
+  title: z.string(),
+  body: z.string(),
+  file: z.string().optional(),
+  line: z.number().optional(),
+})
+
+const specReviewSchema = z.object({
+  name: z.string(),
+  decision: z.enum(['pass', 'needsChanges']),
+  notes: z.string(),
+  findings: z
+    .object({
+      blocker: z.array(specFindingSchema),
+      nonBlocker: z.array(specFindingSchema),
+      counts: z.object({ blocker: z.number(), nonBlocker: z.number() }),
+    })
+    .nullable(),
+})
+
+/**
+ * The spec stages' stored results, consumed by `reduceSpec`: a version of
+ * the spec written by the author or a fix, one review round of it, and a
+ * person's decision on a spec still blocked after the last round.
+ */
+export const SpecEventSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('spec.authored'), version: specVersionSchema }),
+  z.object({ type: z.literal('spec.fixed'), version: specVersionSchema }),
+  z.object({
+    type: z.literal('spec.reviewed'),
+    sha256: z.string(),
+    reviews: z.array(specReviewSchema).min(1),
+  }),
+  z.object({
+    type: z.literal('spec.decided'),
+    sha256: z.string(),
+    decision: z.enum(['approved', 'rejected', 'revise']),
+    notes: z.string().nullable(),
+  }),
+])
+
+export type SpecEvent = z.infer<typeof SpecEventSchema>

@@ -64,7 +64,13 @@ import {
 } from '../engine/status.js'
 import { TERMINAL_STATUSES } from '../engine/terminal.js'
 import { BASELINE_STEP } from '../factory/types.js'
-import { lensName, stageName, stepPartName } from './labels.js'
+import { lensName, roleName, stageName, stepPartName } from './labels.js'
+
+/** A spec review step's output as a review, its reviewer as the lens. */
+function specStepReview(output: unknown): unknown {
+  const o = output as { name?: unknown } | null
+  return o && typeof o.name === 'string' ? { ...o, lens: o.name } : null
+}
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -212,6 +218,7 @@ export interface Pipeline {
 
 const PIPELINE_ORDER = [
   'setup',
+  'spec-check',
   'baseline',
   'preflight',
   'triage',
@@ -222,12 +229,53 @@ const PIPELINE_ORDER = [
   'finish',
 ]
 
+/**
+ * A run with spec stages checks its roles first, then writes and reviews
+ * the spec and chooses its check from it, before the baseline.
+ */
+const SPEC_PIPELINE_ORDER = [
+  'setup',
+  'preflight',
+  'spec',
+  'spec-review',
+  'spec-check',
+  'baseline',
+  'triage',
+  'code',
+  'verify',
+  'review',
+  'approve',
+  'finish',
+]
+
+/** The stage a stored step or wait shows under in the stepper. */
+function pipelineStageOf(name: string): string {
+  const stage = stageOf(name)
+  // A person's decision on a blocked spec belongs to its review.
+  return stage === 'spec-wait' ? 'spec-review' : stage
+}
+
 export interface PipelineInput {
   status: string
   diagnosisKind: DiagnosisKind
   live: Pick<LiveElapsed, 'stage'> | null
   report: Pick<LoopReport, 'attempts' | 'waits' | 'stageVisits' | 'roleUsage'>
 }
+
+/** Whether a run has spec stages: a spec role, step or wait of its own. */
+function hasSpecStages(
+  report: Pick<LoopReport, 'attempts' | 'waits' | 'roleUsage'>,
+): boolean {
+  return (
+    report.roleUsage.some((r) => r.role === 'spec-author') ||
+    report.attempts.some((a) =>
+      SPEC_STAGE_NAMES.includes(stageOf(a.stepName)),
+    ) ||
+    report.waits.some((w) => stageOf(w.name) === 'spec-wait')
+  )
+}
+
+const SPEC_STAGE_NAMES = ['spec', 'spec-review']
 
 /** Stored step or wait name to the stage it belongs to, dated by its start. */
 function pipelineEvents(
@@ -236,18 +284,18 @@ function pipelineEvents(
 ): { stage: string; at: number }[] {
   return [
     ...attempts.map((a) => ({
-      stage: stageOf(a.stepName),
+      stage: pipelineStageOf(a.stepName),
       at: Date.parse(a.startedAt),
     })),
     ...waits.map((w) => ({
-      stage: stageOf(w.name),
+      stage: pipelineStageOf(w.name),
       at: Date.parse(w.createdAt),
     })),
-  ].filter((e) => PIPELINE_ORDER.includes(e.stage))
+  ].filter((e) => SPEC_PIPELINE_ORDER.includes(e.stage))
 }
 
 /** Stages that run at most once and appear only on a run that reached them. */
-const OPTIONAL_ONCE = ['baseline', 'preflight']
+const OPTIONAL_ONCE = ['baseline', 'preflight', 'spec-check']
 /** Stages that run at most once per run. */
 const ONCE_STAGES = ['setup', 'triage', ...OPTIONAL_ONCE]
 
@@ -261,6 +309,7 @@ const ONCE_STAGES = ['setup', 'triage', ...OPTIONAL_ONCE]
 export function derivePipeline(input: PipelineInput): Pipeline {
   const { report } = input
   const approvals = report.waits.filter((w) => stageOf(w.name) === 'approve')
+  const specWaits = report.waits.filter((w) => stageOf(w.name) === 'spec-wait')
   const counts = new Map<string, number>()
   for (const v of report.stageVisits) counts.set(v.stage, v.visits)
   // Approval is a wait, not a step, so it has no attempts to count.
@@ -270,18 +319,37 @@ export function derivePipeline(input: PipelineInput): Pipeline {
       once,
       report.attempts.some((a) => stageOf(a.stepName) === once) ? 1 : 0,
     )
+  // The spec is written once and then once per fix; it is reviewed once per
+  // round.
+  const specSteps = new Set(
+    report.attempts
+      .map((a) => a.stepName)
+      .filter((n) => n === 'spec:author' || n.startsWith('spec:fix:')),
+  )
+  counts.set('spec', specSteps.size)
+  counts.set(
+    'spec-review',
+    new Set(
+      report.attempts
+        .filter((a) => stageOf(a.stepName) === 'spec-review')
+        .map((a) => a.stepName.split(':')[1]),
+    ).size,
+  )
   const hasTriage =
     (counts.get('triage') ?? 0) > 0 ||
     report.roleUsage.some((r) => r.role === 'triage')
-  const order = PIPELINE_ORDER.filter(
+  const order = (
+    hasSpecStages(report) ? SPEC_PIPELINE_ORDER : PIPELINE_ORDER
+  ).filter(
     (s) =>
       (s !== 'triage' || hasTriage) &&
       (!OPTIONAL_ONCE.includes(s) || (counts.get(s) ?? 0) > 0),
   )
 
-  const events = pipelineEvents(report.attempts, approvals).sort(
-    (x, y) => x.at - y.at,
-  )
+  const events = pipelineEvents(report.attempts, [
+    ...approvals,
+    ...specWaits,
+  ]).sort((x, y) => x.at - y.at)
   const last = events.at(-1)?.stage ?? null
   const terminal = TERMINAL_STATUSES.includes(input.status)
   let at: string | null
@@ -448,6 +516,8 @@ export interface TraceInput {
    * for a report that does not carry them.
    */
   reviewRounds?: ReportReviewRound[]
+  /** The report's spec review rounds; `lens` is the reviewer's name. */
+  specRounds?: ReportReviewRound[]
   candidates?: ReportSealedCandidate[]
   /** Outputs of the run's completed steps, by step name. */
   stepOutputs: Record<string, unknown>
@@ -473,6 +543,8 @@ function entryOf(name: string): {
       lens: null,
       seq: null,
     }
+  const spec = specEntryOf(name)
+  if (spec) return spec
   const [kind, s, stage, sub] = name.split(':')
   if (kind !== 'stage' || !s || !stage) return null
   const seq = Number(s)
@@ -494,6 +566,52 @@ function entryOf(name: string): {
     lens: null,
     seq,
   }
+}
+
+/**
+ * A spec step or wait's entry: the author, each fix, each reviewer of each
+ * round, the confirmation, and each wait for a person's decision. They come
+ * before any code, so they sit under the run, in the order they began.
+ */
+function specEntryOf(name: string): {
+  key: string
+  stage: string
+  label: string
+  lens: string | null
+  seq: number | null
+} | null {
+  const [kind, a, b] = name.split(':')
+  const entry = (
+    key: string,
+    stage: string,
+    label: string,
+    lens = null as string | null,
+  ) => ({
+    key,
+    stage,
+    label,
+    lens,
+    seq: null,
+  })
+  if (name === 'spec:author')
+    return entry(name, 'spec', roleName('spec-author'))
+  if (name === 'spec:final') return entry(name, 'spec', '仕様の確定')
+  if (kind === 'spec' && a === 'fix' && b)
+    return entry(`spec:fix#${b}`, 'spec', `${roleName('spec-fix')} ${b}回目`)
+  if (kind === 'spec-review' && a && b)
+    return entry(
+      `spec-review:${b}#${a}`,
+      'spec-review',
+      `${roleName(`spec-review:${b}`)} ${a}回目`,
+      b,
+    )
+  if (kind === 'spec-wait' && a)
+    return entry(
+      `spec-wait#${a}`,
+      'spec-wait',
+      `${stageName('spec-wait')} ${a}回目`,
+    )
+  return null
 }
 
 function checkpointOf(a: AttemptRow, open: boolean): TraceCheckpoint | null {
@@ -623,7 +741,7 @@ export function deriveTrace(input: TraceInput): Trace {
   for (const a of input.attempts)
     add(a.stepName, Date.parse(a.startedAt), (e) => e.attempts.push(a))
   for (const w of input.waits)
-    if (stageOf(w.name) === 'approve')
+    if (stageOf(w.name) === 'approve' || stageOf(w.name) === 'spec-wait')
       add(w.name, Date.parse(w.createdAt), (e) => (e.wait = w))
   const ordered = [...entries.values()].sort(
     (x, y) => (x.seq ?? -1) - (y.seq ?? -1) || x.start - y.start,
@@ -757,16 +875,31 @@ export function deriveTrace(input: TraceInput): Trace {
     // The report's last verdicts belong to the last entry only once it is
     // done: an entry still at work has decided nothing yet.
     const lastDone = state === 'done'
-    const review =
-      e.stage !== 'review'
-        ? null
-        : (input.reviewRounds
-            ?.find((r) => r.sequence === e.seq)
+    // A spec reviewer's verdict: its round's in the report, or its step's.
+    const specRound = e.stage === 'spec-review' ? e.key.split('#')[1] : null
+    const specReview =
+      specRound && lens
+        ? (input.specRounds
+            ?.find((r) => String(r.round) === specRound)
             ?.reviews.find((r) => r.lens === lens) ??
-          asReportReview(reviewStep ? input.stepOutputs[reviewStep] : null) ??
-          (lastDone && e.seq === lastReviewSeq
-            ? (input.reviews.find((r) => r.lens === lens) ?? null)
-            : null))
+          asReportReview(
+            specStepReview(
+              input.stepOutputs[`spec-review:${specRound}:${lens}`],
+            ),
+          ))
+        : null
+    const review =
+      e.stage === 'spec-review'
+        ? specReview
+        : e.stage !== 'review'
+          ? null
+          : (input.reviewRounds
+              ?.find((r) => r.sequence === e.seq)
+              ?.reviews.find((r) => r.lens === lens) ??
+            asReportReview(reviewStep ? input.stepOutputs[reviewStep] : null) ??
+            (lastDone && e.seq === lastReviewSeq
+              ? (input.reviews.find((r) => r.lens === lens) ?? null)
+              : null))
     // Only the candidate this entry's own candidate step sealed: between its
     // agent step and that step, the entry has sealed nothing yet.
     const candidateStep = `stage:${e.seq}:code:candidate`
@@ -1168,6 +1301,7 @@ function createUiApi() {
         reviews: report.reviews,
         candidate: report.candidate,
         reviewRounds: report.reviewRounds,
+        specRounds: report.specRounds,
         candidates: report.candidates,
         stepOutputs,
         now,

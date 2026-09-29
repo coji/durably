@@ -46,7 +46,10 @@ export interface PrepareRepoArgs {
   spec: string | null
   dispositions: string | null
   issue: { number: number; title: string; url: string } | null
+  /** Empty only with `checkFromSpec`, whose script names the check later. */
   checkCommand: string[]
+  /** Fixed at trigger; see `RepoTargetConfig.checkFromSpec`. */
+  checkFromSpec?: string[] | null
   setupCommand: string[] | null
   checkTimeoutMs: number
   publish: boolean
@@ -65,7 +68,7 @@ export interface PrepareRepoArgs {
 export async function prepareRepoTarget(
   args: PrepareRepoArgs,
 ): Promise<RepoTargetConfig> {
-  if (args.checkCommand.length === 0)
+  if (args.checkCommand.length === 0 && !args.checkFromSpec)
     throw new Error('a repo target needs a check command to grade candidates')
   const repo = await repoRoot(args.repoPath)
   const workdir = repoWorkdirOf(args.root)
@@ -108,6 +111,7 @@ export async function prepareRepoTarget(
     workdir,
     setupCommand: args.setupCommand,
     checkCommand: args.checkCommand,
+    ...(args.checkFromSpec ? { checkFromSpec: args.checkFromSpec } : {}),
     checkTimeoutMs: args.checkTimeoutMs,
     task: args.task,
     spec: args.spec,

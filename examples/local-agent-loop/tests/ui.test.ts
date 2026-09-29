@@ -45,7 +45,11 @@ import {
 import { checkpointPaths } from '../src/engine/runner.js'
 import type { DiagnosisKind } from '../src/engine/status.js'
 import { repairLabels } from '../src/factory/repair.js'
-import { BaselineSource, ReviewFindingTitles } from '../src/ui/App.js'
+import {
+  BaselineSource,
+  ReviewFindingTitles,
+  SpecPanel,
+} from '../src/ui/App.js'
 import {
   commandNote,
   noteSaidByReason,
@@ -59,8 +63,13 @@ import {
   isPathDetail,
   reviewDecision,
   squashedBranchField,
+  roleName,
+  stageName,
   stopName,
 } from '../src/ui/labels.js'
+
+/** A diagnosis sentence in Japanese only. */
+const KIND_TEXT_OK = (text: string) => !/[A-Za-z()（）]/.test(text)
 import { pollEvery } from '../src/ui/poll.js'
 import {
   derivePipeline,
@@ -366,6 +375,121 @@ describe('pipeline and trace', () => {
     assert.ok(
       !stagesOf(plain).some(([s]) => s === 'baseline' || s === 'preflight'),
     )
+  })
+
+  it('(f) shows the spec stages only on a run that has them, and waits on the spec apart from approval', () => {
+    const specRoles = [
+      'code',
+      'correctness',
+      'edge-cases',
+      'spec-author',
+      'spec-fix',
+      'spec-review:tech',
+    ]
+    const specSteps = [
+      step('setup', 0, 1),
+      step('preflight', 1, 2),
+      step('spec:author', 2, 5),
+      step('spec-review:1:tech', 5, 8),
+      step('spec:fix:1', 8, 10),
+      step('spec-review:2:tech', 10, 12),
+    ]
+    const blocked = derivePipeline({
+      status: 'waiting',
+      diagnosisKind: 'spec-approval',
+      live: null,
+      report: report(specSteps, [wait('spec-wait:1', 13, null)], specRoles),
+    })
+    assert.deepEqual(stagesOf(blocked).slice(0, 5), [
+      ['setup', 'done', 1],
+      ['preflight', 'done', 1],
+      ['spec', 'done', 2],
+      ['spec-review', 'waiting', 2],
+      ['code', 'not-reached', 0],
+    ])
+    assert.equal(
+      blocked.label,
+      '工程: 仕様 2回、仕様レビュー 2回、いまは仕様レビューで人待ち',
+    )
+    // Before any spec step, the stages are there from the spec roles.
+    const pending = derivePipeline({
+      status: 'pending',
+      diagnosisKind: 'pending',
+      live: null,
+      report: report([], [], specRoles),
+    })
+    assert.deepEqual(
+      stagesOf(pending)
+        .map(([stage]) => stage)
+        .slice(0, 3),
+      ['setup', 'spec', 'spec-review'],
+    )
+    // A run without spec stages keeps its stepper.
+    const plain = derivePipeline({
+      status: 'waiting',
+      diagnosisKind: 'approval',
+      live: null,
+      report: report(repaired, [approval]),
+    })
+    assert.ok(!stagesOf(plain).some(([s]) => String(s).startsWith('spec')))
+    // The trace names each spec step and the wait in Japanese, under the run.
+    const trace = deriveTrace({
+      run: {
+        status: 'waiting',
+        createdAt: iso(0),
+        startedAt: iso(0),
+        completedAt: null,
+        leaseGeneration: 1,
+      },
+      diagnosisKind: 'spec-approval',
+      conclusion: null,
+      attempts: specSteps,
+      waits: [wait('spec-wait:1', 13, null)],
+      reviews: [],
+      candidate: null,
+      specRounds: [
+        {
+          round: 1,
+          sequence: 1,
+          candidate: null,
+          reviews: [
+            {
+              lens: 'tech',
+              decision: 'needsChanges',
+              notes: 'a gap',
+              findings: null,
+            },
+          ],
+        },
+      ],
+      stepOutputs: {},
+      now: t0 + 20_000,
+    })
+    assert.deepEqual(
+      trace.root.children.map((c) => [c.label, c.state]),
+      [
+        ['準備', 'done'],
+        ['事前確認', 'done'],
+        ['仕様の作成', 'done'],
+        ['仕様レビュー tech 1回目', 'done'],
+        ['仕様の修正 1回目', 'done'],
+        ['仕様レビュー tech 2回目', 'done'],
+        ['仕様の判断 1回目', 'waiting'],
+      ],
+    )
+    assert.equal(trace.root.children[3]?.review?.decision, 'needsChanges')
+    assert.equal(KIND_TEXT_OK(diagnosisText({ kind: 'spec-approval' })), true)
+    assert.notEqual(
+      diagnosisText({ kind: 'spec-approval' }),
+      diagnosisText({ kind: 'approval' }),
+    )
+    assert.match(
+      diagnosisText({ kind: 'decided', decision: 'revise' }),
+      /^仕様を直すメモを記録済み/,
+    )
+    assert.equal(roleName('spec-review:tech'), '仕様レビュー tech')
+    assert.equal(stageName('spec'), '仕様')
+    assert.equal(stageName('spec-review'), '仕様レビュー')
   })
 
   it('(c) shows triage only for a run with triage, and the running stage', () => {
@@ -1224,12 +1348,14 @@ describe('diagnosis wording on the page', () => {
     'running',
     'lease-expired',
     'approval',
+    'spec-approval',
     'decided',
     'other-wait',
     'finished',
   ]
   const failures: FailureKind[] = [
     'baseline-check-failed',
+    'spec-check-failed',
     'preflight-failed',
     'candidate-moved',
     'rejected-invocation',
@@ -1562,6 +1688,63 @@ describe('diagnosis wording on the page', () => {
     // No verdict yet, or no baseline: nothing.
     assert.equal(render({ ...base, passed: null, reusedFrom: null }), '')
     assert.equal(render(null), '')
+  })
+
+  it('shows the spec, its advice, the chosen check and each spec round in Japanese, and nothing on a run without spec stages', () => {
+    const base = {
+      specRounds: [
+        {
+          round: 1,
+          sequence: 1,
+          candidate: null,
+          reviews: [
+            {
+              lens: 'tech',
+              decision: 'pass',
+              notes: 'fine',
+              findings: null,
+            },
+          ],
+        },
+      ],
+      spec: {
+        content: '# Spec\n',
+        sha256: 'a'.repeat(64),
+        round: 1,
+        blocked: true,
+        advice: [
+          {
+            severity: 'non-blocker' as const,
+            title: 'name the rule',
+            body: 'b',
+          },
+        ],
+        check: { command: ['node', 'check-ok.mjs'], notes: 'graded here' },
+      },
+    }
+    const html = renderToStaticMarkup(
+      createElement(SpecPanel, { report: base as unknown as LoopReport }),
+    )
+    for (const text of [
+      '仕様',
+      '1回目の仕様レビューで確定',
+      '人の判断',
+      '実装に渡した助言',
+      'name the rule',
+      'node check-ok.mjs',
+      'graded here',
+      '1回目の仕様レビュー',
+      '確定した仕様を開く',
+    ])
+      assert.ok(html.includes(text), text)
+    assert.equal(
+      renderToStaticMarkup(
+        createElement(SpecPanel, {
+          report: { specRounds: [], spec: null } as unknown as LoopReport,
+        }),
+      ),
+      '',
+    )
   })
 
   it('says in Japanese what every next command the CLI annotates does', async () => {

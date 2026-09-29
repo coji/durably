@@ -757,3 +757,108 @@ describe('reviewer invocations in the config version', () => {
     assert.equal(new Set(versions).size, versions.length)
   })
 })
+
+describe('spec stages in the config version', () => {
+  const profile: ResolvedProfile = {
+    id: 'fake:fake-model:provider-default:code',
+    provider: 'fake',
+    requestedModel: null,
+    requestedEffort: null,
+    effectiveModel: 'fake-model',
+    effectiveEffort: null,
+  }
+  const base = {
+    contextMode: 'reuse',
+    instructionsVersion: 'local-factory.v3',
+    maxIterations: 2,
+    target: 'repo:node --test',
+    agentTimeoutMs: 1800000,
+    checkTimeoutMs: 900000,
+    code: profile,
+    correctness: profile,
+    edgeCases: profile,
+  }
+  // The same run's version from before spec stages existed.
+  const PRIOR = '12ea50a6cf90735b'
+  const spec = {
+    author: profile,
+    fix: profile,
+    reviewers: [
+      { name: 'product', profile, invocation: null },
+      {
+        name: 'tech',
+        profile,
+        invocation: {
+          command: '/spec-review {base}',
+          context: 'prompt',
+          output: 'findings-json',
+        },
+      },
+    ],
+    maxRounds: 3,
+    template: '# Template\n',
+    reviewTemplate: 'Review it.\n',
+  }
+
+  it('keeps the prior version without spec stages, a spec given at trigger included', () => {
+    assert.equal(configVersionOf({ ...base, spec: null }), PRIOR)
+    assert.equal(configVersionOf({ ...base, spec: undefined }), PRIOR)
+    // A check chosen from the spec is part of what the run is pointed at.
+    assert.notEqual(
+      configVersionOf({ ...base, target: 'repo:from-spec:node x.mjs' }),
+      PRIOR,
+    )
+  })
+
+  it('changes with each role, invocation, round limit and template content', () => {
+    const other = {
+      ...profile,
+      requestedEffort: 'high',
+      effectiveEffort: 'high',
+    }
+    const versions = [
+      configVersionOf({ ...base, spec }),
+      configVersionOf({ ...base, spec: { ...spec, author: other } }),
+      configVersionOf({ ...base, spec: { ...spec, fix: other } }),
+      configVersionOf({
+        ...base,
+        spec: { ...spec, reviewers: spec.reviewers.slice(0, 1) },
+      }),
+      configVersionOf({
+        ...base,
+        spec: {
+          ...spec,
+          reviewers: [
+            { name: 'ops', profile, invocation: null },
+            ...spec.reviewers.slice(1),
+          ],
+        },
+      }),
+      configVersionOf({
+        ...base,
+        spec: {
+          ...spec,
+          reviewers: [
+            spec.reviewers[0] as (typeof spec.reviewers)[number],
+            {
+              name: 'tech',
+              profile,
+              invocation: {
+                command: '/spec-review {base}',
+                context: 'prompt',
+                output: 'verdict',
+              },
+            },
+          ],
+        },
+      }),
+      configVersionOf({ ...base, spec: { ...spec, maxRounds: 4 } }),
+      configVersionOf({ ...base, spec: { ...spec, template: '# Other\n' } }),
+      configVersionOf({ ...base, spec: { ...spec, reviewTemplate: null } }),
+    ]
+    for (const version of versions) assert.notEqual(version, PRIOR)
+    assert.equal(new Set(versions).size, versions.length)
+    // The same settings give the same version: nothing is read again.
+    assert.equal(configVersionOf({ ...base, spec }), versions[0])
+  })
+})

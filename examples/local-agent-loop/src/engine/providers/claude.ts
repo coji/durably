@@ -52,11 +52,13 @@ import type { TokenUsage } from '../usage.js'
 import {
   isCommandModeReview,
   READ_ONLY_ROLES,
+  SPEC_WRITER_ROLES,
   type AgentCallOptions,
   type AgentProvider,
   type AgentResult,
   type AvailabilityCheck,
   type ReviewCallSettings,
+  type SpecWriteAccess,
 } from './types.js'
 
 const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
@@ -397,6 +399,44 @@ export function decideReviewToolPermission(
   return { allow: true }
 }
 
+/** The tools a spec author or fixer has; every other tool does not exist. */
+export const SPEC_WRITER_TOOLS = ['Read', 'Grep', 'Glob', 'Edit', 'Write']
+
+/**
+ * Decide one tool call of a spec author or fixer. Reading, searching and
+ * globbing are held to `roots`, as a command-mode review's are: the spec's
+ * own directory first, relative paths taken from it, then the worktree.
+ * `Edit` and `Write` may name the spec file alone, compared after resolving
+ * symbolic links. Bash, subagents and every other tool are refused.
+ */
+export function decideSpecToolPermission(
+  roots: readonly string[],
+  writableFile: string,
+  toolName: string,
+  input: Record<string, unknown>,
+): ToolDecision {
+  if (!SPEC_WRITER_TOOLS.includes(toolName))
+    return {
+      allow: false,
+      reason: `a spec writer reads the repository and writes the spec file only (denied ${toolName})`,
+    }
+  if (toolName === 'Edit' || toolName === 'Write') {
+    const p = input['file_path']
+    const cwd = resolve(roots[0] ?? '.')
+    const real =
+      typeof p === 'string' && !namesHome(p)
+        ? realPathOf(resolveInside(cwd, p))
+        : null
+    return real !== null && real === realPathOf(resolve(writableFile))
+      ? { allow: true }
+      : {
+          allow: false,
+          reason: `a spec writer writes the spec file only (denied ${String(p)})`,
+        }
+  }
+  return decideReviewToolPermission(roots, toolName, input)
+}
+
 type Decide = (toolName: string, input: Record<string, unknown>) => ToolDecision
 
 function canUseToolWith(decide: Decide) {
@@ -516,6 +556,7 @@ export function buildClaudeSettings(
   sessionId: string | null = null,
   readableFiles: readonly string[] = [],
   review: ReviewCallSettings | null = null,
+  specWrite: SpecWriteAccess | null = null,
 ): ClaudeCodeSettings {
   const executable = claudeExecutable()
   const pinned = {
@@ -523,6 +564,27 @@ export function buildClaudeSettings(
     // name different CLIs. Unresolved, the SDK reports its own error.
     ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
     ...(effort ? { effort: effort as 'low' } : {}),
+  }
+  if (specWrite) {
+    // A spec author or fixer works in the run's spec directory, outside the
+    // worktree. It reads that directory and the worktree, and writes the
+    // spec file alone: only the listed tools exist, `dontAsk` refuses what
+    // is not pre-approved, no project settings are loaded, and the same
+    // guard sees every call through the hook.
+    const roots = [workdir, ...specWrite.readableDirs]
+    const decide: Decide = (toolName, input) =>
+      decideSpecToolPermission(roots, specWrite.writableFile, toolName, input)
+    return {
+      cwd: workdir,
+      persistSession: false,
+      settingSources: [],
+      permissionMode: 'dontAsk',
+      tools: [...SPEC_WRITER_TOOLS],
+      allowedTools: [...SPEC_WRITER_TOOLS],
+      canUseTool: canUseToolWith(decide),
+      hooks: { PreToolUse: [{ hooks: [preToolUseWith(decide)] }] },
+      ...pinned,
+    }
   }
   if (isCommandModeReview(review)) {
     // `workdir` is the review's own directory: the base commit's CLAUDE.md
@@ -961,6 +1023,8 @@ export class ClaudeProvider implements AgentProvider {
     const { model: modelId, effort } = this.resolveExecution(options)
     const modelIdResolved = modelId ?? defaultModelFor('claude')
     const readOnly = READ_ONLY_ROLES.has(options.role)
+    if (SPEC_WRITER_ROLES.has(options.role) && !options.specWrite)
+      throw new Error(`a ${options.role} call needs the spec file it may write`)
     const onActivity = options.onActivity
     // The concrete model the CLI reports, first seen wins: an alias such as
     // `opus` is resolved by the CLI, never here.
@@ -973,6 +1037,7 @@ export class ClaudeProvider implements AgentProvider {
         options.sessionId,
         options.readableFiles,
         options.review ?? null,
+        options.specWrite ?? null,
       ),
       onSdkMessage: (message: SDKMessage) => {
         observedModel ??= observedClaudeModel(message)

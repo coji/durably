@@ -8,6 +8,8 @@ import { REPAIR_OF_LABEL, triageThatRuns } from '../factory/repair.js'
 import {
   BASELINE_STEP,
   REPAIR_SESSION_STEP,
+  SPEC_CHECK_STEP,
+  SPEC_FINAL_STEP,
   type RepairSessionRecord,
 } from '../factory/types.js'
 import { classifyRun, stageStep } from './failure-reasons.js'
@@ -43,6 +45,7 @@ import {
   type ReportReviewFindings,
   type ReportReviewRound,
   type ReportSealedCandidate,
+  type ReportSpec,
   type ReportTriage,
   type RoleProfileRow,
   type TriageCalibration,
@@ -70,6 +73,11 @@ interface PersistedInput {
     candidateCommit?: string
     findings?: string
     findingsFile?: { path?: string }
+  }
+  spec?: {
+    author?: PersistedProfile
+    fix?: PersistedProfile | null
+    reviewers?: { name?: string; profile?: PersistedProfile }[]
   }
 }
 
@@ -115,7 +123,19 @@ function profileRows(
   // Triage has no fallback: without its own profile it never runs. A repair
   // run never runs the triage profile it records, so it has no row.
   const triage = triageThatRuns(input, input?.profiles?.['triage'])
-  return triage ? [...rows, row('triage', triage)] : rows
+  // The spec roles, each a row of its own: the fix on the author's settings
+  // unless it has its own, and every named reviewer.
+  const spec = input?.spec
+  const specRows = spec?.author
+    ? [
+        row('spec-author', spec.author),
+        row('spec-fix', spec.fix ?? spec.author),
+        ...(spec.reviewers ?? []).flatMap((r) =>
+          r.name && r.profile ? [row(`spec-review:${r.name}`, r.profile)] : [],
+        ),
+      ]
+    : []
+  return [...rows, ...(triage ? [row('triage', triage)] : []), ...specRows]
 }
 
 /** A stored calibration; a value missing from an older record is unknown. */
@@ -365,6 +385,81 @@ function reviewRoundsOf(
         ),
       }
     })
+}
+
+/**
+ * Every spec review round, from the completed `spec-review:<round>:<name>`
+ * steps, one review per reviewer in name order; `lens` is the reviewer's
+ * name. An open run's rounds are there as soon as their steps complete.
+ */
+function specRoundsOf(steps: StoredStep[]): ReportReviewRound[] {
+  const rounds = new Map<number, ReportReview[]>()
+  for (const s of steps) {
+    const [kind, at, name] = s.name.split(':')
+    const round = Number(at)
+    if (
+      kind !== 'spec-review' ||
+      !name ||
+      !Number.isInteger(round) ||
+      s.status !== 'completed'
+    )
+      continue
+    const r = s.output as { name?: unknown; findings?: unknown } | null
+    const review = asReportReview(
+      r && typeof r.name === 'string' ? { ...r, lens: r.name } : null,
+    )
+    if (!review) continue
+    rounds.set(round, [...(rounds.get(round) ?? []), review])
+  }
+  return [...rounds]
+    .sort(([x], [y]) => x - y)
+    .map(([round, reviews]) => ({
+      round,
+      sequence: round,
+      candidate: null,
+      reviews: reviews.sort((x, y) => x.lens.localeCompare(y.lens)),
+    }))
+}
+
+/** The confirmed spec and the check chosen from it; see `ReportSpec`. */
+function specOf(steps: StoredStep[]): ReportSpec | null {
+  const done = (name: string) =>
+    steps.find((s) => s.name === name && s.status === 'completed')?.output
+  const final = done(SPEC_FINAL_STEP) as {
+    content?: unknown
+    sha256?: unknown
+    round?: unknown
+    blocked?: unknown
+    advice?: unknown
+  } | null
+  const check = done(SPEC_CHECK_STEP) as {
+    check?: unknown
+    notes?: unknown
+  } | null
+  const started = steps.some(
+    (s) => s.name.startsWith('spec:') || s.name.startsWith('spec-review:'),
+  )
+  if (!final && !check && !started) return null
+  const advice = Array.isArray(final?.advice)
+    ? final.advice.flatMap((f) => {
+        const finding = asFinding(f)
+        return finding ? [finding] : []
+      })
+    : []
+  return {
+    content: typeof final?.content === 'string' ? final.content : null,
+    sha256: typeof final?.sha256 === 'string' ? final.sha256 : null,
+    round: typeof final?.round === 'number' ? final.round : null,
+    blocked: final?.blocked === true,
+    advice,
+    check:
+      check && Array.isArray(check.check)
+        ? {
+            command: check.check.map(String),
+            notes: typeof check.notes === 'string' ? check.notes : null,
+          }
+        : null,
+  }
 }
 
 /**
@@ -905,6 +1000,8 @@ export async function buildReport(
     repairCalls: repairCallsOf(rows),
     reviews: lastReviews(run.output, waits, reviewRounds),
     reviewRounds,
+    specRounds: specRoundsOf(steps),
+    spec: specOf(steps),
     delivery,
     failure,
     stageVisits: visits,

@@ -72,6 +72,7 @@ import {
   reviewBaseTreeOf,
   reviewHeadTreeOf,
   reviewWorkdirOf,
+  specReviewWorkdirOf,
 } from '../factory/layout.js'
 import { changedPathsLine } from '../factory/prompts.js'
 import {
@@ -189,7 +190,9 @@ export class RepoTarget implements Target {
   }
 
   checkDescription(): string {
-    return `\`${checkFingerprint(this.config.checkCommand)}\`, pinned when the run started`
+    return this.config.checkFromSpec
+      ? `\`${checkFingerprint(this.config.checkCommand)}\`, chosen from the spec before you started`
+      : `\`${checkFingerprint(this.config.checkCommand)}\`, pinned when the run started`
   }
 
   taskBrief(): string {
@@ -213,6 +216,12 @@ export class RepoTarget implements Target {
     ]
     if (this.config.spec)
       inputs.push({ label: 'SPEC', content: this.config.spec })
+    // The spec reviewers' advice is for the implementer; the check script's
+    // notes go to the reviewers too. Both are data, like the task.
+    if (role === 'code' && this.config.specAdvice)
+      inputs.push({ label: 'SPEC_ADVICE', content: this.config.specAdvice })
+    if (this.config.checkNotes)
+      inputs.push({ label: 'CHECK_NOTES', content: this.config.checkNotes })
     // Dispositions record how earlier review findings were settled. They
     // matter to a reviewer deciding whether a finding is new, and would only
     // invite the implementer to argue with its reviewers.
@@ -334,6 +343,36 @@ export class RepoTarget implements Target {
     await rm(cwd, { recursive: true, force: true })
     await mkdir(cwd, { recursive: true })
     await copyReviewConfig(reviewBaseTreeOf(dir), cwd)
+    await writeFile(join(cwd, 'CLAUDE.local.md'), localFile, {
+      encoding: 'utf8',
+      flag: 'wx',
+    })
+    return cwd
+  }
+
+  async prepareSpecReviewWorkdir(
+    round: number,
+    name: string,
+    localFile: string,
+    signal: AbortSignal,
+  ): Promise<string> {
+    const dir = this.config.reviewSnapshotsDir
+    if (!dir)
+      throw new Error(
+        `review snapshots were not set up for spec reviewer ${name}; no configured reviewer reads them`,
+      )
+    const baseDir = reviewBaseTreeOf(dir)
+    await extractCommit(
+      this.config.repoPath,
+      this.config.baseCommit,
+      baseDir,
+      signal,
+    )
+    const cwd = specReviewWorkdirOf(dir, round, name)
+    // Whatever an interrupted attempt left is discarded, not trusted.
+    await rm(cwd, { recursive: true, force: true })
+    await mkdir(cwd, { recursive: true })
+    await copyReviewConfig(baseDir, cwd)
     await writeFile(join(cwd, 'CLAUDE.local.md'), localFile, {
       encoding: 'utf8',
       flag: 'wx',

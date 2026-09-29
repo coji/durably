@@ -210,6 +210,7 @@ type Tone = 'waiting' | 'failed' | 'running' | 'none'
 
 const KIND_LABEL: Record<DiagnosisKind, { label: string; tone: Tone }> = {
   approval: { label: '承認待ち', tone: 'waiting' },
+  'spec-approval': { label: '仕様の判断待ち', tone: 'waiting' },
   'other-wait': { label: '入力待ち', tone: 'waiting' },
   stopped: { label: '停止', tone: 'failed' },
   running: { label: '実行中', tone: 'running' },
@@ -2313,6 +2314,88 @@ function ReviewsPanel({ report: r }: { report: LoopReport }) {
   )
 }
 
+/**
+ * The spec stages: the spec the run went on with, the advice handed to the
+ * implementer, the check chosen from the spec, and every spec review round.
+ * Shown only on a run that has them.
+ */
+export function SpecPanel({ report: r }: { report: LoopReport }) {
+  const spec = r.spec
+  if (!spec && r.specRounds.length === 0) return null
+  return (
+    <Panel title="仕様">
+      <div className="flex flex-col gap-4">
+        {spec?.content != null ? (
+          <dl className="flex flex-col gap-2">
+            <Field label="確定">
+              <span className="font-ui">
+                {spec.round !== null
+                  ? `${spec.round}回目の仕様レビューで確定`
+                  : '確定済み'}
+              </span>
+            </Field>
+            {spec.blocked ? (
+              <Field label="人の判断">
+                <span className="font-ui">
+                  指摘が残った仕様を人が判断して進めました
+                </span>
+              </Field>
+            ) : null}
+          </dl>
+        ) : r.specRounds.length > 0 ? (
+          <Empty>仕様はまだ確定していません。</Empty>
+        ) : null}
+        {spec?.check ? (
+          <dl className="flex flex-col gap-2">
+            <Field label="仕様から決めた採点コマンド">
+              {spec.check.command.join(' ')}
+            </Field>
+            <Field label="採点コマンドの注記">
+              <span className="font-ui">{spec.check.notes ?? 'なし'}</span>
+            </Field>
+          </dl>
+        ) : null}
+        {spec && spec.advice.length > 0 ? (
+          <div className="flex flex-col gap-1 text-sm">
+            <p className="font-medium">実装に渡した助言</p>
+            <ul className="text-fg-2 flex list-disc flex-col gap-1 pl-4">
+              {spec.advice.map((f, at) => (
+                // The stored list never changes order.
+                <li key={`${f.severity}:${at}`}>
+                  {f.severity === 'blocker' ? '直すべき指摘 ' : ''}
+                  {f.title}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {spec?.content != null ? (
+          <details>
+            <summary className="cursor-pointer text-sm">
+              確定した仕様を開く
+            </summary>
+            <pre className="bg-sunken font-code mt-2 max-h-96 overflow-auto rounded-md px-3 py-2 text-xs whitespace-pre-wrap">
+              {spec.content}
+            </pre>
+          </details>
+        ) : null}
+        {r.specRounds.length > 0 ? (
+          <ol className="flex flex-col gap-5">
+            {r.specRounds.map((round) => (
+              <li key={round.round} className="flex flex-col gap-2">
+                <h3 className="text-sm font-semibold">
+                  {round.round}回目の仕様レビュー
+                </h3>
+                <ReviewVerdicts reviews={round.reviews} />
+              </li>
+            ))}
+          </ol>
+        ) : null}
+      </div>
+    </Panel>
+  )
+}
+
 /** Every sealed candidate with its recorded size, oldest first. */
 function CandidateList({ report: r }: { report: LoopReport }) {
   if (r.candidates.length === 0) return null
@@ -2479,6 +2562,8 @@ function RunPage({ data }: { data: RunDetailResponse }) {
       </Panel>
 
       <UsagePanels report={r} />
+
+      <SpecPanel report={r} />
 
       <ReviewsPanel report={r} />
 

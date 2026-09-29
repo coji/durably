@@ -542,6 +542,25 @@ export interface RunSummary {
   reviewRounds: number
 }
 
+/**
+ * The spec the run went on with: the one its spec stages confirmed, and the
+ * check `checkFromSpec` chose from it. Null on a run without either, or
+ * before either is recorded.
+ */
+export interface ReportSpec {
+  /** The confirmed spec; null while the spec stages have not confirmed one. */
+  content: string | null
+  sha256: string | null
+  /** The review round that confirmed it; null before. */
+  round: number | null
+  /** A person approved it through the spec-blocked wait. */
+  blocked: boolean
+  /** The advice handed to the implementer as untrusted data. */
+  advice: ReportFinding[]
+  /** The check `checkFromSpec` chose and its notes; null without one. */
+  check: { command: string[]; notes: string | null } | null
+}
+
 export interface LoopReport {
   runId: string
   jobName: string
@@ -582,6 +601,14 @@ export interface LoopReport {
   reviews: ReportReview[]
   /** Every review round with both verdicts and notes, oldest first. */
   reviewRounds: ReportReviewRound[]
+  /**
+   * Every spec review round, oldest first, one review per named reviewer
+   * (`lens` is the reviewer's name); read from completed steps, so an open
+   * run has them too. Empty on a run without spec stages.
+   */
+  specRounds: ReportReviewRound[]
+  /** See `ReportSpec`. */
+  spec: ReportSpec | null
   /** Branch, commit and location of the delivery; null when none was made. */
   delivery: ReportDelivery | null
   /** Why the run stopped and what to do next; null when it did not stop. */
@@ -657,10 +684,20 @@ function fmtChanges(c: ReportCandidateChanges | null | undefined): string {
     : 'not recorded'
 }
 
+/** The spec stages as `stageOf` names them. */
+export const SPEC_STAGES: readonly string[] = [
+  'spec',
+  'spec-review',
+  'spec-check',
+]
+
 const STAGE_ORDER = [
   'setup',
   'baseline',
   'preflight',
+  'spec',
+  'spec-review',
+  'spec-check',
   'triage',
   'policy',
   'code',
@@ -782,6 +819,12 @@ function usageRoleOf(attempt: AttemptRow): string | null {
 /** The role an LLM step ran as, from its step name. */
 function roleOf(stepName: string): string | null {
   if (stepName === 'triage') return 'triage'
+  // The spec stages: `spec:author`, `spec:fix:<round>` and
+  // `spec-review:<round>:<name>`, each reviewer a role of its own.
+  if (stepName === 'spec:author') return 'spec-author'
+  if (stepName.startsWith('spec:fix:')) return 'spec-fix'
+  if (stepName.startsWith('spec-review:'))
+    return `spec-review:${stepName.split(':').slice(2).join(':')}`
   // The free preflight check is not a call; each minimal call is.
   if (stepName.startsWith('preflight:call:')) return 'preflight'
   if (stepName.endsWith(':agent')) return 'code'
@@ -1212,6 +1255,48 @@ export function reportToMarkdown(r: LoopReport): string {
       lines.push(
         `- round ${round.round}: ${round.candidate?.id ?? 'candidate unknown'}`,
       )
+      for (const review of round.reviews)
+        lines.push(
+          `  - ${review.lens}: ${review.decision} — ${review.notes}`,
+          ...findingLines(review.findings, '    '),
+        )
+    }
+  } else {
+    lines.push('- none')
+  }
+  lines.push('')
+  lines.push('## Spec (the spec stages and checkFromSpec)')
+  lines.push('')
+  if (r.spec) {
+    const sp = r.spec
+    lines.push(
+      sp.content === null
+        ? '- confirmed: not yet'
+        : `- confirmed: round ${fmt(sp.round)}, sha256 ${fmt(sp.sha256)}${sp.blocked ? ' (approved by a person over remaining blockers or after a revise)' : ''}`,
+    )
+    for (const f of sp.advice)
+      lines.push(
+        `- advice: [${f.severity}] ${f.title} — ${f.body}${f.file ? ` (${f.file}${f.line !== undefined ? `:${f.line}` : ''})` : ''}`,
+      )
+    if (sp.check) {
+      lines.push(`- check from spec: ${sp.check.command.join(' ')}`)
+      lines.push(`- check notes: ${sp.check.notes ?? 'none'}`)
+    }
+    if (sp.content !== null) {
+      lines.push('')
+      lines.push('```markdown')
+      lines.push(sp.content.replace(/\n$/, ''))
+      lines.push('```')
+    }
+  } else {
+    lines.push('- none (no spec stages and no checkFromSpec, or not reached)')
+  }
+  lines.push('')
+  lines.push('## Spec review rounds')
+  lines.push('')
+  if (r.specRounds.length > 0) {
+    for (const round of r.specRounds) {
+      lines.push(`- round ${round.round}`)
       for (const review of round.reviews)
         lines.push(
           `  - ${review.lens}: ${review.decision} — ${review.notes}`,
