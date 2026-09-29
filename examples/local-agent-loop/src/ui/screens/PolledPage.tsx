@@ -16,12 +16,15 @@ export function PolledPage<T>({
   url,
   heading,
   back,
+  notice,
   render,
 }: {
   route: Route
   url: string
   heading: (data: T | null) => ReactNode
   back?: boolean
+  /** What the last action came to; the next refresh shows its effect. */
+  notice?: ReactNode
   render: (data: T) => ReactNode
 }) {
   const polled = usePolled<T>(url)
@@ -38,6 +41,7 @@ export function PolledPage<T>({
         ) : null}
         <PageTitle>{heading(polled.data)}</PageTitle>
       </div>
+      {notice ? <div className="mb-6">{notice}</div> : null}
       {polled.data ? (
         render(polled.data)
       ) : polled.error ? (

@@ -428,6 +428,9 @@ export const COMMAND_COPY = {
   retriggerReload: '設定を読み直す再実行コマンドをコピー',
   retrigger: '再実行コマンドをコピー',
   waits: '待ち一覧コマンドをコピー',
+  specRevise: '仕様の修正コマンドをコピー',
+  archive: 'アーカイブのコマンドをコピー',
+  unarchive: 'アーカイブを戻すコマンドをコピー',
   other: 'コマンドをコピー',
 } as const
 
@@ -452,6 +455,41 @@ export const ACTION = {
   cancel: 'やめる',
   busy: '実行しています…',
   sameCommand: '同じ操作のコマンド',
+  approve: '承認',
+  reject: '却下',
+  specApprove: 'いまの仕様で承認',
+  specRevise: '仕様を直す',
+  retrigger: '再実行',
+  archive: 'アーカイブ',
+  unarchive: 'アーカイブから戻す',
+  rejectNote: '候補は納品せず、この実行を終えます。',
+  specApproveNote: '直すべき指摘が残ったまま、いまの仕様で実装に進みます。',
+  specRejectNote: '実装を始めずに、この実行を終えます。',
+  archiveNote:
+    '実行の記録はそのまま残ります。終わったタスクに移し、そこからいつでも戻せます。',
+  notesLabel: '仕様に直してほしいこと',
+  notesHint: 'CLI では、同じメモを書いたファイルを --notes-file に渡します。',
+  notesSubmit: 'このメモで直す',
+  failed: (action: string) => `${action}できませんでした`,
+  dismiss: '閉じる',
+  openRun: '新しい実行を開く',
+} as const
+
+/** What a finished action says, by the action. */
+export const ACTION_DONE = {
+  approve: '承認しました',
+  reject: '却下しました',
+  'spec-revise': '仕様の修正を頼みました',
+  retrigger: '新しい実行を登録しました',
+  retriggerAgain: 'すでに再実行しています',
+  archive: 'アーカイブしました',
+  archiveAgain: 'すでにアーカイブしています',
+  unarchive: 'アーカイブから戻しました',
+  unarchiveAgain: 'アーカイブしていません',
+  decided: 'ワーカーが実行を再開すると、一覧に反映されます。',
+  queued: 'ワーカーが順に取りかかります。',
+  archived: '終わったタスクに移しました。そこから戻せます。',
+  unarchived: '状態に合った場所に戻ります。',
 } as const
 
 // ---------------------------------------------------------------- shell
@@ -497,6 +535,9 @@ export const LIST = {
   firstRun: '最初の実行',
   repairRun: (n: number) => `指摘からの修正 ${n}`,
   superseded: '後の修正で解決',
+  archived: 'アーカイブ済み',
+  archivedTitle:
+    '止まった実行を人がアーカイブしたので、人の手が要るものには出しません。止まった理由はそのまま残っています。',
   supersededTitle:
     '同じ修正元から後に始めた修正が承認されたので、この実行は判断が要りません',
   showRuns: (name: string) => `${name}の実行を表示`,
@@ -842,7 +883,15 @@ export const DESIGN = {
       name: '空の状態',
       about: 'まだない、読み込み中、読み込めないの三つです。',
     },
-    notice: { name: '通知', about: '左の線が状態の色を持ちます。' },
+    notice: {
+      name: '通知',
+      about: '左の線が状態の色を持ちます。操作の結果は閉じられます。',
+    },
+    runActions: {
+      name: '実行への操作',
+      about:
+        '主な操作は1つだけ強く出し、却下とアーカイブは控えめにして確認を挟みます。どの操作にも同じ操作のコマンドを添えます。',
+    },
     trace: {
       name: '時系列',
       about: '行を選ぶと右に詳細が出ます。矢印キーで行を移れます。',
@@ -905,6 +954,14 @@ export const DESIGN = {
     reviewPassed: '最後の回が通過',
     reviewOpen: '最後の回で指摘が残った',
     reviewIncomplete: '最後の回の判定がそろっていない',
+    approval: '承認待ち',
+    specApproval: '仕様の判断待ち',
+    specRevise: '仕様のメモを書く',
+    stopped: '止まった実行',
+    stoppedNoRetry: '再実行できない停止',
+    archived: 'アーカイブ済み',
+    result: '操作の結果',
+    failed: '操作が断られた',
   },
   sample: {
     approve: '承認',

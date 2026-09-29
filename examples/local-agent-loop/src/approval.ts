@@ -1,7 +1,7 @@
 /**
  * Approve or reject a waiting candidate, or decide on a spec the spec
- * reviewers still block: shared by `demo approve|reject|spec-revise` and
- * `demo seed`.
+ * reviewers still block: shared by `demo approve|reject|spec-revise`, the
+ * web UI (through `actions.ts`) and `demo seed`.
  */
 import type { AgentLoopDurably } from './durably.js'
 
@@ -20,6 +20,31 @@ interface SpecWaitMetadata {
 /** Whether a wait's metadata is a spec-blocked wait's. */
 export function isSpecWait(metadata: unknown): metadata is SpecWaitMetadata {
   return (metadata as SpecWaitMetadata | null)?.kind === 'spec-blocked'
+}
+
+/**
+ * The wait `runId` is suspended on, when that is `waitId` and nobody has
+ * decided it yet. A decision for a missing run, a wait of another run, a
+ * wait the run no longer waits on, or one already decided is refused here,
+ * before anything is signalled.
+ */
+async function pendingWaitOf(
+  durably: AgentLoopDurably,
+  runId: string,
+  waitId: string,
+) {
+  const run = await durably.getRun(runId)
+  if (!run) throw new Error(`no run ${runId}`)
+  const wait = (await durably.getWaits(runId)).find((w) => w.id === waitId)
+  if (!wait)
+    throw new Error(
+      `wait ${waitId} is not a wait of run ${runId}; refusing unbound signal`,
+    )
+  if (wait.status !== 'pending' || run.waitingOnWaitId !== waitId)
+    throw new Error(
+      `run ${runId} is not waiting on wait ${waitId} (the wait is ${wait.status}); refusing a second decision`,
+    )
+  return wait
 }
 
 /** The verb each decision's signal ID names. */
@@ -43,8 +68,7 @@ export async function signalApproval(
   decision: ApprovalDecision,
   log: (line: string) => void = () => {},
 ) {
-  const pending = await durably.getWaits(runId)
-  const metadata = pending.find((w) => w.id === waitId)?.metadata
+  const { metadata } = await pendingWaitOf(durably, runId, waitId)
   if (isSpecWait(metadata))
     return signalSpecWait(durably, runId, waitId, metadata, decision, null, log)
   const target = metadata as {
@@ -67,7 +91,7 @@ export async function signalApproval(
  * Decide on a spec-blocked wait: approve the spec as it is, reject it and
  * stop the run, or revise it with `notes`, which the signal carries so the
  * run reads the same notes on every replay. Refused for any other wait, a
- * wait of another run, and a revise without notes.
+ * wait of another run or already decided, and a revise without notes.
  */
 export async function signalSpecDecision(
   durably: AgentLoopDurably,
@@ -77,8 +101,7 @@ export async function signalSpecDecision(
   notes: string | null,
   log: (line: string) => void = () => {},
 ) {
-  const pending = await durably.getWaits(runId)
-  const metadata = pending.find((w) => w.id === waitId)?.metadata
+  const { metadata } = await pendingWaitOf(durably, runId, waitId)
   if (!isSpecWait(metadata))
     throw new Error(
       `wait ${waitId} of run ${runId} is not a spec-blocked wait; refusing unbound signal`,

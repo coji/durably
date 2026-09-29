@@ -4,9 +4,23 @@
  * or by config version; and the design page of every component. Every value
  * is shown as the API returns it from `diagnose`, `groupTasks`,
  * `buildReport`, `trendOf` and `compareReports`; nothing is recomputed here.
+ * Actions go to the server, which calls the CLI's functions; the page shows
+ * what came of each as a notice and the next refresh shows the run moved.
  */
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 
+import {
+  ActionNotice,
+  type Act,
+  type ActionOutcome,
+  type ActionResult,
+} from './components/ActionNotice'
 import { focusPageTitle } from './components/Layout'
 import { SHELL } from './glossary'
 import { parseRoute, routeKey, type Route } from './route'
@@ -50,9 +64,60 @@ function useFocusOnChange(key: string) {
   }, [key])
 }
 
-export function App() {
+/** The header `server.ts` reads the page's token from. */
+const TOKEN_HEADER = 'x-loop-ui-token'
+
+/**
+ * Send actions with the page's token, one POST each, and keep what the
+ * last one came to until it is closed or the page changes.
+ */
+function useActions(token: string, page: string) {
+  // Kept with the page it was made on, so another page shows none.
+  const [last, setLast] = useState<{
+    page: string
+    outcome: ActionOutcome
+  } | null>(null)
+  const outcome = last?.page === page ? last.outcome : null
+  const setOutcome = useCallback(
+    (next: ActionOutcome | null) =>
+      setLast(next ? { page, outcome: next } : null),
+    [page],
+  )
+  const act = useCallback<Act>(
+    async (request) => {
+      try {
+        const res = await fetch(
+          `/api/runs/${encodeURIComponent(request.runId)}/${request.action}`,
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              [TOKEN_HEADER]: token,
+            },
+            body: JSON.stringify(request.body ?? {}),
+          },
+        )
+        const body = (await res.json()) as ActionResult & { error?: string }
+        if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+        setOutcome({ request, result: body })
+        return true
+      } catch (error) {
+        setOutcome({ request, error: (error as Error).message })
+        return false
+      }
+    },
+    [token, setOutcome],
+  )
+  const notice = outcome ? (
+    <ActionNotice outcome={outcome} onDismiss={() => setOutcome(null)} />
+  ) : null
+  return { act, notice }
+}
+
+export function App({ token }: { token: string }) {
   const route = useRoute()
   useFocusOnChange(routeKey(route))
+  const { act, notice } = useActions(token, routeKey(route))
   // The summary opens on the weekly trend when the page loads; the config
   // view is a second reading of the same runs, one press away. The choice
   // lives here, above the routes, so going to another page and back keeps
@@ -71,8 +136,9 @@ export function App() {
         route={route}
         url={url}
         back
+        notice={notice}
         heading={(data) => data?.name ?? SHELL.runFallback}
-        render={(data) => <RunScreen data={data} />}
+        render={(data) => <RunScreen data={data} act={act} />}
       />
     )
   }
@@ -99,8 +165,9 @@ export function App() {
       key="runs"
       route={route}
       url="/api/runs"
+      notice={notice}
       heading={() => SHELL.runs}
-      render={(data) => <RunsScreen data={data} />}
+      render={(data) => <RunsScreen data={data} act={act} />}
     />
   )
 }

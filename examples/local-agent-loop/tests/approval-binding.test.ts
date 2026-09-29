@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
 
-import { signalApproval, signalSpecDecision } from '../src/approval.js'
+import { decideRun, reviseSpec } from '../src/actions.js'
+import { signalSpecDecision } from '../src/approval.js'
 import { createAgentDurably } from '../src/durably.js'
 import { runChild } from '../src/engine/child.js'
 import { diagnose, needsHuman } from '../src/engine/status.js'
@@ -69,6 +70,68 @@ describe('candidate-bound approval', { timeout: 180000 }, () => {
       assert.equal(output.approved, true)
       assert.equal(output.candidate.id, metadata.candidateId)
       assert.equal(output.candidate.sourceHash, metadata.sourceHash)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  it('refuses a decision for a missing run, a wait of another run, the wrong kind of wait, or a decided one', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'candidate-refusals-'))
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    const durably = createAgentDurably({ stateRoot: dir })
+    try {
+      await durably.migrate()
+      const subject = async () =>
+        (
+          await durably.jobs.agentLoop.trigger({
+            provider: 'fake',
+            target: { kind: 'subject' as const },
+            maxIterations: 2,
+            context: 'reuse',
+          })
+        ).id
+      const one = await subject()
+      const two = await subject()
+      await durably.init()
+      const waiting = async (id: string) =>
+        (await durably.getRun(id))?.status === 'waiting'
+      await waitFor(
+        async () => (await waiting(one)) && (await waiting(two)),
+        120000,
+      )
+      // No worker from here on: a decided run stays waiting.
+      await durably.stop()
+      const [wait] = await durably.getWaits(one)
+      const [other] = await durably.getWaits(two)
+      assert.ok(wait && other)
+      const refusals: [Promise<unknown>, RegExp][] = [
+        [decideRun(durably, 'no-such-run', wait.id, 'approved'), /no run/],
+        [decideRun(durably, one, other.id, 'approved'), /not a wait of run/],
+        [decideRun(durably, one, 'no-such-wait', 'rejected'), /not a wait/],
+        // A candidate approval is not a blocked spec.
+        [
+          reviseSpec(durably, one, 'notes'),
+          /not waiting for a decision on a blocked spec/,
+        ],
+      ]
+      for (const [refused, message] of refusals)
+        await assert.rejects(refused, message)
+      for (const w of [wait, other])
+        assert.equal((await durably.getWait(w.id))?.status, 'pending')
+      // Bound to the candidate the wait names, and only once.
+      await decideRun(durably, one, wait.id, 'approved')
+      const bound = {
+        candidateId: (wait.metadata as { candidateId: string }).candidateId,
+        decision: 'approved',
+      }
+      assert.deepEqual((await durably.getWait(wait.id))?.payload, bound)
+      await assert.rejects(
+        decideRun(durably, one, wait.id, 'rejected'),
+        /refusing a second decision/,
+      )
+      assert.deepEqual((await durably.getWait(wait.id))?.payload, bound)
     } finally {
       await durably.stop()
       await durably.db.destroy()
@@ -224,16 +287,21 @@ describe('spec-bound decisions', { timeout: 180000 }, () => {
       // without notes; neither signals anything.
       await assert.rejects(
         signalSpecDecision(durably, 'another-run', wait.id, 'approved', null),
-        /not a spec-blocked wait/,
+        /no run another-run/,
       )
       await assert.rejects(
         signalSpecDecision(durably, run.id, wait.id, 'revise', '  '),
         /needs notes/,
       )
+      await assert.rejects(reviseSpec(durably, run.id, '  '), /needs notes/)
       assert.equal((await durably.getWait(wait.id))?.status, 'pending')
       // A reject through the shared approve/reject path carries the run and
       // the spec version the wait names.
-      await signalApproval(durably, run.id, wait.id, 'rejected')
+      await decideRun(durably, run.id, wait.id, 'rejected')
+      await assert.rejects(
+        reviseSpec(durably, run.id, 'too late'),
+        /not waiting for a decision on a blocked spec/,
+      )
       assert.deepEqual((await durably.getWait(wait.id))?.payload, {
         kind: 'spec',
         runId: run.id,
@@ -260,6 +328,34 @@ describe('spec-bound decisions', { timeout: 180000 }, () => {
       )
       assert.ok(!steps.some((n) => n.startsWith('stage:')))
       assert.ok(!steps.includes('spec:final'))
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  it('revises the spec through the shared function with the notes content', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'spec-revise-'))
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger(
+        await blockedSpecRun(root),
+      )
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'waiting',
+        120000,
+      )
+      const [wait] = await durably.getWaits(run.id)
+      assert.ok(wait)
+      await reviseSpec(durably, run.id, 'Name the error codes.')
+      assert.deepEqual((await durably.getWait(wait.id))?.payload, {
+        kind: 'spec',
+        runId: run.id,
+        specSha256: (wait.metadata as { specSha256: string }).specSha256,
+        decision: 'revise',
+        notes: 'Name the error codes.',
+      })
     } finally {
       await durably.stop()
       await durably.db.destroy()

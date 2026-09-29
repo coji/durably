@@ -1,12 +1,21 @@
 #!/usr/bin/env tsx
-/** CLI: worker | trigger | repair | status | wait | waits | approve | reject | spec-revise | report | compare | ui | seed */
+/** CLI: worker | trigger | repair | status | wait | waits | approve | reject | spec-revise | retrigger | archive | unarchive | report | compare | ui | seed */
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import type { Run } from '@coji/durably'
 
-import { isSpecWait, signalApproval, signalSpecDecision } from './approval.js'
+import {
+  archivedRunIds,
+  archiveRun,
+  decideRun,
+  retriggerableRun,
+  retriggerRun,
+  reviseSpec,
+  unarchiveRun,
+} from './actions.js'
+import { isSpecWait } from './approval.js'
 import {
   acquireWorkerLock,
   createAgentDurably,
@@ -33,7 +42,7 @@ import {
   trendOf,
   trendToMarkdown,
 } from './engine/compare.js'
-import { classifyRun, DEMO } from './engine/failure-reasons.js'
+import { DEMO } from './engine/failure-reasons.js'
 import { formatCost, formatDuration } from './engine/format.js'
 import {
   reportToJson,
@@ -52,7 +61,6 @@ import {
 } from './engine/status.js'
 import { deliverySchema } from './factory/events.js'
 import { timeoutMsSchema } from './factory/job.js'
-import { repairLabels } from './factory/repair.js'
 import {
   buildTriggerInput,
   readNotesFile,
@@ -394,12 +402,17 @@ Commands (run from examples/local-agent-loop):
   pnpm demo retrigger --run <id> --reload-config
                                             the stored task and inputs, settings read again from
                                             the run's factory.json (once per version of the file)
+  pnpm demo archive --run <id>              take a stopped run out of the runs that need a person;
+                                            the run itself is not changed
+  pnpm demo unarchive --run <id>            put an archived run back where it was
   pnpm demo report --run <id> [--format json|md] [--out <file>]
   pnpm demo compare --runs <id,id,...> [--format json|md] [--out <file>]
   pnpm demo compare --trend [--days 30] [--include-fake] [--format json|md] [--out <file>]
                                             finished runs of the last --days days by week (Monday,
                                             local time) and code model/effort; fake runs left out
-  pnpm demo ui [--port 4380]                read-only web UI on 127.0.0.1 (runs, reports, comparison)
+  pnpm demo ui [--port 4380]                web UI on 127.0.0.1: runs, reports, comparison, and the
+                                            approve, reject, spec-revise, retrigger and archive
+                                            above, without --reload-config
   pnpm demo seed [--home <dir>] [--latency 20000-90000]
                                             demo data on the fake provider in a throwaway HOME
 Repository config: factory.json at the repository root, or --config <file>:
@@ -654,10 +667,12 @@ if (cmd === 'worker') {
     read.push({ run, diagnosis, report })
   }
   const seen = new Map(read.map((r) => [r.run.id, r]))
+  const archived = archivedRunIds(durably.stateRoot)
   const tasks = groupTasks(
-    read.map(({ run, diagnosis, report }) =>
-      taskRunInput(run, diagnosis.kind, report),
-    ),
+    read.map(({ run, diagnosis, report }) => ({
+      ...taskRunInput(run, diagnosis.kind, report),
+      archived: archived.has(run.id),
+    })),
   )
   await durably.db.destroy()
   // A task reads as its representative run's block, then the task it
@@ -677,7 +692,7 @@ if (cmd === 'worker') {
     for (const r of task.runs)
       if (r.id !== task.representative)
         lines.push(
-          `  also:    ${r.id}  ${r.parentId ? 'repair' : 'first run'}, ${r.kind}${r.superseded ? ', replaced by a later approved repair' : ''}`,
+          `  also:    ${r.id}  ${r.parentId ? 'repair' : 'first run'}, ${r.kind}${r.superseded ? ', replaced by a later approved repair' : ''}${r.archived ? ', archived' : ''}`,
         )
     return lines
   }
@@ -705,6 +720,14 @@ if (cmd === 'worker') {
   if (leftovers.length > 0) {
     out.push('', 'Finished runs whose worktree is still on disk:')
     for (const lines of leftovers) out.push('', ...lines)
+  }
+  const shelved = tasks.flatMap((t) =>
+    t.runs.filter((r) => r.archived && r.kind === 'stopped'),
+  )
+  if (shelved.length > 0) {
+    out.push('', `${shelved.length} stopped run(s) archived:`)
+    for (const r of shelved)
+      out.push(`  ${r.id}  ${DEMO} unarchive --run ${r.id}`)
   }
   out.push('', workerLine(worker), `database: ${dbPath()}`)
   console.log(
@@ -812,15 +835,18 @@ if (cmd === 'worker') {
   if (!runId || !waitId) throw new Error('--run <id> --wait <waitId> required')
   const durably = createAgentDurably()
   await durably.migrate()
-  const receipt = await signalApproval(
-    durably,
-    runId,
-    waitId,
-    cmd === 'approve' ? 'approved' : 'rejected',
-    (line) => console.log(line),
-  )
-  console.log(JSON.stringify(receipt, null, 2))
-  await durably.db.destroy()
+  try {
+    const receipt = await decideRun(
+      durably,
+      runId,
+      waitId,
+      cmd === 'approve' ? 'approved' : 'rejected',
+      (line) => console.log(line),
+    )
+    console.log(JSON.stringify(receipt, null, 2))
+  } finally {
+    await durably.db.destroy()
+  }
 } else if (cmd === 'spec-revise') {
   const a = args()
   const runId = a['run']
@@ -832,25 +858,8 @@ if (cmd === 'worker') {
   const durably = createAgentDurably()
   await durably.migrate()
   try {
-    const run = await durably.getRun(runId)
-    if (!run) throw new Error(`no run ${runId}`)
-    const wait = (await durably.getWaits(runId)).find(
-      (w) =>
-        w.id === run.waitingOnWaitId &&
-        w.status === 'pending' &&
-        isSpecWait(w.metadata),
-    )
-    if (!wait)
-      throw new Error(
-        `run ${runId} is not waiting for a decision on a blocked spec`,
-      )
-    const receipt = await signalSpecDecision(
-      durably,
-      runId,
-      wait.id,
-      'revise',
-      notes,
-      (line) => console.log(line),
+    const receipt = await reviseSpec(durably, runId, notes, (line) =>
+      console.log(line),
     )
     console.log(JSON.stringify(receipt, null, 2))
   } finally {
@@ -862,18 +871,9 @@ if (cmd === 'worker') {
   if (!runId) throw new Error('--run <id> required')
   const durably = createAgentDurably()
   await durably.migrate()
-  const run = await durably.getRun(runId)
-  if (!run) throw new Error(`no run ${runId}`)
-  // Only a stop the failure table calls safe to repeat: a fresh run resends
-  // every agent call, so an uncertain call or a possible push must be checked
-  // by a person first.
-  const failure = await classifyRun(durably, run)
-  if (!failure?.retryable)
-    throw new Error(
-      `refusing to retrigger ${runId}: ${failure ? failure.reason : `it is ${run.status}, not stopped`}`,
-    )
-  type Input = Parameters<typeof durably.jobs.agentLoop.trigger>[0]
   if (a['reload-config'] === 'true') {
+    const run = await retriggerableRun(durably, runId)
+    type Input = Parameters<typeof durably.jobs.agentLoop.trigger>[0]
     // The stored task and inputs, with the settings read again from the
     // current config. One run per config version: pasting the command again
     // without editing the file returns the run it already started.
@@ -890,21 +890,36 @@ if (cmd === 'worker') {
         : `already retriggered as ${next.id} with this version of ${from}; nothing new started`,
     )
   } else {
-    // One retry per stopped run: pasting the command again returns the run
-    // it already started instead of paying for another, or pushing twice. A
-    // repair run's retry names the same parent, and its setup checks the
-    // parent's candidate branch again before creating anything.
-    const next = await durably.jobs.agentLoop.trigger(run.input as Input, {
-      idempotencyKey: `retrigger-of-${runId}`,
-      labels: repairLabels(run.input),
-    })
+    const next = await retriggerRun(durably, runId)
     console.log(
       next.disposition === 'created'
-        ? `new run ${next.id} with the input of ${runId}`
-        : `already retriggered as ${next.id}; nothing new started`,
+        ? `new run ${next.runId} with the input of ${runId}`
+        : `already retriggered as ${next.runId}; nothing new started`,
     )
   }
   await durably.db.destroy()
+} else if (cmd === 'archive' || cmd === 'unarchive') {
+  const runId = args()['run']
+  if (!runId) throw new Error('--run <id> required')
+  const durably = createAgentDurably()
+  await durably.migrate()
+  try {
+    const { changed } = await (cmd === 'archive' ? archiveRun : unarchiveRun)(
+      durably,
+      runId,
+    )
+    console.log(
+      cmd === 'archive'
+        ? changed
+          ? `archived ${runId}; status and the web UI no longer list it as needing a person. Undo with ${DEMO} unarchive --run ${runId}`
+          : `${runId} is already archived; nothing changed`
+        : changed
+          ? `unarchived ${runId}; it is listed where its state puts it again`
+          : `${runId} is not archived; nothing changed`,
+    )
+  } finally {
+    await durably.db.destroy()
+  }
 } else if (cmd === 'report') {
   const a = args()
   const runId = a['run']
@@ -979,11 +994,15 @@ if (cmd === 'worker') {
     throw new Error('--port must be an integer between 1 and 65535')
   const { startUiServer } = await import('./ui/server.js')
   const ui = await startUiServer({ port: Number(rawPort) })
-  console.log(`web UI (read-only): ${ui.url}`)
+  console.log(`web UI: ${ui.url}`)
   console.log(`database: ${dbPath()}`)
+  console.log(
+    'actions on the page call the same functions as approve, reject, spec-revise, retrigger and archive; no worker is started',
+  )
   console.log('Ctrl-C to stop')
   const shutdown = async () => {
-    // Nothing is written, so a close that hangs is safe to cut short.
+    // Each action is one short write that has settled before it answers,
+    // so a close that hangs is safe to cut short.
     setTimeout(() => process.exit(0), 2000).unref()
     await ui.close()
     process.exit(0)

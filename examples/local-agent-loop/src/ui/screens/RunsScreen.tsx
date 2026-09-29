@@ -1,13 +1,14 @@
 import { formatCost, formatCount, formatDuration } from '../../engine/format'
 import type { Task } from '../../engine/status'
-import { Commands } from '../components/Commands'
+import type { Act } from '../components/ActionNotice'
 import { EmptyState } from '../components/EmptyState'
 import { Section } from '../components/Layout'
 import { LiveProgress } from '../components/LiveProgress'
+import { RunActions } from '../components/RunActions'
 import { IdSuffix, runHref } from '../components/RunLink'
 import { StageTrack } from '../components/StageTrack'
 import { StatusBadge } from '../components/StatusBadge'
-import { SupersededMark } from '../components/SupersededMark'
+import { ArchivedMark, SupersededMark } from '../components/SupersededMark'
 import {
   runRole,
   runState,
@@ -39,6 +40,7 @@ function TaskRuns({
           ...row,
           kind: r.kind,
           superseded: r.superseded,
+          archived: r.archived,
         })
         return (
           <li
@@ -55,6 +57,7 @@ function TaskRuns({
               </a>
               <IdSuffix id={r.id} />
               {r.superseded ? <SupersededMark /> : null}
+              {r.archived ? <ArchivedMark /> : null}
             </span>
             <span className="text-fg-2 flex gap-3 text-xs tabular-nums">
               <span className="font-code">
@@ -82,6 +85,7 @@ function Meta({ task, rep, now }: { task: Task; rep: RunRow; now: string }) {
   const several = task.runs.length > 1
   return (
     <>
+      {rep.archived ? <ArchivedMark /> : null}
       {several ? <span>{LIST.runs(formatCount(task.runs.length))}</span> : null}
       {finished || several ? (
         <TaskTotal total={task.total} several={several} />
@@ -91,20 +95,26 @@ function Meta({ task, rep, now }: { task: Task; rep: RunRow; now: string }) {
   )
 }
 
-/** One task: its run that shows it, why it is there, and the next step. */
+/**
+ * One task: its run that shows it, why it is there, and the next step with
+ * the actions it allows. An archived task keeps its reason and offers its
+ * way back.
+ */
 function TaskItem({
   task,
   rows,
   now,
+  act,
 }: {
   task: Task
   rows: Map<string, RunRow>
   now: string
+  act: Act
 }) {
   const rep = rows.get(task.representative)
   const name = rows.get(task.id)?.name ?? rep?.name
   if (!rep || !name) return null
-  const finished = task.attention === 'done'
+  const finished = task.attention === 'done' && !rep.archived
   const running = rep.diagnosis.kind === 'running'
   return (
     <TaskRow
@@ -114,7 +124,7 @@ function TaskItem({
       id={rep.id}
       meta={<Meta task={task} rep={rep} now={now} />}
       toggleLabel={LIST.showRuns(name)}
-      defaultOpen={!finished}
+      defaultOpen={task.attention !== 'done'}
     >
       <StageTrack pipeline={rep.pipeline} />
       {running ? <LiveProgress live={rep.live} /> : null}
@@ -130,7 +140,7 @@ function TaskItem({
               </span>
             ) : null}
           </p>
-          <Commands lines={rep.diagnosis.next} />
+          <RunActions run={{ ...rep, name }} act={act} />
         </>
       )}
       {task.runs.length > 1 ? (
@@ -145,17 +155,19 @@ function Tasks({
   rows,
   now,
   empty,
+  act,
 }: {
   tasks: Task[]
   rows: Map<string, RunRow>
   now: string
   empty: string
+  act: Act
 }) {
   if (tasks.length === 0) return <EmptyState>{empty}</EmptyState>
   return (
     <TaskList>
       {tasks.map((task) => (
-        <TaskItem key={task.id} task={task} rows={rows} now={now} />
+        <TaskItem key={task.id} task={task} rows={rows} now={now} act={act} />
       ))}
     </TaskList>
   )
@@ -164,9 +176,9 @@ function Tasks({
 /**
  * Tasks that wait on a person or stopped first, then tasks a worker has,
  * then finished ones, in the order the engine gave them. A first run and its
- * repairs are one row.
+ * repairs are one row. Archived tasks are among the finished ones.
  */
-export function RunsScreen({ data }: { data: RunsResponse }) {
+export function RunsScreen({ data, act }: { data: RunsResponse; act: Act }) {
   if (!data.exists)
     return (
       <EmptyState>
@@ -188,6 +200,7 @@ export function RunsScreen({ data }: { data: RunsResponse }) {
           rows={rows}
           now={data.now}
           empty={LIST.attentionEmpty}
+          act={act}
         />
       </Section>
       <Section title={LIST.active} count={active.length}>
@@ -196,10 +209,17 @@ export function RunsScreen({ data }: { data: RunsResponse }) {
           rows={rows}
           now={data.now}
           empty={LIST.activeEmpty}
+          act={act}
         />
       </Section>
       <Section title={LIST.done} count={done.length}>
-        <Tasks tasks={done} rows={rows} now={data.now} empty={LIST.doneEmpty} />
+        <Tasks
+          tasks={done}
+          rows={rows}
+          now={data.now}
+          empty={LIST.doneEmpty}
+          act={act}
+        />
       </Section>
     </>
   )

@@ -19,6 +19,20 @@ export function baselineIndexDirOf(stateRoot: string): string {
   return join(stateRoot, 'baseline-index')
 }
 
+/**
+ * The archive markers: one file per archived run, named by its ID. A run is
+ * archived while its file exists; the database never records it, so
+ * archiving changes nothing about the run itself.
+ */
+export function archiveDirOf(stateRoot: string): string {
+  return join(stateRoot, 'archived')
+}
+
+/** One run's archive marker. */
+export function archiveMarkerOf(stateRoot: string, runId: string): string {
+  return join(archiveDirOf(stateRoot), runId)
+}
+
 /** A repository run's worktree, where the agent edits and reviewers read. */
 export function repoWorkdirOf(runRoot: string): string {
   return join(runRoot, 'work')

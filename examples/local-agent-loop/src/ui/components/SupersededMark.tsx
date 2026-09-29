@@ -1,6 +1,18 @@
 import { LIST } from '../glossary'
 
 /**
+ * The word beside a stopped run a person archived, with why on hover. The
+ * list, the detail header and the task's runs all use it.
+ */
+export function ArchivedMark() {
+  return (
+    <span title={LIST.archivedTitle} className="text-fg-2 text-xs">
+      {LIST.archived}
+    </span>
+  )
+}
+
+/**
  * The word beside a run a later approved repair made moot, with why on
  * hover. The list, the detail header and the task's runs all use it.
  */

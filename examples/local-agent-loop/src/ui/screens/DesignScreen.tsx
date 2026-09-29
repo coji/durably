@@ -4,6 +4,7 @@ import { PageTitle } from '../components/Layout'
 import { Shell } from '../components/Shell'
 import { DESIGN } from '../glossary'
 import type { Route } from '../route'
+import { RunActionStates } from './design/ActionSpecimens'
 import {
   ActionStates,
   BadgeStates,
@@ -40,6 +41,7 @@ const PARTS: [keyof typeof DESIGN.part, () => ReactNode][] = [
   ['table', TableStates],
   ['collapsible', CollapsibleStates],
   ['action', ActionStates],
+  ['runActions', RunActionStates],
   ['copy', CopyStates],
   ['empty', EmptyStates],
   ['notice', NoticeStates],

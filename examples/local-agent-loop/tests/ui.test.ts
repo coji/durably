@@ -1,6 +1,7 @@
 /**
- * The web UI (`demo ui`): read-only, loopback only, and showing the same
- * reasons, commands and numbers as `status`, `report` and `compare`.
+ * The web UI (`demo ui`): loopback only, showing the same reasons, commands
+ * and numbers as `status`, `report` and `compare`, reads that write nothing,
+ * and actions only through the CLI's functions behind the page token.
  *
  * The UI runs as the real CLI in a child process with `HOME` pointed at a
  * temporary directory, so the fixed state root resolves there. Runs are made
@@ -55,8 +56,10 @@ import {
   taskRunIds,
   needsAttention,
   type DiagnosisKind,
+  type Task,
   type TaskRunInput,
 } from '../src/engine/status.js'
+import { archiveMarkerOf } from '../src/factory/layout.js'
 import { repairLabels } from '../src/factory/repair.js'
 import { ReviewFindingTitles } from '../src/ui/components/ReviewFindingTitles.js'
 import {
@@ -90,6 +93,9 @@ import { RecordPanels } from '../src/ui/screens/run/RecordPanels.js'
 import { SpecPanel } from '../src/ui/screens/run/SpecPanel.js'
 import { BaselineSource } from '../src/ui/screens/run/StageTimings.js'
 
+/** A page's actions, for a page rendered where nothing is sent. */
+const noAct = async () => true
+
 /** A diagnosis sentence in Japanese only. */
 const KIND_TEXT_OK = (text: string) => !/[A-Za-z()（）]/.test(text)
 import { pollEvery } from '../src/ui/poll.js'
@@ -118,6 +124,7 @@ import {
   type TrendResponse,
   type TraceNode,
   startUiServer,
+  TOKEN_HEADER,
 } from '../src/ui/server.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -221,6 +228,37 @@ describe('tasks', () => {
     assert.deepEqual(
       [still?.attention, still?.representative],
       ['stop', 'capped'],
+    )
+  })
+
+  it('moves an archived stop to the finished tasks with its diagnosis, unless another run still needs a person', () => {
+    const [alone] = groupTasks([run('stop', 0, 'stopped', { archived: true })])
+    assert.deepEqual(
+      [alone?.attention, alone?.representative, alone?.runs[0]?.kind],
+      ['done', 'stop', 'stopped'],
+    )
+    assert.equal(alone?.runs[0]?.archived, true)
+    // Unarchived, it is a stop again.
+    const [back] = groupTasks([run('stop', 0, 'stopped')])
+    assert.deepEqual(
+      [back?.attention, back?.runs[0]?.archived],
+      ['stop', false],
+    )
+    // Another run of the task still waits on a person: the task stays up.
+    const [task] = groupTasks([
+      run('root', 0, 'stopped', { archived: true }),
+      run('fix', 10, 'approval', { parentId: 'root' }),
+    ])
+    assert.deepEqual(
+      [task?.attention, task?.representative],
+      ['decision', 'fix'],
+    )
+    // Only a run that has stopped can be archived: an open run's marker
+    // changes nothing.
+    const [open] = groupTasks([run('wait', 0, 'approval', { archived: true })])
+    assert.deepEqual(
+      [open?.attention, open?.runs[0]?.archived],
+      ['decision', false],
     )
   })
 
@@ -2174,7 +2212,12 @@ async function freePort(): Promise<number> {
 function get(
   port: number,
   path: string,
-  options: { host?: string; method?: string } = {},
+  options: {
+    host?: string
+    method?: string
+    headers?: Record<string, string>
+    body?: string
+  } = {},
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const req = request(
@@ -2183,7 +2226,10 @@ function get(
         port,
         path,
         method: options.method ?? 'GET',
-        headers: { host: options.host ?? `127.0.0.1:${port}` },
+        headers: {
+          host: options.host ?? `127.0.0.1:${port}`,
+          ...options.headers,
+        },
       },
       (res) => {
         let body = ''
@@ -2193,7 +2239,7 @@ function get(
       },
     )
     req.on('error', reject)
-    req.end()
+    req.end(options.body)
   })
 }
 
@@ -2207,7 +2253,7 @@ async function api<T>(port: number, path: string): Promise<T> {
 async function startUi(
   home: string,
   port: number,
-): Promise<{ child: ChildProcess; url: string }> {
+): Promise<{ child: ChildProcess; url: string; output: () => string }> {
   const child = spawn(
     process.execPath,
     ['--import', 'tsx', cli, 'ui', '--port', String(port)],
@@ -2219,14 +2265,14 @@ async function startUi(
   const url = await new Promise<string>((resolve, reject) => {
     child.stdout?.on('data', (d: Buffer) => {
       out += d.toString()
-      const m = /web UI \(read-only\): (\S+)/.exec(out)
+      const m = /web UI: (\S+)/.exec(out)
       if (m?.[1]) resolve(m[1])
     })
     child.on('exit', (code) =>
       reject(new Error(`demo ui exited (${code}): ${err}`)),
     )
   })
-  return { child, url }
+  return { child, url, output: () => out + err }
 }
 
 async function demo(home: string, args: string[]) {
@@ -2775,6 +2821,7 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
       // each review's notes closed.
       const html = renderToStaticMarkup(
         createElement(RunScreen, {
+          act: noAct,
           data: await api<RunDetailResponse>(
             port,
             `/api/runs/${ids['approved']}`,
@@ -3226,7 +3273,7 @@ describe('numbers on the screens', () => {
       tasks,
     } as unknown as RunsResponse
     const list = htmlText(
-      renderToStaticMarkup(createElement(RunsScreen, { data })),
+      renderToStaticMarkup(createElement(RunsScreen, { data, act: noAct })),
     )
     // The two-run task's line carries the total, labelled as one; the
     // single run's line does not, and its cost appears nowhere.
@@ -3263,7 +3310,7 @@ describe('numbers on the screens', () => {
       ),
     } as unknown as RunsResponse
     const list = htmlText(
-      renderToStaticMarkup(createElement(RunsScreen, { data })),
+      renderToStaticMarkup(createElement(RunsScreen, { data, act: noAct })),
     )
     // Nothing waits: the top says so in so many words.
     assert.ok(list.includes(LIST.attentionEmpty))
@@ -3358,5 +3405,279 @@ describe('numbers on the screens', () => {
     )
     assert.match(records, /1,204 ファイル、\+12,345 行、−6,789 行/)
     assert.ok(!records.includes('12345'))
+  })
+})
+
+describe('web UI actions', { timeout: 300000 }, () => {
+  it('acts through the CLI functions, and only for a POST with the page token and this origin', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'ui-act-'))
+    const stateRoot = join(home, '.local', 'state', 'local-agent-loop')
+    const port = await freePort()
+    const ui = await startUi(home, port)
+    const origin = `http://127.0.0.1:${port}`
+    const page = await get(port, '/')
+    const token =
+      /<meta name="loop-ui-token" content="([0-9a-f]{64})" \/>/.exec(
+        page.body,
+      )?.[1]
+    assert.ok(token, page.body)
+    const post = (
+      path: string,
+      body: unknown = {},
+      headers: Record<string, string> = {
+        origin,
+        [TOKEN_HEADER]: token,
+      },
+      options: { host?: string; method?: string } = {},
+    ) =>
+      get(port, path, {
+        method: 'POST',
+        ...options,
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      })
+    const archived = (id: string) => existsSync(archiveMarkerOf(stateRoot, id))
+    let durably: ReturnType<typeof createAgentDurably> | undefined
+    try {
+      // Before the database exists an action finds no run and creates
+      // nothing.
+      assert.equal((await post('/api/runs/nope/archive')).status, 404)
+      assert.equal(existsSync(stateRoot), false)
+      durably = createAgentDurably({ stateRoot })
+      const db = durably
+
+      process.env.FAKE_FAIL_FIRST = '0'
+      delete process.env.FAKE_REVIEW_SEQUENCE
+      await db.migrate()
+      const subject = async () =>
+        (
+          await db.jobs.agentLoop.trigger({
+            provider: 'fake',
+            target: { kind: 'subject' as const },
+            maxIterations: 2,
+            context: 'reuse',
+          })
+        ).id
+      const toApprove = await subject()
+      const toReject = await subject()
+      await db.init()
+      const waiting = async (id: string) =>
+        (await db.getRun(id))?.status === 'waiting'
+      await until(
+        async () => (await waiting(toApprove)) && (await waiting(toReject)),
+        'approval waits',
+      )
+      await db.stop()
+      // A stop safe to repeat, and one that is not.
+      const cancelled = await subject()
+      await db.cancel(cancelled)
+      const broken = await subject()
+      await db.db
+        .updateTable('durably_runs')
+        .set({ status: 'failed', error: 'boom' })
+        .where('id', '=', broken)
+        .execute()
+      const waitOf = async (id: string) => {
+        const wait = (await db.getWaits(id))[0]
+        assert.ok(wait)
+        return wait
+      }
+      const approveWait = await waitOf(toApprove)
+      const rejectWait = await waitOf(toReject)
+
+      // Every guard answers before the action: nothing in the database or
+      // among the archive markers changes.
+      const target = `/api/runs/${cancelled}/archive`
+      const before = snapshot(dbPath(stateRoot))
+      const refused: [string, Promise<{ status: number }>, number][] = [
+        ['no token', post(target, {}, { origin }), 403],
+        [
+          'wrong token',
+          post(target, {}, { origin, [TOKEN_HEADER]: 'f'.repeat(64) }),
+          403,
+        ],
+        ['no origin', post(target, {}, { [TOKEN_HEADER]: token }), 403],
+        [
+          'foreign origin',
+          post(
+            target,
+            {},
+            { origin: 'http://evil.example', [TOKEN_HEADER]: token },
+          ),
+          403,
+        ],
+        [
+          'wrong host',
+          post(
+            target,
+            {},
+            { origin: `http://evil.example:${port}`, [TOKEN_HEADER]: token },
+            { host: `evil.example:${port}` },
+          ),
+          403,
+        ],
+        [
+          'GET',
+          get(port, target, { headers: { origin, [TOKEN_HEADER]: token } }),
+          405,
+        ],
+        [
+          'HEAD',
+          get(port, target, {
+            method: 'HEAD',
+            headers: { origin, [TOKEN_HEADER]: token },
+          }),
+          405,
+        ],
+        ['PUT', post(target, {}, undefined, { method: 'PUT' }), 405],
+        // A read path takes no write, token or not.
+        ['POST on a read', post(`/api/runs/${cancelled}`), 405],
+      ]
+      for (const [label, sent, status] of refused)
+        assert.equal((await sent).status, status, label)
+      assert.equal(snapshot(dbPath(stateRoot)), before)
+      assert.equal(existsSync(join(stateRoot, 'archived')), false)
+
+      // Archive: a marker, and not one change to the run.
+      const done = await post(target)
+      assert.equal(done.status, 200, done.body)
+      assert.deepEqual(JSON.parse(done.body), { changed: true })
+      assert.ok(archived(cancelled))
+      assert.equal(snapshot(dbPath(stateRoot)), before)
+      const taskOf = (list: RunsResponse, id: string) =>
+        list.tasks.find((t) => t.id === id)
+      let list = await api<RunsResponse>(port, '/api/runs')
+      assert.equal(taskOf(list, cancelled)?.attention, 'done')
+      assert.equal(taskOf(list, cancelled)?.runs[0]?.archived, true)
+      const row = list.runs.find((r) => r.id === cancelled)
+      assert.equal(row?.archived, true)
+      assert.equal(row?.diagnosis.kind, 'stopped')
+      assert.match(row?.archiveCommand ?? '', / demo unarchive --run /)
+      // `status` reads the same marker and the same grouping.
+      const status = await demo(home, ['status', '--format', 'json'])
+      assert.equal(status.code, 0, status.stderr)
+      const cliTasks = (JSON.parse(status.stdout) as { tasks: Task[] }).tasks
+      assert.deepEqual(
+        cliTasks.map((t) => [t.id, t.attention]),
+        list.tasks.map((t) => [t.id, t.attention]),
+      )
+      const text = await demo(home, ['status'])
+      assert.doesNotMatch(
+        text.stdout.split('stopped run(s) archived')[0] ?? '',
+        new RegExp(cancelled),
+      )
+      assert.match(text.stdout, new RegExp(`demo unarchive --run ${cancelled}`))
+      // Unarchived, it is where it was, with the same diagnosis.
+      assert.equal((await post(`/api/runs/${cancelled}/unarchive`)).status, 200)
+      assert.equal(archived(cancelled), false)
+      list = await api<RunsResponse>(port, '/api/runs')
+      assert.equal(taskOf(list, cancelled)?.attention, 'stop')
+      assert.deepEqual(
+        list.runs.find((r) => r.id === cancelled)?.diagnosis,
+        row?.diagnosis,
+      )
+      // A run waiting on a decision is decided, not archived.
+      const open = await post(`/api/runs/${toApprove}/archive`)
+      assert.equal(open.status, 409)
+      assert.match(JSON.parse(open.body).error, /not stopped; decide it/)
+      assert.equal(archived(toApprove), false)
+
+      // Decisions: bound to the candidate the wait names, refused for a wait
+      // of another run, the wrong kind, or a second time.
+      const wrong = await post(`/api/runs/${toReject}/reject`, {
+        waitId: approveWait.id,
+      })
+      assert.equal(wrong.status, 409)
+      assert.match(JSON.parse(wrong.body).error, /not a wait of run/)
+      const notSpec = await post(`/api/runs/${toReject}/spec-revise`, {
+        notes: 'tighten it',
+      })
+      assert.equal(notSpec.status, 409)
+      assert.match(
+        JSON.parse(notSpec.body).error,
+        /not waiting for a decision on a blocked spec/,
+      )
+      assert.equal((await post(`/api/runs/nope/approve`, {})).status, 404)
+      assert.equal(snapshot(dbPath(stateRoot)), before)
+      const approved = await post(`/api/runs/${toApprove}/approve`, {
+        waitId: approveWait.id,
+      })
+      assert.equal(approved.status, 200, approved.body)
+      assert.deepEqual((await db.getWait(approveWait.id))?.payload, {
+        candidateId: (approveWait.metadata as { candidateId: string })
+          .candidateId,
+        decision: 'approved',
+      })
+      const again = await post(`/api/runs/${toApprove}/approve`, {
+        waitId: approveWait.id,
+      })
+      assert.equal(again.status, 409)
+      assert.match(JSON.parse(again.body).error, /refusing a second decision/)
+      const rejected = await post(`/api/runs/${toReject}/reject`, {
+        waitId: rejectWait.id,
+      })
+      assert.equal(rejected.status, 200, rejected.body)
+      const decided = (await db.getWait(rejectWait.id))?.payload as {
+        decision?: string
+      } | null
+      assert.equal(decided?.decision, 'rejected')
+
+      // Retrigger from the stored input: the page and the CLI start one run.
+      const runCount = async () =>
+        (await db.getRuns({ jobName: db.jobs.agentLoop.name })).length
+      const count = await runCount()
+      const retried = await post(`/api/runs/${cancelled}/retrigger`)
+      assert.equal(retried.status, 200, retried.body)
+      const next = JSON.parse(retried.body) as {
+        runId: string
+        disposition: string
+      }
+      assert.equal(next.disposition, 'created')
+      const cli = await demo(home, ['retrigger', '--run', cancelled])
+      assert.equal(cli.code, 0, cli.stderr)
+      assert.match(
+        cli.stdout,
+        new RegExp(`already retriggered as ${next.runId}`),
+      )
+      const twice = JSON.parse(
+        (await post(`/api/runs/${cancelled}/retrigger`)).body,
+      ) as { runId: string; disposition: string }
+      assert.deepEqual(twice, { runId: next.runId, disposition: 'idempotent' })
+      // A stop the CLI refuses to repeat is refused here too.
+      const unsafe = await post(`/api/runs/${broken}/retrigger`)
+      assert.equal(unsafe.status, 409)
+      assert.match(JSON.parse(unsafe.body).error, /refusing to retrigger/)
+      assert.equal(await runCount(), count + 1)
+      // No worker was started and no worker lock taken: the new run waits.
+      assert.equal(existsSync(join(stateRoot, 'worker.lock')), false)
+      assert.equal((await db.getRun(next.runId))?.status, 'pending')
+    } finally {
+      ui.child.kill('SIGTERM')
+      await durably?.stop()
+      await durably?.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+
+    // A new start makes a new token, and neither start printed its own.
+    const port2 = await freePort()
+    const ui2 = await startUi(home, port2)
+    try {
+      const other =
+        /<meta name="loop-ui-token" content="([0-9a-f]{64})" \/>/.exec(
+          (await get(port2, '/')).body,
+        )?.[1]
+      assert.ok(other)
+      assert.notEqual(other, token)
+      assert.equal(ui.output().includes(token), false)
+      assert.equal(ui2.output().includes(other), false)
+      // The first start's token is no good to the second.
+      const stale = await get(port2, `/api/runs/nope/archive`, {
+        method: 'POST',
+        headers: { origin: `http://127.0.0.1:${port2}`, [TOKEN_HEADER]: token },
+      })
+      assert.equal(stale.status, 403)
+    } finally {
+      ui2.child.kill('SIGTERM')
+    }
   })
 })

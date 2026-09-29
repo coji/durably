@@ -1,17 +1,24 @@
 /**
- * `demo ui`: a read-only web UI over the factory's database.
+ * `demo ui`: a web UI over the factory's database (ADR-0027).
  *
  * - Listens on 127.0.0.1 only. The API answers only to a loopback Host
  *   header, so a page on another origin cannot read runs through DNS
  *   rebinding.
- * - Opens the fixed state root's existing database read-only, lazily: until a
- *   worker or `trigger` creates it, every view is empty and nothing is
- *   created. `migrate()` and `init()` are never called.
+ * - Opens the fixed state root's existing database lazily: until a worker or
+ *   `trigger` creates it, every view is empty and nothing is created. It is
+ *   migrated before the first write, as the CLI does; `init()` is never
+ *   called, so no worker starts and the worker lock is never taken.
  * - Every number comes from `buildReport` / `compareReports` / `trendOf`,
  *   every reason and command from `diagnose`, and the task list from
- *   `groupTasks`: the same code the CLI prints from. The API
- *   has no endpoint that runs a command or changes a run.
+ *   `groupTasks`: the same code the CLI prints from.
+ * - Writes are `POST /api/runs/<id>/<action>`, each calling the function
+ *   its `demo` subcommand calls (`actions.ts`). A write needs the token this
+ *   process made at start and put in the page, and an Origin naming this
+ *   server; anything else is refused before the action runs. Reads never
+ *   write.
  */
+import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import {
   createServer,
   type IncomingMessage,
@@ -25,9 +32,17 @@ import { fileURLToPath } from 'node:url'
 import type { Run } from '@coji/durably'
 
 import {
+  archivedRunIds,
+  archiveRun,
+  decideRun,
+  retriggerRun,
+  reviseSpec,
+  unarchiveRun,
+} from '../actions.js'
+import {
+  createAgentDurably,
   dbPath,
   defaultStateRoot,
-  openReadOnlyAgentDurably,
   type AgentLoopDurably,
 } from '../durably.js'
 import {
@@ -52,6 +67,7 @@ import {
 import {
   checkLogFiles,
   classifyRun,
+  DEMO,
   type CheckLogFile,
 } from '../engine/failure-reasons.js'
 import { formatCount } from '../engine/format.js'
@@ -67,6 +83,7 @@ import {
   type ReportReview,
   type ReportReviewRound,
   type ReportSealedCandidate,
+  type ReviewHighlights,
   type UsageTotals,
   type WaitRow,
 } from '../engine/report.js'
@@ -116,8 +133,23 @@ export interface RunRow {
   uncertainCall: boolean
   /** Approval, a stop, or an unknown wait: a person decides next. */
   needsHuman: boolean
+  /** A person archived the stopped run (`demo archive`). */
+  archived: boolean
+  /**
+   * `demo unarchive` for an archived run, `demo archive` for a stopped one
+   * that is not; null for any other run.
+   */
+  archiveCommand: string | null
+  /**
+   * The wait a decision on this run answers: set only while it waits on a
+   * candidate approval or a blocked spec. Sent back with the decision, never
+   * shown.
+   */
+  waitId: string | null
   /** Provisional, as of the response's `now`; null for a finished run. */
   live: LiveElapsed | null
+  /** The report's review highlights, only for a run waiting on approval. */
+  reviewHighlights: ReviewHighlights | null
   conclusion: string | null
   /** The report's settled lead time; null while the run is open. */
   leadTimeMs: number | null
@@ -147,6 +179,12 @@ export interface RunDetailResponse {
   diagnosis: Diagnosis
   uncertainCall: boolean
   needsHuman: boolean
+  /** A person archived the stopped run (`demo archive`). */
+  archived: boolean
+  /** As on `RunRow`. */
+  archiveCommand: string | null
+  /** As on `RunRow`. */
+  waitId: string | null
   live: LiveElapsed | null
   pipeline: Pipeline
   /**
@@ -1222,6 +1260,7 @@ async function inspect(
   report: LoopReport,
   /** The report's failure was worked out in this request, so it is current. */
   fresh: boolean,
+  archived: ReadonlySet<string>,
 ) {
   const { diagnosis, uncertainCall } = await diagnoseRun(
     src,
@@ -1230,12 +1269,22 @@ async function inspect(
     fresh ? { failure: report.failure } : undefined,
   )
   const live = liveElapsed(run, report.attempts, now)
+  const decides =
+    diagnosis.kind === 'approval' || diagnosis.kind === 'spec-approval'
+  const shelved = archived.has(run.id) && TERMINAL_STATUSES.includes(run.status)
   return {
     name: runName(run.input),
     createdAt: run.createdAt,
     diagnosis,
     uncertainCall,
     needsHuman: needsHuman(diagnosis.kind),
+    archived: shelved,
+    archiveCommand: shelved
+      ? `${DEMO} unarchive --run ${run.id}`
+      : diagnosis.kind === 'stopped' && TERMINAL_STATUSES.includes(run.status)
+        ? `${DEMO} archive --run ${run.id}`
+        : null,
+    waitId: decides ? (run.waitingOnWaitId ?? null) : null,
     live,
     pipeline: derivePipeline({
       status: run.status,
@@ -1255,6 +1304,8 @@ function runRow(
     id: run.id,
     status: run.status,
     ...seen,
+    reviewHighlights:
+      seen.diagnosis.kind === 'approval' ? report.reviewHighlights : null,
     conclusion: report.summary.conclusion,
     leadTimeMs: report.summary.leadTimeMs,
     costUsd: report.summary.costUsd,
@@ -1270,12 +1321,39 @@ class HttpError extends Error {
   }
 }
 
-/** The read API, without a listening socket. */
+/** What a write calls, by the last segment of its path. */
+const ACTIONS = [
+  'approve',
+  'reject',
+  'spec-revise',
+  'retrigger',
+  'archive',
+  'unarchive',
+] as const
+type Action = (typeof ACTIONS)[number]
+
+/** A write's path: `/api/runs/<id>/<action>`; null for any other path. */
+export function actionPath(
+  pathname: string,
+): { runId: string; action: Action } | null {
+  const match = /^\/api\/runs\/([^/]+)\/([a-z-]+)$/.exec(pathname)
+  const action = ACTIONS.find((a) => a === match?.[2])
+  return match?.[1] && action
+    ? { runId: decodeURIComponent(match[1]), action }
+    : null
+}
+
+/** The API, without a listening socket. */
 function createUiApi() {
   const stateRoot = defaultStateRoot()
   let durably: AgentLoopDurably | null = null
-  // Opened on first use after the file appears, then kept.
-  const source = () => (durably ??= openReadOnlyAgentDurably({ stateRoot }))
+  // Opened on first use after the file appears, then kept. Nothing is
+  // created before a worker or `trigger` creates the database.
+  const source = () =>
+    (durably ??= existsSync(dbPath(stateRoot))
+      ? createAgentDurably({ stateRoot })
+      : null)
+  let migrated: Promise<void> | null = null
 
   const reports = finishedReportCache()
 
@@ -1290,16 +1368,18 @@ function createUiApi() {
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
     const src = readOnce(db, all)
+    const archived = archivedRunIds(stateRoot)
     const built = await listedReports(reports, src, all, all)
     const rows = await Promise.all(
       built.map(async ({ run, report, fresh }) =>
-        runRow(run, await inspect(src, run, now, report, fresh)),
+        runRow(run, await inspect(src, run, now, report, fresh, archived)),
       ),
     )
     const tasks = groupTasks(
-      built.map(({ run, report }, i) =>
-        taskRunInput(run, rows[i]?.diagnosis.kind ?? 'finished', report),
-      ),
+      built.map(({ run, report }, i) => ({
+        ...taskRunInput(run, rows[i]?.diagnosis.kind ?? 'finished', report),
+        archived: archived.has(run.id),
+      })),
     )
     return { ...base, exists: true, runs: rows, tasks }
   }
@@ -1310,12 +1390,13 @@ function createUiApi() {
     const found = db ? await orEmpty(db.getRun(id), null) : null
     if (!db || !found) throw new HttpError(404, `no run ${id}`)
     const src = readOnce(db, [found])
+    const archived = archivedRunIds(stateRoot)
     const { report, fresh } = await reports.get(src, found)
     const [seen, steps, baselineSource, lineage] = await Promise.all([
-      inspect(src, found, now, report, fresh),
+      inspect(src, found, now, report, fresh, archived),
       src.storage.getSteps(id),
       baselineSourceOf(src, report.baseline),
-      lineageOf(db, found, now),
+      lineageOf(db, found, now, archived),
     ])
     const stepOutputs: Record<string, unknown> = {}
     for (const s of steps)
@@ -1352,6 +1433,7 @@ function createUiApi() {
     db: AgentLoopDurably,
     run: Run,
     now: number,
+    archived: ReadonlySet<string>,
   ): Promise<LineageRun[]> {
     const all = await orEmpty(allRuns(db), [run])
     const ids = new Set(
@@ -1381,7 +1463,10 @@ function createUiApi() {
       }),
     )
     const [task] = groupTasks(
-      read.map(({ run: m, report, kind }) => taskRunInput(m, kind, report)),
+      read.map(({ run: m, report, kind }) => ({
+        ...taskRunInput(m, kind, report),
+        archived: archived.has(m.id),
+      })),
     )
     const byId = new Map(read.map((x) => [x.run.id, x]))
     return (task?.runs ?? []).flatMap((r) => {
@@ -1433,6 +1518,46 @@ function createUiApi() {
     )
   }
 
+  /**
+   * One write, through the function its `demo` subcommand calls. The caller
+   * has already checked the method, the Origin and the token.
+   */
+  async function act(
+    runId: string,
+    action: Action,
+    body: { waitId?: unknown; notes?: unknown },
+  ): Promise<unknown> {
+    const db = source()
+    if (!db) throw new HttpError(404, `no run ${runId}`)
+    await (migrated ??= db.migrate())
+    const text = (v: unknown) => (typeof v === 'string' ? v : '')
+    try {
+      switch (action) {
+        case 'approve':
+        case 'reject':
+          return await decideRun(
+            db,
+            runId,
+            text(body.waitId),
+            action === 'approve' ? 'approved' : 'rejected',
+          )
+        case 'spec-revise':
+          return await reviseSpec(db, runId, text(body.notes))
+        case 'retrigger':
+          return await retriggerRun(db, runId)
+        case 'archive':
+          return await archiveRun(db, runId)
+        case 'unarchive':
+          return await unarchiveRun(db, runId)
+      }
+    } catch (error) {
+      // The CLI's own words: a refusal is the request's fault, not the
+      // server's.
+      const message = (error as Error).message
+      throw new HttpError(message.startsWith('no run ') ? 404 : 409, message)
+    }
+  }
+
   async function handle(pathname: string): Promise<unknown> {
     if (pathname === '/api/runs') return runs()
     if (pathname === '/api/compare') return compare()
@@ -1444,6 +1569,7 @@ function createUiApi() {
 
   return {
     handle,
+    act,
     async close() {
       await durably?.db.destroy()
     },
@@ -1457,6 +1583,44 @@ export interface UiServerOptions {
 export interface UiServer {
   url: string
   close(): Promise<void>
+}
+
+/** The header a write carries the page's token in. */
+export const TOKEN_HEADER = 'x-loop-ui-token'
+
+/** Where the served page carries the token: filled in on every request. */
+const TOKEN_META = /<meta name="loop-ui-token" content="[^"]*" \/>/
+
+/** A write's JSON body is at most this long; notes-file allows 256 KiB. */
+const MAX_BODY_BYTES = 512 * 1024
+
+function sameToken(given: string | string[] | undefined, token: string) {
+  if (typeof given !== 'string') return false
+  const a = Buffer.from(given)
+  const b = Buffer.from(token)
+  return a.length === b.length && timingSafeEqual(a, b)
+}
+
+async function readJson(
+  req: IncomingMessage,
+): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req as AsyncIterable<Buffer>) {
+    size += chunk.length
+    if (size > MAX_BODY_BYTES)
+      throw new HttpError(413, 'request body too large')
+    chunks.push(chunk)
+  }
+  if (size === 0) return {}
+  try {
+    const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    if (body && typeof body === 'object' && !Array.isArray(body))
+      return body as Record<string, unknown>
+  } catch {
+    // Answered below.
+  }
+  throw new HttpError(400, 'the body must be a JSON object')
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -1473,6 +1637,9 @@ export async function startUiServer(
 ): Promise<UiServer> {
   const host = '127.0.0.1'
   const api = createUiApi()
+  // A fresh token per start, only ever sent inside the page. A page of
+  // another site can neither read it nor send this server's Origin.
+  const token = randomBytes(32).toString('hex')
   let port = options.port
   const onRequest = async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', `http://${host}`)
@@ -1480,10 +1647,22 @@ export async function startUiServer(
     const hostHeader = req.headers.host ?? ''
     if (hostHeader !== `${host}:${port}` && hostHeader !== `localhost:${port}`)
       return sendJson(res, 403, { error: 'loopback host only' })
-    if (req.method !== 'GET' && req.method !== 'HEAD')
-      return sendJson(res, 405, { error: 'read-only API' })
+    const write = actionPath(url.pathname)
     try {
-      sendJson(res, 200, await api.handle(url.pathname))
+      if (!write) {
+        if (req.method !== 'GET' && req.method !== 'HEAD')
+          return sendJson(res, 405, { error: 'reads answer GET and HEAD only' })
+        return sendJson(res, 200, await api.handle(url.pathname))
+      }
+      if (req.method !== 'POST')
+        return sendJson(res, 405, { error: 'an action needs POST' })
+      // The Origin must be this server's own, as the Host names it.
+      if (req.headers.origin !== `http://${hostHeader}`)
+        return sendJson(res, 403, { error: 'this server origin only' })
+      if (!sameToken(req.headers[TOKEN_HEADER], token))
+        return sendJson(res, 403, { error: 'missing or wrong page token' })
+      const body = await readJson(req)
+      sendJson(res, 200, await api.act(write.runId, write.action, body))
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500
       sendJson(res, status, { error: (error as Error).message })
@@ -1506,6 +1685,16 @@ export async function startUiServer(
     appType: 'spa',
     logLevel: 'warn',
     server: { middlewareMode: true, hmr: { server } },
+    plugins: [
+      {
+        name: 'loop-ui-token',
+        transformIndexHtml: (html) =>
+          html.replace(
+            TOKEN_META,
+            `<meta name="loop-ui-token" content="${token}" />`,
+          ),
+      },
+    ],
   })
   try {
     await new Promise<void>((resolve, reject) => {

@@ -26,6 +26,12 @@ function commandLabel(command: string): string {
         : COMMAND_COPY.retrigger
     case 'waits':
       return COMMAND_COPY.waits
+    case 'spec-revise':
+      return COMMAND_COPY.specRevise
+    case 'archive':
+      return COMMAND_COPY.archive
+    case 'unarchive':
+      return COMMAND_COPY.unarchive
     default:
       return COMMAND_COPY.other
   }

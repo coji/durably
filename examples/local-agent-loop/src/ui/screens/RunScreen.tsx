@@ -1,8 +1,9 @@
+import type { Act } from '../components/ActionNotice'
 import { CopyAnnouncer, CopyButton, useCopy } from '../components/copy'
 import { Collapsible, Panel } from '../components/Layout'
 import { StageTrack } from '../components/StageTrack'
 import { StatusBadge } from '../components/StatusBadge'
-import { SupersededMark } from '../components/SupersededMark'
+import { ArchivedMark, SupersededMark } from '../components/SupersededMark'
 import { TaskLineage } from '../components/TaskLineage'
 import { runState } from '../components/TaskRow'
 import { Ago } from '../components/Time'
@@ -32,6 +33,7 @@ function RunHeader({ data }: { data: RunDetailResponse }) {
     kind: data.diagnosis.kind,
     conclusion: r.summary.conclusion,
     superseded,
+    archived: data.archived,
   })
   const { copied, copy } = useCopy()
   return (
@@ -39,6 +41,7 @@ function RunHeader({ data }: { data: RunDetailResponse }) {
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <StatusBadge label={state.label} tone={state.tone} />
         {superseded ? <SupersededMark /> : null}
+        {data.archived ? <ArchivedMark /> : null}
         <span className="text-fg-2 text-sm">
           <Ago
             iso={data.createdAt}
@@ -70,7 +73,13 @@ function RunHeader({ data }: { data: RunDetailResponse }) {
  * what the reviews fixed and left, the stages over time with their time and
  * cost, and the evidence, closed.
  */
-export function RunScreen({ data }: { data: RunDetailResponse }) {
+export function RunScreen({
+  data,
+  act,
+}: {
+  data: RunDetailResponse
+  act: Act
+}) {
   const r = data.report
   const totals = {
     leadTimeMs: r.summary.leadTimeMs,
@@ -82,7 +91,7 @@ export function RunScreen({ data }: { data: RunDetailResponse }) {
   return (
     <div className="flex flex-col gap-4">
       <RunHeader data={data} />
-      <StatusPanel data={data} />
+      <StatusPanel data={data} act={act} />
       <ReviewHighlightsPanel h={r.reviewHighlights} />
       <Panel title={DETAIL.trace}>
         <div className="flex flex-col gap-6">
