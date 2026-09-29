@@ -1,3 +1,4 @@
+import type { Act } from '../../components/ActionNotice'
 import { CheckLogs } from '../../components/CheckLogs'
 import { Commands } from '../../components/Commands'
 import { CopyAnnouncer, CopyButton, useCopy } from '../../components/copy'
@@ -5,6 +6,7 @@ import { Field } from '../../components/KeyValue'
 import { Panel } from '../../components/Layout'
 import { LiveProgress } from '../../components/LiveProgress'
 import { LogWriteError, PathValue } from '../../components/PathValue'
+import { RunActions } from '../../components/RunActions'
 import { COPY, DETAIL } from '../../glossary'
 import {
   checkNamesLogs,
@@ -81,10 +83,17 @@ function FailureFields({
 }
 
 /**
- * What the run came to and what a person does next, then its time and cost.
- * A stop's check comes first; its recorded details stay closed.
+ * What the run came to and what a person does next, with the actions it
+ * allows and their CLI commands, then its time and cost. A stop's check
+ * comes first; its recorded details stay closed.
  */
-export function StatusPanel({ data }: { data: RunDetailResponse }) {
+export function StatusPanel({
+  data,
+  act,
+}: {
+  data: RunDetailResponse
+  act: Act
+}) {
   const failure = data.diagnosis.failure
   const next = data.diagnosis.next
   const delivery = data.report.delivery
@@ -134,8 +143,16 @@ export function StatusPanel({ data }: { data: RunDetailResponse }) {
             </Field>
           </dl>
         ) : null}
-        {next.length > 0 ? (
-          <Commands lines={next} />
+        {next.length > 0 || data.archiveCommand ? (
+          <RunActions
+            run={{
+              ...data,
+              id: data.report.runId,
+              reviewHighlights: data.report.reviewHighlights,
+            }}
+            act={act}
+            lead
+          />
         ) : (
           <p className="text-fg-2 text-sm">{DETAIL.noNext}</p>
         )}

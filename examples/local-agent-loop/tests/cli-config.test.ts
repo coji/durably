@@ -18,11 +18,13 @@ import { fileURLToPath } from 'node:url'
 
 import Database from 'better-sqlite3'
 
+import { retriggerRun } from '../src/actions.js'
 import {
   acquireWorkerLock,
   createAgentDurably,
   dbPath,
   probeWorkerLock,
+  type AgentLoopDurably,
 } from '../src/durably.js'
 import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
@@ -32,11 +34,13 @@ import {
   baselineMaxAgeMsSchema,
   specMaxRoundsSchema,
 } from '../src/factory/job.js'
+import { archiveMarkerOf } from '../src/factory/layout.js'
 import {
   codePrompt,
   reviewPrompt,
   triagePrompt,
 } from '../src/factory/prompts.js'
+import { REPAIR_OF_LABEL } from '../src/factory/repair.js'
 import type { FactorySetup } from '../src/factory/types.js'
 import { createTarget } from '../src/targets/index.js'
 import {
@@ -671,6 +675,184 @@ describe('status without --run', { timeout: 180000 }, () => {
     assert.match(decided, /decision on candidate .* is recorded \(approved\)/)
     assert.match(decided, /demo worker/)
     assert.doesNotMatch(decided, /demo (approve|reject)|not a candidate/)
+  })
+})
+
+/** Every row of the tables a run lives in, to prove nothing was written. */
+function rows(box: Sandbox): string {
+  const db = new Database(dbPath(box.stateRoot), { readonly: true })
+  try {
+    return JSON.stringify(
+      [
+        'durably_runs',
+        'durably_steps',
+        'durably_step_attempts',
+        'durably_waits',
+        'durably_run_labels',
+      ].map((t) => db.prepare(`SELECT * FROM ${t} ORDER BY 1`).all()),
+    )
+  } finally {
+    db.close()
+  }
+}
+
+describe('archive and unarchive', { timeout: 120000 }, () => {
+  it('moves a stopped run out of the attention list by a marker alone, and back', async () => {
+    const box = await sandbox()
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    let stopped = ''
+    let pending = ''
+    let delivered = ''
+    try {
+      await durably.migrate()
+      const subject = async () =>
+        (
+          await durably.jobs.agentLoop.trigger({
+            provider: 'fake',
+            target: { kind: 'subject' as const },
+            maxIterations: 1,
+            context: 'reuse',
+          })
+        ).id
+      stopped = await subject()
+      await durably.cancel(stopped)
+      pending = await subject()
+      // Approved and delivered: it needs no one, so there is nothing to archive.
+      delivered = await subject()
+      await durably.db
+        .updateTable('durably_runs')
+        .set({
+          status: 'completed',
+          output: JSON.stringify({ approved: true, conclusion: 'approved' }),
+        })
+        .where('id', '=', delivered)
+        .execute()
+    } finally {
+      await durably.db.destroy()
+    }
+    const marker = archiveMarkerOf(box.stateRoot, stopped)
+    const status = async () => {
+      const res = await demo(box, ['status'])
+      assert.equal(res.code, 0, res.stderr)
+      return res.stdout
+    }
+    const before = await status()
+    const block = blockOf(before, stopped)
+    assert.match(block, /cancelled/)
+
+    // Refused without a run, for an unknown run, and for one still open.
+    assert.match((await demo(box, ['archive'])).stderr, /--run <id> required/)
+    assert.match(
+      (await demo(box, ['archive', '--run', 'nope'])).stderr,
+      /no run nope/,
+    )
+    const open = await demo(box, ['archive', '--run', pending])
+    assert.notEqual(open.code, 0)
+    assert.match(open.stderr, /it is pending, not stopped/)
+    assert.equal(existsSync(archiveMarkerOf(box.stateRoot, pending)), false)
+    const finished = await demo(box, ['archive', '--run', delivered])
+    assert.notEqual(finished.code, 0)
+    assert.match(
+      finished.stderr,
+      /refusing to archive \S+: it finished \(approved\) and needs no one; only a stopped run is archived/,
+    )
+    assert.equal(existsSync(archiveMarkerOf(box.stateRoot, delivered)), false)
+
+    const snapshot = rows(box)
+    const archived = await demo(box, ['archive', '--run', stopped])
+    assert.equal(archived.code, 0, archived.stderr)
+    assert.match(archived.stdout, /^archived /)
+    assert.ok(existsSync(marker))
+    // The run's record is exactly as it was.
+    assert.equal(rows(box), snapshot)
+    const after = await status()
+    assert.equal(blockOf(after, stopped), '')
+    assert.match(after, /1 stopped run\(s\) archived:/)
+    assert.ok(after.includes(`demo unarchive --run ${stopped}`))
+    const json = await demo(box, ['status', '--format', 'json'])
+    const task = (
+      JSON.parse(json.stdout) as {
+        tasks: {
+          id: string
+          attention: string
+          runs: { kind: string; archived: boolean }[]
+        }[]
+      }
+    ).tasks.find((t) => t.id === stopped)
+    assert.deepEqual(
+      [task?.attention, task?.runs[0]?.kind, task?.runs[0]?.archived],
+      ['done', 'stopped', true],
+    )
+    assert.match(
+      (await demo(box, ['archive', '--run', stopped])).stdout,
+      /already archived/,
+    )
+
+    const back = await demo(box, ['unarchive', '--run', stopped])
+    assert.equal(back.code, 0, back.stderr)
+    assert.equal(existsSync(marker), false)
+    assert.equal(rows(box), snapshot)
+    assert.equal(blockOf(await status(), stopped), block)
+    assert.match(
+      (await demo(box, ['unarchive', '--run', stopped])).stdout,
+      /not archived/,
+    )
+  })
+})
+
+describe('retrigger from the stored input', () => {
+  it('starts one run per stopped run with its labels, a repair child with its parent, and refuses a stop unsafe to repeat', async () => {
+    const input = { target: { kind: 'repo' }, repairOf: { runId: 'parent' } }
+    const stored = {
+      child: {
+        id: 'child',
+        status: 'failed',
+        input,
+        output: null,
+        error:
+          'candidate-moved: candidate branch factory/parent moved to 0123456789ab',
+      },
+      broken: {
+        id: 'broken',
+        status: 'failed',
+        input,
+        output: null,
+        error: 'boom',
+      },
+    }
+    const calls: unknown[] = []
+    const durably = {
+      getRun: async (id: keyof typeof stored) => stored[id] ?? null,
+      getStepAttempts: async () => [],
+      storage: { getCompletedStep: async () => null },
+      jobs: {
+        agentLoop: {
+          trigger: async (i: unknown, options: unknown) => {
+            calls.push([i, options])
+            return { id: 'next', disposition: 'created' }
+          },
+        },
+      },
+    } as unknown as AgentLoopDurably
+    assert.deepEqual(await retriggerRun(durably, 'child'), {
+      runId: 'next',
+      disposition: 'created',
+    })
+    assert.deepEqual(calls, [
+      [
+        input,
+        {
+          idempotencyKey: 'retrigger-of-child',
+          labels: { [REPAIR_OF_LABEL]: 'parent' },
+        },
+      ],
+    ])
+    await assert.rejects(
+      retriggerRun(durably, 'broken'),
+      /refusing to retrigger broken/,
+    )
+    await assert.rejects(retriggerRun(durably, 'gone' as never), /no run gone/)
+    assert.equal(calls.length, 1)
   })
 })
 

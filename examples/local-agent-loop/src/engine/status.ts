@@ -79,6 +79,8 @@ export interface TaskRunInput {
   leadTimeMs: number | null
   /** The report's cost; null when any call's usage or price is not known. */
   costUsd: number | null
+  /** A person archived the stopped run; see `actions.ts`. */
+  archived?: boolean
 }
 
 export interface TaskRun {
@@ -93,6 +95,11 @@ export interface TaskRun {
    * parent did: it no longer needs a person.
    */
   superseded: boolean
+  /**
+   * A person archived the run after it stopped: it keeps its diagnosis but
+   * no longer needs a person.
+   */
+  archived: boolean
   attention: TaskAttention
 }
 
@@ -133,8 +140,23 @@ const OPEN_KINDS: readonly DiagnosisKind[] = [
   'decided',
 ]
 
-function attentionOf(kind: DiagnosisKind, superseded: boolean): TaskAttention {
-  if (superseded) return 'done'
+/**
+ * Whether a person can archive a run of this diagnosis: only a stop, which
+ * `diagnose` gives only to a terminal run (failed, cancelled, or completed
+ * without an approved delivery). A run that finished approved needs no one,
+ * and an open one is decided or worked instead. `demo archive`, `status`,
+ * the web UI and `groupTasks` all ask this one function.
+ */
+export function archivable(kind: DiagnosisKind): boolean {
+  return kind === 'stopped'
+}
+
+function attentionOf(
+  kind: DiagnosisKind,
+  superseded: boolean,
+  archived: boolean,
+): TaskAttention {
+  if (superseded || archived) return 'done'
   if (kind === 'stopped') return 'stop'
   if (needsHuman(kind)) return 'decision'
   if (OPEN_KINDS.includes(kind)) return 'active'
@@ -175,7 +197,9 @@ const newestFirst = (x: { createdAt: string }, y: { createdAt: string }) =>
 /**
  * Runs as tasks, in the order a list shows them: decisions, then unresolved
  * stops, then open work, then the rest, each newest first. A run whose
- * parent is not among `runs` starts a task of its own.
+ * parent is not among `runs` starts a task of its own. An archived stopped
+ * run counts as finished, so its task leaves the top of the list unless
+ * another of its runs still needs a person.
  */
 export function groupTasks(runs: TaskRunInput[]): Task[] {
   const rootOf = taskRoots(runs)
@@ -199,6 +223,7 @@ export function groupTasks(runs: TaskRunInput[]): Task[] {
     let repairs = 0
     const taskRuns = ordered.map((run) => {
       const replaced = superseded(run)
+      const archived = (run.archived ?? false) && archivable(run.kind)
       return {
         id: run.id,
         parentId: run.parentId,
@@ -206,7 +231,8 @@ export function groupTasks(runs: TaskRunInput[]): Task[] {
         approved: run.approved,
         repair: run.parentId === null ? null : ++repairs,
         superseded: replaced,
-        attention: attentionOf(run.kind, replaced),
+        archived,
+        attention: attentionOf(run.kind, replaced, archived),
       }
     })
     const attention =

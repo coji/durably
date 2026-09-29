@@ -12,18 +12,19 @@ import { StatusBadge } from './StatusBadge'
 /**
  * One state per run, never a state and a result side by side: an open run
  * by where it stands, a finished one by how it ended. A finished run that
- * stopped for a person reads as failed; one a later repair made moot does
- * not ask for attention.
+ * stopped for a person reads as failed; one a later repair made moot, or
+ * one a person archived, does not ask for attention.
  */
 export function runState(run: {
   status: string
   kind: DiagnosisKind
   conclusion: string | null
   superseded?: boolean
+  archived?: boolean
 }): Status {
   if (!TERMINAL_STATUSES.includes(run.status)) return kindStatus(run.kind)
   const ended = conclusionStatus(run.conclusion ?? run.status)
-  if (run.superseded) return { ...ended, tone: 'done' }
+  if (run.superseded || run.archived) return { ...ended, tone: 'done' }
   return run.kind === 'stopped' ? { ...ended, tone: 'failed' } : ended
 }
 
