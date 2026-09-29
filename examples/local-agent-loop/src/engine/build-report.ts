@@ -17,7 +17,9 @@ import { PRICE_BASIS } from './pricing.js'
 import type { VerificationLog } from './providers/types.js'
 import {
   cacheReadRatio,
+  reviewHighlights,
   roleUsage,
+  specWallMs,
   stageTimings,
   stageUsage,
   stageVisits,
@@ -808,6 +810,22 @@ export async function repairChildren(
 }
 
 /**
+ * The run a repair run repairs: its label, or its stored input when it has
+ * none; null for a run that repairs nothing. The task list and `demo status`
+ * both group runs by it.
+ */
+export function repairParentId(run: {
+  labels?: Record<string, string> | undefined
+  input: unknown
+}): string | null {
+  return (
+    run.labels?.[REPAIR_OF_LABEL] ??
+    (run.input as PersistedInput | null)?.repairOf?.runId ??
+    null
+  )
+}
+
+/**
  * Every run's repair children, oldest first, from runs already read. A run
  * names its parent by its label, or by its stored input when it has none.
  */
@@ -821,9 +839,7 @@ export function repairChildrenByParent(
 ): Map<string, string[]> {
   const byParent = new Map<string, { id: string; createdAt: string }[]>()
   for (const run of runs) {
-    const parent =
-      run.labels?.[REPAIR_OF_LABEL] ??
-      (run.input as PersistedInput | null)?.repairOf?.runId
+    const parent = repairParentId(run)
     if (!parent) continue
     const children = byParent.get(parent) ?? []
     children.push(run)
@@ -979,6 +995,7 @@ export async function buildReport(
   const candidates = sealedCandidates(steps)
   const candidate = lastCandidate(output, candidates)
   const reviewRounds = reviewRoundsOf(steps, candidates)
+  const reviews = lastReviews(run.output, waits, reviewRounds)
   const preflight = preflightOf(steps, rows)
   // Minimal preflight calls get a role row of their own, never folded into
   // the roles whose settings they checked.
@@ -1034,8 +1051,9 @@ export async function buildReport(
     candidates,
     repairSession: repairSession?.report ?? null,
     repairCalls: repairCallsOf(rows),
-    reviews: lastReviews(run.output, waits, reviewRounds),
+    reviews,
     reviewRounds,
+    reviewHighlights: reviewHighlights(reviewRounds, reviews),
     specRounds: specRoundsOf(steps),
     spec: specOf(
       steps,
@@ -1051,6 +1069,7 @@ export async function buildReport(
     waits: waitRows,
     stageTimings: timings,
     stageTotalMs,
+    specWallMs: specWallMs(rows),
     runElapsedMs,
     versions,
     priceBasis: PRICE_BASIS,

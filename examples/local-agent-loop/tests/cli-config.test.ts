@@ -502,6 +502,10 @@ describe('status without --run', { timeout: 180000 }, () => {
     const empty = await demo(box, ['status'])
     assert.equal(empty.code, 0, empty.stderr)
     assert.match(empty.stdout, /No runs need attention/)
+    const emptyJson = await demo(box, ['status', '--format', 'json'])
+    assert.equal(emptyJson.code, 0, emptyJson.stderr)
+    assert.deepEqual(JSON.parse(emptyJson.stdout).tasks, [])
+    assert.notEqual((await demo(box, ['status', '--format', 'yaml'])).code, 0)
 
     // A repository run that finishes (its worktree is kept), and one whose
     // setup fails before any worktree is recorded.
@@ -2637,5 +2641,47 @@ describe('spec stages in factory.json', { timeout: 180000 }, () => {
       const box = await sandbox(config)
       await rejected(box, ['--repo', box.repo, '--task', 'x'], message)
     }
+  })
+})
+
+describe('compare --trend', { timeout: 120000 }, () => {
+  it('refuses a --days that is not a whole number of days from 1, before reading anything', async () => {
+    const box = await sandbox()
+    for (const days of [
+      '0',
+      '-1',
+      'NaN',
+      'Infinity',
+      '1.5',
+      String(Number.MAX_SAFE_INTEGER + 1),
+    ]) {
+      const res = await demo(box, ['compare', '--trend', '--days', days])
+      assert.notEqual(res.code, 0, days)
+      assert.match(res.stderr, /--days must be a whole number of days/, days)
+    }
+    // A bare flag is refused too, and nothing was created on the way.
+    assert.notEqual((await demo(box, ['compare', '--trend', '--days'])).code, 0)
+    assert.equal(existsSync(dbPath(box.stateRoot)), false)
+    const ok = await demo(box, [
+      'compare',
+      '--trend',
+      '--days',
+      String(Number.MAX_SAFE_INTEGER),
+      '--format',
+      'json',
+    ])
+    assert.equal(ok.code, 0, ok.stderr)
+    assert.deepEqual(JSON.parse(ok.stdout), {
+      days: Number.MAX_SAFE_INTEGER,
+      includeFake: false,
+      weeks: [],
+      runIds: [],
+      fakeExcluded: 0,
+      groups: [],
+    })
+    // The config-version comparison is still there, and still asks for runs.
+    const noRuns = await demo(box, ['compare'])
+    assert.notEqual(noRuns.code, 0)
+    assert.match(noRuns.stderr, /--runs <id,id,...> required/)
   })
 })

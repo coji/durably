@@ -1,4 +1,9 @@
-import type { LoopReport } from '../../../engine/report'
+import { formatCount } from '../../../engine/format'
+import type {
+  HighlightGroup,
+  LoopReport,
+  ReviewHighlights,
+} from '../../../engine/report'
 import { EmptyState } from '../../components/EmptyState'
 import { Panel } from '../../components/Layout'
 import { ReviewFindingTitles } from '../../components/ReviewFindingTitles'
@@ -6,7 +11,10 @@ import { IdSuffix } from '../../components/RunLink'
 import { COMMON, REVIEW } from '../../glossary'
 import { lensName, reviewDecision } from '../../labels'
 
-/** Each review of a round: its name, verdict, notes and finding titles. */
+/** Titles shown per group before the rest is counted. */
+const SHOWN = 5
+
+/** Each review of a round: its name, verdict, finding titles, and its notes closed. */
 export function ReviewVerdicts({
   reviews,
 }: {
@@ -26,13 +34,90 @@ export function ReviewVerdicts({
               {reviewDecision(review.decision).label}
             </span>
           </p>
-          <p className="bg-sunken rounded-md px-3 py-2 text-sm whitespace-pre-wrap">
-            {review.notes}
-          </p>
           <ReviewFindingTitles findings={review.findings} />
+          <details>
+            <summary className="text-fg-2 hover:text-fg inline-flex min-h-8 cursor-pointer items-center text-xs">
+              {REVIEW.notes}
+            </summary>
+            <p className="bg-sunken rounded-md px-3 py-2 text-sm whitespace-pre-wrap">
+              {review.notes}
+            </p>
+          </details>
         </li>
       ))}
     </ul>
+  )
+}
+
+/** One side of the highlights: how many, the first titles, the verdicts. */
+function Group({ label, group }: { label: string; group: HighlightGroup }) {
+  const titles = group.titles.slice(0, SHOWN)
+  const rest = group.count - titles.length
+  const empty = group.count === 0 && group.verdicts.length === 0
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <h3 className="flex items-baseline gap-2 text-sm font-semibold">
+        {label}
+        <span className="text-fg-2 font-normal tabular-nums">
+          {COMMON.count(formatCount(group.count))}
+        </span>
+      </h3>
+      {empty ? <p className="text-fg-3 text-sm">{REVIEW.none}</p> : null}
+      {titles.length > 0 ? (
+        <ul className="flex list-disc flex-col gap-1 pl-4 text-sm">
+          {titles.map((title, at) => (
+            // A kept list never changes order, so its position is its identity.
+            <li key={`${at}:${title}`}>{title}</li>
+          ))}
+        </ul>
+      ) : null}
+      {rest > 0 ? (
+        <p className="text-fg-2 text-xs">{REVIEW.more(formatCount(rest))}</p>
+      ) : null}
+      {group.verdicts.length > 0 ? (
+        <ul className="flex flex-col gap-1 text-sm">
+          {group.verdicts.map((v) => (
+            <li key={`${v.round}:${v.lens}`}>
+              <span className="text-fg-2">
+                {REVIEW.roundOf(v.round)} {lensName(v.lens)}
+                {COMMON.separator}
+                {reviewDecision(v.decision).label}
+                {COMMON.listSeparator}
+              </span>
+              {v.line}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * The reviews in short: what the rounds before the last made the run fix,
+ * what the last round left as advice, and what it still blocked on when it
+ * did not pass. Each review's notes are in the evidence below.
+ */
+export function ReviewHighlightsPanel({ h }: { h: ReviewHighlights }) {
+  // Before any review round the stage track already says so.
+  if (h.rounds === 0) return null
+  return (
+    <Panel title={REVIEW.highlights}>
+      <div className="flex flex-col gap-3">
+        <p className="text-fg-2 text-xs">
+          {REVIEW.rounds(h.rounds)}
+          {COMMON.separator}
+          {h.passed ? REVIEW.passedLast : REVIEW.failedLast}
+        </p>
+        <div
+          className={`grid gap-4 md:grid-cols-2 ${h.passed ? '' : 'lg:grid-cols-3'}`}
+        >
+          {h.passed ? null : <Group label={REVIEW.open} group={h.open} />}
+          <Group label={REVIEW.fixed} group={h.fixed} />
+          <Group label={REVIEW.left} group={h.left} />
+        </div>
+      </div>
+    </Panel>
   )
 }
 

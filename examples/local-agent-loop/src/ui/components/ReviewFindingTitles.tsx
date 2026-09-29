@@ -1,3 +1,4 @@
+import { formatCount } from '../../engine/format'
 import type { ReportReviewFindings } from '../../engine/report'
 import { COMMON, REVIEW } from '../glossary'
 
@@ -36,7 +37,10 @@ export function ReviewFindingTitles({
         <div key={g.label} className="flex flex-col gap-1">
           <p>
             <span className="font-medium">{g.label}</span>
-            <span className="text-fg-2"> {COMMON.count(g.count)}</span>
+            <span className="text-fg-2">
+              {' '}
+              {COMMON.count(formatCount(g.count))}
+            </span>
           </p>
           {g.kept.length > 0 ? (
             <ul className="text-fg-2 flex list-disc flex-col gap-1 pl-4">
@@ -47,7 +51,7 @@ export function ReviewFindingTitles({
           ) : null}
           {g.count > g.kept.length ? (
             <p className="text-fg-2">
-              {REVIEW.omitted(g.count - g.kept.length)}
+              {REVIEW.omitted(formatCount(g.count - g.kept.length))}
             </p>
           ) : null}
         </div>

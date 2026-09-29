@@ -4,12 +4,17 @@ import { ActionButton } from '../../components/ActionButton'
 import { Commands } from '../../components/Commands'
 import { CopyButton, useCopy } from '../../components/copy'
 import { EmptyState } from '../../components/EmptyState'
+import { LiveProgress } from '../../components/LiveProgress'
 import { Notice } from '../../components/Notice'
+import { LogWriteError, PathValue } from '../../components/PathValue'
+import { ReviewFindingTitles } from '../../components/ReviewFindingTitles'
+import { RelationLinks, RunLink } from '../../components/RunLink'
 import { kindStatus, TONES } from '../../components/status'
 import { StatusBadge } from '../../components/StatusBadge'
-import { COPY, DESIGN, KIND_NAME, REFRESH } from '../../glossary'
+import { Ago } from '../../components/Time'
+import { COMMON, COPY, DESIGN, KIND_NAME, REFRESH } from '../../glossary'
 import { commandText } from '../../labels'
-import { COMMANDS, TASKS } from './fixtures'
+import { COMMANDS, NOW, TASKS } from './fixtures'
 import { State } from './Specimen'
 
 const KINDS = Object.keys(KIND_NAME) as (keyof typeof KIND_NAME)[]
@@ -159,5 +164,102 @@ export function NoticeStates() {
         </Notice>
       ))}
     </div>
+  )
+}
+
+/** Review findings as a findings review keeps them; data, as stored. */
+const FINDINGS = {
+  blocker: [
+    {
+      severity: 'blocker' as const,
+      title: 'The cost column still prints six decimals',
+      body: '',
+    },
+  ],
+  nonBlocker: [
+    {
+      severity: 'non-blocker' as const,
+      title: 'Name the rounding rule in the README',
+      body: '',
+    },
+  ],
+  counts: { blocker: 1, nonBlocker: 3 },
+}
+
+const LOG_PATH =
+  '/Users/me/.local/state/local-agent-loop/runs/01K6D2Q7XB3M9RKT4WSTOPPD/logs/check.stdout.log'
+
+const minutesAgo = (minutes: number) =>
+  new Date(Date.parse(NOW) - minutes * 60_000).toISOString()
+
+/** A run by its name, the runs linked to it, and a time from `now`. */
+export function LinkStates() {
+  const [approval, stopped, running] = TASKS
+  return (
+    <>
+      <State label={DESIGN.state.link}>
+        <RunLink id={approval.id} name={approval.name} />
+      </State>
+      <State label={DESIGN.state.relations}>
+        <RelationLinks
+          relations={{
+            parent: { id: stopped.id, name: stopped.name },
+            children: [{ id: running.id, name: running.name }],
+          }}
+        />
+      </State>
+      <State label={DESIGN.state.ago}>
+        <span className="text-fg-2 text-sm">
+          <Ago iso={minutesAgo(3)} now={NOW} prefix={`${COMMON.started} `} />
+        </span>
+      </State>
+    </>
+  )
+}
+
+/** The running stage and its elapsed time, and the gap between stages. */
+export function LiveStates() {
+  const live = {
+    runMs: 754_000,
+    stage: 'code',
+    stepName: 'stage:3:code:agent',
+    stageMs: 212_000,
+  }
+  return (
+    <>
+      <State label={KIND_NAME.running}>
+        <LiveProgress live={live} />
+      </State>
+      <State label={DESIGN.state.between}>
+        <LiveProgress
+          live={{ ...live, stage: null, stepName: null, stageMs: null }}
+        />
+      </State>
+    </>
+  )
+}
+
+/** Each kind of finding counted, its kept titles, and the rest counted. */
+export function FindingStates() {
+  return <ReviewFindingTitles findings={FINDINGS} />
+}
+
+/** A path to copy, and a log that could not be written. */
+export function PathStates() {
+  const { copied, copy } = useCopy()
+  return (
+    <>
+      <State label={DESIGN.state.path}>
+        <PathValue
+          path={LOG_PATH}
+          label={COPY.stdoutPath}
+          copied={copied}
+          onCopy={copy}
+        />
+      </State>
+      <State label={DESIGN.state.writeError}>
+        <LogWriteError error="EACCES: permission denied, open 'check.stdout.log'" />
+      </State>
+    </>
   )
 }

@@ -4,9 +4,13 @@ import { describe, it } from 'node:test'
 import { PRICE_BASIS } from '../src/engine/pricing.js'
 import {
   reportToMarkdown,
+  reviewHighlights,
+  specWallMs,
   stageTimings,
   totalStageMs,
   type AttemptRow,
+  type ReportReview,
+  type ReportReviewRound,
   type RunSummary,
 } from '../src/engine/report.js'
 
@@ -118,6 +122,7 @@ describe('stage timing completeness', () => {
       repairCalls: [],
       reviews: [],
       reviewRounds: [],
+      reviewHighlights: reviewHighlights([], []),
       specRounds: [],
       spec: null,
       delivery: null,
@@ -135,6 +140,7 @@ describe('stage timing completeness', () => {
         row('stage:0:code:agent', 'a2', null),
       ]),
       stageTotalMs: null,
+      specWallMs: null,
       runElapsedMs: 200,
       versions: {},
       priceBasis: PRICE_BASIS,
@@ -240,5 +246,153 @@ describe('stage wall time across repeat visits', () => {
     const review = timings.find((t) => t.stage === 'review')
     assert.equal(review?.elapsedMs, 20000)
     assert.equal(review?.wallElapsedMs, 12000)
+  })
+})
+
+describe('the spec stages together', () => {
+  const at = (s: number) =>
+    new Date(Date.UTC(2026, 0, 1) + s * 1000).toISOString()
+  const spec = [
+    timedRow('spec:author', 's1', at(0), at(60)),
+    // Two reviewers side by side count once.
+    timedRow('spec-review:1:alice', 'r1', at(60), at(100)),
+    timedRow('spec-review:1:bob', 'r2', at(65), at(110)),
+    timedRow('spec:fix:1', 'f1', at(110), at(140)),
+    // A person decides on the blocked spec from 140 s to 1000 s.
+    timedRow('spec-review:2:alice', 'r3', at(1000), at(1030)),
+    timedRow('spec-check', 'c1', at(1030), at(1040)),
+  ]
+
+  it('counts the wall time of spec, spec review and spec check once, without the gaps between', () => {
+    const rows = [
+      ...spec,
+      timedRow('stage:3:code:agent', 'a1', at(1040), at(2000)),
+    ]
+    assert.equal(specWallMs(rows), 180_000)
+    // The per-stage work sums both reviewers, so it exceeds the wall time.
+    const timings = stageTimings(rows)
+    const work = timings
+      .filter((t) => ['spec', 'spec-review', 'spec-check'].includes(t.stage))
+      .reduce((sum, t) => sum + (t.elapsedMs ?? 0), 0)
+    assert.equal(work, 215_000)
+  })
+
+  it('is unknown without spec stages, or with a spec attempt that has no end', () => {
+    assert.equal(
+      specWallMs([timedRow('stage:0:code:agent', 'a1', at(0), at(10))]),
+      null,
+    )
+    const open = timedRow('spec:author', 's1', at(0), at(60))
+    open.completedAt = null
+    open.measurement = {
+      ...open.measurement!,
+      invocationCompletedAt: undefined,
+    }
+    assert.equal(specWallMs([open]), null)
+  })
+})
+
+describe('review highlights', () => {
+  const findings = (blocker: string[], nonBlocker: string[]) => ({
+    blocker: blocker.map((title) => ({
+      severity: 'blocker' as const,
+      title,
+      body: 'b',
+    })),
+    nonBlocker: nonBlocker.map((title) => ({
+      severity: 'non-blocker' as const,
+      title,
+      body: 'b',
+    })),
+    counts: { blocker: blocker.length, nonBlocker: nonBlocker.length },
+  })
+  const review = (
+    lens: string,
+    decision: string,
+    f: ReturnType<typeof findings> | null,
+    notes = 'first line\nmore',
+  ): ReportReview => ({ lens, decision, notes, findings: f })
+  const round = (n: number, reviews: ReportReview[]): ReportReviewRound => ({
+    round: n,
+    sequence: n * 2,
+    candidate: null,
+    reviews,
+  })
+
+  it('takes the blockers before the last round as fixed and the last non-blockers as left', () => {
+    const h = reviewHighlights(
+      [
+        round(1, [
+          review('correctness', 'needsChanges', findings(['A', 'B'], ['x'])),
+          review('edge-cases', 'needsChanges', findings(['C'], [])),
+        ]),
+        round(2, [
+          review('correctness', 'pass', findings([], ['D'])),
+          review('edge-cases', 'pass', findings([], ['E', 'F'])),
+        ]),
+      ],
+      [],
+    )
+    assert.equal(h.rounds, 2)
+    assert.equal(h.passed, true)
+    assert.deepEqual([h.fixed.count, h.fixed.titles], [3, ['A', 'B', 'C']])
+    assert.deepEqual([h.left.count, h.left.titles], [3, ['D', 'E', 'F']])
+    assert.equal(h.open.count, 0)
+  })
+
+  it("keeps the last round's blockers apart when it did not pass", () => {
+    const h = reviewHighlights(
+      [
+        round(1, [review('correctness', 'needsChanges', findings(['A'], []))]),
+        round(2, [
+          review('correctness', 'needsChanges', findings(['G'], ['H'])),
+        ]),
+      ],
+      [],
+    )
+    assert.equal(h.passed, false)
+    assert.deepEqual(h.fixed.titles, ['A'])
+    assert.deepEqual(h.open.titles, ['G'])
+    assert.deepEqual(h.left.titles, ['H'])
+  })
+
+  it('shows a verdict review by its decision and the first line of its notes', () => {
+    const h = reviewHighlights(
+      [
+        round(1, [
+          review(
+            'correctness',
+            'needsChanges',
+            null,
+            '\n  Fix the parser\nDetails',
+          ),
+          review('edge-cases', 'pass', null),
+        ]),
+        round(2, [review('correctness', 'pass', null, 'Looks right')]),
+      ],
+      [],
+    )
+    assert.deepEqual(h.fixed.verdicts, [
+      {
+        round: 1,
+        lens: 'correctness',
+        decision: 'needsChanges',
+        line: 'Fix the parser',
+      },
+    ])
+    assert.deepEqual(h.left.verdicts, [
+      { round: 2, lens: 'correctness', decision: 'pass', line: 'Looks right' },
+    ])
+    assert.equal(h.fixed.count + h.left.count, 0)
+  })
+
+  it('reads the last verdicts as one round when no round was stored, and nothing before a review', () => {
+    const h = reviewHighlights(
+      [],
+      [review('correctness', 'pass', findings([], ['Z']))],
+    )
+    assert.deepEqual([h.rounds, h.left.titles], [1, ['Z']])
+    const none = reviewHighlights([], [])
+    assert.deepEqual([none.rounds, none.passed], [0, null])
   })
 })

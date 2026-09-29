@@ -1,12 +1,12 @@
-import { Fragment } from 'react'
+import { Fragment, type ReactNode } from 'react'
 
-import { formatDuration } from '../../../engine/format'
+import { formatCost, formatDuration } from '../../../engine/format'
 import type { LoopReport } from '../../../engine/report'
 import { EmptyState } from '../../components/EmptyState'
 import { PartialTag } from '../../components/KeyValue'
 import { RunLink } from '../../components/RunLink'
 import { Ago } from '../../components/Time'
-import { BASELINE, COMMON, DETAIL, RUN_NAME } from '../../glossary'
+import { BASELINE, COLUMN, COMMON, DETAIL, RUN_NAME } from '../../glossary'
 import { stageName } from '../../labels'
 import type { RunRef } from '../../server'
 
@@ -50,7 +50,49 @@ export function BaselineSource({
   )
 }
 
-/** Each stage's working time as a bar, longest first in scale. */
+/** Name, bar, work, wall and cost in the stage grid's five columns. */
+function StageLine({
+  name,
+  title,
+  share,
+  work,
+  wall,
+  cost,
+  className = '',
+}: {
+  name: string
+  title?: string
+  /** The bar's length from 0 to 1; no bar when absent. */
+  share?: number
+  work: ReactNode
+  wall: ReactNode
+  cost: ReactNode
+  className?: string
+}) {
+  return (
+    <li className={`stage-row items-center gap-3 text-sm ${className}`}>
+      <span title={title}>{name}</span>
+      <span className="stage-bar bg-sunken h-2 rounded-sm" aria-hidden>
+        {share !== undefined ? (
+          <span
+            className="bg-fg-3/60 block h-full rounded-sm"
+            style={{ width: `${share * 100}%` }}
+          />
+        ) : null}
+      </span>
+      <span className="font-code text-right">{work}</span>
+      <span className="font-code text-fg-2 text-right">{wall}</span>
+      <span className="font-code text-right">{cost}</span>
+    </li>
+  )
+}
+
+/**
+ * Each stage's work, wall-clock time and cost on one line, the work as a
+ * bar; the spec stages together by their wall time; the whole run last,
+ * its work beside its lead time. A note says why work can exceed the lead
+ * time.
+ */
 export function StageTimings({
   report,
   baselineSource,
@@ -63,44 +105,71 @@ export function StageTimings({
   const max = Math.max(1, ...report.stageTimings.map((t) => t.elapsedMs ?? 0))
   if (report.stageTimings.length === 0)
     return <EmptyState>{DETAIL.stageTimesEmpty}</EmptyState>
+  const cost = (stage: string) => {
+    const u = report.stageUsage.find((x) => x.stage === stage)
+    return u ? formatCost(u.costUsd) : DETAIL.noCost
+  }
+  // A run with spec stages always has the spec stage itself.
+  const spec = report.stageTimings.some((t) => t.stage === 'spec')
   return (
-    <ul className="flex flex-col gap-2">
-      {report.stageTimings.map((t) => (
-        <Fragment key={t.stage}>
-          <li className="stage-row items-center gap-3">
-            <span className="text-sm">{stageName(t.stage)}</span>
-            <span className="bg-sunken h-2 rounded-sm" aria-hidden>
-              <span
-                className="bg-fg-3/60 block h-full rounded-sm"
-                style={{ width: `${((t.elapsedMs ?? 0) / max) * 100}%` }}
-              />
-            </span>
-            <span className="font-code text-right text-sm">
-              {formatDuration(t.elapsedMs)}
-              {t.elapsedMs == null || t.complete ? null : (
-                <PartialTag title={COMMON.partialTiming} />
-              )}
-            </span>
-          </li>
-          {t.stage === 'baseline' && report.baseline?.passed != null ? (
-            <li className="stage-row-note gap-3">
-              <span />
-              <BaselineSource
-                baseline={report.baseline}
-                source={baselineSource}
-                now={now}
-              />
-            </li>
-          ) : null}
-        </Fragment>
-      ))}
-      <li className="border-line stage-row gap-3 border-t pt-2 text-sm">
-        <span>{DETAIL.stageTotal}</span>
-        <span />
-        <span className="font-code text-right">
-          {formatDuration(report.stageTotalMs)}
-        </span>
-      </li>
-    </ul>
+    <div className="flex flex-col gap-3">
+      <ul className="flex flex-col gap-2">
+        <li className="stage-row text-fg-2 gap-3 text-xs" aria-hidden>
+          <span>{COLUMN.stage}</span>
+          <span className="stage-bar" />
+          <span className="text-right">{DETAIL.work}</span>
+          <span className="text-right">{DETAIL.wall}</span>
+          <span className="text-right" title={COMMON.costNote}>
+            {COLUMN.cost}
+          </span>
+        </li>
+        {report.stageTimings.map((t) => (
+          <Fragment key={t.stage}>
+            <StageLine
+              name={stageName(t.stage)}
+              share={(t.elapsedMs ?? 0) / max}
+              work={
+                <>
+                  {formatDuration(t.elapsedMs)}
+                  {t.elapsedMs == null || t.complete ? null : (
+                    <PartialTag title={COMMON.partialTiming} />
+                  )}
+                </>
+              }
+              wall={formatDuration(t.wallElapsedMs)}
+              cost={cost(t.stage)}
+            />
+            {t.stage === 'baseline' && report.baseline?.passed != null ? (
+              <li className="stage-row-note gap-3">
+                <span />
+                <BaselineSource
+                  baseline={report.baseline}
+                  source={baselineSource}
+                  now={now}
+                />
+              </li>
+            ) : null}
+          </Fragment>
+        ))}
+        {spec ? (
+          <StageLine
+            name={DETAIL.specTogether}
+            title={DETAIL.specTogetherTitle}
+            work=""
+            wall={formatDuration(report.specWallMs)}
+            cost=""
+            className="text-fg-2 border-line border-t pt-2"
+          />
+        ) : null}
+        <StageLine
+          name={DETAIL.stageTotal}
+          work={formatDuration(report.stageTotalMs)}
+          wall={formatDuration(report.summary.leadTimeMs)}
+          cost={formatCost(report.summary.costUsd)}
+          className="border-line border-t pt-2 font-medium"
+        />
+      </ul>
+      <p className="text-fg-2 text-xs">{DETAIL.timeNote}</p>
+    </div>
   )
 }

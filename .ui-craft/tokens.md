@@ -21,7 +21,7 @@
 
 ## Layout
 
-表と時系列の固定幅だけをトークンにする：`--size-trace-max`（時系列の高さの上限）、`--size-inspector`（詳細の列）、`--size-label`（横並びのキー）、`--size-stage-name` と `--size-stage-value`（工程ごとの時間）。時系列は自分の箱の幅で段組みを変える（コンテナクエリ）。
+表と時系列の固定幅だけをトークンにする：`--size-trace-max`（時系列の高さの上限）、`--size-inspector`（詳細の列）、`--size-label`（横並びのキー）、`--size-stage-name` と `--size-stage-value`（工程ごとの時間と費用）、`--size-scroll-margin`（目次から飛んだ見出しを固定ヘッダーの下に出す余白）。時系列は自分の箱の幅で段組みを変える（コンテナクエリ）。
 
 ## Radius
 
@@ -43,7 +43,7 @@
 
 `src/ui/app.css` の `:root` と同じ内容。
 
-````css
+```css
 :root {
   color-scheme: light dark;
 
@@ -109,8 +109,9 @@
   --size-trace-max: 32rem;
   --size-inspector: 20rem;
   --size-label: 6.5rem;
-  --size-stage-name: 6rem;
-  --size-stage-value: 9rem;
+  --size-stage-name: 7rem;
+  --size-stage-value: 5rem;
+  --size-scroll-margin: var(--space-12);
   --size-hatch: 4px;
 
   /* semantics */
@@ -138,5 +139,5 @@
   --state-running-bg: light-dark(oklch(97% 0.03 250), oklch(23% 0.04 250));
   --state-done: var(--text-secondary);
   --state-done-bg: var(--surface-sunken);
-}```
-````
+}
+```

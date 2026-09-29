@@ -7,8 +7,9 @@
  * - Opens the fixed state root's existing database read-only, lazily: until a
  *   worker or `trigger` creates it, every view is empty and nothing is
  *   created. `migrate()` and `init()` are never called.
- * - Every number comes from `buildReport` / `compareReports` and every reason
- *   and command from `diagnose`, the same code the CLI prints from. The API
+ * - Every number comes from `buildReport` / `compareReports` / `trendOf`,
+ *   every reason and command from `diagnose`, and the task list from
+ *   `groupTasks`: the same code the CLI prints from. The API
  *   has no endpoint that runs a command or changes a run.
  */
 import {
@@ -36,10 +37,16 @@ import {
   buildReport,
   repairChildren,
   repairChildrenByParent,
+  repairParentId,
   reusedBaselineOf,
   type ReportSource,
 } from '../engine/build-report.js'
-import { compareReports, type Comparison } from '../engine/compare.js'
+import {
+  compareReports,
+  trendOf,
+  type Comparison,
+  type Trend,
+} from '../engine/compare.js'
 import { classifyRun } from '../engine/failure-reasons.js'
 import type { VerificationLog } from '../engine/providers/types.js'
 import {
@@ -59,9 +66,11 @@ import {
 } from '../engine/report.js'
 import {
   diagnoseRun,
+  groupTasks,
   needsHuman,
   type Diagnosis,
   type DiagnosisKind,
+  type Task,
 } from '../engine/status.js'
 import { TERMINAL_STATUSES } from '../engine/terminal.js'
 import { BASELINE_STEP } from '../factory/types.js'
@@ -119,6 +128,11 @@ export interface RunsResponse {
   now: string
   /** Newest first. */
   runs: RunRow[]
+  /**
+   * The runs as tasks, in the order the list shows them, from `groupTasks`:
+   * what `demo status --format json` prints as its `tasks`.
+   */
+  tasks: Task[]
 }
 
 export interface RunDetailResponse {
@@ -143,6 +157,12 @@ export interface RunDetailResponse {
   /** Exactly what `report --run <id> --format json` prints. */
   report: LoopReport
 }
+
+/**
+ * Finished runs of the last 30 days by week and code model and effort, fake
+ * runs left out: what `compare --trend --format json` prints.
+ */
+export type TrendResponse = Trend
 
 export interface CompareResponse {
   /** Finished runs, newest first, in the order given to `compareReports`. */
@@ -1256,7 +1276,7 @@ function createUiApi() {
       now: new Date(now).toISOString(),
     }
     const db = source()
-    if (!db) return { ...base, exists: false, runs: [] }
+    if (!db) return { ...base, exists: false, runs: [], tasks: [] }
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
     const src = readOnce(db, all)
@@ -1266,7 +1286,16 @@ function createUiApi() {
         runRow(run, await inspect(src, run, now, report, fresh)),
       ),
     )
-    return { ...base, exists: true, runs: rows }
+    const tasks = groupTasks(
+      built.map(({ run, report }, i) => ({
+        id: run.id,
+        createdAt: run.createdAt,
+        parentId: repairParentId(run),
+        kind: rows[i]?.diagnosis.kind ?? 'finished',
+        approved: report.summary.success,
+      })),
+    )
+    return { ...base, exists: true, runs: rows, tasks }
   }
 
   async function run(id: string): Promise<RunDetailResponse> {
@@ -1321,9 +1350,27 @@ function createUiApi() {
     }
   }
 
+  async function trend(): Promise<TrendResponse> {
+    const now = Date.now()
+    const db = source()
+    if (!db) return trendOf([], { now })
+    const all = await orEmpty(allRuns(db), [])
+    reports.keep(all)
+    const done = all.filter((r) => TERMINAL_STATUSES.includes(r.status))
+    const built = await listedReports(reports, readOnce(db, done), done, all)
+    return trendOf(
+      built.map(({ run, report }) => ({
+        report,
+        completedAt: run.completedAt,
+      })),
+      { now },
+    )
+  }
+
   async function handle(pathname: string): Promise<unknown> {
     if (pathname === '/api/runs') return runs()
     if (pathname === '/api/compare') return compare()
+    if (pathname === '/api/trend') return trend()
     const match = /^\/api\/runs\/([^/]+)$/.exec(pathname)
     if (match?.[1]) return run(decodeURIComponent(match[1]))
     throw new HttpError(404, `no such endpoint: ${pathname}`)

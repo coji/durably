@@ -75,8 +75,10 @@ export function TaskRowStates() {
           <TaskRow
             status={first.status}
             name={first.task.name}
+            href="#/design"
             id={first.task.id}
             meta={<span>{ago(first.minutes)}</span>}
+            toggleLabel={first.task.name}
             defaultOpen
           >
             <StageTrack pipeline={first.pipeline} />
@@ -91,7 +93,9 @@ export function TaskRowStates() {
               key={r.task.id}
               status={r.status}
               name={r.task.name}
+              href="#/design"
               id={r.task.id}
+              toggleLabel={r.task.name}
               meta={
                 <>
                   <span className="font-code">

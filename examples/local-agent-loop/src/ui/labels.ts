@@ -34,8 +34,6 @@ import {
   TRIAGE_NAME,
 } from './glossary.js'
 
-export { RELATION_NAME } from './glossary.js'
-
 export function stageName(stage: string): string {
   return STAGE_NAME[stage] ?? stage
 }

@@ -145,6 +145,27 @@ export function formatRelative(
   return ago(Math.floor(h / 24), 'd')
 }
 
+/** `67%`: a share from 0 to 1, rounded to a whole percent. */
+export function formatPercent(share: Maybe, lang: Lang = 'ja'): string {
+  if (!known(share)) return unknownWord(lang)
+  return `${Math.round(share * 100)}%`
+}
+
+/**
+ * A week by its first day, `YYYY-MM-DD` as the trend keys it: `9/28〜` in
+ * Japanese, `week of 2026-09-28` in English.
+ */
+export function formatWeek(
+  weekStart: string | null | undefined,
+  lang: Lang = 'ja',
+): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(weekStart ?? '')
+  if (!m) return unknownWord(lang)
+  return lang === 'ja'
+    ? `${Number(m[2])}/${Number(m[3])}〜`
+    : `week of ${weekStart}`
+}
+
 /** The last six characters of an ID: enough to tell runs apart. */
 export function formatShortId(
   id: string | null | undefined,
@@ -168,5 +189,8 @@ export function formatters(lang: Lang) {
     formatRelative: (iso: string | null | undefined, now: string) =>
       formatRelative(iso, now, lang),
     formatShortId: (id: string | null | undefined) => formatShortId(id, lang),
+    formatPercent: (share: Maybe) => formatPercent(share, lang),
+    formatWeek: (weekStart: string | null | undefined) =>
+      formatWeek(weekStart, lang),
   }
 }

@@ -1,3 +1,5 @@
+import { useId } from 'react'
+
 import type { VerificationLog } from '../../../engine/providers/types'
 import {
   CHECKPOINT_NAME,
@@ -48,9 +50,11 @@ function ReviewBlock({ review }: { review: NonNullable<TraceNode['review']> }) {
  */
 function LogSlot({ log }: { log: VerificationLog | null }) {
   const { copied, copy } = useCopy()
+  // One per inspector: the design page draws several side by side.
+  const headingId = useId()
   return (
-    <section aria-labelledby="trace-log-slot" className="flex flex-col gap-1">
-      <h4 id="trace-log-slot" className="text-fg-2 text-xs font-medium">
+    <section aria-labelledby={headingId} className="flex flex-col gap-1">
+      <h4 id={headingId} className="text-fg-2 text-xs font-medium">
         {TRACE.log}
       </h4>
       {log ? (

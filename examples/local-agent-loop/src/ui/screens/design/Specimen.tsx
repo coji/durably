@@ -22,7 +22,7 @@ export function Specimen({
   children: ReactNode
 }) {
   return (
-    <section aria-labelledby={id} className="flex scroll-mt-16 flex-col gap-3">
+    <section aria-labelledby={id} className="scroll-target flex flex-col gap-3">
       <div className="flex flex-col gap-1">
         <h2 id={id} className="text-lg font-semibold">
           {name}

@@ -1,5 +1,5 @@
 import { Commands } from '../../components/Commands'
-import { CopyAnnouncer, useCopy } from '../../components/copy'
+import { CopyAnnouncer, CopyButton, useCopy } from '../../components/copy'
 import { Field } from '../../components/KeyValue'
 import { Panel } from '../../components/Layout'
 import { LiveProgress } from '../../components/LiveProgress'
@@ -14,6 +14,7 @@ import {
   retryLabel,
 } from '../../labels'
 import type { RunDetailResponse } from '../../server'
+import { SummaryPanel } from './SummaryPanel'
 
 /**
  * Failure detail lines with a stable key each. An exit code line repeats
@@ -35,12 +36,6 @@ function FailureFields({ failure }: { failure: Failure }) {
   return (
     <>
       <dl className="mb-3 flex flex-col gap-2">
-        <Field label={DETAIL.retry}>{retryLabel(failure.retryable)}</Field>
-        <Field label={DETAIL.humanCheck}>
-          <span className="font-ui">
-            {humanCheckText(failure.kind, failure)}
-          </span>
-        </Field>
         {detailRows(failure.details).map(({ line, key }) => {
           const d = detailField(line)
           return (
@@ -73,27 +68,76 @@ function FailureFields({ failure }: { failure: Failure }) {
   )
 }
 
+/**
+ * What the run came to and what a person does next, then its time and cost.
+ * A stop's check comes first; its recorded details stay closed.
+ */
 export function StatusPanel({ data }: { data: RunDetailResponse }) {
+  const failure = data.diagnosis.failure
+  const next = data.diagnosis.next
+  const delivery = data.report.delivery
+  const { copied, copy } = useCopy()
   return (
-    <Panel title={DETAIL.status}>
-      <p className="mb-3 text-sm">
-        {diagnosisText(data.diagnosis, data.uncertainCall)}
-      </p>
-      {data.diagnosis.kind === 'running' ? (
-        <div className="mb-3">
+    <Panel title={DETAIL.conclusion}>
+      <div className="flex flex-col gap-3">
+        {data.diagnosis.kind === 'finished' && delivery?.branch ? (
+          // The badge says how it ended; the sentence says where the work is.
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+            <span>{DETAIL.deliveredTo}</span>
+            <code className="font-code break-all">{delivery.branch}</code>
+            <CopyButton
+              text={delivery.branch}
+              label={COPY.branch}
+              copied={copied}
+              onCopy={copy}
+            />
+            <CopyAnnouncer copied={copied} />
+          </div>
+        ) : data.diagnosis.kind === 'finished' ? null : (
+          <p className="text-sm">
+            {diagnosisText(data.diagnosis, data.uncertainCall)}
+          </p>
+        )}
+        {data.diagnosis.kind === 'running' ? (
           <LiveProgress live={data.live} />
+        ) : null}
+        {failure ? (
+          <dl className="flex flex-col gap-2">
+            <Field label={DETAIL.humanCheck}>
+              <span className="font-ui">
+                {humanCheckText(failure.kind, failure)}
+              </span>
+            </Field>
+            <Field label={DETAIL.retry}>
+              <span className="font-ui">{retryLabel(failure.retryable)}</span>
+            </Field>
+          </dl>
+        ) : null}
+        {next.length > 0 ? (
+          <Commands lines={next} />
+        ) : (
+          <p className="text-fg-2 text-sm">{DETAIL.noNext}</p>
+        )}
+        {failure && failure.details.length > 0 ? (
+          <details className="text-sm">
+            <summary className="text-fg-2 hover:text-fg inline-flex min-h-8 cursor-pointer items-center text-xs">
+              {DETAIL.stopRecord}
+            </summary>
+            <div className="mt-2">
+              <FailureFields failure={failure} />
+            </div>
+          </details>
+        ) : null}
+        {data.diagnosis.cleanup ? (
+          <div>
+            <p className="text-fg-2 mb-2 text-xs">{COPY.cleanupNote}</p>
+            <Commands lines={[data.diagnosis.cleanup]} />
+          </div>
+        ) : null}
+        <div className="border-line border-t pt-3">
+          <SummaryPanel report={data.report} />
         </div>
-      ) : null}
-      {data.diagnosis.failure ? (
-        <FailureFields failure={data.diagnosis.failure} />
-      ) : null}
-      <Commands lines={data.diagnosis.next} />
-      {data.diagnosis.cleanup ? (
-        <div className="mt-3">
-          <p className="text-fg-2 mb-2 text-xs">{COPY.cleanupNote}</p>
-          <Commands lines={[data.diagnosis.cleanup]} />
-        </div>
-      ) : null}
+      </div>
     </Panel>
   )
 }
