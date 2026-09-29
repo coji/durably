@@ -78,6 +78,7 @@ export function TaskRuns({
             {back ? (
               <div className="basis-full">
                 <RunActions
+                  key={r.id}
                   run={{ ...row, name }}
                   act={act}
                   compact

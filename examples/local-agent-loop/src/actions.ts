@@ -119,7 +119,7 @@ export async function archiveRun(durably: AgentLoopDurably, runId: string) {
       `refusing to archive ${runId}: ${
         kind === 'finished'
           ? `it finished (${(run.output as { conclusion?: string } | null)?.conclusion ?? run.status}) and needs no one; only a stopped run is archived`
-          : `it is ${run.status}, not stopped${run.status === 'waiting' ? '; decide it with approve, reject or spec-revise instead' : ''}`
+          : `it is ${run.status}, not stopped${kind === 'approval' || kind === 'spec-approval' ? '; decide it with approve, reject or spec-revise instead' : ''}`
       }`,
     )
   const marker = archiveMarkerOf(durably.stateRoot, runId)

@@ -93,6 +93,7 @@ function TaskItem({
           </p>
           {aside === null || aside === rep.id ? (
             <RunActions
+              key={rep.id}
               run={{ ...rep, name }}
               act={act}
               onAsking={(action) => hear(rep.id, action)}
