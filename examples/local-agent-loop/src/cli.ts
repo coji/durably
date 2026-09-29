@@ -29,6 +29,7 @@ import {
   compareReports,
   comparisonToMarkdown,
   parseTrendDays,
+  inTrendWindow,
   trendOf,
   trendToMarkdown,
 } from './engine/compare.js'
@@ -49,7 +50,6 @@ import {
   type Diagnosis,
   type Task,
 } from './engine/status.js'
-import { TERMINAL_STATUSES } from './engine/terminal.js'
 import { deliverySchema } from './factory/events.js'
 import { timeoutMsSchema } from './factory/job.js'
 import { repairLabels } from './factory/repair.js'
@@ -929,8 +929,9 @@ if (cmd === 'worker') {
     throw new Error('--format must be md or json')
   const durably = createAgentDurably()
   await durably.migrate()
+  const now = Date.now()
   const runs = await durably.getRuns({ jobName: durably.jobs.agentLoop.name })
-  const done = runs.filter((r) => TERMINAL_STATUSES.includes(r.status))
+  const done = runs.filter((r) => inTrendWindow(r, { now, days }))
   const children = repairChildrenByParent(runs)
   const entries = []
   for (const run of done)
@@ -940,7 +941,7 @@ if (cmd === 'worker') {
       }),
       completedAt: run.completedAt,
     })
-  const trend = trendOf(entries, { now: Date.now(), days, includeFake })
+  const trend = trendOf(entries, { now, days, includeFake })
   await emit(
     format === 'json' ? JSON.stringify(trend, null, 2) : trendToMarkdown(trend),
     a['out'],

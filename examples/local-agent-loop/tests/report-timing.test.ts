@@ -122,7 +122,7 @@ describe('stage timing completeness', () => {
       repairCalls: [],
       reviews: [],
       reviewRounds: [],
-      reviewHighlights: reviewHighlights([], []),
+      reviewHighlights: reviewHighlights([], [], []),
       specRounds: [],
       spec: null,
       delivery: null,
@@ -275,6 +275,24 @@ describe('the spec stages together', () => {
       .filter((t) => ['spec', 'spec-review', 'spec-check'].includes(t.stage))
       .reduce((sum, t) => sum + (t.elapsedMs ?? 0), 0)
     assert.equal(work, 215_000)
+    // Each stage's wall time is its own intervals' union: the two review
+    // rounds give 50 s and 30 s, never the 970 s from the first start to
+    // the last end with the person's decision in between.
+    const wall = (stage: string) =>
+      timings.find((t) => t.stage === stage)?.wallElapsedMs
+    assert.equal(wall('spec-review'), 80_000)
+    // The author and the fix are both the spec stage: 60 s and 30 s.
+    assert.equal(wall('spec'), 90_000)
+    assert.equal(wall('spec-check'), 10_000)
+  })
+
+  it('does not span the gap between two rounds of one stage without a sequence', () => {
+    const timings = stageTimings([
+      timedRow('spec:fix:1', 'f1', at(0), at(20)),
+      timedRow('spec:fix:2', 'f2', at(500), at(530)),
+    ])
+    const fix = timings.find((t) => t.stage === 'spec')
+    assert.equal(fix?.wallElapsedMs, 50_000)
   })
 
   it('is unknown without spec stages, or with a spec attempt that has no end', () => {
@@ -319,7 +337,9 @@ describe('review highlights', () => {
     reviews,
   })
 
-  it('takes the blockers before the last round as fixed and the last non-blockers as left', () => {
+  const LENSES = ['correctness', 'edge-cases']
+
+  it('takes the blockers before the last round as earlier and the last non-blockers as left', () => {
     const h = reviewHighlights(
       [
         round(1, [
@@ -332,10 +352,11 @@ describe('review highlights', () => {
         ]),
       ],
       [],
+      LENSES,
     )
     assert.equal(h.rounds, 2)
-    assert.equal(h.passed, true)
-    assert.deepEqual([h.fixed.count, h.fixed.titles], [3, ['A', 'B', 'C']])
+    assert.deepEqual([h.passed, h.complete], [true, true])
+    assert.deepEqual([h.earlier.count, h.earlier.titles], [3, ['A', 'B', 'C']])
     assert.deepEqual([h.left.count, h.left.titles], [3, ['D', 'E', 'F']])
     assert.equal(h.open.count, 0)
   })
@@ -343,15 +364,39 @@ describe('review highlights', () => {
   it("keeps the last round's blockers apart when it did not pass", () => {
     const h = reviewHighlights(
       [
-        round(1, [review('correctness', 'needsChanges', findings(['A'], []))]),
+        round(1, [
+          review('correctness', 'needsChanges', findings(['A'], [])),
+          review('edge-cases', 'pass', findings([], [])),
+        ]),
         round(2, [
           review('correctness', 'needsChanges', findings(['G'], ['H'])),
+          review('edge-cases', 'pass', findings([], [])),
         ]),
       ],
       [],
+      LENSES,
     )
-    assert.equal(h.passed, false)
-    assert.deepEqual(h.fixed.titles, ['A'])
+    assert.deepEqual([h.passed, h.complete], [false, true])
+    assert.deepEqual(h.earlier.titles, ['A'])
+    assert.deepEqual(h.open.titles, ['G'])
+    assert.deepEqual(h.left.titles, ['H'])
+  })
+
+  it('does not call a last round passed while a reviewer has no verdict', () => {
+    // The edge-cases reviewer is still running, or failed: only one verdict.
+    const h = reviewHighlights(
+      [
+        round(1, [
+          review('correctness', 'needsChanges', findings(['A'], [])),
+          review('edge-cases', 'pass', findings([], [])),
+        ]),
+        round(2, [review('correctness', 'pass', findings(['G'], ['H']))]),
+      ],
+      [],
+      LENSES,
+    )
+    assert.deepEqual([h.passed, h.complete], [false, false])
+    assert.deepEqual(h.earlier.titles, ['A'])
     assert.deepEqual(h.open.titles, ['G'])
     assert.deepEqual(h.left.titles, ['H'])
   })
@@ -368,11 +413,16 @@ describe('review highlights', () => {
           ),
           review('edge-cases', 'pass', null),
         ]),
-        round(2, [review('correctness', 'pass', null, 'Looks right')]),
+        round(2, [
+          review('correctness', 'pass', null, 'Looks right'),
+          review('edge-cases', 'pass', null, 'Fine'),
+        ]),
       ],
       [],
+      LENSES,
     )
-    assert.deepEqual(h.fixed.verdicts, [
+    assert.equal(h.passed, true)
+    assert.deepEqual(h.earlier.verdicts, [
       {
         round: 1,
         lens: 'correctness',
@@ -382,17 +432,19 @@ describe('review highlights', () => {
     ])
     assert.deepEqual(h.left.verdicts, [
       { round: 2, lens: 'correctness', decision: 'pass', line: 'Looks right' },
+      { round: 2, lens: 'edge-cases', decision: 'pass', line: 'Fine' },
     ])
-    assert.equal(h.fixed.count + h.left.count, 0)
+    assert.equal(h.earlier.count + h.left.count, 0)
   })
 
   it('reads the last verdicts as one round when no round was stored, and nothing before a review', () => {
     const h = reviewHighlights(
       [],
       [review('correctness', 'pass', findings([], ['Z']))],
+      ['correctness'],
     )
-    assert.deepEqual([h.rounds, h.left.titles], [1, ['Z']])
-    const none = reviewHighlights([], [])
-    assert.deepEqual([none.rounds, none.passed], [0, null])
+    assert.deepEqual([h.rounds, h.passed, h.left.titles], [1, true, ['Z']])
+    const none = reviewHighlights([], [], LENSES)
+    assert.deepEqual([none.rounds, none.passed, none.complete], [0, null, null])
   })
 })

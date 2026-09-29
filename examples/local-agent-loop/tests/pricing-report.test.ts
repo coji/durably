@@ -4,6 +4,7 @@ import { describe, it } from 'node:test'
 import {
   compareReports,
   comparisonToMarkdown,
+  inTrendWindow,
   parseTrendDays,
   trendOf,
   trendToMarkdown,
@@ -52,7 +53,7 @@ function baseReport(): LoopReport {
     repairCalls: [],
     reviews: [],
     reviewRounds: [],
-    reviewHighlights: reviewHighlights([], []),
+    reviewHighlights: reviewHighlights([], [], []),
     specRounds: [],
     spec: null,
     delivery: null,
@@ -562,6 +563,19 @@ describe('trend by week and code profile', () => {
     assert.equal(t.groups.length, 1)
     assert.deepEqual(t.groups[0]?.runIds.length, 3)
     assert.deepEqual(t.weeks, ['2026-09-28'])
+  })
+
+  it('picks the runs to build reports for by the same window and status as the trend', () => {
+    const at = (ms: number) => new Date(ms).toISOString()
+    const day = 86_400_000
+    const w = (status: string, completedAt: string | null) =>
+      inTrendWindow({ status, completedAt }, { now, days: 30 })
+    assert.equal(w('completed', at(now - day)), true)
+    assert.equal(w('failed', at(now - 29 * day)), true)
+    assert.equal(w('completed', at(now - 31 * day)), false)
+    assert.equal(w('completed', at(now + day)), false)
+    assert.equal(w('leased', at(now - day)), false)
+    assert.equal(w('completed', null), false)
   })
 
   it('accepts only a whole positive number of days within the safe range', () => {

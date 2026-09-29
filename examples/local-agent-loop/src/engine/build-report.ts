@@ -9,8 +9,10 @@ import {
   BASELINE_STEP,
   REPAIR_SESSION_STEP,
   SPEC_CHECK_STEP,
+  REVIEW_LENSES,
   SPEC_FINAL_STEP,
   type RepairSessionRecord,
+  type ReviewLens,
 } from '../factory/types.js'
 import { classifyRun, stageStep } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
@@ -383,7 +385,6 @@ function reviewRoundsOf(
     round.set(review.lens, review)
     rounds.set(where.sequence, round)
   }
-  const lensOrder = ['correctness', 'edge-cases']
   return [...rounds]
     .sort(([x], [y]) => x - y)
     .map(([sequence, byLens], i) => {
@@ -393,7 +394,9 @@ function reviewRoundsOf(
         sequence,
         candidate: reviewed ? toReportCandidate(reviewed) : null,
         reviews: [...byLens.values()].sort(
-          (x, y) => lensOrder.indexOf(x.lens) - lensOrder.indexOf(y.lens),
+          (x, y) =>
+            REVIEW_LENSES.indexOf(x.lens as ReviewLens) -
+            REVIEW_LENSES.indexOf(y.lens as ReviewLens),
         ),
       }
     })
@@ -1074,7 +1077,7 @@ export async function buildReport(
     repairCalls: repairCallsOf(rows),
     reviews,
     reviewRounds,
-    reviewHighlights: reviewHighlights(reviewRounds, reviews),
+    reviewHighlights: reviewHighlights(reviewRounds, reviews, REVIEW_LENSES),
     specRounds: specRoundsOf(steps),
     spec: specOf(
       steps,

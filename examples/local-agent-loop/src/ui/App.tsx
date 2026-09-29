@@ -53,8 +53,10 @@ function useFocusOnChange(key: string) {
 export function App() {
   const route = useRoute()
   useFocusOnChange(routeKey(route))
-  // The summary opens on the weekly trend each time; the config view is a
-  // second reading of the same runs, one press away.
+  // The summary opens on the weekly trend when the page loads; the config
+  // view is a second reading of the same runs, one press away. The choice
+  // lives here, above the routes, so going to another page and back keeps
+  // the view last chosen until the page reloads.
   const [compareView, setCompareView] = useState<CompareView>('trend')
   useFocusOnChange(compareView)
   // The design page reads nothing from the API, so nothing polls there.

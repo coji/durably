@@ -24,6 +24,7 @@ import {
   TaskRowStates,
   TraceStates,
 } from './design/DataSpecimens'
+import { HighlightStates } from './design/ReviewSpecimens'
 import { Specimen } from './design/Specimen'
 
 const PARTS: [keyof typeof DESIGN.part, () => ReactNode][] = [
@@ -35,6 +36,7 @@ const PARTS: [keyof typeof DESIGN.part, () => ReactNode][] = [
   ['metric', MetricStates],
   ['keyValue', KeyValueStates],
   ['findings', FindingStates],
+  ['highlights', HighlightStates],
   ['table', TableStates],
   ['collapsible', CollapsibleStates],
   ['action', ActionStates],

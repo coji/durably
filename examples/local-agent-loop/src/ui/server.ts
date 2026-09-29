@@ -44,6 +44,7 @@ import {
 } from '../engine/build-report.js'
 import {
   compareReports,
+  inTrendWindow,
   trendOf,
   type Comparison,
   type Trend,
@@ -53,6 +54,7 @@ import {
   classifyRun,
   type CheckLogFile,
 } from '../engine/failure-reasons.js'
+import { formatCount } from '../engine/format.js'
 import type { VerificationLog } from '../engine/providers/types.js'
 import {
   liveElapsed,
@@ -65,7 +67,6 @@ import {
   type ReportReview,
   type ReportReviewRound,
   type ReportSealedCandidate,
-  type ReportTriage,
   type UsageTotals,
   type WaitRow,
 } from '../engine/report.js'
@@ -94,15 +95,6 @@ export interface RunRef {
 }
 
 /**
- * The run this one repairs from outside findings, and the repair runs
- * started from this one, oldest first.
- */
-export interface Relations {
-  parent: RunRef | null
-  children: RunRef[]
-}
-
-/**
  * One run of the task a detail page's run belongs to, with what its link
  * shows: its place in the task, its state, and when it started.
  */
@@ -126,16 +118,11 @@ export interface RunRow {
   needsHuman: boolean
   /** Provisional, as of the response's `now`; null for a finished run. */
   live: LiveElapsed | null
-  /** Times the code stage was entered (first implementation + repairs). */
-  iterations: number
-  reviewRounds: number
   conclusion: string | null
   /** The report's settled lead time; null while the run is open. */
   leadTimeMs: number | null
   costUsd: number | null
-  triage: ReportTriage['judgment'] | null
   pipeline: Pipeline
-  relations: Relations
 }
 
 export interface RunsResponse {
@@ -162,7 +149,6 @@ export interface RunDetailResponse {
   needsHuman: boolean
   live: LiveElapsed | null
   pipeline: Pipeline
-  relations: Relations
   /**
    * Every run of this run's task, oldest first, this run among them; empty
    * when it has no parent or repairs.
@@ -433,7 +419,7 @@ export function derivePipeline(input: PipelineInput): Pipeline {
 
   const parts = stages
     .filter((s) => s.count > 1)
-    .map((s) => PIPELINE_WORDS.visits(stageName(s.stage), s.count))
+    .map((s) => PIPELINE_WORDS.visits(stageName(s.stage), formatCount(s.count)))
   // Stages the run passed by without entering them.
   const reached = stages.map((s) => s.state !== 'not-reached').lastIndexOf(true)
   const skipped = stages
@@ -1215,18 +1201,6 @@ async function runRef(
   return { id, name: run ? runName(run.input) : fallback }
 }
 
-/** Name the report's parent and children, from their stored inputs. */
-async function relationsOf(
-  src: ReportSource,
-  lineage: LoopReport['lineage'] | undefined,
-): Promise<Relations> {
-  const ref = (id: string) => runRef(src, id, RUN_NAME.missing)
-  return {
-    parent: lineage?.parent ? await ref(lineage.parent.runId) : null,
-    children: await Promise.all((lineage?.children ?? []).map(ref)),
-  }
-}
-
 /**
  * The run whose passing baseline check this run reused, named the same way
  * as repair lineage links. Falls back to a generic label only when that
@@ -1269,7 +1243,6 @@ async function inspect(
       live,
       report,
     }),
-    relations: await relationsOf(src, report.lineage),
     report,
   }
 }
@@ -1282,12 +1255,9 @@ function runRow(
     id: run.id,
     status: run.status,
     ...seen,
-    iterations: report.stageVisits.find((v) => v.stage === 'code')?.visits ?? 0,
-    reviewRounds: report.summary.reviewRounds,
     conclusion: report.summary.conclusion,
     leadTimeMs: report.summary.leadTimeMs,
     costUsd: report.summary.costUsd,
-    triage: report.triage?.judgment ?? null,
   }
 }
 
@@ -1451,7 +1421,8 @@ function createUiApi() {
     if (!db) return trendOf([], { now })
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
-    const done = all.filter((r) => TERMINAL_STATUSES.includes(r.status))
+    // Only the window's runs get a report, never the whole history.
+    const done = all.filter((r) => inTrendWindow(r, { now }))
     const built = await listedReports(reports, readOnce(db, done), done, all)
     return trendOf(
       built.map(({ run, report }) => ({

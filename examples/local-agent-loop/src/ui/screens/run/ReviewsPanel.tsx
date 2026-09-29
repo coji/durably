@@ -51,7 +51,8 @@ export function ReviewVerdicts({
 
 /**
  * One side of the highlights: how many, the first titles, the verdicts.
- * A verdict under what was fixed names the change it asked for, not its
+ * The count is what is listed: findings and verdict reviews alike. A
+ * verdict under what was fixed names the change it asked for, not its
  * 要修正, which would read as still open.
  */
 function Group({
@@ -61,21 +62,21 @@ function Group({
 }: {
   label: string
   group: HighlightGroup
-  /** The rounds before the last, whose requests the run went on to fix. */
+  /** The rounds before a passed last round: their requests were fixed. */
   fixed?: boolean
 }) {
   const titles = group.titles.slice(0, SHOWN)
   const rest = group.count - titles.length
-  const empty = group.count === 0 && group.verdicts.length === 0
+  const listed = group.count + group.verdicts.length
   return (
     <div className="flex min-w-0 flex-col gap-1">
       <h3 className="flex items-baseline gap-2 text-sm font-semibold">
         {label}
         <span className="text-fg-2 font-normal tabular-nums">
-          {COMMON.count(formatCount(group.count))}
+          {COMMON.count(formatCount(listed))}
         </span>
       </h3>
-      {empty ? <p className="text-fg-3 text-sm">{REVIEW.none}</p> : null}
+      {listed === 0 ? <p className="text-fg-3 text-sm">{REVIEW.none}</p> : null}
       {titles.length > 0 ? (
         <ul className="flex list-disc flex-col gap-1 pl-4 text-sm">
           {titles.map((title, at) => (
@@ -88,7 +89,7 @@ function Group({
         <p className="text-fg-2 text-xs">{REVIEW.more(formatCount(rest))}</p>
       ) : null}
       {group.verdicts.length > 0 ? (
-        // Apart from the titles, so the count above matches the bullets.
+        // Apart from the titles, in smaller type: a review, not a finding.
         <ul className="text-fg-2 flex flex-col gap-1 text-xs">
           {group.verdicts.map((v) => {
             const review = `${REVIEW.roundOf(v.round)} ${lensName(v.lens)}`
@@ -115,28 +116,40 @@ function Group({
 }
 
 /**
- * The reviews in short: what the rounds before the last made the run fix,
- * what the last round left as advice, and what it still blocked on when it
- * did not pass. Verdict reviews show their round, lens and verdict only;
- * each review's notes are in the evidence below.
+ * The reviews in short: what the rounds before the last blocked on, what
+ * the last round left as advice, and what it still blocks on when it did
+ * not pass. The earlier blockers read as fixed only once the last round
+ * passed, with a verdict from every reviewer; before that they are only
+ * earlier findings. Verdict reviews show their round, lens and verdict
+ * only; each review's notes are in the evidence below.
  */
 export function ReviewHighlightsPanel({ h }: { h: ReviewHighlights }) {
   // Before any review round the stage track already says so.
   if (h.rounds === 0) return null
-  const verdicts = [h.fixed, h.left, h.open].some((g) => g.verdicts.length > 0)
+  const verdicts = [h.earlier, h.left, h.open].some(
+    (g) => g.verdicts.length > 0,
+  )
   return (
     <Panel title={REVIEW.highlights}>
       <div className="flex flex-col gap-3">
         <p className="text-fg-2 text-xs">
-          {REVIEW.rounds(h.rounds)}
+          {REVIEW.rounds(formatCount(h.rounds))}
           {COMMON.separator}
-          {h.passed ? REVIEW.passedLast : REVIEW.failedLast}
+          {h.passed
+            ? REVIEW.passedLast
+            : h.complete
+              ? REVIEW.failedLast
+              : REVIEW.incompleteLast}
         </p>
         <div
           className={`grid gap-4 md:grid-cols-2 ${h.passed ? '' : 'lg:grid-cols-3'}`}
         >
           {h.passed ? null : <Group label={REVIEW.open} group={h.open} />}
-          <Group label={REVIEW.fixed} group={h.fixed} fixed />
+          {h.passed ? (
+            <Group label={REVIEW.fixed} group={h.earlier} fixed />
+          ) : (
+            <Group label={REVIEW.earlier} group={h.earlier} />
+          )}
           <Group label={REVIEW.left} group={h.left} />
         </div>
         {verdicts ? (

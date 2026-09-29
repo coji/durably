@@ -608,7 +608,7 @@ function report(
     repairCalls: [],
     reviews: [],
     reviewRounds: [],
-    reviewHighlights: reviewHighlights([], []),
+    reviewHighlights: reviewHighlights([], [], []),
     specRounds: [],
     spec: null,
     delivery: {

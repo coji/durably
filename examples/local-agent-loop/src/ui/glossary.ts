@@ -26,6 +26,8 @@ export const COMMON = {
   separator: ' · ',
   started: '開始',
   count: (n: number | string) => `${n}件`,
+  /** A cell whose value does not apply to its row, such as a count only one kind has. */
+  notApplicable: '–',
   nth: (n: number | string) => `${n}回目`,
   costNote:
     '費用は記録したトークン数を API 料金で換算した参考値で、実際の請求額ではありません',
@@ -165,7 +167,7 @@ export const CHECKPOINT_NAME: Record<TraceCheckpoint, string> = {
 
 /** The server's one-sentence pipeline summary, for screen readers. */
 export const PIPELINE_WORDS = {
-  visits: (stage: string, n: number) => `${stage} ${n}回`,
+  visits: (stage: string, n: string) => `${stage} ${n}回`,
   skipped: (stages: string[]) => `${stages.join('と')}は通らず`,
   autoApproved: '承認は設定による自動',
   finished: '完了まで終わった',
@@ -189,7 +191,6 @@ export const TRACE_WORDS = {
 export const RUN_NAME = {
   subject: '同梱題材: calc の add を直す',
   unnamed: '名前のないタスク',
-  missing: '見つからない実行',
   previous: '前の実行',
 } as const
 
@@ -615,12 +616,15 @@ export const REVIEW = {
   verdict: '判定',
   highlights: 'レビューの要点',
   fixed: '直した指摘',
+  /** The earlier rounds' blockers while the last round has not passed. */
+  earlier: 'これまでの指摘',
   left: '残した指摘',
   open: '残っている直すべき指摘',
   none: 'なし',
-  rounds: (n: number) => `レビュー ${n} 回`,
+  rounds: (n: string) => `レビュー ${n} 回`,
   passedLast: '最後のレビューは通過',
   failedLast: '最後のレビューで直すべき指摘が残った',
+  incompleteLast: '最後のレビューは、まだ全員の判定がそろっていない',
   more: (n: string) => `ほか ${n} 件`,
   notes: 'メモを読む',
   roundOf: (n: number) => `${n}回目`,
@@ -733,7 +737,7 @@ export const COMPARE = {
   trendTab: '週ごとの推移',
   configTab: '設定ごとの比較',
   empty: '終わった実行がまだないので、集計するものがありません。',
-  intro: (runs: number) =>
+  intro: (runs: string) =>
     `終わった実行 ${runs} 件を、設定のまとまりごとに集計しています。`,
   rules: '集計の決まり',
   rulesTitle:
@@ -768,20 +772,23 @@ export const COMPARE = {
 } as const
 
 export const TREND = {
-  intro: (days: number, runs: number) =>
+  intro: (days: string, runs: string) =>
     `直近 ${days} 日に終わった実行 ${runs} 件を、実装のモデルと推論量ごとに週で並べています。`,
-  fakeLeftOut: (n: number) => `模擬の実行 ${n} 件は除いています。`,
+  fakeLeftOut: (n: string) => `模擬の実行 ${n} 件は除いています。`,
   note: '週は月曜から始まります。時間、費用、修正回数は中央値で、分からない値は 0 とせず除きます。',
   single: '1 件のみ',
   singleTitle: 'この週の実行は 1 件だけなので、中央値はその 1 件の値です。',
-  empty: (days: number) => `直近 ${days} 日に終わった実行はありません。`,
+  empty: (days: string) => `直近 ${days} 日に終わった実行はありません。`,
+  /** Every finished run of the window was a fake-provider run, left out. */
+  onlyFake: (days: string, n: string) =>
+    `直近 ${days} 日に終わった実行は模擬の実行 ${n} 件だけで、集計からは除いています。`,
   week: '週',
   runs: '実行数',
   approvalRate: '承認率',
   leadTime: '所要時間',
   cost: '費用',
   repairs: '修正回数',
-  total: (days: number) => `${days} 日間`,
+  total: (days: string) => `${days} 日間`,
   noRuns: '–',
   groupRuns: (n: string, rate: string) => `実行 ${n} 件 · 承認率 ${rate}`,
 } as const
@@ -849,6 +856,11 @@ export const DESIGN = {
       name: 'いまの工程',
       about: '実行中の工程と経過時間を1行目に、残りを2行目に出します。',
     },
+    highlights: {
+      name: 'レビューの要点',
+      about:
+        '前の回の指摘を「直した指摘」と呼ぶのは、最後の回が全員の判定で通過したときだけです。',
+    },
     findings: {
       name: '指摘の題名',
       about:
@@ -890,6 +902,9 @@ export const DESIGN = {
     between: '工程の合間',
     path: 'コピーできるパス',
     writeError: '書き込めなかったログ',
+    reviewPassed: '最後の回が通過',
+    reviewOpen: '最後の回で指摘が残った',
+    reviewIncomplete: '最後の回の判定がそろっていない',
   },
   sample: {
     approve: '承認',

@@ -15,7 +15,6 @@ import {
   COLUMN,
   COMMON,
   COMPARE,
-  TREND,
 } from '../../glossary'
 import { runKindName, stageName, stopName, triageName } from '../../labels'
 import { MedianCell, STAT_HEAD, StatRow, statRange } from './StatTable'
@@ -100,7 +99,7 @@ function TriageTables({ triage }: { triage: Group['triage'] }) {
             <Td num>
               {t.judgment === 'routine'
                 ? formatCount(t.routineNeedingMore)
-                : TREND.noRuns}
+                : COMMON.notApplicable}
             </Td>
             <Td>
               {Object.entries(t.stops)

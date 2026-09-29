@@ -504,6 +504,24 @@ function cellOf(list: TrendRun[]): TrendCell {
 }
 
 /**
+ * Whether a run is one the trend reads: finished, with a completion time in
+ * the `days` before `now`. Callers filter runs with it before building their
+ * reports, so the reports built never grow with the whole history.
+ */
+export function inTrendWindow(
+  run: { status: string; completedAt: string | null },
+  options: { now: number; days?: number },
+): boolean {
+  const at = Date.parse(run.completedAt ?? '')
+  return (
+    TERMINAL_STATUSES.includes(run.status) &&
+    Number.isFinite(at) &&
+    at > options.now - (options.days ?? TREND_DAYS) * DAY_MS &&
+    at <= options.now
+  )
+}
+
+/**
  * The trend over the finished runs that completed in the `days` before
  * `now`, fake-provider runs left out unless `includeFake`. An unknown time
  * or cost is left out of its median and counted in `unknown`, never as 0.
@@ -514,16 +532,14 @@ export function trendOf(
 ): Trend {
   const days = options.days ?? TREND_DAYS
   const includeFake = options.includeFake ?? false
-  const since = options.now - days * DAY_MS
   const done = entries
-    .map((e) => ({ ...e, at: Date.parse(e.completedAt ?? '') }))
-    .filter(
-      (e) =>
-        TERMINAL_STATUSES.includes(e.report.status) &&
-        Number.isFinite(e.at) &&
-        e.at > since &&
-        e.at <= options.now,
+    .filter((e) =>
+      inTrendWindow(
+        { status: e.report.status, completedAt: e.completedAt },
+        { now: options.now, days },
+      ),
     )
+    .map((e) => ({ ...e, at: Date.parse(e.completedAt ?? '') }))
     .sort((x, y) => y.at - x.at)
   const counted = done.filter((e) => includeFake || !e.report.fake)
   const weeks: string[] = []

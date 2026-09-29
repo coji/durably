@@ -6,7 +6,7 @@ import { TaskLineage } from '../components/TaskLineage'
 import { runState } from '../components/TaskRow'
 import { Ago } from '../components/Time'
 import { TraceView } from '../components/trace/TraceView'
-import { COMMON, COPY, DETAIL } from '../glossary'
+import { COMMON, COPY, DETAIL, LIST } from '../glossary'
 import type { RunDetailResponse } from '../server'
 import { RecordPanels } from './run/RecordPanels'
 import { ReviewHighlightsPanel, ReviewsPanel } from './run/ReviewsPanel'
@@ -22,16 +22,26 @@ import { UsagePanels } from './run/UsagePanels'
  */
 function RunHeader({ data }: { data: RunDetailResponse }) {
   const r = data.report
+  // A run a later approved repair made moot reads as the list and the
+  // task's runs read it: in the quiet tone, with the word that says why.
+  const superseded =
+    data.lineage.find((l) => l.id === r.runId)?.superseded ?? false
   const state = runState({
     status: r.status,
     kind: data.diagnosis.kind,
     conclusion: r.summary.conclusion,
+    superseded,
   })
   const { copied, copy } = useCopy()
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <StatusBadge label={state.label} tone={state.tone} />
+        {superseded ? (
+          <span title={LIST.supersededTitle} className="text-fg-2 text-xs">
+            {LIST.superseded}
+          </span>
+        ) : null}
         <span className="text-fg-2 text-sm">
           <Ago
             iso={data.createdAt}

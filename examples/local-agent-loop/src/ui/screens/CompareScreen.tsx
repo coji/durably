@@ -156,7 +156,12 @@ function TrendGroupPanel({
             max={max}
           />
         ))}
-        <TrendRow label={TREND.total(days)} cell={g.total} max={max} strong />
+        <TrendRow
+          label={TREND.total(formatCount(days))}
+          cell={g.total}
+          max={max}
+          strong
+        />
       </DataTable>
     </Panel>
   )
@@ -173,16 +178,21 @@ export function TrendScreen({
   data: TrendResponse
   onView: (view: CompareView) => void
 }) {
+  const days = formatCount(data.days)
   return (
     <div className="flex flex-col gap-4">
       <ViewSwitch view="trend" onView={onView} />
       {data.groups.length === 0 ? (
-        <EmptyState>{TREND.empty(data.days)}</EmptyState>
+        <EmptyState>
+          {data.fakeExcluded > 0
+            ? TREND.onlyFake(days, formatCount(data.fakeExcluded))
+            : TREND.empty(days)}
+        </EmptyState>
       ) : (
         <>
           <Intro
-            text={TREND.intro(data.days, data.runIds.length)}
-            rules={`${data.includeFake ? '' : TREND.fakeLeftOut(data.fakeExcluded)}${TREND.note}`}
+            text={TREND.intro(days, formatCount(data.runIds.length))}
+            rules={`${data.includeFake ? '' : TREND.fakeLeftOut(formatCount(data.fakeExcluded))}${TREND.note}`}
           />
           <div className="grid gap-4 lg:grid-cols-2">
             {data.groups.map((g) => (
@@ -216,7 +226,7 @@ export function CompareScreen({
       ) : (
         <>
           <Intro
-            text={COMPARE.intro(data.runIds.length)}
+            text={COMPARE.intro(formatCount(data.runIds.length))}
             rules={COMPARE.rulesTitle}
           />
           <div className="flex flex-col gap-2">

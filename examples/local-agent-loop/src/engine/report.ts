@@ -60,9 +60,9 @@ export interface StageTiming {
   /** Sum of measured work in the stage. */
   elapsedMs: number | null
   /**
-   * Sum of each visit's wall-clock interval. Within one visit the interval
-   * spans parallel branches; separate visits are summed rather than spanned,
-   * so time spent in other stages between two visits is never counted here.
+   * The union of the stage's own attempt intervals: parallel branches count
+   * once, and time between two visits or two rounds of the stage, whether
+   * spent in other stages or idle, is never counted here.
    */
   wallElapsedMs?: number | null
   /**
@@ -259,18 +259,27 @@ export interface ReportReviewRound {
 
 /**
  * The review rounds in short: the findings the rounds before the last one
- * raised as blockers, which led to a repair; the non-blockers the last round
- * left; and the blockers the last round still raised, when it did not pass.
- * Findings are not tracked across rounds, so a title is never matched with
- * another. A verdict review has no findings: its round's decision and the
- * first line of its notes stand in for them.
+ * raised as blockers; the non-blockers the last round left; and the blockers
+ * the last round still raised, when it did not pass. The earlier blockers
+ * read as fixed only when the last round passed. Findings are not tracked
+ * across rounds, so a title is never matched with another. A verdict review
+ * has no findings: its round, lens and decision stand in for them.
  */
 export interface ReviewHighlights {
   /** Review rounds read; 0 before one has finished. */
   rounds: number
-  /** Whether every review of the last round passed; null before one. */
+  /**
+   * Whether the last round has a verdict from every configured reviewer and
+   * every one of them passed; null before a round.
+   */
   passed: boolean | null
-  fixed: HighlightGroup
+  /**
+   * Whether the last round has a verdict from every configured reviewer;
+   * false while one still runs or after one failed; null before a round.
+   */
+  complete: boolean | null
+  /** The blockers of the rounds before the last. */
+  earlier: HighlightGroup
   left: HighlightGroup
   /** The last round's blockers when it did not pass; empty when it did. */
   open: HighlightGroup
@@ -285,11 +294,15 @@ export interface HighlightGroup {
   verdicts: HighlightVerdict[]
 }
 
-/** A verdict review's round, decision and first line of its notes. */
+/** A verdict review's round, lens and decision. */
 export interface HighlightVerdict {
   round: number
   lens: string
   decision: string
+  /**
+   * The first line of its notes. Only the Markdown report prints it; the
+   * screen shows no note text and leaves the notes to the evidence.
+   */
   line: string
 }
 
@@ -307,12 +320,14 @@ function firstLine(notes: string): string {
 }
 
 /**
- * `ReviewHighlights` from the stored rounds. A run whose rounds were not
- * stored has only its last verdicts, read as its one round.
+ * `ReviewHighlights` from the stored rounds, `lenses` being the reviewers
+ * every round runs. A run whose rounds were not stored has only its last
+ * verdicts, read as its one round.
  */
 export function reviewHighlights(
   rounds: ReportReviewRound[],
   last: ReportReview[],
+  lenses: readonly string[],
 ): ReviewHighlights {
   const all: { round: number; reviews: ReportReview[] }[] =
     rounds.length > 0
@@ -320,12 +335,15 @@ export function reviewHighlights(
       : last.length > 0
         ? [{ round: 1, reviews: last }]
         : []
-  const fixed = emptyHighlight()
+  const earlier = emptyHighlight()
   const left = emptyHighlight()
   const open = emptyHighlight()
   const final = all.at(-1)
+  const complete = final
+    ? lenses.every((lens) => final.reviews.some((r) => r.lens === lens))
+    : null
   const passed = final
-    ? final.reviews.every((r) => r.decision === 'pass')
+    ? complete === true && final.reviews.every((r) => r.decision === 'pass')
     : null
   const findings = (
     group: HighlightGroup,
@@ -345,8 +363,8 @@ export function reviewHighlights(
     })
   for (const round of all.slice(0, -1))
     for (const review of round.reviews) {
-      if (review.findings) findings(fixed, review, 'blocker')
-      else if (review.decision !== 'pass') verdict(fixed, round.round, review)
+      if (review.findings) findings(earlier, review, 'blocker')
+      else if (review.decision !== 'pass') verdict(earlier, round.round, review)
     }
   for (const review of final?.reviews ?? []) {
     if (review.findings) {
@@ -355,7 +373,7 @@ export function reviewHighlights(
     } else if (final)
       verdict(review.decision === 'pass' ? left : open, final.round, review)
   }
-  return { rounds: all.length, passed, fixed, left, open }
+  return { rounds: all.length, passed, complete, earlier, left, open }
 }
 
 /** What the run delivered, as recorded in its output. */
@@ -721,7 +739,7 @@ export interface LoopReport {
   reviews: ReportReview[]
   /** Every review round with both verdicts and notes, oldest first. */
   reviewRounds: ReportReviewRound[]
-  /** What the review rounds fixed and left, for the page's short summary. */
+  /** The review rounds in short, for the page's summary. */
   reviewHighlights: ReviewHighlights
   /**
    * Every spec review round, oldest first, one review per named reviewer
@@ -835,18 +853,6 @@ export function stageOf(stepName: string): string {
   if (parts[0] === 'decision') return 'policy'
   const base = stepName.split(':')[0] ?? stepName
   return base
-}
-
-/**
- * Sequence number distinguishing repeat entries into the same stage.
- * `stage:<sequence>:<name>:...` and `decision:<sequence>` carry one; steps
- * that run once per run (setup) do not.
- */
-function sequenceOf(stepName: string): string | null {
-  const parts = stepName.split(':')
-  if ((parts[0] === 'stage' || parts[0] === 'decision') && parts[1])
-    return parts[1]
-  return null
 }
 
 function sortStages<T extends { stage: string }>(rows: T[]): T[] {
@@ -1016,8 +1022,8 @@ function repairsOf(visits: StageVisits[], repairRun: boolean): number {
 }
 
 /**
- * A terminal completed run whose candidate was approved: `summary.success`.
- * `demo status` reads it from the stored run, without a report.
+ * A terminal completed run whose candidate was approved: `summary.success`,
+ * which `demo status` and the list read from the run's report.
  */
 function isApprovedRun(status: string, output: unknown): boolean {
   const o = output as { approved?: boolean; conclusion?: string } | null
@@ -1077,8 +1083,6 @@ export function summarizeRun(input: SummaryInput): RunSummary {
 /** One attempt's stage, interval and measured work, once per invocation. */
 interface TimedAttempt {
   stage: string
-  /** The stage visit it belongs to, such as `code#3`. */
-  visit: string
   start: number
   end: number
   ms: number | null
@@ -1100,64 +1104,56 @@ function timedAttempts(attempts: AttemptRow[]): TimedAttempt[] {
       (Number.isFinite(start) && Number.isFinite(end)
         ? Math.max(0, end - start)
         : null)
-    out.push({
-      stage,
-      visit: `${stage}#${sequenceOf(a.stepName) ?? 'once'}`,
-      start,
-      end,
-      ms,
-    })
+    out.push({ stage, start, end, ms })
   }
   return out
 }
 
 /**
- * Each stage visit's span, from its first start to its last end. Bounds are
- * per visit, never per stage: a stage entered twice would otherwise report
- * one span from its first start to its last end, swallowing every stage that
- * ran in between.
+ * The length of the union of the intervals: overlapping ones count once and
+ * a gap between two counts not at all.
  */
-function visitSpans(
-  timed: TimedAttempt[],
-): { stage: string; start: number; end: number }[] {
-  const spans = new Map<string, { stage: string; start: number; end: number }>()
-  for (const t of timed) {
-    if (!Number.isFinite(t.start) || !Number.isFinite(t.end)) continue
-    const current = spans.get(t.visit)
-    spans.set(t.visit, {
-      stage: t.stage,
-      start: current ? Math.min(current.start, t.start) : t.start,
-      end: current ? Math.max(current.end, t.end) : t.end,
-    })
+function unionMs(intervals: { start: number; end: number }[]): number {
+  let total = 0
+  let reached = -Infinity
+  for (const t of [...intervals].sort((x, y) => x.start - y.start)) {
+    if (t.end <= reached) continue
+    total += t.end - Math.max(t.start, reached)
+    reached = t.end
   }
-  return [...spans.values()]
+  return total
 }
 
-/** Sum once per invocation while retaining its original execution interval. */
+/**
+ * Sum once per invocation while retaining its original execution interval.
+ * A stage's wall time is the union of its own attempts' intervals: parallel
+ * branches count once, and neither the stages that ran between two visits
+ * nor the gaps between two rounds count at all. An attempt without a start
+ * or end is left out of the wall time; a stage with no complete interval
+ * has none.
+ */
 export function stageTimings(attempts: AttemptRow[]): StageTiming[] {
   const timed = timedAttempts(attempts)
   const byStage = new Map<string, number>()
   const incomplete = new Set<string>()
+  const intervals = new Map<string, TimedAttempt[]>()
   for (const t of timed) {
     if (t.ms === null) incomplete.add(t.stage)
     else byStage.set(t.stage, (byStage.get(t.stage) ?? 0) + t.ms)
-  }
-  const wallByStage = new Map<string, number>()
-  for (const visit of visitSpans(timed)) {
-    wallByStage.set(
-      visit.stage,
-      (wallByStage.get(visit.stage) ?? 0) +
-        Math.max(0, visit.end - visit.start),
-    )
+    if (Number.isFinite(t.start) && Number.isFinite(t.end))
+      intervals.set(t.stage, [...(intervals.get(t.stage) ?? []), t])
   }
   const stages = [...new Set([...byStage.keys(), ...incomplete])]
   return sortStages(
-    stages.map((stage) => ({
-      stage,
-      elapsedMs: byStage.get(stage) ?? null,
-      wallElapsedMs: wallByStage.get(stage) ?? null,
-      complete: !incomplete.has(stage),
-    })),
+    stages.map((stage) => {
+      const own = intervals.get(stage)
+      return {
+        stage,
+        elapsedMs: byStage.get(stage) ?? null,
+        wallElapsedMs: own ? unionMs(own) : null,
+        complete: !incomplete.has(stage),
+      }
+    }),
   )
 }
 
@@ -1174,14 +1170,7 @@ export function specWallMs(attempts: AttemptRow[]): number | null {
   if (timed.length === 0) return null
   if (timed.some((t) => !Number.isFinite(t.start) || !Number.isFinite(t.end)))
     return null
-  let total = 0
-  let reached = -Infinity
-  for (const t of timed.sort((x, y) => x.start - y.start)) {
-    if (t.end <= reached) continue
-    total += t.end - Math.max(t.start, reached)
-    reached = t.end
-  }
-  return total
+  return unionMs(timed)
 }
 
 /** Stage total across stages; unknown when any stage timing is partial. */
@@ -1274,9 +1263,19 @@ function highlightLines(h: ReviewHighlights): string[] {
       (v) => `  - round ${v.round} ${v.lens}: ${v.decision} — ${v.line}`,
     ),
   ]
+  const last = h.passed
+    ? 'passed'
+    : h.complete
+      ? 'did not pass'
+      : 'is not complete: a reviewer has no verdict'
   return [
-    `- rounds: ${h.rounds}; last round ${h.passed ? 'passed' : 'did not pass'}`,
-    ...group('fixed (blockers of the rounds before the last)', h.fixed),
+    `- rounds: ${h.rounds}; last round ${last}`,
+    ...group(
+      h.passed
+        ? 'fixed (blockers of the rounds before the last)'
+        : 'earlier (blockers of the rounds before the last)',
+      h.earlier,
+    ),
     ...group('left (non-blockers of the last round)', h.left),
     ...(h.passed ? [] : group('open (blockers of the last round)', h.open)),
   ]

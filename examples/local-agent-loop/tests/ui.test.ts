@@ -66,6 +66,7 @@ import {
   KIND_NAME,
   LIST,
   REVIEW,
+  TREND,
 } from '../src/ui/glossary.js'
 import {
   commandNote,
@@ -92,7 +93,9 @@ import { BaselineSource } from '../src/ui/screens/run/StageTimings.js'
 const KIND_TEXT_OK = (text: string) => !/[A-Za-z()（）]/.test(text)
 import { pollEvery } from '../src/ui/poll.js'
 import { parseRoute } from '../src/ui/route.js'
+import { TrendScreen } from '../src/ui/screens/CompareScreen.js'
 import { DesignScreen } from '../src/ui/screens/DesignScreen.js'
+import { ReviewHighlightsPanel } from '../src/ui/screens/run/ReviewsPanel.js'
 import { SummaryPanel } from '../src/ui/screens/run/SummaryPanel.js'
 import { UsagePanels } from '../src/ui/screens/run/UsagePanels.js'
 import { RunScreen } from '../src/ui/screens/RunScreen.js'
@@ -1797,6 +1800,67 @@ describe('diagnosis wording on the page', () => {
     )
   })
 
+  it('calls earlier blockers fixed only after a complete, passed last round, and counts the verdicts it lists', () => {
+    const group = (titles: string[], verdicts = 0) => ({
+      count: titles.length,
+      titles,
+      verdicts: Array.from({ length: verdicts }, (_, i) => ({
+        round: 1,
+        lens: i === 0 ? 'correctness' : 'edge-cases',
+        decision: 'needsChanges',
+        line: 'notes',
+      })),
+    })
+    const text = (h: Parameters<typeof ReviewHighlightsPanel>[0]['h']) =>
+      renderToStaticMarkup(createElement(ReviewHighlightsPanel, { h })).replace(
+        /<[^>]+>/g,
+        '\n',
+      )
+    const base = {
+      rounds: 2,
+      earlier: group([], 1),
+      left: group(['L']),
+      open: group(['O']),
+    }
+    const passed = text({
+      ...base,
+      passed: true,
+      complete: true,
+      open: group([]),
+    })
+    assert.ok(passed.includes(REVIEW.fixed))
+    assert.ok(!passed.includes(REVIEW.earlier))
+    // One verdict listed under the heading: the count says 1, never 0.
+    assert.match(passed, new RegExp(`${REVIEW.fixed}\\n+1件`))
+    const incomplete = text({ ...base, passed: false, complete: false })
+    assert.ok(incomplete.includes(REVIEW.incompleteLast))
+    assert.ok(incomplete.includes(REVIEW.earlier))
+    assert.ok(incomplete.includes(REVIEW.open))
+    assert.ok(!incomplete.includes(REVIEW.fixed))
+    assert.ok(!incomplete.includes(REVIEW.passedLast))
+    const failed = text({ ...base, passed: false, complete: true })
+    assert.ok(failed.includes(REVIEW.failedLast))
+    assert.ok(failed.includes(REVIEW.earlier))
+  })
+
+  it('says the fake runs it left out when they are all the window had', () => {
+    const html = renderToStaticMarkup(
+      createElement(TrendScreen, {
+        data: {
+          days: 30,
+          includeFake: false,
+          weeks: [],
+          runIds: [],
+          fakeExcluded: 1200,
+          groups: [],
+        },
+        onView: () => {},
+      }),
+    )
+    assert.ok(html.includes(TREND.onlyFake('30', '1,200')), html)
+    assert.ok(!html.includes(TREND.empty('30')))
+  })
+
   it('says in Japanese where the baseline verdict came from, and which run a reused one is from', () => {
     const now = '2026-09-27T12:00:00.000Z'
     const runId = '01REUSEDFROMRUN000000ABCDEF'
@@ -2888,10 +2952,10 @@ describe('repair runs on the page', { timeout: 120000 }, () => {
         .where('id', '=', parent.id)
         .execute()
       const before = await api<RunsResponse>(port, '/api/runs')
-      assert.deepEqual(before.runs.find((r) => r.id === parent.id)?.relations, {
-        parent: null,
-        children: [],
-      })
+      assert.deepEqual(
+        before.tasks.map((t) => t.runs.map((r) => r.id)),
+        [[parent.id]],
+      )
       const childInput = repairChildInput(home, parent.id)
       const child = await durably.jobs.agentLoop.trigger(childInput, {
         labels: repairLabels(childInput),
@@ -2899,14 +2963,12 @@ describe('repair runs on the page', { timeout: 120000 }, () => {
       await durably.db.destroy()
 
       const list = await api<RunsResponse>(port, '/api/runs')
-      assert.deepEqual(list.runs.find((r) => r.id === parent.id)?.relations, {
-        parent: null,
-        children: [{ id: child.id, name: 'Keep the currency on refunds' }],
-      })
-      assert.deepEqual(list.runs.find((r) => r.id === child.id)?.relations, {
-        parent: { id: parent.id, name: SUBJECT_RUN_NAME },
-        children: [],
-      })
+      assert.deepEqual(
+        [parent.id, child.id].map(
+          (id) => list.runs.find((r) => r.id === id)?.name,
+        ),
+        [SUBJECT_RUN_NAME, 'Keep the currency on refunds'],
+      )
       // The parent and its repair are one task, shown by the repair.
       assert.deepEqual(
         list.tasks.map((t) => [
@@ -2921,7 +2983,10 @@ describe('repair runs on the page', { timeout: 120000 }, () => {
         `/api/runs/${parent.id}`,
       )
       assert.deepEqual(detail.report.lineage.children, [child.id])
-      assert.equal(detail.relations.children[0]?.id, child.id)
+      assert.deepEqual(
+        detail.lineage.map((r) => r.id),
+        [parent.id, child.id],
+      )
       const childDetail = await api<RunDetailResponse>(
         port,
         `/api/runs/${child.id}`,
@@ -3063,10 +3128,6 @@ describe('numbers on the screens', () => {
       conclusion: 'approved',
       leadTimeMs: 1_093_000,
       costUsd: 6.443984,
-      triage: null,
-      iterations: 1,
-      reviewRounds: 1,
-      relations: { parent: null, children: [] },
       pipeline: { stages: [], label: '' },
       live: null,
       uncertainCall: false,
