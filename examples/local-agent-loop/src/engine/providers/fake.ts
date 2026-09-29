@@ -544,11 +544,7 @@ export class FakeProvider implements AgentProvider {
             role: options.role,
             round: options.reviewRound ?? 1,
             workdir: options.workdir,
-            input: specFix
-              ? options.prompt
-              : review?.command
-                ? options.prompt
-                : null,
+            input: specFix || review?.command ? options.prompt : null,
             workdirFiles:
               review && isCommandModeReview(review)
                 ? ((await filesWithContent(options.workdir)) ?? {})

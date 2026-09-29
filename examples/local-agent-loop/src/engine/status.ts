@@ -198,22 +198,23 @@ export async function diagnoseRun(
     if (run.status === 'waiting') {
       const waits = await durably.getWaits(run.id)
       const wait = waits.find((w) => w.id === run.waitingOnWaitId)
+      // Approved or rejected, but no worker has picked the run up yet.
+      const decided = (w: NonNullable<typeof wait>, subject: string) => {
+        const decision = (w.payload as { decision?: unknown } | null)?.decision
+        return {
+          kind: 'decided' as const,
+          ...(typeof decision === 'string' ? { decision } : {}),
+          reason: `the decision on ${subject} is recorded (${typeof decision === 'string' ? decision : w.outcome}); a worker resumes the run`,
+          next: [...startWorker, show],
+          cleanup,
+        }
+      }
       const candidateId = (
         wait?.metadata as { candidateId?: unknown } | null | undefined
       )?.candidateId
       if (wait && typeof candidateId === 'string') {
-        // Approved or rejected, but no worker has picked the run up yet.
-        if (wait.status === 'resolved') {
-          const decision = (wait.payload as { decision?: unknown } | null)
-            ?.decision
-          return {
-            kind: 'decided',
-            ...(typeof decision === 'string' ? { decision } : {}),
-            reason: `the decision on candidate ${candidateId} is recorded (${typeof decision === 'string' ? decision : wait.outcome}); a worker resumes the run`,
-            next: [...startWorker, show],
-            cleanup,
-          }
-        }
+        if (wait.status === 'resolved')
+          return decided(wait, `candidate ${candidateId}`)
         if (wait.status === 'pending')
           return {
             kind: 'approval',
@@ -236,17 +237,7 @@ export async function diagnoseRun(
           typeof spec.specSha256 === 'string'
             ? spec.specSha256.slice(0, 12)
             : 'unknown'
-        if (wait.status === 'resolved') {
-          const decision = (wait.payload as { decision?: unknown } | null)
-            ?.decision
-          return {
-            kind: 'decided',
-            ...(typeof decision === 'string' ? { decision } : {}),
-            reason: `the decision on spec ${version} is recorded (${typeof decision === 'string' ? decision : wait.outcome}); a worker resumes the run`,
-            next: [...startWorker, show],
-            cleanup,
-          }
-        }
+        if (wait.status === 'resolved') return decided(wait, `spec ${version}`)
         if (wait.status === 'pending')
           return {
             kind: 'spec-approval',

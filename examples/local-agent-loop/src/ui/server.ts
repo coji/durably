@@ -32,6 +32,7 @@ import {
 import {
   asReportCandidate,
   asReportReview,
+  asSpecReview,
   buildReport,
   repairChildren,
   repairChildrenByParent,
@@ -65,12 +66,6 @@ import {
 import { TERMINAL_STATUSES } from '../engine/terminal.js'
 import { BASELINE_STEP } from '../factory/types.js'
 import { lensName, roleName, stageName, stepPartName } from './labels.js'
-
-/** A spec review step's output as a review, its reviewer as the lens. */
-function specStepReview(output: unknown): unknown {
-  const o = output as { name?: unknown } | null
-  return o && typeof o.name === 'string' ? { ...o, lens: o.name } : null
-}
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -882,11 +877,7 @@ export function deriveTrace(input: TraceInput): Trace {
         ? (input.specRounds
             ?.find((r) => String(r.round) === specRound)
             ?.reviews.find((r) => r.lens === lens) ??
-          asReportReview(
-            specStepReview(
-              input.stepOutputs[`spec-review:${specRound}:${lens}`],
-            ),
-          ))
+          asSpecReview(input.stepOutputs[`spec-review:${specRound}:${lens}`]))
         : null
     const review =
       e.stage === 'spec-review'

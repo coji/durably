@@ -969,18 +969,7 @@ async function runPreflight(
       : []),
     ...(triage ? [['triage', triage] as [string, ResolvedProfile]] : []),
     // The spec roles, so none is found unusable after the spec work began.
-    ...(setup.spec
-      ? ([
-          ['spec-author', setup.spec.author],
-          ...(setup.spec.fix === setup.spec.author
-            ? []
-            : [['spec-fix', setup.spec.fix]]),
-          ...setup.spec.reviewers.map((r) => [
-            `spec-review:${r.name}`,
-            r.profile,
-          ]),
-        ] as [string, ResolvedProfile][])
-      : []),
+    ...(setup.spec ? specRoleEntries(setup.spec) : []),
   ]
   const plan = await step.run(
     'preflight',
@@ -1103,11 +1092,7 @@ function resolveInputProfiles(input: {
   profiles: Record<ProfileRole, ResolvedProfile>
   triage: ResolvedProfile | null
   repair: ResolvedProfile | null
-  spec: {
-    author: ResolvedProfile
-    fix: ResolvedProfile
-    reviewers: { name: string; profile: ResolvedProfile }[]
-  } | null
+  spec: ReturnType<typeof resolveSpecProfiles>
 } {
   // A scenario can make the fake provider honour the requested effort.
   const fake = input.fakeScenario
@@ -1157,17 +1142,14 @@ function resolveInputProfiles(input: {
 }
 
 /**
- * The spec roles' profiles: the author's, the fix's (the author's when the
- * run names none) and each reviewer's, with the profile ids the run records.
+ * The spec stages with their roles' profiles resolved: the author's, the
+ * fix's (the author's when the run names none) and each reviewer's, with the
+ * profile ids the run records. Reviewer invocations are fixed by setup.
  */
 function resolveSpecProfiles(
   spec: z.infer<typeof specStagesSchema> | undefined,
   resolve: (role: string, requested: RequestedProfile) => ResolvedProfile,
-): {
-  author: ResolvedProfile
-  fix: ResolvedProfile
-  reviewers: { name: string; profile: ResolvedProfile }[]
-} | null {
+) {
   if (!spec) return null
   const author = resolve('spec-author', spec.author)
   return {
@@ -1176,8 +1158,33 @@ function resolveSpecProfiles(
     reviewers: spec.reviewers.map((r) => ({
       name: r.name,
       profile: resolve(`spec-review:${r.name}`, r.profile),
+      invocation: r.invocation,
     })),
+    maxRounds: spec.maxRounds,
+    template: spec.template,
+    reviewTemplate: spec.reviewTemplate,
   }
+}
+
+/**
+ * Each spec role with its profile, named as the run records it. The fix is
+ * left out when it runs on the author's profile.
+ */
+function specRoleEntries(
+  spec: Pick<SpecSetup, 'author' | 'fix'> & {
+    reviewers: { name: string; profile: ResolvedProfile }[]
+  },
+): [string, ResolvedProfile][] {
+  return [
+    ['spec-author', spec.author],
+    ...(spec.fix === spec.author
+      ? []
+      : [['spec-fix', spec.fix] as [string, ResolvedProfile]]),
+    ...spec.reviewers.map((r): [string, ResolvedProfile] => [
+      `spec-review:${r.name}`,
+      r.profile,
+    ]),
+  ]
 }
 
 /** The job's name, as its runs are stored. */
@@ -1229,16 +1236,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             ...(triage ? { triage } : {}),
             ...(repair ? { repair } : {}),
             ...(specProfiles
-              ? {
-                  'spec-author': specProfiles.author,
-                  'spec-fix': specProfiles.fix,
-                  ...Object.fromEntries(
-                    specProfiles.reviewers.map((r) => [
-                      `spec-review:${r.name}`,
-                      r.profile,
-                    ]),
-                  ),
-                }
+              ? Object.fromEntries(specRoleEntries(specProfiles))
               : {}),
           })
           // Checked again here, as at trigger, before anything exists.
@@ -1247,19 +1245,15 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             throw new Error(
               'review: a reviewer command, context or output needs a repository target',
             )
-          const specInput = specProfiles ? (input.spec ?? null) : null
-          const specReviewers = specProfiles
-            ? specProfiles.reviewers.map(({ name, profile }) => ({
-                name,
-                profile,
-                invocation: fixReviewInvocation(
-                  specInput?.reviewers.find((r) => r.name === name)?.invocation,
-                  profile,
-                  `spec.review.${name}`,
-                  { spec: true },
-                ),
-              }))
-            : []
+          const specReviewers = (specProfiles?.reviewers ?? []).map((r) => ({
+            ...r,
+            invocation: fixReviewInvocation(
+              r.invocation,
+              r.profile,
+              `spec.review.${r.name}`,
+              { spec: true },
+            ),
+          }))
           // A repair profile that makes the same call as code is code: the
           // run keeps its session and its config version.
           const ownRepair = separateRepairProfile({ repair, profiles })
@@ -1281,11 +1275,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               ...(triageRuns ? [triageRuns] : []),
               ...(ownRepair ? [ownRepair] : []),
               ...(specProfiles
-                ? [
-                    specProfiles.author,
-                    specProfiles.fix,
-                    ...specReviewers.map((r) => r.profile),
-                  ]
+                ? specRoleEntries(specProfiles).map(([, p]) => p)
                 : []),
             ].map((p) => p.provider),
           )
@@ -1384,18 +1374,13 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             baselineCheck && target.kind === 'repo' && !target.checkFromSpec
               ? await baselineIdentityOf(target)
               : null
-          const spec: SpecSetup | null =
-            specProfiles && specInput
-              ? {
-                  author: specProfiles.author,
-                  fix: specProfiles.fix,
-                  reviewers: specReviewers,
-                  maxRounds: specInput.maxRounds,
-                  template: specInput.template,
-                  reviewTemplate: specInput.reviewTemplate,
-                  specPath: specFileOf(root),
-                }
-              : null
+          const spec: SpecSetup | null = specProfiles
+            ? {
+                ...specProfiles,
+                reviewers: specReviewers,
+                specPath: specFileOf(root),
+              }
+            : null
           const instructionsVersion = 'local-factory.v3'
           // Fixed here with the CLI version just recorded, so a restarted
           // worker with another environment never changes how this run's
@@ -1435,20 +1420,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               cli,
               commit: target.kind === 'repo' ? (target.commit ?? null) : null,
               review,
-              spec: spec
-                ? {
-                    author: spec.author,
-                    fix: spec.fix,
-                    reviewers: spec.reviewers.map((r) => ({
-                      name: r.name,
-                      profile: r.profile,
-                      invocation: r.invocation,
-                    })),
-                    maxRounds: spec.maxRounds,
-                    template: spec.template,
-                    reviewTemplate: spec.reviewTemplate,
-                  }
-                : null,
+              spec,
             })
           const value: FactorySetup = {
             fake: profiles.code.provider === 'fake',
@@ -1563,12 +1535,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             })
           : null
       }
-      let repairSession: RepairSessionRecord | null = null
-      let preflightDone = false
-      if (specStages) {
-        repairSession = await preflightAndConfirm()
-        preflightDone = true
-      }
+      let repairSession = specStages ? await preflightAndConfirm() : null
       let runSetup: FactorySetup = repairSession
         ? { ...setup, configVersion: repairSession.configVersion }
         : setup
@@ -1627,20 +1594,17 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       }
       // A check chosen from the fixed spec: run once, before the baseline,
       // and used by the baseline and every verification after it.
+      const repoTarget = runSetup.target
       if (
-        runSetup.target.kind === 'repo' &&
-        runSetup.target.checkFromSpec &&
+        repoTarget.kind === 'repo' &&
+        repoTarget.checkFromSpec &&
+        repoTarget.spec !== null &&
         target instanceof RepoTarget
       ) {
-        const repoTarget = runSetup.target
-        const checkFromSpec = repoTarget.checkFromSpec as string[]
-        const spec = repoTarget.spec
-        if (spec === null)
-          throw new Error('checkFromSpec needs a spec, and the run has none')
         const fixed = await runCheckFromSpec(step, {
-          command: checkFromSpec,
+          command: repoTarget.checkFromSpec,
           specPath: specFileOf(root),
-          spec,
+          spec: repoTarget.spec,
           workdir: repoTarget.workdir,
           timeoutMs: repoTarget.checkTimeoutMs,
           identityOf: (check) =>
@@ -1741,7 +1705,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             `${BASELINE_FAILED_MESSAGE}: \`${checkFingerprint(checkCommand)}\` failed on the base commit ${baseCommit.slice(0, 12)} (exit code ${baseline.exitCode ?? 'unknown'}) before any agent call`,
           )
       }
-      if (!preflightDone) {
+      if (!specStages) {
         repairSession = await preflightAndConfirm()
         if (repairSession)
           runSetup = { ...runSetup, configVersion: repairSession.configVersion }

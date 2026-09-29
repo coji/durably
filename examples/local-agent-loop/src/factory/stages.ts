@@ -63,6 +63,7 @@ import {
   type FactoryOutcome,
   type FactorySetup,
   type ReviewFinding,
+  type ReviewInvocation,
   type ReviewLens,
   type ReviewStepResult,
   type SessionRef,
@@ -373,11 +374,7 @@ export const reviewStage: StageHandler = async ({
           })
         : null
     const local = invocation?.context === 'local-instructions'
-    const input = local
-      ? (command ?? LOCAL_INSTRUCTIONS_INPUT)
-      : command !== null
-        ? `${command}\n\n${context}`
-        : context
+    const input = reviewInputOf(local, command, context)
     // A command-mode reviewer runs in a working directory the factory made
     // for this call alone: the base commit's CLAUDE.md and .claude/, and its
     // own CLAUDE.local.md. That file carries the whole review context, or,
@@ -433,27 +430,10 @@ export const reviewStage: StageHandler = async ({
       session: null,
       configVersion: setup.configVersion,
     })
-    // Read only after the completed checkpoint, so a reply that cannot be
-    // read stops the review and is never sent again.
-    if (invocation && result.permissionDenials.length > 0)
-      throw new Error(
-        `review-incomplete (${lens}): ${result.permissionDenials.length} tool call(s) were refused: ${result.permissionDenials.join('; ').slice(0, 500)}`,
-      )
-    const parsed =
-      output === 'findings-json'
-        ? parseFindingsOutput(result.text)
-        : parseReviewOutput(result.text)
-    if (!parsed.ok)
-      throw new Error(`review-incomplete (${lens}): ${parsed.error}`)
     // The findings are kept with the verdict in this completed step, so a
     // report reads them back without calling the reviewer or reading the
     // checkpoint again. The review event drops them before the state.
-    return {
-      lens,
-      decision: parsed.decision,
-      notes: parsed.notes,
-      findings: parsed.findings ?? null,
-    }
+    return { lens, ...readReviewReply(invocation, output, result, lens) }
   }
   const correctness = `${key}:correctness`
   const edgeCases = `${key}:edge-cases`
@@ -624,6 +604,46 @@ const specSignalSchema = z.object({
 })
 
 /**
+ * What a reviewer is sent: with local instructions, its command or the fixed
+ * instruction; otherwise its command, if any, before the review context.
+ */
+function reviewInputOf(
+  local: boolean,
+  command: string | null,
+  context: string,
+): string {
+  if (local) return command ?? LOCAL_INSTRUCTIONS_INPUT
+  return command !== null ? `${command}\n\n${context}` : context
+}
+
+/**
+ * A reviewer's verdict, read only after the completed checkpoint, so a reply
+ * that cannot be read stops the review and is never sent again. `who` names
+ * the reviewer in the error.
+ */
+function readReviewReply(
+  invocation: ReviewInvocation | null,
+  output: ReviewInvocation['output'],
+  result: { text: string; permissionDenials: string[] },
+  who: string,
+): Pick<ReviewStepResult, 'decision' | 'notes' | 'findings'> {
+  if (invocation && result.permissionDenials.length > 0)
+    throw new Error(
+      `review-incomplete (${who}): ${result.permissionDenials.length} tool call(s) were refused: ${result.permissionDenials.join('; ').slice(0, 500)}`,
+    )
+  const parsed =
+    output === 'findings-json'
+      ? parseFindingsOutput(result.text)
+      : parseReviewOutput(result.text)
+  if (!parsed.ok) throw new Error(`review-incomplete (${who}): ${parsed.error}`)
+  return {
+    decision: parsed.decision,
+    notes: parsed.notes,
+    findings: parsed.findings ?? null,
+  }
+}
+
+/**
  * The spec stages: the author writes the run's spec file, the named
  * reviewers review it side by side, a fix answers their blockers and the
  * next round reviews again, until a round has no blocker or `maxRounds` is
@@ -760,11 +780,7 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
           })
         : null
     const local = invocation?.context === 'local-instructions'
-    const input = local
-      ? (command ?? LOCAL_INSTRUCTIONS_INPUT)
-      : command !== null
-        ? `${command}\n\n${context}`
-        : context
+    const input = reviewInputOf(local, command, context)
     let workdir = target.workdir
     if (commandMode) {
       if (!target.prepareSpecReviewWorkdir)
@@ -814,23 +830,9 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
       session: null,
       configVersion: setup.configVersion,
     })
-    // Read only after the completed checkpoint, as a candidate review is:
-    // a reply that cannot be read stops the run and is never sent again.
-    if (invocation && result.permissionDenials.length > 0)
-      throw new Error(
-        `review-incomplete (spec ${name}): ${result.permissionDenials.length} tool call(s) were refused: ${result.permissionDenials.join('; ').slice(0, 500)}`,
-      )
-    const parsed =
-      output === 'findings-json'
-        ? parseFindingsOutput(result.text)
-        : parseReviewOutput(result.text)
-    if (!parsed.ok)
-      throw new Error(`review-incomplete (spec ${name}): ${parsed.error}`)
     return {
       name,
-      decision: parsed.decision,
-      notes: parsed.notes,
-      findings: parsed.findings ?? null,
+      ...readReviewReply(invocation, output, result, `spec ${name}`),
     }
   }
 
@@ -901,11 +903,11 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
   for (;;) {
     const action = specAction(state)
     const version = state.version
-    if (action === 'author') {
+    // `specAction` authors exactly when there is no version yet.
+    if (action === 'author' || !version) {
       apply({ type: 'spec.authored', version: await write('author') })
       continue
     }
-    if (!version) throw new Error('spec stages have no spec to act on')
     if (action === 'fix')
       apply({ type: 'spec.fixed', version: await write('fix') })
     else if (action === 'review')

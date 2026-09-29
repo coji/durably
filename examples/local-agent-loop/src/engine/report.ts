@@ -203,6 +203,14 @@ export interface ReportReviewFindings {
  * Markdown lines for a review's findings: each severity's total and the
  * titles kept, never a body, file or line.
  */
+/** Each review as its verdict line and its findings, at `indent`. */
+function reviewLines(reviews: ReportReview[], indent: string): string[] {
+  return reviews.flatMap((review) => [
+    `${indent}- ${review.lens}: ${review.decision} — ${review.notes}`,
+    ...findingLines(review.findings, `${indent}  `),
+  ])
+}
+
 function findingLines(
   findings: ReportReviewFindings | null,
   indent: string,
@@ -1239,11 +1247,7 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('## Reviews')
   lines.push('')
   if (r.reviews.length > 0) {
-    for (const review of r.reviews)
-      lines.push(
-        `- ${review.lens}: ${review.decision} — ${review.notes}`,
-        ...findingLines(review.findings, '  '),
-      )
+    lines.push(...reviewLines(r.reviews, ''))
   } else {
     lines.push('- none (no review round has finished)')
   }
@@ -1254,12 +1258,8 @@ export function reportToMarkdown(r: LoopReport): string {
     for (const round of r.reviewRounds) {
       lines.push(
         `- round ${round.round}: ${round.candidate?.id ?? 'candidate unknown'}`,
+        ...reviewLines(round.reviews, '  '),
       )
-      for (const review of round.reviews)
-        lines.push(
-          `  - ${review.lens}: ${review.decision} — ${review.notes}`,
-          ...findingLines(review.findings, '    '),
-        )
     }
   } else {
     lines.push('- none')
@@ -1296,12 +1296,7 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('')
   if (r.specRounds.length > 0) {
     for (const round of r.specRounds) {
-      lines.push(`- round ${round.round}`)
-      for (const review of round.reviews)
-        lines.push(
-          `  - ${review.lens}: ${review.decision} — ${review.notes}`,
-          ...findingLines(review.findings, '    '),
-        )
+      lines.push(`- round ${round.round}`, ...reviewLines(round.reviews, '  '))
     }
   } else {
     lines.push('- none')

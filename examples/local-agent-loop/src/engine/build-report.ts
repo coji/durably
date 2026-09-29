@@ -228,6 +228,14 @@ function asFindings(value: unknown): ReportReviewFindings | null {
  * A stored verdict, with the findings its review step kept; null when it is
  * not one. A verdict recorded before findings were kept has none.
  */
+/** A spec review step's output as a review, its reviewer as the lens. */
+export function asSpecReview(output: unknown): ReportReview | null {
+  const o = output as { name?: unknown } | null
+  return asReportReview(
+    o && typeof o.name === 'string' ? { ...o, lens: o.name } : null,
+  )
+}
+
 export function asReportReview(value: unknown): ReportReview | null {
   const r = value as (Partial<ReportReview> & { findings?: unknown }) | null
   return typeof r?.lens === 'string' &&
@@ -404,10 +412,7 @@ function specRoundsOf(steps: StoredStep[]): ReportReviewRound[] {
       s.status !== 'completed'
     )
       continue
-    const r = s.output as { name?: unknown; findings?: unknown } | null
-    const review = asReportReview(
-      r && typeof r.name === 'string' ? { ...r, lens: r.name } : null,
-    )
+    const review = asSpecReview(s.output)
     if (!review) continue
     rounds.set(round, [...(rounds.get(round) ?? []), review])
   }

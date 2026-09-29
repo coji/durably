@@ -370,28 +370,23 @@ export function resolveProfiles(
   // flags, so `{ "effort": "high" }` changes the effort and nothing else. On
   // another provider, code's model and effort do not apply, and that
   // provider's defaults fill in.
-  const repairConfig = config?.profiles?.repair
-  const repairProvider = repairConfig?.provider ?? roles.code.provider
-  const sameAsCode = repairProvider === roles.code.provider
-  const repair = repairConfig
-    ? fixProfile({
-        provider: repairProvider,
-        model:
-          repairConfig.model ?? (sameAsCode ? roles.code.requestedModel : null),
-        effort:
-          repairConfig.effort ??
-          (sameAsCode ? roles.code.requestedEffort : null),
-      })
-    : null
+  const inheritFrom = (role: RoleConfig | undefined, base: FixedProfile) => {
+    if (!role) return null
+    const provider = role.provider ?? base.provider
+    const same = provider === base.provider
+    return fixProfile({
+      provider,
+      model: role.model ?? (same ? base.requestedModel : null),
+      effort: role.effort ?? (same ? base.requestedEffort : null),
+    })
+  }
+  const repair = inheritFrom(config?.profiles?.repair, roles.code)
   // The spec fix works like repair: what it leaves out comes from the
   // resolved author profile. Every reviewer is a role of its own.
   const specConfig = specStages ? config?.spec : undefined
   let spec: SpecProfiles | null = null
   if (specConfig) {
     const author = fix(specConfig.author)
-    const fixConfig = specConfig.fix
-    const fixProvider = fixConfig?.provider ?? author.provider
-    const sameAsAuthor = fixProvider === author.provider
     const reviewers = Object.entries(specConfig.review ?? {})
     if (reviewers.length === 0)
       throw new Error(
@@ -399,16 +394,7 @@ export function resolveProfiles(
       )
     spec = {
       author,
-      fix: fixConfig
-        ? fixProfile({
-            provider: fixProvider,
-            model:
-              fixConfig.model ?? (sameAsAuthor ? author.requestedModel : null),
-            effort:
-              fixConfig.effort ??
-              (sameAsAuthor ? author.requestedEffort : null),
-          })
-        : null,
+      fix: inheritFrom(specConfig.fix, author),
       reviewers: reviewers.map(([name, r]) => {
         const profile = fix(r)
         return {

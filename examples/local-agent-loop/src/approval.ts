@@ -18,8 +18,15 @@ interface SpecWaitMetadata {
 }
 
 /** Whether a wait's metadata is a spec-blocked wait's. */
-export function isSpecWait(metadata: unknown): boolean {
+export function isSpecWait(metadata: unknown): metadata is SpecWaitMetadata {
   return (metadata as SpecWaitMetadata | null)?.kind === 'spec-blocked'
+}
+
+/** The verb each decision's signal ID names. */
+const VERBS: Record<SpecWaitDecision, string> = {
+  approved: 'approve',
+  rejected: 'reject',
+  revise: 'revise',
 }
 
 /**
@@ -39,7 +46,7 @@ export async function signalApproval(
   const pending = await durably.getWaits(runId)
   const metadata = pending.find((w) => w.id === waitId)?.metadata
   if (isSpecWait(metadata))
-    return signalSpecDecision(durably, runId, waitId, decision, null, log)
+    return signalSpecWait(durably, runId, waitId, metadata, decision, null, log)
   const target = metadata as {
     candidateId?: string
     sourceHash?: string
@@ -49,11 +56,10 @@ export async function signalApproval(
   log(
     `binding approval to candidate ${target.candidateId} (${target.sourceHash?.slice(0, 12) ?? 'unknown hash'}).`,
   )
-  const verb = decision === 'approved' ? 'approve' : 'reject'
   return durably.signal(
     waitId,
     { candidateId: target.candidateId, decision },
-    { signalId: `local-${verb}-${Date.now()}` },
+    { signalId: `local-${VERBS[decision]}-${Date.now()}` },
   )
 }
 
@@ -72,14 +78,23 @@ export async function signalSpecDecision(
   log: (line: string) => void = () => {},
 ) {
   const pending = await durably.getWaits(runId)
-  const metadata = pending.find((w) => w.id === waitId)?.metadata as
-    | SpecWaitMetadata
-    | null
-    | undefined
-  if (!metadata || !isSpecWait(metadata))
+  const metadata = pending.find((w) => w.id === waitId)?.metadata
+  if (!isSpecWait(metadata))
     throw new Error(
       `wait ${waitId} of run ${runId} is not a spec-blocked wait; refusing unbound signal`,
     )
+  return signalSpecWait(durably, runId, waitId, metadata, decision, notes, log)
+}
+
+async function signalSpecWait(
+  durably: AgentLoopDurably,
+  runId: string,
+  waitId: string,
+  metadata: SpecWaitMetadata,
+  decision: SpecWaitDecision,
+  notes: string | null,
+  log: (line: string) => void,
+) {
   if (metadata.runId !== runId || typeof metadata.specSha256 !== 'string')
     throw new Error(
       'wait metadata names no run or spec version; refusing unbound signal',
@@ -89,12 +104,6 @@ export async function signalSpecDecision(
   log(
     `binding the spec decision to run ${runId} and spec ${metadata.specSha256.slice(0, 12)}.`,
   )
-  const verb =
-    decision === 'approved'
-      ? 'approve'
-      : decision === 'rejected'
-        ? 'reject'
-        : 'revise'
   return durably.signal(
     waitId,
     {
@@ -104,6 +113,6 @@ export async function signalSpecDecision(
       decision,
       notes: decision === 'revise' ? notes : null,
     },
-    { signalId: `local-spec-${verb}-${Date.now()}` },
+    { signalId: `local-spec-${VERBS[decision]}-${Date.now()}` },
   )
 }

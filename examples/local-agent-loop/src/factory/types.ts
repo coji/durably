@@ -230,9 +230,6 @@ export interface SpecReviewResult {
   findings: ReviewFindings | null
 }
 
-/** A person's decision on a spec that stayed blocked after the last round. */
-export type SpecDecision = 'approved' | 'rejected' | 'revise'
-
 /** What `SPEC_FINAL_STEP` stores: the spec the run goes on with. */
 export interface SpecRecord extends SpecVersion {
   /** The review round that confirmed it. */

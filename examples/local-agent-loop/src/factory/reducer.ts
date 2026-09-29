@@ -56,7 +56,6 @@ export function reduce(state: FactoryState, event: FactoryEvent): FactoryState {
 
 /** Where the spec stages stand; see `specAction` for what comes next. */
 export interface SpecState {
-  maxRounds: number
   /** The spec as last written; null before the author ran. */
   version: SpecVersion | null
   /** Review rounds run so far. */
@@ -79,7 +78,6 @@ export interface SpecState {
 
 export function initialSpecState(maxRounds: number): SpecState {
   return {
-    maxRounds,
     version: null,
     round: 0,
     allowedRounds: maxRounds,
