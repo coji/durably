@@ -1,5 +1,5 @@
 import type { FailureClassification } from '../../../engine/failure-reasons'
-import type { Diagnosis } from '../../../engine/status'
+import type { Diagnosis, Task } from '../../../engine/status'
 import {
   ActionNotice,
   type Act,
@@ -8,7 +8,9 @@ import {
 import { RunActions, type ActionTarget } from '../../components/RunActions'
 import { ArchivedMark } from '../../components/SupersededMark'
 import { ACTION, DESIGN } from '../../glossary'
-import { TASKS } from './fixtures'
+import type { RunRow } from '../../server'
+import { TaskRuns } from '../list/TaskRuns'
+import { NOW, PIPELINES, TASKS } from './fixtures'
 import { State } from './Specimen'
 
 /** The design page sends nothing: every action only says it is done. */
@@ -144,8 +146,65 @@ const RUNS: [keyof typeof DESIGN.state, ActionTarget, ActionName?][] = [
 ]
 
 /**
- * Each run's actions as the detail page leads with them, then what an
- * action came to and what a refused one says.
+ * A task whose first run stopped and was archived, and whose repair
+ * finished: the archived run offers its way back in the task's runs.
+ */
+const REPAIR = '01K6D2Q7XB3M9RKT4WREPAR1'
+const runRow = (over: Partial<RunRow> & Pick<RunRow, 'id'>): RunRow => ({
+  ...target(stopped, { diagnosis: diagnosis('finished', []) }),
+  status: 'completed',
+  createdAt: '2026-09-30T09:02:00.000Z',
+  uncertainCall: false,
+  needsHuman: false,
+  live: null,
+  conclusion: 'approved',
+  leadTimeMs: 1_104_000,
+  costUsd: 3.12,
+  pipeline: PIPELINES.done,
+  ...over,
+})
+const ARCHIVED_ROWS = new Map(
+  [
+    runRow({
+      ...stoppedRun,
+      diagnosis: diagnosis('stopped', [], {
+        kind: 'verification-failed',
+        retryable: true,
+      }),
+      archived: true,
+      archiveCommand: `${DEMO} unarchive --run ${stopped.id}`,
+      status: 'failed',
+      conclusion: null,
+      createdAt: '2026-09-30T08:31:00.000Z',
+      leadTimeMs: 408_000,
+      costUsd: 1.25,
+    }),
+    runRow({ id: REPAIR }),
+  ].map((r) => [r.id, r]),
+)
+const taskRun = (id: string, repair: number | null, archived: boolean) => ({
+  id,
+  parentId: repair === null ? null : stopped.id,
+  kind: archived ? ('stopped' as const) : ('finished' as const),
+  approved: !archived,
+  repair,
+  superseded: false,
+  archived,
+  attention: 'done' as const,
+})
+const ARCHIVED_TASK: Task = {
+  id: stopped.id,
+  attention: 'done',
+  representative: REPAIR,
+  runs: [taskRun(stopped.id, null, true), taskRun(REPAIR, 1, false)],
+  latestAt: '2026-09-30T09:02:00.000Z',
+  total: { leadTimeMs: 1_512_000, costUsd: 4.37 },
+}
+
+/**
+ * Each run's actions as the detail page leads with them, an archived run's
+ * way back among its task's runs, then what an action came to and what a
+ * refused one says.
  */
 export function RunActionStates() {
   return (
@@ -158,6 +217,15 @@ export function RunActionStates() {
           </div>
         </State>
       ))}
+      <State label={DESIGN.state.archivedRun}>
+        <TaskRuns
+          task={ARCHIVED_TASK}
+          rows={ARCHIVED_ROWS}
+          now={NOW}
+          name={stopped.name}
+          act={act}
+        />
+      </State>
       <State label={DESIGN.state.result}>
         <ActionNotice
           outcome={{

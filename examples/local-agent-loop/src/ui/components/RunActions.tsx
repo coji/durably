@@ -1,52 +1,23 @@
 import { useState } from 'react'
 
 import type { ReviewHighlights } from '../../engine/report'
-import type { Diagnosis } from '../../engine/status'
 import { ACTION } from '../glossary'
-import { commandText } from '../labels'
 import { ActionButton, type ActionLook, type ActionStage } from './ActionButton'
 import type { Act, ActionName } from './ActionNotice'
 import { BUTTON, BUTTON_PRIMARY } from './button'
 import { Commands } from './Commands'
+import {
+  commandLines,
+  offered,
+  only,
+  type ActionTarget,
+  type Offered,
+} from './offered'
 import { ReviewHighlightsBody } from './ReviewHighlights'
 import { SpecReviseForm } from './SpecReviseForm'
 
-/** What the actions of one run read: the list row or the detail page. */
-export interface ActionTarget {
-  id: string
-  name: string
-  diagnosis: Diagnosis
-  archived: boolean
-  archiveCommand: string | null
-  waitId: string | null
-  reviewHighlights: ReviewHighlights | null
-}
+export type { ActionTarget }
 
-/**
- * The actions a run allows, each as the CLI line that does the same; null
- * where the run does not allow it. Only the CLI's own next commands are
- * offered, so the page never offers what `status` would not.
- */
-function offered(run: ActionTarget) {
-  const { kind, next } = run.diagnosis
-  const line = (sub: RegExp) =>
-    next.map(commandText).find((c) => sub.test(c)) ?? null
-  const decides = kind === 'approval' || kind === 'spec-approval'
-  return {
-    spec: kind === 'spec-approval',
-    approve: decides ? line(/ demo approve /) : null,
-    reject: decides ? line(/ demo reject /) : null,
-    revise: kind === 'spec-approval' ? line(/ demo spec-revise /) : null,
-    retrigger:
-      kind === 'stopped' && !run.archived
-        ? line(/ demo retrigger (?!.*--reload-config)/)
-        : null,
-    archive: run.archived ? null : run.archiveCommand,
-    unarchive: run.archived ? run.archiveCommand : null,
-  }
-}
-
-type Offered = ReturnType<typeof offered>
 type Press = (
   action: ActionName,
   label: string,
@@ -60,27 +31,18 @@ type Ask = (name: ActionName) => {
 }
 
 /**
- * The offered actions with every one but the asking one set aside, so the
- * row holds one decision while an action asks, works, or takes notes.
+ * Which action of the row is asking, and the hooks its button reports to;
+ * `onChange` hears it too, so a list can set its other rows' actions aside.
  */
-function only(can: Offered, asking: ActionName | null): Offered {
-  if (asking === null) return can
-  const keep = (name: ActionName, line: string | null) =>
-    asking === name ? line : null
-  return {
-    spec: can.spec,
-    approve: keep('approve', can.approve),
-    reject: keep('reject', can.reject),
-    revise: keep('spec-revise', can.revise),
-    retrigger: keep('retrigger', can.retrigger),
-    archive: keep('archive', can.archive),
-    unarchive: keep('unarchive', can.unarchive),
+function useAsking(
+  initial: ActionName | undefined,
+  onChange?: (name: ActionName | null) => void,
+) {
+  const [asking, setAskingState] = useState<ActionName | null>(initial ?? null)
+  const setAsking = (name: ActionName | null) => {
+    setAskingState(name)
+    onChange?.(name)
   }
-}
-
-/** Which action of the row is asking, and the hooks its button reports to. */
-function useAsking(initial: ActionName | undefined) {
-  const [asking, setAsking] = useState<ActionName | null>(initial ?? null)
   const ask: Ask = (name) => ({
     initialStage: initial === name ? 'confirming' : 'idle',
     onStageChange: (stage) => setAsking(stage === 'idle' ? null : name),
@@ -153,11 +115,14 @@ function DecisionButtons({
 function StopButtons({
   can,
   first,
+  back,
   press,
   ask,
 }: {
   can: Offered
   first: ActionLook
+  /** How the way back from an archive looks. */
+  back: ActionLook
   press: Press
   ask: Ask
 }) {
@@ -183,12 +148,34 @@ function StopButtons({
       {can.unarchive ? (
         <ActionButton
           label={ACTION.unarchive}
+          look={back}
           onAction={press('unarchive', ACTION.unarchive)}
           {...ask('unarchive')}
         />
       ) : null}
     </>
   )
+}
+
+/**
+ * How the row's actions look: the first in ink where it leads, all quiet
+ * and beside their commands in a task's list of runs.
+ */
+function looks(
+  lead: boolean,
+  compact: boolean,
+): { first: ActionLook; back: ActionLook; frame: string } {
+  if (compact)
+    return {
+      first: 'quiet',
+      back: 'quiet',
+      frame: 'flex flex-wrap items-start gap-x-3 gap-y-1',
+    }
+  return {
+    first: lead ? 'primary' : 'default',
+    back: 'default',
+    frame: 'flex flex-col gap-2',
+  }
 }
 
 /**
@@ -199,24 +186,30 @@ function StopButtons({
  * While one action asks, works, or takes notes, the others step aside. The
  * CLI commands, the report and status ones among them, wait in one closed
  * disclosure below the buttons; with no button to press they are the next
- * step and stay in view.
+ * step and stay in view. `compact`, for a run in a task's list of runs, sets
+ * the buttons quiet and the disclosure beside them.
  */
 export function RunActions({
   run,
   act,
   lead = false,
+  compact = false,
   initialAsking,
+  onAsking,
 }: {
   run: ActionTarget
   act: Act
   lead?: boolean
+  compact?: boolean
   /**
    * Start with this action asking, or with the notes form open for
    * `spec-revise`, for the design page.
    */
   initialAsking?: ActionName
+  /** Hears which action asks, works, or takes notes, and null after. */
+  onAsking?: (name: ActionName | null) => void
 }) {
-  const { asking, setAsking, ask } = useAsking(initialAsking)
+  const { asking, setAsking, ask } = useAsking(initialAsking, onAsking)
   const offer = offered(run)
   const can = only(offer, asking)
   const send = (action: ActionName, label: string, body?: object) =>
@@ -225,16 +218,11 @@ export function RunActions({
   const press: Press = (action, label, body) => async () => {
     await send(action, label, body)
   }
-  const first: ActionLook = lead ? 'primary' : 'default'
+  const look = looks(lead, compact)
   const any = Object.values(offer).some((v) => typeof v === 'string')
-  // An archived run offers only its way back; any other shows every next
-  // command, with the archive command after them.
-  const commands = offer.unarchive
-    ? [offer.unarchive]
-    : [...run.diagnosis.next, ...(offer.archive ? [offer.archive] : [])]
   const revising = asking === 'spec-revise'
   return (
-    <div className="flex flex-col gap-2">
+    <div className={look.frame}>
       <div className="flex flex-wrap items-start gap-2 empty:hidden">
         {can.revise ? (
           <button
@@ -249,11 +237,17 @@ export function RunActions({
         <DecisionButtons
           run={run}
           can={can}
-          first={first}
+          first={look.first}
           press={press}
           ask={ask}
         />
-        <StopButtons can={can} first={first} press={press} ask={ask} />
+        <StopButtons
+          can={can}
+          first={look.first}
+          back={look.back}
+          press={press}
+          ask={ask}
+        />
       </div>
       {revising && can.revise ? (
         <SpecReviseForm
@@ -268,7 +262,7 @@ export function RunActions({
       ) : null}
       {asking === null ? (
         <Commands
-          lines={commands}
+          lines={commandLines(run, offer)}
           summary={any ? ACTION.sameCommand : undefined}
         />
       ) : null}

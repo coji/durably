@@ -63,6 +63,7 @@ import { archiveMarkerOf } from '../src/factory/layout.js'
 import { repairLabels } from '../src/factory/repair.js'
 import { ReviewFindingTitles } from '../src/ui/components/ReviewFindingTitles.js'
 import {
+  ACTION,
   DESIGN,
   DETAIL,
   DIAGNOSIS_TEXT,
@@ -89,6 +90,7 @@ import {
   stageName,
   stopName,
 } from '../src/ui/labels.js'
+import { TaskRuns } from '../src/ui/screens/list/TaskRuns.js'
 import { RecordPanels } from '../src/ui/screens/run/RecordPanels.js'
 import { SpecPanel } from '../src/ui/screens/run/SpecPanel.js'
 import { BaselineSource } from '../src/ui/screens/run/StageTimings.js'
@@ -3281,6 +3283,81 @@ describe('numbers on the screens', () => {
     assert.match(list, /\$1\.50/)
     assert.match(list, /15分/)
     assert.ok(!list.includes('$0.25'))
+  })
+
+  it('offers the way back beside an archived run that does not show its task', () => {
+    const first = '01K6D2Q7XB3M9RKT4WFIRST0'
+    const repair = '01K6D2Q7XB3M9RKT4WREPAIR'
+    const back = `pnpm --filter example-local-agent-loop demo unarchive --run ${first}`
+    const runs = [
+      row({
+        id: first,
+        status: 'failed',
+        conclusion: null,
+        diagnosis: { kind: 'stopped', next: [], failure: null },
+        archived: true,
+        archiveCommand: back,
+      } as unknown as Partial<RunRow>),
+      row({
+        id: repair,
+        createdAt: '2026-09-30T11:20:00.000Z',
+        archived: false,
+        archiveCommand: null,
+      } as unknown as Partial<RunRow>),
+    ]
+    const tasks = groupTasks(
+      runs.map((r) => ({
+        id: r.id,
+        createdAt: r.createdAt,
+        parentId: r.id === repair ? first : null,
+        kind: r.diagnosis.kind,
+        approved: r.id === repair,
+        leadTimeMs: r.leadTimeMs,
+        costUsd: r.costUsd,
+        archived: r.archived,
+      })),
+    )
+    const [task] = tasks
+    // The newer finished run shows the task, among the finished ones.
+    assert.deepEqual(
+      [tasks.length, task?.attention, task?.representative],
+      [1, 'done', repair],
+    )
+    const data = { exists: true, db: '/tmp/x.db', now, runs, tasks }
+    const html = renderToStaticMarkup(
+      createElement(RunsScreen, {
+        data: data as unknown as RunsResponse,
+        act: noAct,
+      }),
+    )
+    const list = htmlText(html)
+    // One quiet way back, beside the archived run, with its CLI line.
+    assert.equal(list.split(ACTION.unarchive).length - 1, 1)
+    assert.ok(list.includes(LIST.archived))
+    assert.ok(list.includes(back))
+    assert.ok(list.includes(ACTION.sameCommand))
+    assert.doesNotMatch(list, / demo archive --run /)
+    assert.match(
+      html,
+      new RegExp(`class="[^"]*bg-transparent[^"]*"[^>]*>${ACTION.unarchive}<`),
+    )
+    // While another run's action asks, this run's way back steps aside.
+    const rows = new Map(runs.map((r) => [r.id, r]))
+    const aside = (id: string | null) =>
+      htmlText(
+        renderToStaticMarkup(
+          createElement(TaskRuns, {
+            task: task as Task,
+            rows,
+            now,
+            name: 'task',
+            act: noAct,
+            aside: id,
+          }),
+        ),
+      )
+    assert.ok(!aside(repair).includes(ACTION.unarchive))
+    assert.ok(aside(first).includes(ACTION.unarchive))
   })
 
   it('writes cost, time and tokens as a person reads them, and unknown as 不明', () => {

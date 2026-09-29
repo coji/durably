@@ -1,79 +1,21 @@
-import { formatCost, formatCount, formatDuration } from '../../engine/format'
+import { useState } from 'react'
+
+import { formatCount } from '../../engine/format'
 import type { Task } from '../../engine/status'
 import type { Act } from '../components/ActionNotice'
 import { EmptyState } from '../components/EmptyState'
 import { Section } from '../components/Layout'
 import { LiveProgress } from '../components/LiveProgress'
 import { RunActions } from '../components/RunActions'
-import { IdSuffix, runHref } from '../components/RunLink'
+import { runHref } from '../components/RunLink'
 import { StageTrack } from '../components/StageTrack'
-import { StatusBadge } from '../components/StatusBadge'
-import { ArchivedMark, SupersededMark } from '../components/SupersededMark'
-import {
-  runRole,
-  runState,
-  TaskList,
-  TaskRow,
-  TaskTotal,
-} from '../components/TaskRow'
+import { ArchivedMark } from '../components/SupersededMark'
+import { runState, TaskList, TaskRow, TaskTotal } from '../components/TaskRow'
 import { Ago } from '../components/Time'
 import { COMMON, LIST } from '../glossary'
 import { diagnosisText, retryLabel } from '../labels'
 import type { RunRow, RunsResponse } from '../server'
-
-/** Every run of a task, oldest first, each by its place in the task. */
-function TaskRuns({
-  task,
-  rows,
-  now,
-}: {
-  task: Task
-  rows: Map<string, RunRow>
-  now: string
-}) {
-  return (
-    <ol className="border-line flex flex-col border-t">
-      {task.runs.map((r) => {
-        const row = rows.get(r.id)
-        if (!row) return null
-        const state = runState({
-          ...row,
-          kind: r.kind,
-          superseded: r.superseded,
-          archived: r.archived,
-        })
-        return (
-          <li
-            key={r.id}
-            className="border-line flex flex-wrap items-center gap-x-3 gap-y-1 border-b py-2 text-sm"
-          >
-            <StatusBadge label={state.label} tone={state.tone} />
-            <span className="flex min-w-0 flex-1 basis-40 items-baseline gap-2">
-              <a
-                href={runHref(r.id)}
-                className="text-fg decoration-line-strong underline underline-offset-2 hover:decoration-current"
-              >
-                {runRole(r)}
-              </a>
-              <IdSuffix id={r.id} />
-              {r.superseded ? <SupersededMark /> : null}
-              {r.archived ? <ArchivedMark /> : null}
-            </span>
-            <span className="text-fg-2 flex gap-3 text-xs tabular-nums">
-              <span className="font-code">
-                {formatDuration(row.leadTimeMs)}
-              </span>
-              <span className="font-code" title={COMMON.costNote}>
-                {formatCost(row.costUsd)}
-              </span>
-              <Ago iso={row.createdAt} now={now} />
-            </span>
-          </li>
-        )
-      })}
-    </ol>
-  )
-}
+import { TaskRuns } from './list/TaskRuns'
 
 /**
  * The facts at the end of a task's line. A finished task shows its time and
@@ -98,7 +40,8 @@ function Meta({ task, rep, now }: { task: Task; rep: RunRow; now: string }) {
 /**
  * One task: its run that shows it, why it is there, and the next step with
  * the actions it allows. An archived task keeps its reason and offers its
- * way back.
+ * way back, and so does each archived run among its runs. While one run's
+ * action asks or works, the other runs' actions step aside.
  */
 function TaskItem({
   task,
@@ -111,10 +54,18 @@ function TaskItem({
   now: string
   act: Act
 }) {
+  const [asking, setAsking] = useState<string | null>(null)
   const rep = rows.get(task.representative)
   const name = rows.get(task.id)?.name ?? rep?.name
   if (!rep || !name) return null
   const finished = task.attention === 'done' && !rep.archived
+  // Held only while that run still shows its actions: an unarchived run
+  // leaves the list before it can say it is done.
+  const shows = (id: string) =>
+    id === rep.id ? !finished : rows.get(id)?.archived === true
+  const aside = asking !== null && shows(asking) ? asking : null
+  const hear = (id: string, action: string | null) =>
+    setAsking(action === null ? null : id)
   const running = rep.diagnosis.kind === 'running'
   return (
     <TaskRow
@@ -140,11 +91,25 @@ function TaskItem({
               </span>
             ) : null}
           </p>
-          <RunActions run={{ ...rep, name }} act={act} />
+          {aside === null || aside === rep.id ? (
+            <RunActions
+              run={{ ...rep, name }}
+              act={act}
+              onAsking={(action) => hear(rep.id, action)}
+            />
+          ) : null}
         </>
       )}
       {task.runs.length > 1 ? (
-        <TaskRuns task={task} rows={rows} now={now} />
+        <TaskRuns
+          task={task}
+          rows={rows}
+          now={now}
+          name={name}
+          act={act}
+          aside={aside}
+          onAsking={hear}
+        />
       ) : null}
     </TaskRow>
   )
