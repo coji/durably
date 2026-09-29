@@ -91,7 +91,6 @@ import {
   runSpecStages,
   specAdviceText,
   stages,
-  type SpecOutcome,
 } from './stages.js'
 import {
   DEFAULT_COMMIT_SETTINGS,
@@ -262,6 +261,8 @@ const fakeScenarioSchema = z
           .refine((n) => n !== 'spec.md'),
       )
       .optional(),
+    specFails: z.boolean().optional(),
+    specSymlink: z.boolean().optional(),
     specReviews: z
       .record(z.string().min(1), z.array(z.enum(FAKE_SPEC_REVIEWS)))
       .optional(),
@@ -1550,10 +1551,19 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       // The spec stages write, review and fix the run's spec, and fix the
       // one the run goes on with; a person's rejection ends the run here,
       // before any implementation call.
-      if (specStages && runSetup.target.kind === 'repo') {
-        let outcome: SpecOutcome
-        try {
-          outcome = await runSpecStages({
+      // From the spec stages through triage, a failure or cancel leaves no
+      // review snapshots behind: whichever of these steps throws, the base
+      // tree extracted for spec review must not wait for the worker's
+      // startup sweep. A suspension on the spec wait is not a failure and
+      // is left alone by the `LeaseLostError` exemption below.
+      let roleProviders!: Record<ProfileRole, AgentProvider>
+      let providers!: Record<ProfileRole, AgentProvider> & {
+        repair: AgentProvider
+      }
+      let triage: Awaited<ReturnType<typeof runTriage>> | null
+      try {
+        if (specStages && runSetup.target.kind === 'repo') {
+          const outcome = await runSpecStages({
             step,
             setup: runSetup,
             spec: specStages,
@@ -1569,182 +1579,185 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               ),
             },
           })
-        } catch (error) {
-          // As the stage loop below does: a suspension on the spec wait, a
-          // failure or a cancel leaves no review snapshots behind.
-          if (!(error instanceof Error && error.name === 'LeaseLostError'))
-            await target.releaseReviewSnapshots?.({ base: true })
-          throw error
-        }
-        if (outcome.kind === 'rejected') {
-          await target.cleanup()
-          return {
-            approved: false,
-            conclusion: 'rejected' as const,
-            candidate: null,
-            iterations: 0,
-            reviewRounds: 0,
-            reviews: [],
-            workdir: target.workdir,
-            fake: setup.fake,
-            delivery: null,
-            triage: null,
+          if (outcome.kind === 'rejected') {
+            await target.cleanup()
+            return {
+              approved: false,
+              conclusion: 'rejected' as const,
+              candidate: null,
+              iterations: 0,
+              reviewRounds: 0,
+              reviews: [],
+              workdir: target.workdir,
+              fake: setup.fake,
+              delivery: null,
+              triage: null,
+            }
+          }
+          runSetup = {
+            ...runSetup,
+            target: {
+              ...runSetup.target,
+              spec: outcome.record.content,
+              specAdvice: specAdviceText(outcome.record.advice),
+            },
           }
         }
-        runSetup = {
-          ...runSetup,
-          target: {
-            ...runSetup.target,
-            spec: outcome.record.content,
-            specAdvice: specAdviceText(outcome.record.advice),
-          },
+        // A check chosen from the fixed spec: run once, before the baseline,
+        // and used by the baseline and every verification after it.
+        const repoTarget = runSetup.target
+        if (
+          repoTarget.kind === 'repo' &&
+          repoTarget.checkFromSpec &&
+          repoTarget.spec !== null &&
+          target instanceof RepoTarget
+        ) {
+          const fixed = await runCheckFromSpec(step, {
+            command: repoTarget.checkFromSpec,
+            specPath: specFileOf(root),
+            spec: repoTarget.spec,
+            workdir: repoTarget.workdir,
+            timeoutMs: repoTarget.checkTimeoutMs,
+            identityOf: (check) =>
+              runSetup.baselineCheck
+                ? baselineIdentityOf({ ...repoTarget, checkCommand: check })
+                : Promise.resolve(null),
+          })
+          runSetup = {
+            ...runSetup,
+            target: {
+              ...repoTarget,
+              checkCommand: fixed.check,
+              checkNotes: fixed.notes,
+            },
+            ...(runSetup.baselineCheck
+              ? { baselineIdentity: fixed.baselineIdentity }
+              : {}),
+          }
         }
-      }
-      // A check chosen from the fixed spec: run once, before the baseline,
-      // and used by the baseline and every verification after it.
-      const repoTarget = runSetup.target
-      if (
-        repoTarget.kind === 'repo' &&
-        repoTarget.checkFromSpec &&
-        repoTarget.spec !== null &&
-        target instanceof RepoTarget
-      ) {
-        const fixed = await runCheckFromSpec(step, {
-          command: repoTarget.checkFromSpec,
-          specPath: specFileOf(root),
-          spec: repoTarget.spec,
-          workdir: repoTarget.workdir,
-          timeoutMs: repoTarget.checkTimeoutMs,
-          identityOf: (check) =>
-            runSetup.baselineCheck
-              ? baselineIdentityOf({ ...repoTarget, checkCommand: check })
-              : Promise.resolve(null),
-        })
-        runSetup = {
-          ...runSetup,
-          target: {
-            ...repoTarget,
-            checkCommand: fixed.check,
-            checkNotes: fixed.notes,
-          },
-          ...(runSetup.baselineCheck
-            ? { baselineIdentity: fixed.baselineIdentity }
-            : {}),
-        }
-      }
-      if (runSetup !== setup) target = createTarget(runSetup.target)
-      // The pinned check must pass on the base commit, or no candidate could
-      // be graded: stop before paying for any agent call. The same checkpoint
-      // pair as verification, so a completed result is read back on resume
-      // and an interrupted check is graded again. With `baselineReuse`, a
-      // matching passing result of another run is used instead, once the
-      // worktree is proven to be as the check would need it. The choice is
-      // this step's output, so a replay never looks again.
-      if (
-        runSetup.baselineCheck &&
-        target instanceof RepoTarget &&
-        runSetup.target.kind === 'repo'
-      ) {
-        const baselineTarget = target
-        const checkCommand = runSetup.target.checkCommand
-        const baseCommit = runSetup.target.baseCommit
-        const operationKey = `${step.runId}/baseline`
-        const reuse = runSetup.baselineReuse ?? null
-        const store = options.baselineStore
-        const baseline = await step.run(
-          BASELINE_STEP,
-          async (signal, attempt): Promise<BaselineRecord> => {
-            const reused =
-              reuse && store
-                ? await reusedBaseline({
-                    stateRoot: options.stateRoot,
-                    runId: step.runId,
-                    setup: runSetup,
-                    reuse,
-                    store,
-                    operationKey,
-                  })
-                : null
-            if (reused) {
-              await baselineTarget.assertReadyForBase(signal)
-              return reused
-            }
-            const measured = await runTimedVerificationStep(
-              attempt,
-              {
-                provider: runSetup.profiles.code.provider,
-                operationKey,
-                checkpointsDir: runSetup.checkpointsDir,
-                stage: 'baseline',
-                iteration: 0,
-                grade: (graderSignal) =>
-                  baselineTarget.gradeBase({
-                    // Keyed by the step attempt, as a verification log is.
-                    logDir: join(
-                      runSetup.checkpointsDir,
-                      '..',
-                      'baseline-logs',
-                      attempt.id,
-                    ),
-                    signal: graderSignal,
-                  }),
-              },
-              signal,
-            )
-            return {
-              ...measured.result,
-              source: 'measured',
-              identity: runSetup.baselineIdentity ?? null,
-              // The check's own completion, which a resume that read the
-              // verdict back from the checkpoint does not move.
-              checkedAt: measured.completedAt,
-            }
-          },
-        )
-        // Also on a replay, so an index write lost to a crash after the
-        // step completed is made up. Each run writes only its own entry.
-        await recordBaselineInIndex({
-          stateRoot: options.stateRoot,
-          runId: step.runId,
-          record: baseline,
-        })
-        if (!baseline.passed)
-          throw new Error(
-            `${BASELINE_FAILED_MESSAGE}: \`${checkFingerprint(checkCommand)}\` failed on the base commit ${baseCommit.slice(0, 12)} (exit code ${baseline.exitCode ?? 'unknown'}) before any agent call`,
-          )
-      }
-      if (!specStages) {
-        repairSession = await preflightAndConfirm()
-        if (repairSession)
-          runSetup = { ...runSetup, configVersion: repairSession.configVersion }
-      }
-      const roleProviders = byRole((role) => providerFor(setup.profiles[role]))
-      const providers = {
-        ...roleProviders,
-        repair: ownRepair ? providerFor(ownRepair) : roleProviders.code,
-      }
-      // Shadow mode: the judgment is recorded and nothing below reads it.
-      const triageProfile = triageThatRuns(setup, setup.triage)
-      const triageKey = `${step.runId}/triage/agent`
-      const triage = triageProfile
-        ? await step.run(
-            'triage',
-            (signal, attempt) =>
-              runTriage(signal, attempt, {
-                operationKey: triageKey,
-                setup: runSetup,
-                profile: triageProfile,
-                provider: providerFor(triageProfile),
-                target,
-              }),
-            {
-              metadata: {
-                stage: 'triage',
-                operationKey: triageKey,
-              } as unknown as JsonValue,
+        if (runSetup !== setup) target = createTarget(runSetup.target)
+        // The pinned check must pass on the base commit, or no candidate could
+        // be graded: stop before paying for any agent call. The same checkpoint
+        // pair as verification, so a completed result is read back on resume
+        // and an interrupted check is graded again. With `baselineReuse`, a
+        // matching passing result of another run is used instead, once the
+        // worktree is proven to be as the check would need it. The choice is
+        // this step's output, so a replay never looks again.
+        if (
+          runSetup.baselineCheck &&
+          target instanceof RepoTarget &&
+          runSetup.target.kind === 'repo'
+        ) {
+          const baselineTarget = target
+          const checkCommand = runSetup.target.checkCommand
+          const baseCommit = runSetup.target.baseCommit
+          const operationKey = `${step.runId}/baseline`
+          const reuse = runSetup.baselineReuse ?? null
+          const store = options.baselineStore
+          const baseline = await step.run(
+            BASELINE_STEP,
+            async (signal, attempt): Promise<BaselineRecord> => {
+              const reused =
+                reuse && store
+                  ? await reusedBaseline({
+                      stateRoot: options.stateRoot,
+                      runId: step.runId,
+                      setup: runSetup,
+                      reuse,
+                      store,
+                      operationKey,
+                    })
+                  : null
+              if (reused) {
+                await baselineTarget.assertReadyForBase(signal)
+                return reused
+              }
+              const measured = await runTimedVerificationStep(
+                attempt,
+                {
+                  provider: runSetup.profiles.code.provider,
+                  operationKey,
+                  checkpointsDir: runSetup.checkpointsDir,
+                  stage: 'baseline',
+                  iteration: 0,
+                  grade: (graderSignal) =>
+                    baselineTarget.gradeBase({
+                      // Keyed by the step attempt, as a verification log is.
+                      logDir: join(
+                        runSetup.checkpointsDir,
+                        '..',
+                        'baseline-logs',
+                        attempt.id,
+                      ),
+                      signal: graderSignal,
+                    }),
+                },
+                signal,
+              )
+              return {
+                ...measured.result,
+                source: 'measured',
+                identity: runSetup.baselineIdentity ?? null,
+                // The check's own completion, which a resume that read the
+                // verdict back from the checkpoint does not move.
+                checkedAt: measured.completedAt,
+              }
             },
           )
-        : null
+          // Also on a replay, so an index write lost to a crash after the
+          // step completed is made up. Each run writes only its own entry.
+          await recordBaselineInIndex({
+            stateRoot: options.stateRoot,
+            runId: step.runId,
+            record: baseline,
+          })
+          if (!baseline.passed)
+            throw new Error(
+              `${BASELINE_FAILED_MESSAGE}: \`${checkFingerprint(checkCommand)}\` failed on the base commit ${baseCommit.slice(0, 12)} (exit code ${baseline.exitCode ?? 'unknown'}) before any agent call`,
+            )
+        }
+        if (!specStages) {
+          repairSession = await preflightAndConfirm()
+          if (repairSession)
+            runSetup = {
+              ...runSetup,
+              configVersion: repairSession.configVersion,
+            }
+        }
+        roleProviders = byRole((role) => providerFor(setup.profiles[role]))
+        providers = {
+          ...roleProviders,
+          repair: ownRepair ? providerFor(ownRepair) : roleProviders.code,
+        }
+        // Shadow mode: the judgment is recorded and nothing below reads it.
+        const triageProfile = triageThatRuns(setup, setup.triage)
+        const triageKey = `${step.runId}/triage/agent`
+        triage = triageProfile
+          ? await step.run(
+              'triage',
+              (signal, attempt) =>
+                runTriage(signal, attempt, {
+                  operationKey: triageKey,
+                  setup: runSetup,
+                  profile: triageProfile,
+                  provider: providerFor(triageProfile),
+                  target,
+                }),
+              {
+                metadata: {
+                  stage: 'triage',
+                  operationKey: triageKey,
+                } as unknown as JsonValue,
+              },
+            )
+          : null
+      } catch (error) {
+        // As the stage loop below does: a suspension on the spec wait, a
+        // failure or a cancel leaves no review snapshots behind.
+        if (!(error instanceof Error && error.name === 'LeaseLostError'))
+          await target.releaseReviewSnapshots?.({ base: true })
+        throw error
+      }
       let state = initialState(runSetup, repairSession?.confirmed ?? null)
       // Deliberately not a `finally`: `step.waitFor` suspends by throwing, so a
       // finally block would run cleanup every time the run parks on the human

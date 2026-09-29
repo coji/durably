@@ -451,17 +451,18 @@ function specOf(
   const started = steps.some(
     (s) => s.name.startsWith('spec:') || s.name.startsWith('spec-review:'),
   )
-  if (!final && !check && !started) return null
+  const suppliedSpec =
+    typeof inputSpec === 'string' && inputSpec.length > 0 ? inputSpec : null
+  // A `--spec-file` run reports its input spec whatever state spec-check is
+  // in, including when it has not completed (or failed) yet.
+  if (!final && !check && !started && suppliedSpec === null) return null
   const advice = Array.isArray(final?.advice)
     ? final.advice.flatMap((f) => {
         const finding = asFinding(f)
         return finding ? [finding] : []
       })
     : []
-  const supplied =
-    !final && typeof inputSpec === 'string' && inputSpec.length > 0
-      ? inputSpec
-      : null
+  const supplied = !final ? suppliedSpec : null
   return {
     content: typeof final?.content === 'string' ? final.content : supplied,
     sha256:

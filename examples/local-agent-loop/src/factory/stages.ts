@@ -8,7 +8,14 @@
  */
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 
 import type { JsonValue, StepAttemptContext, StepContext } from '@coji/durably'
@@ -653,10 +660,34 @@ function readReviewReply(
 export async function removeBesideSpec(specPath: string): Promise<string[]> {
   const keep = basename(specPath)
   const dir = dirname(specPath)
-  const extra = (await readdir(dir)).filter((name) => name !== keep).sort()
+  // A call swept on its failure path may never have reached the point that
+  // creates the spec directory (for example, one refused before it starts
+  // because an earlier attempt's checkpoint is uncertain); that is nothing
+  // to sweep, not a sweep failure that should hide the original error.
+  let entries: string[]
+  try {
+    entries = await readdir(dir)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  }
+  const extra = entries.filter((name) => name !== keep).sort()
   for (const name of extra)
     await rm(join(dir, name), { recursive: true, force: true })
   return extra
+}
+
+/**
+ * Fails the step when the spec file a writer left is not a regular file —
+ * for example a symlink, which later reads and writes would follow. The
+ * entry is removed first, so nothing else in the run can point through it.
+ */
+async function assertSpecIsRegularFile(specPath: string): Promise<void> {
+  const stat = await lstat(specPath).catch(() => null)
+  if (stat && !stat.isFile()) {
+    await rm(specPath, { force: true })
+    throw new Error('spec.md must be a regular file')
+  }
 }
 
 /**
@@ -727,33 +758,41 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
         // whatever the call wrote, and a completed checkpoint is read back.
         const { started } = checkpointPaths(setup.checkpointsDir, operationKey)
         if (!existsSync(started)) await put(start)
-        await runAgentCall(signal, attempt, {
-          provider: args.providers[role],
-          providerName: profile.provider,
-          prompt:
-            role === 'author'
-              ? specAuthorPrompt(base)
-              : specFixPrompt({ ...base, feedback }),
-          // The spec's own directory: the file alone is writable.
-          workdir: specDir,
-          specWrite: {
-            writableFile: spec.specPath,
-            readableDirs: [target.workdir],
-          },
-          timeoutMs: setup.agentTimeoutMs,
-          requestedModel: profile.requestedModel,
-          requestedEffort: profile.requestedEffort,
-          effectiveModel: profile.effectiveModel,
-          effectiveEffort: profile.effectiveEffort,
-          role: role === 'author' ? 'spec-author' : 'spec-fix',
-          stage: 'spec',
-          iteration: 0,
-          operationKey,
-          checkpointsDir: setup.checkpointsDir,
-          session: null,
-          configVersion: setup.configVersion,
-        })
-        const removed = await removeBesideSpec(spec.specPath)
+        // Swept in `finally` so a writer that errors or times out also
+        // leaves nothing beside the spec file; the sweep itself must not
+        // hide a call failure.
+        let removed: string[] = []
+        try {
+          await runAgentCall(signal, attempt, {
+            provider: args.providers[role],
+            providerName: profile.provider,
+            prompt:
+              role === 'author'
+                ? specAuthorPrompt(base)
+                : specFixPrompt({ ...base, feedback }),
+            // The spec's own directory: the file alone is writable.
+            workdir: specDir,
+            specWrite: {
+              writableFile: spec.specPath,
+              readableDirs: [target.workdir],
+            },
+            timeoutMs: setup.agentTimeoutMs,
+            requestedModel: profile.requestedModel,
+            requestedEffort: profile.requestedEffort,
+            effectiveModel: profile.effectiveModel,
+            effectiveEffort: profile.effectiveEffort,
+            role: role === 'author' ? 'spec-author' : 'spec-fix',
+            stage: 'spec',
+            iteration: 0,
+            operationKey,
+            checkpointsDir: setup.checkpointsDir,
+            session: null,
+            configVersion: setup.configVersion,
+          })
+        } finally {
+          removed = await removeBesideSpec(spec.specPath)
+        }
+        await assertSpecIsRegularFile(spec.specPath)
         const content = await readFile(spec.specPath, 'utf8')
         if (content.trim().length === 0)
           throw new Error(

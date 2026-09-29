@@ -3151,6 +3151,47 @@ describe('spec stages', { timeout: 240000 }, () => {
     }
   })
 
+  it('removes the review snapshots when checkFromSpec fails after a command-mode spec review prepared them', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-spec-command-fail-'))
+    const repo = await seedSpecRepo(root, 'process.exit(3)\n')
+    recording = recordFakeReviewCalls()
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger(
+        specRun(repo, {
+          autoApprove: true,
+          maxRounds: 1,
+          reviewers: [
+            {
+              name: 'alpha',
+              profile: FAKE_PROFILE,
+              invocation: {
+                command: '/spec-review {base} --effort {effort}',
+                context: 'local-instructions',
+                output: 'findings-json',
+              },
+            },
+          ],
+          fakeScenario: { specReviews: { alpha: ['pass'] } },
+        }),
+      )
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'failed',
+        150000,
+        'the run stops on the failing check',
+      )
+      const failed = await durably.getRun(run.id)
+      assert.match(failed?.error ?? '', /^spec-check-failed: /)
+      // The base tree extracted for the command-mode spec reviewer is gone,
+      // not left for the worker's startup sweep.
+      assert.equal(snapshotsLeft(join(root, 'state'), run.id), false)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
   it('waits on a spec still blocked after the last round: a revise fixes and reviews once more, and an approval goes on with the spec', async () => {
     const root = await mkdtemp(join(tmpdir(), 'repo-spec-blocked-'))
     const repo = await seedSpecRepo(root)
@@ -3269,6 +3310,64 @@ describe('spec stages', { timeout: 240000 }, () => {
       }
       const specDir = join(root, 'state', 'runs', run.id, 'spec')
       assert.deepEqual(readdirSync(specDir), ['spec.md'])
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  it('sweeps what a spec writer left beside the spec file even when the call fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-spec-stray-fail-'))
+    const repo = await seedSpecRepo(root)
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger(
+        specRun(repo, {
+          fakeScenario: {
+            specStray: ['notes.txt'],
+            specFails: true,
+          },
+        }),
+      )
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'failed',
+        60000,
+        'the run fails',
+      )
+      const failed = await durably.getRun(run.id)
+      assert.match(
+        failed?.error ?? '',
+        /fake: the spec spec-author call failed/,
+      )
+      // The sibling the writer left is gone, and the original failure is
+      // still what the run reports, not an error from the sweep itself.
+      const specDir = join(root, 'state', 'runs', run.id, 'spec')
+      assert.deepEqual(readdirSync(specDir), ['spec.md'])
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  it('fails a spec writer step when the spec file is left as a symlink', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-spec-symlink-'))
+    const repo = await seedSpecRepo(root)
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger(
+        specRun(repo, { fakeScenario: { specSymlink: true } }),
+      )
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'failed',
+        60000,
+        'the run fails',
+      )
+      const failed = await durably.getRun(run.id)
+      assert.match(failed?.error ?? '', /spec\.md must be a regular file/)
+      const specPath = join(root, 'state', 'runs', run.id, 'spec', 'spec.md')
+      assert.equal(existsSync(specPath), false)
     } finally {
       await durably.stop()
       await durably.db.destroy()
@@ -3451,6 +3550,37 @@ describe('spec stages', { timeout: 240000 }, () => {
         await durably.stop()
         await durably.db.destroy()
       }
+    }
+  })
+
+  it('reports a spec given at trigger even when checkFromSpec fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-spec-check-report-'))
+    const repo = await seedSpecRepo(root, 'process.exit(3)\n')
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const supplied = '# Spec\n\n## Acceptance criteria\n- add is exact\n'
+      const run = await durably.jobs.agentLoop.trigger(
+        specRun(repo, { stages: false, spec: supplied }),
+      )
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'failed',
+        60000,
+        'the run stops',
+      )
+      const failed = await durably.getRun(run.id)
+      assert.match(failed?.error ?? '', /^spec-check-failed: /)
+      const report = await buildReport(durably, run.id)
+      assert.equal(report.spec?.content, supplied)
+      assert.equal(report.spec?.source, 'input')
+      assert.equal(
+        report.spec?.sha256,
+        createHash('sha256').update(supplied).digest('hex'),
+      )
+      assert.equal(report.spec?.check, null)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
     }
   })
 

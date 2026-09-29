@@ -1116,8 +1116,10 @@ runは、これまでどおりの工程で動き、`configVersion` も変わり�
   このファイルに限ります。Codexはこのファイルのディレクトリを作業ディレクトリにして
   workspace-writeで動かすので、worktreeには書けません。ただし同じディレクトリに
   ほかのファイルは作れるので、`author` と `fix` の呼び出しが終わるたびに
-  `spec.md` 以外を消し、消したものをそのstepの出力（`removed` と `warning`）に
-  残します。runは止めません。レビュー役は読むだけです。
+  （成功しても失敗しても）`spec.md` 以外を消し、成功したときは消したものを
+  そのstepの出力（`removed` と `warning`）に残します。この掃除はrunを止めません。
+  そのうえで `spec.md` 自体が通常のファイルでなければ（シンボリックリンクなど）、
+  それを消してstepを失敗させます。レビュー役は読むだけです。
 - `fix` を書かなければ `author` の設定で直します。`fix` で省いた項目は `author` から
   補います。`maxRounds` の既定は3で、正の整数に限ります。0、負数、小数、
   `Number.MAX_SAFE_INTEGER` を超える値は `trigger` で拒否します。
@@ -1187,9 +1189,9 @@ pnpm --filter example-local-agent-loop demo reject --run <id> --wait <waitId>
   結果を持ちます（`lens` はレビュー役の名前です）。済んだstepから読むので、
   進行中のrunでも出ます。
 - `spec` には、確定した仕様、確定した回、人の判断を経たか、助言、
-  `checkFromSpec` が決めた採点コマンドとnotesが入ります。`--spec-file` と
-  `checkFromSpec` のrunには `spec:final` が無いので、runの入力の仕様を
-  `source: "input"` として入れます。
+  `checkFromSpec` が決めた採点コマンドとnotesが入ります。`--spec-file` の
+  runには `spec:final` が無いので、`spec-check` がまだ済んでいなくても
+  （失敗していても）runの入力の仕様を `source: "input"` として入れます。
 - 使用量は `spec-author`、`spec-fix`、`spec-review:<名前>` の役割で分けて数え、
   工程の時間は `spec`、`spec-review`、`spec-check` として出します。`compare` にも
   同じ工程が並びます。

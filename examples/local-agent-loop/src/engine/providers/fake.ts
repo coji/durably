@@ -82,7 +82,14 @@
  *   reviewer answers needsChanges for `blocker` and pass otherwise.
  */
 import { randomUUID } from 'node:crypto'
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import {
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
 
 import type { TokenUsage } from '../usage.js'
@@ -156,6 +163,17 @@ export interface FakeScenario {
   specText?: string
   /** Files a spec author or fixer leaves beside the spec file. */
   specStray?: string[]
+  /**
+   * A spec author or fixer call fails after leaving `specStray`, without
+   * writing the spec file itself. Stands in for a writer that errors or
+   * times out mid-call.
+   */
+  specFails?: boolean
+  /**
+   * A spec author leaves the spec file as a symlink to another file in the
+   * workdir, instead of writing a regular file.
+   */
+  specSymlink?: boolean
   /** Each spec reviewer's reply per round, by reviewer name. */
   specReviews?: Record<string, (typeof FAKE_SPEC_REVIEWS)[number][]>
 }
@@ -659,6 +677,15 @@ export class FakeProvider implements AgentProvider {
           join(dirname(file), name),
           `stray from ${options.role}\n`,
         )
+      if (scenario.specFails)
+        throw new Error(`fake: the spec ${options.role} call failed`)
+      if (scenario.specSymlink) {
+        const target = join(dirname(file), 'symlink-target.md')
+        await writeFile(target, scenario.specText ?? FAKE_SPEC_TEXT)
+        await rm(file, { force: true })
+        await symlink(target, file)
+        return result(`fake: left the spec (${options.role}) as a symlink`)
+      }
       if (options.role === 'spec-author')
         await writeFile(file, scenario.specText ?? FAKE_SPEC_TEXT)
       else {
