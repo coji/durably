@@ -74,6 +74,8 @@
  * Spec stages (scenario only):
  * - a spec author writes `specText` (a fixed sample spec by default) to the
  *   spec file it was given; a spec fixer appends one revision line to it;
+ *   either also leaves each of `specStray` beside the spec file, as a Codex
+ *   writer's sandbox would let it;
  * - a spec reviewer answers `specReviews[name][round - 1]`: `pass`,
  *   `blocker` (one blocking finding), `advice` (one non-blocking finding) or
  *   `invalid` (a cut-off reply); `pass` when none is scripted. A verdict
@@ -152,6 +154,8 @@ export interface FakeScenario {
   claudeEffortResume?: boolean
   /** What a spec author writes; a fixed sample spec when absent. */
   specText?: string
+  /** Files a spec author or fixer leaves beside the spec file. */
+  specStray?: string[]
   /** Each spec reviewer's reply per round, by reviewer name. */
   specReviews?: Record<string, (typeof FAKE_SPEC_REVIEWS)[number][]>
 }
@@ -650,6 +654,11 @@ export class FakeProvider implements AgentProvider {
       const file = options.specWrite?.writableFile
       if (!file)
         throw new Error(`fake: a ${options.role} call has no spec file`)
+      for (const name of scenario.specStray ?? [])
+        await writeFile(
+          join(dirname(file), name),
+          `stray from ${options.role}\n`,
+        )
       if (options.role === 'spec-author')
         await writeFile(file, scenario.specText ?? FAKE_SPEC_TEXT)
       else {

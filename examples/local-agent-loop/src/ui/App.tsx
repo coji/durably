@@ -2314,6 +2314,13 @@ function ReviewsPanel({ report: r }: { report: LoopReport }) {
   )
 }
 
+/** How the spec the run went on with was confirmed. */
+function specConfirmedLabel(spec: NonNullable<LoopReport['spec']>): string {
+  if (spec.source === 'input') return '実行時にファイルで渡された仕様'
+  if (spec.round !== null) return `${spec.round}回目の仕様レビューで確定`
+  return '確定済み'
+}
+
 /**
  * The spec stages: the spec the run went on with, the advice handed to the
  * implementer, the check chosen from the spec, and every spec review round.
@@ -2328,11 +2335,7 @@ export function SpecPanel({ report: r }: { report: LoopReport }) {
         {spec?.content != null ? (
           <dl className="flex flex-col gap-2">
             <Field label="確定">
-              <span className="font-ui">
-                {spec.round !== null
-                  ? `${spec.round}回目の仕様レビューで確定`
-                  : '確定済み'}
-              </span>
+              <span className="font-ui">{specConfirmedLabel(spec)}</span>
             </Field>
             {spec.blocked ? (
               <Field label="人の判断">

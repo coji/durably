@@ -8,8 +8,8 @@
  */
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
 
 import type { JsonValue, StepAttemptContext, StepContext } from '@coji/durably'
 import { z } from 'zod'
@@ -644,6 +644,22 @@ function readReviewReply(
 }
 
 /**
+ * Remove every entry of the spec directory other than the spec file, and
+ * name what was removed. A Codex writer's workspace-write sandbox is the
+ * whole spec directory, so it can leave files beside the spec; this is
+ * where the spec-file-only rule is enforced for it. A Claude writer is held
+ * to the file by its tool guard, so for it this finds nothing.
+ */
+export async function removeBesideSpec(specPath: string): Promise<string[]> {
+  const keep = basename(specPath)
+  const dir = dirname(specPath)
+  const extra = (await readdir(dir)).filter((name) => name !== keep).sort()
+  for (const name of extra)
+    await rm(join(dir, name), { recursive: true, force: true })
+  return extra
+}
+
+/**
  * The spec stages: the author writes the run's spec file, the named
  * reviewers review it side by side, a fix answers their blockers and the
  * next round reviews again, until a round has no blocker or `maxRounds` is
@@ -737,12 +753,22 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
           session: null,
           configVersion: setup.configVersion,
         })
+        const removed = await removeBesideSpec(spec.specPath)
         const content = await readFile(spec.specPath, 'utf8')
         if (content.trim().length === 0)
           throw new Error(
             `spec-incomplete: the spec ${role} left ${spec.specPath} empty`,
           )
-        return { content, sha256: sha256Of(content) }
+        return {
+          content,
+          sha256: sha256Of(content),
+          ...(removed.length > 0
+            ? {
+                removed,
+                warning: `the spec ${role} left ${removed.join(', ')} beside ${basename(spec.specPath)}; removed`,
+              }
+            : {}),
+        }
       },
       {
         metadata: { stage: 'spec', operationKey } as unknown as JsonValue,

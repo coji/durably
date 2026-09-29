@@ -426,8 +426,15 @@ function specRoundsOf(steps: StoredStep[]): ReportReviewRound[] {
     }))
 }
 
-/** The confirmed spec and the check chosen from it; see `ReportSpec`. */
-function specOf(steps: StoredStep[]): ReportSpec | null {
+/**
+ * The confirmed spec and the check chosen from it; see `ReportSpec`. A run
+ * given its spec at trigger (`--spec-file`) has no `spec:final` step, so
+ * the spec it went on with is the one in its input.
+ */
+function specOf(
+  steps: StoredStep[],
+  inputSpec: string | null | undefined,
+): ReportSpec | null {
   const done = (name: string) =>
     steps.find((s) => s.name === name && s.status === 'completed')?.output
   const final = done(SPEC_FINAL_STEP) as {
@@ -451,9 +458,19 @@ function specOf(steps: StoredStep[]): ReportSpec | null {
         return finding ? [finding] : []
       })
     : []
+  const supplied =
+    !final && typeof inputSpec === 'string' && inputSpec.length > 0
+      ? inputSpec
+      : null
   return {
-    content: typeof final?.content === 'string' ? final.content : null,
-    sha256: typeof final?.sha256 === 'string' ? final.sha256 : null,
+    content: typeof final?.content === 'string' ? final.content : supplied,
+    sha256:
+      typeof final?.sha256 === 'string'
+        ? final.sha256
+        : supplied !== null
+          ? createHash('sha256').update(supplied).digest('hex')
+          : null,
+    source: supplied !== null ? 'input' : 'stages',
     round: typeof final?.round === 'number' ? final.round : null,
     blocked: final?.blocked === true,
     advice,
@@ -1006,7 +1023,7 @@ export async function buildReport(
     reviews: lastReviews(run.output, waits, reviewRounds),
     reviewRounds,
     specRounds: specRoundsOf(steps),
-    spec: specOf(steps),
+    spec: specOf(steps, input?.target?.spec),
     delivery,
     failure,
     stageVisits: visits,

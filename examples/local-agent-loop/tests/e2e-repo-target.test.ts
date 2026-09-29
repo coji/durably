@@ -3233,6 +3233,84 @@ describe('spec stages', { timeout: 240000 }, () => {
     }
   })
 
+  it('removes what a spec writer leaves beside the spec file and records it as a warning, without failing the run', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-spec-stray-'))
+    const repo = await seedSpecRepo(root)
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger(
+        specRun(repo, {
+          reviewers: [
+            { name: 'tech', profile: FAKE_PROFILE, invocation: null },
+          ],
+          fakeScenario: {
+            specReviews: { tech: ['blocker', 'pass'] },
+            specStray: ['notes.txt'],
+          },
+        }),
+      )
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        150000,
+        'the run completes',
+      )
+      for (const [name, role] of [
+        ['spec:author', 'author'],
+        ['spec:fix:1', 'fix'],
+      ] as const) {
+        const stored = (await durably.storage.getCompletedStep(run.id, name))
+          ?.output as { removed?: string[]; warning?: string }
+        assert.deepEqual(stored.removed, ['notes.txt'], name)
+        assert.equal(
+          stored.warning,
+          `the spec ${role} left notes.txt beside spec.md; removed`,
+        )
+      }
+      const specDir = join(root, 'state', 'runs', run.id, 'spec')
+      assert.deepEqual(readdirSync(specDir), ['spec.md'])
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  it('reports a spec given at trigger as the spec the run went on with, when checkFromSpec reads it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-spec-supplied-'))
+    const repo = await seedSpecRepo(root)
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const supplied = '# Spec\n\n## Acceptance criteria\n- add is exact\n'
+      const run = await durably.jobs.agentLoop.trigger(
+        specRun(repo, { stages: false, spec: supplied }),
+      )
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        150000,
+        'the run completes',
+      )
+      const order = await firstSteps(durably, run.id)
+      assert.ok(order.includes('spec-check'))
+      assert.ok(!order.includes('spec:final'))
+      const report = await buildReport(durably, run.id)
+      assert.equal(report.spec?.content, supplied)
+      assert.equal(report.spec?.source, 'input')
+      assert.equal(
+        report.spec?.sha256,
+        createHash('sha256').update(supplied).digest('hex'),
+      )
+      assert.deepEqual(report.spec?.check?.command, ['node', 'check-ok.mjs'])
+      const markdown = reportToMarkdown(report)
+      assert.match(markdown, /- confirmed: from the run input \(--spec-file\)/)
+      assert.doesNotMatch(markdown, /confirmed: not yet/)
+      assert.match(markdown, /- add is exact/)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
   it('carries a findings-json blocker’s title and body to the next spec-fix prompt, in the normal flow and after a spec-revise', async () => {
     const root = await mkdtemp(join(tmpdir(), 'repo-spec-findings-carry-'))
     const repo = await seedSpecRepo(root)

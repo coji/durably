@@ -254,6 +254,14 @@ const fakeScenarioSchema = z
     changes: z.record(z.string().min(1), z.string()).optional(),
     claudeEffortResume: z.boolean().optional(),
     specText: z.string().min(1).optional(),
+    specStray: z
+      .array(
+        z
+          .string()
+          .regex(/^[^/\\]+$/)
+          .refine((n) => n !== 'spec.md'),
+      )
+      .optional(),
     specReviews: z
       .record(z.string().min(1), z.array(z.enum(FAKE_SPEC_REVIEWS)))
       .optional(),

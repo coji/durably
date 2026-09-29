@@ -1065,7 +1065,10 @@ Claudeのレビューは、道具を `Read` だけにして呼びます。道具
 
 `factory.json` に `spec` を書くと、`--spec-file` を渡さなかったrepository runは、
 実装の前に仕様を作ってレビューします。`--spec-file` を渡したrunと `spec` の無い
-runは、これまでどおりの工程で動き、`configVersion` も変わりません。
+runは、これまでどおりの工程で動き、`configVersion` も変わりません。ただし
+`--spec-file` を渡したrunでも `spec.checkFromSpec` があれば、baselineの前に
+`spec-check` を走らせ、それが選んだcheckで採点し、`checkFromSpec` を
+`configVersion` に含めます（後述の `checkFromSpec` を参照）。
 
 ```json
 {
@@ -1111,7 +1114,10 @@ runは、これまでどおりの工程で動き、`configVersion` も変わり�
   `author` と `fix` はリポジトリを読めますが、書けるのはこのファイルだけです。
   Claudeは `Read`、`Grep`、`Glob`、`Edit`、`Write` だけを持ち、`Edit` と `Write` は
   このファイルに限ります。Codexはこのファイルのディレクトリを作業ディレクトリにして
-  workspace-writeで動かすので、worktreeには書けません。レビュー役は読むだけです。
+  workspace-writeで動かすので、worktreeには書けません。ただし同じディレクトリに
+  ほかのファイルは作れるので、`author` と `fix` の呼び出しが終わるたびに
+  `spec.md` 以外を消し、消したものをそのstepの出力（`removed` と `warning`）に
+  残します。runは止めません。レビュー役は読むだけです。
 - `fix` を書かなければ `author` の設定で直します。`fix` で省いた項目は `author` から
   補います。`maxRounds` の既定は3で、正の整数に限ります。0、負数、小数、
   `Number.MAX_SAFE_INTEGER` を超える値は `trigger` で拒否します。
@@ -1181,7 +1187,9 @@ pnpm --filter example-local-agent-loop demo reject --run <id> --wait <waitId>
   結果を持ちます（`lens` はレビュー役の名前です）。済んだstepから読むので、
   進行中のrunでも出ます。
 - `spec` には、確定した仕様、確定した回、人の判断を経たか、助言、
-  `checkFromSpec` が決めた採点コマンドとnotesが入ります。
+  `checkFromSpec` が決めた採点コマンドとnotesが入ります。`--spec-file` と
+  `checkFromSpec` のrunには `spec:final` が無いので、runの入力の仕様を
+  `source: "input"` として入れます。
 - 使用量は `spec-author`、`spec-fix`、`spec-review:<名前>` の役割で分けて数え、
   工程の時間は `spec`、`spec-review`、`spec-check` として出します。`compare` にも
   同じ工程が並びます。
