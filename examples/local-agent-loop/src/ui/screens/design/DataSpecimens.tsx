@@ -18,7 +18,7 @@ import { RunLink } from '../../components/RunLink'
 import { StageTrack } from '../../components/StageTrack'
 import { conclusionStatus, kindStatus } from '../../components/status'
 import { StatusBadge } from '../../components/StatusBadge'
-import { TaskList, TaskRow } from '../../components/TaskRow'
+import { TaskList, TaskRow, TaskTotal } from '../../components/TaskRow'
 import { TraceView } from '../../components/trace/TraceView'
 import {
   COLUMN,
@@ -27,6 +27,7 @@ import {
   DETAIL,
   DIAGNOSIS_TEXT,
   KIND_NAME,
+  LIST,
   TRACE,
 } from '../../glossary'
 import { NOW, PIPELINES, TASKS, USAGE } from './fixtures'
@@ -110,6 +111,29 @@ export function TaskRowStates() {
           ))}
         </TaskList>
       </State>
+      <State label={DESIGN.state.total}>
+        <TaskList>
+          <TaskRow
+            status={conclusionStatus('approved')}
+            name={TASKS[1].name}
+            href="#/design"
+            id={TASKS[1].id}
+            toggleLabel={TASKS[1].name}
+            meta={
+              <>
+                <span>{LIST.runs('3')}</span>
+                <TaskTotal
+                  total={{ leadTimeMs: 2_331_000, costUsd: 7.12 }}
+                  several
+                />
+                <span>{ago(24)}</span>
+              </>
+            }
+          >
+            <StageTrack pipeline={PIPELINES.autoApproved} />
+          </TaskRow>
+        </TaskList>
+      </State>
     </>
   )
 }
@@ -130,6 +154,9 @@ export function StageTrackStates() {
           <StageTrack pipeline={PIPELINES[key]} />
         </State>
       ))}
+      <State label={DESIGN.state.autoApproved}>
+        <StageTrack pipeline={PIPELINES.autoApproved} />
+      </State>
     </>
   )
 }

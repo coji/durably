@@ -145,7 +145,9 @@ export function TraceView({
               if (programmatic.current) programmatic.current = false
               else setUserScrolled(true)
             }}
-            className="trace-scroll relative overflow-auto"
+            // Only an open run's rows scroll, to follow the running row; a
+            // finished run shows every row down to its last stage.
+            className={`relative overflow-auto ${trace.open ? 'trace-scroll' : ''}`}
           >
             <TraceAxisHeader marks={marks} axisMs={axisMs} pctOf={pctOf} />
             <div className="relative">

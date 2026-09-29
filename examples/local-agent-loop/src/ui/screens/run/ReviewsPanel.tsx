@@ -49,8 +49,21 @@ export function ReviewVerdicts({
   )
 }
 
-/** One side of the highlights: how many, the first titles, the verdicts. */
-function Group({ label, group }: { label: string; group: HighlightGroup }) {
+/**
+ * One side of the highlights: how many, the first titles, the verdicts.
+ * A verdict under what was fixed names the change it asked for, not its
+ * 要修正, which would read as still open.
+ */
+function Group({
+  label,
+  group,
+  fixed,
+}: {
+  label: string
+  group: HighlightGroup
+  /** The rounds before the last, whose requests the run went on to fix. */
+  fixed?: boolean
+}) {
   const titles = group.titles.slice(0, SHOWN)
   const rest = group.count - titles.length
   const empty = group.count === 0 && group.verdicts.length === 0
@@ -75,18 +88,26 @@ function Group({ label, group }: { label: string; group: HighlightGroup }) {
         <p className="text-fg-2 text-xs">{REVIEW.more(formatCount(rest))}</p>
       ) : null}
       {group.verdicts.length > 0 ? (
-        <ul className="flex flex-col gap-1 text-sm">
-          {group.verdicts.map((v) => (
-            <li key={`${v.round}:${v.lens}`}>
-              <span className="text-fg-2">
-                {REVIEW.roundOf(v.round)} {lensName(v.lens)}
-                {COMMON.separator}
-                {reviewDecision(v.decision).label}
-                {COMMON.listSeparator}
-              </span>
-              {v.line}
-            </li>
-          ))}
+        // Apart from the titles, so the count above matches the bullets.
+        <ul className="text-fg-2 flex flex-col gap-1 text-xs">
+          {group.verdicts.map((v) => {
+            const review = `${REVIEW.roundOf(v.round)} ${lensName(v.lens)}`
+            return (
+              <li key={`${v.round}:${v.lens}`}>
+                {fixed ? (
+                  REVIEW.askedFor(review)
+                ) : (
+                  <>
+                    {review}
+                    <span title={reviewDecision(v.decision).title}>
+                      {COMMON.separator}
+                      {reviewDecision(v.decision).label}
+                    </span>
+                  </>
+                )}
+              </li>
+            )
+          })}
         </ul>
       ) : null}
     </div>
@@ -96,11 +117,13 @@ function Group({ label, group }: { label: string; group: HighlightGroup }) {
 /**
  * The reviews in short: what the rounds before the last made the run fix,
  * what the last round left as advice, and what it still blocked on when it
- * did not pass. Each review's notes are in the evidence below.
+ * did not pass. Verdict reviews show their round, lens and verdict only;
+ * each review's notes are in the evidence below.
  */
 export function ReviewHighlightsPanel({ h }: { h: ReviewHighlights }) {
   // Before any review round the stage track already says so.
   if (h.rounds === 0) return null
+  const verdicts = [h.fixed, h.left, h.open].some((g) => g.verdicts.length > 0)
   return (
     <Panel title={REVIEW.highlights}>
       <div className="flex flex-col gap-3">
@@ -113,9 +136,12 @@ export function ReviewHighlightsPanel({ h }: { h: ReviewHighlights }) {
           className={`grid gap-4 md:grid-cols-2 ${h.passed ? '' : 'lg:grid-cols-3'}`}
         >
           {h.passed ? null : <Group label={REVIEW.open} group={h.open} />}
-          <Group label={REVIEW.fixed} group={h.fixed} />
+          <Group label={REVIEW.fixed} group={h.fixed} fixed />
           <Group label={REVIEW.left} group={h.left} />
         </div>
+        {verdicts ? (
+          <p className="text-fg-2 text-xs">{REVIEW.notesInEvidence}</p>
+        ) : null}
       </div>
     </Panel>
   )

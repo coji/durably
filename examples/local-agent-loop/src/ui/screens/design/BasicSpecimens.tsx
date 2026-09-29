@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import { ActionButton } from '../../components/ActionButton'
+import { CheckLogs } from '../../components/CheckLogs'
 import { Commands } from '../../components/Commands'
 import { CopyButton, useCopy } from '../../components/copy'
 import { EmptyState } from '../../components/EmptyState'
@@ -8,13 +9,14 @@ import { LiveProgress } from '../../components/LiveProgress'
 import { Notice } from '../../components/Notice'
 import { LogWriteError, PathValue } from '../../components/PathValue'
 import { ReviewFindingTitles } from '../../components/ReviewFindingTitles'
-import { RelationLinks, RunLink } from '../../components/RunLink'
+import { RunLink } from '../../components/RunLink'
 import { kindStatus, TONES } from '../../components/status'
 import { StatusBadge } from '../../components/StatusBadge'
+import { TaskLineage } from '../../components/TaskLineage'
 import { Ago } from '../../components/Time'
 import { COMMON, COPY, DESIGN, KIND_NAME, REFRESH } from '../../glossary'
 import { commandText } from '../../labels'
-import { COMMANDS, NOW, TASKS } from './fixtures'
+import { COMMANDS, LINEAGE, NOW, TASKS } from './fixtures'
 import { State } from './Specimen'
 
 const KINDS = Object.keys(KIND_NAME) as (keyof typeof KIND_NAME)[]
@@ -192,21 +194,16 @@ const LOG_PATH =
 const minutesAgo = (minutes: number) =>
   new Date(Date.parse(NOW) - minutes * 60_000).toISOString()
 
-/** A run by its name, the runs linked to it, and a time from `now`. */
+/** A run by its name, the runs of its task, and a time from `now`. */
 export function LinkStates() {
-  const [approval, stopped, running] = TASKS
+  const [approval] = TASKS
   return (
     <>
       <State label={DESIGN.state.link}>
         <RunLink id={approval.id} name={approval.name} />
       </State>
       <State label={DESIGN.state.relations}>
-        <RelationLinks
-          relations={{
-            parent: { id: stopped.id, name: stopped.name },
-            children: [{ id: running.id, name: running.name }],
-          }}
-        />
+        <TaskLineage runs={LINEAGE} current={LINEAGE[2]?.id ?? ''} now={NOW} />
       </State>
       <State label={DESIGN.state.ago}>
         <span className="text-fg-2 text-sm">
@@ -244,7 +241,10 @@ export function FindingStates() {
   return <ReviewFindingTitles findings={FINDINGS} />
 }
 
-/** A path to copy, and a log that could not be written. */
+/**
+ * A path to copy, a log that could not be written, and the check logs under
+ * a stop's check text: a file that is gone, and a stop that named none.
+ */
 export function PathStates() {
   const { copied, copy } = useCopy()
   return (
@@ -259,6 +259,14 @@ export function PathStates() {
       </State>
       <State label={DESIGN.state.writeError}>
         <LogWriteError error="EACCES: permission denied, open 'check.stdout.log'" />
+      </State>
+      <State label={DESIGN.state.logMissing}>
+        <CheckLogs
+          logs={[{ kind: 'checkStdout', path: LOG_PATH, exists: false }]}
+        />
+      </State>
+      <State label={DESIGN.state.noLog}>
+        <CheckLogs logs={[]} />
       </State>
     </>
   )

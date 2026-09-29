@@ -1,3 +1,4 @@
+import { CheckLogs } from '../../components/CheckLogs'
 import { Commands } from '../../components/Commands'
 import { CopyAnnouncer, CopyButton, useCopy } from '../../components/copy'
 import { Field } from '../../components/KeyValue'
@@ -6,6 +7,7 @@ import { LiveProgress } from '../../components/LiveProgress'
 import { LogWriteError, PathValue } from '../../components/PathValue'
 import { COPY, DETAIL } from '../../glossary'
 import {
+  checkNamesLogs,
   detailField,
   diagnosisText,
   humanCheckText,
@@ -31,12 +33,22 @@ function detailRows(lines: string[]): { line: string; key: string }[] {
 
 type Failure = NonNullable<RunDetailResponse['diagnosis']['failure']>
 
-function FailureFields({ failure }: { failure: Failure }) {
+function FailureFields({
+  failure,
+  pathsShown,
+}: {
+  failure: Failure
+  /** The log paths are already shown under the check text. */
+  pathsShown: boolean
+}) {
   const { copied, copy } = useCopy()
+  const lines = pathsShown
+    ? failure.details.filter((line) => !isPathDetail(line))
+    : failure.details
   return (
     <>
       <dl className="mb-3 flex flex-col gap-2">
-        {detailRows(failure.details).map(({ line, key }) => {
+        {detailRows(lines).map(({ line, key }) => {
           const d = detailField(line)
           return (
             <Field key={key} label={d.label}>
@@ -76,6 +88,7 @@ export function StatusPanel({ data }: { data: RunDetailResponse }) {
   const failure = data.diagnosis.failure
   const next = data.diagnosis.next
   const delivery = data.report.delivery
+  const logsHere = failure ? checkNamesLogs(failure.kind, failure) : false
   const { copied, copy } = useCopy()
   return (
     <Panel title={DETAIL.conclusion}>
@@ -108,6 +121,14 @@ export function StatusPanel({ data }: { data: RunDetailResponse }) {
                 {humanCheckText(failure.kind, failure)}
               </span>
             </Field>
+            {logsHere ? (
+              <div className="flex flex-col gap-1">
+                <dt className="text-fg-2 text-xs">{DETAIL.checkLogs}</dt>
+                <dd>
+                  <CheckLogs logs={data.checkLogs} />
+                </dd>
+              </div>
+            ) : null}
             <Field label={DETAIL.retry}>
               <span className="font-ui">{retryLabel(failure.retryable)}</span>
             </Field>
@@ -118,13 +139,14 @@ export function StatusPanel({ data }: { data: RunDetailResponse }) {
         ) : (
           <p className="text-fg-2 text-sm">{DETAIL.noNext}</p>
         )}
-        {failure && failure.details.length > 0 ? (
+        {failure &&
+        failure.details.some((line) => !logsHere || !isPathDetail(line)) ? (
           <details className="text-sm">
             <summary className="text-fg-2 hover:text-fg inline-flex min-h-8 cursor-pointer items-center text-xs">
               {DETAIL.stopRecord}
             </summary>
             <div className="mt-2">
-              <FailureFields failure={failure} />
+              <FailureFields failure={failure} pathsShown={logsHere} />
             </div>
           </details>
         ) : null}

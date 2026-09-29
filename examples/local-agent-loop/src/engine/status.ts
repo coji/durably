@@ -75,6 +75,10 @@ export interface TaskRunInput {
   kind: DiagnosisKind
   /** The run's `summary.success`: completed with its candidate approved. */
   approved: boolean
+  /** The report's lead time; null while open or when not known. */
+  leadTimeMs: number | null
+  /** The report's cost; null when any call's usage or price is not known. */
+  costUsd: number | null
 }
 
 export interface TaskRun {
@@ -82,6 +86,8 @@ export interface TaskRun {
   parentId: string | null
   kind: DiagnosisKind
   approved: boolean
+  /** Which repair of the task this is, oldest first; null for a first run. */
+  repair: number | null
   /**
    * A repair run that did not get approved while a later repair of the same
    * parent did: it no longer needs a person.
@@ -105,6 +111,19 @@ export interface Task {
   runs: TaskRun[]
   /** When the task's newest run was created. */
   latestAt: string
+  /**
+   * Lead time and cost summed over every run of the task. Either is null
+   * when any run's is not known, so a total never passes for more than it
+   * covers.
+   */
+  total: { leadTimeMs: number | null; costUsd: number | null }
+}
+
+/** The sum of every value, or null when any one is not known. */
+function sumKnown(values: (number | null)[]): number | null {
+  return values.some((v) => v === null)
+    ? null
+    : values.reduce<number>((sum, v) => sum + (v ?? 0), 0)
 }
 
 const OPEN_KINDS: readonly DiagnosisKind[] = [
@@ -122,6 +141,34 @@ function attentionOf(kind: DiagnosisKind, superseded: boolean): TaskAttention {
   return 'done'
 }
 
+type Linked = Pick<TaskRunInput, 'id' | 'parentId'>
+
+/**
+ * Each run's task, by its first run's ID: up through its parents while
+ * they are among `runs`.
+ */
+function taskRoots(runs: Linked[]): (run: Linked) => string {
+  const byId = new Map(runs.map((r) => [r.id, r]))
+  return (run) => {
+    const seen = new Set<string>()
+    let at = run
+    while (at.parentId && byId.has(at.parentId) && !seen.has(at.id)) {
+      seen.add(at.id)
+      at = byId.get(at.parentId) as Linked
+    }
+    return at.id
+  }
+}
+
+/** The IDs of every run in the task `id` belongs to, as `groupTasks` groups. */
+export function taskRunIds(runs: Linked[], id: string): string[] {
+  const rootOf = taskRoots(runs)
+  const run = runs.find((r) => r.id === id)
+  if (!run) return []
+  const root = rootOf(run)
+  return runs.filter((r) => rootOf(r) === root).map((r) => r.id)
+}
+
 const newestFirst = (x: { createdAt: string }, y: { createdAt: string }) =>
   Date.parse(y.createdAt) - Date.parse(x.createdAt)
 
@@ -131,16 +178,7 @@ const newestFirst = (x: { createdAt: string }, y: { createdAt: string }) =>
  * parent is not among `runs` starts a task of its own.
  */
 export function groupTasks(runs: TaskRunInput[]): Task[] {
-  const byId = new Map(runs.map((r) => [r.id, r]))
-  const rootOf = (run: TaskRunInput): string => {
-    const seen = new Set<string>()
-    let at = run
-    while (at.parentId && byId.has(at.parentId) && !seen.has(at.id)) {
-      seen.add(at.id)
-      at = byId.get(at.parentId) as TaskRunInput
-    }
-    return at.id
-  }
+  const rootOf = taskRoots(runs)
   const superseded = (run: TaskRunInput): boolean =>
     run.parentId !== null &&
     !run.approved &&
@@ -158,6 +196,7 @@ export function groupTasks(runs: TaskRunInput[]): Task[] {
   }
   const tasks = [...groups].map(([id, list]): Task => {
     const ordered = [...list].sort((x, y) => -newestFirst(x, y))
+    let repairs = 0
     const taskRuns = ordered.map((run) => {
       const replaced = superseded(run)
       return {
@@ -165,6 +204,7 @@ export function groupTasks(runs: TaskRunInput[]): Task[] {
         parentId: run.parentId,
         kind: run.kind,
         approved: run.approved,
+        repair: run.parentId === null ? null : ++repairs,
         superseded: replaced,
         attention: attentionOf(run.kind, replaced),
       }
@@ -190,6 +230,10 @@ export function groupTasks(runs: TaskRunInput[]): Task[] {
       representative: representative?.id ?? id,
       runs: taskRuns,
       latestAt: newest[0]?.createdAt ?? '',
+      total: {
+        leadTimeMs: sumKnown(ordered.map((r) => r.leadTimeMs)),
+        costUsd: sumKnown(ordered.map((r) => r.costUsd)),
+      },
     }
   })
   return tasks.sort(

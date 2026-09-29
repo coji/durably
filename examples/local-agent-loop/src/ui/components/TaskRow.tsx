@@ -1,7 +1,9 @@
 import { useId, useState, type ReactNode } from 'react'
 
-import type { DiagnosisKind } from '../../engine/status'
+import { formatCost, formatDuration } from '../../engine/format'
+import type { DiagnosisKind, TaskRun } from '../../engine/status'
 import { TERMINAL_STATUSES } from '../../engine/terminal'
+import { COMMON, LIST } from '../glossary'
 import { Chevron } from './Layout'
 import { IdSuffix } from './RunLink'
 import { conclusionStatus, kindStatus, type Status } from './status'
@@ -25,9 +27,15 @@ export function runState(run: {
   return run.kind === 'stopped' ? { ...ended, tone: 'failed' } : ended
 }
 
+/** A run by its place in its task: the first run, or which repair. */
+export function runRole(run: Pick<TaskRun, 'repair'>): string {
+  return run.repair === null ? LIST.firstRun : LIST.repairRun(run.repair)
+}
+
 /**
  * One task in a list: its state, its name as a link to the run that shows
- * it, and a few facts on one line. The chevron opens what is below: the
+ * it, and a few facts on one line; below the md width the name takes up to
+ * two lines and the facts a line of their own. The chevron opens what is below: the
  * reason, the next step, and every run the task took. The name leads; the
  * ID is a quiet suffix.
  */
@@ -73,19 +81,21 @@ export function TaskRow({
           {href ? (
             <a
               href={href}
-              className="text-fg decoration-line-strong min-w-0 truncate text-sm font-medium hover:underline hover:underline-offset-2"
+              className="text-fg decoration-line-strong line-clamp-2 min-w-0 text-sm font-medium hover:underline hover:underline-offset-2 md:block md:truncate"
             >
               {name}
             </a>
           ) : (
-            <span className="min-w-0 truncate text-sm font-medium">{name}</span>
+            <span className="line-clamp-2 min-w-0 text-sm font-medium md:block md:truncate">
+              {name}
+            </span>
           )}
           <span className="shrink-0 whitespace-nowrap">
             <IdSuffix id={id} />
           </span>
         </span>
         {meta ? (
-          <span className="text-fg-2 ml-auto flex flex-wrap items-center gap-x-3 text-xs tabular-nums">
+          <span className="text-fg-2 flex basis-full flex-wrap items-center gap-x-3 pl-11 text-xs tabular-nums md:ml-auto md:basis-auto md:pl-0">
             {meta}
           </span>
         ) : null}
@@ -98,6 +108,28 @@ export function TaskRow({
         {children}
       </div>
     </li>
+  )
+}
+
+/**
+ * A finished task's time and cost, over every run it took; labelled as a
+ * total when it took more than one.
+ */
+export function TaskTotal({
+  total,
+  several,
+}: {
+  total: { leadTimeMs: number | null; costUsd: number | null }
+  several: boolean
+}) {
+  return (
+    <span className="inline-flex items-baseline gap-2">
+      {several ? <span title={LIST.totalTitle}>{LIST.total}</span> : null}
+      <span className="font-code">{formatDuration(total.leadTimeMs)}</span>
+      <span className="font-code" title={COMMON.costNote}>
+        {formatCost(total.costUsd)}
+      </span>
+    </span>
   )
 }
 

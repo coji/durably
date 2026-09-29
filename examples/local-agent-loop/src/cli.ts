@@ -33,8 +33,8 @@ import {
   trendToMarkdown,
 } from './engine/compare.js'
 import { classifyRun, DEMO } from './engine/failure-reasons.js'
+import { formatCost, formatDuration } from './engine/format.js'
 import {
-  isApprovedRun,
   reportToJson,
   reportToMarkdown,
   type LoopReport,
@@ -633,20 +633,33 @@ if (cmd === 'worker') {
   const now = Date.now()
   const worker = workerStatus()
   const runs = await durably.getRuns({ jobName: durably.jobs.agentLoop.name })
-  const seen = new Map<string, { run: Run; diagnosis: Diagnosis }>()
+  // Each run's report too, so a task's time and cost are the list's.
+  const children = repairChildrenByParent(runs)
+  const seen = new Map<
+    string,
+    { run: Run; diagnosis: Diagnosis; report: LoopReport }
+  >()
   for (const run of runs)
     seen.set(run.id, {
       run,
       diagnosis: await diagnose(durably, run, now, worker),
+      report: await buildReport(durably, run.id, {
+        children: children.get(run.id) ?? [],
+      }),
     })
   const tasks = groupTasks(
-    runs.map((run) => ({
-      id: run.id,
-      createdAt: run.createdAt,
-      parentId: repairParentId(run),
-      kind: seen.get(run.id)?.diagnosis.kind ?? 'finished',
-      approved: isApprovedRun(run.status, run.output),
-    })),
+    runs.map((run) => {
+      const s = seen.get(run.id)
+      return {
+        id: run.id,
+        createdAt: run.createdAt,
+        parentId: repairParentId(run),
+        kind: s?.diagnosis.kind ?? 'finished',
+        approved: s?.report.summary.success ?? false,
+        leadTimeMs: s?.report.summary.leadTimeMs ?? null,
+        costUsd: s?.report.summary.costUsd ?? null,
+      }
+    }),
   )
   await durably.db.destroy()
   // A task reads as its representative run's block, then the task it
@@ -659,6 +672,10 @@ if (cmd === 'worker') {
     lines.push(
       `  task:    ${runName(root?.run.input)}  (first run ${task.id}, ${task.runs.length} run(s))`,
     )
+    if (task.runs.length > 1)
+      lines.push(
+        `  total:   ${formatDuration(task.total.leadTimeMs, 'en')}, ${formatCost(task.total.costUsd, 'en')}  (lead time and cost over every run; unknown if any run's is)`,
+      )
     for (const r of task.runs)
       if (r.id !== task.representative)
         lines.push(

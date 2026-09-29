@@ -47,7 +47,11 @@ import {
   type Comparison,
   type Trend,
 } from '../engine/compare.js'
-import { classifyRun } from '../engine/failure-reasons.js'
+import {
+  checkLogFiles,
+  classifyRun,
+  type CheckLogFile,
+} from '../engine/failure-reasons.js'
 import type { VerificationLog } from '../engine/providers/types.js'
 import {
   liveElapsed,
@@ -68,9 +72,11 @@ import {
   diagnoseRun,
   groupTasks,
   needsHuman,
+  taskRunIds,
   type Diagnosis,
   type DiagnosisKind,
   type Task,
+  type TaskRun,
 } from '../engine/status.js'
 import { TERMINAL_STATUSES } from '../engine/terminal.js'
 import { BASELINE_STEP } from '../factory/types.js'
@@ -93,6 +99,16 @@ export interface RunRef {
 export interface Relations {
   parent: RunRef | null
   children: RunRef[]
+}
+
+/**
+ * One run of the task a detail page's run belongs to, with what its link
+ * shows: its place in the task, its state, and when it started.
+ */
+export interface LineageRun extends TaskRun {
+  status: string
+  conclusion: string | null
+  createdAt: string
 }
 
 /** One row of the run list. */
@@ -146,6 +162,16 @@ export interface RunDetailResponse {
   live: LiveElapsed | null
   pipeline: Pipeline
   relations: Relations
+  /**
+   * Every run of this run's task, oldest first, this run among them; empty
+   * when it has no parent or repairs.
+   */
+  lineage: LineageRun[]
+  /**
+   * The check logs a stop's details name, each looked up on disk; empty
+   * when the stop names none.
+   */
+  checkLogs: CheckLogFile[]
   /**
    * The run whose passing baseline check this run reused, named as other
    * run links are; null when the baseline check ran here or has not
@@ -209,10 +235,12 @@ export function runName(input: unknown): string {
 /**
  * Where a stage stands in a run: `running` / `waiting` / `current` is the
  * stage the run is at now (a worker on it, a person to decide, or neither);
- * `stopped` is where a run that did not finish ended.
+ * `stopped` is where a run that did not finish ended; `auto` is an approval
+ * the run's settings gave without a wait, on a run that went on to finish.
  */
 export type PipelineState =
   | 'done'
+  | 'auto'
   | 'running'
   | 'waiting'
   | 'current'
@@ -385,23 +413,34 @@ export function derivePipeline(input: PipelineInput): Pipeline {
           ? 'waiting'
           : 'current'
   }
+  // Only an auto-approving run reaches finish without an approval wait; a
+  // rejection needs the wait too.
+  const autoApproved =
+    (counts.get('finish') ?? 0) > 0 && (counts.get('approve') ?? 0) === 0
   const stages = order.map((stage) => {
     const count = counts.get(stage) ?? 0
     const state: PipelineState =
-      stage === at ? atState : count > 0 ? 'done' : 'not-reached'
+      stage === at
+        ? atState
+        : count > 0
+          ? 'done'
+          : stage === 'approve' && autoApproved
+            ? 'auto'
+            : 'not-reached'
     return { stage, state, count }
   })
 
   const parts = stages
     .filter((s) => s.count > 1)
     .map((s) => PIPELINE_WORDS.visits(stageName(s.stage), s.count))
-  // Stages the run passed by, such as approval on an auto-approved run.
+  // Stages the run passed by without entering them.
   const reached = stages.map((s) => s.state !== 'not-reached').lastIndexOf(true)
   const skipped = stages
     .slice(0, reached)
     .filter((s) => s.state === 'not-reached')
     .map((s) => stageName(s.stage))
   if (skipped.length > 0) parts.push(PIPELINE_WORDS.skipped(skipped))
+  if (autoApproved) parts.push(PIPELINE_WORDS.autoApproved)
   const name = at === null ? '' : stageName(at)
   if (at === null) parts.push(PIPELINE_WORDS.finished)
   else if (atState === 'stopped') parts.push(PIPELINE_WORDS.stoppedAt(name))
@@ -1293,6 +1332,8 @@ function createUiApi() {
         parentId: repairParentId(run),
         kind: rows[i]?.diagnosis.kind ?? 'finished',
         approved: report.summary.success,
+        leadTimeMs: report.summary.leadTimeMs,
+        costUsd: report.summary.costUsd,
       })),
     )
     return { ...base, exists: true, runs: rows, tasks }
@@ -1305,10 +1346,11 @@ function createUiApi() {
     if (!db || !found) throw new HttpError(404, `no run ${id}`)
     const src = readOnce(db, [found])
     const { report, fresh } = await reports.get(src, found)
-    const [seen, steps, baselineSource] = await Promise.all([
+    const [seen, steps, baselineSource, lineage] = await Promise.all([
       inspect(src, found, now, report, fresh),
       src.storage.getSteps(id),
       baselineSourceOf(src, report.baseline),
+      lineageOf(db, found, now),
     ])
     const stepOutputs: Record<string, unknown> = {}
     for (const s of steps)
@@ -1316,6 +1358,8 @@ function createUiApi() {
     return {
       now: new Date(now).toISOString(),
       ...seen,
+      lineage,
+      checkLogs: checkLogFiles(seen.diagnosis.failure?.details ?? []),
       baselineSource,
       trace: deriveTrace({
         run: found,
@@ -1332,6 +1376,69 @@ function createUiApi() {
         now,
       }),
     }
+  }
+
+  /**
+   * The task `run` belongs to, from every run of the job: each member
+   * diagnosed and grouped as the list groups it, so both number the
+   * repairs and mark a replaced run the same way.
+   */
+  async function lineageOf(
+    db: AgentLoopDurably,
+    run: Run,
+    now: number,
+  ): Promise<LineageRun[]> {
+    const all = await orEmpty(allRuns(db), [run])
+    const ids = new Set(
+      taskRunIds(
+        all.map((r) => ({ id: r.id, parentId: repairParentId(r) })),
+        run.id,
+      ),
+    )
+    const members = all.filter((r) => ids.has(r.id))
+    if (members.length <= 1) return []
+    const src = readOnce(db, members)
+    const children = repairChildrenByParent(all)
+    const read = await Promise.all(
+      members.map(async (m) => {
+        const { report, fresh } = await reports.get(
+          src,
+          m,
+          children.get(m.id) ?? [],
+        )
+        const { diagnosis } = await diagnoseRun(
+          src,
+          m,
+          now,
+          fresh ? { failure: report.failure } : undefined,
+        )
+        return { run: m, report, kind: diagnosis.kind }
+      }),
+    )
+    const [task] = groupTasks(
+      read.map(({ run: m, report, kind }) => ({
+        id: m.id,
+        createdAt: m.createdAt,
+        parentId: repairParentId(m),
+        kind,
+        approved: report.summary.success,
+        leadTimeMs: report.summary.leadTimeMs,
+        costUsd: report.summary.costUsd,
+      })),
+    )
+    return (task?.runs ?? []).flatMap((r) => {
+      const hit = read.find((x) => x.run.id === r.id)
+      return hit
+        ? [
+            {
+              ...r,
+              status: hit.run.status,
+              conclusion: hit.report.summary.conclusion,
+              createdAt: hit.run.createdAt,
+            },
+          ]
+        : []
+    })
   }
 
   async function compare(): Promise<CompareResponse> {

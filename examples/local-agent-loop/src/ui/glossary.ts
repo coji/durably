@@ -24,7 +24,6 @@ export const COMMON = {
   partialUsage: '使用量が分かった呼び出しだけの合計',
   partialTiming: '一部の区間だけを計測した値',
   separator: ' · ',
-  listSeparator: '：',
   started: '開始',
   count: (n: number | string) => `${n}件`,
   nth: (n: number | string) => `${n}回目`,
@@ -71,12 +70,6 @@ export const RUN_KIND_NAME: Record<string, string> = {
   normal: '通常の実行',
   repair: '外部の指摘からの修正',
 }
-
-/** The two sides of a link between repair runs. */
-export const RELATION_NAME = {
-  parent: '修正元',
-  children: '指摘からの修正',
-} as const
 
 export const TRIAGE_NAME: Record<string, string> = {
   routine: '定型',
@@ -129,7 +122,7 @@ export const KIND_NAME: Record<DiagnosisKind, string> = {
 
 /** A finished run's conclusion as a state name. */
 export const CONCLUSION_NAME: Record<string, string> = {
-  approved: '承認',
+  approved: '承認済み',
   rejected: '却下',
   'verification-failed': '検証失敗',
   'review-cap-reached': 'レビュー上限',
@@ -139,6 +132,7 @@ export const CONCLUSION_NAME: Record<string, string> = {
 
 /** Words beside a stage in the stage track, so no state rests on color. */
 export const PIPELINE_SUFFIX: Partial<Record<PipelineState, string>> = {
+  auto: '自動',
   running: '実行中',
   waiting: '人待ち',
   stopped: '停止',
@@ -173,6 +167,7 @@ export const CHECKPOINT_NAME: Record<TraceCheckpoint, string> = {
 export const PIPELINE_WORDS = {
   visits: (stage: string, n: number) => `${stage} ${n}回`,
   skipped: (stages: string[]) => `${stages.join('と')}は通らず`,
+  autoApproved: '承認は設定による自動',
   finished: '完了まで終わった',
   stoppedAt: (stage: string) => `${stage}で停止`,
   runningAt: (stage: string) => `いまは${stage}を実行中`,
@@ -357,8 +352,9 @@ export const DETAIL_TEXT = {
 
 /**
  * The CLI's English note on a next command, in Japanese. The page shows it
- * under the buttons, so guidance such as "read the reviews first" is not
- * lost when the note is stripped from the command. Unknown notes are dropped.
+ * as the button's tooltip, so guidance such as "read the reviews first" is
+ * not lost when the note is stripped from the command. Unknown notes are
+ * dropped.
  */
 export const COMMAND_NOTES: [string, string][] = [
   [
@@ -463,9 +459,9 @@ export const SHELL = {
   product: 'local-agent-loop',
   skipToContent: '本文へ移動',
   nav: '画面',
-  runs: '実行一覧',
+  runs: 'タスク一覧',
   compare: '集計',
-  back: '← 実行一覧',
+  back: '← タスク一覧',
   runFallback: '実行の詳細',
 } as const
 
@@ -482,8 +478,8 @@ export const REFRESH = {
 // ---------------------------------------------------------------- run list
 
 export const LIST = {
-  attention: '待っているもの',
-  attentionEmpty: '待っているものはありません',
+  attention: '人の手が要るもの',
+  attentionEmpty: '人の手が要るものはありません',
   active: '動いているもの',
   activeEmpty: '動いている実行も、順番を待つ実行もありません。',
   done: '終わったタスク',
@@ -503,6 +499,11 @@ export const LIST = {
   supersededTitle:
     '同じ修正元から後に始めた修正が承認されたので、この実行は判断が要りません',
   showRuns: (name: string) => `${name}の実行を表示`,
+  total: '合計',
+  totalTitle:
+    'タスクのすべての実行の所要時間と費用を足した値です。どれかの実行の値が分からないときは不明です。',
+  lineage: '同じタスクの実行',
+  current: '表示中',
 } as const
 
 export const COLUMN = {
@@ -557,8 +558,15 @@ export const DETAIL = {
   runId: '実行 ID',
   timeAndCost: '工程ごとの時間と費用',
   work: '作業時間',
-  wall: '経過',
+  wall: '所要時間',
   noCost: '–',
+  noCostNote: '費用の「–」は、モデルを呼ばなかった工程です。',
+  workOverLead:
+    '作業時間が所要時間より長いのは、並んで動いた工程を重ねて数えるためです。',
+  checkLogs: 'チェックのログファイル',
+  logMissing: 'ファイルがありません',
+  noLogRecorded:
+    'この実行の記録には、ログファイルの場所が残っていません。チェックの出力はレポートの検証の試行で読みます。',
   specTogether: '仕様の工程まとめ',
   specTogetherTitle:
     '仕様の作成、仕様レビュー、採点コマンドの決定を合わせた経過時間です。並んだレビューは一度だけ数え、人の判断を待った時間は含みません。',
@@ -618,6 +626,9 @@ export const REVIEW = {
   more: (n: string) => `ほか ${n} 件`,
   notes: 'メモを読む',
   roundOf: (n: number) => `${n}回目`,
+  /** A verdict review that asked for changes a later round no longer asked for. */
+  askedFor: (review: string) => `${review}が求めた修正`,
+  notesInEvidence: 'メモの本文は、下の根拠の「レビュー」で読めます。',
 } as const
 
 export const SPEC = {
@@ -715,7 +726,6 @@ export const TRACE = {
   stdout: '標準出力',
   stderr: '標準エラー',
   writeError: '書き込みエラー',
-  logLater: 'この行のログは、まだここに表示しません。',
 } as const
 
 // ---------------------------------------------------------------- compare
@@ -726,7 +736,10 @@ export const COMPARE = {
   configTab: '設定ごとの比較',
   empty: '終わった実行がまだないので、集計するものがありません。',
   intro: (runs: number) =>
-    `終わった実行 ${runs} 件を設定のまとまりごとに集計しています。外部の指摘からの修正は通常の実行と分け、修正元の時間や費用は含めません。不明な値は 0 として扱わず、統計から除いて「不明」の列に数えます。費用は API 換算の参考値です。`,
+    `終わった実行 ${runs} 件を、設定のまとまりごとに集計しています。`,
+  rules: '集計の決まり',
+  rulesTitle:
+    '外部の指摘からの修正は通常の実行と分け、修正元の時間や費用は含めません。不明な値は 0 として扱わず、統計から除いて「不明」の列に数えます。費用は API 換算の参考値です。',
   config: (version: string | null) => `設定 ${version ?? '版なし'}`,
   runs: (n: string) => `${n} 件`,
   successes: (n: string) => `成功 ${n}`,
@@ -758,19 +771,21 @@ export const COMPARE = {
 
 export const TREND = {
   intro: (days: number, runs: number) =>
-    `直近 ${days} 日に終わった実行 ${runs} 件を、週ごとと、実装に使ったモデルと推論量ごとにまとめています。`,
+    `直近 ${days} 日に終わった実行 ${runs} 件を、実装のモデルと推論量ごとに週で並べています。`,
   fakeLeftOut: (n: number) => `模擬の実行 ${n} 件は除いています。`,
   note: '週は月曜から始まります。時間、費用、修正回数は中央値で、分からない値は 0 とせず除きます。',
+  single: '1 件のみ',
+  singleTitle: 'この週の実行は 1 件だけなので、中央値はその 1 件の値です。',
   empty: (days: number) => `直近 ${days} 日に終わった実行はありません。`,
   week: '週',
-  runs: '件数',
+  runs: '実行数',
   approvalRate: '承認率',
   leadTime: '所要時間',
   cost: '費用',
   repairs: '修正回数',
   total: (days: number) => `${days} 日間`,
   noRuns: '–',
-  groupRuns: (n: string, rate: string) => `${n} 件 · 承認率 ${rate}`,
+  groupRuns: (n: string, rate: string) => `実行 ${n} 件 · 承認率 ${rate}`,
 } as const
 
 // ---------------------------------------------------------------- design
@@ -868,7 +883,11 @@ export const DESIGN = {
     loading: '読み込み中',
     error: '読み込めない',
     link: '実行へのリンク',
-    relations: '修正元と修正',
+    relations: '同じタスクの実行',
+    autoApproved: '設定による自動の承認',
+    logMissing: 'ファイルがないログ',
+    noLog: '場所の記録がないログ',
+    total: '複数の実行の合計',
     ago: '相対時刻',
     between: '工程の合間',
     path: 'コピーできるパス',

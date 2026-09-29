@@ -46,7 +46,25 @@ function ViewSwitch({
   )
 }
 
-/** A week's or the window's numbers; a row without runs says so once. */
+/** What the view counts in one sentence; how it counts, on hover. */
+function Intro({ text, rules }: { text: string; rules: string }) {
+  return (
+    <p className="text-fg-2 text-sm">
+      {text}{' '}
+      <span
+        title={rules}
+        className="decoration-line-strong cursor-help text-xs underline decoration-dotted underline-offset-2"
+      >
+        {COMPARE.rules}
+      </span>
+    </p>
+  )
+}
+
+/**
+ * A week's or the window's numbers; a row without runs says so once, and a
+ * week of a single run is marked, since its medians are that run's values.
+ */
 function TrendRow({
   label,
   cell,
@@ -60,13 +78,25 @@ function TrendRow({
   strong?: boolean
 }) {
   const empty = cell.runs === 0
+  // A week of one run has that run's values as its medians.
+  const single = cell.runs === 1 && !strong
   const dash = <span className="text-fg-3">{TREND.noRuns}</span>
   const median = (stat: Stat, f: Formatter) =>
     empty ? dash : <MedianCell stat={stat} f={f} />
   const lead = cell.leadTimeMs.median
   return (
     <tr className={strong ? 'font-medium' : undefined}>
-      <Td>{label}</Td>
+      <Td>
+        {label}
+        {single ? (
+          <span
+            title={TREND.singleTitle}
+            className="text-fg-2 bg-sunken ml-2 rounded-sm px-1 text-xs font-normal whitespace-nowrap"
+          >
+            {TREND.single}
+          </span>
+        ) : null}
+      </Td>
       <Td num>{formatCount(cell.runs)}</Td>
       <Td num>{empty ? dash : formatPercent(cell.approvalRate)}</Td>
       <Td num>
@@ -150,13 +180,10 @@ export function TrendScreen({
         <EmptyState>{TREND.empty(data.days)}</EmptyState>
       ) : (
         <>
-          <div className="text-fg-2 flex flex-col gap-1 text-sm">
-            <p>
-              {TREND.intro(data.days, data.runIds.length)}
-              {data.includeFake ? '' : TREND.fakeLeftOut(data.fakeExcluded)}
-            </p>
-            <p className="text-xs">{TREND.note}</p>
-          </div>
+          <Intro
+            text={TREND.intro(data.days, data.runIds.length)}
+            rules={`${data.includeFake ? '' : TREND.fakeLeftOut(data.fakeExcluded)}${TREND.note}`}
+          />
           <div className="grid gap-4 lg:grid-cols-2">
             {data.groups.map((g) => (
               <TrendGroupPanel
@@ -188,9 +215,10 @@ export function CompareScreen({
         <EmptyState>{COMPARE.empty}</EmptyState>
       ) : (
         <>
-          <p className="text-fg-2 text-sm">
-            {COMPARE.intro(data.runIds.length)}
-          </p>
+          <Intro
+            text={COMPARE.intro(data.runIds.length)}
+            rules={COMPARE.rulesTitle}
+          />
           <div className="flex flex-col gap-2">
             {groups.map((g) => (
               <GroupPanel

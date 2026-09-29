@@ -54,34 +54,42 @@ function Fact({
 /**
  * The run's time and cost in one line: how long it took from trigger to
  * end, how much work its stages did, how long it waited on a person, and
- * what it cost. No result here: the badge above says it once.
+ * what it cost. No result here: the badge above says it once. When the
+ * work adds up to more than the lead time, one line under it says why.
  */
 export function SummaryPanel({ report: r }: { report: LoopReport }) {
   const s = r.summary
+  const workOverLead =
+    s.workMs != null && s.leadTimeMs != null && s.workMs > s.leadTimeMs
   return (
-    <dl className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-6">
-      <Fact label={DETAIL.leadTime} value={formatDuration(s.leadTimeMs)} />
-      <Fact
-        label={DETAIL.workTime}
-        value={formatDuration(s.workMs)}
-        title={DETAIL.timeNote}
-      />
-      <Fact label={DETAIL.humanWait} value={formatDuration(s.humanWaitMs)} />
-      <Fact
-        label={DETAIL.cost}
-        value={formatCost(s.costUsd)}
-        title={COMMON.costNote}
-      />
-      <Fact label={DETAIL.totalTokens} value={formatTokens(s.totalTokens)}>
-        {s.totalTokens == null || tokensComplete(r) ? null : (
-          <PartialTag title={COMMON.partialUsage} />
-        )}
-      </Fact>
-      <Fact
-        label={DETAIL.repairsReviews}
-        value={`${formatCount(s.repairs)} / ${formatCount(s.reviewRounds)}`}
-      />
-    </dl>
+    <div className="flex flex-col gap-2">
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3 lg:grid-cols-6">
+        <Fact label={DETAIL.leadTime} value={formatDuration(s.leadTimeMs)} />
+        <Fact
+          label={DETAIL.workTime}
+          value={formatDuration(s.workMs)}
+          title={DETAIL.timeNote}
+        />
+        <Fact label={DETAIL.humanWait} value={formatDuration(s.humanWaitMs)} />
+        <Fact
+          label={DETAIL.cost}
+          value={formatCost(s.costUsd)}
+          title={COMMON.costNote}
+        />
+        <Fact label={DETAIL.totalTokens} value={formatTokens(s.totalTokens)}>
+          {s.totalTokens == null || tokensComplete(r) ? null : (
+            <PartialTag title={COMMON.partialUsage} />
+          )}
+        </Fact>
+        <Fact
+          label={DETAIL.repairsReviews}
+          value={`${formatCount(s.repairs)} / ${formatCount(s.reviewRounds)}`}
+        />
+      </dl>
+      {workOverLead ? (
+        <p className="text-fg-2 text-xs">{DETAIL.workOverLead}</p>
+      ) : null}
+    </div>
   )
 }
 

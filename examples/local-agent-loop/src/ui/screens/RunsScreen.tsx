@@ -1,5 +1,5 @@
 import { formatCost, formatCount, formatDuration } from '../../engine/format'
-import type { Task, TaskRun } from '../../engine/status'
+import type { Task } from '../../engine/status'
 import { Commands } from '../components/Commands'
 import { EmptyState } from '../components/EmptyState'
 import { Section } from '../components/Layout'
@@ -7,24 +7,19 @@ import { LiveProgress } from '../components/LiveProgress'
 import { IdSuffix } from '../components/RunLink'
 import { StageTrack } from '../components/StageTrack'
 import { StatusBadge } from '../components/StatusBadge'
-import { runState, TaskList, TaskRow } from '../components/TaskRow'
+import {
+  runRole,
+  runState,
+  TaskList,
+  TaskRow,
+  TaskTotal,
+} from '../components/TaskRow'
 import { Ago } from '../components/Time'
 import { COMMON, LIST } from '../glossary'
 import { diagnosisText, retryLabel } from '../labels'
 import type { RunRow, RunsResponse } from '../server'
 
 const runHref = (id: string) => `#/runs/${encodeURIComponent(id)}`
-
-/** Each run by its place in the task: the first run, then each repair. */
-function roleLabels(runs: TaskRun[]): Map<string, string> {
-  let repairs = 0
-  return new Map(
-    runs.map((r) => [
-      r.id,
-      r.parentId === null ? LIST.firstRun : LIST.repairRun(++repairs),
-    ]),
-  )
-}
 
 /** Every run of a task, oldest first, each by its place in the task. */
 function TaskRuns({
@@ -36,7 +31,6 @@ function TaskRuns({
   rows: Map<string, RunRow>
   now: string
 }) {
-  const roles = roleLabels(task.runs)
   return (
     <ol className="border-line flex flex-col border-t">
       {task.runs.map((r) => {
@@ -58,7 +52,7 @@ function TaskRuns({
                 href={runHref(r.id)}
                 className="text-fg decoration-line-strong underline underline-offset-2 hover:decoration-current"
               >
-                {roles.get(r.id)}
+                {runRole(r)}
               </a>
               <IdSuffix id={r.id} />
               {r.superseded ? (
@@ -86,22 +80,17 @@ function TaskRuns({
   )
 }
 
-/** The facts at the end of a task's line. */
+/**
+ * The facts at the end of a task's line. A finished task shows its time and
+ * cost over every run, marked as a total when it took more than one.
+ */
 function Meta({ task, rep, now }: { task: Task; rep: RunRow; now: string }) {
   const finished = task.attention === 'done'
+  const several = task.runs.length > 1
   return (
     <>
-      {task.runs.length > 1 ? (
-        <span>{LIST.runs(formatCount(task.runs.length))}</span>
-      ) : null}
-      {finished ? (
-        <>
-          <span className="font-code">{formatDuration(rep.leadTimeMs)}</span>
-          <span className="font-code" title={COMMON.costNote}>
-            {formatCost(rep.costUsd)}
-          </span>
-        </>
-      ) : null}
+      {several ? <span>{LIST.runs(formatCount(task.runs.length))}</span> : null}
+      {finished ? <TaskTotal total={task.total} several={several} /> : null}
       <Ago iso={rep.createdAt} now={now} />
     </>
   )

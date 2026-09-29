@@ -52,6 +52,7 @@ import {
 import { checkpointPaths } from '../src/engine/runner.js'
 import {
   groupTasks,
+  taskRunIds,
   needsAttention,
   type DiagnosisKind,
   type TaskRunInput,
@@ -167,6 +168,8 @@ describe('tasks', () => {
     parentId: null,
     kind,
     approved: false,
+    leadTimeMs: null,
+    costUsd: null,
     ...over,
   })
 
@@ -247,6 +250,57 @@ describe('tasks', () => {
       tasks.filter((t) => needsAttention(t.attention)).map((t) => t.id),
       ['spec', 'approval', 'stopped-new', 'stopped-old'],
     )
+  })
+
+  it('sums lead time and cost over the task, unknown when any run is, and numbers its repairs', () => {
+    const [task] = groupTasks([
+      run('root', 0, 'finished', {
+        approved: true,
+        leadTimeMs: 60_000,
+        costUsd: 1.5,
+      }),
+      run('fix1', 10, 'stopped', {
+        parentId: 'root',
+        leadTimeMs: 30_000,
+        costUsd: 0.25,
+      }),
+      run('fix2', 20, 'finished', {
+        parentId: 'root',
+        approved: true,
+        leadTimeMs: 45_000,
+        costUsd: 1,
+      }),
+    ])
+    assert.deepEqual(task?.total, { leadTimeMs: 135_000, costUsd: 2.75 })
+    assert.deepEqual(
+      task?.runs.map((r) => [r.id, r.repair]),
+      [
+        ['root', null],
+        ['fix1', 1],
+        ['fix2', 2],
+      ],
+    )
+    const [partial] = groupTasks([
+      run('root', 0, 'finished', { leadTimeMs: 60_000, costUsd: 1.5 }),
+      run('fix', 10, 'finished', {
+        parentId: 'root',
+        leadTimeMs: 30_000,
+        costUsd: null,
+      }),
+    ])
+    assert.deepEqual(partial?.total, { leadTimeMs: 90_000, costUsd: null })
+  })
+
+  it('finds every run of the task a run belongs to, as groupTasks groups them', () => {
+    const runs = [
+      { id: 'root', parentId: null },
+      { id: 'fix1', parentId: 'root' },
+      { id: 'fix2', parentId: 'fix1' },
+      { id: 'other', parentId: null },
+    ]
+    assert.deepEqual(taskRunIds(runs, 'fix2'), ['root', 'fix1', 'fix2'])
+    assert.deepEqual(taskRunIds(runs, 'other'), ['other'])
+    assert.deepEqual(taskRunIds(runs, 'missing'), [])
   })
 
   it('shows a task by the run that needs a person, even when a newer run is running', () => {
@@ -425,7 +479,7 @@ describe('pipeline and trace', () => {
     assert.equal(p.label, '工程: 実装 2回、検証 2回、検証で停止')
   })
 
-  it('(d) names a stage the run passed by, such as approval when auto-approved', () => {
+  it('(d) shows approval as automatic on a run that finished without an approval wait', () => {
     const p = derivePipeline({
       status: 'completed',
       diagnosisKind: 'finished',
@@ -438,11 +492,12 @@ describe('pipeline and trace', () => {
         step('stage:4:finish:deliver', 21, 22),
       ]),
     })
+    // No approval wait, yet the run finished: its settings approved it.
     assert.equal(
       stagesOf(p).find(([stage]) => stage === 'approve')?.[1],
-      'not-reached',
+      'auto',
     )
-    assert.equal(p.label, '工程: 承認は通らず、完了まで終わった')
+    assert.equal(p.label, '工程: 承認は設定による自動、完了まで終わった')
   })
 
   it('(e) shows the baseline check and preflight only on a run that entered them', () => {
@@ -3040,6 +3095,8 @@ describe('numbers on the screens', () => {
           parentId: null,
           kind: 'finished',
           approved: true,
+          leadTimeMs: r.leadTimeMs,
+          costUsd: r.costUsd,
         })),
       ),
     } as unknown as RunsResponse

@@ -71,7 +71,7 @@
   --size-trace-max: 32rem;
   --size-inspector: 20rem;
   --size-label: 6.5rem;
-  --size-stage-name: 7rem;
+  --size-stage-name: 9rem;
   --size-stage-value: 5rem;
   --size-scroll-margin: var(--space-12);
   --size-hatch: 4px;
@@ -242,6 +242,12 @@ dd {
 @container (width >= 40rem) {
   .trace-cols {
     grid-template-columns: minmax(12rem, 17rem) 7rem minmax(8rem, 1fr);
+  }
+}
+/* A narrow axis keeps a label on every other tick only. */
+@container (width < 40rem) {
+  .trace-tick-minor {
+    visibility: hidden;
   }
 }
 /* A tree row's indent: one step per level, set by `--level`. */

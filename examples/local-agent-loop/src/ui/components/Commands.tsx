@@ -1,4 +1,4 @@
-import { COMMAND_COPY, COMMON, COPY } from '../glossary'
+import { COMMAND_COPY, COPY } from '../glossary'
 import { commandNote, commandText } from '../labels'
 import { CopyAnnouncer, CopyButton, useCopy } from './copy'
 
@@ -32,8 +32,9 @@ function commandLabel(command: string): string {
 }
 
 /**
- * Next commands as copy buttons named for what they do. The command text,
- * which carries IDs such as the wait ID, stays behind a disclosure.
+ * Next commands as copy buttons named for what they do, each with the CLI's
+ * note as its tooltip. The command text, which carries IDs such as the wait
+ * ID, stays behind a disclosure.
  */
 export function Commands({ lines }: { lines: string[] }) {
   const { copied, copy } = useCopy()
@@ -42,31 +43,20 @@ export function Commands({ lines }: { lines: string[] }) {
     const command = commandText(line)
     return { command, label: commandLabel(command), note: commandNote(line) }
   })
-  const notes = commands.filter((c) => c.note !== null)
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap gap-2">
-        {commands.map(({ command, label }) => (
+        {commands.map(({ command, label, note }) => (
           <CopyButton
             key={command}
             text={command}
             label={label}
+            title={note ?? undefined}
             copied={copied}
             onCopy={copy}
           />
         ))}
       </div>
-      {notes.length > 0 && (
-        <ul className="text-fg-2 flex flex-col gap-1 text-xs">
-          {notes.map((n) => (
-            <li key={n.command}>
-              {n.label}
-              {COMMON.listSeparator}
-              {n.note}
-            </li>
-          ))}
-        </ul>
-      )}
       <details className="text-xs">
         <summary className="text-fg-2 hover:text-fg inline-flex min-h-8 cursor-pointer items-center">
           {COPY.commandText}

@@ -1,8 +1,8 @@
 import { CopyAnnouncer, CopyButton, useCopy } from '../components/copy'
 import { Collapsible, Panel } from '../components/Layout'
-import { RelationLinks } from '../components/RunLink'
 import { StageTrack } from '../components/StageTrack'
 import { StatusBadge } from '../components/StatusBadge'
+import { TaskLineage } from '../components/TaskLineage'
 import { runState } from '../components/TaskRow'
 import { Ago } from '../components/Time'
 import { TraceView } from '../components/trace/TraceView'
@@ -17,7 +17,7 @@ import { tokensComplete, TriagePanel } from './run/SummaryPanel'
 import { UsagePanels } from './run/UsagePanels'
 
 /**
- * The run's one state, when it started, its ID, the runs it is linked to
+ * The run's one state, when it started, its ID, the other runs of its task
  * and its stages. The state is said once: how it ended, or where it is.
  */
 function RunHeader({ data }: { data: RunDetailResponse }) {
@@ -51,7 +51,7 @@ function RunHeader({ data }: { data: RunDetailResponse }) {
           <span className="text-fg-2 text-xs">{DETAIL.fake}</span>
         ) : null}
       </div>
-      <RelationLinks relations={data.relations} />
+      <TaskLineage runs={data.lineage} current={r.runId} now={data.now} />
       <StageTrack pipeline={data.pipeline} />
     </div>
   )

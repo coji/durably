@@ -4,6 +4,7 @@ import type { Pipeline, PipelineState } from '../server'
 
 const STAGE_CLASS: Record<PipelineState, string> = {
   done: 'text-fg',
+  auto: 'text-fg',
   running: 'bg-running-bg text-running rounded-sm px-1 font-medium',
   waiting: 'bg-waiting-bg text-waiting rounded-sm px-1 font-medium',
   current: 'bg-sunken text-fg rounded-sm px-1 font-medium',
@@ -13,7 +14,8 @@ const STAGE_CLASS: Record<PipelineState, string> = {
 
 /**
  * The run's stages in their fixed order, on one line where it fits. A done
- * stage carries a check mark; a stage without one was not reached. Screen
+ * stage carries a check mark, an approval the settings gave says 自動 too;
+ * a stage without one was not reached. Screen
  * readers hear the server's one-sentence summary instead of the chips.
  */
 export function StageTrack({ pipeline }: { pipeline: Pipeline }) {
@@ -30,7 +32,7 @@ export function StageTrack({ pipeline }: { pipeline: Pipeline }) {
               {s.state === 'running' ? (
                 <span className="dot-live size-1.5 rounded-full bg-current" />
               ) : null}
-              {s.state === 'done' ? <span>✓</span> : null}
+              {s.state === 'done' || s.state === 'auto' ? <span>✓</span> : null}
               {stageName(s.stage)}
               {s.count > 1 ? (
                 <span className="tabular-nums">×{s.count}</span>

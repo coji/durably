@@ -71,7 +71,9 @@ function StageLine({
 }) {
   return (
     <li className={`stage-row items-center gap-3 text-sm ${className}`}>
-      <span title={title}>{name}</span>
+      <span title={title} className="whitespace-nowrap">
+        {name}
+      </span>
       <span className="stage-bar bg-sunken h-2 rounded-sm" aria-hidden>
         {share !== undefined ? (
           <span
@@ -91,7 +93,7 @@ function StageLine({
  * Each stage's work, wall-clock time and cost on one line, the work as a
  * bar; the spec stages together by their wall time; the whole run last,
  * its work beside its lead time. A note says why work can exceed the lead
- * time.
+ * time, and what a dash in the cost column means.
  */
 export function StageTimings({
   report,
@@ -105,10 +107,14 @@ export function StageTimings({
   const max = Math.max(1, ...report.stageTimings.map((t) => t.elapsedMs ?? 0))
   if (report.stageTimings.length === 0)
     return <EmptyState>{DETAIL.stageTimesEmpty}</EmptyState>
+  // A dash is a stage without a model call; a call of unknown cost is 不明.
+  const called = (stage: string) =>
+    report.stageUsage.find((x) => x.stage === stage)
   const cost = (stage: string) => {
-    const u = report.stageUsage.find((x) => x.stage === stage)
+    const u = called(stage)
     return u ? formatCost(u.costUsd) : DETAIL.noCost
   }
+  const dashes = report.stageTimings.some((t) => !called(t.stage))
   // A run with spec stages always has the spec stage itself.
   const spec = report.stageTimings.some((t) => t.stage === 'spec')
   return (
@@ -169,7 +175,10 @@ export function StageTimings({
           className="border-line border-t pt-2 font-medium"
         />
       </ul>
-      <p className="text-fg-2 text-xs">{DETAIL.timeNote}</p>
+      <div className="text-fg-2 flex flex-col gap-1 text-xs">
+        <p>{DETAIL.timeNote}</p>
+        {dashes ? <p>{DETAIL.noCostNote}</p> : null}
+      </div>
     </div>
   )
 }
