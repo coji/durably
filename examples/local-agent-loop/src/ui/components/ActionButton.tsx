@@ -6,8 +6,9 @@ import {
   type ReactNode,
 } from 'react'
 
-import { ACTION } from '../glossary'
+import { ACTION, COMMAND_COPY } from '../glossary'
 import { BUTTON, BUTTON_PRIMARY, BUTTON_QUIET } from './button'
+import { CopyAnnouncer, CopyButton, useCopy } from './copy'
 
 export type ActionStage = 'idle' | 'confirming' | 'busy'
 
@@ -22,10 +23,12 @@ const LOOK: Record<ActionLook, string> = {
 
 /**
  * An action on a run. With `confirm`, the first press only asks: the
- * question, the CLI command that does the same thing, and two answers. The
- * action runs on the second press; Escape or the other answer backs out.
- * In a wrapping row of buttons the question takes a line of its own.
- * `initialStage` starts the button in a given stage, for the design page.
+ * question, the CLI command that does the same thing with its copy button,
+ * and two answers. The action runs on the second press; Escape or the other
+ * answer backs out. In a wrapping row of buttons the question takes a line
+ * of its own. `onStageChange` tells the row, so it can set its other
+ * actions aside while this one asks or works. `initialStage` starts the
+ * button in a given stage, for the design page.
  */
 export function ActionButton({
   label,
@@ -34,6 +37,7 @@ export function ActionButton({
   look = 'default',
   disabled,
   initialStage = 'idle',
+  onStageChange,
 }: {
   label: string
   onAction: () => void | Promise<void>
@@ -45,12 +49,19 @@ export function ActionButton({
   look?: ActionLook
   disabled?: boolean
   initialStage?: ActionStage
+  onStageChange?: (stage: ActionStage) => void
 }) {
-  const [stage, setStage] = useState<ActionStage>(initialStage)
-  const trigger = useRef<HTMLButtonElement | null>(null)
-  // Set by a press, so a button shown already asking takes no focus.
+  const [stage, setStageState] = useState<ActionStage>(initialStage)
+  const setStage = (next: ActionStage) => {
+    setStageState(next)
+    onStageChange?.(next)
+  }
+  // Set by a press, so a button shown already asking takes no focus; set by
+  // backing out, so the button comes back with focus.
   const asked = useRef(false)
+  const returning = useRef(false)
   const questionId = useId()
+  const { copied, copy } = useCopy()
 
   const run = async () => {
     setStage('busy')
@@ -61,8 +72,8 @@ export function ActionButton({
     }
   }
   const backOut = () => {
+    returning.current = true
     setStage('idle')
-    trigger.current?.focus()
   }
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key !== 'Escape') return
@@ -84,11 +95,17 @@ export function ActionButton({
         {confirm.details ? (
           <div className="text-fg-2 text-sm">{confirm.details}</div>
         ) : null}
-        <div className="flex flex-col gap-1">
-          <span className="text-fg-2 text-xs">{ACTION.sameCommand}</span>
-          <code className="bg-sunken font-code block overflow-x-auto rounded-sm px-2 py-1 text-xs whitespace-pre">
+        <div className="flex items-center gap-2">
+          <code className="bg-sunken font-code block min-w-0 flex-1 overflow-x-auto rounded-sm px-2 py-1 text-xs whitespace-pre">
             {confirm.command}
           </code>
+          <CopyButton
+            text={confirm.command}
+            label={COMMAND_COPY.other}
+            copied={copied}
+            onCopy={copy}
+          />
+          <CopyAnnouncer copied={copied} />
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -117,7 +134,11 @@ export function ActionButton({
 
   return (
     <button
-      ref={trigger}
+      ref={(el) => {
+        if (!el || !returning.current) return
+        returning.current = false
+        el.focus()
+      }}
       type="button"
       disabled={disabled || stage === 'busy'}
       aria-busy={stage === 'busy' || undefined}

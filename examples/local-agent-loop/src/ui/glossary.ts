@@ -890,7 +890,7 @@ export const DESIGN = {
     runActions: {
       name: '実行への操作',
       about:
-        '主な操作は1つだけ強く出し、却下とアーカイブは控えめにして確認を挟みます。どの操作にも同じ操作のコマンドを添えます。',
+        '主な操作は1つだけ強く出し、却下とアーカイブは控えめにして確認を挟みます。確認のあいだはほかの操作を隠します。コマンドは閉じた「同じ操作のコマンド」にまとめます。',
     },
     trace: {
       name: '時系列',
@@ -959,6 +959,8 @@ export const DESIGN = {
     specRevise: '仕様のメモを書く',
     stopped: '止まった実行',
     stoppedNoRetry: '再実行できない停止',
+    approveAsking: '承認の確認',
+    archiveAsking: 'アーカイブの確認',
     archived: 'アーカイブ済み',
     result: '操作の結果',
     failed: '操作が断られた',

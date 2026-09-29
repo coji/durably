@@ -1,6 +1,10 @@
 import type { FailureClassification } from '../../../engine/failure-reasons'
 import type { Diagnosis } from '../../../engine/status'
-import { ActionNotice, type Act } from '../../components/ActionNotice'
+import {
+  ActionNotice,
+  type Act,
+  type ActionName,
+} from '../../components/ActionNotice'
 import { RunActions, type ActionTarget } from '../../components/RunActions'
 import { ArchivedMark } from '../../components/SupersededMark'
 import { ACTION, DESIGN } from '../../glossary'
@@ -57,30 +61,42 @@ const decide = (id: string) => [
   `${DEMO} reject --run ${id} --wait ${WAIT}`,
 ]
 
-const RUNS: [keyof typeof DESIGN.state, ActionTarget, boolean?][] = [
-  [
-    'approval',
-    target(approval, {
-      diagnosis: diagnosis('approval', decide(approval.id)),
-      waitId: WAIT,
-      reviewHighlights: {
-        rounds: 2,
-        last: 'passed',
-        lastPasses: [],
-        earlier: {
-          count: 1,
-          titles: ['The cost column still prints six decimals'],
-          verdicts: [],
-        },
-        left: {
-          count: 1,
-          titles: ['Name the rounding rule in the README'],
-          verdicts: [],
-        },
-        open: { count: 0, titles: [], verdicts: [] },
-      },
-    }),
-  ],
+const approvalRun = target(approval, {
+  diagnosis: diagnosis('approval', decide(approval.id)),
+  waitId: WAIT,
+  reviewHighlights: {
+    rounds: 2,
+    last: 'passed',
+    lastPasses: [],
+    earlier: {
+      count: 1,
+      titles: ['The cost column still prints six decimals'],
+      verdicts: [],
+    },
+    left: {
+      count: 1,
+      titles: ['Name the rounding rule in the README'],
+      verdicts: [],
+    },
+    open: { count: 0, titles: [], verdicts: [] },
+  },
+})
+
+const stoppedRun = target(stopped, {
+  diagnosis: diagnosis(
+    'stopped',
+    [
+      `${DEMO} report --run ${stopped.id} --format json`,
+      `${DEMO} retrigger --run ${stopped.id}`,
+    ],
+    { kind: 'verification-failed', retryable: true },
+  ),
+  archiveCommand: `${DEMO} archive --run ${stopped.id}`,
+})
+
+const RUNS: [keyof typeof DESIGN.state, ActionTarget, ActionName?][] = [
+  ['approval', approvalRun],
+  ['approveAsking', approvalRun, 'approve'],
   [
     'specApproval',
     target(approval, {
@@ -100,19 +116,10 @@ const RUNS: [keyof typeof DESIGN.state, ActionTarget, boolean?][] = [
       ]),
       waitId: WAIT,
     }),
-    true,
+    'spec-revise',
   ],
-  [
-    'stopped',
-    target(stopped, {
-      diagnosis: diagnosis(
-        'stopped',
-        [`${DEMO} retrigger --run ${stopped.id}`],
-        { kind: 'verification-failed', retryable: true },
-      ),
-      archiveCommand: `${DEMO} archive --run ${stopped.id}`,
-    }),
-  ],
+  ['stopped', stoppedRun],
+  ['archiveAsking', stoppedRun, 'archive'],
   [
     'stoppedNoRetry',
     target(stopped, {
@@ -143,11 +150,11 @@ const RUNS: [keyof typeof DESIGN.state, ActionTarget, boolean?][] = [
 export function RunActionStates() {
   return (
     <>
-      {RUNS.map(([state, run, revising]) => (
+      {RUNS.map(([state, run, asking]) => (
         <State key={state} label={DESIGN.state[state]}>
           <div className="flex flex-col gap-2">
             {run.archived ? <ArchivedMark /> : null}
-            <RunActions run={run} act={act} lead initialRevising={revising} />
+            <RunActions run={run} act={act} lead initialAsking={asking} />
           </div>
         </State>
       ))}

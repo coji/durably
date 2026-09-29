@@ -1,14 +1,14 @@
 import { useState } from 'react'
 
-import { formatCount } from '../../engine/format'
 import type { ReviewHighlights } from '../../engine/report'
 import type { Diagnosis } from '../../engine/status'
-import { ACTION, COMMON, REVIEW } from '../glossary'
+import { ACTION } from '../glossary'
 import { commandText } from '../labels'
-import { ActionButton, type ActionLook } from './ActionButton'
+import { ActionButton, type ActionLook, type ActionStage } from './ActionButton'
 import type { Act, ActionName } from './ActionNotice'
 import { BUTTON, BUTTON_PRIMARY } from './button'
 import { Commands } from './Commands'
+import { ReviewHighlightsBody } from './ReviewHighlights'
 import { SpecReviseForm } from './SpecReviseForm'
 
 /** What the actions of one run read: the list row or the detail page. */
@@ -20,45 +20,6 @@ export interface ActionTarget {
   archiveCommand: string | null
   waitId: string | null
   reviewHighlights: ReviewHighlights | null
-}
-
-/** Finding titles the approval question shows per group. */
-const SHOWN = 3
-
-/** The reviews in two or three lines, asked before an approval. */
-function HighlightsBrief({ h }: { h: ReviewHighlights | null }) {
-  if (!h || h.rounds === 0) return null
-  const groups = (
-    [
-      [REVIEW.open, h.open],
-      [REVIEW.left, h.left],
-    ] as const
-  ).filter(([, g]) => g.count > 0)
-  return (
-    <div className="flex flex-col gap-1">
-      <p>
-        {REVIEW.rounds(formatCount(h.rounds))}
-        {COMMON.separator}
-        {h.last === 'passed'
-          ? REVIEW.passedLast
-          : h.last === 'blocked'
-            ? REVIEW.failedLast
-            : REVIEW.incompleteLast}
-      </p>
-      {groups.map(([label, g]) => (
-        <div key={label}>
-          <p>
-            {label} {COMMON.count(formatCount(g.count))}
-          </p>
-          <ul className="list-disc pl-4">
-            {g.titles.slice(0, SHOWN).map((title, at) => (
-              <li key={`${at}:${title}`}>{title}</li>
-            ))}
-          </ul>
-        </div>
-      ))}
-    </div>
-  )
 }
 
 /**
@@ -92,17 +53,67 @@ type Press = (
   body?: object,
 ) => () => Promise<void>
 
+/** How a button starts, and what it tells the row when its stage changes. */
+type Ask = (name: ActionName) => {
+  initialStage: ActionStage
+  onStageChange: (stage: ActionStage) => void
+}
+
+/**
+ * The offered actions with every one but the asking one set aside, so the
+ * row holds one decision while an action asks, works, or takes notes.
+ */
+function only(can: Offered, asking: ActionName | null): Offered {
+  if (asking === null) return can
+  const keep = (name: ActionName, line: string | null) =>
+    asking === name ? line : null
+  return {
+    spec: can.spec,
+    approve: keep('approve', can.approve),
+    reject: keep('reject', can.reject),
+    revise: keep('spec-revise', can.revise),
+    retrigger: keep('retrigger', can.retrigger),
+    archive: keep('archive', can.archive),
+    unarchive: keep('unarchive', can.unarchive),
+  }
+}
+
+/** Which action of the row is asking, and the hooks its button reports to. */
+function useAsking(initial: ActionName | undefined) {
+  const [asking, setAsking] = useState<ActionName | null>(initial ?? null)
+  const ask: Ask = (name) => ({
+    initialStage: initial === name ? 'confirming' : 'idle',
+    onStageChange: (stage) => setAsking(stage === 'idle' ? null : name),
+  })
+  return { asking, setAsking, ask }
+}
+
+/** What approving says first: the reviews in short, or what a spec approval skips. */
+function ApproveDetails({
+  spec,
+  h,
+}: {
+  spec: boolean
+  h: ReviewHighlights | null
+}) {
+  if (spec) return ACTION.specApproveNote
+  if (!h || h.rounds === 0) return null
+  return <ReviewHighlightsBody h={h} compact />
+}
+
 /** Approve and reject, of a candidate or of a blocked spec. */
 function DecisionButtons({
   run,
   can,
   first,
   press,
+  ask,
 }: {
   run: ActionTarget
   can: Offered
   first: ActionLook
   press: Press
+  ask: Ask
 }) {
   const waitId = run.waitId ?? ''
   const approve = can.spec ? ACTION.specApprove : ACTION.approve
@@ -113,12 +124,11 @@ function DecisionButtons({
           label={approve}
           look={can.spec ? 'default' : first}
           onAction={press('approve', approve, { waitId })}
+          {...ask('approve')}
           confirm={{
             command: can.approve,
-            details: can.spec ? (
-              ACTION.specApproveNote
-            ) : (
-              <HighlightsBrief h={run.reviewHighlights} />
+            details: (
+              <ApproveDetails spec={can.spec} h={run.reviewHighlights} />
             ),
           }}
         />
@@ -128,6 +138,7 @@ function DecisionButtons({
           label={ACTION.reject}
           look="quiet"
           onAction={press('reject', ACTION.reject, { waitId })}
+          {...ask('reject')}
           confirm={{
             command: can.reject,
             details: can.spec ? ACTION.specRejectNote : ACTION.rejectNote,
@@ -143,10 +154,12 @@ function StopButtons({
   can,
   first,
   press,
+  ask,
 }: {
   can: Offered
   first: ActionLook
   press: Press
+  ask: Ask
 }) {
   return (
     <>
@@ -155,6 +168,7 @@ function StopButtons({
           label={ACTION.retrigger}
           look={first}
           onAction={press('retrigger', ACTION.retrigger)}
+          {...ask('retrigger')}
         />
       ) : null}
       {can.archive ? (
@@ -162,6 +176,7 @@ function StopButtons({
           label={ACTION.archive}
           look="quiet"
           onAction={press('archive', ACTION.archive)}
+          {...ask('archive')}
           confirm={{ command: can.archive, details: ACTION.archiveNote }}
         />
       ) : null}
@@ -169,6 +184,7 @@ function StopButtons({
         <ActionButton
           label={ACTION.unarchive}
           onAction={press('unarchive', ACTION.unarchive)}
+          {...ask('unarchive')}
         />
       ) : null}
     </>
@@ -177,25 +193,32 @@ function StopButtons({
 
 /**
  * What a person can do to this run from the page, each through the same
- * function as its CLI command, which is shown beside it: decide an
- * approval or a blocked spec, run a safe stop again, or archive a stop.
- * `lead` sets the first action in ink, for the one screen it leads; reject
- * and archive stay quiet and ask first.
+ * function as its CLI command: decide an approval or a blocked spec, run a
+ * safe stop again, or archive a stop. `lead` sets the first action in ink,
+ * for the one screen it leads; reject and archive stay quiet and ask first.
+ * While one action asks, works, or takes notes, the others step aside. The
+ * CLI commands, the report and status ones among them, wait in one closed
+ * disclosure below the buttons; with no button to press they are the next
+ * step and stay in view.
  */
 export function RunActions({
   run,
   act,
   lead = false,
-  initialRevising = false,
+  initialAsking,
 }: {
   run: ActionTarget
   act: Act
   lead?: boolean
-  /** Start with the notes form open, for the design page. */
-  initialRevising?: boolean
+  /**
+   * Start with this action asking, or with the notes form open for
+   * `spec-revise`, for the design page.
+   */
+  initialAsking?: ActionName
 }) {
-  const [revising, setRevising] = useState(initialRevising)
-  const can = offered(run)
+  const { asking, setAsking, ask } = useAsking(initialAsking)
+  const offer = offered(run)
+  const can = only(offer, asking)
   const send = (action: ActionName, label: string, body?: object) =>
     act({ runId: run.id, name: run.name, action, label, body })
   // Awaited, so the button shows it is at work until the answer comes.
@@ -203,48 +226,51 @@ export function RunActions({
     await send(action, label, body)
   }
   const first: ActionLook = lead ? 'primary' : 'default'
-  const any = Object.values(can).some((v) => typeof v === 'string')
+  const any = Object.values(offer).some((v) => typeof v === 'string')
   // An archived run offers only its way back; any other shows every next
   // command, with the archive command after them.
-  const commands = can.unarchive
-    ? [can.unarchive]
-    : [...run.diagnosis.next, ...(can.archive ? [can.archive] : [])]
+  const commands = offer.unarchive
+    ? [offer.unarchive]
+    : [...run.diagnosis.next, ...(offer.archive ? [offer.archive] : [])]
+  const revising = asking === 'spec-revise'
   return (
-    <div className="flex flex-col gap-3">
-      {any ? (
-        <div className="flex flex-wrap items-start gap-2">
-          {can.revise ? (
-            <button
-              type="button"
-              aria-expanded={revising}
-              onClick={() => setRevising((r) => !r)}
-              className={lead ? BUTTON_PRIMARY : BUTTON}
-            >
-              {ACTION.specRevise}
-            </button>
-          ) : null}
-          <DecisionButtons run={run} can={can} first={first} press={press} />
-          <StopButtons can={can} first={first} press={press} />
-        </div>
-      ) : null}
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-start gap-2 empty:hidden">
+        {can.revise ? (
+          <button
+            type="button"
+            aria-expanded={revising}
+            onClick={() => setAsking(revising ? null : 'spec-revise')}
+            className={lead ? BUTTON_PRIMARY : BUTTON}
+          >
+            {ACTION.specRevise}
+          </button>
+        ) : null}
+        <DecisionButtons
+          run={run}
+          can={can}
+          first={first}
+          press={press}
+          ask={ask}
+        />
+        <StopButtons can={can} first={first} press={press} ask={ask} />
+      </div>
       {revising && can.revise ? (
         <SpecReviseForm
           command={can.revise}
-          focus={!initialRevising}
-          onCancel={() => setRevising(false)}
+          focus={initialAsking !== 'spec-revise'}
+          onCancel={() => setAsking(null)}
           onSend={async (notes) => {
             if (await send('spec-revise', ACTION.specRevise, { notes }))
-              setRevising(false)
+              setAsking(null)
           }}
         />
       ) : null}
-      {commands.length > 0 ? (
-        <div className="flex flex-col gap-1">
-          {any ? (
-            <span className="text-fg-2 text-xs">{ACTION.sameCommand}</span>
-          ) : null}
-          <Commands lines={commands} />
-        </div>
+      {asking === null ? (
+        <Commands
+          lines={commands}
+          summary={any ? ACTION.sameCommand : undefined}
+        />
       ) : null}
     </div>
   )
