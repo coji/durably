@@ -65,6 +65,7 @@ import {
 } from '../engine/status.js'
 import { TERMINAL_STATUSES } from '../engine/terminal.js'
 import { BASELINE_STEP } from '../factory/types.js'
+import { COMMON, PIPELINE_WORDS, RUN_NAME, TRACE_WORDS } from './glossary.js'
 import { lensName, roleName, stageName, stepPartName } from './labels.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -150,7 +151,7 @@ export interface CompareResponse {
 }
 
 /** The heading for the bundled sample, whose task never varies. */
-export const SUBJECT_RUN_NAME = '同梱題材: calc の add を直す'
+export const SUBJECT_RUN_NAME = RUN_NAME.subject
 
 const NAME_MAX = 80
 
@@ -179,7 +180,7 @@ export function runName(input: unknown): string {
           .split('\n')
           .map((l) => l.trim().replace(/^#+\s*/, ''))
           .find((l) => l.length > 0) ?? '')
-  if (line.length === 0) return '名前のないタスク'
+  if (line.length === 0) return RUN_NAME.unnamed
   return line.length > NAME_MAX ? `${line.slice(0, NAME_MAX - 1)}…` : line
 }
 
@@ -373,21 +374,21 @@ export function derivePipeline(input: PipelineInput): Pipeline {
 
   const parts = stages
     .filter((s) => s.count > 1)
-    .map((s) => `${stageName(s.stage)} ${s.count}回`)
+    .map((s) => PIPELINE_WORDS.visits(stageName(s.stage), s.count))
   // Stages the run passed by, such as approval on an auto-approved run.
   const reached = stages.map((s) => s.state !== 'not-reached').lastIndexOf(true)
   const skipped = stages
     .slice(0, reached)
     .filter((s) => s.state === 'not-reached')
     .map((s) => stageName(s.stage))
-  if (skipped.length > 0) parts.push(`${skipped.join('と')}は通らず`)
+  if (skipped.length > 0) parts.push(PIPELINE_WORDS.skipped(skipped))
   const name = at === null ? '' : stageName(at)
-  if (at === null) parts.push('完了まで終わった')
-  else if (atState === 'stopped') parts.push(`${name}で停止`)
-  else if (atState === 'running') parts.push(`いまは${name}を実行中`)
-  else if (atState === 'waiting') parts.push(`いまは${name}で人待ち`)
-  else parts.push(`いまは${name}`)
-  return { stages, label: `工程: ${parts.join('、')}` }
+  if (at === null) parts.push(PIPELINE_WORDS.finished)
+  else if (atState === 'stopped') parts.push(PIPELINE_WORDS.stoppedAt(name))
+  else if (atState === 'running') parts.push(PIPELINE_WORDS.runningAt(name))
+  else if (atState === 'waiting') parts.push(PIPELINE_WORDS.waitingAt(name))
+  else parts.push(PIPELINE_WORDS.at(name))
+  return { stages, label: PIPELINE_WORDS.sentence(parts) }
 }
 
 // ---------------------------------------------------------------- trace
@@ -590,21 +591,25 @@ function specEntryOf(name: string): {
   })
   if (name === 'spec:author')
     return entry(name, 'spec', roleName('spec-author'))
-  if (name === 'spec:final') return entry(name, 'spec', '仕様の確定')
+  if (name === 'spec:final') return entry(name, 'spec', TRACE_WORDS.specFinal)
   if (kind === 'spec' && a === 'fix' && b)
-    return entry(`spec:fix#${b}`, 'spec', `${roleName('spec-fix')} ${b}回目`)
+    return entry(
+      `spec:fix#${b}`,
+      'spec',
+      TRACE_WORDS.numbered(roleName('spec-fix'), b),
+    )
   if (kind === 'spec-review' && a && b)
     return entry(
       `spec-review:${b}#${a}`,
       'spec-review',
-      `${roleName(`spec-review:${b}`)} ${a}回目`,
+      TRACE_WORDS.numbered(roleName(`spec-review:${b}`), a),
       b,
     )
   if (kind === 'spec-wait' && a)
     return entry(
       `spec-wait#${a}`,
       'spec-wait',
-      `${stageName('spec-wait')} ${a}回目`,
+      TRACE_WORDS.numbered(stageName('spec-wait'), a),
     )
   return null
 }
@@ -843,10 +848,10 @@ export function deriveTrace(input: TraceInput): Trace {
           return node({
             id: `attempt:${a.attemptId}`,
             kind: 'attempt',
-            label:
-              multiStep && part
-                ? `${stepPartName(part)} 試行 ${n}`
-                : `試行 ${n}`,
+            label: TRACE_WORDS.attempt(
+              n,
+              multiStep && part ? stepPartName(part) : undefined,
+            ),
             stage: e.stage,
             iteration: at,
             state: stateOf(a),
@@ -953,7 +958,7 @@ export function deriveTrace(input: TraceInput): Trace {
     return node({
       id: `iteration:${n}`,
       kind: 'iteration',
-      label: `${n}回目`,
+      label: COMMON.nth(n),
       stage: null,
       iteration: n,
       state: states.includes('running')
@@ -986,7 +991,7 @@ export function deriveTrace(input: TraceInput): Trace {
   const root = node({
     id: 'run',
     kind: 'run',
-    label: '実行全体',
+    label: TRACE_WORDS.run,
     stage: null,
     iteration: null,
     state: terminal
@@ -1155,7 +1160,7 @@ async function relationsOf(
   src: ReportSource,
   lineage: LoopReport['lineage'] | undefined,
 ): Promise<Relations> {
-  const ref = (id: string) => runRef(src, id, '見つからない実行')
+  const ref = (id: string) => runRef(src, id, RUN_NAME.missing)
   return {
     parent: lineage?.parent ? await ref(lineage.parent.runId) : null,
     children: await Promise.all((lineage?.children ?? []).map(ref)),
@@ -1172,7 +1177,7 @@ async function baselineSourceOf(
   baseline: LoopReport['baseline'],
 ): Promise<RunRef | null> {
   const runId = baseline?.reusedFrom?.runId
-  return runId ? runRef(src, runId, '前の実行') : null
+  return runId ? runRef(src, runId, RUN_NAME.previous) : null
 }
 
 /** What both the list row and the detail page read for one run. */

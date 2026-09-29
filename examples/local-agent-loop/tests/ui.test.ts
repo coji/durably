@@ -9,11 +9,18 @@
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { request } from 'node:http'
 import { connect, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
@@ -45,11 +52,8 @@ import {
 import { checkpointPaths } from '../src/engine/runner.js'
 import type { DiagnosisKind } from '../src/engine/status.js'
 import { repairLabels } from '../src/factory/repair.js'
-import {
-  BaselineSource,
-  ReviewFindingTitles,
-  SpecPanel,
-} from '../src/ui/App.js'
+import { ReviewFindingTitles } from '../src/ui/components/ReviewFindingTitles.js'
+import { DESIGN } from '../src/ui/glossary.js'
 import {
   commandNote,
   noteSaidByReason,
@@ -67,10 +71,17 @@ import {
   stageName,
   stopName,
 } from '../src/ui/labels.js'
+import { SpecPanel } from '../src/ui/screens/run/SpecPanel.js'
+import { BaselineSource } from '../src/ui/screens/run/StageTimings.js'
 
 /** A diagnosis sentence in Japanese only. */
 const KIND_TEXT_OK = (text: string) => !/[A-Za-z()（）]/.test(text)
 import { pollEvery } from '../src/ui/poll.js'
+import { parseRoute } from '../src/ui/route.js'
+import { DesignScreen } from '../src/ui/screens/DesignScreen.js'
+import { SummaryPanel } from '../src/ui/screens/run/SummaryPanel.js'
+import { UsagePanels } from '../src/ui/screens/run/UsagePanels.js'
+import { RunsScreen } from '../src/ui/screens/RunsScreen.js'
 import {
   derivePipeline,
   deriveTrace,
@@ -82,6 +93,7 @@ import {
   type CompareResponse,
   type RunDetailResponse,
   type RunRef,
+  type RunRow,
   type RunsResponse,
   type TraceInput,
   type TraceNode,
@@ -2087,10 +2099,17 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
         (await get(port, '/api/runs', { host: `evil.example:${port}` })).status,
         403,
       )
+      for (const method of ['POST', 'PUT', 'PATCH', 'DELETE'])
+        assert.equal(
+          (await get(port, '/api/runs', { method })).status,
+          405,
+          method,
+        )
       assert.equal(
-        (await get(port, '/api/runs', { method: 'POST' })).status,
-        405,
+        (await get(port, '/api/runs', { method: 'HEAD' })).status,
+        200,
       )
+      assert.equal(existsSync(dbPath(stateRoot)), false)
 
       // A worker process creates the database and a run: the next read,
       // from the UI that started before either existed, shows it.
@@ -2664,5 +2683,210 @@ describe('repair runs on the page', { timeout: 120000 }, () => {
     } finally {
       ui.child.kill('SIGTERM')
     }
+  })
+})
+
+const uiRoot = fileURLToPath(new URL('../src/ui/', import.meta.url))
+
+async function clientFiles(): Promise<string[]> {
+  const entries = await readdir(uiRoot, { recursive: true })
+  return entries
+    .filter((f) => /\.tsx?$/.test(f))
+    .filter((f) => !['server.ts', 'glossary.ts', 'labels.ts'].includes(f))
+    .map((f) => join(uiRoot, f))
+}
+
+/** Components, screens and App.tsx: the files that draw the page. */
+async function drawingFiles(): Promise<string[]> {
+  return (await clientFiles()).filter((f) =>
+    /(^|\/)(components|screens)\/|App\.tsx$/.test(relative(uiRoot, f)),
+  )
+}
+
+const htmlText = (html: string) => html.replace(/<[^>]+>/g, '\n')
+
+describe('routes', () => {
+  it('reads each page from the hash', () => {
+    assert.deepEqual(parseRoute(''), { page: 'runs' })
+    assert.deepEqual(parseRoute('#/'), { page: 'runs' })
+    assert.deepEqual(parseRoute('#/compare'), { page: 'compare' })
+    assert.deepEqual(parseRoute('#/design'), { page: 'design' })
+    assert.deepEqual(parseRoute('#/runs/a%2Fb'), { page: 'run', id: 'a/b' })
+  })
+})
+
+describe('the design page', () => {
+  it('draws every component in light and dark without the API', () => {
+    const calls: string[] = []
+    const saved = globalThis.fetch
+    globalThis.fetch = (async (url: string) => {
+      calls.push(String(url))
+      throw new Error('the design page must not fetch')
+    }) as typeof fetch
+    try {
+      const html = renderToStaticMarkup(
+        createElement(DesignScreen, { route: { page: 'design' } }),
+      )
+      const shown = htmlText(html)
+      for (const part of Object.values(DESIGN.part))
+        assert.ok(shown.includes(part.name), part.name)
+      const specimens = Object.keys(DESIGN.part).length
+      assert.equal(html.match(/scheme-light/g)?.length, specimens)
+      assert.equal(html.match(/scheme-dark/g)?.length, specimens)
+      // A confirmed action shown asking: its question and its CLI line.
+      assert.match(shown, /再実行しますか/)
+      assert.match(html, /pnpm demo retrigger --run/)
+      // Two timelines per pane, each a treegrid.
+      assert.equal(html.match(/role="treegrid"/g)?.length, 4)
+      assert.deepEqual(calls, [])
+    } finally {
+      globalThis.fetch = saved
+    }
+  })
+
+  it('never polls or writes: no polling hook, fetch or storage in its files', async () => {
+    const files = (await clientFiles()).filter(
+      (f) => f.includes('/design/') || f.endsWith('DesignScreen.tsx'),
+    )
+    assert.ok(files.length >= 4)
+    for (const file of files) {
+      const source = await readFile(file, 'utf8')
+      for (const banned of ['usePolled', 'pollJson', 'fetch(', 'localStorage'])
+        assert.ok(!source.includes(banned), `${file}: ${banned}`)
+    }
+  })
+})
+
+describe('client source', () => {
+  it('keeps each client file within a few hundred lines', async () => {
+    for (const file of await clientFiles()) {
+      const lines = (await readFile(file, 'utf8')).split('\n').length
+      assert.ok(lines <= 300, `${relative(uiRoot, file)}: ${lines} lines`)
+    }
+  })
+
+  it('takes every fixed word from the glossary', async () => {
+    for (const file of await drawingFiles()) {
+      if (file.endsWith('fixtures.ts')) continue
+      const code = (await readFile(file, 'utf8'))
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/\/\/.*$/gm, '')
+      const hit = /[ぁ-んァ-ヶ一-龠々]+/.exec(code)
+      assert.equal(hit, null, `${relative(uiRoot, file)}: ${hit?.[0]}`)
+    }
+  })
+
+  it('writes no color, type size or spacing value into a component', async () => {
+    const banned = [
+      /#[0-9a-f]{3,8}\b/i,
+      /\b(?:oklch|rgba?|hsla?)\(/,
+      /\b\d+(?:\.\d+)?px\b/,
+      /\b(?:text|p[xytblr]?|m[xytblr]?|gap(?:-[xy])?|space-[xy])-\[/,
+    ]
+    for (const file of await drawingFiles()) {
+      // Fixtures are data: an issue number such as `#261` is not a color.
+      if (file.endsWith('fixtures.ts')) continue
+      const code = (await readFile(file, 'utf8')).replace(
+        /\/\*[\s\S]*?\*\//g,
+        '',
+      )
+      for (const re of banned)
+        assert.doesNotMatch(code, re, `${relative(uiRoot, file)}: ${re}`)
+    }
+  })
+})
+
+describe('numbers on the screens', () => {
+  const now = '2026-09-30T12:00:00.000Z'
+  const row = (over: Partial<RunRow>): RunRow =>
+    ({
+      id: '01K6D2Q7XB3M9RKT4WFINISH',
+      name: 'task',
+      status: 'completed',
+      createdAt: '2026-09-30T11:00:00.000Z',
+      needsHuman: false,
+      conclusion: 'approved',
+      leadTimeMs: 1_093_000,
+      costUsd: 6.443984,
+      triage: null,
+      iterations: 1,
+      reviewRounds: 1,
+      relations: { parent: null, children: [] },
+      pipeline: { stages: [], label: '' },
+      live: null,
+      uncertainCall: false,
+      diagnosis: { kind: 'finished', next: [], failure: null },
+      ...over,
+    }) as unknown as RunRow
+
+  it('writes cost, time and tokens as a person reads them, and unknown as 不明', () => {
+    const data = {
+      exists: true,
+      db: '/tmp/x.db',
+      now,
+      runs: [
+        row({}),
+        row({
+          id: '01K6D2Q7XB3M9RKT4WUNKNWN',
+          leadTimeMs: null,
+          costUsd: null,
+        }),
+      ],
+    } as unknown as RunsResponse
+    const list = htmlText(
+      renderToStaticMarkup(createElement(RunsScreen, { data })),
+    )
+    assert.match(list, /\$6\.44/)
+    assert.match(list, /18分13秒/)
+    assert.equal(list.match(/不明/g)?.length, 2)
+    assert.ok(!list.includes('6.443984'))
+    assert.doesNotMatch(list, /\d ?ms\b/)
+
+    const usage = {
+      invocations: 3,
+      inputTokens: 4_100_000,
+      cacheReadTokens: null,
+      cacheWriteTokens: 0,
+      outputTokens: 1_023_456,
+      totalTokens: 5_123_456,
+      costUsd: 6.443984,
+      complete: true,
+      costComplete: true,
+    }
+    const report = {
+      summary: {
+        conclusion: 'approved',
+        leadTimeMs: 1_093_000,
+        workMs: 0,
+        humanWaitMs: null,
+        totalTokens: 5_123_456,
+        costUsd: 6.443984,
+        repairs: 0,
+        reviewRounds: 1,
+      },
+      triage: null,
+      stageUsage: [{ ...usage, stage: 'code' }],
+      roleUsage: [
+        {
+          ...usage,
+          role: 'code',
+          provider: 'codex',
+          requestedModel: null,
+          requestedEffort: null,
+        },
+      ],
+    } as unknown as LoopReport
+    const detail = htmlText(
+      renderToStaticMarkup(createElement(SummaryPanel, { report })) +
+        renderToStaticMarkup(createElement(UsagePanels, { report })),
+    )
+    assert.match(detail, /5\.1M/)
+    assert.match(detail, /\$6\.44/)
+    assert.match(detail, /18分13秒/)
+    assert.match(detail, /0秒/)
+    assert.ok(!detail.includes('5,123,456') && !detail.includes('5123456'))
+    assert.doesNotMatch(detail, /\d ?ms\b/)
+    // The unknown human wait and cache reads say so, never 0.
+    assert.ok((detail.match(/不明/g)?.length ?? 0) >= 3)
   })
 })

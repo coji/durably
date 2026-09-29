@@ -1,7 +1,8 @@
 /**
- * Japanese names for the stored stage, role, lens and triage identifiers,
- * shared by the server's screen-reader sentences and the page. Unknown
- * identifiers pass through unchanged.
+ * Helpers that turn stored stage, role, lens, triage and failure
+ * identifiers into the page's words, shared by the server's screen-reader
+ * sentences and the page. The words themselves live in the glossary;
+ * unknown identifiers pass through unchanged.
  */
 import {
   DETAIL_PREFIX,
@@ -9,45 +10,39 @@ import {
   PATH_DETAILS,
 } from '../engine/failure-details.js'
 import type { FailureKind, ReloadAdvice } from '../engine/failure-reasons.js'
-import type { Diagnosis, DiagnosisKind } from '../engine/status.js'
+import type { Diagnosis } from '../engine/status.js'
+import {
+  CHECK_TEXT,
+  COMMAND_NOTES,
+  COPY,
+  DECIDED_TEXT,
+  DETAIL_LABEL,
+  DETAIL_TEXT,
+  DIAGNOSIS_TEXT,
+  FAILURE_TEXT,
+  LEASE_EXPIRED_UNCERTAIN_TEXT,
+  LENS_NAME,
+  RECORD,
+  RETRY_TEXT,
+  REVIEW_DECISION,
+  ROLE_NAME,
+  RUN_KIND_NAME,
+  SPEC_REVIEWER,
+  STAGE_NAME,
+  STEP_PART_NAME,
+  STOP_NAME,
+  TRIAGE_NAME,
+} from './glossary.js'
 
-const STAGE_NAME: Record<string, string> = {
-  setup: '準備',
-  baseline: 'ベースの検証',
-  preflight: '事前確認',
-  spec: '仕様',
-  'spec-review': '仕様レビュー',
-  'spec-wait': '仕様の判断',
-  'spec-check': '採点コマンドの決定',
-  triage: '見立て',
-  policy: '判断',
-  code: '実装',
-  verify: '検証',
-  review: 'レビュー',
-  approve: '承認',
-  finish: '完了',
-  stop: '停止',
-}
+export { RELATION_NAME } from './glossary.js'
 
 export function stageName(stage: string): string {
   return STAGE_NAME[stage] ?? stage
 }
 
-const LENS_NAME: Record<string, string> = {
-  correctness: '正しさのレビュー',
-  'edge-cases': '境界条件のレビュー',
-}
-
 /** A review lens, such as `correctness`, as a review's name. */
 export function lensName(lens: string): string {
   return LENS_NAME[lens] ?? lens
-}
-
-/** Usage roles that are not a stage or a lens. */
-const ROLE_NAME: Record<string, string> = {
-  repair: '修正',
-  'spec-author': '仕様の作成',
-  'spec-fix': '仕様の修正',
 }
 
 /** The prefix of a spec reviewer's role, `spec-review:<name>`. */
@@ -59,40 +54,16 @@ const SPEC_REVIEW_ROLE = 'spec-review:'
  */
 export function roleName(role: string): string {
   if (role.startsWith(SPEC_REVIEW_ROLE))
-    return `仕様レビュー ${role.slice(SPEC_REVIEW_ROLE.length)}`
+    return SPEC_REVIEWER(role.slice(SPEC_REVIEW_ROLE.length))
   return ROLE_NAME[role] ?? LENS_NAME[role] ?? STAGE_NAME[role] ?? role
-}
-
-/** How a comparison group's runs started. */
-const RUN_KIND_NAME: Record<string, string> = {
-  normal: '通常の実行',
-  repair: '外部の指摘からの修正',
 }
 
 export function runKindName(kind: string): string {
   return RUN_KIND_NAME[kind] ?? kind
 }
 
-/** The two sides of a link between repair runs. */
-export const RELATION_NAME = {
-  parent: '修正元',
-  children: '指摘からの修正',
-} as const
-
-const TRIAGE_NAME: Record<string, string> = {
-  routine: '定型',
-  probe: '試行が必要',
-  unknown: '不明',
-}
-
 export function triageName(judgment: string): string {
   return TRIAGE_NAME[judgment] ?? judgment
-}
-
-const STEP_PART_NAME: Record<string, string> = {
-  agent: 'エージェント',
-  candidate: '候補の記録',
-  call: '最小の呼び出し',
 }
 
 /** The last part of a step name inside a stage, such as `agent`. */
@@ -100,115 +71,8 @@ export function stepPartName(part: string): string {
   return STEP_PART_NAME[part] ?? part
 }
 
-/**
- * The page's own words for why a run is where it is, chosen from the
- * diagnosis kind and the failure kind only. The CLI's reason text carries
- * IDs and timestamps; the page shows those as data, never in a sentence.
- */
-const DIAGNOSIS_TEXT: Record<Exclude<DiagnosisKind, 'stopped'>, string> = {
-  pending: 'まだどのワーカーも取り出していません。',
-  running: 'ワーカーが実行しています。',
-  'lease-expired':
-    '担当のワーカーが止まったか、連絡が途切れました。ワーカーを動かすと、記録から続きを再開します。',
-  approval: 'レビューが終わり、候補の承認を待っています。',
-  'spec-approval':
-    '仕様レビューの指摘が上限の回数のあとも残り、仕様をどうするか人の判断を待っています。',
-  decided: '承認か却下の判断は記録済みです。ワーカーが実行を再開します。',
-  'other-wait': '候補の承認ではない入力を待っています。',
-  finished: '終わりました。',
-}
-
-/** Why a stopped run stopped, and what a person checks first. */
-const FAILURE_TEXT: Record<FailureKind, { reason: string; check: string }> = {
-  'baseline-check-failed': {
-    reason:
-      'エージェントを呼ぶ前に、ベースのコミットで固定したチェックがすでに失敗しました。このままでは候補を採点できません。',
-    check:
-      '下に示したログファイルでチェックの出力を全文読み、採点コマンドか環境を直す。factory.json を直したときは設定を読み直す再実行を、環境だけを直したときは通常の再実行を使う。',
-  },
-  'spec-check-failed': {
-    reason:
-      '確定した仕様から採点コマンドを決めるスクリプトが失敗したか、時間切れになったか、決まった形で出力しませんでした。ベースの検証と実装を始める前に止めました。',
-    check:
-      '下のエラーを読み、スクリプトか factory.json の設定を直して、設定を読み直す再実行を使う。同じ実行の中でスクリプトの結果を読み替えることはしない。',
-  },
-  'preflight-failed': {
-    reason:
-      'ある役割のプロバイダー、モデル、推論の強さの組み合わせが使えません。実装を呼ぶ前に止めました。',
-    check:
-      'エラーに示した役割の設定か、使う実行ファイルの指定を factory.json で直し、設定を読み直す再実行を使う。ログインの問題なら、ログインし直してから通常の再実行を使う。',
-  },
-  'candidate-moved': {
-    reason:
-      '修正元の実行が承認した候補のコミットがないか、そのブランチがもう候補を指していません。作業ツリー、ブランチ、実行ディレクトリを残さず、エージェントを呼ぶ前に止めました。',
-    check:
-      '承認のあとに誰かが作業を変えています。ブランチを候補のコミットに戻して通常の再実行を使うか、変えた作業を承認した実行から修正をやり直す。',
-  },
-  'rejected-invocation': {
-    reason:
-      '事前確認のあと、プロバイダーがエージェントの呼び出しをはっきり断りました。断られたことを呼び出しの答えとして記録したので、結果の分からない呼び出しは残っていません。',
-    check:
-      '下の拒否の理由を読み、その役割の設定か使う実行ファイルの指定を factory.json で直して、設定を読み直す再実行を使う。ログインや利用上限の問題なら、プロバイダー側で直してから通常の再実行を使う。',
-  },
-  'verification-failed': {
-    reason:
-      '最後の修正のあとも、固定したチェックが通りませんでした。修正の回数を使い切っています。',
-    check:
-      '下に示したログファイルでチェックの出力を全文読み、タスク、チェック、--max-iterations のどれを変えるか決める。',
-  },
-  'review-cap-reached': {
-    reason:
-      'チェックは通りましたが、最後の修正のあともレビューが修正を求めました。',
-    check:
-      'レポートでレビューの指摘を読み、候補を手で仕上げるか、タスクを書き直す。',
-  },
-  'uncertain-invocation': {
-    reason:
-      'エージェントの呼び出しを始めましたが、完了の記録がありません。プロバイダーが受け取って動いたかは分かりません。',
-    check:
-      'もう一度送る前に、プロバイダー側のセッション履歴と使用量、作業ツリー、開始だけ記録されたチェックポイントを確かめる。',
-  },
-  cancelled: {
-    reason:
-      '実行は取り消されました。完了の記録がない呼び出しは残っていません。',
-    check: '取り消しが意図したものか確かめる。',
-  },
-  'cancelled-publish': {
-    reason:
-      '公開する設定の実行が取り消されました。リモートへのブランチの送信やプルリクエストの作成が、もう済んでいるかもしれません。',
-    check:
-      'もう一度始める前に、リモートに実行のブランチと下書きのプルリクエストがないか確かめる。',
-  },
-  unclassified: {
-    reason: '記録からは分からない理由で止まりました。',
-    check: 'もう一度始める前に、実行のエラーと試行を読む。',
-  },
-}
-
-/** A stop reason in a few words, for a count such as a comparison's. */
-const STOP_NAME: Record<FailureKind, string> = {
-  'baseline-check-failed': 'ベースの検証失敗',
-  'spec-check-failed': '採点コマンドの決定に失敗',
-  'preflight-failed': '事前確認で停止',
-  'candidate-moved': '修正元の候補の変更',
-  'rejected-invocation': '呼び出しの拒否',
-  'verification-failed': '検証失敗',
-  'review-cap-reached': 'レビュー上限',
-  'uncertain-invocation': '結果が不明な呼び出し',
-  cancelled: '取り消し',
-  'cancelled-publish': '公開中の取り消し',
-  unclassified: '分類できない停止',
-}
-
 export function stopName(kind: string): string {
   return STOP_NAME[kind as FailureKind] ?? kind
-}
-
-const DECIDED_TEXT: Record<string, string> = {
-  approved: '承認を記録済みです。ワーカーが実行を再開します。',
-  rejected: '却下を記録済みです。ワーカーが実行を再開します。',
-  revise:
-    '仕様を直すメモを記録済みです。ワーカーが仕様を直してもう一度レビューします。',
 }
 
 export function diagnosisText(
@@ -221,15 +85,15 @@ export function diagnosisText(
       ? FAILURE_TEXT[d.failure.kind].reason
       : FAILURE_TEXT.unclassified.reason
   if (d.kind === 'lease-expired' && uncertainCall)
-    return '担当のワーカーが止まったか、連絡が途切れました。完了の記録がないエージェント呼び出しが残っているので、ワーカーを動かすとそこで止まり、人の確認を待ちます。'
+    return LEASE_EXPIRED_UNCERTAIN_TEXT
   if (d.kind === 'decided' && d.decision && DECIDED_TEXT[d.decision])
     return DECIDED_TEXT[d.decision]
   return DIAGNOSIS_TEXT[d.kind]
 }
 
-const REVIEW_DECISION: Record<string, { label: string; title: string }> = {
-  pass: { label: '通過', title: 'レビューは修正なしで通しました' },
-  needsChanges: { label: '要修正', title: 'レビューは修正を求めました' },
+/** Whether the run can simply be started again, in words. */
+export function retryLabel(retryable: boolean): string {
+  return retryable ? RETRY_TEXT.retryable : RETRY_TEXT.notRetryable
 }
 
 /**
@@ -261,70 +125,6 @@ function splitCommand(line: string): { command: string; note: string | null } {
 }
 
 /**
- * The CLI's English note on a next command, in Japanese. The page shows it
- * under the buttons, so guidance such as "read the reviews first" is not
- * lost when the note is stripped from the command. Unknown notes are dropped.
- */
-const COMMAND_NOTES: [string, string][] = [
-  [
-    'read the reviews first',
-    '承認か却下の前に、レビューの判定とメモを読みます。',
-  ],
-  [
-    'once, with the same stored input; to change the task or --max-iterations, trigger anew',
-    '保存済みの入力のまま、1回だけ実行し直します。タスクや --max-iterations を変えたいときは、trigger からやり直します。',
-  ],
-  [
-    'after fixing factory.json; the stored task with the settings read again, once per version of the file',
-    'factory.json を直してから実行します。保存済みのタスクのまま設定を読み直し、ファイルの版ごとに1回だけ実行します。',
-  ],
-  [
-    'after fixing factory.json; the --check, --setup or --base given at trigger still wins over it, so to change those, trigger anew',
-    'factory.json を直してから実行します。trigger で指定した --check、--setup、--base は factory.json より優先されるので、それらを変えたいときは trigger からやり直します。',
-  ],
-  [
-    'the check output is in the verification attempt',
-    '検証コマンドの出力は、検証の試行に入っています。',
-  ],
-  ['the reviewer notes', 'レビューのメモを読めます。'],
-  [
-    'read the spec reviews first',
-    '判断の前に、仕様レビューの指摘と仕様を読みます。',
-  ],
-  ['go on with the spec as it is', 'いまの仕様のまま実装に進みます。'],
-  [
-    'fix it once more with your notes',
-    'メモのファイルを渡して、仕様をもう一度直してレビューし直します。',
-  ],
-  ['stop before any implementation', '実装を始めずに実行を止めます。'],
-  [
-    'the spec the script read',
-    '採点コマンドを決めるときに読んだ仕様を確かめられます。',
-  ],
-  [
-    'delivery shows what was recorded',
-    '納品物に記録された内容を確かめられます。',
-  ],
-  ['if none is running', 'ワーカーが動いていなければ起動します。'],
-  [
-    'the baseline check output',
-    'ベースのコミットでのチェックの結果とログの場所を読めます。',
-  ],
-  [
-    'the refused call and its reason',
-    '断られた呼び出しと、その理由を読めます。',
-  ],
-  [
-    'the preflight result for each role',
-    '役割ごとの事前確認の結果と確認の方法を読めます。',
-  ],
-  [
-    'the parent run and the candidate commit',
-    '修正元の実行と、候補のコミットを読めます。',
-  ],
-]
-
-/**
  * Notes the page does not repeat under the buttons, because the reason text
  * above them already says the same thing: the lease-expired run's notes.
  */
@@ -346,29 +146,6 @@ export function noteSaidByReason(note: string): boolean {
   return SAID_BY_REASON.some((en) => note.startsWith(en))
 }
 
-/** Preflight check text for a run with no factory.json to fix. */
-const PREFLIGHT_WITHOUT_CONFIG_TEXT =
-  'エラーに示した役割のプロバイダー、モデル、推論の強さを直し、trigger からやり直す。ログインの問題なら、ログインし直してから通常の再実行を使う。'
-
-/** Rejected-call check text for a run with no factory.json to fix. */
-const REJECTED_WITHOUT_CONFIG_TEXT =
-  '下の拒否の理由を読み、その役割のプロバイダー、モデル、推論の強さを直して trigger からやり直す。ログインや利用上限の問題なら、プロバイダー側で直してから通常の再実行を使う。'
-
-/**
- * Baseline check text for a repair run, which keeps its parent's settings:
- * there is no config to read again.
- */
-const BASELINE_WITHOUT_CONFIG_TEXT =
-  '下に示したログファイルでチェックの出力を全文読む。環境だけを直したときは通常の再実行を使う。修正の実行は修正元の採点コマンド、準備、ベースを引き継ぐので、それらを変えるときはリポジトリか factory.json を直し、trigger から通常の実行を始めるか、直したあとに承認された実行から修正をやり直す。'
-
-/** The same when setup left files .gitignore does not cover. */
-const SETUP_UNTRACKED_WITHOUT_CONFIG_TEXT =
-  '準備のコマンドが .gitignore にないファイルを作っています。修正の実行は修正元の準備とベースと baselineCheck を引き継ぐので、リポジトリの .gitignore か factory.json を直し、trigger から通常の実行を始めるか、直したあとに承認された実行から修正をやり直す。'
-
-/** Baseline check text when setup left files .gitignore does not cover. */
-const SETUP_UNTRACKED_TEXT =
-  '準備のコマンドが .gitignore にないファイルを作っているので、下に示したファイルを .gitignore に入れるか、factory.json の baselineCheck を外して設定を読み直す再実行を使う。'
-
 /**
  * What a person checks first. `failure` carries the server's own verdicts:
  * whether the config-reload retry applies, and whether setup left files.
@@ -379,38 +156,26 @@ export function humanCheckText(
 ): string {
   const noConfig = failure?.reload === 'none'
   if (kind === 'baseline-check-failed' && failure?.setupUntracked)
-    return noConfig ? SETUP_UNTRACKED_WITHOUT_CONFIG_TEXT : SETUP_UNTRACKED_TEXT
+    return noConfig
+      ? CHECK_TEXT.setupUntrackedWithoutConfig
+      : CHECK_TEXT.setupUntracked
   if (kind === 'baseline-check-failed' && noConfig)
-    return BASELINE_WITHOUT_CONFIG_TEXT
+    return CHECK_TEXT.baselineWithoutConfig
   if (kind === 'preflight-failed' && failure?.reload === 'none')
-    return PREFLIGHT_WITHOUT_CONFIG_TEXT
+    return CHECK_TEXT.preflightWithoutConfig
   if (kind === 'rejected-invocation' && failure?.reload === 'none')
-    return REJECTED_WITHOUT_CONFIG_TEXT
+    return CHECK_TEXT.rejectedWithoutConfig
   return FAILURE_TEXT[kind].check
 }
 
-const DETAIL_LABEL: Record<keyof typeof DETAIL_PREFIX, string> = {
-  checkpoint: '完了の記録がないチェックポイント',
-  error: 'エラー',
-  refusal: '拒否の理由',
-  checkAttempt: '検証の試行',
-  checkExitCode: '検証の終了コード',
-  checkStdout: '検証の標準出力',
-  checkStderr: '検証の標準エラー',
-  checkTimeout: '時間切れまでの時間',
-  checkLogWriteError: 'ログの書き込みエラー',
-  setupUntracked: '準備が残したファイル',
-}
-
 /** Shown for an exit code the check never returned. */
-export const NO_EXIT_CODE = '終了コードを得る前に打ち切られました'
+export const NO_EXIT_CODE = DETAIL_TEXT.noExitCode
 
 /** Shown for a cancelled or lease-lost grading attempt. */
-export const INTERRUPTED_CHECK_TEXT = '中断されたため、判定には含まれません'
+export const INTERRUPTED_CHECK_TEXT = DETAIL_TEXT.interruptedCheck
 
 /** Shown beside a log write error, which is kept as data. */
-export const LOG_WRITE_ERROR_NOTE =
-  'ログファイルへの書き込みに失敗したため、ファイルの中身が欠けているかもしれません。'
+export const LOG_WRITE_ERROR_NOTE = DETAIL_TEXT.logWriteErrorNote
 
 /**
  * A failure detail line as a label and its value, to show as data. `title`
@@ -435,7 +200,7 @@ export function detailField(line: string): {
       return { label, value, note: LOG_WRITE_ERROR_NOTE }
     return { label, value }
   }
-  return { label: '記録', value: line }
+  return { label: DETAIL_TEXT.record, value: line }
 }
 
 /** A detail line whose value is a file path to copy, such as a check log. */
@@ -452,8 +217,8 @@ export function squashedBranchField(delivery: {
   squashedBranch?: string | null
 }): { label: string; value: string | null; copyLabel: string } {
   return {
-    label: '1コミットにまとめたブランチ',
+    label: RECORD.squashedBranch,
     value: delivery.squashedBranch ?? null,
-    copyLabel: 'まとめたブランチ名をコピー',
+    copyLabel: COPY.squashedBranch,
   }
 }

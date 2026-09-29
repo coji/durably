@@ -1,7 +1,14 @@
 @import 'tailwindcss';
 
-/* Design tokens: copied from .ui-craft/tokens.md, plus --duration-pulse. */
+/*
+ * Design tokens, as .ui-craft/tokens.md defines them. Each semantic token
+ * holds its light and dark value in `light-dark()`, so the scheme follows
+ * the OS and a box with its own `color-scheme` (the design page's light and
+ * dark panes) shows the other one without a second set of rules.
+ */
 :root {
+  color-scheme: light dark;
+
   /* primitives */
   --gray-50: oklch(98.5% 0.004 250);
   --gray-100: oklch(96% 0.005 250);
@@ -14,6 +21,8 @@
   --gray-800: oklch(25% 0.006 250);
   --gray-900: oklch(19% 0.005 250);
   --gray-950: oklch(14% 0.005 250);
+  --gray-1000: oklch(11% 0.005 250);
+  --white: oklch(100% 0 0);
   --amber-500: oklch(72% 0.15 70);
   --amber-700: oklch(52% 0.13 70);
   --red-500: oklch(60% 0.19 25);
@@ -33,62 +42,69 @@
   --text-base: 14px;
   --text-lg: 16px;
   --text-xl: 20px;
-  --font-sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+  /*
+   * System fonts only. The Japanese faces come right after the Latin UI
+   * fonts, so kana and kanji never fall to a Chinese default.
+   */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans',
+    'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', 'Noto Sans JP',
+    system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 10px;
   --shadow-pop: 0 4px 12px oklch(0% 0 0 / 0.08), 0 1px 3px oklch(0% 0 0 / 0.06);
   --duration-fast: 150ms;
   /*
-   * Not in tokens.md: one full cycle of the running dot's slow pulse. It is
-   * the UI's only ambient motion, so it is slow enough to read as "alive"
-   * without drawing the eye; hover and focus changes use --duration-fast.
+   * One full cycle of the running dot's slow pulse. It is the UI's only
+   * ambient motion, so it is slow enough to read as "alive" without drawing
+   * the eye; hover and focus changes use --duration-fast.
    */
   --duration-pulse: 1.2s;
+  --duration-sheen: 2.4s;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --z-sticky: 20;
   --z-toast: 50;
 
-  /* semantics (light) */
-  --surface-canvas: var(--gray-50);
-  --surface-raised: #fff;
-  --surface-sunken: var(--gray-100);
-  --text-primary: var(--gray-900);
-  --text-secondary: var(--gray-600);
+  /* layout: the few fixed widths the dense tables and the trace need */
+  --size-trace-max: 32rem;
+  --size-inspector: 20rem;
+  --size-label: 6.5rem;
+  --size-stage-name: 6rem;
+  --size-stage-value: 9rem;
+  --size-hatch: 4px;
+
+  /* semantics */
+  --surface-canvas: light-dark(var(--gray-50), var(--gray-950));
+  --surface-raised: light-dark(var(--white), var(--gray-900));
+  --surface-sunken: light-dark(var(--gray-100), var(--gray-1000));
+  --text-primary: light-dark(var(--gray-900), var(--gray-50));
+  --text-secondary: light-dark(var(--gray-600), var(--gray-400));
   --text-tertiary: var(--gray-500);
-  --border-subtle: oklch(0% 0 0 / 0.07);
-  --border-default: oklch(0% 0 0 / 0.13);
+  --text-inverse: light-dark(var(--white), var(--gray-950));
+  --border-subtle: light-dark(oklch(0% 0 0 / 0.07), oklch(100% 0 0 / 0.07));
+  --border-default: light-dark(oklch(0% 0 0 / 0.13), oklch(100% 0 0 / 0.13));
   --focus-ring: var(--blue-500);
-  --state-waiting: var(--amber-700);
-  --state-waiting-bg: oklch(97% 0.04 70);
-  --state-failed: var(--red-700);
-  --state-failed-bg: oklch(97% 0.03 25);
-  --state-running: var(--blue-700);
-  --state-running-bg: oklch(97% 0.03 250);
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --surface-canvas: var(--gray-950);
-    --surface-raised: var(--gray-900);
-    --surface-sunken: oklch(11% 0.005 250);
-    --text-primary: var(--gray-50);
-    --text-secondary: var(--gray-400);
-    --text-tertiary: var(--gray-500);
-    --border-subtle: oklch(100% 0 0 / 0.07);
-    --border-default: oklch(100% 0 0 / 0.13);
-    --state-waiting: oklch(78% 0.13 70);
-    --state-waiting-bg: oklch(24% 0.04 70);
-    --state-failed: oklch(70% 0.16 25);
-    --state-failed-bg: oklch(23% 0.04 25);
-    --state-running: oklch(72% 0.12 250);
-    --state-running-bg: oklch(23% 0.04 250);
-  }
+  --sheen: light-dark(oklch(100% 0 0 / 0.35), oklch(100% 0 0 / 0.18));
+
+  /*
+   * Four states. Color is for the three that ask for attention; a finished
+   * run, and any state that asks for none, is the neutral `done`.
+   */
+  --state-waiting: light-dark(var(--amber-700), oklch(78% 0.13 70));
+  --state-waiting-bg: light-dark(oklch(97% 0.04 70), oklch(24% 0.04 70));
+  --state-failed: light-dark(var(--red-700), oklch(70% 0.16 25));
+  --state-failed-bg: light-dark(oklch(97% 0.03 25), oklch(23% 0.04 25));
+  --state-running: light-dark(var(--blue-700), oklch(72% 0.12 250));
+  --state-running-bg: light-dark(oklch(97% 0.03 250), oklch(23% 0.04 250));
+  --state-done: var(--text-secondary);
+  --state-done-bg: var(--surface-sunken);
 }
 
 /*
  * Utilities named after the semantic tokens. The type, radius and spacing
- * scales keep Tailwind's names with the token values.
+ * scales keep Tailwind's names with the token values: `p-3` is --space-3.
  */
 @theme inline {
   --color-canvas: var(--surface-canvas);
@@ -97,6 +113,7 @@
   --color-fg: var(--text-primary);
   --color-fg-2: var(--text-secondary);
   --color-fg-3: var(--text-tertiary);
+  --color-inverse: var(--text-inverse);
   --color-line: var(--border-subtle);
   --color-line-strong: var(--border-default);
   --color-focus: var(--focus-ring);
@@ -106,8 +123,11 @@
   --color-failed-bg: var(--state-failed-bg);
   --color-running: var(--state-running);
   --color-running-bg: var(--state-running-bg);
+  --color-done: var(--state-done);
+  --color-done-bg: var(--state-done-bg);
   --font-ui: var(--font-sans);
   --font-code: var(--font-mono);
+  --spacing: var(--space-1);
 }
 @theme {
   --text-xs: 12px;
@@ -120,9 +140,6 @@
   --radius-lg: 10px;
 }
 
-html {
-  color-scheme: light dark;
-}
 body {
   margin: 0;
   background: var(--surface-canvas);
@@ -136,6 +153,13 @@ body {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   border-radius: var(--radius-sm);
+}
+/* Every number sits in a column: IDs, costs, durations, counts. */
+.font-code,
+time,
+td,
+dd {
+  font-variant-numeric: tabular-nums;
 }
 
 /* The only ambient motion: the dot of a running run (--duration-pulse). */
@@ -174,25 +198,25 @@ body {
   background-image: linear-gradient(
     90deg,
     transparent 0%,
-    oklch(100% 0 0 / 0.35) 50%,
+    var(--sheen) 50%,
     transparent 100%
   );
   background-size: 40% 100%;
   background-repeat: no-repeat;
-  animation: sheen 2.4s linear infinite;
+  animation: sheen var(--duration-sheen) linear infinite;
 }
 .bar-hatch {
   background: repeating-linear-gradient(
     135deg,
-    var(--state-waiting-bg) 0 4px,
-    transparent 4px 8px
+    var(--state-waiting-bg) 0 var(--size-hatch),
+    transparent var(--size-hatch) calc(var(--size-hatch) * 2)
   );
 }
 .bar-hatch-done {
   background: repeating-linear-gradient(
     135deg,
-    var(--surface-sunken) 0 4px,
-    transparent 4px 8px
+    var(--surface-sunken) 0 var(--size-hatch),
+    transparent var(--size-hatch) calc(var(--size-hatch) * 2)
   );
 }
 @media (prefers-reduced-motion: reduce) {
@@ -200,4 +224,56 @@ body {
     animation: none;
     background-image: none;
   }
+}
+
+/* The trace's three columns: tree, duration, waterfall. */
+.trace-cols {
+  display: grid;
+  grid-template-columns: minmax(8rem, 15rem) 5.5rem minmax(4rem, 1fr);
+}
+/*
+ * The trace sizes to its own box, not the window, so it reads the same in
+ * a page-wide panel and in a design-page pane.
+ */
+.trace-box {
+  container-type: inline-size;
+}
+@container (width >= 40rem) {
+  .trace-cols {
+    grid-template-columns: minmax(12rem, 17rem) 7rem minmax(8rem, 1fr);
+  }
+}
+/* A tree row's indent: one step per level, set by `--level`. */
+.trace-indent {
+  padding-left: calc(var(--level, 0) * var(--space-3) + var(--space-1));
+}
+.trace-layout {
+  display: grid;
+  align-items: start;
+  gap: var(--space-4);
+}
+@container (width >= 56rem) {
+  .trace-layout {
+    grid-template-columns: minmax(0, 1fr) var(--size-inspector);
+  }
+}
+.trace-scroll {
+  max-height: var(--size-trace-max);
+}
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: var(--space-3);
+}
+.kv-inline {
+  display: grid;
+  grid-template-columns: var(--size-label) 1fr;
+}
+.stage-row {
+  display: grid;
+  grid-template-columns: var(--size-stage-name) 1fr var(--size-stage-value);
+}
+.stage-row-note {
+  display: grid;
+  grid-template-columns: var(--size-stage-name) 1fr;
 }

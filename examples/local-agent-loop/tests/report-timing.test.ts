@@ -141,6 +141,11 @@ describe('stage timing completeness', () => {
       notes: [],
     })
     assert.match(md, /PARTIAL/)
+    // Times read as durations; an unknown one is unknown, never 0 or `ms`.
+    assert.match(md, /- stage total: unknown/)
+    assert.match(md, /- run elapsed: 0\.2s/)
+    assert.match(md, /- code: work=0\.1s, wall=/)
+    assert.doesNotMatch(md, /\d ?ms\b/)
   })
 
   it('uses the original invocation interval after checkpoint recovery', () => {

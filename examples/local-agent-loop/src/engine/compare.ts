@@ -8,6 +8,7 @@
  * statistics, never from one report. Unknown values are dropped from the
  * statistic and counted in `unknown`, never treated as zero.
  */
+import { formatters } from './format.js'
 import {
   CALIBRATION_KEYS,
   SPEC_STAGES,
@@ -17,6 +18,15 @@ import {
   type ReportTriage,
   type TriageCalibration,
 } from './report.js'
+
+/** The Markdown is English; the web UI reads the same values in Japanese. */
+const {
+  formatCost,
+  formatCount,
+  formatDuration,
+  formatTokens,
+  unknown: UNKNOWN,
+} = formatters('en')
 
 export interface Stat {
   n: number
@@ -273,9 +283,15 @@ export function compareReports(reports: LoopReport[]): Comparison {
   return { groups: out }
 }
 
-function fmtStat(s: Stat, digits = 0): string {
-  if (s.median === null) return `unknown (${s.unknown} unknown)`
-  const f = (v: number | null) => (v === null ? '?' : v.toFixed(digits))
+/**
+ * `median [min..max] (n=…)`, each value in the format a person reads that
+ * quantity in; an unknown median is `unknown`.
+ */
+function fmtStat(
+  s: Stat,
+  f: (v: number | null) => string = formatCount,
+): string {
+  if (s.median === null) return `${UNKNOWN} (${s.unknown} unknown)`
   const tail = s.unknown > 0 ? `, ${s.unknown} unknown` : ''
   return `${f(s.median)} [${f(s.min)}..${f(s.max)}] (n=${s.n}${tail})`
 }
@@ -313,21 +329,21 @@ export function comparisonToMarkdown(c: Comparison): string {
         .map(([c, n]) => `${c} ${n}`)
         .join(', ')}`,
     )
-    lines.push(`- lead time ms: ${fmtStat(g.leadTimeMs)}`)
-    lines.push(`- work ms: ${fmtStat(g.workMs)}`)
-    lines.push(`- human wait ms: ${fmtStat(g.humanWaitMs)}`)
-    lines.push(`- total tokens: ${fmtStat(g.totalTokens)}`)
-    lines.push(`- cost USD: ${fmtStat(g.costUsd, 6)}`)
-    lines.push(`- cost per success USD: ${fmtStat(g.costPerSuccessUsd, 6)}`)
+    lines.push(`- lead time: ${fmtStat(g.leadTimeMs, formatDuration)}`)
+    lines.push(`- work: ${fmtStat(g.workMs, formatDuration)}`)
+    lines.push(`- human wait: ${fmtStat(g.humanWaitMs, formatDuration)}`)
+    lines.push(`- total tokens: ${fmtStat(g.totalTokens, formatTokens)}`)
+    lines.push(`- cost: ${fmtStat(g.costUsd, formatCost)}`)
+    lines.push(
+      `- cost per success: ${fmtStat(g.costPerSuccessUsd, formatCost)}`,
+    )
     lines.push(`- repairs: ${fmtStat(g.repairs)}`)
     lines.push('')
-    lines.push(
-      '| stage | work ms | total tokens | cache-read | cost USD | reworked |',
-    )
+    lines.push('| stage | work | total tokens | cache-read | cost | reworked |')
     lines.push('|---|---|---|---|---|---|')
     for (const s of g.stages) {
       lines.push(
-        `| ${s.stage} | ${fmtStat(s.workMs)} | ${fmtStat(s.totalTokens)} | ${fmtStat(s.cacheReadTokens)} | ${fmtStat(s.costUsd, 6)} | ${fmtStat(s.reworked)} |`,
+        `| ${s.stage} | ${fmtStat(s.workMs, formatDuration)} | ${fmtStat(s.totalTokens, formatTokens)} | ${fmtStat(s.cacheReadTokens, formatTokens)} | ${fmtStat(s.costUsd, formatCost)} | ${fmtStat(s.reworked)} |`,
       )
     }
     if (g.triage.length > 0) {
@@ -337,12 +353,12 @@ export function comparisonToMarkdown(c: Comparison): string {
       )
       lines.push('')
       lines.push(
-        '| judgment | runs | approved | verification-failed | review-cap-reached | repairs | cost USD | routine needing repair or cap | stops |',
+        '| judgment | runs | approved | verification-failed | review-cap-reached | repairs | cost | routine needing repair or cap | stops |',
       )
       lines.push('|---|---|---|---|---|---|---|---|---|')
       for (const t of g.triage) {
         lines.push(
-          `| ${t.judgment} | ${t.runs} | ${t.approved} | ${t.verificationFailed} | ${t.reviewCapReached} | ${fmtStat(t.repairs)} | ${fmtStat(t.costUsd, 6)} | ${t.judgment === 'routine' ? t.routineNeedingMore : '-'} | ${fmtStops(t.stops)} |`,
+          `| ${t.judgment} | ${t.runs} | ${t.approved} | ${t.verificationFailed} | ${t.reviewCapReached} | ${fmtStat(t.repairs)} | ${fmtStat(t.costUsd, formatCost)} | ${t.judgment === 'routine' ? t.routineNeedingMore : '-'} | ${fmtStops(t.stops)} |`,
         )
       }
       lines.push('')

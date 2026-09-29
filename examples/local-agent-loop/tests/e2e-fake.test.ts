@@ -2443,7 +2443,7 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
       const md = reportToMarkdown(effort.report)
       assert.match(
         md,
-        /## Repair calls[\s\S]*\| continued-effort-change \| 46000 \| 43628 \| 0\.9484 \|/,
+        /## Repair calls[\s\S]*\| continued-effort-change \| 46\.0K \| 43\.6K \| 0\.9484 \|/,
       )
       assert.match(reportToMarkdown(same.report), /\| continued \|/)
 

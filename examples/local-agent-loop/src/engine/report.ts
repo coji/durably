@@ -15,6 +15,7 @@ import type { StepAttempt } from '@coji/durably'
 
 import { INTERRUPTED_CHECK } from './failure-details.js'
 import { retryText, type FailureClassification } from './failure-reasons.js'
+import { formatters } from './format.js'
 import { PRICE_BASIS } from './pricing.js'
 import type {
   AttemptMeasurement,
@@ -24,6 +25,10 @@ import type {
 import { TERMINAL_STATUSES } from './terminal.js'
 import type { CandidateChanges } from './types.js'
 import { aggregateUsage } from './usage.js'
+
+/** The Markdown is English; the web UI reads the same values in Japanese. */
+const { formatCost, formatCount, formatDuration, formatTokens } =
+  formatters('en')
 
 export interface AttemptRow {
   stepName: string
@@ -684,14 +689,6 @@ function fmt(v: unknown): string {
   return String(v)
 }
 
-function fmtMs(v: number | null): string {
-  return v === null ? 'unknown' : `${v}ms`
-}
-
-function fmtUsd(v: number | null): string {
-  return v === null ? 'unknown' : v.toFixed(6)
-}
-
 function fmtChanges(c: ReportCandidateChanges | null | undefined): string {
   return c
     ? `${c.files} files, +${c.additions} / -${c.deletions} lines`
@@ -1129,10 +1126,12 @@ export function reportToMarkdown(r: LoopReport): string {
     const c = r.triage.calibration ?? UNKNOWN_CALIBRATION
     lines.push(`- judgment: ${r.triage.judgment}`)
     lines.push(`- reason: ${r.triage.reason}`)
-    lines.push(`- task characters: ${fmt(c.taskChars)}`)
-    lines.push(`- spec characters: ${fmt(c.specChars)}`)
-    lines.push(`- acceptance criteria in spec: ${fmt(c.acceptanceCriteria)}`)
-    lines.push(`- planned files in spec: ${fmt(c.plannedFiles)}`)
+    lines.push(`- task characters: ${formatCount(c.taskChars)}`)
+    lines.push(`- spec characters: ${formatCount(c.specChars)}`)
+    lines.push(
+      `- acceptance criteria in spec: ${formatCount(c.acceptanceCriteria)}`,
+    )
+    lines.push(`- planned files in spec: ${formatCount(c.plannedFiles)}`)
   } else if (r.lineage.parent) {
     lines.push('- none (a repair run never runs triage)')
   } else {
@@ -1149,7 +1148,7 @@ export function reportToMarkdown(r: LoopReport): string {
     const timedOut = b.log?.timedOutAfterMs
     let exit = String(b.exitCode ?? 'unknown')
     if (b.exitCode === null && b.passed !== null)
-      exit += ` (killed before it exited${timedOut === undefined ? '' : `, timed out after ${timedOut}ms`})`
+      exit += ` (killed before it exited${timedOut === undefined ? '' : `, timed out after ${formatDuration(timedOut)}`})`
     lines.push(`- exit code: ${exit}`)
     if (b.log) {
       if (b.log.interrupted) lines.push(`- attempt: ${INTERRUPTED_CHECK}`)
@@ -1181,7 +1180,7 @@ export function reportToMarkdown(r: LoopReport): string {
     const u = r.preflight.usage
     lines.push(
       u
-        ? `- minimal calls: ${u.invocations}, tokens ${fmt(u.totalTokens)}, cost(USD) ${fmtUsd(u.costUsd)}${u.complete ? '' : ' (PARTIAL)'}`
+        ? `- minimal calls: ${u.invocations}, tokens ${formatTokens(u.totalTokens)}, cost ${formatCost(u.costUsd)}${u.complete ? '' : ' (PARTIAL)'}`
         : '- minimal calls: 0 (every setting was decided by a free check)',
     )
   } else {
@@ -1244,7 +1243,7 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push('|---|---|---|---|---|---|---|')
     for (const c of r.repairCalls)
       lines.push(
-        `| ${c.stepName} | ${fmt(c.iteration)} | ${c.invocationId?.slice(0, 8) ?? 'n/a'} | ${c.sessionHandling ?? 'unknown'}${c.recovered ? ' (recovered)' : ''} | ${fmt(c.inputTokens)} | ${fmt(c.cacheReadTokens)} | ${c.cacheReadRatio === null ? 'null' : c.cacheReadRatio.toFixed(4)} |`,
+        `| ${c.stepName} | ${fmt(c.iteration)} | ${c.invocationId?.slice(0, 8) ?? 'n/a'} | ${c.sessionHandling ?? 'unknown'}${c.recovered ? ' (recovered)' : ''} | ${formatTokens(c.inputTokens)} | ${formatTokens(c.cacheReadTokens)} | ${c.cacheReadRatio === null ? 'null' : c.cacheReadRatio.toFixed(4)} |`,
       )
   } else {
     lines.push('- none')
@@ -1361,28 +1360,30 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('')
   const s = r.summary
   lines.push(`- success: ${s.success ? 'yes' : 'no'} (${fmt(s.conclusion)})`)
-  lines.push(`- lead time (trigger -> terminal): ${fmtMs(s.leadTimeMs)}`)
-  lines.push(`- work (stage total): ${fmtMs(s.workMs)}`)
   lines.push(
-    `- human wait: ${fmtMs(s.humanWaitMs)}${s.humanWaitRatio !== null ? ` (${(s.humanWaitRatio * 100).toFixed(1)}% of lead time)` : ''}`,
+    `- lead time (trigger -> terminal): ${formatDuration(s.leadTimeMs)}`,
+  )
+  lines.push(`- work (stage total): ${formatDuration(s.workMs)}`)
+  lines.push(
+    `- human wait: ${formatDuration(s.humanWaitMs)}${s.humanWaitRatio !== null ? ` (${(s.humanWaitRatio * 100).toFixed(1)}% of lead time)` : ''}`,
   )
   lines.push(`- llm invocations: ${s.llmInvocations}`)
-  lines.push(`- total tokens: ${fmt(s.totalTokens)}`)
-  lines.push(`- cost (USD api-equiv): ${fmtUsd(s.costUsd)}`)
-  lines.push(`- cost per success: ${fmtUsd(s.costPerSuccessUsd)}`)
+  lines.push(`- total tokens: ${formatTokens(s.totalTokens)}`)
+  lines.push(`- cost (api-equiv): ${formatCost(s.costUsd)}`)
+  lines.push(`- cost per success: ${formatCost(s.costPerSuccessUsd)}`)
   lines.push(`- repairs: ${s.repairs}, review rounds: ${s.reviewRounds}`)
   lines.push('')
   lines.push('## Stage usage (deduped by invocation)')
   lines.push('')
   lines.push(
-    '| stage | visits | reworked | invocations | in | cache-read | cache-write | out | total | cost(USD) |',
+    '| stage | visits | reworked | invocations | in | cache-read | cache-write | out | total | cost (api-equiv) |',
   )
   lines.push('|---|---|---|---|---|---|---|---|---|---|')
   const visits = new Map(r.stageVisits.map((v) => [v.stage, v]))
   for (const u of r.stageUsage) {
     const v = visits.get(u.stage)
     lines.push(
-      `| ${u.stage} | ${v?.visits ?? 'n/a'} | ${v?.reworked ?? 'n/a'} | ${u.invocations} | ${fmt(u.inputTokens)} | ${fmt(u.cacheReadTokens)} | ${fmt(u.cacheWriteTokens)} | ${fmt(u.outputTokens)} | ${fmt(u.totalTokens)} | ${fmtUsd(u.costUsd)}${u.complete ? '' : ' (PARTIAL)'} |`,
+      `| ${u.stage} | ${v?.visits ?? 'n/a'} | ${v?.reworked ?? 'n/a'} | ${u.invocations} | ${formatTokens(u.inputTokens)} | ${formatTokens(u.cacheReadTokens)} | ${formatTokens(u.cacheWriteTokens)} | ${formatTokens(u.outputTokens)} | ${formatTokens(u.totalTokens)} | ${formatCost(u.costUsd)}${u.complete ? '' : ' (PARTIAL)'} |`,
     )
   }
   for (const v of r.stageVisits) {
@@ -1395,12 +1396,12 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('## Role usage (deduped by invocation)')
   lines.push('')
   lines.push(
-    '| role | provider | model(requested) | effort(requested) | invocations | in | cache-read | cache-write | out | total | cost(USD) | usage | cost |',
+    '| role | provider | model(requested) | effort(requested) | invocations | in | cache-read | cache-write | out | total | cost (api-equiv) | usage | cost |',
   )
   lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|')
   for (const u of r.roleUsage) {
     lines.push(
-      `| ${u.role} | ${fmt(u.provider)} | ${u.requestedModel ?? '(default)'} | ${u.requestedEffort ?? '(default)'} | ${u.invocations} | ${fmt(u.inputTokens)} | ${fmt(u.cacheReadTokens)} | ${fmt(u.cacheWriteTokens)} | ${fmt(u.outputTokens)} | ${fmt(u.totalTokens)} | ${fmtUsd(u.costUsd)} | ${u.complete ? 'complete' : 'PARTIAL'} | ${u.costComplete ? 'complete' : 'PARTIAL'} |`,
+      `| ${u.role} | ${fmt(u.provider)} | ${u.requestedModel ?? '(default)'} | ${u.requestedEffort ?? '(default)'} | ${u.invocations} | ${formatTokens(u.inputTokens)} | ${formatTokens(u.cacheReadTokens)} | ${formatTokens(u.cacheWriteTokens)} | ${formatTokens(u.outputTokens)} | ${formatTokens(u.totalTokens)} | ${formatCost(u.costUsd)} | ${u.complete ? 'complete' : 'PARTIAL'} | ${u.costComplete ? 'complete' : 'PARTIAL'} |`,
     )
   }
   lines.push('')
@@ -1408,23 +1409,23 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('')
   for (const t of r.stageTimings) {
     lines.push(
-      `- ${t.stage}: work=${fmtMs(t.elapsedMs)}, wall=${fmtMs(t.wallElapsedMs ?? null)}${t.complete ? '' : ' (PARTIAL — some attempts missing elapsedMs)'}`,
+      `- ${t.stage}: work=${formatDuration(t.elapsedMs)}, wall=${formatDuration(t.wallElapsedMs)}${t.complete ? '' : ' (PARTIAL — some attempts missing elapsedMs)'}`,
     )
   }
-  lines.push(`- stage total: ${fmtMs(r.stageTotalMs)}`)
-  lines.push(`- run elapsed: ${fmtMs(r.runElapsedMs)}`)
+  lines.push(`- stage total: ${formatDuration(r.stageTotalMs)}`)
+  lines.push(`- run elapsed: ${formatDuration(r.runElapsedMs)}`)
   lines.push('')
   lines.push('## Attempts (from persisted step attempts)')
   lines.push('')
   lines.push(
-    '| step | invocation | status | model(requested/effective/reported) | effort(requested/effective/reported) | elapsedMs | tokens(in/cache-read/cache-write/out/total) | cost(USD api-equiv) | result |',
+    '| step | invocation | status | model(requested/effective/reported) | effort(requested/effective/reported) | elapsed | tokens(in/cache-read/cache-write/out/total) | cost (api-equiv) | result |',
   )
   lines.push('|---|---|---|---|---|---|---|---|---|')
   for (const a of r.attempts) {
     const m = a.measurement
     const tokens = m?.usage
-      ? `${fmt(m.usage.inputTokens)}/${fmt(m.usage.cacheReadTokens)}/${fmt(m.usage.cacheWriteTokens)}/${fmt(m.usage.outputTokens)}/${fmt(m.usage.totalTokens)}`
-      : 'unknown/unknown/unknown/unknown/unknown'
+      ? `${formatTokens(m.usage.inputTokens)}/${formatTokens(m.usage.cacheReadTokens)}/${formatTokens(m.usage.cacheWriteTokens)}/${formatTokens(m.usage.outputTokens)}/${formatTokens(m.usage.totalTokens)}`
+      : Array(5).fill(formatTokens(null)).join('/')
     const model =
       m != null
         ? `${fmt(m.requestedModel)}/${fmt(m.effectiveModel)}/${fmt(m.reportedModel)}`
@@ -1434,7 +1435,7 @@ export function reportToMarkdown(r: LoopReport): string {
         ? `${fmt(m.requestedEffort)}/${fmt(m.effectiveEffort)}/${fmt(m.reportedEffort)}`
         : 'unknown/unknown/unknown'
     lines.push(
-      `| ${a.stepName} | ${m?.invocationId?.slice(0, 8) ?? 'n/a'} | ${a.status}${a.interruptionReason ? ` (${a.interruptionReason})` : ''} | ${model} | ${effort} | ${fmt(m?.elapsedMs)} | ${tokens} | ${m?.costUsdEstimate != null ? `${m.costUsdEstimate.toFixed(6)} (${m.costBasis})` : 'unknown'} | ${fmt(m?.result)} |`,
+      `| ${a.stepName} | ${m?.invocationId?.slice(0, 8) ?? 'n/a'} | ${a.status}${a.interruptionReason ? ` (${a.interruptionReason})` : ''} | ${model} | ${effort} | ${formatDuration(m?.elapsedMs)} | ${tokens} | ${m?.costUsdEstimate != null ? `${formatCost(m.costUsdEstimate)} (${m.costBasis})` : formatCost(null)} | ${fmt(m?.result)} |`,
     )
   }
   const agg = aggregateUsage(
@@ -1446,19 +1447,19 @@ export function reportToMarkdown(r: LoopReport): string {
   )
   lines.push('')
   lines.push(
-    `- aggregate usage (deduped by invocation): in=${fmt(agg.inputTokens)} cache-read=${fmt(agg.cacheReadTokens)} cache-write=${fmt(agg.cacheWriteTokens)} out=${fmt(agg.outputTokens)} total=${fmt(agg.totalTokens)}${agg.complete ? '' : ' (PARTIAL — some invocations missing usage)'}`,
+    `- aggregate usage (deduped by invocation): in=${formatTokens(agg.inputTokens)} cache-read=${formatTokens(agg.cacheReadTokens)} cache-write=${formatTokens(agg.cacheWriteTokens)} out=${formatTokens(agg.outputTokens)} total=${formatTokens(agg.totalTokens)}${agg.complete ? '' : ' (PARTIAL — some invocations missing usage)'}`,
   )
   lines.push(`- missing usage invocations: ${agg.missingAttempts.length}`)
   const aggCost = aggregateInvocationCost(r.attempts, agg.complete)
   lines.push(
-    `- aggregate cost (stored per-invocation estimates): ${aggCost != null ? `${aggCost.toFixed(6)} USD` : 'unknown'}`,
+    `- aggregate cost (stored per-invocation estimates): ${formatCost(aggCost)}`,
   )
   lines.push('')
   lines.push('## Waits')
   lines.push('')
   for (const w of r.waits) {
     lines.push(
-      `- ${w.name} (${w.id}): outcome=${fmt(w.outcome)} created=${w.createdAt} suspended=${fmt(w.suspendedAt)} resolved=${fmt(w.resolvedAt)} inputWait=${fmtMs(w.inputWaitMs)} executionSlotWait=${fmtMs(w.executionSlotWaitMs)}`,
+      `- ${w.name} (${w.id}): outcome=${fmt(w.outcome)} created=${w.createdAt} suspended=${fmt(w.suspendedAt)} resolved=${fmt(w.resolvedAt)} inputWait=${formatDuration(w.inputWaitMs)} executionSlotWait=${formatDuration(w.executionSlotWaitMs)}`,
     )
   }
   const versions = Object.entries(r.versions)

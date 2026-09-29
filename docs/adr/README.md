@@ -67,6 +67,7 @@ What we considered and why we didn't do it.
 | [0024](0024-local-agent-loop-claude-effort-session-reuse.md)    | local-agent-loop effort-only repair sessions  | accepted |
 | [0025](0025-local-agent-loop-baseline-reuse.md)                 | local-agent-loop baseline result reuse        | accepted |
 | [0026](0026-local-agent-loop-spec-stages.md)                    | local-agent-loop spec stages                  | accepted |
+| [0027](0027-local-agent-loop-web-ui-writes.md)                  | local-agent-loop web UI writes                | proposed |
 
 ## Prior Art
 
