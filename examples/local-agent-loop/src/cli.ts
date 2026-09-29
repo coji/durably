@@ -115,12 +115,7 @@ function timeoutFlag(
   const raw = a[name]
   if (raw === undefined) return undefined
   const v = Number(raw)
-  if (
-    !/^\d+$/.test(raw) ||
-    !Number.isSafeInteger(v) ||
-    v < 1 ||
-    v > MAX_TIMEOUT_MS
-  )
+  if (!/^\d+$/.test(raw) || v < 1 || v > MAX_TIMEOUT_MS)
     throw new Error(
       `--${name} must be an integer number of milliseconds between 1 and ${MAX_TIMEOUT_MS}`,
     )
@@ -649,14 +644,14 @@ if (cmd === 'worker') {
   if (!runId) throw new Error('--run <id> required')
   // Every flag is checked before the database is opened.
   const timeoutMs = timeoutFlag(a, 'timeout')
-  if (a['no-worker-timeout'] === 'true' && a['worker-timeout'] !== undefined)
+  const noWorkerTimeout = a['no-worker-timeout'] === 'true'
+  if (noWorkerTimeout && a['worker-timeout'] !== undefined)
     throw new Error(
       '--worker-timeout and --no-worker-timeout exclude each other',
     )
-  const workerTimeoutMs =
-    a['no-worker-timeout'] === 'true'
-      ? null
-      : (timeoutFlag(a, 'worker-timeout') ?? DEFAULT_WORKER_TIMEOUT_MS)
+  const workerTimeoutMs = noWorkerTimeout
+    ? null
+    : (timeoutFlag(a, 'worker-timeout') ?? DEFAULT_WORKER_TIMEOUT_MS)
   const format = a['format'] ?? 'text'
   if (format !== 'text' && format !== 'json')
     throw new Error('--format must be text or json')

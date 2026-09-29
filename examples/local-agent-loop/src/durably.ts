@@ -98,10 +98,6 @@ export function acquireWorkerLock(
 ): WorkerLockResult {
   mkdirSync(stateRoot, { recursive: true })
   const paths = workerLockPaths(stateRoot)
-  // Retry briefly: a `probeWorkerLock` caller holds a shared lock only for a
-  // single read, so a short busy timeout lets a worker start while a probe
-  // loop runs. A second worker keeps the lock exclusively for as long as it
-  // runs, so it is still refused once the timeout elapses.
   const lock = new Database(paths.lock, {
     timeout: WORKER_LOCK_ACQUIRE_TIMEOUT_MS,
   })
