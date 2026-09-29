@@ -77,6 +77,14 @@ function workerLockPaths(stateRoot: string = defaultStateRoot()) {
 }
 
 /**
+ * How long `acquireWorkerLock` retries a busy lock before refusing. This
+ * rides out a `probeWorkerLock` caller's momentary shared lock (held only
+ * for a single read); a second worker still holds the lock exclusively for
+ * as long as it runs, so it is still refused once this window elapses.
+ */
+const WORKER_LOCK_ACQUIRE_TIMEOUT_MS = 2000
+
+/**
  * Take the state root's worker lock: one worker per database. The lock is an
  * exclusive SQLite transaction on a file of its own, which SQLite holds with
  * the operating system's file lock, so it lasts exactly as long as the
@@ -90,8 +98,13 @@ export function acquireWorkerLock(
 ): WorkerLockResult {
   mkdirSync(stateRoot, { recursive: true })
   const paths = workerLockPaths(stateRoot)
-  // No busy wait: a second worker is told at once.
-  const lock = new Database(paths.lock, { timeout: 0 })
+  // Retry briefly: a `probeWorkerLock` caller holds a shared lock only for a
+  // single read, so a short busy timeout lets a worker start while a probe
+  // loop runs. A second worker keeps the lock exclusively for as long as it
+  // runs, so it is still refused once the timeout elapses.
+  const lock = new Database(paths.lock, {
+    timeout: WORKER_LOCK_ACQUIRE_TIMEOUT_MS,
+  })
   try {
     lock.exec('BEGIN EXCLUSIVE')
   } catch (error) {

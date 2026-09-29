@@ -16,6 +16,8 @@ import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+import Database from 'better-sqlite3'
+
 import {
   acquireWorkerLock,
   createAgentDurably,
@@ -1554,6 +1556,54 @@ const wait = setInterval(() => existsSync(gate) || clearInterval(wait), 100)
         w.child.kill('SIGKILL')
       }
       await db.db.destroy()
+    }
+  })
+
+  it('starts while a probe momentarily holds the lock file, but still refuses a live second worker', async () => {
+    const box = await sandbox()
+    // Create the lock file so a readonly probe connection can open it.
+    const created = acquireWorkerLock(box.stateRoot, packageRoot)
+    assert.ok(created.acquired)
+    if (created.acquired) created.release()
+    const lockPath = join(box.stateRoot, 'worker.lock')
+
+    // Simulate `demo wait`'s once-a-second probe holding the lock file open
+    // for a moment, spanning the window in which a real worker starts.
+    const probe = new Database(lockPath, {
+      readonly: true,
+      fileMustExist: true,
+    })
+    probe.exec('BEGIN')
+    probe.prepare('SELECT count(*) FROM sqlite_master').get()
+    // sleep-ok(work): simulated hold of the lock file; only needs to be well
+    // under the worker's retry window, not any particular length
+    const release = setTimeout(() => probe.close(), 500)
+
+    const first = startWorker(box)
+    try {
+      await first.running()
+    } finally {
+      clearTimeout(release)
+      try {
+        probe.close()
+      } catch {
+        // Already closed.
+      }
+    }
+
+    try {
+      // A live second worker is still refused, retry window or not.
+      const second = startWorker(box)
+      try {
+        assert.notEqual(await second.exited, 0)
+        assert.match(second.output(), new RegExp(`pid ${first.pid()}\\b`))
+      } finally {
+        second.kill('SIGKILL')
+        second.child.kill('SIGKILL')
+      }
+    } finally {
+      first.kill('SIGKILL')
+      first.child.kill('SIGKILL')
     }
   })
 })
