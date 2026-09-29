@@ -1,0 +1,34 @@
+import type { ReactNode } from 'react'
+
+import type { Tone } from './status'
+
+const RULE: Record<Tone, string> = {
+  waiting: 'border-waiting bg-waiting-bg',
+  failed: 'border-failed bg-failed-bg',
+  running: 'border-running bg-running-bg',
+  done: 'border-line-strong bg-sunken',
+}
+
+/**
+ * A short message about the page itself, such as a refresh that failed or
+ * an action that finished. The rule on its left carries the state's color.
+ */
+export function Notice({
+  tone = 'done',
+  title,
+  children,
+}: {
+  tone?: Tone
+  title?: string
+  children?: ReactNode
+}) {
+  return (
+    <div
+      role={tone === 'failed' ? 'alert' : 'status'}
+      className={`flex flex-col gap-1 rounded-sm border-l-2 px-3 py-2 text-sm ${RULE[tone]}`}
+    >
+      {title ? <p className="text-fg font-medium">{title}</p> : null}
+      {children ? <div className="text-fg-2 text-xs">{children}</div> : null}
+    </div>
+  )
+}

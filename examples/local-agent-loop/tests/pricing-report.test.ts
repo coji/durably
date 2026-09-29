@@ -3,7 +3,7 @@ import { describe, it } from 'node:test'
 
 import { compareReports, comparisonToMarkdown } from '../src/engine/compare.js'
 import { PRICE_BASIS, estimateCostUsd } from '../src/engine/pricing.js'
-import { reportToMarkdown } from '../src/engine/report.js'
+import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
 import type { LoopReport } from '../src/engine/report.js'
 
 function baseReport(): LoopReport {
@@ -125,8 +125,36 @@ describe('pricing/report', () => {
 
   it('renders unknown (not 0) for missing measurements', () => {
     const md = reportToMarkdown(baseReport())
-    assert.match(md, /unknown/)
+    assert.match(md, /- lead time \(trigger -> terminal\): unknown/)
+    assert.match(md, /- total tokens: unknown/)
+    assert.match(md, /- cost \(api-equiv\): unknown/)
     assert.doesNotMatch(md, /\| 0 \|/)
+  })
+
+  it('writes quantities as a person reads them and keeps the JSON raw', () => {
+    const r: LoopReport = {
+      ...baseReport(),
+      summary: {
+        ...baseReport().summary,
+        leadTimeMs: 1_093_000,
+        totalTokens: 5_123_456,
+        costUsd: 6.443984,
+      },
+    }
+    const md = reportToMarkdown(r)
+    assert.match(md, /- lead time \(trigger -> terminal\): 18m 13s/)
+    assert.match(md, /- total tokens: 5\.1M/)
+    assert.match(md, /- cost \(api-equiv\): \$6\.44/)
+    assert.ok(!md.includes('6.443984'))
+    assert.doesNotMatch(md, /\d ?ms\b/)
+    // The JSON keeps every stored number and null as it was.
+    const json = JSON.parse(reportToJson(r)) as LoopReport
+    assert.equal(json.summary.leadTimeMs, 1_093_000)
+    assert.equal(json.summary.totalTokens, 5_123_456)
+    assert.equal(json.summary.costUsd, 6.443984)
+    assert.equal(json.summary.workMs, null)
+    assert.equal(json.summary.costPerSuccessUsd, null)
+    assert.equal(reportToJson(r), JSON.stringify(r, null, 2))
   })
 
   it('separates real-call counts from full-loop verification', () => {
@@ -157,8 +185,8 @@ describe('pricing/report', () => {
         },
       ],
     })
-    assert.match(md, /inputWait=60000ms/)
-    assert.match(md, /executionSlotWait=500ms/)
+    assert.match(md, /inputWait=1m/)
+    assert.match(md, /executionSlotWait=0\.5s/)
   })
 
   it('keeps aggregate cost unknown when any invocation cannot be priced', () => {
@@ -269,13 +297,13 @@ describe('pricing/report', () => {
     const md = reportToMarkdown({
       ...baseReport(),
       attempts: [
-        invocation('codex-call', 0.001, 'gpt-5'),
-        invocation('claude-call', 0.002, 'claude-opus-5'),
+        invocation('codex-call', 0.25, 'gpt-5'),
+        invocation('claude-call', 1.5, 'claude-opus-5'),
       ],
     })
     assert.match(
       md,
-      /aggregate cost \(stored per-invocation estimates\): 0\.003000 USD/,
+      /aggregate cost \(stored per-invocation estimates\): \$1\.75/,
     )
     assert.ok(!md.includes(PRICE_BASIS.checkedAt))
     assert.ok(!md.includes(PRICE_BASIS.source))

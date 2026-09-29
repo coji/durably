@@ -319,7 +319,7 @@ describe('role usage', () => {
     assert.match(md, /## Role usage/)
     assert.match(
       md,
-      /\| code \| codex \| gpt-5\.6-sol \| low \| 1 \| 1000 \| 500 \| unknown \| 100 \| 1100 \| 0\.010000 \| complete \| complete \|/,
+      /\| code \| codex \| gpt-5\.6-sol \| low \| 1 \| 1\.0K \| 500 \| unknown \| 100 \| 1\.1K \| \$0\.01 \| complete \| complete \|/,
     )
     assert.match(
       md,
@@ -668,10 +668,10 @@ describe('run summary', () => {
     const md = reportToMarkdown(report('r4'))
     assert.match(md, /## Summary \(one row per run\)/)
     assert.match(md, /- success: yes \(approved\)/)
-    assert.match(md, /- human wait: 5000ms \(25\.0% of lead time\)/)
+    assert.match(md, /- human wait: 5s \(25\.0% of lead time\)/)
     assert.match(
       md,
-      /\| code \| 1 \| 0 \| 1 \| 1000 \| 500 \| unknown \| 100 \| 1100 \| 0\.010000 \|/,
+      /\| code \| 1 \| 0 \| 1 \| 1\.0K \| 500 \| unknown \| 100 \| 1\.1K \| \$0\.01 \|/,
     )
     assert.match(md, /- config version: cfg-a/)
   })
@@ -740,7 +740,9 @@ describe('cross-run comparison', () => {
     const md = comparisonToMarkdown(c)
     assert.match(md, /## codex\/gpt-5\.6-sol\/low\/reuse — config cfg-a/)
     assert.match(md, /- success: 2\/3 \(67%\)/)
-    assert.match(md, /cost USD: unknown \(1 unknown\)/)
+    assert.match(md, /- cost: unknown \(1 unknown\)/)
+    assert.match(md, /- cost: \$0\.02 \[\$0\.01\.\.\$0\.03\] \(n=3\)/)
+    assert.match(md, /\| code \| .* \| 2\.1K \[1\.1K\.\.3\.1K\] \(n=3\) \|/)
   })
 })
 
