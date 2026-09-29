@@ -118,6 +118,8 @@ describe('stage timing completeness', () => {
       repairCalls: [],
       reviews: [],
       reviewRounds: [],
+      specRounds: [],
+      spec: null,
       delivery: null,
       failure: null,
       stageVisits: [],

@@ -1,6 +1,7 @@
 /** Pure factory state reducer. */
-import type { FactoryEvent } from './events.js'
-import type { FactoryState } from './types.js'
+import type { FactoryEvent, SpecEvent } from './events.js'
+import { specBlockerText } from './prompts.js'
+import type { FactoryState, SpecReviewResult, SpecVersion } from './types.js'
 
 export function reduce(state: FactoryState, event: FactoryEvent): FactoryState {
   switch (event.type) {
@@ -50,5 +51,86 @@ export function reduce(state: FactoryState, event: FactoryEvent): FactoryState {
       return { ...state, approval: event.decision }
     case 'factory.finished':
       return { ...state, outcome: event.outcome }
+  }
+}
+
+/** Where the spec stages stand; see `specAction` for what comes next. */
+export interface SpecState {
+  /** The spec as last written; null before the author ran. */
+  version: SpecVersion | null
+  /** Review rounds run so far. */
+  round: number
+  /** The rounds allowed before a person decides; grows by one per revise. */
+  allowedRounds: number
+  /** The last round's results. */
+  reviews: SpecReviewResult[]
+  /** The version as last written has not been reviewed yet. */
+  unreviewed: boolean
+  /** The blocker notes of earlier rounds a fix already addressed. */
+  settled: string[]
+  /** Spec-blocked waits so far. */
+  waits: number
+  /** A person decided on a blocked spec: its approval or rejection. */
+  decision: 'approved' | 'rejected' | null
+  /** A person's notes for the next fix; null when none is pending. */
+  reviseNotes: string | null
+}
+
+export function initialSpecState(maxRounds: number): SpecState {
+  return {
+    version: null,
+    round: 0,
+    allowedRounds: maxRounds,
+    reviews: [],
+    unreviewed: false,
+    settled: [],
+    waits: 0,
+    decision: null,
+    reviseNotes: null,
+  }
+}
+
+/** The blocking reviews of the last round, one note line per reviewer. */
+export function specBlockers(state: SpecState): SpecReviewResult[] {
+  return state.reviews.filter((r) => r.decision === 'needsChanges')
+}
+
+export function reduceSpec(state: SpecState, event: SpecEvent): SpecState {
+  switch (event.type) {
+    case 'spec.authored':
+      return { ...state, version: event.version, unreviewed: true }
+    case 'spec.fixed':
+      return {
+        ...state,
+        version: event.version,
+        unreviewed: true,
+        // What this fix addressed is settled for the reviews that follow.
+        settled: [
+          ...state.settled,
+          ...specBlockers(state).map((r) => `${r.name}: ${specBlockerText(r)}`),
+        ],
+        reviseNotes: null,
+      }
+    case 'spec.reviewed':
+      if (event.sha256 !== state.version?.sha256)
+        throw new Error(`spec review target is stale: ${event.sha256}`)
+      return {
+        ...state,
+        round: state.round + 1,
+        reviews: event.reviews,
+        unreviewed: false,
+      }
+    case 'spec.decided':
+      if (event.sha256 !== state.version?.sha256)
+        throw new Error(`spec decision target is stale: ${event.sha256}`)
+      return event.decision === 'revise'
+        ? {
+            ...state,
+            waits: state.waits + 1,
+            // One more fix, then one more review round.
+            allowedRounds: state.round + 1,
+            reviseNotes: event.notes ?? '',
+          }
+        : { ...state, waits: state.waits + 1, decision: event.decision }
   }
 }

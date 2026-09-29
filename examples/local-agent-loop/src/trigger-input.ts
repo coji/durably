@@ -15,11 +15,15 @@ import { parseProviderName } from './engine/providers/index.js'
 import {
   assertSingleMode,
   baselineReuseSchema,
+  DEFAULT_SPEC_MAX_ROUNDS,
   fixProfile,
+  fixReviewInvocation,
   fixReviewInvocations,
   type AgentLoopInput,
   nonBlank,
   resolveTimeouts,
+  specMaxRoundsSchema,
+  specReviewerNameSchema,
   timeoutMsSchema,
   type FixedProfile,
 } from './factory/job.js'
@@ -33,6 +37,8 @@ import {
 import {
   REVIEW_CONTEXTS,
   REVIEW_OUTPUTS,
+  SPEC_CHECK_STEP,
+  SPEC_FINAL_STEP,
   type BaselineReuse,
   type FactorySetup,
   type ProfileRole,
@@ -100,6 +106,47 @@ const commitConfigSchema = z
   .strict()
 
 /**
+ * The spec stages: who writes, fixes and reviews the spec before any
+ * implementation, the templates they follow (paths relative to the config
+ * file's directory, read once at trigger), and how many review rounds run
+ * before a person decides. `checkFromSpec` is a script that reads the run's
+ * fixed spec and prints the check to grade with; it also applies to a run
+ * given `--spec-file`, which skips the other stages.
+ */
+const specConfigSchema = z
+  .object({
+    template: z.string().min(1).optional(),
+    reviewTemplate: z.string().min(1).optional(),
+    maxRounds: specMaxRoundsSchema.optional(),
+    author: roleConfigSchema.optional(),
+    /** The fix's own settings; the author's when absent. */
+    fix: roleConfigSchema.optional(),
+    /** Named reviewers, each run side by side in every round. */
+    review: z.record(specReviewerNameSchema, reviewRoleConfigSchema).optional(),
+    checkFromSpec: z.array(z.string().min(1)).min(1).optional(),
+  })
+  .strict()
+
+type SpecConfig = z.infer<typeof specConfigSchema>
+
+/** Whether a spec config configures the stages, beyond `checkFromSpec`. */
+function configuresSpecStages(spec: SpecConfig | undefined): boolean {
+  return (
+    spec !== undefined &&
+    (
+      [
+        'template',
+        'reviewTemplate',
+        'maxRounds',
+        'author',
+        'fix',
+        'review',
+      ] as const
+    ).some((key) => spec[key] !== undefined)
+  )
+}
+
+/**
  * `factory.json`: what stays the same for every run against one repository.
  * Everything is optional here; `check` is required once flags are applied.
  */
@@ -139,6 +186,8 @@ const factoryConfigSchema = z
     agentTimeoutMs: timeoutMsSchema.optional(),
     /** Commit author, message template, and the branch `--publish` pushes. */
     commit: commitConfigSchema.optional(),
+    /** Spec stages before implementation, and a check chosen from the spec. */
+    spec: specConfigSchema.optional(),
   })
   .strict()
 
@@ -229,28 +278,32 @@ const MAX_INPUT_FILE_BYTES = 256 * 1024
 async function readInputFile(
   flag: string,
   path: string,
+  /** How errors name the file; `--<flag>` by default. */
+  name = `--${flag}`,
+  /** The directory a relative path is taken from; the current one by default. */
+  from?: string,
 ): Promise<{ content: string; ref: InputFileRef }> {
-  const abs = resolve(path)
+  const abs = from ? resolve(from, path) : resolve(path)
   let size: number
   try {
     size = (await stat(abs)).size
   } catch {
-    throw new Error(`--${flag} ${path}: cannot read file`)
+    throw new Error(`${name} ${path}: cannot read file`)
   }
   // Check the size before reading, so a huge file is never loaded.
   if (size > MAX_INPUT_FILE_BYTES)
     throw new Error(
-      `--${flag} ${path}: file is ${size} bytes; the limit is 256 KiB`,
+      `${name} ${path}: file is ${size} bytes; the limit is 256 KiB`,
     )
   let bytes: Buffer
   try {
     bytes = await readFile(abs)
   } catch {
-    throw new Error(`--${flag} ${path}: cannot read file`)
+    throw new Error(`${name} ${path}: cannot read file`)
   }
   if (bytes.length > MAX_INPUT_FILE_BYTES)
     throw new Error(
-      `--${flag} ${path}: file is ${bytes.length} bytes; the limit is 256 KiB`,
+      `${name} ${path}: file is ${bytes.length} bytes; the limit is 256 KiB`,
     )
   let content: string
   try {
@@ -259,10 +312,10 @@ async function readInputFile(
       bytes,
     )
   } catch {
-    throw new Error(`--${flag} ${path}: not UTF-8 text`)
+    throw new Error(`${name} ${path}: not UTF-8 text`)
   }
   if (content.trim().length === 0)
-    throw new Error(`--${flag} ${path}: file is empty`)
+    throw new Error(`${name} ${path}: file is empty`)
   return { content, ref: { path: abs } }
 }
 
@@ -281,11 +334,14 @@ function splitArgv(value: string): string[] {
 export function resolveProfiles(
   a: Record<string, string>,
   config: FactoryConfig | null,
+  /** The run has spec stages: the config's spec roles are resolved too. */
+  specStages = false,
 ): {
   roles: Record<ProfileRole, FixedProfile>
   triage: FixedProfile | null
   repair: FixedProfile | null
   review: Partial<Record<ReviewLens, ReviewInvocation>>
+  spec: SpecProfiles | null
 } {
   const fallbackProvider = parseProviderName(a['provider'] ?? 'fake')
   const fix = (role: RoleConfig | undefined) => {
@@ -314,28 +370,120 @@ export function resolveProfiles(
   // flags, so `{ "effort": "high" }` changes the effort and nothing else. On
   // another provider, code's model and effort do not apply, and that
   // provider's defaults fill in.
-  const repairConfig = config?.profiles?.repair
-  const repairProvider = repairConfig?.provider ?? roles.code.provider
-  const sameAsCode = repairProvider === roles.code.provider
-  const repair = repairConfig
-    ? fixProfile({
-        provider: repairProvider,
-        model:
-          repairConfig.model ?? (sameAsCode ? roles.code.requestedModel : null),
-        effort:
-          repairConfig.effort ??
-          (sameAsCode ? roles.code.requestedEffort : null),
-      })
-    : null
+  const inheritFrom = (role: RoleConfig | undefined, base: FixedProfile) => {
+    if (!role) return null
+    const provider = role.provider ?? base.provider
+    const same = provider === base.provider
+    return fixProfile({
+      provider,
+      model: role.model ?? (same ? base.requestedModel : null),
+      effort: role.effort ?? (same ? base.requestedEffort : null),
+    })
+  }
+  const repair = inheritFrom(config?.profiles?.repair, roles.code)
+  // The spec fix works like repair: what it leaves out comes from the
+  // resolved author profile. Every reviewer is a role of its own.
+  const specConfig = specStages ? config?.spec : undefined
+  let spec: SpecProfiles | null = null
+  if (specConfig) {
+    const author = fix(specConfig.author)
+    const reviewers = Object.entries(specConfig.review ?? {})
+    if (reviewers.length === 0)
+      throw new Error(
+        'spec.review must name at least one reviewer, such as { "review": { "product": {}, "tech": {} } }',
+      )
+    spec = {
+      author,
+      fix: inheritFrom(specConfig.fix, author),
+      reviewers: reviewers.map(([name, r]) => {
+        const profile = fix(r)
+        return {
+          name,
+          profile,
+          invocation: fixReviewInvocation(r, profile, `spec.review.${name}`, {
+            spec: true,
+          }),
+        }
+      }),
+    }
+  }
   assertSingleMode({
     ...roles,
     ...(triage ? { triage } : {}),
     ...(repair ? { repair } : {}),
+    ...(spec
+      ? {
+          'spec-author': spec.author,
+          ...(spec.fix ? { 'spec-fix': spec.fix } : {}),
+          ...Object.fromEntries(
+            spec.reviewers.map((r) => [`spec-review:${r.name}`, r.profile]),
+          ),
+        }
+      : {}),
   })
   // Checked against the resolved profiles, so a Codex reviewer or an
   // `{effort}` with no effort is refused before the run exists.
   const review = fixReviewInvocations(config?.profiles?.review, roles)
-  return { roles, triage, repair, review }
+  return { roles, triage, repair, review, spec }
+}
+
+/** The spec roles as `resolveProfiles` fixes them. */
+interface SpecProfiles {
+  author: FixedProfile
+  /** Null: the fix runs on the author's profile. */
+  fix: FixedProfile | null
+  reviewers: {
+    name: string
+    profile: FixedProfile
+    invocation: ReviewInvocation | null
+  }[]
+}
+
+/** The spec stages' templates and round limit, read at trigger. */
+interface SpecStagesSettings {
+  maxRounds: number
+  template: string | null
+  reviewTemplate: string | null
+  templateFiles: {
+    template: InputFileRef | null
+    reviewTemplate: InputFileRef | null
+  }
+}
+
+/**
+ * Read the spec stages' templates once, here, from paths relative to the
+ * config file's directory, with the same limits as an input file. Null when
+ * the run has no spec stages.
+ */
+async function readSpecStages(
+  loaded: LoadedConfig | null,
+  hasSpec: boolean,
+): Promise<SpecStagesSettings | null> {
+  const spec = loaded?.config.spec
+  if (!loaded || hasSpec || !configuresSpecStages(spec)) return null
+  const read = async (key: 'template' | 'reviewTemplate') => {
+    const path = spec?.[key]
+    return path
+      ? readInputFile(
+          `spec.${key}`,
+          path,
+          `${loaded.path}: spec.${key}`,
+          dirname(loaded.path),
+        )
+      : null
+  }
+  // One after the other, so a config with two bad paths names the first.
+  const template = await read('template')
+  const reviewTemplate = await read('reviewTemplate')
+  return {
+    maxRounds: spec?.maxRounds ?? DEFAULT_SPEC_MAX_ROUNDS,
+    template: template?.content ?? null,
+    reviewTemplate: reviewTemplate?.content ?? null,
+    templateFiles: {
+      template: template?.ref ?? null,
+      reviewTemplate: reviewTemplate?.ref ?? null,
+    },
+  }
 }
 
 /** The trigger flags a config can be overridden by, kept for a reload. */
@@ -361,19 +509,34 @@ export interface ConfigSource {
 async function repoSettings(
   a: Record<string, string>,
   loaded: LoadedConfig | null,
+  /** The run was given a spec (`--spec-file`), so it has no spec stages. */
+  hasSpec: boolean,
 ) {
   const config = loaded?.config ?? null
-  const checkCommand = a['check'] ? splitArgv(a['check']) : config?.check
-  if (!checkCommand || checkCommand.length === 0)
+  const specStages = await readSpecStages(loaded, hasSpec)
+  // A check chosen from the spec replaces the config's and --check's.
+  const checkFromSpec = config?.spec?.checkFromSpec ?? null
+  if (checkFromSpec && !hasSpec && !specStages)
+    throw new Error(
+      `${loaded?.path ?? 'factory.json'}: spec.checkFromSpec reads the run's spec, and this run has none: pass --spec-file, or configure the spec stages (spec.review)`,
+    )
+  const checkCommand = checkFromSpec
+    ? null
+    : a['check']
+      ? splitArgv(a['check'])
+      : config?.check
+  if (!checkFromSpec && (!checkCommand || checkCommand.length === 0))
     throw new Error(
       'a check command is required for --repo: set "check" in factory.json or pass --check "<command>". It is the pinned check that decides pass or fail',
     )
   const setupCommand = a['setup'] ? splitArgv(a['setup']) : config?.setup
   const commit = config?.commit
   return {
+    specStages,
     settings: {
       baseRef: a['base'] ?? config?.base ?? 'HEAD',
-      checkCommand,
+      checkCommand: checkCommand ?? null,
+      checkFromSpec,
       setupCommand:
         setupCommand && setupCommand.length > 0 ? setupCommand : null,
       baselineCheck: config?.baselineCheck ?? false,
@@ -431,11 +594,16 @@ export async function resolveTarget(a: Record<string, string>) {
       config: null,
       codexPath: null,
       configSource: null,
+      specStages: null,
     }
   }
   const repoPath = isAbsolute(repo) ? repo : join(process.cwd(), repo)
   const loaded = await loadConfig(await repoRoot(repoPath), a['config'])
-  const { settings, codexPath, configSource } = await repoSettings(a, loaded)
+  const { settings, codexPath, configSource, specStages } = await repoSettings(
+    a,
+    loaded,
+    Boolean(a['spec-file']),
+  )
   const sources = ['issue', 'task', 'task-file'].filter((flag) => a[flag])
   if (sources.length > 1)
     throw new Error(
@@ -482,6 +650,7 @@ export async function resolveTarget(a: Record<string, string>) {
     config: loaded?.config ?? null,
     codexPath,
     configSource,
+    specStages,
   }
 }
 
@@ -501,8 +670,14 @@ function assembleInput(a: Record<string, string>, resolved: ResolvedTarget) {
   if (!/^[1-3]$/.test(rawIterations))
     throw new Error('--max-iterations must be an integer between 1 and 3')
   const maxIterations = Number(rawIterations)
-  const { target, config, codexPath, configSource } = resolved
-  const { roles: profiles, triage, repair, review } = resolveProfiles(a, config)
+  const { target, config, codexPath, configSource, specStages } = resolved
+  const {
+    roles: profiles,
+    triage,
+    repair,
+    review,
+    spec,
+  } = resolveProfiles(a, config, specStages !== null)
   // Fixed here, so the worker's environment never changes a stored run: the
   // config wins, then this process's environment, then the target default.
   const { checkTimeoutMs, agentTimeoutMs } = resolveTimeouts(
@@ -539,6 +714,20 @@ function assembleInput(a: Record<string, string>, resolved: ResolvedTarget) {
     codexPath,
     ...(configSource ? { configSource } : {}),
     ...(Object.keys(review).length > 0 ? { review } : {}),
+    ...(spec && specStages
+      ? {
+          spec: {
+            author: requested(spec.author),
+            fix: spec.fix ? requested(spec.fix) : null,
+            reviewers: spec.reviewers.map((r) => ({
+              name: r.name,
+              profile: requested(r.profile),
+              invocation: r.invocation,
+            })),
+            ...specStages,
+          },
+        }
+      : {}),
   }
 }
 
@@ -611,15 +800,22 @@ export async function reloadTriggerInput(stored: StoredInput): Promise<{
     (source.path !== null && source.path !== join(root, 'factory.json'))
   const explicit = named && source.path ? source.path : undefined
   const loaded = await loadConfig(root, explicit)
-  const { settings, codexPath, configSource } = await repoSettings(a, loaded)
+  const storedTarget = stored.target as Extract<
+    ResolvedTarget['target'],
+    { kind: 'repo' }
+  >
+  const { settings, codexPath, configSource, specStages } = await repoSettings(
+    a,
+    loaded,
+    // The spec the run was given; the spec stages never store theirs here.
+    typeof storedTarget.spec === 'string',
+  )
   const input = assembleInput(a, {
-    target: {
-      ...(stored.target as Extract<ResolvedTarget['target'], { kind: 'repo' }>),
-      ...settings,
-    },
+    target: { ...storedTarget, ...settings },
     config: loaded?.config ?? null,
     codexPath,
     configSource,
+    specStages,
   })
   return {
     input: {
@@ -630,6 +826,15 @@ export async function reloadTriggerInput(stored: StoredInput): Promise<{
     },
     configSha256: loaded?.sha256 ?? null,
   }
+}
+
+/**
+ * Read `demo spec-revise`'s notes once, with an input file's limits: at most
+ * 256 KiB, UTF-8, not blank. The signal carries the content, so editing the
+ * file afterwards changes nothing.
+ */
+export async function readNotesFile(path: string): Promise<string> {
+  return (await readInputFile('notes-file', path)).content
 }
 
 /** The outside findings and optional dispositions a repair run is given. */
@@ -769,6 +974,12 @@ export function buildRepairInput(
   files: RepairFiles,
   /** Demo and test only: the fake provider's behavior for the child. */
   fakeScenario?: unknown,
+  /**
+   * What the parent fixed after setup: the spec its spec stages confirmed
+   * and the check its `checkFromSpec` chose. The child keeps both as they
+   * are and runs neither stage again.
+   */
+  fixed: { spec?: string | null; check?: string[] | null } = {},
 ) {
   const { setup: stored, commit, branch } = repairableCandidate(parent, setup)
   const parentInput = parent.input as StoredRepairInput
@@ -805,7 +1016,7 @@ export function buildRepairInput(
       repoPath: t.repoPath,
       baseRef: commit,
       task: t.task,
-      spec: t.spec,
+      spec: fixed.spec ?? t.spec,
       dispositions,
       inputFiles: {
         task: storedFiles.task ?? null,
@@ -813,7 +1024,7 @@ export function buildRepairInput(
         dispositions: dispositionsRef,
       },
       issue: t.issue,
-      checkCommand: t.checkCommand,
+      checkCommand: fixed.check ?? t.checkCommand,
       setupCommand: t.setupCommand,
       publish: t.publish,
       commit: recorded(
@@ -898,7 +1109,14 @@ export async function startableRepair(
   if (!parent) throw new Error(`no run ${parentId}`)
   const setup = (await durably.storage.getCompletedStep(parentId, 'setup'))
     ?.output
-  const built = buildRepairInput(parent, setup, files, fakeScenario)
+  const [final, check] = await Promise.all([
+    durably.storage.getCompletedStep(parentId, SPEC_FINAL_STEP),
+    durably.storage.getCompletedStep(parentId, SPEC_CHECK_STEP),
+  ])
+  const built = buildRepairInput(parent, setup, files, fakeScenario, {
+    spec: (final?.output as { content?: string } | null)?.content ?? null,
+    check: (check?.output as { check?: string[] } | null)?.check ?? null,
+  })
   const { target, repairOf } = built.input
   await assertCandidateUnmoved(
     target.repoPath,

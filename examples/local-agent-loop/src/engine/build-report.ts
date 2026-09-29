@@ -8,6 +8,8 @@ import { REPAIR_OF_LABEL, triageThatRuns } from '../factory/repair.js'
 import {
   BASELINE_STEP,
   REPAIR_SESSION_STEP,
+  SPEC_CHECK_STEP,
+  SPEC_FINAL_STEP,
   type RepairSessionRecord,
 } from '../factory/types.js'
 import { classifyRun, stageStep } from './failure-reasons.js'
@@ -43,6 +45,7 @@ import {
   type ReportReviewFindings,
   type ReportReviewRound,
   type ReportSealedCandidate,
+  type ReportSpec,
   type ReportTriage,
   type RoleProfileRow,
   type TriageCalibration,
@@ -62,6 +65,7 @@ interface PersistedInput {
   target?: {
     task?: string
     spec?: string | null
+    checkFromSpec?: string[] | null
     dispositions?: string | null
     inputFiles?: Record<string, { path?: string } | null>
   }
@@ -70,6 +74,11 @@ interface PersistedInput {
     candidateCommit?: string
     findings?: string
     findingsFile?: { path?: string }
+  }
+  spec?: {
+    author?: PersistedProfile
+    fix?: PersistedProfile | null
+    reviewers?: { name?: string; profile?: PersistedProfile }[]
   }
 }
 
@@ -115,7 +124,19 @@ function profileRows(
   // Triage has no fallback: without its own profile it never runs. A repair
   // run never runs the triage profile it records, so it has no row.
   const triage = triageThatRuns(input, input?.profiles?.['triage'])
-  return triage ? [...rows, row('triage', triage)] : rows
+  // The spec roles, each a row of its own: the fix on the author's settings
+  // unless it has its own, and every named reviewer.
+  const spec = input?.spec
+  const specRows = spec?.author
+    ? [
+        row('spec-author', spec.author),
+        row('spec-fix', spec.fix ?? spec.author),
+        ...(spec.reviewers ?? []).flatMap((r) =>
+          r.name && r.profile ? [row(`spec-review:${r.name}`, r.profile)] : [],
+        ),
+      ]
+    : []
+  return [...rows, ...(triage ? [row('triage', triage)] : []), ...specRows]
 }
 
 /** A stored calibration; a value missing from an older record is unknown. */
@@ -208,6 +229,14 @@ function asFindings(value: unknown): ReportReviewFindings | null {
  * A stored verdict, with the findings its review step kept; null when it is
  * not one. A verdict recorded before findings were kept has none.
  */
+/** A spec review step's output as a review, its reviewer as the lens. */
+export function asSpecReview(output: unknown): ReportReview | null {
+  const o = output as { name?: unknown } | null
+  return asReportReview(
+    o && typeof o.name === 'string' ? { ...o, lens: o.name } : null,
+  )
+}
+
 export function asReportReview(value: unknown): ReportReview | null {
   const r = value as (Partial<ReportReview> & { findings?: unknown }) | null
   return typeof r?.lens === 'string' &&
@@ -365,6 +394,108 @@ function reviewRoundsOf(
         ),
       }
     })
+}
+
+/**
+ * Every spec review round, from the completed `spec-review:<round>:<name>`
+ * steps, one review per reviewer in name order; `lens` is the reviewer's
+ * name. An open run's rounds are there as soon as their steps complete.
+ */
+function specRoundsOf(steps: StoredStep[]): ReportReviewRound[] {
+  const rounds = new Map<number, ReportReview[]>()
+  for (const s of steps) {
+    const [kind, at, name] = s.name.split(':')
+    const round = Number(at)
+    if (
+      kind !== 'spec-review' ||
+      !name ||
+      !Number.isInteger(round) ||
+      s.status !== 'completed'
+    )
+      continue
+    const review = asSpecReview(s.output)
+    if (!review) continue
+    rounds.set(round, [...(rounds.get(round) ?? []), review])
+  }
+  return [...rounds]
+    .sort(([x], [y]) => x - y)
+    .map(([round, reviews]) => ({
+      round,
+      sequence: round,
+      candidate: null,
+      reviews: reviews.sort((x, y) => x.lens.localeCompare(y.lens)),
+    }))
+}
+
+/**
+ * The confirmed spec and the check chosen from it; see `ReportSpec`. A run
+ * given its spec at trigger (`--spec-file`) has no `spec:final` step, so
+ * the spec it went on with is the one in its input. A `--spec-file` run
+ * without spec stages and without `checkFromSpec` has no spec section at
+ * all: its input spec is a check baseline detail, not a spec this run
+ * reasoned about, so it reports `null` as a legacy run would.
+ */
+function specOf(
+  steps: StoredStep[],
+  inputSpec: string | null | undefined,
+  hasCheckFromSpec: boolean,
+): ReportSpec | null {
+  const done = (name: string) =>
+    steps.find((s) => s.name === name && s.status === 'completed')?.output
+  const final = done(SPEC_FINAL_STEP) as {
+    content?: unknown
+    sha256?: unknown
+    round?: unknown
+    blocked?: unknown
+    advice?: unknown
+  } | null
+  const check = done(SPEC_CHECK_STEP) as {
+    check?: unknown
+    notes?: unknown
+  } | null
+  const started = steps.some(
+    (s) => s.name.startsWith('spec:') || s.name.startsWith('spec-review:'),
+  )
+  const suppliedSpec =
+    typeof inputSpec === 'string' && inputSpec.length > 0 ? inputSpec : null
+  // A `--spec-file` run reports its input spec whatever state spec-check is
+  // in, including when it has not completed (or failed) yet, but only when
+  // `checkFromSpec` is configured; otherwise the input spec is not one this
+  // run reasoned about, so it reports null like a legacy run.
+  if (
+    !final &&
+    !check &&
+    !started &&
+    (suppliedSpec === null || !hasCheckFromSpec)
+  )
+    return null
+  const advice = Array.isArray(final?.advice)
+    ? final.advice.flatMap((f) => {
+        const finding = asFinding(f)
+        return finding ? [finding] : []
+      })
+    : []
+  const supplied = !final ? suppliedSpec : null
+  return {
+    content: typeof final?.content === 'string' ? final.content : supplied,
+    sha256:
+      typeof final?.sha256 === 'string'
+        ? final.sha256
+        : supplied !== null
+          ? createHash('sha256').update(supplied).digest('hex')
+          : null,
+    source: supplied !== null ? 'input' : 'stages',
+    round: typeof final?.round === 'number' ? final.round : null,
+    blocked: final?.blocked === true,
+    advice,
+    check:
+      check && Array.isArray(check.check)
+        ? {
+            command: check.check.map(String),
+            notes: typeof check.notes === 'string' ? check.notes : null,
+          }
+        : null,
+  }
 }
 
 /**
@@ -905,6 +1036,12 @@ export async function buildReport(
     repairCalls: repairCallsOf(rows),
     reviews: lastReviews(run.output, waits, reviewRounds),
     reviewRounds,
+    specRounds: specRoundsOf(steps),
+    spec: specOf(
+      steps,
+      input?.target?.spec,
+      Boolean(input?.target?.checkFromSpec),
+    ),
     delivery,
     failure,
     stageVisits: visits,

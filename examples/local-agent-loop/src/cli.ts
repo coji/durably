@@ -1,10 +1,10 @@
 #!/usr/bin/env tsx
-/** CLI: worker | trigger | repair | status | wait | waits | approve | reject | report | compare | ui | seed */
+/** CLI: worker | trigger | repair | status | wait | waits | approve | reject | spec-revise | report | compare | ui | seed */
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { signalApproval } from './approval.js'
+import { isSpecWait, signalApproval, signalSpecDecision } from './approval.js'
 import {
   acquireWorkerLock,
   createAgentDurably,
@@ -34,6 +34,7 @@ import { timeoutMsSchema } from './factory/job.js'
 import { repairLabels } from './factory/repair.js'
 import {
   buildTriggerInput,
+  readNotesFile,
   readRepairFiles,
   reloadTriggerInput,
   startableRepair,
@@ -195,7 +196,9 @@ async function stopOf(
         exit: WAIT_EXIT.human,
         reason: approval
           ? `waiting for a human decision on approval wait ${wait.id}`
-          : `waiting on durable wait ${wait.id} (${wait.name}), which nobody has resolved`,
+          : isSpecWait(wait.metadata)
+            ? `waiting for a human decision on the blocked spec, wait ${wait.id}`
+            : `waiting on durable wait ${wait.id} (${wait.name}), which nobody has resolved`,
       }
     }
   }
@@ -358,6 +361,12 @@ Commands (run from examples/local-agent-loop):
   pnpm demo waits --run <id>
   pnpm demo approve --run <id> --wait <waitId>
   pnpm demo reject --run <id> --wait <waitId>
+                                            also a spec the spec reviewers still block after
+                                            the last round: approve goes on with it as it is,
+                                            reject stops the run before any implementation
+  pnpm demo spec-revise --run <id> --notes-file <file>
+                                            fix the blocked spec once more with the notes,
+                                            then review it once more
   pnpm demo retrigger --run <id>            new run with the stored input (only for stops safe to repeat)
   pnpm demo retrigger --run <id> --reload-config
                                             the stored task and inputs, settings read again from
@@ -376,7 +385,11 @@ Repository config: factory.json at the repository root, or --config <file>:
                 "messageTemplate": "...", "publishSquashed": false },
     "profiles": { "code": { "provider": "codex", "model": "...", "effort": "..." },
                   "review": { "correctness": { ... }, "edge-cases": { ... } },
-                  "repair": { ... }, "triage": { ... } } }
+                  "repair": { ... }, "triage": { ... } },
+    "spec": { "template": "<file>", "reviewTemplate": "<file>", "maxRounds": 3,
+              "author": { ... }, "fix": { ... },
+              "review": { "<name>": { ..., "command": "...", "context": "...", "output": "..." } },
+              "checkFromSpec": ["node", "scripts/check-from-spec.mjs"] } }
   --check, --setup and --base override the config. A role the config leaves
   out uses --provider/--model/--effort. A field a role leaves out comes from
   --model/--effort when the role uses --provider's provider, and otherwise
@@ -396,6 +409,20 @@ Repository config: factory.json at the repository root, or --config <file>:
   when the repository, base commit, check, setup, checkTimeoutMs, Node.js
   version, platform, architecture and check executable all match. Setup and
   the clean-worktree checks still run.
+  "spec" (repository runs without --spec-file): after setup and preflight,
+  "author" writes the run's spec file (runs/<id>/spec/spec.md, outside the
+  worktree) from the task and "template"; every named reviewer reviews it
+  side by side, following "reviewTemplate"; a blocker is fixed by "fix" (the
+  author's settings when absent) and reviewed again, up to "maxRounds"
+  rounds (default 3). A spec still blocked then waits for approve, reject or
+  spec-revise. Author and fix read the repository and write the spec file
+  only; reviewers are read-only, and a reviewer command may use {effort}
+  and {base}. Templates are read once at trigger, relative to the config.
+  "checkFromSpec" runs once on the run's fixed spec (from the spec stages or
+  --spec-file), with the spec's path as its last argument, in the worktree,
+  within checkTimeoutMs, and must print {"check": ["..."], "notes"?: "..."};
+  that check then replaces "check" and --check for the baseline and every
+  verification. A failure stops the run as spec-check-failed.
   "codexPath" names the Codex CLI to launch, relative to the config file;
   without it, the bundled CLI first, then codex on PATH.
   "commit" sets the author (name and email) of every factory commit and a
@@ -710,6 +737,41 @@ if (cmd === 'worker') {
   )
   console.log(JSON.stringify(receipt, null, 2))
   await durably.db.destroy()
+} else if (cmd === 'spec-revise') {
+  const a = args()
+  const runId = a['run']
+  const notesFile = a['notes-file']
+  if (!runId || !notesFile)
+    throw new Error('--run <id> --notes-file <path> required')
+  // Read before the database is opened: a bad file signals nothing.
+  const notes = await readNotesFile(notesFile)
+  const durably = createAgentDurably()
+  await durably.migrate()
+  try {
+    const run = await durably.getRun(runId)
+    if (!run) throw new Error(`no run ${runId}`)
+    const wait = (await durably.getWaits(runId)).find(
+      (w) =>
+        w.id === run.waitingOnWaitId &&
+        w.status === 'pending' &&
+        isSpecWait(w.metadata),
+    )
+    if (!wait)
+      throw new Error(
+        `run ${runId} is not waiting for a decision on a blocked spec`,
+      )
+    const receipt = await signalSpecDecision(
+      durably,
+      runId,
+      wait.id,
+      'revise',
+      notes,
+      (line) => console.log(line),
+    )
+    console.log(JSON.stringify(receipt, null, 2))
+  } finally {
+    await durably.db.destroy()
+  }
 } else if (cmd === 'retrigger') {
   const a = args()
   const runId = a['run']

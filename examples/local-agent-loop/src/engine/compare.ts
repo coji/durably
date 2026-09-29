@@ -10,6 +10,7 @@
  */
 import {
   CALIBRATION_KEYS,
+  SPEC_STAGES,
   TRIAGE_JUDGMENTS,
   UNKNOWN_CALIBRATION,
   type LoopReport,
@@ -211,8 +212,17 @@ export function compareReports(reports: LoopReport[]): Comparison {
     const first = list[0]
     if (!first) continue
     const successes = list.filter((r) => r.summary.success).length
+    // Stages with LLM usage, and the spec stages by their time alone: the
+    // check chosen from the spec calls no LLM but is part of the work.
     const stageNames = [
-      ...new Set(list.flatMap((r) => r.stageUsage.map((u) => u.stage))),
+      ...new Set(
+        list.flatMap((r) => [
+          ...r.stageUsage.map((u) => u.stage),
+          ...r.stageTimings
+            .map((t) => t.stage)
+            .filter((stage) => SPEC_STAGES.includes(stage)),
+        ]),
+      ),
     ]
     const stages: StageStats[] = stageNames.map((stage) => {
       const usage = list.map((r) => r.stageUsage.find((u) => u.stage === stage))

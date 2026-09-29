@@ -1,4 +1,5 @@
 /** Code policy: chooses the next development action, never file mechanics. */
+import { specBlockers, type SpecState } from './reducer.js'
 import type { FactoryState, StageDecision, StageName } from './types.js'
 
 export function availableActions(state: FactoryState): StageName[] {
@@ -62,4 +63,30 @@ export function assertAllowedDecision(
     throw new Error(`policy selected disallowed stage: ${decision.stage}`)
   if (decision.stage === 'code' && !decision.role)
     throw new Error('code decision requires implement or repair role')
+}
+
+/** What the spec stages do next. */
+export type SpecAction =
+  | 'author'
+  | 'review'
+  | 'fix'
+  | 'wait'
+  | 'confirm'
+  | 'reject'
+
+/**
+ * The spec stages' next action. A spec is confirmed once a round has no
+ * blocker, or a person approves it; a blocker is fixed while rounds remain,
+ * and after the last round a person decides. A revise adds one fix and one
+ * round, after which a remaining blocker waits for a person again.
+ * Non-blocking findings never hold a spec back.
+ */
+export function specAction(state: SpecState): SpecAction {
+  if (!state.version) return 'author'
+  if (state.decision === 'rejected') return 'reject'
+  if (state.decision === 'approved') return 'confirm'
+  if (state.reviseNotes !== null) return 'fix'
+  if (state.unreviewed) return 'review'
+  if (specBlockers(state).length === 0) return 'confirm'
+  return state.round < state.allowedRounds ? 'fix' : 'wait'
 }

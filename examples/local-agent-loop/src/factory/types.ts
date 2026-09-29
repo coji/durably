@@ -167,6 +167,94 @@ export interface FactorySetup {
    * that configured none.
    */
   review?: Partial<Record<ReviewLens, ReviewInvocation>> | null
+  /**
+   * The spec stages, fixed at trigger: set only on a repository run whose
+   * `factory.json` configures them and that was given no `--spec-file`.
+   * Absent: the run starts from the spec it was given, as before.
+   */
+  spec?: SpecSetup | null
+}
+
+/** One named spec reviewer, as setup resolved it. */
+export interface SpecReviewer {
+  name: string
+  profile: ResolvedProfile
+  /** Its command, context and output; null uses the prompt and the verdict. */
+  invocation: ReviewInvocation | null
+}
+
+/**
+ * The spec stages of a run: who writes, fixes and reviews the spec, how many
+ * review rounds run before a person decides, and the templates read at
+ * trigger. The worker never reads a template file again.
+ */
+export interface SpecSetup {
+  author: ResolvedProfile
+  /** The author's profile when `factory.json` names none for the fix. */
+  fix: ResolvedProfile
+  reviewers: SpecReviewer[]
+  maxRounds: number
+  /** The spec template's content; null when none was configured. */
+  template: string | null
+  /** The review instruction template's content; null when none. */
+  reviewTemplate: string | null
+  /** The run-owned spec file, outside the worktree (`specFileOf`). */
+  specPath: string
+}
+
+/** The spec author's step; the first call of the spec stages. */
+export const SPEC_AUTHOR_STEP = 'spec:author'
+/** The spec fix after review round `round`. */
+export const specFixStep = (round: number) => `spec:fix:${round}`
+/** One reviewer's review in round `round`. */
+export const specReviewStep = (round: number, name: string) =>
+  `spec-review:${round}:${name}`
+/** The `n`th wait for a person's decision on a spec still blocked. */
+export const specWaitName = (n: number) => `spec-wait:${n}`
+/** The step recording the confirmed spec. */
+export const SPEC_FINAL_STEP = 'spec:final'
+/** The step running `checkFromSpec` and recording the check it chose. */
+export const SPEC_CHECK_STEP = 'spec-check'
+
+/** One version of the spec file, as an author or fix step stores it. */
+export interface SpecVersion {
+  content: string
+  sha256: string
+}
+
+/** What a spec reviewer's step stores: the verdict and its findings. */
+export interface SpecReviewResult {
+  name: string
+  decision: 'pass' | 'needsChanges'
+  notes: string
+  findings: ReviewFindings | null
+}
+
+/** What `SPEC_FINAL_STEP` stores: the spec the run goes on with. */
+export interface SpecRecord extends SpecVersion {
+  /** The review round that confirmed it. */
+  round: number
+  /** A person approved it through the spec-blocked wait. */
+  blocked: boolean
+  /**
+   * The advice the implementer is given as untrusted data: the confirming
+   * round's non-blocking findings, and its blockers when a person approved
+   * the spec over them. Empty when there is none.
+   */
+  advice: ReviewFinding[]
+}
+
+/** What `SPEC_CHECK_STEP` stores. */
+export interface SpecCheckRecord {
+  /** The check the run grades with, from `checkFromSpec`. */
+  check: string[]
+  /** The script's notes, handed to the implementer as untrusted data. */
+  notes: string | null
+  /**
+   * The baseline identity with this check, resolved here and never again;
+   * null without the baseline check or when a value could not be resolved.
+   */
+  baselineIdentity: BaselineIdentity | null
 }
 
 /** A lens's fixed invocation; null when it uses the defaults. */

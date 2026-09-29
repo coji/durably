@@ -6,14 +6,32 @@
  * from the run's `Target`, so the same stage graph drives the bundled sample
  * and a real repository.
  */
-import { dirname, join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
+import {
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
 
-import type { JsonValue, StepAttemptContext } from '@coji/durably'
+import type { JsonValue, StepAttemptContext, StepContext } from '@coji/durably'
+import { z } from 'zod'
 
-import type { ReviewCallSettings } from '../engine/providers/types.js'
-import { runAgentCall } from '../engine/runner.js'
+import { runChild } from '../engine/child.js'
+import { SPEC_CHECK_FAILED_MESSAGE } from '../engine/failure-reasons.js'
+import type {
+  AgentProvider,
+  ReviewCallSettings,
+} from '../engine/providers/types.js'
+import { checkpointPaths, runAgentCall } from '../engine/runner.js'
 import type { ReviewSnapshots } from '../engine/types.js'
 import { runVerificationStep } from '../engine/verification.js'
+import { SpecEventSchema, type SpecEvent } from './events.js'
+import { specAction } from './policy.js'
 import {
   codePrompt,
   expandReviewCommand,
@@ -23,18 +41,45 @@ import {
   parseReviewOutput,
   reviewLocations,
   reviewPrompt,
+  specAuthorPrompt,
+  specBlockerText,
+  specFixPrompt,
+  specReviewLocations,
+  specReviewPrompt,
 } from './prompts.js'
-import type { Delivery } from './target.js'
+import {
+  initialSpecState,
+  reduceSpec,
+  specBlockers,
+  type SpecState,
+} from './reducer.js'
+import type { Delivery, Target, UntrustedInput } from './target.js'
 import {
   REVIEW_LENSES,
   reviewInvocationOf,
   separateRepairProfile,
   sessionHandlingOf,
+  SPEC_AUTHOR_STEP,
+  SPEC_CHECK_STEP,
+  SPEC_FINAL_STEP,
+  specFixStep,
+  specReviewStep,
+  specWaitName,
   usesReviewMaterials,
+  type BaselineIdentity,
   type FactoryOutcome,
+  type FactorySetup,
+  type ReviewFinding,
+  type ReviewInvocation,
   type ReviewLens,
   type ReviewStepResult,
   type SessionRef,
+  type SpecCheckRecord,
+  type SpecRecord,
+  type SpecReviewer,
+  type SpecReviewResult,
+  type SpecSetup,
+  type SpecVersion,
   type StageArgs,
   type StageHandler,
 } from './types.js'
@@ -336,11 +381,7 @@ export const reviewStage: StageHandler = async ({
           })
         : null
     const local = invocation?.context === 'local-instructions'
-    const input = local
-      ? (command ?? LOCAL_INSTRUCTIONS_INPUT)
-      : command !== null
-        ? `${command}\n\n${context}`
-        : context
+    const input = reviewInputOf(local, command, context)
     // A command-mode reviewer runs in a working directory the factory made
     // for this call alone: the base commit's CLAUDE.md and .claude/, and its
     // own CLAUDE.local.md. That file carries the whole review context, or,
@@ -396,27 +437,10 @@ export const reviewStage: StageHandler = async ({
       session: null,
       configVersion: setup.configVersion,
     })
-    // Read only after the completed checkpoint, so a reply that cannot be
-    // read stops the review and is never sent again.
-    if (invocation && result.permissionDenials.length > 0)
-      throw new Error(
-        `review-incomplete (${lens}): ${result.permissionDenials.length} tool call(s) were refused: ${result.permissionDenials.join('; ').slice(0, 500)}`,
-      )
-    const parsed =
-      output === 'findings-json'
-        ? parseFindingsOutput(result.text)
-        : parseReviewOutput(result.text)
-    if (!parsed.ok)
-      throw new Error(`review-incomplete (${lens}): ${parsed.error}`)
     // The findings are kept with the verdict in this completed step, so a
     // report reads them back without calling the reviewer or reading the
     // checkpoint again. The review event drops them before the state.
-    return {
-      lens,
-      decision: parsed.decision,
-      notes: parsed.notes,
-      findings: parsed.findings ?? null,
-    }
+    return { lens, ...readReviewReply(invocation, output, result, lens) }
   }
   const correctness = `${key}:correctness`
   const edgeCases = `${key}:edge-cases`
@@ -549,3 +573,577 @@ export const stages = {
   finish: finishStage,
   stop: stopStage,
 } satisfies Record<StageArgs['decision']['stage'], StageHandler>
+
+// ---------------------------------------------------------------- spec stages
+
+/** The providers the spec stages call, one per role and reviewer. */
+export interface SpecProviders {
+  author: AgentProvider
+  fix: AgentProvider
+  /** By reviewer name. */
+  reviewers: Record<string, AgentProvider>
+}
+
+export interface SpecStageArgs {
+  step: StepContext
+  /** The run's setup as the calls after preflight see it. */
+  setup: FactorySetup
+  spec: SpecSetup
+  target: Target
+  providers: SpecProviders
+}
+
+/** How the spec stages ended: a spec to go on with, or a person's no. */
+export type SpecOutcome =
+  | { kind: 'confirmed'; record: SpecRecord }
+  | { kind: 'rejected'; version: SpecVersion }
+
+const sha256Of = (text: string) =>
+  createHash('sha256').update(text).digest('hex')
+
+/** The payload a spec-blocked wait accepts; see `signalApproval`. */
+const specSignalSchema = z.object({
+  kind: z.literal('spec'),
+  runId: z.string(),
+  specSha256: z.string(),
+  decision: z.enum(['approved', 'rejected', 'revise']),
+  notes: z.string().nullable().optional(),
+})
+
+/**
+ * What a reviewer is sent: with local instructions, its command or the fixed
+ * instruction; otherwise its command, if any, before the review context.
+ */
+function reviewInputOf(
+  local: boolean,
+  command: string | null,
+  context: string,
+): string {
+  if (local) return command ?? LOCAL_INSTRUCTIONS_INPUT
+  return command !== null ? `${command}\n\n${context}` : context
+}
+
+/**
+ * A reviewer's verdict, read only after the completed checkpoint, so a reply
+ * that cannot be read stops the review and is never sent again. `who` names
+ * the reviewer in the error.
+ */
+function readReviewReply(
+  invocation: ReviewInvocation | null,
+  output: ReviewInvocation['output'],
+  result: { text: string; permissionDenials: string[] },
+  who: string,
+): Pick<ReviewStepResult, 'decision' | 'notes' | 'findings'> {
+  if (invocation && result.permissionDenials.length > 0)
+    throw new Error(
+      `review-incomplete (${who}): ${result.permissionDenials.length} tool call(s) were refused: ${result.permissionDenials.join('; ').slice(0, 500)}`,
+    )
+  const parsed =
+    output === 'findings-json'
+      ? parseFindingsOutput(result.text)
+      : parseReviewOutput(result.text)
+  if (!parsed.ok) throw new Error(`review-incomplete (${who}): ${parsed.error}`)
+  return {
+    decision: parsed.decision,
+    notes: parsed.notes,
+    findings: parsed.findings ?? null,
+  }
+}
+
+/**
+ * Remove every entry of the spec directory other than the spec file, and
+ * name what was removed. A Codex writer's workspace-write sandbox is the
+ * whole spec directory, so it can leave files beside the spec; this is
+ * where the spec-file-only rule is enforced for it. A Claude writer is held
+ * to the file by its tool guard, so for it this finds nothing.
+ */
+export async function removeBesideSpec(specPath: string): Promise<string[]> {
+  const keep = basename(specPath)
+  const dir = dirname(specPath)
+  // A call swept on its failure path may never have reached the point that
+  // creates the spec directory (for example, one refused before it starts
+  // because an earlier attempt's checkpoint is uncertain); that is nothing
+  // to sweep, not a sweep failure that should hide the original error.
+  let entries: string[]
+  try {
+    entries = await readdir(dir)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  }
+  const extra = entries.filter((name) => name !== keep).sort()
+  for (const name of extra)
+    await rm(join(dir, name), { recursive: true, force: true })
+  return extra
+}
+
+/**
+ * Sweeps spec-directory siblings after a writer call, without ever letting
+ * a cleanup failure replace or hide the call's own error. Pass the call's
+ * error when the call failed: cleanup still runs, but its own failure is
+ * swallowed and `callError` is rethrown unchanged. Pass `undefined` when
+ * the call succeeded: a cleanup failure is reported as `cleanupWarning`
+ * instead of thrown, since a call that already succeeded must not fail the
+ * step over cleanup.
+ */
+export async function cleanupSpecWriteSiblings(
+  specPath: string,
+  callError?: unknown,
+): Promise<{ removed: string[]; cleanupWarning: string | null }> {
+  if (callError !== undefined) {
+    await removeBesideSpec(specPath).catch(() => {})
+    throw callError
+  }
+  try {
+    return { removed: await removeBesideSpec(specPath), cleanupWarning: null }
+  } catch (cleanupError) {
+    return {
+      removed: [],
+      cleanupWarning: `failed to remove files beside ${basename(specPath)}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+    }
+  }
+}
+
+/**
+ * Fails the step when the spec file a writer left is not a regular file —
+ * for example a symlink, which later reads and writes would follow. The
+ * entry is removed first, so nothing else in the run can point through it.
+ */
+async function assertSpecIsRegularFile(specPath: string): Promise<void> {
+  const stat = await lstat(specPath).catch(() => null)
+  if (stat && !stat.isFile()) {
+    await rm(specPath, { force: true })
+    throw new Error('spec.md must be a regular file')
+  }
+}
+
+/**
+ * The spec stages: the author writes the run's spec file, the named
+ * reviewers review it side by side, a fix answers their blockers and the
+ * next round reviews again, until a round has no blocker or `maxRounds` is
+ * spent; then a person decides through a durable wait. Each call goes
+ * through the common checkpoint path, and each result is a stored step or
+ * wait, so a replay reads the same results and resends nothing. The pure
+ * `reduceSpec` and `specAction` decide every transition.
+ */
+export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
+  const { step, setup, spec, target } = args
+  const specDir = dirname(spec.specPath)
+  let state = initialSpecState(spec.maxRounds)
+  const apply = (event: SpecEvent) => {
+    state = reduceSpec(state, SpecEventSchema.parse(event))
+  }
+  // Every stage that reads the spec file first puts the version it works
+  // on there: a replay passes completed steps without writing anything.
+  const put = async (content: string) => {
+    await mkdir(specDir, { recursive: true })
+    await writeFile(spec.specPath, content, 'utf8')
+  }
+  const task = target
+    .untrustedInputs('code')
+    .filter((input) => input.label === 'TASK')
+
+  const write = async (role: 'author' | 'fix'): Promise<SpecVersion> => {
+    const name = role === 'author' ? SPEC_AUTHOR_STEP : specFixStep(state.round)
+    const operationKey = `${step.runId}/${name}`
+    const profile = role === 'author' ? spec.author : spec.fix
+    // The spec this call starts from, taken before the step runs.
+    const start =
+      role === 'author' ? (spec.template ?? '') : (state.version?.content ?? '')
+    const feedback: UntrustedInput[] =
+      role === 'author'
+        ? []
+        : [
+            {
+              label: 'SPEC_FINDINGS' as const,
+              content: specBlockers(state)
+                .map((r) => `${r.name}:\n${specBlockerText(r)}`)
+                .join('\n\n'),
+            },
+            ...(state.settled.length > 0
+              ? [
+                  {
+                    label: 'SETTLED_FINDINGS' as const,
+                    content: state.settled.join('\n'),
+                  },
+                ]
+              : []),
+            ...(state.reviseNotes
+              ? [{ label: 'HUMAN_NOTES' as const, content: state.reviseNotes }]
+              : []),
+          ].filter((input) => input.content.trim().length > 0)
+    const base = {
+      worktree: target.workdir,
+      specPath: spec.specPath,
+      template: spec.template,
+      untrusted: task,
+    }
+    return step.run(
+      name,
+      async (signal, attempt) => {
+        // Written only before the call starts: once it has, the file holds
+        // whatever the call wrote, and a completed checkpoint is read back.
+        const { started } = checkpointPaths(setup.checkpointsDir, operationKey)
+        if (!existsSync(started)) await put(start)
+        // Swept whether the call succeeds or fails, so a writer that errors
+        // or times out also leaves nothing beside the spec file; see
+        // `cleanupSpecWriteSiblings` for how a sweep failure is handled on
+        // each path.
+        try {
+          await runAgentCall(signal, attempt, {
+            provider: args.providers[role],
+            providerName: profile.provider,
+            prompt:
+              role === 'author'
+                ? specAuthorPrompt(base)
+                : specFixPrompt({ ...base, feedback }),
+            // The spec's own directory: the file alone is writable.
+            workdir: specDir,
+            specWrite: {
+              writableFile: spec.specPath,
+              readableDirs: [target.workdir],
+            },
+            timeoutMs: setup.agentTimeoutMs,
+            requestedModel: profile.requestedModel,
+            requestedEffort: profile.requestedEffort,
+            effectiveModel: profile.effectiveModel,
+            effectiveEffort: profile.effectiveEffort,
+            role: role === 'author' ? 'spec-author' : 'spec-fix',
+            stage: 'spec',
+            iteration: 0,
+            operationKey,
+            checkpointsDir: setup.checkpointsDir,
+            session: null,
+            configVersion: setup.configVersion,
+          })
+        } catch (callError) {
+          // A sibling-cleanup failure on this path must never replace the
+          // call's own error; `cleanupSpecWriteSiblings` rethrows it.
+          await cleanupSpecWriteSiblings(spec.specPath, callError)
+        }
+        // The call succeeded: a cleanup failure must not fail this step, so
+        // it is recorded as a warning in the step output instead of thrown.
+        const { removed, cleanupWarning } = await cleanupSpecWriteSiblings(
+          spec.specPath,
+        )
+        await assertSpecIsRegularFile(spec.specPath)
+        const content = await readFile(spec.specPath, 'utf8')
+        if (content.trim().length === 0)
+          throw new Error(
+            `spec-incomplete: the spec ${role} left ${spec.specPath} empty`,
+          )
+        return {
+          content,
+          sha256: sha256Of(content),
+          ...(removed.length > 0
+            ? {
+                removed,
+                warning: `the spec ${role} left ${removed.join(', ')} beside ${basename(spec.specPath)}; removed`,
+              }
+            : {}),
+          ...(cleanupWarning ? { cleanupWarning } : {}),
+        }
+      },
+      {
+        metadata: { stage: 'spec', operationKey } as unknown as JsonValue,
+      },
+    )
+  }
+
+  const baseCommit =
+    setup.target.kind === 'repo' ? setup.target.baseCommit : null
+  // The base tree, extracted once and shared by every reviewer of every
+  // round that runs a command or local instructions: extraction is not
+  // safe to race, and the base commit never changes across the run.
+  let specBaseTree: Promise<string> | null = null
+  const reviewOnce = async (
+    reviewer: SpecReviewer,
+    round: number,
+    signal: AbortSignal,
+    attempt: StepAttemptContext,
+  ): Promise<SpecReviewResult> => {
+    const { name, profile, invocation } = reviewer
+    const output = invocation?.output ?? 'verdict'
+    const commandMode = usesReviewMaterials(invocation)
+    const context = specReviewPrompt({
+      name,
+      worktree: target.workdir,
+      specPath: spec.specPath,
+      reviewTemplate: spec.reviewTemplate,
+      untrusted: task,
+      output,
+    })
+    // `{effort}` and `{base}` only: no candidate exists yet, and trigger
+    // refuses `{head}`.
+    const command =
+      invocation?.command != null
+        ? expandReviewCommand(invocation.command, {
+            effort: profile.effectiveEffort,
+            base: baseCommit,
+            head: null,
+          })
+        : null
+    const local = invocation?.context === 'local-instructions'
+    const input = reviewInputOf(local, command, context)
+    let workdir = target.workdir
+    if (commandMode) {
+      if (!target.prepareSpecReviewWorkdir || !target.prepareSpecReviewBase)
+        throw new Error(
+          `spec review (${name}): a reviewer command or local instructions need a target with review snapshots`,
+        )
+      specBaseTree ??= target.prepareSpecReviewBase.call(target, signal)
+      await specBaseTree
+      workdir = await target.prepareSpecReviewWorkdir(
+        round,
+        name,
+        local
+          ? localInstructions(context)
+          : specReviewLocations({
+              worktree: target.workdir,
+              specPath: spec.specPath,
+            }),
+      )
+    }
+    const settings: ReviewCallSettings | null = invocation
+      ? {
+          command: command !== null,
+          context: invocation.context,
+          output,
+          readableDirs: commandMode ? [target.workdir, specDir] : [],
+        }
+      : null
+    const stepName = specReviewStep(round, name)
+    const result = await runAgentCall(signal, attempt, {
+      provider: args.providers.reviewers[name] as AgentProvider,
+      providerName: profile.provider,
+      prompt: input,
+      workdir,
+      readableFiles: [spec.specPath],
+      ...(settings ? { review: settings } : {}),
+      specReviewer: name,
+      timeoutMs: setup.agentTimeoutMs,
+      requestedModel: profile.requestedModel,
+      requestedEffort: profile.requestedEffort,
+      effectiveModel: profile.effectiveModel,
+      effectiveEffort: profile.effectiveEffort,
+      role: 'spec-review',
+      stage: 'spec-review',
+      iteration: 0,
+      reviewRound: round,
+      operationKey: `${step.runId}/${stepName}`,
+      checkpointsDir: setup.checkpointsDir,
+      session: null,
+      configVersion: setup.configVersion,
+    })
+    return {
+      name,
+      ...readReviewReply(invocation, output, result, `spec ${name}`),
+    }
+  }
+
+  const reviewRound = async (version: SpecVersion) => {
+    const round = state.round + 1
+    await put(version.content)
+    const materials = spec.reviewers.some((r) =>
+      usesReviewMaterials(r.invocation),
+    )
+    let results: Record<string, SpecReviewResult>
+    try {
+      results = await step.all(
+        Object.fromEntries(
+          spec.reviewers.map((reviewer) => [
+            specReviewStep(round, reviewer.name),
+            (signal: AbortSignal, attempt: StepAttemptContext) =>
+              reviewOnce(reviewer, round, signal, attempt),
+          ]),
+        ),
+      )
+    } finally {
+      // Each reviewer's directory is read during its review only.
+      if (materials) await target.releaseReviewSnapshots?.({ base: false })
+    }
+    return spec.reviewers.map(
+      (r) => results[specReviewStep(round, r.name)] as SpecReviewResult,
+    )
+  }
+
+  const decide = async (version: SpecVersion): Promise<SpecEvent> => {
+    const wait = await step.prepareWait(specWaitName(state.waits + 1), {
+      metadata: {
+        kind: 'spec-blocked',
+        runId: step.runId,
+        specSha256: version.sha256,
+        round: state.round,
+        blockers: specBlockers(state).map((r) => ({
+          name: r.name,
+          notes: r.notes,
+        })),
+      } as unknown as JsonValue,
+    })
+    const result = await step.waitFor(wait)
+    if (result.type === 'timeout')
+      throw new Error(
+        `spec decision timed out for spec ${version.sha256.slice(0, 12)}; no decision was signalled`,
+      )
+    const payload = specSignalSchema.safeParse(result.payload)
+    if (
+      !payload.success ||
+      payload.data.runId !== step.runId ||
+      payload.data.specSha256 !== version.sha256
+    )
+      throw new Error(
+        `spec decision mismatch: expected run ${step.runId} and spec ${version.sha256.slice(0, 12)}`,
+      )
+    const notes = payload.data.notes ?? null
+    if (payload.data.decision === 'revise' && !notes?.trim())
+      throw new Error('spec decision: a revise carries no notes')
+    return {
+      type: 'spec.decided',
+      sha256: version.sha256,
+      decision: payload.data.decision,
+      notes,
+    }
+  }
+
+  for (;;) {
+    const action = specAction(state)
+    const version = state.version
+    // `specAction` authors exactly when there is no version yet.
+    if (action === 'author' || !version) {
+      apply({ type: 'spec.authored', version: await write('author') })
+      continue
+    }
+    if (action === 'fix')
+      apply({ type: 'spec.fixed', version: await write('fix') })
+    else if (action === 'review')
+      apply({
+        type: 'spec.reviewed',
+        sha256: version.sha256,
+        reviews: await reviewRound(version),
+      })
+    else if (action === 'wait') apply(await decide(version))
+    else if (action === 'reject') return { kind: 'rejected', version }
+    else {
+      const record = await step.run(
+        SPEC_FINAL_STEP,
+        async (): Promise<SpecRecord> => ({
+          ...version,
+          round: state.round,
+          blocked: state.waits > 0,
+          advice: specAdvice(state),
+        }),
+        { metadata: { stage: 'spec' } as unknown as JsonValue },
+      )
+      await put(record.content)
+      return { kind: 'confirmed', record }
+    }
+  }
+}
+
+/**
+ * The confirming round's advice: every non-blocking finding, and, when a
+ * person approved the spec over them, its blockers too.
+ */
+function specAdvice(state: SpecState): ReviewFinding[] {
+  const approvedOver = state.decision === 'approved'
+  return state.reviews.flatMap((r) => [
+    ...(r.findings?.nonBlocker ?? []),
+    ...(approvedOver
+      ? r.findings
+        ? r.findings.blocker
+        : r.decision === 'needsChanges'
+          ? [{ severity: 'blocker' as const, title: r.name, body: r.notes }]
+          : []
+      : []),
+  ])
+}
+
+/** The advice as the implementer's untrusted SPEC_ADVICE block. */
+export function specAdviceText(advice: ReviewFinding[]): string | null {
+  if (advice.length === 0) return null
+  return advice
+    .map(
+      (f) =>
+        `- [${f.severity}]${f.file ? ` ${f.file}${f.line !== undefined ? `:${f.line}` : ''}` : ''} ${f.title} — ${f.body}`,
+    )
+    .join('\n')
+}
+
+/** What `checkFromSpec` must print on success. */
+const checkOutputSchema = z
+  .object({
+    check: z.array(z.string().min(1)).min(1),
+    notes: z.string().optional(),
+  })
+  .strict()
+
+/**
+ * Run `checkFromSpec` once on the run's fixed spec, in the worktree, within
+ * the check timeout, and record the check it chose and the baseline identity
+ * with that check. The script is local, so an interrupted attempt runs it
+ * again; a completed step is read back and never run again. Every failure,
+ * a timeout, output that is not the expected JSON and an empty check
+ * included, stops the run as `spec-check-failed` before the baseline and
+ * any implementation call.
+ */
+export async function runCheckFromSpec(
+  step: StepContext,
+  args: {
+    command: string[]
+    specPath: string
+    spec: string
+    workdir: string
+    timeoutMs: number
+    identityOf: (check: string[]) => Promise<BaselineIdentity | null>
+  },
+): Promise<SpecCheckRecord> {
+  return step.run(
+    SPEC_CHECK_STEP,
+    async (signal) => {
+      const [command, ...rest] = args.command
+      if (!command) throw new Error(`${SPEC_CHECK_FAILED_MESSAGE}: no command`)
+      await mkdir(dirname(args.specPath), { recursive: true })
+      await writeFile(args.specPath, args.spec, 'utf8')
+      const shown = [...args.command, args.specPath].join(' ')
+      const stop = (why: string) =>
+        new Error(
+          `${SPEC_CHECK_FAILED_MESSAGE}: \`${shown}\` ${why}; stopped before the baseline check and any implementation call`,
+        )
+      let res
+      try {
+        res = await runChild(command, [...rest, args.specPath], {
+          cwd: args.workdir,
+          timeoutMs: args.timeoutMs,
+          maxOutputChars: 256 * 1024,
+          signal,
+        })
+      } catch (error) {
+        if (signal.aborted || (error as Error).name === 'SpawnCancelledError')
+          throw error
+        throw stop(`could not run (${(error as Error).message})`)
+      }
+      if (res.code !== 0)
+        throw stop(
+          `exited with ${res.code ?? 'no exit code'}: ${res.stderr.slice(-500).trim()}`,
+        )
+      let raw: unknown
+      try {
+        raw = JSON.parse(res.stdout)
+      } catch {
+        throw stop(`printed no JSON: ${res.stdout.slice(0, 200).trim()}`)
+      }
+      const parsed = checkOutputSchema.safeParse(raw)
+      if (!parsed.success)
+        throw stop(
+          `printed JSON that is not { "check": [non-empty strings], "notes"?: string }: ${parsed.error.issues.map((i) => i.message).join('; ')}`,
+        )
+      const record: SpecCheckRecord = {
+        check: parsed.data.check,
+        notes: parsed.data.notes?.trim() ? parsed.data.notes : null,
+        baselineIdentity: await args.identityOf(parsed.data.check),
+      }
+      return record
+    },
+    { metadata: { stage: 'spec-check' } as unknown as JsonValue },
+  )
+}

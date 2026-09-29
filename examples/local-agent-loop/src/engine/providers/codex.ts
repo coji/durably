@@ -15,6 +15,7 @@ import { runChild } from '../child.js'
 import { defaultModelFor, resolveEffort } from '../models.js'
 import {
   READ_ONLY_ROLES,
+  SPEC_WRITER_ROLES,
   type AgentCallOptions,
   type AgentProvider,
   type AgentResult,
@@ -397,6 +398,16 @@ export class CodexProvider implements AgentProvider {
     const { model, effort } = this.resolveExecution(options)
     const modelId = model ?? defaultModelFor('codex')
     const readOnly = READ_ONLY_ROLES.has(options.role)
+    // A spec author or fixer runs in the run's spec directory, which holds
+    // the spec file alone, so the workspace-write sandbox lets it write that
+    // file and nothing in the worktree, which it still reads like any file.
+    if (
+      SPEC_WRITER_ROLES.has(options.role) &&
+      options.specWrite?.writableFile.startsWith(`${options.workdir}/`) !== true
+    )
+      throw new Error(
+        `a ${options.role} call must run in the directory of the spec file it writes`,
+      )
     const executable = codexExecutable(this.cliPath).path
     const provider = createCodexAppServer({
       defaultSettings: {

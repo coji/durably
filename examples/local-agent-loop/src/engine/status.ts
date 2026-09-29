@@ -18,7 +18,8 @@ import {
 import { TERMINAL_STATUSES } from './terminal.js'
 
 /**
- * Where an open or stopped run stands. Only `approval`, `stopped` and
+ * Where an open or stopped run stands. Only `approval` (a candidate),
+ * `spec-approval` (a spec the spec reviewers still block), `stopped` and
  * `other-wait` are waiting on a person; `running` is a healthy worker and
  * must never be shown as needing one.
  */
@@ -27,6 +28,7 @@ export type DiagnosisKind =
   | 'running'
   | 'lease-expired'
   | 'approval'
+  | 'spec-approval'
   | 'decided'
   | 'other-wait'
   | 'stopped'
@@ -34,6 +36,7 @@ export type DiagnosisKind =
 
 const HUMAN_KINDS: readonly DiagnosisKind[] = [
   'approval',
+  'spec-approval',
   'stopped',
   'other-wait',
 ]
@@ -195,22 +198,23 @@ export async function diagnoseRun(
     if (run.status === 'waiting') {
       const waits = await durably.getWaits(run.id)
       const wait = waits.find((w) => w.id === run.waitingOnWaitId)
+      // Approved or rejected, but no worker has picked the run up yet.
+      const decided = (w: NonNullable<typeof wait>, subject: string) => {
+        const decision = (w.payload as { decision?: unknown } | null)?.decision
+        return {
+          kind: 'decided' as const,
+          ...(typeof decision === 'string' ? { decision } : {}),
+          reason: `the decision on ${subject} is recorded (${typeof decision === 'string' ? decision : w.outcome}); a worker resumes the run`,
+          next: [...startWorker, show],
+          cleanup,
+        }
+      }
       const candidateId = (
         wait?.metadata as { candidateId?: unknown } | null | undefined
       )?.candidateId
       if (wait && typeof candidateId === 'string') {
-        // Approved or rejected, but no worker has picked the run up yet.
-        if (wait.status === 'resolved') {
-          const decision = (wait.payload as { decision?: unknown } | null)
-            ?.decision
-          return {
-            kind: 'decided',
-            ...(typeof decision === 'string' ? { decision } : {}),
-            reason: `the decision on candidate ${candidateId} is recorded (${typeof decision === 'string' ? decision : wait.outcome}); a worker resumes the run`,
-            next: [...startWorker, show],
-            cleanup,
-          }
-        }
+        if (wait.status === 'resolved')
+          return decided(wait, `candidate ${candidateId}`)
         if (wait.status === 'pending')
           return {
             kind: 'approval',
@@ -219,6 +223,30 @@ export async function diagnoseRun(
               `${DEMO} report --run ${run.id}  # read the reviews first`,
               `${DEMO} approve --run ${run.id} --wait ${wait.id}`,
               `${DEMO} reject --run ${run.id} --wait ${wait.id}`,
+            ],
+            cleanup,
+          }
+      }
+      const spec = wait?.metadata as {
+        kind?: unknown
+        specSha256?: unknown
+        round?: unknown
+      } | null
+      if (wait && spec?.kind === 'spec-blocked') {
+        const version =
+          typeof spec.specSha256 === 'string'
+            ? spec.specSha256.slice(0, 12)
+            : 'unknown'
+        if (wait.status === 'resolved') return decided(wait, `spec ${version}`)
+        if (wait.status === 'pending')
+          return {
+            kind: 'spec-approval',
+            reason: `the spec reviewers still block spec ${version} after round ${typeof spec.round === 'number' ? spec.round : 'unknown'}; waiting for a human decision on it`,
+            next: [
+              `${DEMO} report --run ${run.id}  # read the spec reviews first`,
+              `${DEMO} approve --run ${run.id} --wait ${wait.id}  # go on with the spec as it is`,
+              `${DEMO} spec-revise --run ${run.id} --notes-file <file>  # fix it once more with your notes`,
+              `${DEMO} reject --run ${run.id} --wait ${wait.id}  # stop before any implementation`,
             ],
             cleanup,
           }

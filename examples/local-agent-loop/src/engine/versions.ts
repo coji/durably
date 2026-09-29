@@ -183,6 +183,28 @@ export interface ConfigVersionInput {
       { command: string | null; context: string; output: string }
     >
   > | null
+  /**
+   * The spec stages: the author's, fix's and each named reviewer's profile
+   * and invocation, the round limit, and the contents of the templates read
+   * at trigger. Left out entirely on a run without them, so such a run keeps
+   * its version.
+   */
+  spec?: {
+    author: ConfigVersionProfile
+    fix: ConfigVersionProfile
+    reviewers: {
+      name: string
+      profile: ConfigVersionProfile
+      invocation: {
+        command: string | null
+        context: string
+        output: string
+      } | null
+    }[]
+    maxRounds: number
+    template: string | null
+    reviewTemplate: string | null
+  } | null
 }
 
 function canonicalProfile(p: ConfigVersionProfile): ConfigVersionProfile {
@@ -202,8 +224,9 @@ function canonicalProfile(p: ConfigVersionProfile): ConfigVersionProfile {
  * continues the implementation session across an effort change), the context
  * mode, iteration budget, instruction set, triage profile (when there is
  * one), the path and version of every real CLI launched, the commit
- * author and message template (when set), and each configured reviewer's
- * command, context and output are identical —
+ * author and message template (when set), each configured reviewer's
+ * command, context and output, and the spec stages with their templates
+ * (when configured) are identical —
  * the unit of a fair comparison. Stored on every LLM attempt as
  * `configVersion`.
  */
@@ -251,6 +274,28 @@ export function configVersionOf(input: ConfigVersionInput): string {
       : {}),
     ...(commitKey ? { commit: commitKey } : {}),
     ...(review.length > 0 ? { review: Object.fromEntries(review) } : {}),
+    ...(input.spec
+      ? {
+          spec: {
+            author: canonicalProfile(input.spec.author),
+            fix: canonicalProfile(input.spec.fix),
+            reviewers: input.spec.reviewers.map((r) => ({
+              name: r.name,
+              profile: canonicalProfile(r.profile),
+              invocation: r.invocation
+                ? {
+                    command: r.invocation.command,
+                    context: r.invocation.context,
+                    output: r.invocation.output,
+                  }
+                : null,
+            })),
+            maxRounds: input.spec.maxRounds,
+            template: input.spec.template,
+            reviewTemplate: input.spec.reviewTemplate,
+          },
+        }
+      : {}),
   })
   return createHash('sha256').update(canonical).digest('hex').slice(0, 16)
 }

@@ -69,3 +69,30 @@ export function reviewWorkdirOf(
 ): string {
   return join(reviewCandidateDirOf(snapshotsDir, candidateId), lens, 'cwd')
 }
+
+/**
+ * The run's own spec directory, outside the worktree. It holds the spec file
+ * alone: a spec author or fixer works here and may write that file and
+ * nothing else, and the spec reviewers and `checkFromSpec` read it here.
+ */
+export function specDirOf(runRoot: string): string {
+  return join(runRoot, 'spec')
+}
+
+/** The run-owned spec file the spec stages write and the run confirms. */
+export function specFileOf(runRoot: string): string {
+  return join(specDirOf(runRoot), 'spec.md')
+}
+
+/**
+ * The working directory of one configured spec review call: the base
+ * commit's `CLAUDE.md` and `.claude/`, and the factory's `CLAUDE.local.md`,
+ * one per reviewer and round. Removed with the round, like a candidate's.
+ */
+export function specReviewWorkdirOf(
+  snapshotsDir: string,
+  round: number,
+  name: string,
+): string {
+  return join(snapshotsDir, `spec-${round}`, name, 'cwd')
+}

@@ -19,6 +19,7 @@ import {
 } from '../engine/failure-reasons.js'
 import {
   FAKE_REVIEW_DECISIONS,
+  FAKE_SPEC_REVIEWS,
   FAKE_TRIAGE_KINDS,
   FakeRun,
 } from '../engine/providers/fake.js'
@@ -71,7 +72,7 @@ import {
   deliverySchema,
   FactoryEventSchema,
 } from './events.js'
-import { runRootOf, reviewSnapshotsDirOf } from './layout.js'
+import { runRootOf, reviewSnapshotsDirOf, specFileOf } from './layout.js'
 import {
   assertAllowedDecision,
   availableActions,
@@ -85,7 +86,12 @@ import {
 } from './prompts.js'
 import { reduce } from './reducer.js'
 import { triageThatRuns } from './repair.js'
-import { stages } from './stages.js'
+import {
+  runCheckFromSpec,
+  runSpecStages,
+  specAdviceText,
+  stages,
+} from './stages.js'
 import {
   DEFAULT_COMMIT_SETTINGS,
   type Target,
@@ -108,6 +114,7 @@ import {
   type FactorySetup,
   type RepairSessionRecord,
   type ProfileRole,
+  type SpecSetup,
   type ReviewContext,
   type ReviewInvocation,
   type ReviewLens,
@@ -178,8 +185,16 @@ const targetSchema = z
         })
         .default({ task: null, spec: null, dispositions: null }),
       issue: issueSchema.nullable().default(null),
-      /** Pinned before the agent starts, so it cannot redefine grading. */
-      checkCommand: z.array(z.string().min(1)).min(1),
+      /**
+       * Pinned before the agent starts, so it cannot redefine grading. Null
+       * only with `checkFromSpec`, whose script names the check.
+       */
+      checkCommand: z.array(z.string().min(1)).min(1).nullable(),
+      /**
+       * Run once on the run's fixed spec before the baseline; the check it
+       * prints replaces `checkCommand`. Needs a spec: `spec`, or spec stages.
+       */
+      checkFromSpec: z.array(z.string().min(1)).min(1).nullable().optional(),
       setupCommand: z.array(z.string().min(1)).nullable().default(null),
       /** Push the branch and open a draft pull request when approved. */
       publish: z.boolean().default(false),
@@ -237,6 +252,20 @@ const fakeScenarioSchema = z
     summary: z.string().optional(),
     changes: z.record(z.string().min(1), z.string()).optional(),
     claudeEffortResume: z.boolean().optional(),
+    specText: z.string().min(1).optional(),
+    specStray: z
+      .array(
+        z
+          .string()
+          .regex(/^[^/\\]+$/)
+          .refine((n) => n !== 'spec.md'),
+      )
+      .optional(),
+    specFails: z.boolean().optional(),
+    specSymlink: z.boolean().optional(),
+    specReviews: z
+      .record(z.string().min(1), z.array(z.enum(FAKE_SPEC_REVIEWS)))
+      .optional(),
   })
   .strict()
 
@@ -351,36 +380,57 @@ export function fixReviewInvocations(
 ): Partial<Record<ReviewLens, ReviewInvocation>> {
   const fixed: Partial<Record<ReviewLens, ReviewInvocation>> = {}
   for (const lens of REVIEW_LENSES) {
-    const r = requested?.[lens]
-    if (
-      !r ||
-      ((r.command ?? null) === null &&
-        r.context === undefined &&
-        r.output === undefined)
+    const invocation = fixReviewInvocation(
+      requested?.[lens],
+      profiles[lens],
+      `${where}.${lens}`,
     )
-      continue
-    const invocation: ReviewInvocation = {
-      command: r.command ?? null,
-      context: r.context ?? 'prompt',
-      output: r.output ?? 'verdict',
-    }
-    const refuse = (why: string) => new Error(`${where}.${lens}: ${why}`)
-    const { provider, effectiveEffort } = profiles[lens]
-    if (invocation.command !== null && invocation.command.trim() === '')
-      throw refuse('command must not be empty')
-    const unsupported = unsupportedReviewSettings(invocation, provider)
-    if (unsupported) throw refuse(unsupported)
-    if (invocation.command !== null) {
-      const used = reviewCommandPlaceholders(invocation.command)
-      if (!used.ok) throw refuse(`command: ${used.error}`)
-      if (used.names.has('effort') && effectiveEffort === null)
-        throw refuse(
-          'command uses {effort}, but the role resolves no effort; set "effort" for it',
-        )
-    }
-    fixed[lens] = invocation
+    if (invocation) fixed[lens] = invocation
   }
   return fixed
+}
+
+/**
+ * One reviewer's invocation, checked as `fixReviewInvocations` checks a
+ * lens's; null when it names none of the three fields. A spec reviewer
+ * passes `spec`: no candidate exists yet, so `{head}` is refused too.
+ */
+export function fixReviewInvocation(
+  r: RequestedReviewInvocation | null | undefined,
+  profile: { provider: ProviderName; effectiveEffort: string | null },
+  where: string,
+  options: { spec?: boolean } = {},
+): ReviewInvocation | null {
+  if (
+    !r ||
+    ((r.command ?? null) === null &&
+      r.context === undefined &&
+      r.output === undefined)
+  )
+    return null
+  const invocation: ReviewInvocation = {
+    command: r.command ?? null,
+    context: r.context ?? 'prompt',
+    output: r.output ?? 'verdict',
+  }
+  const refuse = (why: string) => new Error(`${where}: ${why}`)
+  if (invocation.command !== null && invocation.command.trim() === '')
+    throw refuse('command must not be empty')
+  const unsupported = unsupportedReviewSettings(invocation, profile.provider)
+  if (unsupported) throw refuse(unsupported)
+  if (invocation.command !== null) {
+    const used = reviewCommandPlaceholders(invocation.command)
+    if (!used.ok) throw refuse(`command: ${used.error}`)
+    if (options.spec && used.names.has('head'))
+      throw refuse(
+        'command: {head} names a candidate commit, and a spec review runs before any exists (allowed: {effort}, {base})',
+      )
+    if (used.names.has('effort') && profile.effectiveEffort === null)
+      throw refuse(
+        'command uses {effort}, but the role resolves no effort; set "effort" for it',
+      )
+  }
+  return invocation
 }
 
 /**
@@ -413,6 +463,67 @@ const repairOfSchema = z
       .strict(),
   })
   .strict()
+
+/**
+ * How many spec review rounds run before a person decides: a positive safe
+ * integer. `0`, a sign, a fraction, `NaN`, `Infinity` and values past
+ * `Number.MAX_SAFE_INTEGER` are refused.
+ */
+export const specMaxRoundsSchema = z
+  .number()
+  .int()
+  .positive()
+  .max(Number.MAX_SAFE_INTEGER)
+
+/** The rounds a run allows when `factory.json` names none. */
+export const DEFAULT_SPEC_MAX_ROUNDS = 3
+
+/** A spec reviewer's name: it names a step, a directory and a report row. */
+export const specReviewerNameSchema = z
+  .string()
+  .regex(
+    /^[a-z0-9][a-z0-9-]{0,39}$/,
+    'a spec reviewer name is 1-40 lowercase letters, digits or hyphens, starting with a letter or digit',
+  )
+
+/**
+ * The spec stages of a run, fixed at trigger with the templates' contents.
+ * Only on a repository run given no spec.
+ */
+const specStagesSchema = z
+  .object({
+    author: requestedProfileSchema,
+    /** Null: the fix runs on the author's profile. */
+    fix: requestedProfileSchema.nullable(),
+    reviewers: z
+      .array(
+        z
+          .object({
+            name: specReviewerNameSchema,
+            profile: requestedProfileSchema,
+            invocation: reviewInvocationSchema.nullable(),
+          })
+          .strict(),
+      )
+      .min(1),
+    maxRounds: specMaxRoundsSchema.default(DEFAULT_SPEC_MAX_ROUNDS),
+    template: z.string().min(1).nullable(),
+    reviewTemplate: z.string().min(1).nullable(),
+    /** Where each template came from; the worker never reads them. */
+    templateFiles: z
+      .object({
+        template: inputFileSchema.nullable(),
+        reviewTemplate: inputFileSchema.nullable(),
+      })
+      .strict()
+      .default({ template: null, reviewTemplate: null }),
+  })
+  .strict()
+  .refine(
+    (spec) =>
+      new Set(spec.reviewers.map((r) => r.name)).size === spec.reviewers.length,
+    { message: 'spec reviewers need distinct names', path: ['reviewers'] },
+  )
 
 const inputSchema = z
   .object({
@@ -483,13 +594,29 @@ const inputSchema = z
      * trigger. Absent, or a lens left out: the prompt and the verdict.
      */
     review: reviewInvocationsSchema.optional(),
+    /**
+     * The spec stages, fixed at trigger. Absent: the run starts from the
+     * spec it was given, if any, as before.
+     */
+    spec: specStagesSchema.optional(),
   })
   // Refused at trigger, so a real run is never stored with a demo scenario.
   .refine(
     (input) =>
       !input.fakeScenario ||
-      [input.provider, ...Object.values(input.profiles ?? {})].every(
-        (p) => (typeof p === 'string' ? p : p?.provider) === 'fake',
+      [
+        input.provider,
+        ...Object.values(input.profiles ?? {}),
+        ...(input.spec
+          ? [
+              input.spec.author,
+              input.spec.fix,
+              ...input.spec.reviewers.map((r) => r.profile),
+            ]
+          : []),
+      ].every(
+        (p) =>
+          p === null || (typeof p === 'string' ? p : p?.provider) === 'fake',
       ),
     {
       message: 'fakeScenario is only for runs where every role is fake',
@@ -511,6 +638,43 @@ const inputSchema = z
           path: ['review', lens],
         })
     }
+  })
+  // The spec stages write the spec, so a run given one has none; and a
+  // check chosen from the spec needs a spec to read.
+  .superRefine((input, ctx) => {
+    const target = input.target
+    if (input.spec && (target.kind !== 'repo' || target.spec !== null))
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'spec stages need a repository target without a spec (--spec-file)',
+        path: ['spec'],
+      })
+    for (const [index, r] of (input.spec?.reviewers ?? []).entries()) {
+      const unsupported = r.invocation
+        ? unsupportedReviewSettings(r.invocation, r.profile.provider)
+        : null
+      if (unsupported)
+        ctx.addIssue({
+          code: 'custom',
+          message: `spec.review.${r.name}: ${unsupported}`,
+          path: ['spec', 'reviewers', index],
+        })
+    }
+    if (target.kind !== 'repo') return
+    if (target.checkFromSpec && !input.spec && target.spec === null)
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'checkFromSpec needs a spec: pass --spec-file, or configure the spec stages',
+        path: ['target', 'checkFromSpec'],
+      })
+    if (!target.checkCommand && !target.checkFromSpec)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'a repository target needs checkCommand or checkFromSpec',
+        path: ['target', 'checkCommand'],
+      })
   })
   // A repair run starts from the parent's candidate, with the settings the
   // parent resolved; nothing about it is left for the worker to decide.
@@ -813,6 +977,8 @@ async function runPreflight(
       ? [['repair', setup.repair] as [string, ResolvedProfile]]
       : []),
     ...(triage ? [['triage', triage] as [string, ResolvedProfile]] : []),
+    // The spec roles, so none is found unusable after the spec work began.
+    ...(setup.spec ? specRoleEntries(setup.spec) : []),
   ]
   const plan = await step.run(
     'preflight',
@@ -930,10 +1096,12 @@ function resolveInputProfiles(input: {
         repair?: RequestedProfile | undefined
       })
     | undefined
+  spec?: z.infer<typeof specStagesSchema> | undefined
 }): {
   profiles: Record<ProfileRole, ResolvedProfile>
   triage: ResolvedProfile | null
   repair: ResolvedProfile | null
+  spec: ReturnType<typeof resolveSpecProfiles>
 } {
   // A scenario can make the fake provider honour the requested effort.
   const fake = input.fakeScenario
@@ -976,7 +1144,56 @@ function resolveInputProfiles(input: {
     repair: requestedRepair
       ? resolve('repair', fixRequested(requestedRepair))
       : null,
+    spec: resolveSpecProfiles(input.spec, (role, requested) =>
+      resolve(role, fixRequested(requested)),
+    ),
   }
+}
+
+/**
+ * The spec stages with their roles' profiles resolved: the author's, the
+ * fix's (the author's when the run names none) and each reviewer's, with the
+ * profile ids the run records. Reviewer invocations are fixed by setup.
+ */
+function resolveSpecProfiles(
+  spec: z.infer<typeof specStagesSchema> | undefined,
+  resolve: (role: string, requested: RequestedProfile) => ResolvedProfile,
+) {
+  if (!spec) return null
+  const author = resolve('spec-author', spec.author)
+  return {
+    author,
+    fix: spec.fix ? resolve('spec-fix', spec.fix) : author,
+    reviewers: spec.reviewers.map((r) => ({
+      name: r.name,
+      profile: resolve(`spec-review:${r.name}`, r.profile),
+      invocation: r.invocation,
+    })),
+    maxRounds: spec.maxRounds,
+    template: spec.template,
+    reviewTemplate: spec.reviewTemplate,
+  }
+}
+
+/**
+ * Each spec role with its profile, named as the run records it. The fix is
+ * left out when it runs on the author's profile.
+ */
+function specRoleEntries(
+  spec: Pick<SpecSetup, 'author' | 'fix'> & {
+    reviewers: { name: string; profile: ResolvedProfile }[]
+  },
+): [string, ResolvedProfile][] {
+  return [
+    ['spec-author', spec.author],
+    ...(spec.fix === spec.author
+      ? []
+      : [['spec-fix', spec.fix] as [string, ResolvedProfile]]),
+    ...spec.reviewers.map((r): [string, ResolvedProfile] => [
+      `spec-review:${r.name}`,
+      r.profile,
+    ]),
+  ]
 }
 
 /** The job's name, as its runs are stored. */
@@ -1007,7 +1224,12 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           // Profiles first: a bad profile fails before any worktree or branch
           // exists in the target repository.
           const repairOf = input.repairOf ?? null
-          const { profiles, triage, repair } = repairOf
+          const {
+            profiles,
+            triage,
+            repair,
+            spec: specProfiles,
+          } = repairOf
             ? // A repair run takes the profiles its parent resolved, as they
               // were. It records the parent's triage profile but never runs
               // triage.
@@ -1015,12 +1237,16 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                 profiles: byRole((role) => repairOf.profiles[role]),
                 triage: repairOf.profiles.triage,
                 repair: repairOf.profiles.repair,
+                spec: null,
               }
             : resolveInputProfiles(input)
           assertSingleMode({
             ...profiles,
             ...(triage ? { triage } : {}),
             ...(repair ? { repair } : {}),
+            ...(specProfiles
+              ? Object.fromEntries(specRoleEntries(specProfiles))
+              : {}),
           })
           // Checked again here, as at trigger, before anything exists.
           const review = fixReviewInvocations(input.review, profiles, 'review')
@@ -1028,6 +1254,15 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             throw new Error(
               'review: a reviewer command, context or output needs a repository target',
             )
+          const specReviewers = (specProfiles?.reviewers ?? []).map((r) => ({
+            ...r,
+            invocation: fixReviewInvocation(
+              r.invocation,
+              r.profile,
+              `spec.review.${r.name}`,
+              { spec: true },
+            ),
+          }))
           // A repair profile that makes the same call as code is code: the
           // run keeps its session and its config version.
           const ownRepair = separateRepairProfile({ repair, profiles })
@@ -1048,6 +1283,9 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               ...Object.values(profiles),
               ...(triageRuns ? [triageRuns] : []),
               ...(ownRepair ? [ownRepair] : []),
+              ...(specProfiles
+                ? specRoleEntries(specProfiles).map(([, p]) => p)
+                : []),
             ].map((p) => p.provider),
           )
           await Promise.all(
@@ -1081,7 +1319,11 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   spec: input.target.spec,
                   dispositions: input.target.dispositions,
                   issue: input.target.issue,
-                  checkCommand: input.target.checkCommand,
+                  // With `checkFromSpec`, the script names the check later.
+                  checkCommand: input.target.checkFromSpec
+                    ? []
+                    : (input.target.checkCommand ?? []),
+                  checkFromSpec: input.target.checkFromSpec ?? null,
                   setupCommand: input.target.setupCommand,
                   checkTimeoutMs: testTimeoutMs,
                   publish: input.target.publish,
@@ -1120,7 +1362,10 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           await rm(snapshotsDir, { recursive: true, force: true })
           const target: TargetConfig =
             prepared.kind === 'repo' &&
-            Object.values(review).some((r) => usesReviewMaterials(r ?? null))
+            [
+              ...Object.values(review),
+              ...specReviewers.map((r) => r.invocation),
+            ].some((r) => usesReviewMaterials(r ?? null))
               ? { ...prepared, reviewSnapshotsDir: snapshotsDir }
               : prepared
           const baselineCheck =
@@ -1132,11 +1377,19 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           if (baselineCheck && target.kind === 'repo')
             await assertSetupLeftNoUntracked(target.workdir, signal)
           // Resolved here, in the worktree setup prepared, and never again:
-          // a replay compares the values this run was set up with.
+          // a replay compares the values this run was set up with. A check
+          // chosen from the spec is resolved in its own step instead.
           const baselineIdentity =
-            baselineCheck && target.kind === 'repo'
+            baselineCheck && target.kind === 'repo' && !target.checkFromSpec
               ? await baselineIdentityOf(target)
               : null
+          const spec: SpecSetup | null = specProfiles
+            ? {
+                ...specProfiles,
+                reviewers: specReviewers,
+                specPath: specFileOf(root),
+              }
+            : null
           const instructionsVersion = 'local-factory.v3'
           // Fixed here with the CLI version just recorded, so a restarted
           // worker with another environment never changes how this run's
@@ -1162,7 +1415,9 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               target:
                 target.kind === 'subject'
                   ? 'subject'
-                  : `repo:${target.checkCommand.join(' ')}`,
+                  : target.checkFromSpec
+                    ? `repo:from-spec:${target.checkFromSpec.join(' ')}`
+                    : `repo:${target.checkCommand.join(' ')}`,
               agentTimeoutMs,
               checkTimeoutMs: testTimeoutMs,
               code: profiles.code,
@@ -1174,6 +1429,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               cli,
               commit: target.kind === 'repo' ? (target.commit ?? null) : null,
               review,
+              spec,
             })
           const value: FactorySetup = {
             fake: profiles.code.provider === 'fake',
@@ -1208,6 +1464,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             ...(baselineCheck ? { baselineIdentity } : {}),
             codexPath,
             ...(Object.keys(review).length > 0 ? { review } : {}),
+            ...(spec ? { spec } : {}),
             ...(repairOf
               ? {
                   repairOf: {
@@ -1234,84 +1491,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
         },
       )
 
-      const target = createTarget(setup.target)
-      // The pinned check must pass on the base commit, or no candidate could
-      // be graded: stop before paying for any agent call. The same checkpoint
-      // pair as verification, so a completed result is read back on resume
-      // and an interrupted check is graded again. With `baselineReuse`, a
-      // matching passing result of another run is used instead, once the
-      // worktree is proven to be as the check would need it. The choice is
-      // this step's output, so a replay never looks again.
-      if (
-        setup.baselineCheck &&
-        target instanceof RepoTarget &&
-        setup.target.kind === 'repo'
-      ) {
-        const operationKey = `${step.runId}/baseline`
-        const reuse = setup.baselineReuse ?? null
-        const store = options.baselineStore
-        const baseline = await step.run(
-          BASELINE_STEP,
-          async (signal, attempt): Promise<BaselineRecord> => {
-            const reused =
-              reuse && store
-                ? await reusedBaseline({
-                    stateRoot: options.stateRoot,
-                    runId: step.runId,
-                    setup,
-                    reuse,
-                    store,
-                    operationKey,
-                  })
-                : null
-            if (reused) {
-              await target.assertReadyForBase(signal)
-              return reused
-            }
-            const measured = await runTimedVerificationStep(
-              attempt,
-              {
-                provider: setup.profiles.code.provider,
-                operationKey,
-                checkpointsDir: setup.checkpointsDir,
-                stage: 'baseline',
-                iteration: 0,
-                grade: (graderSignal) =>
-                  target.gradeBase({
-                    // Keyed by the step attempt, as a verification log is.
-                    logDir: join(
-                      setup.checkpointsDir,
-                      '..',
-                      'baseline-logs',
-                      attempt.id,
-                    ),
-                    signal: graderSignal,
-                  }),
-              },
-              signal,
-            )
-            return {
-              ...measured.result,
-              source: 'measured',
-              identity: setup.baselineIdentity ?? null,
-              // The check's own completion, which a resume that read the
-              // verdict back from the checkpoint does not move.
-              checkedAt: measured.completedAt,
-            }
-          },
-        )
-        // Also on a replay, so an index write lost to a crash after the
-        // step completed is made up. Each run writes only its own entry.
-        await recordBaselineInIndex({
-          stateRoot: options.stateRoot,
-          runId: step.runId,
-          record: baseline,
-        })
-        if (!baseline.passed)
-          throw new Error(
-            `${BASELINE_FAILED_MESSAGE}: \`${checkFingerprint(setup.target.checkCommand)}\` failed on the base commit ${setup.target.baseCommit.slice(0, 12)} (exit code ${baseline.exitCode ?? 'unknown'}) before any agent call`,
-          )
-      }
+      let target = createTarget(setup.target)
       // One per run, shared by every role. Review verdicts are read by round
       // and lens, so replaying completed rounds shifts nothing.
       const fakeRun = input.fakeScenario
@@ -1324,68 +1504,260 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           requestedModel: profile.requestedModel,
           codexPath: setup.codexPath ?? null,
         })
-      const observedModels = await runPreflight(
-        step,
-        setup,
-        target,
-        providerFor,
-      )
-      const roleProviders = byRole((role) => providerFor(setup.profiles[role]))
+      const specStages = setup.spec ?? null
       const ownRepair = separateRepairProfile(setup)
-      // Setup could not know the model an alias runs; preflight saw it. The
-      // stages read this confirmed decision, and every call after preflight
-      // carries the config version it gives. Recorded in its own step, next
-      // to setup's answer, so a report can show why a repair starts new.
-      const observedModelOf = (profile: ResolvedProfile) =>
-        observedModels.get(executionKey(profile)) ?? null
-      const repairSession: RepairSessionRecord | null = ownRepair
-        ? await step.run(REPAIR_SESSION_STEP, async () => {
-            const confirmed = confirmRepairSession({
-              setup: setup.repairSession,
-              provider: setup.profiles.code.provider,
-              codeModel: observedModelOf(setup.profiles.code),
-              repairModel: observedModelOf(ownRepair),
+      // Every role's settings are proven usable before its first call, and
+      // the repair session decision the stages read is confirmed with what
+      // preflight saw. With spec stages this comes first, before the spec
+      // author's call; otherwise after the baseline, as before.
+      const preflightAndConfirm = async () => {
+        const observedModels = await runPreflight(
+          step,
+          setup,
+          target,
+          providerFor,
+        )
+        // Setup could not know the model an alias runs; preflight saw it.
+        // The stages read this confirmed decision, and every call after
+        // preflight carries the config version it gives. Recorded in its
+        // own step, next to setup's answer, so a report can show why a
+        // repair starts new.
+        const observedModelOf = (profile: ResolvedProfile) =>
+          observedModels.get(executionKey(profile)) ?? null
+        return ownRepair
+          ? await step.run(REPAIR_SESSION_STEP, async () => {
+              const confirmed = confirmRepairSession({
+                setup: setup.repairSession,
+                provider: setup.profiles.code.provider,
+                codeModel: observedModelOf(setup.profiles.code),
+                repairModel: observedModelOf(ownRepair),
+              })
+              const record: RepairSessionRecord = {
+                setup: setup.repairSession ?? null,
+                confirmed,
+                configVersion:
+                  (confirmed.continues
+                    ? setup.repairSession?.confirmedConfigVersion
+                    : undefined) ?? setup.configVersion,
+              }
+              return record
             })
-            const record: RepairSessionRecord = {
-              setup: setup.repairSession ?? null,
-              confirmed,
-              configVersion:
-                (confirmed.continues
-                  ? setup.repairSession?.confirmedConfigVersion
-                  : undefined) ?? setup.configVersion,
-            }
-            return record
-          })
-        : null
-      const runSetup: FactorySetup = repairSession
+          : null
+      }
+      let repairSession = specStages ? await preflightAndConfirm() : null
+      let runSetup: FactorySetup = repairSession
         ? { ...setup, configVersion: repairSession.configVersion }
         : setup
-      const providers = {
-        ...roleProviders,
-        repair: ownRepair ? providerFor(ownRepair) : roleProviders.code,
+      // The spec stages write, review and fix the run's spec, and fix the
+      // one the run goes on with; a person's rejection ends the run here,
+      // before any implementation call.
+      // From the spec stages through triage, a failure or cancel leaves no
+      // review snapshots behind: whichever of these steps throws, the base
+      // tree extracted for spec review must not wait for the worker's
+      // startup sweep. A suspension on the spec wait is not a failure and
+      // is left alone by the `LeaseLostError` exemption below.
+      let roleProviders!: Record<ProfileRole, AgentProvider>
+      let providers!: Record<ProfileRole, AgentProvider> & {
+        repair: AgentProvider
       }
-      // Shadow mode: the judgment is recorded and nothing below reads it.
-      const triageProfile = triageThatRuns(setup, setup.triage)
-      const triageKey = `${step.runId}/triage/agent`
-      const triage = triageProfile
-        ? await step.run(
-            'triage',
-            (signal, attempt) =>
-              runTriage(signal, attempt, {
-                operationKey: triageKey,
-                setup: runSetup,
-                profile: triageProfile,
-                provider: providerFor(triageProfile),
-                target,
-              }),
-            {
-              metadata: {
-                stage: 'triage',
-                operationKey: triageKey,
-              } as unknown as JsonValue,
+      let triage: Awaited<ReturnType<typeof runTriage>> | null
+      try {
+        if (specStages && runSetup.target.kind === 'repo') {
+          const outcome = await runSpecStages({
+            step,
+            setup: runSetup,
+            spec: specStages,
+            target,
+            providers: {
+              author: providerFor(specStages.author),
+              fix: providerFor(specStages.fix),
+              reviewers: Object.fromEntries(
+                specStages.reviewers.map((r) => [
+                  r.name,
+                  providerFor(r.profile),
+                ]),
+              ),
+            },
+          })
+          if (outcome.kind === 'rejected') {
+            await target.cleanup()
+            return {
+              approved: false,
+              conclusion: 'rejected' as const,
+              candidate: null,
+              iterations: 0,
+              reviewRounds: 0,
+              reviews: [],
+              workdir: target.workdir,
+              fake: setup.fake,
+              delivery: null,
+              triage: null,
+            }
+          }
+          runSetup = {
+            ...runSetup,
+            target: {
+              ...runSetup.target,
+              spec: outcome.record.content,
+              specAdvice: specAdviceText(outcome.record.advice),
+            },
+          }
+        }
+        // A check chosen from the fixed spec: run once, before the baseline,
+        // and used by the baseline and every verification after it.
+        const repoTarget = runSetup.target
+        if (
+          repoTarget.kind === 'repo' &&
+          repoTarget.checkFromSpec &&
+          repoTarget.spec !== null &&
+          target instanceof RepoTarget
+        ) {
+          const fixed = await runCheckFromSpec(step, {
+            command: repoTarget.checkFromSpec,
+            specPath: specFileOf(root),
+            spec: repoTarget.spec,
+            workdir: repoTarget.workdir,
+            timeoutMs: repoTarget.checkTimeoutMs,
+            identityOf: (check) =>
+              runSetup.baselineCheck
+                ? baselineIdentityOf({ ...repoTarget, checkCommand: check })
+                : Promise.resolve(null),
+          })
+          runSetup = {
+            ...runSetup,
+            target: {
+              ...repoTarget,
+              checkCommand: fixed.check,
+              checkNotes: fixed.notes,
+            },
+            ...(runSetup.baselineCheck
+              ? { baselineIdentity: fixed.baselineIdentity }
+              : {}),
+          }
+        }
+        if (runSetup !== setup) target = createTarget(runSetup.target)
+        // The pinned check must pass on the base commit, or no candidate could
+        // be graded: stop before paying for any agent call. The same checkpoint
+        // pair as verification, so a completed result is read back on resume
+        // and an interrupted check is graded again. With `baselineReuse`, a
+        // matching passing result of another run is used instead, once the
+        // worktree is proven to be as the check would need it. The choice is
+        // this step's output, so a replay never looks again.
+        if (
+          runSetup.baselineCheck &&
+          target instanceof RepoTarget &&
+          runSetup.target.kind === 'repo'
+        ) {
+          const baselineTarget = target
+          const checkCommand = runSetup.target.checkCommand
+          const baseCommit = runSetup.target.baseCommit
+          const operationKey = `${step.runId}/baseline`
+          const reuse = runSetup.baselineReuse ?? null
+          const store = options.baselineStore
+          const baseline = await step.run(
+            BASELINE_STEP,
+            async (signal, attempt): Promise<BaselineRecord> => {
+              const reused =
+                reuse && store
+                  ? await reusedBaseline({
+                      stateRoot: options.stateRoot,
+                      runId: step.runId,
+                      setup: runSetup,
+                      reuse,
+                      store,
+                      operationKey,
+                    })
+                  : null
+              if (reused) {
+                await baselineTarget.assertReadyForBase(signal)
+                return reused
+              }
+              const measured = await runTimedVerificationStep(
+                attempt,
+                {
+                  provider: runSetup.profiles.code.provider,
+                  operationKey,
+                  checkpointsDir: runSetup.checkpointsDir,
+                  stage: 'baseline',
+                  iteration: 0,
+                  grade: (graderSignal) =>
+                    baselineTarget.gradeBase({
+                      // Keyed by the step attempt, as a verification log is.
+                      logDir: join(
+                        runSetup.checkpointsDir,
+                        '..',
+                        'baseline-logs',
+                        attempt.id,
+                      ),
+                      signal: graderSignal,
+                    }),
+                },
+                signal,
+              )
+              return {
+                ...measured.result,
+                source: 'measured',
+                identity: runSetup.baselineIdentity ?? null,
+                // The check's own completion, which a resume that read the
+                // verdict back from the checkpoint does not move.
+                checkedAt: measured.completedAt,
+              }
             },
           )
-        : null
+          // Also on a replay, so an index write lost to a crash after the
+          // step completed is made up. Each run writes only its own entry.
+          await recordBaselineInIndex({
+            stateRoot: options.stateRoot,
+            runId: step.runId,
+            record: baseline,
+          })
+          if (!baseline.passed)
+            throw new Error(
+              `${BASELINE_FAILED_MESSAGE}: \`${checkFingerprint(checkCommand)}\` failed on the base commit ${baseCommit.slice(0, 12)} (exit code ${baseline.exitCode ?? 'unknown'}) before any agent call`,
+            )
+        }
+        if (!specStages) {
+          repairSession = await preflightAndConfirm()
+          if (repairSession)
+            runSetup = {
+              ...runSetup,
+              configVersion: repairSession.configVersion,
+            }
+        }
+        roleProviders = byRole((role) => providerFor(setup.profiles[role]))
+        providers = {
+          ...roleProviders,
+          repair: ownRepair ? providerFor(ownRepair) : roleProviders.code,
+        }
+        // Shadow mode: the judgment is recorded and nothing below reads it.
+        const triageProfile = triageThatRuns(setup, setup.triage)
+        const triageKey = `${step.runId}/triage/agent`
+        triage = triageProfile
+          ? await step.run(
+              'triage',
+              (signal, attempt) =>
+                runTriage(signal, attempt, {
+                  operationKey: triageKey,
+                  setup: runSetup,
+                  profile: triageProfile,
+                  provider: providerFor(triageProfile),
+                  target,
+                }),
+              {
+                metadata: {
+                  stage: 'triage',
+                  operationKey: triageKey,
+                } as unknown as JsonValue,
+              },
+            )
+          : null
+      } catch (error) {
+        // As the stage loop below does: a suspension on the spec wait, a
+        // failure or a cancel leaves no review snapshots behind.
+        if (!(error instanceof Error && error.name === 'LeaseLostError'))
+          await target.releaseReviewSnapshots?.({ base: true })
+        throw error
+      }
       let state = initialState(runSetup, repairSession?.confirmed ?? null)
       // Deliberately not a `finally`: `step.waitFor` suspends by throwing, so a
       // finally block would run cleanup every time the run parks on the human

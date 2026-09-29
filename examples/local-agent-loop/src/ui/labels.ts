@@ -15,6 +15,10 @@ const STAGE_NAME: Record<string, string> = {
   setup: '準備',
   baseline: 'ベースの検証',
   preflight: '事前確認',
+  spec: '仕様',
+  'spec-review': '仕様レビュー',
+  'spec-wait': '仕様の判断',
+  'spec-check': '採点コマンドの決定',
   triage: '見立て',
   policy: '判断',
   code: '実装',
@@ -42,10 +46,20 @@ export function lensName(lens: string): string {
 /** Usage roles that are not a stage or a lens. */
 const ROLE_NAME: Record<string, string> = {
   repair: '修正',
+  'spec-author': '仕様の作成',
+  'spec-fix': '仕様の修正',
 }
 
-/** A usage role: `code`, `repair`, `triage`, or a review lens. */
+/** The prefix of a spec reviewer's role, `spec-review:<name>`. */
+const SPEC_REVIEW_ROLE = 'spec-review:'
+
+/**
+ * A usage role: `code`, `repair`, `triage`, a review lens, a spec role, or
+ * a named spec reviewer, whose name is kept as it is written.
+ */
 export function roleName(role: string): string {
+  if (role.startsWith(SPEC_REVIEW_ROLE))
+    return `仕様レビュー ${role.slice(SPEC_REVIEW_ROLE.length)}`
   return ROLE_NAME[role] ?? LENS_NAME[role] ?? STAGE_NAME[role] ?? role
 }
 
@@ -97,6 +111,8 @@ const DIAGNOSIS_TEXT: Record<Exclude<DiagnosisKind, 'stopped'>, string> = {
   'lease-expired':
     '担当のワーカーが止まったか、連絡が途切れました。ワーカーを動かすと、記録から続きを再開します。',
   approval: 'レビューが終わり、候補の承認を待っています。',
+  'spec-approval':
+    '仕様レビューの指摘が上限の回数のあとも残り、仕様をどうするか人の判断を待っています。',
   decided: '承認か却下の判断は記録済みです。ワーカーが実行を再開します。',
   'other-wait': '候補の承認ではない入力を待っています。',
   finished: '終わりました。',
@@ -109,6 +125,12 @@ const FAILURE_TEXT: Record<FailureKind, { reason: string; check: string }> = {
       'エージェントを呼ぶ前に、ベースのコミットで固定したチェックがすでに失敗しました。このままでは候補を採点できません。',
     check:
       '下に示したログファイルでチェックの出力を全文読み、採点コマンドか環境を直す。factory.json を直したときは設定を読み直す再実行を、環境だけを直したときは通常の再実行を使う。',
+  },
+  'spec-check-failed': {
+    reason:
+      '確定した仕様から採点コマンドを決めるスクリプトが失敗したか、時間切れになったか、決まった形で出力しませんでした。ベースの検証と実装を始める前に止めました。',
+    check:
+      '下のエラーを読み、スクリプトか factory.json の設定を直して、設定を読み直す再実行を使う。同じ実行の中でスクリプトの結果を読み替えることはしない。',
   },
   'preflight-failed': {
     reason:
@@ -166,6 +188,7 @@ const FAILURE_TEXT: Record<FailureKind, { reason: string; check: string }> = {
 /** A stop reason in a few words, for a count such as a comparison's. */
 const STOP_NAME: Record<FailureKind, string> = {
   'baseline-check-failed': 'ベースの検証失敗',
+  'spec-check-failed': '採点コマンドの決定に失敗',
   'preflight-failed': '事前確認で停止',
   'candidate-moved': '修正元の候補の変更',
   'rejected-invocation': '呼び出しの拒否',
@@ -184,6 +207,8 @@ export function stopName(kind: string): string {
 const DECIDED_TEXT: Record<string, string> = {
   approved: '承認を記録済みです。ワーカーが実行を再開します。',
   rejected: '却下を記録済みです。ワーカーが実行を再開します。',
+  revise:
+    '仕様を直すメモを記録済みです。ワーカーが仕様を直してもう一度レビューします。',
 }
 
 export function diagnosisText(
@@ -262,6 +287,20 @@ const COMMAND_NOTES: [string, string][] = [
     '検証コマンドの出力は、検証の試行に入っています。',
   ],
   ['the reviewer notes', 'レビューのメモを読めます。'],
+  [
+    'read the spec reviews first',
+    '判断の前に、仕様レビューの指摘と仕様を読みます。',
+  ],
+  ['go on with the spec as it is', 'いまの仕様のまま実装に進みます。'],
+  [
+    'fix it once more with your notes',
+    'メモのファイルを渡して、仕様をもう一度直してレビューし直します。',
+  ],
+  ['stop before any implementation', '実装を始めずに実行を止めます。'],
+  [
+    'the spec the script read',
+    '採点コマンドを決めるときに読んだ仕様を確かめられます。',
+  ],
   [
     'delivery shows what was recorded',
     '納品物に記録された内容を確かめられます。',

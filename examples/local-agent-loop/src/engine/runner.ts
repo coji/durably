@@ -18,6 +18,7 @@ import type {
   ProviderName,
   ReviewCallSettings,
   SessionHandling,
+  SpecWriteAccess,
 } from './providers/types.js'
 import type { SessionRef } from './types.js'
 import { mergeUsage, type TokenUsage } from './usage.js'
@@ -32,6 +33,10 @@ export interface AgentCallSpec {
   readableFiles?: string[]
   /** A configured review's settings; see `AgentCallOptions.review`. */
   review?: ReviewCallSettings
+  /** A spec writer's access; see `AgentCallOptions.specWrite`. */
+  specWrite?: SpecWriteAccess
+  /** A spec reviewer's name; see `AgentCallOptions.specReviewer`. */
+  specReviewer?: string
   timeoutMs: number
   requestedModel: string | null
   requestedEffort: string | null
@@ -407,6 +412,8 @@ export async function runAgentCall(
       workdir: spec.workdir,
       ...(spec.readableFiles ? { readableFiles: spec.readableFiles } : {}),
       ...(spec.review ? { review: spec.review } : {}),
+      ...(spec.specWrite ? { specWrite: spec.specWrite } : {}),
+      ...(spec.specReviewer ? { specReviewer: spec.specReviewer } : {}),
       timeoutMs: spec.timeoutMs,
       requestedModel: spec.effectiveModel,
       requestedEffort: spec.effectiveEffort,
