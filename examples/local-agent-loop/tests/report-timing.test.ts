@@ -9,10 +9,61 @@ import {
   stageTimings,
   totalStageMs,
   type AttemptRow,
+  type LoopReport,
   type ReportReview,
   type ReportReviewRound,
   type RunSummary,
 } from '../src/engine/report.js'
+
+/** A finished run with two code attempts, one of them unmeasured. */
+function baseReport(): LoopReport {
+  return {
+    runId: 'r1',
+    jobName: 'agent-loop',
+    status: 'completed',
+    input: {},
+    output: null,
+    fake: false,
+    configVersion: null,
+    triage: null,
+    baseline: null,
+    preflight: null,
+    summary: emptySummary(),
+    stageUsage: [],
+    roleUsage: [],
+    inputs: { task: null, spec: null, dispositions: null, findings: null },
+    lineage: { parent: null, children: [] },
+    candidate: null,
+    candidates: [],
+    repairSession: null,
+    repairCalls: [],
+    reviews: [],
+    reviewRounds: [],
+    reviewHighlights: reviewHighlights([], [], []),
+    specRounds: [],
+    spec: null,
+    delivery: null,
+    failure: null,
+    stageVisits: [],
+    realLlmCallCount: 1,
+    fullLoopVerified: false,
+    attempts: [
+      row('stage:0:code:agent', 'a1', 100),
+      row('stage:0:code:agent', 'a2', null),
+    ],
+    waits: [],
+    stageTimings: stageTimings([
+      row('stage:0:code:agent', 'a1', 100),
+      row('stage:0:code:agent', 'a2', null),
+    ]),
+    stageTotalMs: null,
+    specWallMs: null,
+    runElapsedMs: 200,
+    versions: {},
+    priceBasis: PRICE_BASIS,
+    notes: [],
+  }
+}
 
 function emptySummary(): RunSummary {
   return {
@@ -100,52 +151,7 @@ describe('stage timing completeness', () => {
   })
 
   it('markdown flags partial stages instead of presenting known-only sums', () => {
-    const md = reportToMarkdown({
-      runId: 'r1',
-      jobName: 'agent-loop',
-      status: 'completed',
-      input: {},
-      output: null,
-      fake: false,
-      configVersion: null,
-      triage: null,
-      baseline: null,
-      preflight: null,
-      summary: emptySummary(),
-      stageUsage: [],
-      roleUsage: [],
-      inputs: { task: null, spec: null, dispositions: null, findings: null },
-      lineage: { parent: null, children: [] },
-      candidate: null,
-      candidates: [],
-      repairSession: null,
-      repairCalls: [],
-      reviews: [],
-      reviewRounds: [],
-      reviewHighlights: reviewHighlights([], [], []),
-      specRounds: [],
-      spec: null,
-      delivery: null,
-      failure: null,
-      stageVisits: [],
-      realLlmCallCount: 1,
-      fullLoopVerified: false,
-      attempts: [
-        row('stage:0:code:agent', 'a1', 100),
-        row('stage:0:code:agent', 'a2', null),
-      ],
-      waits: [],
-      stageTimings: stageTimings([
-        row('stage:0:code:agent', 'a1', 100),
-        row('stage:0:code:agent', 'a2', null),
-      ]),
-      stageTotalMs: null,
-      specWallMs: null,
-      runElapsedMs: 200,
-      versions: {},
-      priceBasis: PRICE_BASIS,
-      notes: [],
-    })
+    const md = reportToMarkdown(baseReport())
     assert.match(md, /PARTIAL/)
     // Times read as durations; an unknown one is unknown, never 0 or `ms`.
     assert.match(md, /- stage total: unknown/)
@@ -355,7 +361,7 @@ describe('review highlights', () => {
       LENSES,
     )
     assert.equal(h.rounds, 2)
-    assert.deepEqual([h.passed, h.complete], [true, true])
+    assert.equal(h.last, 'passed')
     assert.deepEqual([h.earlier.count, h.earlier.titles], [3, ['A', 'B', 'C']])
     assert.deepEqual([h.left.count, h.left.titles], [3, ['D', 'E', 'F']])
     assert.equal(h.open.count, 0)
@@ -376,7 +382,7 @@ describe('review highlights', () => {
       [],
       LENSES,
     )
-    assert.deepEqual([h.passed, h.complete], [false, true])
+    assert.equal(h.last, 'blocked')
     assert.deepEqual(h.earlier.titles, ['A'])
     assert.deepEqual(h.open.titles, ['G'])
     assert.deepEqual(h.left.titles, ['H'])
@@ -395,7 +401,7 @@ describe('review highlights', () => {
       [],
       LENSES,
     )
-    assert.deepEqual([h.passed, h.complete], [false, false])
+    assert.equal(h.last, 'incomplete')
     assert.deepEqual(h.earlier.titles, ['A'])
     assert.deepEqual(h.open.titles, ['G'])
     assert.deepEqual(h.left.titles, ['H'])
@@ -421,7 +427,7 @@ describe('review highlights', () => {
       [],
       LENSES,
     )
-    assert.equal(h.passed, true)
+    assert.equal(h.last, 'passed')
     assert.deepEqual(h.earlier.verdicts, [
       {
         round: 1,
@@ -430,11 +436,48 @@ describe('review highlights', () => {
         line: 'Fix the parser',
       },
     ])
-    assert.deepEqual(h.left.verdicts, [
+    // The passing verdicts of the last round left nothing: no group
+    // lists or counts them.
+    assert.deepEqual(h.lastPasses, [
       { round: 2, lens: 'correctness', decision: 'pass', line: 'Looks right' },
       { round: 2, lens: 'edge-cases', decision: 'pass', line: 'Fine' },
     ])
-    assert.equal(h.earlier.count + h.left.count, 0)
+    assert.deepEqual(h.left.verdicts, [])
+    assert.equal(h.earlier.count + h.left.count + h.open.count, 0)
+  })
+
+  it('counts findings only, and keeps a passing verdict out of what was left', () => {
+    const h = reviewHighlights(
+      [
+        round(1, [
+          review('correctness', 'needsChanges', findings(['A'], [])),
+          review('edge-cases', 'needsChanges', null),
+        ]),
+        round(2, [
+          review('correctness', 'pass', findings([], ['D', 'E', 'F'])),
+          review('edge-cases', 'pass', null, 'Fine'),
+        ]),
+      ],
+      [],
+      LENSES,
+    )
+    assert.equal(h.last, 'passed')
+    assert.deepEqual([h.left.count, h.left.verdicts], [3, []])
+    assert.deepEqual([h.earlier.count, h.earlier.verdicts.length], [1, 1])
+    assert.deepEqual(
+      h.lastPasses.map((v) => v.lens),
+      ['edge-cases'],
+    )
+    const md = reportToMarkdown({
+      ...baseReport(),
+      reviewHighlights: h,
+    })
+    assert.match(md, /left \(non-blockers of the last round\): 3 finding\(s\)/)
+    assert.match(
+      md,
+      /fixed \(blockers of the rounds before the last\): 1 finding\(s\)/,
+    )
+    assert.match(md, /last round passed\n {2}- round 2 edge-cases: pass — Fine/)
   })
 
   it('reads the last verdicts as one round when no round was stored, and nothing before a review', () => {
@@ -443,8 +486,8 @@ describe('review highlights', () => {
       [review('correctness', 'pass', findings([], ['Z']))],
       ['correctness'],
     )
-    assert.deepEqual([h.rounds, h.passed, h.left.titles], [1, true, ['Z']])
+    assert.deepEqual([h.rounds, h.last, h.left.titles], [1, 'passed', ['Z']])
     const none = reviewHighlights([], [], LENSES)
-    assert.deepEqual([none.rounds, none.passed, none.complete], [0, null, null])
+    assert.deepEqual([none.rounds, none.last], [0, null])
   })
 })

@@ -624,7 +624,7 @@ export const REVIEW = {
   rounds: (n: string) => `レビュー ${n} 回`,
   passedLast: '最後のレビューは通過',
   failedLast: '最後のレビューで直すべき指摘が残った',
-  incompleteLast: '最後のレビューは、まだ全員の判定がそろっていない',
+  incompleteLast: '最後のレビューは、全員の判定がそろっていない',
   more: (n: string) => `ほか ${n} 件`,
   notes: 'メモを読む',
   roundOf: (n: number) => `${n}回目`,

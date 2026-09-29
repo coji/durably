@@ -263,21 +263,24 @@ export interface ReportReviewRound {
  * the last round still raised, when it did not pass. The earlier blockers
  * read as fixed only when the last round passed. Findings are not tracked
  * across rounds, so a title is never matched with another. A verdict review
- * has no findings: its round, lens and decision stand in for them.
+ * has no findings: its round, lens and decision stand in for them, and no
+ * count includes it.
  */
 export interface ReviewHighlights {
   /** Review rounds read; 0 before one has finished. */
   rounds: number
   /**
-   * Whether the last round has a verdict from every configured reviewer and
-   * every one of them passed; null before a round.
+   * How the last round ended: `passed` when every configured reviewer gave
+   * a verdict and every one passed; `blocked` when every one gave a verdict
+   * and one did not pass; `incomplete` when a reviewer has no verdict,
+   * while one still runs or after one failed; null before a round.
    */
-  passed: boolean | null
+  last: 'passed' | 'blocked' | 'incomplete' | null
   /**
-   * Whether the last round has a verdict from every configured reviewer;
-   * false while one still runs or after one failed; null before a round.
+   * The last round's verdict reviews that passed. They left nothing, so
+   * they belong to no group.
    */
-  complete: boolean | null
+  lastPasses: HighlightVerdict[]
   /** The blockers of the rounds before the last. */
   earlier: HighlightGroup
   left: HighlightGroup
@@ -287,7 +290,10 @@ export interface ReviewHighlights {
 
 /** One side of `ReviewHighlights`: its findings and its verdict reviews. */
 export interface HighlightGroup {
-  /** Findings in this group across its rounds, whether kept or not. */
+  /**
+   * Findings in this group across its rounds, whether kept or not. Verdict
+   * reviews are listed, not counted.
+   */
   count: number
   /** The titles the report kept, in round and review order. */
   titles: string[]
@@ -338,13 +344,15 @@ export function reviewHighlights(
   const earlier = emptyHighlight()
   const left = emptyHighlight()
   const open = emptyHighlight()
+  const lastPasses: HighlightVerdict[] = []
   const final = all.at(-1)
-  const complete = final
-    ? lenses.every((lens) => final.reviews.some((r) => r.lens === lens))
-    : null
-  const passed = final
-    ? complete === true && final.reviews.every((r) => r.decision === 'pass')
-    : null
+  const ending: ReviewHighlights['last'] = !final
+    ? null
+    : !lenses.every((lens) => final.reviews.some((r) => r.lens === lens))
+      ? 'incomplete'
+      : final.reviews.every((r) => r.decision === 'pass')
+        ? 'passed'
+        : 'blocked'
   const findings = (
     group: HighlightGroup,
     review: ReportReview,
@@ -354,8 +362,8 @@ export function reviewHighlights(
     group.count += review.findings.counts[kind]
     group.titles.push(...review.findings[kind].map((f) => f.title))
   }
-  const verdict = (group: HighlightGroup, round: number, r: ReportReview) =>
-    group.verdicts.push({
+  const verdict = (to: HighlightVerdict[], round: number, r: ReportReview) =>
+    to.push({
       round,
       lens: r.lens,
       decision: r.decision,
@@ -364,16 +372,28 @@ export function reviewHighlights(
   for (const round of all.slice(0, -1))
     for (const review of round.reviews) {
       if (review.findings) findings(earlier, review, 'blocker')
-      else if (review.decision !== 'pass') verdict(earlier, round.round, review)
+      else if (review.decision !== 'pass')
+        verdict(earlier.verdicts, round.round, review)
     }
   for (const review of final?.reviews ?? []) {
     if (review.findings) {
       findings(left, review, 'nonBlocker')
-      if (!passed) findings(open, review, 'blocker')
+      if (ending !== 'passed') findings(open, review, 'blocker')
     } else if (final)
-      verdict(review.decision === 'pass' ? left : open, final.round, review)
+      verdict(
+        review.decision === 'pass' ? lastPasses : open.verdicts,
+        final.round,
+        review,
+      )
   }
-  return { rounds: all.length, passed, complete, earlier, left, open }
+  return {
+    rounds: all.length,
+    last: ending,
+    lastPasses,
+    earlier,
+    left,
+    open,
+  }
 }
 
 /** What the run delivered, as recorded in its output. */
@@ -1256,28 +1276,30 @@ function aggregateInvocationCost(
 
 function highlightLines(h: ReviewHighlights): string[] {
   if (h.rounds === 0) return ['- none (no review round has finished)']
+  const verdict = (v: HighlightVerdict) =>
+    `  - round ${v.round} ${v.lens}: ${v.decision} — ${v.line}`
   const group = (label: string, g: HighlightGroup): string[] => [
     `- ${label}: ${g.count} finding(s)`,
     ...g.titles.map((t) => `  - ${t}`),
-    ...g.verdicts.map(
-      (v) => `  - round ${v.round} ${v.lens}: ${v.decision} — ${v.line}`,
-    ),
+    ...g.verdicts.map(verdict),
   ]
-  const last = h.passed
+  const passed = h.last === 'passed'
+  const last = passed
     ? 'passed'
-    : h.complete
+    : h.last === 'blocked'
       ? 'did not pass'
       : 'is not complete: a reviewer has no verdict'
   return [
     `- rounds: ${h.rounds}; last round ${last}`,
+    ...h.lastPasses.map(verdict),
     ...group(
-      h.passed
+      passed
         ? 'fixed (blockers of the rounds before the last)'
         : 'earlier (blockers of the rounds before the last)',
       h.earlier,
     ),
     ...group('left (non-blockers of the last round)', h.left),
-    ...(h.passed ? [] : group('open (blockers of the last round)', h.open)),
+    ...(passed ? [] : group('open (blockers of the last round)', h.open)),
   ]
 }
 

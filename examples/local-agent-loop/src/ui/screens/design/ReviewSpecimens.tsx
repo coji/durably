@@ -21,8 +21,12 @@ const HIGHLIGHTS: [keyof typeof DESIGN.state, ReviewHighlights][] = [
     'reviewPassed',
     {
       rounds: 2,
-      passed: true,
-      complete: true,
+      last: 'passed',
+      // A verdict-mode reviewer that passed: shown with how the round
+      // ended, neither counted nor listed as left.
+      lastPasses: [
+        { round: 2, lens: 'edge-cases', decision: 'pass', line: '' },
+      ],
       earlier: EARLIER,
       left: LEFT,
       open: group([]),
@@ -32,8 +36,8 @@ const HIGHLIGHTS: [keyof typeof DESIGN.state, ReviewHighlights][] = [
     'reviewOpen',
     {
       rounds: 2,
-      passed: false,
-      complete: true,
+      last: 'blocked',
+      lastPasses: [],
       earlier: EARLIER,
       left: LEFT,
       open: OPEN,
@@ -43,8 +47,8 @@ const HIGHLIGHTS: [keyof typeof DESIGN.state, ReviewHighlights][] = [
     'reviewIncomplete',
     {
       rounds: 2,
-      passed: false,
-      complete: false,
+      last: 'incomplete',
+      lastPasses: [],
       earlier: EARLIER,
       left: LEFT,
       open: group([]),

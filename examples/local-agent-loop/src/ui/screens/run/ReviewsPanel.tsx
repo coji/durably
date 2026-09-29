@@ -1,6 +1,7 @@
 import { formatCount } from '../../../engine/format'
 import type {
   HighlightGroup,
+  HighlightVerdict,
   LoopReport,
   ReviewHighlights,
 } from '../../../engine/report'
@@ -49,11 +50,30 @@ export function ReviewVerdicts({
   )
 }
 
+/** A verdict review's round and lens: `2回目 正しさのレビュー`. */
+function verdictReview(v: HighlightVerdict): string {
+  return `${REVIEW.roundOf(v.round)} ${lensName(v.lens)}`
+}
+
+/** A verdict review with its decision, in the smaller type of a review. */
+function VerdictLine({ v }: { v: HighlightVerdict }) {
+  return (
+    <>
+      {verdictReview(v)}
+      <span title={reviewDecision(v.decision).title}>
+        {COMMON.separator}
+        {reviewDecision(v.decision).label}
+      </span>
+    </>
+  )
+}
+
 /**
- * One side of the highlights: how many, the first titles, the verdicts.
- * The count is what is listed: findings and verdict reviews alike. A
- * verdict under what was fixed names the change it asked for, not its
- * 要修正, which would read as still open.
+ * One side of the highlights: how many findings, the first titles, the
+ * verdicts. The count is the report's, findings only; verdict reviews are
+ * listed below without being counted, so a group of verdicts alone shows
+ * no count. A verdict under what was fixed names the change it asked for,
+ * not its 要修正, which would read as still open.
  */
 function Group({
   label,
@@ -67,16 +87,19 @@ function Group({
 }) {
   const titles = group.titles.slice(0, SHOWN)
   const rest = group.count - titles.length
-  const listed = group.count + group.verdicts.length
   return (
     <div className="flex min-w-0 flex-col gap-1">
       <h3 className="flex items-baseline gap-2 text-sm font-semibold">
         {label}
-        <span className="text-fg-2 font-normal tabular-nums">
-          {COMMON.count(formatCount(listed))}
-        </span>
+        {group.count > 0 ? (
+          <span className="text-fg-2 font-normal tabular-nums">
+            {COMMON.count(formatCount(group.count))}
+          </span>
+        ) : null}
       </h3>
-      {listed === 0 ? <p className="text-fg-3 text-sm">{REVIEW.none}</p> : null}
+      {group.count === 0 && group.verdicts.length === 0 ? (
+        <p className="text-fg-3 text-sm">{REVIEW.none}</p>
+      ) : null}
       {titles.length > 0 ? (
         <ul className="flex list-disc flex-col gap-1 pl-4 text-sm">
           {titles.map((title, at) => (
@@ -91,24 +114,15 @@ function Group({
       {group.verdicts.length > 0 ? (
         // Apart from the titles, in smaller type: a review, not a finding.
         <ul className="text-fg-2 flex flex-col gap-1 text-xs">
-          {group.verdicts.map((v) => {
-            const review = `${REVIEW.roundOf(v.round)} ${lensName(v.lens)}`
-            return (
-              <li key={`${v.round}:${v.lens}`}>
-                {fixed ? (
-                  REVIEW.askedFor(review)
-                ) : (
-                  <>
-                    {review}
-                    <span title={reviewDecision(v.decision).title}>
-                      {COMMON.separator}
-                      {reviewDecision(v.decision).label}
-                    </span>
-                  </>
-                )}
-              </li>
-            )
-          })}
+          {group.verdicts.map((v) => (
+            <li key={`${v.round}:${v.lens}`}>
+              {fixed ? (
+                REVIEW.askedFor(verdictReview(v))
+              ) : (
+                <VerdictLine v={v} />
+              )}
+            </li>
+          ))}
         </ul>
       ) : null}
     </div>
@@ -126,26 +140,40 @@ function Group({
 export function ReviewHighlightsPanel({ h }: { h: ReviewHighlights }) {
   // Before any review round the stage track already says so.
   if (h.rounds === 0) return null
-  const verdicts = [h.earlier, h.left, h.open].some(
-    (g) => g.verdicts.length > 0,
-  )
+  const passed = h.last === 'passed'
+  const verdicts =
+    h.lastPasses.length > 0 ||
+    [h.earlier, h.left, h.open].some((g) => g.verdicts.length > 0)
   return (
     <Panel title={REVIEW.highlights}>
       <div className="flex flex-col gap-3">
-        <p className="text-fg-2 text-xs">
-          {REVIEW.rounds(formatCount(h.rounds))}
-          {COMMON.separator}
-          {h.passed
-            ? REVIEW.passedLast
-            : h.complete
-              ? REVIEW.failedLast
-              : REVIEW.incompleteLast}
-        </p>
+        <div className="text-fg-2 flex flex-col gap-1 text-xs">
+          <p>
+            {REVIEW.rounds(formatCount(h.rounds))}
+            {COMMON.separator}
+            {passed
+              ? REVIEW.passedLast
+              : h.last === 'blocked'
+                ? REVIEW.failedLast
+                : REVIEW.incompleteLast}
+          </p>
+          {h.lastPasses.length > 0 ? (
+            // The last round's passing verdicts: what it decided, not
+            // something it left, so they sit with how it ended.
+            <ul className="flex flex-col gap-1">
+              {h.lastPasses.map((v) => (
+                <li key={v.lens}>
+                  <VerdictLine v={v} />
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
         <div
-          className={`grid gap-4 md:grid-cols-2 ${h.passed ? '' : 'lg:grid-cols-3'}`}
+          className={`grid gap-4 md:grid-cols-2 ${passed ? '' : 'lg:grid-cols-3'}`}
         >
-          {h.passed ? null : <Group label={REVIEW.open} group={h.open} />}
-          {h.passed ? (
+          {passed ? null : <Group label={REVIEW.open} group={h.open} />}
+          {passed ? (
             <Group label={REVIEW.fixed} group={h.earlier} fixed />
           ) : (
             <Group label={REVIEW.earlier} group={h.earlier} />

@@ -7,6 +7,7 @@ import { LiveProgress } from '../components/LiveProgress'
 import { IdSuffix, runHref } from '../components/RunLink'
 import { StageTrack } from '../components/StageTrack'
 import { StatusBadge } from '../components/StatusBadge'
+import { SupersededMark } from '../components/SupersededMark'
 import {
   runRole,
   runState,
@@ -53,14 +54,7 @@ function TaskRuns({
                 {runRole(r)}
               </a>
               <IdSuffix id={r.id} />
-              {r.superseded ? (
-                <span
-                  title={LIST.supersededTitle}
-                  className="text-fg-2 text-xs"
-                >
-                  {LIST.superseded}
-                </span>
-              ) : null}
+              {r.superseded ? <SupersededMark /> : null}
             </span>
             <span className="text-fg-2 flex gap-3 text-xs tabular-nums">
               <span className="font-code">

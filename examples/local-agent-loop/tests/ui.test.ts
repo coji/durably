@@ -79,6 +79,7 @@ import {
   diagnosisText,
   humanCheckText,
   isPathDetail,
+  lensName,
   reviewDecision,
   squashedBranchField,
   roleName,
@@ -1800,16 +1801,19 @@ describe('diagnosis wording on the page', () => {
     )
   })
 
-  it('calls earlier blockers fixed only after a complete, passed last round, and counts the verdicts it lists', () => {
+  it('calls earlier blockers fixed only after a complete, passed last round, and counts findings only', () => {
+    const verdictOf = (lens: string, decision: string, round = 1) => ({
+      round,
+      lens,
+      decision,
+      line: 'notes',
+    })
     const group = (titles: string[], verdicts = 0) => ({
       count: titles.length,
       titles,
-      verdicts: Array.from({ length: verdicts }, (_, i) => ({
-        round: 1,
-        lens: i === 0 ? 'correctness' : 'edge-cases',
-        decision: 'needsChanges',
-        line: 'notes',
-      })),
+      verdicts: Array.from({ length: verdicts }, (_, i) =>
+        verdictOf(i === 0 ? 'correctness' : 'edge-cases', 'needsChanges'),
+      ),
     })
     const text = (h: Parameters<typeof ReviewHighlightsPanel>[0]['h']) =>
       renderToStaticMarkup(createElement(ReviewHighlightsPanel, { h })).replace(
@@ -1818,29 +1822,59 @@ describe('diagnosis wording on the page', () => {
       )
     const base = {
       rounds: 2,
+      lastPasses: [],
       earlier: group([], 1),
       left: group(['L']),
       open: group(['O']),
     }
-    const passed = text({
-      ...base,
-      passed: true,
-      complete: true,
-      open: group([]),
-    })
+    const passed = text({ ...base, last: 'passed', open: group([]) })
     assert.ok(passed.includes(REVIEW.fixed))
     assert.ok(!passed.includes(REVIEW.earlier))
-    // One verdict listed under the heading: the count says 1, never 0.
-    assert.match(passed, new RegExp(`${REVIEW.fixed}\\n+1件`))
-    const incomplete = text({ ...base, passed: false, complete: false })
+    // Only a verdict listed under the heading: no count, and not なし.
+    assert.match(
+      passed,
+      new RegExp(`${REVIEW.fixed}\\n+[^件]*${REVIEW.askedFor('')}`),
+    )
+    assert.doesNotMatch(passed, new RegExp(`${REVIEW.fixed}\\n+\\d+件`))
+    assert.match(passed, new RegExp(`${REVIEW.left}\\n+1件`))
+    const incomplete = text({ ...base, last: 'incomplete' })
     assert.ok(incomplete.includes(REVIEW.incompleteLast))
     assert.ok(incomplete.includes(REVIEW.earlier))
     assert.ok(incomplete.includes(REVIEW.open))
     assert.ok(!incomplete.includes(REVIEW.fixed))
     assert.ok(!incomplete.includes(REVIEW.passedLast))
-    const failed = text({ ...base, passed: false, complete: true })
+    const failed = text({ ...base, last: 'blocked' })
     assert.ok(failed.includes(REVIEW.failedLast))
     assert.ok(failed.includes(REVIEW.earlier))
+  })
+
+  it('shows a passing verdict of the last round with how it ended, not as left', () => {
+    const h = {
+      rounds: 2,
+      last: 'passed' as const,
+      lastPasses: [
+        { round: 2, lens: 'correctness', decision: 'pass', line: 'ok' },
+        { round: 2, lens: 'edge-cases', decision: 'pass', line: 'ok' },
+      ],
+      earlier: { count: 0, titles: [], verdicts: [] },
+      left: { count: 0, titles: [], verdicts: [] },
+      open: { count: 0, titles: [], verdicts: [] },
+    }
+    const html = renderToStaticMarkup(
+      createElement(ReviewHighlightsPanel, { h }),
+    )
+    const text = html.replace(/<[^>]+>/g, '\n')
+    const pass = reviewDecision('pass').label
+    const status = text.indexOf(REVIEW.passedLast)
+    const left = text.indexOf(REVIEW.left)
+    const verdict = text.indexOf(
+      `${REVIEW.roundOf(2)} ${lensName('correctness')}`,
+    )
+    assert.ok(status >= 0 && verdict > status && verdict < left, text)
+    // Nothing was left: the heading has no count, and says なし.
+    assert.match(text, new RegExp(`${REVIEW.left}\\n+${REVIEW.none}`))
+    assert.doesNotMatch(text, /\d+件/)
+    assert.equal(text.slice(left).includes(pass), false)
   })
 
   it('says the fake runs it left out when they are all the window had', () => {

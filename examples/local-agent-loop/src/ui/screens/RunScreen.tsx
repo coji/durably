@@ -2,11 +2,12 @@ import { CopyAnnouncer, CopyButton, useCopy } from '../components/copy'
 import { Collapsible, Panel } from '../components/Layout'
 import { StageTrack } from '../components/StageTrack'
 import { StatusBadge } from '../components/StatusBadge'
+import { SupersededMark } from '../components/SupersededMark'
 import { TaskLineage } from '../components/TaskLineage'
 import { runState } from '../components/TaskRow'
 import { Ago } from '../components/Time'
 import { TraceView } from '../components/trace/TraceView'
-import { COMMON, COPY, DETAIL, LIST } from '../glossary'
+import { COMMON, COPY, DETAIL } from '../glossary'
 import type { RunDetailResponse } from '../server'
 import { RecordPanels } from './run/RecordPanels'
 import { ReviewHighlightsPanel, ReviewsPanel } from './run/ReviewsPanel'
@@ -37,11 +38,7 @@ function RunHeader({ data }: { data: RunDetailResponse }) {
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <StatusBadge label={state.label} tone={state.tone} />
-        {superseded ? (
-          <span title={LIST.supersededTitle} className="text-fg-2 text-xs">
-            {LIST.superseded}
-          </span>
-        ) : null}
+        {superseded ? <SupersededMark /> : null}
         <span className="text-fg-2 text-sm">
           <Ago
             iso={data.createdAt}
