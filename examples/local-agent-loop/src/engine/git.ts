@@ -4,8 +4,11 @@
  * Every call goes through `runChild`, so each one inherits the cancel-aware,
  * process-group-contained subprocess handling and cannot outlive a lost lease.
  * Nothing here interprets a repository's contents; it only creates isolated
- * worktrees, seals work as commits, and reads back what changed.
+ * worktrees, seals work as commits, reads back what changed, and removes a
+ * finished run's worktree and, when asked, its branches.
  */
+import { existsSync } from 'node:fs'
+
 import { runChild } from './child.js'
 
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -119,6 +122,59 @@ export async function removeWorktree(
     return true
   } catch {
     return false
+  }
+}
+
+/** A failed git call as one line: the command and what git printed. */
+function describeGitFailure(error: unknown): string {
+  if (error instanceof GitError) {
+    const stderr = error.stderr.trim()
+    return stderr ? `${error.message}: ${stderr}` : error.message
+  }
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Force-remove a finished run's worktree, then prune git's registration of
+ * it, so neither the directory nor a stale `git worktree list` entry stays.
+ * A directory that is already gone is only pruned, so asking again after a
+ * removal succeeds. Returns why git could not, or null. The directory is
+ * never removed any other way: a worktree git refuses to remove is left for
+ * a person to look at.
+ */
+export async function forceRemoveWorktree(
+  repo: string,
+  dir: string,
+): Promise<string | null> {
+  let failure: string | null = null
+  if (existsSync(dir)) {
+    try {
+      await git(repo, ['worktree', 'remove', '--force', dir])
+    } catch (error) {
+      failure = describeGitFailure(error)
+    }
+  }
+  try {
+    await git(repo, ['worktree', 'prune'])
+  } catch (error) {
+    failure ??= describeGitFailure(error)
+  }
+  return failure
+}
+
+/**
+ * Delete one local branch, whatever it has merged. Returns why git could
+ * not, or null; a branch checked out in a worktree is refused by git.
+ */
+export async function deleteBranch(
+  repo: string,
+  branch: string,
+): Promise<string | null> {
+  try {
+    await git(repo, ['branch', '-D', branch])
+    return null
+  } catch (error) {
+    return describeGitFailure(error)
   }
 }
 

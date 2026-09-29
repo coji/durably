@@ -238,6 +238,10 @@ pnpm --filter example-local-agent-loop demo status --format json
   `git -C '<repo>' worktree remove '<workdir>'` を表示します。setupが記録した
   パスが存在するときだけ出し、強制削除やbranch削除は含みません。変更が残る
   worktreeではgitが削除を拒みます。実行するかどうかは利用者が決めます。
+  まとめて片付けるときは `demo prune` を使います（下の「終わったrunの作業ツリーを
+  片付ける」）。
+- worktreeを片付けたrunには `worktree: removed` と表示します。承認・納品の後に
+  片付けられなかったrunには、gitの出したエラーを `warning:` として表示します。
 
 同じ理由と次の手順は、`status --run <runId>` の `diagnosis` と、reportの
 `failure`（JSON）および「Stop reason」節（Markdown）にも出ます。
@@ -334,6 +338,7 @@ timing:
 
 ```bash
 pnpm --filter example-local-agent-loop demo archive --run <runId>
+pnpm --filter example-local-agent-loop demo archive --run <runId> --delete-branch
 pnpm --filter example-local-agent-loop demo unarchive --run <runId>
 ```
 
@@ -344,11 +349,64 @@ pnpm --filter example-local-agent-loop demo unarchive --run <runId>
   approve、reject、spec-revise で判断します。この判定は CLI、`status`、web UI が
   同じ関数（`archivable`）で行います。
 - `unarchive` は、アーカイブのファイルがある run ならどれでも戻せます。
-- アーカイブは state root の `archived/<runId>` に小さなファイルを置くだけです。
+- アーカイブは state root の `archived/<runId>` に小さなファイルを置きます。
   run の状態、step、wait は変えないので、止まった理由はそのまま残り、
   `unarchive` でファイルを消すと元の区分に戻ります。
+- repo run をアーカイブすると、その run の worktree とレビュー用スナップショットも
+  片付けます。git が削除を拒んだときは警告を表示し、アーカイブはそのまま済ませます。
+  すでにアーカイブした run にもう一度 `archive` を打つと、残った worktree の
+  片付けをやり直します。`unarchive` しても worktree は元に戻りません。
+- ブランチは残します。`--delete-branch` を付けたときだけ、その run が記録した
+  factory のブランチ（issue 付きの run は `factory/issue-<番号>-<runId>`）と
+  `factory/<runId>-squashed` を消します。
 - `status` と web UI は同じファイルを同じ関数（`groupTasks`）で読むので、
   どちらでアーカイブしても両方から外れます。
+
+### 終わったrunの作業ツリーを片付ける
+
+repo run の worktree（`runs/<runId>/work`）は、次のときに片付けます。片付けるのは
+worktree とレビュー用スナップショット（`runs/<runId>/review-snapshots`）だけです。
+
+- 承認して納品した run は、納品の記録を step に残した直後に、自分の worktree を
+  片付けます。納品後に直すときは、記録した commit とブランチから新しい run を
+  作るので（`demo repair`）、元の worktree は要りません。
+- 止まった run をアーカイブしたとき（上の「止まったrunをアーカイブする」）。
+- `demo prune --apply` を打ったとき。この変更より前に終わった run の worktree を
+  まとめて片付けるためのものです。
+
+```bash
+pnpm --filter example-local-agent-loop demo prune                      # 対象と容量を表示するだけ
+pnpm --filter example-local-agent-loop demo prune --apply              # worktree を片付ける
+pnpm --filter example-local-agent-loop demo prune --delete-branches    # 消すブランチも表示する
+pnpm --filter example-local-agent-loop demo prune --delete-branches --apply
+```
+
+- 削除は `git worktree remove --force` で行い、続けて `git worktree prune` で
+  git の登録も消します。git が削除を拒んだときは、ディレクトリを別の方法で
+  消さずに残し、警告にします。
+- 納品後の片付けに失敗しても、run は承認・納品済みとして終わります。失敗の理由は
+  run の出力の `worktreeCleanupWarning` に残り、`status`、report、web UI の
+  詳細画面に出ます。`demo prune --apply` でやり直せます。
+- `demo prune` の対象は、終わった repo run のうち、承認して納品したものか
+  アーカイブしたもので、worktree がまだ残っているものです。保存した run、setup、
+  納品の記録、アーカイブのファイルから決め、ディレクトリ名だけからは決めません。
+  `--apply` なしでは対象の run ID、worktree ごとの容量、合計を表示するだけで、
+  何も消しません。同じコマンドをもう一度打っても、片付けが済んでいれば何もせずに
+  成功します。
+- pending、leased、waiting の run は、アーカイブのファイルがあっても片付けません。
+  アーカイブしていない止まった run、却下した run、納品せずに完了した run も
+  対象外です。止まった run の worktree は、人が原因を調べる材料だからです。
+- ブランチは通常の片付けでは消しません。`demo prune --delete-branches --apply` は、
+  アーカイブした run が記録した factory のブランチと `factory/<runId>-squashed`
+  だけを消します。worktree が残っているかどうかは問いません。`--apply` なしでは
+  消す予定のブランチを表示します。納品した run のブランチは消しません。納品物で
+  あり、`demo repair` の起点だからです。
+- 片付けた後も、仕様、検証ログ、report、checkpoint、候補の差分、納品の記録
+  （patch と `delivery`）はそのまま読めます。report と web UI は、片付けた
+  worktree のパスを作業場所として案内せず、「作業ツリーは片付け済み」と表示します。
+- run 全体やリモートのブランチ、pull request は消しません。この方針は
+  [ADR-0028](../../docs/adr/0028-local-agent-loop-worktree-retention.md) に
+  まとめています。
 
 ### ブラウザで見る（web UI）
 
@@ -1428,7 +1486,9 @@ DBと全runのデータは `~/.local/state/local-agent-loop/` に置きます。
 ~/.local/state/local-agent-loop/
   local-agent-loop.db              run、step、attempt、wait
   runs/<runId>/
-    work/                          worktree（同梱題材ではコピー）
+    work/                          worktree（同梱題材ではコピー）。repo runでは
+                                   納品後やアーカイブ時に片付ける
+    worktree-removed               納品後に片付けを始めた印（再実行の判定用）
     operation-checkpoints/         LLM呼び出しと検証のcheckpoint
     verification-scratch/          検証用の一時領域
     verification-logs/<candidate>/<attempt>/
@@ -1837,7 +1897,7 @@ src/
     runner.ts       LLM呼び出し1回の冪等化と計測
     verification.ts checkpoint付き検証step（採点内容は呼び出し側が渡す）
     candidate.ts    ディレクトリコピーによるCandidate封印
-    git.ts          worktree、commit封印、差分、patch、push
+    git.ts          worktree、commit封印、差分、patch、push、worktreeとbranchの削除
     tree.ts         ディレクトリのhashと差分
     child.ts        process group単位で終了する子process
     providers/      AI SDK v7のCodex / Claude / fake adapter
@@ -1863,7 +1923,7 @@ src/
   ui/               web UI（server.tsとReactの画面）。操作はactions.tsを呼ぶ
   cli.ts            コマンドの入口
   trigger-input.ts  factory.jsonと入力ファイルの読み込み、trigger時の固定
-  actions.ts        承認、却下、仕様の修正、再実行、アーカイブ（CLIとweb UIで共有）
+  actions.ts        承認、却下、仕様の修正、再実行、アーカイブ（CLIとweb UIで共有）、pruneの対象選び
   approval.ts       candidateに結びつけた承認と却下のsignal
   demo-seed.ts      demo seedが作るデモ用のリポジトリとrun
   durably.ts        固定state directoryのDB

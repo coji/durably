@@ -57,6 +57,7 @@ function baseReport(): LoopReport {
     specRounds: [],
     spec: null,
     delivery: null,
+    worktree: null,
     failure: null,
     stageVisits: [],
     realLlmCallCount: 0,

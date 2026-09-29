@@ -56,6 +56,7 @@ import {
   groupTasks,
   taskRunIds,
   needsAttention,
+  type Diagnosis,
   type DiagnosisKind,
   type Task,
   type TaskRunInput,
@@ -3646,7 +3647,13 @@ describe('web UI actions', { timeout: 300000 }, () => {
       // Archive: a marker, and not one change to the run.
       const done = await post(target)
       assert.equal(done.status, 200, done.body)
-      assert.deepEqual(JSON.parse(done.body), { changed: true })
+      // A subject run has no worktree to remove.
+      assert.deepEqual(JSON.parse(done.body), {
+        changed: true,
+        worktreeRemoved: false,
+        deletedBranches: [],
+        warnings: [],
+      })
       assert.ok(archived(cancelled))
       assert.equal(snapshot(dbPath(stateRoot)), before)
       const taskOf = (list: RunsResponse, id: string) =>
@@ -3783,3 +3790,164 @@ describe('web UI actions', { timeout: 300000 }, () => {
     }
   })
 })
+
+describe('worktree cleanup on the page', { timeout: 300000 }, () => {
+  it('shows an archived repository run as cleaned up, even from a cached detail, and prunes its branches only when asked', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'ui-worktree-'))
+    const stateRoot = join(home, '.local', 'state', 'local-agent-loop')
+    const git = async (cwd: string, args: string[]) => {
+      const res = await runChild('git', args, { cwd, timeoutMs: 60000 })
+      assert.equal(res.code, 0, res.stderr)
+      return res.stdout
+    }
+    const repo = join(home, 'repo')
+    await mkdir(join(repo, 'test'), { recursive: true })
+    await writeFile(join(repo, 'package.json'), '{"type":"module"}\n')
+    await writeFile(join(repo, 'test', 'noop.test.js'), '')
+    await git(home, ['init', '--initial-branch=main', 'repo'])
+    await git(repo, ['config', 'user.email', 'test@localhost'])
+    await git(repo, ['config', 'user.name', 'test'])
+    await git(repo, ['add', '-A'])
+    await git(repo, ['commit', '-m', 'seed'])
+
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    const durably = createAgentDurably({ stateRoot })
+    let ui: Awaited<ReturnType<typeof startUi>> | undefined
+    try {
+      await durably.migrate()
+      // A check that never passes: the run stops as verification-failed and
+      // keeps its worktree for a person to look at.
+      const { id } = await durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        target: {
+          kind: 'repo' as const,
+          repoPath: repo,
+          baseRef: 'HEAD',
+          task: 'Change nothing that passes.',
+          spec: null,
+          dispositions: null,
+          inputFiles: { task: null, spec: null, dispositions: null },
+          issue: null,
+          checkCommand: ['sh', '-c', 'exit 1'],
+          setupCommand: null,
+          publish: false,
+        },
+        maxIterations: 1,
+        context: 'reuse',
+      })
+      await durably.init()
+      await until(
+        async () => (await durably.getRun(id))?.status === 'completed',
+        'repository run stops',
+      )
+      await durably.stop()
+      const workdir = join(stateRoot, 'runs', id, 'work')
+      const branch = `factory/${id}`
+      assert.ok(existsSync(workdir))
+
+      const port = await freePort()
+      ui = await startUi(home, port)
+      const origin = `http://127.0.0.1:${port}`
+      const token =
+        /<meta name="loop-ui-token" content="([0-9a-f]{64})" \/>/.exec(
+          (await get(port, '/')).body,
+        )?.[1]
+      assert.ok(token)
+      const detail = () => api<RunDetailResponse>(port, `/api/runs/${id}`)
+      const shown = (data: RunDetailResponse) =>
+        htmlText(
+          renderToStaticMarkup(createElement(RunScreen, { act: noAct, data })),
+        )
+      // Served once while the worktree is there: the finished report is
+      // cached from here on.
+      const first = await detail()
+      assert.equal(first.report.worktree?.present, true)
+      assert.equal(first.diagnosis.worktree?.present, true)
+      assert.ok(!shown(first).includes(DETAIL.worktreeRemoved))
+      // An unarchived stop is not pruned.
+      const none = await demo(home, ['prune', '--delete-branches'])
+      assert.equal(none.code, 0, none.stderr)
+      assert.match(none.stdout, /^0 worktree\(s\)/)
+      assert.match(none.stdout, /branches of 0 archived run\(s\)/)
+
+      const archived = await get(port, `/api/runs/${id}/archive`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin,
+          [TOKEN_HEADER]: token,
+        },
+        body: '{}',
+      })
+      assert.equal(archived.status, 200, archived.body)
+      assert.deepEqual(JSON.parse(archived.body), {
+        changed: true,
+        worktreeRemoved: true,
+        deletedBranches: [],
+        warnings: [],
+      })
+      assert.equal(existsSync(workdir), false)
+      assert.ok(existsSync(join(stateRoot, 'runs', id, 'candidates')))
+
+      // The same detail, from the cache, now says the worktree is gone and
+      // never offers its path.
+      const after = await detail()
+      assert.equal(after.report.worktree?.present, false)
+      assert.equal(after.diagnosis.worktree?.present, false)
+      assert.equal(after.diagnosis.cleanup, null)
+      const text = shown(after)
+      assert.ok(text.includes(DETAIL.worktreeRemoved))
+      assert.ok(text.includes(DETAIL.worktreeKept))
+      assert.ok(!text.includes(workdir))
+      // `status` and `report` say the same.
+      const status = await demo(home, ['status', '--run', id])
+      assert.equal(status.code, 0, status.stderr)
+      assert.equal(
+        (JSON.parse(status.stdout) as { diagnosis: Diagnosis }).diagnosis
+          .worktree?.present,
+        false,
+      )
+      const report = await demo(home, ['report', '--run', id])
+      assert.match(report.stdout, /## Worktree\n\n- removed; /)
+
+      // Branches go only with --delete-branches, and only after the dry
+      // run lists them.
+      const kept = await demo(home, ['prune', '--apply'])
+      assert.equal(kept.code, 0, kept.stderr)
+      assert.ok(await branchOf(repo, branch))
+      const dry = await demo(home, ['prune', '--delete-branches'])
+      assert.equal(dry.code, 0, dry.stderr)
+      assert.match(dry.stdout, /^0 worktree\(s\) .*, 0 bytes in total:/)
+      assert.match(dry.stdout, new RegExp(`  ${id}  ${branch}\n`))
+      assert.match(dry.stdout, /dry run: nothing was removed/)
+      assert.ok(await branchOf(repo, branch))
+      const applied = await demo(home, [
+        'prune',
+        '--delete-branches',
+        '--apply',
+      ])
+      assert.equal(applied.code, 0, applied.stderr)
+      assert.match(
+        applied.stdout,
+        new RegExp(`deleted 1 branch\\(es\\): ${branch}`),
+      )
+      assert.equal(await branchOf(repo, branch), null)
+    } finally {
+      ui?.child.kill('SIGTERM')
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+  })
+})
+
+/** The commit a local branch points at, or null. */
+async function branchOf(repo: string, branch: string): Promise<string | null> {
+  const res = await runChild(
+    'git',
+    ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`],
+    { cwd: repo, timeoutMs: 60000 },
+  )
+  return res.code === 0 ? res.stdout.trim() : null
+}

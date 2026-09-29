@@ -14,6 +14,7 @@ import { kindStatus, TONES } from '../../components/status'
 import { StatusBadge } from '../../components/StatusBadge'
 import { TaskLineage } from '../../components/TaskLineage'
 import { Ago } from '../../components/Time'
+import { WorktreeNote } from '../../components/WorktreeNote'
 import { COMMON, COPY, DESIGN, KIND_NAME, REFRESH } from '../../glossary'
 import { commandText } from '../../labels'
 import { COMMANDS, LINEAGE, NOW, TASKS } from './fixtures'
@@ -267,6 +268,30 @@ export function PathStates() {
       </State>
       <State label={DESIGN.state.noLog}>
         <CheckLogs logs={[]} />
+      </State>
+    </>
+  )
+}
+
+/** A worktree removed after its run, and one the run could not remove. */
+export function WorktreeStates() {
+  const path =
+    '/Users/me/.local/state/local-agent-loop/runs/01K6D2Q7XB3M9RKT4WSTOPPD/work'
+  return (
+    <>
+      <State label={DESIGN.state.worktreeRemoved}>
+        <WorktreeNote
+          worktree={{ path, present: false, cleanupWarning: null }}
+        />
+      </State>
+      <State label={DESIGN.state.worktreeWarning}>
+        <WorktreeNote
+          worktree={{
+            path,
+            present: true,
+            cleanupWarning: `git worktree remove --force ${path} failed with code 128: fatal: '${path}' is locked`,
+          }}
+        />
       </State>
     </>
   )

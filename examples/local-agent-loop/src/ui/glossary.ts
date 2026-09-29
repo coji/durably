@@ -579,6 +579,12 @@ export const DETAIL = {
   noNext: '人がすることはありません。',
   stopRecord: '停止の記録を見る',
   deliveredTo: '納品したブランチ',
+  worktreeRemoved: '作業ツリーは片付け済み',
+  worktreeKept:
+    'ログ、差分、仕様、チェックポイント、納品の記録は残っています。直すときは記録したコミットから新しい実行を始めます。',
+  worktreeWarning: '納品のあと、作業ツリーを片付けられませんでした',
+  worktreeWarningNote:
+    '実行は承認と納品を終えています。demo prune --apply で片付けをやり直せます。',
   retry: '再実行',
   humanCheck: '人が確認すること',
   leadTime: '所要時間',
@@ -921,6 +927,11 @@ export const DESIGN = {
       name: 'ファイルの場所',
       about: 'パスはデータとして等幅で出し、コピーボタンを添えます。',
     },
+    worktree: {
+      name: '作業ツリーの片付け',
+      about:
+        '片付けた作業ツリーのパスは出しません。残っている記録と、片付けに失敗したときの理由を出します。',
+    },
   },
   state: {
     closed: '閉じた状態',
@@ -952,6 +963,8 @@ export const DESIGN = {
     ago: '相対時刻',
     between: '工程の合間',
     path: 'コピーできるパス',
+    worktreeRemoved: '片付け済み',
+    worktreeWarning: '片付けに失敗',
     writeError: '書き込めなかったログ',
     reviewPassed: '最後の回が通過',
     reviewOpen: '最後の回で指摘が残った',

@@ -5,7 +5,10 @@
  */
 import { join } from 'node:path'
 
-/** A run's own directory: worktree, checkpoints, candidates and delivery. */
+/**
+ * A run's own directory: worktree, checkpoints, candidates and delivery.
+ * Only `removableRunPathsOf` names what may be removed from it.
+ */
 export function runRootOf(stateRoot: string, runId: string): string {
   return join(stateRoot, 'runs', runId)
 }
@@ -33,9 +36,41 @@ export function archiveMarkerOf(stateRoot: string, runId: string): string {
   return join(archiveDirOf(stateRoot), runId)
 }
 
-/** A repository run's worktree, where the agent edits and reviewers read. */
+/**
+ * A repository run's worktree, where the agent edits and reviewers read.
+ * With the review snapshots, it is all of a run's directory that is ever
+ * removed while the run is kept (ADR-0028): after an approved delivery is
+ * recorded, when a stopped run is archived, and by `demo prune --apply`.
+ * The spec, checkpoints, logs, candidate diffs and delivery stay.
+ */
 export function repoWorkdirOf(runRoot: string): string {
   return join(runRoot, 'work')
+}
+
+/**
+ * The paths of a finished repository run that may be removed, and nothing
+ * else of the run: its worktree and its review snapshots.
+ */
+export function removableRunPathsOf(runRoot: string): {
+  worktree: string
+  reviewSnapshots: string
+} {
+  return {
+    worktree: repoWorkdirOf(runRoot),
+    reviewSnapshots: reviewSnapshotsDirOf(runRoot),
+  }
+}
+
+/**
+ * Written by the run itself, once its approved delivery is recorded and
+ * right before it removes its worktree. A worker that dies before the run
+ * is marked completed replays every step, and a replay must not ask the
+ * removed worktree whether the sealed candidate is intact: while this file
+ * exists, the target skips those checks. Every step it would guard is
+ * already recorded by then.
+ */
+export function worktreeRetiredMarkerOf(runRoot: string): string {
+  return join(runRoot, 'worktree-removed')
 }
 
 /**
@@ -44,7 +79,8 @@ export function repoWorkdirOf(runRoot: string): string {
  * tree and one private working directory per reviewer. Only the worker
  * removes it: when a candidate's review round ends, before every stage that
  * is not a review, when the run fails, is cancelled or finishes, when setup
- * runs again, and at worker startup for runs that have already ended.
+ * runs again, and at worker startup for runs that have already ended. The
+ * worktree's removal takes whatever is left of it too.
  */
 export function reviewSnapshotsDirOf(runRoot: string): string {
   return join(runRoot, 'review-snapshots')

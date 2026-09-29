@@ -29,6 +29,7 @@ const diagnosis = (
   reason: '',
   next,
   cleanup: null,
+  worktree: null,
   ...(failure
     ? {
         failure: {

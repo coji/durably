@@ -318,7 +318,12 @@ describe('factory.json and input files', { timeout: 180000 }, () => {
 
     // One fixed state root; nothing in the repository, the checkout, or
     // wherever DURABLY_DB pointed.
-    assert.ok(existsSync(join(box.stateRoot, 'runs', runId, 'work')))
+    assert.ok(
+      existsSync(join(box.stateRoot, 'runs', runId, 'operation-checkpoints')),
+    )
+    // The delivered run's worktree was removed once the delivery was
+    // recorded; its branch is the way back to the work.
+    assert.equal(existsSync(join(box.stateRoot, 'runs', runId, 'work')), false)
     assert.equal(existsSync(join(box.root, 'durably-db-override.db')), false)
     assert.equal(existsSync(join(box.repo, 'runs')), false)
     assert.deepEqual(
@@ -511,8 +516,8 @@ describe('status without --run', { timeout: 180000 }, () => {
     assert.deepEqual(JSON.parse(emptyJson.stdout).tasks, [])
     assert.notEqual((await demo(box, ['status', '--format', 'yaml'])).code, 0)
 
-    // A repository run that finishes (its worktree is kept), and one whose
-    // setup fails before any worktree is recorded.
+    // A repository run that finishes, and one whose setup fails before any
+    // worktree is recorded.
     const done = await trigger(box, ['--repo', box.repo, '--task', 'fix add'])
     const noSetup = await trigger(box, [
       '--repo',
@@ -572,7 +577,19 @@ describe('status without --run', { timeout: 180000 }, () => {
         workdir = setup.target.workdir
         repoPath = setup.target.repoPath
       }
-      assert.ok(existsSync(workdir))
+      // The delivered run removed its worktree. One from before that did
+      // not: made again here, it is the leftover `status` points at.
+      assert.equal(existsSync(workdir), false)
+      const delivered = (await durably.getRun(done))?.output as {
+        delivery: { commit: string }
+      }
+      await git(repoPath, [
+        'worktree',
+        'add',
+        '--detach',
+        workdir,
+        delivered.delivery.commit,
+      ])
       // With no worker running: one queued run, one held by a live lease and
       // one whose lease has run out.
       pending = await subject()

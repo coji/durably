@@ -620,6 +620,7 @@ function report(
       squashedBranch: null,
       squashedCommit: null,
     },
+    worktree: null,
     failure: null,
     stageVisits: sv,
     realLlmCallCount: 3,

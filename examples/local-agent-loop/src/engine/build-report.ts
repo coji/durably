@@ -54,7 +54,11 @@ import {
   type RoleProfileRow,
   type TriageCalibration,
 } from './report.js'
-import type { DiagnosisKind, TaskRunInput } from './status.js'
+import {
+  worktreeStateOf,
+  type DiagnosisKind,
+  type TaskRunInput,
+} from './status.js'
 
 interface PersistedProfile {
   provider?: string
@@ -1016,6 +1020,10 @@ export async function buildReport(
         squashedCommit: recorded.squashedCommit ?? null,
       }
     : null
+  const setupTarget = (
+    steps.find((s) => s.name === 'setup' && s.status === 'completed')
+      ?.output as { target?: { kind?: string; workdir?: string } } | null
+  )?.target
   const candidates = sealedCandidates(steps)
   const candidate = lastCandidate(output, candidates)
   const reviewRounds = reviewRoundsOf(steps, candidates)
@@ -1085,6 +1093,7 @@ export async function buildReport(
       Boolean(input?.target?.checkFromSpec),
     ),
     delivery,
+    worktree: worktreeStateOf(setupTarget, run.output),
     failure,
     stageVisits: visits,
     realLlmCallCount,

@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-/** CLI: worker | trigger | repair | status | wait | waits | approve | reject | spec-revise | retrigger | archive | unarchive | report | compare | ui | seed */
+/** CLI: worker | trigger | repair | status | wait | waits | approve | reject | spec-revise | retrigger | archive | unarchive | prune | report | compare | ui | seed */
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,9 +7,11 @@ import { fileURLToPath } from 'node:url'
 import type { Run } from '@coji/durably'
 
 import {
+  applyPrune,
   archivedRunIds,
   archiveRun,
   decideRun,
+  planPrune,
   retriggerableRun,
   retriggerRun,
   reviseSpec,
@@ -81,6 +83,23 @@ async function emit(text: string, out: string | undefined): Promise<void> {
   } else {
     console.log(text)
   }
+}
+
+/** A size on disk for a person: bytes, KiB, MiB or GiB. */
+function formatBytes(bytes: number): string {
+  const units = ['bytes', 'KiB', 'MiB', 'GiB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit++
+  }
+  return unit === 0 ? `${bytes} bytes` : `${value.toFixed(1)} ${units[unit]}`
+}
+
+/** A cleanup's warnings, one line each, on stderr. */
+function printWarnings(warnings: string[]): void {
+  for (const warning of warnings) console.error(`warning: ${warning}`)
 }
 
 /** A recorded delivery with the squashed branch and commit always named. */
@@ -402,9 +421,20 @@ Commands (run from examples/local-agent-loop):
   pnpm demo retrigger --run <id> --reload-config
                                             the stored task and inputs, settings read again from
                                             the run's factory.json (once per version of the file)
-  pnpm demo archive --run <id>              take a stopped run out of the runs that need a person;
-                                            the run itself is not changed
-  pnpm demo unarchive --run <id>            put an archived run back where it was
+  pnpm demo archive --run <id> [--delete-branch]
+                                            take a stopped run out of the runs that need a person;
+                                            the run itself is not changed. A repository run's
+                                            worktree and review snapshots are removed (again, when
+                                            already archived); --delete-branch also deletes its
+                                            recorded factory branch and squashed branch
+  pnpm demo unarchive --run <id>            put an archived run back where it was; a removed
+                                            worktree is not made again
+  pnpm demo prune [--apply] [--delete-branches]
+                                            worktrees of repository runs that were approved and
+                                            delivered, or archived, with their sizes and total;
+                                            nothing is removed without --apply. --delete-branches
+                                            also lists and deletes the recorded branches of
+                                            archived runs, never of delivered ones
   pnpm demo report --run <id> [--format json|md] [--out <file>]
   pnpm demo compare --runs <id,id,...> [--format json|md] [--out <file>]
   pnpm demo compare --trend [--days 30] [--include-fake] [--format json|md] [--out <file>]
@@ -897,25 +927,85 @@ if (cmd === 'worker') {
     )
   }
   await durably.db.destroy()
-} else if (cmd === 'archive' || cmd === 'unarchive') {
+} else if (cmd === 'archive') {
+  const a = args()
+  const runId = a['run']
+  if (!runId) throw new Error('--run <id> required')
+  const durably = createAgentDurably()
+  await durably.migrate()
+  try {
+    const done = await archiveRun(durably, runId, {
+      deleteBranches: a['delete-branch'] === 'true',
+    })
+    console.log(
+      done.changed
+        ? `archived ${runId}; status and the web UI no longer list it as needing a person. Undo with ${DEMO} unarchive --run ${runId}`
+        : `${runId} is already archived; its state did not change`,
+    )
+    if (done.worktreeRemoved)
+      console.log(
+        'removed its worktree; the spec, logs, checkpoints, candidate diffs and delivery record are kept',
+      )
+    if (done.deletedBranches.length > 0)
+      console.log(`deleted branches: ${done.deletedBranches.join(', ')}`)
+    printWarnings(done.warnings)
+    if (done.warnings.length > 0)
+      console.error(`run ${DEMO} archive --run ${runId} again to retry`)
+  } finally {
+    await durably.db.destroy()
+  }
+} else if (cmd === 'unarchive') {
   const runId = args()['run']
   if (!runId) throw new Error('--run <id> required')
   const durably = createAgentDurably()
   await durably.migrate()
   try {
-    const { changed } = await (cmd === 'archive' ? archiveRun : unarchiveRun)(
-      durably,
-      runId,
-    )
+    const { changed } = await unarchiveRun(durably, runId)
     console.log(
-      cmd === 'archive'
-        ? changed
-          ? `archived ${runId}; status and the web UI no longer list it as needing a person. Undo with ${DEMO} unarchive --run ${runId}`
-          : `${runId} is already archived; nothing changed`
-        : changed
-          ? `unarchived ${runId}; it is listed where its state puts it again`
-          : `${runId} is not archived; nothing changed`,
+      changed
+        ? `unarchived ${runId}; it is listed where its state puts it again`
+        : `${runId} is not archived; nothing changed`,
     )
+  } finally {
+    await durably.db.destroy()
+  }
+} else if (cmd === 'prune') {
+  const a = args()
+  const apply = a['apply'] === 'true'
+  const deleteBranches = a['delete-branches'] === 'true'
+  const durably = createAgentDurably()
+  await durably.migrate()
+  try {
+    const plan = await planPrune(durably, { deleteBranches })
+    const out: string[] = []
+    out.push(
+      `${plan.worktrees.length} worktree(s) of delivered or archived runs, ${formatBytes(plan.totalBytes)} in total:`,
+    )
+    for (const w of plan.worktrees)
+      out.push(`  ${w.runId}  ${formatBytes(w.bytes)}  ${w.reason}  ${w.path}`)
+    if (deleteBranches) {
+      out.push(`branches of ${plan.branches.length} archived run(s):`)
+      for (const b of plan.branches)
+        out.push(`  ${b.runId}  ${b.branches.join(', ')}`)
+    }
+    if (!apply) {
+      out.push(
+        `dry run: nothing was removed. Run ${DEMO} prune --apply${deleteBranches ? ' --delete-branches' : ''} to remove ${deleteBranches ? 'them' : 'these worktrees; branches are kept'}.`,
+      )
+      console.log(out.join('\n'))
+    } else {
+      const done = await applyPrune(durably, plan)
+      out.push(
+        `removed ${done.removed.length} worktree(s), ${formatBytes(done.removed.reduce((sum, w) => sum + w.bytes, 0))}; the spec, logs, checkpoints, candidate diffs and delivery records are kept`,
+      )
+      if (deleteBranches)
+        out.push(
+          `deleted ${done.deletedBranches.length} branch(es)${done.deletedBranches.length > 0 ? `: ${done.deletedBranches.join(', ')}` : ''}`,
+        )
+      console.log(out.join('\n'))
+      printWarnings(done.warnings)
+      if (done.warnings.length > 0) process.exitCode = 1
+    }
   } finally {
     await durably.db.destroy()
   }

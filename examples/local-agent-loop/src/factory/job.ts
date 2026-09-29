@@ -716,6 +716,12 @@ const outputSchema = z.object({
   workdir: z.string(),
   fake: z.boolean(),
   delivery: deliverySchema.nullable(),
+  /**
+   * Why the worktree could not be removed after the approved delivery was
+   * recorded; null when it was removed, absent when there was none to
+   * remove. The run is approved and delivered either way.
+   */
+  worktreeCleanupWarning: z.string().nullable().optional(),
   /** Null when the run had no triage profile. */
   triage: z
     .object({

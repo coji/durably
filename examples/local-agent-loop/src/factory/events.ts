@@ -104,6 +104,7 @@ export const FactoryEventSchema = z.discriminatedUnion('type', [
       workdir: z.string(),
       fake: z.boolean(),
       delivery: deliverySchema.nullable(),
+      worktreeCleanupWarning: z.string().nullable().optional(),
     }),
   }),
 ])

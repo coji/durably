@@ -94,8 +94,10 @@ function outcome(
   conclusion: FactoryOutcome['conclusion'],
   delivery: Delivery | null,
   workdir: string,
+  worktreeCleanupWarning?: string | null,
 ): FactoryOutcome {
   return {
+    ...(worktreeCleanupWarning !== undefined ? { worktreeCleanupWarning } : {}),
     approved: conclusion === 'approved',
     conclusion,
     candidate: state.candidate,
@@ -535,6 +537,18 @@ export const finishStage: StageHandler = async ({
           signal,
         }),
       )
+  // Once the delivery is recorded, the worktree has served its purpose: a
+  // later fix starts a new run from the recorded commit and branch. Its
+  // removal is a step of its own, so a replay reads what it came to rather
+  // than removing again, and a failure is only a warning on the result.
+  // From here on the target no longer asks for the worktree (ADR-0028).
+  const retire = target.retireWorktree
+  const cleanup =
+    delivery && retire
+      ? await step.run(`${key}:worktree`, async () => ({
+          warning: await retire.call(target),
+        }))
+      : null
   return step.run(`${key}:result`, async () => ({
     type: 'factory.finished' as const,
     outcome: outcome(
@@ -542,6 +556,7 @@ export const finishStage: StageHandler = async ({
       rejected ? 'rejected' : 'approved',
       delivery,
       target.workdir,
+      cleanup ? cleanup.warning : undefined,
     ),
   }))
 }

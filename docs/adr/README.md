@@ -68,6 +68,7 @@ What we considered and why we didn't do it.
 | [0025](0025-local-agent-loop-baseline-reuse.md)                 | local-agent-loop baseline result reuse        | accepted |
 | [0026](0026-local-agent-loop-spec-stages.md)                    | local-agent-loop spec stages                  | accepted |
 | [0027](0027-local-agent-loop-web-ui-writes.md)                  | local-agent-loop web UI writes                | accepted |
+| [0028](0028-local-agent-loop-worktree-retention.md)             | local-agent-loop worktree retention           | accepted |
 
 ## Prior Art
 

@@ -7,6 +7,7 @@ import { Panel } from '../../components/Layout'
 import { LiveProgress } from '../../components/LiveProgress'
 import { LogWriteError, PathValue } from '../../components/PathValue'
 import { RunActions } from '../../components/RunActions'
+import { WorktreeNote } from '../../components/WorktreeNote'
 import { COPY, DETAIL } from '../../glossary'
 import {
   checkNamesLogs,
@@ -123,6 +124,7 @@ export function StatusPanel({
         {data.diagnosis.kind === 'running' ? (
           <LiveProgress live={data.live} />
         ) : null}
+        <WorktreeNote worktree={data.report.worktree} />
         {failure ? (
           <dl className="flex flex-col gap-2">
             <Field label={DETAIL.humanCheck}>
