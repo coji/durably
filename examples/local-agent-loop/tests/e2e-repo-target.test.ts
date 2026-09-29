@@ -3082,6 +3082,75 @@ describe('spec stages', { timeout: 240000 }, () => {
     }
   })
 
+  it('runs two command-mode spec reviewers side by side, extracting the shared base tree once', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-spec-command-'))
+    const repo = await seedSpecRepo(root)
+    const BASE_MEMORY = 'Base memory: review the spec with care.\n'
+    await writeFile(join(repo, 'AGENTS.md'), BASE_MEMORY)
+    await symlink('AGENTS.md', join(repo, 'CLAUDE.md'))
+    await git(repo, ['add', '-A'])
+    await git(repo, ['commit', '-m', 'spec review config'])
+    recording = recordFakeReviewCalls()
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger(
+        specRun(repo, {
+          autoApprove: true,
+          maxRounds: 1,
+          reviewers: [
+            {
+              name: 'alpha',
+              profile: FAKE_PROFILE,
+              invocation: {
+                command: '/spec-review {base} --effort {effort}',
+                context: 'local-instructions',
+                output: 'findings-json',
+              },
+            },
+            {
+              name: 'beta',
+              profile: FAKE_PROFILE,
+              invocation: {
+                command: '/spec-review {base} --effort {effort}',
+                context: 'local-instructions',
+                output: 'findings-json',
+              },
+            },
+          ],
+          fakeScenario: {
+            specReviews: { alpha: ['pass'], beta: ['pass'] },
+          },
+        }),
+      )
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        150000,
+        'the run completes',
+      )
+      const finished = await durably.getRun(run.id)
+      const output = finished?.output as { conclusion: string }
+      assert.equal(output.conclusion, 'approved')
+
+      // Both spec reviewers ran and answered, each in a directory of its
+      // own, and both succeeded despite starting together.
+      const specCalls = recording.calls.filter((c) => c.role === 'spec-review')
+      assert.equal(specCalls.length, 2)
+      assert.notEqual(specCalls[0]?.workdir, specCalls[1]?.workdir)
+
+      // The base tree was extracted exactly once: one `base` directory, no
+      // leftover `.partial`/`.index` an interrupted or racing extraction
+      // would leave, and both reviewers' own directories carry the base
+      // commit's CLAUDE.md, copied from that one extraction.
+      assert.equal(snapshotsLeft(join(root, 'state'), run.id), false)
+      for (const call of specCalls)
+        assert.equal(call.workdirFiles['CLAUDE.md'], BASE_MEMORY)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
   it('waits on a spec still blocked after the last round: a revise fixes and reviews once more, and an approval goes on with the spec', async () => {
     const root = await mkdtemp(join(tmpdir(), 'repo-spec-blocked-'))
     const repo = await seedSpecRepo(root)

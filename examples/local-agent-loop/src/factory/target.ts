@@ -246,16 +246,20 @@ export interface Target {
     localFile: string,
   ): Promise<string>
   /**
+   * Extract the base commit's tree for spec review, reusing what is already
+   * there. Shared by every reviewer of a round; call once before
+   * `prepareSpecReviewWorkdir`.
+   */
+  prepareSpecReviewBase?(signal: AbortSignal): Promise<string>
+  /**
    * Make one configured spec review call's own working directory, fresh:
-   * the base commit's `CLAUDE.md` and `.claude/`, extracting the base tree
-   * first when it is not there, and `localFile` as `CLAUDE.local.md`.
-   * Returns its path.
+   * the base commit's `CLAUDE.md` and `.claude/`, and `localFile` as
+   * `CLAUDE.local.md`. Call after `prepareSpecReviewBase`. Returns its path.
    */
   prepareSpecReviewWorkdir?(
     round: number,
     name: string,
     localFile: string,
-    signal: AbortSignal,
   ): Promise<string>
   /**
    * Remove every candidate's tree and review working directories, and the

@@ -350,16 +350,11 @@ export class RepoTarget implements Target {
     return cwd
   }
 
-  async prepareSpecReviewWorkdir(
-    round: number,
-    name: string,
-    localFile: string,
-    signal: AbortSignal,
-  ): Promise<string> {
+  async prepareSpecReviewBase(signal: AbortSignal): Promise<string> {
     const dir = this.config.reviewSnapshotsDir
     if (!dir)
       throw new Error(
-        `review snapshots were not set up for spec reviewer ${name}; no configured reviewer reads them`,
+        'review snapshots were not set up for spec review; no configured reviewer reads them',
       )
     const baseDir = reviewBaseTreeOf(dir)
     await extractCommit(
@@ -368,6 +363,20 @@ export class RepoTarget implements Target {
       baseDir,
       signal,
     )
+    return baseDir
+  }
+
+  async prepareSpecReviewWorkdir(
+    round: number,
+    name: string,
+    localFile: string,
+  ): Promise<string> {
+    const dir = this.config.reviewSnapshotsDir
+    if (!dir)
+      throw new Error(
+        `review snapshots were not set up for spec reviewer ${name}; no configured reviewer reads them`,
+      )
+    const baseDir = reviewBaseTreeOf(dir)
     const cwd = specReviewWorkdirOf(dir, round, name)
     // Whatever an interrupted attempt left is discarded, not trusted.
     await rm(cwd, { recursive: true, force: true })

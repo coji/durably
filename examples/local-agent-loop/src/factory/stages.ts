@@ -752,6 +752,10 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
 
   const baseCommit =
     setup.target.kind === 'repo' ? setup.target.baseCommit : null
+  // The base tree, extracted once and shared by every reviewer of every
+  // round that runs a command or local instructions: extraction is not
+  // safe to race, and the base commit never changes across the run.
+  let specBaseTree: Promise<string> | null = null
   const reviewOnce = async (
     reviewer: SpecReviewer,
     round: number,
@@ -783,10 +787,12 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
     const input = reviewInputOf(local, command, context)
     let workdir = target.workdir
     if (commandMode) {
-      if (!target.prepareSpecReviewWorkdir)
+      if (!target.prepareSpecReviewWorkdir || !target.prepareSpecReviewBase)
         throw new Error(
           `spec review (${name}): a reviewer command or local instructions need a target with review snapshots`,
         )
+      specBaseTree ??= target.prepareSpecReviewBase.call(target, signal)
+      await specBaseTree
       workdir = await target.prepareSpecReviewWorkdir(
         round,
         name,
@@ -796,7 +802,6 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
               worktree: target.workdir,
               specPath: spec.specPath,
             }),
-        signal,
       )
     }
     const settings: ReviewCallSettings | null = invocation
