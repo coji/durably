@@ -1,7 +1,8 @@
 /**
  * Why a run is where it is, and what a human does next. `demo status` and the
- * web UI both read this one function, so the two never describe the same run
- * differently or offer different commands.
+ * web UI both read this one function, so the two describe a run the same way.
+ * Only the CLI looks for a worker: it leaves out the advice to start one
+ * while one runs, which the web UI always offers.
  */
 import { existsSync } from 'node:fs'
 
@@ -78,7 +79,8 @@ export async function diagnose(
  * not know, and says what to do either way.
  */
 export interface WorkerSeen {
-  running: boolean
+  /** Null when the lock could not be read: treated as not known to run. */
+  running: boolean | null
 }
 
 /**

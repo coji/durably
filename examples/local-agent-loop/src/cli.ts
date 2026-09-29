@@ -20,7 +20,7 @@ import {
   recordedTriage,
   repairChildren,
 } from './engine/build-report.js'
-import { killOwnedChildren } from './engine/child.js'
+import { killOwnedChildren, MAX_TIMEOUT_MS } from './engine/child.js'
 import { compareReports, comparisonToMarkdown } from './engine/compare.js'
 import { classifyRun, DEMO } from './engine/failure-reasons.js'
 import {
@@ -30,6 +30,7 @@ import {
 } from './engine/report.js'
 import { diagnose, diagnosisLines, lastLeaseRenewal } from './engine/status.js'
 import { deliverySchema } from './factory/events.js'
+import { timeoutMsSchema } from './factory/job.js'
 import { repairLabels } from './factory/repair.js'
 import {
   buildTriggerInput,
@@ -84,19 +85,23 @@ function args(): Record<string, string> {
  * lock holder's own, shown only while it holds the lock.
  */
 function workerStatus() {
-  const { running, holder } = probeWorkerLock()
+  const { running, holder, unknownReason } = probeWorkerLock()
   return {
+    /** Null when the lock could not be read. */
     running,
     pid: running ? (holder?.pid ?? null) : null,
     startedAt: running ? (holder?.startedAt ?? null) : null,
-    /** The command that starts one; null while one runs. */
-    start: running ? null : `${DEMO} worker`,
+    /** The command that starts one; null unless none is known to run. */
+    start: running === false ? `${DEMO} worker` : null,
+    /** Why `running` is unknown; null otherwise. */
+    unknownReason,
   }
 }
 
 type WorkerStatus = ReturnType<typeof workerStatus>
 
 function workerLine(w: WorkerStatus): string {
+  if (w.running === null) return `worker: unknown (${w.unknownReason})`
   if (!w.running) return `worker: not running; start one with ${w.start}`
   return `worker: running (pid ${w.pid ?? 'unknown'}, started ${w.startedAt ?? 'unknown'})`
 }
@@ -105,7 +110,6 @@ function workerLine(w: WorkerStatus): string {
 const WAIT_POLL_MS = 1000
 /** How long `wait` goes on without a worker before giving up, by default. */
 const DEFAULT_WORKER_TIMEOUT_MS = 10000
-const MAX_TIMEOUT_MS = 2147483647
 
 /** A positive integer of milliseconds, or undefined when the flag is absent. */
 function timeoutFlag(
@@ -114,8 +118,8 @@ function timeoutFlag(
 ): number | undefined {
   const raw = a[name]
   if (raw === undefined) return undefined
-  const v = Number(raw)
-  if (!/^\d+$/.test(raw) || v < 1 || v > MAX_TIMEOUT_MS)
+  const v = /^\d+$/.test(raw) ? Number(raw) : Number.NaN
+  if (!timeoutMsSchema.safeParse(v).success)
     throw new Error(
       `--${name} must be an integer number of milliseconds between 1 and ${MAX_TIMEOUT_MS}`,
     )
@@ -133,6 +137,7 @@ const WAIT_EXIT = {
 } as const
 
 type WaitStop = { exit: number; reason: string }
+type StoredRun = NonNullable<Awaited<ReturnType<AgentLoopDurably['getRun']>>>
 
 /**
  * Whether the run itself has stopped: ended, or waiting on an input nobody
@@ -143,9 +148,16 @@ type WaitStop = { exit: number; reason: string }
 async function runStop(
   durably: AgentLoopDurably,
   runId: string,
-): Promise<WaitStop | null> {
+): Promise<{ run: StoredRun; stop: WaitStop | null }> {
   const run = await durably.getRun(runId)
   if (!run) throw new Error(`no run ${runId}`)
+  return { run, stop: await stopOf(durably, run) }
+}
+
+async function stopOf(
+  durably: AgentLoopDurably,
+  run: StoredRun,
+): Promise<WaitStop | null> {
   if (run.status === 'completed') {
     const output = run.output as {
       approved?: unknown
@@ -174,9 +186,7 @@ async function runStop(
   if (run.status === 'cancelled')
     return { exit: WAIT_EXIT.cancelled, reason: 'cancelled' }
   if (run.status === 'waiting' && run.waitingOnWaitId) {
-    const wait = (await durably.getWaits(runId)).find(
-      (w) => w.id === run.waitingOnWaitId,
-    )
+    const wait = await durably.getWait(run.waitingOnWaitId)
     if (wait?.status === 'pending') {
       const approval =
         typeof (wait.metadata as { candidateId?: unknown } | null)
@@ -211,18 +221,24 @@ async function waitCommand(
   const started = Date.now()
   let workerMissingSince: number | null = null
   let stop: WaitStop
+  // The run and worker the summary shows: the reads that decided the exit.
+  let run: StoredRun
+  let worker: WorkerStatus | null = null
   for (;;) {
     const seen = await runStop(durably, runId)
-    if (seen) {
+    if (seen.stop) {
       // Read once more before deciding: the stop must still hold.
       const again = await runStop(durably, runId)
-      if (again) {
-        stop = again
+      if (again.stop) {
+        run = again.run
+        stop = again.stop
         break
       }
     }
     const now = Date.now()
-    if (probeWorkerLock().running) workerMissingSince = null
+    worker = workerStatus()
+    // Only a lock seen free counts as no worker; an unreadable one does not.
+    if (worker.running !== false) workerMissingSince = null
     else workerMissingSince ??= now
     let limit: WaitStop | null = null
     if (options.timeoutMs !== undefined && now - started >= options.timeoutMs)
@@ -241,7 +257,9 @@ async function waitCommand(
       }
     if (limit) {
       // A stop the run reached meanwhile wins over giving up.
-      stop = (await runStop(durably, runId)) ?? limit
+      const last = await runStop(durably, runId)
+      run = last.run
+      stop = last.stop ?? limit
       break
     }
     const remaining =
@@ -252,10 +270,10 @@ async function waitCommand(
     await new Promise((r) => setTimeout(r, Math.min(WAIT_POLL_MS, remaining)))
   }
 
-  const run = await durably.getRun(runId)
-  if (!run) throw new Error(`no run ${runId}`)
   const now = Date.now()
-  const worker = workerStatus()
+  // Exit 6 was decided by the probe above; keep that one. Otherwise the
+  // worker did not decide the exit, so look now if nobody has yet.
+  if (stop.exit !== WAIT_EXIT.noWorker || !worker) worker = workerStatus()
   const diagnosis = await diagnose(durably, run, now, worker)
   const report = await buildReport(durably, runId)
   const again = `${DEMO} wait --run ${runId}`

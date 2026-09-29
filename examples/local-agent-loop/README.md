@@ -110,11 +110,14 @@ another worker already runs on ~/.local/state/local-agent-loop: pid 41234, start
   解放し、`kill -9` やクラッシュではOSが解放します。pidを書いた
   `worker.json` が残っていても、次のworkerはロックを取り直して上書きするので、
   古い情報だけで起動を拒むことはありません。
-- `demo wait` は1秒ごとに同じロックファイルをのぞいてworkerの有無を確かめます
-  （読み取りの瞬間だけ共有ロックを握ります）。workerの起動はこの瞬間との衝突を
-  最大2秒までリトライして乗り越えるので、`wait`を見ながらworkerを起動しても
-  失敗しません。動いているworker（排他ロックを握り続けている2つ目のworker）は
-  このリトライを超えても変わらず拒否されます。
+- `demo trigger`、`demo status`、`demo wait` は同じロックファイルをのぞいて
+  workerの有無を確かめます（`wait` は1秒ごと。読み取りの瞬間だけ共有ロックを
+  握ります）。workerの起動はこの瞬間との衝突を最大2秒までリトライして乗り越える
+  ので、`wait`を見ながらworkerを起動しても失敗しません。1つ目のworkerが排他ロック
+  を握り続けている間は、2つ目のworkerはこのリトライを超えても変わらず拒否されます。
+- ロックファイルが読めない（壊れている、権限がないなど）ときは、workerの有無を
+  「不明」（`running: null`、`worker: unknown`）と表示します。`wait` は不明を
+  「workerがいない」とは数えないので、それだけで終了コード6にはなりません。
 - 別のstate root（`HOME` が違う環境）のworker同士は互いを拒みません。
 - timeoutは `trigger` の時点でrun inputに固定されるので、workerの環境変数で
   既存runの値が変わることはありません（「trigger時点で固定されるもの」）。

@@ -131,11 +131,16 @@ export function acquireWorkerLock(
   }
 }
 
-/** Whether a worker holds a state root's lock, and who it says it is. */
+/**
+ * Whether a worker holds a state root's lock, and who it says it is.
+ * `running` is null when the lock could not be read at all.
+ */
 export interface WorkerPresence {
-  running: boolean
-  /** The holder's note; null when no worker runs or it has not written one. */
+  running: boolean | null
+  /** The holder's note; null unless a worker is known to run. */
   holder: WorkerLockHolder | null
+  /** Why `running` is null; null otherwise. */
+  unknownReason: string | null
 }
 
 /**
@@ -143,12 +148,20 @@ export interface WorkerPresence {
  * note, decides: a worker killed with `kill -9` leaves its note behind, but
  * not its lock. A read-only connection asks for a shared lock, which the
  * worker's exclusive one refuses. Nothing is created: no lock file means no
- * worker has ever started on this root.
+ * worker has ever started on this root. Any other failure to read the lock
+ * says nothing either way, so it is reported as unknown; this never throws.
  */
 export function probeWorkerLock(
   stateRoot: string = defaultStateRoot(),
 ): WorkerPresence {
   const paths = workerLockPaths(stateRoot)
+  const unknown = (error: unknown): WorkerPresence => ({
+    running: null,
+    holder: null,
+    unknownReason: `cannot read ${paths.lock}: ${error instanceof Error ? error.message : String(error)}`,
+  })
+  if (!existsSync(paths.lock))
+    return { running: false, holder: null, unknownReason: null }
   let lock: Database.Database
   try {
     lock = new Database(paths.lock, {
@@ -156,15 +169,20 @@ export function probeWorkerLock(
       fileMustExist: true,
       timeout: 0,
     })
-  } catch {
-    return { running: false, holder: null }
+  } catch (error) {
+    return unknown(error)
   }
   try {
     lock.prepare('SELECT count(*) FROM sqlite_master').get()
-    return { running: false, holder: null }
+    return { running: false, holder: null, unknownReason: null }
   } catch (error) {
-    if ((error as { code?: unknown }).code !== 'SQLITE_BUSY') throw error
-    return { running: true, holder: readHolder(paths.holder) }
+    if ((error as { code?: unknown }).code !== 'SQLITE_BUSY')
+      return unknown(error)
+    return {
+      running: true,
+      holder: readHolder(paths.holder),
+      unknownReason: null,
+    }
   } finally {
     lock.close()
   }

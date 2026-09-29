@@ -22,6 +22,7 @@ import {
   acquireWorkerLock,
   createAgentDurably,
   dbPath,
+  probeWorkerLock,
 } from '../src/durably.js'
 import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
@@ -2143,7 +2144,11 @@ describe('wait and worker state', { timeout: 300000 }, () => {
     conclusion: string | null
     stopReason: string
     next: string[]
-    worker: { running: boolean; pid: number | null; start: string | null }
+    worker: {
+      running: boolean | null
+      pid: number | null
+      start: string | null
+    }
     lastLeaseRenewedAt: string | null
     stageTimings: {
       stage: string
@@ -2170,7 +2175,11 @@ describe('wait and worker state', { timeout: 300000 }, () => {
     const res = await demo(box, ['status', '--run', runId])
     assert.equal(res.code, 0, res.stderr)
     return JSON.parse(res.stdout) as {
-      worker: { running: boolean; pid: number | null; start: string | null }
+      worker: {
+        running: boolean | null
+        pid: number | null
+        start: string | null
+      }
       lastLeaseRenewedAt: string | null
       diagnosis: { next: string[] }
     }
@@ -2326,6 +2335,60 @@ describe('wait and worker state', { timeout: 300000 }, () => {
     } finally {
       await durably.db.destroy()
     }
+  })
+
+  it('reports an unreadable lock as unknown, and neither fails nor gives up on it', async () => {
+    const box = await sandbox()
+    await mkdir(box.stateRoot, { recursive: true })
+    const lockPath = join(box.stateRoot, 'worker.lock')
+    assert.deepEqual(probeWorkerLock(box.stateRoot), {
+      running: false,
+      holder: null,
+      unknownReason: null,
+    })
+    // Not a database: the lock says nothing either way.
+    await writeFile(
+      lockPath,
+      'not a sqlite database, just some text '.repeat(8),
+    )
+    const corrupt = probeWorkerLock(box.stateRoot)
+    assert.equal(corrupt.running, null)
+    assert.match(corrupt.unknownReason ?? '', /worker\.lock/)
+    if (process.getuid?.() !== 0) {
+      await chmod(lockPath, 0o000)
+      try {
+        assert.equal(probeWorkerLock(box.stateRoot).running, null)
+      } finally {
+        await chmod(lockPath, 0o600)
+      }
+    }
+
+    // `trigger` stores the run and still prints its id.
+    const triggered = await demo(box, ['trigger', '--provider', 'fake'])
+    assert.equal(triggered.code, 0, triggered.stderr)
+    const shown = JSON.parse(triggered.stdout) as {
+      runId: string
+      worker: { running: boolean | null; start: string | null }
+    }
+    assert.ok(shown.runId)
+    assert.equal(shown.worker.running, null)
+    assert.equal(shown.worker.start, null)
+    const runId = shown.runId
+    const list = await demo(box, ['status'])
+    assert.equal(list.code, 0, list.stderr)
+    assert.match(list.stdout, /worker: unknown \(cannot read /)
+    const one = await statusJson(box, runId)
+    assert.equal(one.worker.running, null)
+
+    // Unknown is not absent: only --timeout ends the wait.
+    const held = await waitJson(box, runId, [
+      '--worker-timeout',
+      '1',
+      '--timeout',
+      '2500',
+    ])
+    assert.equal(held.code, 5)
+    assert.equal(held.out.worker.running, null)
   })
 
   it('follows runs a worker in another process moves, until they end or wait on a person', async () => {
