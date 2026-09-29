@@ -3410,6 +3410,37 @@ describe('spec stages', { timeout: 240000 }, () => {
     }
   })
 
+  it('reports no spec for a legacy --spec-file run with no spec stages and no checkFromSpec', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-spec-legacy-'))
+    const repo = await seedSpecRepo(root)
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const supplied = '# Spec\n\n## Acceptance criteria\n- add is exact\n'
+      const run = await durably.jobs.agentLoop.trigger(
+        specRun(repo, { stages: false, spec: supplied, checkFromSpec: null }),
+      )
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        150000,
+        'the run completes',
+      )
+      const order = await firstSteps(durably, run.id)
+      assert.ok(!order.includes('spec-check'))
+      assert.ok(!order.includes('spec:final'))
+      const report = await buildReport(durably, run.id)
+      assert.equal(report.spec, null)
+      const markdown = reportToMarkdown(report)
+      assert.match(
+        markdown,
+        /none \(no spec stages and no checkFromSpec, or not reached\)/,
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
   it('carries a findings-json blocker’s title and body to the next spec-fix prompt, in the normal flow and after a spec-revise', async () => {
     const root = await mkdtemp(join(tmpdir(), 'repo-spec-findings-carry-'))
     const repo = await seedSpecRepo(root)

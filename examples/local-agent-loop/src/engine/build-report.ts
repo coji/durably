@@ -65,6 +65,7 @@ interface PersistedInput {
   target?: {
     task?: string
     spec?: string | null
+    checkFromSpec?: string[] | null
     dispositions?: string | null
     inputFiles?: Record<string, { path?: string } | null>
   }
@@ -429,11 +430,15 @@ function specRoundsOf(steps: StoredStep[]): ReportReviewRound[] {
 /**
  * The confirmed spec and the check chosen from it; see `ReportSpec`. A run
  * given its spec at trigger (`--spec-file`) has no `spec:final` step, so
- * the spec it went on with is the one in its input.
+ * the spec it went on with is the one in its input. A `--spec-file` run
+ * without spec stages and without `checkFromSpec` has no spec section at
+ * all: its input spec is a check baseline detail, not a spec this run
+ * reasoned about, so it reports `null` as a legacy run would.
  */
 function specOf(
   steps: StoredStep[],
   inputSpec: string | null | undefined,
+  hasCheckFromSpec: boolean,
 ): ReportSpec | null {
   const done = (name: string) =>
     steps.find((s) => s.name === name && s.status === 'completed')?.output
@@ -454,8 +459,16 @@ function specOf(
   const suppliedSpec =
     typeof inputSpec === 'string' && inputSpec.length > 0 ? inputSpec : null
   // A `--spec-file` run reports its input spec whatever state spec-check is
-  // in, including when it has not completed (or failed) yet.
-  if (!final && !check && !started && suppliedSpec === null) return null
+  // in, including when it has not completed (or failed) yet, but only when
+  // `checkFromSpec` is configured; otherwise the input spec is not one this
+  // run reasoned about, so it reports null like a legacy run.
+  if (
+    !final &&
+    !check &&
+    !started &&
+    (suppliedSpec === null || !hasCheckFromSpec)
+  )
+    return null
   const advice = Array.isArray(final?.advice)
     ? final.advice.flatMap((f) => {
         const finding = asFinding(f)
@@ -1024,7 +1037,11 @@ export async function buildReport(
     reviews: lastReviews(run.output, waits, reviewRounds),
     reviewRounds,
     specRounds: specRoundsOf(steps),
-    spec: specOf(steps, input?.target?.spec),
+    spec: specOf(
+      steps,
+      input?.target?.spec,
+      Boolean(input?.target?.checkFromSpec),
+    ),
     delivery,
     failure,
     stageVisits: visits,

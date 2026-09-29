@@ -678,6 +678,33 @@ export async function removeBesideSpec(specPath: string): Promise<string[]> {
 }
 
 /**
+ * Sweeps spec-directory siblings after a writer call, without ever letting
+ * a cleanup failure replace or hide the call's own error. Pass the call's
+ * error when the call failed: cleanup still runs, but its own failure is
+ * swallowed and `callError` is rethrown unchanged. Pass `undefined` when
+ * the call succeeded: a cleanup failure is reported as `cleanupWarning`
+ * instead of thrown, since a call that already succeeded must not fail the
+ * step over cleanup.
+ */
+export async function cleanupSpecWriteSiblings(
+  specPath: string,
+  callError?: unknown,
+): Promise<{ removed: string[]; cleanupWarning: string | null }> {
+  if (callError !== undefined) {
+    await removeBesideSpec(specPath).catch(() => {})
+    throw callError
+  }
+  try {
+    return { removed: await removeBesideSpec(specPath), cleanupWarning: null }
+  } catch (cleanupError) {
+    return {
+      removed: [],
+      cleanupWarning: `failed to remove files beside ${basename(specPath)}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+    }
+  }
+}
+
+/**
  * Fails the step when the spec file a writer left is not a regular file —
  * for example a symlink, which later reads and writes would follow. The
  * entry is removed first, so nothing else in the run can point through it.
@@ -758,10 +785,10 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
         // whatever the call wrote, and a completed checkpoint is read back.
         const { started } = checkpointPaths(setup.checkpointsDir, operationKey)
         if (!existsSync(started)) await put(start)
-        // Swept in `finally` so a writer that errors or times out also
-        // leaves nothing beside the spec file; the sweep itself must not
-        // hide a call failure.
-        let removed: string[] = []
+        // Swept whether the call succeeds or fails, so a writer that errors
+        // or times out also leaves nothing beside the spec file; see
+        // `cleanupSpecWriteSiblings` for how a sweep failure is handled on
+        // each path.
         try {
           await runAgentCall(signal, attempt, {
             provider: args.providers[role],
@@ -789,9 +816,16 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
             session: null,
             configVersion: setup.configVersion,
           })
-        } finally {
-          removed = await removeBesideSpec(spec.specPath)
+        } catch (callError) {
+          // A sibling-cleanup failure on this path must never replace the
+          // call's own error; `cleanupSpecWriteSiblings` rethrows it.
+          await cleanupSpecWriteSiblings(spec.specPath, callError)
         }
+        // The call succeeded: a cleanup failure must not fail this step, so
+        // it is recorded as a warning in the step output instead of thrown.
+        const { removed, cleanupWarning } = await cleanupSpecWriteSiblings(
+          spec.specPath,
+        )
         await assertSpecIsRegularFile(spec.specPath)
         const content = await readFile(spec.specPath, 'utf8')
         if (content.trim().length === 0)
@@ -807,6 +841,7 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
                 warning: `the spec ${role} left ${removed.join(', ')} beside ${basename(spec.specPath)}; removed`,
               }
             : {}),
+          ...(cleanupWarning ? { cleanupWarning } : {}),
         }
       },
       {
