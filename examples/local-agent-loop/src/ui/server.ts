@@ -7,8 +7,9 @@
  * - Opens the fixed state root's existing database read-only, lazily: until a
  *   worker or `trigger` creates it, every view is empty and nothing is
  *   created. `migrate()` and `init()` are never called.
- * - Every number comes from `buildReport` / `compareReports` and every reason
- *   and command from `diagnose`, the same code the CLI prints from. The API
+ * - Every number comes from `buildReport` / `compareReports` / `trendOf`,
+ *   every reason and command from `diagnose`, and the task list from
+ *   `groupTasks`: the same code the CLI prints from. The API
  *   has no endpoint that runs a command or changes a run.
  */
 import {
@@ -36,11 +37,24 @@ import {
   buildReport,
   repairChildren,
   repairChildrenByParent,
+  repairParentId,
   reusedBaselineOf,
+  taskRunInput,
   type ReportSource,
 } from '../engine/build-report.js'
-import { compareReports, type Comparison } from '../engine/compare.js'
-import { classifyRun } from '../engine/failure-reasons.js'
+import {
+  compareReports,
+  inTrendWindow,
+  trendOf,
+  type Comparison,
+  type Trend,
+} from '../engine/compare.js'
+import {
+  checkLogFiles,
+  classifyRun,
+  type CheckLogFile,
+} from '../engine/failure-reasons.js'
+import { formatCount } from '../engine/format.js'
 import type { VerificationLog } from '../engine/providers/types.js'
 import {
   liveElapsed,
@@ -53,15 +67,18 @@ import {
   type ReportReview,
   type ReportReviewRound,
   type ReportSealedCandidate,
-  type ReportTriage,
   type UsageTotals,
   type WaitRow,
 } from '../engine/report.js'
 import {
   diagnoseRun,
+  groupTasks,
   needsHuman,
+  taskRunIds,
   type Diagnosis,
   type DiagnosisKind,
+  type Task,
+  type TaskRun,
 } from '../engine/status.js'
 import { TERMINAL_STATUSES } from '../engine/terminal.js'
 import { BASELINE_STEP } from '../factory/types.js'
@@ -78,12 +95,13 @@ export interface RunRef {
 }
 
 /**
- * The run this one repairs from outside findings, and the repair runs
- * started from this one, oldest first.
+ * One run of the task a detail page's run belongs to, with what its link
+ * shows: its place in the task, its state, and when it started.
  */
-export interface Relations {
-  parent: RunRef | null
-  children: RunRef[]
+export interface LineageRun extends TaskRun {
+  status: string
+  conclusion: string | null
+  createdAt: string
 }
 
 /** One row of the run list. */
@@ -100,16 +118,11 @@ export interface RunRow {
   needsHuman: boolean
   /** Provisional, as of the response's `now`; null for a finished run. */
   live: LiveElapsed | null
-  /** Times the code stage was entered (first implementation + repairs). */
-  iterations: number
-  reviewRounds: number
   conclusion: string | null
   /** The report's settled lead time; null while the run is open. */
   leadTimeMs: number | null
   costUsd: number | null
-  triage: ReportTriage['judgment'] | null
   pipeline: Pipeline
-  relations: Relations
 }
 
 export interface RunsResponse {
@@ -119,6 +132,11 @@ export interface RunsResponse {
   now: string
   /** Newest first. */
   runs: RunRow[]
+  /**
+   * The runs as tasks, in the order the list shows them, from `groupTasks`:
+   * what `demo status --format json` prints as its `tasks`.
+   */
+  tasks: Task[]
 }
 
 export interface RunDetailResponse {
@@ -131,7 +149,16 @@ export interface RunDetailResponse {
   needsHuman: boolean
   live: LiveElapsed | null
   pipeline: Pipeline
-  relations: Relations
+  /**
+   * Every run of this run's task, oldest first, this run among them; empty
+   * when it has no parent or repairs.
+   */
+  lineage: LineageRun[]
+  /**
+   * The check logs a stop's details name, each looked up on disk; empty
+   * when the stop names none.
+   */
+  checkLogs: CheckLogFile[]
   /**
    * The run whose passing baseline check this run reused, named as other
    * run links are; null when the baseline check ran here or has not
@@ -143,6 +170,12 @@ export interface RunDetailResponse {
   /** Exactly what `report --run <id> --format json` prints. */
   report: LoopReport
 }
+
+/**
+ * Finished runs of the last 30 days by week and code model and effort, fake
+ * runs left out: what `compare --trend --format json` prints.
+ */
+export type TrendResponse = Trend
 
 export interface CompareResponse {
   /** Finished runs, newest first, in the order given to `compareReports`. */
@@ -189,10 +222,12 @@ export function runName(input: unknown): string {
 /**
  * Where a stage stands in a run: `running` / `waiting` / `current` is the
  * stage the run is at now (a worker on it, a person to decide, or neither);
- * `stopped` is where a run that did not finish ended.
+ * `stopped` is where a run that did not finish ended; `auto` is an approval
+ * the run's settings gave without a wait, on a run that went on to finish.
  */
 export type PipelineState =
   | 'done'
+  | 'auto'
   | 'running'
   | 'waiting'
   | 'current'
@@ -365,23 +400,34 @@ export function derivePipeline(input: PipelineInput): Pipeline {
           ? 'waiting'
           : 'current'
   }
+  // Only an auto-approving run reaches finish without an approval wait; a
+  // rejection needs the wait too.
+  const autoApproved =
+    (counts.get('finish') ?? 0) > 0 && (counts.get('approve') ?? 0) === 0
   const stages = order.map((stage) => {
     const count = counts.get(stage) ?? 0
     const state: PipelineState =
-      stage === at ? atState : count > 0 ? 'done' : 'not-reached'
+      stage === at
+        ? atState
+        : count > 0
+          ? 'done'
+          : stage === 'approve' && autoApproved
+            ? 'auto'
+            : 'not-reached'
     return { stage, state, count }
   })
 
   const parts = stages
     .filter((s) => s.count > 1)
-    .map((s) => PIPELINE_WORDS.visits(stageName(s.stage), s.count))
-  // Stages the run passed by, such as approval on an auto-approved run.
+    .map((s) => PIPELINE_WORDS.visits(stageName(s.stage), formatCount(s.count)))
+  // Stages the run passed by without entering them.
   const reached = stages.map((s) => s.state !== 'not-reached').lastIndexOf(true)
   const skipped = stages
     .slice(0, reached)
     .filter((s) => s.state === 'not-reached')
     .map((s) => stageName(s.stage))
   if (skipped.length > 0) parts.push(PIPELINE_WORDS.skipped(skipped))
+  if (autoApproved) parts.push(PIPELINE_WORDS.autoApproved)
   const name = at === null ? '' : stageName(at)
   if (at === null) parts.push(PIPELINE_WORDS.finished)
   else if (atState === 'stopped') parts.push(PIPELINE_WORDS.stoppedAt(name))
@@ -1155,18 +1201,6 @@ async function runRef(
   return { id, name: run ? runName(run.input) : fallback }
 }
 
-/** Name the report's parent and children, from their stored inputs. */
-async function relationsOf(
-  src: ReportSource,
-  lineage: LoopReport['lineage'] | undefined,
-): Promise<Relations> {
-  const ref = (id: string) => runRef(src, id, RUN_NAME.missing)
-  return {
-    parent: lineage?.parent ? await ref(lineage.parent.runId) : null,
-    children: await Promise.all((lineage?.children ?? []).map(ref)),
-  }
-}
-
 /**
  * The run whose passing baseline check this run reused, named the same way
  * as repair lineage links. Falls back to a generic label only when that
@@ -1209,7 +1243,6 @@ async function inspect(
       live,
       report,
     }),
-    relations: await relationsOf(src, report.lineage),
     report,
   }
 }
@@ -1222,12 +1255,9 @@ function runRow(
     id: run.id,
     status: run.status,
     ...seen,
-    iterations: report.stageVisits.find((v) => v.stage === 'code')?.visits ?? 0,
-    reviewRounds: report.summary.reviewRounds,
     conclusion: report.summary.conclusion,
     leadTimeMs: report.summary.leadTimeMs,
     costUsd: report.summary.costUsd,
-    triage: report.triage?.judgment ?? null,
   }
 }
 
@@ -1256,7 +1286,7 @@ function createUiApi() {
       now: new Date(now).toISOString(),
     }
     const db = source()
-    if (!db) return { ...base, exists: false, runs: [] }
+    if (!db) return { ...base, exists: false, runs: [], tasks: [] }
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
     const src = readOnce(db, all)
@@ -1266,7 +1296,12 @@ function createUiApi() {
         runRow(run, await inspect(src, run, now, report, fresh)),
       ),
     )
-    return { ...base, exists: true, runs: rows }
+    const tasks = groupTasks(
+      built.map(({ run, report }, i) =>
+        taskRunInput(run, rows[i]?.diagnosis.kind ?? 'finished', report),
+      ),
+    )
+    return { ...base, exists: true, runs: rows, tasks }
   }
 
   async function run(id: string): Promise<RunDetailResponse> {
@@ -1276,10 +1311,11 @@ function createUiApi() {
     if (!db || !found) throw new HttpError(404, `no run ${id}`)
     const src = readOnce(db, [found])
     const { report, fresh } = await reports.get(src, found)
-    const [seen, steps, baselineSource] = await Promise.all([
+    const [seen, steps, baselineSource, lineage] = await Promise.all([
       inspect(src, found, now, report, fresh),
       src.storage.getSteps(id),
       baselineSourceOf(src, report.baseline),
+      lineageOf(db, found, now),
     ])
     const stepOutputs: Record<string, unknown> = {}
     for (const s of steps)
@@ -1287,6 +1323,8 @@ function createUiApi() {
     return {
       now: new Date(now).toISOString(),
       ...seen,
+      lineage,
+      checkLogs: checkLogFiles(seen.diagnosis.failure?.details ?? []),
       baselineSource,
       trace: deriveTrace({
         run: found,
@@ -1305,6 +1343,62 @@ function createUiApi() {
     }
   }
 
+  /**
+   * The task `run` belongs to, from every run of the job: each member
+   * diagnosed and grouped as the list groups it, so both number the
+   * repairs and mark a replaced run the same way.
+   */
+  async function lineageOf(
+    db: AgentLoopDurably,
+    run: Run,
+    now: number,
+  ): Promise<LineageRun[]> {
+    const all = await orEmpty(allRuns(db), [run])
+    const ids = new Set(
+      taskRunIds(
+        all.map((r) => ({ id: r.id, parentId: repairParentId(r) })),
+        run.id,
+      ),
+    )
+    const members = all.filter((r) => ids.has(r.id))
+    if (members.length <= 1) return []
+    const src = readOnce(db, members)
+    const children = repairChildrenByParent(all)
+    const read = await Promise.all(
+      members.map(async (m) => {
+        const { report, fresh } = await reports.get(
+          src,
+          m,
+          children.get(m.id) ?? [],
+        )
+        const { diagnosis } = await diagnoseRun(
+          src,
+          m,
+          now,
+          fresh ? { failure: report.failure } : undefined,
+        )
+        return { run: m, report, kind: diagnosis.kind }
+      }),
+    )
+    const [task] = groupTasks(
+      read.map(({ run: m, report, kind }) => taskRunInput(m, kind, report)),
+    )
+    const byId = new Map(read.map((x) => [x.run.id, x]))
+    return (task?.runs ?? []).flatMap((r) => {
+      const hit = byId.get(r.id)
+      return hit
+        ? [
+            {
+              ...r,
+              status: hit.run.status,
+              conclusion: hit.report.summary.conclusion,
+              createdAt: hit.run.createdAt,
+            },
+          ]
+        : []
+    })
+  }
+
   async function compare(): Promise<CompareResponse> {
     const db = source()
     if (!db) return { runIds: [], comparison: { groups: [] } }
@@ -1321,9 +1415,28 @@ function createUiApi() {
     }
   }
 
+  async function trend(): Promise<TrendResponse> {
+    const now = Date.now()
+    const db = source()
+    if (!db) return trendOf([], { now })
+    const all = await orEmpty(allRuns(db), [])
+    reports.keep(all)
+    // Only the window's runs get a report, never the whole history.
+    const done = all.filter((r) => inTrendWindow(r, { now }))
+    const built = await listedReports(reports, readOnce(db, done), done, all)
+    return trendOf(
+      built.map(({ run, report }) => ({
+        report,
+        completedAt: run.completedAt,
+      })),
+      { now },
+    )
+  }
+
   async function handle(pathname: string): Promise<unknown> {
     if (pathname === '/api/runs') return runs()
     if (pathname === '/api/compare') return compare()
+    if (pathname === '/api/trend') return trend()
     const match = /^\/api\/runs\/([^/]+)$/.exec(pathname)
     if (match?.[1]) return run(decodeURIComponent(match[1]))
     throw new HttpError(404, `no such endpoint: ${pathname}`)

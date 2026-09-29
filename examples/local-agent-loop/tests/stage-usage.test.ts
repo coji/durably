@@ -26,6 +26,7 @@ import {
   summarizeRun,
   type AttemptRow,
   type LoopReport,
+  reviewHighlights,
 } from '../src/engine/report.js'
 import { writeMeasurement } from '../src/engine/runner.js'
 import type { TokenUsage } from '../src/engine/usage.js'
@@ -607,6 +608,7 @@ function report(
     repairCalls: [],
     reviews: [],
     reviewRounds: [],
+    reviewHighlights: reviewHighlights([], [], []),
     specRounds: [],
     spec: null,
     delivery: {
@@ -629,6 +631,7 @@ function report(
       { stage: 'review', elapsedMs: 2000, wallElapsedMs: 1000, complete: true },
     ],
     stageTotalMs: 3000,
+    specWallMs: null,
     runElapsedMs,
     versions: {},
     priceBasis: PRICE_BASIS,

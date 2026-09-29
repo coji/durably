@@ -34,8 +34,6 @@ import {
   TRIAGE_NAME,
 } from './glossary.js'
 
-export { RELATION_NAME } from './glossary.js'
-
 export function stageName(stage: string): string {
   return STAGE_NAME[stage] ?? stage
 }
@@ -109,8 +107,8 @@ export function reviewDecision(decision: string): {
 
 /**
  * The command itself, without the CLI's English `  # …` comment. The page
- * explains each command in Japanese on its button, in the note under the
- * buttons, and in the reason text.
+ * explains each command in Japanese on its button, in the button's tooltip,
+ * and in the reason text.
  */
 export function commandText(line: string): string {
   return splitCommand(line).command
@@ -125,7 +123,7 @@ function splitCommand(line: string): { command: string; note: string | null } {
 }
 
 /**
- * Notes the page does not repeat under the buttons, because the reason text
+ * Notes the page does not repeat on the buttons, because the reason text
  * above them already says the same thing: the lease-expired run's notes.
  */
 const SAID_BY_REASON = [
@@ -165,6 +163,18 @@ export function humanCheckText(
   if (kind === 'rejected-invocation' && failure?.reload === 'none')
     return CHECK_TEXT.rejectedWithoutConfig
   return FAILURE_TEXT[kind].check
+}
+
+/**
+ * Whether the check text for this stop points at the check's log files
+ * below it, so the page shows them right there.
+ */
+export function checkNamesLogs(
+  kind: FailureKind,
+  failure?: { setupUntracked?: boolean },
+): boolean {
+  if (kind === 'verification-failed') return true
+  return kind === 'baseline-check-failed' && !failure?.setupUntracked
 }
 
 /** Shown for an exit code the check never returned. */

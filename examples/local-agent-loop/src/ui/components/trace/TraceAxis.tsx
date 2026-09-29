@@ -1,7 +1,10 @@
 import { formatTick } from '../../../engine/format'
 import { TRACE } from '../../glossary'
 
-/** The sticky header: the two column names and the time axis's ticks. */
+/**
+ * The sticky header: the two column names and the time axis's ticks. In a
+ * narrow box every other tick loses its label, so labels never touch.
+ */
 export function TraceAxisHeader({
   marks,
   axisMs,
@@ -19,10 +22,10 @@ export function TraceAxisHeader({
       <span className="px-2">{TRACE.stage}</span>
       <span className="px-2 text-right">{TRACE.duration}</span>
       <span className="relative h-full tabular-nums">
-        {marks.map((m) => (
+        {marks.map((m, i) => (
           <span
             key={m}
-            className="absolute top-1/2 -translate-y-1/2 whitespace-nowrap"
+            className={`absolute top-1/2 -translate-y-1/2 whitespace-nowrap ${i % 2 === 1 ? 'trace-tick-minor' : ''}`}
             style={{
               left: pctOf(m),
               // The first label starts at 0; one near the edge ends there.

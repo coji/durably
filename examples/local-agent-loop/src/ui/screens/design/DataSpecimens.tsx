@@ -18,7 +18,7 @@ import { RunLink } from '../../components/RunLink'
 import { StageTrack } from '../../components/StageTrack'
 import { conclusionStatus, kindStatus } from '../../components/status'
 import { StatusBadge } from '../../components/StatusBadge'
-import { TaskList, TaskRow } from '../../components/TaskRow'
+import { TaskList, TaskRow, TaskTotal } from '../../components/TaskRow'
 import { TraceView } from '../../components/trace/TraceView'
 import {
   COLUMN,
@@ -27,9 +27,10 @@ import {
   DETAIL,
   DIAGNOSIS_TEXT,
   KIND_NAME,
+  LIST,
   TRACE,
 } from '../../glossary'
-import { NOW, PIPELINES, TASKS, USAGE } from './fixtures'
+import { MULTI_RUN, NOW, PIPELINES, TASKS, USAGE } from './fixtures'
 import { State } from './Specimen'
 import { TOTALS, TRACES } from './trace-fixtures'
 
@@ -75,8 +76,10 @@ export function TaskRowStates() {
           <TaskRow
             status={first.status}
             name={first.task.name}
+            href="#/design"
             id={first.task.id}
             meta={<span>{ago(first.minutes)}</span>}
+            toggleLabel={first.task.name}
             defaultOpen
           >
             <StageTrack pipeline={first.pipeline} />
@@ -91,7 +94,9 @@ export function TaskRowStates() {
               key={r.task.id}
               status={r.status}
               name={r.task.name}
+              href="#/design"
               id={r.task.id}
+              toggleLabel={r.task.name}
               meta={
                 <>
                   <span className="font-code">
@@ -102,6 +107,29 @@ export function TaskRowStates() {
               }
             >
               <StageTrack pipeline={r.pipeline} />
+            </TaskRow>
+          ))}
+        </TaskList>
+      </State>
+      <State label={DESIGN.state.total}>
+        <TaskList>
+          {MULTI_RUN.map((r) => (
+            <TaskRow
+              key={r.task.id}
+              status={r.status}
+              name={r.task.name}
+              href="#/design"
+              id={r.task.id}
+              toggleLabel={r.task.name}
+              meta={
+                <>
+                  <span>{LIST.runs(r.runs)}</span>
+                  <TaskTotal total={r.total} several />
+                  <span>{ago(r.minutes)}</span>
+                </>
+              }
+            >
+              <StageTrack pipeline={PIPELINES[r.pipeline]} />
             </TaskRow>
           ))}
         </TaskList>
@@ -126,6 +154,9 @@ export function StageTrackStates() {
           <StageTrack pipeline={PIPELINES[key]} />
         </State>
       ))}
+      <State label={DESIGN.state.autoApproved}>
+        <StageTrack pipeline={PIPELINES.autoApproved} />
+      </State>
     </>
   )
 }

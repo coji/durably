@@ -10,7 +10,7 @@
 import type { DETAIL_PREFIX } from '../engine/failure-details.js'
 import type { FailureKind } from '../engine/failure-reasons.js'
 import { UNKNOWN } from '../engine/format.js'
-import type { TriageCalibration } from '../engine/report.js'
+import type { CALIBRATION_KEYS as ENGINE_CALIBRATION_KEYS } from '../engine/report.js'
 import type { DiagnosisKind } from '../engine/status.js'
 import type { PipelineState, TraceCheckpoint, TraceState } from './server.js'
 
@@ -19,15 +19,15 @@ import type { PipelineState, TraceCheckpoint, TraceState } from './server.js'
 export const COMMON = {
   unknown: UNKNOWN,
   none: 'なし',
-  notYet: 'まだない',
   defaultSetting: '既定',
   partial: '一部',
   partialUsage: '使用量が分かった呼び出しだけの合計',
   partialTiming: '一部の区間だけを計測した値',
   separator: ' · ',
-  listSeparator: '：',
   started: '開始',
   count: (n: number | string) => `${n}件`,
+  /** A cell whose value does not apply to its row, such as a count only one kind has. */
+  notApplicable: '–',
   nth: (n: number | string) => `${n}回目`,
   costNote:
     '費用は記録したトークン数を API 料金で換算した参考値で、実際の請求額ではありません',
@@ -72,12 +72,6 @@ export const RUN_KIND_NAME: Record<string, string> = {
   normal: '通常の実行',
   repair: '外部の指摘からの修正',
 }
-
-/** The two sides of a link between repair runs. */
-export const RELATION_NAME = {
-  parent: '修正元',
-  children: '指摘からの修正',
-} as const
 
 export const TRIAGE_NAME: Record<string, string> = {
   routine: '定型',
@@ -130,7 +124,7 @@ export const KIND_NAME: Record<DiagnosisKind, string> = {
 
 /** A finished run's conclusion as a state name. */
 export const CONCLUSION_NAME: Record<string, string> = {
-  approved: '承認',
+  approved: '承認済み',
   rejected: '却下',
   'verification-failed': '検証失敗',
   'review-cap-reached': 'レビュー上限',
@@ -140,6 +134,7 @@ export const CONCLUSION_NAME: Record<string, string> = {
 
 /** Words beside a stage in the stage track, so no state rests on color. */
 export const PIPELINE_SUFFIX: Partial<Record<PipelineState, string>> = {
+  auto: '自動',
   running: '実行中',
   waiting: '人待ち',
   stopped: '停止',
@@ -172,8 +167,9 @@ export const CHECKPOINT_NAME: Record<TraceCheckpoint, string> = {
 
 /** The server's one-sentence pipeline summary, for screen readers. */
 export const PIPELINE_WORDS = {
-  visits: (stage: string, n: number) => `${stage} ${n}回`,
+  visits: (stage: string, n: string) => `${stage} ${n}回`,
   skipped: (stages: string[]) => `${stages.join('と')}は通らず`,
+  autoApproved: '承認は設定による自動',
   finished: '完了まで終わった',
   stoppedAt: (stage: string) => `${stage}で停止`,
   runningAt: (stage: string) => `いまは${stage}を実行中`,
@@ -195,7 +191,6 @@ export const TRACE_WORDS = {
 export const RUN_NAME = {
   subject: '同梱題材: calc の add を直す',
   unnamed: '名前のないタスク',
-  missing: '見つからない実行',
   previous: '前の実行',
 } as const
 
@@ -358,8 +353,9 @@ export const DETAIL_TEXT = {
 
 /**
  * The CLI's English note on a next command, in Japanese. The page shows it
- * under the buttons, so guidance such as "read the reviews first" is not
- * lost when the note is stripped from the command. Unknown notes are dropped.
+ * as the button's tooltip, so guidance such as "read the reviews first" is
+ * not lost when the note is stripped from the command. Unknown notes are
+ * dropped.
  */
 export const COMMAND_NOTES: [string, string][] = [
   [
@@ -444,6 +440,7 @@ export const COPY = {
   stdoutPath: '標準出力のパスをコピー',
   stderrPath: '標準エラーのパスをコピー',
   squashedBranch: 'まとめたブランチ名をコピー',
+  branch: 'ブランチ名をコピー',
   cleanupNote:
     '作業ツリーを片付けるコマンドです。ブランチは残ります。変更が残っている作業ツリーは git が削除を拒否します。',
 } as const
@@ -463,11 +460,10 @@ export const SHELL = {
   product: 'local-agent-loop',
   skipToContent: '本文へ移動',
   nav: '画面',
-  runs: '実行一覧',
+  runs: 'タスク一覧',
   compare: '集計',
-  back: '← 実行一覧',
+  back: '← タスク一覧',
   runFallback: '実行の詳細',
-  design: '部品の見本',
 } as const
 
 export const REFRESH = {
@@ -483,31 +479,38 @@ export const REFRESH = {
 // ---------------------------------------------------------------- run list
 
 export const LIST = {
-  human: '人の手が要る実行',
-  humanEmpty: '承認待ちや停止した実行はありません。',
-  open: '動いている実行',
-  openEmpty: '動いている実行も、順番を待つ実行もありません。',
-  finished: '終わった実行',
-  finishedEmpty: '終わった実行はまだありません。',
+  attention: '人の手が要るもの',
+  attentionEmpty: '人の手が要るものはありません',
+  active: '動いているもの',
+  activeEmpty: '動いている実行も、順番を待つ実行もありません。',
+  done: '終わったタスク',
+  doneEmpty: '終わったタスクはまだありません。',
   noDbBefore:
     'データベースがまだありません。ワーカーを起動するか実行を登録すると',
   noDbAfter: 'に作られ、次の更新で表示されます。',
-  iteration: (n: number) => `実装 ${n} 回目`,
-  reviewRounds: (n: number) => `レビュー ${n} 回`,
   retry: '再実行: ',
   currentStage: (stage: string) => `いまの工程: ${stage}`,
   betweenStages: 'いまの工程: 工程の合間',
   stageElapsed: (d: string) => `この工程 ${d} 経過`,
   runElapsed: (d: string) => `全体 ${d} 経過`,
+  runs: (n: string) => `実行 ${n} 件`,
+  firstRun: '最初の実行',
+  repairRun: (n: number) => `指摘からの修正 ${n}`,
+  superseded: '後の修正で解決',
+  supersededTitle:
+    '同じ修正元から後に始めた修正が承認されたので、この実行は判断が要りません',
+  showRuns: (name: string) => `${name}の実行を表示`,
+  total: '合計',
+  totalTitle:
+    'タスクのすべての実行の所要時間と費用を足した値です。どれかの実行の値が分からないときは不明です。',
+  lineage: '同じタスクの実行',
+  current: '表示中',
 } as const
 
 export const COLUMN = {
   task: 'タスク',
   result: '結果',
-  leadTime: '所要時間',
   cost: '費用',
-  triage: '見立て',
-  started: '開始',
   stage: '工程',
   role: '役割',
   roleProfile: 'プロバイダー / 指定モデル / 指定推論量',
@@ -517,7 +520,6 @@ export const COLUMN = {
   cacheWrite: 'キャッシュ書き',
   output: '出力',
   totalTokens: '合計トークン',
-  time: '時間',
   metric: '指標',
   median: '中央値',
   min: '最小',
@@ -530,11 +532,12 @@ export const COLUMN = {
 // ---------------------------------------------------------------- run detail
 
 export const DETAIL = {
-  status: 'いまの状態と次の手順',
+  conclusion: '結論と次の手',
+  noNext: '人がすることはありません。',
+  stopRecord: '停止の記録を見る',
+  deliveredTo: '納品したブランチ',
   retry: '再実行',
   humanCheck: '人が確認すること',
-  summary: 'まとめ',
-  result: '結果',
   leadTime: '所要時間',
   workTime: '工程の作業時間',
   humanWait: '人の待ち時間',
@@ -544,16 +547,32 @@ export const DETAIL = {
   triage: '見立て',
   triageShadow: '見立ては記録するだけで、進め方は変えません。',
   trace: '工程の時系列',
-  stageTimes: '工程ごとの時間',
   stageTimesEmpty: 'まだ完了した工程がありません。',
-  stageTotal: '工程合計',
+  stageTotal: '全体',
   stageUsage: '工程ごとのトークンと費用',
   stageUsageEmpty: 'まだモデルの呼び出しがありません。',
   roleUsage: '役割ごとのトークンと費用',
   usageNote:
     '。「不明」は使用量か価格が分からない呼び出しを含むことを、「一部」の印は分かった分だけの値であることを示します。',
   fake: '模擬の実行で、実際のモデルでは検証していません',
-  runId: '実行 ID',
+  timeAndCost: '工程ごとの時間と費用',
+  work: '作業時間',
+  wall: '所要時間',
+  noCost: '–',
+  noCostNote: '費用の「–」は、モデルを呼ばなかった工程です。',
+  workOverLead:
+    '作業時間が所要時間より長いのは、並んで動いた工程を重ねて数えるためです。',
+  checkLogs: 'チェックのログファイル',
+  logMissing: 'ファイルがありません',
+  noLogRecorded:
+    'この実行の記録には、ログファイルの場所が残っていません。チェックの出力はレポートの検証の試行で読みます。',
+  specTogether: '仕様の工程まとめ',
+  specTogetherTitle:
+    '仕様の作成、仕様レビュー、採点コマンドの決定を合わせた経過時間です。並んだレビューは一度だけ数え、人の判断を待った時間は含みません。',
+  timeNote:
+    '作業時間は工程ごとの呼び出しの時間の合計です。レビューのように並んで動いた工程は重ねて数えるので、合計が所要時間を超えることがあります。所要時間は登録から終わるまでの時計の時間です。',
+  evidence: '根拠',
+  evidenceNote: '記録の詳細です。開くと表示します。',
 } as const
 
 export const CALIBRATION_NAME = {
@@ -561,12 +580,20 @@ export const CALIBRATION_NAME = {
   specChars: '仕様の文字数',
   acceptanceCriteria: '仕様の受け入れ基準の数',
   plannedFiles: '仕様が挙げる変更予定ファイルの数',
-} as const satisfies Record<keyof TriageCalibration, string>
+} as const satisfies Record<(typeof ENGINE_CALIBRATION_KEYS)[number], string>
 
-/** What the triage record measured, in the order report and compare list it. */
-export const CALIBRATION_KEYS = Object.keys(
-  CALIBRATION_NAME,
-) as (keyof TriageCalibration)[]
+/**
+ * What the triage record measured, in the order report and compare list it.
+ * The engine's list is the one definition: this copy must equal it, key for
+ * key, or the page does not compile. The engine module itself reads files,
+ * so the page cannot import it.
+ */
+export const CALIBRATION_KEYS = [
+  'taskChars',
+  'specChars',
+  'acceptanceCriteria',
+  'plannedFiles',
+] as const satisfies typeof ENGINE_CALIBRATION_KEYS
 
 export const BASELINE = {
   measured: 'この実行でチェックを実行しました',
@@ -585,8 +612,25 @@ export const REVIEW = {
   blockers: '直すべき指摘',
   advice: '助言',
   blockerPrefix: '直すべき指摘 ',
-  omitted: (n: number) => `ほか${n}件はレポートに残していません。`,
+  omitted: (n: string) => `ほか${n}件はレポートに残していません。`,
   verdict: '判定',
+  highlights: 'レビューの要点',
+  fixed: '直した指摘',
+  /** The earlier rounds' blockers while the last round has not passed. */
+  earlier: 'これまでの指摘',
+  left: '残した指摘',
+  open: '残っている直すべき指摘',
+  none: 'なし',
+  rounds: (n: string) => `レビュー ${n} 回`,
+  passedLast: '最後のレビューは通過',
+  failedLast: '最後のレビューで直すべき指摘が残った',
+  incompleteLast: '最後のレビューは、全員の判定がそろっていない',
+  more: (n: string) => `ほか ${n} 件`,
+  notes: 'メモを読む',
+  roundOf: (n: number) => `${n}回目`,
+  /** A verdict review that asked for changes a later round no longer asked for. */
+  askedFor: (review: string) => `${review}が求めた修正`,
+  notesInEvidence: 'メモの本文は、下の根拠の「レビュー」で読めます。',
 } as const
 
 export const SPEC = {
@@ -612,7 +656,7 @@ export const RECORD = {
   branch: 'ブランチ',
   commit: 'コミット',
   changes: '変更の規模',
-  changesText: (files: number, additions: number, deletions: number) =>
+  changesText: (files: string, additions: string, deletions: string) =>
     `${files} ファイル、+${additions} 行、−${deletions} 行`,
   changesMissing: '規模の記録なし',
   delivery: '納品物',
@@ -684,20 +728,25 @@ export const TRACE = {
   stdout: '標準出力',
   stderr: '標準エラー',
   writeError: '書き込みエラー',
-  logLater: 'この行のログは、まだここに表示しません。',
 } as const
 
 // ---------------------------------------------------------------- compare
 
 export const COMPARE = {
+  view: '集計の見方',
+  trendTab: '週ごとの推移',
+  configTab: '設定ごとの比較',
   empty: '終わった実行がまだないので、集計するものがありません。',
-  intro: (runs: number) =>
-    `終わった実行 ${runs} 件を設定のまとまりごとに集計しています。外部の指摘からの修正は通常の実行と分け、修正元の時間や費用は含めません。不明な値は 0 として扱わず、統計から除いて「不明」の列に数えます。費用は API 換算の参考値です。`,
+  intro: (runs: string) =>
+    `終わった実行 ${runs} 件を、設定のまとまりごとに集計しています。`,
+  rules: '集計の決まり',
+  rulesTitle:
+    '外部の指摘からの修正は通常の実行と分け、修正元の時間や費用は含めません。不明な値は 0 として扱わず、統計から除いて「不明」の列に数えます。費用は API 換算の参考値です。',
   config: (version: string | null) => `設定 ${version ?? '版なし'}`,
-  runs: (n: number) => `${n} 件`,
-  successes: (n: number) => `成功 ${n}`,
-  successRate: (percent: string) => `成功率 ${percent}%`,
-  unknownCount: (n: number) => `不明 ${n} 件`,
+  runs: (n: string) => `${n} 件`,
+  successes: (n: string) => `成功 ${n}`,
+  successRate: (percent: string) => `成功率 ${percent}`,
+  unknownCount: (n: string) => `不明 ${n} 件`,
   leadTime: '所要時間',
   workTime: '工程の作業時間',
   humanWait: '人の待ち時間',
@@ -720,6 +769,28 @@ export const COMPARE = {
   stops: '停止の理由',
   calibrationNote:
     '見立ての判定別に、保存したタスクと仕様から測った値の中央値です。仕様がない実行や古い記録の値は不明に数えます。',
+} as const
+
+export const TREND = {
+  intro: (days: string, runs: string) =>
+    `直近 ${days} 日に終わった実行 ${runs} 件を、実装のモデルと推論量ごとに週で並べています。`,
+  fakeLeftOut: (n: string) => `模擬の実行 ${n} 件は除いています。`,
+  note: '週は月曜から始まります。時間、費用、修正回数は中央値で、分からない値は 0 とせず除きます。',
+  single: '1 件のみ',
+  singleTitle: 'この週の実行は 1 件だけなので、中央値はその 1 件の値です。',
+  empty: (days: string) => `直近 ${days} 日に終わった実行はありません。`,
+  /** Every finished run of the window was a fake-provider run, left out. */
+  onlyFake: (days: string, n: string) =>
+    `直近 ${days} 日に終わった実行は模擬の実行 ${n} 件だけで、集計からは除いています。`,
+  week: '週',
+  runs: '実行数',
+  approvalRate: '承認率',
+  leadTime: '所要時間',
+  cost: '費用',
+  repairs: '修正回数',
+  total: (days: string) => `${days} 日間`,
+  noRuns: '–',
+  groupRuns: (n: string, rate: string) => `実行 ${n} 件 · 承認率 ${rate}`,
 } as const
 
 // ---------------------------------------------------------------- design
@@ -776,6 +847,29 @@ export const DESIGN = {
       name: '時系列',
       about: '行を選ぶと右に詳細が出ます。矢印キーで行を移れます。',
     },
+    links: {
+      name: '実行へのリンクと時刻',
+      about:
+        '実行は名前で示し、ID は末尾だけ添えます。時刻は相対表記で、正確な時刻はホバーで出ます。',
+    },
+    live: {
+      name: 'いまの工程',
+      about: '実行中の工程と経過時間を1行目に、残りを2行目に出します。',
+    },
+    highlights: {
+      name: 'レビューの要点',
+      about:
+        '前の回の指摘を「直した指摘」と呼ぶのは、最後の回が全員の判定で通過したときだけです。',
+    },
+    findings: {
+      name: '指摘の題名',
+      about:
+        '種類ごとの件数と、レポートが残した題名だけを出します。本文はレポートで読みます。',
+    },
+    path: {
+      name: 'ファイルの場所',
+      about: 'パスはデータとして等幅で出し、コピーボタンを添えます。',
+    },
   },
   state: {
     closed: '閉じた状態',
@@ -798,6 +892,19 @@ export const DESIGN = {
     empty: 'まだない',
     loading: '読み込み中',
     error: '読み込めない',
+    link: '実行へのリンク',
+    relations: '同じタスクの実行',
+    autoApproved: '設定による自動の承認',
+    logMissing: 'ファイルがないログ',
+    noLog: '場所の記録がないログ',
+    total: '複数の実行の合計',
+    ago: '相対時刻',
+    between: '工程の合間',
+    path: 'コピーできるパス',
+    writeError: '書き込めなかったログ',
+    reviewPassed: '最後の回が通過',
+    reviewOpen: '最後の回で指摘が残った',
+    reviewIncomplete: '最後の回の判定がそろっていない',
   },
   sample: {
     approve: '承認',

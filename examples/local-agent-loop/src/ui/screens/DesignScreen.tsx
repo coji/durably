@@ -9,7 +9,11 @@ import {
   BadgeStates,
   CopyStates,
   EmptyStates,
+  FindingStates,
+  LinkStates,
+  LiveStates,
   NoticeStates,
+  PathStates,
 } from './design/BasicSpecimens'
 import {
   CollapsibleStates,
@@ -20,20 +24,26 @@ import {
   TaskRowStates,
   TraceStates,
 } from './design/DataSpecimens'
+import { HighlightStates } from './design/ReviewSpecimens'
 import { Specimen } from './design/Specimen'
 
 const PARTS: [keyof typeof DESIGN.part, () => ReactNode][] = [
   ['badge', BadgeStates],
   ['taskRow', TaskRowStates],
+  ['links', LinkStates],
   ['stageTrack', StageTrackStates],
+  ['live', LiveStates],
   ['metric', MetricStates],
   ['keyValue', KeyValueStates],
+  ['findings', FindingStates],
+  ['highlights', HighlightStates],
   ['table', TableStates],
   ['collapsible', CollapsibleStates],
   ['action', ActionStates],
   ['copy', CopyStates],
   ['empty', EmptyStates],
   ['notice', NoticeStates],
+  ['path', PathStates],
   ['trace', TraceStates],
 ]
 

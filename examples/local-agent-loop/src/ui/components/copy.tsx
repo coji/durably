@@ -48,11 +48,14 @@ export function useCopy(): { copied: Copied | null; copy: OnCopy } {
 export function CopyButton({
   text,
   label,
+  title,
   copied,
   onCopy,
 }: {
   text: string
   label: string
+  /** What the copied text does, on hover. */
+  title?: string
   copied: { text: string } | null
   onCopy: OnCopy
 }) {
@@ -60,6 +63,7 @@ export function CopyButton({
     <span className="relative">
       <button
         type="button"
+        title={title}
         onClick={() => onCopy(text, label)}
         className={BUTTON}
       >

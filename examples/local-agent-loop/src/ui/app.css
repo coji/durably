@@ -71,8 +71,9 @@
   --size-trace-max: 32rem;
   --size-inspector: 20rem;
   --size-label: 6.5rem;
-  --size-stage-name: 6rem;
-  --size-stage-value: 9rem;
+  --size-stage-name: 9rem;
+  --size-stage-value: 5rem;
+  --size-scroll-margin: var(--space-12);
   --size-hatch: 4px;
 
   /* semantics */
@@ -243,6 +244,12 @@ dd {
     grid-template-columns: minmax(12rem, 17rem) 7rem minmax(8rem, 1fr);
   }
 }
+/* A narrow axis keeps a label on every other tick only. */
+@container (width < 40rem) {
+  .trace-tick-minor {
+    visibility: hidden;
+  }
+}
 /* A tree row's indent: one step per level, set by `--level`. */
 .trace-indent {
   padding-left: calc(var(--level, 0) * var(--space-3) + var(--space-1));
@@ -271,9 +278,30 @@ dd {
 }
 .stage-row {
   display: grid;
-  grid-template-columns: var(--size-stage-name) 1fr var(--size-stage-value);
+  grid-template-columns: var(--size-stage-name) repeat(
+      3,
+      var(--size-stage-value)
+    );
 }
 .stage-row-note {
   display: grid;
   grid-template-columns: var(--size-stage-name) 1fr;
+}
+/* The bar needs room; on a narrow screen the numbers carry the row alone. */
+.stage-bar {
+  display: none;
+}
+@media (width >= 40rem) {
+  .stage-row {
+    grid-template-columns:
+      var(--size-stage-name) minmax(2rem, 1fr)
+      repeat(3, var(--size-stage-value));
+  }
+  .stage-bar {
+    display: block;
+  }
+}
+/* A heading the design page's contents jump to clears the sticky header. */
+.scroll-target {
+  scroll-margin-top: var(--size-scroll-margin);
 }

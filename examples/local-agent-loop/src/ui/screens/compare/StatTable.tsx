@@ -1,5 +1,5 @@
 import type { Stat } from '../../../engine/compare'
-import { UNKNOWN } from '../../../engine/format'
+import { formatCount, UNKNOWN } from '../../../engine/format'
 import { Td, Th } from '../../components/DataTable'
 import { COLUMN, COMPARE } from '../../glossary'
 
@@ -20,8 +20,8 @@ export function StatRow({
       <Td num>{f(stat.median)}</Td>
       <Td num>{f(stat.min)}</Td>
       <Td num>{f(stat.max)}</Td>
-      <Td num>{stat.n}</Td>
-      <Td num>{stat.unknown}</Td>
+      <Td num>{formatCount(stat.n)}</Td>
+      <Td num>{formatCount(stat.unknown)}</Td>
     </tr>
   )
 }
@@ -44,14 +44,19 @@ export function statRange(stat: Stat, f: Formatter): string {
     : `${f(stat.median)} [${f(stat.min)}–${f(stat.max)}]`
 }
 
-/** A calibration median with how many runs did not know the value. */
-export function CalibrationStat({ stat, f }: { stat: Stat; f: Formatter }) {
+/**
+ * A median with how many runs did not know the value, under it: a median
+ * over fewer runs than the row counts says so.
+ */
+export function MedianCell({ stat, f }: { stat: Stat; f: Formatter }) {
   return (
     <span className="flex flex-col items-end">
-      <span>{f(stat.median)}</span>
+      <span className={stat.median === null ? 'text-fg-3' : undefined}>
+        {f(stat.median)}
+      </span>
       {stat.unknown > 0 ? (
         <span className="text-fg-2 text-xs">
-          {COMPARE.unknownCount(stat.unknown)}
+          {COMPARE.unknownCount(formatCount(stat.unknown))}
         </span>
       ) : null}
     </span>

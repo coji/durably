@@ -11,7 +11,11 @@ import { existsSync } from 'node:fs'
 
 import type { AnyDurably, Run, StepAttempt } from '@coji/durably'
 
-import { DETAIL_PREFIX, INTERRUPTED_CHECK } from './failure-details.js'
+import {
+  DETAIL_PREFIX,
+  INTERRUPTED_CHECK,
+  PATH_DETAILS,
+} from './failure-details.js'
 import type { AttemptMeasurement, VerificationLog } from './providers/types.js'
 import {
   checkpointPaths,
@@ -361,6 +365,27 @@ function logDetails(log: VerificationLog): string[] {
       ? [`${DETAIL_PREFIX.checkLogWriteError}${log.writeError}`]
       : []),
   ]
+}
+
+/** A check log a stop's details name, and whether the file is there. */
+export interface CheckLogFile {
+  kind: (typeof PATH_DETAILS)[number]
+  path: string
+  exists: boolean
+}
+
+/**
+ * The check log files a stop's details name, oldest attempt first, each
+ * looked up on disk: a copied database or a removed run directory leaves
+ * the path without the file.
+ */
+export function checkLogFiles(details: string[]): CheckLogFile[] {
+  return details.flatMap((line) => {
+    const kind = PATH_DETAILS.find((k) => line.startsWith(DETAIL_PREFIX[k]))
+    if (!kind) return []
+    const path = line.slice(DETAIL_PREFIX[kind].length)
+    return [{ kind, path, exists: existsSync(path) }]
+  })
 }
 
 /**

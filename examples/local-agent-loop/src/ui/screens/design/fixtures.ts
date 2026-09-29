@@ -4,9 +4,15 @@
  * still come from the glossary. Nothing here is read from the API.
  */
 import type { UsageTotals } from '../../../engine/report'
+import { conclusionStatus, kindStatus } from '../../components/status'
 import { PIPELINE_WORDS } from '../../glossary'
 import { stageName } from '../../labels'
-import type { Pipeline, PipelineStage, PipelineState } from '../../server'
+import type {
+  LineageRun,
+  Pipeline,
+  PipelineStage,
+  PipelineState,
+} from '../../server'
 
 export const NOW = '2026-09-30T09:24:00.000Z'
 export const ORIGIN = Date.parse('2026-09-30T09:00:00.000Z')
@@ -76,7 +82,85 @@ export const PIPELINES = {
   running: pipeline('code', 'running'),
   current: pipeline('triage', 'current'),
   done: pipeline(null, 'done'),
+  autoApproved: autoApproved(),
 }
+
+/**
+ * Tasks that took more than one run, which show their total on the line: one
+ * still stopped at the top of the list, one approved.
+ */
+export const MULTI_RUN = [
+  {
+    task: TASKS[1],
+    status: kindStatus('stopped'),
+    pipeline: 'stopped',
+    runs: '2',
+    total: { leadTimeMs: 1_512_000, costUsd: 4.37 },
+    minutes: 41,
+  },
+  {
+    task: TASKS[3],
+    status: conclusionStatus('approved'),
+    pipeline: 'autoApproved',
+    runs: '3',
+    total: { leadTimeMs: 2_331_000, costUsd: 7.12 },
+    minutes: 24,
+  },
+] as const
+
+/** A finished run whose settings approved it, so approval had no wait. */
+function autoApproved(): Pipeline {
+  const done = pipeline(null, 'done')
+  return {
+    stages: done.stages.map((s) =>
+      s.stage === 'approve' ? { ...s, state: 'auto', count: 0 } : s,
+    ),
+    label: PIPELINE_WORDS.sentence([
+      PIPELINE_WORDS.autoApproved,
+      PIPELINE_WORDS.finished,
+    ]),
+  }
+}
+
+/** A first run stopped at review, a repair replaced, and one approved. */
+export const LINEAGE: LineageRun[] = [
+  {
+    id: TASKS[1].id,
+    parentId: null,
+    kind: 'finished',
+    approved: true,
+    repair: null,
+    superseded: false,
+    attention: 'done',
+    status: 'completed',
+    conclusion: 'approved',
+    createdAt: '2026-09-29T09:00:00.000Z',
+  },
+  {
+    id: '01K6D2Q7XB3M9RKT4WREPAR1',
+    parentId: TASKS[1].id,
+    kind: 'stopped',
+    approved: false,
+    repair: 1,
+    superseded: true,
+    attention: 'done',
+    status: 'completed',
+    conclusion: 'review-cap-reached',
+    createdAt: '2026-09-30T08:10:00.000Z',
+  },
+  {
+    id: '01K6D2Q7XB3M9RKT4WREPAR2',
+    parentId: TASKS[1].id,
+    kind: 'finished',
+    approved: true,
+    repair: 2,
+    superseded: false,
+    attention: 'done',
+    status: 'completed',
+    conclusion: 'approved',
+    createdAt: '2026-09-30T08:52:00.000Z',
+  },
+]
 
 function usage(
   total: number,

@@ -60,13 +60,16 @@ export function Panel({
   )
 }
 
-/** A chevron that turns when its disclosure opens. */
-export function Chevron() {
+/**
+ * A chevron that turns when its disclosure opens: inside a `<details>` by
+ * itself, beside a toggle button by `open`.
+ */
+export function Chevron({ open }: { open?: boolean }) {
   return (
     <svg
       aria-hidden
       viewBox="0 0 12 12"
-      className="text-fg-3 size-3 shrink-0 transition-transform duration-(--duration-fast) ease-out group-open:rotate-90"
+      className={`text-fg-3 size-3 shrink-0 transition-transform duration-(--duration-fast) ease-out group-open:rotate-90 ${open ? 'rotate-90' : ''}`}
     >
       <path
         d="M4.5 3l3 3-3 3"
@@ -80,31 +83,46 @@ export function Chevron() {
   )
 }
 
-/** A panel that opens and closes; closed, only its heading shows. */
+/**
+ * A panel that opens and closes; closed, only its heading shows. `bare`
+ * drops the box, for a part of the page that holds panels of its own.
+ */
 export function Collapsible({
   title,
   count,
+  note,
   defaultOpen,
+  bare,
   children,
 }: {
   title: string
   count?: number
+  /** A short line beside the heading, such as what opening shows. */
+  note?: string
   defaultOpen?: boolean
+  bare?: boolean
   children: ReactNode
 }) {
   return (
     <details
       open={defaultOpen}
-      className="group border-line bg-raised rounded-lg border"
+      className={`group ${bare ? '' : 'border-line bg-raised rounded-lg border'}`}
     >
-      <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 px-4 py-3 text-base font-semibold [&::-webkit-details-marker]:hidden">
+      <summary
+        className={`flex min-h-8 cursor-pointer list-none flex-wrap items-center gap-x-2 text-base font-semibold [&::-webkit-details-marker]:hidden ${bare ? 'py-2' : 'px-4 py-3'}`}
+      >
         <Chevron />
         <h2 className="flex items-baseline gap-2">
           {title}
           {count !== undefined ? <Count n={count} /> : null}
         </h2>
+        {note ? (
+          <span className="text-fg-2 text-xs font-normal">{note}</span>
+        ) : null}
       </summary>
-      <div className="px-4 pb-4">{children}</div>
+      <div className={bare ? 'flex flex-col gap-6 pt-3' : 'px-4 pb-4'}>
+        {children}
+      </div>
     </details>
   )
 }

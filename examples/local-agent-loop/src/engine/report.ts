@@ -60,9 +60,9 @@ export interface StageTiming {
   /** Sum of measured work in the stage. */
   elapsedMs: number | null
   /**
-   * Sum of each visit's wall-clock interval. Within one visit the interval
-   * spans parallel branches; separate visits are summed rather than spanned,
-   * so time spent in other stages between two visits is never counted here.
+   * The union of the stage's own attempt intervals: parallel branches count
+   * once, and time between two visits or two rounds of the stage, whether
+   * spent in other stages or idle, is never counted here.
    */
   wallElapsedMs?: number | null
   /**
@@ -255,6 +255,145 @@ export interface ReportReviewRound {
   /** The candidate the round reviewed; null when it is not stored. */
   candidate: ReportCandidate | null
   reviews: ReportReview[]
+}
+
+/**
+ * The review rounds in short: the findings the rounds before the last one
+ * raised as blockers; the non-blockers the last round left; and the blockers
+ * the last round still raised, when it did not pass. The earlier blockers
+ * read as fixed only when the last round passed. Findings are not tracked
+ * across rounds, so a title is never matched with another. A verdict review
+ * has no findings: its round, lens and decision stand in for them, and no
+ * count includes it.
+ */
+export interface ReviewHighlights {
+  /** Review rounds read; 0 before one has finished. */
+  rounds: number
+  /**
+   * How the last round ended: `passed` when every configured reviewer gave
+   * a verdict and every one passed; `blocked` when every one gave a verdict
+   * and one did not pass; `incomplete` when a reviewer has no verdict,
+   * while one still runs or after one failed; null before a round.
+   */
+  last: 'passed' | 'blocked' | 'incomplete' | null
+  /**
+   * The last round's verdict reviews that passed. They left nothing, so
+   * they belong to no group.
+   */
+  lastPasses: HighlightVerdict[]
+  /** The blockers of the rounds before the last. */
+  earlier: HighlightGroup
+  left: HighlightGroup
+  /** The last round's blockers when it did not pass; empty when it did. */
+  open: HighlightGroup
+}
+
+/** One side of `ReviewHighlights`: its findings and its verdict reviews. */
+export interface HighlightGroup {
+  /**
+   * Findings in this group across its rounds, whether kept or not. Verdict
+   * reviews are listed, not counted.
+   */
+  count: number
+  /** The titles the report kept, in round and review order. */
+  titles: string[]
+  verdicts: HighlightVerdict[]
+}
+
+/** A verdict review's round, lens and decision. */
+export interface HighlightVerdict {
+  round: number
+  lens: string
+  decision: string
+  /**
+   * The first line of its notes. Only the Markdown report prints it; the
+   * screen shows no note text and leaves the notes to the evidence.
+   */
+  line: string
+}
+
+function emptyHighlight(): HighlightGroup {
+  return { count: 0, titles: [], verdicts: [] }
+}
+
+function firstLine(notes: string): string {
+  return (
+    notes
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? ''
+  )
+}
+
+/**
+ * `ReviewHighlights` from the stored rounds, `lenses` being the reviewers
+ * every round runs. A run whose rounds were not stored has only its last
+ * verdicts, read as its one round.
+ */
+export function reviewHighlights(
+  rounds: ReportReviewRound[],
+  last: ReportReview[],
+  lenses: readonly string[],
+): ReviewHighlights {
+  const all: { round: number; reviews: ReportReview[] }[] =
+    rounds.length > 0
+      ? rounds
+      : last.length > 0
+        ? [{ round: 1, reviews: last }]
+        : []
+  const earlier = emptyHighlight()
+  const left = emptyHighlight()
+  const open = emptyHighlight()
+  const lastPasses: HighlightVerdict[] = []
+  const final = all.at(-1)
+  const ending: ReviewHighlights['last'] = !final
+    ? null
+    : !lenses.every((lens) => final.reviews.some((r) => r.lens === lens))
+      ? 'incomplete'
+      : final.reviews.every((r) => r.decision === 'pass')
+        ? 'passed'
+        : 'blocked'
+  const findings = (
+    group: HighlightGroup,
+    review: ReportReview,
+    kind: 'blocker' | 'nonBlocker',
+  ) => {
+    if (!review.findings) return
+    group.count += review.findings.counts[kind]
+    group.titles.push(...review.findings[kind].map((f) => f.title))
+  }
+  const verdict = (to: HighlightVerdict[], round: number, r: ReportReview) =>
+    to.push({
+      round,
+      lens: r.lens,
+      decision: r.decision,
+      line: firstLine(r.notes),
+    })
+  for (const round of all.slice(0, -1))
+    for (const review of round.reviews) {
+      if (review.findings) findings(earlier, review, 'blocker')
+      else if (review.decision !== 'pass')
+        verdict(earlier.verdicts, round.round, review)
+    }
+  for (const review of final?.reviews ?? []) {
+    if (review.findings) {
+      findings(left, review, 'nonBlocker')
+      if (ending !== 'passed') findings(open, review, 'blocker')
+    } else if (final)
+      verdict(
+        review.decision === 'pass' ? lastPasses : open.verdicts,
+        final.round,
+        review,
+      )
+  }
+  return {
+    rounds: all.length,
+    last: ending,
+    lastPasses,
+    earlier,
+    left,
+    open,
+  }
 }
 
 /** What the run delivered, as recorded in its output. */
@@ -620,6 +759,8 @@ export interface LoopReport {
   reviews: ReportReview[]
   /** Every review round with both verdicts and notes, oldest first. */
   reviewRounds: ReportReviewRound[]
+  /** The review rounds in short, for the page's summary. */
+  reviewHighlights: ReviewHighlights
   /**
    * Every spec review round, oldest first, one review per named reviewer
    * (`lens` is the reviewer's name); read from completed steps, so an open
@@ -645,6 +786,13 @@ export interface LoopReport {
   waits: WaitRow[]
   stageTimings: StageTiming[]
   stageTotalMs: number | null
+  /**
+   * Wall-clock time of the spec stages together (spec, spec-review and
+   * spec-check), each span counted once where they overlap; see
+   * `specWallMs`. Null on a run without spec stages or with an attempt in
+   * them that lacks a start or an end.
+   */
+  specWallMs: number | null
   runElapsedMs: number | null
   versions: Record<string, string | null>
   priceBasis: typeof PRICE_BASIS
@@ -725,18 +873,6 @@ export function stageOf(stepName: string): string {
   if (parts[0] === 'decision') return 'policy'
   const base = stepName.split(':')[0] ?? stepName
   return base
-}
-
-/**
- * Sequence number distinguishing repeat entries into the same stage.
- * `stage:<sequence>:<name>:...` and `decision:<sequence>` carry one; steps
- * that run once per run (setup) do not.
- */
-function sequenceOf(stepName: string): string | null {
-  const parts = stepName.split(':')
-  if ((parts[0] === 'stage' || parts[0] === 'decision') && parts[1])
-    return parts[1]
-  return null
 }
 
 function sortStages<T extends { stage: string }>(rows: T[]): T[] {
@@ -905,17 +1041,26 @@ function repairsOf(visits: StageVisits[], repairRun: boolean): number {
   return (repairRun ? code?.visits : code?.reworked) ?? 0
 }
 
+/**
+ * A terminal completed run whose candidate was approved: `summary.success`,
+ * which `demo status` and the list read from the run's report.
+ */
+function isApprovedRun(status: string, output: unknown): boolean {
+  const o = output as { approved?: boolean; conclusion?: string } | null
+  return (
+    status === 'completed' &&
+    o?.approved === true &&
+    o.conclusion === 'approved'
+  )
+}
+
 /** Fold a run into the one-row summary used for cross-run comparison. */
 export function summarizeRun(input: SummaryInput): RunSummary {
   const output = input.output as {
-    approved?: boolean
     conclusion?: string
     reviewRounds?: number
   } | null
-  const success =
-    input.status === 'completed' &&
-    output?.approved === true &&
-    output?.conclusion === 'approved'
+  const success = isApprovedRun(input.status, input.output)
   const usageRows = input.stageUsage
   const allComplete = usageRows.every((r) => r.complete)
   const sumLeg = (pick: (r: StageUsage) => number | null): number | null => {
@@ -955,18 +1100,17 @@ export function summarizeRun(input: SummaryInput): RunSummary {
   }
 }
 
-/** Sum once per invocation while retaining its original execution interval. */
-export function stageTimings(attempts: AttemptRow[]): StageTiming[] {
-  const byStage = new Map<string, number>()
-  // Bounds are per visit, never per stage: a stage entered twice would
-  // otherwise report one span from its first start to its last end, swallowing
-  // every stage that ran in between.
-  const visitBounds = new Map<
-    string,
-    { stage: string; start: number; end: number }
-  >()
-  const incomplete = new Set<string>()
+/** One attempt's stage, interval and measured work, once per invocation. */
+interface TimedAttempt {
+  stage: string
+  start: number
+  end: number
+  ms: number | null
+}
+
+function timedAttempts(attempts: AttemptRow[]): TimedAttempt[] {
   const seen = new Set<string>()
+  const out: TimedAttempt[] = []
   for (const a of dedupeByInvocation(attempts)) {
     if (seen.has(a.attemptId)) continue
     seen.add(a.attemptId)
@@ -980,38 +1124,73 @@ export function stageTimings(attempts: AttemptRow[]): StageTiming[] {
       (Number.isFinite(start) && Number.isFinite(end)
         ? Math.max(0, end - start)
         : null)
-    if (Number.isFinite(start) && Number.isFinite(end)) {
-      const key = `${stage}#${sequenceOf(a.stepName) ?? 'once'}`
-      const current = visitBounds.get(key)
-      visitBounds.set(key, {
-        stage,
-        start: current ? Math.min(current.start, start) : start,
-        end: current ? Math.max(current.end, end) : end,
-      })
-    }
-    if (ms === null) {
-      incomplete.add(stage)
-      continue
-    }
-    byStage.set(stage, (byStage.get(stage) ?? 0) + ms)
+    out.push({ stage, start, end, ms })
   }
-  const wallByStage = new Map<string, number>()
-  for (const visit of visitBounds.values()) {
-    wallByStage.set(
-      visit.stage,
-      (wallByStage.get(visit.stage) ?? 0) +
-        Math.max(0, visit.end - visit.start),
-    )
+  return out
+}
+
+/**
+ * The length of the union of the intervals: overlapping ones count once and
+ * a gap between two counts not at all.
+ */
+function unionMs(intervals: { start: number; end: number }[]): number {
+  let total = 0
+  let reached = -Infinity
+  for (const t of [...intervals].sort((x, y) => x.start - y.start)) {
+    if (t.end <= reached) continue
+    total += t.end - Math.max(t.start, reached)
+    reached = t.end
+  }
+  return total
+}
+
+/**
+ * Sum once per invocation while retaining its original execution interval.
+ * A stage's wall time is the union of its own attempts' intervals: parallel
+ * branches count once, and neither the stages that ran between two visits
+ * nor the gaps between two rounds count at all. An attempt without a start
+ * or end is left out of the wall time; a stage with no complete interval
+ * has none.
+ */
+export function stageTimings(attempts: AttemptRow[]): StageTiming[] {
+  const timed = timedAttempts(attempts)
+  const byStage = new Map<string, number>()
+  const incomplete = new Set<string>()
+  const intervals = new Map<string, TimedAttempt[]>()
+  for (const t of timed) {
+    if (t.ms === null) incomplete.add(t.stage)
+    else byStage.set(t.stage, (byStage.get(t.stage) ?? 0) + t.ms)
+    if (Number.isFinite(t.start) && Number.isFinite(t.end))
+      intervals.set(t.stage, [...(intervals.get(t.stage) ?? []), t])
   }
   const stages = [...new Set([...byStage.keys(), ...incomplete])]
   return sortStages(
-    stages.map((stage) => ({
-      stage,
-      elapsedMs: byStage.get(stage) ?? null,
-      wallElapsedMs: wallByStage.get(stage) ?? null,
-      complete: !incomplete.has(stage),
-    })),
+    stages.map((stage) => {
+      const own = intervals.get(stage)
+      return {
+        stage,
+        elapsedMs: byStage.get(stage) ?? null,
+        wallElapsedMs: own ? unionMs(own) : null,
+        complete: !incomplete.has(stage),
+      }
+    }),
   )
+}
+
+/**
+ * The spec stages' wall-clock time together: the union of their attempts'
+ * intervals, so parallel spec reviews count once and a gap between two
+ * attempts, such as a person deciding on a blocked spec, counts not at all.
+ * Null without a spec stage, or when an attempt in one lacks a start or end.
+ */
+export function specWallMs(attempts: AttemptRow[]): number | null {
+  const timed = timedAttempts(attempts).filter((t) =>
+    SPEC_STAGES.includes(t.stage),
+  )
+  if (timed.length === 0) return null
+  if (timed.some((t) => !Number.isFinite(t.start) || !Number.isFinite(t.end)))
+    return null
+  return unionMs(timed)
 }
 
 /** Stage total across stages; unknown when any stage timing is partial. */
@@ -1093,6 +1272,35 @@ function aggregateInvocationCost(
   ).map((a) => a.measurement?.costUsdEstimate ?? null)
   if (costs.some((cost) => cost === null)) return null
   return costs.reduce<number>((sum, cost) => sum + (cost ?? 0), 0)
+}
+
+function highlightLines(h: ReviewHighlights): string[] {
+  if (h.rounds === 0) return ['- none (no review round has finished)']
+  const verdict = (v: HighlightVerdict) =>
+    `  - round ${v.round} ${v.lens}: ${v.decision} — ${v.line}`
+  const group = (label: string, g: HighlightGroup): string[] => [
+    `- ${label}: ${g.count} finding(s)`,
+    ...g.titles.map((t) => `  - ${t}`),
+    ...g.verdicts.map(verdict),
+  ]
+  const passed = h.last === 'passed'
+  const last = passed
+    ? 'passed'
+    : h.last === 'blocked'
+      ? 'did not pass'
+      : 'is not complete: a reviewer has no verdict'
+  return [
+    `- rounds: ${h.rounds}; last round ${last}`,
+    ...h.lastPasses.map(verdict),
+    ...group(
+      passed
+        ? 'fixed (blockers of the rounds before the last)'
+        : 'earlier (blockers of the rounds before the last)',
+      h.earlier,
+    ),
+    ...group('left (non-blockers of the last round)', h.left),
+    ...(passed ? [] : group('open (blockers of the last round)', h.open)),
+  ]
 }
 
 export function reportToMarkdown(r: LoopReport): string {
@@ -1270,6 +1478,10 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push('- none')
   }
   lines.push('')
+  lines.push('## Review highlights')
+  lines.push('')
+  lines.push(...highlightLines(r.reviewHighlights))
+  lines.push('')
   lines.push('## Spec (the spec stages and checkFromSpec)')
   lines.push('')
   if (r.spec) {
@@ -1413,6 +1625,10 @@ export function reportToMarkdown(r: LoopReport): string {
     )
   }
   lines.push(`- stage total: ${formatDuration(r.stageTotalMs)}`)
+  if (r.stageTimings.some((t) => SPEC_STAGES.includes(t.stage)))
+    lines.push(
+      `- spec stages wall (spec, spec-review, spec-check together): ${formatDuration(r.specWallMs)}`,
+    )
   lines.push(`- run elapsed: ${formatDuration(r.runElapsedMs)}`)
   lines.push('')
   lines.push('## Attempts (from persisted step attempts)')

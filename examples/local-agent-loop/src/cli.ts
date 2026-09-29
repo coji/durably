@@ -4,6 +4,8 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import type { Run } from '@coji/durably'
+
 import { isSpecWait, signalApproval, signalSpecDecision } from './approval.js'
 import {
   acquireWorkerLock,
@@ -19,16 +21,35 @@ import {
   buildReport,
   recordedTriage,
   repairChildren,
+  repairChildrenByParent,
+  taskRunInput,
 } from './engine/build-report.js'
 import { killOwnedChildren, MAX_TIMEOUT_MS } from './engine/child.js'
-import { compareReports, comparisonToMarkdown } from './engine/compare.js'
+import {
+  compareReports,
+  comparisonToMarkdown,
+  parseTrendDays,
+  inTrendWindow,
+  trendOf,
+  trendToMarkdown,
+} from './engine/compare.js'
 import { classifyRun, DEMO } from './engine/failure-reasons.js'
+import { formatCost, formatDuration } from './engine/format.js'
 import {
   reportToJson,
   reportToMarkdown,
   type LoopReport,
 } from './engine/report.js'
-import { diagnose, diagnosisLines, lastLeaseRenewal } from './engine/status.js'
+import {
+  diagnose,
+  diagnoseRun,
+  diagnosisLines,
+  groupTasks,
+  lastLeaseRenewal,
+  needsAttention,
+  type Diagnosis,
+  type Task,
+} from './engine/status.js'
 import { deliverySchema } from './factory/events.js'
 import { timeoutMsSchema } from './factory/job.js'
 import { repairLabels } from './factory/repair.js'
@@ -351,7 +372,9 @@ Commands (run from examples/local-agent-loop):
   pnpm demo repair --run <id> --findings-file <file> [--dispositions-file <file>]
                                             new run that repairs an approved, delivered repository
                                             run's candidate from outside findings (see below)
-  pnpm demo status                          open and stopped runs: reason and next command
+  pnpm demo status [--format text|json]     tasks that wait on a person, stopped unresolved or
+                                            run now: a first run and its repair runs are one task,
+                                            shown by its representative run's reason and next command
   pnpm demo status --run <id>
   pnpm demo wait --run <id> [--timeout <ms>] [--worker-timeout <ms> | --no-worker-timeout] [--format json]
                                             until the run ends or waits on a person; exit 0 approved
@@ -373,6 +396,9 @@ Commands (run from examples/local-agent-loop):
                                             the run's factory.json (once per version of the file)
   pnpm demo report --run <id> [--format json|md] [--out <file>]
   pnpm demo compare --runs <id,id,...> [--format json|md] [--out <file>]
+  pnpm demo compare --trend [--days 30] [--include-fake] [--format json|md] [--out <file>]
+                                            finished runs of the last --days days by week (Monday,
+                                            local time) and code model/effort; fake runs left out
   pnpm demo ui [--port 4380]                read-only web UI on 127.0.0.1 (runs, reports, comparison)
   pnpm demo seed [--home <dir>] [--latency 20000-90000]
                                             demo data on the fake provider in a throwaway HOME
@@ -599,35 +625,93 @@ if (cmd === 'worker') {
     await durably.db.destroy()
   }
 } else if (cmd === 'status' && !args()['run']) {
+  const format = args()['format'] ?? 'text'
+  if (format !== 'text' && format !== 'json')
+    throw new Error('--format must be text or json')
+  const { readOnce, runName } = await import('./ui/server.js')
   const durably = createAgentDurably()
   await durably.migrate()
   const now = Date.now()
   const worker = workerStatus()
-  const open: string[][] = []
-  const leftovers: string[][] = []
-  for (const run of await durably.getRuns({
-    jobName: durably.jobs.agentLoop.name,
-  })) {
-    const d = await diagnose(durably, run, now, worker)
-    if (d.kind !== 'finished') open.push(diagnosisLines(run, d))
-    else if (d.cleanup) leftovers.push(diagnosisLines(run, d))
+  const runs = await durably.getRuns({ jobName: durably.jobs.agentLoop.name })
+  // Each run's report too, so a task's time and cost are the list's. The
+  // report and the diagnosis share one read of each run, and the diagnosis
+  // takes the report's failure instead of classifying the run again.
+  const src = readOnce(durably, runs)
+  const children = repairChildrenByParent(runs)
+  const read: { run: Run; diagnosis: Diagnosis; report: LoopReport }[] = []
+  for (const run of runs) {
+    const report = await buildReport(src, run.id, {
+      children: children.get(run.id) ?? [],
+    })
+    const { diagnosis } = await diagnoseRun(
+      src,
+      run,
+      now,
+      { failure: report.failure },
+      worker,
+    )
+    read.push({ run, diagnosis, report })
   }
+  const seen = new Map(read.map((r) => [r.run.id, r]))
+  const tasks = groupTasks(
+    read.map(({ run, diagnosis, report }) =>
+      taskRunInput(run, diagnosis.kind, report),
+    ),
+  )
+  await durably.db.destroy()
+  // A task reads as its representative run's block, then the task it
+  // belongs to and its other runs.
+  const taskLines = (task: Task): string[] => {
+    const rep = seen.get(task.representative)
+    const root = seen.get(task.id)
+    if (!rep) return []
+    const lines = diagnosisLines(rep.run, rep.diagnosis)
+    lines.push(
+      `  task:    ${runName(root?.run.input)}  (first run ${task.id}, ${task.runs.length} run(s))`,
+    )
+    if (task.runs.length > 1)
+      lines.push(
+        `  total:   ${formatDuration(task.total.leadTimeMs, 'en')}, ${formatCost(task.total.costUsd, 'en')}  (lead time and cost over every run; unknown if any run's is)`,
+      )
+    for (const r of task.runs)
+      if (r.id !== task.representative)
+        lines.push(
+          `  also:    ${r.id}  ${r.parentId ? 'repair' : 'first run'}, ${r.kind}${r.superseded ? ', replaced by a later approved repair' : ''}`,
+        )
+    return lines
+  }
+  const attention = tasks.filter((t) => needsAttention(t.attention))
+  const active = tasks.filter((t) => t.attention === 'active')
+  const leftovers = read.flatMap(({ run, diagnosis: d }) =>
+    d.kind === 'finished' && d.cleanup ? [diagnosisLines(run, d)] : [],
+  )
   const out: string[] = []
-  if (open.length === 0)
+  if (attention.length === 0 && active.length === 0)
     out.push(
       'No runs need attention: nothing is pending, running, waiting or stopped.',
     )
-  else {
-    out.push(`${open.length} run(s) need attention:`)
-    for (const lines of open) out.push('', ...lines)
+  if (attention.length > 0) {
+    out.push(
+      `${attention.length} task(s) wait on a person or stopped unresolved:`,
+    )
+    for (const task of attention) out.push('', ...taskLines(task))
+  }
+  if (active.length > 0) {
+    if (out.length > 0) out.push('')
+    out.push(`${active.length} task(s) with a run pending or running:`)
+    for (const task of active) out.push('', ...taskLines(task))
   }
   if (leftovers.length > 0) {
     out.push('', 'Finished runs whose worktree is still on disk:')
     for (const lines of leftovers) out.push('', ...lines)
   }
   out.push('', workerLine(worker), `database: ${dbPath()}`)
-  console.log(out.join('\n'))
-  await durably.db.destroy()
+  console.log(
+    format === 'json'
+      ? JSON.stringify({ tasks, worker, database: dbPath() }, null, 2)
+      : out.join('\n'),
+  )
 } else if (cmd === 'status') {
   const runId = args()['run'] as string
   const durably = createAgentDurably()
@@ -833,6 +917,36 @@ if (cmd === 'worker') {
     format === 'json' ? reportToJson(report) : reportToMarkdown(report)
   await emit(text, a['out'])
   await durably.db.destroy()
+} else if (cmd === 'compare' && args()['trend'] === 'true') {
+  const a = args()
+  // Every flag is checked before the database is opened.
+  if (a['runs'] !== undefined)
+    throw new Error('--trend reads every finished run; leave out --runs')
+  const days = parseTrendDays(a['days'])
+  const includeFake = a['include-fake'] === 'true'
+  const format = a['format'] ?? 'md'
+  if (format !== 'md' && format !== 'json')
+    throw new Error('--format must be md or json')
+  const durably = createAgentDurably()
+  await durably.migrate()
+  const now = Date.now()
+  const runs = await durably.getRuns({ jobName: durably.jobs.agentLoop.name })
+  const done = runs.filter((r) => inTrendWindow(r, { now, days }))
+  const children = repairChildrenByParent(runs)
+  const entries = []
+  for (const run of done)
+    entries.push({
+      report: await buildReport(durably, run.id, {
+        children: children.get(run.id) ?? [],
+      }),
+      completedAt: run.completedAt,
+    })
+  const trend = trendOf(entries, { now, days, includeFake })
+  await emit(
+    format === 'json' ? JSON.stringify(trend, null, 2) : trendToMarkdown(trend),
+    a['out'],
+  )
+  await durably.db.destroy()
 } else if (cmd === 'compare') {
   const a = args()
   const runIds = (a['runs'] ?? '')
@@ -840,7 +954,9 @@ if (cmd === 'worker') {
     .map((id) => id.trim())
     .filter((id) => id.length > 0)
   if (runIds.length === 0)
-    throw new Error('--runs <id,id,...> required (comma-separated run ids)')
+    throw new Error(
+      '--runs <id,id,...> required (comma-separated run ids), or --trend',
+    )
   const format = a['format'] ?? 'md'
   const durably = createAgentDurably()
   await durably.migrate()

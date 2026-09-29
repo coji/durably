@@ -46,6 +46,199 @@ export function needsHuman(kind: DiagnosisKind): boolean {
   return HUMAN_KINDS.includes(kind)
 }
 
+/**
+ * Where a task stands, from its runs: a person decides (`decision`), a run
+ * stopped and nothing replaced it (`stop`), a worker has it or will
+ * (`active`), or nothing is left to do (`done`). In that order a task list
+ * shows them.
+ */
+export type TaskAttention = 'decision' | 'stop' | 'active' | 'done'
+
+const ATTENTION_ORDER: readonly TaskAttention[] = [
+  'decision',
+  'stop',
+  'active',
+  'done',
+]
+
+/** Only a decision or an unresolved stop puts a task at the top of the list. */
+export function needsAttention(attention: TaskAttention): boolean {
+  return attention === 'decision' || attention === 'stop'
+}
+
+/** One run as the task list reads it. */
+export interface TaskRunInput {
+  id: string
+  createdAt: string
+  /** The run it repairs, from `repairParentId`; null for a first run. */
+  parentId: string | null
+  kind: DiagnosisKind
+  /** The run's `summary.success`: completed with its candidate approved. */
+  approved: boolean
+  /** The report's lead time; null while open or when not known. */
+  leadTimeMs: number | null
+  /** The report's cost; null when any call's usage or price is not known. */
+  costUsd: number | null
+}
+
+export interface TaskRun {
+  id: string
+  parentId: string | null
+  kind: DiagnosisKind
+  approved: boolean
+  /** Which repair of the task this is, oldest first; null for a first run. */
+  repair: number | null
+  /**
+   * A repair run that did not get approved while a later repair of the same
+   * parent did: it no longer needs a person.
+   */
+  superseded: boolean
+  attention: TaskAttention
+}
+
+/**
+ * A first run and every repair run below it: one piece of work, however
+ * many runs it took. `demo status` and the web UI's list both read tasks
+ * from `groupTasks`, so they agree on the task, its run and its place.
+ */
+export interface Task {
+  /** The first run's ID. */
+  id: string
+  attention: TaskAttention
+  /** The run that shows the task's state and next step. */
+  representative: string
+  /** Oldest first, so the first run leads. */
+  runs: TaskRun[]
+  /** When the task's newest run was created. */
+  latestAt: string
+  /**
+   * Lead time and cost summed over every run of the task. Either is null
+   * when any run's is not known, so a total never passes for more than it
+   * covers.
+   */
+  total: { leadTimeMs: number | null; costUsd: number | null }
+}
+
+/** The sum of every value, or null when any one is not known. */
+function sumKnown(values: (number | null)[]): number | null {
+  return values.some((v) => v === null)
+    ? null
+    : values.reduce<number>((sum, v) => sum + (v ?? 0), 0)
+}
+
+const OPEN_KINDS: readonly DiagnosisKind[] = [
+  'pending',
+  'running',
+  'lease-expired',
+  'decided',
+]
+
+function attentionOf(kind: DiagnosisKind, superseded: boolean): TaskAttention {
+  if (superseded) return 'done'
+  if (kind === 'stopped') return 'stop'
+  if (needsHuman(kind)) return 'decision'
+  if (OPEN_KINDS.includes(kind)) return 'active'
+  return 'done'
+}
+
+type Linked = Pick<TaskRunInput, 'id' | 'parentId'>
+
+/**
+ * Each run's task, by its first run's ID: up through its parents while
+ * they are among `runs`.
+ */
+function taskRoots(runs: Linked[]): (run: Linked) => string {
+  const byId = new Map(runs.map((r) => [r.id, r]))
+  return (run) => {
+    const seen = new Set<string>()
+    let at = run
+    while (at.parentId && byId.has(at.parentId) && !seen.has(at.id)) {
+      seen.add(at.id)
+      at = byId.get(at.parentId) as Linked
+    }
+    return at.id
+  }
+}
+
+/** The IDs of every run in the task `id` belongs to, as `groupTasks` groups. */
+export function taskRunIds(runs: Linked[], id: string): string[] {
+  const rootOf = taskRoots(runs)
+  const run = runs.find((r) => r.id === id)
+  if (!run) return []
+  const root = rootOf(run)
+  return runs.filter((r) => rootOf(r) === root).map((r) => r.id)
+}
+
+const newestFirst = (x: { createdAt: string }, y: { createdAt: string }) =>
+  Date.parse(y.createdAt) - Date.parse(x.createdAt)
+
+/**
+ * Runs as tasks, in the order a list shows them: decisions, then unresolved
+ * stops, then open work, then the rest, each newest first. A run whose
+ * parent is not among `runs` starts a task of its own.
+ */
+export function groupTasks(runs: TaskRunInput[]): Task[] {
+  const rootOf = taskRoots(runs)
+  const superseded = (run: TaskRunInput): boolean =>
+    run.parentId !== null &&
+    !run.approved &&
+    !OPEN_KINDS.includes(run.kind) &&
+    runs.some(
+      (other) =>
+        other.parentId === run.parentId &&
+        other.approved &&
+        Date.parse(other.createdAt) > Date.parse(run.createdAt),
+    )
+  const groups = new Map<string, TaskRunInput[]>()
+  for (const run of runs) {
+    const root = rootOf(run)
+    groups.set(root, [...(groups.get(root) ?? []), run])
+  }
+  const tasks = [...groups].map(([id, list]): Task => {
+    const ordered = [...list].sort((x, y) => -newestFirst(x, y))
+    let repairs = 0
+    const taskRuns = ordered.map((run) => {
+      const replaced = superseded(run)
+      return {
+        id: run.id,
+        parentId: run.parentId,
+        kind: run.kind,
+        approved: run.approved,
+        repair: run.parentId === null ? null : ++repairs,
+        superseded: replaced,
+        attention: attentionOf(run.kind, replaced),
+      }
+    })
+    const attention =
+      ATTENTION_ORDER.find((a) => taskRuns.some((r) => r.attention === a)) ??
+      'done'
+    const newest = [...taskRuns].reverse()
+    const representative =
+      newest.find(
+        (r) =>
+          r.attention === attention && (attention !== 'done' || !r.superseded),
+      ) ?? newest[0]
+    return {
+      id,
+      attention,
+      representative: representative?.id ?? id,
+      runs: taskRuns,
+      latestAt: ordered.at(-1)?.createdAt ?? '',
+      total: {
+        leadTimeMs: sumKnown(ordered.map((r) => r.leadTimeMs)),
+        costUsd: sumKnown(ordered.map((r) => r.costUsd)),
+      },
+    }
+  })
+  return tasks.sort(
+    (x, y) =>
+      ATTENTION_ORDER.indexOf(x.attention) -
+        ATTENTION_ORDER.indexOf(y.attention) ||
+      newestFirst({ createdAt: x.latestAt }, { createdAt: y.latestAt }) ||
+      (x.id < y.id ? 1 : -1),
+  )
+}
+
 export interface Diagnosis {
   kind: DiagnosisKind
   reason: string

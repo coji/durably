@@ -1,3 +1,5 @@
+import { useId } from 'react'
+
 import type { VerificationLog } from '../../../engine/providers/types'
 import {
   CHECKPOINT_NAME,
@@ -42,64 +44,53 @@ function ReviewBlock({ review }: { review: NonNullable<TraceNode['review']> }) {
   )
 }
 
-/**
- * The row's log: a verification row's full check output as file paths, or
- * the reserved slot for an agent log, which is not read in yet.
- */
-function LogSlot({ log }: { log: VerificationLog | null }) {
+/** A verification row's full check output, as file paths to copy. */
+function LogSlot({ log }: { log: VerificationLog }) {
   const { copied, copy } = useCopy()
+  // One per inspector: the design page draws several side by side.
+  const headingId = useId()
   return (
-    <section aria-labelledby="trace-log-slot" className="flex flex-col gap-1">
-      <h4 id="trace-log-slot" className="text-fg-2 text-xs font-medium">
+    <section aria-labelledby={headingId} className="flex flex-col gap-1">
+      <h4 id={headingId} className="text-fg-2 text-xs font-medium">
         {TRACE.log}
       </h4>
-      {log ? (
-        <>
-          <InlineFields>
-            {log.interrupted ? (
-              <InlineField label={TRACE.attempts}>
-                {DETAIL_TEXT.interruptedCheck}
-              </InlineField>
-            ) : null}
-            <InlineField label={TRACE.exitCode}>
-              <span
-                className="font-code"
-                title={
-                  log.exitCode === null ? DETAIL_TEXT.noExitCode : undefined
-                }
-              >
-                {log.exitCode ?? 'null'}
-              </span>
-            </InlineField>
-            <InlineField label={TRACE.stdout}>
-              <PathValue
-                path={log.stdoutPath}
-                label={COPY.stdoutPath}
-                copied={copied}
-                onCopy={copy}
-              />
-            </InlineField>
-            <InlineField label={TRACE.stderr}>
-              <PathValue
-                path={log.stderrPath}
-                label={COPY.stderrPath}
-                copied={copied}
-                onCopy={copy}
-              />
-            </InlineField>
-            {log.writeError ? (
-              <InlineField label={TRACE.writeError}>
-                <LogWriteError error={log.writeError} />
-              </InlineField>
-            ) : null}
-          </InlineFields>
-          <CopyAnnouncer copied={copied} />
-        </>
-      ) : (
-        <p className="border-line-strong text-fg-3 rounded-md border border-dashed px-3 py-2 text-xs">
-          {TRACE.logLater}
-        </p>
-      )}
+      <InlineFields>
+        {log.interrupted ? (
+          <InlineField label={TRACE.attempts}>
+            {DETAIL_TEXT.interruptedCheck}
+          </InlineField>
+        ) : null}
+        <InlineField label={TRACE.exitCode}>
+          <span
+            className="font-code"
+            title={log.exitCode === null ? DETAIL_TEXT.noExitCode : undefined}
+          >
+            {log.exitCode ?? 'null'}
+          </span>
+        </InlineField>
+        <InlineField label={TRACE.stdout}>
+          <PathValue
+            path={log.stdoutPath}
+            label={COPY.stdoutPath}
+            copied={copied}
+            onCopy={copy}
+          />
+        </InlineField>
+        <InlineField label={TRACE.stderr}>
+          <PathValue
+            path={log.stderrPath}
+            label={COPY.stderrPath}
+            copied={copied}
+            onCopy={copy}
+          />
+        </InlineField>
+        {log.writeError ? (
+          <InlineField label={TRACE.writeError}>
+            <LogWriteError error={log.writeError} />
+          </InlineField>
+        ) : null}
+      </InlineFields>
+      <CopyAnnouncer copied={copied} />
     </section>
   )
 }
@@ -158,7 +149,7 @@ export function TraceInspector({
       {n.stage === 'review' && n.kind === 'entry' && n.review ? (
         <ReviewBlock review={n.review} />
       ) : null}
-      <LogSlot log={n.verificationLog} />
+      {n.verificationLog ? <LogSlot log={n.verificationLog} /> : null}
       <p className="text-fg-3 text-xs">
         {TRACE.clockBefore}
         <time dateTime={origin} title={exactTime(origin)}>

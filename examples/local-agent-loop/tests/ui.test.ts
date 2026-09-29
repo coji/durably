@@ -50,10 +50,24 @@ import {
   type UsageTotals,
 } from '../src/engine/report.js'
 import { checkpointPaths } from '../src/engine/runner.js'
-import type { DiagnosisKind } from '../src/engine/status.js'
+import {
+  groupTasks,
+  taskRunIds,
+  needsAttention,
+  type DiagnosisKind,
+  type TaskRunInput,
+} from '../src/engine/status.js'
 import { repairLabels } from '../src/factory/repair.js'
 import { ReviewFindingTitles } from '../src/ui/components/ReviewFindingTitles.js'
-import { DESIGN } from '../src/ui/glossary.js'
+import {
+  DESIGN,
+  DETAIL,
+  DIAGNOSIS_TEXT,
+  KIND_NAME,
+  LIST,
+  REVIEW,
+  TREND,
+} from '../src/ui/glossary.js'
 import {
   commandNote,
   noteSaidByReason,
@@ -65,12 +79,14 @@ import {
   diagnosisText,
   humanCheckText,
   isPathDetail,
+  lensName,
   reviewDecision,
   squashedBranchField,
   roleName,
   stageName,
   stopName,
 } from '../src/ui/labels.js'
+import { RecordPanels } from '../src/ui/screens/run/RecordPanels.js'
 import { SpecPanel } from '../src/ui/screens/run/SpecPanel.js'
 import { BaselineSource } from '../src/ui/screens/run/StageTimings.js'
 
@@ -78,9 +94,12 @@ import { BaselineSource } from '../src/ui/screens/run/StageTimings.js'
 const KIND_TEXT_OK = (text: string) => !/[A-Za-z()（）]/.test(text)
 import { pollEvery } from '../src/ui/poll.js'
 import { parseRoute } from '../src/ui/route.js'
+import { TrendScreen } from '../src/ui/screens/CompareScreen.js'
 import { DesignScreen } from '../src/ui/screens/DesignScreen.js'
+import { ReviewHighlightsPanel } from '../src/ui/screens/run/ReviewsPanel.js'
 import { SummaryPanel } from '../src/ui/screens/run/SummaryPanel.js'
 import { UsagePanels } from '../src/ui/screens/run/UsagePanels.js'
+import { RunScreen } from '../src/ui/screens/RunScreen.js'
 import { RunsScreen } from '../src/ui/screens/RunsScreen.js'
 import {
   derivePipeline,
@@ -96,6 +115,7 @@ import {
   type RunRow,
   type RunsResponse,
   type TraceInput,
+  type TrendResponse,
   type TraceNode,
   startUiServer,
 } from '../src/ui/server.js'
@@ -135,6 +155,168 @@ describe('runName', () => {
     assert.equal(runName({ target: { kind: 'subject' } }), SUBJECT_RUN_NAME)
     assert.equal(SUBJECT_RUN_NAME, '同梱題材: calc の add を直す')
     assert.notEqual(runName(repo({ task: '   \n ' })), '')
+  })
+})
+
+describe('tasks', () => {
+  const at = (minute: number) =>
+    new Date(Date.UTC(2026, 8, 30, 0, minute)).toISOString()
+  const run = (
+    id: string,
+    minute: number,
+    kind: DiagnosisKind,
+    over: Partial<TaskRunInput> = {},
+  ): TaskRunInput => ({
+    id,
+    createdAt: at(minute),
+    parentId: null,
+    kind,
+    approved: false,
+    leadTimeMs: null,
+    costUsd: null,
+    ...over,
+  })
+
+  it('makes a first run and every repair below it one task, led by its first run', () => {
+    const tasks = groupTasks([
+      run('root', 0, 'finished', { approved: true }),
+      run('fix1', 10, 'finished', { parentId: 'root', approved: true }),
+      run('fix2', 20, 'finished', { parentId: 'fix1', approved: true }),
+      run('alone', 5, 'finished', { approved: true }),
+      // A parent that is gone leaves its repair a task of its own.
+      run('orphan', 30, 'finished', { parentId: 'gone', approved: true }),
+    ])
+    assert.deepEqual(
+      tasks.map((t) => [t.id, t.runs.map((r) => r.id), t.representative]),
+      [
+        ['orphan', ['orphan'], 'orphan'],
+        ['root', ['root', 'fix1', 'fix2'], 'fix2'],
+        ['alone', ['alone'], 'alone'],
+      ],
+    )
+  })
+
+  it('drops a stopped repair that a later approved repair of the same parent replaced', () => {
+    const [task] = groupTasks([
+      run('root', 0, 'finished', { approved: true }),
+      run('capped', 10, 'stopped', { parentId: 'root' }),
+      run('fixed', 20, 'finished', { parentId: 'root', approved: true }),
+    ])
+    assert.equal(task?.attention, 'done')
+    assert.equal(task?.representative, 'fixed')
+    assert.deepEqual(
+      task?.runs.map((r) => [r.id, r.superseded, r.attention]),
+      [
+        ['root', false, 'done'],
+        ['capped', true, 'done'],
+        ['fixed', false, 'done'],
+      ],
+    )
+    // An approved repair from before the stop does not replace it.
+    const [still] = groupTasks([
+      run('root', 0, 'finished', { approved: true }),
+      run('fixed', 10, 'finished', { parentId: 'root', approved: true }),
+      run('capped', 20, 'stopped', { parentId: 'root' }),
+    ])
+    assert.deepEqual(
+      [still?.attention, still?.representative],
+      ['stop', 'capped'],
+    )
+  })
+
+  it('puts decisions first, then unresolved stops, then open work, then the rest, newest first', () => {
+    const tasks = groupTasks([
+      run('done-new', 50, 'finished', { approved: true }),
+      run('running', 40, 'running'),
+      run('stopped-old', 1, 'stopped'),
+      run('stopped-new', 30, 'stopped'),
+      run('approval', 2, 'approval'),
+      run('pending', 45, 'pending'),
+      run('expired', 3, 'lease-expired'),
+      run('decided', 4, 'decided'),
+      run('spec', 5, 'spec-approval'),
+    ])
+    assert.deepEqual(
+      tasks.map((t) => [t.id, t.attention]),
+      [
+        ['spec', 'decision'],
+        ['approval', 'decision'],
+        ['stopped-new', 'stop'],
+        ['stopped-old', 'stop'],
+        ['pending', 'active'],
+        ['running', 'active'],
+        ['decided', 'active'],
+        ['expired', 'active'],
+        ['done-new', 'done'],
+      ],
+    )
+    assert.deepEqual(
+      tasks.filter((t) => needsAttention(t.attention)).map((t) => t.id),
+      ['spec', 'approval', 'stopped-new', 'stopped-old'],
+    )
+  })
+
+  it('sums lead time and cost over the task, unknown when any run is, and numbers its repairs', () => {
+    const [task] = groupTasks([
+      run('root', 0, 'finished', {
+        approved: true,
+        leadTimeMs: 60_000,
+        costUsd: 1.5,
+      }),
+      run('fix1', 10, 'stopped', {
+        parentId: 'root',
+        leadTimeMs: 30_000,
+        costUsd: 0.25,
+      }),
+      run('fix2', 20, 'finished', {
+        parentId: 'root',
+        approved: true,
+        leadTimeMs: 45_000,
+        costUsd: 1,
+      }),
+    ])
+    assert.deepEqual(task?.total, { leadTimeMs: 135_000, costUsd: 2.75 })
+    assert.deepEqual(
+      task?.runs.map((r) => [r.id, r.repair]),
+      [
+        ['root', null],
+        ['fix1', 1],
+        ['fix2', 2],
+      ],
+    )
+    const [partial] = groupTasks([
+      run('root', 0, 'finished', { leadTimeMs: 60_000, costUsd: 1.5 }),
+      run('fix', 10, 'finished', {
+        parentId: 'root',
+        leadTimeMs: 30_000,
+        costUsd: null,
+      }),
+    ])
+    assert.deepEqual(partial?.total, { leadTimeMs: 90_000, costUsd: null })
+  })
+
+  it('finds every run of the task a run belongs to, as groupTasks groups them', () => {
+    const runs = [
+      { id: 'root', parentId: null },
+      { id: 'fix1', parentId: 'root' },
+      { id: 'fix2', parentId: 'fix1' },
+      { id: 'other', parentId: null },
+    ]
+    assert.deepEqual(taskRunIds(runs, 'fix2'), ['root', 'fix1', 'fix2'])
+    assert.deepEqual(taskRunIds(runs, 'other'), ['other'])
+    assert.deepEqual(taskRunIds(runs, 'missing'), [])
+  })
+
+  it('shows a task by the run that needs a person, even when a newer run is running', () => {
+    const [task] = groupTasks([
+      run('root', 0, 'finished', { approved: true }),
+      run('waits', 10, 'approval', { parentId: 'root' }),
+      run('runs', 20, 'running', { parentId: 'root' }),
+    ])
+    assert.deepEqual(
+      [task?.attention, task?.representative],
+      ['decision', 'waits'],
+    )
   })
 })
 
@@ -301,7 +483,7 @@ describe('pipeline and trace', () => {
     assert.equal(p.label, '工程: 実装 2回、検証 2回、検証で停止')
   })
 
-  it('(d) names a stage the run passed by, such as approval when auto-approved', () => {
+  it('(d) shows approval as automatic on a run that finished without an approval wait', () => {
     const p = derivePipeline({
       status: 'completed',
       diagnosisKind: 'finished',
@@ -314,11 +496,12 @@ describe('pipeline and trace', () => {
         step('stage:4:finish:deliver', 21, 22),
       ]),
     })
+    // No approval wait, yet the run finished: its settings approved it.
     assert.equal(
       stagesOf(p).find(([stage]) => stage === 'approve')?.[1],
-      'not-reached',
+      'auto',
     )
-    assert.equal(p.label, '工程: 承認は通らず、完了まで終わった')
+    assert.equal(p.label, '工程: 承認は設定による自動、完了まで終わった')
   })
 
   it('(e) shows the baseline check and preflight only on a run that entered them', () => {
@@ -1618,6 +1801,100 @@ describe('diagnosis wording on the page', () => {
     )
   })
 
+  it('calls earlier blockers fixed only after a complete, passed last round, and counts findings only', () => {
+    const verdictOf = (lens: string, decision: string, round = 1) => ({
+      round,
+      lens,
+      decision,
+      line: 'notes',
+    })
+    const group = (titles: string[], verdicts = 0) => ({
+      count: titles.length,
+      titles,
+      verdicts: Array.from({ length: verdicts }, (_, i) =>
+        verdictOf(i === 0 ? 'correctness' : 'edge-cases', 'needsChanges'),
+      ),
+    })
+    const text = (h: Parameters<typeof ReviewHighlightsPanel>[0]['h']) =>
+      renderToStaticMarkup(createElement(ReviewHighlightsPanel, { h })).replace(
+        /<[^>]+>/g,
+        '\n',
+      )
+    const base = {
+      rounds: 2,
+      lastPasses: [],
+      earlier: group([], 1),
+      left: group(['L']),
+      open: group(['O']),
+    }
+    const passed = text({ ...base, last: 'passed', open: group([]) })
+    assert.ok(passed.includes(REVIEW.fixed))
+    assert.ok(!passed.includes(REVIEW.earlier))
+    // Only a verdict listed under the heading: no count, and not なし.
+    assert.match(
+      passed,
+      new RegExp(`${REVIEW.fixed}\\n+[^件]*${REVIEW.askedFor('')}`),
+    )
+    assert.doesNotMatch(passed, new RegExp(`${REVIEW.fixed}\\n+\\d+件`))
+    assert.match(passed, new RegExp(`${REVIEW.left}\\n+1件`))
+    const incomplete = text({ ...base, last: 'incomplete' })
+    assert.ok(incomplete.includes(REVIEW.incompleteLast))
+    assert.ok(incomplete.includes(REVIEW.earlier))
+    assert.ok(incomplete.includes(REVIEW.open))
+    assert.ok(!incomplete.includes(REVIEW.fixed))
+    assert.ok(!incomplete.includes(REVIEW.passedLast))
+    const failed = text({ ...base, last: 'blocked' })
+    assert.ok(failed.includes(REVIEW.failedLast))
+    assert.ok(failed.includes(REVIEW.earlier))
+  })
+
+  it('shows a passing verdict of the last round with how it ended, not as left', () => {
+    const h = {
+      rounds: 2,
+      last: 'passed' as const,
+      lastPasses: [
+        { round: 2, lens: 'correctness', decision: 'pass', line: 'ok' },
+        { round: 2, lens: 'edge-cases', decision: 'pass', line: 'ok' },
+      ],
+      earlier: { count: 0, titles: [], verdicts: [] },
+      left: { count: 0, titles: [], verdicts: [] },
+      open: { count: 0, titles: [], verdicts: [] },
+    }
+    const html = renderToStaticMarkup(
+      createElement(ReviewHighlightsPanel, { h }),
+    )
+    const text = html.replace(/<[^>]+>/g, '\n')
+    const pass = reviewDecision('pass').label
+    const status = text.indexOf(REVIEW.passedLast)
+    const left = text.indexOf(REVIEW.left)
+    const verdict = text.indexOf(
+      `${REVIEW.roundOf(2)} ${lensName('correctness')}`,
+    )
+    assert.ok(status >= 0 && verdict > status && verdict < left, text)
+    // Nothing was left: the heading has no count, and says なし.
+    assert.match(text, new RegExp(`${REVIEW.left}\\n+${REVIEW.none}`))
+    assert.doesNotMatch(text, /\d+件/)
+    assert.equal(text.slice(left).includes(pass), false)
+  })
+
+  it('says the fake runs it left out when they are all the window had', () => {
+    const html = renderToStaticMarkup(
+      createElement(TrendScreen, {
+        data: {
+          days: 30,
+          includeFake: false,
+          weeks: [],
+          runIds: [],
+          fakeExcluded: 1200,
+          groups: [],
+        },
+        onView: () => {},
+      }),
+    )
+    assert.ok(html.includes(TREND.onlyFake('30', '1,200')), html)
+    assert.ok(!html.includes(TREND.empty('30')))
+  })
+
   it('says in Japanese where the baseline verdict came from, and which run a reused one is from', () => {
     const now = '2026-09-27T12:00:00.000Z'
     const runId = '01REUSEDFROMRUN000000ABCDEF'
@@ -2450,6 +2727,69 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
       ])
       assert.equal(res.code, 0, res.stderr)
       assert.deepEqual(compared.comparison, JSON.parse(res.stdout))
+
+      // The tasks, their runs and their place are what `status` prints.
+      const tasksNow = await api<RunsResponse>(port, '/api/runs')
+      const statusCli = await demo(home, ['status', '--format', 'json'])
+      assert.equal(statusCli.code, 0, statusCli.stderr)
+      assert.deepEqual(
+        tasksNow.tasks,
+        (JSON.parse(statusCli.stdout) as { tasks: unknown }).tasks,
+      )
+      assert.deepEqual(
+        tasksNow.tasks
+          .filter((t) => ['decision', 'stop'].includes(t.attention))
+          .map((t) => t.representative)
+          .sort(),
+        tasksNow.runs
+          .filter((r) => r.needsHuman)
+          .map((r) => r.id)
+          .sort(),
+      )
+      // The trend is `compare --trend` over the same runs: every one of
+      // them is fake, so all are left out and counted as such.
+      const trend = await api<TrendResponse>(port, '/api/trend')
+      const trendCli = await demo(home, [
+        'compare',
+        '--trend',
+        '--format',
+        'json',
+      ])
+      assert.equal(trendCli.code, 0, trendCli.stderr)
+      assert.deepEqual(trend, JSON.parse(trendCli.stdout))
+      assert.equal(trend.fakeExcluded, finished.length)
+      assert.deepEqual(trend.groups, [])
+      const withFake = await demo(home, [
+        'compare',
+        '--trend',
+        '--include-fake',
+        '--format',
+        'json',
+      ])
+      assert.equal(
+        (JSON.parse(withFake.stdout) as TrendResponse).runIds.length,
+        finished.length,
+      )
+
+      // The detail says the run's state once, and keeps the evidence and
+      // each review's notes closed.
+      const html = renderToStaticMarkup(
+        createElement(RunScreen, {
+          data: await api<RunDetailResponse>(
+            port,
+            `/api/runs/${ids['approved']}`,
+          ),
+        }),
+      )
+      const detailText = htmlText(html)
+      assert.ok(detailText.includes(DETAIL.conclusion))
+      assert.ok(detailText.includes(REVIEW.highlights))
+      // One badge above the conclusion, and no sentence repeating it.
+      const header = html.slice(0, html.indexOf(DETAIL.conclusion))
+      assert.equal(header.match(/leading-4 font-medium/g)?.length, 1)
+      assert.ok(header.includes(`>${KIND_NAME.finished}<`) === false)
+      assert.ok(!detailText.includes(DIAGNOSIS_TEXT.finished))
+      assert.doesNotMatch(html, /<details[^>]*\bopen/)
       const counts = compared.comparison.groups.reduce<Record<string, number>>(
         (acc, g) => {
           for (const [c, n] of Object.entries(g.conclusions))
@@ -2646,10 +2986,10 @@ describe('repair runs on the page', { timeout: 120000 }, () => {
         .where('id', '=', parent.id)
         .execute()
       const before = await api<RunsResponse>(port, '/api/runs')
-      assert.deepEqual(before.runs.find((r) => r.id === parent.id)?.relations, {
-        parent: null,
-        children: [],
-      })
+      assert.deepEqual(
+        before.tasks.map((t) => t.runs.map((r) => r.id)),
+        [[parent.id]],
+      )
       const childInput = repairChildInput(home, parent.id)
       const child = await durably.jobs.agentLoop.trigger(childInput, {
         labels: repairLabels(childInput),
@@ -2657,20 +2997,30 @@ describe('repair runs on the page', { timeout: 120000 }, () => {
       await durably.db.destroy()
 
       const list = await api<RunsResponse>(port, '/api/runs')
-      assert.deepEqual(list.runs.find((r) => r.id === parent.id)?.relations, {
-        parent: null,
-        children: [{ id: child.id, name: 'Keep the currency on refunds' }],
-      })
-      assert.deepEqual(list.runs.find((r) => r.id === child.id)?.relations, {
-        parent: { id: parent.id, name: SUBJECT_RUN_NAME },
-        children: [],
-      })
+      assert.deepEqual(
+        [parent.id, child.id].map(
+          (id) => list.runs.find((r) => r.id === id)?.name,
+        ),
+        [SUBJECT_RUN_NAME, 'Keep the currency on refunds'],
+      )
+      // The parent and its repair are one task, shown by the repair.
+      assert.deepEqual(
+        list.tasks.map((t) => [
+          t.id,
+          t.runs.map((r) => r.id),
+          t.representative,
+        ]),
+        [[parent.id, [parent.id, child.id], child.id]],
+      )
       const detail = await api<RunDetailResponse>(
         port,
         `/api/runs/${parent.id}`,
       )
       assert.deepEqual(detail.report.lineage.children, [child.id])
-      assert.equal(detail.relations.children[0]?.id, child.id)
+      assert.deepEqual(
+        detail.lineage.map((r) => r.id),
+        [parent.id, child.id],
+      )
       const childDetail = await api<RunDetailResponse>(
         port,
         `/api/runs/${child.id}`,
@@ -2738,6 +3088,10 @@ describe('the design page', () => {
       assert.match(html, /pnpm demo retrigger --run/)
       // Two timelines per pane, each a treegrid.
       assert.equal(html.match(/role="treegrid"/g)?.length, 4)
+      // Every inspector names its log heading with an ID of its own.
+      assert.equal(html.match(/id="trace-log-slot"/g), null)
+      const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1])
+      assert.equal(new Set(ids).size, ids.length)
       assert.deepEqual(calls, [])
     } finally {
       globalThis.fetch = saved
@@ -2808,10 +3162,6 @@ describe('numbers on the screens', () => {
       conclusion: 'approved',
       leadTimeMs: 1_093_000,
       costUsd: 6.443984,
-      triage: null,
-      iterations: 1,
-      reviewRounds: 1,
-      relations: { parent: null, children: [] },
       pipeline: { stages: [], label: '' },
       live: null,
       uncertainCall: false,
@@ -2819,23 +3169,104 @@ describe('numbers on the screens', () => {
       ...over,
     }) as unknown as RunRow
 
-  it('writes cost, time and tokens as a person reads them, and unknown as 不明', () => {
+  it('shows the total on a stopped task that took more than one run, not on a single run', () => {
+    const stopped = {
+      status: 'failed',
+      conclusion: null,
+      diagnosis: { kind: 'stopped', next: [], failure: null },
+    } as unknown as Partial<RunRow>
+    const runs = [
+      row({
+        id: '01K6D2Q7XB3M9RKT4WFIRST0',
+        conclusion: 'changes_requested',
+        leadTimeMs: 600_000,
+        costUsd: 1,
+      }),
+      row({
+        ...stopped,
+        id: '01K6D2Q7XB3M9RKT4WREPAIR',
+        createdAt: '2026-09-30T11:20:00.000Z',
+        leadTimeMs: 300_000,
+        costUsd: 0.5,
+      }),
+      row({
+        ...stopped,
+        id: '01K6D2Q7XB3M9RKT4WALONE0',
+        createdAt: '2026-09-30T11:10:00.000Z',
+        leadTimeMs: 120_000,
+        costUsd: 0.25,
+      }),
+    ]
+    const parents: Record<string, string> = {
+      '01K6D2Q7XB3M9RKT4WREPAIR': '01K6D2Q7XB3M9RKT4WFIRST0',
+    }
+    const tasks = groupTasks(
+      runs.map((r) => ({
+        id: r.id,
+        createdAt: r.createdAt,
+        parentId: parents[r.id] ?? null,
+        kind: r.diagnosis.kind,
+        approved: false,
+        leadTimeMs: r.leadTimeMs,
+        costUsd: r.costUsd,
+      })),
+    )
+    assert.deepEqual(
+      tasks.map((t) => [t.attention, t.runs.length]),
+      [
+        ['stop', 2],
+        ['stop', 1],
+      ],
+    )
     const data = {
       exists: true,
       db: '/tmp/x.db',
       now,
-      runs: [
-        row({}),
-        row({
-          id: '01K6D2Q7XB3M9RKT4WUNKNWN',
-          leadTimeMs: null,
-          costUsd: null,
-        }),
-      ],
+      runs,
+      tasks,
     } as unknown as RunsResponse
     const list = htmlText(
       renderToStaticMarkup(createElement(RunsScreen, { data })),
     )
+    // The two-run task's line carries the total, labelled as one; the
+    // single run's line does not, and its cost appears nowhere.
+    assert.equal(list.match(new RegExp(LIST.total, 'g'))?.length, 1)
+    assert.match(list, /\$1\.50/)
+    assert.match(list, /15分/)
+    assert.ok(!list.includes('$0.25'))
+  })
+
+  it('writes cost, time and tokens as a person reads them, and unknown as 不明', () => {
+    const runs = [
+      row({}),
+      row({
+        id: '01K6D2Q7XB3M9RKT4WUNKNWN',
+        leadTimeMs: null,
+        costUsd: null,
+      }),
+    ]
+    const data = {
+      exists: true,
+      db: '/tmp/x.db',
+      now,
+      runs,
+      tasks: groupTasks(
+        runs.map((r) => ({
+          id: r.id,
+          createdAt: r.createdAt,
+          parentId: null,
+          kind: 'finished',
+          approved: true,
+          leadTimeMs: r.leadTimeMs,
+          costUsd: r.costUsd,
+        })),
+      ),
+    } as unknown as RunsResponse
+    const list = htmlText(
+      renderToStaticMarkup(createElement(RunsScreen, { data })),
+    )
+    // Nothing waits: the top says so in so many words.
+    assert.ok(list.includes(LIST.attentionEmpty))
     assert.match(list, /\$6\.44/)
     assert.match(list, /18分13秒/)
     assert.equal(list.match(/不明/g)?.length, 2)
@@ -2888,5 +3319,44 @@ describe('numbers on the screens', () => {
     assert.doesNotMatch(detail, /\d ?ms\b/)
     // The unknown human wait and cache reads say so, never 0.
     assert.ok((detail.match(/不明/g)?.length ?? 0) >= 3)
+
+    // A candidate's size, like every count, is written with separators.
+    const changes = {
+      files: 1204,
+      additions: 12345,
+      deletions: 6789,
+      diffPath: '/tmp/d.diff',
+      changedFilesPath: '/tmp/f.txt',
+    }
+    const records = htmlText(
+      renderToStaticMarkup(
+        createElement(RecordPanels, {
+          report: {
+            ...report,
+            candidate: { id: 'c1', branch: null, commit: null, changes },
+            candidates: [
+              {
+                id: 'c1',
+                branch: null,
+                commit: null,
+                changes,
+                iteration: 1,
+                sequence: 3,
+              },
+            ],
+            delivery: null,
+            inputs: {
+              task: null,
+              spec: null,
+              dispositions: null,
+              findings: null,
+            },
+            notes: [],
+          } as unknown as LoopReport,
+        }),
+      ),
+    )
+    assert.match(records, /1,204 ファイル、\+12,345 行、−6,789 行/)
+    assert.ok(!records.includes('12345'))
   })
 })

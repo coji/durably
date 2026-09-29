@@ -3,10 +3,11 @@ import {
   formatCost,
   formatCount,
   formatDuration,
+  formatPercent,
   formatTokens,
 } from '../../../engine/format'
 import { DataTable, Td, Th } from '../../components/DataTable'
-import { Panel } from '../../components/Layout'
+import { Collapsible } from '../../components/Layout'
 import { conclusionStatus } from '../../components/status'
 import {
   CALIBRATION_KEYS,
@@ -16,7 +17,7 @@ import {
   COMPARE,
 } from '../../glossary'
 import { runKindName, stageName, stopName, triageName } from '../../labels'
-import { CalibrationStat, STAT_HEAD, StatRow, statRange } from './StatTable'
+import { MedianCell, STAT_HEAD, StatRow, statRange } from './StatTable'
 
 type Group = Comparison['groups'][number]
 
@@ -32,11 +33,11 @@ function groupTitle(g: Group): string {
 
 function groupLine(g: Group): string {
   return [
-    COMPARE.runs(g.runs),
-    COMPARE.successes(g.successes),
-    COMPARE.successRate((g.successRate * 100).toFixed(0)),
+    COMPARE.runs(formatCount(g.runs)),
+    COMPARE.successes(formatCount(g.successes)),
+    COMPARE.successRate(formatPercent(g.successRate)),
     ...Object.entries(g.conclusions).map(
-      ([c, n]) => `${conclusionStatus(c).label} ${n}`,
+      ([c, n]) => `${conclusionStatus(c).label} ${formatCount(n)}`,
     ),
   ].join(COMMON.separator)
 }
@@ -59,8 +60,8 @@ function StageTable({ stages }: { stages: Group['stages'] }) {
           <Td>{stageName(st.stage)}</Td>
           <Td num>{statRange(st.workMs, formatDuration)}</Td>
           <Td num>{statRange(st.costUsd, formatCost)}</Td>
-          <Td num>{st.workMs.unknown}</Td>
-          <Td num>{st.costUsd.unknown}</Td>
+          <Td num>{formatCount(st.workMs.unknown)}</Td>
+          <Td num>{formatCount(st.costUsd.unknown)}</Td>
         </tr>
       ))}
     </DataTable>
@@ -89,16 +90,20 @@ function TriageTables({ triage }: { triage: Group['triage'] }) {
         {triage.map((t) => (
           <tr key={t.judgment}>
             <Td>{triageName(t.judgment)}</Td>
-            <Td num>{t.runs}</Td>
-            <Td num>{t.approved}</Td>
-            <Td num>{t.verificationFailed}</Td>
-            <Td num>{t.reviewCapReached}</Td>
+            <Td num>{formatCount(t.runs)}</Td>
+            <Td num>{formatCount(t.approved)}</Td>
+            <Td num>{formatCount(t.verificationFailed)}</Td>
+            <Td num>{formatCount(t.reviewCapReached)}</Td>
             <Td num>{formatCount(t.repairs.median)}</Td>
             <Td num>{formatCost(t.costUsd.median)}</Td>
-            <Td num>{t.judgment === 'routine' ? t.routineNeedingMore : '–'}</Td>
+            <Td num>
+              {t.judgment === 'routine'
+                ? formatCount(t.routineNeedingMore)
+                : COMMON.notApplicable}
+            </Td>
             <Td>
               {Object.entries(t.stops)
-                .map(([kind, n]) => `${stopName(kind)} ${n}`)
+                .map(([kind, n]) => `${stopName(kind)} ${formatCount(n)}`)
                 .join(COMMON.separator) || COMMON.none}
             </Td>
           </tr>
@@ -122,7 +127,7 @@ function TriageTables({ triage }: { triage: Group['triage'] }) {
             <Td>{triageName(t.judgment)}</Td>
             {CALIBRATION_KEYS.map((key) => (
               <Td key={key} num>
-                <CalibrationStat stat={t.calibration[key]} f={formatCount} />
+                <MedianCell stat={t.calibration[key]} f={formatCount} />
               </Td>
             ))}
           </tr>
@@ -132,11 +137,13 @@ function TriageTables({ triage }: { triage: Group['triage'] }) {
   )
 }
 
-/** One config group: its outcome line, its statistics, its stages, triage. */
+/**
+ * One config group, closed to its title and outcome line; open, its
+ * statistics, its stages and its triage.
+ */
 export function GroupPanel({ group: g }: { group: Group }) {
   return (
-    <Panel title={groupTitle(g)}>
-      <p className="mb-3 text-sm">{groupLine(g)}</p>
+    <Collapsible title={groupTitle(g)} note={groupLine(g)}>
       <DataTable head={STAT_HEAD}>
         <StatRow
           label={COMPARE.leadTime}
@@ -172,6 +179,6 @@ export function GroupPanel({ group: g }: { group: Group }) {
           <TriageTables triage={g.triage} />
         </div>
       ) : null}
-    </Panel>
+    </Collapsible>
   )
 }

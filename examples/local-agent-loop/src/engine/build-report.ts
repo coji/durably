@@ -2,22 +2,26 @@
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 
-import type { AnyDurably } from '@coji/durably'
+import type { AnyDurably, Run } from '@coji/durably'
 
 import { REPAIR_OF_LABEL, triageThatRuns } from '../factory/repair.js'
 import {
   BASELINE_STEP,
   REPAIR_SESSION_STEP,
   SPEC_CHECK_STEP,
+  REVIEW_LENSES,
   SPEC_FINAL_STEP,
   type RepairSessionRecord,
+  type ReviewLens,
 } from '../factory/types.js'
 import { classifyRun, stageStep } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import type { VerificationLog } from './providers/types.js'
 import {
   cacheReadRatio,
+  reviewHighlights,
   roleUsage,
+  specWallMs,
   stageTimings,
   stageUsage,
   stageVisits,
@@ -50,6 +54,7 @@ import {
   type RoleProfileRow,
   type TriageCalibration,
 } from './report.js'
+import type { DiagnosisKind, TaskRunInput } from './status.js'
 
 interface PersistedProfile {
   provider?: string
@@ -380,7 +385,6 @@ function reviewRoundsOf(
     round.set(review.lens, review)
     rounds.set(where.sequence, round)
   }
-  const lensOrder = ['correctness', 'edge-cases']
   return [...rounds]
     .sort(([x], [y]) => x - y)
     .map(([sequence, byLens], i) => {
@@ -390,7 +394,9 @@ function reviewRoundsOf(
         sequence,
         candidate: reviewed ? toReportCandidate(reviewed) : null,
         reviews: [...byLens.values()].sort(
-          (x, y) => lensOrder.indexOf(x.lens) - lensOrder.indexOf(y.lens),
+          (x, y) =>
+            REVIEW_LENSES.indexOf(x.lens as ReviewLens) -
+            REVIEW_LENSES.indexOf(y.lens as ReviewLens),
         ),
       }
     })
@@ -808,6 +814,42 @@ export async function repairChildren(
 }
 
 /**
+ * The run a repair run repairs: its label, or its stored input when it has
+ * none; null for a run that repairs nothing. The task list and `demo status`
+ * both group runs by it.
+ */
+export function repairParentId(run: {
+  labels?: Record<string, string> | undefined
+  input: unknown
+}): string | null {
+  return (
+    run.labels?.[REPAIR_OF_LABEL] ??
+    (run.input as PersistedInput | null)?.repairOf?.runId ??
+    null
+  )
+}
+
+/**
+ * A run as `groupTasks` reads it, from its report and its diagnosis: the one
+ * mapping `demo status` and the web UI share.
+ */
+export function taskRunInput(
+  run: Pick<Run, 'id' | 'createdAt' | 'labels' | 'input'>,
+  kind: DiagnosisKind,
+  report: Pick<LoopReport, 'summary'>,
+): TaskRunInput {
+  return {
+    id: run.id,
+    createdAt: run.createdAt,
+    parentId: repairParentId(run),
+    kind,
+    approved: report.summary.success,
+    leadTimeMs: report.summary.leadTimeMs,
+    costUsd: report.summary.costUsd,
+  }
+}
+
+/**
  * Every run's repair children, oldest first, from runs already read. A run
  * names its parent by its label, or by its stored input when it has none.
  */
@@ -821,9 +863,7 @@ export function repairChildrenByParent(
 ): Map<string, string[]> {
   const byParent = new Map<string, { id: string; createdAt: string }[]>()
   for (const run of runs) {
-    const parent =
-      run.labels?.[REPAIR_OF_LABEL] ??
-      (run.input as PersistedInput | null)?.repairOf?.runId
+    const parent = repairParentId(run)
     if (!parent) continue
     const children = byParent.get(parent) ?? []
     children.push(run)
@@ -979,6 +1019,7 @@ export async function buildReport(
   const candidates = sealedCandidates(steps)
   const candidate = lastCandidate(output, candidates)
   const reviewRounds = reviewRoundsOf(steps, candidates)
+  const reviews = lastReviews(run.output, waits, reviewRounds)
   const preflight = preflightOf(steps, rows)
   // Minimal preflight calls get a role row of their own, never folded into
   // the roles whose settings they checked.
@@ -1034,8 +1075,9 @@ export async function buildReport(
     candidates,
     repairSession: repairSession?.report ?? null,
     repairCalls: repairCallsOf(rows),
-    reviews: lastReviews(run.output, waits, reviewRounds),
+    reviews,
     reviewRounds,
+    reviewHighlights: reviewHighlights(reviewRounds, reviews, REVIEW_LENSES),
     specRounds: specRoundsOf(steps),
     spec: specOf(
       steps,
@@ -1051,6 +1093,7 @@ export async function buildReport(
     waits: waitRows,
     stageTimings: timings,
     stageTotalMs,
+    specWallMs: specWallMs(rows),
     runElapsedMs,
     versions,
     priceBasis: PRICE_BASIS,

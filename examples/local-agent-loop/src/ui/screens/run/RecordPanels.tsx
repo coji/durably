@@ -1,3 +1,4 @@
+import { formatCount } from '../../../engine/format'
 import type { LoopReport, ReportCandidateChanges } from '../../../engine/report'
 import { CopyAnnouncer, useCopy } from '../../components/copy'
 import { EmptyState } from '../../components/EmptyState'
@@ -10,7 +11,11 @@ import { squashedBranchField } from '../../labels'
 
 /** A candidate's size as the report recorded it at sealing. */
 function changesText(c: ReportCandidateChanges): string {
-  return RECORD.changesText(c.files, c.additions, c.deletions)
+  return RECORD.changesText(
+    formatCount(c.files),
+    formatCount(c.additions),
+    formatCount(c.deletions),
+  )
 }
 
 /** Every sealed candidate with its recorded size, oldest first. */
