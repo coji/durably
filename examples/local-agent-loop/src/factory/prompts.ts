@@ -5,7 +5,12 @@ import { z } from 'zod'
 
 import type { CandidateChanges, ReviewSnapshots } from '../engine/types.js'
 import type { UntrustedInput } from './target.js'
-import type { ReviewFinding, ReviewFindings, ReviewOutput } from './types.js'
+import type {
+  ReviewFinding,
+  ReviewFindings,
+  ReviewOutput,
+  SpecReviewResult,
+} from './types.js'
 
 /**
  * Fence caller-supplied text off as data.
@@ -567,7 +572,7 @@ function findingNote(finding: ReviewFinding): string {
  * prompt and the stored events without limit. Every listed blocker keeps its
  * place, title and the start of its body, which is what the repair needs.
  */
-function blockerNotes(blockers: ReviewFinding[]): string {
+export function blockerNotes(blockers: ReviewFinding[]): string {
   const shown = blockers.slice(0, FINDINGS_NOTES_LIMITS.findings)
   const rest = blockers.length - shown.length
   return [
@@ -576,6 +581,18 @@ function blockerNotes(blockers: ReviewFinding[]): string {
       ? [`- (${rest} more blocker${rest === 1 ? '' : 's'} not listed)`]
       : []),
   ].join('\n')
+}
+
+/**
+ * A spec reviewer's blocker text for a fix prompt or a settled note: the
+ * structured findings' title and body, one line each in the same
+ * `- [file:line] title — body` format and bounds as the code-repair notes,
+ * when the reviewer returned findings-json; the reviewer's own notes
+ * otherwise, for a verdict-only reviewer.
+ */
+export function specBlockerText(r: SpecReviewResult): string {
+  const blockers = r.findings?.blocker ?? []
+  return blockers.length > 0 ? blockerNotes(blockers) : r.notes
 }
 
 /** How much of a review's findings the report keeps; see `reportFindings`. */

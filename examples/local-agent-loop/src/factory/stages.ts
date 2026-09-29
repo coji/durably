@@ -35,6 +35,7 @@ import {
   reviewLocations,
   reviewPrompt,
   specAuthorPrompt,
+  specBlockerText,
   specFixPrompt,
   specReviewLocations,
   specReviewPrompt,
@@ -662,7 +663,7 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
             {
               label: 'SPEC_FINDINGS' as const,
               content: specBlockers(state)
-                .map((r) => `${r.name}:\n${r.notes}`)
+                .map((r) => `${r.name}:\n${specBlockerText(r)}`)
                 .join('\n\n'),
             },
             ...(state.settled.length > 0

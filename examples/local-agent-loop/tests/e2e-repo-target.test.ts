@@ -3164,6 +3164,108 @@ describe('spec stages', { timeout: 240000 }, () => {
     }
   })
 
+  it('carries a findings-json blocker’s title and body to the next spec-fix prompt, in the normal flow and after a spec-revise', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-spec-findings-carry-'))
+    const repo = await seedSpecRepo(root)
+    recording = recordFakeReviewCalls()
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger(
+        specRun(repo, {
+          maxRounds: 1,
+          reviewers: [
+            {
+              name: 'tech',
+              profile: FAKE_PROFILE,
+              invocation: {
+                command: null,
+                context: 'prompt',
+                output: 'findings-json',
+              },
+            },
+          ],
+          // Round 1 and round 2 both block, so a revise is needed twice
+          // before round 3 finally passes.
+          fakeScenario: {
+            specReviews: { tech: ['blocker', 'blocker', 'pass'] },
+          },
+        }),
+      )
+      const pendingSpecWait = async () => {
+        const current = await durably.getRun(run.id)
+        if (current?.status !== 'waiting') return null
+        return (
+          (await durably.getWaits(run.id)).find(
+            (w) => w.id === current.waitingOnWaitId && w.status === 'pending',
+          ) ?? null
+        )
+      }
+      // The reviewer's blocker body: a fixed, distinctive sentence the fake
+      // provider never repeats anywhere else in a spec prompt.
+      const sentence = 'the spec leaves an input undefined'
+      await waitFor(
+        async () => (await pendingSpecWait())?.name === 'spec-wait:1',
+        120000,
+        'the run waits on the round-1 blocked spec',
+      )
+      const first = await pendingSpecWait()
+      await signalSpecDecision(
+        durably,
+        run.id,
+        first?.id ?? '',
+        'revise',
+        'Please address the finding.',
+      )
+      await waitFor(
+        async () => (await pendingSpecWait())?.name === 'spec-wait:2',
+        120000,
+        'the revised spec is blocked again at round 2',
+      )
+      const second = await pendingSpecWait()
+      await signalSpecDecision(
+        durably,
+        run.id,
+        second?.id ?? '',
+        'revise',
+        'Please address the finding again.',
+      )
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        120000,
+        'the run completes once round 3 passes',
+      )
+      const specFixCalls = recording.calls.filter((c) => c.role === 'spec-fix')
+      assert.equal(specFixCalls.length, 2)
+      // Normal flow: round 1's blocker reaches the first spec-fix prompt as
+      // SPEC_FINDINGS, title and body both, not just a free-text summary.
+      assert.match(
+        specFixCalls[0]?.input ?? '',
+        /UNTRUSTED SPEC_FINDINGS [0-9a-f]{16}>>>[\s\S]*fake spec blocker[\s\S]*the spec leaves an input undefined/,
+      )
+      assert.doesNotMatch(
+        specFixCalls[0]?.input ?? '',
+        /UNTRUSTED SETTLED_FINDINGS/,
+      )
+      // After a spec-revise and a further round that blocks again: the
+      // second spec-fix prompt carries round 2's blocker as SPEC_FINDINGS
+      // and keeps round 1's settled blocker detail, sentence included.
+      assert.match(
+        specFixCalls[1]?.input ?? '',
+        /UNTRUSTED SPEC_FINDINGS [0-9a-f]{16}>>>[\s\S]*fake spec blocker[\s\S]*the spec leaves an input undefined/,
+      )
+      assert.match(
+        specFixCalls[1]?.input ?? '',
+        new RegExp(
+          `UNTRUSTED SETTLED_FINDINGS [0-9a-f]{16}>>>[\\s\\S]*${sentence}`,
+        ),
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
   it('stops as spec-check-failed before the baseline and the code when the script fails or prints a bad check', async () => {
     for (const [script, message] of [
       ['process.exit(3)\n', /exited with 3/],

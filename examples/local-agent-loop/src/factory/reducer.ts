@@ -1,5 +1,6 @@
 /** Pure factory state reducer. */
 import type { FactoryEvent, SpecEvent } from './events.js'
+import { specBlockerText } from './prompts.js'
 import type { FactoryState, SpecReviewResult, SpecVersion } from './types.js'
 
 export function reduce(state: FactoryState, event: FactoryEvent): FactoryState {
@@ -108,7 +109,7 @@ export function reduceSpec(state: SpecState, event: SpecEvent): SpecState {
         // What this fix addressed is settled for the reviews that follow.
         settled: [
           ...state.settled,
-          ...specBlockers(state).map((r) => `${r.name}: ${r.notes}`),
+          ...specBlockers(state).map((r) => `${r.name}: ${specBlockerText(r)}`),
         ],
         reviseNotes: null,
       }

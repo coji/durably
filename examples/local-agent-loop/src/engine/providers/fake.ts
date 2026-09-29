@@ -533,27 +533,38 @@ export class FakeProvider implements AgentProvider {
   async call(options: AgentCallOptions): Promise<AgentResult> {
     const started = Date.now()
     const review = options.review
+    // A spec fix has no `review` settings, but a recording test still wants
+    // its prompt, to see what feedback it was handed.
+    const specFix = options.role === 'spec-fix'
     // Recorded before anything else, so a call that is then cancelled is on
     // record too.
     const record: FakeReviewCall | null =
-      review && recording
+      (review || specFix) && recording
         ? {
             role: options.role,
             round: options.reviewRound ?? 1,
             workdir: options.workdir,
-            input: review.command ? options.prompt : null,
-            workdirFiles: isCommandModeReview(review)
-              ? ((await filesWithContent(options.workdir)) ?? {})
+            input: specFix
+              ? options.prompt
+              : review?.command
+                ? options.prompt
+                : null,
+            workdirFiles:
+              review && isCommandModeReview(review)
+                ? ((await filesWithContent(options.workdir)) ?? {})
+                : {},
+            readable: review
+              ? Object.fromEntries(
+                  await Promise.all(
+                    review.readableDirs.map(
+                      async (dir) =>
+                        [dir, await filesWithContent(dir)] as const,
+                    ),
+                  ),
+                )
               : {},
-            readable: Object.fromEntries(
-              await Promise.all(
-                review.readableDirs.map(
-                  async (dir) => [dir, await filesWithContent(dir)] as const,
-                ),
-              ),
-            ),
             localInstructionsAtStart:
-              review.context === 'local-instructions'
+              review?.context === 'local-instructions'
                 ? await readLocalInstructions(options.workdir)
                 : null,
             localInstructionsAtEnd: null,

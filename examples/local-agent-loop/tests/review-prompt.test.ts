@@ -17,8 +17,10 @@ import {
   REVIEW_STATUS_COMPLETE,
   reviewCommandPlaceholders,
   reviewPrompt,
+  specBlockerText,
 } from '../src/factory/prompts.js'
 import type { RepoTargetConfig, Target } from '../src/factory/target.js'
+import type { SpecReviewResult } from '../src/factory/types.js'
 import { RepoTarget } from '../src/targets/repo.js'
 import { SubjectTarget } from '../src/targets/subject.js'
 
@@ -988,5 +990,54 @@ describe('review command placeholders', () => {
       expandReviewCommand('/r {head}', { effort: null, base: null, head: 'h' }),
       '/r h',
     )
+  })
+})
+
+describe('a spec reviewer blocker as feedback text', () => {
+  const findingsJsonBlocker: SpecReviewResult = {
+    name: 'product',
+    decision: 'needsChanges',
+    // A short, generic verdict summary that never mentions the finding's
+    // own text: reproduces a reviewer whose notes do not carry the
+    // structured finding's title and body on their own.
+    notes: 'the spec needs another pass before it is ready',
+    findings: {
+      blocker: [
+        {
+          severity: 'blocker',
+          title: 'undefined rounding rule',
+          body: 'This exact sentence must reach the next spec-fix prompt.',
+          file: 'spec.md',
+          line: 4,
+        },
+      ],
+      nonBlocker: [],
+      counts: { blocker: 1, nonBlocker: 0 },
+    },
+  }
+
+  it('uses the blocking finding title and body, in the one-line note format, not just the notes summary', () => {
+    const text = specBlockerText(findingsJsonBlocker)
+    assert.equal(
+      text,
+      '- [spec.md:4] undefined rounding rule — This exact sentence must reach the next spec-fix prompt.',
+    )
+    // The scenario this reproduces: the sentence is genuinely absent from
+    // the reviewer's own notes, so only reading `findings.blocker` finds it.
+    assert.ok(
+      !findingsJsonBlocker.notes.includes(
+        'This exact sentence must reach the next spec-fix prompt.',
+      ),
+    )
+  })
+
+  it('falls back to the notes for a verdict-only reviewer with no structured findings', () => {
+    const verdictOnly: SpecReviewResult = {
+      name: 'tech',
+      decision: 'needsChanges',
+      notes: 'fake spec blocker: the spec leaves an input undefined',
+      findings: null,
+    }
+    assert.equal(specBlockerText(verdictOnly), verdictOnly.notes)
   })
 })
