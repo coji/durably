@@ -135,8 +135,7 @@ const SAID_BY_REASON = [
 
 export function commandNote(line: string): string | null {
   const { note } = splitCommand(line)
-  if (note === null || SAID_BY_REASON.some((en) => note.startsWith(en)))
-    return null
+  if (note === null || noteSaidByReason(note)) return null
   // Whole-note match: a note that gains a clause must get its own translation.
   return COMMAND_NOTES.find(([en]) => note === en)?.[1] ?? null
 }

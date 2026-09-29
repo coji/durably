@@ -3,7 +3,7 @@ import { commandNote, commandText } from '../labels'
 import { CopyAnnouncer, CopyButton, useCopy } from './copy'
 
 /** What a copy button says, from the command it copies. */
-export function commandLabel(command: string): string {
+function commandLabel(command: string): string {
   if (/^git .* worktree remove /.test(command))
     return COMMAND_COPY.worktreeRemove
   const sub = /\bdemo (\S+)/.exec(command)?.[1]
@@ -38,20 +38,19 @@ export function commandLabel(command: string): string {
 export function Commands({ lines }: { lines: string[] }) {
   const { copied, copy } = useCopy()
   if (lines.length === 0) return null
-  const commands = lines.map(commandText)
-  const notes = lines.flatMap((line, i) => {
-    const note = commandNote(line)
-    const command = commands[i] as string
-    return note ? [{ command, label: commandLabel(command), note }] : []
+  const commands = lines.map((line) => {
+    const command = commandText(line)
+    return { command, label: commandLabel(command), note: commandNote(line) }
   })
+  const notes = commands.filter((c) => c.note !== null)
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap gap-2">
-        {commands.map((command) => (
+        {commands.map(({ command, label }) => (
           <CopyButton
             key={command}
             text={command}
-            label={commandLabel(command)}
+            label={label}
             copied={copied}
             onCopy={copy}
           />
@@ -73,7 +72,7 @@ export function Commands({ lines }: { lines: string[] }) {
           {COPY.commandText}
         </summary>
         <ul className="mt-1 flex flex-col gap-2">
-          {commands.map((command) => (
+          {commands.map(({ command }) => (
             <li key={command}>
               <code className="bg-sunken font-code text-fg block overflow-x-auto rounded-sm px-2 py-1 text-sm whitespace-pre">
                 {command}

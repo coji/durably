@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-export const PAGE_TITLE_ID = 'page-title'
+const PAGE_TITLE_ID = 'page-title'
 
 export function focusPageTitle() {
   document.getElementById(PAGE_TITLE_ID)?.focus()

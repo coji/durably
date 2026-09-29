@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 
 import { pollJson } from './poll'
 
-export const REFRESH_MS = 3000
+const REFRESH_MS = 3000
 
 export interface PollState<T> {
   data: T | null
