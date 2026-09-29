@@ -3074,6 +3074,73 @@ describe('numbers on the screens', () => {
       ...over,
     }) as unknown as RunRow
 
+  it('shows the total on a stopped task that took more than one run, not on a single run', () => {
+    const stopped = {
+      status: 'failed',
+      conclusion: null,
+      diagnosis: { kind: 'stopped', next: [], failure: null },
+    } as unknown as Partial<RunRow>
+    const runs = [
+      row({
+        id: '01K6D2Q7XB3M9RKT4WFIRST0',
+        conclusion: 'changes_requested',
+        leadTimeMs: 600_000,
+        costUsd: 1,
+      }),
+      row({
+        ...stopped,
+        id: '01K6D2Q7XB3M9RKT4WREPAIR',
+        createdAt: '2026-09-30T11:20:00.000Z',
+        leadTimeMs: 300_000,
+        costUsd: 0.5,
+      }),
+      row({
+        ...stopped,
+        id: '01K6D2Q7XB3M9RKT4WALONE0',
+        createdAt: '2026-09-30T11:10:00.000Z',
+        leadTimeMs: 120_000,
+        costUsd: 0.25,
+      }),
+    ]
+    const parents: Record<string, string> = {
+      '01K6D2Q7XB3M9RKT4WREPAIR': '01K6D2Q7XB3M9RKT4WFIRST0',
+    }
+    const tasks = groupTasks(
+      runs.map((r) => ({
+        id: r.id,
+        createdAt: r.createdAt,
+        parentId: parents[r.id] ?? null,
+        kind: r.diagnosis.kind,
+        approved: false,
+        leadTimeMs: r.leadTimeMs,
+        costUsd: r.costUsd,
+      })),
+    )
+    assert.deepEqual(
+      tasks.map((t) => [t.attention, t.runs.length]),
+      [
+        ['stop', 2],
+        ['stop', 1],
+      ],
+    )
+    const data = {
+      exists: true,
+      db: '/tmp/x.db',
+      now,
+      runs,
+      tasks,
+    } as unknown as RunsResponse
+    const list = htmlText(
+      renderToStaticMarkup(createElement(RunsScreen, { data })),
+    )
+    // The two-run task's line carries the total, labelled as one; the
+    // single run's line does not, and its cost appears nowhere.
+    assert.equal(list.match(new RegExp(LIST.total, 'g'))?.length, 1)
+    assert.match(list, /\$1\.50/)
+    assert.match(list, /15分/)
+    assert.ok(!list.includes('$0.25'))
+  })
+
   it('writes cost, time and tokens as a person reads them, and unknown as 不明', () => {
     const runs = [
       row({}),

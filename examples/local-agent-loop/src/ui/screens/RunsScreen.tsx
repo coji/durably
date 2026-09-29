@@ -82,7 +82,8 @@ function TaskRuns({
 
 /**
  * The facts at the end of a task's line. A finished task shows its time and
- * cost over every run, marked as a total when it took more than one.
+ * cost over every run, marked as a total when it took more than one; an open
+ * task shows that total only when it took more than one run.
  */
 function Meta({ task, rep, now }: { task: Task; rep: RunRow; now: string }) {
   const finished = task.attention === 'done'
@@ -90,7 +91,9 @@ function Meta({ task, rep, now }: { task: Task; rep: RunRow; now: string }) {
   return (
     <>
       {several ? <span>{LIST.runs(formatCount(task.runs.length))}</span> : null}
-      {finished ? <TaskTotal total={task.total} several={several} /> : null}
+      {finished || several ? (
+        <TaskTotal total={task.total} several={several} />
+      ) : null}
       <Ago iso={rep.createdAt} now={now} />
     </>
   )

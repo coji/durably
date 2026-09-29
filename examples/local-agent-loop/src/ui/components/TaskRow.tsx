@@ -112,8 +112,8 @@ export function TaskRow({
 }
 
 /**
- * A finished task's time and cost, over every run it took; labelled as a
- * total when it took more than one.
+ * A task's time and cost, over every run it took; labelled as a total when
+ * it took more than one.
  */
 export function TaskTotal({
   total,

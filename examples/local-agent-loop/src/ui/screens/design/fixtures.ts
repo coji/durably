@@ -4,6 +4,7 @@
  * still come from the glossary. Nothing here is read from the API.
  */
 import type { UsageTotals } from '../../../engine/report'
+import { conclusionStatus, kindStatus } from '../../components/status'
 import { PIPELINE_WORDS } from '../../glossary'
 import { stageName } from '../../labels'
 import type {
@@ -83,6 +84,29 @@ export const PIPELINES = {
   done: pipeline(null, 'done'),
   autoApproved: autoApproved(),
 }
+
+/**
+ * Tasks that took more than one run, which show their total on the line: one
+ * still stopped at the top of the list, one approved.
+ */
+export const MULTI_RUN = [
+  {
+    task: TASKS[1],
+    status: kindStatus('stopped'),
+    pipeline: 'stopped',
+    runs: '2',
+    total: { leadTimeMs: 1_512_000, costUsd: 4.37 },
+    minutes: 41,
+  },
+  {
+    task: TASKS[3],
+    status: conclusionStatus('approved'),
+    pipeline: 'autoApproved',
+    runs: '3',
+    total: { leadTimeMs: 2_331_000, costUsd: 7.12 },
+    minutes: 24,
+  },
+] as const
 
 /** A finished run whose settings approved it, so approval had no wait. */
 function autoApproved(): Pipeline {

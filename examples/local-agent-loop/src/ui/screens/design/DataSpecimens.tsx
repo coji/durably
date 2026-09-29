@@ -30,7 +30,7 @@ import {
   LIST,
   TRACE,
 } from '../../glossary'
-import { NOW, PIPELINES, TASKS, USAGE } from './fixtures'
+import { MULTI_RUN, NOW, PIPELINES, TASKS, USAGE } from './fixtures'
 import { State } from './Specimen'
 import { TOTALS, TRACES } from './trace-fixtures'
 
@@ -113,25 +113,25 @@ export function TaskRowStates() {
       </State>
       <State label={DESIGN.state.total}>
         <TaskList>
-          <TaskRow
-            status={conclusionStatus('approved')}
-            name={TASKS[1].name}
-            href="#/design"
-            id={TASKS[1].id}
-            toggleLabel={TASKS[1].name}
-            meta={
-              <>
-                <span>{LIST.runs('3')}</span>
-                <TaskTotal
-                  total={{ leadTimeMs: 2_331_000, costUsd: 7.12 }}
-                  several
-                />
-                <span>{ago(24)}</span>
-              </>
-            }
-          >
-            <StageTrack pipeline={PIPELINES.autoApproved} />
-          </TaskRow>
+          {MULTI_RUN.map((r) => (
+            <TaskRow
+              key={r.task.id}
+              status={r.status}
+              name={r.task.name}
+              href="#/design"
+              id={r.task.id}
+              toggleLabel={r.task.name}
+              meta={
+                <>
+                  <span>{LIST.runs(r.runs)}</span>
+                  <TaskTotal total={r.total} several />
+                  <span>{ago(r.minutes)}</span>
+                </>
+              }
+            >
+              <StageTrack pipeline={PIPELINES[r.pipeline]} />
+            </TaskRow>
+          ))}
         </TaskList>
       </State>
     </>
