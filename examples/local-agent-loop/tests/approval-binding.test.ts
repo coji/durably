@@ -111,10 +111,7 @@ describe('candidate-bound approval', { timeout: 180000 }, () => {
         [decideRun(durably, one, other.id, 'approved'), /not a wait of run/],
         [decideRun(durably, one, 'no-such-wait', 'rejected'), /not a wait/],
         // A candidate approval is not a blocked spec.
-        [
-          reviseSpec(durably, one, 'notes'),
-          /not waiting for a decision on a blocked spec/,
-        ],
+        [reviseSpec(durably, one, 'notes'), /not a spec-blocked wait/],
       ]
       for (const [refused, message] of refusals)
         await assert.rejects(refused, message)
@@ -300,7 +297,7 @@ describe('spec-bound decisions', { timeout: 180000 }, () => {
       await decideRun(durably, run.id, wait.id, 'rejected')
       await assert.rejects(
         reviseSpec(durably, run.id, 'too late'),
-        /not waiting for a decision on a blocked spec/,
+        /refusing a second decision/,
       )
       assert.deepEqual((await durably.getWait(wait.id))?.payload, {
         kind: 'spec',

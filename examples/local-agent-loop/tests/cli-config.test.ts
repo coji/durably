@@ -702,6 +702,7 @@ describe('archive and unarchive', { timeout: 120000 }, () => {
     const durably = createAgentDurably({ stateRoot: box.stateRoot })
     let stopped = ''
     let pending = ''
+    let delivered = ''
     try {
       await durably.migrate()
       const subject = async () =>
@@ -716,6 +717,16 @@ describe('archive and unarchive', { timeout: 120000 }, () => {
       stopped = await subject()
       await durably.cancel(stopped)
       pending = await subject()
+      // Approved and delivered: it needs no one, so there is nothing to archive.
+      delivered = await subject()
+      await durably.db
+        .updateTable('durably_runs')
+        .set({
+          status: 'completed',
+          output: JSON.stringify({ approved: true, conclusion: 'approved' }),
+        })
+        .where('id', '=', delivered)
+        .execute()
     } finally {
       await durably.db.destroy()
     }
@@ -739,6 +750,13 @@ describe('archive and unarchive', { timeout: 120000 }, () => {
     assert.notEqual(open.code, 0)
     assert.match(open.stderr, /it is pending, not stopped/)
     assert.equal(existsSync(archiveMarkerOf(box.stateRoot, pending)), false)
+    const finished = await demo(box, ['archive', '--run', delivered])
+    assert.notEqual(finished.code, 0)
+    assert.match(
+      finished.stderr,
+      /refusing to archive \S+: it finished \(approved\) and needs no one; only a stopped run is archived/,
+    )
+    assert.equal(existsSync(archiveMarkerOf(box.stateRoot, delivered)), false)
 
     const snapshot = rows(box)
     const archived = await demo(box, ['archive', '--run', stopped])

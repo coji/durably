@@ -18,7 +18,7 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises'
-import { request } from 'node:http'
+import { request, type IncomingHttpHeaders } from 'node:http'
 import { connect, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
@@ -52,6 +52,7 @@ import {
 } from '../src/engine/report.js'
 import { checkpointPaths } from '../src/engine/runner.js'
 import {
+  archivable,
   groupTasks,
   taskRunIds,
   needsAttention,
@@ -255,12 +256,21 @@ describe('tasks', () => {
       [task?.attention, task?.representative],
       ['decision', 'fix'],
     )
-    // Only a run that has stopped can be archived: an open run's marker
-    // changes nothing.
+    // Only a run that has stopped can be archived: the marker of an open
+    // run, or of one that finished and needs no one, changes nothing.
     const [open] = groupTasks([run('wait', 0, 'approval', { archived: true })])
     assert.deepEqual(
       [open?.attention, open?.runs[0]?.archived],
       ['decision', false],
+    )
+    const [done] = groupTasks([run('ok', 0, 'finished', { archived: true })])
+    assert.deepEqual(
+      [done?.attention, done?.runs[0]?.archived],
+      ['done', false],
+    )
+    assert.deepEqual(
+      (['stopped', 'finished', 'approval', 'pending'] as const).map(archivable),
+      [true, false, false, false],
     )
   })
 
@@ -2220,7 +2230,7 @@ function get(
     headers?: Record<string, string>
     body?: string
   } = {},
-): Promise<{ status: number; body: string }> {
+): Promise<{ status: number; body: string; headers: IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const req = request(
       {
@@ -2237,7 +2247,9 @@ function get(
         let body = ''
         res.setEncoding('utf8')
         res.on('data', (chunk: string) => (body += chunk))
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
+        res.on('end', () =>
+          resolve({ status: res.statusCode ?? 0, body, headers: res.headers }),
+        )
       },
     )
     req.on('error', reject)
@@ -3612,6 +3624,22 @@ describe('web UI actions', { timeout: 300000 }, () => {
       ]
       for (const [label, sent, status] of refused)
         assert.equal((await sent).status, status, label)
+      // A malformed run ID is the request's fault, checked after the method,
+      // and the server keeps answering after it.
+      const malformed: [string, Promise<{ status: number }>, number][] = [
+        ['GET', get(port, '/api/runs/%E0/archive'), 405],
+        ['POST', post('/api/runs/%E0/archive'), 400],
+        ['read', get(port, '/api/runs/%E0'), 400],
+      ]
+      for (const [label, sent, status] of malformed)
+        assert.equal((await sent).status, status, `malformed ${label}`)
+      assert.equal((await get(port, '/api/runs')).status, 200)
+      // Another localhost origin cannot read the page that carries the token.
+      const cross = await get(port, '/', {
+        headers: { origin: 'http://localhost:5173' },
+      })
+      assert.equal(cross.status, 200)
+      assert.equal(cross.headers['access-control-allow-origin'], undefined)
       assert.equal(snapshot(dbPath(stateRoot)), before)
       assert.equal(existsSync(join(stateRoot, 'archived')), false)
 
@@ -3670,10 +3698,7 @@ describe('web UI actions', { timeout: 300000 }, () => {
         notes: 'tighten it',
       })
       assert.equal(notSpec.status, 409)
-      assert.match(
-        JSON.parse(notSpec.body).error,
-        /not waiting for a decision on a blocked spec/,
-      )
+      assert.match(JSON.parse(notSpec.body).error, /not a spec-blocked wait/)
       assert.equal((await post(`/api/runs/nope/approve`, {})).status, 404)
       assert.equal(snapshot(dbPath(stateRoot)), before)
       const approved = await post(`/api/runs/${toApprove}/approve`, {

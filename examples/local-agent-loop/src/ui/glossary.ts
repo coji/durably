@@ -465,6 +465,8 @@ export const ACTION = {
   rejectNote: '候補は納品せず、この実行を終えます。',
   specApproveNote: '直すべき指摘が残ったまま、いまの仕様で実装に進みます。',
   specRejectNote: '実装を始めずに、この実行を終えます。',
+  retriggerNote:
+    '保存済みの入力で新しい実行を始めます。エージェントを最初から呼び直すので、費用がかかります。',
   archiveNote:
     '実行の記録はそのまま残ります。終わったタスクに移し、そこからいつでも戻せます。',
   notesLabel: '仕様に直してほしいこと',
@@ -961,6 +963,7 @@ export const DESIGN = {
     stoppedNoRetry: '再実行できない停止',
     approveAsking: '承認の確認',
     archiveAsking: 'アーカイブの確認',
+    retriggerAsking: '再実行の確認',
     archived: 'アーカイブ済み',
     archivedRun: 'タスクの実行の中のアーカイブ済み',
     result: '操作の結果',

@@ -140,8 +140,16 @@ const OPEN_KINDS: readonly DiagnosisKind[] = [
   'decided',
 ]
 
-/** Only a run that has stopped for good can be archived. */
-const ARCHIVABLE_KINDS: readonly DiagnosisKind[] = ['stopped', 'finished']
+/**
+ * Whether a person can archive a run of this diagnosis: only a stop, which
+ * `diagnose` gives only to a terminal run (failed, cancelled, or completed
+ * without an approved delivery). A run that finished approved needs no one,
+ * and an open one is decided or worked instead. `demo archive`, `status`,
+ * the web UI and `groupTasks` all ask this one function.
+ */
+export function archivable(kind: DiagnosisKind): boolean {
+  return kind === 'stopped'
+}
 
 function attentionOf(
   kind: DiagnosisKind,
@@ -215,8 +223,7 @@ export function groupTasks(runs: TaskRunInput[]): Task[] {
     let repairs = 0
     const taskRuns = ordered.map((run) => {
       const replaced = superseded(run)
-      const archived =
-        (run.archived ?? false) && ARCHIVABLE_KINDS.includes(run.kind)
+      const archived = (run.archived ?? false) && archivable(run.kind)
       return {
         id: run.id,
         parentId: run.parentId,

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import type { ReviewHighlights } from '../../engine/report'
 import { ACTION } from '../glossary'
@@ -8,6 +8,7 @@ import { BUTTON, BUTTON_PRIMARY } from './button'
 import { Commands } from './Commands'
 import {
   commandLines,
+  lineOf,
   offered,
   only,
   type ActionTarget,
@@ -33,21 +34,31 @@ type Ask = (name: ActionName) => {
 /**
  * Which action of the row is asking, and the hooks its button reports to;
  * `onChange` hears it too, so a list can set its other rows' actions aside.
+ * `offerOf` names what the run offers for an action now: once a poll shows
+ * the asked action gone or on another wait, decided elsewhere, the question
+ * closes and the refreshed next steps show.
  */
 function useAsking(
   initial: ActionName | undefined,
+  offerOf: (name: ActionName) => string | null,
   onChange?: (name: ActionName | null) => void,
 ) {
-  const [asking, setAskingState] = useState<ActionName | null>(initial ?? null)
+  const [asked, setAsked] = useState(() =>
+    initial ? { name: initial, offer: offerOf(initial) } : null,
+  )
   const setAsking = (name: ActionName | null) => {
-    setAskingState(name)
+    setAsked(name ? { name, offer: offerOf(name) } : null)
     onChange?.(name)
   }
+  const gone = asked !== null && offerOf(asked.name) !== asked.offer
+  useEffect(() => {
+    if (gone) setAsking(null)
+  })
   const ask: Ask = (name) => ({
     initialStage: initial === name ? 'confirming' : 'idle',
     onStageChange: (stage) => setAsking(stage === 'idle' ? null : name),
   })
-  return { asking, setAsking, ask }
+  return { asking: gone ? null : (asked?.name ?? null), setAsking, ask }
 }
 
 /** What approving says first: the reviews in short, or what a spec approval skips. */
@@ -83,6 +94,7 @@ function DecisionButtons({
     <>
       {can.approve ? (
         <ActionButton
+          key={`approve-${waitId}`}
           label={approve}
           look={can.spec ? 'default' : first}
           onAction={press('approve', approve, { waitId })}
@@ -97,6 +109,7 @@ function DecisionButtons({
       ) : null}
       {can.reject ? (
         <ActionButton
+          key={`reject-${waitId}`}
           label={ACTION.reject}
           look="quiet"
           onAction={press('reject', ACTION.reject, { waitId })}
@@ -134,6 +147,7 @@ function StopButtons({
           look={first}
           onAction={press('retrigger', ACTION.retrigger)}
           {...ask('retrigger')}
+          confirm={{ command: can.retrigger, details: ACTION.retriggerNote }}
         />
       ) : null}
       {can.archive ? (
@@ -182,7 +196,8 @@ function looks(
  * What a person can do to this run from the page, each through the same
  * function as its CLI command: decide an approval or a blocked spec, run a
  * safe stop again, or archive a stop. `lead` sets the first action in ink,
- * for the one screen it leads; reject and archive stay quiet and ask first.
+ * for the one screen it leads; reject and archive stay quiet. Approve,
+ * reject, retrigger and archive ask first; spec revision takes notes first.
  * While one action asks, works, or takes notes, the others step aside. The
  * CLI commands, the report and status ones among them, wait in one closed
  * disclosure below the buttons; with no button to press they are the next
@@ -209,8 +224,12 @@ export function RunActions({
   /** Hears which action asks, works, or takes notes, and null after. */
   onAsking?: (name: ActionName | null) => void
 }) {
-  const { asking, setAsking, ask } = useAsking(initialAsking, onAsking)
   const offer = offered(run)
+  const { asking, setAsking, ask } = useAsking(
+    initialAsking,
+    (name) => `${lineOf(offer, name) ?? ''} ${run.waitId ?? ''}`,
+    onAsking,
+  )
   const can = only(offer, asking)
   const send = (action: ActionName, label: string, body?: object) =>
     act({ runId: run.id, name: run.name, action, label, body })

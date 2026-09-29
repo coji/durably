@@ -50,21 +50,34 @@ export function commandLines(run: ActionTarget, offer: Offered): string[] {
   return [...run.diagnosis.next, ...(offer.archive ? [offer.archive] : [])]
 }
 
+/** The CLI line an action is offered as; null where the run does not offer it. */
+export function lineOf(can: Offered, name: ActionName): string | null {
+  const lines: Record<ActionName, string | null> = {
+    approve: can.approve,
+    reject: can.reject,
+    'spec-revise': can.revise,
+    retrigger: can.retrigger,
+    archive: can.archive,
+    unarchive: can.unarchive,
+  }
+  return lines[name]
+}
+
 /**
  * The offered actions with every one but the asking one set aside, so the
  * row holds one decision while an action asks, works, or takes notes.
  */
 export function only(can: Offered, asking: ActionName | null): Offered {
   if (asking === null) return can
-  const keep = (name: ActionName, line: string | null) =>
-    asking === name ? line : null
+  const keep = (name: ActionName) =>
+    asking === name ? lineOf(can, name) : null
   return {
     spec: can.spec,
-    approve: keep('approve', can.approve),
-    reject: keep('reject', can.reject),
-    revise: keep('spec-revise', can.revise),
-    retrigger: keep('retrigger', can.retrigger),
-    archive: keep('archive', can.archive),
-    unarchive: keep('unarchive', can.unarchive),
+    approve: keep('approve'),
+    reject: keep('reject'),
+    revise: keep('spec-revise'),
+    retrigger: keep('retrigger'),
+    archive: keep('archive'),
+    unarchive: keep('unarchive'),
   }
 }

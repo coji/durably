@@ -88,6 +88,7 @@ import {
   type WaitRow,
 } from '../engine/report.js'
 import {
+  archivable,
   diagnoseRun,
   groupTasks,
   needsHuman,
@@ -1271,7 +1272,7 @@ async function inspect(
   const live = liveElapsed(run, report.attempts, now)
   const decides =
     diagnosis.kind === 'approval' || diagnosis.kind === 'spec-approval'
-  const shelved = archived.has(run.id) && TERMINAL_STATUSES.includes(run.status)
+  const shelved = archived.has(run.id) && archivable(diagnosis.kind)
   return {
     name: runName(run.input),
     createdAt: run.createdAt,
@@ -1281,7 +1282,7 @@ async function inspect(
     archived: shelved,
     archiveCommand: shelved
       ? `${DEMO} unarchive --run ${run.id}`
-      : diagnosis.kind === 'stopped' && TERMINAL_STATUSES.includes(run.status)
+      : archivable(diagnosis.kind)
         ? `${DEMO} archive --run ${run.id}`
         : null,
     waitId: decides ? (run.waitingOnWaitId ?? null) : null,
@@ -1332,15 +1333,26 @@ const ACTIONS = [
 ] as const
 type Action = (typeof ACTIONS)[number]
 
-/** A write's path: `/api/runs/<id>/<action>`; null for any other path. */
+/**
+ * A write's path: `/api/runs/<id>/<action>`; null for any other path. The
+ * ID stays encoded, so telling a write from a read never throws; it is
+ * decoded with `runIdOf` once the request has passed its checks.
+ */
 export function actionPath(
   pathname: string,
-): { runId: string; action: Action } | null {
+): { rawId: string; action: Action } | null {
   const match = /^\/api\/runs\/([^/]+)\/([a-z-]+)$/.exec(pathname)
   const action = ACTIONS.find((a) => a === match?.[2])
-  return match?.[1] && action
-    ? { runId: decodeURIComponent(match[1]), action }
-    : null
+  return match?.[1] && action ? { rawId: match[1], action } : null
+}
+
+/** A run ID from its path segment; a malformed escape is the request's fault. */
+function runIdOf(raw: string): string {
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    throw new HttpError(400, 'malformed run id in the path')
+  }
 }
 
 /** The API, without a listening socket. */
@@ -1529,7 +1541,11 @@ function createUiApi() {
   ): Promise<unknown> {
     const db = source()
     if (!db) throw new HttpError(404, `no run ${runId}`)
-    await (migrated ??= db.migrate())
+    // A failed migration is not kept, so the next write tries again.
+    await (migrated ??= db.migrate().catch((error: unknown) => {
+      migrated = null
+      throw error
+    }))
     const text = (v: unknown) => (typeof v === 'string' ? v : '')
     try {
       switch (action) {
@@ -1563,7 +1579,7 @@ function createUiApi() {
     if (pathname === '/api/compare') return compare()
     if (pathname === '/api/trend') return trend()
     const match = /^\/api\/runs\/([^/]+)$/.exec(pathname)
-    if (match?.[1]) return run(decodeURIComponent(match[1]))
+    if (match?.[1]) return run(runIdOf(match[1]))
     throw new HttpError(404, `no such endpoint: ${pathname}`)
   }
 
@@ -1637,8 +1653,9 @@ export async function startUiServer(
 ): Promise<UiServer> {
   const host = '127.0.0.1'
   const api = createUiApi()
-  // A fresh token per start, only ever sent inside the page. A page of
-  // another site can neither read it nor send this server's Origin.
+  // A fresh token per start, only ever sent inside the page. With CORS off,
+  // a page of any other origin, another localhost port included, can
+  // neither read it nor send this server's Origin.
   const token = randomBytes(32).toString('hex')
   let port = options.port
   const onRequest = async (req: IncomingMessage, res: ServerResponse) => {
@@ -1647,8 +1664,8 @@ export async function startUiServer(
     const hostHeader = req.headers.host ?? ''
     if (hostHeader !== `${host}:${port}` && hostHeader !== `localhost:${port}`)
       return sendJson(res, 403, { error: 'loopback host only' })
-    const write = actionPath(url.pathname)
     try {
+      const write = actionPath(url.pathname)
       if (!write) {
         if (req.method !== 'GET' && req.method !== 'HEAD')
           return sendJson(res, 405, { error: 'reads answer GET and HEAD only' })
@@ -1662,13 +1679,22 @@ export async function startUiServer(
       if (!sameToken(req.headers[TOKEN_HEADER], token))
         return sendJson(res, 403, { error: 'missing or wrong page token' })
       const body = await readJson(req)
-      sendJson(res, 200, await api.act(write.runId, write.action, body))
+      const runId = runIdOf(write.rawId)
+      sendJson(res, 200, await api.act(runId, write.action, body))
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500
       sendJson(res, status, { error: (error as Error).message })
     }
   }
-  const server = createServer((req, res) => void onRequest(req, res))
+  // Nothing a request does may reject past here: an unhandled rejection
+  // would end the process.
+  const server = createServer(
+    (req, res) =>
+      void onRequest(req, res).catch((error: unknown) => {
+        if (res.headersSent) return void res.destroy()
+        sendJson(res, 500, { error: (error as Error).message })
+      }),
+  )
   // `closeAllConnections` does not reach a socket upgraded to a WebSocket,
   // such as the live-reload socket of an open tab, so those are tracked and
   // destroyed on close; otherwise Ctrl-C waits until the tab is closed.
@@ -1684,7 +1710,8 @@ export async function startUiServer(
     configFile: join(packageRoot, 'vite.config.ts'),
     appType: 'spa',
     logLevel: 'warn',
-    server: { middlewareMode: true, hmr: { server } },
+    // No CORS: another localhost origin must not read the page's token.
+    server: { cors: false, middlewareMode: true, hmr: { server } },
     plugins: [
       {
         name: 'loop-ui-token',

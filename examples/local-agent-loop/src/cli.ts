@@ -721,9 +721,8 @@ if (cmd === 'worker') {
     out.push('', 'Finished runs whose worktree is still on disk:')
     for (const lines of leftovers) out.push('', ...lines)
   }
-  const shelved = tasks.flatMap((t) =>
-    t.runs.filter((r) => r.archived && r.kind === 'stopped'),
-  )
+  // `groupTasks` marks a run archived only when `archivable` allows it.
+  const shelved = tasks.flatMap((t) => t.runs.filter((r) => r.archived))
   if (shelved.length > 0) {
     out.push('', `${shelved.length} stopped run(s) archived:`)
     for (const r of shelved)

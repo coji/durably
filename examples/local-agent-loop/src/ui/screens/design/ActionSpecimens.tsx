@@ -121,6 +121,7 @@ const RUNS: [keyof typeof DESIGN.state, ActionTarget, ActionName?][] = [
     'spec-revise',
   ],
   ['stopped', stoppedRun],
+  ['retriggerAsking', stoppedRun, 'retrigger'],
   ['archiveAsking', stoppedRun, 'archive'],
   [
     'stoppedNoRetry',

@@ -10,14 +10,13 @@ import { existsSync, readdirSync } from 'node:fs'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 
 import {
-  isSpecWait,
   signalApproval,
   signalSpecDecision,
   type ApprovalDecision,
 } from './approval.js'
 import type { AgentLoopDurably } from './durably.js'
 import { classifyRun } from './engine/failure-reasons.js'
-import { TERMINAL_STATUSES } from './engine/terminal.js'
+import { archivable, diagnose } from './engine/status.js'
 import { archiveDirOf, archiveMarkerOf } from './factory/layout.js'
 import { repairLabels } from './factory/repair.js'
 
@@ -45,8 +44,9 @@ export async function decideRun(
 
 /**
  * `demo spec-revise`: fix the blocked spec once more with `notes`, the
- * content the CLI reads from its notes file. Refused unless the run waits
- * on its own pending blocked-spec wait, and for blank notes.
+ * content the CLI reads from its notes file, on the wait the run is
+ * suspended on. `signalSpecDecision` refuses it unless that is the run's own
+ * pending blocked-spec wait, and refuses blank notes.
  */
 export async function reviseSpec(
   durably: AgentLoopDurably,
@@ -55,17 +55,18 @@ export async function reviseSpec(
   log?: Log,
 ) {
   const run = await stored(durably, runId)
-  const wait = (await durably.getWaits(runId)).find(
-    (w) =>
-      w.id === run.waitingOnWaitId &&
-      w.status === 'pending' &&
-      isSpecWait(w.metadata),
-  )
-  if (!wait)
+  if (!run.waitingOnWaitId)
     throw new Error(
       `run ${runId} is not waiting for a decision on a blocked spec`,
     )
-  return signalSpecDecision(durably, runId, wait.id, 'revise', notes, log)
+  return signalSpecDecision(
+    durably,
+    runId,
+    run.waitingOnWaitId,
+    'revise',
+    notes,
+    log,
+  )
 }
 
 /**
@@ -103,27 +104,24 @@ export async function retriggerRun(durably: AgentLoopDurably, runId: string) {
   return { runId: next.id, disposition: next.disposition }
 }
 
-/** A run that has stopped for good; only such a run is archived. */
-async function stoppedRun(
-  durably: AgentLoopDurably,
-  runId: string,
-  verb: string,
-) {
-  const run = await stored(durably, runId)
-  if (!TERMINAL_STATUSES.includes(run.status))
-    throw new Error(
-      `refusing to ${verb} ${runId}: it is ${run.status}, not stopped${run.status === 'waiting' ? '; decide it with approve, reject or spec-revise instead' : ''}`,
-    )
-  return run
-}
-
 /**
  * `demo archive`: take a stopped run out of the runs that need a person.
  * Only a marker file under the state root is written; the run, its steps
  * and its waits stay as they are. `changed` is false when it already was.
+ * Refused for any run `archivable` refuses: one still open is decided or
+ * worked instead, and one that finished needs no one.
  */
 export async function archiveRun(durably: AgentLoopDurably, runId: string) {
-  await stoppedRun(durably, runId, 'archive')
+  const run = await stored(durably, runId)
+  const { kind } = await diagnose(durably, run, Date.now())
+  if (!archivable(kind))
+    throw new Error(
+      `refusing to archive ${runId}: ${
+        kind === 'finished'
+          ? `it finished (${(run.output as { conclusion?: string } | null)?.conclusion ?? run.status}) and needs no one; only a stopped run is archived`
+          : `it is ${run.status}, not stopped${run.status === 'waiting' ? '; decide it with approve, reject or spec-revise instead' : ''}`
+      }`,
+    )
   const marker = archiveMarkerOf(durably.stateRoot, runId)
   if (existsSync(marker)) return { changed: false }
   await mkdir(archiveDirOf(durably.stateRoot), { recursive: true })
@@ -134,9 +132,13 @@ export async function archiveRun(durably: AgentLoopDurably, runId: string) {
   return { changed: true }
 }
 
-/** `demo unarchive`: remove the marker, so the run reads as before. */
+/**
+ * `demo unarchive`: remove the marker, so the run reads as before. Any
+ * stored run with a marker can be brought back; looking the run up first
+ * keeps an ID that is not a run's out of the marker path.
+ */
 export async function unarchiveRun(durably: AgentLoopDurably, runId: string) {
-  await stoppedRun(durably, runId, 'unarchive')
+  await stored(durably, runId)
   const marker = archiveMarkerOf(durably.stateRoot, runId)
   if (!existsSync(marker)) return { changed: false }
   await rm(marker, { force: true })
