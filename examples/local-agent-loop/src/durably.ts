@@ -122,6 +122,45 @@ export function acquireWorkerLock(
   }
 }
 
+/** Whether a worker holds a state root's lock, and who it says it is. */
+export interface WorkerPresence {
+  running: boolean
+  /** The holder's note; null when no worker runs or it has not written one. */
+  holder: WorkerLockHolder | null
+}
+
+/**
+ * Look at a state root's worker lock without taking it. The lock, not the
+ * note, decides: a worker killed with `kill -9` leaves its note behind, but
+ * not its lock. A read-only connection asks for a shared lock, which the
+ * worker's exclusive one refuses. Nothing is created: no lock file means no
+ * worker has ever started on this root.
+ */
+export function probeWorkerLock(
+  stateRoot: string = defaultStateRoot(),
+): WorkerPresence {
+  const paths = workerLockPaths(stateRoot)
+  let lock: Database.Database
+  try {
+    lock = new Database(paths.lock, {
+      readonly: true,
+      fileMustExist: true,
+      timeout: 0,
+    })
+  } catch {
+    return { running: false, holder: null }
+  }
+  try {
+    lock.prepare('SELECT count(*) FROM sqlite_master').get()
+    return { running: false, holder: null }
+  } catch (error) {
+    if ((error as { code?: unknown }).code !== 'SQLITE_BUSY') throw error
+    return { running: true, holder: readHolder(paths.holder) }
+  } finally {
+    lock.close()
+  }
+}
+
 function readHolder(path: string): WorkerLockHolder | null {
   try {
     const v = JSON.parse(readFileSync(path, 'utf8')) as WorkerLockHolder
@@ -159,6 +198,9 @@ function build(options: AgentDurablyOptions) {
   return withDatabase(database, stateRoot, options.maxConcurrentRuns)
 }
 
+/** How long a run's lease lasts; a worker renews it only while running it. */
+export const LEASE_MS = 10000
+
 function withDatabase(
   database: Database.Database,
   stateRoot: string,
@@ -169,7 +211,7 @@ function withDatabase(
     dialect,
     pollingIntervalMs: 500,
     leaseRenewIntervalMs: 1000,
-    leaseMs: 10000,
+    leaseMs: LEASE_MS,
     preserveSteps: true,
     ...(maxConcurrentRuns ? { maxConcurrentRuns } : {}),
   })

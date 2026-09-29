@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-/** CLI: worker | trigger | repair | status | waits | approve | reject | report | compare | ui | seed */
+/** CLI: worker | trigger | repair | status | wait | waits | approve | reject | report | compare | ui | seed */
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,8 +9,11 @@ import {
   acquireWorkerLock,
   createAgentDurably,
   dbPath,
+  LEASE_MS,
   legacyDbWarning,
+  probeWorkerLock,
   sweepReviewSnapshots,
+  type AgentLoopDurably,
 } from './durably.js'
 import {
   buildReport,
@@ -19,13 +22,13 @@ import {
 } from './engine/build-report.js'
 import { killOwnedChildren } from './engine/child.js'
 import { compareReports, comparisonToMarkdown } from './engine/compare.js'
-import { classifyRun } from './engine/failure-reasons.js'
+import { classifyRun, DEMO } from './engine/failure-reasons.js'
 import {
   reportToJson,
   reportToMarkdown,
   type LoopReport,
 } from './engine/report.js'
-import { diagnose, diagnosisLines } from './engine/status.js'
+import { diagnose, diagnosisLines, lastLeaseRenewal } from './engine/status.js'
 import { deliverySchema } from './factory/events.js'
 import { repairLabels } from './factory/repair.js'
 import {
@@ -75,6 +78,249 @@ function args(): Record<string, string> {
   return out
 }
 
+/**
+ * Whether a worker runs on this state root, from its lock rather than its
+ * note: a killed worker's note stays behind. The pid and start time are the
+ * lock holder's own, shown only while it holds the lock.
+ */
+function workerStatus() {
+  const { running, holder } = probeWorkerLock()
+  return {
+    running,
+    pid: running ? (holder?.pid ?? null) : null,
+    startedAt: running ? (holder?.startedAt ?? null) : null,
+    /** The command that starts one; null while one runs. */
+    start: running ? null : `${DEMO} worker`,
+  }
+}
+
+type WorkerStatus = ReturnType<typeof workerStatus>
+
+function workerLine(w: WorkerStatus): string {
+  if (!w.running) return `worker: not running; start one with ${w.start}`
+  return `worker: running (pid ${w.pid ?? 'unknown'}, started ${w.startedAt ?? 'unknown'})`
+}
+
+/** How often `wait` reads the stored run. */
+const WAIT_POLL_MS = 1000
+/** How long `wait` goes on without a worker before giving up, by default. */
+const DEFAULT_WORKER_TIMEOUT_MS = 10000
+const MAX_TIMEOUT_MS = 2147483647
+
+/** A positive integer of milliseconds, or undefined when the flag is absent. */
+function timeoutFlag(
+  a: Record<string, string>,
+  name: string,
+): number | undefined {
+  const raw = a[name]
+  if (raw === undefined) return undefined
+  const v = Number(raw)
+  if (
+    !/^\d+$/.test(raw) ||
+    !Number.isSafeInteger(v) ||
+    v < 1 ||
+    v > MAX_TIMEOUT_MS
+  )
+    throw new Error(
+      `--${name} must be an integer number of milliseconds between 1 and ${MAX_TIMEOUT_MS}`,
+    )
+  return v
+}
+
+/** `wait` exit codes. A command error (bad flag, unknown run) exits 1. */
+const WAIT_EXIT = {
+  delivered: 0,
+  human: 2,
+  failed: 3,
+  cancelled: 4,
+  timeout: 5,
+  noWorker: 6,
+} as const
+
+type WaitStop = { exit: number; reason: string }
+
+/**
+ * Whether the run itself has stopped: ended, or waiting on an input nobody
+ * has given yet. Only the run's own status and the wait it names count; a
+ * `status` inside its output or progress does not. A decided wait the
+ * worker has yet to resume is not a stop.
+ */
+async function runStop(
+  durably: AgentLoopDurably,
+  runId: string,
+): Promise<WaitStop | null> {
+  const run = await durably.getRun(runId)
+  if (!run) throw new Error(`no run ${runId}`)
+  if (run.status === 'completed') {
+    const output = run.output as {
+      approved?: unknown
+      conclusion?: unknown
+      delivery?: unknown
+    } | null
+    const delivered =
+      output?.approved === true &&
+      output.conclusion === 'approved' &&
+      output.delivery != null
+    return delivered
+      ? {
+          exit: WAIT_EXIT.delivered,
+          reason: 'completed: approved and delivered',
+        }
+      : {
+          exit: WAIT_EXIT.failed,
+          reason: `completed without an approved delivery (${String(output?.conclusion ?? 'no conclusion')})`,
+        }
+  }
+  if (run.status === 'failed')
+    return {
+      exit: WAIT_EXIT.failed,
+      reason: `failed: ${run.error ?? 'no error recorded'}`,
+    }
+  if (run.status === 'cancelled')
+    return { exit: WAIT_EXIT.cancelled, reason: 'cancelled' }
+  if (run.status === 'waiting' && run.waitingOnWaitId) {
+    const wait = (await durably.getWaits(runId)).find(
+      (w) => w.id === run.waitingOnWaitId,
+    )
+    if (wait?.status === 'pending') {
+      const approval =
+        typeof (wait.metadata as { candidateId?: unknown } | null)
+          ?.candidateId === 'string'
+      return {
+        exit: WAIT_EXIT.human,
+        reason: approval
+          ? `waiting for a human decision on approval wait ${wait.id}`
+          : `waiting on durable wait ${wait.id} (${wait.name}), which nobody has resolved`,
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * Read the stored run every WAIT_POLL_MS until it stops, the time runs out,
+ * or no worker has been seen for `workerTimeoutMs`. Only the database is
+ * read: a worker in another process sends no events here. The loop awaits
+ * each read before sleeping, so reads never overlap, and leaves no timer
+ * behind. The report is built once, after the result is decided.
+ */
+async function waitCommand(
+  durably: AgentLoopDurably,
+  runId: string,
+  options: {
+    timeoutMs: number | undefined
+    workerTimeoutMs: number | null
+    json: boolean
+  },
+): Promise<number> {
+  const started = Date.now()
+  let workerMissingSince: number | null = null
+  let stop: WaitStop
+  for (;;) {
+    const seen = await runStop(durably, runId)
+    if (seen) {
+      // Read once more before deciding: the stop must still hold.
+      const again = await runStop(durably, runId)
+      if (again) {
+        stop = again
+        break
+      }
+    }
+    const now = Date.now()
+    if (probeWorkerLock().running) workerMissingSince = null
+    else workerMissingSince ??= now
+    let limit: WaitStop | null = null
+    if (options.timeoutMs !== undefined && now - started >= options.timeoutMs)
+      limit = {
+        exit: WAIT_EXIT.timeout,
+        reason: `--timeout of ${options.timeoutMs} ms reached; the run has not stopped`,
+      }
+    else if (
+      options.workerTimeoutMs !== null &&
+      workerMissingSince !== null &&
+      now - workerMissingSince >= options.workerTimeoutMs
+    )
+      limit = {
+        exit: WAIT_EXIT.noWorker,
+        reason: `no worker has been running for ${now - workerMissingSince} ms, so the run cannot move`,
+      }
+    if (limit) {
+      // A stop the run reached meanwhile wins over giving up.
+      stop = (await runStop(durably, runId)) ?? limit
+      break
+    }
+    const remaining =
+      options.timeoutMs === undefined
+        ? WAIT_POLL_MS
+        : Math.max(1, options.timeoutMs - (now - started))
+    // sleep-ok(poll): one tick of the loop that re-reads the stored run
+    await new Promise((r) => setTimeout(r, Math.min(WAIT_POLL_MS, remaining)))
+  }
+
+  const run = await durably.getRun(runId)
+  if (!run) throw new Error(`no run ${runId}`)
+  const now = Date.now()
+  const worker = workerStatus()
+  const diagnosis = await diagnose(durably, run, now, worker)
+  const report = await buildReport(durably, runId)
+  const again = `${DEMO} wait --run ${runId}`
+  const next =
+    stop.exit === WAIT_EXIT.noWorker
+      ? [`${DEMO} worker`, again]
+      : stop.exit === WAIT_EXIT.timeout
+        ? [...diagnosis.next, again]
+        : diagnosis.next
+  const summary = {
+    runId,
+    status: run.status,
+    exitCode: stop.exit,
+    conclusion: report.summary.conclusion,
+    stopReason: stop.reason,
+    /** Where the run stands, as `status` says it. */
+    diagnosis: diagnosis.reason,
+    next,
+    worker,
+    // Derived from the run's lease; null without a lease in force.
+    lastLeaseRenewedAt: lastLeaseRenewal(run, now, LEASE_MS),
+    // A stage with an unmeasured attempt has no total: null, not the sum
+    // of what was measured.
+    stageTimings: report.stageTimings.map((t) => ({
+      stage: t.stage,
+      elapsedMs: t.complete ? t.elapsedMs : null,
+      wallElapsedMs: t.complete ? (t.wallElapsedMs ?? null) : null,
+      complete: t.complete,
+    })),
+    stageTotalMs: report.stageTotalMs,
+    runElapsedMs: report.runElapsedMs,
+  }
+  if (options.json) {
+    console.log(JSON.stringify(summary, null, 2))
+    return stop.exit
+  }
+  const ms = (v: number | null) => (v === null ? 'unknown' : `${v} ms`)
+  const lines = [
+    `run:        ${runId}`,
+    `status:     ${run.status}`,
+    `conclusion: ${summary.conclusion ?? 'none'}`,
+    `stopped:    ${stop.reason} (exit ${stop.exit})`,
+    `diagnosis:  ${diagnosis.reason}`,
+    workerLine(worker),
+    `last lease renewal: ${summary.lastLeaseRenewedAt ?? 'none recorded'}`,
+    'timing:',
+    ...summary.stageTimings.map(
+      (t) =>
+        `  ${t.stage}: work=${ms(t.elapsedMs)}, wall=${ms(t.wallElapsedMs)}${t.complete ? '' : ' (partly unmeasured)'}`,
+    ),
+    `  stage total: ${ms(summary.stageTotalMs)}`,
+    `  run elapsed: ${ms(summary.runElapsedMs)}`,
+  ]
+  next.forEach((n, i) =>
+    lines.push(`${i === 0 ? 'next:' : '     '}       ${n}`),
+  )
+  console.log(lines.join('\n'))
+  return stop.exit
+}
+
 function usage(): void {
   console.log(`local-agent-loop — Durably local agent demo
 Commands (run from examples/local-agent-loop):
@@ -91,6 +337,11 @@ Commands (run from examples/local-agent-loop):
                                             run's candidate from outside findings (see below)
   pnpm demo status                          open and stopped runs: reason and next command
   pnpm demo status --run <id>
+  pnpm demo wait --run <id> [--timeout <ms>] [--worker-timeout <ms> | --no-worker-timeout] [--format json]
+                                            until the run ends or waits on a person; exit 0 approved
+                                            and delivered, 2 waits on a person, 3 failed or not
+                                            delivered, 4 cancelled, 5 --timeout, 6 no worker for
+                                            --worker-timeout (default 10000), 1 command error
   pnpm demo waits --run <id>
   pnpm demo approve --run <id> --wait <waitId>
   pnpm demo reject --run <id> --wait <waitId>
@@ -263,6 +514,8 @@ if (cmd === 'worker') {
         status: run.status,
         target: input.target.kind,
         db: dbPath(),
+        // Without a worker the run stays pending; `start` says how to start one.
+        worker: workerStatus(),
       },
       null,
       2,
@@ -309,12 +562,13 @@ if (cmd === 'worker') {
   const durably = createAgentDurably()
   await durably.migrate()
   const now = Date.now()
+  const worker = workerStatus()
   const open: string[][] = []
   const leftovers: string[][] = []
   for (const run of await durably.getRuns({
     jobName: durably.jobs.agentLoop.name,
   })) {
-    const d = await diagnose(durably, run, now)
+    const d = await diagnose(durably, run, now, worker)
     if (d.kind !== 'finished') open.push(diagnosisLines(run, d))
     else if (d.cleanup) leftovers.push(diagnosisLines(run, d))
   }
@@ -331,7 +585,7 @@ if (cmd === 'worker') {
     out.push('', 'Finished runs whose worktree is still on disk:')
     for (const lines of leftovers) out.push('', ...lines)
   }
-  out.push('', `database: ${dbPath()}`)
+  out.push('', workerLine(worker), `database: ${dbPath()}`)
   console.log(out.join('\n'))
   await durably.db.destroy()
 } else if (cmd === 'status') {
@@ -341,11 +595,16 @@ if (cmd === 'worker') {
   const run = await durably.getRun(runId)
   const attempts = await durably.getStepAttempts(runId)
   const waits = await durably.getWaits(runId)
+  const now = Date.now()
+  const worker = workerStatus()
   console.log(
     JSON.stringify(
       {
         // Why the run is where it is, and the next command to run.
-        diagnosis: run ? await diagnose(durably, run, Date.now()) : null,
+        diagnosis: run ? await diagnose(durably, run, now, worker) : null,
+        worker,
+        // Derived from the run's lease; null without a lease in force.
+        lastLeaseRenewedAt: run ? lastLeaseRenewal(run, now, LEASE_MS) : null,
         // Where the work ended up. The sealed candidate names the branch and
         // commit a repository run leaves behind, whatever its conclusion.
         // A delivery recorded before the squashed branch existed shows it
@@ -384,6 +643,36 @@ if (cmd === 'worker') {
     ),
   )
   await durably.db.destroy()
+} else if (cmd === 'wait') {
+  const a = args()
+  const runId = a['run']
+  if (!runId) throw new Error('--run <id> required')
+  // Every flag is checked before the database is opened.
+  const timeoutMs = timeoutFlag(a, 'timeout')
+  if (a['no-worker-timeout'] === 'true' && a['worker-timeout'] !== undefined)
+    throw new Error(
+      '--worker-timeout and --no-worker-timeout exclude each other',
+    )
+  const workerTimeoutMs =
+    a['no-worker-timeout'] === 'true'
+      ? null
+      : (timeoutFlag(a, 'worker-timeout') ?? DEFAULT_WORKER_TIMEOUT_MS)
+  const format = a['format'] ?? 'text'
+  if (format !== 'text' && format !== 'json')
+    throw new Error('--format must be text or json')
+  const durably = createAgentDurably()
+  let exitCode: number
+  try {
+    await durably.migrate()
+    exitCode = await waitCommand(durably, runId, {
+      timeoutMs,
+      workerTimeoutMs,
+      json: format === 'json',
+    })
+  } finally {
+    await durably.db.destroy()
+  }
+  process.exit(exitCode)
 } else if (cmd === 'waits') {
   const a = args()
   const runId = a['run']
