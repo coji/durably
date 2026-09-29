@@ -1,7 +1,8 @@
 /**
  * Why a run is where it is, and what a human does next. `demo status` and the
- * web UI both read this one function, so the two never describe the same run
- * differently or offer different commands.
+ * web UI both read this one function, so the two describe a run the same way.
+ * Only the CLI looks for a worker: it leaves out the advice to start one
+ * while one runs, which the web UI always offers.
  */
 import { existsSync } from 'node:fs'
 
@@ -68,8 +69,35 @@ export async function diagnose(
   durably: DiagnoseSource,
   run: Run,
   now: number,
+  worker?: WorkerSeen,
 ): Promise<Diagnosis> {
-  return (await diagnoseRun(durably, run, now)).diagnosis
+  return (await diagnoseRun(durably, run, now, undefined, worker)).diagnosis
+}
+
+/**
+ * Whether a worker holds the state root's lock. Left out, the diagnosis does
+ * not know, and says what to do either way.
+ */
+export interface WorkerSeen {
+  /** Null when the lock could not be read: treated as not known to run. */
+  running: boolean | null
+}
+
+/**
+ * When the worker last renewed this run's lease: the lease's end less its
+ * length. Only a leased run with a lease still in force has one; a pending,
+ * waiting or finished run has none, even while a worker is up, because an
+ * idle worker renews nothing.
+ */
+export function lastLeaseRenewal(
+  run: Pick<Run, 'status' | 'leaseExpiresAt'>,
+  now: number,
+  leaseMs: number,
+): string | null {
+  if (run.status !== 'leased' || !run.leaseExpiresAt) return null
+  const expires = Date.parse(run.leaseExpiresAt)
+  if (!Number.isFinite(expires) || expires < now) return null
+  return new Date(expires - leaseMs).toISOString()
 }
 
 type DiagnoseSource = Pick<AnyDurably, 'getStepAttempts' | 'getWaits'> & {
@@ -86,6 +114,7 @@ export async function diagnoseRun(
   run: Run,
   now: number,
   known?: { failure: FailureClassification | null },
+  worker?: WorkerSeen,
 ): Promise<{ diagnosis: Diagnosis; uncertainCall: boolean }> {
   let uncertainCall = false
   const diagnosis = await describe()
@@ -111,12 +140,17 @@ export async function diagnoseRun(
         ? `git -C ${shellQuote(target.repoPath)} worktree remove ${shellQuote(target.workdir)}`
         : null
     const show = `${DEMO} status --run ${run.id}`
-    const worker = `${DEMO} worker`
+    const startCmd = `${DEMO} worker`
+    // Offered unless a worker is known to run; the words stay those the
+    // web UI, which does not look for a worker, prints too.
+    const startWorker = worker?.running
+      ? []
+      : [`${startCmd}  # if none is running`]
     if (run.status === 'pending')
       return {
         kind: 'pending',
         reason: 'queued; no worker has picked it up yet',
-        next: [`${worker}  # if none is running`, show],
+        next: [...startWorker, show],
         cleanup,
       }
     if (run.status === 'leased') {
@@ -137,9 +171,15 @@ export async function diagnoseRun(
             ? `${reason}; an agent call it started has no completed checkpoint`
             : reason,
           next: [
-            stuck
-              ? `${worker}  # the reclaimed run stops at that call for a human to check`
-              : `${worker}  # a worker reclaims the run and resumes it from its checkpoints`,
+            // The running worker reclaims it on its own; only an absent one
+            // has to be started.
+            ...(worker?.running
+              ? []
+              : [
+                  stuck
+                    ? `${startCmd}  # the reclaimed run stops at that call for a human to check`
+                    : `${startCmd}  # a worker reclaims the run and resumes it from its checkpoints`,
+                ]),
             show,
           ],
           cleanup,
@@ -167,7 +207,7 @@ export async function diagnoseRun(
             kind: 'decided',
             ...(typeof decision === 'string' ? { decision } : {}),
             reason: `the decision on candidate ${candidateId} is recorded (${typeof decision === 'string' ? decision : wait.outcome}); a worker resumes the run`,
-            next: [`${worker}  # if none is running`, show],
+            next: [...startWorker, show],
             cleanup,
           }
         }

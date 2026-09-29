@@ -110,6 +110,14 @@ another worker already runs on ~/.local/state/local-agent-loop: pid 41234, start
   解放し、`kill -9` やクラッシュではOSが解放します。pidを書いた
   `worker.json` が残っていても、次のworkerはロックを取り直して上書きするので、
   古い情報だけで起動を拒むことはありません。
+- `demo trigger`、`demo status`、`demo wait` は同じロックファイルをのぞいて
+  workerの有無を確かめます（`wait` は1秒ごと。読み取りの瞬間だけ共有ロックを
+  握ります）。workerの起動はこの瞬間との衝突を最大2秒までリトライして乗り越える
+  ので、`wait`を見ながらworkerを起動しても失敗しません。1つ目のworkerが排他ロック
+  を握り続けている間は、2つ目のworkerはこのリトライを超えても変わらず拒否されます。
+- ロックファイルが読めない（壊れている、権限がないなど）ときは、workerの有無を
+  「不明」（`running: null`、`worker: unknown`）と表示します。`wait` は不明を
+  「workerがいない」とは数えないので、それだけで終了コード6にはなりません。
 - 別のstate root（`HOME` が違う環境）のworker同士は互いを拒みません。
 - timeoutは `trigger` の時点でrun inputに固定されるので、workerの環境変数で
   既存runの値が変わることはありません（「trigger時点で固定されるもの」）。
@@ -212,6 +220,91 @@ pnpm --filter example-local-agent-loop demo status
 
 同じ理由と次の手順は、`status --run <runId>` の `diagnosis` と、reportの
 `failure`（JSON）および「Stop reason」節（Markdown）にも出ます。
+
+### workerの稼働状態
+
+`trigger` のJSON、`status --run` のJSON、`status` の一覧は、workerが動いているかを
+表示します。workerがいなければpendingのrunは進まないので、`trigger` と `status`
+はworkerの起動コマンドを案内します。
+
+```json
+"worker": {
+  "running": false,
+  "pid": null,
+  "startedAt": null,
+  "start": "pnpm --filter example-local-agent-loop demo worker"
+}
+```
+
+- 稼働しているかは、workerのロック（`worker.lock`）が握られているかで判断します。
+  `kill -9` で止まったworkerの `worker.json` は残りますが、ロックは残らないので、
+  稼働中とは表示しません。pidと起動時刻は、ロックが握られているときだけ
+  `worker.json` から読んで表示します。
+- workerが動いていれば、pendingのrunや判断済みのwaitにworkerの起動を案内しません。
+- `status --run` の `lastLeaseRenewedAt` は、workerがそのrunのleaseを最後に更新した
+  時刻です。専用のheartbeatは記録していないので、有効なleaseの期限からlease期間
+  （10秒）を引いて求めます。leaseを持たないpending、waiting、終わったrunと、
+  leaseが期限切れのrunでは `null` です。workerはrunを実行している間だけleaseを
+  更新するので、workerが動いていても、runを持っていない間は更新がありません。
+
+### runが止まるまで待つ（wait）
+
+`wait` は、runが終わるか、人の判断を待つところで止まるまで待ち、結果を要約して
+終了します。runの状態やreportを繰り返し確かめる代わりに使います。
+
+```bash
+pnpm --filter example-local-agent-loop demo wait --run <runId> \
+  [--timeout <ms>] [--worker-timeout <ms> | --no-worker-timeout] [--format json]
+```
+
+- 保存されたrunを1秒ごとに読み直します。別プロセスのworkerのイベントはこの
+  プロセスに届かないので、DBだけを見ます。runを進めるのは、別に起動した
+  workerです。
+- 止まったと判断するのは、run自体の `status` が `completed`、`failed`、
+  `cancelled` のときと、`waiting` でrunの `waitingOnWaitId` が指すwaitが未解決の
+  ときです。outputやprogressの中にある `status` は見ません。承認・拒否を記録済みで
+  workerの再開を待っているrunは、待ち続けます。
+- `--timeout` は全体の制限時間です。省略すると制限しません。
+- `--worker-timeout` は、workerがいない状態が続いたら打ち切るまでの時間です。
+  既定は10秒です。workerが再び見つかれば、数え直します。`--no-worker-timeout`
+  を付けると、workerがいないことだけでは打ち切りません。
+- どちらのtimeoutも1以上2147483647以下の整数ミリ秒です。範囲外の値や
+  小数を渡すと、待ち始める前に終了コード1で終わります。
+- runが止まっていれば、timeoutやworker不在よりもその結果を優先します。
+- reportは、結果が決まったあとに1回だけ作ります。
+
+要約には、run ID、runの状態、結論（`conclusion`）、止まった理由、次のコマンド、
+workerの状態、最後のlease更新時刻、工程ごとの時間を出します。計測できていない
+attemptを含む工程の時間は、分かった分だけの合計を出さず、`null`（通常の出力では
+`unknown`）にします。`--format json` では同じ項目を1つのJSONオブジェクトで出します。
+
+```text
+run:        01M3NS4V2HEWGT14DDC8TPKC0H
+status:     completed
+conclusion: approved
+stopped:    completed: approved and delivered (exit 0)
+diagnosis:  finished: approved
+worker: running (pid 43292, started 2026-09-29T05:10:46.402Z)
+last lease renewal: none recorded
+timing:
+  setup: work=20 ms, wall=20 ms
+  code: work=71 ms, wall=73 ms
+  ...
+  stage total: 236 ms
+  run elapsed: 11764 ms
+```
+
+終了コードは次のとおりです。
+
+| 終了コード | 意味                                                                         |
+| ---------- | ---------------------------------------------------------------------------- |
+| 0          | 承認され、納品まで済んで完了した                                             |
+| 1          | コマンドの誤り（引数の不正、存在しないrunなど）                              |
+| 2          | 未解決のwaitで止まっている（承認待ちとそれ以外のdurable wait）               |
+| 3          | 失敗した、または承認・納品に至らずに完了した（拒否、検証失敗、レビュー上限） |
+| 4          | 取り消された                                                                 |
+| 5          | `--timeout` に達した                                                         |
+| 6          | workerがいない状態が `--worker-timeout` 続いた                               |
 
 ### ブラウザで見る（web UI）
 

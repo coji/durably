@@ -77,6 +77,14 @@ function workerLockPaths(stateRoot: string = defaultStateRoot()) {
 }
 
 /**
+ * How long `acquireWorkerLock` retries a busy lock before refusing. This
+ * rides out a `probeWorkerLock` caller's momentary shared lock (held only
+ * for a single read); a second worker still holds the lock exclusively for
+ * as long as it runs, so it is still refused once this window elapses.
+ */
+const WORKER_LOCK_ACQUIRE_TIMEOUT_MS = 2000
+
+/**
  * Take the state root's worker lock: one worker per database. The lock is an
  * exclusive SQLite transaction on a file of its own, which SQLite holds with
  * the operating system's file lock, so it lasts exactly as long as the
@@ -90,8 +98,9 @@ export function acquireWorkerLock(
 ): WorkerLockResult {
   mkdirSync(stateRoot, { recursive: true })
   const paths = workerLockPaths(stateRoot)
-  // No busy wait: a second worker is told at once.
-  const lock = new Database(paths.lock, { timeout: 0 })
+  const lock = new Database(paths.lock, {
+    timeout: WORKER_LOCK_ACQUIRE_TIMEOUT_MS,
+  })
   try {
     lock.exec('BEGIN EXCLUSIVE')
   } catch (error) {
@@ -119,6 +128,63 @@ export function acquireWorkerLock(
         rmSync(paths.holder, { force: true })
       lock.close()
     },
+  }
+}
+
+/**
+ * Whether a worker holds a state root's lock, and who it says it is.
+ * `running` is null when the lock could not be read at all.
+ */
+export interface WorkerPresence {
+  running: boolean | null
+  /** The holder's note; null unless a worker is known to run. */
+  holder: WorkerLockHolder | null
+  /** Why `running` is null; null otherwise. */
+  unknownReason: string | null
+}
+
+/**
+ * Look at a state root's worker lock without taking it. The lock, not the
+ * note, decides: a worker killed with `kill -9` leaves its note behind, but
+ * not its lock. A read-only connection asks for a shared lock, which the
+ * worker's exclusive one refuses. Nothing is created: no lock file means no
+ * worker has ever started on this root. Any other failure to read the lock
+ * says nothing either way, so it is reported as unknown; this never throws.
+ */
+export function probeWorkerLock(
+  stateRoot: string = defaultStateRoot(),
+): WorkerPresence {
+  const paths = workerLockPaths(stateRoot)
+  const unknown = (error: unknown): WorkerPresence => ({
+    running: null,
+    holder: null,
+    unknownReason: `cannot read ${paths.lock}: ${error instanceof Error ? error.message : String(error)}`,
+  })
+  if (!existsSync(paths.lock))
+    return { running: false, holder: null, unknownReason: null }
+  let lock: Database.Database
+  try {
+    lock = new Database(paths.lock, {
+      readonly: true,
+      fileMustExist: true,
+      timeout: 0,
+    })
+  } catch (error) {
+    return unknown(error)
+  }
+  try {
+    lock.prepare('SELECT count(*) FROM sqlite_master').get()
+    return { running: false, holder: null, unknownReason: null }
+  } catch (error) {
+    if ((error as { code?: unknown }).code !== 'SQLITE_BUSY')
+      return unknown(error)
+    return {
+      running: true,
+      holder: readHolder(paths.holder),
+      unknownReason: null,
+    }
+  } finally {
+    lock.close()
   }
 }
 
@@ -159,6 +225,9 @@ function build(options: AgentDurablyOptions) {
   return withDatabase(database, stateRoot, options.maxConcurrentRuns)
 }
 
+/** How long a run's lease lasts; a worker renews it only while running it. */
+export const LEASE_MS = 10000
+
 function withDatabase(
   database: Database.Database,
   stateRoot: string,
@@ -169,7 +238,7 @@ function withDatabase(
     dialect,
     pollingIntervalMs: 500,
     leaseRenewIntervalMs: 1000,
-    leaseMs: 10000,
+    leaseMs: LEASE_MS,
     preserveSteps: true,
     ...(maxConcurrentRuns ? { maxConcurrentRuns } : {}),
   })

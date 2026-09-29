@@ -16,7 +16,14 @@ import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { createAgentDurably, dbPath } from '../src/durably.js'
+import Database from 'better-sqlite3'
+
+import {
+  acquireWorkerLock,
+  createAgentDurably,
+  dbPath,
+  probeWorkerLock,
+} from '../src/durably.js'
 import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
@@ -1410,40 +1417,39 @@ describe('retrigger --reload-config', { timeout: 240000 }, () => {
   })
 })
 
-describe('one worker per state root', { timeout: 240000 }, () => {
-  /** A worker process, with its output so far. */
-  function startWorker(box: Sandbox, env: Record<string, string> = {}) {
-    const child = spawn(tsx, [cli, 'worker'], {
-      cwd: box.root,
-      env: { ...process.env, HOME: box.home, FAKE_FAIL_FIRST: '0', ...env },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    let out = ''
-    child.stdout.on('data', (d: Buffer) => (out += d.toString()))
-    child.stderr.on('data', (d: Buffer) => (out += d.toString()))
-    const exited = new Promise<number | null>((resolve) =>
-      child.once('exit', (code) => resolve(code)),
-    )
-    // tsx runs the worker in a child of its own, so signals go to the pid
-    // the worker prints, the process that holds the lock.
-    const pid = () => Number(/worker running, pid (\d+)/.exec(out)?.[1])
-    return {
-      child,
-      exited,
-      output: () => out,
-      pid,
-      running: () =>
-        until(async () => Number.isInteger(pid()), 'worker starts'),
-      kill: (signal: NodeJS.Signals) => {
-        try {
-          process.kill(pid(), signal)
-        } catch {
-          // Already gone.
-        }
-      },
-    }
+/** A worker process, with its output so far. */
+function startWorker(box: Sandbox, env: Record<string, string> = {}) {
+  const child = spawn(tsx, [cli, 'worker'], {
+    cwd: box.root,
+    env: { ...process.env, HOME: box.home, FAKE_FAIL_FIRST: '0', ...env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  child.stdout.on('data', (d: Buffer) => (out += d.toString()))
+  child.stderr.on('data', (d: Buffer) => (out += d.toString()))
+  const exited = new Promise<number | null>((resolve) =>
+    child.once('exit', (code) => resolve(code)),
+  )
+  // tsx runs the worker in a child of its own, so signals go to the pid
+  // the worker prints, the process that holds the lock.
+  const pid = () => Number(/worker running, pid (\d+)/.exec(out)?.[1])
+  return {
+    child,
+    exited,
+    output: () => out,
+    pid,
+    running: () => until(async () => Number.isInteger(pid()), 'worker starts'),
+    kill: (signal: NodeJS.Signals) => {
+      try {
+        process.kill(pid(), signal)
+      } catch {
+        // Already gone.
+      }
+    },
   }
+}
 
+describe('one worker per state root', { timeout: 240000 }, () => {
   it('refuses a second worker, lets another root run, and survives kill -9 without rerunning a finished baseline', async () => {
     // The check reads gate files beside the repository: while `slow-base`
     // exists it hangs on the base commit, and while `slow-verify` exists it
@@ -1551,6 +1557,54 @@ const wait = setInterval(() => existsSync(gate) || clearInterval(wait), 100)
         w.child.kill('SIGKILL')
       }
       await db.db.destroy()
+    }
+  })
+
+  it('starts while a probe momentarily holds the lock file, but still refuses a live second worker', async () => {
+    const box = await sandbox()
+    // Create the lock file so a readonly probe connection can open it.
+    const created = acquireWorkerLock(box.stateRoot, packageRoot)
+    assert.ok(created.acquired)
+    if (created.acquired) created.release()
+    const lockPath = join(box.stateRoot, 'worker.lock')
+
+    // Simulate `demo wait`'s once-a-second probe holding the lock file open
+    // for a moment, spanning the window in which a real worker starts.
+    const probe = new Database(lockPath, {
+      readonly: true,
+      fileMustExist: true,
+    })
+    probe.exec('BEGIN')
+    probe.prepare('SELECT count(*) FROM sqlite_master').get()
+    // sleep-ok(work): simulated hold of the lock file; only needs to be well
+    // under the worker's retry window, not any particular length
+    const release = setTimeout(() => probe.close(), 500)
+
+    const first = startWorker(box)
+    try {
+      await first.running()
+    } finally {
+      clearTimeout(release)
+      try {
+        probe.close()
+      } catch {
+        // Already closed.
+      }
+    }
+
+    try {
+      // A live second worker is still refused, retry window or not.
+      const second = startWorker(box)
+      try {
+        assert.notEqual(await second.exited, 0)
+        assert.match(second.output(), new RegExp(`pid ${first.pid()}\\b`))
+      } finally {
+        second.kill('SIGKILL')
+        second.child.kill('SIGKILL')
+      }
+    } finally {
+      first.kill('SIGKILL')
+      first.child.kill('SIGKILL')
     }
   })
 })
@@ -2079,5 +2133,358 @@ describe('reviewer command, context and output', { timeout: 120000 }, () => {
         output: 'verdict',
       },
     })
+  })
+})
+
+describe('wait and worker state', { timeout: 300000 }, () => {
+  interface WaitSummary {
+    runId: string
+    status: string
+    exitCode: number
+    conclusion: string | null
+    stopReason: string
+    next: string[]
+    worker: {
+      running: boolean | null
+      pid: number | null
+      start: string | null
+    }
+    lastLeaseRenewedAt: string | null
+    stageTimings: {
+      stage: string
+      elapsedMs: number | null
+      complete: boolean
+    }[]
+    stageTotalMs: number | null
+    runElapsedMs: number | null
+  }
+
+  async function waitJson(box: Sandbox, runId: string, flags: string[] = []) {
+    const res = await demo(box, [
+      'wait',
+      '--run',
+      runId,
+      '--format',
+      'json',
+      ...flags,
+    ])
+    return { code: res.code, out: JSON.parse(res.stdout) as WaitSummary }
+  }
+
+  async function statusJson(box: Sandbox, runId: string) {
+    const res = await demo(box, ['status', '--run', runId])
+    assert.equal(res.code, 0, res.stderr)
+    return JSON.parse(res.stdout) as {
+      worker: {
+        running: boolean | null
+        pid: number | null
+        start: string | null
+      }
+      lastLeaseRenewedAt: string | null
+      diagnosis: { next: string[] }
+    }
+  }
+
+  it('refuses a bad timeout, or an unknown run, before waiting', async () => {
+    const box = await sandbox()
+    const bad = ['0', '-1', '1.5', 'NaN', 'Infinity', '2147483648', 'soon']
+    for (const flag of ['--timeout', '--worker-timeout'])
+      for (const value of bad) {
+        const res = await demo(box, ['wait', '--run', 'x', flag, value])
+        assert.equal(res.code, 1, `${flag} ${value}`)
+        assert.match(res.stderr, /must be an integer number of milliseconds/)
+      }
+    const both = await demo(box, [
+      'wait',
+      '--run',
+      'x',
+      '--worker-timeout',
+      '5',
+      '--no-worker-timeout',
+    ])
+    assert.equal(both.code, 1)
+    // Nothing was opened, so nothing was waited on.
+    assert.equal(existsSync(dbPath(box.stateRoot)), false)
+    const unknown = await demo(box, ['wait', '--run', 'no-such-run'])
+    assert.equal(unknown.code, 1)
+    assert.match(unknown.stderr, /no run no-such-run/)
+  })
+
+  it('reads the worker from its lock, gives a lease time only for a live lease, and gives up without a worker', async () => {
+    const box = await sandbox()
+    // A note from a worker that is gone, naming a live pid: not a worker.
+    await mkdir(box.stateRoot, { recursive: true })
+    await writeFile(
+      join(box.stateRoot, 'worker.json'),
+      JSON.stringify({
+        pid: process.pid,
+        checkout: packageRoot,
+        startedAt: new Date().toISOString(),
+      }),
+    )
+    const triggered = await demo(box, ['trigger', '--provider', 'fake'])
+    assert.equal(triggered.code, 0, triggered.stderr)
+    const shown = JSON.parse(triggered.stdout) as {
+      runId: string
+      worker: { running: boolean; pid: number | null; start: string | null }
+    }
+    const runId = shown.runId
+    assert.equal(shown.worker.running, false)
+    assert.equal(shown.worker.pid, null)
+    assert.match(shown.worker.start ?? '', /demo worker$/)
+    const list = await demo(box, ['status'])
+    assert.match(
+      list.stdout,
+      /worker: not running; start one with .*demo worker/,
+    )
+    assert.match(blockOf(list.stdout, runId), /demo worker/)
+    const absent = await statusJson(box, runId)
+    assert.equal(absent.worker.running, false)
+    assert.equal(absent.lastLeaseRenewedAt, null)
+
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    await durably.migrate()
+    const lock = acquireWorkerLock(box.stateRoot, packageRoot)
+    assert.ok(lock.acquired)
+    try {
+      const again = await demo(box, ['trigger', '--provider', 'fake'])
+      const up = JSON.parse(again.stdout) as {
+        worker: { running: boolean; pid: number | null; start: string | null }
+      }
+      assert.deepEqual(
+        {
+          running: up.worker.running,
+          pid: up.worker.pid,
+          start: up.worker.start,
+        },
+        { running: true, pid: process.pid, start: null },
+      )
+      // A worker is up but the run holds no lease: no renewal to show, and
+      // no worker to start.
+      const idle = await statusJson(box, runId)
+      assert.equal(idle.worker.running, true)
+      assert.equal(idle.lastLeaseRenewedAt, null)
+      assert.ok(!idle.diagnosis.next.some((n) => /demo worker/.test(n)))
+
+      const setRun = (values: Record<string, string | null>) =>
+        durably.db
+          .updateTable('durably_runs')
+          .set(values)
+          .where('id', '=', runId)
+          .execute()
+      const expires = new Date(Date.now() + 5000).toISOString()
+      await setRun({
+        status: 'leased',
+        lease_owner: 'other-worker',
+        lease_expires_at: expires,
+      })
+      assert.equal(
+        (await statusJson(box, runId)).lastLeaseRenewedAt,
+        new Date(Date.parse(expires) - 10000).toISOString(),
+      )
+      await setRun({
+        lease_expires_at: new Date(Date.now() - 60000).toISOString(),
+      })
+      assert.equal((await statusJson(box, runId)).lastLeaseRenewedAt, null)
+
+      // A `status` inside the output or progress is not the run's.
+      await setRun({
+        status: 'pending',
+        lease_owner: null,
+        lease_expires_at: null,
+        output: JSON.stringify({ status: 'completed' }),
+        progress: JSON.stringify({ current: 0, status: 'waiting' }),
+      })
+      const held = await waitJson(box, runId, ['--timeout', '1500'])
+      assert.equal(held.code, 5)
+      assert.equal(held.out.exitCode, 5)
+      assert.equal(held.out.status, 'pending')
+      assert.equal(held.out.worker.running, true)
+      assert.equal(held.out.lastLeaseRenewedAt, null)
+    } finally {
+      if (lock.acquired) lock.release()
+    }
+
+    // No worker: given up after --worker-timeout, told to start one.
+    const gone = await waitJson(box, runId, ['--worker-timeout', '1000'])
+    assert.equal(gone.code, 6)
+    assert.equal(gone.out.worker.running, false)
+    assert.match(gone.out.next[0] ?? '', /demo worker$/)
+    const text = await demo(box, [
+      'wait',
+      '--run',
+      runId,
+      '--worker-timeout',
+      '1',
+    ])
+    assert.equal(text.code, 6)
+    assert.match(text.stdout, /worker: not running/)
+    // Without the worker limit only --timeout ends it.
+    const patient = await waitJson(box, runId, [
+      '--no-worker-timeout',
+      '--timeout',
+      '2500',
+    ])
+    assert.equal(patient.code, 5)
+
+    try {
+      await durably.cancel(runId)
+      const cancelled = await waitJson(box, runId, ['--timeout', '60000'])
+      assert.equal(cancelled.code, 4)
+      assert.equal(cancelled.out.status, 'cancelled')
+    } finally {
+      await durably.db.destroy()
+    }
+  })
+
+  it('reports an unreadable lock as unknown, and neither fails nor gives up on it', async () => {
+    const box = await sandbox()
+    await mkdir(box.stateRoot, { recursive: true })
+    const lockPath = join(box.stateRoot, 'worker.lock')
+    assert.deepEqual(probeWorkerLock(box.stateRoot), {
+      running: false,
+      holder: null,
+      unknownReason: null,
+    })
+    // Not a database: the lock says nothing either way.
+    await writeFile(
+      lockPath,
+      'not a sqlite database, just some text '.repeat(8),
+    )
+    const corrupt = probeWorkerLock(box.stateRoot)
+    assert.equal(corrupt.running, null)
+    assert.match(corrupt.unknownReason ?? '', /worker\.lock/)
+    if (process.getuid?.() !== 0) {
+      await chmod(lockPath, 0o000)
+      try {
+        assert.equal(probeWorkerLock(box.stateRoot).running, null)
+      } finally {
+        await chmod(lockPath, 0o600)
+      }
+    }
+
+    // `trigger` stores the run and still prints its id.
+    const triggered = await demo(box, ['trigger', '--provider', 'fake'])
+    assert.equal(triggered.code, 0, triggered.stderr)
+    const shown = JSON.parse(triggered.stdout) as {
+      runId: string
+      worker: { running: boolean | null; start: string | null }
+    }
+    assert.ok(shown.runId)
+    assert.equal(shown.worker.running, null)
+    assert.equal(shown.worker.start, null)
+    const runId = shown.runId
+    const list = await demo(box, ['status'])
+    assert.equal(list.code, 0, list.stderr)
+    assert.match(list.stdout, /worker: unknown \(cannot read /)
+    const one = await statusJson(box, runId)
+    assert.equal(one.worker.running, null)
+
+    // Unknown is not absent: only --timeout ends the wait.
+    const held = await waitJson(box, runId, [
+      '--worker-timeout',
+      '1',
+      '--timeout',
+      '2500',
+    ])
+    assert.equal(held.code, 5)
+    assert.equal(held.out.worker.running, null)
+  })
+
+  it('follows runs a worker in another process moves, until they end or wait on a person', async () => {
+    const box = await sandbox({ check: CHECK })
+    const subject = async () => {
+      const res = await demo(box, ['trigger', '--provider', 'fake'])
+      assert.equal(res.code, 0, res.stderr)
+      return (JSON.parse(res.stdout) as { runId: string }).runId
+    }
+    const approved = await subject()
+    const rejected = await subject()
+    const other = await subject()
+    const failed = await trigger(box, [
+      '--repo',
+      box.repo,
+      '--task',
+      'fix add',
+      '--base',
+      'no-such-ref',
+    ])
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    await durably.migrate()
+    const workers: ReturnType<typeof startWorker>[] = []
+    const pendingWait = async (runId: string) =>
+      (await durably.getWaits(runId)).find((w) => w.status === 'pending')
+    try {
+      const first = startWorker(box)
+      workers.push(first)
+      await first.running()
+      // Waits from pending, across the whole run, on the stored state.
+      const human = await waitJson(box, approved)
+      assert.equal(human.code, 2)
+      assert.equal(human.out.status, 'waiting')
+      assert.match(human.out.stopReason, /approval wait/)
+      assert.ok(human.out.next.some((n) => /demo approve/.test(n)))
+      assert.ok(human.out.stageTimings.some((t) => t.stage === 'code'))
+      for (const t of human.out.stageTimings)
+        if (!t.complete) assert.equal(t.elapsedMs, null)
+      assert.equal((await waitJson(box, rejected)).code, 2)
+      assert.equal((await waitJson(box, other)).code, 2)
+      const stopped = await waitJson(box, failed)
+      assert.equal(stopped.code, 3)
+      assert.equal(stopped.out.status, 'failed')
+
+      // A wait that is not a candidate approval still waits on a person.
+      const otherWait = await pendingWait(other)
+      assert.ok(otherWait)
+      await durably.db
+        .updateTable('durably_waits')
+        .set({ metadata: null })
+        .where('id', '=', otherWait.id)
+        .execute()
+      const input = await waitJson(box, other)
+      assert.equal(input.code, 2)
+      assert.match(input.out.stopReason, /nobody has resolved/)
+
+      // Decided but not resumed: not a person's turn. Without a worker,
+      // the wait gives up on the worker instead.
+      first.kill('SIGTERM')
+      assert.equal(await first.exited, 0)
+      for (const [runId, verb] of [
+        [approved, 'approve'],
+        [rejected, 'reject'],
+      ] as const) {
+        const w = await pendingWait(runId)
+        assert.ok(w)
+        const res = await demo(box, [verb, '--run', runId, '--wait', w.id])
+        assert.equal(res.code, 0, res.stderr)
+      }
+      const decided = await waitJson(box, approved, [
+        '--worker-timeout',
+        '1000',
+      ])
+      assert.equal(decided.code, 6)
+      assert.equal(decided.out.status, 'waiting')
+
+      const second = startWorker(box)
+      workers.push(second)
+      await second.running()
+      const done = await demo(box, ['wait', '--run', approved])
+      assert.equal(done.code, 0, done.stdout)
+      assert.match(done.stdout, /conclusion: approved/)
+      assert.match(done.stdout, /stopped: +completed: approved and delivered/)
+      assert.match(done.stdout, /timing:\n {2}setup: work=/)
+      const refused = await waitJson(box, rejected)
+      assert.equal(refused.code, 3)
+      assert.equal(refused.out.status, 'completed')
+      assert.equal(refused.out.conclusion, 'rejected')
+      second.kill('SIGTERM')
+      assert.equal(await second.exited, 0)
+    } finally {
+      for (const w of workers) {
+        w.kill('SIGKILL')
+        w.child.kill('SIGKILL')
+      }
+      await durably.db.destroy()
+    }
   })
 })
