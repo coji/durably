@@ -2,7 +2,7 @@ import { COMMON, LIST } from '../glossary'
 import type { LineageRun } from '../server'
 import { runHref } from './RunLink'
 import { StatusBadge } from './StatusBadge'
-import { SupersededMark } from './SupersededMark'
+import { ArchivedMark, SupersededMark } from './SupersededMark'
 import { runRole, runState } from './TaskRow'
 import { Ago } from './Time'
 
@@ -49,6 +49,7 @@ export function TaskLineage({
                 </a>
               )}
               {r.superseded ? <SupersededMark /> : null}
+              {r.archived ? <ArchivedMark /> : null}
               <span className="text-fg-2">
                 <Ago iso={r.createdAt} now={now} />
               </span>
