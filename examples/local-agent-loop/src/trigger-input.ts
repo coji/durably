@@ -24,6 +24,7 @@ import {
   type AgentLoopInput,
   nonBlank,
   resolveTimeouts,
+  selfCheckSchema,
   specMaxRoundsSchema,
   specReviewerNameSchema,
   timeoutMsSchema,
@@ -157,6 +158,11 @@ function configuresSpecStages(spec: SpecConfig | undefined): boolean {
 const factoryConfigSchema = z
   .object({
     check: z.array(z.string().min(1)).min(1).optional(),
+    /**
+     * Quick commands the implementer and repairer are told to run before
+     * finishing. Prompt-only: the factory never runs them (ADR-0031).
+     */
+    selfCheck: selfCheckSchema.optional(),
     setup: z.array(z.string().min(1)).min(1).optional(),
     base: z.string().min(1).optional(),
     profiles: z
@@ -548,6 +554,7 @@ async function repoSettings(
       checkFromSpec,
       setupCommand:
         setupCommand && setupCommand.length > 0 ? setupCommand : null,
+      selfCheck: config?.selfCheck ?? null,
       baselineCheck: config?.baselineCheck ?? false,
       baselineReuse: config?.baselineReuse ?? null,
       parallelReview: config?.parallelReview ?? false,
@@ -677,8 +684,8 @@ function assembleInput(a: Record<string, string>, resolved: ResolvedTarget) {
   // Math.min/Math.max propagate NaN rather than clamping it, so a non-numeric
   // value would reach the job schema as NaN and surface as a zod stack trace.
   const rawIterations = a['max-iterations'] ?? '2'
-  if (!/^[1-3]$/.test(rawIterations))
-    throw new Error('--max-iterations must be an integer between 1 and 3')
+  if (!/^[1-5]$/.test(rawIterations))
+    throw new Error('--max-iterations must be an integer between 1 and 5')
   const maxIterations = Number(rawIterations)
   const { target, config, codexPath, configSource, specStages } = resolved
   const {
@@ -914,6 +921,7 @@ interface StoredRepairInput {
       dispositions?: InputFileRef | null
     }
     commit?: CommitSettings
+    selfCheck?: string[][] | null
     baselineCheck?: boolean
     baselineReuse?: BaselineReuse | null
     parallelReview?: boolean
@@ -1151,6 +1159,11 @@ export function buildRepairInput(
       issue: t.issue,
       checkCommand: fixed.check ?? t.checkCommand,
       setupCommand: t.setupCommand,
+      selfCheck: recorded(
+        t,
+        'selfCheck',
+        () => parentInput.target?.selfCheck ?? null,
+      ),
       publish: t.publish,
       commit: recorded(
         t,

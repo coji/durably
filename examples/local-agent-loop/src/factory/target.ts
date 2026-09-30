@@ -66,6 +66,13 @@ export interface RepoTargetConfig {
   /** Optional one-time preparation (dependency install) for a fresh worktree. */
   setupCommand: string[] | null
   /**
+   * Quick commands, fixed at trigger, that the implementation and repair
+   * prompts tell the agent to run before finishing. The factory never runs
+   * them; only `checkCommand` grades (ADR-0031). Null or absent: no such
+   * rule, as on a run set up before it existed.
+   */
+  selfCheck?: string[][] | null
+  /**
    * Pinned check argv. Recorded at setup so the agent cannot redefine it.
    * Empty at setup on a run with `checkFromSpec`: the run grades with the
    * check that script returns, fixed in its own step before the baseline.

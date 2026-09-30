@@ -3790,6 +3790,12 @@ describe('reviews beside verification on the page', () => {
     assert.ok(text.includes(REVIEW_STATUS['cancelled']?.reason ?? '-'))
     assert.ok(text.includes(REVIEW_STATUS['discarded']?.label ?? '-'))
     assert.ok(text.includes(REVIEW_STATUS['discarded']?.reason ?? '-'))
+    // True of runs before and after failed-round reviews reached the repair:
+    // why it is set aside, and that only newer runs hand it on.
+    const discarded = REVIEW_STATUS['discarded']?.reason ?? ''
+    assert.match(discarded, /^検証に落ちた候補へのレビューなので/)
+    assert.match(discarded, /新しいrunでは/)
+    assert.doesNotMatch(discarded, /[()（）]/)
     assert.ok(text.includes(REVIEW.noVerdict))
     assert.ok(text.includes(REVIEW.discardedCost))
     // A cost that is not known reads as unknown, never as $0.00.

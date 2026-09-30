@@ -36,13 +36,14 @@ import {
   specMaxRoundsSchema,
 } from '../src/factory/job.js'
 import { archiveMarkerOf } from '../src/factory/layout.js'
+import { availableActions } from '../src/factory/policy.js'
 import {
   codePrompt,
   reviewPrompt,
   triagePrompt,
 } from '../src/factory/prompts.js'
 import { REPAIR_OF_LABEL } from '../src/factory/repair.js'
-import type { FactorySetup } from '../src/factory/types.js'
+import type { FactorySetup, FactoryState } from '../src/factory/types.js'
 import { createTarget } from '../src/targets/index.js'
 import {
   buildRepairInput,
@@ -179,6 +180,7 @@ type RunInput = {
     baselineCheck?: boolean
     baselineReuse?: { maxAgeMs: number } | null
     parallelReview?: boolean
+    selfCheck?: string[][] | null
     commit?: {
       authorName: string | null
       authorEmail: string | null
@@ -1473,6 +1475,229 @@ describe('parallelReview', { timeout: 180000 }, () => {
     // Setup records it only when on; a parent without it is off.
     assert.equal(repair(parent(false), setup), false)
     assert.equal(repair(parent(), setup), false)
+  })
+})
+
+describe('selfCheck', { timeout: 240000 }, () => {
+  const LINT = ['node', '--check', 'src/calc.js']
+  const five = [1, 2, 3, 4, 5].map((n) => ['node', '-e', `${n}`])
+
+  it('stores one to five argv commands at trigger, null when left out, and reloads them', async () => {
+    const one = await sandbox({ check: CHECK, selfCheck: [LINT] })
+    const input = await inputOf(
+      one,
+      await trigger(one, ['--repo', one.repo, '--task', 'x']),
+    )
+    assert.deepEqual(input.target.selfCheck, [LINT])
+    const most = await sandbox({ check: CHECK, selfCheck: five })
+    const mostInput = await inputOf(
+      most,
+      await trigger(most, ['--repo', most.repo, '--task', 'x']),
+    )
+    assert.deepEqual(mostInput.target.selfCheck, five)
+    const plain = await sandbox({ check: CHECK })
+    const plainInput = await inputOf(
+      plain,
+      await trigger(plain, ['--repo', plain.repo, '--task', 'x']),
+    )
+    assert.equal(plainInput.target.selfCheck, null)
+    // `retrigger --reload-config` reads the file as it is now.
+    await writeFile(
+      join(one.repo, 'factory.json'),
+      JSON.stringify({ check: CHECK, selfCheck: [['node', '-v']] }),
+    )
+    const reloaded = await reloadTriggerInput(
+      input as unknown as Parameters<typeof reloadTriggerInput>[0],
+    )
+    assert.deepEqual(
+      (reloaded.input.target as { selfCheck?: unknown }).selfCheck,
+      [['node', '-v']],
+    )
+    await writeFile(
+      join(one.repo, 'factory.json'),
+      JSON.stringify({ check: CHECK }),
+    )
+    const dropped = await reloadTriggerInput(
+      input as unknown as Parameters<typeof reloadTriggerInput>[0],
+    )
+    assert.equal(
+      (dropped.input.target as { selfCheck?: unknown }).selfCheck,
+      null,
+    )
+  })
+
+  it('refuses an empty list, more than five, an empty command, an empty or non-string argument', async () => {
+    for (const selfCheck of [
+      [],
+      [...five, ['node', '-e', '6']],
+      [[]],
+      [['pnpm', '']],
+      [['']],
+      [['pnpm', 1]],
+      ['pnpm lint'],
+    ]) {
+      const box = await sandbox({ check: CHECK, selfCheck })
+      await rejected(
+        box,
+        ['--repo', box.repo, '--task', 'x'],
+        /invalid factory config[\s\S]*selfCheck/,
+      )
+    }
+  })
+
+  it('keeps the commands fixed at trigger in the prompt, and gives them to a repair run whatever factory.json says now', async () => {
+    const box = await sandbox({ check: CHECK, selfCheck: [LINT] })
+    const parentId = await trigger(box, [
+      '--repo',
+      box.repo,
+      '--task',
+      'the parent task',
+      '--max-iterations',
+      '1',
+    ])
+    // Edited after trigger: the run never reads it.
+    await writeFile(
+      join(box.repo, 'factory.json'),
+      JSON.stringify({ check: CHECK, selfCheck: [['node', '-v']] }),
+    )
+    process.env.FAKE_FAIL_FIRST = '0'
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    await durably.init()
+    let setup: FactorySetup
+    try {
+      await until(
+        async () => (await durably.getRun(parentId))?.status === 'completed',
+        'the parent completes',
+      )
+      setup = (await durably.storage.getCompletedStep(parentId, 'setup'))
+        ?.output as FactorySetup
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+    assert.equal(setup.target.kind, 'repo')
+    const rules = createTarget(setup.target).implementationRules()
+    const prompt = codePrompt({
+      role: 'implement',
+      iteration: 1,
+      repairNotes: [],
+      task: 'x',
+      rules,
+    })
+    assert.ok(prompt.includes('`node --check src/calc.js`'))
+    assert.ok(!prompt.includes('`node -v`'))
+    // A repair run takes the parent's value, not the edited file's.
+    await writeFile(join(box.root, 'findings.md'), 'FINDING: refunds\n')
+    const res = await demo(box, [
+      'repair',
+      '--run',
+      parentId,
+      '--findings-file',
+      'findings.md',
+    ])
+    assert.equal(res.code, 0, res.stderr)
+    const child = await inputOf(
+      box,
+      (JSON.parse(res.stdout) as { runId: string }).runId,
+    )
+    assert.deepEqual(child.target.selfCheck, [LINT])
+  })
+
+  it("gives a repair run its parent's value, absence included", () => {
+    const commit = 'a'.repeat(40)
+    const profile = (role: string) => ({
+      id: `fake:provider-default:provider-default:${role}`,
+      provider: 'fake',
+      requestedModel: null,
+      requestedEffort: null,
+      effectiveModel: null,
+      effectiveEffort: null,
+    })
+    const parent = {
+      id: 'p',
+      status: 'completed',
+      input: { provider: 'fake', target: { kind: 'repo' } },
+      output: {
+        approved: true,
+        conclusion: 'approved',
+        candidate: { commit, branch: 'factory/p' },
+        delivery: { commit },
+      },
+    }
+    const setup = (selfCheck?: string[][] | null) => ({
+      contextMode: 'reuse',
+      maxIterations: 5,
+      agentTimeoutMs: 600000,
+      autoApprove: true,
+      profiles: {
+        code: profile('code'),
+        correctness: profile('correctness'),
+        'edge-cases': profile('edge-cases'),
+      },
+      target: {
+        kind: 'repo',
+        repoPath: '/repo',
+        task: 'task',
+        spec: null,
+        dispositions: null,
+        issue: null,
+        checkCommand: ['true'],
+        setupCommand: null,
+        ...(selfCheck === undefined ? {} : { selfCheck }),
+        checkTimeoutMs: 120000,
+        publish: false,
+      },
+    })
+    const files = {
+      findings: { content: 'FINDING\n', ref: { path: '/f.md' } },
+      dispositions: null,
+    }
+    const child = (s: object) => buildRepairInput(parent, s, files).input
+    assert.deepEqual(child(setup([LINT])).target.selfCheck, [LINT])
+    assert.equal(child(setup(null)).target.selfCheck, null)
+    assert.equal(child(setup()).target.selfCheck, null)
+    // The inherited limit, 5 included, is the child's own.
+    assert.equal(child(setup()).maxIterations, 5)
+  })
+})
+
+describe('--max-iterations', { timeout: 120000 }, () => {
+  it('accepts 1 to 5, defaults to 2, and refuses 0 and 6', async () => {
+    const box = await sandbox({ check: CHECK })
+    const stored = async (args: string[]) =>
+      (
+        (await inputOf(
+          box,
+          await trigger(box, ['--repo', box.repo, '--task', 'x', ...args]),
+        )) as RunInput & { maxIterations: number }
+      ).maxIterations
+    assert.equal(await stored([]), 2)
+    assert.equal(await stored(['--max-iterations', '1']), 1)
+    assert.equal(await stored(['--max-iterations', '5']), 5)
+    const fresh = await sandbox({ check: CHECK })
+    for (const value of ['0', '6'])
+      await rejected(
+        fresh,
+        ['--repo', fresh.repo, '--task', 'x', '--max-iterations', value],
+        /--max-iterations must be an integer between 1 and 5/,
+      )
+  })
+
+  it("counts a repair run's own repairs against an inherited limit of 5", () => {
+    const state = (iteration: number) =>
+      ({
+        outcome: null,
+        candidate: { id: 'c' },
+        verification: { targetId: 'c', passed: false },
+        iteration,
+        setup: {
+          maxIterations: 5,
+          repairOf: { runId: 'p', candidateCommit: 'a'.repeat(40) },
+        },
+      }) as unknown as FactoryState
+    assert.deepEqual(availableActions(state(4)), ['code'])
+    assert.deepEqual(availableActions(state(5)), ['stop'])
   })
 })
 

@@ -71,6 +71,7 @@ What we considered and why we didn't do it.
 | [0028](0028-local-agent-loop-worktree-retention.md)             | local-agent-loop worktree retention           | accepted |
 | [0029](0029-local-agent-loop-parallel-verification-review.md)   | local-agent-loop parallel verification review | accepted |
 | [0030](0030-local-agent-loop-verification-failed-repair.md)     | local-agent-loop verification-failed repair   | accepted |
+| [0031](0031-local-agent-loop-self-check.md)                     | local-agent-loop prompt-only self checks      | accepted |
 
 ## Prior Art
 

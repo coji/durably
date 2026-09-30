@@ -900,3 +900,48 @@ describe('spec stages in the config version', () => {
     assert.equal(configVersionOf({ ...base, spec }), versions[0])
   })
 })
+
+describe('selfCheck in the config version', () => {
+  const profile = {
+    provider: 'fake',
+    requestedModel: null,
+    requestedEffort: null,
+    effectiveModel: null,
+    effectiveEffort: null,
+  }
+  const base = {
+    contextMode: 'reuse',
+    instructionsVersion: 'local-factory.v3',
+    maxIterations: 2,
+    target: 'repo:pnpm validate',
+    agentTimeoutMs: 1800000,
+    checkTimeoutMs: 900000,
+    code: profile,
+    correctness: profile,
+    edgeCases: profile,
+  }
+
+  it('keeps the version it had before selfCheck existed when it is absent', () => {
+    // Computed before the field existed.
+    const prior = '492af9658dc223a6'
+    assert.equal(configVersionOf(base), prior)
+    assert.equal(configVersionOf({ ...base, selfCheck: null }), prior)
+    assert.equal(configVersionOf({ ...base, selfCheck: [] }), prior)
+  })
+
+  it('changes with the configured commands', () => {
+    const versions = [
+      configVersionOf(base),
+      configVersionOf({ ...base, selfCheck: [['pnpm', 'lint']] }),
+      configVersionOf({ ...base, selfCheck: [['pnpm', 'typecheck']] }),
+      configVersionOf({
+        ...base,
+        selfCheck: [
+          ['pnpm', 'lint'],
+          ['pnpm', 'typecheck'],
+        ],
+      }),
+    ]
+    assert.equal(new Set(versions).size, versions.length)
+  })
+})

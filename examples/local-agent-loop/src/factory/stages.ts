@@ -410,8 +410,20 @@ const verifyReviewStage: StageHandler = async (args) => {
     results[correctness],
     results[edgeCases],
   ] as ParallelReviewStepResult[]
-  // A cancelled review has no verdict and hands the repair nothing.
-  const completed = reviews.flatMap((r) => ('status' in r ? [] : [r]))
+  // A cancelled review has no verdict and hands the repair nothing. Parsing
+  // the event strips the findings from a passing round's reviews.
+  const completed = reviews.flatMap((r) =>
+    'status' in r
+      ? []
+      : [
+          {
+            lens: r.lens,
+            decision: r.decision,
+            notes: r.notes,
+            findings: r.findings,
+          },
+        ],
+  )
   return {
     type: 'verify-review.completed',
     targetId: candidate.id,
@@ -420,22 +432,8 @@ const verifyReviewStage: StageHandler = async (args) => {
     exitCode: verification.exitCode,
     log: verification.log ?? null,
     ...(verification.passed
-      ? {
-          reviews: completed.map((r) => ({
-            lens: r.lens,
-            decision: r.decision,
-            notes: r.notes,
-          })),
-        }
-      : {
-          reviews: null,
-          failedCheckReviews: completed.map((r) => ({
-            lens: r.lens,
-            decision: r.decision,
-            notes: r.notes,
-            findings: r.findings,
-          })),
-        }),
+      ? { reviews: completed }
+      : { reviews: null, failedCheckReviews: completed }),
   }
 }
 

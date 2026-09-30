@@ -258,6 +258,23 @@ export class RepoTarget implements Target {
       `Grading runs ${this.checkDescription()}. The command was fixed before you started, so editing scripts cannot change what is run.`,
       'Add or update tests that would fail without your change. Tests that pass whether or not the fix is present do not count.',
       'Do not commit; the factory commits for you. Do not push, open pull requests, or run network commands.',
+      ...this.selfCheckRule(),
+    ]
+  }
+
+  /**
+   * The `selfCheck` commands, as one rule; none without them. The factory
+   * never runs them: only the grading command judges the run (ADR-0031).
+   */
+  private selfCheckRule(): string[] {
+    const commands = this.config.selfCheck ?? []
+    if (commands.length === 0) return []
+    return [
+      [
+        'Before you finish, run each of these commands in this worktree and fix what they report:',
+        ...commands.map((command) => `  \`${checkFingerprint(command)}\``),
+        'They are quick checks that the grading command also covers. Only the grading command judges this run.',
+      ].join('\n'),
     ]
   }
 
