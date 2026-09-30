@@ -452,7 +452,7 @@ Commands (run from examples/local-agent-loop):
 Repository config: factory.json at the repository root, or --config <file>:
   { "check": ["pnpm", "validate"], "setup": ["pnpm", "install"], "base": "main",
     "baselineCheck": false, "baselineReuse": { "maxAgeMs": 3600000 },
-    "codexPath": "<file>",
+    "parallelReview": false, "codexPath": "<file>",
     "checkTimeoutMs": 900000, "agentTimeoutMs": 1800000,
     "commit": { "authorName": "...", "authorEmail": "...",
                 "messageTemplate": "...", "publishSquashed": false },
@@ -482,6 +482,15 @@ Repository config: factory.json at the repository root, or --config <file>:
   when the repository, base commit, check, setup, checkTimeoutMs, Node.js
   version, platform, architecture and check executable all match. Setup and
   the clean-worktree checks still run.
+  "parallelReview": true starts verification and both reviews of each sealed
+  candidate together (default false: review follows a passing check, as
+  before). Reviewers then read the candidate's sealed tree and diff, never
+  the worktree the check runs in. A check that fails ends the reviews still
+  running (cancelled, superseded-by-verify) and sets aside the ones that
+  answered (discarded, verify-failed); neither is used for a repair or an
+  approval, nor counted toward the review cap. Only a candidate that passes
+  both is approved. The report, compare and compare --trend show what the
+  reviews of failed candidates cost, apart from the total.
   "spec" (repository runs without --spec-file): after setup and preflight,
   "author" writes the run's spec file (runs/<id>/spec/spec.md, outside the
   worktree) from the task and "template"; every named reviewer reviews it

@@ -28,8 +28,11 @@ import type {
   ReviewCallSettings,
 } from '../engine/providers/types.js'
 import { checkpointPaths, runAgentCall } from '../engine/runner.js'
-import type { ReviewSnapshots } from '../engine/types.js'
-import { runVerificationStep } from '../engine/verification.js'
+import type { CandidateRef, ReviewSnapshots } from '../engine/types.js'
+import {
+  runVerificationStep,
+  type VerificationOutcome,
+} from '../engine/verification.js'
 import { SpecEventSchema, type SpecEvent } from './events.js'
 import { specAction } from './policy.js'
 import {
@@ -55,6 +58,7 @@ import {
 } from './reducer.js'
 import type { Delivery, Target, UntrustedInput } from './target.js'
 import {
+  REVIEW_CANCEL_REASON,
   REVIEW_LENSES,
   reviewInvocationOf,
   separateRepairProfile,
@@ -67,6 +71,7 @@ import {
   specWaitName,
   usesReviewMaterials,
   type BaselineIdentity,
+  type CancelledReviewStepResult,
   type FactoryOutcome,
   type FactorySetup,
   type ReviewFinding,
@@ -241,49 +246,21 @@ export const codeStage: StageHandler = async ({
   return { type: 'code.completed', role, candidate, session }
 }
 
-export const verifyStage: StageHandler = async ({
-  step,
-  state,
-  key,
-  services,
-}) => {
+export const verifyStage: StageHandler = async (args) => {
+  const { step, state, key, services } = args
+  // With `parallelReview`, the candidate is reviewed while it is verified.
+  if (state.setup.parallelReview) return verifyReviewStage(args)
   const target = services.target
   const candidate = requireCandidate(state)
   await target.assertIntact(candidate)
   const result = await step.run(`${key}:acceptance`, (signal, attempt) =>
-    runVerificationStep(
-      attempt,
-      {
-        provider: state.setup.profiles.code.provider,
-        operationKey: `${step.runId}/${key}/acceptance`,
-        checkpointsDir: state.setup.checkpointsDir,
-        stage: 'verify',
-        iteration: state.iteration,
-        // What "verified" means belongs to the target. The engine only owns
-        // the checkpointing, the measurement, and the signal.
-        grade: (graderSignal) =>
-          target.grade({
-            candidate,
-            scratchDir: join(
-              state.setup.checkpointsDir,
-              '..',
-              'verification-scratch',
-              candidate.id,
-              attempt.id,
-            ),
-            // Keyed by the step attempt: a worker that dies mid-grading
-            // leaves its partial log, and the re-grade writes a new one.
-            logDir: join(
-              state.setup.checkpointsDir,
-              '..',
-              'verification-logs',
-              candidate.id,
-              attempt.id,
-            ),
-            signal: graderSignal,
-          }),
-      },
+    verifyCandidate(
+      state,
+      target,
+      candidate,
+      `${step.runId}/${key}/acceptance`,
       signal,
+      attempt,
     ),
   )
   await target.assertIntact(candidate)
@@ -311,6 +288,186 @@ export const reviewStage: StageHandler = async ({
   )
     throw new Error('review requires the same verified candidate')
   await target.assertIntact(candidate)
+  const round = await reviewRoundOf({
+    step,
+    state,
+    key,
+    target,
+    providers: services.providers,
+    candidate,
+    snapshotOnly: false,
+  })
+  const correctness = `${key}:correctness`
+  const edgeCases = `${key}:edge-cases`
+  let results
+  try {
+    results = await step.all({
+      [correctness]: (signal, attempt) =>
+        round.reviewOnce('correctness', signal, attempt),
+      [edgeCases]: (signal, attempt) =>
+        round.reviewOnce('edge-cases', signal, attempt),
+    })
+  } finally {
+    // The candidate's tree and the reviewers' directories are read only
+    // during its review, and removed however the round ends, a replay that
+    // only reads checkpoints included: a worker that died after both
+    // reviews were recorded left them. The base tree is kept for the next
+    // candidate and removed with the run.
+    await round.release()
+  }
+  await target.assertIntact(candidate)
+  return {
+    type: 'review.completed',
+    targetId: candidate.id,
+    reviews: [results[correctness], results[edgeCases]].map((r) => {
+      // Only a review beside verification is ever cancelled.
+      if ('status' in r) throw new Error(`review ${r.lens} was ${r.status}`)
+      return r
+    }),
+  }
+}
+
+/**
+ * Verification and review of one sealed candidate, started together in one
+ * `step.all` (ADR-0029). The steps keep the names the two stages give them
+ * one after the other, so a report reads them the same way. The reviewers
+ * read the candidate's sealed tree and diff, never the worktree the check
+ * runs in. A failed check ends the reviews still running: each call is
+ * settled as cancelled with the usage it had reported, and a review that
+ * already answered is kept on record but not used. The stage ends once
+ * every branch has.
+ */
+export const verifyReviewStage: StageHandler = async (args) => {
+  const { step, state, key, services } = args
+  const target = services.target
+  const candidate = requireCandidate(state)
+  await target.assertIntact(candidate)
+  const reviewKey = key.replace(/:verify$/, ':review')
+  const round = await reviewRoundOf({
+    step,
+    state,
+    key: reviewKey,
+    target,
+    providers: services.providers,
+    candidate,
+    snapshotOnly: true,
+  })
+  // One controller for the round: a failed check ends both reviewers.
+  const superseded = new AbortController()
+  const acceptance = `${key}:acceptance`
+  const correctness = `${reviewKey}:correctness`
+  const edgeCases = `${reviewKey}:edge-cases`
+  let results
+  try {
+    results = await step.all({
+      [acceptance]: async (
+        signal: AbortSignal,
+        attempt: StepAttemptContext,
+      ) => {
+        const result = await verifyCandidate(
+          state,
+          target,
+          candidate,
+          `${step.runId}/${key}/acceptance`,
+          signal,
+          attempt,
+        )
+        if (!result.passed)
+          superseded.abort(new Error('the candidate failed verification'))
+        return result
+      },
+      [correctness]: (signal: AbortSignal, attempt: StepAttemptContext) =>
+        round.reviewOnce('correctness', signal, attempt, superseded.signal),
+      [edgeCases]: (signal: AbortSignal, attempt: StepAttemptContext) =>
+        round.reviewOnce('edge-cases', signal, attempt, superseded.signal),
+    })
+  } finally {
+    await round.release()
+  }
+  await target.assertIntact(candidate)
+  const verification = results[acceptance] as VerificationOutcome
+  const reviews = [results[correctness], results[edgeCases]] as (
+    | ReviewStepResult
+    | CancelledReviewStepResult
+  )[]
+  const verdicts = reviews.flatMap((r) =>
+    'status' in r
+      ? []
+      : [{ lens: r.lens, decision: r.decision, notes: r.notes }],
+  )
+  return {
+    type: 'verify-review.completed',
+    targetId: candidate.id,
+    passed: verification.passed,
+    stdout: verification.stdout,
+    exitCode: verification.exitCode,
+    log: verification.log ?? null,
+    reviews: verification.passed ? verdicts : null,
+  }
+}
+
+/** Grade one sealed candidate through the verification checkpoint pair. */
+function verifyCandidate(
+  state: StageArgs['state'],
+  target: Target,
+  candidate: CandidateRef,
+  operationKey: string,
+  signal: AbortSignal,
+  attempt: StepAttemptContext,
+) {
+  return runVerificationStep(
+    attempt,
+    {
+      provider: state.setup.profiles.code.provider,
+      operationKey,
+      checkpointsDir: state.setup.checkpointsDir,
+      stage: 'verify',
+      iteration: state.iteration,
+      // What "verified" means belongs to the target. The engine only owns
+      // the checkpointing, the measurement, and the signal.
+      grade: (graderSignal) =>
+        target.grade({
+          candidate,
+          scratchDir: join(
+            state.setup.checkpointsDir,
+            '..',
+            'verification-scratch',
+            candidate.id,
+            attempt.id,
+          ),
+          // Keyed by the step attempt: a worker that dies mid-grading
+          // leaves its partial log, and the re-grade writes a new one.
+          logDir: join(
+            state.setup.checkpointsDir,
+            '..',
+            'verification-logs',
+            candidate.id,
+            attempt.id,
+          ),
+          signal: graderSignal,
+        }),
+    },
+    signal,
+  )
+}
+
+/**
+ * One review round on `candidate`: each lens's call, and the removal of
+ * what the round extracted. With `snapshotOnly`, on a target with review
+ * snapshots, every reviewer reads the candidate's sealed tree and diff and
+ * nothing else of it: a prompt review works in that tree, a command review
+ * in its own directory, and neither is shown the worktree.
+ */
+async function reviewRoundOf(args: {
+  step: StageArgs['step']
+  state: StageArgs['state']
+  key: string
+  target: Target
+  providers: StageArgs['services']['providers']
+  candidate: CandidateRef
+  snapshotOnly: boolean
+}) {
+  const { step, state, key, target, candidate } = args
   const trustedContext = await target.reviewContext(candidate)
   const reviewCwd = target.reviewCwd(candidate)
   // Both reviewers read the same candidate's diff and changed-file list, and
@@ -322,11 +479,16 @@ export const reviewStage: StageHandler = async ({
   const setup = state.setup
   const baseCommit =
     setup.target.kind === 'repo' ? setup.target.baseCommit : null
-  // Whether any reviewer of the round reads the base and head trees and
-  // works in a directory of its own.
-  const materials = REVIEW_LENSES.some((lens) =>
-    usesReviewMaterials(reviewInvocationOf(setup, lens)),
-  )
+  // Only a target with review snapshots has a worktree to keep reviewers
+  // out of; the sample's candidate is already a sealed copy.
+  const snapshotOnly =
+    args.snapshotOnly && target.prepareReviewSnapshots !== undefined
+  // Whether any reviewer of the round reads the base and head trees.
+  const materials =
+    snapshotOnly ||
+    REVIEW_LENSES.some((lens) =>
+      usesReviewMaterials(reviewInvocationOf(setup, lens)),
+    )
   // The base and head trees, extracted once for both reviewers of this
   // round when either reads them, and only when a call is about to be made.
   let snapshots: Promise<ReviewSnapshots> | null = null
@@ -348,7 +510,13 @@ export const reviewStage: StageHandler = async ({
     lens: ReviewLens,
     signal: AbortSignal,
     attempt: StepAttemptContext,
-  ): Promise<ReviewStepResult> => {
+    superseded?: AbortSignal,
+  ): Promise<ReviewStepResult | CancelledReviewStepResult> => {
+    const cancelled: CancelledReviewStepResult = {
+      lens,
+      status: 'cancelled',
+      reason: REVIEW_CANCEL_REASON,
+    }
     // Each reviewer has its own profile and provider, and always starts a
     // new session: two branches never share one.
     const profile = setup.profiles[lens]
@@ -356,7 +524,7 @@ export const reviewStage: StageHandler = async ({
     const invocation = reviewInvocationOf(setup, lens)
     const output = invocation?.output ?? 'verdict'
     const commandMode = usesReviewMaterials(invocation)
-    const own = commandMode ? await materialsFor(signal) : null
+    const own = commandMode || snapshotOnly ? await materialsFor(signal) : null
     const trees = own?.trees ?? null
     const context = reviewPrompt(
       lens,
@@ -367,10 +535,13 @@ export const reviewStage: StageHandler = async ({
       Boolean(setup.repairOf),
       {
         output,
-        snapshots: trees,
+        // A prompt review in the sealed tree is shown that tree alone.
+        snapshots: commandMode ? trees : null,
         // A command-mode reviewer works in a directory of its own, so it
-        // is told where the candidate is.
-        worktree: commandMode ? reviewCwd : null,
+        // is told where the candidate is: the worktree, or the sealed tree
+        // when the check runs in the worktree beside it.
+        worktree: commandMode && !snapshotOnly ? reviewCwd : null,
+        candidateTree: !commandMode && trees ? trees.headDir : null,
       },
     )
     // `{base}` and `{head}` are the run's base commit and this candidate's.
@@ -389,19 +560,23 @@ export const reviewStage: StageHandler = async ({
     // own CLAUDE.local.md. That file carries the whole review context, or,
     // when the context travels in the prompt, where the candidate is, so a
     // subagent that never sees the prompt still finds the code. The
-    // candidate is only read, as data.
-    const workdir = own
-      ? await own.workdir(
-          lens,
-          local
-            ? localInstructions(context)
-            : reviewLocations({
-                worktree: reviewCwd,
-                changes,
-                snapshots: own.trees,
-              }),
-        )
-      : reviewCwd
+    // candidate is only read, as data. A prompt review beside the check
+    // works in the candidate's sealed tree.
+    const workdir =
+      own && commandMode
+        ? await own.workdir(
+            lens,
+            local
+              ? localInstructions(context)
+              : reviewLocations({
+                  worktree: snapshotOnly ? null : reviewCwd,
+                  changes,
+                  snapshots: own.trees,
+                }),
+          )
+        : trees
+          ? trees.headDir
+          : reviewCwd
     const settings: ReviewCallSettings | null = invocation
       ? {
           command: command !== null,
@@ -410,7 +585,7 @@ export const reviewStage: StageHandler = async ({
           readableDirs:
             trees && changes
               ? [
-                  reviewCwd,
+                  ...(snapshotOnly ? [] : [reviewCwd]),
                   dirname(changes.diffPath),
                   trees.baseDir,
                   trees.headDir,
@@ -419,7 +594,7 @@ export const reviewStage: StageHandler = async ({
         }
       : null
     const result = await runAgentCall(signal, attempt, {
-      provider: services.providers[lens],
+      provider: args.providers[lens],
       providerName: profile.provider,
       prompt: input,
       workdir,
@@ -438,35 +613,21 @@ export const reviewStage: StageHandler = async ({
       checkpointsDir: setup.checkpointsDir,
       session: null,
       configVersion: setup.configVersion,
+      ...(superseded
+        ? { supersede: { signal: superseded, reason: REVIEW_CANCEL_REASON } }
+        : {}),
     })
+    if (result.cancelled) return cancelled
     // The findings are kept with the verdict in this completed step, so a
     // report reads them back without calling the reviewer or reading the
     // checkpoint again. The review event drops them before the state.
     return { lens, ...readReviewReply(invocation, output, result, lens) }
   }
-  const correctness = `${key}:correctness`
-  const edgeCases = `${key}:edge-cases`
-  let results
-  try {
-    results = await step.all({
-      [correctness]: (signal, attempt) =>
-        reviewOnce('correctness', signal, attempt),
-      [edgeCases]: (signal, attempt) =>
-        reviewOnce('edge-cases', signal, attempt),
-    })
-  } finally {
-    // The candidate's tree and the reviewers' directories are read only
-    // during its review, and removed however the round ends, a replay that
-    // only reads checkpoints included: a worker that died after both
-    // reviews were recorded left them. The base tree is kept for the next
-    // candidate and removed with the run.
-    if (materials) await target.releaseReviewSnapshots?.({ base: false })
-  }
-  await target.assertIntact(candidate)
   return {
-    type: 'review.completed',
-    targetId: candidate.id,
-    reviews: [results[correctness], results[edgeCases]],
+    reviewOnce,
+    release: async () => {
+      if (materials) await target.releaseReviewSnapshots?.({ base: false })
+    },
   }
 }
 

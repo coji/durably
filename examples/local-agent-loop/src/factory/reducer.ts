@@ -45,6 +45,39 @@ export function reduce(state: FactoryState, event: FactoryEvent): FactoryState {
         repairNotes: notes,
       }
     }
+    case 'verify-review.completed': {
+      if (event.targetId !== state.candidate?.id)
+        throw new Error(`verification target is stale: ${event.targetId}`)
+      const verification = {
+        targetId: event.targetId,
+        passed: event.passed,
+        stdout: event.stdout,
+        exitCode: event.exitCode,
+        log: event.log,
+      }
+      // A failed check hands its output alone to the repair: the reviews
+      // of a candidate that failed are neither kept nor counted.
+      if (!event.passed)
+        return {
+          ...state,
+          verification,
+          reviews: [],
+          repairNotes: [`acceptance: ${event.stdout.slice(-1000)}`],
+        }
+      if (!event.reviews)
+        throw new Error(
+          `a passing verification of ${event.targetId} has no reviews`,
+        )
+      return {
+        ...state,
+        verification,
+        reviews: event.reviews,
+        reviewRounds: state.reviewRounds + 1,
+        repairNotes: event.reviews
+          .filter((review) => review.decision === 'needsChanges')
+          .map((review) => `${review.lens}: ${review.notes}`),
+      }
+    }
     case 'approval.completed':
       if (event.targetId !== state.candidate?.id)
         throw new Error(`approval target is stale: ${event.targetId}`)

@@ -42,6 +42,7 @@ import {
   type FailureClassification,
   type FailureKind,
 } from '../src/engine/failure-reasons.js'
+import { formatCost } from '../src/engine/format.js'
 import {
   liveElapsed,
   stageUsage,
@@ -68,6 +69,7 @@ import { ReviewFindingTitles } from '../src/ui/components/ReviewFindingTitles.js
 import {
   ACTION,
   ACTION_DONE,
+  COMPARE,
   COPY,
   DESIGN,
   DETAIL,
@@ -75,6 +77,7 @@ import {
   KIND_NAME,
   LIST,
   REVIEW,
+  REVIEW_STATUS,
   TREND,
 } from '../src/ui/glossary.js'
 import {
@@ -107,9 +110,13 @@ const noAct = async () => true
 const KIND_TEXT_OK = (text: string) => !/[A-Za-z()（）]/.test(text)
 import { pollEvery } from '../src/ui/poll.js'
 import { parseRoute } from '../src/ui/route.js'
+import { GroupPanel } from '../src/ui/screens/compare/GroupPanel.js'
 import { TrendScreen } from '../src/ui/screens/CompareScreen.js'
 import { DesignScreen } from '../src/ui/screens/DesignScreen.js'
-import { ReviewHighlightsPanel } from '../src/ui/screens/run/ReviewsPanel.js'
+import {
+  ReviewHighlightsPanel,
+  ReviewsPanel,
+} from '../src/ui/screens/run/ReviewsPanel.js'
 import { SummaryPanel } from '../src/ui/screens/run/SummaryPanel.js'
 import { UsagePanels } from '../src/ui/screens/run/UsagePanels.js'
 import { RunScreen } from '../src/ui/screens/RunScreen.js'
@@ -3458,6 +3465,7 @@ describe('numbers on the screens', () => {
       approvalRate: 8 / 9,
       leadTimeMs: median(854_000),
       costUsd: median(4.44, 2),
+      discardedReviewCostUsd: median(0.31),
       repairRuns: median(1),
     }
     const empty = {
@@ -3468,6 +3476,7 @@ describe('numbers on the screens', () => {
       approvalRate: null,
       leadTimeMs: median(null),
       costUsd: median(null),
+      discardedReviewCostUsd: median(null),
       repairRuns: median(null),
     }
     const html = renderToStaticMarkup(
@@ -3645,6 +3654,114 @@ describe('numbers on the screens', () => {
     )
     assert.match(records, /1,204 ファイル、\+12,345 行、−6,789 行/)
     assert.ok(!records.includes('12345'))
+  })
+})
+
+describe('reviews beside verification on the page', () => {
+  it('names a cancelled and a discarded round with their reasons, and what they cost', () => {
+    const report = {
+      reviews: [],
+      candidates: [],
+      reviewRounds: [
+        {
+          round: 1,
+          sequence: 1,
+          candidate: null,
+          status: 'cancelled',
+          reason: 'superseded-by-verify',
+          reviews: [
+            {
+              lens: 'correctness',
+              decision: '',
+              notes: '',
+              findings: null,
+              status: 'cancelled',
+              reason: 'superseded-by-verify',
+            },
+          ],
+        },
+        {
+          round: 2,
+          sequence: 4,
+          candidate: null,
+          status: 'discarded',
+          reason: 'verify-failed',
+          reviews: [
+            {
+              lens: 'edge-cases',
+              decision: 'pass',
+              notes: 'ok',
+              findings: null,
+              status: 'discarded',
+              reason: 'verify-failed',
+            },
+          ],
+        },
+      ],
+      discardedReviews: {
+        invocations: 3,
+        inputTokens: null,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+        outputTokens: null,
+        totalTokens: null,
+        costUsd: null,
+        complete: false,
+        costComplete: false,
+      },
+    }
+    const text = htmlText(
+      renderToStaticMarkup(
+        createElement(ReviewsPanel, { report: report as never }),
+      ),
+    )
+    assert.ok(text.includes(REVIEW_STATUS['cancelled']?.label ?? '-'))
+    assert.ok(text.includes(REVIEW_STATUS['cancelled']?.reason ?? '-'))
+    assert.ok(text.includes(REVIEW_STATUS['discarded']?.label ?? '-'))
+    assert.ok(text.includes(REVIEW_STATUS['discarded']?.reason ?? '-'))
+    assert.ok(text.includes(REVIEW.noVerdict))
+    assert.ok(text.includes(REVIEW.discardedCost))
+    // A cost that is not known reads as unknown, never as $0.00.
+    assert.ok(text.includes(formatCost(null)))
+    assert.ok(!text.includes('$0.00'))
+  })
+
+  it('shows the cost of reviews on failed candidates apart from the total in a config group', () => {
+    const stat = (m: number | null) => ({
+      n: m === null ? 0 : 1,
+      unknown: m === null ? 1 : 0,
+      median: m,
+      min: m,
+      max: m,
+    })
+    const group = {
+      kind: 'normal',
+      configVersion: 'cv',
+      runIds: ['a'],
+      label: 'fake',
+      runs: 1,
+      successes: 0,
+      successRate: 0,
+      conclusions: { 'verification-failed': 1 },
+      leadTimeMs: stat(1000),
+      workMs: stat(1000),
+      humanWaitMs: stat(0),
+      totalTokens: stat(100),
+      costUsd: stat(1.5),
+      costPerSuccessUsd: stat(null),
+      discardedReviewCostUsd: stat(0.25),
+      repairs: stat(0),
+      stages: [],
+      triage: [],
+    }
+    const text = htmlText(
+      renderToStaticMarkup(
+        createElement(GroupPanel, { group: group as never }),
+      ),
+    )
+    assert.ok(text.includes(COMPARE.discardedReviewCost))
+    assert.ok(text.includes(formatCost(0.25)))
+    assert.ok(text.includes(formatCost(1.5)))
   })
 })
 

@@ -71,7 +71,7 @@ import {
   type CheckLogFile,
 } from '../engine/failure-reasons.js'
 import { formatCount } from '../engine/format.js'
-import type { VerificationLog } from '../engine/providers/types.js'
+import { NOT_SENT, type VerificationLog } from '../engine/providers/types.js'
 import {
   liveElapsed,
   stageOf,
@@ -703,9 +703,16 @@ function specEntryOf(name: string): {
 
 function checkpointOf(a: AttemptRow, open: boolean): TraceCheckpoint | null {
   const result = a.measurement?.result ?? null
-  if (result === null) return null
+  // Superseded before it was sent: no checkpoint was ever written.
+  if (result === null || result === NOT_SENT) return null
   if (result === 'checkpoint-recovered') return 'recovered'
-  if (result.endsWith('-done') || result === 'pass' || result === 'fail')
+  // A review a failed check ended is settled by its completed checkpoint.
+  if (
+    result.endsWith('-done') ||
+    result === 'pass' ||
+    result === 'fail' ||
+    result === 'cancelled'
+  )
     return 'completed'
   return open ? 'running' : 'uncertain'
 }

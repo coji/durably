@@ -15,6 +15,7 @@ import {
   reportToJson,
   reportToMarkdown,
   reviewHighlights,
+  summarizeRun,
 } from '../src/engine/report.js'
 import type { LoopReport } from '../src/engine/report.js'
 import { groupTasks } from '../src/engine/status.js'
@@ -44,6 +45,8 @@ function baseReport(): LoopReport {
       costPerSuccessUsd: null,
       repairs: 0,
       reviewRounds: 0,
+      discardedReviewCalls: 0,
+      discardedReviewCostUsd: 0,
     },
     stageUsage: [],
     roleUsage: [],
@@ -724,9 +727,12 @@ describe('trend by task, week and code profile', () => {
     assert.match(md, /## gpt-6-astra \/ medium/)
     assert.match(
       md,
-      /\| week of 2026-09-28 \| 2 \| 1\/2 \(50%\) \| 2\/2 \(100%\) \| 12m 30s \[5m\.\.20m\] \(n=2\) \| \$1\.00 \[\$1\.00\.\.\$1\.00\] \(n=1, 1 unknown\) \| 1 \[0\.\.1\] \(n=2\) \|/,
+      /\| week of 2026-09-28 \| 2 \| 1\/2 \(50%\) \| 2\/2 \(100%\) \| 12m 30s \[5m\.\.20m\] \(n=2\) \| \$1\.00 \[\$1\.00\.\.\$1\.00\] \(n=1, 1 unknown\) \| \$0\.00 \[\$0\.00\.\.\$0\.00\] \(n=2\) \| 1 \[0\.\.1\] \(n=2\) \|/,
     )
-    assert.match(md, /\| week of 2026-09-28 \| 0 \| - \| - \| - \| - \| - \|/)
+    assert.match(
+      md,
+      /\| week of 2026-09-28 \| 0 \| - \| - \| - \| - \| - \| - \|/,
+    )
     assert.match(md, /\| last 30 days \| 1 \| 1\/1 \(100%\)/)
     assert.match(
       trendToMarkdown(trendOf([], { now })),
@@ -760,5 +766,106 @@ describe('trend by task, week and code profile', () => {
       days: Number.MAX_SAFE_INTEGER,
     })
     assert.deepEqual(t.weeks, ['2026-09-28'])
+  })
+})
+
+describe('reviews of candidates that failed verification', () => {
+  const report = (
+    runId: string,
+    discardedReviewCostUsd: number | null,
+  ): LoopReport => {
+    const r = baseReport()
+    return {
+      ...r,
+      runId,
+      status: 'completed',
+      configVersion: 'cfg-parallel',
+      summary: {
+        ...r.summary,
+        conclusion: 'verification-failed',
+        costUsd: 3,
+        discardedReviewCalls: 2,
+        discardedReviewCostUsd,
+      } as LoopReport['summary'],
+    }
+  }
+
+  it('keeps their cost apart from the total, and an unknown one unknown', () => {
+    const summary = (
+      discarded: Parameters<typeof summarizeRun>[0]['discardedReviews'],
+    ) =>
+      summarizeRun({
+        status: 'completed',
+        output: null,
+        runElapsedMs: null,
+        stageTotalMs: null,
+        waits: [],
+        attempts: [],
+        stageUsage: [],
+        stageVisits: [],
+        discardedReviews: discarded,
+      })
+    // None: zero calls and zero cost, a known value.
+    assert.equal(summary(null).discardedReviewCalls, 0)
+    assert.equal(summary(null).discardedReviewCostUsd, 0)
+    // A call without usage or a price leaves the cost unknown, never 0.
+    const unknown = summary({
+      invocations: 2,
+      inputTokens: null,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      outputTokens: null,
+      totalTokens: null,
+      costUsd: null,
+      complete: false,
+      costComplete: false,
+    })
+    assert.equal(unknown.discardedReviewCalls, 2)
+    assert.equal(unknown.discardedReviewCostUsd, null)
+
+    const c = compareReports([
+      report('a', 0.5),
+      report('b', 0),
+      report('c', null),
+    ])
+    const g = c.groups[0]!
+    assert.deepEqual(g.discardedReviewCostUsd, {
+      n: 2,
+      unknown: 1,
+      median: 0.25,
+      min: 0,
+      max: 0.5,
+    })
+    assert.equal(g.costUsd.median, 3)
+    assert.match(
+      comparisonToMarkdown(c),
+      /- of which reviews of candidates that failed verification: \$0\.25 \[\$0\.00\.\.\$0\.50\] \(n=2, 1 unknown\)/,
+    )
+  })
+
+  it("adds up a task's runs in the trend, and leaves out a task with an unknown one", () => {
+    const now = new Date(2026, 8, 30, 12).getTime()
+    const iso = (ms: number) => new Date(ms).toISOString()
+    const run = (
+      id: string,
+      parentId: string | null,
+      discarded: number | null,
+    ): TrendRun => ({
+      id,
+      parentId,
+      createdAt: iso(now - 7_200_000 + (parentId ? 60_000 : 0)),
+      status: 'completed',
+      completedAt: iso(now - 3_600_000 + (parentId ? 60_000 : 0)),
+      report: { ...report(id, discarded), fake: false },
+    })
+    const t = trendOf(
+      [run('a', null, 0.25), run('a2', 'a', 0.5), run('b', null, null)],
+      { now },
+    )
+    const total = t.groups[0]!.total
+    assert.equal(total.tasks, 2)
+    assert.equal(total.discardedReviewCostUsd.median, 0.75)
+    assert.equal(total.discardedReviewCostUsd.unknown, 1)
+    assert.match(trendToMarkdown(t), /failed-candidate reviews/)
   })
 })

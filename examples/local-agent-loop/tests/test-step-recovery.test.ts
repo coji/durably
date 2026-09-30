@@ -18,8 +18,16 @@ import { runChild } from '../src/engine/child.js'
 import { DETAIL_PREFIX } from '../src/engine/failure-details.js'
 import { classifyFailure } from '../src/engine/failure-reasons.js'
 import { resolveCommit } from '../src/engine/git.js'
-import type { AttemptMeasurement } from '../src/engine/providers/types.js'
+import type {
+  AgentCallOptions,
+  AgentProvider,
+  AttemptMeasurement,
+} from '../src/engine/providers/types.js'
+import { usageOf } from '../src/engine/report.js'
+import { checkpointPaths } from '../src/engine/runner.js'
 import { runVerificationStep } from '../src/engine/verification.js'
+import { verifyStage } from '../src/factory/stages.js'
+import { initialState, type FactorySetup } from '../src/factory/types.js'
 import { assertSetupLeftNoUntracked, RepoTarget } from '../src/targets/repo.js'
 import {
   runAcceptanceSuite,
@@ -598,5 +606,275 @@ describe('baseline check on the base commit', () => {
         return true
       },
     )
+  })
+})
+
+describe('a review beside verification', () => {
+  /**
+   * The parallel stage over stub targets and spy providers: `grade` decides
+   * the check, each provider answers or waits for its abort.
+   */
+  async function harness(
+    root: string,
+    passes: boolean,
+    /**
+     * `calls-first`: the check ends once both calls were sent.
+     * `check-first`: the reviews are ready only once the check has ended.
+     */
+    order: 'calls-first' | 'check-first' = 'calls-first',
+  ) {
+    const gate = () => {
+      let open = () => {}
+      const opened = new Promise<void>((r) => (open = r))
+      return { open, opened }
+    }
+    const bothCalled = gate()
+    const checked = gate()
+    const worktree = join(root, 'worktree')
+    const snapshots = join(root, 'review-snapshots')
+    const headDir = join(snapshots, 'head')
+    const baseDir = join(snapshots, 'base')
+    const changesDir = join(root, 'candidates', 'candidate-1')
+    for (const d of [worktree, headDir, baseDir, changesDir])
+      await mkdir(d, { recursive: true })
+    const calls: { name: string; options: AgentCallOptions }[] = []
+    const spy = (name: 'codex' | 'claude'): AgentProvider => ({
+      name,
+      fake: false,
+      cliPath: null,
+      partialUsage: true,
+      resolveExecution: () => ({ model: `${name}-model`, effort: null }),
+      call: async (options) => {
+        calls.push({ name, options })
+        if (calls.length === 2) bothCalled.open()
+        options.onPartialUsage?.({
+          inputTokens: 1200,
+          cachedInputTokens: null,
+          outputTokens: 30,
+          totalTokens: 1230,
+          usageSource: 'provider-partial',
+        })
+        if (passes)
+          return {
+            text: 'PLAN: p\nCOUNTEREXAMPLE: none\nDECISION: pass\nNOTES: ok',
+            resolvedModel: `${name}-model`,
+            resolvedEffort: null,
+            reportedModel: null,
+            reportedEffort: null,
+            usage: null,
+            elapsedMs: 1,
+          }
+        return new Promise((_, reject) =>
+          options.signal?.addEventListener('abort', () =>
+            reject(new Error('aborted by the caller')),
+          ),
+        )
+      },
+      checkAvailability: async () => ({
+        verdict: 'available',
+        method: 'stub',
+        detail: 'stub',
+      }),
+      rejectionReason: () => null,
+    })
+    const profile = (provider: 'codex' | 'claude') => ({
+      id: `${provider}:${provider}-model:provider-default:review`,
+      provider,
+      requestedModel: null,
+      requestedEffort: null,
+      effectiveModel: `${provider}-model`,
+      effectiveEffort: null,
+    })
+    const setup = {
+      fake: false,
+      contextMode: 'reuse',
+      target: { kind: 'repo', baseCommit: 'b'.repeat(40) },
+      checkpointsDir: join(root, 'operation-checkpoints'),
+      instructionsVersion: 'v',
+      configVersion: 'cv',
+      profiles: {
+        code: profile('claude'),
+        correctness: profile('codex'),
+        'edge-cases': profile('claude'),
+      },
+      maxIterations: 1,
+      agentTimeoutMs: 60000,
+      autoApprove: true,
+      parallelReview: true,
+    } as unknown as FactorySetup
+    const candidate = {
+      id: 'candidate-1',
+      snapshotDir: worktree,
+      sourceHash: 'h',
+      acceptanceHash: 'h',
+      commit: 'c'.repeat(40),
+      changes: {
+        diffPath: join(changesDir, 'changes.diff'),
+        changedFilesPath: join(changesDir, 'changed-files.txt'),
+        files: 1,
+        additions: 1,
+        deletions: 1,
+      },
+    }
+    const state = { ...initialState(setup), candidate, iteration: 1 }
+    const target = {
+      kind: 'repo',
+      workdir: worktree,
+      assertIntact: async () => {},
+      reviewContext: async () => `Candidate: ${candidate.id}`,
+      reviewCwd: () => worktree,
+      reviewRules: () => ['Check it.'],
+      untrustedInputs: () => [],
+      prepareReviewSnapshots: async () => {
+        if (order === 'check-first') await checked.opened
+        return { baseDir, headDir }
+      },
+      prepareReviewWorkdir: async () => join(snapshots, 'own'),
+      releaseReviewSnapshots: async () => {},
+      grade: async () => {
+        if (order === 'calls-first') await bothCalled.opened
+        return passes
+          ? { passed: true, stdout: 'ok', exitCode: 0, elapsedMs: 200 }
+          : { passed: false, stdout: 'failed', exitCode: 1, elapsedMs: 200 }
+      },
+    }
+    const metadata = new Map<string, AttemptMeasurement[]>()
+    const outputs = new Map<string, unknown>()
+    const run = async (
+      name: string,
+      fn: (signal: AbortSignal, attempt: unknown) => Promise<unknown>,
+    ) => {
+      const snapshots: AttemptMeasurement[] = []
+      metadata.set(name, snapshots)
+      const output = await fn(new AbortController().signal, {
+        id: randomUUID(),
+        log: { info: () => {} },
+        setMetadata: async (value: unknown) => {
+          snapshots.push(value as AttemptMeasurement)
+        },
+      })
+      outputs.set(name, output)
+      // The verify branch has returned, so the round is aborted by now.
+      if (name.endsWith(':acceptance')) checked.open()
+      return output
+    }
+    const stage = () =>
+      verifyStage({
+        step: {
+          runId: 'run-1',
+          run,
+          all: async (branches: Record<string, never>) =>
+            Object.fromEntries(
+              await Promise.all(
+                Object.entries(branches).map(async ([name, fn]) => [
+                  name,
+                  await run(name, fn),
+                ]),
+              ),
+            ),
+        } as never,
+        state: state as never,
+        decision: { stage: 'verify', reason: 'next' },
+        key: 'stage:1:verify',
+        services: {
+          providers: {
+            code: spy('claude'),
+            repair: spy('claude'),
+            correctness: spy('codex'),
+            'edge-cases': spy('claude'),
+          },
+          target: target as never,
+        },
+      })
+    return { stage, calls, metadata, outputs, worktree, headDir, setup }
+  }
+
+  it('points a Codex and a Claude prompt review at the sealed tree, never the worktree', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'parallel-review-'))
+    const h = await harness(root, true)
+    const event = await h.stage()
+    assert.equal(event.type, 'verify-review.completed')
+    assert.deepEqual(h.calls.map((c) => c.name).sort(), ['claude', 'codex'])
+    for (const { options } of h.calls) {
+      assert.equal(options.workdir, h.headDir)
+      assert.ok(!options.prompt.includes(h.worktree))
+      assert.match(options.prompt, /Candidate commit tree: /)
+      for (const file of options.readableFiles ?? [])
+        assert.ok(!file.startsWith(h.worktree))
+    }
+  })
+
+  it('cancels both calls when the check fails, keeps their partial usage, and never resends them', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'parallel-review-'))
+    const h = await harness(root, false)
+    const event = await h.stage()
+    assert.equal(event.type, 'verify-review.completed')
+    assert.equal((event as { passed: boolean }).passed, false)
+    assert.equal((event as { reviews: unknown }).reviews, null)
+    assert.equal(h.calls.length, 2)
+    for (const lens of ['correctness', 'edge-cases']) {
+      const name = `stage:1:review:${lens}`
+      assert.deepEqual(h.outputs.get(name), {
+        lens,
+        status: 'cancelled',
+        reason: 'superseded-by-verify',
+      })
+      const last = h.metadata.get(name)?.at(-1)
+      assert.equal(last?.result, 'cancelled')
+      assert.equal(last?.interruptionReason, 'superseded-by-verify')
+      assert.equal(last?.usage?.inputTokens, 1200)
+      assert.equal(last?.usage?.usageSource, 'provider-partial')
+      const saved = JSON.parse(
+        await readFile(
+          checkpointPaths(
+            h.setup.checkpointsDir,
+            `run-1/stage:1:review/${lens}`,
+          ).completed,
+          'utf8',
+        ),
+      ) as { cancelled?: string; status?: string }
+      assert.equal(saved.status, 'completed')
+      assert.equal(saved.cancelled, 'superseded-by-verify')
+    }
+    // A replay reads both back: nothing is sent, nothing is uncertain.
+    const replayed = await h.stage()
+    assert.equal((replayed as { passed: boolean }).passed, false)
+    assert.equal(h.calls.length, 2)
+    for (const lens of ['correctness', 'edge-cases']) {
+      const last = h.metadata.get(`stage:1:review:${lens}`)?.at(-1)
+      assert.equal(last?.result, 'cancelled')
+      assert.equal(last?.recovered, true)
+    }
+  })
+
+  it('sends nothing when the check fails before a review is ready, and counts no usage for it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'parallel-review-'))
+    const h = await harness(root, false, 'check-first')
+    const event = await h.stage()
+    assert.equal((event as { passed: boolean }).passed, false)
+    assert.equal(h.calls.length, 0)
+    const rows = ['correctness', 'edge-cases'].map((lens) => {
+      const name = `stage:1:review:${lens}`
+      assert.deepEqual(h.outputs.get(name), {
+        lens,
+        status: 'cancelled',
+        reason: 'superseded-by-verify',
+      })
+      const last = h.metadata.get(name)?.at(-1)
+      assert.equal(last?.result, 'not-sent')
+      return {
+        stepName: name,
+        stepIndex: 0,
+        attemptId: randomUUID(),
+        leaseGeneration: 1,
+        status: 'completed',
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        interruptionReason: null,
+        measurement: last ?? null,
+      }
+    })
+    // Nothing was spent: no invocation, and no unknown cost.
+    assert.equal(usageOf(rows), null)
   })
 })

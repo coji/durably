@@ -146,6 +146,7 @@ function candidateFilesSection(
   changes: CandidateChanges | null,
   snapshots: ReviewSnapshots | null,
   worktree: string | null,
+  candidateTree: string | null,
 ): string[] {
   if (!changes) return []
   const trees = snapshots
@@ -159,7 +160,16 @@ function candidateFilesSection(
         worktreeLocationLine(worktree),
         '- Your working directory is not the candidate: the candidate is the worktree above, holding this candidate commit. Read the code there, or in the candidate commit tree. It is read-only.',
       ]
-    : []
+    : candidateTree
+      ? [
+          `- Candidate commit tree: ${candidateTree}`,
+          '- Your working directory is this tree: the whole repository at this candidate commit. Read the code there. It is read-only.',
+        ]
+      : snapshots
+        ? [
+            '- Your working directory is not the candidate: read the code in the candidate commit tree below. It is read-only.',
+          ]
+        : []
   return [
     'CANDIDATE FILES (written by the factory from the base commit and this candidate commit):',
     ...where,
@@ -216,6 +226,11 @@ export function reviewPrompt(
      * not the candidate.
      */
     worktree?: string | null
+    /**
+     * The candidate's sealed tree, for a reviewer working in it while the
+     * check runs in the worktree (ADR-0029).
+     */
+    candidateTree?: string | null
   } = {},
 ): string {
   const output = options.output ?? 'verdict'
@@ -246,6 +261,7 @@ export function reviewPrompt(
       changes,
       options.snapshots ?? null,
       options.worktree ?? null,
+      options.candidateTree ?? null,
     ),
     ...untrustedSection(untrusted),
     ...replyShape(output),
@@ -269,7 +285,8 @@ export function localInstructions(prompt: string): string {
  * where the code under review is.
  */
 export function reviewLocations(args: {
-  worktree: string
+  /** Null while the check runs in it: the sealed trees are the candidate. */
+  worktree: string | null
   changes: CandidateChanges | null
   snapshots: ReviewSnapshots
 }): string {
@@ -279,7 +296,7 @@ export function reviewLocations(args: {
     '',
     'This working directory holds only review configuration. The code under review is not here: read it where the factory put it, by absolute path, and give these paths to any subagent you start. All of them are read-only.',
     '',
-    worktreeLocationLine(worktree),
+    ...(worktree ? [worktreeLocationLine(worktree)] : []),
     ...(changes ? diffLocationLines(changes) : []),
     ...treeLocationLines(snapshots),
     '',

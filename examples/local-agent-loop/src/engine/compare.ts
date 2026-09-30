@@ -104,6 +104,12 @@ export interface ConfigGroup {
   costUsd: Stat
   /** Cost over successful runs only. */
   costPerSuccessUsd: Stat
+  /**
+   * The part of `costUsd` spent reviewing candidates that failed
+   * verification (ADR-0029); 0 on a run that had none, unknown when a call
+   * had no usage or price.
+   */
+  discardedReviewCostUsd: Stat
   repairs: Stat
   stages: StageStats[]
   /** One row per triage judgment present; empty when no run had triage. */
@@ -297,6 +303,9 @@ export function compareReports(reports: LoopReport[]): Comparison {
           .filter((r) => r.summary.success)
           .map((r) => r.summary.costPerSuccessUsd),
       ),
+      discardedReviewCostUsd: stat(
+        list.map((r) => r.summary.discardedReviewCostUsd),
+      ),
       repairs: stat(list.map((r) => r.summary.repairs)),
       stages,
       triage: triageStats(list),
@@ -358,6 +367,9 @@ export function comparisonToMarkdown(c: Comparison): string {
     lines.push(`- cost: ${fmtStat(g.costUsd, formatCost)}`)
     lines.push(
       `- cost per success: ${fmtStat(g.costPerSuccessUsd, formatCost)}`,
+    )
+    lines.push(
+      `- of which reviews of candidates that failed verification: ${fmtStat(g.discardedReviewCostUsd, formatCost)}`,
     )
     lines.push(`- repairs: ${fmtStat(g.repairs)}`)
     lines.push('')
@@ -455,6 +467,11 @@ export interface TrendCell {
   approvalRate: number | null
   leadTimeMs: Stat
   costUsd: Stat
+  /**
+   * The part of `costUsd` spent reviewing candidates that failed
+   * verification, summed over the task's runs (ADR-0029).
+   */
+  discardedReviewCostUsd: Stat
   /** Repair runs below each task's first run. */
   repairRuns: Stat
 }
@@ -582,6 +599,11 @@ function cellOf(tasks: TrendTask[]): TrendCell {
       tasks.map((t) => sum(t, (r) => r.report.summary.leadTimeMs)),
     ),
     costUsd: stat(tasks.map((t) => sum(t, (r) => r.report.summary.costUsd))),
+    discardedReviewCostUsd: stat(
+      tasks.map((t) =>
+        sum(t, (r) => r.report.summary.discardedReviewCostUsd ?? null),
+      ),
+    ),
     repairRuns: stat(tasks.map((t) => t.runs.length - 1)),
   }
 }
@@ -653,8 +675,8 @@ function share(n: number, c: TrendCell, rate: number | null): string {
 }
 
 function trendRow(label: string, c: TrendCell): string {
-  if (c.tasks === 0) return `| ${label} | 0 | - | - | - | - | - |`
-  return `| ${label} | ${c.tasks} | ${share(c.firstPassApproved, c, c.firstPassRate)} | ${share(c.approved, c, c.approvalRate)} | ${fmtStat(c.leadTimeMs, formatDuration)} | ${fmtStat(c.costUsd, formatCost)} | ${fmtStat(c.repairRuns)} |`
+  if (c.tasks === 0) return `| ${label} | 0 | - | - | - | - | - | - |`
+  return `| ${label} | ${c.tasks} | ${share(c.firstPassApproved, c, c.firstPassRate)} | ${share(c.approved, c, c.approvalRate)} | ${fmtStat(c.leadTimeMs, formatDuration)} | ${fmtStat(c.costUsd, formatCost)} | ${fmtStat(c.discardedReviewCostUsd, formatCost)} | ${fmtStat(c.repairRuns)} |`
 }
 
 export function trendToMarkdown(t: Trend): string {
@@ -665,7 +687,7 @@ export function trendToMarkdown(t: Trend): string {
     `Tasks whose newest run finished in the last ${t.days} days, by that run's week (Monday, local time) and by the first run's code model and effort. ${t.includeFake ? 'Fake-provider tasks included.' : `Fake-provider tasks left out: ${t.fakeExcluded}.`}`,
   )
   lines.push(
-    'first pass: approved without a repair run. approved: the newest run was approved and delivered. Time and cost add up every run of the task; repair runs count the runs below the first.',
+    'first pass: approved without a repair run. approved: the newest run was approved and delivered. Time and cost add up every run of the task; repair runs count the runs below the first. failed-candidate reviews: the part of the cost spent reviewing candidates that failed verification.',
   )
   lines.push(
     'median [min..max] (n=known tasks); a task with any unknown run time or cost is excluded from that median, never zero-filled.',
@@ -681,9 +703,9 @@ export function trendToMarkdown(t: Trend): string {
     )
     lines.push('')
     lines.push(
-      '| week | tasks | first pass | approved | task time | task cost | repair runs |',
+      '| week | tasks | first pass | approved | task time | task cost | failed-candidate reviews | repair runs |',
     )
-    lines.push('|---|---|---|---|---|---|---|')
+    lines.push('|---|---|---|---|---|---|---|---|')
     for (const w of g.weeks) lines.push(trendRow(formatWeek(w.week), w))
     lines.push(trendRow(`last ${t.days} days`, g.total))
   }

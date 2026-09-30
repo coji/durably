@@ -173,6 +173,13 @@ export interface FactorySetup {
    * Absent: the run starts from the spec it was given, as before.
    */
   spec?: SpecSetup | null
+  /**
+   * Verify each sealed candidate and review it at the same time, fixed at
+   * trigger from `factory.json`. The reviewers then read the candidate's
+   * sealed tree and diff, never the worktree the check runs in. Absent or
+   * false: review follows a passing verification, as before (ADR-0029).
+   */
+  parallelReview?: boolean
 }
 
 /** One named spec reviewer, as setup resolved it. */
@@ -360,6 +367,27 @@ export interface ReviewStepResult extends ReviewVerdict {
   /** A `findings-json` review's findings; null for a verdict review. */
   findings: ReviewFindings | null
 }
+
+/** Why a review that ran beside verification was ended before its verdict. */
+export const REVIEW_CANCEL_REASON = 'superseded-by-verify' as const
+
+/** Why a review with a verdict was left out: its candidate failed the check. */
+export const REVIEW_DISCARD_REASON = 'verify-failed' as const
+
+/**
+ * What a review step running beside verification stores when the check
+ * failed first: no verdict, and the call settled as cancelled.
+ */
+export interface CancelledReviewStepResult {
+  lens: ReviewLens
+  status: 'cancelled'
+  reason: typeof REVIEW_CANCEL_REASON
+}
+
+/** What a review step stores in a run with `parallelReview`. */
+export type ParallelReviewStepResult =
+  | ReviewStepResult
+  | CancelledReviewStepResult
 
 export interface FactoryOutcome {
   approved: boolean

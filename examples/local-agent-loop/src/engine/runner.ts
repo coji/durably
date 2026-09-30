@@ -10,15 +10,16 @@ import {
   estimateCostBreakdown,
   estimateCostBreakdownByModel,
 } from './pricing.js'
-import type {
-  AgentProvider,
-  AgentResult,
-  AgentRole,
-  AttemptMeasurement,
-  ProviderName,
-  ReviewCallSettings,
-  SessionHandling,
-  SpecWriteAccess,
+import {
+  NOT_SENT,
+  type AgentProvider,
+  type AgentResult,
+  type AgentRole,
+  type AttemptMeasurement,
+  type ProviderName,
+  type ReviewCallSettings,
+  type SessionHandling,
+  type SpecWriteAccess,
 } from './providers/types.js'
 import type { SessionRef } from './types.js'
 import { mergeUsage, type TokenUsage } from './usage.js'
@@ -68,7 +69,18 @@ export interface AgentCallSpec {
    * agent activity on the call is never read as a refusal.
    */
   acceptRejection?: boolean
+  /**
+   * A signal that ends the call because its result is no longer wanted,
+   * such as a review whose candidate failed verification. Unlike a cancel
+   * or a lost lease, the call is settled: a completed checkpoint records it
+   * as `cancelled` with `reason`, the partial usage already reported stays
+   * on the measurement, and a replay reads it back without calling again.
+   */
+  supersede?: { signal: AbortSignal; reason: SupersedeReason }
 }
+
+/** Why a call's result was no longer wanted; see `AgentCallSpec.supersede`. */
+export type SupersedeReason = 'superseded-by-verify'
 
 export interface AgentCallOutcome {
   text: string
@@ -82,6 +94,8 @@ export interface AgentCallOutcome {
   permissionDenials: string[]
   /** The concrete model the provider reported running; null when none. */
   observedModel: string | null
+  /** Why the call was ended early by `supersede`; null when it was not. */
+  cancelled: SupersedeReason | null
 }
 
 interface StartedCheckpoint {
@@ -99,6 +113,8 @@ interface CompletedCheckpoint {
   result: AgentResult | null
   /** Why the provider refused the call outright; absent otherwise. */
   rejection?: string
+  /** Why the call was ended by `supersede`; absent otherwise. */
+  cancelled?: SupersedeReason
   invocationStartedAt: string
   invocationCompletedAt: string
 }
@@ -302,6 +318,7 @@ export async function runAgentCall(
       rejection: null,
       permissionDenials: result.permissionDenials ?? [],
       observedModel: result.observedModel ?? null,
+      cancelled: null,
     }
   }
 
@@ -339,12 +356,51 @@ export async function runAgentCall(
       rejection,
       permissionDenials: [],
       observedModel: null,
+      cancelled: null,
+    }
+  }
+
+  /**
+   * A call ended by `supersede`: settled like a refusal, with the partial
+   * usage it reported kept. Nothing is read from it and nothing is resent.
+   */
+  const finishCancelled = async (
+    reason: SupersedeReason,
+    checkpoint: CompletedCheckpoint,
+    recovered: boolean,
+  ): Promise<AgentCallOutcome> => {
+    invocationId = checkpoint.invocationId
+    await settleMeasurement()
+    measurement = await writeMeasurement(attempt, measurement, {
+      invocationId,
+      elapsedMs:
+        Date.parse(checkpoint.invocationCompletedAt) -
+        Date.parse(checkpoint.invocationStartedAt),
+      invocationStartedAt: checkpoint.invocationStartedAt,
+      invocationCompletedAt: checkpoint.invocationCompletedAt,
+      recovered,
+      result: 'cancelled',
+      error: null,
+      interruptionReason: reason,
+    })
+    return {
+      text: '',
+      sessionId: null,
+      invocationId,
+      recovered,
+      measurement,
+      rejection: null,
+      permissionDenials: [],
+      observedModel: null,
+      cancelled: reason,
     }
   }
   const settled = (
     checkpoint: CompletedCheckpoint,
     recovered: boolean,
   ): Promise<AgentCallOutcome> => {
+    if (typeof checkpoint.cancelled === 'string')
+      return finishCancelled(checkpoint.cancelled, checkpoint, recovered)
     if (typeof checkpoint.rejection === 'string')
       return finishRejected(checkpoint.rejection, checkpoint, recovered)
     if (!checkpoint.result)
@@ -371,6 +427,25 @@ export async function runAgentCall(
   }
   if (existingStart)
     throw new UncertainInvocationError(operationKey, invocationId)
+  // Superseded before anything was sent: there is no call to settle, and
+  // nothing was spent. Recorded as `not-sent`, which no usage sum counts.
+  if (spec.supersede?.signal.aborted) {
+    measurement = await writeMeasurement(attempt, measurement, {
+      result: NOT_SENT,
+      interruptionReason: spec.supersede.reason,
+    })
+    return {
+      text: '',
+      sessionId: null,
+      invocationId,
+      recovered: false,
+      measurement,
+      rejection: null,
+      permissionDenials: [],
+      observedModel: null,
+      cancelled: spec.supersede.reason,
+    }
+  }
 
   const startRecord: StartedCheckpoint = {
     operationKey,
@@ -403,7 +478,12 @@ export async function runAgentCall(
     () => timeout.abort(new Error('agent call timeout')),
     timerDelay(spec.timeoutMs),
   )
-  const linked = AbortSignal.any([signal, timeout.signal])
+  const supersede = spec.supersede ?? null
+  const linked = AbortSignal.any([
+    signal,
+    timeout.signal,
+    ...(supersede ? [supersede.signal] : []),
+  ])
   // Whether the agent was seen at work on this call; see `onActivity`.
   let active = false
   try {
@@ -468,6 +548,24 @@ export async function runAgentCall(
     // reads the checkpoint's value, and the two must agree.
     return finish(result, false, completed)
   } catch (error) {
+    // Ended because its result is no longer wanted, and not by a cancel, a
+    // lost lease or the timeout: settled as cancelled, with the usage it had
+    // reported, so a replay neither resends it nor reads it as uncertain.
+    if (
+      supersede?.signal.aborted &&
+      !signal.aborted &&
+      !timeout.signal.aborted
+    ) {
+      const cancelled: CompletedCheckpoint = {
+        ...startRecord,
+        status: 'completed',
+        result: null,
+        cancelled: supersede.reason,
+        invocationCompletedAt: new Date().toISOString(),
+      }
+      await writeJsonAtomic(paths.completed, cancelled, attempt.id)
+      return finishCancelled(supersede.reason, cancelled, false)
+    }
     // An explicit refusal was not acted on, so it is recorded as the call's
     // completed answer: a replay reads it back and nothing is sent again. A
     // cancel or a timeout is never a refusal, whatever its message says, and

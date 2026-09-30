@@ -107,6 +107,24 @@ export const REVIEW_DECISION: Record<string, { label: string; title: string }> =
     needsChanges: { label: '要修正', title: 'レビューは修正を求めました' },
   }
 
+/**
+ * How a review that ran beside verification ended when the candidate failed
+ * the check (ADR-0029): its short label, and the reason in one sentence.
+ */
+export const REVIEW_STATUS: Record<string, { label: string; reason: string }> =
+  {
+    cancelled: {
+      label: '中止',
+      reason:
+        '検証が先に失敗したので、このレビューは途中で止めました。判定は出ていません。',
+    },
+    discarded: {
+      label: '不採用',
+      reason:
+        '候補が検証に落ちたので、このレビューの判定は修正にも承認にも使っていません。',
+    },
+  }
+
 // ---------------------------------------------------------------- states
 
 /** A diagnosis kind as a state name. */
@@ -690,6 +708,11 @@ export const REVIEW = {
   /** A verdict review that asked for changes a later round no longer asked for. */
   askedFor: (review: string) => `${review}が求めた修正`,
   notesInEvidence: 'メモの本文は、下の根拠の「レビュー」で読めます。',
+  noVerdict: '判定なし',
+  /** The review calls spent on candidates that failed verification. */
+  discardedCost: '検証に落ちた候補へのレビュー',
+  discardedCalls: (n: string) => `${n} 回の呼び出し`,
+  discardedCostNote: 'この費用は実行全体の費用に含まれています。',
 } as const
 
 export const SPEC = {
@@ -812,6 +835,7 @@ export const COMPARE = {
   totalTokens: '合計トークン',
   cost: '費用',
   costPerSuccess: '成功 1 件の費用',
+  discardedReviewCost: '検証に落ちた候補へのレビュー費用',
   repairs: '修正回数',
   stageWork: '作業時間 中央値 [最小–最大]',
   stageCost: '費用 中央値 [最小–最大]',
@@ -857,6 +881,9 @@ export const TREND = {
   medianTitle: 'タスクごとに、すべての実行を合計した値の中央値です。',
   repairRuns: '修正の実行',
   repairRunsTitle: '最初の実行の後に始めた修正の実行の本数の中央値です。',
+  discardedReviewCost: '落ちた候補のレビュー',
+  discardedReviewCostTitle:
+    '費用のうち、検証に落ちた候補のレビューに使った分の中央値です。',
   noTasks: '–',
   /** How many tasks of the row a rate counts. */
   count: (n: string) => `${n} 件`,
@@ -995,6 +1022,7 @@ export const DESIGN = {
     reviewPassed: '最後の回が通過',
     reviewOpen: '最後の回で指摘が残った',
     reviewIncomplete: '最後の回の判定がそろっていない',
+    reviewDiscarded: '検証に落ちた候補へのレビュー',
     approval: '承認待ち',
     specApproval: '仕様の判断待ち',
     specRevise: '仕様のメモを書く',

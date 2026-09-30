@@ -860,6 +860,54 @@ baseの採点を繰り返します。`baselineCheck` と一緒に `baselineReuse
 - 運用のための最適化で、エージェントに見せるものも採点の基準も変えないので、
   `configVersion` には入りません。
 
+### 検証とレビューを同時に始める（parallelReview）
+
+既定では、封印した候補を検証し、通ったものだけをレビューします。
+`factory.json` に `"parallelReview": true` を書くと、候補を封印した直後に
+検証と二つのレビューを同時に始めます。検証がほぼ毎回通るリポジトリでは、
+レビューを待つ時間のぶんrunが短くなります。
+
+```json
+{
+  "parallelReview": true
+}
+```
+
+- 書かなければオフで、工程の順序、stepの名前、レビューの呼び出し回数と
+  費用は今までと同じです。値は `trigger` の時点でrun inputに保存します。
+  `retrigger` は保存した値を引き継ぎ、`--reload-config` はファイルを読み直し、
+  `demo repair` の修正runは元のrunの値を引き継ぎます。いつレビューするかの
+  選択で、レビューの中身は変えないので、`configVersion` には入りません。
+- オンのとき、レビュー役が読む候補のコードは、封印したcommitから取り出した
+  木（head snapshot）と、候補のdiffと変更ファイル一覧だけです。検証が動いている
+  worktreeは、作業ディレクトリにも、promptにも、読める場所にも入れません。
+  promptのレビューはhead snapshotの中で動きます。`command` や
+  `local-instructions` のレビューは今までどおり自分用のディレクトリで動き、
+  base snapshotも読めます。Codex、Claudeのどちらでも同じです。
+- 検証とレビューの両方が通った候補だけが、今までどおり承認に進みます。
+  レビューが修正を求めたときは、今までどおり修正に回ります。
+- 検証がレビューの途中で失敗すると、その回のレビューを止めます。止めた
+  呼び出しは、それまでに分かった使用量と、完了のcheckpointを
+  `cancelled`（理由 `superseded-by-verify`）として残します。workerが再開しても
+  その呼び出しを送り直さず、`uncertain-invocation` にもしません。まだ送って
+  いなかったレビューは送らず、呼び出しとしても費用としても数えません
+  （計測の記録は `not-sent`）。すべてのレビューが終わってから次の工程に進みます。
+- レビューが先に終わってから検証が失敗した回は、判定を記録に残したうえで
+  `discarded`（理由 `verify-failed`）として使いません。
+- 止めた回と使わなかった回の判定と指摘は、修正にも承認にも使わず、
+  `review-cap-reached` までのレビュー回数にも数えません。修正に渡すのは
+  検証の失敗だけです。
+- レビューの途中でworkerが止まり、開始のcheckpointしかない呼び出しは、
+  今までどおり `uncertain-invocation` で止め、送り直しません。
+
+reportの「Review rounds」では、数えなかった回に `cancelled` か `discarded` と
+理由が付きます。「検証に落ちた候補へのレビュー」の呼び出し数と費用は、
+reportの要約、`demo compare` の設定ごとの行、`demo compare --trend` の列に、
+総費用とは別に出ます。この費用は総費用に含まれています。使用量や価格が
+分からない呼び出しがあれば、0 ではなく不明と出します。web UIでは、
+レビューの欄と工程の時系列の詳細に「中止」「不採用」と理由が出て、
+工程の時系列では検証とレビューの重なりが実際の時刻どおりに見えます。
+
 ### 設定の事前確認（preflight）
 
 baselineの後、triageを含む最初のエージェント呼び出しの前に、全役割
@@ -908,7 +956,7 @@ PATHの `codex` を使います。CLIのpathと版はreportの「Versions」と�
 保存します。実際に使うmodelとeffortは、workerがそのrequested設定からproviderの
 presetで解決します。workerは元のファイルを読み直さないので、trigger後にファイルを
 書き換えても、そのrunの設定とpromptは変わりません。timeout、`codexPath`、
-`baselineCheck`、`baselineReuse`、`commit` も同じく解決済みの値をrun inputに保存します。reportには各入力ファイルの
+`baselineCheck`、`baselineReuse`、`parallelReview`、`commit` も同じく解決済みの値をrun inputに保存します。reportには各入力ファイルの
 pathと、保存した本文から計算したSHA-256が出ます。設定を直した後に同じtaskで
 やり直すには、`demo retrigger --run <id> --reload-config` を使います（上の
 「止まったrunと次の手順を見る」を参照）。

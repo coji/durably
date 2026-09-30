@@ -25,6 +25,7 @@ import {
   RECORD,
   RETRY_TEXT,
   REVIEW_DECISION,
+  REVIEW_STATUS,
   ROLE_NAME,
   RUN_KIND_NAME,
   SPEC_REVIEWER,
@@ -98,6 +99,16 @@ export function retryLabel(retryable: boolean): string {
  * A review verdict's word and hover text. An unknown verdict is data, shown
  * as stored.
  */
+/**
+ * How a review, or a round, run beside a check the candidate failed ended:
+ * its label and reason; null for one that counted (ADR-0029).
+ */
+export function reviewStatus(
+  status: string | null | undefined,
+): { label: string; reason: string } | null {
+  return status ? (REVIEW_STATUS[status] ?? null) : null
+}
+
 export function reviewDecision(decision: string): {
   label: string
   title: string

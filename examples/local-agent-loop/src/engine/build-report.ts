@@ -8,6 +8,8 @@ import { REPAIR_OF_LABEL, triageThatRuns } from '../factory/repair.js'
 import {
   BASELINE_STEP,
   REPAIR_SESSION_STEP,
+  REVIEW_CANCEL_REASON,
+  REVIEW_DISCARD_REASON,
   SPEC_CHECK_STEP,
   REVIEW_LENSES,
   SPEC_FINAL_STEP,
@@ -53,6 +55,7 @@ import {
   type ReportTriage,
   type RoleProfileRow,
   type TriageCalibration,
+  type UsageTotals,
 } from './report.js'
 import {
   worktreeStateOf,
@@ -248,6 +251,16 @@ export function asSpecReview(output: unknown): ReportReview | null {
 
 export function asReportReview(value: unknown): ReportReview | null {
   const r = value as (Partial<ReportReview> & { findings?: unknown }) | null
+  // A review a failed check ended before its verdict (ADR-0029).
+  if (typeof r?.lens === 'string' && r.status === 'cancelled')
+    return {
+      lens: r.lens,
+      decision: '',
+      notes: '',
+      findings: null,
+      status: 'cancelled',
+      ...(typeof r.reason === 'string' ? { reason: r.reason } : {}),
+    }
   return typeof r?.lens === 'string' &&
     typeof r.decision === 'string' &&
     typeof r.notes === 'string'
@@ -380,9 +393,18 @@ function reviewRoundsOf(
   candidates: ReportSealedCandidate[],
 ): ReportReviewRound[] {
   const rounds = new Map<number, Map<string, ReportReview>>()
+  // The checks that failed at a review's own sequence: with
+  // `parallelReview`, verification and review share one (ADR-0029).
+  const failedChecks = new Set<number>()
   for (const s of steps) {
     const where = stageStep(s.name)
-    if (s.status !== 'completed' || where?.stage !== 'review') continue
+    if (s.status !== 'completed' || !where) continue
+    if (where.stage === 'verify' && where.part === 'acceptance') {
+      if ((s.output as { passed?: unknown } | null)?.passed === false)
+        failedChecks.add(where.sequence)
+      continue
+    }
+    if (where.stage !== 'review') continue
     const [review] = asReviews([s.output]) ?? []
     if (!review || review.lens !== where.part) continue
     const round = rounds.get(where.sequence) ?? new Map()
@@ -393,17 +415,52 @@ function reviewRoundsOf(
     .sort(([x], [y]) => x - y)
     .map(([sequence, byLens], i) => {
       const reviewed = candidates.filter((c) => c.sequence < sequence).at(-1)
+      const failed = failedChecks.has(sequence)
+      const reviews = [...byLens.values()]
+        .sort(
+          (x, y) =>
+            REVIEW_LENSES.indexOf(x.lens as ReviewLens) -
+            REVIEW_LENSES.indexOf(y.lens as ReviewLens),
+        )
+        .map((r): ReportReview =>
+          failed && r.status !== 'cancelled'
+            ? { ...r, status: 'discarded', reason: REVIEW_DISCARD_REASON }
+            : r,
+        )
+      const cancelled = reviews.some((r) => r.status === 'cancelled')
       return {
         round: i + 1,
         sequence,
         candidate: reviewed ? toReportCandidate(reviewed) : null,
-        reviews: [...byLens.values()].sort(
-          (x, y) =>
-            REVIEW_LENSES.indexOf(x.lens as ReviewLens) -
-            REVIEW_LENSES.indexOf(y.lens as ReviewLens),
-        ),
+        reviews,
+        status: !failed ? 'completed' : cancelled ? 'cancelled' : 'discarded',
+        reason: !failed
+          ? null
+          : cancelled
+            ? REVIEW_CANCEL_REASON
+            : REVIEW_DISCARD_REASON,
       }
     })
+}
+
+/**
+ * Usage of the review calls in rounds that did not count: those on a
+ * candidate that failed verification. Null when there were none.
+ */
+function discardedReviewsOf(
+  rows: AttemptRow[],
+  rounds: ReportReviewRound[],
+): UsageTotals | null {
+  const sequences = new Set(
+    rounds.filter((r) => r.status !== 'completed').map((r) => r.sequence),
+  )
+  if (sequences.size === 0) return null
+  return usageOf(
+    rows.filter((a) => {
+      const where = stageStep(a.stepName)
+      return where?.stage === 'review' && sequences.has(where.sequence)
+    }),
+  )
 }
 
 /**
@@ -1028,7 +1085,11 @@ export async function buildReport(
   const candidates = sealedCandidates(steps)
   const candidate = lastCandidate(output, candidates)
   const reviewRounds = reviewRoundsOf(steps, candidates)
-  const reviews = lastReviews(run.output, waits, reviewRounds)
+  // The rounds whose verdicts counted; a candidate that failed its check
+  // left none of its reviews to the run (ADR-0029).
+  const countedRounds = reviewRounds.filter((r) => r.status === 'completed')
+  const discardedReviews = discardedReviewsOf(rows, reviewRounds)
+  const reviews = lastReviews(run.output, waits, countedRounds)
   const preflight = preflightOf(steps, rows)
   // Minimal preflight calls get a role row of their own, never folded into
   // the roles whose settings they checked.
@@ -1069,6 +1130,7 @@ export async function buildReport(
       stageUsage: usage,
       stageVisits: visits,
       repairRun: repairParent(input) !== null,
+      discardedReviews,
     }),
     triage: await recordedTriage(durably, run),
     baseline: baselineOf(steps, rows),
@@ -1086,7 +1148,8 @@ export async function buildReport(
     repairCalls: repairCallsOf(rows),
     reviews,
     reviewRounds,
-    reviewHighlights: reviewHighlights(reviewRounds, reviews, REVIEW_LENSES),
+    discardedReviews,
+    reviewHighlights: reviewHighlights(countedRounds, reviews, REVIEW_LENSES),
     specRounds: specRoundsOf(steps),
     spec: specOf(
       steps,
