@@ -99,6 +99,7 @@ import {
 } from './stages.js'
 import {
   DEFAULT_COMMIT_SETTINGS,
+  type RepairParentConclusion,
   type Target,
   type TargetConfig,
 } from './target.js'
@@ -449,6 +450,22 @@ export function fixReviewInvocation(
       )
   }
   return invocation
+}
+
+/**
+ * Whether a run checks its base commit before any agent call. A repair of a
+ * verification-failed parent keeps the setting for its own children but
+ * never runs the baseline: its base is the candidate the check failed on,
+ * and that failure is its findings (ADR-0030).
+ */
+function runsBaselineCheck(
+  baselineCheck: boolean | undefined,
+  repairOf: { parentConclusion?: RepairParentConclusion } | null | undefined,
+): boolean {
+  return (
+    baselineCheck === true &&
+    repairOf?.parentConclusion !== 'verification-failed'
+  )
 }
 
 /**
@@ -1435,11 +1452,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           // not cover, so setup must not leave any. Checked here, in the
           // step that ran setup, so a resumed baseline never mistakes the
           // check's own output for setup's.
-          // A repair of a verification-failed parent keeps the setting for
-          // its own children but never runs the baseline (ADR-0030).
-          const runsBaseline =
-            baselineCheck &&
-            input.repairOf?.parentConclusion !== 'verification-failed'
+          const runsBaseline = runsBaselineCheck(baselineCheck, input.repairOf)
           if (runsBaseline && target.kind === 'repo')
             await assertSetupLeftNoUntracked(target.workdir, signal)
           // Resolved here, in the worktree setup prepared, and never again:
@@ -1712,11 +1725,9 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
         // matching passing result of another run is used instead, once the
         // worktree is proven to be as the check would need it. The choice is
         // this step's output, so a replay never looks again. A repair of a
-        // verification-failed parent skips it: its base is the candidate the
-        // check failed on, and that failure is its findings (ADR-0030).
+        // verification-failed parent skips it (`runsBaselineCheck`).
         if (
-          runSetup.baselineCheck &&
-          runSetup.repairOf?.parentConclusion !== 'verification-failed' &&
+          runsBaselineCheck(runSetup.baselineCheck, runSetup.repairOf) &&
           target instanceof RepoTarget &&
           runSetup.target.kind === 'repo'
         ) {

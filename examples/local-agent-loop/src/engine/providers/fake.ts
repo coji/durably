@@ -581,18 +581,18 @@ export class FakeProvider implements AgentProvider {
     started: number,
   ): Promise<AgentResult> {
     const review = options.review
-    // A spec fix has no `review` settings, but a recording test still wants
-    // its prompt, to see what feedback it was handed.
-    const specFix = options.role === 'spec-fix'
+    // A spec fix or a code repair has no `review` settings, but a recording
+    // test still wants its prompt, to see what feedback it was handed.
+    const promptOnly = options.role === 'spec-fix' || options.role === 'repair'
     // Recorded before anything else, so a call that is then cancelled is on
     // record too.
     const record: FakeReviewCall | null =
-      (review || specFix) && recording
+      (review || promptOnly) && recording
         ? {
             role: options.role,
             round: options.reviewRound ?? 1,
             workdir: options.workdir,
-            input: specFix || review?.command ? options.prompt : null,
+            input: promptOnly || review?.command ? options.prompt : null,
             workdirFiles:
               review && isCommandModeReview(review)
                 ? ((await filesWithContent(options.workdir)) ?? {})

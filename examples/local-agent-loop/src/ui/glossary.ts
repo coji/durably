@@ -122,7 +122,7 @@ export const REVIEW_STATUS: Record<string, { label: string; reason: string }> =
     discarded: {
       label: '不採用',
       reason:
-        '候補が検証に落ちたので、このレビューの判定は修正にも承認にも使っていません。',
+        '候補が検証に落ちたので、このレビューの判定は承認にもレビュー回数にも使っていません。次の修正があれば、検証の失敗のあとに参考として渡します。',
     },
     pending: {
       label: '検証待ち',
