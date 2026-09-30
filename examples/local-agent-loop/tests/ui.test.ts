@@ -4564,8 +4564,12 @@ describe('the log panel', () => {
     assert.deepEqual(second, { text: 'red', held: '\u001b]0;ti' })
     const third = plainPart(second.held, 'tle\u0007!\u001b', false)
     assert.deepEqual(third, { text: '!', held: '\u001b' })
-    // A log that ends mid-escape drops it.
+    // A log that ends mid-escape drops it, payload included.
     assert.deepEqual(plainPart(third.held, '[', true), { text: '', held: '' })
+    assert.deepEqual(plainPart('', 'a\u001b]0;title', true), {
+      text: 'a',
+      held: '',
+    })
   })
 
   it('shows the text as characters, without terminal escapes, and only the last 256 KiB', () => {

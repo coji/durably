@@ -44,14 +44,14 @@ export function plainPart(
   chunk: string,
   done: boolean,
 ): { text: string; held: string } {
+  // The unfinished escape goes first: stripping completed escapes from it
+  // would remove its introducer and leave its payload as text.
   const raw = held + chunk
-  if (done)
-    return { text: raw.replace(ANSI, '').replace(UNFINISHED, ''), held: '' }
-  const tail = UNFINISHED.exec(raw)?.[0] ?? ''
-  const next = tail.length <= HELD_MAX ? tail : ''
+  const found = UNFINISHED.exec(raw)?.[0] ?? ''
+  const tail = found.length <= HELD_MAX ? found : ''
   return {
-    text: raw.slice(0, raw.length - next.length).replace(ANSI, ''),
-    held: next,
+    text: raw.slice(0, raw.length - tail.length).replace(ANSI, ''),
+    held: done ? '' : tail,
   }
 }
 
