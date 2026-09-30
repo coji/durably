@@ -175,7 +175,7 @@ function RowLogs({ node: n, runId }: { node: TraceNode; runId?: string }) {
   )
 }
 
-/** The selected row's stored details and its log. */
+/** The selected row's log first, then its stored details. */
 export function TraceInspector({
   node: n,
   chosen,
@@ -206,6 +206,7 @@ export function TraceInspector({
           <StatusBadge label={state.label} tone={state.tone} />
         </h3>
       </div>
+      <RowLogs node={n} runId={runId} />
       <InlineFields>
         <TimingFields
           node={n}
@@ -232,7 +233,6 @@ export function TraceInspector({
       {n.stage === 'review' && n.kind === 'entry' && n.review ? (
         <ReviewBlock review={n.review} />
       ) : null}
-      <RowLogs node={n} runId={runId} />
       <p className="text-fg-3 text-xs">
         {TRACE.clockBefore}
         <time dateTime={origin} title={exactTime(origin)}>
