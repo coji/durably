@@ -378,6 +378,7 @@ export function watchActivity<M extends object>(
             }
             if (part.type === 'text-delta' && typeof part.delta === 'string')
               output.text(part.delta)
+            else if (part.type === 'text-end') output.line()
             else if (
               part.type === 'tool-call' &&
               typeof part.toolName === 'string'

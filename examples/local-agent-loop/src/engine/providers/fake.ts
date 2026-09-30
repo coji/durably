@@ -563,19 +563,23 @@ export class FakeProvider implements AgentProvider {
    * the call's last output.
    */
   async call(options: AgentCallOptions): Promise<AgentResult> {
+    // Timed from before the scripted output, so its delay counts as work.
+    const started = Date.now()
     const output = agentOutput(options.onOutput)
     const timed = this.run?.scenario.output
     for (const chunk of timed?.chunks ?? []) {
       await sleep(timed?.intervalMs ?? 0, options.signal)
       output.text(chunk)
     }
-    const result = await this.answer(options)
+    const result = await this.answer(options, started)
     output.text(result.text.endsWith('\n') ? result.text : `${result.text}\n`)
     return result
   }
 
-  private async answer(options: AgentCallOptions): Promise<AgentResult> {
-    const started = Date.now()
+  private async answer(
+    options: AgentCallOptions,
+    started: number,
+  ): Promise<AgentResult> {
     const review = options.review
     // A spec fix has no `review` settings, but a recording test still wants
     // its prompt, to see what feedback it was handed.

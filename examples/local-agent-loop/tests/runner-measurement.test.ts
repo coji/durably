@@ -1221,6 +1221,10 @@ describe('what a provider writes to the agent log', () => {
       { type: 'text-start', id: 't' },
       { type: 'text-delta', id: 't', delta: 'Reading ' },
       { type: 'text-delta', id: 't', delta: 'the code' },
+      { type: 'text-end', id: 't' },
+      { type: 'text-start', id: 't2' },
+      { type: 'text-delta', id: 't2', delta: 'Next message' },
+      { type: 'text-end', id: 't2' },
       { type: 'tool-input-start', id: 'c', toolName: 'exec_command' },
       { type: 'tool-input-delta', id: 'c', delta: '{"command":"ls"}' },
       { type: 'tool-input-end', id: 'c' },
@@ -1251,7 +1255,7 @@ describe('what a provider writes to the agent log', () => {
     for await (const _ of stream as unknown as AsyncIterable<unknown>);
     assert.equal(
       written,
-      'Reading the code\n> exec_command rg -n formatCost src\n',
+      'Reading the code\nNext message\n> exec_command rg -n formatCost src\n',
     )
   })
 

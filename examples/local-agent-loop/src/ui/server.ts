@@ -99,6 +99,7 @@ import {
 import {
   archivable,
   currentWorktree,
+  diagnose,
   diagnoseRun,
   groupTasks,
   needsHuman,
@@ -749,13 +750,34 @@ function profileOf(attempts: AttemptRow[]): TraceProfile | null {
     : null
 }
 
+/**
+ * Whether an attempt may still be running, and so writing its log: it has
+ * not finished, it belongs to the run's current lease generation, and the
+ * diagnosis says that lease is live. An attempt a cancel or a lost lease
+ * left `started` is not open.
+ */
+export function attemptOpen(
+  a: Pick<AttemptRow, 'completedAt' | 'status' | 'leaseGeneration'>,
+  run: { leaseGeneration: number },
+  leaseLive: boolean,
+): boolean {
+  return (
+    leaseLive &&
+    a.completedAt === null &&
+    a.status === 'started' &&
+    a.leaseGeneration === run.leaseGeneration
+  )
+}
+
+const hasLog = (a: AttemptRow) =>
+  Boolean(a.measurement?.agentLog || a.measurement?.verificationLog)
+
 /** A row's log: the attempt that recorded it and its agent log, if any. */
 function logOf(
   a: AttemptRow | undefined,
 ): Pick<TraceNode, 'logAttemptId' | 'agentLog'> {
-  const m = a?.measurement
-  return m?.agentLog || m?.verificationLog
-    ? { logAttemptId: a?.attemptId ?? null, agentLog: m.agentLog ?? null }
+  return a && hasLog(a)
+    ? { logAttemptId: a.attemptId, agentLog: a.measurement?.agentLog ?? null }
     : { logAttemptId: null, agentLog: null }
 }
 
@@ -927,8 +949,7 @@ export function deriveTrace(input: TraceInput): Trace {
     )
     const unfinished = (a: AttemptRow) =>
       a.completedAt === null && a.status === 'started'
-    const isOpen = (a: AttemptRow) =>
-      leaseLive && unfinished(a) && a.leaseGeneration === run.leaseGeneration
+    const isOpen = (a: AttemptRow) => attemptOpen(a, run, leaseLive)
     const stateOf = (a: AttemptRow): TraceState =>
       isOpen(a)
         ? 'running'
@@ -1033,6 +1054,11 @@ export function deriveTrace(input: TraceInput): Trace {
         : (input.candidates?.find((c) => c.sequence === e.seq) ??
           asReportCandidate(input.stepOutputs[candidateStep]) ??
           (e.seq === lastCodeSeq ? input.candidate : null))
+    // The entry shows the log of the latest attempt of a step that records
+    // one. A retry that replayed a checkpoint recorded none, so the entry
+    // then has none rather than an older attempt's.
+    const logSteps = new Set(sorted.filter(hasLog).map((a) => a.stepName))
+    const logged = [...sorted].reverse().find((a) => logSteps.has(a.stepName))
     return node({
       id: `entry:${e.key}`,
       kind: 'entry',
@@ -1051,16 +1077,8 @@ export function deriveTrace(input: TraceInput): Trace {
       checkpoint: checked ? checkpointOf(checked, isOpen(checked)) : null,
       review,
       candidate,
-      verificationLog:
-        [...sorted].reverse().find((a) => a.measurement?.verificationLog)
-          ?.measurement?.verificationLog ?? null,
-      ...logOf(
-        [...sorted]
-          .reverse()
-          .find(
-            (a) => a.measurement?.agentLog || a.measurement?.verificationLog,
-          ),
-      ),
+      verificationLog: logged?.measurement?.verificationLog ?? null,
+      ...logOf(logged),
       children,
     })
   }
@@ -1740,7 +1758,8 @@ function createUiApi() {
       (a) => a.id === attemptId,
     )
     if (!attempt) throw new HttpError(404, `no attempt ${attemptId}`)
-    const m = toAttemptRow(attempt).measurement
+    const row = toAttemptRow(attempt)
+    const m = row.measurement
     const path =
       file === 'agent'
         ? m?.agentLog?.path
@@ -1752,7 +1771,11 @@ function createUiApi() {
       runRootOf(stateRoot, runId),
       path,
       from,
-      attempt.status !== 'started',
+      !attemptOpen(
+        row,
+        found,
+        (await diagnose(db, found, Date.now())).kind === 'running',
+      ),
     )
   }
 

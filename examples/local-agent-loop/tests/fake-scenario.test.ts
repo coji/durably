@@ -78,6 +78,20 @@ describe('fake provider realism', () => {
     assert.throws(() => parseLatency('fast'))
   })
 
+  it('counts the scripted output delay in elapsedMs', async () => {
+    const provider = new FakeProvider({
+      run: new FakeRun({
+        latencyMs: { min: 0, max: 0 },
+        output: { chunks: ['a', 'b'], intervalMs: 150 },
+      }),
+    })
+    const result = await provider.call(review())
+    assert.ok(
+      (result.elapsedMs ?? 0) >= 300,
+      `elapsedMs ${result.elapsedMs} left out the output delay`,
+    )
+  })
+
   it('stops a long fake latency as soon as the call is aborted', async () => {
     const provider = new FakeProvider({
       run: new FakeRun({ latencyMs: { min: 60000, max: 60000 } }),

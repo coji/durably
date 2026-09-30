@@ -113,6 +113,7 @@ import {
   followLog,
   LogBody,
   logTail,
+  plainPart,
   type LogView,
 } from '../src/ui/components/trace/AttemptLog.js'
 import { pollEvery } from '../src/ui/poll.js'
@@ -1307,6 +1308,21 @@ describe('pipeline and trace', () => {
     // A row no attempt of which recorded a log links none.
     assert.equal(verify?.logAttemptId, null)
     assert.equal(t.root.logAttemptId, null)
+
+    // A retry that replayed its checkpoint recorded no log: the entry then
+    // shows none, not the older attempt's.
+    const replayed = traceOf(
+      [
+        called('stage:0:code:agent', 1, 4, 1, 'failed'),
+        step('stage:0:code:agent', 5, 6),
+        step('stage:0:code:candidate', 6, 7),
+      ],
+      [],
+      { status: 'completed', completedAt: iso(8) },
+    )
+    const [replayedCode] = replayed.root.children[0]?.children ?? []
+    assert.equal(replayedCode?.logAttemptId, null)
+    assert.equal(replayedCode?.agentLog, null)
   })
 
   it('trace (h) keeps the findings a review step stored, and none from an older step', () => {
@@ -4541,11 +4557,26 @@ describe('the log panel', () => {
     assert.match(html, /記録されたファイルが見つかりません/)
   })
 
+  it('removes a terminal escape split between two parts', () => {
+    const first = plainPart('', 'a\u001b[3', false)
+    assert.deepEqual(first, { text: 'a', held: '\u001b[3' })
+    const second = plainPart(first.held, '1mred\u001b]0;ti', false)
+    assert.deepEqual(second, { text: 'red', held: '\u001b]0;ti' })
+    const third = plainPart(second.held, 'tle\u0007!\u001b', false)
+    assert.deepEqual(third, { text: '!', held: '\u001b' })
+    // A log that ends mid-escape drops it.
+    assert.deepEqual(plainPart(third.held, '[', true), { text: '', held: '' })
+  })
+
   it('shows the text as characters, without terminal escapes, and only the last 256 KiB', () => {
     const html = renderToStaticMarkup(
       createElement(LogBody, {
         view: {
-          text: '\u001b[31mred\u001b[0m <b>not bold</b> **not markdown**\n',
+          text: plainPart(
+            '',
+            '\u001b[31mred\u001b[0m <b>not bold</b> **not markdown**\n',
+            false,
+          ).text,
           state: 'live',
           trimmed: false,
         },
@@ -4730,6 +4761,46 @@ describe('agent logs over HTTP', { timeout: 300000 }, () => {
       assert.equal(first.done, false)
       await rm(big)
       assert.equal(await status(), LOG_MISSING_STATUS)
+
+      // An attempt left `started` is done unless it is still open: of the
+      // current lease generation, under a live lease.
+      const small = join(runRoot, 'agent-logs', 'small.log')
+      await writeFile(small, 'partial')
+      record(small)
+      const { lease_generation: gen } = db
+        .prepare('SELECT lease_generation FROM durably_runs WHERE id = ?')
+        .get(code.run_id) as { lease_generation: number }
+      const setRun = (status: string) =>
+        db
+          .prepare(
+            'UPDATE durably_runs SET status = ?, lease_expires_at = ? WHERE id = ?',
+          )
+          .run(
+            status,
+            new Date(Date.now() + 60 * 60_000).toISOString(),
+            code.run_id,
+          )
+      const setAttempt = (generation: number) =>
+        db
+          .prepare(
+            "UPDATE durably_step_attempts SET status = 'started', completed_at = NULL, lease_generation = ? WHERE id = ?",
+          )
+          .run(generation, code.id)
+      const done = async () =>
+        (
+          await api<LogChunk>(
+            port,
+            `/api/runs/${code.run_id}/logs/${code.id}?from=0`,
+          )
+        ).done
+      setRun('leased')
+      setAttempt(gen)
+      assert.equal(await done(), false, 'open attempt')
+      setAttempt(gen - 1)
+      assert.equal(await done(), true, 'stale lease generation')
+      setAttempt(gen)
+      setRun('cancelled')
+      assert.equal(await done(), true, 'cancelled run')
     } finally {
       db.close()
       ui.child.kill('SIGTERM')

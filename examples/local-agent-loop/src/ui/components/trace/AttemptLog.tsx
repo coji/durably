@@ -1,11 +1,4 @@
-import {
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 
 import { TRACE } from '../../glossary'
 import { followLogParts } from '../../poll'
@@ -19,8 +12,9 @@ const SHOWN_MAX = 256 * 1024
 
 export type LogState = 'live' | 'done' | 'missing' | 'failed'
 
-/** A log as read so far: its text, raw, and whether more may come. */
+/** A log as read so far: its text, and whether more may come. */
 export interface LogView {
+  /** Plain text: terminal escapes are removed as parts arrive. */
   text: string
   state: LogState
   /** The start was dropped to keep the text within `SHOWN_MAX`. */
@@ -31,6 +25,35 @@ export interface LogView {
 const ANSI =
   // eslint-disable-next-line no-control-regex
   /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g
+
+/** An escape at the very end that the next part may still finish. */
+const UNFINISHED =
+  // eslint-disable-next-line no-control-regex
+  /\u001b(?:\[[0-?]*[ -/]*|\][^\u0007\u001b]*\u001b?)?$/
+
+/** An unfinished escape longer than this is text, not held back forever. */
+const HELD_MAX = 256
+
+/**
+ * `held + chunk` without its terminal escapes. An unfinished escape at the
+ * end is returned as `held`, to be read again with the next part; once the
+ * log is done it is dropped.
+ */
+export function plainPart(
+  held: string,
+  chunk: string,
+  done: boolean,
+): { text: string; held: string } {
+  const raw = held + chunk
+  if (done)
+    return { text: raw.replace(ANSI, '').replace(UNFINISHED, ''), held: '' }
+  const tail = UNFINISHED.exec(raw)?.[0] ?? ''
+  const next = tail.length <= HELD_MAX ? tail : ''
+  return {
+    text: raw.slice(0, raw.length - next.length).replace(ANSI, ''),
+    held: next,
+  }
+}
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -57,10 +80,14 @@ export function followLog(
   intervalMs = REFRESH_MS,
 ): () => void {
   let view = EMPTY
+  let held = ''
   const show = (next: LogView) => onView((view = next))
   return followLogParts(url, intervalMs, {
     part: (part) => {
-      const next = logTail(view.text + part.chunk)
+      // Stripped before the tail is cut, so a cut never splits an escape.
+      const plain = plainPart(held, part.chunk, part.done)
+      held = plain.held
+      const next = logTail(view.text + plain.text)
       show({
         text: next.text,
         state: part.done ? 'done' : 'live',
@@ -102,15 +129,14 @@ function LogStateMark({ state }: { state: LogState }) {
 }
 
 /**
- * A log's text as plain characters, never markup, with its terminal
- * escapes removed. It keeps to the end while the reader is there, and holds
+ * A log's text as plain characters, never markup. It keeps to the end while the reader is there, and holds
  * still once they scroll up.
  */
 export function LogBody({ view }: { view: LogView }) {
   const box = useRef<HTMLPreElement | null>(null)
   const pinned = useRef(true)
   const labelId = useId()
-  const text = useMemo(() => view.text.replace(ANSI, ''), [view.text])
+  const text = view.text
   useLayoutEffect(() => {
     const el = box.current
     if (el && pinned.current) el.scrollTop = el.scrollHeight

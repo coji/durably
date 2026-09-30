@@ -239,6 +239,10 @@ export function agentOutput(onOutput: ((chunk: string) => void) | undefined) {
     tool(name: string, input: unknown) {
       emit(`${lineStart ? '' : '\n'}${toolCallLine(name, input)}`)
     },
+    /** End the line a message left open, so the next starts its own. */
+    line() {
+      if (!lineStart) emit('\n')
+    },
   }
 }
 
