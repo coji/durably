@@ -18,6 +18,7 @@ import { RunLink } from '../../components/RunLink'
 import { StageTrack } from '../../components/StageTrack'
 import { conclusionStatus, kindStatus } from '../../components/status'
 import { StatusBadge } from '../../components/StatusBadge'
+import { FakeMark } from '../../components/SupersededMark'
 import { TaskList, TaskRow, TaskTotal } from '../../components/TaskRow'
 import { TraceView } from '../../components/trace/TraceView'
 import {
@@ -58,14 +59,12 @@ const ROWS = [
     status: conclusionStatus('approved'),
     pipeline: PIPELINES.done,
     minutes: 180,
+    fake: true,
   },
 ]
 
-const ago = (minutes: number) =>
-  formatRelative(
-    new Date(Date.parse(NOW) - minutes * 60_000).toISOString(),
-    NOW,
-  )
+const ago = (m: number) =>
+  formatRelative(new Date(Date.parse(NOW) - m * 60_000).toISOString(), NOW)
 
 export function TaskRowStates() {
   const [first] = ROWS
@@ -99,6 +98,7 @@ export function TaskRowStates() {
               toggleLabel={r.task.name}
               meta={
                 <>
+                  {r.fake ? <FakeMark /> : null}
                   <span className="font-code">
                     {formatCost(USAGE.known.costUsd)}
                   </span>

@@ -81,6 +81,8 @@ export interface TaskRunInput {
   costUsd: number | null
   /** A person archived the stopped run; see `actions.ts`. */
   archived?: boolean
+  /** The report's `fake`: the run used the fake provider. */
+  fake?: boolean
 }
 
 export interface TaskRun {
@@ -116,6 +118,8 @@ export interface Task {
   representative: string
   /** Oldest first, so the first run leads. */
   runs: TaskRun[]
+  /** The first run used the fake provider: a rehearsal, not real work. */
+  fake: boolean
   /** When the task's newest run was created. */
   latestAt: string
   /**
@@ -127,7 +131,7 @@ export interface Task {
 }
 
 /** The sum of every value, or null when any one is not known. */
-function sumKnown(values: (number | null)[]): number | null {
+export function sumKnown(values: (number | null)[]): number | null {
   return values.some((v) => v === null)
     ? null
     : values.reduce<number>((sum, v) => sum + (v ?? 0), 0)
@@ -167,9 +171,9 @@ type Linked = Pick<TaskRunInput, 'id' | 'parentId'>
 
 /**
  * Each run's task, by its first run's ID: up through its parents while
- * they are among `runs`.
+ * they are among `runs`. `groupTasks` and the trend group runs by it.
  */
-function taskRoots(runs: Linked[]): (run: Linked) => string {
+export function taskRoots(runs: Linked[]): (run: Linked) => string {
   const byId = new Map(runs.map((r) => [r.id, r]))
   return (run) => {
     const seen = new Set<string>()
@@ -249,6 +253,7 @@ export function groupTasks(runs: TaskRunInput[]): Task[] {
       attention,
       representative: representative?.id ?? id,
       runs: taskRuns,
+      fake: list.find((r) => r.id === id)?.fake ?? false,
       latestAt: ordered.at(-1)?.createdAt ?? '',
       total: {
         leadTimeMs: sumKnown(ordered.map((r) => r.leadTimeMs)),

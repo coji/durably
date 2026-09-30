@@ -59,8 +59,8 @@ import {
 } from '../engine/build-report.js'
 import {
   compareReports,
-  inTrendWindow,
   trendOf,
+  trendRunIds,
   type Comparison,
   type Trend,
 } from '../engine/compare.js'
@@ -212,8 +212,9 @@ export interface RunDetailResponse {
 }
 
 /**
- * Finished runs of the last 30 days by week and code model and effort, fake
- * runs left out: what `compare --trend --format json` prints.
+ * Tasks whose newest run finished in the last 30 days, by week and the first
+ * run's code model and effort, fake tasks left out: what `compare --trend
+ * --format json` prints.
  */
 export type TrendResponse = Trend
 
@@ -1221,12 +1222,12 @@ export function finishedReportCache(build = buildReport) {
  * once, so no report makes its own child query and the view's reads do not
  * grow with the square of the history.
  */
-export async function listedReports(
+export async function listedReports<R extends Run>(
   cache: ReturnType<typeof finishedReportCache>,
   src: ReportSource,
-  runs: Run[],
+  runs: R[],
   all: Run[],
-): Promise<{ run: Run; report: LoopReport; fresh: boolean }[]> {
+): Promise<{ run: R; report: LoopReport; fresh: boolean }[]> {
   const children = repairChildrenByParent(all)
   return Promise.all(
     runs.map(async (run) => ({
@@ -1526,14 +1527,14 @@ function createUiApi() {
     if (!db) return trendOf([], { now })
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
-    // Only the window's runs get a report, never the whole history.
-    const done = all.filter((r) => inTrendWindow(r, { now }))
+    // Only the runs of the window's tasks get a report, never the whole
+    // history.
+    const rows = all.map((run) => ({ ...run, parentId: repairParentId(run) }))
+    const read = new Set(trendRunIds(rows, { now }))
+    const done = rows.filter((r) => read.has(r.id))
     const built = await listedReports(reports, readOnce(db, done), done, all)
     return trendOf(
-      built.map(({ run, report }) => ({
-        report,
-        completedAt: run.completedAt,
-      })),
+      built.map(({ run, report }) => ({ ...run, report })),
       { now },
     )
   }

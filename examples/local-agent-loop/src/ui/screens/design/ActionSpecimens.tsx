@@ -199,6 +199,7 @@ const ARCHIVED_TASK: Task = {
   attention: 'done',
   representative: REPAIR,
   runs: [taskRun(stopped.id, null, true), taskRun(REPAIR, 1, false)],
+  fake: false,
   latestAt: '2026-09-30T09:02:00.000Z',
   total: { leadTimeMs: 1_512_000, costUsd: 4.37 },
 }

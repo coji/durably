@@ -33,6 +33,7 @@ import {
   recordedTriage,
   repairChildren,
   repairChildrenByParent,
+  repairParentId,
   taskRunInput,
 } from './engine/build-report.js'
 import { killOwnedChildren, MAX_TIMEOUT_MS } from './engine/child.js'
@@ -40,8 +41,8 @@ import {
   compareReports,
   comparisonToMarkdown,
   parseTrendDays,
-  inTrendWindow,
   trendOf,
+  trendRunIds,
   trendToMarkdown,
 } from './engine/compare.js'
 import { DEMO } from './engine/failure-reasons.js'
@@ -438,8 +439,11 @@ Commands (run from examples/local-agent-loop):
   pnpm demo report --run <id> [--format json|md] [--out <file>]
   pnpm demo compare --runs <id,id,...> [--format json|md] [--out <file>]
   pnpm demo compare --trend [--days 30] [--include-fake] [--format json|md] [--out <file>]
-                                            finished runs of the last --days days by week (Monday,
-                                            local time) and code model/effort; fake runs left out
+                                            tasks whose newest run finished in the last --days days,
+                                            by that week (Monday, local time) and the first run's
+                                            code model/effort: first-pass and final approval, and
+                                            each task's time, cost and repair runs over all its
+                                            runs; tasks started on the fake provider left out
   pnpm demo ui [--port 4380]                web UI on 127.0.0.1: runs, reports, comparison, and the
                                             approve, reject, spec-revise, retrigger and archive
                                             above, without --reload-config
@@ -1044,15 +1048,16 @@ if (cmd === 'worker') {
   await durably.migrate()
   const now = Date.now()
   const runs = await durably.getRuns({ jobName: durably.jobs.agentLoop.name })
-  const done = runs.filter((r) => inTrendWindow(r, { now, days }))
+  const rows = runs.map((run) => ({ ...run, parentId: repairParentId(run) }))
+  const read = new Set(trendRunIds(rows, { now, days }))
   const children = repairChildrenByParent(runs)
   const entries = []
-  for (const run of done)
+  for (const row of rows.filter((r) => read.has(r.id)))
     entries.push({
-      report: await buildReport(durably, run.id, {
-        children: children.get(run.id) ?? [],
+      ...row,
+      report: await buildReport(durably, row.id, {
+        children: children.get(row.id) ?? [],
       }),
-      completedAt: run.completedAt,
     })
   const trend = trendOf(entries, { now, days, includeFake })
   await emit(
