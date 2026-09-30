@@ -90,6 +90,7 @@ const stoppedRun = target(stopped, {
     'stopped',
     [
       `${DEMO} report --run ${stopped.id} --format json`,
+      `${DEMO} repair --run ${stopped.id}`,
       `${DEMO} retrigger --run ${stopped.id}`,
     ],
     { kind: 'verification-failed', retryable: true },

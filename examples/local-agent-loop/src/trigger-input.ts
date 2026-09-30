@@ -10,8 +10,10 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { z } from 'zod'
 
 import { runChild } from './engine/child.js'
+import { stageStep } from './engine/failure-reasons.js'
 import { repoRoot } from './engine/git.js'
 import { parseProviderName } from './engine/providers/index.js'
+import type { VerificationOutcome } from './engine/verification.js'
 import {
   assertSingleMode,
   baselineReuseSchema,
@@ -31,7 +33,9 @@ import { repairLabels } from './factory/repair.js'
 import {
   DEFAULT_COMMIT_SETTINGS,
   type CommitSettings,
+  type FindingsRef,
   type InputFileRef,
+  type RepairParentConclusion,
   type RepoTargetConfig,
 } from './factory/target.js'
 import {
@@ -845,8 +849,17 @@ export async function readNotesFile(path: string): Promise<string> {
 
 /** The outside findings and optional dispositions a repair run is given. */
 export interface RepairFiles {
-  findings: { content: string; ref: InputFileRef }
+  findings: { content: string; ref: FindingsRef }
   dispositions: { content: string; ref: InputFileRef } | null
+}
+
+/**
+ * What `demo repair` read from its flags. The findings are null when no file
+ * was given: a parent that stopped on the check then has them built from its
+ * stored failure (ADR-0030).
+ */
+export type RepairFlagFiles = Omit<RepairFiles, 'findings'> & {
+  findings: RepairFiles['findings'] | null
 }
 
 /** The only flags `demo repair` takes; every setting is the parent's. */
@@ -859,7 +872,7 @@ const REPAIR_FLAGS = ['run', 'findings-file', 'dispositions-file']
  */
 export async function readRepairFiles(
   a: Record<string, string>,
-): Promise<RepairFiles> {
+): Promise<RepairFlagFiles> {
   if (a['reload-config'] !== undefined)
     throw new Error(
       "repair keeps the parent run's stored settings; --reload-config is not accepted. To run with other settings, start a normal run with trigger",
@@ -870,10 +883,9 @@ export async function readRepairFiles(
       `repair takes only --run, --findings-file and --dispositions-file; not accepted: ${other.map((f) => `--${f}`).join(', ')}. A repair run keeps the parent run's stored settings; to run with other settings, start a normal run with trigger`,
     )
   const findings = a['findings-file']
-  if (!findings) throw new Error('--findings-file <path> required')
   const dispositions = a['dispositions-file']
   return {
-    findings: await readInputFile('findings-file', findings),
+    findings: findings ? await readInputFile('findings-file', findings) : null,
     dispositions: dispositions
       ? await readInputFile('dispositions-file', dispositions)
       : null,
@@ -913,14 +925,19 @@ type RepoSetup = FactorySetup & { target: RepoTargetConfig }
 interface StoredOutput {
   approved?: boolean
   conclusion?: string
-  candidate?: { commit?: string; branch?: string } | null
+  candidate?: { id?: string; commit?: string; branch?: string } | null
   delivery?: { commit?: string | null } | null
 }
 
+const refusal = (parent: RepairParent, why: string) =>
+  new Error(`refusing to repair ${parent.id}: ${why}`)
+
 /**
  * The parent's candidate, when the parent may be repaired: a repository run
- * that completed approved and delivered its last candidate. Anything else,
- * including a run that stopped with a candidate, is refused.
+ * that completed either approved and delivered its last candidate, or
+ * verification-failed with a recorded last candidate (ADR-0030). Anything
+ * else, including a run that stopped on the reviews with a candidate, is
+ * refused.
  */
 export function repairableCandidate(
   parent: RepairParent,
@@ -929,27 +946,35 @@ export function repairableCandidate(
   setup: RepoSetup
   commit: string
   branch: string
+  conclusion: RepairParentConclusion
 } {
-  const refuse = (why: string) =>
-    new Error(`refusing to repair ${parent.id}: ${why}`)
+  const refuse = (why: string) => refusal(parent, why)
   const input = parent.input as StoredRepairInput | null
   if (input?.target?.kind !== 'repo') throw refuse('it is not a repository run')
   if (parent.status !== 'completed')
     throw refuse(`it is ${parent.status}, not completed`)
   const output = parent.output as StoredOutput | null
-  if (output?.conclusion !== 'approved' || output.approved !== true)
+  const conclusion =
+    output?.conclusion === 'approved' && output.approved === true
+      ? 'approved'
+      : output?.conclusion === 'verification-failed'
+        ? 'verification-failed'
+        : null
+  if (!conclusion)
     throw refuse(
-      `its conclusion is ${output?.conclusion ?? 'unknown'}, not approved`,
+      `its conclusion is ${output?.conclusion ?? 'unknown'}, not approved or verification-failed`,
     )
-  const commit = output.candidate?.commit
-  const branch = output.candidate?.branch
+  const commit = output?.candidate?.commit
+  const branch = output?.candidate?.branch
   if (!commit || !branch) throw refuse('it recorded no candidate commit')
-  const delivered = output.delivery?.commit
-  if (!delivered) throw refuse('it recorded no delivery')
-  if (delivered !== commit)
-    throw refuse(
-      `its delivered commit ${delivered.slice(0, 12)} is not its last candidate ${commit.slice(0, 12)}`,
-    )
+  if (conclusion === 'approved') {
+    const delivered = output?.delivery?.commit
+    if (!delivered) throw refuse('it recorded no delivery')
+    if (delivered !== commit)
+      throw refuse(
+        `its delivered commit ${delivered.slice(0, 12)} is not its last candidate ${commit.slice(0, 12)}`,
+      )
+  }
   const stored = setup as Partial<FactorySetup> | null
   if (stored?.target?.kind !== 'repo' || !stored.profiles)
     throw refuse('its setup record is missing')
@@ -957,7 +982,95 @@ export function repairableCandidate(
     setup: stored as RepoSetup,
     commit,
     branch,
+    conclusion,
   }
+}
+
+/** The parts of a stored step the findings are built from. */
+export interface StoredStepRecord {
+  name: string
+  status: string
+  output: unknown
+}
+
+/**
+ * Findings built from a verification-failed parent's own record: the stored
+ * output tail and exit code of the check that failed on its last candidate,
+ * and the check command it graded with. Only the check that followed the
+ * sealing of that candidate is read, never an earlier candidate's and never
+ * a log file, which could have changed since. The text depends on the stored
+ * record alone, so the same parent always gives the same findings.
+ */
+export function checkFailureFindings(
+  parent: RepairParent,
+  steps: StoredStepRecord[],
+  check: string[],
+): { content: string; ref: FindingsRef } {
+  const refuse = (why: string) =>
+    refusal(
+      parent,
+      `${why}; give the findings with --findings-file <path> instead`,
+    )
+  const output = parent.output as StoredOutput | null
+  const candidate = output?.candidate
+  const done = steps.flatMap((s) => {
+    const where = s.status === 'completed' ? stageStep(s.name) : null
+    return where ? [{ ...where, output: s.output }] : []
+  })
+  const sealed = done
+    .filter((s) => s.stage === 'code' && s.part === 'candidate')
+    .sort((x, y) => x.sequence - y.sequence)
+    .at(-1)
+  const sealedCandidate = sealed?.output as {
+    id?: unknown
+    commit?: unknown
+  } | null
+  if (
+    !sealed ||
+    !candidate?.id ||
+    sealedCandidate?.id !== candidate.id ||
+    sealedCandidate.commit !== candidate.commit
+  )
+    throw refuse('its last candidate has no stored sealing step')
+  const result = done
+    .filter(
+      (s) =>
+        s.stage === 'verify' &&
+        s.part === 'acceptance' &&
+        s.sequence > sealed.sequence,
+    )
+    .sort((x, y) => x.sequence - y.sequence)[0]?.output as Partial<
+    Record<keyof VerificationOutcome, unknown>
+  > | null
+  if (
+    result?.passed !== false ||
+    typeof result.stdout !== 'string' ||
+    result.stdout.trim() === ''
+  )
+    throw refuse('no failed check output is stored for its last candidate')
+  const exitCode =
+    typeof result.exitCode === 'number' ? String(result.exitCode) : 'none'
+  const longest = Math.max(
+    0,
+    ...(result.stdout.match(/`+/g) ?? []).map((run) => run.length),
+  )
+  const fence = '`'.repeat(Math.max(3, longest + 1))
+  const content = [
+    `# Check failure of factory run ${parent.id}`,
+    '',
+    `The pinned check failed on the run's last candidate, commit ${candidate.commit}, after its last repair.`,
+    '',
+    `- check command: ${JSON.stringify(check)}`,
+    `- exit code: ${exitCode}`,
+    '',
+    '## Output tail (stdout and stderr)',
+    '',
+    fence,
+    result.stdout.replace(/\n$/, ''),
+    fence,
+    '',
+  ].join('\n')
+  return { content, ref: { parentRun: parent.id } }
 }
 
 const sha256Of = (text: string) =>
@@ -988,7 +1101,12 @@ export function buildRepairInput(
    */
   fixed: { spec?: string | null; check?: string[] | null } = {},
 ) {
-  const { setup: stored, commit, branch } = repairableCandidate(parent, setup)
+  const {
+    setup: stored,
+    commit,
+    branch,
+    conclusion,
+  } = repairableCandidate(parent, setup)
   const parentInput = parent.input as StoredRepairInput
   const t = stored.target
   const storedFiles = parentInput.target?.inputFiles ?? {}
@@ -1072,6 +1190,7 @@ export function buildRepairInput(
       runId: parent.id,
       candidateCommit: commit,
       candidateBranch: branch,
+      parentConclusion: conclusion,
       findings: files.findings.content,
       findingsFile: files.findings.ref,
       profiles: {
@@ -1101,17 +1220,20 @@ export interface RepairSource {
       runId: string,
       name: string,
     ): Promise<{ output: unknown } | null>
+    getSteps(runId: string): Promise<StoredStepRecord[]>
   }
 }
 
 /**
  * Read a parent run, refuse it unless it may be repaired and its candidate
  * branch is unmoved, and build the child's input. Nothing is triggered.
+ * An approved parent needs a findings file; a verification-failed one uses
+ * the file when given and its stored check failure otherwise.
  */
 export async function startableRepair(
   durably: RepairSource,
   parentId: string,
-  files: RepairFiles,
+  files: RepairFlagFiles,
   /** Demo and test only: the fake provider's behavior for the child. */
   fakeScenario?: unknown,
 ): Promise<ReturnType<typeof buildRepairInput>> {
@@ -1123,10 +1245,31 @@ export async function startableRepair(
     durably.storage.getCompletedStep(parentId, SPEC_FINAL_STEP),
     durably.storage.getCompletedStep(parentId, SPEC_CHECK_STEP),
   ])
-  const built = buildRepairInput(parent, setup, files, fakeScenario, {
+  const fixed = {
     spec: (final?.output as { content?: string } | null)?.content ?? null,
     check: (check?.output as { check?: string[] } | null)?.check ?? null,
-  })
+  }
+  let findings = files.findings
+  if (!findings) {
+    const { setup: stored, conclusion } = repairableCandidate(parent, setup)
+    if (conclusion === 'approved')
+      throw refusal(
+        parent,
+        'it was approved, so --findings-file <path> is required',
+      )
+    findings = checkFailureFindings(
+      parent,
+      await durably.storage.getSteps(parentId),
+      fixed.check ?? stored.target.checkCommand,
+    )
+  }
+  const built = buildRepairInput(
+    parent,
+    setup,
+    { ...files, findings },
+    fakeScenario,
+    fixed,
+  )
   const { target, repairOf } = built.input
   await assertCandidateUnmoved(
     target.repoPath,

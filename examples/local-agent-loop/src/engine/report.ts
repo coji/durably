@@ -132,12 +132,20 @@ export interface ReportInputFile {
   sha256: string
 }
 
+/**
+ * A repair run's findings: a file, or the parent run whose stored check
+ * failure they were built from (ADR-0030).
+ */
+export type ReportFindings =
+  | ReportInputFile
+  | { parentRun: string; sha256: string }
+
 export interface ReportInputs {
   task: ReportInputFile | null
   spec: ReportInputFile | null
   dispositions: ReportInputFile | null
   /** A repair run's outside findings; null on every other run. */
-  findings: ReportInputFile | null
+  findings: ReportFindings | null
 }
 
 /**
@@ -780,7 +788,10 @@ export interface LoopReport {
   configVersion: string | null
   summary: RunSummary
   triage: ReportTriage | null
-  /** Null when the run had no baseline check or has not reached it. */
+  /**
+   * Null when the run had no baseline check, a repair of a verification-failed
+   * parent included, or has not reached it.
+   */
   baseline: ReportBaseline | null
   /** Null for a run from before preflight, or one that has not reached it. */
   preflight: ReportPreflight | null
@@ -1447,7 +1458,9 @@ export function reportToMarkdown(r: LoopReport): string {
       )
     else if (b.passed !== null) lines.push('- source: measured in this run')
   } else {
-    lines.push('- none (baselineCheck is off, or the run has not reached it)')
+    lines.push(
+      '- none (baselineCheck is off, the run repairs a verification-failed parent, or it has not reached the check)',
+    )
   }
   lines.push('')
   lines.push('## Preflight (each distinct provider, model and effort)')
@@ -1473,8 +1486,13 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('## Inputs (SHA-256 of stored content)')
   lines.push('')
   for (const [name, file] of Object.entries(r.inputs)) {
+    const source = !file
+      ? null
+      : 'path' in file
+        ? file.path
+        : `built from the check failure of run ${file.parentRun}`
     lines.push(
-      `- ${name}: ${file ? `${file.sha256} (${file.path})` : 'not given'}`,
+      `- ${name}: ${file ? `${file.sha256} (${source})` : 'not given'}`,
     )
   }
   lines.push('')

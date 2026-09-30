@@ -57,7 +57,12 @@ import {
   specBlockers,
   type SpecState,
 } from './reducer.js'
-import type { Delivery, Target, UntrustedInput } from './target.js'
+import type {
+  Delivery,
+  RepairParentConclusion,
+  Target,
+  UntrustedInput,
+} from './target.js'
 import {
   REVIEW_CANCEL_REASON,
   REVIEW_LENSES,
@@ -93,6 +98,16 @@ import {
 function requireCandidate(state: StageArgs['state']) {
   if (!state.candidate) throw new Error('stage requires a candidate')
   return state.candidate
+}
+
+/**
+ * How a repair run's parent ended; a run set up before it was kept repairs an
+ * approved parent. Null on every other run.
+ */
+function repairParentConclusion(
+  setup: FactorySetup,
+): RepairParentConclusion | null {
+  return setup.repairOf ? (setup.repairOf.parentConclusion ?? 'approved') : null
 }
 
 function outcome(
@@ -149,7 +164,8 @@ export const codeStage: StageHandler = async ({
   // A repair run's first repair addresses the outside findings. It starts a
   // session of its own: at iteration 0 this run has no session to continue,
   // and the parent's is never carried over.
-  const fromFindings = Boolean(state.setup.repairOf) && state.iteration === 0
+  const fromFindings =
+    state.iteration === 0 ? repairParentConclusion(state.setup) : null
   // Only the code role's own provider, profile, cwd and instructions decide
   // whether its session may continue; the reviewers' profiles never do.
   const recorded = reuse && !fromFindings ? state.implementationSession : null
@@ -539,7 +555,7 @@ async function reviewRoundOf(args: {
       target.reviewRules(lens),
       target.untrustedInputs(lens),
       changes,
-      Boolean(setup.repairOf),
+      repairParentConclusion(setup),
       {
         output,
         // A prompt review in the sealed tree is shown that tree alone.

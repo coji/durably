@@ -600,13 +600,15 @@ export class RepoTarget implements Target {
       this.config.baseCommit,
       head,
     )
-    const parent = this.config.repairOf?.runId
+    const parent = this.config.repairOf
     return [
       'TRUSTED CONTEXT (produced by the factory, not by the implementer):',
       `Base commit: ${this.config.baseCommit}`,
       ...(parent
         ? [
-            `The base commit is the approved candidate of factory run ${parent}. This run repairs it from the findings in the untrusted FINDINGS block, so the changes below are the repair alone.`,
+            parent.parentConclusion === 'verification-failed'
+              ? `The base commit is the last candidate of factory run ${parent.runId}, which stopped because the pinned check still failed on it, so it was never approved. This run repairs it from the findings in the untrusted FINDINGS block, so the changes below are the repair alone; the base's own changes are not listed and are read from the working directory.`
+              : `The base commit is the approved candidate of factory run ${parent.runId}. This run repairs it from the findings in the untrusted FINDINGS block, so the changes below are the repair alone.`,
           ]
         : []),
       `Candidate: ${candidate.id}`,

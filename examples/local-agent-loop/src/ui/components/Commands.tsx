@@ -24,6 +24,8 @@ function commandLabel(command: string): string {
       return command.includes('--reload-config')
         ? COMMAND_COPY.retriggerReload
         : COMMAND_COPY.retrigger
+    case 'repair':
+      return COMMAND_COPY.repair
     case 'waits':
       return COMMAND_COPY.waits
     case 'spec-revise':

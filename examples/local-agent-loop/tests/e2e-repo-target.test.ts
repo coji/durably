@@ -61,10 +61,14 @@ import { archiveMarkerOf } from '../src/factory/layout.js'
 import { codePrompt, REVIEW_STATUS_COMPLETE } from '../src/factory/prompts.js'
 import { repairLabels } from '../src/factory/repair.js'
 import { specAdviceText } from '../src/factory/stages.js'
-import type { FactorySetup } from '../src/factory/types.js'
+import { BASELINE_STEP, type FactorySetup } from '../src/factory/types.js'
 import { createTarget } from '../src/targets/index.js'
 import { assertCandidateUnmoved, extractCommit } from '../src/targets/repo.js'
-import { buildRepairInput, type RepairFiles } from '../src/trigger-input.js'
+import {
+  buildRepairInput,
+  startableRepair,
+  type RepairFiles,
+} from '../src/trigger-input.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -1318,6 +1322,7 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       assert.deepEqual(childSetup.repairOf, {
         runId: parent.id,
         candidateCommit: parentCommit,
+        parentConclusion: 'approved',
       })
 
       // No triage and no implementation: the first agent call is a repair.
@@ -1480,6 +1485,153 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       await durably.stop()
       await durably.db.destroy()
       delete process.env.FAKE_FAIL_FIRST
+    }
+  })
+
+  it('repairs a verification-failed candidate from its stored check failure, with no findings file, to approval', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-stopped-'))
+    const repo = await seedRepo(root)
+    // The parent's one iteration leaves the bug: the check fails and the
+    // run stops with its candidate.
+    delete process.env.FAKE_FAIL_FIRST
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const { parent, setup } = await approvedParent(durably, repo, {
+        maxIterations: 1,
+      })
+      const parentOutput = parent.output as {
+        conclusion: string
+        candidate: { commit: string; branch: string }
+        delivery: unknown
+      }
+      assert.equal(parentOutput.conclusion, 'verification-failed')
+      assert.equal(parentOutput.delivery, null)
+      const parentCommit = parentOutput.candidate.commit
+      const failedCheck = (await durably.storage.getSteps(parent.id)).find(
+        (s) => /^stage:\d+:verify:acceptance$/.test(s.name),
+      )?.output as { stdout: string; exitCode: number }
+
+      const fake = { failIterations: 0, changes: { 'NOTES.md': 'fixed\n' } }
+      const built = await startableRepair(
+        durably,
+        parent.id,
+        { findings: null, dispositions: null },
+        fake,
+      )
+      const { input, idempotencyKey, labels } = built
+      assert.equal(input.target.baseRef, parentCommit)
+      assert.equal(input.maxIterations, setup.maxIterations)
+      assert.equal(input.repairOf.parentConclusion, 'verification-failed')
+      assert.deepEqual(input.repairOf.findingsFile, { parentRun: parent.id })
+      assert.ok(input.repairOf.findings.includes(failedCheck.stdout.trimEnd()))
+      assert.match(input.repairOf.findings, /adds decimals without truncation/)
+      assert.match(input.repairOf.findings, /^- exit code: 1$/m)
+      // As if the parent had baselineCheck on: the child inherits it, but its
+      // base is the candidate the check failed on, so it skips the baseline
+      // instead of stopping as baseline-check-failed.
+      const child = await durably.jobs.agentLoop.trigger(
+        { ...input, target: { ...input.target, baselineCheck: true } },
+        { idempotencyKey, labels },
+      )
+      await waitFor(
+        async () => (await durably.getRun(child.id))?.status === 'completed',
+        150000,
+        'repair of a stopped run completes',
+      )
+      const output = (await durably.getRun(child.id))?.output as {
+        conclusion: string
+        iterations: number
+        candidate: { commit: string }
+        triage: unknown
+      }
+      assert.equal(output.conclusion, 'approved')
+      assert.equal(output.iterations, 1)
+      assert.equal(output.triage, null)
+      assert.equal(
+        (await git(repo, ['rev-parse', `${output.candidate.commit}^`])).trim(),
+        parentCommit,
+      )
+      const childSetup = (
+        await durably.storage.getCompletedStep(child.id, 'setup')
+      )?.output as FactorySetup
+      assert.deepEqual(childSetup.repairOf, {
+        runId: parent.id,
+        candidateCommit: parentCommit,
+        parentConclusion: 'verification-failed',
+      })
+      assert.deepEqual(childSetup.profiles, setup.profiles)
+      assert.equal(childSetup.maxIterations, setup.maxIterations)
+      if (childSetup.target.kind !== 'repo')
+        throw new Error('repo target expected')
+      assert.equal(childSetup.target.baseCommit, parentCommit)
+      assert.equal(
+        childSetup.target.repairOf?.parentConclusion,
+        'verification-failed',
+      )
+      assert.equal(
+        childSetup.target.repairOf?.findings,
+        input.repairOf.findings,
+      )
+      // No triage and no implementation: the first agent call is a repair.
+      const attempts = await durably.getStepAttempts(child.id)
+      assert.ok(!attempts.some((a) => a.stepName === 'triage'))
+      const report = await buildReport(durably, child.id)
+      const calls = report.attempts.filter((a) =>
+        /^stage:\d+:code:agent$/.test(a.stepName),
+      )
+      assert.equal(calls[0]?.measurement?.role, 'repair')
+      assert.equal(calls[0]?.measurement?.iteration, 1)
+      assert.equal(childSetup.baselineCheck, true)
+      assert.ok(!attempts.some((a) => a.stepName === BASELINE_STEP))
+      assert.equal(report.baseline, null)
+      assert.equal(report.failure, null)
+
+      // The report names the parent as the findings' source, with the hash
+      // of the content the child stored.
+      assert.deepEqual(report.inputs.findings, {
+        parentRun: parent.id,
+        sha256: sha256(input.repairOf.findings),
+      })
+      const md = reportToMarkdown(report)
+      assert.ok(
+        md.includes(
+          `- findings: ${sha256(input.repairOf.findings)} (built from the check failure of run ${parent.id})`,
+        ),
+      )
+      assert.ok(reportToJson(report).includes(`"parentRun": "${parent.id}"`))
+      assert.deepEqual(report.lineage.parent, {
+        runId: parent.id,
+        candidateCommit: parentCommit,
+      })
+      assert.deepEqual(
+        (await buildReport(durably, parent.id)).lineage.children,
+        [child.id],
+      )
+
+      // The same stored failure returns the same child.
+      const again = await startableRepair(durably, parent.id, {
+        findings: null,
+        dispositions: null,
+      })
+      assert.equal(again.idempotencyKey, idempotencyKey)
+      // A moved candidate branch starts nothing.
+      await git(repo, [
+        'update-ref',
+        `refs/heads/${parentOutput.candidate.branch}`,
+        output.candidate.commit,
+      ])
+      await assert.rejects(
+        startableRepair(durably, parent.id, {
+          findings: null,
+          dispositions: null,
+        }),
+        /candidate branch .* moved to/,
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
     }
   })
 

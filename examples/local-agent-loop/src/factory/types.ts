@@ -23,7 +23,12 @@ import type {
 } from '../engine/types.js'
 import type { VerificationOutcome } from '../engine/verification.js'
 import type { FactoryEvent } from './events.js'
-import type { Delivery, Target, TargetConfig } from './target.js'
+import type {
+  Delivery,
+  RepairParentConclusion,
+  Target,
+  TargetConfig,
+} from './target.js'
 
 export type { CandidateRef, ContextMode, ResolvedProfile, SessionRef }
 export type { Delivery, TargetConfig }
@@ -333,6 +338,8 @@ export interface RepairOrigin {
   runId: string
   /** The parent's last candidate commit: this run's base. */
   candidateCommit: string
+  /** How the parent ended; absent on a run set up before it was kept. */
+  parentConclusion?: RepairParentConclusion
 }
 
 export interface VerificationResult {

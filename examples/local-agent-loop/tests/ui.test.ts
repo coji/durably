@@ -3178,10 +3178,10 @@ describe('repair runs on the page', { timeout: 120000 }, () => {
         `/api/runs/${child.id}`,
       )
       assert.equal(childDetail.report.lineage.parent?.runId, parent.id)
-      assert.equal(
-        childDetail.report.inputs.findings?.path,
-        join(home, 'findings.md'),
-      )
+      assert.deepEqual(childDetail.report.inputs.findings, {
+        path: join(home, 'findings.md'),
+        sha256: childDetail.report.inputs.findings?.sha256,
+      })
     } finally {
       ui.child.kill('SIGTERM')
     }
