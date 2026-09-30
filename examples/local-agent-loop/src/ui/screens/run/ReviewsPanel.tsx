@@ -108,6 +108,7 @@ export function ReviewsPanel({ report: r }: { report: LoopReport }) {
         <ol className="flex flex-col gap-6">
           {rounds.map((round) => {
             const sealed = round.candidate ? sealedAs(round.candidate.id) : null
+            const ended = reviewStatus(round.status)
             return (
               <li key={round.sequence} className="flex flex-col gap-2">
                 <h3 className="flex flex-wrap items-baseline gap-2 text-sm font-semibold">
@@ -122,10 +123,8 @@ export function ReviewsPanel({ report: r }: { report: LoopReport }) {
                   ) : null}
                   <ReviewStatusTag status={round.status} />
                 </h3>
-                {reviewStatus(round.status) ? (
-                  <p className="text-fg-2 text-xs">
-                    {reviewStatus(round.status)?.reason}
-                  </p>
+                {ended ? (
+                  <p className="text-fg-2 text-xs">{ended.reason}</p>
                 ) : null}
                 <ReviewVerdicts reviews={round.reviews} />
               </li>

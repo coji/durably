@@ -222,16 +222,22 @@ export interface ReportReviewFindings {
  * Markdown lines for a review's findings: each severity's total and the
  * titles kept, never a body, file or line.
  */
+/**
+ * ` — <status> (<reason>)` for a review or round that did not count, and
+ * nothing for one that did (ADR-0029).
+ */
+function statusAside(r: { status?: ReviewStatus; reason?: string | null }) {
+  return r.status && r.status !== 'completed'
+    ? ` — ${r.status}${r.reason ? ` (${r.reason})` : ''}`
+    : ''
+}
+
 /** Each review as its verdict line and its findings, at `indent`. */
 function reviewLines(reviews: ReportReview[], indent: string): string[] {
-  const aside = (r: ReportReview) =>
-    r.status && r.status !== 'completed'
-      ? ` — ${r.status}${r.reason ? ` (${r.reason})` : ''}`
-      : ''
   return reviews.flatMap((review) => [
     review.status === 'cancelled'
-      ? `${indent}- ${review.lens}: no verdict${aside(review)}`
-      : `${indent}- ${review.lens}: ${review.decision} — ${review.notes}${aside(review)}`,
+      ? `${indent}- ${review.lens}: no verdict${statusAside(review)}`
+      : `${indent}- ${review.lens}: ${review.decision} — ${review.notes}${statusAside(review)}`,
     ...findingLines(review.findings, `${indent}  `),
   ])
 }
@@ -1526,10 +1532,8 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('')
   if (r.reviewRounds.length > 0) {
     for (const round of r.reviewRounds) {
-      const ended =
-        round.status && round.status !== 'completed'
-          ? ` — ${round.status}${round.reason ? ` (${round.reason})` : ''}, not counted`
-          : ''
+      const aside = statusAside(round)
+      const ended = aside ? `${aside}, not counted` : ''
       lines.push(
         `- round ${round.round}: ${round.candidate?.id ?? 'candidate unknown'}${ended}`,
         ...reviewLines(round.reviews, '  '),

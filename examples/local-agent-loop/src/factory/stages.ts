@@ -71,7 +71,7 @@ import {
   specWaitName,
   usesReviewMaterials,
   type BaselineIdentity,
-  type CancelledReviewStepResult,
+  type ParallelReviewStepResult,
   type FactoryOutcome,
   type FactorySetup,
   type ReviewFinding,
@@ -337,7 +337,7 @@ export const reviewStage: StageHandler = async ({
  * already answered is kept on record but not used. The stage ends once
  * every branch has.
  */
-export const verifyReviewStage: StageHandler = async (args) => {
+const verifyReviewStage: StageHandler = async (args) => {
   const { step, state, key, services } = args
   const target = services.target
   const candidate = requireCandidate(state)
@@ -386,10 +386,10 @@ export const verifyReviewStage: StageHandler = async (args) => {
   }
   await target.assertIntact(candidate)
   const verification = results[acceptance] as VerificationOutcome
-  const reviews = [results[correctness], results[edgeCases]] as (
-    | ReviewStepResult
-    | CancelledReviewStepResult
-  )[]
+  const reviews = [
+    results[correctness],
+    results[edgeCases],
+  ] as ParallelReviewStepResult[]
   const verdicts = reviews.flatMap((r) =>
     'status' in r
       ? []
@@ -511,12 +511,7 @@ async function reviewRoundOf(args: {
     signal: AbortSignal,
     attempt: StepAttemptContext,
     superseded?: AbortSignal,
-  ): Promise<ReviewStepResult | CancelledReviewStepResult> => {
-    const cancelled: CancelledReviewStepResult = {
-      lens,
-      status: 'cancelled',
-      reason: REVIEW_CANCEL_REASON,
-    }
+  ): Promise<ParallelReviewStepResult> => {
     // Each reviewer has its own profile and provider, and always starts a
     // new session: two branches never share one.
     const profile = setup.profiles[lens]
@@ -617,7 +612,8 @@ async function reviewRoundOf(args: {
         ? { supersede: { signal: superseded, reason: REVIEW_CANCEL_REASON } }
         : {}),
     })
-    if (result.cancelled) return cancelled
+    if (result.cancelled)
+      return { lens, status: 'cancelled', reason: REVIEW_CANCEL_REASON }
     // The findings are kept with the verdict in this completed step, so a
     // report reads them back without calling the reviewer or reading the
     // checkpoint again. The review event drops them before the state.
