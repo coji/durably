@@ -121,24 +121,28 @@ export interface CodePromptArgs {
   fromFindings?: RepairParentConclusion | null
 }
 
+/** The opening of an unapproved parent's REPAIR_BASE. */
+const UNAPPROVED_REPAIR_BASE =
+  'The last candidate of an earlier factory run of this task is already committed in the working directory. It was never approved:'
+
 /** What the base of a repair run is, by how its parent ended. */
 const REPAIR_BASE: Record<RepairParentConclusion, string> = {
   approved:
     'An approved implementation of this task is already committed in the working directory.',
-  'verification-failed':
-    'The last candidate of an earlier factory run of this task is already committed in the working directory. It was never approved: that run stopped because the pinned check still failed on it after its last repair.',
-  'review-cap-reached':
-    'The last candidate of an earlier factory run of this task is already committed in the working directory. It was never approved: the pinned check passed on it, but that run stopped because reviewers still found blocking issues after its review cap.',
+  'verification-failed': `${UNAPPROVED_REPAIR_BASE} that run stopped because the pinned check still failed on it after its last repair.`,
+  'review-cap-reached': `${UNAPPROVED_REPAIR_BASE} the pinned check passed on it, but that run stopped because reviewers still found blocking issues after its review cap.`,
 }
+
+/** How a reviewer judges a repair whose base was never approved. */
+const UNAPPROVED_REVIEW_JUDGEMENT =
+  "No reviewer has passed it, so judge the candidate as a whole, base and repair together, against the task and the spec, and whether this repair addresses the findings. The changed paths listed for you are the repair's alone, so read the rest of the candidate too, in the candidate tree the CANDIDATE FILES section names, or in your working directory when it names none."
 
 /** What a repair run's reviewer judges, by how its parent ended. */
 const REVIEW_REPAIR_BASE: Record<RepairParentConclusion, string> = {
   approved:
     'The base is an implementation already approved for the task: judge whether this repair addresses the findings without regressing what the approved candidate already does, not whether the diff implements the whole task.',
-  'verification-failed':
-    "The base is the last candidate of an earlier run of this task that was never approved: the pinned check still failed on it. No reviewer has passed it, so judge the candidate as a whole, base and repair together, against the task and the spec, and whether this repair addresses the findings. The changed paths listed for you are the repair's alone, so read the rest of the candidate too, in the candidate tree the CANDIDATE FILES section names, or in your working directory when it names none.",
-  'review-cap-reached':
-    "The base is the last candidate of an earlier run of this task that was never approved: the pinned check passed on it, but reviewers still found blocking issues after the review cap. No reviewer has passed it, so judge the candidate as a whole, base and repair together, against the task and the spec, and whether this repair addresses the findings. The changed paths listed for you are the repair's alone, so read the rest of the candidate too, in the candidate tree the CANDIDATE FILES section names, or in your working directory when it names none.",
+  'verification-failed': `The base is the last candidate of an earlier run of this task that was never approved: the pinned check still failed on it. ${UNAPPROVED_REVIEW_JUDGEMENT}`,
+  'review-cap-reached': `The base is the last candidate of an earlier run of this task that was never approved: the pinned check passed on it, but reviewers still found blocking issues after the review cap. ${UNAPPROVED_REVIEW_JUDGEMENT}`,
 }
 
 export function codePrompt(args: CodePromptArgs): string {
