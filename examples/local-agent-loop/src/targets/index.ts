@@ -56,7 +56,7 @@ export interface PrepareRepoArgs {
   /** Fixed at trigger; applied to every iteration and the squash commit. */
   commit: CommitSettings
   /** A repair run's parent and findings; `baseRef` is then its candidate. */
-  repairOf?: { runId: string; findings: string } | null
+  repairOf?: RepoTargetConfig['repairOf']
   /**
    * Runs after an earlier attempt's worktree and branch are discarded and
    * right before the new ones are created; throwing stops setup there.

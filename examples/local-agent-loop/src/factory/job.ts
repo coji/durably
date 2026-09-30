@@ -452,19 +452,32 @@ export function fixReviewInvocation(
 }
 
 /**
- * A run that repairs another run's approved candidate from outside findings.
+ * A run that repairs another run's last candidate from outside findings: an
+ * approved, delivered one, or one that stopped failing the check (ADR-0030).
  * Built by `demo repair` from the parent's stored input and setup; the
  * worker never resolves these profiles again.
  */
 const repairOfSchema = z
   .object({
     runId: z.string().min(1),
-    /** The parent's last candidate commit, which is also its delivery. */
+    /**
+     * The parent's last candidate commit; for an approved parent, also its
+     * delivery.
+     */
     candidateCommit: z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/),
     candidateBranch: z.string().min(1),
+    /** Absent on a run stored before it was kept: an approved parent. */
+    parentConclusion: z.enum(['approved', 'verification-failed']).optional(),
     /** Stored once at trigger; its SHA-256 is taken from this content. */
     findings: nonBlank,
-    findingsFile: inputFileSchema,
+    /**
+     * The findings file, or the parent run when the findings were built
+     * from its stored check failure.
+     */
+    findingsFile: z.union([
+      inputFileSchema,
+      z.object({ parentRun: z.string().min(1) }),
+    ]),
     /** The effective profiles the parent recorded at setup. */
     profiles: z
       .object({
@@ -707,6 +720,20 @@ const inputSchema = z
       message:
         'a repair run needs a repository target based on the parent candidate commit, and fixed timeouts',
       path: ['repairOf'],
+    },
+  )
+  // Findings built from the parent's check failure name that parent, and
+  // only a parent that stopped on the check has one.
+  .refine(
+    (input) =>
+      !input.repairOf ||
+      !('parentRun' in input.repairOf.findingsFile) ||
+      (input.repairOf.findingsFile.parentRun === input.repairOf.runId &&
+        input.repairOf.parentConclusion === 'verification-failed'),
+    {
+      message:
+        "findings built from a run's check failure must name the parent run, which stopped verification-failed",
+      path: ['repairOf', 'findingsFile'],
     },
   )
 
@@ -1355,7 +1382,12 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   publish: input.target.publish,
                   commit: input.target.commit ?? DEFAULT_COMMIT_SETTINGS,
                   repairOf: repairOf
-                    ? { runId: repairOf.runId, findings: repairOf.findings }
+                    ? {
+                        runId: repairOf.runId,
+                        findings: repairOf.findings,
+                        parentConclusion:
+                          repairOf.parentConclusion ?? 'approved',
+                      }
                     : null,
                   // The parent's candidate is checked again here, not only
                   // by `demo repair`: its branch can move after that check,
@@ -1502,6 +1534,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   repairOf: {
                     runId: repairOf.runId,
                     candidateCommit: repairOf.candidateCommit,
+                    parentConclusion: repairOf.parentConclusion ?? 'approved',
                   },
                 }
               : {}),

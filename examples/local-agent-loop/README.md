@@ -1490,15 +1490,24 @@ factoryの外で指摘が見つかったときは、`demo repair` でそのrun�
 起動します。終わったrunを再開するのではなく、候補のcommitを引き継ぐ新しいrunとして
 記録するので、修正の時間、費用、回数もfactoryで測れます。
 
+修正の回数を使い切ってもチェックが通らずに止まったrun（`verification-failed`）も、
+同じ `demo repair` で最後の候補から続けられます。`retrigger` と違って実装を
+最初からやり直さず、修正の回数を新しくして最後の候補を直します。
+
 ```bash
 pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
-  --findings-file findings.md [--dispositions-file dispositions.md]
+  [--findings-file findings.md] [--dispositions-file dispositions.md]
 ```
 
-- 親にできるのは、`completed` で結論が `approved`、納品が記録され、最後の候補と
-  納品のcommitが一致するrepository runだけです。拒否、上限到達、失敗、取り消し、
-  承認待ちのrunは、候補が残っていても親にできません。子runが同じ条件を満たせば、
+- 親にできるのは、`completed` のrepository runのうち次の2種類です。
+  - 結論が `approved` で、納品が記録され、最後の候補と納品のcommitが一致するrun。
+  - 結論が `verification-failed` で、最後の候補のcommitとブランチが記録された
+    run。納品は要りません。
+
+  拒否、レビューの上限到達（`review-cap-reached`）、失敗、取り消し、承認待ちの
+  runは、候補が残っていても親にできません。子runが同じ条件を満たせば、
   さらにその子を作れます。
+
 - 起動前に、親の候補commitが対象リポジトリにあり、記録された候補ブランチの先端が
   そのcommitのままであることを確かめます。ブランチが動いていれば何も作りません。
   子runのsetupも、worktreeとブランチを候補commitから作る直前（CLIの確認のあと、
@@ -1517,13 +1526,23 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   無い古い親だけ保存済みの入力から補います。子の子も同じです。
   いまの `factory.json` と環境変数は読みません。`--reload-config` は受け付けません。
   設定を変えたいときは、通常の `trigger` から始めます。
-- 指摘ファイルは必須です。処分ファイルは任意で、指定すると親の処分を置き換え、
+- 親が `approved` なら指摘ファイルは必須です。親が `verification-failed` なら
+  任意で、渡せばそのファイルを使います。渡さなければ、親が保存した記録から
+  指摘を作ります。中身は、最後の候補で失敗したチェックの出力の末尾（stdout と
+  stderr）、終了コード、親が使った採点コマンドです。ログファイルは読まず、
+  前の候補の結果で代用もしません。最後の候補の失敗結果が保存されていなければ、
+  指摘ファイルを求めて止まります。
+- 処分ファイルは任意で、指定すると親の処分を置き換え、
   省略すると親の処分を引き継ぎます。どちらも `--task-file` と同じ検査（256 KiB
   まで、UTF-8、空白だけは不可）を通し、内容と読み込んだパスを子runに保存します。
   指摘は修正担当と両レビュアーに、task、specと同じ信頼しない入力として渡します。
-  処分はこれまでどおり両レビュアーにだけ渡します。レビュアーには、承認済みの候補に
-  対する修正だけの差分を見て、指摘に応えているか、承認済みの候補を壊していないかを
-  判断するよう伝えます。
+  記録から作った指摘も同じです。
+  処分はこれまでどおり両レビュアーにだけ渡します。親が `approved` なら、
+  レビュアーには、承認済みの候補に対する修正だけの差分を見て、指摘に応えているか、
+  承認済みの候補を壊していないかを判断するよう伝えます。親が `verification-failed`
+  なら、修正担当とレビュアーに、基点の候補はチェックが通らず承認されていないことを
+  伝え、レビュアーには基点と修正を合わせた候補全体をtaskとspecに照らして判断する
+  よう伝えます。
 - 子runの基点は親の最後の候補commitです。親の元のbaseや、起動時点の `HEAD` は
   使いません。反復のブランチはissueの有無にかかわらず `factory/<子の runId>`、
   squashedブランチは `factory/<子の runId>-squashed` で、差分、patch、squashed
@@ -1537,7 +1556,8 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
 - 親から引き継いだ `--max-iterations` は子run自身の修正回数だけを数え、親が使った回数は差し引き
   ません。最初の修正も修正回数と使用量に入ります。
 - 同じ親、同じ指摘の内容、同じ処分の内容で起動すると、パスが違っても同じ子runを
-  返し、runもブランチも増やしません。処分の内容が変われば別の子runです。
+  返し、runもブランチも増やしません。記録から作った指摘は親の記録だけで決まるので、
+  繰り返しても同じ子runです。指摘か処分の内容が変われば別の子runです。
 - `--publish` のDraft PRは通常のrunと同じく既定ブランチ向けです。親がまだ
   mergeされていなければ、PRには親の変更も含まれます。
 - 子runは起動するどの経路（`demo repair`、`demo retrigger`、`demo seed`）でも
@@ -1547,11 +1567,16 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   します。web UIの一覧と比較は、読み込んだ全runのlabel（無ければ入力の
   `repairOf`）から親ごとの子を一度にまとめ、runごとには問い合わせません。
 - `report` と `status --run` には親のIDと子のID一覧が、reportには指摘ファイルの
-  パスと保存内容のSHA-256も出ます。web UIでは一覧と詳細で、親と子をtaskの名前で
+  パスと保存内容のSHA-256も出ます。記録から作った指摘は、パスの代わりに作った元の
+  親runを示します（JSONでは `parentRun`）。web UIでは一覧と詳細で、親と子をtaskの名前で
   リンクします。`compare` は通常のrunと子runを別のグループに分け、親の時間、費用、
   工程を子の値に足しません。子run同士は `configVersion` ごとにまとめます。
 - 判断の理由は [ADR-0022](../../docs/adr/0022-local-agent-loop-external-repair-runs.md)
+  と、`verification-failed` の親を加えた
+  [ADR-0030](../../docs/adr/0030-local-agent-loop-verification-failed-repair.md)
   にあります。
+- `verification-failed` で止まったrepository runの次の一手には、`retrigger` と
+  並べて `demo repair --run <id>` を出します。
 
 ### durably checkoutを固定して呼ぶ
 

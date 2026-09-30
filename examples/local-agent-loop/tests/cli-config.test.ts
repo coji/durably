@@ -28,6 +28,7 @@ import {
 } from '../src/durably.js'
 import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
+import { classifyFailure } from '../src/engine/failure-reasons.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
 import { BASELINE_INDEX_PRUNE_AGE_MS } from '../src/factory/baseline-reuse.js'
 import {
@@ -45,6 +46,7 @@ import type { FactorySetup } from '../src/factory/types.js'
 import { createTarget } from '../src/targets/index.js'
 import {
   buildRepairInput,
+  checkFailureFindings,
   reloadTriggerInput,
   repairableCandidate,
   resolveProfiles,
@@ -1929,7 +1931,8 @@ describe('repair', { timeout: 240000 }, () => {
       assert.match(res.stderr, message)
       assert.equal(existsSync(dbPath(box.stateRoot)), false)
     }
-    await refused([], /--findings-file <path> required/)
+    // Whether findings are required depends on how the parent ended, so a
+    // missing file is refused only once the parent is read (see below).
     await refused(['--findings-file', 'gone.md'], /gone\.md: cannot read file/)
     await refused(['--findings-file', 'empty.md'], /empty\.md: file is empty/)
     await refused(['--findings-file', 'bad.md'], /bad\.md: not UTF-8 text/)
@@ -1961,7 +1964,7 @@ describe('repair', { timeout: 240000 }, () => {
       )
   })
 
-  it('refuses every parent that is not an approved, delivered repository run', () => {
+  it('refuses every parent that is not an approved, delivered or verification-failed repository run', () => {
     const commit = 'c'.repeat(40)
     const setup = {
       target: { kind: 'repo' },
@@ -1979,6 +1982,33 @@ describe('repair', { timeout: 240000 }, () => {
       },
     }
     assert.equal(repairableCandidate(good, setup).commit, commit)
+    assert.equal(repairableCandidate(good, setup).conclusion, 'approved')
+    // A run that stopped on the check needs its candidate, not a delivery.
+    const stopped = {
+      ...good,
+      output: {
+        ...good.output,
+        approved: false,
+        conclusion: 'verification-failed',
+        delivery: null as never,
+      },
+    }
+    assert.equal(repairableCandidate(stopped, setup).commit, commit)
+    assert.equal(
+      repairableCandidate(stopped, setup).conclusion,
+      'verification-failed',
+    )
+    assert.throws(
+      () =>
+        repairableCandidate(
+          {
+            ...stopped,
+            output: { ...stopped.output, candidate: null as never },
+          },
+          setup,
+        ),
+      /no candidate commit/,
+    )
     const cases: [string, Partial<typeof good>, RegExp][] = [
       ['pending', { status: 'pending' }, /it is pending, not completed/],
       ['leased', { status: 'leased' }, /it is leased, not completed/],
@@ -1991,11 +2021,8 @@ describe('repair', { timeout: 240000 }, () => {
         /not a repository run/,
       ],
     ]
-    for (const conclusion of [
-      'rejected',
-      'verification-failed',
-      'review-cap-reached',
-    ])
+    // Refused even with a candidate: review-cap-reached stays out (ADR-0030).
+    for (const conclusion of ['rejected', 'review-cap-reached'])
       cases.push([
         conclusion,
         {
@@ -2006,7 +2033,21 @@ describe('repair', { timeout: 240000 }, () => {
             delivery: null as never,
           },
         },
-        new RegExp(`its conclusion is ${conclusion}, not approved`),
+        new RegExp(
+          `its conclusion is ${conclusion}, not approved or verification-failed`,
+        ),
+      ])
+    for (const status of [
+      'pending',
+      'leased',
+      'waiting',
+      'failed',
+      'cancelled',
+    ])
+      cases.push([
+        `verification-failed but ${status}`,
+        { ...stopped, status },
+        new RegExp(`it is ${status}, not completed`),
       ])
     cases.push(
       [
@@ -2032,6 +2073,154 @@ describe('repair', { timeout: 240000 }, () => {
         name,
       )
     assert.throws(() => repairableCandidate(good, null), /setup record/)
+  })
+
+  it('names repair beside retrigger for a verification-failed repository run only', () => {
+    const next = (repo: boolean | undefined) =>
+      classifyFailure({
+        runId: 'r1',
+        status: 'completed',
+        output: { conclusion: 'verification-failed' },
+        error: null,
+        uncertain: [],
+        ...(repo === undefined ? {} : { repo }),
+      })?.next ?? []
+    const repair = (lines: string[]) =>
+      lines.filter((l) => l.includes(' repair --run r1 '))
+    assert.equal(repair(next(true)).length, 1)
+    assert.match(repair(next(true))[0] ?? '', /--findings-file is given$/)
+    assert.ok(next(true).some((l) => l.includes(' retrigger --run r1 ')))
+    assert.deepEqual(repair(next(false)), [])
+    // A review-cap-reached run is not offered a repair.
+    const capped = classifyFailure({
+      runId: 'r1',
+      status: 'completed',
+      output: { conclusion: 'review-cap-reached' },
+      error: null,
+      uncertain: [],
+      repo: true,
+    })
+    assert.deepEqual(repair(capped?.next ?? []), [])
+  })
+
+  it("builds findings from the last candidate's failed check only, the same every time", () => {
+    const commit = 'c'.repeat(40)
+    const parent = {
+      id: 'p',
+      status: 'completed',
+      input: { target: { kind: 'repo' } },
+      output: {
+        approved: false,
+        conclusion: 'verification-failed',
+        candidate: { id: 'cand-2', commit, branch: 'factory/p' },
+        delivery: null,
+      },
+    }
+    const step = (name: string, output: unknown, status = 'completed') => ({
+      name,
+      status,
+      output,
+    })
+    const failed = (stdout: string, exitCode: number | null = 1) => ({
+      passed: false,
+      stdout,
+      exitCode,
+      log: { stdoutPath: '/gone/stdout.log', stderrPath: '/gone/stderr.log' },
+    })
+    const first = [
+      step('setup', {}),
+      step('stage:1:code:candidate', { id: 'cand-1', commit: 'a'.repeat(40) }),
+      step('stage:2:verify:acceptance', failed('EARLIER FAILURE\n')),
+      step('stage:3:code:candidate', { id: 'cand-2', commit }),
+    ]
+    const check = ['node', '--test', 'test/**/*.test.js']
+    // Sequential: the check of the last candidate is the next verify step.
+    const sequential = [
+      ...first,
+      step(
+        'stage:4:verify:acceptance',
+        failed('not ok 1 - adds ``` decimals\n'),
+      ),
+    ]
+    const built = checkFailureFindings(parent, sequential, check)
+    assert.deepEqual(built.ref, { parentRun: 'p' })
+    assert.match(built.content, /^# Check failure of factory run p$/m)
+    assert.match(built.content, new RegExp(`commit ${commit}`))
+    assert.ok(
+      built.content.includes(`- check command: ${JSON.stringify(check)}`),
+    )
+    assert.match(built.content, /^- exit code: 1$/m)
+    assert.ok(built.content.includes('not ok 1 - adds ``` decimals'))
+    // A fence longer than any backtick run in the output.
+    assert.match(built.content, /^````$/m)
+    assert.doesNotMatch(built.content, /EARLIER FAILURE|\/gone\//)
+    assert.deepEqual(checkFailureFindings(parent, sequential, check), built)
+    // Parallel verification and review (ADR-0029) name the check the same
+    // way, beside review steps of the same sequence.
+    const parallel = [
+      ...first,
+      step('stage:4:review:correctness', {
+        lens: 'correctness',
+        status: 'cancelled',
+      }),
+      step(
+        'stage:4:verify:acceptance',
+        failed('not ok 1 - adds ``` decimals\n'),
+      ),
+    ]
+    assert.equal(
+      checkFailureFindings(parent, parallel, check).content,
+      built.content,
+    )
+    const refused = (steps: typeof first, message: RegExp, name: string) =>
+      assert.throws(
+        () => checkFailureFindings(parent, steps, check),
+        (error: Error) =>
+          message.test(error.message) &&
+          /--findings-file <path> instead/.test(error.message),
+        name,
+      )
+    // Missing: an earlier candidate's failure is never used instead.
+    refused(
+      first,
+      /no failed check output is stored for its last candidate/,
+      'missing',
+    )
+    refused(
+      [...first, step('stage:4:verify:acceptance', failed('x'), 'failed')],
+      /no failed check output/,
+      'not completed',
+    )
+    refused(
+      [...first, step('stage:4:verify:acceptance', failed('  \n'))],
+      /no failed check output/,
+      'blank output',
+    )
+    refused(
+      [
+        ...first,
+        step('stage:4:verify:acceptance', {
+          passed: true,
+          stdout: 'ok',
+          exitCode: 0,
+        }),
+      ],
+      /no failed check output/,
+      'passed',
+    )
+    refused(
+      [
+        ...first,
+        step('stage:4:verify:acceptance', { passed: false, exitCode: 1 }),
+      ],
+      /no failed check output/,
+      'no output',
+    )
+    refused(
+      first.slice(0, 3),
+      /its last candidate has no stored sealing step/,
+      'candidate not sealed',
+    )
   })
 
   it('inherits a null or false the parent setup recorded, and falls back only when the setup lacks the value', () => {
@@ -2187,6 +2376,13 @@ describe('repair', { timeout: 240000 }, () => {
         branch: string
       }
     }
+    // An approved parent needs findings from outside.
+    const bare = await demo(box, ['repair', '--run', parentId], env)
+    assert.notEqual(bare.code, 0)
+    assert.match(
+      bare.stderr,
+      /it was approved, so --findings-file <path> is required/,
+    )
     const first = await repair(['--findings-file', 'a/findings.md'])
     assert.equal(first.disposition, 'created')
     assert.equal(first.parentRunId, parentId)
@@ -2282,6 +2478,98 @@ describe('repair', { timeout: 240000 }, () => {
         child as unknown as Parameters<typeof reloadTriggerInput>[0],
       ),
       /does not apply to a repair run/,
+    )
+  })
+
+  it('repairs a verification-failed parent from its stored check failure, or from a file given instead', async () => {
+    const box = await sandbox({ check: CHECK })
+    // The fake leaves the bug in its one iteration: the check fails.
+    delete process.env.FAKE_FAIL_FIRST
+    const parentId = await trigger(box, [
+      '--repo',
+      box.repo,
+      '--task',
+      'the parent task',
+      '--max-iterations',
+      '1',
+    ])
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    await durably.init()
+    let stored: { stdout: string; exitCode: number | null }
+    try {
+      await until(
+        async () => (await durably.getRun(parentId))?.status === 'completed',
+        'the parent stops',
+      )
+      const output = (await durably.getRun(parentId))?.output as {
+        conclusion: string
+      }
+      assert.equal(output.conclusion, 'verification-failed')
+      const step = (await durably.storage.getSteps(parentId)).find((s) =>
+        /^stage:\d+:verify:acceptance$/.test(s.name),
+      )
+      stored = step?.output as typeof stored
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+    await writeFile(join(box.root, 'findings.md'), 'FINDING: by hand\n')
+    await writeFile(join(box.root, 'disp.md'), 'CHILD DISPOSITIONS\n')
+    const repair = async (args: string[]) => {
+      const res = await demo(box, ['repair', '--run', parentId, ...args])
+      assert.equal(res.code, 0, res.stderr)
+      return JSON.parse(res.stdout) as {
+        runId: string
+        disposition: string
+        parentRunId: string
+      }
+    }
+    const derived = await repair([])
+    assert.equal(derived.disposition, 'created')
+    assert.equal(derived.parentRunId, parentId)
+    // The same parent and dispositions return the same child.
+    const again = await repair([])
+    assert.equal(again.runId, derived.runId)
+    assert.equal(again.disposition, 'idempotent')
+    const withDisp = await repair(['--dispositions-file', 'disp.md'])
+    assert.notEqual(withDisp.runId, derived.runId)
+    // A file given for such a parent takes precedence.
+    const fromFile = await repair(['--findings-file', 'findings.md'])
+    assert.notEqual(fromFile.runId, derived.runId)
+
+    type ChildInput = RunInput & {
+      maxIterations: number
+      repairOf: {
+        runId: string
+        parentConclusion: string
+        findings: string
+        findingsFile: { path?: string; parentRun?: string }
+      }
+    }
+    const child = (await inputOf(box, derived.runId)) as ChildInput
+    assert.equal(child.repairOf.parentConclusion, 'verification-failed')
+    assert.deepEqual(child.repairOf.findingsFile, { parentRun: parentId })
+    assert.ok(child.repairOf.findings.includes(stored.stdout.trimEnd()))
+    assert.match(child.repairOf.findings, /^- exit code: 1$/m)
+    assert.ok(
+      child.repairOf.findings.includes(
+        `- check command: ${JSON.stringify(CHECK)}`,
+      ),
+    )
+    assert.equal(stored.exitCode, 1)
+    assert.equal(child.maxIterations, 1)
+    const byHand = (await inputOf(box, fromFile.runId)) as ChildInput
+    assert.equal(byHand.repairOf.findings, 'FINDING: by hand\n')
+    assert.ok(byHand.repairOf.findingsFile.path?.endsWith('findings.md'))
+    assert.equal(byHand.repairOf.parentConclusion, 'verification-failed')
+
+    // status --run links the children to the parent by repair lineage.
+    const parentStatus = await demo(box, ['status', '--run', parentId])
+    assert.deepEqual(
+      (
+        JSON.parse(parentStatus.stdout) as { lineage: { children: string[] } }
+      ).lineage.children.sort(),
+      [derived.runId, withDisp.runId, fromFile.runId].sort(),
     )
   })
 })

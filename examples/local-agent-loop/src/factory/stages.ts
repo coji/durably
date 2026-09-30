@@ -149,7 +149,10 @@ export const codeStage: StageHandler = async ({
   // A repair run's first repair addresses the outside findings. It starts a
   // session of its own: at iteration 0 this run has no session to continue,
   // and the parent's is never carried over.
-  const fromFindings = Boolean(state.setup.repairOf) && state.iteration === 0
+  const fromFindings =
+    state.setup.repairOf && state.iteration === 0
+      ? (state.setup.repairOf.parentConclusion ?? 'approved')
+      : null
   // Only the code role's own provider, profile, cwd and instructions decide
   // whether its session may continue; the reviewers' profiles never do.
   const recorded = reuse && !fromFindings ? state.implementationSession : null
@@ -539,7 +542,7 @@ async function reviewRoundOf(args: {
       target.reviewRules(lens),
       target.untrustedInputs(lens),
       changes,
-      Boolean(setup.repairOf),
+      setup.repairOf ? (setup.repairOf.parentConclusion ?? 'approved') : null,
       {
         output,
         // A prompt review in the sealed tree is shown that tree alone.

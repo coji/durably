@@ -115,10 +115,21 @@ export interface RepoTargetConfig {
   commit?: CommitSettings
   /**
    * A repair run's parent and the findings it repairs from. `baseCommit` is
-   * then the parent's approved candidate. Absent on every other run.
+   * then the parent's last candidate. Absent on every other run.
    */
-  repairOf?: { runId: string; findings: string } | null
+  repairOf?: {
+    runId: string
+    findings: string
+    /** How the parent ended; absent on a run stored before it was kept. */
+    parentConclusion?: RepairParentConclusion
+  } | null
 }
+
+/**
+ * How a repair run's parent ended: approved and delivered, or stopped with
+ * its last candidate failing the check (ADR-0030).
+ */
+export type RepairParentConclusion = 'approved' | 'verification-failed'
 
 export type TargetConfig = SubjectTargetConfig | RepoTargetConfig
 
@@ -126,6 +137,12 @@ export type TargetConfig = SubjectTargetConfig | RepoTargetConfig
 export interface InputFileRef {
   path: string
 }
+
+/**
+ * Where a repair run's findings came from: a file, or the parent run's own
+ * stored check failure when no file was given (ADR-0030).
+ */
+export type FindingsRef = InputFileRef | { parentRun: string }
 
 /**
  * Text that came from whoever started the run rather than from the factory.

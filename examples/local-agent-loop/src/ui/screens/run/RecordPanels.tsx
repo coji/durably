@@ -123,7 +123,17 @@ export function RecordPanels({ report: r }: { report: LoopReport }) {
             const file = r.inputs[name]
             return (
               <Field key={name} label={INPUT_NAME[name]}>
-                {file ? `${file.sha256}  ${file.path}` : RECORD.notGiven}
+                {!file ? (
+                  RECORD.notGiven
+                ) : 'path' in file ? (
+                  `${file.sha256}  ${file.path}`
+                ) : (
+                  <span className="inline-flex flex-wrap items-baseline gap-x-2">
+                    <span>{file.sha256}</span>
+                    <span className="font-ui">{RECORD.findingsFromParent}</span>
+                    <IdSuffix id={file.parentRun} />
+                  </span>
+                )}
               </Field>
             )
           })}

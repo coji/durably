@@ -446,6 +446,25 @@ describe('repair runs from outside findings', () => {
     }
     assert.match(reportToMarkdown(parent), /- parent: none\n- children: a, b/)
   })
+
+  it('names the parent run as the source of findings built from its check failure', () => {
+    const findings = { parentRun: 'parent', sha256: 'e'.repeat(64) }
+    const r = {
+      ...run('child', 'parent', 1),
+      inputs: { task: null, spec: null, dispositions: null, findings },
+    }
+    assert.match(
+      reportToMarkdown(r),
+      new RegExp(
+        `- findings: ${'e'.repeat(64)} \\(built from the check failure of run parent\\)`,
+      ),
+    )
+    assert.deepEqual(
+      (JSON.parse(reportToJson(r)) as { inputs: { findings: unknown } }).inputs
+        .findings,
+      findings,
+    )
+  })
 })
 
 describe('trend by task, week and code profile', () => {

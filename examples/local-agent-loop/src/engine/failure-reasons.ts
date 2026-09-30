@@ -155,7 +155,7 @@ interface FailureEntry {
   retryable: boolean
   /** What a person has to look at before doing anything else. */
   humanCheck: string
-  next: (runId: string, reload: ReloadAdvice) => string[]
+  next: (runId: string, reload: ReloadAdvice, repo: boolean) => string[]
 }
 
 const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
@@ -224,8 +224,14 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
     retryable: true,
     humanCheck:
       'read the full check output in the log files named below and decide whether the task, the check or --max-iterations has to change',
-    next: (runId) => [
+    next: (runId, _reload, repo) => [
       `${DEMO} report --run ${runId} --format json  # the check output is in the verification attempt`,
+      // Only a repository run has a candidate a repair run can start from.
+      ...(repo
+        ? [
+            `${DEMO} repair --run ${runId}  # go on from the last candidate with a new repair budget; the findings are built from the check failure unless --findings-file is given`,
+          ]
+        : []),
       retrigger(runId),
     ],
   },
@@ -449,6 +455,8 @@ export interface ClassifyInput {
   publish?: boolean
   /** From `reloadAdvice`; a repository run with no flags when omitted. */
   reload?: ReloadAdvice
+  /** Whether it is a repository run; true when omitted. */
+  repo?: boolean
 }
 
 /**
@@ -536,7 +544,7 @@ export function classifyFailure(
               : SETUP_UNTRACKED_CHECK,
         }
       : {}),
-    next: entry.next(input.runId, reload),
+    next: entry.next(input.runId, reload, input.repo ?? true),
     details,
     reload,
     setupUntracked: setupPaths !== null,
@@ -591,5 +599,8 @@ export async function classifyRun(
       (run.input as { target?: { publish?: unknown } } | null)?.target
         ?.publish === true,
     reload: reloadAdvice(run.input),
+    repo:
+      (run.input as { target?: { kind?: unknown } } | null)?.target?.kind ===
+      'repo',
   })
 }

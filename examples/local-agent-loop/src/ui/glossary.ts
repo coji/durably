@@ -402,6 +402,10 @@ export const COMMAND_NOTES: [string, string][] = [
     'the check output is in the verification attempt',
     '検証コマンドの出力は、検証の試行に入っています。',
   ],
+  [
+    'go on from the last candidate with a new repair budget; the findings are built from the check failure unless --findings-file is given',
+    '最後の候補から、修正の回数を新しくして続けます。--findings-file を渡さなければ、失敗したチェックの出力を指摘として渡します。',
+  ],
   ['the reviewer notes', 'レビューのメモを読めます。'],
   [
     'read the spec reviews first',
@@ -451,6 +455,7 @@ export const COMMAND_COPY = {
   worker: 'ワーカー起動コマンドをコピー',
   retriggerReload: '設定を読み直す再実行コマンドをコピー',
   retrigger: '再実行コマンドをコピー',
+  repair: '最後の候補から修正するコマンドをコピー',
   waits: '待ち一覧コマンドをコピー',
   specRevise: '仕様の修正コマンドをコピー',
   archive: 'アーカイブのコマンドをコピー',
@@ -755,7 +760,10 @@ export const RECORD = {
   summary: '概要',
   squashedBranch: '1コミットにまとめたブランチ',
   inputs: '入力ファイル',
-  inputsNote: '値は保存した内容の SHA-256 とファイルの場所です。',
+  inputsNote:
+    '値は保存した内容の SHA-256 と、読んだファイルの場所か作った元の実行です。',
+  /** Findings built from the parent's stored check failure, not a file. */
+  findingsFromParent: '修正元の実行で失敗したチェックの出力から作成',
   notGiven: '指定なし',
   notes: '注記',
 } as const

@@ -42,6 +42,7 @@ import {
   type ReportCandidateChanges,
   type ReportDelivery,
   type ReportFinding,
+  type ReportFindings,
   type ReportInputs,
   type ReportLineage,
   type ReportPreflight,
@@ -87,7 +88,7 @@ interface PersistedInput {
     runId?: string
     candidateCommit?: string
     findings?: string
-    findingsFile?: { path?: string }
+    findingsFile?: { path?: string; parentRun?: string }
   }
   spec?: {
     author?: PersistedProfile
@@ -853,11 +854,25 @@ function inputHashes(input: PersistedInput | null): ReportInputs {
     task: entry('task'),
     spec: entry('spec'),
     dispositions: entry('dispositions'),
-    findings: hashed(
-      input?.repairOf?.findingsFile?.path,
-      input?.repairOf?.findings,
-    ),
+    findings: findingsHash(input),
   }
+}
+
+/**
+ * A repair run's findings: the file they were read from, or the parent run
+ * whose stored check failure they were built from (ADR-0030), with the
+ * SHA-256 of the content the run stored.
+ */
+function findingsHash(input: PersistedInput | null): ReportFindings | null {
+  const origin = input?.repairOf
+  if (typeof origin?.findings !== 'string') return null
+  const sha256 = createHash('sha256').update(origin.findings).digest('hex')
+  const ref = origin.findingsFile
+  return ref?.path
+    ? { path: ref.path, sha256 }
+    : ref?.parentRun
+      ? { parentRun: ref.parentRun, sha256 }
+      : null
 }
 
 /** The run a repair run repairs, from its stored input. */
