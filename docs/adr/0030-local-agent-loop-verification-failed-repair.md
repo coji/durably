@@ -19,7 +19,7 @@ This amends ADR-0022's decision "Which runs may be a parent". Everything else in
 - **Stored like a findings file.** The built text is stored in the child input as the findings, with a reference that names the parent run (`{ parentRun }`) instead of a path. It is hashed into the idempotency key and into the report like a file's content, so the same parent, findings and dispositions return the same child. The text depends on the stored record alone, so repeating the command returns the same child. Existing file references and stored repair runs keep their path.
 - **Prompts say how the parent ended.** The child input, its setup record and the target's repair context carry the parent's conclusion; a run stored before it was kept counts as an approved parent. For a verification-failed parent, the repairer and both reviewers are told that the base is the last candidate of a run that stopped on the check and was never approved. The reviewers judge the candidate as a whole, base and repair together, against the task and the spec, since no review ever passed the base. The findings stay in the fenced, untrusted `FINDINGS` block for all three.
 - **No baseline check for this parent.** The child's base is the candidate the pinned check failed on, so a baseline check would always stop it as `baseline-check-failed` before the repair, and that failure is already its findings. A child of a verification-failed parent therefore skips the baseline, and the setup's untracked-file check and baseline identity that exist only for it. It still records the inherited `baselineCheck` and `baselineReuse`, so its own children inherit them, and its report shows no baseline.
-- **Reviewers see the repair's changed paths.** The factory lists only the changes from the parent's candidate. Reviewers of a verification-failed child are told that the list is the repair alone and to read the rest of the candidate in their working directory, which holds the whole tree. The parent's original base is not passed.
+- **Reviewers see the repair's changed paths.** The factory lists only the changes from the parent's candidate. Reviewers of a verification-failed child are told that the list is the repair alone and to read the rest of the candidate in the candidate tree the CANDIDATE FILES section names, or in their working directory when it names none; either holds the whole tree. The parent's original base is not passed.
 - **The same child in every other way.** Settings are inherited and frozen, the base is the candidate commit, the first code stage is a `repair` at iteration 1 with no triage and no implementation, the inherited `maxIterations` counts the child's own repairs only, and the labels, `repairOf` lineage, status and web UI links are those of any repair run.
 - **Suggested next step.** A verification-failed repository run names `demo repair --run <id>` beside `retrigger`. The bundled sample, which has no candidate branch, does not.
 
@@ -27,12 +27,12 @@ This amends ADR-0022's decision "Which runs may be a parent". Everything else in
 
 - A run that nearly finished can continue from its candidate with a new repair budget, without a person writing findings and without paying for implementation again.
 - A child of a verification-failed parent starts from a candidate no reviewer passed, so its reviews cover the whole change, not the repair alone.
-- The findings a child gets without a file are the check output only. Reviews of the parent's failed candidate are not passed on (#281).
+- The findings a child gets without a file are the check output only. Reviews that completed beside the parent's failed check are not passed to the child unless a person supplies them as a findings file. Within one run, those reviews do go to the next repair, by ADR-0029's amendment (#281); that is separate from a `demo repair` child.
 
 ## Deferred
 
-- Passing the parent's reviews of failed candidates to the child (#281).
-- A pre-check before the repair, and any cap on `maxIterations` (#282).
+- Passing a verification-failed parent's completed reviews to a `demo repair` child.
+- A pre-check before the repair, and the `maxIterations` cap (#282): decided in ADR-0031.
 - Repairing a `review-cap-reached` run.
 
 ## Rejected Alternatives
@@ -47,7 +47,7 @@ Rejected. Continuing from a stopped candidate needs exactly the repair child's m
 
 ### Allow `review-cap-reached` too
 
-Deferred, not adopted. Its candidate passed the check, and what it lacks is a reviewer's approval. Its findings are review findings that a person should weigh before a new run repairs from them, and passing reviews on is the separate question of #281.
+Deferred, not adopted. Its candidate passed the check, and what it lacks is a reviewer's approval. Its findings are review findings that a person should weigh before a new run repairs from them.
 
 ### Build the findings from the check's log files
 

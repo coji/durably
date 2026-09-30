@@ -134,6 +134,9 @@ pnpm --filter example-local-agent-loop demo approve --run <runId> --wait <waitId
 pnpm --filter example-local-agent-loop demo report --run <runId> --format md
 ```
 
+`--max-iterations` は1つのrunで実装と修正を合わせて何回までするかで、1から5まで
+指定できます。省略すると2です。
+
 Claudeでは `--provider claude` に替えるだけです。承認CLIはwait metadataから
 Candidate IDを読み、signal payloadにも同じIDを入れます。拒否は `approve` の
 代わりに `reject` を使います。
@@ -221,7 +224,7 @@ pnpm --filter example-local-agent-loop demo status --format json
   直下の `factory.json` を消した場合は、設定なしのtriggerと同じに扱います。
   `--config` で渡したファイル（パスが直下の `factory.json` でも）が無くなって
   いれば、設定なしとはみなさずエラーにします。
-  profile、`check`、`setup`、`base`、`codexPath`、timeout、`baselineCheck`、
+  profile、`check`、`selfCheck`、`setup`、`base`、`codexPath`、timeout、`baselineCheck`、
   `baselineReuse` は `trigger` と同じ規則で解決・検証し、trigger時の `--check`、`--setup`、`--base`
   は引き続き設定より優先します。そのrunでは、次の手順の注記にもそう表示します。
   これらを変えるときは `trigger` からやり直します。同梱の題材のrunと
@@ -949,6 +952,34 @@ Claudeは途中の使用量を返さないので、止めたレビューの使�
 レビューの欄と工程の時系列の詳細に「中止」「不採用」「検証待ち」と理由が出て、
 工程の時系列では検証とレビューの重なりが実際の時刻どおりに見えます。
 
+### 終える前にエージェントに確かめさせる（selfCheck）
+
+`factory.json` の `"selfCheck"` に短いコマンドを書くと、実装と修正のpromptに
+「終える前にworktreeでこれらを実行し、出た問題を直す」という規則が1つ加わります。
+未使用のexportのように、手元ですぐ見つかる問題で修正の1回を使わないためです。
+
+```json
+{
+  "check": ["pnpm", "validate"],
+  "selfCheck": [
+    ["pnpm", "lint"],
+    ["pnpm", "typecheck"]
+  ]
+}
+```
+
+- 1から5個のコマンドを書けます。各コマンドは `check` と同じくargvの配列で、
+  空の配列と空の文字列は `trigger` の時点で拒否します。
+- promptには各コマンドを1行ずつ、バッククォートで囲んで載せます。あわせて、
+  採点コマンドも同じ問題を見つけることと、runの合否を決めるのは採点コマンド
+  だけであることを伝えます。
+- factoryはこれらのコマンドを実行しません。工程も、やり直しも、反復の数え方も
+  増えません。合否は今までどおり `check` だけで決めます。
+- 書かなければpromptは今までと同じです。値は `trigger` の時点でrun inputに
+  保存します。`retrigger` は保存した値を引き継ぎ、`--reload-config` はファイルを
+  読み直し、`demo repair` の修正runは元のrunの値を引き継ぎます。promptが変わる
+  ので、書いたときは `configVersion` に入ります。
+
 ### 設定の事前確認（preflight）
 
 baselineの後、triageを含む最初のエージェント呼び出しの前に、全役割
@@ -997,7 +1028,7 @@ baselineの後、triageを含む最初のエージェント呼び出しの前に
 保存します。実際に使うmodelとeffortは、workerがそのrequested設定からproviderの
 presetで解決します。workerは元のファイルを読み直さないので、trigger後にファイルを
 書き換えても、そのrunの設定とpromptは変わりません。timeout、`codexPath`、
-`baselineCheck`、`baselineReuse`、`parallelReview`、`commit` も同じく解決済みの値をrun inputに保存します。reportには各入力ファイルの
+`baselineCheck`、`baselineReuse`、`parallelReview`、`selfCheck`、`commit` も同じく解決済みの値をrun inputに保存します。reportには各入力ファイルの
 pathと、保存した本文から計算したSHA-256が出ます。設定を直した後に同じtaskで
 やり直すには、`demo retrigger --run <id> --reload-config` を使います（上の
 「止まったrunと次の手順を見る」を参照）。
@@ -1525,7 +1556,7 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   だけです。`--max-iterations`、`--publish`、`--check`、`--config` など、ほかの
   フラグは黙って無視せずエラーにします。
 - 子runは、親が保存したtask、spec、issue、profile（triageも含む解決済みの値）、
-  check、setup、timeout、`codexPath`、commitとpublishの設定、`--max-iterations` を
+  check、`selfCheck`、setup、timeout、`codexPath`、commitとpublishの設定、`--max-iterations` を
   引き継ぎます。親のsetupが記録した値は `null` でもそのまま使い、setupに項目が
   無い古い親だけ保存済みの入力から補います。子の子も同じです。
   いまの `factory.json` と環境変数は読みません。`--reload-config` は受け付けません。
@@ -1535,7 +1566,8 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   指摘を作ります。中身は、最後の候補で失敗したチェックの出力の末尾（stdout と
   stderr）、終了コード、親が使った採点コマンドです。ログファイルは読まず、
   前の候補の結果で代用もしません。最後の候補の失敗結果が保存されていなければ、
-  指摘ファイルを求めて止まります。
+  指摘ファイルを求めて止まります。親のrunの中で検証に落ちた候補へのレビューは、
+  子runには渡しません。渡したいときは指摘ファイルに書いて渡します。
 - 処分ファイルは任意で、指定すると親の処分を置き換え、
   省略すると親の処分を引き継ぎます。どちらも `--task-file` と同じ検査（256 KiB
   まで、UTF-8、空白だけは不可）を通し、内容と読み込んだパスを子runに保存します。
@@ -1547,7 +1579,8 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   なら、修正担当とレビュアーに、基点の候補はチェックが通らず承認されていないことを
   伝え、レビュアーには基点と修正を合わせた候補全体をtaskとspecに照らして判断する
   よう伝えます。レビュアーに渡す変更ファイルの一覧は修正の分だけなので、基点の
-  変更は作業ディレクトリのファイルを読んで確かめるよう伝えます。
+  変更は、CANDIDATE FILES の節が示す候補の木を読んで確かめるよう伝えます。
+  節が木を示していなければ、作業ディレクトリを読みます。
 - 子runの基点は親の最後の候補commitです。親の元のbaseや、起動時点の `HEAD` は
   使いません。反復のブランチはissueの有無にかかわらず `factory/<子の runId>`、
   squashedブランチは `factory/<子の runId>-squashed` で、差分、patch、squashed
@@ -1754,8 +1787,8 @@ LLM呼び出しはすべて `src/engine/runner.ts` を通り、attempt metadata�
 - usageの単位（このサンプルは一provider invocation）と取得元
 - elapsed、result、error、interruption reason、API換算参考価格とmeter別内訳
 - `configVersion`（三役割それぞれのprovider、model、effort、context、指示版、
-  反復上限、対象、timeoutのhash。triage profileと、`code` と違うrepair profileが
-  あればそれも含む。effortだけ違う修正でsessionを継続すると事前確認で確定した
+  反復上限、対象、timeoutのhash。triage profileと、`code` と違うrepair profileと、
+  `selfCheck` のコマンドがあればそれも含む。effortだけ違う修正でsessionを継続すると事前確認で確定した
   runは、その方針も含む。事前確認の最小呼び出しには確定前の版が入る）
 
 providerが返すusageは、一回の呼び出しの**全モデル応答の合計**でなければいけません。

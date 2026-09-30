@@ -392,6 +392,7 @@ Commands (run from examples/local-agent-loop):
   pnpm demo worker                          start worker (long-running; kill -9 to test resume)
                                             one per state root: a second one is refused
   pnpm demo trigger --provider codex|claude|fake [--context reuse|fresh] [--max-iterations 2] [--model X] [--effort Y]
+      --max-iterations: implementation and repair stages per run, 1 to 5 (default 2)
       bundled sample (default): no further flags
       real repository:  --repo <path> (--issue 234 | --task "..." | --task-file <file>)
                         [--spec-file <file>] [--dispositions-file <file>] [--config <file>]
@@ -454,6 +455,7 @@ Repository config: factory.json at the repository root, or --config <file>:
   { "check": ["pnpm", "validate"], "setup": ["pnpm", "install"], "base": "main",
     "baselineCheck": false, "baselineReuse": { "maxAgeMs": 3600000 },
     "parallelReview": false, "codexPath": "<file>",
+    "selfCheck": [["pnpm", "lint"], ["pnpm", "typecheck"]],
     "checkTimeoutMs": 900000, "agentTimeoutMs": 1800000,
     "commit": { "authorName": "...", "authorEmail": "...",
                 "messageTemplate": "...", "publishSquashed": false },
@@ -488,8 +490,10 @@ Repository config: factory.json at the repository root, or --config <file>:
   before). Reviewers then read the candidate's sealed tree and diff, never
   the worktree the check runs in. A check that fails ends the reviews still
   running (cancelled, superseded-by-verify) and sets aside the ones that
-  answered (discarded, verify-failed); neither is used for a repair or an
-  approval, nor counted toward the review cap. A round whose check has no
+  answered (discarded, verify-failed); neither is used for an approval, nor
+  counted toward the review cap. The next repair in the same run gets the
+  check failure first, then the answered reviews of that round as untrusted
+  findings; a cancelled review hands it nothing. A round whose check has no
   result yet, or ended with an error, is pending (verify-pending) and not
   counted either. Only a candidate that passes both is approved. The
   report, compare and compare --trend show what the reviews of failed
@@ -508,6 +512,9 @@ Repository config: factory.json at the repository root, or --config <file>:
   within checkTimeoutMs, and must print {"check": ["..."], "notes"?: "..."};
   that check then replaces "check" and --check for the baseline and every
   verification. A failure stops the run as spec-check-failed.
+  "selfCheck" lists 1 to 5 quick commands (argv, like "check") that the
+  code and repair prompts tell the agent to run in its worktree before
+  finishing. The factory never runs them; only "check" grades the run.
   "codexPath" names the Codex CLI to launch, relative to the config file;
   without it, codex on PATH first, then the bundled CLI.
   "commit" sets the author (name and email) of every factory commit and a

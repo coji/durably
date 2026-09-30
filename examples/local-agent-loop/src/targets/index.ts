@@ -51,6 +51,8 @@ export interface PrepareRepoArgs {
   /** Fixed at trigger; see `RepoTargetConfig.checkFromSpec`. */
   checkFromSpec?: string[] | null
   setupCommand: string[] | null
+  /** Fixed at trigger; see `RepoTargetConfig.selfCheck`. */
+  selfCheck?: string[][] | null
   checkTimeoutMs: number
   publish: boolean
   /** Fixed at trigger; applied to every iteration and the squash commit. */
@@ -110,6 +112,7 @@ export async function prepareRepoTarget(
     branch: args.branch,
     workdir,
     setupCommand: args.setupCommand,
+    selfCheck: args.selfCheck ?? null,
     checkCommand: args.checkCommand,
     ...(args.checkFromSpec ? { checkFromSpec: args.checkFromSpec } : {}),
     checkTimeoutMs: args.checkTimeoutMs,

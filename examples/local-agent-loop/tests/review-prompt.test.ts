@@ -512,6 +512,116 @@ describe('the reviews of a candidate that failed its check', () => {
     assert.equal(repair([]), repair())
     assert.equal(blockBody(repair(), FAILED_CANDIDATE_REVIEWS_LABEL), null)
     assert.doesNotMatch(repair(), /Fix the check failure above first/)
+    // Byte for byte the ending the prompt had before these reviews existed:
+    // no newline after the feedback, and one after the reply line alone.
+    assert.ok(
+      repair().endsWith(
+        'Reply with a short summary of files changed.\n\nVerified feedback to address:\n- acceptance: CHECK-FAILURE add(0.1, 0.2) returned 0',
+      ),
+    )
+    const implement = codePrompt({
+      role: 'implement',
+      iteration: 1,
+      repairNotes: [],
+      task: 'Fix add().',
+      rules: [],
+      failedCheckReviews: [],
+    })
+    assert.ok(
+      implement.endsWith('Reply with a short summary of files changed.\n'),
+    )
+  })
+
+  it('are not called the end of the prompt by a new session, since they follow the feedback', () => {
+    const prompt = codePrompt({
+      role: 'repair',
+      iteration: 2,
+      repairNotes: ['acceptance: CHECK-FAILURE'],
+      task: 'Fix add().',
+      rules: [],
+      failedCheckReviews: reviews,
+      newSession: true,
+    })
+    const opening = prompt.slice(0, prompt.indexOf('TASK:'))
+    assert.match(opening, /the verified feedback below is addressed/)
+    assert.doesNotMatch(opening, /at the end/)
+    assert.ok(
+      prompt.indexOf('Verified feedback to address:') <
+        prompt.indexOf(`<<<UNTRUSTED ${FAILED_CANDIDATE_REVIEWS_LABEL} `),
+    )
+  })
+})
+
+describe('selfCheck in the implementation and repair prompts', () => {
+  const selfCheck = [
+    ['pnpm', 'lint'],
+    ['pnpm', 'exec', 'tsc', '--noEmit'],
+  ]
+  const prompts = (target: Target) =>
+    [
+      codePrompt({
+        role: 'implement',
+        iteration: 1,
+        repairNotes: [],
+        task: target.taskBrief(),
+        rules: target.implementationRules(),
+      }),
+      codePrompt({
+        role: 'repair',
+        iteration: 2,
+        repairNotes: ['acceptance: failed'],
+        task: target.taskBrief(),
+        rules: target.implementationRules(),
+      }),
+      codePrompt({
+        role: 'repair',
+        iteration: 2,
+        repairNotes: ['acceptance: failed'],
+        task: target.taskBrief(),
+        rules: target.implementationRules(),
+        newSession: true,
+      }),
+      codePrompt({
+        role: 'repair',
+        iteration: 1,
+        repairNotes: [],
+        task: target.taskBrief(),
+        rules: target.implementationRules(),
+        fromFindings: 'verification-failed',
+      }),
+    ] as const
+
+  it('adds one rule listing every command in backticks, one per line', () => {
+    const target = new RepoTarget({ ...repoConfig, selfCheck })
+    const rules = target.implementationRules()
+    assert.equal(
+      rules.length,
+      new RepoTarget(repoConfig).implementationRules().length + 1,
+    )
+    for (const prompt of prompts(target)) {
+      assert.match(
+        prompt,
+        /- Before you finish, run each of these commands in this worktree and fix what they report:\n {2}`pnpm lint`\n {2}`pnpm exec tsc --noEmit`\nThey are quick checks that the grading command also covers\. Only the grading command judges this run\./,
+      )
+      // Grading is still the pinned check alone.
+      assert.match(prompt, /Grading runs `pnpm validate`/)
+    }
+  })
+
+  it('adds nothing when the run has none', () => {
+    const plain = new RepoTarget(repoConfig)
+    for (const config of [{}, { selfCheck: null }]) {
+      const target = new RepoTarget({ ...repoConfig, ...config })
+      assert.deepEqual(
+        target.implementationRules(),
+        plain.implementationRules(),
+      )
+      for (const prompt of prompts(target)) {
+        assert.doesNotMatch(prompt, /Before you finish/)
+        assert.doesNotMatch(prompt, /quick checks/)
+        assert.doesNotMatch(prompt, /pnpm lint/)
+      }
+    }
   })
 })
 

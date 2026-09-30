@@ -194,6 +194,12 @@ export interface ConfigVersionInput {
     messageTemplate: string | null
   } | null
   /**
+   * The repository run's `selfCheck` commands, which the code and repair
+   * prompts list. Left out when absent or empty, so such a run keeps its
+   * version.
+   */
+  selfCheck?: string[][] | null
+  /**
    * The fixed command, context and output of each reviewer that named any
    * of them. A lens that named none is left out, and so is the whole field
    * when none did, so such a run keeps its version.
@@ -245,7 +251,8 @@ function canonicalProfile(p: ConfigVersionProfile): ConfigVersionProfile {
  * continues the implementation session across an effort change), the context
  * mode, iteration budget, instruction set, triage profile (when there is
  * one), the path and version of every real CLI launched, the commit
- * author and message template (when set), each configured reviewer's
+ * author and message template (when set), the self-check commands (when
+ * set), each configured reviewer's
  * command, context and output, and the spec stages with their templates
  * (when configured) are identical —
  * the unit of a fair comparison. Stored on every LLM attempt as
@@ -294,6 +301,9 @@ export function configVersionOf(input: ConfigVersionInput): string {
         }
       : {}),
     ...(commitKey ? { commit: commitKey } : {}),
+    ...(input.selfCheck && input.selfCheck.length > 0
+      ? { selfCheck: input.selfCheck }
+      : {}),
     ...(review.length > 0 ? { review: Object.fromEntries(review) } : {}),
     ...(input.spec
       ? {

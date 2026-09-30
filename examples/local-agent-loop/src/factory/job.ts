@@ -166,6 +166,16 @@ export const baselineReuseSchema = z
   .object({ maxAgeMs: baselineMaxAgeMsSchema })
   .strict()
 
+/**
+ * `selfCheck` in a target and in factory.json: one to five commands, each
+ * argv like `check`. The prompts list them; the factory never runs them
+ * (ADR-0031).
+ */
+export const selfCheckSchema = z
+  .array(z.array(z.string().min(1)).min(1))
+  .min(1)
+  .max(5)
+
 /** Where an input came from. Its hash is taken from the stored content. */
 const inputFileSchema = z.object({ path: z.string().min(1) })
 
@@ -202,6 +212,11 @@ const targetSchema = z
        */
       checkFromSpec: z.array(z.string().min(1)).min(1).nullable().optional(),
       setupCommand: z.array(z.string().min(1)).nullable().default(null),
+      /**
+       * Commands the code and repair prompts tell the agent to run before
+       * finishing (ADR-0031). Null or absent: no such rule, as before.
+       */
+      selfCheck: selfCheckSchema.nullable().optional(),
       /** Push the branch and open a draft pull request when approved. */
       publish: z.boolean().default(false),
       /**
@@ -577,7 +592,7 @@ const inputSchema = z
   .object({
     /** The code role's provider; also every role's when `profiles` is absent. */
     provider: providerSchema,
-    maxIterations: z.number().int().min(1).max(3).default(2),
+    maxIterations: z.number().int().min(1).max(5).default(2),
     model: z.string().optional(),
     effort: z.string().optional(),
     context: z.enum(['reuse', 'fresh']).default('reuse'),
@@ -1395,6 +1410,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                     : (input.target.checkCommand ?? []),
                   checkFromSpec: input.target.checkFromSpec ?? null,
                   setupCommand: input.target.setupCommand,
+                  selfCheck: input.target.selfCheck ?? null,
                   checkTimeoutMs: testTimeoutMs,
                   publish: input.target.publish,
                   commit: input.target.commit ?? DEFAULT_COMMIT_SETTINGS,
@@ -1507,6 +1523,8 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               triage,
               cli,
               commit: target.kind === 'repo' ? (target.commit ?? null) : null,
+              selfCheck:
+                target.kind === 'repo' ? (target.selfCheck ?? null) : null,
               review,
               spec,
             })
