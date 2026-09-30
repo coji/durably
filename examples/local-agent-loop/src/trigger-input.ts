@@ -1127,7 +1127,7 @@ export function reviewFindings(parent: RepairParent): {
   const content = [
     `# Review findings of factory run ${parent.id}`,
     '',
-    `The pinned check passed on the run's last candidate, commit ${output?.candidate?.commit}, but these reviewers still asked for changes after its last repair.`,
+    `The pinned check passed on the run's last candidate, commit ${output?.candidate?.commit}, but these reviewers still asked for changes when it stopped at its review cap.`,
     '',
     ...blocking.flatMap((r) => [
       `## ${r.lens ?? 'review'}`,

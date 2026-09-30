@@ -135,7 +135,7 @@ const REPAIR_BASE: Record<RepairParentConclusion, string> = {
 
 /** How a reviewer judges a repair whose base was never approved. */
 const UNAPPROVED_REVIEW_JUDGEMENT =
-  "No reviewer has passed it, so judge the candidate as a whole, base and repair together, against the task and the spec, and whether this repair addresses the findings. The changed paths listed for you are the repair's alone, so read the rest of the candidate too, in the candidate tree the CANDIDATE FILES section names, or in your working directory when it names none."
+  "It was never approved, so judge the candidate as a whole, base and repair together, against the task and the spec, and whether this repair addresses the findings. The changed paths listed for you are the repair's alone, so read the rest of the candidate too, in the candidate tree the CANDIDATE FILES section names, or in your working directory when it names none."
 
 /** What a repair run's reviewer judges, by how its parent ended. */
 const REVIEW_REPAIR_BASE: Record<RepairParentConclusion, string> = {
