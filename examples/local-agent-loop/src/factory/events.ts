@@ -51,6 +51,20 @@ export const deliverySchema = z.object({
   squashedCommit: z.string().nullable().default(null),
 })
 
+const reviewFindingSchema = z.object({
+  severity: z.enum(['blocker', 'non-blocker']),
+  title: z.string(),
+  body: z.string(),
+  file: z.string().optional(),
+  line: z.number().optional(),
+})
+
+const reviewFindingsSchema = z.object({
+  blocker: z.array(reviewFindingSchema),
+  nonBlocker: z.array(reviewFindingSchema),
+  counts: z.object({ blocker: z.number(), nonBlocker: z.number() }),
+})
+
 const reviewSchema = z.object({
   lens: z.enum(['correctness', 'edge-cases']),
   decision: z.enum(['pass', 'needsChanges']),
@@ -59,6 +73,11 @@ const reviewSchema = z.object({
   // strips them here, so the state, the approval wait's metadata and the
   // run output keep the verdicts only. The report reads the findings from
   // the review steps.
+})
+
+/** A completed review with its findings, as its step stored it. */
+const reviewStepSchema = reviewSchema.extend({
+  findings: reviewFindingsSchema.nullable(),
 })
 
 export const FactoryEventSchema = z.discriminatedUnion('type', [
@@ -84,7 +103,9 @@ export const FactoryEventSchema = z.discriminatedUnion('type', [
   }),
   // Verification and review of one candidate, run side by side. The
   // verdicts are kept only when the check passed; a failed check leaves no
-  // review for the state, whatever its reviewers said (ADR-0029).
+  // counted review, whatever its reviewers said (ADR-0029). The reviews that
+  // completed before it failed go to the next repair alone, with their
+  // findings, after the check failure.
   z.object({
     type: z.literal('verify-review.completed'),
     targetId: z.string(),
@@ -93,6 +114,8 @@ export const FactoryEventSchema = z.discriminatedUnion('type', [
     exitCode: z.number().nullable(),
     log: verificationLogSchema.nullable(),
     reviews: z.array(reviewSchema).length(2).nullable(),
+    // Optional so a round recorded before it existed still parses.
+    failedCheckReviews: z.array(reviewStepSchema).optional(),
   }),
   z.object({
     type: z.literal('approval.completed'),
@@ -128,25 +151,11 @@ const specVersionSchema = z.object({
   sha256: z.string(),
 })
 
-const specFindingSchema = z.object({
-  severity: z.enum(['blocker', 'non-blocker']),
-  title: z.string(),
-  body: z.string(),
-  file: z.string().optional(),
-  line: z.number().optional(),
-})
-
 const specReviewSchema = z.object({
   name: z.string(),
   decision: z.enum(['pass', 'needsChanges']),
   notes: z.string(),
-  findings: z
-    .object({
-      blocker: z.array(specFindingSchema),
-      nonBlocker: z.array(specFindingSchema),
-      counts: z.object({ blocker: z.number(), nonBlocker: z.number() }),
-    })
-    .nullable(),
+  findings: reviewFindingsSchema.nullable(),
 })
 
 /**

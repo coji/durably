@@ -296,8 +296,9 @@ export interface ReportReviewRound {
    * failed is `cancelled` when that ended a review still running, and
    * `discarded` when every review had answered, and `pending` while that
    * check has not completed, still running or ended by an error; none of
-   * these counts toward the review rounds, the highlights or a repair.
-   * Absent on a spec round.
+   * these counts toward the review rounds or the highlights. The reviews
+   * that answered beside a failed check go to the next repair after the
+   * check failure. Absent on a spec round.
    */
   status?: ReviewStatus
   /**

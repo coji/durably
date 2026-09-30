@@ -15,6 +15,7 @@ export function reduce(state: FactoryState, event: FactoryEvent): FactoryState {
         reviews: [],
         approval: null,
         repairNotes: [],
+        failedCheckReviews: [],
       }
     case 'verify.completed':
       if (event.targetId !== state.candidate?.id)
@@ -55,14 +56,16 @@ export function reduce(state: FactoryState, event: FactoryEvent): FactoryState {
         exitCode: event.exitCode,
         log: event.log,
       }
-      // A failed check hands its output alone to the repair: the reviews
-      // of a candidate that failed are neither kept nor counted.
+      // A failed check hands its output to the repair first. The reviews
+      // of a candidate that failed are neither kept nor counted; those that
+      // completed go to the repair apart, after the check failure.
       if (!event.passed)
         return {
           ...state,
           verification,
           reviews: [],
           repairNotes: [`acceptance: ${event.stdout.slice(-1000)}`],
+          failedCheckReviews: event.failedCheckReviews ?? [],
         }
       if (!event.reviews)
         throw new Error(

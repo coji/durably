@@ -438,6 +438,12 @@ export interface FactoryState {
    */
   repairSession: ConfirmedRepairSession | null
   repairNotes: string[]
+  /**
+   * The reviews that completed beside a check the candidate then failed
+   * (ADR-0029): handed to the next repair after the check failure, as
+   * untrusted findings. Never counted, and never part of `reviews`.
+   */
+  failedCheckReviews: ReviewStepResult[]
   approval: 'approved' | 'rejected' | null
   outcome: FactoryOutcome | null
 }
@@ -456,6 +462,7 @@ export function initialState(
     reviewRounds: 0,
     implementationSession: null,
     repairNotes: [],
+    failedCheckReviews: [],
     approval: null,
     outcome: null,
   }

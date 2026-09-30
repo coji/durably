@@ -189,6 +189,7 @@ export const codeStage: StageHandler = async ({
           role,
           iteration,
           repairNotes: state.repairNotes,
+          failedCheckReviews: state.failedCheckReviews,
           task: target.taskBrief(),
           rules: target.implementationRules(),
           untrusted: target.untrustedInputs('code'),
@@ -352,8 +353,9 @@ export const reviewStage: StageHandler = async ({
  * read the candidate's sealed tree and diff, never the worktree the check
  * runs in. A failed check ends the reviews still running: each call is
  * settled as cancelled with the usage it had reported, and a review that
- * already answered is kept on record but not used. The stage ends once
- * every branch has.
+ * already answered is kept on record but not counted: its verdict and
+ * findings go to the next repair, after the check failure. The stage ends
+ * once every branch has.
  */
 const verifyReviewStage: StageHandler = async (args) => {
   const { step, state, key, services } = args
@@ -408,11 +410,8 @@ const verifyReviewStage: StageHandler = async (args) => {
     results[correctness],
     results[edgeCases],
   ] as ParallelReviewStepResult[]
-  const verdicts = reviews.flatMap((r) =>
-    'status' in r
-      ? []
-      : [{ lens: r.lens, decision: r.decision, notes: r.notes }],
-  )
+  // A cancelled review has no verdict and hands the repair nothing.
+  const completed = reviews.flatMap((r) => ('status' in r ? [] : [r]))
   return {
     type: 'verify-review.completed',
     targetId: candidate.id,
@@ -420,7 +419,23 @@ const verifyReviewStage: StageHandler = async (args) => {
     stdout: verification.stdout,
     exitCode: verification.exitCode,
     log: verification.log ?? null,
-    reviews: verification.passed ? verdicts : null,
+    reviews: verification.passed
+      ? completed.map((r) => ({
+          lens: r.lens,
+          decision: r.decision,
+          notes: r.notes,
+        }))
+      : null,
+    ...(verification.passed
+      ? {}
+      : {
+          failedCheckReviews: completed.map((r) => ({
+            lens: r.lens,
+            decision: r.decision,
+            notes: r.notes,
+            findings: r.findings,
+          })),
+        }),
   }
 }
 

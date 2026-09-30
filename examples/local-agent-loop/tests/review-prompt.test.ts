@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
 import {
@@ -10,6 +14,7 @@ import {
   changedPathsLine,
   codePrompt,
   expandReviewCommand,
+  FAILED_CANDIDATE_REVIEWS_LABEL,
   FINDINGS_NOTES_LIMITS,
   FINDINGS_REPORT_LIMITS,
   localInstructions,
@@ -20,7 +25,10 @@ import {
   specBlockerText,
 } from '../src/factory/prompts.js'
 import type { RepoTargetConfig, Target } from '../src/factory/target.js'
-import type { SpecReviewResult } from '../src/factory/types.js'
+import type {
+  ReviewStepResult,
+  SpecReviewResult,
+} from '../src/factory/types.js'
 import { RepoTarget } from '../src/targets/repo.js'
 import { SubjectTarget } from '../src/targets/subject.js'
 
@@ -345,10 +353,165 @@ describe('a repair run from outside findings', () => {
     }
   })
 
+  it('points both reviewers of a verification-failed repair at the candidate tree, not their working directory', async () => {
+    const changes = {
+      diffPath: '/state/runs/r1/candidates/c1/changes.diff',
+      changedFilesPath: '/state/runs/r1/candidates/c1/changed-files.txt',
+      files: 1,
+      additions: 1,
+      deletions: 0,
+    }
+    const trees = { baseDir: '/snap/base', headDir: '/snap/head' }
+    // A command-mode reviewer beside the check: its working directory holds
+    // only review configuration, and the candidate is the sealed tree.
+    const prompt = reviewPrompt(
+      'correctness',
+      'TRUSTED CONTEXT',
+      ['rule'],
+      [],
+      changes,
+      'verification-failed',
+      { snapshots: trees },
+    )
+    assert.match(
+      prompt,
+      /read the rest of the candidate too, in the candidate tree the CANDIDATE FILES section names/,
+    )
+    assert.doesNotMatch(prompt, /candidate in the working directory/)
+    assert.ok(prompt.includes(`- Candidate commit tree: ${trees.headDir}`))
+
+    const root = await mkdtemp(join(tmpdir(), 'review-context-'))
+    try {
+      const git = (...args: string[]) =>
+        execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim()
+      git('init', '--initial-branch=main')
+      git('config', 'user.email', 'test@localhost')
+      git('config', 'user.name', 'test')
+      await writeFile(join(root, 'a.txt'), 'a\n')
+      git('add', '-A')
+      git('commit', '-m', 'base')
+      const base = git('rev-parse', 'HEAD')
+      await writeFile(join(root, 'b.txt'), 'b\n')
+      git('add', '-A')
+      git('commit', '-m', 'repair')
+      const target = new RepoTarget({
+        ...repoConfig,
+        repoPath: root,
+        workdir: root,
+        baseCommit: base,
+        repairOf: {
+          runId: 'parent-run',
+          findings: 'FINDINGS',
+          parentConclusion: 'verification-failed',
+        },
+      })
+      const context = await target.reviewContext({
+        id: 'candidate-1',
+        snapshotDir: root,
+        sourceHash: 'h',
+        acceptanceHash: 'h',
+      })
+      assert.match(
+        context,
+        /the base's own changes are not listed: read them in the candidate tree the CANDIDATE FILES section names/,
+      )
+      assert.doesNotMatch(context, /read from the working directory/)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('sends no findings block on a run that is not a repair run', async () => {
     const { code, correctness } = await promptsFor(withInputs)
     assert.equal(blockBody(code, 'FINDINGS'), null)
     assert.equal(blockBody(correctness, 'FINDINGS'), null)
+  })
+})
+
+describe('the reviews of a candidate that failed its check', () => {
+  const finding = (severity: 'blocker' | 'non-blocker', title: string) => ({
+    severity,
+    title,
+    body: `${title} body`,
+    file: 'src/a.ts',
+    line: 3,
+  })
+  const reviews: ReviewStepResult[] = [
+    {
+      lens: 'correctness',
+      decision: 'needsChanges',
+      notes: 'VERDICT-NOTES: rounding is wrong',
+      findings: null,
+    },
+    {
+      lens: 'edge-cases',
+      decision: 'needsChanges',
+      notes: 'ignored when findings are listed',
+      findings: {
+        blocker: [finding('blocker', 'BLOCKER-TITLE')],
+        nonBlocker: [finding('non-blocker', 'ADVICE-TITLE')],
+        counts: { blocker: 3, nonBlocker: 1 },
+      },
+    },
+  ]
+  const repair = (failedCheckReviews?: ReviewStepResult[]) =>
+    codePrompt({
+      role: 'repair',
+      iteration: 2,
+      repairNotes: ['acceptance: CHECK-FAILURE add(0.1, 0.2) returned 0'],
+      task: 'Fix add().',
+      rules: ['Keep the change minimal.'],
+      ...(failedCheckReviews ? { failedCheckReviews } : {}),
+    })
+
+  it('come after the check failure, fenced as untrusted findings of the failed candidate', () => {
+    const prompt = repair(reviews)
+    const failure = prompt.indexOf('CHECK-FAILURE')
+    const fixFirst = prompt.indexOf('Fix the check failure above first.')
+    const block = prompt.indexOf(
+      `<<<UNTRUSTED ${FAILED_CANDIDATE_REVIEWS_LABEL} `,
+    )
+    assert.ok(failure >= 0 && failure < fixFirst && fixFirst < block)
+    assert.match(
+      prompt,
+      /untrusted FAILED_CANDIDATE_REVIEWS block below holds the reviews of the candidate that failed its check/,
+    )
+    assert.match(prompt, /may be moot once the check failure is fixed/)
+    const body = blockBody(prompt, FAILED_CANDIDATE_REVIEWS_LABEL) ?? ''
+    assert.ok(
+      body.startsWith(
+        'correctness: needsChanges\nVERDICT-NOTES: rounding is wrong',
+      ),
+    )
+    assert.match(
+      body,
+      /edge-cases: needsChanges\nBlockers:\n- \[src\/a\.ts:3\] BLOCKER-TITLE — BLOCKER-TITLE body\n- \(2 more blockers not listed\)\nNon-blockers:\n- \[src\/a\.ts:3\] ADVICE-TITLE — ADVICE-TITLE body$/,
+    )
+    assert.doesNotMatch(body, /ignored when findings are listed/)
+  })
+
+  it('keep a finding line bounded like the repair notes', () => {
+    const long = 'x'.repeat(5000)
+    const [review] = reviews.slice(1)
+    if (!review?.findings) throw new Error('findings expected')
+    const prompt = repair([
+      {
+        ...review,
+        findings: {
+          ...review.findings,
+          blocker: [{ ...finding('blocker', 'LONG'), body: long }],
+        },
+      },
+    ])
+    const body = blockBody(prompt, FAILED_CANDIDATE_REVIEWS_LABEL) ?? ''
+    for (const line of body.split('\n'))
+      assert.ok(line.length <= FINDINGS_NOTES_LIMITS.perFinding, line)
+  })
+
+  it('leave the prompt as it was when there are none', () => {
+    assert.equal(repair([]), repair())
+    assert.equal(blockBody(repair(), FAILED_CANDIDATE_REVIEWS_LABEL), null)
+    assert.doesNotMatch(repair(), /Fix the check failure above first/)
   })
 })
 
