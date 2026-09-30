@@ -21,7 +21,7 @@ import {
 import type { AgentLoopDurably } from './durably.js'
 import { classifyRun } from './engine/failure-reasons.js'
 import { branchCommit, deleteBranch } from './engine/git.js'
-import { archivable, diagnose } from './engine/status.js'
+import { archivable, deliveredRun, diagnose } from './engine/status.js'
 import { TERMINAL_STATUSES } from './engine/terminal.js'
 import {
   archiveDirOf,
@@ -143,10 +143,6 @@ async function repoRunFiles(durably: AgentLoopDurably, run: Run) {
   const runRoot = runRootOf(durably.stateRoot, run.id)
   const own = removableRunPathsOf(runRoot)
   if (resolve(target.workdir) !== resolve(own.worktree)) return null
-  const output = run.output as {
-    conclusion?: string
-    delivery?: unknown
-  } | null
   return {
     repoPath: target.repoPath,
     runRoot,
@@ -156,10 +152,7 @@ async function repoRunFiles(durably: AgentLoopDurably, run: Run) {
       ...(target.branch ? [target.branch] : []),
       squashedBranchFor(run.id),
     ],
-    delivered:
-      run.status === 'completed' &&
-      output?.conclusion === 'approved' &&
-      output.delivery != null,
+    delivered: deliveredRun(run),
   }
 }
 
@@ -283,7 +276,7 @@ export function archivedRunIds(stateRoot: string): Set<string> {
   }
 }
 
-/** Bytes of every file under `dir`, links counted as links, not followed. */
+/** Bytes of `path` and every file under it; links are counted, not followed. */
 async function sizeOf(path: string): Promise<number> {
   let info
   try {

@@ -291,14 +291,29 @@ export function worktreeStateOf(
   output: unknown,
 ): WorktreeState | null {
   if (setupTarget?.kind !== 'repo' || !setupTarget.workdir) return null
-  const present = existsSync(setupTarget.workdir)
   const warning = (output as { worktreeCleanupWarning?: unknown } | null)
     ?.worktreeCleanupWarning
-  return {
+  return currentWorktree({
     path: setupTarget.workdir,
-    present,
-    cleanupWarning: present && typeof warning === 'string' ? warning : null,
-  }
+    present: true,
+    cleanupWarning: typeof warning === 'string' ? warning : null,
+  })
+}
+
+/**
+ * Whether a run was approved and its delivery recorded: the runs whose
+ * worktree is removed after the delivery (ADR-0028).
+ */
+export function deliveredRun(run: Run): boolean {
+  const output = run.output as {
+    conclusion?: string
+    delivery?: unknown
+  } | null
+  return (
+    run.status === 'completed' &&
+    output?.conclusion === 'approved' &&
+    output.delivery != null
+  )
 }
 
 /** `state` as it is now: whether its path is still there is read again. */
@@ -421,23 +436,11 @@ export async function diagnoseRun(
     // finished has no record to trust. One the run should already have
     // removed, after its delivery or when it was archived, goes the way
     // `demo prune --apply` removes it: forced, and its registration pruned.
-    const output = run.output as {
-      conclusion?: string
-      delivery?: unknown
-    } | null
-    const delivered =
-      run.status === 'completed' &&
-      output?.conclusion === 'approved' &&
-      output.delivery != null
     const cleanup =
-      terminal &&
-      target?.kind === 'repo' &&
-      target.repoPath &&
-      target.workdir &&
-      existsSync(target.workdir)
-        ? delivered || archived
+      terminal && target?.repoPath && worktree?.present
+        ? deliveredRun(run) || archived
           ? PRUNE_APPLY
-          : `git -C ${shellQuote(target.repoPath)} worktree remove ${shellQuote(target.workdir)}`
+          : `git -C ${shellQuote(target.repoPath)} worktree remove ${shellQuote(worktree.path)}`
         : null
     const show = `${DEMO} status --run ${run.id}`
     const startCmd = `${DEMO} worker`
