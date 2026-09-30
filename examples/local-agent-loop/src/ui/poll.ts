@@ -1,3 +1,5 @@
+import type { LogChunk } from './server'
+
 /**
  * Run `load` now and again every `intervalMs`, never two at once: the next
  * call is scheduled only after the previous one settles, so a slow response
@@ -52,13 +54,6 @@ export function pollJson<T>(
   }, intervalMs)
 }
 
-/** One read of a log endpoint: `LogChunk` in `server.ts`. */
-export interface LogPart {
-  chunk: string
-  nextOffset: number
-  done: boolean
-}
-
 /** The status a log endpoint answers when the recorded file is gone. */
 const LOG_MISSING = 410
 
@@ -72,7 +67,7 @@ export function followLogParts(
   url: string,
   intervalMs: number,
   on: {
-    part: (part: LogPart) => void
+    part: (part: LogChunk) => void
     missing: () => void
     error: () => void
   },
@@ -89,7 +84,7 @@ export function followLogParts(
           on.missing()
           return stop()
         }
-        const body = (await res.json()) as LogPart & { error?: string }
+        const body = (await res.json()) as LogChunk & { error?: string }
         if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
         offset = body.nextOffset
         on.part(body)

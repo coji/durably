@@ -1,9 +1,9 @@
-import type { LogView } from '../../components/trace/AttemptLog'
 /**
  * Two runs' timelines for the design page: one still implementing, one
  * waiting on a person. Between them every row state appears once. Then an
  * agent log as it is written, once it has ended, and once its file is gone.
  */
+import type { LogView } from '../../components/trace/AttemptLog'
 import { COMMON, DESIGN, TRACE_WORDS } from '../../glossary'
 import { lensName, stageName } from '../../labels'
 import type { Trace, TraceNode } from '../../server'

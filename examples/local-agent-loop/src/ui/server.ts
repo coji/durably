@@ -1483,7 +1483,7 @@ type Action = (typeof ACTIONS)[number]
 /**
  * A write's path: `/api/runs/<id>/<action>`; null for any other path. The
  * ID stays encoded, so telling a write from a read never throws; it is
- * decoded with `runIdOf` once the request has passed its checks.
+ * decoded with `idOf` once the request has passed its checks.
  */
 export function actionPath(
   pathname: string,
@@ -1493,12 +1493,12 @@ export function actionPath(
   return match?.[1] && action ? { rawId: match[1], action } : null
 }
 
-/** A run ID from its path segment; a malformed escape is the request's fault. */
-function runIdOf(raw: string): string {
+/** An ID from its path segment; a malformed escape is the request's fault. */
+function idOf(raw: string): string {
   try {
     return decodeURIComponent(raw)
   } catch {
-    throw new HttpError(400, 'malformed run id in the path')
+    throw new HttpError(400, 'malformed id in the path')
   }
 }
 
@@ -1762,10 +1762,10 @@ function createUiApi() {
     if (pathname === '/api/compare') return compare()
     if (pathname === '/api/trend') return trend()
     const match = /^\/api\/runs\/([^/]+)$/.exec(pathname)
-    if (match?.[1]) return run(runIdOf(match[1]))
+    if (match?.[1]) return run(idOf(match[1]))
     const logs = /^\/api\/runs\/([^/]+)\/logs\/([^/]+)$/.exec(pathname)
     if (logs?.[1] && logs[2])
-      return log(runIdOf(logs[1]), runIdOf(logs[2]), url.searchParams)
+      return log(idOf(logs[1]), idOf(logs[2]), url.searchParams)
     throw new HttpError(404, `no such endpoint: ${pathname}`)
   }
 
@@ -1865,7 +1865,7 @@ export async function startUiServer(
       if (!sameToken(req.headers[TOKEN_HEADER], token))
         return sendJson(res, 403, { error: 'missing or wrong page token' })
       const body = await readJson(req)
-      const runId = runIdOf(write.rawId)
+      const runId = idOf(write.rawId)
       sendJson(res, 200, await api.act(runId, write.action, body))
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500

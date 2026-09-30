@@ -85,10 +85,6 @@ export const PIPELINES = {
   autoApproved: autoApproved(),
 }
 
-/**
- * Tasks that took more than one run, which show their total on the line: one
- * still stopped at the top of the list, one approved.
- */
 /** The task list's rows: one per state that asks for attention, and a finished one. */
 export const TASK_ROWS = [
   {
@@ -118,6 +114,10 @@ export const TASK_ROWS = [
   },
 ]
 
+/**
+ * Tasks that took more than one run, which show their total on the line: one
+ * still stopped at the top of the list, one approved.
+ */
 export const MULTI_RUN = [
   {
     task: TASKS[1],

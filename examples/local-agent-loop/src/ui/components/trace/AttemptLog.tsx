@@ -72,13 +72,6 @@ export function followLog(
   })
 }
 
-/** `followLog` for a component, which is keyed by its URL. */
-function useAttemptLog(url: string): LogView {
-  const [view, setView] = useState<LogView>(EMPTY)
-  useEffect(() => followLog(url, setView), [url])
-  return view
-}
-
 /** Where a log is read from: the run and the attempt that recorded it. */
 export interface LogSource {
   runId: string
@@ -161,8 +154,11 @@ export function LogBody({ view }: { view: LogView }) {
   )
 }
 
+/** `followLog` for a component, which is keyed by its URL. */
 function FollowedLog({ url }: { url: string }) {
-  return <LogBody view={useAttemptLog(url)} />
+  const [view, setView] = useState<LogView>(EMPTY)
+  useEffect(() => followLog(url, setView), [url])
+  return <LogBody view={view} />
 }
 
 /** A log read live from the server; another URL starts a fresh read. */
