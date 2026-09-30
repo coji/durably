@@ -375,6 +375,12 @@ export const REVIEW_CANCEL_REASON = 'superseded-by-verify' as const
 export const REVIEW_DISCARD_REASON = 'verify-failed' as const
 
 /**
+ * Why a review with a verdict is not used yet: its candidate's check has
+ * not completed, still running or ended with an error.
+ */
+export const REVIEW_PENDING_REASON = 'verify-pending' as const
+
+/**
  * What a review step running beside verification stores when the check
  * failed first: no verdict, and the call settled as cancelled.
  */

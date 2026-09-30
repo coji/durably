@@ -10,6 +10,7 @@ import {
   REPAIR_SESSION_STEP,
   REVIEW_CANCEL_REASON,
   REVIEW_DISCARD_REASON,
+  REVIEW_PENDING_REASON,
   SPEC_CHECK_STEP,
   REVIEW_LENSES,
   SPEC_FINAL_STEP,
@@ -53,6 +54,7 @@ import {
   type ReportSealedCandidate,
   type ReportSpec,
   type ReportTriage,
+  type ReviewStatus,
   type RoleProfileRow,
   type TriageCalibration,
   type UsageTotals,
@@ -387,21 +389,29 @@ function sealedCandidates(steps: StoredStep[]): ReportSealedCandidate[] {
  * Every review round, from the stored review step outputs. Each round is
  * paired with the last candidate sealed before it, which is the candidate
  * the review stage checked.
+ *
+ * With `parallelReview` (ADR-0029), a round shares its sequence with the
+ * check of the same candidate, and counts only once that check completed
+ * and passed. A failed check makes it `cancelled` or `discarded`; with no
+ * completed check yet, still running or ended by an error, it is
+ * `pending`. A sequential round always follows a passed check.
  */
 function reviewRoundsOf(
   steps: StoredStep[],
   candidates: ReportSealedCandidate[],
+  parallelReview: boolean,
 ): ReportReviewRound[] {
   const rounds = new Map<number, Map<string, ReportReview>>()
-  // The checks that failed at a review's own sequence: with
-  // `parallelReview`, verification and review share one (ADR-0029).
-  const failedChecks = new Set<number>()
+  // The completed checks by sequence: whether each passed.
+  const checks = new Map<number, boolean>()
   for (const s of steps) {
     const where = stageStep(s.name)
     if (s.status !== 'completed' || !where) continue
     if (where.stage === 'verify' && where.part === 'acceptance') {
-      if ((s.output as { passed?: unknown } | null)?.passed === false)
-        failedChecks.add(where.sequence)
+      checks.set(
+        where.sequence,
+        (s.output as { passed?: unknown } | null)?.passed === true,
+      )
       continue
     }
     if (where.stage !== 'review') continue
@@ -415,7 +425,11 @@ function reviewRoundsOf(
     .sort(([x], [y]) => x - y)
     .map(([sequence, byLens], i) => {
       const reviewed = candidates.filter((c) => c.sequence < sequence).at(-1)
-      const failed = failedChecks.has(sequence)
+      const passed = parallelReview ? checks.get(sequence) : true
+      const held: Exclude<ReviewStatus, 'completed' | 'cancelled'> | null =
+        passed === true ? null : passed === false ? 'discarded' : 'pending'
+      const heldReason =
+        held === 'pending' ? REVIEW_PENDING_REASON : REVIEW_DISCARD_REASON
       const reviews = [...byLens.values()]
         .sort(
           (x, y) =>
@@ -423,22 +437,29 @@ function reviewRoundsOf(
             REVIEW_LENSES.indexOf(y.lens as ReviewLens),
         )
         .map((r): ReportReview =>
-          failed && r.status !== 'cancelled'
-            ? { ...r, status: 'discarded', reason: REVIEW_DISCARD_REASON }
+          held && r.status !== 'cancelled'
+            ? { ...r, status: held, reason: heldReason }
             : r,
         )
       const cancelled = reviews.some((r) => r.status === 'cancelled')
+      const status: ReviewStatus =
+        held === null
+          ? 'completed'
+          : held === 'discarded' && cancelled
+            ? 'cancelled'
+            : held
       return {
         round: i + 1,
         sequence,
         candidate: reviewed ? toReportCandidate(reviewed) : null,
         reviews,
-        status: !failed ? 'completed' : cancelled ? 'cancelled' : 'discarded',
-        reason: !failed
-          ? null
-          : cancelled
-            ? REVIEW_CANCEL_REASON
-            : REVIEW_DISCARD_REASON,
+        status,
+        reason:
+          status === 'completed'
+            ? null
+            : status === 'cancelled'
+              ? REVIEW_CANCEL_REASON
+              : heldReason,
       }
     })
 }
@@ -452,7 +473,9 @@ function discardedReviewsOf(
   rounds: ReportReviewRound[],
 ): UsageTotals | null {
   const sequences = new Set(
-    rounds.filter((r) => r.status !== 'completed').map((r) => r.sequence),
+    rounds
+      .filter((r) => r.status === 'cancelled' || r.status === 'discarded')
+      .map((r) => r.sequence),
   )
   if (sequences.size === 0) return null
   return usageOf(
@@ -1078,13 +1101,20 @@ export async function buildReport(
         squashedCommit: recorded.squashedCommit ?? null,
       }
     : null
-  const setupTarget = (
-    steps.find((s) => s.name === 'setup' && s.status === 'completed')
-      ?.output as { target?: { kind?: string; workdir?: string } } | null
-  )?.target
+  const setupOutput = steps.find(
+    (s) => s.name === 'setup' && s.status === 'completed',
+  )?.output as {
+    target?: { kind?: string; workdir?: string }
+    parallelReview?: unknown
+  } | null
+  const setupTarget = setupOutput?.target
   const candidates = sealedCandidates(steps)
   const candidate = lastCandidate(output, candidates)
-  const reviewRounds = reviewRoundsOf(steps, candidates)
+  const reviewRounds = reviewRoundsOf(
+    steps,
+    candidates,
+    setupOutput?.parallelReview === true,
+  )
   // The rounds whose verdicts counted; a candidate that failed its check
   // left none of its reviews to the run (ADR-0029).
   const countedRounds = reviewRounds.filter((r) => r.status === 'completed')
@@ -1131,6 +1161,7 @@ export async function buildReport(
       stageVisits: visits,
       repairRun: repairParent(input) !== null,
       discardedReviews,
+      countedReviewRounds: countedRounds.length,
     }),
     triage: await recordedTriage(durably, run),
     baseline: baselineOf(steps, rows),

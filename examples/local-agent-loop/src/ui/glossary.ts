@@ -109,7 +109,8 @@ export const REVIEW_DECISION: Record<string, { label: string; title: string }> =
 
 /**
  * How a review that ran beside verification ended when the candidate failed
- * the check (ADR-0029): its short label, and the reason in one sentence.
+ * the check, or that waits on a check with no result yet (ADR-0029): its
+ * short label, and the reason in one sentence.
  */
 export const REVIEW_STATUS: Record<string, { label: string; reason: string }> =
   {
@@ -122,6 +123,11 @@ export const REVIEW_STATUS: Record<string, { label: string; reason: string }> =
       label: '不採用',
       reason:
         '候補が検証に落ちたので、このレビューの判定は修正にも承認にも使っていません。',
+    },
+    pending: {
+      label: '検証待ち',
+      reason:
+        '候補の検証の結果がまだ出ていないので、このレビューの判定はまだ使っていません。',
     },
   }
 
@@ -1023,6 +1029,7 @@ export const DESIGN = {
     reviewOpen: '最後の回で指摘が残った',
     reviewIncomplete: '最後の回の判定がそろっていない',
     reviewDiscarded: '検証に落ちた候補へのレビュー',
+    reviewPending: '検証の結果を待つレビュー',
     approval: '承認待ち',
     specApproval: '仕様の判断待ち',
     specRevise: '仕様のメモを書く',

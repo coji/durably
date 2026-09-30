@@ -488,9 +488,11 @@ Repository config: factory.json at the repository root, or --config <file>:
   the worktree the check runs in. A check that fails ends the reviews still
   running (cancelled, superseded-by-verify) and sets aside the ones that
   answered (discarded, verify-failed); neither is used for a repair or an
-  approval, nor counted toward the review cap. Only a candidate that passes
-  both is approved. The report, compare and compare --trend show what the
-  reviews of failed candidates cost, apart from the total.
+  approval, nor counted toward the review cap. A round whose check has no
+  result yet, or ended with an error, is pending (verify-pending) and not
+  counted either. Only a candidate that passes both is approved. The
+  report, compare and compare --trend show what the reviews of failed
+  candidates cost, apart from the total.
   "spec" (repository runs without --spec-file): after setup and preflight,
   "author" writes the run's spec file (runs/<id>/spec/spec.md, outside the
   worktree) from the task and "template"; every named reviewer reviews it

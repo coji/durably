@@ -3726,6 +3726,42 @@ describe('reviews beside verification on the page', () => {
     assert.ok(!text.includes('$0.00'))
   })
 
+  it('marks a round waiting on its check, with the reason on hover', () => {
+    const report = {
+      reviews: [],
+      candidates: [],
+      reviewRounds: [
+        {
+          round: 1,
+          sequence: 1,
+          candidate: null,
+          status: 'pending',
+          reason: 'verify-pending',
+          reviews: [
+            {
+              lens: 'correctness',
+              decision: 'pass',
+              notes: 'ok',
+              findings: null,
+              status: 'pending',
+              reason: 'verify-pending',
+            },
+          ],
+        },
+      ],
+      discardedReviews: null,
+    }
+    const html = renderToStaticMarkup(
+      createElement(ReviewsPanel, { report: report as never }),
+    )
+    const pending = REVIEW_STATUS['pending']
+    assert.ok(pending)
+    assert.ok(htmlText(html).includes(pending.label))
+    assert.ok(html.includes(`title="${pending.reason}"`))
+    // Nothing waiting on a check is a cost of a failed candidate.
+    assert.ok(!htmlText(html).includes(REVIEW.discardedCost))
+  })
+
   it('shows the cost of reviews on failed candidates apart from the total in a config group', () => {
     const stat = (m: number | null) => ({
       n: m === null ? 0 : 1,

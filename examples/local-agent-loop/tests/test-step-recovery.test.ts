@@ -620,8 +620,10 @@ describe('a review beside verification', () => {
     /**
      * `calls-first`: the check ends once both calls were sent.
      * `check-first`: the reviews are ready only once the check has ended.
+     * `extracting`: the trees are never ready; their extraction ends only
+     * when its signal is aborted.
      */
-    order: 'calls-first' | 'check-first' = 'calls-first',
+    order: 'calls-first' | 'check-first' | 'extracting' = 'calls-first',
   ) {
     const gate = () => {
       let open = () => {}
@@ -638,6 +640,7 @@ describe('a review beside verification', () => {
     for (const d of [worktree, headDir, baseDir, changesDir])
       await mkdir(d, { recursive: true })
     const calls: { name: string; options: AgentCallOptions }[] = []
+    let extractionAborted = false
     const spy = (name: 'codex' | 'claude'): AgentProvider => ({
       name,
       fake: false,
@@ -725,7 +728,14 @@ describe('a review beside verification', () => {
       reviewCwd: () => worktree,
       reviewRules: () => ['Check it.'],
       untrustedInputs: () => [],
-      prepareReviewSnapshots: async () => {
+      prepareReviewSnapshots: async (_: unknown, signal: AbortSignal) => {
+        if (order === 'extracting')
+          await new Promise((_, reject) =>
+            signal.addEventListener('abort', () => {
+              extractionAborted = true
+              reject(new Error('extraction aborted'))
+            }),
+          )
         if (order === 'check-first') await checked.opened
         return { baseDir, headDir }
       },
@@ -786,7 +796,16 @@ describe('a review beside verification', () => {
           target: target as never,
         },
       })
-    return { stage, calls, metadata, outputs, worktree, headDir, setup }
+    return {
+      stage,
+      calls,
+      metadata,
+      outputs,
+      worktree,
+      headDir,
+      setup,
+      extractionAborted: () => extractionAborted,
+    }
   }
 
   it('points a Codex and a Claude prompt review at the sealed tree, never the worktree', async () => {
@@ -877,4 +896,28 @@ describe('a review beside verification', () => {
     // Nothing was spent: no invocation, and no unknown cost.
     assert.equal(usageOf(rows), null)
   })
+
+  it(
+    'ends the tree extraction when the check fails, and records the calls as not sent',
+    {
+      timeout: 20000,
+    },
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'parallel-review-'))
+      const h = await harness(root, false, 'extracting')
+      const event = await h.stage()
+      assert.equal((event as { passed: boolean }).passed, false)
+      assert.equal(h.extractionAborted(), true)
+      assert.equal(h.calls.length, 0)
+      for (const lens of ['correctness', 'edge-cases']) {
+        const name = `stage:1:review:${lens}`
+        assert.deepEqual(h.outputs.get(name), {
+          lens,
+          status: 'cancelled',
+          reason: 'superseded-by-verify',
+        })
+        assert.equal(h.metadata.get(name)?.at(-1)?.result, 'not-sent')
+      }
+    },
+  )
 })

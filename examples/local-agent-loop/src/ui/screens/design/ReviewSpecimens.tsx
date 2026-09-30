@@ -119,9 +119,47 @@ const BESIDE_CHECK = {
 } as unknown as LoopReport
 
 /**
+ * A round beside a check with no result yet (ADR-0029): both reviews have
+ * answered, and neither verdict is used until the check passes.
+ */
+const AWAITING_CHECK = {
+  reviews: [],
+  candidates: [],
+  reviewRounds: [
+    {
+      round: 1,
+      sequence: 1,
+      candidate: null,
+      status: 'pending',
+      reason: 'verify-pending',
+      reviews: [
+        {
+          lens: 'correctness',
+          decision: 'pass',
+          notes: 'The fix keeps decimals.',
+          findings: null,
+          status: 'pending',
+          reason: 'verify-pending',
+        },
+        {
+          lens: 'edge-cases',
+          decision: 'needsChanges',
+          notes: 'Division by zero is still left undefined.',
+          findings: null,
+          status: 'pending',
+          reason: 'verify-pending',
+        },
+      ],
+    },
+  ],
+  discardedReviews: null,
+} as unknown as LoopReport
+
+/**
  * The review highlights after a passed last round, with blockers still
  * open, and while a reviewer of the last round has no verdict yet; then
- * the rounds of reviews run beside a check the candidate failed.
+ * the rounds of reviews run beside a check the candidate failed, and a
+ * round waiting on its check.
  */
 export function HighlightStates() {
   return (
@@ -133,6 +171,9 @@ export function HighlightStates() {
       ))}
       <State label={DESIGN.state.reviewDiscarded}>
         <ReviewsPanel report={BESIDE_CHECK} />
+      </State>
+      <State label={DESIGN.state.reviewPending}>
+        <ReviewsPanel report={AWAITING_CHECK} />
       </State>
     </>
   )

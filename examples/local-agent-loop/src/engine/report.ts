@@ -188,15 +188,17 @@ export interface ReportReview {
    * A review run beside verification (ADR-0029): `cancelled` when the
    * check failed first and ended the call, with no verdict (`decision` is
    * empty); `discarded` when it answered and the check then failed, so its
-   * verdict was not used. Absent: its verdict counted.
+   * verdict was not used; `pending` when the check has not completed, still
+   * running or ended by an error, so its verdict is not used yet. Absent:
+   * its verdict counted.
    */
   status?: ReviewStatus
-  /** Why it was cancelled or discarded; absent when it counted. */
+  /** Why it was cancelled, discarded or pending; absent when it counted. */
   reason?: string
 }
 
 /** How a review round, or one review in it, ended; see `ReportReview.status`. */
-export type ReviewStatus = 'completed' | 'cancelled' | 'discarded'
+export type ReviewStatus = 'completed' | 'cancelled' | 'discarded' | 'pending'
 
 /** One kept finding of a `findings-json` review. */
 export interface ReportFinding {
@@ -284,11 +286,16 @@ export interface ReportReviewRound {
   /**
    * `completed` when its verdicts counted. A round run beside a check that
    * failed is `cancelled` when that ended a review still running, and
-   * `discarded` when every review had answered; neither counts toward the
-   * review rounds, the highlights or a repair. Absent on a spec round.
+   * `discarded` when every review had answered, and `pending` while that
+   * check has not completed, still running or ended by an error; none of
+   * these counts toward the review rounds, the highlights or a repair.
+   * Absent on a spec round.
    */
   status?: ReviewStatus
-  /** `superseded-by-verify` or `verify-failed`; null when it counted. */
+  /**
+   * `superseded-by-verify`, `verify-failed` or `verify-pending`; null when
+   * it counted.
+   */
   reason?: string | null
 }
 
@@ -728,13 +735,12 @@ export interface RunSummary {
   repairs: number
   reviewRounds: number
   /**
-   * Review calls on candidates that failed verification, cancelled or
-   * discarded (ADR-0029), and what they cost. The cost is part of
-   * `costUsd`; null when any such call had no usage or price. Zero calls
-   * and zero cost on a run that had none. Absent on a summary made before
-   * it existed.
+   * What the review calls on candidates that failed verification, cancelled
+   * or discarded (ADR-0029), cost; `LoopReport.discardedReviews` has their
+   * count. Part of `costUsd`; null when any such call had no usage or
+   * price. Zero on a run that had none. Absent on a summary made before it
+   * existed.
    */
-  discardedReviewCalls?: number
   discardedReviewCostUsd?: number | null
 }
 
@@ -1093,6 +1099,11 @@ export interface SummaryInput {
   repairRun?: boolean
   /** See `LoopReport.discardedReviews`. */
   discardedReviews?: UsageTotals | null
+  /**
+   * The review rounds whose verdicts counted (`completed`), used for a run
+   * with no output yet. Without it, the review stage's visits.
+   */
+  countedReviewRounds?: number
 }
 
 function repairsOf(visits: StageVisits[], repairRun: boolean): number {
@@ -1155,8 +1166,9 @@ export function summarizeRun(input: SummaryInput): RunSummary {
     reviewRounds:
       typeof output?.reviewRounds === 'number'
         ? output.reviewRounds
-        : (input.stageVisits.find((v) => v.stage === 'review')?.visits ?? 0),
-    discardedReviewCalls: input.discardedReviews?.invocations ?? 0,
+        : (input.countedReviewRounds ??
+          input.stageVisits.find((v) => v.stage === 'review')?.visits ??
+          0),
     discardedReviewCostUsd: input.discardedReviews
       ? input.discardedReviews.costUsd
       : 0,

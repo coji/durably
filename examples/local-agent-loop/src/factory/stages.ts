@@ -519,7 +519,17 @@ async function reviewRoundOf(args: {
     const invocation = reviewInvocationOf(setup, lens)
     const output = invocation?.output ?? 'verdict'
     const commandMode = usesReviewMaterials(invocation)
-    const own = commandMode || snapshotOnly ? await materialsFor(signal) : null
+    // A failed check ends the extraction too. Then nothing is sent: the
+    // call below records it as not sent, in the directory it never uses.
+    const own =
+      commandMode || snapshotOnly
+        ? await materialsFor(
+            superseded ? AbortSignal.any([signal, superseded]) : signal,
+          ).catch((error: unknown) => {
+            if (superseded?.aborted && !signal.aborted) return null
+            throw error
+          })
+        : null
     const trees = own?.trees ?? null
     const context = reviewPrompt(
       lens,
@@ -571,7 +581,9 @@ async function reviewRoundOf(args: {
           )
         : trees
           ? trees.headDir
-          : reviewCwd
+          : snapshotOnly
+            ? setup.checkpointsDir
+            : reviewCwd
     const settings: ReviewCallSettings | null = invocation
       ? {
           command: command !== null,

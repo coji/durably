@@ -2836,7 +2836,8 @@ describe('verification and review side by side', { timeout: 300000 }, () => {
    * first waits for the run's code call and both reviews to have `started`
    * or `completed` (read from the run's checkpoints beside the worktree),
    * or for nothing with `none`, so a test decides whether the reviews are
-   * running or done when the check ends.
+   * running or done when the check ends. `hold` waits as `completed`, then
+   * until a `release` file appears beside the worktree.
    */
   async function slowCheckRepo(root: string): Promise<string> {
     const repo = join(root, 'repo')
@@ -2854,12 +2855,14 @@ describe('verification and review side by side', { timeout: 300000 }, () => {
       join(repo, 'check.mjs'),
       [
         "import { execFileSync } from 'node:child_process'",
-        "import { readdirSync } from 'node:fs'",
-        "const suffix = { started: '.started.json', completed: '.completed.json' }[process.argv[2]]",
+        "import { existsSync, readdirSync } from 'node:fs'",
+        "const suffix = { started: '.started.json', completed: '.completed.json', hold: '.completed.json' }[process.argv[2]]",
         "const reached = () => readdirSync('../operation-checkpoints').filter((f) => f.endsWith(suffix)).length >= 3",
         'const deadline = Date.now() + 60000',
         // sleep-ok(poll): the check re-reads the checkpoints until the reviews reached the point it waits for
         'while (suffix && !reached() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))',
+        // sleep-ok(poll): a held check waits for the test to release it
+        "while (process.argv[2] === 'hold' && !existsSync('../release') && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))",
         "execFileSync(process.execPath, ['--test', 'test/calc.test.js'], { stdio: 'inherit' })",
         '',
       ].join('\n'),
@@ -3187,6 +3190,112 @@ describe('verification and review side by side', { timeout: 300000 }, () => {
       )
     } finally {
       recording.stop()
+      await durably.stop()
+      await durably.db.destroy()
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('counts no round whose check has not completed: still running, or thrown', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'e2e-parallel-pending-'))
+    const dir = join(home, '.local', 'state', 'local-agent-loop')
+    const repo = await slowCheckRepo(home)
+    delete process.env.FAKE_FAIL_FIRST
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    delete process.env.FAKE_REVIEW_SLOW_MS
+    const durably = createAgentDurably({ stateRoot: dir })
+    await durably.migrate()
+    const start = async (checkCommand: string[]) =>
+      (
+        await durably.jobs.agentLoop.trigger({
+          provider: 'fake',
+          profiles: { code: fake, correctness: fake, 'edge-cases': fake },
+          target: {
+            kind: 'repo' as const,
+            repoPath: repo,
+            baseRef: 'HEAD',
+            task: 'Fix add() so decimal inputs are not truncated.',
+            spec: null,
+            dispositions: null,
+            inputFiles: { task: null, spec: null, dispositions: null },
+            issue: null,
+            checkCommand,
+            setupCommand: null,
+            publish: false,
+            parallelReview: true,
+          },
+          maxIterations: 1,
+          context: 'reuse',
+          fakeScenario: { failIterations: 0 },
+        })
+      ).id
+    const settles = (id: string, name: string) =>
+      waitFor(
+        async () =>
+          ['completed', 'failed'].includes(
+            (await durably.getRun(id))?.status ?? '',
+          ),
+        120000,
+        `run ${name} settles`,
+      )
+    const assertPending = (
+      report: Awaited<ReturnType<typeof buildReport>>,
+      name: string,
+    ) => {
+      assert.equal(report.reviewRounds.length, 1, name)
+      const round = report.reviewRounds[0]
+      assert.equal(round?.status, 'pending', name)
+      assert.equal(round?.reason, 'verify-pending', name)
+      assert.deepEqual(
+        round?.reviews.map((r) => [r.decision, r.status]),
+        [
+          ['pass', 'pending'],
+          ['pass', 'pending'],
+        ],
+        name,
+      )
+      // Neither the highlights, the last verdicts nor the count use it.
+      assert.equal(report.reviewHighlights.rounds, 0, name)
+      assert.deepEqual(report.reviews, [], name)
+      assert.equal(report.summary.reviewRounds, 0, name)
+      // Nor is it a review of a candidate that failed its check.
+      assert.equal(report.discardedReviews, null, name)
+      assert.match(
+        reportToMarkdown(report),
+        /pending \(verify-pending\), not counted/,
+        name,
+      )
+    }
+    try {
+      const held = await start(['node', 'check.mjs', 'hold'])
+      // A check that cannot start throws instead of failing.
+      const thrown = await start([join(home, 'no-such-check')])
+      await durably.init()
+
+      // Still running: both reviews answered, the check is held.
+      await waitFor(
+        async () =>
+          (await durably.storage.getSteps(held)).filter(
+            (s) =>
+              /:review:(correctness|edge-cases)$/.test(s.name) &&
+              s.status === 'completed',
+          ).length === 2,
+        120000,
+        'both reviews answer',
+      )
+      assert.equal((await durably.getRun(held))?.status, 'leased')
+      assertPending(await buildReport(durably, held), 'running')
+      await writeFile(join(dir, 'runs', held, 'release'), '')
+      await settles(held, 'held')
+      const released = await buildReport(durably, held)
+      assert.equal(released.reviewRounds[0]?.status, 'completed')
+      assert.equal(released.summary.reviewRounds, 1)
+
+      // Thrown: the run failed with its reviews kept but never counted.
+      await settles(thrown, 'thrown')
+      assert.equal((await durably.getRun(thrown))?.status, 'failed')
+      assertPending(await buildReport(durably, thrown), 'thrown')
+    } finally {
       await durably.stop()
       await durably.db.destroy()
       await rm(home, { recursive: true, force: true })

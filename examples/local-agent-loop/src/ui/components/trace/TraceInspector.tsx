@@ -14,6 +14,7 @@ import { CopyAnnouncer, useCopy } from '../copy'
 import { InlineField, InlineFields } from '../KeyValue'
 import { LogWriteError, PathValue } from '../PathValue'
 import { ReviewFindingTitles } from '../ReviewFindingTitles'
+import { ReviewStatusMark } from '../ReviewStatusMark'
 import { traceStatus } from '../status'
 import { StatusBadge } from '../StatusBadge'
 import { exactTime } from '../Time'
@@ -46,7 +47,7 @@ function ReviewBlock({ review }: { review: NonNullable<TraceNode['review']> }) {
             {verdict.label}
           </span>
         )}
-        {ended ? <span className="text-fg-2"> {ended.label}</span> : null}
+        <ReviewStatusMark status={review.status} />
       </p>
       {ended ? <p className="text-fg-2 text-xs">{ended.reason}</p> : null}
       {cancelled ? null : (

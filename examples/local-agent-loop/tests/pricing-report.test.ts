@@ -45,7 +45,6 @@ function baseReport(): LoopReport {
       costPerSuccessUsd: null,
       repairs: 0,
       reviewRounds: 0,
-      discardedReviewCalls: 0,
       discardedReviewCostUsd: 0,
     },
     stageUsage: [],
@@ -784,7 +783,6 @@ describe('reviews of candidates that failed verification', () => {
         ...r.summary,
         conclusion: 'verification-failed',
         costUsd: 3,
-        discardedReviewCalls: 2,
         discardedReviewCostUsd,
       } as LoopReport['summary'],
     }
@@ -805,8 +803,7 @@ describe('reviews of candidates that failed verification', () => {
         stageVisits: [],
         discardedReviews: discarded,
       })
-    // None: zero calls and zero cost, a known value.
-    assert.equal(summary(null).discardedReviewCalls, 0)
+    // None: zero cost, a known value.
     assert.equal(summary(null).discardedReviewCostUsd, 0)
     // A call without usage or a price leaves the cost unknown, never 0.
     const unknown = summary({
@@ -820,7 +817,6 @@ describe('reviews of candidates that failed verification', () => {
       complete: false,
       costComplete: false,
     })
-    assert.equal(unknown.discardedReviewCalls, 2)
     assert.equal(unknown.discardedReviewCostUsd, null)
 
     const c = compareReports([
@@ -841,6 +837,27 @@ describe('reviews of candidates that failed verification', () => {
       comparisonToMarkdown(c),
       /- of which reviews of candidates that failed verification: \$0\.25 \[\$0\.00\.\.\$0\.50\] \(n=2, 1 unknown\)/,
     )
+  })
+
+  it('counts only the rounds that counted for a run with no output yet', () => {
+    const summary = (countedReviewRounds?: number) =>
+      summarizeRun({
+        status: 'leased',
+        output: null,
+        runElapsedMs: null,
+        stageTotalMs: null,
+        waits: [],
+        attempts: [],
+        stageUsage: [],
+        // Two review stage visits: one cancelled or discarded round, one
+        // still waiting on its check.
+        stageVisits: [{ stage: 'review', visits: 2, reworked: 1 }],
+        ...(countedReviewRounds === undefined ? {} : { countedReviewRounds }),
+      })
+    assert.equal(summary(0).reviewRounds, 0)
+    assert.equal(summary(1).reviewRounds, 1)
+    // A summary made without the rounds keeps counting the visits.
+    assert.equal(summary().reviewRounds, 2)
   })
 
   it("adds up a task's runs in the trend, and leaves out a task with an unknown one", () => {

@@ -1,34 +1,14 @@
 import { formatCost, formatCount } from '../../../engine/format'
-import type {
-  LoopReport,
-  ReviewHighlights,
-  ReviewStatus,
-} from '../../../engine/report'
+import type { LoopReport, ReviewHighlights } from '../../../engine/report'
 import { EmptyState } from '../../components/EmptyState'
 import { InlineField, InlineFields } from '../../components/KeyValue'
 import { Panel } from '../../components/Layout'
 import { ReviewFindingTitles } from '../../components/ReviewFindingTitles'
 import { ReviewHighlightsBody } from '../../components/ReviewHighlights'
+import { ReviewStatusMark } from '../../components/ReviewStatusMark'
 import { IdSuffix } from '../../components/RunLink'
 import { COMMON, REVIEW } from '../../glossary'
 import { lensName, reviewDecision, reviewStatus } from '../../labels'
-
-/**
- * A review or round that did not count, as a quiet tag with its reason on
- * hover; nothing for one that counted.
- */
-export function ReviewStatusTag({ status }: { status?: ReviewStatus | null }) {
-  const shown = reviewStatus(status)
-  if (!shown) return null
-  return (
-    <span
-      title={shown.reason}
-      className="bg-sunken text-fg-2 rounded-sm px-1 text-xs font-normal whitespace-nowrap"
-    >
-      {shown.label}
-    </span>
-  )
-}
 
 /** Each review of a round: its name, verdict, finding titles, and its notes closed. */
 export function ReviewVerdicts({
@@ -56,11 +36,7 @@ export function ReviewVerdicts({
                 {reviewDecision(review.decision).label}
               </span>
             )}
-            {reviewStatus(review.status) ? (
-              <span className="ml-2">
-                <ReviewStatusTag status={review.status} />
-              </span>
-            ) : null}
+            <ReviewStatusMark status={review.status} />
           </p>
           <ReviewFindingTitles findings={review.findings} />
           {review.status === 'cancelled' ? null : (
@@ -121,7 +97,7 @@ export function ReviewsPanel({ report: r }: { report: LoopReport }) {
                       <IdSuffix id={round.candidate.id} />
                     </span>
                   ) : null}
-                  <ReviewStatusTag status={round.status} />
+                  <ReviewStatusMark status={round.status} />
                 </h3>
                 {ended ? (
                   <p className="text-fg-2 text-xs">{ended.reason}</p>
