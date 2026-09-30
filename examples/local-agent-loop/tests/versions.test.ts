@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -39,13 +39,33 @@ import {
 import { resolveProfiles } from '../src/trigger-input.js'
 
 describe('recorded CLI versions', { timeout: 60000 }, () => {
-  it('names the Codex CLI the provider launches, not one on PATH', async () => {
+  it('prefers codex on PATH, then the bundled CLI, and records the one it launches', async () => {
+    const saved = process.env['PATH']
+    const dir = await mkdtemp(join(tmpdir(), 'codex-on-path-'))
+    const stub = join(dir, 'codex')
+    await writeFile(stub, '#!/bin/sh\necho "codex-cli 9.9.9"\n')
+    await chmod(stub, 0o755)
+    try {
+      process.env['PATH'] = dir
+      assert.deepEqual(codexExecutable(), {
+        command: stub,
+        args: [],
+        path: stub,
+      })
+      // Without one on PATH, this workspace's bundled `@openai/codex`.
+      process.env['PATH'] = ''
+      const bundled = codexExecutable()
+      assert.equal(bundled.command, 'node')
+      assert.match(
+        bundled.path ?? '',
+        /@openai[/\\]codex[/\\]bin[/\\]codex\.js$/,
+      )
+      assert.deepEqual(bundled.args, [bundled.path])
+    } finally {
+      process.env['PATH'] = saved
+      await rm(dir, { recursive: true, force: true })
+    }
     const exe = codexExecutable()
-    // This workspace installs the provider's own `@openai/codex`, which the
-    // provider prefers to any `codex` on PATH.
-    assert.equal(exe.command, 'node')
-    assert.match(exe.path ?? '', /@openai[/\\]codex[/\\]bin[/\\]codex\.js$/)
-    assert.deepEqual(exe.args, [exe.path])
     const versions = await resolveVersions('codex')
     assert.equal(versions['codexCliPath'], exe.path)
     // Whatever the version is, it came from that file, or it is unknown.

@@ -982,8 +982,8 @@ baselineの後、triageを含む最初のエージェント呼び出しの前に
 `factory.json` のあるディレクトリから解決し、実行可能な通常ファイルでなければ
 `trigger` が失敗します。解決した絶対パスをrun inputに固定し、preflight、本番の
 呼び出し、版の取得はすべてそのファイルを使います。`.js` などのscriptは `node`
-で起動します。省略時は従来どおり、同梱の `@openai/codex` を優先し、無ければ
-PATHの `codex` を使います。CLIのpathと版はreportの「Versions」と「Preflight」に
+で起動します。省略時はPATHの `codex` を優先し、無ければ同梱の `@openai/codex`
+を使います。同梱の版は新しいモデルに追いつかないことがあるためです。CLIのpathと版はreportの「Versions」と「Preflight」に
 出て、`configVersion` にも入るので、違うCLIで動いたrunは別の設定として比較されます。
 
 ### trigger時点で固定されるもの
