@@ -63,9 +63,12 @@ import {
 } from '../src/engine/status.js'
 import { archiveMarkerOf } from '../src/factory/layout.js'
 import { repairLabels } from '../src/factory/repair.js'
+import { ActionNotice } from '../src/ui/components/ActionNotice.js'
 import { ReviewFindingTitles } from '../src/ui/components/ReviewFindingTitles.js'
 import {
   ACTION,
+  ACTION_DONE,
+  COPY,
   DESIGN,
   DETAIL,
   DIAGNOSIS_TEXT,
@@ -2100,7 +2103,11 @@ describe('diagnosis wording on the page', () => {
     for (const note of notes) {
       // The cleanup line is shown on its own and is not a next command, and
       // the lease-expired notes repeat what the reason text already says.
-      if (note.startsWith('keeps the branch') || noteSaidByReason(note))
+      if (
+        note.startsWith('keeps the branch') ||
+        note.startsWith('forces the removal') ||
+        noteSaidByReason(note)
+      )
         continue
       const ja = commandNote(`pnpm demo x  # ${note}`)
       assert.ok(ja, note)
@@ -3792,7 +3799,7 @@ describe('web UI actions', { timeout: 300000 }, () => {
 })
 
 describe('worktree cleanup on the page', { timeout: 300000 }, () => {
-  it('shows an archived repository run as cleaned up, even from a cached detail, and prunes its branches only when asked', async () => {
+  it('shows an archived repository run as cleaned up, even from a cached detail, says why when git refuses, and prunes its branches only when asked', async () => {
     const home = await mkdtemp(join(tmpdir(), 'ui-worktree-'))
     const stateRoot = join(home, '.local', 'state', 'local-agent-loop')
     const git = async (cwd: string, args: string[]) => {
@@ -3871,18 +3878,86 @@ describe('worktree cleanup on the page', { timeout: 300000 }, () => {
       assert.match(none.stdout, /^0 worktree\(s\)/)
       assert.match(none.stdout, /branches of 0 archived run\(s\)/)
 
-      const archived = await get(port, `/api/runs/${id}/archive`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          origin,
-          [TOKEN_HEADER]: token,
-        },
-        body: '{}',
-      })
+      const archive = () =>
+        get(port, `/api/runs/${id}/archive`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            origin,
+            [TOKEN_HEADER]: token,
+          },
+          body: '{}',
+        })
+      // A locked worktree: git refuses, the run is archived anyway, and the
+      // answer carries git's reason, which the page's notice shows.
+      await git(repo, ['worktree', 'lock', workdir])
+      const refused = await archive()
+      assert.equal(refused.status, 200, refused.body)
+      const result = JSON.parse(refused.body) as {
+        changed: boolean
+        worktreeRemoved: boolean
+        warnings: string[]
+      }
+      assert.equal(result.changed, true)
+      assert.equal(result.worktreeRemoved, false)
+      assert.equal(result.warnings.length, 1)
+      assert.match(result.warnings[0] ?? '', /locked/)
+      assert.ok(existsSync(workdir))
+      const notice = htmlText(
+        renderToStaticMarkup(
+          createElement(ActionNotice, {
+            outcome: {
+              request: {
+                runId: id,
+                name: first.name,
+                action: 'archive',
+                label: ACTION.archive,
+              },
+              result,
+            },
+          }),
+        ),
+      )
+      assert.ok(notice.includes(ACTION_DONE.archive))
+      assert.ok(notice.includes(ACTION_DONE.worktreeLeft))
+      // git's own words, as the page escapes them.
+      assert.ok(
+        notice
+          .replaceAll('&#x27;', "'")
+          .replaceAll('&quot;', '"')
+          .replaceAll('&amp;', '&')
+          .includes(result.warnings[0] ?? '-'),
+        notice,
+      )
+      // The cached detail reads the worktree again: it is still there, and
+      // the page says how to remove it.
+      const left = await detail()
+      assert.equal(left.archived, true)
+      assert.equal(left.report.worktree?.present, true)
+      assert.equal(
+        left.diagnosis.cleanup,
+        'pnpm --filter example-local-agent-loop demo prune --apply',
+      )
+      const leftText = shown(left)
+      assert.ok(leftText.includes(DETAIL.worktreeLeft))
+      assert.ok(leftText.includes(DETAIL.worktreeLeftNote))
+      assert.ok(leftText.includes(COPY.cleanupPruneNote))
+      assert.ok(!leftText.includes(DETAIL.worktreeRemoved))
+      // `status` offers the same forced removal.
+      const leftStatus = await demo(home, ['status', '--run', id])
+      assert.equal(leftStatus.code, 0, leftStatus.stderr)
+      assert.equal(
+        (JSON.parse(leftStatus.stdout) as { diagnosis: Diagnosis }).diagnosis
+          .cleanup,
+        left.diagnosis.cleanup,
+      )
+
+      // Unlocked, archiving again removes it.
+      await git(repo, ['worktree', 'unlock', workdir])
+      const archived = await archive()
       assert.equal(archived.status, 200, archived.body)
       assert.deepEqual(JSON.parse(archived.body), {
-        changed: true,
+        changed: false,
         worktreeRemoved: true,
         deletedBranches: [],
         warnings: [],

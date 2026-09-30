@@ -1274,6 +1274,8 @@ async function inspect(
     run,
     now,
     fresh ? { failure: report.failure } : undefined,
+    undefined,
+    archived.has(run.id),
   )
   const live = liveElapsed(run, report.attempts, now)
   const decides =

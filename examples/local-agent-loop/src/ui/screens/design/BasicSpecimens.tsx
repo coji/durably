@@ -273,26 +273,24 @@ export function PathStates() {
   )
 }
 
-/** A worktree removed after its run, and one the run could not remove. */
+/** A worktree removed, one left after a delivery, one left after an archive. */
 export function WorktreeStates() {
   const path =
     '/Users/me/.local/state/local-agent-loop/runs/01K6D2Q7XB3M9RKT4WSTOPPD/work'
+  const warning = `git worktree remove --force ${path} failed with code 128: fatal: '${path}' is locked`
+  const left = { path, present: true, cleanupWarning: null }
+  const states = [
+    ['worktreeRemoved', { ...left, present: false }, false],
+    ['worktreeWarning', { ...left, cleanupWarning: warning }, false],
+    ['worktreeLeft', left, true],
+  ] as const
   return (
     <>
-      <State label={DESIGN.state.worktreeRemoved}>
-        <WorktreeNote
-          worktree={{ path, present: false, cleanupWarning: null }}
-        />
-      </State>
-      <State label={DESIGN.state.worktreeWarning}>
-        <WorktreeNote
-          worktree={{
-            path,
-            present: true,
-            cleanupWarning: `git worktree remove --force ${path} failed with code 128: fatal: '${path}' is locked`,
-          }}
-        />
-      </State>
+      {states.map(([label, worktree, archived]) => (
+        <State key={label} label={DESIGN.state[label]}>
+          <WorktreeNote worktree={worktree} archived={archived} />
+        </State>
+      ))}
     </>
   )
 }

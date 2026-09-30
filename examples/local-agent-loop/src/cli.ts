@@ -682,6 +682,7 @@ if (cmd === 'worker') {
   // takes the report's failure instead of classifying the run again.
   const src = readOnce(durably, runs)
   const children = repairChildrenByParent(runs)
+  const archived = archivedRunIds(durably.stateRoot)
   const read: { run: Run; diagnosis: Diagnosis; report: LoopReport }[] = []
   for (const run of runs) {
     const report = await buildReport(src, run.id, {
@@ -693,11 +694,11 @@ if (cmd === 'worker') {
       now,
       { failure: report.failure },
       worker,
+      archived.has(run.id),
     )
     read.push({ run, diagnosis, report })
   }
   const seen = new Map(read.map((r) => [r.run.id, r]))
-  const archived = archivedRunIds(durably.stateRoot)
   const tasks = groupTasks(
     read.map(({ run, diagnosis, report }) => ({
       ...taskRunInput(run, diagnosis.kind, report),
@@ -777,7 +778,15 @@ if (cmd === 'worker') {
     JSON.stringify(
       {
         // Why the run is where it is, and the next command to run.
-        diagnosis: run ? await diagnose(durably, run, now, worker) : null,
+        diagnosis: run
+          ? await diagnose(
+              durably,
+              run,
+              now,
+              worker,
+              archivedRunIds(durably.stateRoot).has(run.id),
+            )
+          : null,
         worker,
         // Derived from the run's lease; null without a lease in force.
         lastLeaseRenewedAt: run ? lastLeaseRenewal(run, now, LEASE_MS) : null,

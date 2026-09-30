@@ -1,13 +1,12 @@
 import type { Act } from '../../components/ActionNotice'
 import { CheckLogs } from '../../components/CheckLogs'
-import { Commands } from '../../components/Commands'
 import { CopyAnnouncer, CopyButton, useCopy } from '../../components/copy'
 import { Field } from '../../components/KeyValue'
 import { Panel } from '../../components/Layout'
 import { LiveProgress } from '../../components/LiveProgress'
 import { LogWriteError, PathValue } from '../../components/PathValue'
 import { RunActions } from '../../components/RunActions'
-import { WorktreeNote } from '../../components/WorktreeNote'
+import { CleanupCommand, WorktreeNote } from '../../components/WorktreeNote'
 import { COPY, DETAIL } from '../../glossary'
 import {
   checkNamesLogs,
@@ -124,7 +123,10 @@ export function StatusPanel({
         {data.diagnosis.kind === 'running' ? (
           <LiveProgress live={data.live} />
         ) : null}
-        <WorktreeNote worktree={data.report.worktree} />
+        <WorktreeNote
+          worktree={data.report.worktree}
+          archived={data.archived}
+        />
         {failure ? (
           <dl className="flex flex-col gap-2">
             <Field label={DETAIL.humanCheck}>
@@ -169,12 +171,7 @@ export function StatusPanel({
             </div>
           </details>
         ) : null}
-        {data.diagnosis.cleanup ? (
-          <div>
-            <p className="text-fg-2 mb-2 text-xs">{COPY.cleanupNote}</p>
-            <Commands lines={[data.diagnosis.cleanup]} />
-          </div>
-        ) : null}
+        <CleanupCommand cleanup={data.diagnosis.cleanup} />
         <div className="border-line border-t pt-3">
           <SummaryPanel report={data.report} />
         </div>

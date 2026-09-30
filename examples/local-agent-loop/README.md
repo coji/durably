@@ -238,6 +238,9 @@ pnpm --filter example-local-agent-loop demo status --format json
   `git -C '<repo>' worktree remove '<workdir>'` を表示します。setupが記録した
   パスが存在するときだけ出し、強制削除やbranch削除は含みません。変更が残る
   worktreeではgitが削除を拒みます。実行するかどうかは利用者が決めます。
+  承認・納品済みのrunとアーカイブ済みのrunは、本来片付いているはずなので、
+  代わりに `demo prune --apply` を表示します。こちらは強制削除とGitの登録の
+  pruneまで行い、branchは残します。
   まとめて片付けるときは `demo prune` を使います（下の「終わったrunの作業ツリーを
   片付ける」）。
 - worktreeを片付けたrunには `worktree: removed` と表示します。承認・納品の後に

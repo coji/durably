@@ -54,7 +54,7 @@ import { recordFakeReviewCalls } from '../src/engine/providers/fake.js'
 import { READ_ONLY_ROLES } from '../src/engine/providers/types.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
 import { checkpointPaths } from '../src/engine/runner.js'
-import { diagnose, diagnosisLines } from '../src/engine/status.js'
+import { diagnose, diagnosisLines, PRUNE_APPLY } from '../src/engine/status.js'
 import { fixProfile } from '../src/factory/job.js'
 import { archiveMarkerOf } from '../src/factory/layout.js'
 import { codePrompt, REVIEW_STATUS_COMPLETE } from '../src/factory/prompts.js'
@@ -1907,6 +1907,26 @@ describe('worktrees of finished runs', { timeout: 300000 }, () => {
       assert.equal(refused.worktreeRemoved, false)
       assert.match(refused.warnings.join('\n'), /locked/)
       assert.ok(existsSync(await work(archived.id)))
+      // `status` then offers the forced removal `demo prune --apply` makes;
+      // a stop nobody archived keeps the git removal a change refuses.
+      const runOf = async (id: string) => (await durably.getRun(id)) as Run
+      assert.equal(
+        (
+          await diagnose(
+            durably,
+            await runOf(archived.id),
+            Date.now(),
+            undefined,
+            true,
+          )
+        ).cleanup,
+        PRUNE_APPLY,
+      )
+      assert.match(
+        (await diagnose(durably, await runOf(stopped.id), Date.now()))
+          .cleanup ?? '',
+        /^git -C .* worktree remove /,
+      )
       await git(repo, ['worktree', 'unlock', await work(archived.id)])
       const retried = await archiveRun(durably, archived.id)
       assert.deepEqual(retried, {
@@ -2037,6 +2057,106 @@ describe('worktrees of finished runs', { timeout: 300000 }, () => {
       )
       assert.ok(existsSync(await work(next.runId)))
       assert.notEqual(await work(next.runId), await work(stopped.id))
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+  })
+})
+
+describe('worktrees of manually approved runs', { timeout: 300000 }, () => {
+  it('removes the worktree after a person approves, and a replay neither delivers nor removes again', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-manual-cleanup-'))
+    const repo = await seedRepo(root)
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        target: {
+          kind: 'repo' as const,
+          repoPath: repo,
+          baseRef: 'HEAD',
+          task: 'Fix add() so decimal inputs are not truncated.',
+          spec: null,
+          dispositions: null,
+          inputFiles: NO_FILES,
+          issue: null,
+          checkCommand: ['node', '--test', 'test/**/*.test.js'],
+          setupCommand: null,
+          publish: false,
+        },
+        maxIterations: 1,
+        context: 'reuse',
+        checkTimeoutMs: 120000,
+        agentTimeoutMs: 600000,
+        codexPath: null,
+        autoApprove: false,
+      })
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'waiting',
+        150000,
+        'the run waits for the candidate approval',
+      )
+      const approval = (await durably.getWaits(run.id)).find(
+        (w) =>
+          typeof (w.metadata as { candidateId?: unknown } | null)
+            ?.candidateId === 'string',
+      )
+      assert.ok(approval, 'a candidate approval wait')
+      await signalApproval(durably, run.id, approval.id, 'approved')
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        60000,
+        'the approved run completes',
+      )
+      const output = (await durably.getRun(run.id))?.output as {
+        conclusion: string
+        workdir: string
+        delivery: unknown
+        worktreeCleanupWarning?: unknown
+      }
+      assert.equal(output.conclusion, 'approved')
+      assert.ok(output.delivery)
+      assert.equal(output.worktreeCleanupWarning, null)
+      assert.equal(existsSync(output.workdir), false)
+      assert.doesNotMatch(
+        await git(repo, ['worktree', 'list', '--porcelain']),
+        new RegExp(run.id),
+      )
+
+      // Replayed from the start, the recorded approval, delivery and removal
+      // are read back, not done again.
+      const attemptsOf = async (suffix: string) =>
+        (await durably.getStepAttempts(run.id)).filter((a) =>
+          a.stepName.endsWith(suffix),
+        ).length
+      assert.equal(await attemptsOf(':deliver'), 1)
+      assert.equal(await attemptsOf(':finish:worktree'), 1)
+      await durably.db
+        .updateTable('durably_runs')
+        .set({
+          status: 'pending',
+          output: null,
+          completed_at: null,
+          lease_owner: null,
+          lease_expires_at: null,
+        })
+        .where('id', '=', run.id)
+        .execute()
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        60000,
+        'replayed run completes',
+      )
+      const replayed = (await durably.getRun(run.id))?.output as typeof output
+      assert.equal(replayed.conclusion, 'approved')
+      assert.deepEqual(replayed.delivery, output.delivery)
+      assert.equal(await attemptsOf(':deliver'), 1)
+      assert.equal(await attemptsOf(':finish:worktree'), 1)
     } finally {
       await durably.stop()
       await durably.db.destroy()

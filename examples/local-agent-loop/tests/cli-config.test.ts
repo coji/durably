@@ -644,21 +644,23 @@ describe('status without --run', { timeout: 180000 }, () => {
     for (const id of [pending, live, expired])
       assert.doesNotMatch(blockOf(out, id), /retry:/)
     assert.match(blockOf(out, noSetup), /unclassified[\s\S]*retry: +NO/)
-    // The finished repository run's worktree is still on disk: offer a
-    // non-forcing removal of exactly that path. The run that failed before
-    // setup and the sample run get none.
-    const remove = `git -C '${repoPath}' worktree remove '${workdir}'`
-    assert.ok(blockOf(out, done).includes(remove), out)
-    assert.doesNotMatch(out, /--force|branch -D/)
+    // The delivered repository run's worktree is still on disk, though its
+    // run should have removed it: offer `demo prune --apply`, which forces
+    // the removal and prunes the registration, not a git removal that a
+    // worktree with changes refuses. The run that failed before setup and
+    // the sample run get none.
+    const prune = `cleanup: ${demoCmd} prune --apply  # forces the removal`
+    assert.ok(blockOf(out, done).includes(prune), out)
+    assert.doesNotMatch(out, /worktree remove|branch -D/)
     for (const id of [noSetup, waiting, pending, live, expired])
-      assert.doesNotMatch(blockOf(out, id), /worktree remove/)
+      assert.doesNotMatch(blockOf(out, id), /cleanup:/)
 
     // Once the worktree is gone, the run is not mentioned again.
     await git(repoPath, ['worktree', 'remove', workdir])
     const after = await demo(box, ['status'])
     assert.equal(after.code, 0, after.stderr)
     assert.equal(blockOf(after.stdout, done), '')
-    assert.doesNotMatch(after.stdout, /worktree remove/)
+    assert.doesNotMatch(after.stdout, /cleanup:/)
 
     // The run-specific view keeps its fields and adds the diagnosis.
     const one = await demo(box, ['status', '--run', waiting])
