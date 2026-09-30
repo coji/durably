@@ -1,6 +1,13 @@
 /** Common execution, recovery and measurement path for every LLM call. */
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises'
+import {
+  appendFile,
+  mkdir,
+  open,
+  readFile,
+  rename,
+  writeFile,
+} from 'node:fs/promises'
 import { join } from 'node:path'
 
 import type { JsonValue, StepAttemptContext } from '@coji/durably'
@@ -12,6 +19,7 @@ import {
 } from './pricing.js'
 import {
   NOT_SENT,
+  type AgentLog,
   type AgentProvider,
   type AgentResult,
   type AgentRole,
@@ -50,6 +58,11 @@ export interface AgentCallSpec {
   reviewRound?: number
   operationKey?: string
   checkpointsDir?: string
+  /**
+   * Where the run keeps its agent logs. A call that is sent writes its
+   * output to a file of its attempt's own here; absent, nothing is written.
+   */
+  agentLogsDir?: string
   session?: SessionRef | null
   requireSession?: boolean
   /**
@@ -187,6 +200,24 @@ async function writeJsonAtomic(
   await rename(temporary, path)
 }
 
+/**
+ * An empty agent log for one attempt. A file that cannot be made is
+ * recorded with the reason, and the call goes on without it.
+ */
+async function createAgentLog(
+  dir: string,
+  attemptId: string,
+): Promise<AgentLog> {
+  const path = join(dir, `${attemptId}.log`)
+  try {
+    await mkdir(dir, { recursive: true })
+    await writeFile(path, '', { flag: 'wx' })
+    return { path }
+  } catch (error) {
+    return { path, writeError: (error as Error).message }
+  }
+}
+
 export async function writeMeasurement(
   attempt: StepAttemptContext,
   current: AttemptMeasurement,
@@ -276,9 +307,17 @@ export async function runAgentCall(
   // a failed snapshot write can never reject into an unhandled rejection.
   let finalized = false
   let partialWrites: Promise<void> = Promise.resolve()
+  // The agent's output is appended the same way: in the order it arrives,
+  // and not after the terminal write begins. A failed append is kept as the
+  // log's `writeError`, recorded by the terminal write.
+  let agentLog: AgentLog | null = null
+  let logWrites: Promise<void> = Promise.resolve()
   const settleMeasurement = async (): Promise<void> => {
     finalized = true
     await partialWrites
+    await logWrites
+    if (agentLog?.writeError)
+      measurement = { ...measurement, agentLog: { ...agentLog } }
   }
 
   const finish = async (
@@ -469,9 +508,28 @@ export async function runAgentCall(
     }
     throw error
   }
+  // Made and recorded before anything is sent, so the file is on record
+  // before its first line. A replay or a call never sent returns above and
+  // makes none.
+  agentLog = spec.agentLogsDir
+    ? await createAgentLog(spec.agentLogsDir, attempt.id)
+    : null
   measurement = await writeMeasurement(attempt, measurement, {
     invocationStartedAt: startRecord.invocationStartedAt,
+    ...(agentLog ? { agentLog: { ...agentLog } } : {}),
   })
+  const log = agentLog
+  const onOutput =
+    log && !log.writeError
+      ? (chunk: string) => {
+          if (finalized) return
+          logWrites = logWrites
+            .then(() => appendFile(log.path, chunk, 'utf8'))
+            .catch((error: unknown) => {
+              log.writeError ??= (error as Error).message
+            })
+        }
+      : undefined
 
   const timeout = new AbortController()
   const timer = setTimeout(
@@ -504,6 +562,7 @@ export async function runAgentCall(
       onActivity: () => {
         active = true
       },
+      ...(onOutput ? { onOutput } : {}),
       onPartialUsage: (usage) => {
         active = true
         partialWrites = partialWrites

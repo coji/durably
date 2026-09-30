@@ -94,6 +94,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 
 import type { TokenUsage } from '../usage.js'
 import {
+  agentOutput,
   isCommandModeReview,
   type AgentCallOptions,
   type AgentProvider,
@@ -176,6 +177,11 @@ export interface FakeScenario {
   specSymlink?: boolean
   /** Each spec reviewer's reply per round, by reviewer name. */
   specReviews?: Record<string, (typeof FAKE_SPEC_REVIEWS)[number][]>
+  /**
+   * Agent output each call writes before it answers, one chunk every
+   * `intervalMs`. Every call then writes its reply as its last output.
+   */
+  output?: { chunks: string[]; intervalMs: number }
 }
 
 /** Per-run state shared by every fake provider instance of one run. */
@@ -552,7 +558,23 @@ export class FakeProvider implements AgentProvider {
     }
   }
 
+  /**
+   * The scenario's timed output, then the answer, whose reply is written as
+   * the call's last output.
+   */
   async call(options: AgentCallOptions): Promise<AgentResult> {
+    const output = agentOutput(options.onOutput)
+    const timed = this.run?.scenario.output
+    for (const chunk of timed?.chunks ?? []) {
+      await sleep(timed?.intervalMs ?? 0, options.signal)
+      output.text(chunk)
+    }
+    const result = await this.answer(options)
+    output.text(result.text.endsWith('\n') ? result.text : `${result.text}\n`)
+    return result
+  }
+
+  private async answer(options: AgentCallOptions): Promise<AgentResult> {
     const started = Date.now()
     const review = options.review
     // A spec fix has no `review` settings, but a recording test still wants

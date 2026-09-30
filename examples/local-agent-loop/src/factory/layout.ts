@@ -3,7 +3,7 @@
  * the cancel cleanup all read these, so moving a directory moves it for all
  * of them.
  */
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 /**
  * A run's own directory: worktree, checkpoints, candidates and delivery.
@@ -45,6 +45,24 @@ export function archiveMarkerOf(stateRoot: string, runId: string): string {
  */
 export function repoWorkdirOf(runRoot: string): string {
   return join(runRoot, 'work')
+}
+
+/**
+ * The run's agent output: one file per attempt that sent a call, written
+ * while the call runs and read by the web UI. Kept with the run, like its
+ * checkpoints: neither a worktree cleanup nor `demo prune` removes it.
+ */
+export function agentLogsDirOf(runRoot: string): string {
+  return join(runRoot, 'agent-logs')
+}
+
+/**
+ * The agent log directory of the run whose operation checkpoints are in
+ * `checkpointsDir`, which setup always puts directly in the run's own
+ * directory. The stages have the setup, not the state root.
+ */
+export function agentLogsDirBeside(checkpointsDir: string): string {
+  return agentLogsDirOf(dirname(checkpointsDir))
 }
 
 /**

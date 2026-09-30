@@ -34,6 +34,7 @@ import {
   type VerificationOutcome,
 } from '../engine/verification.js'
 import { SpecEventSchema, type SpecEvent } from './events.js'
+import { agentLogsDirBeside } from './layout.js'
 import { specAction } from './policy.js'
 import {
   codePrompt,
@@ -191,6 +192,7 @@ export const codeStage: StageHandler = async ({
         iteration,
         operationKey: `${step.runId}/${key}/agent`,
         checkpointsDir: state.setup.checkpointsDir,
+        agentLogsDir: agentLogsDirBeside(state.setup.checkpointsDir),
         session: continuedSession,
         requireSession: reuse,
         ...(role === 'repair'
@@ -618,6 +620,7 @@ async function reviewRoundOf(args: {
       reviewRound: round,
       operationKey: `${step.runId}/${key}/${lens}`,
       checkpointsDir: setup.checkpointsDir,
+      agentLogsDir: agentLogsDirBeside(setup.checkpointsDir),
       session: null,
       configVersion: setup.configVersion,
       ...(superseded
@@ -997,6 +1000,7 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
             iteration: 0,
             operationKey,
             checkpointsDir: setup.checkpointsDir,
+            agentLogsDir: agentLogsDirBeside(setup.checkpointsDir),
             session: null,
             configVersion: setup.configVersion,
           })
@@ -1116,6 +1120,7 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
       reviewRound: round,
       operationKey: `${step.runId}/${stepName}`,
       checkpointsDir: setup.checkpointsDir,
+      agentLogsDir: agentLogsDirBeside(setup.checkpointsDir),
       session: null,
       configVersion: setup.configVersion,
     })

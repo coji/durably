@@ -3373,3 +3373,117 @@ describe('verification and review side by side', { timeout: 300000 }, () => {
     }
   })
 })
+
+describe('agent logs of a fake run', { timeout: 180000 }, () => {
+  it('grows while the call writes, and a replayed call writes none', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'e2e-agent-log-'))
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    delete process.env.FAKE_REVIEW_SLOW_MS
+    const durably = createAgentDurably({ stateRoot: dir })
+    await durably.migrate()
+    const chunks = ['one\n', 'two\n', 'three\n']
+    const trigger = () =>
+      durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        target: { kind: 'subject' as const },
+        maxIterations: 1,
+        context: 'reuse',
+        fakeScenario: { output: { chunks, intervalMs: 600 } },
+      })
+    try {
+      const live = await trigger()
+      // The second run's implementation completed before a worker restart:
+      // its checkpoint is read back, and nothing is sent or written.
+      const replayed = await trigger()
+      const checkpointsDir = join(
+        dir,
+        'runs',
+        replayed.id,
+        'operation-checkpoints',
+      )
+      await mkdir(checkpointsDir, { recursive: true })
+      const operationKey = `${replayed.id}/stage:0:code/agent`
+      const at = new Date().toISOString()
+      await writeFile(
+        checkpointPaths(checkpointsDir, operationKey).completed,
+        `${JSON.stringify({
+          operationKey,
+          invocationId: 'saved-invocation',
+          status: 'completed',
+          invocationStartedAt: at,
+          invocationCompletedAt: at,
+          result: {
+            text: 'fake: saved before the restart',
+            session: { id: 'saved-session' },
+            resolvedModel: 'fake-model',
+            resolvedEffort: 'low',
+            reportedModel: 'fake-model',
+            reportedEffort: 'low',
+            usage: null,
+            elapsedMs: 5,
+          },
+        })}\n`,
+      )
+      await durably.init()
+
+      const codeOf = async (runId: string) =>
+        (await durably.getStepAttempts(runId)).find((a) =>
+          a.stepName.endsWith(':code:agent'),
+        )
+      const logOf = (a: { metadata: unknown } | undefined) =>
+        (a?.metadata as AttemptMeasurement | null)?.agentLog ?? null
+      // What the file held each time it was read while the call ran.
+      const seen: string[] = []
+      await waitFor(
+        async () => {
+          const code = await codeOf(live.id)
+          const log = logOf(code)
+          if (!code || !log) return false
+          const text = await readFile(log.path, 'utf8')
+          if (code.status === 'started' && text !== seen.at(-1)) seen.push(text)
+          return code.status !== 'started'
+        },
+        60000,
+        'live implementation ends',
+      )
+      const grown = seen.filter((t) => t !== '')
+      assert.ok(grown.length >= 2, JSON.stringify(seen))
+      // Each read held the one before it, and the chunks came in order.
+      for (const [i, t] of grown.entries())
+        assert.ok(
+          i === 0 || t.startsWith(grown[i - 1] ?? ''),
+          JSON.stringify(seen),
+        )
+      const code = await codeOf(live.id)
+      const final = await readFile(logOf(code)?.path ?? '', 'utf8')
+      assert.ok(final.startsWith(chunks.join('')), final)
+      assert.ok(final.endsWith('fake: fixed add() to return a + b\n'), final)
+
+      await waitFor(
+        async () =>
+          ['completed', 'failed'].includes(
+            (await durably.getRun(replayed.id))?.status ?? '',
+          ),
+        120000,
+        'replayed run settles',
+      )
+      const recovered = await codeOf(replayed.id)
+      assert.equal(
+        (recovered?.metadata as AttemptMeasurement | undefined)?.result,
+        'checkpoint-recovered',
+      )
+      assert.equal(logOf(recovered), null)
+      // No sent call in that run, so no log at all.
+      assert.equal(
+        existsSync(join(dir, 'runs', replayed.id, 'agent-logs')),
+        false,
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})

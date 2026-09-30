@@ -16,6 +16,7 @@ import {
   readdir,
   readFile,
   rm,
+  symlink,
   writeFile,
 } from 'node:fs/promises'
 import { request, type IncomingHttpHeaders } from 'node:http'
@@ -108,6 +109,12 @@ const noAct = async () => true
 
 /** A diagnosis sentence in Japanese only. */
 const KIND_TEXT_OK = (text: string) => !/[A-Za-z()（）]/.test(text)
+import {
+  followLog,
+  LogBody,
+  logTail,
+  type LogView,
+} from '../src/ui/components/trace/AttemptLog.js'
 import { pollEvery } from '../src/ui/poll.js'
 import { parseRoute } from '../src/ui/route.js'
 import { GroupPanel } from '../src/ui/screens/compare/GroupPanel.js'
@@ -126,6 +133,11 @@ import {
   deriveTrace,
   finishedReportCache,
   listedReports,
+  LOG_MISSING_STATUS,
+  LOG_READ_MAX,
+  readLogChunk,
+  wholeUtf8Length,
+  type LogChunk,
   readOnce,
   runName,
   SUBJECT_RUN_NAME,
@@ -1252,6 +1264,49 @@ describe('pipeline and trace', () => {
     )
     // Rows that are not verifications carry no check log.
     assert.equal(code2?.verificationLog, null)
+  })
+
+  it('trace (g2) links each row to the attempt whose log it shows', () => {
+    const agentLog = (n: number) => ({
+      path: `/runs/r1/agent-logs/code-${n}.log`,
+    })
+    const called = (
+      name: string,
+      start: number,
+      end: number,
+      n: number,
+      status = 'completed',
+    ): AttemptRow => ({
+      ...step(name, start, end, status),
+      measurement: { result: 'implement-done', agentLog: agentLog(n) } as never,
+    })
+    const t = traceOf(
+      [
+        called('stage:0:code:agent', 1, 4, 1, 'failed'),
+        called('stage:0:code:agent', 5, 9, 2),
+        step('stage:0:code:candidate', 9, 10),
+        step('stage:1:verify:acceptance', 10, 12),
+      ],
+      [],
+      { status: 'completed', completedAt: iso(13) },
+    )
+    const [code, verify] = t.root.children[0]?.children ?? []
+    // The entry shows its latest attempt that recorded a log: after a
+    // retry, the retry's own.
+    assert.equal(code?.logAttemptId, 'stage:0:code:agent@5')
+    assert.deepEqual(code?.agentLog, agentLog(2))
+    // Each attempt row shows its own, and one with no log shows none.
+    assert.deepEqual(
+      code?.children.map((c) => [c.logAttemptId, c.agentLog]),
+      [
+        ['stage:0:code:agent@1', agentLog(1)],
+        ['stage:0:code:agent@5', agentLog(2)],
+        [null, null],
+      ],
+    )
+    // A row no attempt of which recorded a log links none.
+    assert.equal(verify?.logAttemptId, null)
+    assert.equal(t.root.logAttemptId, null)
   })
 
   it('trace (h) keeps the findings a review step stored, and none from an older step', () => {
@@ -4322,3 +4377,363 @@ async function branchOf(repo: string, branch: string): Promise<string | null> {
   )
   return res.code === 0 ? res.stdout.trim() : null
 }
+
+describe('reading a log in parts', () => {
+  const runDir = async () => {
+    const root = await mkdtemp(join(tmpdir(), 'log-read-'))
+    const run = join(root, 'runs', 'r1')
+    await mkdir(join(run, 'agent-logs'), { recursive: true })
+    return { root, run }
+  }
+
+  it('leaves a character cut at the read boundary for the next read', async () => {
+    const { run } = await runDir()
+    const path = join(run, 'agent-logs', 'a.log')
+    // `あ` is three bytes; the first read ends one byte into it.
+    await writeFile(path, `${'a'.repeat(LOG_READ_MAX - 1)}あいう`)
+    const first = await readLogChunk(run, path, 0, false)
+    assert.equal(first.chunk, 'a'.repeat(LOG_READ_MAX - 1))
+    assert.equal(first.nextOffset, LOG_READ_MAX - 1)
+    assert.equal(first.done, false)
+    const second = await readLogChunk(run, path, first.nextOffset, true)
+    assert.equal(second.chunk, 'あいう')
+    assert.equal(second.nextOffset, first.nextOffset + 9)
+    assert.equal(second.done, true)
+    // Past the end: nothing, and the offset stays.
+    assert.deepEqual(await readLogChunk(run, path, 10 ** 9, false), {
+      chunk: '',
+      nextOffset: 10 ** 9,
+      done: false,
+    })
+    // A still-running attempt keeps a half-written character back; once it
+    // has ended, the last read returns every byte so the log can end.
+    await writeFile(path, Buffer.from('ab\xe3\x81', 'latin1'))
+    assert.equal((await readLogChunk(run, path, 0, false)).nextOffset, 2)
+    assert.equal((await readLogChunk(run, path, 0, true)).nextOffset, 4)
+    assert.equal(wholeUtf8Length(Buffer.from('é')), 2)
+    assert.equal(wholeUtf8Length(Buffer.from('é').subarray(0, 1)), 0)
+  })
+
+  it('reads at most 64 KiB at a time, and done only at the end of an ended log', async () => {
+    const { run } = await runDir()
+    const path = join(run, 'agent-logs', 'big.log')
+    await writeFile(path, 'x'.repeat(LOG_READ_MAX * 2 + 10))
+    const reads: number[] = []
+    let offset = 0
+    for (;;) {
+      const r = await readLogChunk(run, path, offset, true)
+      reads.push(Buffer.byteLength(r.chunk))
+      assert.equal(r.nextOffset, offset + Buffer.byteLength(r.chunk))
+      offset = r.nextOffset
+      if (r.done) break
+    }
+    assert.deepEqual(reads, [LOG_READ_MAX, LOG_READ_MAX, 10])
+  })
+
+  it('refuses a path outside the run and says when the file is gone', async () => {
+    const { root, run } = await runDir()
+    const outside = join(root, 'secret.txt')
+    await writeFile(outside, 'secret')
+    const status = (p: Promise<unknown>) =>
+      p.then(
+        () => 200,
+        (e: { status?: number }) => e.status,
+      )
+    // Outside as recorded, or through `..`.
+    assert.equal(await status(readLogChunk(run, outside, 0, true)), 403)
+    assert.equal(
+      await status(readLogChunk(run, join(run, '..', 'r1x.log'), 0, true)),
+      403,
+    )
+    // Inside as recorded, outside once the link is followed.
+    const link = join(run, 'agent-logs', 'link.log')
+    await symlink(outside, link)
+    assert.equal(await status(readLogChunk(run, link, 0, true)), 403)
+    assert.equal(
+      await status(
+        readLogChunk(run, join(run, 'agent-logs', 'gone.log'), 0, true),
+      ),
+      LOG_MISSING_STATUS,
+    )
+  })
+})
+
+describe('the log panel', () => {
+  it('follows a log until the server says it is done, one request at a time', async () => {
+    const answers = [
+      { chunk: 'one\n', nextOffset: 4, done: false },
+      { chunk: '', nextOffset: 4, done: false },
+      { chunk: 'two\n', nextOffset: 8, done: true },
+    ]
+    const asked: string[] = []
+    let inFlight = 0
+    let overlapped = false
+    const real = globalThis.fetch
+    globalThis.fetch = (async (url: string) => {
+      asked.push(url)
+      overlapped ||= inFlight > 0
+      inFlight++
+      // sleep-ok(yield): lets a second request start if one ever would
+      await new Promise((r) => setTimeout(r, 1))
+      inFlight--
+      const body = answers.shift() ?? {
+        chunk: 'late',
+        nextOffset: 99,
+        done: false,
+      }
+      return new Response(JSON.stringify(body), { status: 200 })
+    }) as typeof fetch
+    const views: LogView[] = []
+    try {
+      const stop = followLog(
+        '/api/runs/r/logs/a?file=agent',
+        (v) => views.push(v),
+        10,
+      )
+      await until(async () => views.at(-1)?.state === 'done', 'log done')
+      // sleep-ok(negative): several intervals in which no request may follow
+      await new Promise((r) => setTimeout(r, 100))
+      stop()
+    } finally {
+      globalThis.fetch = real
+    }
+    assert.deepEqual(asked, [
+      '/api/runs/r/logs/a?file=agent&from=0',
+      '/api/runs/r/logs/a?file=agent&from=4',
+      '/api/runs/r/logs/a?file=agent&from=4',
+    ])
+    assert.equal(overlapped, false)
+    assert.deepEqual(views.at(-1), {
+      text: 'one\ntwo\n',
+      state: 'done',
+      trimmed: false,
+    })
+  })
+
+  it('says the file is missing and stops', async () => {
+    let asked = 0
+    const real = globalThis.fetch
+    globalThis.fetch = (async () => {
+      asked++
+      return new Response('{"error":"gone"}', { status: 410 })
+    }) as typeof fetch
+    const views: LogView[] = []
+    try {
+      const stop = followLog(
+        '/api/runs/r/logs/a?file=agent',
+        (v) => views.push(v),
+        10,
+      )
+      await until(async () => views.length > 0, 'missing')
+      // sleep-ok(negative): several intervals in which no request may follow
+      await new Promise((r) => setTimeout(r, 100))
+      stop()
+    } finally {
+      globalThis.fetch = real
+    }
+    assert.equal(asked, 1)
+    assert.equal(views.at(-1)?.state, 'missing')
+    const html = renderToStaticMarkup(
+      createElement(LogBody, {
+        view: { text: '', state: 'missing', trimmed: false },
+      }),
+    )
+    assert.match(html, /記録されたファイルが見つかりません/)
+  })
+
+  it('shows the text as characters, without terminal escapes, and only the last 256 KiB', () => {
+    const html = renderToStaticMarkup(
+      createElement(LogBody, {
+        view: {
+          text: '\u001b[31mred\u001b[0m <b>not bold</b> **not markdown**\n',
+          state: 'live',
+          trimmed: false,
+        },
+      }),
+    )
+    assert.ok(!html.includes('\u001b'))
+    assert.match(
+      html,
+      /<pre[^>]*>red &lt;b&gt;not bold&lt;\/b&gt; \*\*not markdown\*\*/,
+    )
+    assert.match(html, /書き込み中/)
+    const long = logTail(`${'x'.repeat(10)}${'あ'.repeat(100_000)}`)
+    assert.equal(long.cut, true)
+    assert.ok(Buffer.byteLength(long.text) <= 256 * 1024)
+    assert.ok(!long.text.includes('x'))
+    assert.ok(!long.text.includes('�'))
+    assert.deepEqual(logTail('short'), { text: 'short', cut: false })
+  })
+})
+
+describe('agent logs over HTTP', { timeout: 300000 }, () => {
+  it("reads a fake run's output while it is written, and only logs the run recorded", async () => {
+    const home = await mkdtemp(join(tmpdir(), 'ui-logs-'))
+    const stateRoot = join(home, '.local', 'state', 'local-agent-loop')
+    const port = await freePort()
+    const ui = await startUi(home, port)
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    delete process.env.FAKE_REVIEW_SLOW_MS
+    const durably = createAgentDurably({ stateRoot })
+    try {
+      await durably.migrate()
+      const chunks = [
+        '読んでいます。\n',
+        '> exec_command ls src\n',
+        '直しました。\n',
+      ]
+      const run = await durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        target: { kind: 'subject' as const },
+        maxIterations: 1,
+        context: 'reuse',
+        fakeScenario: { output: { chunks, intervalMs: 700 } },
+      })
+      await durably.init()
+      const attemptOf = async (suffix: string) =>
+        (await durably.getStepAttempts(run.id)).find((a) =>
+          a.stepName.endsWith(suffix),
+        )
+      const recorded = async () =>
+        (
+          (await attemptOf(':code:agent'))?.metadata as {
+            agentLog?: { path: string }
+          } | null
+        )?.agentLog
+      await until(async () => Boolean(await recorded()), 'code log recorded')
+      const code = await attemptOf(':code:agent')
+      assert.ok(code)
+      const logPath = (await recorded())?.path ?? ''
+      assert.equal(
+        logPath,
+        join(stateRoot, 'runs', run.id, 'agent-logs', `${code.id}.log`),
+      )
+      const base = `/api/runs/${run.id}/logs/${code.id}`
+
+      // Read while the call is still writing: each read returns what came
+      // since the last, and the offset moves by the bytes it returned.
+      let offset = 0
+      let text = ''
+      let whileRunning = 0
+      await until(async () => {
+        const r = await api<LogChunk>(port, `${base}?from=${offset}`)
+        assert.equal(r.nextOffset, offset + Buffer.byteLength(r.chunk))
+        const running = (await attemptOf(':code:agent'))?.status === 'started'
+        if (r.chunk && running && !r.done) whileRunning++
+        offset = r.nextOffset
+        text += r.chunk
+        return r.done
+      }, 'code log done')
+      assert.ok(whileRunning >= 2, `read ${whileRunning} parts while running`)
+      assert.ok(text.startsWith(chunks.join('')), text)
+      assert.equal(text, await readFile(logPath, 'utf8'))
+      // Done stays done, and the prompt is not in the log.
+      assert.equal(
+        (await api<LogChunk>(port, `${base}?from=${offset}`)).done,
+        true,
+      )
+      assert.ok(!text.includes('Fix src/calc.js'))
+
+      // A check's stdout and stderr, from the paths it already recorded.
+      await until(
+        async () =>
+          (await attemptOf(':verify:acceptance'))?.status === 'completed',
+        'verify done',
+      )
+      const verify = await attemptOf(':verify:acceptance')
+      assert.ok(verify)
+      const checkLog = (
+        verify.metadata as {
+          verificationLog: { stdoutPath: string; stderrPath: string }
+        }
+      ).verificationLog
+      for (const [file, path] of [
+        ['stdout', checkLog.stdoutPath],
+        ['stderr', checkLog.stderrPath],
+      ] as const) {
+        const r: LogChunk = await api<LogChunk>(
+          port,
+          `/api/runs/${run.id}/logs/${verify.id}?file=${file}`,
+        )
+        assert.equal(r.chunk, await readFile(path, 'utf8'))
+        assert.equal(r.done, true)
+      }
+
+      // Unknown attempts, a run that is not the attempt's, and a log the
+      // attempt never recorded.
+      const setup = await attemptOf('setup')
+      for (const path of [
+        `/api/runs/${run.id}/logs/nope`,
+        `/api/runs/nope/logs/${code.id}`,
+        `/api/runs/${run.id}/logs/${verify.id}`,
+        `/api/runs/${run.id}/logs/${code.id}?file=stdout`,
+        `/api/runs/${run.id}/logs/${setup?.id}`,
+      ])
+        assert.equal((await get(port, path)).status, 404, path)
+      // Bad offsets and file names.
+      for (const q of [
+        'from=-1',
+        'from=1.5',
+        'from=abc',
+        'from=9007199254740993',
+        'from=',
+        'file=spec',
+      ])
+        assert.equal((await get(port, `${base}?${q}`)).status, 400, q)
+      // The same Host rule and methods as every read; no token needed.
+      assert.equal(
+        (await get(port, base, { host: `evil.example:${port}` })).status,
+        403,
+      )
+      assert.equal((await get(port, base, { method: 'HEAD' })).status, 200)
+      assert.equal((await get(port, base, { method: 'POST' })).status, 405)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+    }
+
+    // A recorded path is read only inside the run, and a gone file says so.
+    const db = new Database(dbPath(stateRoot))
+    try {
+      const code = db
+        .prepare(
+          "SELECT id, run_id, metadata FROM durably_step_attempts WHERE step_name LIKE '%:code:agent'",
+        )
+        .get() as { id: string; run_id: string; metadata: string }
+      const runRoot = join(stateRoot, 'runs', code.run_id)
+      const record = (path: string) => {
+        const m = JSON.parse(code.metadata) as Record<string, unknown>
+        db.prepare(
+          'UPDATE durably_step_attempts SET metadata = ? WHERE id = ?',
+        ).run(JSON.stringify({ ...m, agentLog: { path } }), code.id)
+      }
+      const status = async () =>
+        (await get(port, `/api/runs/${code.run_id}/logs/${code.id}`)).status
+      const outside = join(home, 'outside.txt')
+      await writeFile(outside, "not the run's")
+      record(outside)
+      assert.equal(await status(), 403)
+      const link = join(runRoot, 'agent-logs', 'link.log')
+      await symlink(outside, link)
+      record(link)
+      assert.equal(await status(), 403)
+      const big = join(runRoot, 'agent-logs', 'big.log')
+      await writeFile(big, 'y'.repeat(LOG_READ_MAX * 3))
+      record(big)
+      const first = await api<LogChunk>(
+        port,
+        `/api/runs/${code.run_id}/logs/${code.id}`,
+      )
+      assert.equal(Buffer.byteLength(first.chunk), LOG_READ_MAX)
+      assert.equal(first.done, false)
+      await rm(big)
+      assert.equal(await status(), LOG_MISSING_STATUS)
+    } finally {
+      db.close()
+      ui.child.kill('SIGTERM')
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+})

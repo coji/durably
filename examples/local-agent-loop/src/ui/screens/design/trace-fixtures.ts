@@ -1,8 +1,10 @@
+import type { LogView } from '../../components/trace/AttemptLog'
 /**
  * Two runs' timelines for the design page: one still implementing, one
- * waiting on a person. Between them every row state appears once.
+ * waiting on a person. Between them every row state appears once. Then an
+ * agent log as it is written, once it has ended, and once its file is gone.
  */
-import { COMMON, TRACE_WORDS } from '../../glossary'
+import { COMMON, DESIGN, TRACE_WORDS } from '../../glossary'
 import { lensName, stageName } from '../../labels'
 import type { Trace, TraceNode } from '../../server'
 import { ORIGIN, USAGE } from './fixtures'
@@ -33,6 +35,8 @@ function node(p: Spec): TraceNode {
     review: null,
     candidate: null,
     verificationLog: null,
+    logAttemptId: null,
+    agentLog: null,
     wait: null,
     children: [],
     ...p,
@@ -183,7 +187,12 @@ const secondPassRunning = node({
       startMs: min(14),
       endMs: min(15),
     }),
-    entry('code', 2, 15, null, { profile: codex, usage: USAGE.unknown }),
+    entry('code', 2, 15, null, {
+      profile: codex,
+      usage: USAGE.unknown,
+      logAttemptId: 'code-2',
+      agentLog: { path: '/runs/01K6D2Q7/agent-logs/01K6D2S9.log' },
+    }),
   ],
 })
 
@@ -260,3 +269,31 @@ export const TOTALS = {
   costUsd: 7.353984,
   complete: false,
 }
+
+const LOG_TEXT = [
+  'formatCost が 1 セント未満を $0.00 と出している箇所を探します。',
+  '> exec_command rg -n "formatCost" src',
+  '1 セント未満は有効数字 2 桁で出すように直します。',
+  '> apply_patch src/engine/format.ts',
+  '> exec_command pnpm test -- format\n',
+].join('\n')
+
+/** An agent log as the inspector shows it: live, ended, and gone. */
+export const LOG_VIEWS: { label: string; view: LogView }[] = [
+  {
+    label: DESIGN.state.logLive,
+    view: { text: LOG_TEXT, state: 'live', trimmed: false },
+  },
+  {
+    label: DESIGN.state.logDone,
+    view: {
+      text: `${LOG_TEXT}テストが通りました。1 セント未満の費用も読めます。\n`,
+      state: 'done',
+      trimmed: false,
+    },
+  },
+  {
+    label: DESIGN.state.logMissing,
+    view: { text: '', state: 'missing', trimmed: false },
+  },
+]

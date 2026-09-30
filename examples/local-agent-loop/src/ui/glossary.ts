@@ -466,6 +466,7 @@ export const COPY = {
   runId: '実行 ID をコピー',
   stdoutPath: '標準出力のパスをコピー',
   stderrPath: '標準エラーのパスをコピー',
+  agentLogPath: '出力のパスをコピー',
   squashedBranch: 'まとめたブランチ名をコピー',
   branch: 'ブランチ名をコピー',
   cleanupNote:
@@ -816,6 +817,18 @@ export const TRACE = {
   stdout: '標準出力',
   stderr: '標準エラー',
   writeError: '書き込みエラー',
+  agentLog: 'エージェントの出力',
+  logFile: 'ファイル',
+  logShown: '表示するログ',
+  logBody: 'ログの本文',
+  logLive: '書き込み中',
+  logDone: '書き終わり',
+  logEmpty: 'まだ出力がありません。',
+  logNone: '出力はありませんでした。',
+  logMissing:
+    '記録されたファイルが見つかりません。消されたか、移された可能性があります。',
+  logFailed: 'ログを読めませんでした。次の更新でもう一度読みます。',
+  logTrimmed: '長いため末尾だけを表示しています。全文はファイルで読めます。',
 } as const
 
 // ---------------------------------------------------------------- compare
@@ -959,7 +972,8 @@ export const DESIGN = {
     },
     trace: {
       name: '時系列',
-      about: '行を選ぶと右に詳細が出ます。矢印キーで行を移れます。',
+      about:
+        '行を選ぶと右に詳細とログが出ます。矢印キーで行を移れます。ログは書き込み中、書き終わり、ファイルがない場合の見え方です。',
     },
     links: {
       name: '実行へのリンクと時刻',
@@ -1015,6 +1029,8 @@ export const DESIGN = {
     relations: '同じタスクの実行',
     autoApproved: '設定による自動の承認',
     logMissing: 'ファイルがないログ',
+    logLive: '書き込み中のログ',
+    logDone: '書き終わったログ',
     noLog: '場所の記録がないログ',
     total: '複数の実行の合計',
     ago: '相対時刻',

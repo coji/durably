@@ -177,6 +177,78 @@ export interface AgentCallOptions {
    * refusal, since the agent may already have acted.
    */
   onActivity?: () => void
+  /**
+   * Called, in order, with what the agent writes: assistant text as it
+   * arrives, and one line per tool call with its name and a short summary
+   * of its arguments. Never the prompt, a thinking or reasoning block, or
+   * usage.
+   */
+  onOutput?: (chunk: string) => void
+}
+
+/** How long a tool call's argument summary may be in an agent log. */
+const TOOL_SUMMARY_MAX = 160
+
+/**
+ * One agent-log line for a tool call: its name and its arguments in short.
+ * A string argument is shown as is; an object shows its first string field
+ * such as a command or a path, or else the object itself, cut to one line.
+ */
+export function toolCallLine(name: string, input: unknown): string {
+  let value = input
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value) as unknown
+    } catch {
+      // A plain string argument.
+    }
+  }
+  const first =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.values(value).find((v) => typeof v === 'string')
+      : null
+  const raw =
+    typeof value === 'string'
+      ? value
+      : typeof first === 'string'
+        ? first
+        : value == null
+          ? ''
+          : JSON.stringify(value)
+  const summary = raw.replace(/\s+/g, ' ').trim()
+  const short =
+    summary.length > TOOL_SUMMARY_MAX
+      ? `${summary.slice(0, TOOL_SUMMARY_MAX - 1)}…`
+      : summary
+  return `> ${name}${short ? ` ${short}` : ''}\n`
+}
+
+/**
+ * What a provider hands `onOutput`: text as is, and each tool call on a
+ * line of its own. Absent `onOutput`, it writes nothing.
+ */
+export function agentOutput(onOutput: ((chunk: string) => void) | undefined) {
+  let lineStart = true
+  const emit = (chunk: string) => {
+    if (!onOutput || chunk === '') return
+    onOutput(chunk)
+    lineStart = chunk.endsWith('\n')
+  }
+  return {
+    text: emit,
+    tool(name: string, input: unknown) {
+      emit(`${lineStart ? '' : '\n'}${toolCallLine(name, input)}`)
+    },
+  }
+}
+
+/**
+ * Where one attempt's agent output is written, from before the call is
+ * sent until it ends. `writeError` says the file may be incomplete.
+ */
+export interface AgentLog {
+  path: string
+  writeError?: string
 }
 
 export interface ResolvedExecution {
@@ -325,4 +397,6 @@ export interface AttemptMeasurement {
   interruptionReason: string | null
   /** A verification attempt's full check output; absent on LLM calls. */
   verificationLog?: VerificationLog | null
+  /** An LLM call's agent output; absent when nothing was sent. */
+  agentLog?: AgentLog | null
 }
