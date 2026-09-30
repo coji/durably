@@ -113,6 +113,20 @@ const firstPass = node({
         }),
       ],
     }),
+    // Beside the failing check: the review it ended (ADR-0029).
+    entry('review', 1, 9, 10, {
+      id: 'review#1-beside',
+      label: lensName('edge-cases'),
+      usage: USAGE.known,
+      review: {
+        lens: 'edge-cases',
+        decision: '',
+        notes: '',
+        findings: null,
+        status: 'cancelled',
+        reason: 'superseded-by-verify',
+      },
+    }),
     node({
       id: 'idle#1',
       kind: 'entry',

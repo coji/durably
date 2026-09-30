@@ -8,12 +8,13 @@ import {
   REVIEW,
   TRACE,
 } from '../../glossary'
-import { reviewDecision } from '../../labels'
+import { reviewDecision, reviewStatus } from '../../labels'
 import type { TraceNode } from '../../server'
 import { CopyAnnouncer, useCopy } from '../copy'
 import { InlineField, InlineFields } from '../KeyValue'
 import { LogWriteError, PathValue } from '../PathValue'
 import { ReviewFindingTitles } from '../ReviewFindingTitles'
+import { ReviewStatusMark } from '../ReviewStatusMark'
 import { traceStatus } from '../status'
 import { StatusBadge } from '../StatusBadge'
 import { exactTime } from '../Time'
@@ -26,19 +27,34 @@ import {
 } from './InspectorFields'
 import type { RunTotals } from './model'
 
+/**
+ * A review's verdict, notes and findings. One that ran beside a check the
+ * candidate failed says so, with the reason, in place of or under its
+ * verdict (ADR-0029).
+ */
 function ReviewBlock({ review }: { review: NonNullable<TraceNode['review']> }) {
   const verdict = reviewDecision(review.decision)
+  const ended = reviewStatus(review.status)
+  const cancelled = review.status === 'cancelled'
   return (
     <div className="flex flex-col gap-1">
       <p className="text-sm">
         {REVIEW.verdict}{' '}
-        <span className="font-medium" title={verdict.title}>
-          {verdict.label}
-        </span>
+        {cancelled ? (
+          <span className="font-medium">{REVIEW.noVerdict}</span>
+        ) : (
+          <span className="font-medium" title={verdict.title}>
+            {verdict.label}
+          </span>
+        )}
+        <ReviewStatusMark status={review.status} />
       </p>
-      <p className="bg-sunken max-h-48 overflow-auto rounded-md px-3 py-2 text-sm whitespace-pre-wrap">
-        {review.notes}
-      </p>
+      {ended ? <p className="text-fg-2 text-xs">{ended.reason}</p> : null}
+      {cancelled ? null : (
+        <p className="bg-sunken max-h-48 overflow-auto rounded-md px-3 py-2 text-sm whitespace-pre-wrap">
+          {review.notes}
+        </p>
+      )}
       <ReviewFindingTitles findings={review.findings} />
     </div>
   )

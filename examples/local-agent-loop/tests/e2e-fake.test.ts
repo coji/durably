@@ -27,6 +27,7 @@ import { createAgentDurably } from '../src/durably.js'
 import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
 import { compareReports, comparisonToMarkdown } from '../src/engine/compare.js'
+import { recordFakeReviewCalls } from '../src/engine/providers/fake.js'
 import type {
   AgentCallOptions,
   AgentProvider,
@@ -2826,5 +2827,549 @@ describe('triage calibration counting', () => {
     assert.equal(c.specChars, [...'# Plan\n\n- just prose items\n'].length)
     assert.equal(c.acceptanceCriteria, null)
     assert.equal(c.plannedFiles, null)
+  })
+})
+
+describe('verification and review side by side', { timeout: 300000 }, () => {
+  /**
+   * A repository whose `add()` truncates decimals, graded by a check that
+   * first waits for the run's code call and both reviews to have `started`
+   * or `completed` (read from the run's checkpoints beside the worktree),
+   * or for nothing with `none`, so a test decides whether the reviews are
+   * running or done when the check ends. `hold` waits as `completed`, then
+   * until a `release` file appears beside the worktree.
+   */
+  async function slowCheckRepo(root: string): Promise<string> {
+    const repo = join(root, 'repo')
+    await mkdir(join(repo, 'src'), { recursive: true })
+    await mkdir(join(repo, 'test'), { recursive: true })
+    await writeFile(
+      join(repo, 'src', 'calc.js'),
+      'export function add(a, b) {\n  return Math.trunc(a) + Math.trunc(b)\n}\n',
+    )
+    await writeFile(
+      join(repo, 'test', 'calc.test.js'),
+      "import assert from 'node:assert/strict'\nimport { it } from 'node:test'\nimport { add } from '../src/calc.js'\nit('adds decimals', () => assert.equal(add(0.1, 0.2), 0.30000000000000004))\n",
+    )
+    await writeFile(
+      join(repo, 'check.mjs'),
+      [
+        "import { execFileSync } from 'node:child_process'",
+        "import { existsSync, readdirSync } from 'node:fs'",
+        "const suffix = { started: '.started.json', completed: '.completed.json', hold: '.completed.json' }[process.argv[2]]",
+        "const reached = () => readdirSync('../operation-checkpoints').filter((f) => f.endsWith(suffix)).length >= 3",
+        'const deadline = Date.now() + 60000',
+        // sleep-ok(poll): the check re-reads the checkpoints until the reviews reached the point it waits for
+        'while (suffix && !reached() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))',
+        // sleep-ok(poll): a held check waits for the test to release it
+        "while (process.argv[2] === 'hold' && !existsSync('../release') && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))",
+        "execFileSync(process.execPath, ['--test', 'test/calc.test.js'], { stdio: 'inherit' })",
+        '',
+      ].join('\n'),
+    )
+    await writeFile(join(repo, 'package.json'), '{"type":"module"}\n')
+    for (const args of [
+      ['init', '--initial-branch=main'],
+      ['config', 'user.email', 'test@localhost'],
+      ['config', 'user.name', 'test'],
+      ['add', '-A'],
+      ['commit', '-m', 'base'],
+    ]) {
+      const res = await runChild('git', args, { cwd: repo, timeoutMs: 30000 })
+      if (res.code !== 0)
+        throw new Error(`git ${args.join(' ')}: ${res.stderr}`)
+    }
+    return repo
+  }
+
+  const fake = {
+    provider: 'fake' as const,
+    requestedModel: null,
+    requestedEffort: null,
+  }
+
+  it('overlaps the two, keeps the step names, and approves only a candidate that passes both', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'e2e-parallel-'))
+    const dir = join(home, '.local', 'state', 'local-agent-loop')
+    const repo = await slowCheckRepo(home)
+    delete process.env.FAKE_FAIL_FIRST
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    delete process.env.FAKE_REVIEW_SLOW_MS
+    const durably = createAgentDurably({ stateRoot: dir })
+    await durably.migrate()
+    const start = async (args: {
+      parallelReview?: boolean
+      waitFor: 'none' | 'started' | 'completed'
+      failIterations: number
+      maxIterations: number
+      latencyMs?: number
+      reviewSequence?: ('pass' | 'needsChanges')[]
+      review?: boolean
+    }) =>
+      (
+        await durably.jobs.agentLoop.trigger({
+          provider: 'fake',
+          profiles: { code: fake, correctness: fake, 'edge-cases': fake },
+          target: {
+            kind: 'repo' as const,
+            repoPath: repo,
+            baseRef: 'HEAD',
+            task: 'Fix add() so decimal inputs are not truncated.',
+            spec: null,
+            dispositions: null,
+            inputFiles: { task: null, spec: null, dispositions: null },
+            issue: null,
+            checkCommand: ['node', 'check.mjs', args.waitFor],
+            setupCommand: null,
+            publish: false,
+            ...(args.parallelReview !== undefined
+              ? { parallelReview: args.parallelReview }
+              : {}),
+          },
+          maxIterations: args.maxIterations,
+          context: 'reuse',
+          ...(args.review
+            ? {
+                review: {
+                  correctness: {
+                    command: '/review {head}',
+                    context: 'prompt' as const,
+                    output: 'verdict' as const,
+                  },
+                  'edge-cases': {
+                    command: null,
+                    context: 'prompt' as const,
+                    output: 'findings-json' as const,
+                  },
+                },
+              }
+            : {}),
+          fakeScenario: {
+            failIterations: args.failIterations,
+            ...(args.reviewSequence
+              ? { reviewSequence: args.reviewSequence }
+              : {}),
+            ...(args.latencyMs
+              ? { latencyMs: { min: args.latencyMs, max: args.latencyMs } }
+              : {}),
+          },
+        })
+      ).id
+    const recording = recordFakeReviewCalls()
+    const ids: Record<string, string> = {}
+    try {
+      // Both pass, the check ending once the reviews started: approved.
+      ids['passes'] = await start({
+        parallelReview: true,
+        waitFor: 'started',
+        failIterations: 0,
+        maxIterations: 1,
+        review: true,
+      })
+      // The same run with the setting off, and with it left out.
+      ids['off'] = await start({
+        parallelReview: false,
+        waitFor: 'none',
+        failIterations: 0,
+        maxIterations: 1,
+      })
+      ids['omitted'] = await start({
+        waitFor: 'none',
+        failIterations: 0,
+        maxIterations: 1,
+      })
+      ids['onQuick'] = await start({
+        parallelReview: true,
+        waitFor: 'none',
+        failIterations: 0,
+        maxIterations: 1,
+      })
+      // The check fails while both reviews still run: both are cancelled.
+      ids['cancelled'] = await start({
+        parallelReview: true,
+        waitFor: 'started',
+        failIterations: 1,
+        maxIterations: 1,
+        latencyMs: 10000,
+      })
+      // Both reviews answer, pass and needsChanges, before the check fails.
+      ids['discarded'] = await start({
+        parallelReview: true,
+        waitFor: 'completed',
+        failIterations: 1,
+        maxIterations: 1,
+        reviewSequence: ['pass', 'needsChanges'],
+      })
+      // Discarded passes never approve; the repaired candidate is reviewed
+      // in a round of its own, the first one counted.
+      ids['repaired'] = await start({
+        parallelReview: true,
+        waitFor: 'completed',
+        failIterations: 1,
+        maxIterations: 2,
+      })
+      await durably.init()
+      for (const [name, id] of Object.entries(ids))
+        await waitFor(
+          async () =>
+            ['completed', 'failed'].includes(
+              (await durably.getRun(id))?.status ?? '',
+            ),
+          180000,
+          `run ${name} settles`,
+        )
+      const output = async (id: string) =>
+        (await durably.getRun(id))?.output as {
+          conclusion: string
+          reviewRounds: number
+          reviews: unknown[]
+        } | null
+      const stepNames = async (id: string) =>
+        (await durably.storage.getSteps(id))
+          .map((s) => s.name)
+          .filter((n) => n.startsWith('stage:'))
+          .sort()
+      const setupOf = async (id: string) =>
+        (await durably.storage.getCompletedStep(id, 'setup'))?.output as {
+          configVersion: string
+          parallelReview?: boolean
+          target: { workdir: string }
+        }
+
+      // Off and omitted behave alike. On keeps each step's stage and part,
+      // one stage entry fewer, and the config version: the setting is when
+      // the reviews run, not what they are.
+      for (const name of ['off', 'omitted', 'onQuick', 'passes']) {
+        const id = ids[name] ?? ''
+        assert.equal((await output(id))?.conclusion, 'approved', name)
+        assert.equal((await output(id))?.reviewRounds, 1, name)
+      }
+      assert.deepEqual(
+        await stepNames(ids['off'] ?? ''),
+        await stepNames(ids['omitted'] ?? ''),
+      )
+      const parts = async (id: string) =>
+        (await stepNames(id)).map((n) => n.replace(/^stage:\d+:/, '')).sort()
+      assert.deepEqual(
+        await parts(ids['onQuick'] ?? ''),
+        await parts(ids['omitted'] ?? ''),
+      )
+      const versions = await Promise.all(
+        ['off', 'omitted', 'onQuick'].map(
+          async (n) => (await setupOf(ids[n] ?? '')).configVersion,
+        ),
+      )
+      assert.equal(new Set(versions).size, 1)
+      assert.equal(
+        (await setupOf(ids['omitted'] ?? '')).parallelReview,
+        undefined,
+      )
+      assert.equal((await setupOf(ids['off'] ?? '')).parallelReview, undefined)
+      // Off: review starts only after verification completed.
+      const offReport = await buildReport(durably, ids['off'] ?? '')
+      const interval = (
+        report: typeof offReport,
+        test: (name: string) => boolean,
+      ) => {
+        const rows = report.attempts.filter((a) => test(a.stepName))
+        assert.ok(rows.length > 0)
+        return {
+          start: Math.min(
+            ...rows.map((a) =>
+              Date.parse(a.measurement?.invocationStartedAt ?? a.startedAt),
+            ),
+          ),
+          end: Math.max(
+            ...rows.map((a) =>
+              Date.parse(
+                a.measurement?.invocationCompletedAt ?? a.completedAt ?? '',
+              ),
+            ),
+          ),
+        }
+      }
+      const isVerify = (n: string) => n.endsWith(':verify:acceptance')
+      const isReview = (n: string) =>
+        /:review:(correctness|edge-cases)$/.test(n)
+      assert.ok(
+        interval(offReport, isReview).start >=
+          interval(offReport, isVerify).end,
+      )
+      // On: the reviews ran while the check ran.
+      const passes = await buildReport(durably, ids['passes'] ?? '')
+      const verify = interval(passes, isVerify)
+      const review = interval(passes, isReview)
+      assert.ok(review.start < verify.end && verify.start < review.end)
+      assert.equal(passes.reviewRounds[0]?.status, 'completed')
+
+      // The reviewers read the sealed tree and the diff, never the worktree.
+      const worktree = (await setupOf(ids['passes'] ?? '')).target.workdir
+      const calls = recording.calls.filter((c) =>
+        c.workdir.includes(ids['passes'] ?? '-'),
+      )
+      assert.equal(calls.length, 2)
+      for (const call of calls) {
+        assert.ok(!call.workdir.startsWith(worktree), call.workdir)
+        for (const readable of Object.keys(call.readable))
+          assert.ok(!readable.startsWith(worktree), readable)
+        assert.ok(!(call.input ?? '').includes(worktree))
+        for (const content of Object.values(call.workdirFiles))
+          assert.ok(!content.includes(worktree))
+      }
+
+      // Cancelled: each call settled with its reason and a completed
+      // checkpoint; no verdict, no round counted.
+      const cancelledId = ids['cancelled'] ?? ''
+      assert.equal(
+        (await output(cancelledId))?.conclusion,
+        'verification-failed',
+      )
+      assert.equal((await output(cancelledId))?.reviewRounds, 0)
+      assert.deepEqual((await output(cancelledId))?.reviews, [])
+      const cancelledReport = await buildReport(durably, cancelledId)
+      const cancelledCalls = cancelledReport.attempts.filter((a) =>
+        isReview(a.stepName),
+      )
+      assert.equal(cancelledCalls.length, 2)
+      const checkpoints = join(
+        dir,
+        'runs',
+        cancelledId,
+        'operation-checkpoints',
+      )
+      for (const call of cancelledCalls) {
+        assert.equal(call.status, 'completed')
+        assert.equal(call.measurement?.result, 'cancelled')
+        assert.equal(
+          call.measurement?.interruptionReason,
+          'superseded-by-verify',
+        )
+        const key = call.measurement?.operationKey ?? ''
+        const saved = JSON.parse(
+          await readFile(checkpointPaths(checkpoints, key).completed, 'utf8'),
+        ) as { cancelled?: string }
+        assert.equal(saved.cancelled, 'superseded-by-verify')
+      }
+      assert.equal(cancelledReport.reviewRounds[0]?.status, 'cancelled')
+      assert.equal(
+        cancelledReport.reviewRounds[0]?.reason,
+        'superseded-by-verify',
+      )
+      assert.notEqual(cancelledReport.failure?.kind, 'uncertain-invocation')
+      assert.equal(cancelledReport.discardedReviews?.invocations, 2)
+      assert.match(
+        reportToMarkdown(cancelledReport),
+        /cancelled \(superseded-by-verify\)/,
+      )
+
+      // Discarded: both verdicts recorded, neither used or counted.
+      const discardedId = ids['discarded'] ?? ''
+      assert.equal(
+        (await output(discardedId))?.conclusion,
+        'verification-failed',
+      )
+      assert.equal((await output(discardedId))?.reviewRounds, 0)
+      const discarded = await buildReport(durably, discardedId)
+      assert.equal(discarded.reviewRounds[0]?.status, 'discarded')
+      assert.equal(discarded.reviewRounds[0]?.reason, 'verify-failed')
+      assert.deepEqual(
+        discarded.reviewRounds[0]?.reviews.map((r) => r.decision),
+        ['pass', 'needsChanges'],
+      )
+      assert.equal(discarded.reviewHighlights.rounds, 0)
+      assert.match(reportToMarkdown(discarded), /discarded \(verify-failed\)/)
+
+      // A discarded pass approves nothing; the repaired candidate does.
+      const repaired = await output(ids['repaired'] ?? '')
+      assert.equal(repaired?.conclusion, 'approved')
+      assert.equal(repaired?.reviewRounds, 1)
+      const repairedReport = await buildReport(durably, ids['repaired'] ?? '')
+      assert.deepEqual(
+        repairedReport.reviewRounds.map((r) => r.status),
+        ['discarded', 'completed'],
+      )
+    } finally {
+      recording.stop()
+      await durably.stop()
+      await durably.db.destroy()
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('counts no round whose check has not completed: still running, or thrown', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'e2e-parallel-pending-'))
+    const dir = join(home, '.local', 'state', 'local-agent-loop')
+    const repo = await slowCheckRepo(home)
+    delete process.env.FAKE_FAIL_FIRST
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    delete process.env.FAKE_REVIEW_SLOW_MS
+    const durably = createAgentDurably({ stateRoot: dir })
+    await durably.migrate()
+    const start = async (checkCommand: string[]) =>
+      (
+        await durably.jobs.agentLoop.trigger({
+          provider: 'fake',
+          profiles: { code: fake, correctness: fake, 'edge-cases': fake },
+          target: {
+            kind: 'repo' as const,
+            repoPath: repo,
+            baseRef: 'HEAD',
+            task: 'Fix add() so decimal inputs are not truncated.',
+            spec: null,
+            dispositions: null,
+            inputFiles: { task: null, spec: null, dispositions: null },
+            issue: null,
+            checkCommand,
+            setupCommand: null,
+            publish: false,
+            parallelReview: true,
+          },
+          maxIterations: 1,
+          context: 'reuse',
+          fakeScenario: { failIterations: 0 },
+        })
+      ).id
+    const settles = (id: string, name: string) =>
+      waitFor(
+        async () =>
+          ['completed', 'failed'].includes(
+            (await durably.getRun(id))?.status ?? '',
+          ),
+        120000,
+        `run ${name} settles`,
+      )
+    const assertPending = (
+      report: Awaited<ReturnType<typeof buildReport>>,
+      name: string,
+    ) => {
+      assert.equal(report.reviewRounds.length, 1, name)
+      const round = report.reviewRounds[0]
+      assert.equal(round?.status, 'pending', name)
+      assert.equal(round?.reason, 'verify-pending', name)
+      assert.deepEqual(
+        round?.reviews.map((r) => [r.decision, r.status]),
+        [
+          ['pass', 'pending'],
+          ['pass', 'pending'],
+        ],
+        name,
+      )
+      // Neither the highlights, the last verdicts nor the count use it.
+      assert.equal(report.reviewHighlights.rounds, 0, name)
+      assert.deepEqual(report.reviews, [], name)
+      assert.equal(report.summary.reviewRounds, 0, name)
+      // Nor is it a review of a candidate that failed its check.
+      assert.equal(report.discardedReviews, null, name)
+      assert.match(
+        reportToMarkdown(report),
+        /pending \(verify-pending\), not counted/,
+        name,
+      )
+    }
+    try {
+      const held = await start(['node', 'check.mjs', 'hold'])
+      // A check that cannot start throws instead of failing.
+      const thrown = await start([join(home, 'no-such-check')])
+      await durably.init()
+
+      // Still running: both reviews answered, the check is held.
+      await waitFor(
+        async () =>
+          (await durably.storage.getSteps(held)).filter(
+            (s) =>
+              /:review:(correctness|edge-cases)$/.test(s.name) &&
+              s.status === 'completed',
+          ).length === 2,
+        120000,
+        'both reviews answer',
+      )
+      assert.equal((await durably.getRun(held))?.status, 'leased')
+      assertPending(await buildReport(durably, held), 'running')
+      await writeFile(join(dir, 'runs', held, 'release'), '')
+      await settles(held, 'held')
+      const released = await buildReport(durably, held)
+      assert.equal(released.reviewRounds[0]?.status, 'completed')
+      assert.equal(released.summary.reviewRounds, 1)
+
+      // Thrown: the run failed with its reviews kept but never counted.
+      await settles(thrown, 'thrown')
+      assert.equal((await durably.getRun(thrown))?.status, 'failed')
+      assertPending(await buildReport(durably, thrown), 'thrown')
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
+  it('stops as uncertain on a review a stopped worker left started, and sends it no more', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'e2e-parallel-lost-'))
+    const dir = join(home, '.local', 'state', 'local-agent-loop')
+    const repo = await slowCheckRepo(home)
+    delete process.env.FAKE_FAIL_FIRST
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    delete process.env.FAKE_REVIEW_SLOW_MS
+    const durably = createAgentDurably({ stateRoot: dir })
+    await durably.migrate()
+    try {
+      const run = await durably.jobs.agentLoop.trigger({
+        provider: 'fake',
+        profiles: { code: fake, correctness: fake, 'edge-cases': fake },
+        target: {
+          kind: 'repo' as const,
+          repoPath: repo,
+          baseRef: 'HEAD',
+          task: 'Fix add() so decimal inputs are not truncated.',
+          spec: null,
+          dispositions: null,
+          inputFiles: { task: null, spec: null, dispositions: null },
+          issue: null,
+          checkCommand: ['node', 'check.mjs', 'none'],
+          setupCommand: null,
+          publish: false,
+          parallelReview: true,
+        },
+        maxIterations: 1,
+        context: 'reuse',
+        fakeScenario: { failIterations: 1 },
+      })
+      // The worker stopped after sending the correctness review.
+      const checkpointsDir = join(dir, 'runs', run.id, 'operation-checkpoints')
+      await mkdir(checkpointsDir, { recursive: true })
+      const operationKey = `${run.id}/stage:1:review/correctness`
+      await writeFile(
+        checkpointPaths(checkpointsDir, operationKey).started,
+        `${JSON.stringify({
+          operationKey,
+          invocationId: 'lost-review',
+          status: 'started',
+          invocationStartedAt: new Date().toISOString(),
+        })}\n`,
+      )
+      await durably.init()
+      await waitFor(
+        async () =>
+          ['completed', 'failed'].includes(
+            (await durably.getRun(run.id))?.status ?? '',
+          ),
+        120000,
+        'run settles',
+      )
+      const report = await buildReport(durably, run.id)
+      assert.equal(report.status, 'failed')
+      assert.equal(report.failure?.kind, 'uncertain-invocation')
+      const correctness = report.attempts.filter((a) =>
+        a.stepName.endsWith(':review:correctness'),
+      )
+      assert.equal(correctness.length, 1)
+      assert.equal(correctness[0]?.measurement?.invocationId, 'lost-review')
+      assert.ok(
+        !existsSync(checkpointPaths(checkpointsDir, operationKey).completed),
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      await rm(home, { recursive: true, force: true })
+    }
   })
 })

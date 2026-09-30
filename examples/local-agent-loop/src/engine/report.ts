@@ -17,10 +17,11 @@ import { INTERRUPTED_CHECK } from './failure-details.js'
 import { retryText, type FailureClassification } from './failure-reasons.js'
 import { formatters } from './format.js'
 import { PRICE_BASIS } from './pricing.js'
-import type {
-  AttemptMeasurement,
-  SessionHandling,
-  VerificationLog,
+import {
+  NOT_SENT,
+  type AttemptMeasurement,
+  type SessionHandling,
+  type VerificationLog,
 } from './providers/types.js'
 import type { WorktreeState } from './status.js'
 import { TERMINAL_STATUSES } from './terminal.js'
@@ -183,7 +184,21 @@ export interface ReportReview {
    * verdict review and for a review recorded before findings were kept.
    */
   findings: ReportReviewFindings | null
+  /**
+   * A review run beside verification (ADR-0029): `cancelled` when the
+   * check failed first and ended the call, with no verdict (`decision` is
+   * empty); `discarded` when it answered and the check then failed, so its
+   * verdict was not used; `pending` when the check has not completed, still
+   * running or ended by an error, so its verdict is not used yet. Absent:
+   * its verdict counted.
+   */
+  status?: ReviewStatus
+  /** Why it was cancelled, discarded or pending; absent when it counted. */
+  reason?: string
 }
+
+/** How a review round, or one review in it, ended; see `ReportReview.status`. */
+export type ReviewStatus = 'completed' | 'cancelled' | 'discarded' | 'pending'
 
 /** One kept finding of a `findings-json` review. */
 export interface ReportFinding {
@@ -209,10 +224,22 @@ export interface ReportReviewFindings {
  * Markdown lines for a review's findings: each severity's total and the
  * titles kept, never a body, file or line.
  */
+/**
+ * ` — <status> (<reason>)` for a review or round that did not count, and
+ * nothing for one that did (ADR-0029).
+ */
+function statusAside(r: { status?: ReviewStatus; reason?: string | null }) {
+  return r.status && r.status !== 'completed'
+    ? ` — ${r.status}${r.reason ? ` (${r.reason})` : ''}`
+    : ''
+}
+
 /** Each review as its verdict line and its findings, at `indent`. */
 function reviewLines(reviews: ReportReview[], indent: string): string[] {
   return reviews.flatMap((review) => [
-    `${indent}- ${review.lens}: ${review.decision} — ${review.notes}`,
+    review.status === 'cancelled'
+      ? `${indent}- ${review.lens}: no verdict${statusAside(review)}`
+      : `${indent}- ${review.lens}: ${review.decision} — ${review.notes}${statusAside(review)}`,
     ...findingLines(review.findings, `${indent}  `),
   ])
 }
@@ -256,6 +283,20 @@ export interface ReportReviewRound {
   /** The candidate the round reviewed; null when it is not stored. */
   candidate: ReportCandidate | null
   reviews: ReportReview[]
+  /**
+   * `completed` when its verdicts counted. A round run beside a check that
+   * failed is `cancelled` when that ended a review still running, and
+   * `discarded` when every review had answered, and `pending` while that
+   * check has not completed, still running or ended by an error; none of
+   * these counts toward the review rounds, the highlights or a repair.
+   * Absent on a spec round.
+   */
+  status?: ReviewStatus
+  /**
+   * `superseded-by-verify`, `verify-failed` or `verify-pending`; null when
+   * it counted.
+   */
+  reason?: string | null
 }
 
 /**
@@ -693,6 +734,14 @@ export interface RunSummary {
    */
   repairs: number
   reviewRounds: number
+  /**
+   * What the review calls on candidates that failed verification, cancelled
+   * or discarded (ADR-0029), cost; `LoopReport.discardedReviews` has their
+   * count. Part of `costUsd`; null when any such call had no usage or
+   * price. Zero on a run that had none. Absent on a summary made before it
+   * existed.
+   */
+  discardedReviewCostUsd?: number | null
 }
 
 /**
@@ -760,6 +809,11 @@ export interface LoopReport {
   reviews: ReportReview[]
   /** Every review round with both verdicts and notes, oldest first. */
   reviewRounds: ReportReviewRound[]
+  /**
+   * Usage of the review calls on candidates that failed verification: the
+   * rounds `cancelled` or `discarded`. Null or absent when the run had none.
+   */
+  discardedReviews?: UsageTotals | null
   /** The review rounds in short, for the page's summary. */
   reviewHighlights: ReviewHighlights
   /**
@@ -894,6 +948,8 @@ function sortStages<T extends { stage: string }>(rows: T[]): T[] {
  */
 function dedupeByInvocation(attempts: AttemptRow[]): AttemptRow[] {
   const selected = new Map<string, AttemptRow>()
+  // A call superseded before it was sent is no invocation (ADR-0029).
+  attempts = attempts.filter((a) => a.measurement?.result !== NOT_SENT)
   const completed = (a: AttemptRow | undefined) =>
     a?.measurement?.result === 'checkpoint-recovered' ||
     (a?.measurement?.result?.endsWith('-done') ?? false)
@@ -1041,6 +1097,13 @@ export interface SummaryInput {
   stageVisits: StageVisits[]
   /** A repair run: its first code stage is a repair too. */
   repairRun?: boolean
+  /** See `LoopReport.discardedReviews`. */
+  discardedReviews?: UsageTotals | null
+  /**
+   * The review rounds whose verdicts counted (`completed`), used for a run
+   * with no output yet. Without it, the review stage's visits.
+   */
+  countedReviewRounds?: number
 }
 
 function repairsOf(visits: StageVisits[], repairRun: boolean): number {
@@ -1103,7 +1166,12 @@ export function summarizeRun(input: SummaryInput): RunSummary {
     reviewRounds:
       typeof output?.reviewRounds === 'number'
         ? output.reviewRounds
-        : (input.stageVisits.find((v) => v.stage === 'review')?.visits ?? 0),
+        : (input.countedReviewRounds ??
+          input.stageVisits.find((v) => v.stage === 'review')?.visits ??
+          0),
+    discardedReviewCostUsd: input.discardedReviews
+      ? input.discardedReviews.costUsd
+      : 0,
   }
 }
 
@@ -1476,8 +1544,10 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('')
   if (r.reviewRounds.length > 0) {
     for (const round of r.reviewRounds) {
+      const aside = statusAside(round)
+      const ended = aside ? `${aside}, not counted` : ''
       lines.push(
-        `- round ${round.round}: ${round.candidate?.id ?? 'candidate unknown'}`,
+        `- round ${round.round}: ${round.candidate?.id ?? 'candidate unknown'}${ended}`,
         ...reviewLines(round.reviews, '  '),
       )
     }
@@ -1607,6 +1677,10 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push(`- cost (api-equiv): ${formatCost(s.costUsd)}`)
   lines.push(`- cost per success: ${formatCost(s.costPerSuccessUsd)}`)
   lines.push(`- repairs: ${s.repairs}, review rounds: ${s.reviewRounds}`)
+  if (r.discardedReviews)
+    lines.push(
+      `- reviews of candidates that failed verification: ${r.discardedReviews.invocations} call(s), cost ${formatCost(r.discardedReviews.costUsd)} (part of the cost above)`,
+    )
   lines.push('')
   lines.push('## Stage usage (deduped by invocation)')
   lines.push('')

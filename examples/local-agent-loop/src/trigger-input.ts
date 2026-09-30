@@ -179,6 +179,11 @@ const factoryConfigSchema = z
      * most `maxAgeMs` milliseconds instead of running the check.
      */
     baselineReuse: baselineReuseSchema.optional(),
+    /**
+     * Verify and review each candidate side by side; off when absent. The
+     * reviewers then read the candidate's sealed tree and diff (ADR-0029).
+     */
+    parallelReview: z.boolean().optional(),
     /** The Codex CLI file to launch; relative to this file's directory. */
     codexPath: z.string().min(1).optional(),
     /** Milliseconds; win over `TEST_TIMEOUT_MS` / `AGENT_TIMEOUT_MS`. */
@@ -541,6 +546,7 @@ async function repoSettings(
         setupCommand && setupCommand.length > 0 ? setupCommand : null,
       baselineCheck: config?.baselineCheck ?? false,
       baselineReuse: config?.baselineReuse ?? null,
+      parallelReview: config?.parallelReview ?? false,
       // Fixed here with every default filled in, so the run never reads
       // factory.json again and a reload reads it afresh.
       commit: {
@@ -898,6 +904,7 @@ interface StoredRepairInput {
     commit?: CommitSettings
     baselineCheck?: boolean
     baselineReuse?: BaselineReuse | null
+    parallelReview?: boolean
   }
 }
 
@@ -1042,6 +1049,9 @@ export function buildRepairInput(
         'baselineReuse',
         () => parentInput.target?.baselineReuse ?? null,
       ),
+      // Setup records it only when on; otherwise the parent's input says.
+      parallelReview:
+        stored.parallelReview ?? parentInput.target?.parallelReview ?? false,
     },
     autoApprove: stored.autoApprove,
     checkTimeoutMs: t.checkTimeoutMs,

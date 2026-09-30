@@ -25,6 +25,7 @@ import {
   RECORD,
   RETRY_TEXT,
   REVIEW_DECISION,
+  REVIEW_STATUS,
   ROLE_NAME,
   RUN_KIND_NAME,
   SPEC_REVIEWER,
@@ -92,6 +93,16 @@ export function diagnosisText(
 /** Whether the run can simply be started again, in words. */
 export function retryLabel(retryable: boolean): string {
   return retryable ? RETRY_TEXT.retryable : RETRY_TEXT.notRetryable
+}
+
+/**
+ * How a review, or a round, run beside a check the candidate failed ended:
+ * its label and reason; null for one that counted (ADR-0029).
+ */
+export function reviewStatus(
+  status: string | null | undefined,
+): { label: string; reason: string } | null {
+  return status ? (REVIEW_STATUS[status] ?? null) : null
 }
 
 /**

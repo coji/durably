@@ -116,6 +116,7 @@ function TrendRow({ w, max }: { w: TrendWeek; max: number }) {
         ) : null}
       </Td>
       <Td num>{median(w.costUsd, formatCost)}</Td>
+      <Td num>{median(w.discardedReviewCostUsd, formatCost)}</Td>
       <Td num>{median(w.repairRuns, formatCount)}</Td>
     </tr>
   )
@@ -184,6 +185,12 @@ function TrendGroupView({ group: g }: { group: TrendGroup }) {
               </Th>
               <Th num title={`${TREND.medianTitle}${COMMON.costNote}`}>
                 {TREND.cost}
+              </Th>
+              <Th
+                num
+                title={`${TREND.discardedReviewCostTitle}${COMMON.costNote}`}
+              >
+                {TREND.discardedReviewCost}
               </Th>
               <Th num title={TREND.repairRunsTitle}>
                 {TREND.repairRuns}

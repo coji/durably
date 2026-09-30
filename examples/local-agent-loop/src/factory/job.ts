@@ -210,6 +210,12 @@ const targetSchema = z
        * instead of running the check. Read only with `baselineCheck`.
        */
       baselineReuse: baselineReuseSchema.nullable().optional(),
+      /**
+       * Verify and review each candidate side by side (ADR-0029). Absent:
+       * off, as on a run stored before it existed. Not part of the config
+       * version: it changes when the reviews run, not what they are.
+       */
+      parallelReview: z.boolean().optional(),
     }),
   ])
   .default({ kind: 'subject' })
@@ -1361,17 +1367,21 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   signal,
                 })
           // Only a reviewer with its own command or local instructions reads
-          // the base and head trees, so only then are they extracted. Trees
-          // an earlier attempt of this setup left are discarded with its
+          // the base and head trees, or every reviewer when reviews run
+          // beside the check, so only then are they extracted. Trees an
+          // earlier attempt of this setup left are discarded with its
           // worktree.
+          const parallelReview =
+            input.target.kind === 'repo' && input.target.parallelReview === true
           const snapshotsDir = reviewSnapshotsDirOf(root)
           await rm(snapshotsDir, { recursive: true, force: true })
           const target: TargetConfig =
             prepared.kind === 'repo' &&
-            [
-              ...Object.values(review),
-              ...specReviewers.map((r) => r.invocation),
-            ].some((r) => usesReviewMaterials(r ?? null))
+            (parallelReview ||
+              [
+                ...Object.values(review),
+                ...specReviewers.map((r) => r.invocation),
+              ].some((r) => usesReviewMaterials(r ?? null)))
               ? { ...prepared, reviewSnapshotsDir: snapshotsDir }
               : prepared
           const baselineCheck =
@@ -1471,6 +1481,8 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             codexPath,
             ...(Object.keys(review).length > 0 ? { review } : {}),
             ...(spec ? { spec } : {}),
+            // Only when on, so a run without it keeps the setup it had.
+            ...(parallelReview ? { parallelReview } : {}),
             ...(repairOf
               ? {
                   repairOf: {

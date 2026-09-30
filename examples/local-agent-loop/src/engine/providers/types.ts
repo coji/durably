@@ -261,6 +261,12 @@ export interface VerificationLog {
  */
 export type SessionHandling = 'continued' | 'continued-effort-change' | 'fresh'
 
+/**
+ * The measurement result of a call superseded before it was sent
+ * (ADR-0029): not an invocation, so no usage sum counts it.
+ */
+export const NOT_SENT = 'not-sent'
+
 /** Persisted per-attempt measurement. Missing values stay null (never 0-filled). */
 export interface AttemptMeasurement {
   provider: ProviderName

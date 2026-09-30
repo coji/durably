@@ -82,6 +82,18 @@ export const FactoryEventSchema = z.discriminatedUnion('type', [
     targetId: z.string(),
     reviews: z.array(reviewSchema).length(2),
   }),
+  // Verification and review of one candidate, run side by side. The
+  // verdicts are kept only when the check passed; a failed check leaves no
+  // review for the state, whatever its reviewers said (ADR-0029).
+  z.object({
+    type: z.literal('verify-review.completed'),
+    targetId: z.string(),
+    passed: z.boolean(),
+    stdout: z.string(),
+    exitCode: z.number().nullable(),
+    log: verificationLogSchema.nullable(),
+    reviews: z.array(reviewSchema).length(2).nullable(),
+  }),
   z.object({
     type: z.literal('approval.completed'),
     targetId: z.string(),

@@ -176,6 +176,7 @@ type RunInput = {
     inputFiles: Record<string, { path: string } | null>
     baselineCheck?: boolean
     baselineReuse?: { maxAgeMs: number } | null
+    parallelReview?: boolean
     commit?: {
       authorName: string | null
       authorEmail: string | null
@@ -1372,6 +1373,104 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
       input as unknown as Parameters<typeof reloadTriggerInput>[0],
     )
     assert.equal(reuseOf(dropped.input.target), null)
+  })
+})
+
+describe('parallelReview', { timeout: 180000 }, () => {
+  it('fixes the setting at trigger, off when left out, reloads it, and passes it to a repair', async () => {
+    const on = await sandbox({ check: CHECK, parallelReview: true })
+    const input = await inputOf(
+      on,
+      await trigger(on, ['--repo', on.repo, '--task', 'x']),
+    )
+    assert.equal(input.target.parallelReview, true)
+    const plain = await sandbox({ check: CHECK })
+    const plainInput = await inputOf(
+      plain,
+      await trigger(plain, ['--repo', plain.repo, '--task', 'x']),
+    )
+    assert.equal(plainInput.target.parallelReview, false)
+    // Anything but a boolean is refused before the run.
+    const bad = await sandbox({ check: CHECK, parallelReview: 'yes' })
+    await rejected(
+      bad,
+      ['--repo', bad.repo, '--task', 'x'],
+      /invalid factory config[\s\S]*parallelReview/,
+    )
+    // A reload reads the file as it is now.
+    await writeFile(
+      join(on.repo, 'factory.json'),
+      JSON.stringify({ check: CHECK }),
+    )
+    const reloaded = await reloadTriggerInput(
+      input as unknown as Parameters<typeof reloadTriggerInput>[0],
+    )
+    assert.equal(
+      (reloaded.input.target as { parallelReview?: boolean }).parallelReview,
+      false,
+    )
+  })
+
+  it('gives a repair run the setting its parent was set up with', () => {
+    const commit = 'a'.repeat(40)
+    const profile = (role: string) => ({
+      id: `fake:provider-default:provider-default:${role}`,
+      provider: 'fake',
+      requestedModel: null,
+      requestedEffort: null,
+      effectiveModel: null,
+      effectiveEffort: null,
+    })
+    const parent = (parallelReview?: boolean) => ({
+      id: 'p',
+      status: 'completed',
+      input: {
+        provider: 'fake',
+        target: {
+          kind: 'repo',
+          ...(parallelReview === undefined ? {} : { parallelReview }),
+        },
+      },
+      output: {
+        approved: true,
+        conclusion: 'approved',
+        candidate: { commit, branch: 'factory/p' },
+        delivery: { commit },
+      },
+    })
+    const setup = {
+      contextMode: 'reuse',
+      maxIterations: 1,
+      agentTimeoutMs: 600000,
+      autoApprove: true,
+      profiles: {
+        code: profile('code'),
+        correctness: profile('correctness'),
+        'edge-cases': profile('edge-cases'),
+      },
+      target: {
+        kind: 'repo',
+        repoPath: '/repo',
+        task: 'task',
+        spec: null,
+        dispositions: null,
+        issue: null,
+        checkCommand: ['true'],
+        setupCommand: null,
+        checkTimeoutMs: 120000,
+        publish: false,
+      },
+    }
+    const files = {
+      findings: { content: 'FINDING\n', ref: { path: '/f.md' } },
+      dispositions: null,
+    }
+    const repair = (p: ReturnType<typeof parent>, s: object) =>
+      buildRepairInput(p, s, files).input.target.parallelReview
+    assert.equal(repair(parent(true), { ...setup, parallelReview: true }), true)
+    // Setup records it only when on; a parent without it is off.
+    assert.equal(repair(parent(false), setup), false)
+    assert.equal(repair(parent(), setup), false)
   })
 })
 

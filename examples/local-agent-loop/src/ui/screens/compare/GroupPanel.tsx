@@ -167,6 +167,11 @@ export function GroupPanel({ group: g }: { group: Group }) {
           stat={g.costPerSuccessUsd}
           f={formatCost}
         />
+        <StatRow
+          label={COMPARE.discardedReviewCost}
+          stat={g.discardedReviewCostUsd}
+          f={formatCost}
+        />
         <StatRow label={COMPARE.repairs} stat={g.repairs} f={formatCount} />
       </DataTable>
       {g.stages.length > 0 ? (
