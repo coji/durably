@@ -788,7 +788,10 @@ export interface LoopReport {
   configVersion: string | null
   summary: RunSummary
   triage: ReportTriage | null
-  /** Null when the run had no baseline check or has not reached it. */
+  /**
+   * Null when the run had no baseline check, a repair of a verification-failed
+   * parent included, or has not reached it.
+   */
   baseline: ReportBaseline | null
   /** Null for a run from before preflight, or one that has not reached it. */
   preflight: ReportPreflight | null
@@ -1455,7 +1458,9 @@ export function reportToMarkdown(r: LoopReport): string {
       )
     else if (b.passed !== null) lines.push('- source: measured in this run')
   } else {
-    lines.push('- none (baselineCheck is off, or the run has not reached it)')
+    lines.push(
+      '- none (baselineCheck is off, the run repairs a verification-failed parent, or it has not reached the check)',
+    )
   }
   lines.push('')
   lines.push('## Preflight (each distinct provider, model and effort)')

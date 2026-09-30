@@ -61,7 +61,7 @@ import { archiveMarkerOf } from '../src/factory/layout.js'
 import { codePrompt, REVIEW_STATUS_COMPLETE } from '../src/factory/prompts.js'
 import { repairLabels } from '../src/factory/repair.js'
 import { specAdviceText } from '../src/factory/stages.js'
-import type { FactorySetup } from '../src/factory/types.js'
+import { BASELINE_STEP, type FactorySetup } from '../src/factory/types.js'
 import { createTarget } from '../src/targets/index.js'
 import { assertCandidateUnmoved, extractCommit } from '../src/targets/repo.js'
 import {
@@ -1528,10 +1528,13 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       assert.ok(input.repairOf.findings.includes(failedCheck.stdout.trimEnd()))
       assert.match(input.repairOf.findings, /adds decimals without truncation/)
       assert.match(input.repairOf.findings, /^- exit code: 1$/m)
-      const child = await durably.jobs.agentLoop.trigger(input, {
-        idempotencyKey,
-        labels,
-      })
+      // As if the parent had baselineCheck on: the child inherits it, but its
+      // base is the candidate the check failed on, so it skips the baseline
+      // instead of stopping as baseline-check-failed.
+      const child = await durably.jobs.agentLoop.trigger(
+        { ...input, target: { ...input.target, baselineCheck: true } },
+        { idempotencyKey, labels },
+      )
       await waitFor(
         async () => (await durably.getRun(child.id))?.status === 'completed',
         150000,
@@ -1580,6 +1583,10 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       )
       assert.equal(calls[0]?.measurement?.role, 'repair')
       assert.equal(calls[0]?.measurement?.iteration, 1)
+      assert.equal(childSetup.baselineCheck, true)
+      assert.ok(!attempts.some((a) => a.stepName === BASELINE_STEP))
+      assert.equal(report.baseline, null)
+      assert.equal(report.failure, null)
 
       // The report names the parent as the findings' source, with the hash
       // of the content the child stored.

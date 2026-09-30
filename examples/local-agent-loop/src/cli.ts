@@ -529,14 +529,16 @@ Repository config: factory.json at the repository root, or --config <file>:
   An approved parent needs --findings-file. For a verification-failed parent
   it is optional: without it, the findings are built from the parent's
   stored output tail and exit code of the check that failed on its last
-  candidate, with the check command. The child works on factory/<childRunId> cut from that commit, with
-  the parent's stored task, spec, issue, profiles, check, setup, timeouts,
-  codexPath, commit and publish settings and max iterations; factory.json
-  and the environment are not read, and any other flag is refused. Its setup
-  checks the candidate branch again and stops as candidate-moved, before
-  creating anything, if the branch moved since. It skips
-  triage, starts with a repair in a new session, and the inherited max
-  iterations count its own repairs only. The findings are stored as untrusted input for
+  candidate, with the check command. The child works on factory/<childRunId>
+  cut from that commit, with the parent's stored task, spec, issue,
+  profiles, check, setup, timeouts, codexPath, commit and publish settings
+  and max iterations; factory.json and the environment are not read, and
+  any other flag is refused. Its setup checks the candidate branch again and
+  stops as candidate-moved, before creating anything, if the branch moved
+  since. The child of a verification-failed parent skips baselineCheck,
+  since its base is the candidate the check failed on. It skips triage,
+  starts with a repair in a new session, and the inherited max iterations
+  count its own repairs only. The findings are stored as untrusted input for
   the repairer and both reviewers; --dispositions-file replaces the parent's
   dispositions (inherited otherwise). The same parent, findings and
   dispositions return the same child run.

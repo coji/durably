@@ -1542,13 +1542,18 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   承認済みの候補を壊していないかを判断するよう伝えます。親が `verification-failed`
   なら、修正担当とレビュアーに、基点の候補はチェックが通らず承認されていないことを
   伝え、レビュアーには基点と修正を合わせた候補全体をtaskとspecに照らして判断する
-  よう伝えます。
+  よう伝えます。レビュアーに渡す変更ファイルの一覧は修正の分だけなので、基点の
+  変更は作業ディレクトリのファイルを読んで確かめるよう伝えます。
 - 子runの基点は親の最後の候補commitです。親の元のbaseや、起動時点の `HEAD` は
   使いません。反復のブランチはissueの有無にかかわらず `factory/<子の runId>`、
   squashedブランチは `factory/<子の runId>-squashed` で、差分、patch、squashed
   commitの親はすべて親の候補commitです。
 - 子runでもsetup、preflight、設定していればbaselineCheckを実行します。
-  `baselineReuse` も親の設定を引き継ぎます。triageと
+  `baselineReuse` も親の設定を引き継ぎます。ただし親が `verification-failed`
+  の子runはbaselineCheckを実行しません。基点は親のチェックが失敗した候補なので
+  必ず `baseline-check-failed` で止まり、その失敗はすでに指摘として渡しているから
+  です。設定は記録して孫runへ引き継ぎ、reportの「Baseline check」節は `none`
+  になります。triageと
   初回実装は行わず（triage profileは記録するだけで、呼び出しも事前確認も、CLIの
   確認もしません）、最初のcode工程を `repair` の1回目として新しいsessionで始め
   ます。`profiles.repair` があればそれを使います。そのあとは通常どおり検証、

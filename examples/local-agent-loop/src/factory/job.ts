@@ -1385,8 +1385,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                     ? {
                         runId: repairOf.runId,
                         findings: repairOf.findings,
-                        parentConclusion:
-                          repairOf.parentConclusion ?? 'approved',
+                        parentConclusion: repairOf.parentConclusion,
                       }
                     : null,
                   // The parent's candidate is checked again here, not only
@@ -1436,13 +1435,18 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           // not cover, so setup must not leave any. Checked here, in the
           // step that ran setup, so a resumed baseline never mistakes the
           // check's own output for setup's.
-          if (baselineCheck && target.kind === 'repo')
+          // A repair of a verification-failed parent keeps the setting for
+          // its own children but never runs the baseline (ADR-0030).
+          const runsBaseline =
+            baselineCheck &&
+            input.repairOf?.parentConclusion !== 'verification-failed'
+          if (runsBaseline && target.kind === 'repo')
             await assertSetupLeftNoUntracked(target.workdir, signal)
           // Resolved here, in the worktree setup prepared, and never again:
           // a replay compares the values this run was set up with. A check
           // chosen from the spec is resolved in its own step instead.
           const baselineIdentity =
-            baselineCheck && target.kind === 'repo' && !target.checkFromSpec
+            runsBaseline && target.kind === 'repo' && !target.checkFromSpec
               ? await baselineIdentityOf(target)
               : null
           const spec: SpecSetup | null = specProfiles
@@ -1534,7 +1538,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                   repairOf: {
                     runId: repairOf.runId,
                     candidateCommit: repairOf.candidateCommit,
-                    parentConclusion: repairOf.parentConclusion ?? 'approved',
+                    parentConclusion: repairOf.parentConclusion,
                   },
                 }
               : {}),
@@ -1707,9 +1711,12 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
         // and an interrupted check is graded again. With `baselineReuse`, a
         // matching passing result of another run is used instead, once the
         // worktree is proven to be as the check would need it. The choice is
-        // this step's output, so a replay never looks again.
+        // this step's output, so a replay never looks again. A repair of a
+        // verification-failed parent skips it: its base is the candidate the
+        // check failed on, and that failure is its findings (ADR-0030).
         if (
           runSetup.baselineCheck &&
+          runSetup.repairOf?.parentConclusion !== 'verification-failed' &&
           target instanceof RepoTarget &&
           runSetup.target.kind === 'repo'
         ) {

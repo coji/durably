@@ -838,18 +838,23 @@ export function repairCallsOf(rows: AttemptRow[]): ReportRepairCall[] {
   return [...calls.values()]
 }
 
+/** A reference with the SHA-256 of the content, or null without either. */
+function hashed<R extends object>(ref: R | null | undefined, content: unknown) {
+  return ref && typeof content === 'string'
+    ? { ...ref, sha256: createHash('sha256').update(content).digest('hex') }
+    : null
+}
+
 /**
  * Each input file's path, with the SHA-256 of the content the run stored and
  * used. The hash is computed here, so it always describes that content.
  */
 function inputHashes(input: PersistedInput | null): ReportInputs {
   const target = input?.target
-  const hashed = (path: string | undefined, content: unknown) =>
-    path && typeof content === 'string'
-      ? { path, sha256: createHash('sha256').update(content).digest('hex') }
-      : null
-  const entry = (name: 'task' | 'spec' | 'dispositions') =>
-    hashed(target?.inputFiles?.[name]?.path, target?.[name])
+  const entry = (name: 'task' | 'spec' | 'dispositions') => {
+    const path = target?.inputFiles?.[name]?.path
+    return hashed(path ? { path } : null, target?.[name])
+  }
   return {
     task: entry('task'),
     spec: entry('spec'),
@@ -865,14 +870,15 @@ function inputHashes(input: PersistedInput | null): ReportInputs {
  */
 function findingsHash(input: PersistedInput | null): ReportFindings | null {
   const origin = input?.repairOf
-  if (typeof origin?.findings !== 'string') return null
-  const sha256 = createHash('sha256').update(origin.findings).digest('hex')
-  const ref = origin.findingsFile
-  return ref?.path
-    ? { path: ref.path, sha256 }
-    : ref?.parentRun
-      ? { parentRun: ref.parentRun, sha256 }
-      : null
+  const ref = origin?.findingsFile
+  return hashed(
+    ref?.path
+      ? { path: ref.path }
+      : ref?.parentRun
+        ? { parentRun: ref.parentRun }
+        : null,
+    origin?.findings,
+  )
 }
 
 /** The run a repair run repairs, from its stored input. */
