@@ -1,4 +1,4 @@
-import type { Stat, TrendCell } from '../../engine/compare'
+import type { Stat, TrendGroup, TrendWeek } from '../../engine/compare'
 import {
   formatCost,
   formatCount,
@@ -8,11 +8,10 @@ import {
 } from '../../engine/format'
 import { DataTable, Td, Th } from '../components/DataTable'
 import { EmptyState } from '../components/EmptyState'
-import { Panel } from '../components/Layout'
 import { COMMON, COMPARE, TREND } from '../glossary'
 import type { CompareResponse, TrendResponse } from '../server'
 import { GroupPanel } from './compare/GroupPanel'
-import { MedianCell, type Formatter } from './compare/StatTable'
+import { Figure, MedianCell, type Formatter } from './compare/StatTable'
 
 export type CompareView = 'trend' | 'config'
 
@@ -61,47 +60,53 @@ function Intro({ text, rules }: { text: string; rules: string }) {
   )
 }
 
+/** A rate with how many tasks it counts under it. */
+function RateCell({ n, rate }: { n: number; rate: number | null }) {
+  return (
+    <span className="flex flex-col items-end">
+      {formatPercent(rate)}
+      <span className="text-fg-2 text-xs">{TREND.count(formatCount(n))}</span>
+    </span>
+  )
+}
+
 /**
- * A week's or the window's numbers; a row without runs says so once, and a
- * week of a single run is marked, since its medians are that run's values.
+ * One week's tasks; a week without tasks says so once, and a week of a
+ * single task is marked, since its medians are that task's values.
  */
-function TrendRow({
-  label,
-  cell,
-  max,
-  strong,
-}: {
-  label: string
-  cell: TrendCell
-  /** The longest weekly median lead time in the group, for the bar. */
-  max: number
-  strong?: boolean
-}) {
-  const empty = cell.runs === 0
-  // A week of one run has that run's values as its medians.
-  const single = cell.runs === 1 && !strong
-  const dash = <span className="text-fg-3">{TREND.noRuns}</span>
+function TrendRow({ w, max }: { w: TrendWeek; max: number }) {
+  const empty = w.tasks === 0
+  const dash = <span className="text-fg-3">{TREND.noTasks}</span>
   const median = (stat: Stat, f: Formatter) =>
     empty ? dash : <MedianCell stat={stat} f={f} />
-  const lead = cell.leadTimeMs.median
+  const lead = w.leadTimeMs.median
   return (
-    <tr className={strong ? 'font-medium' : undefined}>
+    <tr>
       <Td>
-        {label}
-        {single ? (
+        {formatWeek(w.week)}
+        {w.tasks === 1 ? (
           <span
             title={TREND.singleTitle}
-            className="text-fg-2 bg-sunken ml-2 rounded-sm px-1 text-xs font-normal whitespace-nowrap"
+            className="text-fg-2 bg-sunken ml-2 rounded-sm px-1 text-xs whitespace-nowrap"
           >
             {TREND.single}
           </span>
         ) : null}
       </Td>
-      <Td num>{formatCount(cell.runs)}</Td>
-      <Td num>{empty ? dash : formatPercent(cell.approvalRate)}</Td>
+      <Td num>{formatCount(w.tasks)}</Td>
       <Td num>
-        {median(cell.leadTimeMs, formatDuration)}
-        {!empty && lead !== null && !strong ? (
+        {empty ? (
+          dash
+        ) : (
+          <RateCell n={w.firstPassApproved} rate={w.firstPassRate} />
+        )}
+      </Td>
+      <Td num>
+        {empty ? dash : <RateCell n={w.approved} rate={w.approvalRate} />}
+      </Td>
+      <Td num>
+        {median(w.leadTimeMs, formatDuration)}
+        {!empty && lead !== null ? (
           <span aria-hidden className="bg-sunken mt-1 block h-1 rounded-sm">
             <span
               className="bg-fg-3/60 ml-auto block h-full rounded-sm"
@@ -110,66 +115,95 @@ function TrendRow({
           </span>
         ) : null}
       </Td>
-      <Td num>{median(cell.costUsd, formatCost)}</Td>
-      <Td num>{median(cell.repairs, formatCount)}</Td>
+      <Td num>{median(w.costUsd, formatCost)}</Td>
+      <Td num>{median(w.repairRuns, formatCount)}</Td>
     </tr>
   )
 }
 
-function TrendGroupPanel({
-  group: g,
-  days,
-}: {
-  group: TrendResponse['groups'][number]
-  days: number
-}) {
+/** Under a median card: how many tasks it could not count, if any. */
+function unknownNote(stat: Stat) {
+  return stat.unknown > 0
+    ? COMPARE.unknownCount(formatCount(stat.unknown))
+    : TREND.median
+}
+
+/**
+ * One model and effort: the window's two approval rates and a task's time
+ * and cost first, then the same numbers week by week.
+ */
+function TrendGroupView({ group: g }: { group: TrendGroup }) {
+  const t = g.total
   const max = Math.max(1, ...g.weeks.map((w) => w.leadTimeMs.median ?? 0))
+  const tasks = formatCount(t.tasks)
   return (
-    <Panel
-      title={`${g.model ?? COMMON.defaultSetting}${COMMON.separator}${g.effort ?? COMMON.defaultSetting}`}
-    >
-      <p className="text-fg-2 -mt-2 mb-2 text-xs">
-        {TREND.groupRuns(
-          formatCount(g.total.runs),
-          formatPercent(g.total.approvalRate),
-        )}
-      </p>
-      <DataTable
-        head={
-          <>
-            <Th>{TREND.week}</Th>
-            <Th num>{TREND.runs}</Th>
-            <Th num>{TREND.approvalRate}</Th>
-            <Th num>{TREND.leadTime}</Th>
-            <Th num title={COMMON.costNote}>
-              {TREND.cost}
-            </Th>
-            <Th num>{TREND.repairs}</Th>
-          </>
-        }
-      >
-        {g.weeks.map((w) => (
-          <TrendRow
-            key={w.week}
-            label={formatWeek(w.week)}
-            cell={w}
-            max={max}
+    <section className="flex flex-col gap-2">
+      <h2 className="flex flex-wrap items-baseline gap-x-3 text-base font-semibold">
+        {`${g.model ?? COMMON.defaultSetting}${COMMON.separator}${g.effort ?? COMMON.defaultSetting}`}
+        <span className="text-fg-2 text-xs font-normal">
+          {TREND.groupTasks(tasks, formatCount(t.repairRuns.median))}
+        </span>
+      </h2>
+      <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+        <dl className="border-line bg-raised grid grid-cols-2 rounded-lg border py-1">
+          <Figure
+            label={TREND.firstPassRate}
+            value={formatPercent(t.firstPassRate)}
+            note={TREND.share(formatCount(t.firstPassApproved), tasks)}
           />
-        ))}
-        <TrendRow
-          label={TREND.total(formatCount(days))}
-          cell={g.total}
-          max={max}
-          strong
-        />
-      </DataTable>
-    </Panel>
+          <Figure
+            label={TREND.approvalRate}
+            value={formatPercent(t.approvalRate)}
+            note={TREND.share(formatCount(t.approved), tasks)}
+          />
+          <Figure
+            label={TREND.leadTimePerTask}
+            value={formatDuration(t.leadTimeMs.median)}
+            note={unknownNote(t.leadTimeMs)}
+          />
+          <Figure
+            label={TREND.costPerTask}
+            value={formatCost(t.costUsd.median)}
+            note={unknownNote(t.costUsd)}
+          />
+        </dl>
+        <DataTable
+          framed
+          head={
+            <>
+              <Th>{TREND.week}</Th>
+              <Th num>{TREND.tasks}</Th>
+              <Th num title={TREND.firstPassTitle}>
+                {TREND.firstPass}
+              </Th>
+              <Th num title={TREND.approvedTitle}>
+                {TREND.approved}
+              </Th>
+              <Th num title={TREND.medianTitle}>
+                {TREND.leadTime}
+              </Th>
+              <Th num title={`${TREND.medianTitle}${COMMON.costNote}`}>
+                {TREND.cost}
+              </Th>
+              <Th num title={TREND.repairRunsTitle}>
+                {TREND.repairRuns}
+              </Th>
+            </>
+          }
+        >
+          {g.weeks.map((w) => (
+            <TrendRow key={w.week} w={w} max={max} />
+          ))}
+        </DataTable>
+      </div>
+    </section>
   )
 }
 
 /**
- * Whether the factory gets better: the finished runs of the last 30 days,
- * week by week, one panel per model and effort the code stage ran on.
+ * Whether the factory gets better: the tasks finished in the last 30 days,
+ * week by week, one block per model and effort the first run's code stage
+ * ran on.
  */
 export function TrendScreen({
   data,
@@ -191,16 +225,12 @@ export function TrendScreen({
       ) : (
         <>
           <Intro
-            text={TREND.intro(days, formatCount(data.runIds.length))}
+            text={TREND.intro(days, formatCount(data.taskIds.length))}
             rules={`${data.includeFake ? '' : TREND.fakeLeftOut(formatCount(data.fakeExcluded))}${TREND.note}`}
           />
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="flex flex-col gap-6">
             {data.groups.map((g) => (
-              <TrendGroupPanel
-                key={`${g.model}|${g.effort}`}
-                group={g}
-                days={data.days}
-              />
+              <TrendGroupView key={`${g.model}|${g.effort}`} group={g} />
             ))}
           </div>
         </>

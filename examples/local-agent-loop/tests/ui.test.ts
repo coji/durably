@@ -1938,7 +1938,7 @@ describe('diagnosis wording on the page', () => {
           days: 30,
           includeFake: false,
           weeks: [],
-          runIds: [],
+          taskIds: [],
           fakeExcluded: 1200,
           groups: [],
         },
@@ -2814,8 +2814,13 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
           .map((r) => r.id)
           .sort(),
       )
-      // The trend is `compare --trend` over the same runs: every one of
-      // them is fake, so all are left out and counted as such.
+      // The trend is `compare --trend` over the same tasks: every one of
+      // them started on the fake provider, so all are left out and counted
+      // as tasks, and each is marked as a rehearsal in the list.
+      assert.ok(tasksNow.tasks.every((t) => t.fake))
+      const finishedTasks = tasksNow.tasks
+        .filter((t) => finished.includes(t.runs.at(-1)?.id ?? ''))
+        .map((t) => t.id)
       const trend = await api<TrendResponse>(port, '/api/trend')
       const trendCli = await demo(home, [
         'compare',
@@ -2825,7 +2830,7 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
       ])
       assert.equal(trendCli.code, 0, trendCli.stderr)
       assert.deepEqual(trend, JSON.parse(trendCli.stdout))
-      assert.equal(trend.fakeExcluded, finished.length)
+      assert.equal(trend.fakeExcluded, finishedTasks.length)
       assert.deepEqual(trend.groups, [])
       const withFake = await demo(home, [
         'compare',
@@ -2834,9 +2839,9 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
         '--format',
         'json',
       ])
-      assert.equal(
-        (JSON.parse(withFake.stdout) as TrendResponse).runIds.length,
-        finished.length,
+      assert.deepEqual(
+        [...(JSON.parse(withFake.stdout) as TrendResponse).taskIds].sort(),
+        [...finishedTasks].sort(),
       )
 
       // The detail says the run's state once, and keeps the evidence and
@@ -3378,6 +3383,144 @@ describe('numbers on the screens', () => {
       )
     assert.ok(!aside(repair).includes(ACTION.unarchive))
     assert.ok(aside(first).includes(ACTION.unarchive))
+  })
+
+  it('marks a finished task started on the fake provider as 模擬, and only that one', () => {
+    const fakeRoot = '01K6D2Q7XB3M9RKT4WFAKE00'
+    const realRoot = '01K6D2Q7XB3M9RKT4WREAL00'
+    const openFake = '01K6D2Q7XB3M9RKT4WOPEN00'
+    const runs = [
+      row({ id: fakeRoot, name: 'ためしの題材' }),
+      // A real repair of a fake task leaves the task a rehearsal.
+      row({ id: `${fakeRoot}R`, createdAt: '2026-09-30T11:30:00.000Z' }),
+      row({ id: realRoot, name: '本番の題材' }),
+      row({
+        id: openFake,
+        name: '動いている題材',
+        status: 'leased',
+        conclusion: null,
+        diagnosis: { kind: 'running', next: [], failure: null },
+      } as unknown as Partial<RunRow>),
+    ]
+    const fake = new Set([fakeRoot, openFake])
+    const tasks = groupTasks(
+      runs.map((r) => ({
+        id: r.id,
+        createdAt: r.createdAt,
+        parentId: r.id === `${fakeRoot}R` ? fakeRoot : null,
+        kind: r.diagnosis.kind,
+        approved: r.status === 'completed',
+        leadTimeMs: r.leadTimeMs,
+        costUsd: r.costUsd,
+        fake: fake.has(r.id),
+      })),
+    )
+    assert.deepEqual(
+      tasks.map((t) => [t.id, t.fake]),
+      [
+        [openFake, true],
+        [fakeRoot, true],
+        [realRoot, false],
+      ],
+    )
+    const data = { exists: true, db: '/tmp/x.db', now, runs, tasks }
+    const html = renderToStaticMarkup(
+      createElement(RunsScreen, {
+        data: data as unknown as RunsResponse,
+        act: noAct,
+      }),
+    )
+    // Listed with the rest, marked once, with why on hover.
+    assert.equal(html.split(`>${LIST.fake}<`).length - 1, 1)
+    assert.ok(html.includes(LIST.fakeTitle))
+    const done = htmlText(html).slice(htmlText(html).indexOf(LIST.done))
+    assert.ok(done.includes('ためしの題材'))
+    assert.ok(done.includes('本番の題材'))
+    assert.ok(
+      done.indexOf(LIST.fake) > done.indexOf('ためしの題材') &&
+        done.indexOf(LIST.fake) < done.indexOf('本番の題材'),
+    )
+  })
+
+  it("shows the trend's two approval rates and a task's time and cost first, as the engine counted them", () => {
+    const median = (m: number | null, unknown = 0) => ({
+      n: m === null ? 0 : 1,
+      unknown,
+      median: m,
+      min: m,
+      max: m,
+    })
+    const cell = {
+      tasks: 9,
+      firstPassApproved: 4,
+      firstPassRate: 4 / 9,
+      approved: 8,
+      approvalRate: 8 / 9,
+      leadTimeMs: median(854_000),
+      costUsd: median(4.44, 2),
+      repairRuns: median(1),
+    }
+    const empty = {
+      tasks: 0,
+      firstPassApproved: 0,
+      firstPassRate: null,
+      approved: 0,
+      approvalRate: null,
+      leadTimeMs: median(null),
+      costUsd: median(null),
+      repairRuns: median(null),
+    }
+    const html = renderToStaticMarkup(
+      createElement(TrendScreen, {
+        data: {
+          days: 30,
+          includeFake: false,
+          weeks: ['2026-09-21', '2026-09-28'],
+          taskIds: ['a'],
+          fakeExcluded: 6,
+          groups: [
+            {
+              model: 'gpt-6-astra',
+              effort: 'medium',
+              taskIds: ['a'],
+              total: cell,
+              weeks: [
+                { week: '2026-09-21', ...empty },
+                { week: '2026-09-28', ...cell },
+              ],
+            },
+          ],
+        },
+        onView: () => {},
+      }),
+    )
+    const text = htmlText(html)
+    // Two views, as before.
+    assert.equal(html.split('aria-pressed').length - 1, 2)
+    // The rates and the medians lead, in that order, before the weeks.
+    const order = [
+      TREND.firstPassRate,
+      '44%',
+      TREND.share('4', '9'),
+      TREND.approvalRate,
+      '89%',
+      TREND.share('8', '9'),
+      TREND.leadTimePerTask,
+      '14分14秒',
+      TREND.costPerTask,
+      '$4.44',
+      '不明 2 件',
+      '9/21〜',
+      '9/28〜',
+    ].map((word) => text.indexOf(word))
+    assert.ok(
+      order.every((at, i) => at >= 0 && (i === 0 || at > (order[i - 1] ?? 0))),
+      JSON.stringify(order),
+    )
+    assert.ok(text.includes(TREND.groupTasks('9', '1')))
+    assert.ok(text.includes(TREND.count('4')))
+    assert.ok(html.includes(TREND.fakeLeftOut('6')))
+    assert.doesNotMatch(text, /\(/)
   })
 
   it('writes cost, time and tokens as a person reads them, and unknown as 不明', () => {

@@ -2876,7 +2876,7 @@ describe('compare --trend', { timeout: 120000 }, () => {
       days: Number.MAX_SAFE_INTEGER,
       includeFake: false,
       weeks: [],
-      runIds: [],
+      taskIds: [],
       fakeExcluded: 0,
       groups: [],
     })

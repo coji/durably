@@ -840,7 +840,7 @@ export function repairParentId(run: {
 export function taskRunInput(
   run: Pick<Run, 'id' | 'createdAt' | 'labels' | 'input'>,
   kind: DiagnosisKind,
-  report: Pick<LoopReport, 'summary'>,
+  report: Pick<LoopReport, 'summary' | 'fake'>,
 ): TaskRunInput {
   return {
     id: run.id,
@@ -850,6 +850,7 @@ export function taskRunInput(
     approved: report.summary.success,
     leadTimeMs: report.summary.leadTimeMs,
     costUsd: report.summary.costUsd,
+    fake: report.fake,
   }
 }
 

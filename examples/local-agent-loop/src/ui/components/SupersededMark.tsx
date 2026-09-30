@@ -23,3 +23,15 @@ export function SupersededMark() {
     </span>
   )
 }
+
+/**
+ * The word beside a finished task whose first run used the fake provider,
+ * with why on hover: a rehearsal, still listed but left out of the trend.
+ */
+export function FakeMark() {
+  return (
+    <span title={LIST.fakeTitle} className="text-fg-2 text-xs">
+      {LIST.fake}
+    </span>
+  )
+}

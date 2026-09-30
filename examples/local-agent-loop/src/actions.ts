@@ -30,11 +30,7 @@ import {
   runRootOf,
 } from './factory/layout.js'
 import { repairLabels } from './factory/repair.js'
-import {
-  removeQuietly,
-  removeRunWorktree,
-  squashedBranchFor,
-} from './targets/repo.js'
+import { removeRunWorktree, squashedBranchFor } from './targets/repo.js'
 
 type Log = (line: string) => void
 
@@ -193,13 +189,12 @@ async function cleanUpRun(
     deletedBranches: [],
     warnings: [],
   }
-  if (existsSync(files.worktree)) {
-    const warning = await removeRunWorktree(files.repoPath, files.runRoot)
-    if (warning) done.warnings.push(`worktree ${files.worktree}: ${warning}`)
-    else done.worktreeRemoved = true
-  } else {
-    await removeQuietly(files.reviewSnapshots)
-  }
+  // Called also when the directory is gone, so a worktree deleted outside
+  // git leaves no stale registration that would keep its branch checked out.
+  const present = existsSync(files.worktree)
+  const warning = await removeRunWorktree(files.repoPath, files.runRoot)
+  if (warning) done.warnings.push(`worktree ${files.worktree}: ${warning}`)
+  else done.worktreeRemoved = present
   if (deleteBranches && !files.delivered)
     for (const branch of await existingBranches(files)) {
       const warning = await deleteBranch(files.repoPath, branch)

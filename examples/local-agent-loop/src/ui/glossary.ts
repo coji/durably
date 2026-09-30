@@ -542,6 +542,9 @@ export const LIST = {
   repairRun: (n: number) => `指摘からの修正 ${n}`,
   superseded: '後の修正で解決',
   archived: 'アーカイブ済み',
+  fake: '模擬',
+  fakeTitle:
+    '最初の実行が模擬のプロバイダーで動いたタスクです。実際のモデルは呼んでいないので、週ごとの推移には数えません。',
   archivedTitle:
     '止まった実行を人がアーカイブしたので、人の手が要るものには出しません。止まった理由はそのまま残っています。',
   supersededTitle:
@@ -828,25 +831,39 @@ export const COMPARE = {
 } as const
 
 export const TREND = {
-  intro: (days: string, runs: string) =>
-    `直近 ${days} 日に終わった実行 ${runs} 件を、実装のモデルと推論量ごとに週で並べています。`,
-  fakeLeftOut: (n: string) => `模擬の実行 ${n} 件は除いています。`,
-  note: '週は月曜から始まります。時間、費用、修正回数は中央値で、分からない値は 0 とせず除きます。',
+  intro: (days: string, tasks: string) =>
+    `直近 ${days} 日に終わったタスク ${tasks} 件を、最初の実行のモデルと推論量ごとに、最後の実行が終わった週で並べています。`,
+  fakeLeftOut: (n: string) => `模擬のタスク ${n} 件は除いています。`,
+  note: '週は月曜から始まります。タスクの所要時間と費用は、修正の実行も含めたすべての実行の合計の中央値です。分からない値を含むタスクは 0 とせず、その中央値から除きます。',
   single: '1 件のみ',
-  singleTitle: 'この週の実行は 1 件だけなので、中央値はその 1 件の値です。',
-  empty: (days: string) => `直近 ${days} 日に終わった実行はありません。`,
-  /** Every finished run of the window was a fake-provider run, left out. */
+  singleTitle: 'この週のタスクは 1 件だけなので、中央値はその 1 件の値です。',
+  empty: (days: string) => `直近 ${days} 日に終わったタスクはありません。`,
+  /** Every finished task of the window was a fake-provider task, left out. */
   onlyFake: (days: string, n: string) =>
-    `直近 ${days} 日に終わった実行は模擬の実行 ${n} 件だけで、集計からは除いています。`,
+    `直近 ${days} 日に終わったタスクは模擬のタスク ${n} 件だけで、集計からは除いています。`,
   week: '週',
-  runs: '実行数',
-  approvalRate: '承認率',
+  tasks: 'タスク',
+  firstPass: '初回承認',
+  firstPassRate: '初回承認率',
+  firstPassTitle: '修正の実行なしに、最初の実行で承認されたタスクの割合です。',
+  approved: '最終承認',
+  approvalRate: '最終承認率',
+  approvedTitle:
+    '最後の実行が承認されて届けられたタスクの割合です。修正の実行で承認されたタスクも数えます。',
   leadTime: '所要時間',
+  leadTimePerTask: 'タスクあたりの所要時間',
   cost: '費用',
-  repairs: '修正回数',
-  total: (days: string) => `${days} 日間`,
-  noRuns: '–',
-  groupRuns: (n: string, rate: string) => `実行 ${n} 件 · 承認率 ${rate}`,
+  costPerTask: 'タスクあたりの費用',
+  medianTitle: 'タスクごとに、すべての実行を合計した値の中央値です。',
+  repairRuns: '修正の実行',
+  repairRunsTitle: '最初の実行の後に始めた修正の実行の本数の中央値です。',
+  noTasks: '–',
+  /** How many tasks of the row a rate counts. */
+  count: (n: string) => `${n} 件`,
+  share: (n: string, tasks: string) => `${tasks} 件中 ${n} 件`,
+  median: '中央値',
+  groupTasks: (tasks: string, repairs: string) =>
+    `タスク ${tasks} 件 · 修正の実行は中央値 ${repairs} 本`,
 } as const
 
 // ---------------------------------------------------------------- design

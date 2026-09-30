@@ -59,8 +59,8 @@ import {
 } from '../engine/build-report.js'
 import {
   compareReports,
-  inTrendWindow,
   trendOf,
+  trendRunIds,
   type Comparison,
   type Trend,
 } from '../engine/compare.js'
@@ -212,8 +212,9 @@ export interface RunDetailResponse {
 }
 
 /**
- * Finished runs of the last 30 days by week and code model and effort, fake
- * runs left out: what `compare --trend --format json` prints.
+ * Tasks whose newest run finished in the last 30 days, by week and the first
+ * run's code model and effort, fake tasks left out: what `compare --trend
+ * --format json` prints.
  */
 export type TrendResponse = Trend
 
@@ -1526,13 +1527,17 @@ function createUiApi() {
     if (!db) return trendOf([], { now })
     const all = await orEmpty(allRuns(db), [])
     reports.keep(all)
-    // Only the window's runs get a report, never the whole history.
-    const done = all.filter((r) => inTrendWindow(r, { now }))
+    // Only the runs of the window's tasks get a report, never the whole
+    // history.
+    const rows = all.map((run) => ({ ...run, parentId: repairParentId(run) }))
+    const read = new Set(trendRunIds(rows, { now }))
+    const done = all.filter((r) => read.has(r.id))
     const built = await listedReports(reports, readOnce(db, done), done, all)
     return trendOf(
       built.map(({ run, report }) => ({
+        ...run,
+        parentId: repairParentId(run),
         report,
-        completedAt: run.completedAt,
       })),
       { now },
     )

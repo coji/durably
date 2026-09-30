@@ -9,7 +9,7 @@ import { LiveProgress } from '../components/LiveProgress'
 import { RunActions } from '../components/RunActions'
 import { runHref } from '../components/RunLink'
 import { StageTrack } from '../components/StageTrack'
-import { ArchivedMark } from '../components/SupersededMark'
+import { ArchivedMark, FakeMark } from '../components/SupersededMark'
 import { runState, TaskList, TaskRow, TaskTotal } from '../components/TaskRow'
 import { Ago } from '../components/Time'
 import { COMMON, LIST } from '../glossary'
@@ -19,8 +19,9 @@ import { TaskRuns } from './list/TaskRuns'
 
 /**
  * The facts at the end of a task's line. A finished task shows its time and
- * cost over every run, marked as a total when it took more than one; an open
- * task shows that total only when it took more than one run.
+ * cost over every run, marked as a total when it took more than one, and
+ * whether it was a rehearsal on the fake provider; an open task shows that
+ * total only when it took more than one run.
  */
 function Meta({ task, rep, now }: { task: Task; rep: RunRow; now: string }) {
   const finished = task.attention === 'done'
@@ -28,6 +29,7 @@ function Meta({ task, rep, now }: { task: Task; rep: RunRow; now: string }) {
   return (
     <>
       {rep.archived ? <ArchivedMark /> : null}
+      {finished && task.fake ? <FakeMark /> : null}
       {several ? <span>{LIST.runs(formatCount(task.runs.length))}</span> : null}
       {finished || several ? (
         <TaskTotal total={task.total} several={several} />

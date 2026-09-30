@@ -17,6 +17,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rm,
   symlink,
   writeFile,
 } from 'node:fs/promises'
@@ -1857,6 +1858,7 @@ describe('worktrees of finished runs', { timeout: 300000 }, () => {
         issue: { number: 12, title: 'Decimal add', url: 'https://x/12' },
       })
       const marked = await trigger(durably, repo, { check: failing })
+      const gone = await trigger(durably, repo, { check: failing })
       const waiting = await trigger(durably, repo, { autoApprove: false })
       await waitFor(
         async () =>
@@ -1864,6 +1866,7 @@ describe('worktrees of finished runs', { timeout: 300000 }, () => {
           (await status(stopped.id)) === 'completed' &&
           (await status(archived.id)) === 'completed' &&
           (await status(marked.id)) === 'completed' &&
+          (await status(gone.id)) === 'completed' &&
           (await status(waiting.id)) === 'waiting',
         150000,
         'runs finish or wait',
@@ -2057,6 +2060,33 @@ describe('worktrees of finished runs', { timeout: 300000 }, () => {
       )
       assert.ok(existsSync(await work(next.runId)))
       assert.notEqual(await work(next.runId), await work(stopped.id))
+
+      // A worktree deleted outside git leaves its registration behind, which
+      // keeps its branch checked out; archiving prunes it and deletes the
+      // branch, and says it removed no worktree.
+      await rm(await work(gone.id), { recursive: true, force: true })
+      assert.match(
+        await git(repo, ['worktree', 'list', '--porcelain']),
+        new RegExp(gone.id),
+      )
+      assert.deepEqual(
+        await archiveRun(durably, gone.id, { deleteBranches: true }),
+        {
+          changed: true,
+          worktreeRemoved: false,
+          deletedBranches: [`factory/${gone.id}`],
+          warnings: [],
+        },
+      )
+      assert.doesNotMatch(
+        await git(repo, ['worktree', 'list', '--porcelain']),
+        new RegExp(gone.id),
+      )
+      assert.equal(await branchCommit(repo, `factory/${gone.id}`), null)
+      assert.equal(
+        existsSync(join(stateRoot, 'runs', gone.id, 'review-snapshots')),
+        false,
+      )
     } finally {
       await durably.stop()
       await durably.db.destroy()

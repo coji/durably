@@ -18,6 +18,7 @@ import {
   type ReportTriage,
   type TriageCalibration,
 } from './report.js'
+import { sumKnown, taskRoots } from './status.js'
 import { TERMINAL_STATUSES } from './terminal.js'
 
 /** The Markdown is English; the web UI reads the same values in Japanese. */
@@ -423,21 +424,39 @@ export function parseTrendDays(raw: string | undefined): number {
   return days
 }
 
-/** A finished run's report and when it finished, as the trend reads it. */
-export interface TrendRun {
-  report: LoopReport
+/** A run as the trend picks its tasks, before any report is built. */
+export interface TrendRow {
+  id: string
+  /** The run it repairs, from `repairParentId`; null for a first run. */
+  parentId: string | null
+  createdAt: string
+  status: string
   completedAt: string | null
 }
 
-/** One group's runs over one week, or over the whole window. */
+/** A run of a task the trend reads, with its report. */
+export interface TrendRun extends TrendRow {
+  report: LoopReport
+}
+
+/**
+ * One group's tasks over one week, or over the whole window. A task's time
+ * and cost are its runs' sums; either is unknown when any run's is.
+ */
 export interface TrendCell {
-  runs: number
+  tasks: number
+  /** Tasks approved on their first run, without a repair run. */
+  firstPassApproved: number
+  /** `firstPassApproved / tasks`; null without tasks. */
+  firstPassRate: number | null
+  /** Tasks whose newest run was approved and delivered. */
   approved: number
-  /** `approved / runs`; null without runs. */
+  /** `approved / tasks`; null without tasks. */
   approvalRate: number | null
   leadTimeMs: Stat
   costUsd: Stat
-  repairs: Stat
+  /** Repair runs below each task's first run. */
+  repairRuns: Stat
 }
 
 export interface TrendWeek extends TrendCell {
@@ -445,33 +464,34 @@ export interface TrendWeek extends TrendCell {
   week: string
 }
 
-/** The runs whose code profile ran on one model and effort. */
+/** The tasks whose first run's code profile ran on one model and effort. */
 export interface TrendGroup {
   /** Null when neither the calls nor the input named one. */
   model: string | null
   effort: string | null
-  /** Newest completion first. */
-  runIds: string[]
+  /** Task IDs, each its first run's; newest completion first. */
+  taskIds: string[]
   total: TrendCell
-  /** One per week of the trend, oldest first, weeks without runs included. */
+  /** One per week of the trend, oldest first, weeks without tasks included. */
   weeks: TrendWeek[]
 }
 
 /**
- * Finished runs by week and by the code profile's model and effort, for
- * reading whether the factory gets better. The CLI version is not part of the
- * group: a new release of the same model is the same line.
+ * Finished tasks by the week their newest run finished and by their first
+ * run's code model and effort, for reading whether the factory gets better.
+ * The CLI version is not part of the group: a new release of the same model
+ * is the same line.
  */
 export interface Trend {
   days: number
   includeFake: boolean
-  /** Mondays from the first run's week to the current week, oldest first. */
+  /** Mondays from the first task's week to the current week, oldest first. */
   weeks: string[]
-  /** The runs counted, newest completion first. */
-  runIds: string[]
-  /** Fake-provider runs in the window that were left out. */
+  /** The tasks counted, newest completion first. */
+  taskIds: string[]
+  /** Tasks in the window whose first run used the fake provider, left out. */
   fakeExcluded: number
-  /** Most runs first. */
+  /** Most tasks first. */
   groups: TrendGroup[]
 }
 
@@ -491,57 +511,98 @@ function mondayOf(ms: number): Date {
   return d
 }
 
-function cellOf(list: TrendRun[]): TrendCell {
-  const approved = list.filter((r) => r.report.summary.success).length
+/**
+ * The tasks the trend reads, each its runs oldest first: a first run and its
+ * repair runs, as `groupTasks` groups them, whose newest run finished with a
+ * completion time in the `days` before `now`.
+ */
+function finishedTasks<T extends TrendRow>(
+  runs: T[],
+  options: { now: number; days: number },
+): { root: T; runs: T[]; latest: T; at: number }[] {
+  const rootOf = taskRoots(runs)
+  const byRoot = new Map<string, T[]>()
+  for (const run of runs) {
+    const root = rootOf(run)
+    byRoot.set(root, [...(byRoot.get(root) ?? []), run])
+  }
+  return [...byRoot].flatMap(([id, list]) => {
+    const ordered = [...list].sort(
+      (x, y) => Date.parse(x.createdAt) - Date.parse(y.createdAt),
+    )
+    const latest = ordered.at(-1)
+    const root = list.find((r) => r.id === id)
+    const at = Date.parse(latest?.completedAt ?? '')
+    return latest &&
+      root &&
+      TERMINAL_STATUSES.includes(latest.status) &&
+      Number.isFinite(at) &&
+      at > options.now - options.days * DAY_MS &&
+      at <= options.now
+      ? [{ root, runs: ordered, latest, at }]
+      : []
+  })
+}
+
+/**
+ * The runs to build reports for: every run of every task the trend reads,
+ * also those that finished before the window, so a task's totals cover all
+ * of it. Callers pass it the runs as stored, so the reports built never
+ * grow with the whole history.
+ */
+export function trendRunIds(
+  runs: TrendRow[],
+  options: { now: number; days?: number },
+): string[] {
+  return finishedTasks(runs, {
+    now: options.now,
+    days: options.days ?? TREND_DAYS,
+  }).flatMap((t) => t.runs.map((r) => r.id))
+}
+
+type TrendTask = ReturnType<typeof finishedTasks<TrendRun>>[number]
+
+function cellOf(tasks: TrendTask[]): TrendCell {
+  const rate = (n: number) => (tasks.length > 0 ? n / tasks.length : null)
+  const approvedRun = (r: TrendRun) =>
+    r.report.summary.success && r.report.delivery !== null
+  const firstPassApproved = tasks.filter(
+    (t) => t.runs.length === 1 && approvedRun(t.latest),
+  ).length
+  const approved = tasks.filter((t) => approvedRun(t.latest)).length
+  const sum = (t: TrendTask, pick: (r: TrendRun) => number | null) =>
+    sumKnown(t.runs.map(pick))
   return {
-    runs: list.length,
+    tasks: tasks.length,
+    firstPassApproved,
+    firstPassRate: rate(firstPassApproved),
     approved,
-    approvalRate: list.length > 0 ? approved / list.length : null,
-    leadTimeMs: stat(list.map((r) => r.report.summary.leadTimeMs)),
-    costUsd: stat(list.map((r) => r.report.summary.costUsd)),
-    repairs: stat(list.map((r) => r.report.summary.repairs)),
+    approvalRate: rate(approved),
+    leadTimeMs: stat(
+      tasks.map((t) => sum(t, (r) => r.report.summary.leadTimeMs)),
+    ),
+    costUsd: stat(tasks.map((t) => sum(t, (r) => r.report.summary.costUsd))),
+    repairRuns: stat(tasks.map((t) => t.runs.length - 1)),
   }
 }
 
 /**
- * Whether a run is one the trend reads: finished, with a completion time in
- * the `days` before `now`. Callers filter runs with it before building their
- * reports, so the reports built never grow with the whole history.
- */
-export function inTrendWindow(
-  run: { status: string; completedAt: string | null },
-  options: { now: number; days?: number },
-): boolean {
-  const at = Date.parse(run.completedAt ?? '')
-  return (
-    TERMINAL_STATUSES.includes(run.status) &&
-    Number.isFinite(at) &&
-    at > options.now - (options.days ?? TREND_DAYS) * DAY_MS &&
-    at <= options.now
-  )
-}
-
-/**
- * The trend over the finished runs that completed in the `days` before
- * `now`, fake-provider runs left out unless `includeFake`. An unknown time
- * or cost is left out of its median and counted in `unknown`, never as 0.
+ * The trend over the tasks whose newest run finished in the `days` before
+ * `now`, tasks whose first run used the fake provider left out unless
+ * `includeFake`. A task's time and cost add up all its runs, also those
+ * before the window; an unknown one is left out of its median and counted
+ * in `unknown`, never as 0.
  */
 export function trendOf(
-  entries: TrendRun[],
+  runs: TrendRun[],
   options: { now: number; days?: number; includeFake?: boolean },
 ): Trend {
   const days = options.days ?? TREND_DAYS
   const includeFake = options.includeFake ?? false
-  const done = entries
-    .filter((e) =>
-      inTrendWindow(
-        { status: e.report.status, completedAt: e.completedAt },
-        { now: options.now, days },
-      ),
-    )
-    .map((e) => ({ ...e, at: Date.parse(e.completedAt ?? '') }))
-    .sort((x, y) => y.at - x.at)
-  const counted = done.filter((e) => includeFake || !e.report.fake)
+  const done = finishedTasks(runs, { now: options.now, days }).sort(
+    (x, y) => y.at - x.at,
+  )
+  const counted = done.filter((t) => includeFake || !t.root.report.fake)
   const weeks: string[] = []
   const first = counted.at(-1)
   if (first) {
@@ -552,57 +613,65 @@ export function trendOf(
     )
       weeks.push(localDate(d))
   }
-  const byGroup = new Map<string, (typeof counted)[number][]>()
-  for (const e of counted) {
-    const code = codeProfileOf(e.report)
+  const byGroup = new Map<string, TrendTask[]>()
+  for (const t of counted) {
+    const code = codeProfileOf(t.root.report)
     const key = JSON.stringify([code.model, code.effort])
-    byGroup.set(key, [...(byGroup.get(key) ?? []), e])
+    byGroup.set(key, [...(byGroup.get(key) ?? []), t])
   }
   const groups = [...byGroup.values()].map((list): TrendGroup => {
-    const code = codeProfileOf((list[0] as TrendRun).report)
+    const code = codeProfileOf((list[0] as TrendTask).root.report)
     return {
       model: code.model,
       effort: code.effort,
-      runIds: list.map((e) => e.report.runId),
+      taskIds: list.map((t) => t.root.id),
       total: cellOf(list),
       weeks: weeks.map((week) => ({
         week,
-        ...cellOf(list.filter((e) => localDate(mondayOf(e.at)) === week)),
+        ...cellOf(list.filter((t) => localDate(mondayOf(t.at)) === week)),
       })),
     }
   })
   groups.sort(
     (x, y) =>
-      y.total.runs - x.total.runs ||
+      y.total.tasks - x.total.tasks ||
       `${x.model}/${x.effort}`.localeCompare(`${y.model}/${y.effort}`),
   )
   return {
     days,
     includeFake,
     weeks,
-    runIds: counted.map((e) => e.report.runId),
+    taskIds: counted.map((t) => t.root.id),
     fakeExcluded: done.length - counted.length,
     groups,
   }
 }
 
+/** `n/total (rate)`, as the approval columns read. */
+function share(n: number, c: TrendCell, rate: number | null): string {
+  return `${n}/${c.tasks} (${formatPercent(rate)})`
+}
+
 function trendRow(label: string, c: TrendCell): string {
-  if (c.runs === 0) return `| ${label} | 0 | 0 | - | - | - | - |`
-  return `| ${label} | ${c.runs} | ${c.approved} | ${formatPercent(c.approvalRate)} | ${fmtStat(c.leadTimeMs, formatDuration)} | ${fmtStat(c.costUsd, formatCost)} | ${fmtStat(c.repairs)} |`
+  if (c.tasks === 0) return `| ${label} | 0 | - | - | - | - | - |`
+  return `| ${label} | ${c.tasks} | ${share(c.firstPassApproved, c, c.firstPassRate)} | ${share(c.approved, c, c.approvalRate)} | ${fmtStat(c.leadTimeMs, formatDuration)} | ${fmtStat(c.costUsd, formatCost)} | ${fmtStat(c.repairRuns)} |`
 }
 
 export function trendToMarkdown(t: Trend): string {
   const lines: string[] = []
-  lines.push('# Run trend')
+  lines.push('# Task trend')
   lines.push('')
   lines.push(
-    `Finished runs of the last ${t.days} days, by week (Monday, local time) and by the code profile's model and effort. ${t.includeFake ? 'Fake-provider runs included.' : `Fake-provider runs left out: ${t.fakeExcluded}.`}`,
+    `Tasks whose newest run finished in the last ${t.days} days, by that run's week (Monday, local time) and by the first run's code model and effort. ${t.includeFake ? 'Fake-provider tasks included.' : `Fake-provider tasks left out: ${t.fakeExcluded}.`}`,
   )
   lines.push(
-    'median [min..max] (n=known runs); unknown values are excluded, never zero-filled.',
+    'first pass: approved without a repair run. approved: the newest run was approved and delivered. Time and cost add up every run of the task; repair runs count the runs below the first.',
+  )
+  lines.push(
+    'median [min..max] (n=known tasks); a task with any unknown run time or cost is excluded from that median, never zero-filled.',
   )
   if (t.groups.length === 0) {
-    lines.push('', 'No finished run in the window.', '')
+    lines.push('', 'No finished task in the window.', '')
     return lines.join('\n')
   }
   for (const g of t.groups) {
@@ -612,7 +681,7 @@ export function trendToMarkdown(t: Trend): string {
     )
     lines.push('')
     lines.push(
-      '| week | runs | approved | approval rate | lead time | cost | repairs |',
+      '| week | tasks | first pass | approved | task time | task cost | repair runs |',
     )
     lines.push('|---|---|---|---|---|---|---|')
     for (const w of g.weeks) lines.push(trendRow(formatWeek(w.week), w))

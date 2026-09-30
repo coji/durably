@@ -4,10 +4,11 @@ import { describe, it } from 'node:test'
 import {
   compareReports,
   comparisonToMarkdown,
-  inTrendWindow,
   parseTrendDays,
   trendOf,
+  trendRunIds,
   trendToMarkdown,
+  type TrendRun,
 } from '../src/engine/compare.js'
 import { PRICE_BASIS, estimateCostUsd } from '../src/engine/pricing.js'
 import {
@@ -16,6 +17,7 @@ import {
   reviewHighlights,
 } from '../src/engine/report.js'
 import type { LoopReport } from '../src/engine/report.js'
+import { groupTasks } from '../src/engine/status.js'
 
 function baseReport(): LoopReport {
   return {
@@ -444,58 +446,80 @@ describe('repair runs from outside findings', () => {
   })
 })
 
-describe('trend by week and code profile', () => {
+describe('trend by task, week and code profile', () => {
   // Local times, so the weeks are the same in every time zone: Wednesday
   // 2026-09-30 at noon; its week starts on Monday 2026-09-28.
   const local = (d: number, h = 12) => new Date(2026, 8, d, h).getTime()
   const now = local(30)
+  const iso = (ms: number) => new Date(ms).toISOString()
+  /** A run that finished at `completed`, created an hour before it. */
   const run = (
     id: string,
     completed: number | null,
     over: {
+      parent?: string
+      created?: number
       model?: string
       effort?: string
       fake?: boolean
       success?: boolean
       leadTimeMs?: number | null
       costUsd?: number | null
-      repairs?: number
       status?: string
     } = {},
-  ) => ({
-    report: {
-      ...baseReport(),
-      runId: id,
+  ): TrendRun => {
+    const success = over.success ?? true
+    return {
+      id,
+      parentId: over.parent ?? null,
+      createdAt: iso(over.created ?? (completed ?? now) - 3_600_000),
       status: over.status ?? 'completed',
-      fake: over.fake ?? false,
-      input: { provider: 'codex', model: 'm1', effort: 'low' },
-      attempts: [
-        {
-          ...baseReport().attempts[0]!,
-          stepName: 'stage:3:code:agent',
-          measurement: {
-            ...baseReport().attempts[0]!.measurement!,
-            effectiveModel: over.model ?? 'gpt-6-astra',
-            effectiveEffort: over.effort ?? 'medium',
-            versions: { codex: `0.${id.length}` },
+      completedAt: completed === null ? null : iso(completed),
+      report: {
+        ...baseReport(),
+        runId: id,
+        status: over.status ?? 'completed',
+        fake: over.fake ?? false,
+        input: { provider: 'codex', model: 'm1', effort: 'low' },
+        attempts: [
+          {
+            ...baseReport().attempts[0]!,
+            stepName: 'stage:3:code:agent',
+            measurement: {
+              ...baseReport().attempts[0]!.measurement!,
+              effectiveModel: over.model ?? 'gpt-6-astra',
+              effectiveEffort: over.effort ?? 'medium',
+              versions: { codex: `0.${id.length}` },
+            },
           },
+        ],
+        delivery: success
+          ? {
+              kind: 'branch',
+              location: '/repo',
+              summary: 'delivered',
+              branch: `factory/${id}`,
+              commit: 'c'.repeat(40),
+              squashedBranch: null,
+              squashedCommit: null,
+            }
+          : null,
+        summary: {
+          ...baseReport().summary,
+          success,
+          leadTimeMs: over.leadTimeMs === undefined ? 600_000 : over.leadTimeMs,
+          costUsd: over.costUsd === undefined ? 2 : over.costUsd,
+          // Repairs inside a run are not repair runs.
+          repairs: 3,
         },
-      ],
-      summary: {
-        ...baseReport().summary,
-        success: over.success ?? true,
-        leadTimeMs: over.leadTimeMs === undefined ? 600_000 : over.leadTimeMs,
-        costUsd: over.costUsd === undefined ? 2 : over.costUsd,
-        repairs: over.repairs ?? 0,
-      },
-    } as LoopReport,
-    completedAt: completed === null ? null : new Date(completed).toISOString(),
-  })
+      } as LoopReport,
+    }
+  }
 
-  it('counts finished runs of the window by Monday week and model/effort, never an unknown as 0', () => {
+  it("counts tasks by the week their newest run finished and by the first run's model/effort, never an unknown as 0", () => {
     const t = trendOf(
       [
-        run('a', local(29), { leadTimeMs: 300_000, costUsd: 1, repairs: 1 }),
+        run('a', local(29), { leadTimeMs: 300_000, costUsd: 1 }),
         run('b', local(28, 0), { success: false, costUsd: null }),
         run('c', local(27, 23), { leadTimeMs: 900_000, costUsd: 3 }),
         run('d', local(22), { effort: 'low' }),
@@ -508,10 +532,10 @@ describe('trend by week and code profile', () => {
       { now },
     )
     assert.deepEqual(t.weeks, ['2026-09-21', '2026-09-28'])
-    assert.deepEqual(t.runIds, ['a', 'b', 'c', 'd'])
+    assert.deepEqual(t.taskIds, ['a', 'b', 'c', 'd'])
     assert.equal(t.fakeExcluded, 1)
     assert.deepEqual(
-      t.groups.map((g) => [g.model, g.effort, g.runIds]),
+      t.groups.map((g) => [g.model, g.effort, g.taskIds]),
       [
         ['gpt-6-astra', 'medium', ['a', 'b', 'c']],
         ['gpt-6-astra', 'low', ['d']],
@@ -520,11 +544,18 @@ describe('trend by week and code profile', () => {
     const [medium] = t.groups
     const [lastWeek, thisWeek] = medium!.weeks
     assert.deepEqual(
-      [lastWeek?.week, lastWeek?.runs, thisWeek?.week, thisWeek?.runs],
+      [lastWeek?.week, lastWeek?.tasks, thisWeek?.week, thisWeek?.tasks],
       ['2026-09-21', 1, '2026-09-28', 2],
     )
-    assert.equal(thisWeek?.approved, 1)
-    assert.equal(thisWeek?.approvalRate, 0.5)
+    assert.deepEqual(
+      [
+        thisWeek?.firstPassApproved,
+        thisWeek?.firstPassRate,
+        thisWeek?.approved,
+        thisWeek?.approvalRate,
+      ],
+      [1, 0.5, 1, 0.5],
+    )
     assert.equal(thisWeek?.leadTimeMs.median, 450_000)
     // b's cost is unknown: left out of the median, not counted as $0.
     assert.deepEqual(
@@ -535,48 +566,172 @@ describe('trend by week and code profile', () => {
       ],
       [1, 1, 1],
     )
-    assert.equal(medium?.total.runs, 3)
-    // A week without runs has no rate at all.
+    // Repairs inside a run are not repair runs.
+    assert.equal(thisWeek?.repairRuns.median, 0)
+    assert.equal(medium?.total.tasks, 3)
+    // A week without tasks has no rate and no median at all.
     const low = t.groups[1]!
     assert.deepEqual(
-      low.weeks.map((w) => [w.runs, w.approvalRate]),
+      low.weeks.map((w) => [w.tasks, w.approvalRate, w.firstPassRate]),
       [
-        [1, 1],
-        [0, null],
+        [1, 1, 1],
+        [0, null, null],
       ],
     )
-    const md = trendToMarkdown(t)
-    assert.match(md, /## gpt-6-astra \/ medium/)
-    assert.match(md, /\| week of 2026-09-28 \| 2 \| 1 \| 50% \| 7m 30s/)
-    assert.match(md, /\| week of 2026-09-28 \| 0 \| 0 \| - \|/)
+    assert.equal(low.weeks[1]?.leadTimeMs.median, null)
   })
 
-  it('takes fake runs only when asked, and the CLI version is not part of a group', () => {
+  it('counts a task once, over every run it took, by its newest run', () => {
     const t = trendOf(
       [
-        run('a', local(29)),
-        run('bb', local(29)),
-        run('f', local(29), { fake: true }),
+        // Started before the window, with an unknown-cost run inside it:
+        // counted this week by its approved repair, with totals over both.
+        run('root', local(30) - 40 * 86_400_000, {
+          success: false,
+          leadTimeMs: 100_000,
+          costUsd: 5,
+          model: 'root-model',
+          effort: 'high',
+        }),
+        run('fix', local(29), {
+          parent: 'root',
+          leadTimeMs: 200_000,
+          costUsd: 1,
+          model: 'other-model',
+        }),
+        // Approved on its first run, a week earlier.
+        run('clean', local(23), { model: 'root-model', effort: 'high' }),
+        // Its repair's cost is unknown: the task's cost is unknown too.
+        run('p', local(24), { model: 'root-model', effort: 'high' }),
+        run('p1', local(25), { parent: 'p', costUsd: null }),
+        run('p2', local(26), { parent: 'p1' }),
+        // Newest run still open: the task is not in the trend yet.
+        run('q', local(28), { model: 'root-model', effort: 'high' }),
+        run('q1', null, { parent: 'q', status: 'leased', created: local(29) }),
       ],
-      { now, includeFake: true, days: 7 },
+      { now },
     )
+    assert.deepEqual(t.taskIds, ['root', 'p', 'clean'])
+    assert.equal(t.groups.length, 1)
+    const [g] = t.groups
+    // The first run's code profile names the group, not its repair's.
+    assert.deepEqual([g?.model, g?.effort], ['root-model', 'high'])
+    const [last, current] = g!.weeks
+    assert.deepEqual(
+      [
+        current?.week,
+        current?.tasks,
+        current?.approved,
+        current?.firstPassApproved,
+      ],
+      ['2026-09-28', 1, 1, 0],
+    )
+    assert.equal(current?.leadTimeMs.median, 300_000)
+    assert.equal(current?.costUsd.median, 6)
+    assert.equal(current?.repairRuns.median, 1)
+    assert.deepEqual(
+      [last?.tasks, last?.firstPassApproved, last?.approved],
+      [2, 1, 2],
+    )
+    assert.deepEqual(
+      [last?.costUsd.n, last?.costUsd.unknown, last?.costUsd.median],
+      [1, 1, 2],
+    )
+    assert.deepEqual([last?.repairRuns.min, last?.repairRuns.max], [0, 2])
+    // The window's weeks start at the first counted task's week.
+    assert.deepEqual(t.weeks, ['2026-09-21', '2026-09-28'])
+    // The runs to build reports for: every run of every counted task.
+    assert.deepEqual(
+      trendRunIds(
+        [
+          run('root', local(30) - 40 * 86_400_000),
+          run('fix', local(29), { parent: 'root' }),
+          run('q', local(28)),
+          run('q1', null, {
+            parent: 'q',
+            status: 'leased',
+            created: local(29),
+          }),
+          run('gone', local(30) - 31 * 86_400_000),
+        ],
+        { now },
+      ).sort(),
+      ['fix', 'root'],
+    )
+  })
+
+  it('reads final approval from the newest run, not the run the list shows', () => {
+    // The first run stopped at the review cap; its repair of that candidate
+    // was approved. The list shows the stop, which nobody archived.
+    const runs = [
+      run('capped', local(28), { success: false }),
+      run('repaired', local(29), { parent: 'capped' }),
+    ]
+    const [task] = groupTasks(
+      runs.map((r) => ({
+        id: r.id,
+        createdAt: r.createdAt,
+        parentId: r.parentId,
+        kind: r.id === 'capped' ? ('stopped' as const) : ('finished' as const),
+        approved: r.report.summary.success,
+        leadTimeMs: r.report.summary.leadTimeMs,
+        costUsd: r.report.summary.costUsd,
+      })),
+    )
+    assert.equal(task?.representative, 'capped')
+    const cell = trendOf(runs, { now }).groups[0]!.total
+    assert.deepEqual(
+      [cell.tasks, cell.approved, cell.approvalRate, cell.firstPassApproved],
+      [1, 1, 1, 0],
+    )
+    // An approval without a delivery is not a final approval.
+    const undelivered = run('solo', local(29))
+    undelivered.report = { ...undelivered.report, delivery: null }
+    assert.equal(trendOf([undelivered], { now }).groups[0]!.total.approved, 0)
+  })
+
+  it('takes fake tasks only when asked, by their first run, and the CLI version is not part of a group', () => {
+    const runs = [
+      run('a', local(29)),
+      run('bb', local(29)),
+      run('f', local(28), { fake: true }),
+      // A real repair of a fake task is still a fake task.
+      run('f1', local(29), { parent: 'f' }),
+    ]
+    const left = trendOf(runs, { now, days: 7 })
+    assert.equal(left.fakeExcluded, 1)
+    assert.deepEqual(left.taskIds, ['a', 'bb'])
+    const t = trendOf(runs, { now, includeFake: true, days: 7 })
     assert.equal(t.fakeExcluded, 0)
     assert.equal(t.groups.length, 1)
-    assert.deepEqual(t.groups[0]?.runIds.length, 3)
+    assert.deepEqual(t.groups[0]?.taskIds.length, 3)
     assert.deepEqual(t.weeks, ['2026-09-28'])
   })
 
-  it('picks the runs to build reports for by the same window and status as the trend', () => {
-    const at = (ms: number) => new Date(ms).toISOString()
-    const day = 86_400_000
-    const w = (status: string, completedAt: string | null) =>
-      inTrendWindow({ status, completedAt }, { now, days: 30 })
-    assert.equal(w('completed', at(now - day)), true)
-    assert.equal(w('failed', at(now - 29 * day)), true)
-    assert.equal(w('completed', at(now - 31 * day)), false)
-    assert.equal(w('completed', at(now + day)), false)
-    assert.equal(w('leased', at(now - day)), false)
-    assert.equal(w('completed', null), false)
+  it('prints the same numbers in Markdown', () => {
+    const t = trendOf(
+      [
+        run('a', local(29), { leadTimeMs: 300_000, costUsd: 1 }),
+        run('b', local(28), { success: false, costUsd: null }),
+        run('c', local(29), { parent: 'b', leadTimeMs: 600_000 }),
+        run('d', local(22), { effort: 'low' }),
+      ],
+      { now },
+    )
+    const md = trendToMarkdown(t)
+    assert.match(md, /^# Task trend/)
+    assert.match(md, /Fake-provider tasks left out: 0\./)
+    assert.match(md, /## gpt-6-astra \/ medium/)
+    assert.match(
+      md,
+      /\| week of 2026-09-28 \| 2 \| 1\/2 \(50%\) \| 2\/2 \(100%\) \| 12m 30s \[5m\.\.20m\] \(n=2\) \| \$1\.00 \[\$1\.00\.\.\$1\.00\] \(n=1, 1 unknown\) \| 1 \[0\.\.1\] \(n=2\) \|/,
+    )
+    assert.match(md, /\| week of 2026-09-28 \| 0 \| - \| - \| - \| - \| - \|/)
+    assert.match(md, /\| last 30 days \| 1 \| 1\/1 \(100%\)/)
+    assert.match(
+      trendToMarkdown(trendOf([], { now })),
+      /No finished task in the window\./,
+    )
   })
 
   it('accepts only a whole positive number of days within the safe range', () => {
