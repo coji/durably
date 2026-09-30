@@ -1,5 +1,6 @@
 /** Version recording: AI SDK + provider packages + local CLIs. */
 import { createHash } from 'node:crypto'
+import { statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 
 import { runChild } from './child.js'
@@ -55,7 +56,9 @@ export async function resolveVersions(
   provider: 'codex' | 'claude' | 'fake',
   cliPath: string | null = null,
 ): Promise<Record<string, string | null>> {
-  const key = `${provider}:${provider === 'codex' ? (cliPath ?? '') : ''}`
+  // The launched file and its mtime: a CLI updated in place, such as the
+  // owner's PATH `codex`, is probed again by a long-running worker.
+  const key = `${provider}:${cliFileStamp(provider, cliPath)}`
   const cached = versionCache.get(key)
   if (cached) return cached
   // Drop a rejected probe from the cache: caching it would make one transient
@@ -66,6 +69,24 @@ export async function resolveVersions(
   })
   versionCache.set(key, pending)
   return pending
+}
+
+function cliFileStamp(
+  provider: 'codex' | 'claude' | 'fake',
+  cliPath: string | null,
+): string {
+  const path =
+    provider === 'codex'
+      ? codexExecutable(cliPath).path
+      : provider === 'claude'
+        ? claudeExecutable()
+        : null
+  if (!path) return ''
+  try {
+    return `${path}@${statSync(path).mtimeMs}`
+  } catch {
+    return path
+  }
 }
 
 async function resolveVersionsUncached(

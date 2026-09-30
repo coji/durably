@@ -84,7 +84,7 @@ claude --version
 claude auth login
 ```
 
-Codexは `ai-sdk-provider-codex-cli@2.3.0`（同梱の `@openai/codex` 0.156.1）のapp-server modeを使い、最初の
+Codexは `ai-sdk-provider-codex-cli@2.3.0` のapp-server modeを使い、最初の
 呼び出しでpersistent threadを作り、修正時は保存した `threadId` を明示します。
 Claudeは `ai-sdk-provider-claude-code@4.3.1` が返す `sessionId` を保存し、修正時は
 明示的な `resume` を使います。「cwdで最新の会話を選ぶ」動作は使いません。
@@ -982,8 +982,8 @@ baselineの後、triageを含む最初のエージェント呼び出しの前に
 `factory.json` のあるディレクトリから解決し、実行可能な通常ファイルでなければ
 `trigger` が失敗します。解決した絶対パスをrun inputに固定し、preflight、本番の
 呼び出し、版の取得はすべてそのファイルを使います。`.js` などのscriptは `node`
-で起動します。省略時は従来どおり、同梱の `@openai/codex` を優先し、無ければ
-PATHの `codex` を使います。CLIのpathと版はreportの「Versions」と「Preflight」に
+で起動します。省略時はPATHの `codex` を優先し、無ければ同梱の `@openai/codex`
+を使います。同梱の版は新しいモデルに追いつかないことがあるためです。CLIのpathと版はreportの「Versions」と「Preflight」に
 出て、`configVersion` にも入るので、違うCLIで動いたrunは別の設定として比較されます。
 
 ### trigger時点で固定されるもの
@@ -1822,9 +1822,9 @@ pnpm --filter example-local-agent-loop demo report --run <runId> --format md \
   呼び出しごとの生データ、承認待ちの inputWait / executionSlotWait
 - **Versions**: `ai` と provider パッケージの版に加え、providerが実際に起動した
   CLIの版とパス。Codexは `codexCli` / `codexCliPath`、Claudeは `claudeCli` /
-  `claudeCliPath` です。Codex providerは自分で解決できる `@openai/codex` を
-  `node <パッケージ>/bin/codex.js` として起動し、無いときだけPATH上の `codex` を
-  使います。Claude Agent SDKは同梱のネイティブバイナリを起動し、PATH上の `claude`
+  `claudeCliPath` です。Codexは `codexPath` が無ければPATH上の `codex` を起動し、
+  無いときだけproviderが解決できる `@openai/codex` を
+  `node <パッケージ>/bin/codex.js` として起動します。Claude Agent SDKは同梱のネイティブバイナリを起動し、PATH上の `claude`
   は使いません。factoryは同じ解決を行い、その実行ファイルをproviderに明示して
   渡すので、記録した版と起動したCLIは同じファイルです。見つからない値は `null`
   にし、別のインストールから推測しません

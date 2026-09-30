@@ -71,7 +71,7 @@ export function parseCodexAuthMode(statusOutput: string): CodexAuthMode {
 export interface CodexExecutable {
   command: string
   args: string[]
-  /** The launched file; null when a PATH lookup finds nothing. */
+  /** The launched file; null when neither PATH nor the bundled CLI has one. */
   path: string | null
 }
 
@@ -99,17 +99,21 @@ function onPath(name: string): string | null {
 /**
  * The Codex CLI the provider launches. A run that pinned `codexPath` launches
  * that file, a script through `node` the way the provider does. Otherwise
- * `ai-sdk-provider-codex-cli` prefers the `@openai/codex` package it can
- * resolve itself, run as `node <package>/bin/codex.js`, and falls back to
- * `codex` on PATH. This repeats that resolution from the provider's own
- * location, and the provider is then handed the result explicitly, so the
- * version on record and the CLI that runs are the same file.
+ * `codex` on PATH, which is the one the owner keeps updated and logged in;
+ * only without one, the `@openai/codex` package `ai-sdk-provider-codex-cli`
+ * can resolve itself, run as `node <package>/bin/codex.js`. The provider is
+ * always handed the result explicitly, so the version on record and the CLI
+ * that runs are the same file.
  */
 export function codexExecutable(pinned?: string | null): CodexExecutable {
   if (pinned)
     return /\.[cm]?js$/i.test(pinned)
       ? { command: 'node', args: [pinned], path: pinned }
       : { command: pinned, args: [], path: pinned }
+  // A Windows `.cmd` shim needs a shell the provider does not use.
+  const found = onPath('codex')
+  if (found && !/\.(cmd|bat)$/i.test(found))
+    return { command: found, args: [], path: found }
   try {
     const provider = createRequire(import.meta.url).resolve(
       'ai-sdk-provider-codex-cli/package.json',
@@ -118,7 +122,7 @@ export function codexExecutable(pinned?: string | null): CodexExecutable {
     const bin = join(dirname(pkg), 'bin', 'codex.js')
     return { command: 'node', args: [bin], path: bin }
   } catch {
-    return { command: 'codex', args: [], path: onPath('codex') }
+    return { command: 'codex', args: [], path: null }
   }
 }
 

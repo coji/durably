@@ -1251,7 +1251,7 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
     assert.equal(input.codexPath, codex)
     assert.equal(input.target.baselineCheck, true)
 
-    // Left out: no pin, so the bundled CLI and PATH fallback stay, and no
+    // Left out: no pin, so PATH then the bundled CLI, and no
     // baseline check.
     const plain = await sandbox({ check: CHECK })
     const plainInput = await inputOf(

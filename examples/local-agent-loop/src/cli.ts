@@ -508,7 +508,7 @@ Repository config: factory.json at the repository root, or --config <file>:
   that check then replaces "check" and --check for the baseline and every
   verification. A failure stops the run as spec-check-failed.
   "codexPath" names the Codex CLI to launch, relative to the config file;
-  without it, the bundled CLI first, then codex on PATH.
+  without it, codex on PATH first, then the bundled CLI.
   "commit" sets the author (name and email) of every factory commit and a
   message template in which {iteration}, {runId} and {task} (the task's first
   line) are replaced; each field is optional and none may be empty. Without

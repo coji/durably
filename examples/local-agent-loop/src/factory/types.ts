@@ -145,8 +145,8 @@ export interface FactorySetup {
    */
   baselineIdentity?: BaselineIdentity | null
   /**
-   * The Codex CLI file the run pinned at trigger. Null or absent: the bundled
-   * CLI first, then `codex` on PATH, as before `codexPath` existed.
+   * The Codex CLI file the run pinned at trigger. Null or absent: `codex` on
+   * PATH first, then the bundled CLI.
    */
   codexPath?: string | null
   /**

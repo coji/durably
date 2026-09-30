@@ -577,7 +577,7 @@ const inputSchema = z
     agentTimeoutMs: timeoutMsSchema.optional(),
     /**
      * The Codex CLI file to launch, resolved and checked at trigger. Null or
-     * absent: the bundled CLI first, then `codex` on PATH.
+     * absent: `codex` on PATH first, then the bundled CLI.
      */
     codexPath: z.string().min(1).nullable().optional(),
     /**
