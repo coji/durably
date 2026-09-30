@@ -419,16 +419,16 @@ const verifyReviewStage: StageHandler = async (args) => {
     stdout: verification.stdout,
     exitCode: verification.exitCode,
     log: verification.log ?? null,
-    reviews: verification.passed
-      ? completed.map((r) => ({
-          lens: r.lens,
-          decision: r.decision,
-          notes: r.notes,
-        }))
-      : null,
     ...(verification.passed
-      ? {}
+      ? {
+          reviews: completed.map((r) => ({
+            lens: r.lens,
+            decision: r.decision,
+            notes: r.notes,
+          })),
+        }
       : {
+          reviews: null,
           failedCheckReviews: completed.map((r) => ({
             lens: r.lens,
             decision: r.decision,
