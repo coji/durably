@@ -1,3 +1,5 @@
+import type { LogChunk } from './server'
+
 /**
  * Run `load` now and again every `intervalMs`, never two at once: the next
  * call is scheduled only after the previous one settles, so a slow response
@@ -50,4 +52,48 @@ export function pollJson<T>(
       if (!signal.aborted) onError((error as Error).message)
     }
   }, intervalMs)
+}
+
+/** The status a log endpoint answers when the recorded file is gone. */
+const LOG_MISSING = 410
+
+/**
+ * Read a log endpoint from byte 0, one request at a time: again at once
+ * while a read returns more, then every `intervalMs`, until a read says it
+ * is done or the file is missing. Each outcome goes to its handler; the
+ * returned function stops it.
+ */
+export function followLogParts(
+  url: string,
+  intervalMs: number,
+  on: {
+    part: (part: LogChunk) => void
+    missing: () => void
+    error: () => void
+  },
+): () => void {
+  let offset = 0
+  const stop = pollEvery(async (signal) => {
+    try {
+      for (;;) {
+        const res = await fetch(`${url}&from=${offset}`, {
+          signal,
+          cache: 'no-store',
+        })
+        if (res.status === LOG_MISSING) {
+          on.missing()
+          return stop()
+        }
+        const body = (await res.json()) as LogChunk & { error?: string }
+        if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+        offset = body.nextOffset
+        on.part(body)
+        if (body.done) return stop()
+        if (body.chunk === '') return
+      }
+    } catch {
+      if (!signal.aborted) on.error()
+    }
+  }, intervalMs)
+  return stop
 }

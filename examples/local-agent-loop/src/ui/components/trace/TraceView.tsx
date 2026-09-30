@@ -33,10 +33,13 @@ export function TraceView({
   trace,
   totals,
   serverNow,
+  runId,
 }: {
   trace: Trace
   totals: RunTotals
   serverNow: string
+  /** The run whose logs the inspector reads; absent on the design page. */
+  runId?: string
 }) {
   const liveNow = useLiveNow(serverNow, trace.open)
   const origin = Date.parse(trace.startedAt)
@@ -200,6 +203,7 @@ export function TraceView({
           totals={totals}
           elapsed={elapsed}
           origin={trace.startedAt}
+          runId={runId}
         />
       </div>
     </div>

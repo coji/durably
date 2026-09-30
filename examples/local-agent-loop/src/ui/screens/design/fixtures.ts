@@ -85,6 +85,35 @@ export const PIPELINES = {
   autoApproved: autoApproved(),
 }
 
+/** The task list's rows: one per state that asks for attention, and a finished one. */
+export const TASK_ROWS = [
+  {
+    task: TASKS[0],
+    status: kindStatus('approval'),
+    pipeline: PIPELINES.waiting,
+    minutes: 3,
+  },
+  {
+    task: TASKS[1],
+    status: kindStatus('stopped'),
+    pipeline: PIPELINES.stopped,
+    minutes: 41,
+  },
+  {
+    task: TASKS[2],
+    status: kindStatus('running'),
+    pipeline: PIPELINES.running,
+    minutes: 12,
+  },
+  {
+    task: TASKS[3],
+    status: conclusionStatus('approved'),
+    pipeline: PIPELINES.done,
+    minutes: 180,
+    fake: true,
+  },
+]
+
 /**
  * Tasks that took more than one run, which show their total on the line: one
  * still stopped at the top of the list, one approved.

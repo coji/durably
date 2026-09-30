@@ -14,6 +14,7 @@ import {
 import { runChild } from '../child.js'
 import { defaultModelFor, resolveEffort } from '../models.js'
 import {
+  agentOutput,
   READ_ONLY_ROLES,
   SPEC_WRITER_ROLES,
   type AgentCallOptions,
@@ -336,32 +337,53 @@ interface StreamingModel {
   ): Promise<{ stream: ReadableStream<{ type: string }> }>
 }
 
+/** The fields of a stream part the agent log reads. */
+interface OutputPart {
+  type: string
+  delta?: unknown
+  toolName?: unknown
+  input?: unknown
+}
+
 /**
  * The same model, with `onActivity` called on the first part of its stream
- * that shows the agent at work. The app-server model builds its
- * `doGenerate` answer from `this.doStream`, so an own `doStream` on the
- * instance also sees what `generateText` reads. The model is made for this
- * one call, so replacing the method touches nothing else.
+ * that shows the agent at work, and `onOutput` given each text delta and
+ * one line per tool call. The tool call's own `tool-call` part is the one
+ * line: its `tool-input-*` parts and results are not written, nor is any
+ * reasoning. The app-server model builds its `doGenerate` answer from
+ * `this.doStream`, so an own `doStream` on the instance also sees what
+ * `generateText` reads. The model is made for this one call, so replacing
+ * the method touches nothing else.
  */
 export function watchActivity<M extends object>(
   model: M,
   onActivity: (() => void) | undefined,
+  onOutput?: (chunk: string) => void,
 ): M {
-  if (!onActivity) return model
+  if (!onActivity && !onOutput) return model
   const target = model as unknown as StreamingModel
   const original = target.doStream.bind(target)
+  const output = agentOutput(onOutput)
   let seen = false
   target.doStream = async (streamOptions) => {
     const response = await original(streamOptions)
     return {
       ...response,
       stream: response.stream.pipeThrough(
-        new TransformStream<{ type: string }, { type: string }>({
+        new TransformStream<OutputPart, OutputPart>({
           transform(part, controller) {
-            if (!seen && !NOT_ACTIVITY.has(part.type)) {
+            if (onActivity && !seen && !NOT_ACTIVITY.has(part.type)) {
               seen = true
               onActivity()
             }
+            if (part.type === 'text-delta' && typeof part.delta === 'string')
+              output.text(part.delta)
+            else if (part.type === 'text-end') output.line()
+            else if (
+              part.type === 'tool-call' &&
+              typeof part.toolName === 'string'
+            )
+              output.tool(part.toolName, part.input)
             controller.enqueue(part)
           },
         }),
@@ -421,7 +443,11 @@ export class CodexProvider implements AgentProvider {
     })
     try {
       const result = await generateText({
-        model: watchActivity(provider(modelId), options.onActivity),
+        model: watchActivity(
+          provider(modelId),
+          options.onActivity,
+          options.onOutput,
+        ),
         prompt: options.prompt,
         providerOptions: {
           'codex-app-server': options.sessionId

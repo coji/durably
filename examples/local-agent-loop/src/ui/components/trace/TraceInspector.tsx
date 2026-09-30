@@ -1,6 +1,6 @@
 import { useId } from 'react'
 
-import type { VerificationLog } from '../../../engine/providers/types'
+import type { AgentLog, VerificationLog } from '../../../engine/providers/types'
 import {
   CHECKPOINT_NAME,
   COPY,
@@ -18,6 +18,7 @@ import { ReviewStatusMark } from '../ReviewStatusMark'
 import { traceStatus } from '../status'
 import { StatusBadge } from '../StatusBadge'
 import { exactTime } from '../Time'
+import { CheckLogBody, LiveLog, logUrl, type LogSource } from './AttemptLog'
 import {
   CandidateFields,
   ProfileFields,
@@ -60,8 +61,56 @@ function ReviewBlock({ review }: { review: NonNullable<TraceNode['review']> }) {
   )
 }
 
-/** A verification row's full check output, as file paths to copy. */
-function LogSlot({ log }: { log: VerificationLog }) {
+/**
+ * An agent call's output: its file, to copy, and its text, read while the
+ * call runs.
+ */
+function AgentLogSlot({
+  log,
+  source,
+}: {
+  log: AgentLog
+  source: LogSource | null
+}) {
+  const { copied, copy } = useCopy()
+  const headingId = useId()
+  return (
+    <section aria-labelledby={headingId} className="flex flex-col gap-2">
+      <h4 id={headingId} className="text-fg-2 text-xs font-medium">
+        {TRACE.agentLog}
+      </h4>
+      <InlineFields>
+        <InlineField label={TRACE.logFile}>
+          <PathValue
+            path={log.path}
+            label={COPY.agentLogPath}
+            copied={copied}
+            onCopy={copy}
+          />
+        </InlineField>
+        {log.writeError ? (
+          <InlineField label={TRACE.writeError}>
+            <LogWriteError error={log.writeError} />
+          </InlineField>
+        ) : null}
+      </InlineFields>
+      {source ? <LiveLog url={logUrl(source, 'agent')} /> : null}
+      <CopyAnnouncer copied={copied} />
+    </section>
+  )
+}
+
+/**
+ * A verification row's full check output: file paths to copy, and the
+ * stdout or stderr text.
+ */
+function LogSlot({
+  log,
+  source,
+}: {
+  log: VerificationLog
+  source: LogSource | null
+}) {
   const { copied, copy } = useCopy()
   // One per inspector: the design page draws several side by side.
   const headingId = useId()
@@ -106,24 +155,42 @@ function LogSlot({ log }: { log: VerificationLog }) {
           </InlineField>
         ) : null}
       </InlineFields>
+      {source ? <CheckLogBody source={source} /> : null}
       <CopyAnnouncer copied={copied} />
     </section>
   )
 }
 
-/** The selected row's stored details, and the slot where logs will go. */
+/** The row's agent output or check output, read from its attempt. */
+function RowLogs({ node: n, runId }: { node: TraceNode; runId?: string }) {
+  const source =
+    runId && n.logAttemptId ? { runId, attemptId: n.logAttemptId } : null
+  return (
+    <>
+      {n.agentLog ? <AgentLogSlot log={n.agentLog} source={source} /> : null}
+      {n.verificationLog ? (
+        <LogSlot log={n.verificationLog} source={source} />
+      ) : null}
+    </>
+  )
+}
+
+/** The selected row's stored details and its log. */
 export function TraceInspector({
   node: n,
   chosen,
   totals,
   elapsed,
   origin,
+  runId,
 }: {
   node: TraceNode
   chosen: boolean
   totals: RunTotals
   elapsed: number
   origin: string
+  /** The run whose logs are read; absent on the design page. */
+  runId?: string
 }) {
   const state = traceStatus(n.state)
   const heading = chosen ? TRACE.chosen : n.open ? TRACE.following : TRACE.pick
@@ -165,7 +232,7 @@ export function TraceInspector({
       {n.stage === 'review' && n.kind === 'entry' && n.review ? (
         <ReviewBlock review={n.review} />
       ) : null}
-      {n.verificationLog ? <LogSlot log={n.verificationLog} /> : null}
+      <RowLogs node={n} runId={runId} />
       <p className="text-fg-3 text-xs">
         {TRACE.clockBefore}
         <time dateTime={origin} title={exactTime(origin)}>

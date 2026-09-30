@@ -95,7 +95,12 @@ export function RunScreen({
       <ReviewHighlightsPanel h={r.reviewHighlights} />
       <Panel title={DETAIL.trace}>
         <div className="flex flex-col gap-6">
-          <TraceView trace={data.trace} totals={totals} serverNow={data.now} />
+          <TraceView
+            trace={data.trace}
+            totals={totals}
+            serverNow={data.now}
+            runId={r.runId}
+          />
           <div className="flex flex-col gap-2">
             <h3 className="text-sm font-semibold">{DETAIL.timeAndCost}</h3>
             <StageTimings

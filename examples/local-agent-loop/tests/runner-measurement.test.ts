@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -15,6 +22,8 @@ import {
   lastVerificationLogs,
   uncertainCheckpoints,
 } from '../src/engine/failure-reasons.js'
+import { claudeOutput } from '../src/engine/providers/claude.js'
+import { watchActivity } from '../src/engine/providers/codex.js'
 import type {
   AgentCallOptions,
   AgentProvider,
@@ -1068,5 +1077,217 @@ describe('a refused call after preflight stops the run, settled', () => {
     const both = classifyFailure({ ...base, uncertain: ['/tmp/x.started'] })
     assert.equal(both?.kind, 'uncertain-invocation')
     assert.equal(both?.retryable, false)
+  })
+})
+
+describe('an agent call writes its output to a log of its own', () => {
+  const result: AgentResult = {
+    text: 'done',
+    session: { id: 'native-session' },
+    resolvedModel: 'resolved-model',
+    resolvedEffort: 'low',
+    reportedModel: null,
+    reportedEffort: null,
+    usage: null,
+    elapsedMs: 5,
+  }
+  const specOf = async (provider: AgentProvider) => {
+    const root = await mkdtemp(join(tmpdir(), 'agent-log-'))
+    return {
+      provider,
+      providerName: 'codex' as const,
+      prompt: 'the prompt is never written',
+      workdir: '/tmp',
+      timeoutMs: 5000,
+      requestedModel: null,
+      requestedEffort: null,
+      effectiveModel: 'resolved-model',
+      effectiveEffort: 'low',
+      role: 'implement' as const,
+      stage: 'implement',
+      iteration: 1,
+      operationKey: `test/${randomUUID()}`,
+      checkpointsDir: join(root, 'operation-checkpoints'),
+      agentLogsDir: join(root, 'agent-logs'),
+      session: null,
+    }
+  }
+
+  it('records the file before the first output and waits for every append before the terminal write', async () => {
+    const attempt = fakeAttempt()
+    let late: ((chunk: string) => void) | undefined
+    const recordedAtFirstOutput: (string | undefined)[] = []
+    const spec = await specOf(
+      stubProvider(async (options) => {
+        recordedAtFirstOutput.push(attempt.snapshots.at(-1)?.agentLog?.path)
+        for (const chunk of ['one\n', 'two\n', 'three\n'])
+          options.onOutput?.(chunk)
+        late = options.onOutput
+        return result
+      }),
+    )
+    const outcome = await runAgentCall(
+      new AbortController().signal,
+      attempt as never,
+      spec,
+    )
+    const path = join(spec.agentLogsDir, `${attempt.id}.log`)
+    assert.deepEqual(recordedAtFirstOutput, [path])
+    assert.deepEqual(outcome.measurement.agentLog, { path })
+    // Every append had landed before the call returned.
+    assert.equal(await readFile(path, 'utf8'), 'one\ntwo\nthree\n')
+    // Output after the terminal write is dropped.
+    late?.('after the end\n')
+    // sleep-ok(negative): gives a dropped append the chance to land anyway
+    await new Promise((r) => setTimeout(r, 50))
+    assert.equal(await readFile(path, 'utf8'), 'one\ntwo\nthree\n')
+    assert.ok(!(await readFile(path, 'utf8')).includes('prompt'))
+  })
+
+  it('keeps a failed append as the log write error instead of failing the call', async () => {
+    const attempt = fakeAttempt()
+    const spec = await specOf(
+      stubProvider(async (options) => {
+        const path = attempt.snapshots.at(-1)?.agentLog?.path ?? ''
+        // The file is replaced by a directory, so every append fails.
+        await rm(path)
+        await mkdir(path)
+        options.onOutput?.('lost\n')
+        return result
+      }),
+    )
+    const outcome = await runAgentCall(
+      new AbortController().signal,
+      attempt as never,
+      spec,
+    )
+    assert.equal(outcome.text, 'done')
+    assert.match(outcome.measurement.agentLog?.writeError ?? '', /EISDIR/)
+    assert.match(attempt.snapshots.at(-1)?.agentLog?.writeError ?? '', /EISDIR/)
+  })
+
+  it('makes no log and writes nothing on a replay or a call never sent', async () => {
+    let calls = 0
+    const spec = await specOf(
+      stubProvider(async (options) => {
+        calls++
+        options.onOutput?.('first\n')
+        return result
+      }),
+    )
+    const first = fakeAttempt()
+    await runAgentCall(new AbortController().signal, first as never, spec)
+    const replay = fakeAttempt()
+    const recovered = await runAgentCall(
+      new AbortController().signal,
+      replay as never,
+      spec,
+    )
+    assert.equal(calls, 1)
+    assert.equal(recovered.recovered, true)
+    assert.equal(recovered.measurement.agentLog, undefined)
+    assert.deepEqual(await readdir(spec.agentLogsDir), [`${first.id}.log`])
+    assert.equal(
+      await readFile(join(spec.agentLogsDir, `${first.id}.log`), 'utf8'),
+      'first\n',
+    )
+
+    const superseded = new AbortController()
+    superseded.abort()
+    const unsent = await specOf(spec.provider)
+    const notSent = await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      {
+        ...unsent,
+        supersede: {
+          signal: superseded.signal,
+          reason: 'superseded-by-verify',
+        },
+      },
+    )
+    assert.equal(notSent.measurement.agentLog, undefined)
+    assert.equal(existsSync(unsent.agentLogsDir), false)
+    assert.equal(calls, 1)
+  })
+})
+
+describe('what a provider writes to the agent log', () => {
+  it('Codex: text deltas and one line per tool call, never reasoning or usage', async () => {
+    const parts = [
+      { type: 'stream-start' },
+      { type: 'reasoning-start', id: 'r' },
+      { type: 'reasoning-delta', id: 'r', delta: 'secret reasoning' },
+      { type: 'text-start', id: 't' },
+      { type: 'text-delta', id: 't', delta: 'Reading ' },
+      { type: 'text-delta', id: 't', delta: 'the code' },
+      { type: 'text-end', id: 't' },
+      { type: 'text-start', id: 't2' },
+      { type: 'text-delta', id: 't2', delta: 'Next message' },
+      { type: 'text-end', id: 't2' },
+      { type: 'tool-input-start', id: 'c', toolName: 'exec_command' },
+      { type: 'tool-input-delta', id: 'c', delta: '{"command":"ls"}' },
+      { type: 'tool-input-end', id: 'c' },
+      {
+        type: 'tool-call',
+        toolCallId: 'c',
+        toolName: 'exec_command',
+        input: '{"command":"rg -n\\n formatCost src"}',
+      },
+      { type: 'tool-result', toolCallId: 'c', toolName: 'exec_command' },
+      { type: 'finish', usage: { inputTokens: 123, outputTokens: 45 } },
+    ]
+    const model = {
+      doStream: async () => ({
+        stream: new ReadableStream({
+          start(controller) {
+            for (const part of parts) controller.enqueue(part)
+            controller.close()
+          },
+        }),
+      }),
+    }
+    let written = ''
+    const watched = watchActivity(model, undefined, (chunk) => {
+      written += chunk
+    })
+    const { stream } = await watched.doStream()
+    for await (const _ of stream as unknown as AsyncIterable<unknown>);
+    assert.equal(
+      written,
+      'Reading the code\nNext message\n> exec_command rg -n formatCost src\n',
+    )
+  })
+
+  it('Claude: each text block and tool call once, never thinking, errors or results', () => {
+    let written = ''
+    const read = claudeOutput((chunk) => {
+      written += chunk
+    })
+    const assistant = (content: unknown[], extra: object = {}) =>
+      ({
+        type: 'assistant',
+        message: { id: 'm1', content, usage: { input_tokens: 9 } },
+        ...extra,
+      }) as never
+    read({ type: 'system', subtype: 'init', model: 'claude-x' } as never)
+    const thinking = { type: 'thinking', thinking: 'secret thinking' }
+    const text = { type: 'text', text: 'Looking at the tests.' }
+    const tool = {
+      type: 'tool_use',
+      id: 'tool-1',
+      name: 'Bash',
+      input: { command: 'pnpm test', description: 'run' },
+    }
+    read(assistant([thinking, text]))
+    // The same message again, with the block it had already sent.
+    read(assistant([thinking, text, tool]))
+    read(assistant([{ type: 'text', text: 'refused' }], { error: 'x' }))
+    read({
+      type: 'user',
+      message: { content: [{ type: 'tool_result', content: 'ok' }] },
+    } as never)
+    read({ type: 'result', usage: { input_tokens: 9 } } as never)
+    assert.equal(written, 'Looking at the tests.\n> Bash pnpm test\n')
   })
 })

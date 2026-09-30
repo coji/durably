@@ -16,10 +16,10 @@ import { Collapsible } from '../../components/Layout'
 import { MetricCard, MetricGrid } from '../../components/MetricCard'
 import { RunLink } from '../../components/RunLink'
 import { StageTrack } from '../../components/StageTrack'
-import { conclusionStatus, kindStatus } from '../../components/status'
 import { StatusBadge } from '../../components/StatusBadge'
 import { FakeMark } from '../../components/SupersededMark'
 import { TaskList, TaskRow, TaskTotal } from '../../components/TaskRow'
+import { LogBody } from '../../components/trace/AttemptLog'
 import { TraceView } from '../../components/trace/TraceView'
 import {
   COLUMN,
@@ -31,43 +31,15 @@ import {
   LIST,
   TRACE,
 } from '../../glossary'
-import { MULTI_RUN, NOW, PIPELINES, TASKS, USAGE } from './fixtures'
+import { MULTI_RUN, NOW, PIPELINES, TASK_ROWS, USAGE } from './fixtures'
 import { State } from './Specimen'
-import { TOTALS, TRACES } from './trace-fixtures'
-
-const ROWS = [
-  {
-    task: TASKS[0],
-    status: kindStatus('approval'),
-    pipeline: PIPELINES.waiting,
-    minutes: 3,
-  },
-  {
-    task: TASKS[1],
-    status: kindStatus('stopped'),
-    pipeline: PIPELINES.stopped,
-    minutes: 41,
-  },
-  {
-    task: TASKS[2],
-    status: kindStatus('running'),
-    pipeline: PIPELINES.running,
-    minutes: 12,
-  },
-  {
-    task: TASKS[3],
-    status: conclusionStatus('approved'),
-    pipeline: PIPELINES.done,
-    minutes: 180,
-    fake: true,
-  },
-]
+import { LOG_VIEWS, TOTALS, TRACES } from './trace-fixtures'
 
 const ago = (m: number) =>
   formatRelative(new Date(Date.parse(NOW) - m * 60_000).toISOString(), NOW)
 
 export function TaskRowStates() {
-  const [first] = ROWS
+  const [first] = TASK_ROWS
   return (
     <>
       <State label={DESIGN.state.open}>
@@ -88,7 +60,7 @@ export function TaskRowStates() {
       </State>
       <State label={DESIGN.state.closed}>
         <TaskList>
-          {ROWS.slice(1).map((r) => (
+          {TASK_ROWS.slice(1).map((r) => (
             <TaskRow
               key={r.task.id}
               status={r.status}
@@ -234,7 +206,7 @@ function SampleTable({ framed }: { framed?: boolean }) {
         </>
       }
     >
-      {ROWS.slice(1).map((r, i) => (
+      {TASK_ROWS.slice(1).map((r, i) => (
         <tr key={r.task.id}>
           <Td>
             <RunLink id={r.task.id} name={r.task.name} />
@@ -294,6 +266,11 @@ export function TraceStates() {
       <State label={KIND_NAME.approval}>
         <TraceView trace={TRACES.waiting} totals={TOTALS} serverNow={NOW} />
       </State>
+      {LOG_VIEWS.map(({ label, view }) => (
+        <State key={label} label={label}>
+          <LogBody view={view} />
+        </State>
+      ))}
     </>
   )
 }

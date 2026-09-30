@@ -72,7 +72,12 @@ import {
   deliverySchema,
   FactoryEventSchema,
 } from './events.js'
-import { runRootOf, reviewSnapshotsDirOf, specFileOf } from './layout.js'
+import {
+  agentLogsDirBeside,
+  runRootOf,
+  reviewSnapshotsDirOf,
+  specFileOf,
+} from './layout.js'
 import {
   assertAllowedDecision,
   availableActions,
@@ -271,6 +276,13 @@ const fakeScenarioSchema = z
     specSymlink: z.boolean().optional(),
     specReviews: z
       .record(z.string().min(1), z.array(z.enum(FAKE_SPEC_REVIEWS)))
+      .optional(),
+    output: z
+      .object({
+        chunks: z.array(z.string()),
+        intervalMs: z.number().int().min(0),
+      })
+      .strict()
       .optional(),
   })
   .strict()
@@ -898,6 +910,7 @@ async function runTriage(
       iteration: 0,
       operationKey: args.operationKey,
       checkpointsDir: setup.checkpointsDir,
+      agentLogsDir: agentLogsDirBeside(setup.checkpointsDir),
       session: null,
       configVersion: setup.configVersion,
     })
@@ -1060,6 +1073,7 @@ async function runPreflight(
           iteration: 0,
           operationKey,
           checkpointsDir: setup.checkpointsDir,
+          agentLogsDir: agentLogsDirBeside(setup.checkpointsDir),
           session: null,
           configVersion: setup.configVersion,
           acceptRejection: true,

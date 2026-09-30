@@ -50,6 +50,7 @@ import {
 import { defaultModelFor, resolveEffort } from '../models.js'
 import type { TokenUsage } from '../usage.js'
 import {
+  agentOutput,
   isCommandModeReview,
   READ_ONLY_ROLES,
   SPEC_WRITER_ROLES,
@@ -871,6 +872,47 @@ export function isAgentActivity(message: SDKMessage): boolean {
   return body?.model !== SYNTHETIC_MODEL || anyUsage
 }
 
+/**
+ * A reader of Agent SDK messages that hands `onOutput` the assistant's text
+ * and one line per tool call. A message can arrive more than once with the
+ * blocks it had already sent, so each text block is written once per
+ * message ID and position, and each tool call once per its own ID. Thinking
+ * blocks, tool results, errored frames and everything else are skipped.
+ */
+export function claudeOutput(onOutput: ((chunk: string) => void) | undefined) {
+  const output = agentOutput(onOutput)
+  const written = new Set<string>()
+  return (message: SDKMessage) => {
+    if (!onOutput || message.type !== 'assistant' || message.error) return
+    const body = message.message as unknown as {
+      id?: unknown
+      content?: unknown
+    }
+    if (!Array.isArray(body?.content)) return
+    for (const [index, block] of body.content.entries()) {
+      const b = block as {
+        type?: unknown
+        text?: unknown
+        id?: unknown
+        name?: unknown
+        input?: unknown
+      }
+      const key =
+        b.type === 'tool_use'
+          ? `tool:${String(b.id)}`
+          : `${String(body.id)}:${index}`
+      if (written.has(key)) continue
+      if (b.type === 'text' && typeof b.text === 'string') {
+        written.add(key)
+        output.text(b.text.endsWith('\n') ? b.text : `${b.text}\n`)
+      } else if (b.type === 'tool_use' && typeof b.name === 'string') {
+        written.add(key)
+        output.tool(b.name, b.input)
+      }
+    }
+  }
+}
+
 /** The model name the Claude CLI puts on the frames it makes up itself. */
 const SYNTHETIC_MODEL = '<synthetic>'
 
@@ -1026,6 +1068,7 @@ export class ClaudeProvider implements AgentProvider {
     if (SPEC_WRITER_ROLES.has(options.role) && !options.specWrite)
       throw new Error(`a ${options.role} call needs the spec file it may write`)
     const onActivity = options.onActivity
+    const writeOutput = claudeOutput(options.onOutput)
     // The concrete model the CLI reports, first seen wins: an alias such as
     // `opus` is resolved by the CLI, never here.
     let observedModel: string | null = null
@@ -1042,6 +1085,7 @@ export class ClaudeProvider implements AgentProvider {
       onSdkMessage: (message: SDKMessage) => {
         observedModel ??= observedClaudeModel(message)
         if (onActivity && isAgentActivity(message)) onActivity()
+        writeOutput(message)
       },
     })
     const reported = await generateText({

@@ -16,16 +16,20 @@
  *   process made at start and put in the page, and an Origin naming this
  *   server; anything else is refused before the action runs. Reads never
  *   write.
+ * - `GET /api/runs/<id>/logs/<attemptId>` reads a part of one attempt's
+ *   agent log, or its check's stdout or stderr, from a path the attempt
+ *   recorded, and only inside the run's own directory.
  */
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { existsSync } from 'node:fs'
+import { open, realpath } from 'node:fs/promises'
 import {
   createServer,
   type IncomingMessage,
   type ServerResponse,
 } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import type { Duplex } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 
@@ -71,10 +75,15 @@ import {
   type CheckLogFile,
 } from '../engine/failure-reasons.js'
 import { formatCount } from '../engine/format.js'
-import { NOT_SENT, type VerificationLog } from '../engine/providers/types.js'
+import {
+  NOT_SENT,
+  type AgentLog,
+  type VerificationLog,
+} from '../engine/providers/types.js'
 import {
   liveElapsed,
   stageOf,
+  toAttemptRow,
   usageOf,
   type AttemptRow,
   type LiveElapsed,
@@ -90,6 +99,7 @@ import {
 import {
   archivable,
   currentWorktree,
+  diagnose,
   diagnoseRun,
   groupTasks,
   needsHuman,
@@ -100,6 +110,7 @@ import {
   type TaskRun,
 } from '../engine/status.js'
 import { TERMINAL_STATUSES } from '../engine/terminal.js'
+import { runRootOf } from '../factory/layout.js'
 import { BASELINE_STEP } from '../factory/types.js'
 import { COMMON, PIPELINE_WORDS, RUN_NAME, TRACE_WORDS } from './glossary.js'
 import { lensName, roleName, stageName, stepPartName } from './labels.js'
@@ -552,6 +563,14 @@ export interface TraceNode {
    * entry's latest attempt's. Null on every other row.
    */
   verificationLog: VerificationLog | null
+  /**
+   * The attempt whose log the row shows: an attempt row's own, or the
+   * entry's latest attempt that recorded one. After a retry, the entry
+   * shows the retry's log and each attempt row its own. Null when none did.
+   */
+  logAttemptId: string | null
+  /** That attempt's agent output, when it sent an LLM call. */
+  agentLog: AgentLog | null
   wait: Pick<WaitRow, 'outcome' | 'inputWaitMs' | 'executionSlotWaitMs'> | null
   children: TraceNode[]
 }
@@ -731,6 +750,37 @@ function profileOf(attempts: AttemptRow[]): TraceProfile | null {
     : null
 }
 
+/**
+ * Whether an attempt may still be running, and so writing its log: it has
+ * not finished, it belongs to the run's current lease generation, and the
+ * diagnosis says that lease is live. An attempt a cancel or a lost lease
+ * left `started` is not open.
+ */
+export function attemptOpen(
+  a: Pick<AttemptRow, 'completedAt' | 'status' | 'leaseGeneration'>,
+  run: { leaseGeneration: number },
+  leaseLive: boolean,
+): boolean {
+  return (
+    leaseLive &&
+    a.completedAt === null &&
+    a.status === 'started' &&
+    a.leaseGeneration === run.leaseGeneration
+  )
+}
+
+const hasLog = (a: AttemptRow) =>
+  Boolean(a.measurement?.agentLog || a.measurement?.verificationLog)
+
+/** A row's log: the attempt that recorded it and its agent log, if any. */
+function logOf(
+  a: AttemptRow | undefined,
+): Pick<TraceNode, 'logAttemptId' | 'agentLog'> {
+  return a && hasLog(a)
+    ? { logAttemptId: a.attemptId, agentLog: a.measurement?.agentLog ?? null }
+    : { logAttemptId: null, agentLog: null }
+}
+
 const iso = (ms: number | null) =>
   ms === null ? null : new Date(ms).toISOString()
 
@@ -789,6 +839,8 @@ export function deriveTrace(input: TraceInput): Trace {
       review: null,
       candidate: null,
       verificationLog: null,
+      logAttemptId: null,
+      agentLog: null,
       wait: null,
       children: [],
       ...base,
@@ -897,8 +949,7 @@ export function deriveTrace(input: TraceInput): Trace {
     )
     const unfinished = (a: AttemptRow) =>
       a.completedAt === null && a.status === 'started'
-    const isOpen = (a: AttemptRow) =>
-      leaseLive && unfinished(a) && a.leaseGeneration === run.leaseGeneration
+    const isOpen = (a: AttemptRow) => attemptOpen(a, run, leaseLive)
     const stateOf = (a: AttemptRow): TraceState =>
       isOpen(a)
         ? 'running'
@@ -959,6 +1010,7 @@ export function deriveTrace(input: TraceInput): Trace {
             usage: usageOf([a]),
             checkpoint: checkpointOf(a, aOpen),
             verificationLog: a.measurement?.verificationLog ?? null,
+            ...logOf(a),
           })
         })
       : []
@@ -1002,6 +1054,11 @@ export function deriveTrace(input: TraceInput): Trace {
         : (input.candidates?.find((c) => c.sequence === e.seq) ??
           asReportCandidate(input.stepOutputs[candidateStep]) ??
           (e.seq === lastCodeSeq ? input.candidate : null))
+    // The entry shows the log of the latest attempt of a step that records
+    // one. A retry that replayed a checkpoint recorded none, so the entry
+    // then has none rather than an older attempt's.
+    const logSteps = new Set(sorted.filter(hasLog).map((a) => a.stepName))
+    const logged = [...sorted].reverse().find((a) => logSteps.has(a.stepName))
     return node({
       id: `entry:${e.key}`,
       kind: 'entry',
@@ -1020,9 +1077,8 @@ export function deriveTrace(input: TraceInput): Trace {
       checkpoint: checked ? checkpointOf(checked, isOpen(checked)) : null,
       review,
       candidate,
-      verificationLog:
-        [...sorted].reverse().find((a) => a.measurement?.verificationLog)
-          ?.measurement?.verificationLog ?? null,
+      verificationLog: logged?.measurement?.verificationLog ?? null,
+      ...logOf(logged),
       children,
     })
   }
@@ -1338,6 +1394,99 @@ class HttpError extends Error {
   }
 }
 
+/** The most of a log one request reads. */
+export const LOG_READ_MAX = 64 * 1024
+
+/** Which of an attempt's logs a read asks for; `agent` when unnamed. */
+export const LOG_FILES = ['agent', 'stdout', 'stderr'] as const
+export type LogFile = (typeof LOG_FILES)[number]
+
+/** The status a recorded log file that is gone answers with. */
+export const LOG_MISSING_STATUS = 410
+
+/**
+ * One read of a log. `nextOffset` is `from` plus the bytes `chunk` holds;
+ * `done` says nothing more will come: the attempt has ended and the read
+ * reached the end of the file.
+ */
+export interface LogChunk {
+  chunk: string
+  nextOffset: number
+  done: boolean
+}
+
+/**
+ * How many leading bytes of `bytes` are whole UTF-8 characters: a
+ * character cut off at the end is left for the next read.
+ */
+export function wholeUtf8Length(bytes: Uint8Array): number {
+  for (let i = bytes.length - 1; i >= Math.max(0, bytes.length - 4); i--) {
+    const b = bytes[i] ?? 0
+    if ((b & 0xc0) === 0x80) continue
+    const size = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : b >= 0xc0 ? 2 : 1
+    return i + size <= bytes.length ? bytes.length : i
+  }
+  return bytes.length
+}
+
+/**
+ * Up to `LOG_READ_MAX` bytes of the log at `path` from byte `from`. The path
+ * must be in `runRoot` as recorded and once its links are resolved. Once
+ * the attempt has `ended`, a read that reaches the end of the file returns
+ * every byte, a cut-off character included, so the log can end.
+ */
+export async function readLogChunk(
+  runRoot: string,
+  path: string,
+  from: number,
+  ended: boolean,
+): Promise<LogChunk> {
+  const outside = () => new HttpError(403, 'the log is outside the run')
+  const root = resolve(runRoot)
+  const recorded = resolve(path)
+  if (!recorded.startsWith(root + sep)) throw outside()
+  const gone = (error: unknown) =>
+    (error as NodeJS.ErrnoException).code === 'ENOENT'
+      ? new HttpError(LOG_MISSING_STATUS, `the log file is missing: ${path}`)
+      : error
+  let handle: Awaited<ReturnType<typeof open>>
+  try {
+    const real = await realpath(recorded)
+    if (!real.startsWith((await realpath(root)) + sep)) throw outside()
+    handle = await open(real, 'r')
+  } catch (error) {
+    throw gone(error)
+  }
+  try {
+    const { size } = await handle.stat()
+    const buffer = Buffer.alloc(
+      Math.max(0, Math.min(LOG_READ_MAX, size - from)),
+    )
+    const { bytesRead } =
+      buffer.length > 0
+        ? await handle.read(buffer, 0, buffer.length, from)
+        : { bytesRead: 0 }
+    const read = buffer.subarray(0, bytesRead)
+    const last = ended && from + bytesRead >= size
+    const kept = last ? bytesRead : wholeUtf8Length(read)
+    return {
+      chunk: read.subarray(0, kept).toString('utf8'),
+      nextOffset: from + kept,
+      done: last,
+    }
+  } finally {
+    await handle.close()
+  }
+}
+
+/** A `from` query value: a non-negative safe integer, 0 when absent. */
+function offsetOf(raw: string | null): number {
+  const from = raw === null ? 0 : /^\d+$/.test(raw) ? Number(raw) : NaN
+  if (!Number.isSafeInteger(from))
+    throw new HttpError(400, 'from must be a non-negative integer byte offset')
+  return from
+}
+
 /** What a write calls, by the last segment of its path. */
 const ACTIONS = [
   'approve',
@@ -1352,7 +1501,7 @@ type Action = (typeof ACTIONS)[number]
 /**
  * A write's path: `/api/runs/<id>/<action>`; null for any other path. The
  * ID stays encoded, so telling a write from a read never throws; it is
- * decoded with `runIdOf` once the request has passed its checks.
+ * decoded with `idOf` once the request has passed its checks.
  */
 export function actionPath(
   pathname: string,
@@ -1362,12 +1511,12 @@ export function actionPath(
   return match?.[1] && action ? { rawId: match[1], action } : null
 }
 
-/** A run ID from its path segment; a malformed escape is the request's fault. */
-function runIdOf(raw: string): string {
+/** An ID from its path segment; a malformed escape is the request's fault. */
+function idOf(raw: string): string {
   try {
     return decodeURIComponent(raw)
   } catch {
-    throw new HttpError(400, 'malformed run id in the path')
+    throw new HttpError(400, 'malformed id in the path')
   }
 }
 
@@ -1590,12 +1739,56 @@ function createUiApi() {
     }
   }
 
-  async function handle(pathname: string): Promise<unknown> {
+  /**
+   * Part of one attempt's log. The attempt is looked up among the run's
+   * own, and the path is the one it recorded, never one the request names.
+   */
+  async function log(
+    runId: string,
+    attemptId: string,
+    query: URLSearchParams,
+  ): Promise<LogChunk> {
+    const from = offsetOf(query.get('from'))
+    const file = LOG_FILES.find((f) => f === (query.get('file') ?? 'agent'))
+    if (!file) throw new HttpError(400, `file must be ${LOG_FILES.join(', ')}`)
+    const db = source()
+    const found = db ? await orEmpty(db.getRun(runId), null) : null
+    if (!db || !found) throw new HttpError(404, `no run ${runId}`)
+    const attempt = (await db.getStepAttempts(runId)).find(
+      (a) => a.id === attemptId,
+    )
+    if (!attempt) throw new HttpError(404, `no attempt ${attemptId}`)
+    const row = toAttemptRow(attempt)
+    const m = row.measurement
+    const path =
+      file === 'agent'
+        ? m?.agentLog?.path
+        : file === 'stdout'
+          ? m?.verificationLog?.stdoutPath
+          : m?.verificationLog?.stderrPath
+    if (!path) throw new HttpError(404, `no ${file} log recorded`)
+    return readLogChunk(
+      runRootOf(stateRoot, runId),
+      path,
+      from,
+      !attemptOpen(
+        row,
+        found,
+        (await diagnose(db, found, Date.now())).kind === 'running',
+      ),
+    )
+  }
+
+  async function handle(url: URL): Promise<unknown> {
+    const { pathname } = url
     if (pathname === '/api/runs') return runs()
     if (pathname === '/api/compare') return compare()
     if (pathname === '/api/trend') return trend()
     const match = /^\/api\/runs\/([^/]+)$/.exec(pathname)
-    if (match?.[1]) return run(runIdOf(match[1]))
+    if (match?.[1]) return run(idOf(match[1]))
+    const logs = /^\/api\/runs\/([^/]+)\/logs\/([^/]+)$/.exec(pathname)
+    if (logs?.[1] && logs[2])
+      return log(idOf(logs[1]), idOf(logs[2]), url.searchParams)
     throw new HttpError(404, `no such endpoint: ${pathname}`)
   }
 
@@ -1685,7 +1878,7 @@ export async function startUiServer(
       if (!write) {
         if (req.method !== 'GET' && req.method !== 'HEAD')
           return sendJson(res, 405, { error: 'reads answer GET and HEAD only' })
-        return sendJson(res, 200, await api.handle(url.pathname))
+        return sendJson(res, 200, await api.handle(url))
       }
       if (req.method !== 'POST')
         return sendJson(res, 405, { error: 'an action needs POST' })
@@ -1695,7 +1888,7 @@ export async function startUiServer(
       if (!sameToken(req.headers[TOKEN_HEADER], token))
         return sendJson(res, 403, { error: 'missing or wrong page token' })
       const body = await readJson(req)
-      const runId = runIdOf(write.rawId)
+      const runId = idOf(write.rawId)
       sendJson(res, 200, await api.act(runId, write.action, body))
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500
