@@ -15,6 +15,7 @@ import {
   LiveStates,
   NoticeStates,
   PathStates,
+  WorktreeStates,
 } from './design/BasicSpecimens'
 import {
   CollapsibleStates,
@@ -46,6 +47,7 @@ const PARTS: [keyof typeof DESIGN.part, () => ReactNode][] = [
   ['empty', EmptyStates],
   ['notice', NoticeStates],
   ['path', PathStates],
+  ['worktree', WorktreeStates],
   ['trace', TraceStates],
 ]
 

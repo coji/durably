@@ -29,6 +29,7 @@ const diagnosis = (
   reason: '',
   next,
   cleanup: null,
+  worktree: null,
   ...(failure
     ? {
         failure: {
@@ -204,8 +205,8 @@ const ARCHIVED_TASK: Task = {
 
 /**
  * Each run's actions as the detail page leads with them, an archived run's
- * way back among its task's runs, then what an action came to and what a
- * refused one says.
+ * way back among its task's runs, then what an action came to, an archive
+ * that left the worktree, and what a refused one says.
  */
 export function RunActionStates() {
   return (
@@ -237,6 +238,25 @@ export function RunActionStates() {
               label: ACTION.archive,
             },
             result: { changed: true },
+          }}
+          onDismiss={() => {}}
+        />
+      </State>
+      <State label={DESIGN.state.archiveWarning}>
+        <ActionNotice
+          outcome={{
+            request: {
+              runId: stopped.id,
+              name: stopped.name,
+              action: 'archive',
+              label: ACTION.archive,
+            },
+            result: {
+              changed: true,
+              warnings: [
+                `worktree /Users/me/.local/state/local-agent-loop/runs/${stopped.id}/work: git worktree remove --force failed with code 128: fatal: cannot remove a locked working tree`,
+              ],
+            },
           }}
           onDismiss={() => {}}
         />

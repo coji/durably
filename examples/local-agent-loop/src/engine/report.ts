@@ -22,6 +22,7 @@ import type {
   SessionHandling,
   VerificationLog,
 } from './providers/types.js'
+import type { WorktreeState } from './status.js'
 import { TERMINAL_STATUSES } from './terminal.js'
 import type { CandidateChanges } from './types.js'
 import { aggregateUsage } from './usage.js'
@@ -771,6 +772,12 @@ export interface LoopReport {
   spec: ReportSpec | null
   /** Branch, commit and location of the delivery; null when none was made. */
   delivery: ReportDelivery | null
+  /**
+   * A repository run's worktree as it is now: removed after an approved
+   * delivery, an archive or `demo prune --apply`, and then not a place to
+   * work. Null for any other run.
+   */
+  worktree: WorktreeState | null
   /** Why the run stopped and what to do next; null when it did not stop. */
   failure: FailureClassification | null
   stageVisits: StageVisits[]
@@ -1553,6 +1560,22 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push(`- summary: ${r.delivery.summary}`)
   } else {
     lines.push('- none')
+  }
+  lines.push('')
+  lines.push('## Worktree')
+  lines.push('')
+  if (!r.worktree)
+    lines.push('- none (not a repository run, or setup did not finish)')
+  else if (!r.worktree.present)
+    lines.push(
+      '- removed; the spec, verification logs, checkpoints, candidate diffs, this report and the delivery record are kept',
+    )
+  else {
+    lines.push(`- path: ${r.worktree.path}`)
+    if (r.worktree.cleanupWarning)
+      lines.push(
+        `- warning: could not be removed after the delivery: ${r.worktree.cleanupWarning}`,
+      )
   }
   lines.push('')
   lines.push('## Stop reason')

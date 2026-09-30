@@ -14,6 +14,7 @@ import { kindStatus, TONES } from '../../components/status'
 import { StatusBadge } from '../../components/StatusBadge'
 import { TaskLineage } from '../../components/TaskLineage'
 import { Ago } from '../../components/Time'
+import { WorktreeNote } from '../../components/WorktreeNote'
 import { COMMON, COPY, DESIGN, KIND_NAME, REFRESH } from '../../glossary'
 import { commandText } from '../../labels'
 import { COMMANDS, LINEAGE, NOW, TASKS } from './fixtures'
@@ -268,6 +269,28 @@ export function PathStates() {
       <State label={DESIGN.state.noLog}>
         <CheckLogs logs={[]} />
       </State>
+    </>
+  )
+}
+
+/** A worktree removed, one left after a delivery, one left after an archive. */
+export function WorktreeStates() {
+  const path =
+    '/Users/me/.local/state/local-agent-loop/runs/01K6D2Q7XB3M9RKT4WSTOPPD/work'
+  const warning = `git worktree remove --force ${path} failed with code 128: fatal: '${path}' is locked`
+  const left = { path, present: true, cleanupWarning: null }
+  const states = [
+    ['worktreeRemoved', { ...left, present: false }, false],
+    ['worktreeWarning', { ...left, cleanupWarning: warning }, false],
+    ['worktreeLeft', left, true],
+  ] as const
+  return (
+    <>
+      {states.map(([label, worktree, archived]) => (
+        <State key={label} label={DESIGN.state[label]}>
+          <WorktreeNote worktree={worktree} archived={archived} />
+        </State>
+      ))}
     </>
   )
 }

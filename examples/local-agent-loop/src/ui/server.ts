@@ -89,6 +89,7 @@ import {
 } from '../engine/report.js'
 import {
   archivable,
+  currentWorktree,
   diagnoseRun,
   groupTasks,
   needsHuman,
@@ -1157,11 +1158,12 @@ export function readOnce(db: ReportSource, known: Run[] = []): ReportSource {
 
 /**
  * Reports by run. A finished run's row never changes again, so its report is
- * built once and reused while the row is unchanged. Only two fields read
+ * built once and reused while the row is unchanged. Only three fields read
  * files that can still change: a failed or cancelled run's `failure` reads
- * checkpoint files, so a reused report gets it classified again, and a
- * reused baseline cites another run's log, so it is worked out again from
- * the stored step to say whether that log is still there.
+ * checkpoint files, so a reused report gets it classified again; a reused
+ * baseline cites another run's log, so it is worked out again from the
+ * stored step to say whether that log is still there; and the worktree is
+ * looked for again, since an archive or a prune removes it.
  * Its repair children can also be added after it finished, so a reused
  * report always gets them again: from `children` when the caller worked them
  * out from the runs it read, otherwise with one label query. Open runs are
@@ -1191,7 +1193,11 @@ export function finishedReportCache(build = buildReport) {
                 ?.output,
             ) ?? hit.report.baseline)
           : hit.report.baseline
-        const cached = { ...hit.report, lineage, baseline }
+        // Whether the worktree is still there is a fact about the disk: an
+        // archive or `demo prune --apply` removes it without touching the
+        // run's row.
+        const worktree = currentWorktree(hit.report.worktree)
+        const cached = { ...hit.report, lineage, baseline, worktree }
         if (run.status === 'completed') return { report: cached, fresh: false }
         const failure = await classifyRun(src, run)
         return { report: { ...cached, failure }, fresh: true }
@@ -1268,6 +1274,8 @@ async function inspect(
     run,
     now,
     fresh ? { failure: report.failure } : undefined,
+    undefined,
+    archived.has(run.id),
   )
   const live = liveElapsed(run, report.attempts, now)
   const decides =

@@ -376,6 +376,11 @@ export interface FactoryOutcome {
   fake: boolean
   /** What the human receives; null when the run produced nothing to act on. */
   delivery: Delivery | null
+  /**
+   * Why the worktree could not be removed after the approved delivery was
+   * recorded; null when it was. Absent when there was nothing to remove.
+   */
+  worktreeCleanupWarning?: string | null
 }
 
 export interface FactoryState {

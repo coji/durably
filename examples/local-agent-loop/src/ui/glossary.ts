@@ -446,6 +446,8 @@ export const COPY = {
   branch: 'ブランチ名をコピー',
   cleanupNote:
     '作業ツリーを片付けるコマンドです。ブランチは残ります。変更が残っている作業ツリーは git が削除を拒否します。',
+  cleanupPruneNote:
+    '片付け済みのはずの作業ツリーを片付けるコマンドです。変更が残っていても削除し、git の登録も消します。ブランチは残ります。',
 } as const
 
 /** A confirmed action: the question, its two answers, and the CLI line. */
@@ -491,6 +493,8 @@ export const ACTION_DONE = {
   decided: 'ワーカーが実行を再開すると、一覧に反映されます。',
   queued: 'ワーカーが順に取りかかります。',
   archived: '終わったタスクに移しました。そこから戻せます。',
+  worktreeLeft:
+    '作業ツリーは片付けられず、残っています。git が返した理由は次のとおりです。',
   unarchived: '状態に合った場所に戻ります。',
 } as const
 
@@ -579,6 +583,15 @@ export const DETAIL = {
   noNext: '人がすることはありません。',
   stopRecord: '停止の記録を見る',
   deliveredTo: '納品したブランチ',
+  worktreeRemoved: '作業ツリーは片付け済み',
+  worktreeKept:
+    'ログ、差分、仕様、チェックポイント、納品の記録は残っています。直すときは記録したコミットから新しい実行を始めます。',
+  worktreeWarning: '納品のあと、作業ツリーを片付けられませんでした',
+  worktreeWarningNote:
+    '実行は承認と納品を終えています。demo prune --apply で片付けをやり直せます。',
+  worktreeLeft: 'アーカイブした実行の作業ツリーが残っています',
+  worktreeLeftNote:
+    'アーカイブのときに片付けられませんでした。原因を取り除いてから demo prune --apply で片付けます。',
   retry: '再実行',
   humanCheck: '人が確認すること',
   leadTime: '所要時間',
@@ -921,6 +934,11 @@ export const DESIGN = {
       name: 'ファイルの場所',
       about: 'パスはデータとして等幅で出し、コピーボタンを添えます。',
     },
+    worktree: {
+      name: '作業ツリーの片付け',
+      about:
+        '片付けた作業ツリーのパスは出しません。残っている記録と、片付けに失敗したときの理由を出します。',
+    },
   },
   state: {
     closed: '閉じた状態',
@@ -952,6 +970,10 @@ export const DESIGN = {
     ago: '相対時刻',
     between: '工程の合間',
     path: 'コピーできるパス',
+    worktreeRemoved: '片付け済み',
+    worktreeWarning: '片付けに失敗',
+    worktreeLeft: 'アーカイブ後も残った',
+    archiveWarning: 'アーカイブしたが作業ツリーが残った',
     writeError: '書き込めなかったログ',
     reviewPassed: '最後の回が通過',
     reviewOpen: '最後の回で指摘が残った',

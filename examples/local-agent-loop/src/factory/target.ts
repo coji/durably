@@ -268,6 +268,15 @@ export interface Target {
   releaseReviewSnapshots?(options: { base: boolean }): Promise<void>
   /** Turn an approved candidate into something the human can act on. */
   deliver(args: DeliverArgs): Promise<Delivery>
-  /** Best-effort cleanup of scratch worktrees. Never throws. */
+  /**
+   * Best-effort cleanup of what only a running run reads, such as review
+   * snapshots. Never throws. The repository worktree stays.
+   */
   cleanup(): Promise<void>
+  /**
+   * Remove the worktree once an approved delivery is recorded; a target
+   * without one does not implement it. Returns why it could not, or null,
+   * and never throws.
+   */
+  retireWorktree?(): Promise<string | null>
 }

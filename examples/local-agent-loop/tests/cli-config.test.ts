@@ -318,7 +318,12 @@ describe('factory.json and input files', { timeout: 180000 }, () => {
 
     // One fixed state root; nothing in the repository, the checkout, or
     // wherever DURABLY_DB pointed.
-    assert.ok(existsSync(join(box.stateRoot, 'runs', runId, 'work')))
+    assert.ok(
+      existsSync(join(box.stateRoot, 'runs', runId, 'operation-checkpoints')),
+    )
+    // The delivered run's worktree was removed once the delivery was
+    // recorded; its branch is the way back to the work.
+    assert.equal(existsSync(join(box.stateRoot, 'runs', runId, 'work')), false)
     assert.equal(existsSync(join(box.root, 'durably-db-override.db')), false)
     assert.equal(existsSync(join(box.repo, 'runs')), false)
     assert.deepEqual(
@@ -511,8 +516,8 @@ describe('status without --run', { timeout: 180000 }, () => {
     assert.deepEqual(JSON.parse(emptyJson.stdout).tasks, [])
     assert.notEqual((await demo(box, ['status', '--format', 'yaml'])).code, 0)
 
-    // A repository run that finishes (its worktree is kept), and one whose
-    // setup fails before any worktree is recorded.
+    // A repository run that finishes, and one whose setup fails before any
+    // worktree is recorded.
     const done = await trigger(box, ['--repo', box.repo, '--task', 'fix add'])
     const noSetup = await trigger(box, [
       '--repo',
@@ -572,7 +577,19 @@ describe('status without --run', { timeout: 180000 }, () => {
         workdir = setup.target.workdir
         repoPath = setup.target.repoPath
       }
-      assert.ok(existsSync(workdir))
+      // The delivered run removed its worktree. One from before that did
+      // not: made again here, it is the leftover `status` points at.
+      assert.equal(existsSync(workdir), false)
+      const delivered = (await durably.getRun(done))?.output as {
+        delivery: { commit: string }
+      }
+      await git(repoPath, [
+        'worktree',
+        'add',
+        '--detach',
+        workdir,
+        delivered.delivery.commit,
+      ])
       // With no worker running: one queued run, one held by a live lease and
       // one whose lease has run out.
       pending = await subject()
@@ -627,21 +644,23 @@ describe('status without --run', { timeout: 180000 }, () => {
     for (const id of [pending, live, expired])
       assert.doesNotMatch(blockOf(out, id), /retry:/)
     assert.match(blockOf(out, noSetup), /unclassified[\s\S]*retry: +NO/)
-    // The finished repository run's worktree is still on disk: offer a
-    // non-forcing removal of exactly that path. The run that failed before
-    // setup and the sample run get none.
-    const remove = `git -C '${repoPath}' worktree remove '${workdir}'`
-    assert.ok(blockOf(out, done).includes(remove), out)
-    assert.doesNotMatch(out, /--force|branch -D/)
+    // The delivered repository run's worktree is still on disk, though its
+    // run should have removed it: offer `demo prune --apply`, which forces
+    // the removal and prunes the registration, not a git removal that a
+    // worktree with changes refuses. The run that failed before setup and
+    // the sample run get none.
+    const prune = `cleanup: ${demoCmd} prune --apply  # forces the removal`
+    assert.ok(blockOf(out, done).includes(prune), out)
+    assert.doesNotMatch(out, /worktree remove|branch -D/)
     for (const id of [noSetup, waiting, pending, live, expired])
-      assert.doesNotMatch(blockOf(out, id), /worktree remove/)
+      assert.doesNotMatch(blockOf(out, id), /cleanup:/)
 
     // Once the worktree is gone, the run is not mentioned again.
     await git(repoPath, ['worktree', 'remove', workdir])
     const after = await demo(box, ['status'])
     assert.equal(after.code, 0, after.stderr)
     assert.equal(blockOf(after.stdout, done), '')
-    assert.doesNotMatch(after.stdout, /worktree remove/)
+    assert.doesNotMatch(after.stdout, /cleanup:/)
 
     // The run-specific view keeps its fields and adds the diagnosis.
     const one = await demo(box, ['status', '--run', waiting])

@@ -48,6 +48,7 @@ import {
   describeCommitChanges,
   diffStat,
   ensureSquashedBranch,
+  forceRemoveWorktree,
   isDirty,
   writePatch,
   pushBranch,
@@ -69,10 +70,12 @@ import {
   type GradeResult,
 } from '../engine/verification.js'
 import {
+  removableRunPathsOf,
   reviewBaseTreeOf,
   reviewHeadTreeOf,
   reviewWorkdirOf,
   specReviewWorkdirOf,
+  worktreeRetiredMarkerOf,
 } from '../factory/layout.js'
 import { changedPathsLine } from '../factory/prompts.js'
 import {
@@ -167,6 +170,20 @@ export class RepoTarget implements Target {
 
   get workdir(): string {
     return this.config.workdir
+  }
+
+  /** The run's directory, which holds the worktree. */
+  private get runRoot(): string {
+    return dirname(this.config.workdir)
+  }
+
+  /**
+   * The run removed its worktree after recording its delivery (see
+   * `worktreeRetiredMarkerOf`), so this execution only replays recorded
+   * steps and must not look for the worktree.
+   */
+  private get retired(): boolean {
+    return existsSync(worktreeRetiredMarkerOf(this.runRoot))
   }
 
   private get commitSettings(): CommitSettings {
@@ -410,6 +427,8 @@ export class RepoTarget implements Target {
   }
 
   async assertIntact(candidate: CandidateRef): Promise<void> {
+    // Every step this check guards was recorded before the worktree went.
+    if (this.retired) return
     // Untracked files do not count. A real check command leaves build output
     // behind (`.turbo/`, `*.tsbuildinfo`, coverage), and none of it is in the
     // commit the candidate names, so a passing check would otherwise fail the
@@ -570,7 +589,12 @@ export class RepoTarget implements Target {
   }
 
   async reviewContext(candidate: CandidateRef): Promise<string> {
-    const head = await resolveCommit(this.config.workdir, 'HEAD')
+    // A replay after the worktree was removed reads the sealed commit; the
+    // review it would inform is already recorded.
+    const head =
+      this.retired && candidate.commit
+        ? candidate.commit
+        : await resolveCommit(this.config.workdir, 'HEAD')
     const changes = await describeCommitChanges(
       this.config.repoPath,
       this.config.baseCommit,
@@ -593,7 +617,11 @@ export class RepoTarget implements Target {
   }
 
   async deliver(args: DeliverArgs): Promise<Delivery> {
-    const head = await resolveCommit(this.config.workdir, 'HEAD')
+    // The sealed commit, which `assertIntact` proved the worktree is at, so
+    // a delivery made again never needs the worktree.
+    const head =
+      args.candidate.commit ??
+      (await resolveCommit(this.config.workdir, 'HEAD'))
     await mkdir(this.config.deliveryDir, { recursive: true })
     const patchPath = join(
       this.config.deliveryDir,
@@ -757,11 +785,46 @@ export class RepoTarget implements Target {
   }
 
   async cleanup(): Promise<void> {
-    // The worktree and branch are intentionally kept: they are the delivery.
-    // The review snapshots are not; they are only read during a review.
+    // The review snapshots are only read during a review. The worktree is
+    // left here whatever the run came to: only an approved delivery removes
+    // it (`retireWorktree`), and a stop keeps it for a person to look at.
+    // The branches are always kept; they are the delivery.
     if (this.config.reviewSnapshotsDir)
       await removeQuietly(this.config.reviewSnapshotsDir)
   }
+
+  /**
+   * Remove the worktree once the approved delivery is recorded (ADR-0028).
+   * The marker goes first, so a replay after this point never asks for the
+   * worktree. Returns why git could not remove it, or null; never throws,
+   * so a failed removal never fails a delivered run.
+   */
+  async retireWorktree(): Promise<string | null> {
+    try {
+      await writeFile(
+        worktreeRetiredMarkerOf(this.runRoot),
+        `${JSON.stringify({ at: new Date().toISOString() })}\n`,
+      )
+      return await removeRunWorktree(this.config.repoPath, this.runRoot)
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+  }
+}
+
+/**
+ * Remove a repository run's worktree with `git worktree remove --force`,
+ * prune git's registration of it, and remove its review snapshots. Nothing
+ * else of the run is touched. Asking again after a removal succeeds and
+ * does nothing. Returns why git could not remove the worktree, or null.
+ */
+export async function removeRunWorktree(
+  repoPath: string,
+  runRoot: string,
+): Promise<string | null> {
+  const paths = removableRunPathsOf(runRoot)
+  await removeQuietly(paths.reviewSnapshots)
+  return forceRemoveWorktree(repoPath, paths.worktree)
 }
 
 /** Remove a directory, ignoring every failure; for best-effort cleanup. */

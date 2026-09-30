@@ -265,6 +265,70 @@ export function groupTasks(runs: TaskRunInput[]): Task[] {
   )
 }
 
+/**
+ * A repository run's worktree as it is now on disk (ADR-0028). An approved
+ * delivery, an archive or `demo prune --apply` removes it; the spec, logs,
+ * checkpoints, candidate diffs and delivery record stay.
+ */
+export interface WorktreeState {
+  /** The path setup recorded; not a place to work once `present` is false. */
+  path: string
+  present: boolean
+  /**
+   * Why the run could not remove it after its approved delivery, while it
+   * is still there; null otherwise.
+   */
+  cleanupWarning: string | null
+}
+
+/**
+ * The worktree setup recorded for a repository run, as it is now, with the
+ * warning the run's output recorded when it could not remove it. Null for
+ * a subject run and a run without a completed setup.
+ */
+export function worktreeStateOf(
+  setupTarget: { kind?: string; workdir?: string } | null | undefined,
+  output: unknown,
+): WorktreeState | null {
+  if (setupTarget?.kind !== 'repo' || !setupTarget.workdir) return null
+  const warning = (output as { worktreeCleanupWarning?: unknown } | null)
+    ?.worktreeCleanupWarning
+  return currentWorktree({
+    path: setupTarget.workdir,
+    present: true,
+    cleanupWarning: typeof warning === 'string' ? warning : null,
+  })
+}
+
+/**
+ * Whether a run was approved and its delivery recorded: the runs whose
+ * worktree is removed after the delivery (ADR-0028).
+ */
+export function deliveredRun(run: Run): boolean {
+  const output = run.output as {
+    conclusion?: string
+    delivery?: unknown
+  } | null
+  return (
+    run.status === 'completed' &&
+    output?.conclusion === 'approved' &&
+    output.delivery != null
+  )
+}
+
+/** `state` as it is now: whether its path is still there is read again. */
+export function currentWorktree(
+  state: WorktreeState | null,
+): WorktreeState | null {
+  if (!state) return null
+  const present = existsSync(state.path)
+  return {
+    ...state,
+    present,
+    cleanupWarning: present ? state.cleanupWarning : null,
+  }
+}
+
 export interface Diagnosis {
   kind: DiagnosisKind
   reason: string
@@ -273,9 +337,21 @@ export interface Diagnosis {
   failure?: FailureClassification
   /** Set only for a decided run: the decision its approval wait recorded. */
   decision?: string
-  /** A non-forcing worktree removal, for a finished repo run's worktree. */
+  /**
+   * How to remove a finished repo run's worktree: `demo prune --apply` for
+   * a delivered or archived run, otherwise a non-forcing `git worktree
+   * remove` a worktree with changes refuses.
+   */
   cleanup: string | null
+  /** The repository run's worktree as it is now; null for any other run. */
+  worktree: WorktreeState | null
 }
+
+/**
+ * The cleanup offered for a worktree its delivered or archived run should
+ * already have removed: forced, with its registration pruned (ADR-0028).
+ */
+export const PRUNE_APPLY = `${DEMO} prune --apply`
 
 /** Quote for a POSIX shell, so a printed command pastes safely. */
 export function shellQuote(value: string): string {
@@ -292,8 +368,10 @@ export async function diagnose(
   run: Run,
   now: number,
   worker?: WorkerSeen,
+  archived = false,
 ): Promise<Diagnosis> {
-  return (await diagnoseRun(durably, run, now, undefined, worker)).diagnosis
+  return (await diagnoseRun(durably, run, now, undefined, worker, archived))
+    .diagnosis
 }
 
 /**
@@ -337,6 +415,8 @@ export async function diagnoseRun(
   now: number,
   known?: { failure: FailureClassification | null },
   worker?: WorkerSeen,
+  /** The run has an archive marker (`demo archive`). */
+  archived = false,
 ): Promise<{ diagnosis: Diagnosis; uncertainCall: boolean }> {
   let uncertainCall = false
   const diagnosis = await describe()
@@ -350,16 +430,17 @@ export async function diagnoseRun(
     } | null
     const terminal = TERMINAL_STATUSES.includes(run.status)
     const target = setup?.target
+    const worktree = worktreeStateOf(target, run.output)
     // Only the worktree the setup step recorded, and only when it is still
     // there: a subject run has none, and a run that failed before setup
-    // finished has no record to trust.
+    // finished has no record to trust. One the run should already have
+    // removed, after its delivery or when it was archived, goes the way
+    // `demo prune --apply` removes it: forced, and its registration pruned.
     const cleanup =
-      terminal &&
-      target?.kind === 'repo' &&
-      target.repoPath &&
-      target.workdir &&
-      existsSync(target.workdir)
-        ? `git -C ${shellQuote(target.repoPath)} worktree remove ${shellQuote(target.workdir)}`
+      terminal && target?.repoPath && worktree?.present
+        ? deliveredRun(run) || archived
+          ? PRUNE_APPLY
+          : `git -C ${shellQuote(target.repoPath)} worktree remove ${shellQuote(worktree.path)}`
         : null
     const show = `${DEMO} status --run ${run.id}`
     const startCmd = `${DEMO} worker`
@@ -374,6 +455,7 @@ export async function diagnoseRun(
         reason: 'queued; no worker has picked it up yet',
         next: [...startWorker, show],
         cleanup,
+        worktree,
       }
     if (run.status === 'leased') {
       const expires = run.leaseExpiresAt ? Date.parse(run.leaseExpiresAt) : NaN
@@ -405,6 +487,7 @@ export async function diagnoseRun(
             show,
           ],
           cleanup,
+          worktree,
         }
       }
       return {
@@ -412,6 +495,7 @@ export async function diagnoseRun(
         reason: `a worker is running it (lease held until ${run.leaseExpiresAt ?? 'unknown'})`,
         next: [show],
         cleanup,
+        worktree,
       }
     }
     if (run.status === 'waiting') {
@@ -426,6 +510,7 @@ export async function diagnoseRun(
           reason: `the decision on ${subject} is recorded (${typeof decision === 'string' ? decision : w.outcome}); a worker resumes the run`,
           next: [...startWorker, show],
           cleanup,
+          worktree,
         }
       }
       const candidateId = (
@@ -444,6 +529,7 @@ export async function diagnoseRun(
               `${DEMO} reject --run ${run.id} --wait ${wait.id}`,
             ],
             cleanup,
+            worktree,
           }
       }
       const spec = wait?.metadata as {
@@ -468,6 +554,7 @@ export async function diagnoseRun(
               `${DEMO} reject --run ${run.id} --wait ${wait.id}  # stop before any implementation`,
             ],
             cleanup,
+            worktree,
           }
       }
       return {
@@ -475,6 +562,7 @@ export async function diagnoseRun(
         reason: 'waiting on an input that is not a candidate approval',
         next: [`${DEMO} waits --run ${run.id}`],
         cleanup,
+        worktree,
       }
     }
     const failure = known ? known.failure : await classifyRun(durably, run)
@@ -486,6 +574,7 @@ export async function diagnoseRun(
         failure,
         // The worktree is evidence a human has to inspect first.
         cleanup: failure.kind === 'uncertain-invocation' ? null : cleanup,
+        worktree,
       }
     const conclusion = (run.output as { conclusion?: string } | null)
       ?.conclusion
@@ -494,6 +583,7 @@ export async function diagnoseRun(
       reason: `finished: ${conclusion ?? run.status}`,
       next: [],
       cleanup,
+      worktree,
     }
   }
 }
@@ -509,7 +599,19 @@ export function diagnosisLines(run: Run, d: Diagnosis): string[] {
   d.next.forEach((n, i) =>
     lines.push(`  ${i === 0 ? 'next:' : '     '}    ${n}`),
   )
-  if (d.cleanup)
+  if (d.worktree && !d.worktree.present)
+    lines.push(
+      '  worktree: removed; the spec, logs, checkpoints, candidate diffs and delivery record are kept',
+    )
+  if (d.worktree?.cleanupWarning)
+    lines.push(
+      `  warning: the worktree could not be removed after the delivery: ${d.worktree.cleanupWarning}`,
+    )
+  if (d.cleanup === PRUNE_APPLY)
+    lines.push(
+      `  cleanup: ${d.cleanup}  # forces the removal and prunes the registration; keeps the branch`,
+    )
+  else if (d.cleanup)
     lines.push(
       `  cleanup: ${d.cleanup}  # keeps the branch; refuses a worktree with changes`,
     )

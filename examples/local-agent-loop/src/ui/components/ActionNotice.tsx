@@ -34,6 +34,11 @@ export interface ActionResult {
   disposition?: string
   /** `archive` / `unarchive`: false when nothing had to change. */
   changed?: boolean
+  /**
+   * `archive`: why git could not remove the worktree. The run is archived
+   * either way.
+   */
+  warnings?: string[]
 }
 
 export type ActionOutcome =
@@ -98,6 +103,7 @@ export function ActionNotice({
     )
   const words = doneWords(request.action, outcome.result)
   const next = outcome.result.runId
+  const warnings = outcome.result.warnings ?? []
   return (
     <Notice title={words.title} onDismiss={onDismiss}>
       <p>{request.name}</p>
@@ -115,6 +121,16 @@ export function ActionNotice({
           </>
         ) : null}
       </p>
+      {warnings.length > 0 ? (
+        <>
+          <p>{ACTION_DONE.worktreeLeft}</p>
+          {warnings.map((warning) => (
+            <p key={warning} className="font-code break-all">
+              {warning}
+            </p>
+          ))}
+        </>
+      ) : null}
     </Notice>
   )
 }
