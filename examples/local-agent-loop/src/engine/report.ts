@@ -134,7 +134,7 @@ export interface ReportInputFile {
 
 /**
  * A repair run's findings: a file, or the parent run whose stored check
- * failure they were built from (ADR-0030).
+ * failure or last reviews they were built from (ADR-0030).
  */
 export type ReportFindings =
   | ReportInputFile
@@ -1491,7 +1491,7 @@ export function reportToMarkdown(r: LoopReport): string {
       ? null
       : 'path' in file
         ? file.path
-        : `built from the check failure of run ${file.parentRun}`
+        : `built from the stored record of run ${file.parentRun}`
     lines.push(
       `- ${name}: ${file ? `${file.sha256} (${source})` : 'not given'}`,
     )

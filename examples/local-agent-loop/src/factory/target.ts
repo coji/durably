@@ -133,10 +133,14 @@ export interface RepoTargetConfig {
 }
 
 /**
- * How a repair run's parent ended: approved and delivered, or stopped with
- * its last candidate failing the check (ADR-0030).
+ * How a repair run's parent ended: approved and delivered, stopped with its
+ * last candidate failing the check, or stopped with reviewers still asking
+ * for changes after the review cap (ADR-0030).
  */
-export type RepairParentConclusion = 'approved' | 'verification-failed'
+export type RepairParentConclusion =
+  | 'approved'
+  | 'verification-failed'
+  | 'review-cap-reached'
 
 export type TargetConfig = SubjectTargetConfig | RepoTargetConfig
 
@@ -147,7 +151,7 @@ export interface InputFileRef {
 
 /**
  * Where a repair run's findings came from: a file, or the parent run's own
- * stored check failure when no file was given (ADR-0030).
+ * stored check failure or last reviews when no file was given (ADR-0030).
  */
 export type FindingsRef = InputFileRef | { parentRun: string }
 

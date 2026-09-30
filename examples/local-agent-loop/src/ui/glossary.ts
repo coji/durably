@@ -406,6 +406,10 @@ export const COMMAND_NOTES: [string, string][] = [
     'go on from the last candidate with a new repair budget; the findings are built from the check failure unless --findings-file is given',
     '最後の候補から、修正の回数を新しくして続けます。--findings-file を渡さなければ、失敗したチェックの出力を指摘として渡します。',
   ],
+  [
+    'go on from the last candidate with a new repair budget; the findings are built from the last reviews unless --findings-file is given',
+    '最後の候補から、修正の回数を新しくして続けます。--findings-file を渡さなければ、最後のレビューの指摘を渡します。',
+  ],
   ['the reviewer notes', 'レビューのメモを読めます。'],
   [
     'read the spec reviews first',
@@ -762,8 +766,11 @@ export const RECORD = {
   inputs: '入力ファイル',
   inputsNote:
     '値は保存した内容の SHA-256 と、読んだファイルの場所か作った元の実行です。',
-  /** Findings built from the parent's stored check failure, not a file. */
-  findingsFromParent: '修正元の実行で失敗したチェックの出力から作成',
+  /**
+   * Findings built from the parent's stored record, not a file: its failed
+   * check or its last reviews.
+   */
+  findingsFromParent: '修正元の実行の記録から作成',
   notGiven: '指定なし',
   notes: '注記',
 } as const

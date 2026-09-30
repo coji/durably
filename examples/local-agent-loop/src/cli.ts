@@ -399,9 +399,10 @@ Commands (run from examples/local-agent-loop):
                         [--check "pnpm validate"] [--setup "pnpm install"] [--base <ref>]
                         [--publish] [--approve auto|manual]
   pnpm demo repair --run <id> [--findings-file <file>] [--dispositions-file <file>]
-                                            new run that repairs the last candidate of an approved,
+                  [--max-iterations <n>]    new run that repairs the last candidate of an approved,
                                             delivered repository run from outside findings, or of
-                                            one that stopped verification-failed (see below)
+                                            one that stopped verification-failed or
+                                            review-cap-reached (see below)
   pnpm demo status [--format text|json]     tasks that wait on a person, stopped unresolved or
                                             run now: a first run and its repair runs are one task,
                                             shown by its representative run's reason and next command
@@ -530,25 +531,28 @@ Repository config: factory.json at the repository root, or --config <file>:
   squashed branch when "publishSquashed" is true; without --publish neither
   is pushed.
   repair starts a child run from a parent run that completed approved and
-  delivered its last candidate, or completed verification-failed with a
-  recorded last candidate, whose candidate branch still points at that
-  commit. Every other conclusion, review-cap-reached included, is refused.
-  An approved parent needs --findings-file. For a verification-failed parent
-  it is optional: without it, the findings are built from the parent's
+  delivered its last candidate, or completed verification-failed or
+  review-cap-reached with a recorded last candidate, whose candidate branch
+  still points at that commit. Every other conclusion is refused. An
+  approved parent needs --findings-file. For the other two it is optional:
+  without it, a verification-failed parent's findings are built from its
   stored output tail and exit code of the check that failed on its last
-  candidate, with the check command. The child works on factory/<childRunId>
-  cut from that commit, with the parent's stored task, spec, issue,
-  profiles, check, setup, timeouts, codexPath, commit and publish settings
-  and max iterations; factory.json and the environment are not read, and
-  any other flag is refused. Its setup checks the candidate branch again and
-  stops as candidate-moved, before creating anything, if the branch moved
-  since. The child of a verification-failed parent skips baselineCheck,
-  since its base is the candidate the check failed on. It skips triage,
-  starts with a repair in a new session, and the inherited max iterations
-  count its own repairs only. The findings are stored as untrusted input for
-  the repairer and both reviewers; --dispositions-file replaces the parent's
-  dispositions (inherited otherwise). The same parent, findings and
-  dispositions return the same child run.
+  candidate, with the check command, and a review-cap-reached parent's from
+  the notes of each of its last reviews that asked for changes. The child
+  works on factory/<childRunId> cut from that commit, with the parent's
+  stored task, spec, issue, profiles, check, setup, timeouts, codexPath,
+  commit and publish settings and max iterations; factory.json and the
+  environment are not read. --max-iterations (1 to 5) replaces the
+  inherited max iterations; any other flag is refused. Its setup checks the
+  candidate branch again and stops as candidate-moved, before creating
+  anything, if the branch moved since. The child of a verification-failed
+  parent skips baselineCheck, since its base is the candidate the check
+  failed on; every other child runs it as its parent did. It skips triage,
+  starts with a repair in a new session, and its max iterations count its
+  own repairs only. The findings are stored as untrusted input for the
+  repairer and both reviewers; --dispositions-file replaces the parent's
+  dispositions (inherited otherwise). The same parent, findings,
+  dispositions and max iterations return the same child run.
   Timeouts are positive integer milliseconds, at most 2147483647; without them, the trigger's
   TEST_TIMEOUT_MS / AGENT_TIMEOUT_MS, then the target's default.
   Before the first agent call, every role's provider, model and effort is
