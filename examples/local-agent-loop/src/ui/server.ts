@@ -1222,12 +1222,12 @@ export function finishedReportCache(build = buildReport) {
  * once, so no report makes its own child query and the view's reads do not
  * grow with the square of the history.
  */
-export async function listedReports(
+export async function listedReports<R extends Run>(
   cache: ReturnType<typeof finishedReportCache>,
   src: ReportSource,
-  runs: Run[],
+  runs: R[],
   all: Run[],
-): Promise<{ run: Run; report: LoopReport; fresh: boolean }[]> {
+): Promise<{ run: R; report: LoopReport; fresh: boolean }[]> {
   const children = repairChildrenByParent(all)
   return Promise.all(
     runs.map(async (run) => ({
@@ -1531,14 +1531,10 @@ function createUiApi() {
     // history.
     const rows = all.map((run) => ({ ...run, parentId: repairParentId(run) }))
     const read = new Set(trendRunIds(rows, { now }))
-    const done = all.filter((r) => read.has(r.id))
+    const done = rows.filter((r) => read.has(r.id))
     const built = await listedReports(reports, readOnce(db, done), done, all)
     return trendOf(
-      built.map(({ run, report }) => ({
-        ...run,
-        parentId: repairParentId(run),
-        report,
-      })),
+      built.map(({ run, report }) => ({ ...run, report })),
       { now },
     )
   }
