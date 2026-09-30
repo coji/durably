@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  mkdtemp,
+  readFile,
+  rm,
+  utimes,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -52,6 +59,17 @@ describe('recorded CLI versions', { timeout: 60000 }, () => {
         args: [],
         path: stub,
       })
+      assert.equal(
+        (await resolveVersions('codex'))['codexCli'],
+        'codex-cli 9.9.9',
+      )
+      // Updated in place, the same path is probed again.
+      await writeFile(stub, '#!/bin/sh\necho "codex-cli 9.9.10"\n')
+      await utimes(stub, new Date(), new Date(Date.now() + 5000))
+      assert.equal(
+        (await resolveVersions('codex'))['codexCli'],
+        'codex-cli 9.9.10',
+      )
       // Without one on PATH, this workspace's bundled `@openai/codex`.
       process.env['PATH'] = ''
       const bundled = codexExecutable()

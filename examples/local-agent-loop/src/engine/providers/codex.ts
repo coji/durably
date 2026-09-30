@@ -71,7 +71,7 @@ export function parseCodexAuthMode(statusOutput: string): CodexAuthMode {
 export interface CodexExecutable {
   command: string
   args: string[]
-  /** The launched file; null when a PATH lookup finds nothing. */
+  /** The launched file; null when neither PATH nor the bundled CLI has one. */
   path: string | null
 }
 
