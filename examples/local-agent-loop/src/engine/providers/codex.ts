@@ -342,6 +342,8 @@ interface OutputPart {
   type: string
   delta?: unknown
   toolName?: unknown
+  result?: unknown
+  preliminary?: unknown
   input?: unknown
 }
 
@@ -384,6 +386,12 @@ export function watchActivity<M extends object>(
               typeof part.toolName === 'string'
             )
               output.tool(part.toolName, part.input)
+            else if (
+              part.type === 'tool-result' &&
+              typeof part.toolName === 'string' &&
+              !part.preliminary
+            )
+              output.result(part.toolName, part.result)
             controller.enqueue(part)
           },
         }),

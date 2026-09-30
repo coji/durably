@@ -1235,6 +1235,33 @@ describe('what a provider writes to the agent log', () => {
         input: '{"command":"rg -n\\n formatCost src"}',
       },
       { type: 'tool-result', toolCallId: 'c', toolName: 'exec_command' },
+      // The app-server shape: the whole item as JSON, `type` first; a
+      // preliminary output delta, then the final result with its exit code.
+      {
+        type: 'tool-call',
+        toolCallId: 'd',
+        toolName: 'exec',
+        input:
+          '{"type":"commandExecution","id":"d","command":"pnpm test","cwd":"/w","status":"inProgress"}',
+      },
+      {
+        type: 'tool-result',
+        toolCallId: 'd',
+        toolName: 'exec',
+        preliminary: true,
+        result: { type: 'output-delta', delta: 'ok\n' },
+      },
+      {
+        type: 'tool-result',
+        toolCallId: 'd',
+        toolName: 'exec',
+        result: {
+          type: 'commandExecution',
+          id: 'd',
+          command: 'pnpm test',
+          exitCode: 1,
+        },
+      },
       { type: 'finish', usage: { inputTokens: 123, outputTokens: 45 } },
     ]
     const model = {
@@ -1255,7 +1282,7 @@ describe('what a provider writes to the agent log', () => {
     for await (const _ of stream as unknown as AsyncIterable<unknown>);
     assert.equal(
       written,
-      'Reading the code\nNext message\n> exec_command rg -n formatCost src\n',
+      'Reading the code\nNext message\n> exec_command rg -n formatCost src\n> exec pnpm test\n< exec exit 1\n',
     )
   })
 

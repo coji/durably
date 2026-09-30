@@ -189,10 +189,34 @@ export interface AgentCallOptions {
 /** How long a tool call's argument summary may be in an agent log. */
 const TOOL_SUMMARY_MAX = 160
 
+/** Argument fields worth showing, in order; Codex's app-server items lead with `type`. */
+const ARGUMENT_FIELDS = [
+  'command',
+  'query',
+  'pattern',
+  'path',
+  'file_path',
+  'tool',
+]
+
+/** Fields that describe the call, not what it does. */
+const NOT_ARGUMENTS = new Set(['type', 'id', 'status', 'cwd', 'processId'])
+
+/** The one string field of a tool's arguments that says what it does. */
+function argumentOf(value: Record<string, unknown>): string | null {
+  for (const key of ARGUMENT_FIELDS)
+    if (typeof value[key] === 'string') return value[key]
+  const first = Object.entries(value).find(
+    ([k, v]) => !NOT_ARGUMENTS.has(k) && typeof v === 'string',
+  )
+  return first ? (first[1] as string) : null
+}
+
 /**
  * One agent-log line for a tool call: its name and its arguments in short.
- * A string argument is shown as is; an object shows its first string field
- * such as a command or a path, or else the object itself, cut to one line.
+ * A string argument is shown as is; an object shows its command, query or
+ * path, else its first descriptive string field, else the object itself,
+ * cut to one line.
  */
 export function toolCallLine(name: string, input: unknown): string {
   let value = input
@@ -205,7 +229,7 @@ export function toolCallLine(name: string, input: unknown): string {
   }
   const first =
     value && typeof value === 'object' && !Array.isArray(value)
-      ? Object.values(value).find((v) => typeof v === 'string')
+      ? argumentOf(value as Record<string, unknown>)
       : null
   const raw =
     typeof value === 'string'
@@ -223,9 +247,18 @@ export function toolCallLine(name: string, input: unknown): string {
   return `> ${name}${short ? ` ${short}` : ''}\n`
 }
 
+/** A command's exit code from a tool result, in either spelling. */
+function exitCodeOf(result: unknown): number | null {
+  if (!result || typeof result !== 'object') return null
+  const r = result as Record<string, unknown>
+  const code = r.exitCode ?? r.exit_code
+  return typeof code === 'number' ? code : null
+}
+
 /**
- * What a provider hands `onOutput`: text as is, and each tool call on a
- * line of its own. Absent `onOutput`, it writes nothing.
+ * What a provider hands `onOutput`: text as is, each tool call on a line
+ * of its own, and a command's exit code after it. Absent `onOutput`, it
+ * writes nothing.
  */
 export function agentOutput(onOutput: ((chunk: string) => void) | undefined) {
   let lineStart = true
@@ -238,6 +271,12 @@ export function agentOutput(onOutput: ((chunk: string) => void) | undefined) {
     text: emit,
     tool(name: string, input: unknown) {
       emit(`${lineStart ? '' : '\n'}${toolCallLine(name, input)}`)
+    },
+    /** How a command ended, when its result says: `< exec exit 1`. */
+    result(name: string, result: unknown) {
+      const code = exitCodeOf(result)
+      if (code !== null)
+        emit(`${lineStart ? '' : '\n'}< ${name} exit ${code}\n`)
     },
     /** End the line a message left open, so the next starts its own. */
     line() {
