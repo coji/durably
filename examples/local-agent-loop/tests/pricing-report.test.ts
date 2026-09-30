@@ -447,7 +447,7 @@ describe('repair runs from outside findings', () => {
     assert.match(reportToMarkdown(parent), /- parent: none\n- children: a, b/)
   })
 
-  it('names the parent run as the source of findings built from its check failure', () => {
+  it('names the parent run as the source of findings built from its stored check failure or reviews', () => {
     const findings = { parentRun: 'parent', sha256: 'e'.repeat(64) }
     const r = {
       ...run('child', 'parent', 1),
@@ -456,7 +456,7 @@ describe('repair runs from outside findings', () => {
     assert.match(
       reportToMarkdown(r),
       new RegExp(
-        `- findings: ${'e'.repeat(64)} \\(built from the check failure of run parent\\)`,
+        `- findings: ${'e'.repeat(64)} \\(built from the stored record of run parent\\)`,
       ),
     )
     assert.deepEqual(

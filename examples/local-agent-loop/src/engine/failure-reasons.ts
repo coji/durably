@@ -241,8 +241,14 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
     retryable: true,
     humanCheck:
       'read the reviewer notes in the report; finish the candidate by hand or restate the task',
-    next: (runId) => [
+    next: (runId, _reload, repo) => [
       `${DEMO} report --run ${runId}  # the reviewer notes`,
+      // Only a repository run has a candidate a repair run can start from.
+      ...(repo
+        ? [
+            `${DEMO} repair --run ${runId}  # go on from the last candidate with a new repair budget; the findings are built from the last reviews unless --findings-file is given`,
+          ]
+        : []),
       retrigger(runId),
     ],
   },

@@ -485,7 +485,8 @@ function runsBaselineCheck(
 
 /**
  * A run that repairs another run's last candidate from outside findings: an
- * approved, delivered one, or one that stopped failing the check (ADR-0030).
+ * approved, delivered one, or one that stopped failing the check or with
+ * reviewers still asking for changes (ADR-0030).
  * Built by `demo repair` from the parent's stored input and setup; the
  * worker never resolves these profiles again.
  */
@@ -499,12 +500,14 @@ const repairOfSchema = z
     candidateCommit: z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/),
     candidateBranch: z.string().min(1),
     /** Absent on a run stored before it was kept: an approved parent. */
-    parentConclusion: z.enum(['approved', 'verification-failed']).optional(),
+    parentConclusion: z
+      .enum(['approved', 'verification-failed', 'review-cap-reached'])
+      .optional(),
     /** Stored once at trigger; its SHA-256 is taken from this content. */
     findings: nonBlank,
     /**
      * The findings file, or the parent run when the findings were built
-     * from its stored check failure.
+     * from its stored check failure or last reviews.
      */
     findingsFile: z.union([
       inputFileSchema,
@@ -754,17 +757,18 @@ const inputSchema = z
       path: ['repairOf'],
     },
   )
-  // Findings built from the parent's check failure name that parent, and
-  // only a parent that stopped on the check has one.
+  // Findings built from the parent's record name that parent, and only a
+  // parent that stopped on the check or at the review cap has them.
   .refine(
     (input) =>
       !input.repairOf ||
       !('parentRun' in input.repairOf.findingsFile) ||
       (input.repairOf.findingsFile.parentRun === input.repairOf.runId &&
-        input.repairOf.parentConclusion === 'verification-failed'),
+        (input.repairOf.parentConclusion === 'verification-failed' ||
+          input.repairOf.parentConclusion === 'review-cap-reached')),
     {
       message:
-        "findings built from a run's check failure must name the parent run, which stopped verification-failed",
+        "findings built from a run's record must name the parent run, which stopped verification-failed or review-cap-reached",
       path: ['repairOf', 'findingsFile'],
     },
   )

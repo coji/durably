@@ -48,9 +48,11 @@ import { createTarget } from '../src/targets/index.js'
 import {
   buildRepairInput,
   checkFailureFindings,
+  readRepairFiles,
   reloadTriggerInput,
   repairableCandidate,
   resolveProfiles,
+  reviewFindings,
 } from '../src/trigger-input.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -2175,7 +2177,6 @@ describe('repair', { timeout: 240000 }, () => {
     )
     // A flag a repair run would ignore is refused, not dropped silently.
     for (const flag of [
-      ['--max-iterations', '3'],
       ['--publish'],
       ['--check', 'true'],
       ['--config', 'factory.json'],
@@ -2184,12 +2185,45 @@ describe('repair', { timeout: 240000 }, () => {
       await refused(
         ['--findings-file', 'ok.md', ...flag],
         new RegExp(
-          `repair takes only --run, --findings-file and --dispositions-file; not accepted: ${flag[0]}\\.`,
+          `repair takes only --run, --findings-file, --dispositions-file and --max-iterations; not accepted: ${flag[0]}\\.`,
         ),
+      )
+    await refused(
+      ['--findings-file', 'ok.md', '--max-iterations', '0'],
+      /--max-iterations must be an integer between 1 and 5/,
+    )
+  })
+
+  it('takes --max-iterations from 1 to 5 only, and leaves it to the parent when absent', async () => {
+    const read = (value?: string) =>
+      readRepairFiles({
+        run: 'p',
+        ...(value !== undefined ? { 'max-iterations': value } : {}),
+      })
+    assert.equal((await read()).maxIterations, undefined)
+    assert.equal('maxIterations' in (await read()), false)
+    for (const ok of ['1', '4', '5'])
+      assert.equal((await read(ok)).maxIterations, Number(ok))
+    for (const bad of [
+      '0',
+      '6',
+      '-1',
+      '1.5',
+      '4.0',
+      'NaN',
+      'Infinity',
+      '9007199254740993',
+      '',
+      ' 4',
+    ])
+      await assert.rejects(
+        read(bad),
+        /--max-iterations must be an integer between 1 and 5/,
+        bad,
       )
   })
 
-  it('refuses every parent that is not an approved, delivered or verification-failed repository run', () => {
+  it('refuses every parent that is not an approved, delivered, verification-failed or review-cap-reached repository run', () => {
     const commit = 'c'.repeat(40)
     const setup = {
       target: { kind: 'repo' },
@@ -2234,6 +2268,30 @@ describe('repair', { timeout: 240000 }, () => {
         ),
       /no candidate commit/,
     )
+    // So does a run that stopped at the review cap (ADR-0030, 2026-10-01).
+    const capped = {
+      ...stopped,
+      output: { ...stopped.output, conclusion: 'review-cap-reached' },
+    }
+    assert.equal(repairableCandidate(capped, setup).commit, commit)
+    assert.equal(
+      repairableCandidate(capped, setup).conclusion,
+      'review-cap-reached',
+    )
+    assert.throws(
+      () =>
+        repairableCandidate(
+          {
+            ...capped,
+            output: {
+              ...capped.output,
+              candidate: { commit, branch: '' } as never,
+            },
+          },
+          setup,
+        ),
+      /no candidate commit/,
+    )
     const cases: [string, Partial<typeof good>, RegExp][] = [
       ['pending', { status: 'pending' }, /it is pending, not completed/],
       ['leased', { status: 'leased' }, /it is leased, not completed/],
@@ -2246,8 +2304,8 @@ describe('repair', { timeout: 240000 }, () => {
         /not a repository run/,
       ],
     ]
-    // Refused even with a candidate: review-cap-reached stays out (ADR-0030).
-    for (const conclusion of ['rejected', 'review-cap-reached'])
+    // Refused even with a candidate.
+    for (const conclusion of ['rejected', 'unknown-conclusion'])
       cases.push([
         conclusion,
         {
@@ -2259,7 +2317,7 @@ describe('repair', { timeout: 240000 }, () => {
           },
         },
         new RegExp(
-          `its conclusion is ${conclusion}, not approved or verification-failed`,
+          `its conclusion is ${conclusion}, not approved, verification-failed or review-cap-reached`,
         ),
       ])
     for (const status of [
@@ -2269,11 +2327,18 @@ describe('repair', { timeout: 240000 }, () => {
       'failed',
       'cancelled',
     ])
-      cases.push([
-        `verification-failed but ${status}`,
-        { ...stopped, status },
-        new RegExp(`it is ${status}, not completed`),
-      ])
+      cases.push(
+        [
+          `verification-failed but ${status}`,
+          { ...stopped, status },
+          new RegExp(`it is ${status}, not completed`),
+        ],
+        [
+          `review-cap-reached but ${status}`,
+          { ...capped, status },
+          new RegExp(`it is ${status}, not completed`),
+        ],
+      )
     cases.push(
       [
         'no candidate',
@@ -2300,32 +2365,95 @@ describe('repair', { timeout: 240000 }, () => {
     assert.throws(() => repairableCandidate(good, null), /setup record/)
   })
 
-  it('names repair beside retrigger for a verification-failed repository run only', () => {
-    const next = (repo: boolean | undefined) =>
+  it('names repair beside retrigger for a verification-failed or review-cap-reached repository run only', () => {
+    const next = (conclusion: string, repo: boolean | undefined) =>
       classifyFailure({
         runId: 'r1',
         status: 'completed',
-        output: { conclusion: 'verification-failed' },
+        output: { conclusion },
         error: null,
         uncertain: [],
         ...(repo === undefined ? {} : { repo }),
       })?.next ?? []
     const repair = (lines: string[]) =>
       lines.filter((l) => l.includes(' repair --run r1 '))
-    assert.equal(repair(next(true)).length, 1)
-    assert.match(repair(next(true))[0] ?? '', /--findings-file is given$/)
-    assert.ok(next(true).some((l) => l.includes(' retrigger --run r1 ')))
-    assert.deepEqual(repair(next(false)), [])
-    // A review-cap-reached run is not offered a repair.
-    const capped = classifyFailure({
-      runId: 'r1',
+    for (const [conclusion, source] of [
+      ['verification-failed', 'check failure'],
+      ['review-cap-reached', 'last reviews'],
+    ] as const) {
+      const lines = next(conclusion, true)
+      assert.equal(repair(lines).length, 1, conclusion)
+      assert.match(
+        repair(lines)[0] ?? '',
+        new RegExp(`built from the ${source} unless --findings-file is given$`),
+      )
+      assert.ok(lines.some((l) => l.includes(' retrigger --run r1 ')))
+      assert.deepEqual(repair(next(conclusion, false)), [], conclusion)
+    }
+  })
+
+  it("builds findings from the parent's last needsChanges reviews only, the same every time", () => {
+    const commit = 'c'.repeat(40)
+    const parent = (reviews: unknown) => ({
+      id: 'p',
       status: 'completed',
-      output: { conclusion: 'review-cap-reached' },
-      error: null,
-      uncertain: [],
-      repo: true,
+      input: { target: { kind: 'repo' } },
+      output: {
+        approved: false,
+        conclusion: 'review-cap-reached',
+        candidate: { id: 'cand-2', commit, branch: 'factory/p' },
+        delivery: null,
+        reviews,
+      },
     })
-    assert.deepEqual(repair(capped?.next ?? []), [])
+    const both = parent([
+      {
+        lens: 'correctness',
+        decision: 'needsChanges',
+        notes: 'refunds still truncate\nsecond line',
+      },
+      { lens: 'edge-cases', decision: 'needsChanges', notes: 'empty cart' },
+    ])
+    const built = reviewFindings(both)
+    assert.deepEqual(built.ref, { parentRun: 'p' })
+    assert.match(built.content, /^# Review findings of factory run p$/m)
+    assert.match(built.content, new RegExp(`commit ${commit}`))
+    assert.match(
+      built.content,
+      /^## correctness\n\nrefunds still truncate\nsecond line\n\n## edge-cases\n\nempty cart$/m,
+    )
+    assert.deepEqual(reviewFindings(both), built)
+    // A pass review's notes, and a review with blank notes, are left out.
+    const one = reviewFindings(
+      parent([
+        { lens: 'correctness', decision: 'pass', notes: 'PASS NOTE' },
+        { lens: 'edge-cases', decision: 'needsChanges', notes: 'empty cart' },
+      ]),
+    ).content
+    assert.doesNotMatch(one, /PASS NOTE|## correctness/)
+    assert.match(one, /^## edge-cases\n\nempty cart$/m)
+    const refused = (reviews: unknown, name: string) =>
+      assert.throws(
+        () => reviewFindings(parent(reviews)),
+        /refusing to repair p: no stored review asked for changes with notes; give the findings with --findings-file <path> instead/,
+        name,
+      )
+    refused(
+      [
+        { lens: 'correctness', decision: 'pass', notes: 'fine' },
+        { lens: 'edge-cases', decision: 'pass', notes: 'fine' },
+      ],
+      'all pass',
+    )
+    refused(
+      [
+        { lens: 'correctness', decision: 'needsChanges', notes: '  \n\t' },
+        { lens: 'edge-cases', decision: 'pass', notes: 'fine' },
+      ],
+      'blank notes',
+    )
+    refused([], 'no reviews')
+    refused(undefined, 'reviews missing')
   })
 
   it("builds findings from the last candidate's failed check only, the same every time", () => {
@@ -2622,6 +2750,32 @@ describe('repair', { timeout: 240000 }, () => {
       'disp.md',
     ])
     assert.notEqual(other.runId, first.runId)
+    // The parent's budget, given, is the inherited one; another is another
+    // child, returned again for the same budget.
+    const sameBudget = await repair([
+      '--findings-file',
+      'a/findings.md',
+      '--max-iterations',
+      '1',
+    ])
+    assert.equal(sameBudget.runId, first.runId)
+    assert.equal(sameBudget.disposition, 'idempotent')
+    const budget = await repair([
+      '--findings-file',
+      'a/findings.md',
+      '--max-iterations',
+      '4',
+    ])
+    assert.equal(budget.disposition, 'created')
+    assert.notEqual(budget.runId, first.runId)
+    const budgetAgain = await repair([
+      '--findings-file',
+      'b/copy.md',
+      '--max-iterations',
+      '4',
+    ])
+    assert.equal(budgetAgain.runId, budget.runId)
+    assert.equal(budgetAgain.disposition, 'idempotent')
 
     type ChildInput = RunInput & {
       maxIterations: number
@@ -2648,12 +2802,15 @@ describe('repair', { timeout: 240000 }, () => {
     assert.equal('configSource' in child, false)
     const withDisp = (await inputOf(box, other.runId)) as ChildInput
     assert.equal(withDisp.target.dispositions, 'CHILD DISPOSITIONS\n')
+    const withBudget = (await inputOf(box, budget.runId)) as ChildInput
+    assert.equal(withBudget.maxIterations, 4)
+    assert.equal(withBudget.checkTimeoutMs, 150000)
 
     // status --run shows both sides.
     const parentStatus = await demo(box, ['status', '--run', parentId])
     assert.deepEqual(
       (JSON.parse(parentStatus.stdout) as { lineage: unknown }).lineage,
-      { parent: null, children: [first.runId, other.runId] },
+      { parent: null, children: [first.runId, other.runId, budget.runId] },
     )
     const childStatus = await demo(box, ['status', '--run', first.runId])
     assert.equal(
@@ -2693,7 +2850,7 @@ describe('repair', { timeout: 240000 }, () => {
           (r.input as { repairOf?: { runId?: string } }).repairOf?.runId ===
           parentId,
       )
-      assert.equal(children.length, 2)
+      assert.equal(children.length, 3)
     } finally {
       await d.db.destroy()
     }
@@ -2796,6 +2953,81 @@ describe('repair', { timeout: 240000 }, () => {
       ).lineage.children.sort(),
       [derived.runId, withDisp.runId, fromFile.runId].sort(),
     )
+  })
+
+  it('repairs a review-cap-reached parent from its stored reviews, or from a file given instead', async () => {
+    const box = await sandbox({ check: CHECK })
+    // The check passes; one reviewer still asks for changes after the one
+    // iteration.
+    process.env.FAKE_FAIL_FIRST = '0'
+    process.env.FAKE_REVIEW_SEQUENCE = 'needsChanges,pass'
+    const parentId = await trigger(box, [
+      '--repo',
+      box.repo,
+      '--task',
+      'the parent task',
+      '--max-iterations',
+      '1',
+    ])
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    await durably.init()
+    let reviews: { lens: string; decision: string; notes: string }[]
+    try {
+      await until(
+        async () => (await durably.getRun(parentId))?.status === 'completed',
+        'the parent stops',
+      )
+      const output = (await durably.getRun(parentId))?.output as {
+        conclusion: string
+        reviews: typeof reviews
+      }
+      assert.equal(output.conclusion, 'review-cap-reached')
+      reviews = output.reviews
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+      delete process.env.FAKE_FAIL_FIRST
+      delete process.env.FAKE_REVIEW_SEQUENCE
+    }
+    const blocking = reviews.filter((r) => r.decision === 'needsChanges')
+    const passing = reviews.filter((r) => r.decision === 'pass')
+    assert.equal(blocking.length, 1)
+    assert.equal(passing.length, 1)
+    await writeFile(join(box.root, 'findings.md'), 'FINDING: by hand\n')
+    const repair = async (args: string[]) => {
+      const res = await demo(box, ['repair', '--run', parentId, ...args])
+      assert.equal(res.code, 0, res.stderr)
+      return JSON.parse(res.stdout) as { runId: string; disposition: string }
+    }
+    const derived = await repair([])
+    assert.equal(derived.disposition, 'created')
+    assert.equal((await repair([])).runId, derived.runId)
+    const fromFile = await repair(['--findings-file', 'findings.md'])
+    assert.notEqual(fromFile.runId, derived.runId)
+    const fourTimes = await repair(['--max-iterations', '4'])
+    assert.notEqual(fourTimes.runId, derived.runId)
+
+    type ChildInput = RunInput & {
+      maxIterations: number
+      repairOf: {
+        parentConclusion: string
+        findings: string
+        findingsFile: { path?: string; parentRun?: string }
+      }
+    }
+    const child = (await inputOf(box, derived.runId)) as ChildInput
+    assert.equal(child.repairOf.parentConclusion, 'review-cap-reached')
+    assert.deepEqual(child.repairOf.findingsFile, { parentRun: parentId })
+    assert.ok(child.repairOf.findings.includes(`## ${blocking[0]?.lens}`))
+    assert.ok(child.repairOf.findings.includes(blocking[0]?.notes ?? '-'))
+    assert.ok(!child.repairOf.findings.includes(passing[0]?.notes ?? '-'))
+    assert.equal(child.maxIterations, 1)
+    const byHand = (await inputOf(box, fromFile.runId)) as ChildInput
+    assert.equal(byHand.repairOf.findings, 'FINDING: by hand\n')
+    assert.equal(byHand.repairOf.parentConclusion, 'review-cap-reached')
+    const budget = (await inputOf(box, fourTimes.runId)) as ChildInput
+    assert.equal(budget.maxIterations, 4)
+    assert.equal(budget.repairOf.findings, child.repairOf.findings)
   })
 })
 

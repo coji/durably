@@ -3725,6 +3725,49 @@ describe('numbers on the screens', () => {
     )
     assert.match(records, /1,204 ファイル、\+12,345 行、−6,789 行/)
     assert.ok(!records.includes('12345'))
+
+    // Findings built from the parent's record, a failed check or its last
+    // reviews, name the parent run, never a path or one kind of source.
+    const derived = htmlText(
+      renderToStaticMarkup(
+        createElement(RecordPanels, {
+          report: {
+            ...report,
+            candidate: null,
+            candidates: [],
+            delivery: null,
+            inputs: {
+              task: null,
+              spec: null,
+              dispositions: null,
+              findings: {
+                parentRun: '01K6D2Q7XB3M9RKT4WPARENT',
+                sha256: 'e'.repeat(64),
+              },
+            },
+            notes: [],
+          } as unknown as LoopReport,
+        }),
+      ),
+    )
+    assert.ok(derived.includes('修正元の実行の記録から作成'))
+    assert.doesNotMatch(derived, /失敗したチェック/)
+  })
+
+  it("shows a review-cap-reached run's repair command with its note in Japanese", () => {
+    const next =
+      classifyFailure({
+        runId: 'r1',
+        status: 'completed',
+        output: { conclusion: 'review-cap-reached' },
+        error: null,
+        uncertain: [],
+        repo: true,
+      })?.next ?? []
+    const repair = next.find((l) => l.includes(' repair --run r1'))
+    assert.ok(repair)
+    assert.match(commandText(repair), / demo repair --run r1$/)
+    assert.match(commandNote(repair) ?? '', /最後のレビューの指摘を渡します/)
   })
 })
 

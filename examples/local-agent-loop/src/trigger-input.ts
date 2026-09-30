@@ -674,6 +674,17 @@ export async function resolveTarget(a: Record<string, string>) {
 type ResolvedTarget = Awaited<ReturnType<typeof resolveTarget>>
 
 /**
+ * `--max-iterations`, for trigger and repair alike. Math.min/Math.max
+ * propagate NaN rather than clamping it, so a non-numeric value would reach
+ * the job schema as NaN and surface as a zod stack trace.
+ */
+function parseMaxIterations(raw: string): number {
+  if (!/^[1-5]$/.test(raw))
+    throw new Error('--max-iterations must be an integer between 1 and 5')
+  return Number(raw)
+}
+
+/**
  * The run input from a resolved target and the flags that are not about the
  * repository. Trigger and reload both end here.
  */
@@ -681,12 +692,7 @@ function assembleInput(a: Record<string, string>, resolved: ResolvedTarget) {
   const context = a['context'] ?? 'reuse'
   if (context !== 'reuse' && context !== 'fresh')
     throw new Error('--context must be reuse|fresh')
-  // Math.min/Math.max propagate NaN rather than clamping it, so a non-numeric
-  // value would reach the job schema as NaN and surface as a zod stack trace.
-  const rawIterations = a['max-iterations'] ?? '2'
-  if (!/^[1-5]$/.test(rawIterations))
-    throw new Error('--max-iterations must be an integer between 1 and 5')
-  const maxIterations = Number(rawIterations)
+  const maxIterations = parseMaxIterations(a['max-iterations'] ?? '2')
   const { target, config, codexPath, configSource, specStages } = resolved
   const {
     roles: profiles,
@@ -862,20 +868,32 @@ export interface RepairFiles {
 
 /**
  * What `demo repair` read from its flags. The findings are null when no file
- * was given: a parent that stopped on the check then has them built from its
- * stored failure (ADR-0030).
+ * was given: a parent that stopped on the check or at the review cap then
+ * has them built from its stored record (ADR-0030). `maxIterations` is set
+ * only when `--max-iterations` was given; the parent's value applies
+ * otherwise.
  */
 export type RepairFlagFiles = Omit<RepairFiles, 'findings'> & {
   findings: RepairFiles['findings'] | null
+  maxIterations?: number
 }
 
-/** The only flags `demo repair` takes; every setting is the parent's. */
-const REPAIR_FLAGS = ['run', 'findings-file', 'dispositions-file']
+/**
+ * The only flags `demo repair` takes; every setting but the repair budget
+ * is the parent's.
+ */
+const REPAIR_FLAGS = [
+  'run',
+  'findings-file',
+  'dispositions-file',
+  'max-iterations',
+]
 
 /**
  * Read `demo repair`'s input files once, with the same limits as trigger's:
- * at most 256 KiB, UTF-8, not blank. Any other flag is refused rather than
- * ignored: a repair run takes its parent's stored settings, and nothing else.
+ * at most 256 KiB, UTF-8, not blank, and `--max-iterations` as trigger
+ * reads it. Any other flag is refused rather than ignored: a repair run
+ * takes its parent's stored settings, and nothing else.
  */
 export async function readRepairFiles(
   a: Record<string, string>,
@@ -887,8 +905,11 @@ export async function readRepairFiles(
   const other = Object.keys(a).filter((flag) => !REPAIR_FLAGS.includes(flag))
   if (other.length > 0)
     throw new Error(
-      `repair takes only --run, --findings-file and --dispositions-file; not accepted: ${other.map((f) => `--${f}`).join(', ')}. A repair run keeps the parent run's stored settings; to run with other settings, start a normal run with trigger`,
+      `repair takes only --run, --findings-file, --dispositions-file and --max-iterations; not accepted: ${other.map((f) => `--${f}`).join(', ')}. A repair run keeps the parent run's other stored settings; to run with other settings, start a normal run with trigger`,
     )
+  const iterations = a['max-iterations']
+  const maxIterations =
+    iterations !== undefined ? parseMaxIterations(iterations) : undefined
   const findings = a['findings-file']
   const dispositions = a['dispositions-file']
   return {
@@ -896,6 +917,7 @@ export async function readRepairFiles(
     dispositions: dispositions
       ? await readInputFile('dispositions-file', dispositions)
       : null,
+    ...(maxIterations !== undefined ? { maxIterations } : {}),
   }
 }
 
@@ -935,6 +957,7 @@ interface StoredOutput {
   conclusion?: string
   candidate?: { id?: string; commit?: string; branch?: string } | null
   delivery?: { commit?: string | null } | null
+  reviews?: { lens?: string; decision?: string; notes?: string }[]
 }
 
 const refusal = (parent: RepairParent, why: string) =>
@@ -943,9 +966,8 @@ const refusal = (parent: RepairParent, why: string) =>
 /**
  * The parent's candidate, when the parent may be repaired: a repository run
  * that completed either approved and delivered its last candidate, or
- * verification-failed with a recorded last candidate (ADR-0030). Anything
- * else, including a run that stopped on the reviews with a candidate, is
- * refused.
+ * verification-failed or review-cap-reached with a recorded last candidate
+ * (ADR-0030). Anything else, a rejected run included, is refused.
  */
 export function repairableCandidate(
   parent: RepairParent,
@@ -965,12 +987,13 @@ export function repairableCandidate(
   const conclusion =
     output?.conclusion === 'approved' && output.approved === true
       ? 'approved'
-      : output?.conclusion === 'verification-failed'
-        ? 'verification-failed'
+      : output?.conclusion === 'verification-failed' ||
+          output?.conclusion === 'review-cap-reached'
+        ? output.conclusion
         : null
   if (!conclusion)
     throw refuse(
-      `its conclusion is ${output?.conclusion ?? 'unknown'}, not approved or verification-failed`,
+      `its conclusion is ${output?.conclusion ?? 'unknown'}, not approved, verification-failed or review-cap-reached`,
     )
   const commit = output?.candidate?.commit
   const branch = output?.candidate?.branch
@@ -1081,6 +1104,41 @@ export function checkFailureFindings(
   return { content, ref: { parentRun: parent.id } }
 }
 
+/**
+ * Findings built from a review-cap-reached parent's own record: the notes of
+ * each review in its stored output that still asked for changes. The output
+ * holds each lens's last verdict, and a findings-json lens's notes are its
+ * blocker lines already, so no step or log is read. The text depends on the
+ * stored output alone, so the same parent always gives the same findings.
+ */
+export function reviewFindings(parent: RepairParent): {
+  content: string
+  ref: FindingsRef
+} {
+  const output = parent.output as StoredOutput | null
+  const blocking = (output?.reviews ?? []).filter(
+    (r) => r.decision === 'needsChanges' && (r.notes ?? '').trim() !== '',
+  )
+  if (blocking.length === 0)
+    throw refusal(
+      parent,
+      'no stored review asked for changes with notes; give the findings with --findings-file <path> instead',
+    )
+  const content = [
+    `# Review findings of factory run ${parent.id}`,
+    '',
+    `The pinned check passed on the run's last candidate, commit ${output?.candidate?.commit}, but these reviewers still asked for changes after its last repair.`,
+    '',
+    ...blocking.flatMap((r) => [
+      `## ${r.lens ?? 'review'}`,
+      '',
+      (r.notes ?? '').trim(),
+      '',
+    ]),
+  ].join('\n')
+  return { content, ref: { parentRun: parent.id } }
+}
+
 const sha256Of = (text: string) =>
   createHash('sha256').update(text).digest('hex')
 
@@ -1091,10 +1149,14 @@ const sha256Of = (text: string) =>
  * a parent's setup predates is taken from the parent's stored input.
  *
  * Dispositions replace the parent's when given and are inherited otherwise.
- * The idempotency key names the parent and the SHA-256 of the findings and
- * of the dispositions the child really gets, so the same content from
- * another path returns the same run. The labels name the parent, so the
- * parent's report finds the child; trigger with both.
+ * `maxIterations` replaces the parent's when given; it is the only setting a
+ * repair may change. The idempotency key names the parent and the SHA-256 of
+ * the findings and of the dispositions the child really gets, so the same
+ * content from another path returns the same run. It names the repair budget
+ * only when that differs from the parent's, so the same budget, given or
+ * inherited, keeps the key a child got before the budget could change. The
+ * labels name the parent, so the parent's report finds the child; trigger
+ * with both.
  */
 export function buildRepairInput(
   parent: RepairParent,
@@ -1108,6 +1170,8 @@ export function buildRepairInput(
    * are and runs neither stage again.
    */
   fixed: { spec?: string | null; check?: string[] | null } = {},
+  /** `--max-iterations`; the parent's value when absent. */
+  maxIterations?: number,
 ) {
   const {
     setup: stored,
@@ -1138,7 +1202,7 @@ export function buildRepairInput(
     ...(parentInput.model !== undefined ? { model: parentInput.model } : {}),
     ...(parentInput.effort !== undefined ? { effort: parentInput.effort } : {}),
     context: stored.contextMode,
-    maxIterations: stored.maxIterations,
+    maxIterations: maxIterations ?? stored.maxIterations,
     // The requested settings, for the report's profile rows; the worker
     // uses the resolved ones in `repairOf`.
     ...(parentInput.profiles
@@ -1221,6 +1285,9 @@ export function buildRepairInput(
     `repair-of-${parent.id}`,
     `findings-${sha256Of(files.findings.content)}`,
     `dispositions-${dispositions ? sha256Of(dispositions) : 'none'}`,
+    ...(input.maxIterations !== stored.maxIterations
+      ? [`max-iterations-${input.maxIterations}`]
+      : []),
   ].join('-')
   return { input, idempotencyKey, labels: repairLabels(input) }
 }
@@ -1241,7 +1308,8 @@ export interface RepairSource {
  * Read a parent run, refuse it unless it may be repaired and its candidate
  * branch is unmoved, and build the child's input. Nothing is triggered.
  * An approved parent needs a findings file; a verification-failed one uses
- * the file when given and its stored check failure otherwise.
+ * the file when given and its stored check failure otherwise, and a
+ * review-cap-reached one its stored last reviews.
  */
 export async function startableRepair(
   durably: RepairSource,
@@ -1270,18 +1338,22 @@ export async function startableRepair(
         parent,
         'it was approved, so --findings-file <path> is required',
       )
-    findings = checkFailureFindings(
-      parent,
-      await durably.storage.getSteps(parentId),
-      fixed.check ?? stored.target.checkCommand,
-    )
+    findings =
+      conclusion === 'review-cap-reached'
+        ? reviewFindings(parent)
+        : checkFailureFindings(
+            parent,
+            await durably.storage.getSteps(parentId),
+            fixed.check ?? stored.target.checkCommand,
+          )
   }
   const built = buildRepairInput(
     parent,
     setup,
-    { ...files, findings },
+    { findings, dispositions: files.dispositions },
     fakeScenario,
     fixed,
+    files.maxIterations,
   )
   const { target, repairOf } = built.input
   await assertCandidateUnmoved(

@@ -51,7 +51,10 @@ import {
   decideSpecToolPermission,
   decideToolPermission,
 } from '../src/engine/providers/claude.js'
-import { recordFakeReviewCalls } from '../src/engine/providers/fake.js'
+import {
+  type FakeScenario,
+  recordFakeReviewCalls,
+} from '../src/engine/providers/fake.js'
 import { READ_ONLY_ROLES } from '../src/engine/providers/types.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
 import { checkpointPaths } from '../src/engine/runner.js'
@@ -1148,9 +1151,10 @@ type Durably = ReturnType<typeof createAgentDurably>
 async function approvedParent(
   durably: Durably,
   repo: string,
-  extra: { maxIterations: number },
+  extra: { maxIterations: number; fakeScenario?: FakeScenario },
 ) {
   const run = await durably.jobs.agentLoop.trigger({
+    ...(extra.fakeScenario ? { fakeScenario: extra.fakeScenario } : {}),
     provider: 'fake',
     profiles: {
       code: { provider: 'fake', requestedModel: null, requestedEffort: null },
@@ -1597,7 +1601,7 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       const md = reportToMarkdown(report)
       assert.ok(
         md.includes(
-          `- findings: ${sha256(input.repairOf.findings)} (built from the check failure of run ${parent.id})`,
+          `- findings: ${sha256(input.repairOf.findings)} (built from the stored record of run ${parent.id})`,
         ),
       )
       assert.ok(reportToJson(report).includes(`"parentRun": "${parent.id}"`))
@@ -1629,6 +1633,138 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
         }),
         /candidate branch .* moved to/,
       )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  it('repairs a review-cap-reached candidate from its stored reviews, with the baseline and a budget of its own', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-capped-'))
+    const repo = await seedRepo(root)
+    delete process.env.FAKE_FAIL_FIRST
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      // The check passes, but correctness still asks for changes after the
+      // parent's one iteration.
+      const { parent, setup } = await approvedParent(durably, repo, {
+        maxIterations: 1,
+        fakeScenario: {
+          failIterations: 0,
+          reviewSequence: ['needsChanges', 'pass'],
+          reviewNotes: ['BLOCKER: refunds still truncate', 'PASS NOTE'],
+        },
+      })
+      const parentOutput = parent.output as {
+        conclusion: string
+        candidate: { commit: string; branch: string }
+        delivery: unknown
+      }
+      assert.equal(parentOutput.conclusion, 'review-cap-reached')
+      assert.equal(parentOutput.delivery, null)
+      const parentCommit = parentOutput.candidate.commit
+
+      const fake = {
+        failIterations: 0,
+        reviewSequence: Array.from(
+          { length: 8 },
+          () => 'needsChanges' as const,
+        ),
+        changes: { 'NOTES.md': 'repaired\n' },
+      }
+      const built = await startableRepair(
+        durably,
+        parent.id,
+        { findings: null, dispositions: null, maxIterations: 4 },
+        fake,
+      )
+      const { input, idempotencyKey, labels } = built
+      assert.equal(input.target.baseRef, parentCommit)
+      assert.equal(input.maxIterations, 4)
+      assert.equal(input.repairOf.parentConclusion, 'review-cap-reached')
+      assert.deepEqual(input.repairOf.findingsFile, { parentRun: parent.id })
+      assert.match(input.repairOf.findings, /^## correctness$/m)
+      assert.ok(
+        input.repairOf.findings.includes('BLOCKER: refunds still truncate'),
+      )
+      assert.doesNotMatch(input.repairOf.findings, /PASS NOTE|## edge-cases/)
+      // The candidate passed the check, so the inherited baseline runs.
+      const child = await durably.jobs.agentLoop.trigger(
+        { ...input, target: { ...input.target, baselineCheck: true } },
+        { idempotencyKey, labels },
+      )
+      await waitFor(
+        async () => (await durably.getRun(child.id))?.status === 'completed',
+        150000,
+        'repair of a capped run completes',
+      )
+      const output = (await durably.getRun(child.id))?.output as {
+        conclusion: string
+        iterations: number
+      }
+      // Its own budget of four repairs, spent.
+      assert.equal(output.conclusion, 'review-cap-reached')
+      assert.equal(output.iterations, 4)
+      const childSetup = (
+        await durably.storage.getCompletedStep(child.id, 'setup')
+      )?.output as FactorySetup
+      assert.equal(childSetup.maxIterations, 4)
+      assert.notEqual(childSetup.configVersion, setup.configVersion)
+      assert.deepEqual(childSetup.repairOf, {
+        runId: parent.id,
+        candidateCommit: parentCommit,
+        parentConclusion: 'review-cap-reached',
+      })
+      if (childSetup.target.kind !== 'repo')
+        throw new Error('repo target expected')
+      assert.equal(childSetup.target.baseCommit, parentCommit)
+      const attempts = await durably.getStepAttempts(child.id)
+      assert.ok(attempts.some((a) => a.stepName === BASELINE_STEP))
+      assert.ok(!attempts.some((a) => a.stepName === 'triage'))
+      const report = await buildReport(durably, child.id)
+      assert.notEqual(report.baseline, null)
+      const calls = report.attempts.filter((a) =>
+        /^stage:\d+:code:agent$/.test(a.stepName),
+      )
+      assert.equal(calls[0]?.measurement?.role, 'repair')
+      assert.equal(calls[0]?.measurement?.iteration, 1)
+      assert.equal(report.summary.repairs, 4)
+      assert.ok(
+        reportToMarkdown(report).includes(
+          `- findings: ${sha256(input.repairOf.findings)} (built from the stored record of run ${parent.id})`,
+        ),
+      )
+
+      // Inherited, the parent's budget; given as the parent's, the same
+      // child as inherited; any other budget, another child.
+      const inherited = await startableRepair(durably, parent.id, {
+        findings: null,
+        dispositions: null,
+      })
+      assert.equal(inherited.input.maxIterations, 1)
+      assert.notEqual(inherited.idempotencyKey, idempotencyKey)
+      const same = await startableRepair(durably, parent.id, {
+        findings: null,
+        dispositions: null,
+        maxIterations: 1,
+      })
+      assert.equal(same.idempotencyKey, inherited.idempotencyKey)
+      const again = await startableRepair(durably, parent.id, {
+        findings: null,
+        dispositions: null,
+        maxIterations: 4,
+      })
+      assert.equal(again.idempotencyKey, idempotencyKey)
+      // A findings file given for such a parent is used instead.
+      const byHand = await startableRepair(
+        durably,
+        parent.id,
+        findingsFile('FINDINGS: by hand\n', join(root, 'f.md')),
+      )
+      assert.equal(byHand.input.repairOf.findings, 'FINDINGS: by hand\n')
+      assert.equal(byHand.input.repairOf.parentConclusion, 'review-cap-reached')
     } finally {
       await durably.stop()
       await durably.db.destroy()

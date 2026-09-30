@@ -1292,7 +1292,7 @@ effortに加えて、呼び出し方と返答の読み方を役割ごとに書�
   判定は実LLMの判定として数えません。
 - 三つとも書かない役割は、従来どおりのpromptとverdictで動きます。どれか一つでも
   書いた役割だけ、三つの確定値が `configVersion` に入ります。どの役割も書かなければ
-  `configVersion` は変わりません。`demo repair` の子runは親の設定をそのまま使います。
+  `configVersion` は変わりません。`demo repair` の子runは、`--max-iterations` を除いて親の設定をそのまま使います。
 
 `command` か `local-instructions` を使う役割があるrunでは、candidateをレビューする
 直前に、次のものを `runs/<runId>/review-snapshots/` に作ります。どれもworktreeの外に
@@ -1525,23 +1525,26 @@ factoryの外で指摘が見つかったときは、`demo repair` でそのrun�
 起動します。終わったrunを再開するのではなく、候補のcommitを引き継ぐ新しいrunとして
 記録するので、修正の時間、費用、回数もfactoryで測れます。
 
-修正の回数を使い切ってもチェックが通らずに止まったrun（`verification-failed`）も、
+修正の回数を使い切ってもチェックが通らずに止まったrun（`verification-failed`）と、
+チェックは通ったのにレビューが修正を求めたまま止まったrun（`review-cap-reached`）も、
 同じ `demo repair` で最後の候補から続けられます。`retrigger` と違って実装を
 最初からやり直さず、修正の回数を新しくして最後の候補を直します。
 
 ```bash
 pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
-  [--findings-file findings.md] [--dispositions-file dispositions.md]
+  [--findings-file findings.md] [--dispositions-file dispositions.md] \
+  [--max-iterations 4]
 ```
 
-- 親にできるのは、`completed` のrepository runのうち次の2種類です。
+- 親にできるのは、`completed` のrepository runのうち次の3種類です。
   - 結論が `approved` で、納品が記録され、最後の候補と納品のcommitが一致するrun。
   - 結論が `verification-failed` で、最後の候補のcommitとブランチが記録された
     run。納品は要りません。
+  - 結論が `review-cap-reached` で、最後の候補のcommitとブランチが記録された
+    run。納品は要りません。
 
-  拒否、レビューの上限到達（`review-cap-reached`）、失敗、取り消し、承認待ちの
-  runは、候補が残っていても親にできません。子runが同じ条件を満たせば、
-  さらにその子を作れます。
+  拒否、失敗、取り消し、承認待ちのrunは、候補が残っていても親にできません。
+  子runが同じ条件を満たせば、さらにその子を作れます。
 
 - 起動前に、親の候補commitが対象リポジトリにあり、記録された候補ブランチの先端が
   そのcommitのままであることを確かめます。ブランチが動いていれば何も作りません。
@@ -1552,22 +1555,30 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   `candidate-moved`（`retry: yes`）として止まります。worktree、ブランチ、
   run directoryは残さず、agentは呼びません。ブランチを候補commitに戻せば
   `retrigger` で続けられます。
-- `demo repair` が受け付けるのは `--run`、`--findings-file`、`--dispositions-file`
-  だけです。`--max-iterations`、`--publish`、`--check`、`--config` など、ほかの
+- `demo repair` が受け付けるのは `--run`、`--findings-file`、`--dispositions-file`、
+  `--max-iterations` だけです。`--publish`、`--check`、`--config` など、ほかの
   フラグは黙って無視せずエラーにします。
 - 子runは、親が保存したtask、spec、issue、profile（triageも含む解決済みの値）、
   check、`selfCheck`、setup、timeout、`codexPath`、commitとpublishの設定、`--max-iterations` を
-  引き継ぎます。親のsetupが記録した値は `null` でもそのまま使い、setupに項目が
+  引き継ぎます。`--max-iterations`（1から5の整数）を渡したときだけ、子runの修正回数を
+  その値にします。値は子runの入力に保存され、`configVersion` にも入ります。親のsetupが記録した値は `null` でもそのまま使い、setupに項目が
   無い古い親だけ保存済みの入力から補います。子の子も同じです。
   いまの `factory.json` と環境変数は読みません。`--reload-config` は受け付けません。
   設定を変えたいときは、通常の `trigger` から始めます。
-- 親が `approved` なら指摘ファイルは必須です。親が `verification-failed` なら
-  任意で、渡せばそのファイルを使います。渡さなければ、親が保存した記録から
-  指摘を作ります。中身は、最後の候補で失敗したチェックの出力の末尾（stdout と
-  stderr）、終了コード、親が使った採点コマンドです。ログファイルは読まず、
-  前の候補の結果で代用もしません。最後の候補の失敗結果が保存されていなければ、
-  指摘ファイルを求めて止まります。親のrunの中で検証に落ちた候補へのレビューは、
-  子runには渡しません。渡したいときは指摘ファイルに書いて渡します。
+- 親が `approved` なら指摘ファイルは必須です。親が `verification-failed` か
+  `review-cap-reached` なら任意で、渡せばそのファイルを使います。渡さなければ、
+  親が保存した記録から指摘を作ります。
+  - `verification-failed` の親では、最後の候補で失敗したチェックの出力の末尾
+    （stdout と stderr）、終了コード、親が使った採点コマンドです。ログファイルは
+    読まず、前の候補の結果で代用もしません。最後の候補の失敗結果が保存されて
+    いなければ、指摘ファイルを求めて止まります。親のrunの中で検証に落ちた候補への
+    レビューは、子runには渡しません。渡したいときは指摘ファイルに書いて渡します。
+  - `review-cap-reached` の親では、runの出力に保存した各レビューの最後の判定のうち
+    `needsChanges` のものを、レビューの種類ごとの見出しとメモにまとめます。
+    `pass` のレビューのメモは入れません。`findings-json` で答えるレビューのメモは、
+    保存済みの直すべき指摘の行です。途中の回の工程やログは読みません。
+    `needsChanges` のレビューが無いか、メモが空白だけなら、指摘ファイルを
+    求めて止まります。
 - 処分ファイルは任意で、指定すると親の処分を置き換え、
   省略すると親の処分を引き継ぎます。どちらも `--task-file` と同じ検査（256 KiB
   まで、UTF-8、空白だけは不可）を通し、内容と読み込んだパスを子runに保存します。
@@ -1577,7 +1588,9 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   レビュアーには、承認済みの候補に対する修正だけの差分を見て、指摘に応えているか、
   承認済みの候補を壊していないかを判断するよう伝えます。親が `verification-failed`
   なら、修正担当とレビュアーに、基点の候補はチェックが通らず承認されていないことを
-  伝え、レビュアーには基点と修正を合わせた候補全体をtaskとspecに照らして判断する
+  伝えます。親が `review-cap-reached` なら、チェックは通ったもののレビューの上限の
+  あとも指摘が残り、承認されていないことを伝えます。どちらも、レビュアーには
+  基点と修正を合わせた候補全体をtaskとspecに照らして判断する
   よう伝えます。レビュアーに渡す変更ファイルの一覧は修正の分だけなので、基点の
   変更は、CANDIDATE FILES の節が示す候補の木を読んで確かめるよう伝えます。
   節が木を示していなければ、作業ディレクトリを読みます。
@@ -1590,16 +1603,19 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   の子runはbaselineCheckを実行しません。基点は親のチェックが失敗した候補なので
   必ず `baseline-check-failed` で止まり、その失敗はすでに指摘として渡しているから
   です。設定は記録して孫runへ引き継ぎ、reportの「Baseline check」節は `none`
-  になります。triageと
+  になります。親が `review-cap-reached` の子runは、基点がチェックを通った候補
+  なので、baselineCheckを通常どおり実行します。triageと
   初回実装は行わず（triage profileは記録するだけで、呼び出しも事前確認も、CLIの
   確認もしません）、最初のcode工程を `repair` の1回目として新しいsessionで始め
   ます。`profiles.repair` があればそれを使います。そのあとは通常どおり検証、
   両レビュー、承認、納品に進みます。
-- 親から引き継いだ `--max-iterations` は子run自身の修正回数だけを数え、親が使った回数は差し引き
-  ません。最初の修正も修正回数と使用量に入ります。
-- 同じ親、同じ指摘の内容、同じ処分の内容で起動すると、パスが違っても同じ子runを
-  返し、runもブランチも増やしません。記録から作った指摘は親の記録だけで決まるので、
-  繰り返しても同じ子runです。指摘か処分の内容が変われば別の子runです。
+- 子runの `--max-iterations` は、引き継いだ値でも指定した値でも、子run自身の
+  修正回数だけを数え、親が使った回数は差し引きません。最初の修正も修正回数と
+  使用量に入ります。
+- 同じ親、同じ指摘の内容、同じ処分の内容、同じ修正回数で起動すると、パスが違っても
+  同じ子runを返し、runもブランチも増やしません。記録から作った指摘は親の記録だけで
+  決まるので、繰り返しても同じ子runです。指摘か処分の内容、または修正回数が変われば
+  別の子runです。親と同じ修正回数を指定したときは、省略したときと同じ子runです。
 - `--publish` のDraft PRは通常のrunと同じく既定ブランチ向けです。親がまだ
   mergeされていなければ、PRには親の変更も含まれます。
 - 子runは起動するどの経路（`demo repair`、`demo retrigger`、`demo seed`）でも
@@ -1614,11 +1630,11 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   リンクします。`compare` は通常のrunと子runを別のグループに分け、親の時間、費用、
   工程を子の値に足しません。子run同士は `configVersion` ごとにまとめます。
 - 判断の理由は [ADR-0022](../../docs/adr/0022-local-agent-loop-external-repair-runs.md)
-  と、`verification-failed` の親を加えた
+  と、`verification-failed` と `review-cap-reached` の親を加えた
   [ADR-0030](../../docs/adr/0030-local-agent-loop-verification-failed-repair.md)
   にあります。
-- `verification-failed` で止まったrepository runの次の一手には、`retrigger` と
-  並べて `demo repair --run <id>` を出します。
+- `verification-failed` か `review-cap-reached` で止まったrepository runの次の一手
+  には、`retrigger` と並べて `demo repair --run <id>` を出します。
 
 ### durably checkoutを固定して呼ぶ
 

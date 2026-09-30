@@ -84,12 +84,23 @@ import {
   type Delivery,
   type DeliverArgs,
   type GradeArgs,
+  type RepairParentConclusion,
   type RepoTargetConfig,
   type SealArgs,
   type Target,
   type UntrustedInput,
 } from '../factory/target.js'
 import type { ProfileRole } from '../factory/types.js'
+
+/** Why a repair run's unapproved base was never approved (ADR-0030). */
+const UNAPPROVED_BASE: Record<
+  Exclude<RepairParentConclusion, 'approved'>,
+  string
+> = {
+  'verification-failed': 'the pinned check still failed on it',
+  'review-cap-reached':
+    'reviewers still found blocking issues in it after the review cap',
+}
 
 /**
  * The candidate commit must still be in the repository and still be the tip
@@ -623,8 +634,8 @@ export class RepoTarget implements Target {
       `Base commit: ${this.config.baseCommit}`,
       ...(parent
         ? [
-            parent.parentConclusion === 'verification-failed'
-              ? `The base commit is the last candidate of factory run ${parent.runId}, which stopped because the pinned check still failed on it, so it was never approved. This run repairs it from the findings in the untrusted FINDINGS block, so the changes below are the repair alone; the base's own changes are not listed: read them in the candidate tree the CANDIDATE FILES section names, or in your working directory when it names none.`
+            parent.parentConclusion && parent.parentConclusion !== 'approved'
+              ? `The base commit is the last candidate of factory run ${parent.runId}, which stopped because ${UNAPPROVED_BASE[parent.parentConclusion]}, so it was never approved. This run repairs it from the findings in the untrusted FINDINGS block, so the changes below are the repair alone; the base's own changes are not listed: read them in the candidate tree the CANDIDATE FILES section names, or in your working directory when it names none.`
               : `The base commit is the approved candidate of factory run ${parent.runId}. This run repairs it from the findings in the untrusted FINDINGS block, so the changes below are the repair alone.`,
           ]
         : []),
