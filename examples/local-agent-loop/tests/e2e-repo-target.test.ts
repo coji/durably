@@ -3351,7 +3351,7 @@ describe('configured reviewers', { timeout: 240000 }, () => {
         const md = reportToMarkdown(report)
         assert.ok(
           md.includes(
-            `  - tool calls the guard refused: 1; first: ${denial.slice(0, 300)}\n`,
+            `  - tool calls the guard refused: 1\n    - ${denial.slice(0, 300)}\n`,
           ),
           md,
         )
