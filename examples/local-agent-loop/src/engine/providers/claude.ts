@@ -375,7 +375,10 @@ export function decideReviewToolPermission(
     if (typeof p === 'string' && !inside(p))
       return {
         allow: false,
-        reason: `read outside the review's directories denied: ${p}`,
+        reason:
+          toolName === 'Glob' && typeof input['pattern'] === 'string'
+            ? `glob outside the review's directories denied: ${input['pattern']} (path ${p})`
+            : `read outside the review's directories denied: ${p}`,
       }
   }
   const pattern = input['pattern']

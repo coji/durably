@@ -673,9 +673,12 @@ export async function classifyRun(
   const repo =
     (run.input as { target?: { kind?: unknown } } | null)?.target?.kind ===
     'repo'
+  // The steps are read only when the run's error names an unfinished
+  // review: every list refresh classifies each failed run again.
   const repairable =
     run.status === 'failed' &&
     repo &&
+    (run.error ?? '').includes(REVIEW_INCOMPLETE_MESSAGE) &&
     reviewIncompleteBase(run.error, await durably.storage.getSteps(run.id)).ok
   if (run.status === 'failed' || run.status === 'cancelled') {
     const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))

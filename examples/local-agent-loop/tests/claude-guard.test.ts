@@ -507,6 +507,11 @@ describe('command-mode review guard', () => {
       "glob outside the review's directories denied: ../**/* (path not given)",
     )
     // The decisions themselves are unchanged.
+    // Refused for its path argument rather than its pattern: both named.
+    assert.equal(
+      reason({ pattern: '**/node_modules/parse5/**', path: '/etc' }),
+      "glob outside the review's directories denied: **/node_modules/parse5/** (path /etc)",
+    )
     assert.equal(reason({ pattern: 'src/**/*.js', path: ROOT }), null)
     assert.equal(reason({ pattern: `${MATERIALS}/head/**` }), null)
 
