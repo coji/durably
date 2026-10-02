@@ -248,6 +248,19 @@ function statusAside(r: { status?: ReviewStatus; reason?: string | null }) {
     : ''
 }
 
+/** The guard's refusals of a review: the count, then each stored entry. */
+function denialLines(
+  d: { count: number; entries: string[] },
+  indent: string,
+): string[] {
+  const rest = d.count - d.entries.length
+  return [
+    `${indent}- tool calls the guard refused: ${d.count}`,
+    ...d.entries.map((entry) => `${indent}  - ${entry}`),
+    ...(rest > 0 ? [`${indent}  - ${rest} more not listed`] : []),
+  ]
+}
+
 /** Each review as its verdict line and its findings, at `indent`. */
 function reviewLines(reviews: ReportReview[], indent: string): string[] {
   return reviews.flatMap((review) => [
@@ -255,9 +268,7 @@ function reviewLines(reviews: ReportReview[], indent: string): string[] {
       ? `${indent}- ${review.lens}: no verdict${statusAside(review)}`
       : `${indent}- ${review.lens}: ${review.decision} — ${review.notes}${statusAside(review)}`,
     ...(review.permissionDenials
-      ? [
-          `${indent}  - tool calls the guard refused: ${review.permissionDenials.count}; first: ${review.permissionDenials.entries[0] ?? ''}`,
-        ]
+      ? denialLines(review.permissionDenials, `${indent}  `)
       : []),
     ...findingLines(review.findings, `${indent}  `),
   ])

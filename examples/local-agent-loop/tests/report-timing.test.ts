@@ -551,22 +551,31 @@ describe('refused tool calls of a review', () => {
         },
       ],
     })
-    const first = long(0).slice(0, 300)
+    // Every stored entry, in order, then how many more were refused.
+    const listed = (indent: string) =>
+      [
+        `${indent}- tool calls the guard refused: 12`,
+        ...Array.from(
+          { length: 10 },
+          (_, i) => `${indent}  - ${long(i).slice(0, 300)}`,
+        ),
+        `${indent}  - 2 more not listed`,
+      ].join('\n')
     assert.ok(
       md.includes(
-        `- correctness: pass — Fine\n  - tool calls the guard refused: 12; first: ${first}\n- edge-cases: pass — Fine too\n`,
+        `- correctness: pass — Fine\n${listed('  ')}\n- edge-cases: pass — Fine too\n`,
       ),
       md,
     )
     assert.ok(
       md.includes(
-        `  - correctness: pass — Fine\n    - tool calls the guard refused: 12; first: ${first}\n  - edge-cases: pass — Fine too\n`,
+        `  - correctness: pass — Fine\n${listed('    ')}\n  - edge-cases: pass — Fine too\n`,
       ),
       md,
     )
     assert.ok(
       md.includes(
-        '  - security: needsChanges — Spec gap\n    - tool calls the guard refused: 1; first: Read: outside /etc\n',
+        '  - security: needsChanges — Spec gap\n    - tool calls the guard refused: 1\n      - Read: outside /etc\n',
       ),
       md,
     )
