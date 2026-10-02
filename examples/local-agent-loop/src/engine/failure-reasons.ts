@@ -673,19 +673,24 @@ export async function classifyRun(
   const repo =
     (run.input as { target?: { kind?: unknown } } | null)?.target?.kind ===
     'repo'
-  // The steps are read only when the run's error names an unfinished
-  // review: every list refresh classifies each failed run again.
-  const repairable =
-    run.status === 'failed' &&
-    repo &&
-    (run.error ?? '').includes(REVIEW_INCOMPLETE_MESSAGE) &&
-    reviewIncompleteBase(run.error, await durably.storage.getSteps(run.id)).ok
+  let repairable = false
   if (run.status === 'failed' || run.status === 'cancelled') {
     const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))
       ?.output as { checkpointsDir?: string } | null | undefined
     const attempts = await durably.getStepAttempts(run.id)
     uncertain = uncertainCheckpoints(setup?.checkpointsDir ?? null, attempts)
     baseline = baselineLogs(attempts)
+    // The steps are read only when the run or one of its attempts failed
+    // with an unfinished review: every list refresh classifies each failed
+    // run again. In parallel mode the run's error may be another reviewer's.
+    const unfinishedReview = [run.error, ...attempts.map((a) => a.error)].some(
+      (e) => (e ?? '').startsWith(REVIEW_INCOMPLETE_MESSAGE),
+    )
+    repairable =
+      run.status === 'failed' &&
+      repo &&
+      unfinishedReview &&
+      reviewIncompleteBase(run.error, await durably.storage.getSteps(run.id)).ok
   } else if (
     run.status === 'completed' &&
     (run.output as { conclusion?: unknown } | null)?.conclusion ===

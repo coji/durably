@@ -1817,6 +1817,16 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
         failure?.next.some((l) => l.includes(` repair --run ${parent.id} `)),
         failure?.next.join('\n'),
       )
+      // In parallel mode the run's error may be the other reviewer's; the
+      // failed review attempt still makes the run repairable and advised.
+      const other = await classifyRun(durably, {
+        ...parent,
+        error: 'Error: step.all failed',
+      })
+      assert.ok(
+        other?.next.some((l) => l.includes(` repair --run ${parent.id} `)),
+        other?.next.join('\n'),
+      )
 
       const fake = {
         failIterations: 0,
