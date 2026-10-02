@@ -19,7 +19,11 @@ import {
 } from '../factory/types.js'
 import { classifyRun, stageStep } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
-import type { VerificationLog } from './providers/types.js'
+import {
+  boundedDenials,
+  type PermissionDenials,
+  type VerificationLog,
+} from './providers/types.js'
 import {
   cacheReadRatio,
   reviewHighlights,
@@ -264,16 +268,33 @@ export function asReportReview(value: unknown): ReportReview | null {
       status: 'cancelled',
       ...(typeof r.reason === 'string' ? { reason: r.reason } : {}),
     }
-  return typeof r?.lens === 'string' &&
-    typeof r.decision === 'string' &&
-    typeof r.notes === 'string'
-    ? {
-        lens: r.lens,
-        decision: r.decision,
-        notes: r.notes,
-        findings: asFindings(r.findings),
-      }
-    : null
+  if (
+    typeof r?.lens !== 'string' ||
+    typeof r.decision !== 'string' ||
+    typeof r.notes !== 'string'
+  )
+    return null
+  const denials = asDenials(r.permissionDenials)
+  return {
+    lens: r.lens,
+    decision: r.decision,
+    notes: r.notes,
+    findings: asFindings(r.findings),
+    ...(denials ? { permissionDenials: denials } : {}),
+  }
+}
+
+/**
+ * A review step's refused tool calls, held to the stored bound; null when
+ * none are stored.
+ */
+function asDenials(value: unknown): PermissionDenials | null {
+  const v = value as { count?: unknown; entries?: unknown } | null | undefined
+  if (typeof v?.count !== 'number' || !Array.isArray(v.entries)) return null
+  const bounded = boundedDenials(
+    v.entries.filter((e): e is string => typeof e === 'string'),
+  )
+  return bounded ? { count: v.count, entries: bounded.entries } : null
 }
 
 function asReviews(value: unknown): ReportReview[] | null {
@@ -322,12 +343,16 @@ function lastReviews(
     .find((r) =>
       reviews.every((review) => r.reviews.some((kept) => same(kept, review))),
     )
-  return reviews.map((review) => ({
-    ...review,
-    findings:
-      round?.reviews.find((kept) => same(kept, review))?.findings ??
-      review.findings,
-  }))
+  return reviews.map((review) => {
+    const kept = round?.reviews.find((k) => same(k, review))
+    return {
+      ...review,
+      findings: kept?.findings ?? review.findings,
+      ...(kept?.permissionDenials
+        ? { permissionDenials: kept.permissionDenials }
+        : {}),
+    }
+  })
 }
 
 type StoredStep = Awaited<

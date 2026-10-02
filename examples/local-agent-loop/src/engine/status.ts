@@ -406,7 +406,7 @@ export function lastLeaseRenewal(
 }
 
 type DiagnoseSource = Pick<AnyDurably, 'getStepAttempts' | 'getWaits'> & {
-  storage: Pick<AnyDurably['storage'], 'getCompletedStep'>
+  storage: Pick<AnyDurably['storage'], 'getCompletedStep' | 'getSteps'>
 }
 
 /**

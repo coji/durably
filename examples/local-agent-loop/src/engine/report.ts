@@ -20,6 +20,7 @@ import { PRICE_BASIS } from './pricing.js'
 import {
   NOT_SENT,
   type AttemptMeasurement,
+  type PermissionDenials,
   type SessionHandling,
   type VerificationLog,
 } from './providers/types.js'
@@ -203,6 +204,11 @@ export interface ReportReview {
   status?: ReviewStatus
   /** Why it was cancelled, discarded or pending; absent when it counted. */
   reason?: string
+  /**
+   * The tool calls the guard refused during the review: their count and the
+   * first entries, each cut to a fixed length. Absent when there were none.
+   */
+  permissionDenials?: PermissionDenials
 }
 
 /** How a review round, or one review in it, ended; see `ReportReview.status`. */
@@ -242,12 +248,25 @@ function statusAside(r: { status?: ReviewStatus; reason?: string | null }) {
     : ''
 }
 
+/** The guard's refusals of a review: the count, then each stored entry. */
+function denialLines(d: PermissionDenials, indent: string): string[] {
+  const rest = d.count - d.entries.length
+  return [
+    `${indent}- tool calls the guard refused: ${d.count}`,
+    ...d.entries.map((entry) => `${indent}  - ${entry}`),
+    ...(rest > 0 ? [`${indent}  - ${rest} more not listed`] : []),
+  ]
+}
+
 /** Each review as its verdict line and its findings, at `indent`. */
 function reviewLines(reviews: ReportReview[], indent: string): string[] {
   return reviews.flatMap((review) => [
     review.status === 'cancelled'
       ? `${indent}- ${review.lens}: no verdict${statusAside(review)}`
       : `${indent}- ${review.lens}: ${review.decision} — ${review.notes}${statusAside(review)}`,
+    ...(review.permissionDenials
+      ? denialLines(review.permissionDenials, `${indent}  `)
+      : []),
     ...findingLines(review.findings, `${indent}  `),
   ])
 }

@@ -937,8 +937,8 @@ baseの採点を繰り返します。`baselineCheck` と一緒に `baselineReuse
 - レビューの途中でworkerが止まり、開始のcheckpointしかない呼び出しは、
   今までどおり `uncertain-invocation` で止め、送り直しません。
 - 検証が失敗する前に、レビューがそれ自体の理由で失敗したとき（返答を読めない、
-  ツール呼び出しを拒まれた、providerが拒否した）は、逐次のときと同じくrunを
-  失敗にします。
+  providerが拒否した）は、逐次のときと同じくrunを失敗にします。ツール呼び出しを
+  拒まれただけなら、返答が読める限りレビューは失敗にしません（後述）。
 
 reportの「Review rounds」では、数えなかった回に `cancelled` か `discarded` と
 理由が付きます。検証がまだ終わっていない回と、検証がエラーで終わった回は
@@ -1276,8 +1276,20 @@ effortに加えて、呼び出し方と返答の読み方を役割ごとに書�
   U+0085、Unicodeの行区切りと段落区切り）は前後の空白ごと空白一つにするので、一件が
   複数行になることはありません。
   空の配列か `non-blocker` だけなら `pass` です。完了行が無い・最終行でない・別の状態、JSONが無い・壊れている、指摘の形が
-  違う、Claudeが道具の使用を拒否した、途中で切れた、はどれも `review-incomplete`
+  違う、途中で切れた、はどれも `review-incomplete`
   で止まり、`pass` にはなりません。同じ呼び出しを自動で送り直すこともしません。
+- レビューのツール呼び出しをガードが拒んでも、それだけでは `review-incomplete` に
+  しません。ガードが拒むのは、レビュー自身の作業ディレクトリ、候補のworktree、
+  差分と変更ファイル一覧のディレクトリ、baseとheadの木の外だけなので、拒まれた
+  読み取りで候補の中身が隠れることはないからです。返答が読めれば、その判定を
+  そのまま使います。返答が読めなければ、拒まれた呼び出しがあってもなくても
+  `review-incomplete` で止まります。`command` のないレビューも、仕様のレビューも
+  同じです。
+  拒まれた呼び出しは、ツール名とガードが示した理由（`Glob` ならパターンと
+  `path` 引数）を、件数と先頭10件、各300文字までで記録します。記録はレビューの
+  stepの出力と呼び出しの試行のmeasurementに残し、reportではJSONのレビューの
+  `permissionDenials` と、Markdownのレビューの行の下の1行に出します。拒まれた
+  呼び出しが無いレビューには出しません。
   指摘の本文にコードフェンスがあっても、JSON配列として読める最初の閉じフェンスまでを
   読むので途中で切れません。
   読めた返答の指摘は、判定とnotesとは別に、レビューstepの出力に構造化して保存し、
@@ -1376,8 +1388,8 @@ treeは残ることがあります。workerは起動時に、終わったrun（�
   含む）の使用量は、従来どおり親のループの値です。
 
 `command` も `local-instructions` も使わず `output: findings-json` だけを書いた
-Claudeのレビューは、道具を `Read` だけにして呼びます。道具の使用を拒否されると
-`review-incomplete` になるので、使えない道具は最初から見せません。
+Claudeのレビューは、道具を `Read` だけにして呼びます。ガードが拒む道具は
+最初から見せません。
 
 ### 仕様を先に作ってレビューする（spec）
 
@@ -1526,8 +1538,9 @@ factoryの外で指摘が見つかったときは、`demo repair` でそのrun�
 記録するので、修正の時間、費用、回数もfactoryで測れます。
 
 修正の回数を使い切ってもチェックが通らずに止まったrun（`verification-failed`）と、
-チェックは通ったのにレビューが修正を求めたまま止まったrun（`review-cap-reached`）も、
-同じ `demo repair` で最後の候補から続けられます。`retrigger` と違って実装を
+チェックは通ったのにレビューが修正を求めたまま止まったrun（`review-cap-reached`）、
+最後の候補がチェックを通ったあとにレビューが終わらず失敗したrun
+（`review-incomplete`）も、同じ `demo repair` で最後の候補から続けられます。`retrigger` と違って実装を
 最初からやり直さず、修正の回数を新しくして最後の候補を直します。
 
 ```bash
@@ -1536,14 +1549,21 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   [--max-iterations 4]
 ```
 
-- 親にできるのは、`completed` のrepository runのうち次の3種類です。
-  - 結論が `approved` で、納品が記録され、最後の候補と納品のcommitが一致するrun。
-  - 結論が `verification-failed` で、最後の候補のcommitとブランチが記録された
-    run。納品は要りません。
-  - 結論が `review-cap-reached` で、最後の候補のcommitとブランチが記録された
-    run。納品は要りません。
+- 親にできるのは、repository runのうち次の4種類です。
+  - `completed` で、結論が `approved`、納品が記録され、最後の候補と納品の
+    commitが一致するrun。
+  - `completed` で、結論が `verification-failed`、最後の候補のcommitとブランチが
+    記録されたrun。納品は要りません。
+  - `completed` で、結論が `review-cap-reached`、最後の候補のcommitとブランチが
+    記録されたrun。納品は要りません。
+  - `failed` で、runのエラーか失敗したレビューのstepのエラーが
+    `review-incomplete` で始まり、最後に封をした候補のstepにcommitとブランチが
+    あり、その候補のあとの検証のstepが完了して通ったrun。失敗したrunには出力が
+    無いので、候補と検証の結果はrunが残したstepから読みます。
 
-  拒否、失敗、取り消し、承認待ちのrunは、候補が残っていても親にできません。
+  拒否、取り消し、承認待ちのrunと、ほかの理由で失敗したrunは、候補が残っていても
+  親にできません。最後の候補に封をしていない、その候補の検証が無いか落ちた、
+  という失敗したrunも親にできません。
   子runが同じ条件を満たせば、さらにその子を作れます。
 
 - 起動前に、親の候補commitが対象リポジトリにあり、記録された候補ブランチの先端が
@@ -1565,9 +1585,9 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   無い古い親だけ保存済みの入力から補います。子の子も同じです。
   いまの `factory.json` と環境変数は読みません。`--reload-config` は受け付けません。
   設定を変えたいときは、通常の `trigger` から始めます。
-- 親が `approved` なら指摘ファイルは必須です。親が `verification-failed` か
-  `review-cap-reached` なら任意で、渡せばそのファイルを使います。渡さなければ、
-  親が保存した記録から指摘を作ります。
+- 親が `approved` なら指摘ファイルは必須です。親が `verification-failed`、
+  `review-cap-reached`、`review-incomplete` なら任意で、渡せばそのファイルを
+  使います。渡さなければ、親が保存した記録から指摘を作ります。
   - `verification-failed` の親では、最後の候補で失敗したチェックの出力の末尾
     （stdout と stderr）、終了コード、親が使った採点コマンドです。ログファイルは
     読まず、前の候補の結果で代用もしません。最後の候補の失敗結果が保存されて
@@ -1579,6 +1599,11 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
     保存済みの直すべき指摘の行です。途中の回の工程やログは読みません。
     `needsChanges` のレビューが無いか、メモが空白だけなら、指摘ファイルを
     求めて止まります。
+  - `review-incomplete` の親では、最後の候補の回のレビューのstepのうち、完了して
+    `needsChanges` を返したものを、同じくレビューの種類ごとの見出しとメモに
+    まとめます。前の候補のレビューと、終わらなかった、取り消した、失敗した
+    レビューは入れません。該当するレビューが無いか、メモが空白だけなら、
+    指摘ファイルを求めて止まります。
 - 処分ファイルは任意で、指定すると親の処分を置き換え、
   省略すると親の処分を引き継ぎます。どちらも `--task-file` と同じ検査（256 KiB
   まで、UTF-8、空白だけは不可）を通し、内容と読み込んだパスを子runに保存します。
@@ -1589,7 +1614,9 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   承認済みの候補を壊していないかを判断するよう伝えます。親が `verification-failed`
   なら、修正担当とレビュアーに、基点の候補はチェックが通らず承認されていないことを
   伝えます。親が `review-cap-reached` なら、チェックは通ったもののレビューの上限の
-  あとも指摘が残り、承認されていないことを伝えます。どちらも、レビュアーには
+  あとも指摘が残り、承認されていないことを伝えます。親が `review-incomplete` なら、
+  チェックは通ったもののレビューが終わらず、候補全体をまだ誰もレビューしていない
+  ことを伝えます。どれも、レビュアーには
   基点と修正を合わせた候補全体をtaskとspecに照らして判断する
   よう伝えます。レビュアーに渡す変更ファイルの一覧は修正の分だけなので、基点の
   変更は、CANDIDATE FILES の節が示す候補の木を読んで確かめるよう伝えます。
@@ -1603,8 +1630,8 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   の子runはbaselineCheckを実行しません。基点は親のチェックが失敗した候補なので
   必ず `baseline-check-failed` で止まり、その失敗はすでに指摘として渡しているから
   です。設定は記録して孫runへ引き継ぎ、reportの「Baseline check」節は `none`
-  になります。親が `review-cap-reached` の子runは、基点がチェックを通った候補
-  なので、baselineCheckを通常どおり実行します。triageと
+  になります。親が `review-cap-reached` か `review-incomplete` の子runは、基点が
+  チェックを通った候補なので、baselineCheckを通常どおり実行します。triageと
   初回実装は行わず（triage profileは記録するだけで、呼び出しも事前確認も、CLIの
   確認もしません）、最初のcode工程を `repair` の1回目として新しいsessionで始め
   ます。`profiles.repair` があればそれを使います。そのあとは通常どおり検証、
@@ -1630,11 +1657,13 @@ pnpm --filter example-local-agent-loop demo repair --run <親の runId> \
   リンクします。`compare` は通常のrunと子runを別のグループに分け、親の時間、費用、
   工程を子の値に足しません。子run同士は `configVersion` ごとにまとめます。
 - 判断の理由は [ADR-0022](../../docs/adr/0022-local-agent-loop-external-repair-runs.md)
-  と、`verification-failed` と `review-cap-reached` の親を加えた
+  と、`verification-failed`、`review-cap-reached`、`review-incomplete` の親を加えた
   [ADR-0030](../../docs/adr/0030-local-agent-loop-verification-failed-repair.md)
   にあります。
 - `verification-failed` か `review-cap-reached` で止まったrepository runの次の一手
   には、`retrigger` と並べて `demo repair --run <id>` を出します。
+  `review-incomplete` で失敗したrepository runでは、最後の候補が記録されていて
+  その検証が通っているときだけ、次の一手に `demo repair --run <id>` を出します。
 
 ### durably checkoutを固定して呼ぶ
 

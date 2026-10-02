@@ -375,7 +375,10 @@ export function decideReviewToolPermission(
     if (typeof p === 'string' && !inside(p))
       return {
         allow: false,
-        reason: `read outside the review's directories denied: ${p}`,
+        reason:
+          toolName === 'Glob' && typeof input['pattern'] === 'string'
+            ? `glob outside the review's directories denied: ${input['pattern']} (path ${p})`
+            : `read outside the review's directories denied: ${p}`,
       }
   }
   const pattern = input['pattern']
@@ -394,7 +397,7 @@ export function decideReviewToolPermission(
     )
       return {
         allow: false,
-        reason: `glob outside the review's directories denied: ${pattern}`,
+        reason: `glob outside the review's directories denied: ${pattern} (path ${typeof searchPath === 'string' ? searchPath : 'not given'})`,
       }
   }
   return { allow: true }
@@ -619,8 +622,7 @@ export function buildClaudeSettings(
     settingSources: [],
     permissionMode: 'default',
     // A configured review that is not in command mode (a findings-only
-    // one) reads a refused tool call as an incomplete review, so it is not
-    // shown any tool it could not use.
+    // one) is not shown any tool the guard would refuse.
     ...(review ? { tools: ['Read'] } : {}),
     allowedTools: readOnly ? ['Read'] : ['Read', 'Edit', 'Write', 'Bash'],
     canUseTool: workdirGuard(workdir, readOnly, readableFiles),
@@ -791,17 +793,74 @@ export function claudeCallUsage(
   }
 }
 
-/** The provider's recorded permission denials, one line each. */
-export function permissionDenialsOf(denials: unknown): string[] {
+/**
+ * The provider's recorded permission denials, one line each. A denial by
+ * the `PreToolUse` hook reaches the result's list without a reason, so its
+ * reason is the one the guard gave for that tool call, from `guardReasons`.
+ */
+export function permissionDenialsOf(
+  denials: unknown,
+  guardReasons: ReadonlyMap<string, string> = new Map(),
+): string[] {
   if (!Array.isArray(denials)) return []
   return denials.map((denial) => {
     const d = (denial ?? {}) as Record<string, unknown>
     const tool = typeof d['toolName'] === 'string' ? d['toolName'] : 'tool'
     const agent =
       typeof d['agentId'] === 'string' ? ` (subagent ${d['agentId']})` : ''
-    const reason = typeof d['reason'] === 'string' ? `: ${d['reason']}` : ''
+    const given =
+      typeof d['reason'] === 'string'
+        ? d['reason']
+        : typeof d['toolUseId'] === 'string'
+          ? guardReasons.get(d['toolUseId'])
+          : undefined
+    const reason = given !== undefined ? `: ${given}` : ''
     return `${tool}${agent}${reason}`.slice(0, 400)
   })
+}
+
+/**
+ * The same settings, with each `PreToolUse` hook also keeping, by tool call,
+ * the reason the guard gave for a call it denied. The decisions are the
+ * hooks' own, unchanged.
+ */
+export function keepingGuardReasons(
+  settings: ClaudeCodeSettings,
+  reasons: Map<string, string>,
+): ClaudeCodeSettings {
+  const matchers = settings.hooks?.PreToolUse
+  if (!matchers) return settings
+  return {
+    ...settings,
+    hooks: {
+      ...settings.hooks,
+      PreToolUse: matchers.map((matcher) => ({
+        ...matcher,
+        hooks: matcher.hooks.map(
+          (hook) => async (input, toolUseId, options) => {
+            const output = await hook(input, toolUseId, options)
+            const decided = (
+              output as {
+                hookSpecificOutput?: {
+                  permissionDecision?: unknown
+                  permissionDecisionReason?: unknown
+                }
+              }
+            ).hookSpecificOutput
+            const id =
+              toolUseId ?? (input as { tool_use_id?: unknown }).tool_use_id
+            if (
+              decided?.permissionDecision === 'deny' &&
+              typeof decided.permissionDecisionReason === 'string' &&
+              typeof id === 'string'
+            )
+              reasons.set(id, decided.permissionDecisionReason)
+            return output
+          },
+        ),
+      })),
+    },
+  }
 }
 
 /**
@@ -1072,15 +1131,19 @@ export class ClaudeProvider implements AgentProvider {
     // The concrete model the CLI reports, first seen wins: an alias such as
     // `opus` is resolved by the CLI, never here.
     let observedModel: string | null = null
+    const guardReasons = new Map<string, string>()
     const model = claudeCode(modelIdResolved, {
-      ...buildClaudeSettings(
-        options.workdir,
-        readOnly,
-        effort,
-        options.sessionId,
-        options.readableFiles,
-        options.review ?? null,
-        options.specWrite ?? null,
+      ...keepingGuardReasons(
+        buildClaudeSettings(
+          options.workdir,
+          readOnly,
+          effort,
+          options.sessionId,
+          options.readableFiles,
+          options.review ?? null,
+          options.specWrite ?? null,
+        ),
+        guardReasons,
       ),
       onSdkMessage: (message: SDKMessage) => {
         observedModel ??= observedClaudeModel(message)
@@ -1110,7 +1173,10 @@ export class ClaudeProvider implements AgentProvider {
       typeof providerMetadata?.['sessionId'] === 'string'
         ? providerMetadata['sessionId']
         : options.sessionId
-    const denials = permissionDenialsOf(providerMetadata?.['permissionDenials'])
+    const denials = permissionDenialsOf(
+      providerMetadata?.['permissionDenials'],
+      guardReasons,
+    )
     const { usage, usageByModel } = claudeCallUsage(
       options.review,
       {

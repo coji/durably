@@ -382,6 +382,33 @@ export type SessionHandling = 'continued' | 'continued-effort-change' | 'fresh'
  */
 export const NOT_SENT = 'not-sent'
 
+/**
+ * The tool calls the provider refused during one call, as a review step, its
+ * attempt and the report keep them: the total, and the first
+ * `DENIAL_ENTRIES` entries, each `<tool>: <the guard's reason>` cut to
+ * `DENIAL_ENTRY_CHARS` characters.
+ */
+export interface PermissionDenials {
+  count: number
+  entries: string[]
+}
+
+export const DENIAL_ENTRIES = 10
+export const DENIAL_ENTRY_CHARS = 300
+
+/** The bounded record of `denials`; undefined when there are none. */
+export function boundedDenials(
+  denials: readonly string[],
+): PermissionDenials | undefined {
+  if (denials.length === 0) return undefined
+  return {
+    count: denials.length,
+    entries: denials
+      .slice(0, DENIAL_ENTRIES)
+      .map((d) => d.slice(0, DENIAL_ENTRY_CHARS)),
+  }
+}
+
 /** Persisted per-attempt measurement. Missing values stay null (never 0-filled). */
 export interface AttemptMeasurement {
   provider: ProviderName
@@ -442,4 +469,6 @@ export interface AttemptMeasurement {
   verificationLog?: VerificationLog | null
   /** An LLM call's agent output; absent when nothing was sent. */
   agentLog?: AgentLog | null
+  /** Tool calls the provider refused during the call; absent when none. */
+  permissionDenials?: PermissionDenials
 }

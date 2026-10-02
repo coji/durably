@@ -402,7 +402,8 @@ Commands (run from examples/local-agent-loop):
                   [--max-iterations <n>]    new run that repairs the last candidate of an approved,
                                             delivered repository run from outside findings, or of
                                             one that stopped verification-failed or
-                                            review-cap-reached (see below)
+                                            review-cap-reached, or failed review-incomplete
+                                            after its check passed (see below)
   pnpm demo status [--format text|json]     tasks that wait on a person, stopped unresolved or
                                             run now: a first run and its repair runs are one task,
                                             shown by its representative run's reason and next command
@@ -532,13 +533,17 @@ Repository config: factory.json at the repository root, or --config <file>:
   is pushed.
   repair starts a child run from a parent run that completed approved and
   delivered its last candidate, or completed verification-failed or
-  review-cap-reached with a recorded last candidate, whose candidate branch
-  still points at that commit. Every other conclusion is refused. An
-  approved parent needs --findings-file. For the other two it is optional:
-  without it, a verification-failed parent's findings are built from its
-  stored output tail and exit code of the check that failed on its last
-  candidate, with the check command, and a review-cap-reached parent's from
-  the notes of each of its last reviews that asked for changes. The child
+  review-cap-reached with a recorded last candidate, or failed with a
+  review-incomplete error after the check passed on its last sealed
+  candidate, whose candidate branch still points at that commit. Every
+  other conclusion or failure is refused. An approved parent needs
+  --findings-file. For the other three it is optional: without it, a
+  verification-failed parent's findings are built from its stored output
+  tail and exit code of the check that failed on its last candidate, with
+  the check command, a review-cap-reached parent's from the notes of each
+  of its last reviews that asked for changes, and a review-incomplete
+  parent's from the notes of each review of its last candidate that
+  finished asking for changes; with none, give --findings-file. The child
   works on factory/<childRunId> cut from that commit, with the parent's
   stored task, spec, issue, profiles, check, setup, timeouts, codexPath,
   commit and publish settings and max iterations; factory.json and the

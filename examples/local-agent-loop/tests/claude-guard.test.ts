@@ -18,6 +18,8 @@ import {
   COMMAND_MODE_REVIEW_TOOLS,
   decideReviewToolPermission,
   decideToolPermission,
+  keepingGuardReasons,
+  permissionDenialsOf,
   preToolUseHook,
   reviewPreToolUseHook,
 } from '../src/engine/providers/claude.js'
@@ -489,6 +491,82 @@ describe('command-mode review guard', () => {
       (await guard('Read', { file_path: `${MATERIALS}/changes.diff` }))
         .behavior,
       'allow',
+    )
+  })
+  it("names a refused Glob's pattern and path, and records the guard's reason with the provider's denial", async () => {
+    const reason = (input: Record<string, unknown>) => {
+      const d = decideReviewToolPermission(ROOTS, 'Glob', input)
+      return d.allow ? null : d.reason
+    }
+    assert.equal(
+      reason({ pattern: '/etc/*', path: 'src' }),
+      "glob outside the review's directories denied: /etc/* (path src)",
+    )
+    assert.equal(
+      reason({ pattern: '../**/*' }),
+      "glob outside the review's directories denied: ../**/* (path not given)",
+    )
+    // The decisions themselves are unchanged.
+    // Refused for its path argument rather than its pattern: both named.
+    assert.equal(
+      reason({ pattern: '**/node_modules/parse5/**', path: '/etc' }),
+      "glob outside the review's directories denied: **/node_modules/parse5/** (path /etc)",
+    )
+    assert.equal(reason({ pattern: 'src/**/*.js', path: ROOT }), null)
+    assert.equal(reason({ pattern: `${MATERIALS}/head/**` }), null)
+
+    // A hook's denial reaches the result's list without a reason: the
+    // guard's own reason for that tool call is kept and used.
+    const reasons = new Map<string, string>()
+    const settings = keepingGuardReasons(
+      buildClaudeSettings(ROOT, true, null, null, [], review()),
+      reasons,
+    )
+    const hook = settings.hooks?.PreToolUse?.[0]?.hooks[0]
+    assert.ok(hook)
+    const input = (tool_input: Record<string, unknown>) =>
+      ({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Glob',
+        tool_input,
+      }) as unknown as Parameters<typeof hook>[0]
+    const signal = new AbortController().signal
+    const denied = await hook(
+      input({ pattern: '/etc/*', path: 'src' }),
+      'tu-1',
+      {
+        signal,
+      },
+    )
+    assert.equal(
+      (denied as { hookSpecificOutput: { permissionDecision: string } })
+        .hookSpecificOutput.permissionDecision,
+      'deny',
+    )
+    await hook(input({ pattern: 'src/**/*.js' }), 'tu-2', { signal })
+    assert.deepEqual(
+      [...reasons],
+      [
+        [
+          'tu-1',
+          "glob outside the review's directories denied: /etc/* (path src)",
+        ],
+      ],
+    )
+    assert.deepEqual(
+      permissionDenialsOf(
+        [
+          { toolName: 'Glob', toolUseId: 'tu-1' },
+          { toolName: 'Read', toolUseId: 'tu-3', reason: 'given' },
+          { toolName: 'Grep', toolUseId: 'tu-4' },
+        ],
+        reasons,
+      ),
+      [
+        "Glob: glob outside the review's directories denied: /etc/* (path src)",
+        'Read: given',
+        'Grep',
+      ],
     )
   })
 })

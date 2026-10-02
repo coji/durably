@@ -1151,7 +1151,12 @@ type Durably = ReturnType<typeof createAgentDurably>
 async function approvedParent(
   durably: Durably,
   repo: string,
-  extra: { maxIterations: number; fakeScenario?: FakeScenario },
+  extra: {
+    maxIterations: number
+    fakeScenario?: FakeScenario
+    /** The status the run ends in; completed when left out. */
+    ends?: 'completed' | 'failed'
+  },
 ) {
   const run = await durably.jobs.agentLoop.trigger({
     ...(extra.fakeScenario ? { fakeScenario: extra.fakeScenario } : {}),
@@ -1190,9 +1195,10 @@ async function approvedParent(
     codexPath: null,
   })
   await waitFor(
-    async () => (await durably.getRun(run.id))?.status === 'completed',
+    async () =>
+      (await durably.getRun(run.id))?.status === (extra.ends ?? 'completed'),
     150000,
-    'parent run completes',
+    'parent run ends',
   )
   const parent = await durably.getRun(run.id)
   assert.ok(parent)
@@ -1765,6 +1771,150 @@ describe('repair from outside findings', { timeout: 240000 }, () => {
       )
       assert.equal(byHand.input.repairOf.findings, 'FINDINGS: by hand\n')
       assert.equal(byHand.input.repairOf.parentConclusion, 'review-cap-reached')
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  it("repairs a candidate whose review did not finish after it passed the check, from that candidate's finished reviews or a file", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-target-incomplete-'))
+    const repo = await seedRepo(root)
+    delete process.env.FAKE_FAIL_FIRST
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      // Both reviewers ask for changes on the first candidate; on the
+      // second, which passes the check too, correctness asks again and the
+      // edge-cases reply cannot be read, so the run fails.
+      const { parent } = await approvedParent(durably, repo, {
+        maxIterations: 2,
+        ends: 'failed',
+        fakeScenario: {
+          failIterations: 0,
+          reviewSequence: [
+            'needsChanges',
+            'needsChanges',
+            'needsChanges',
+            'invalid',
+          ],
+          reviewNotes: ['EARLIER A', 'EARLIER B', 'BLOCKER: last round', 'x'],
+          changes: { 'NOTES.md': 'second candidate\n' },
+        },
+      })
+      assert.match(parent.error ?? '', /^review-incomplete \(edge-cases\)/)
+      assert.equal(parent.output, null)
+      const steps = await durably.storage.getSteps(parent.id)
+      const last = steps
+        .filter(
+          (s) => s.status === 'completed' && s.name.endsWith(':code:candidate'),
+        )
+        .at(-1)?.output as { commit: string; branch: string }
+      // Its next step names the repair.
+      const failure = await classifyRun(durably, parent)
+      assert.ok(
+        failure?.next.some((l) => l.includes(` repair --run ${parent.id} `)),
+        failure?.next.join('\n'),
+      )
+      // In parallel mode the run's error may be the other reviewer's; the
+      // failed review attempt still makes the run repairable and advised.
+      const other = await classifyRun(durably, {
+        ...parent,
+        error: 'Error: step.all failed',
+      })
+      assert.ok(
+        other?.next.some((l) => l.includes(` repair --run ${parent.id} `)),
+        other?.next.join('\n'),
+      )
+
+      const fake = {
+        failIterations: 0,
+        changes: { 'NOTES.md': 'repaired\n' },
+      }
+      const built = await startableRepair(
+        durably,
+        parent.id,
+        { findings: null, dispositions: null },
+        fake,
+      )
+      const { input, idempotencyKey, labels } = built
+      assert.equal(input.target.baseRef, last.commit)
+      assert.equal(input.repairOf.candidateCommit, last.commit)
+      assert.equal(input.repairOf.candidateBranch, last.branch)
+      assert.equal(input.repairOf.parentConclusion, 'review-incomplete')
+      assert.equal(input.maxIterations, 2)
+      assert.deepEqual(input.repairOf.findingsFile, { parentRun: parent.id })
+      assert.match(input.repairOf.findings, /^## correctness$/m)
+      assert.ok(input.repairOf.findings.includes('BLOCKER: last round'))
+      // Never an earlier candidate's notes, nor the review that failed.
+      assert.doesNotMatch(input.repairOf.findings, /EARLIER|## edge-cases/)
+      // The candidate passed the check, so the inherited baseline runs.
+      const child = await durably.jobs.agentLoop.trigger(
+        { ...input, target: { ...input.target, baselineCheck: true } },
+        { idempotencyKey, labels },
+      )
+      await waitFor(
+        async () => (await durably.getRun(child.id))?.status === 'completed',
+        150000,
+        'repair of a review-incomplete run completes',
+      )
+      const output = (await durably.getRun(child.id))?.output as {
+        conclusion: string
+      }
+      assert.equal(output.conclusion, 'approved')
+      const childSetup = (
+        await durably.storage.getCompletedStep(child.id, 'setup')
+      )?.output as FactorySetup
+      assert.deepEqual(childSetup.repairOf, {
+        runId: parent.id,
+        candidateCommit: last.commit,
+        parentConclusion: 'review-incomplete',
+      })
+      const attempts = await durably.getStepAttempts(child.id)
+      assert.ok(attempts.some((a) => a.stepName === BASELINE_STEP))
+      assert.ok(!attempts.some((a) => a.stepName === 'triage'))
+      const report = await buildReport(durably, child.id)
+      const calls = report.attempts.filter((a) =>
+        /^stage:\d+:code:agent$/.test(a.stepName),
+      )
+      assert.equal(calls[0]?.measurement?.role, 'repair')
+      assert.equal(calls[0]?.measurement?.iteration, 1)
+
+      // A findings file given is used instead of the stored reviews.
+      const byHand = await startableRepair(
+        durably,
+        parent.id,
+        findingsFile('FINDINGS: by hand\n', join(root, 'f.md')),
+      )
+      assert.equal(byHand.input.repairOf.findings, 'FINDINGS: by hand\n')
+      assert.deepEqual(byHand.input.repairOf.findingsFile, {
+        path: join(root, 'f.md'),
+      })
+      assert.equal(byHand.input.repairOf.parentConclusion, 'review-incomplete')
+
+      // A parent whose finished review passed has nothing to build from.
+      const { parent: passed } = await approvedParent(durably, repo, {
+        maxIterations: 1,
+        ends: 'failed',
+        fakeScenario: {
+          failIterations: 0,
+          reviewSequence: ['pass', 'invalid'],
+        },
+      })
+      await assert.rejects(
+        startableRepair(durably, passed.id, {
+          findings: null,
+          dispositions: null,
+        }),
+        /refusing to repair .*: no stored review asked for changes with notes; give the findings with --findings-file <path> instead/,
+      )
+      const given = await startableRepair(
+        durably,
+        passed.id,
+        findingsFile('FINDINGS: by hand\n', join(root, 'f.md')),
+      )
+      assert.equal(given.input.repairOf.parentConclusion, 'review-incomplete')
     } finally {
       await durably.stop()
       await durably.db.destroy()
@@ -2908,12 +3058,12 @@ describe('configured reviewers', { timeout: 240000 }, () => {
             { reviewOutputs: [text, findings([])] },
           ],
         ),
-        // A clean pass, but a tool call was refused on the way: the review
-        // may have missed what that call would have shown.
+        // A reply that cannot be read stays incomplete when a tool call was
+        // refused on the way too.
         [
-          'permission denial',
+          'cut off, with a permission denial',
           {
-            reviewOutputs: [findings([]), findings([])],
+            reviewOutputs: [broken['cut off'], findings([])],
             reviewDenials: [
               "Grep (subagent a1): read outside the review's directories denied: /etc",
               '',
@@ -3085,11 +3235,137 @@ describe('configured reviewers', { timeout: 240000 }, () => {
             name,
           )
       }
-      const denied = incomplete.find((i) => i.name === 'permission denial')
-      assert.match(
-        (await durably.getRun(denied?.run.id ?? '?'))?.error ?? '',
-        /1 tool call\(s\) were refused: Grep \(subagent a1\)/,
+      const denied = incomplete.find(
+        (i) => i.name === 'cut off, with a permission denial',
       )
+      assert.doesNotMatch(
+        (await durably.getRun(denied?.run.id ?? '?'))?.error ?? '',
+        /were refused/,
+      )
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  it('keeps a readable reply with refused tool calls as its verdict, and records the refusals on the step, the attempt and the report', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-review-denials-'))
+    const repo = await seedRepo(root)
+    delete process.env.FAKE_FAIL_FIRST
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    delete process.env.FAKE_REVIEW_SLOW_MS
+    const durably = createAgentDurably({
+      stateRoot: join(root, 'state'),
+      maxConcurrentRuns: 2,
+    })
+    await durably.init()
+    // A command-mode review, and a findings-json review with no command
+    // that reads with Read alone.
+    const commandMode = {
+      correctness: {
+        command: null,
+        context: 'local-instructions' as const,
+        output: 'findings-json' as const,
+      },
+    }
+    const readOnly = {
+      correctness: {
+        command: null,
+        context: 'prompt' as const,
+        output: 'findings-json' as const,
+      },
+    }
+    const denial = `Glob: glob outside the review's directories denied: /etc/* (path ${'x'.repeat(400)})`
+    // Edge-cases is a verdict review with its scripted default reply.
+    const scenario = {
+      failIterations: 0,
+      reviewOutputs: [findings([])],
+      reviewDenials: [denial],
+    }
+    try {
+      const runs = await Promise.all(
+        [commandMode, readOnly].map((review) =>
+          durably.jobs.agentLoop.trigger(
+            configuredRun(repo, review, {
+              maxIterations: 1,
+              fakeScenario: scenario,
+            }),
+          ),
+        ),
+      )
+      await waitFor(
+        async () =>
+          (
+            await Promise.all(
+              runs.map(async (r) =>
+                ['completed', 'failed'].includes(
+                  (await durably.getRun(r.id))?.status ?? '',
+                ),
+              ),
+            )
+          ).every(Boolean),
+        200000,
+        'denial runs settle',
+      )
+      const kept = { count: 1, entries: [denial.slice(0, 300)] }
+      for (const run of runs) {
+        const done = await durably.getRun(run.id)
+        const output = done?.output as { conclusion: string }
+        assert.equal(output?.conclusion, 'approved', done?.error ?? '')
+        const attempts = await durably.getStepAttempts(run.id)
+        const reviewed = attempts.find((a) =>
+          /^stage:\d+:review:correctness$/.test(a.stepName),
+        )
+        const stored = (
+          await durably.storage.getCompletedStep(
+            run.id,
+            reviewed?.stepName ?? '?',
+          )
+        )?.output as { decision: string; permissionDenials?: unknown }
+        assert.equal(stored.decision, 'pass')
+        assert.deepEqual(stored.permissionDenials, kept)
+        const metadata = (reviewed?.metadata ?? {}) as {
+          permissionDenials?: unknown
+        }
+        assert.deepEqual(metadata.permissionDenials, kept)
+        // The other reviewer reported none, so nothing is kept for it.
+        const other = attempts.find((a) =>
+          /^stage:\d+:review:edge-cases$/.test(a.stepName),
+        )
+        const otherStep = (
+          await durably.storage.getCompletedStep(run.id, other?.stepName ?? '?')
+        )?.output as Record<string, unknown>
+        assert.ok(!('permissionDenials' in otherStep))
+        const otherMetadata = (other?.metadata ?? {}) as Record<string, unknown>
+        assert.ok(!('permissionDenials' in otherMetadata))
+        const report = await buildReport(durably, run.id)
+        const review = report.reviews.find((r) => r.lens === 'correctness')
+        assert.deepEqual(review?.permissionDenials, kept)
+        assert.deepEqual(
+          report.reviewRounds[0]?.reviews.find((r) => r.lens === 'correctness')
+            ?.permissionDenials,
+          kept,
+        )
+        assert.ok(
+          !(
+            'permissionDenials' in
+            (report.reviews.find((r) => r.lens === 'edge-cases') ?? {})
+          ),
+        )
+        assert.deepEqual(
+          JSON.parse(reportToJson(report)).reviews.find(
+            (r: { lens: string }) => r.lens === 'correctness',
+          ).permissionDenials,
+          kept,
+        )
+        const md = reportToMarkdown(report)
+        assert.ok(
+          md.includes(
+            `  - tool calls the guard refused: 1\n    - ${denial.slice(0, 300)}\n`,
+          ),
+          md,
+        )
+      }
     } finally {
       await durably.stop()
       await durably.db.destroy()
