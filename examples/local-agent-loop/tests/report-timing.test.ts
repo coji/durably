@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
+import { asReportReview, asSpecReview } from '../src/engine/build-report.js'
 import { PRICE_BASIS } from '../src/engine/pricing.js'
 import {
   reportToMarkdown,
@@ -490,5 +491,84 @@ describe('review highlights', () => {
     assert.deepEqual([h.rounds, h.last, h.left.titles], [1, 'passed', ['Z']])
     const none = reviewHighlights([], [], LENSES)
     assert.deepEqual([none.rounds, none.last], [0, null])
+  })
+})
+
+describe('refused tool calls of a review', () => {
+  it('reads them from stored repository and spec review steps, held to ten entries of 300 characters, and shows one line under each affected review', () => {
+    const long = (i: number) => `Glob: denied ${i} ${'x'.repeat(400)}`
+    const stored = asReportReview({
+      lens: 'correctness',
+      decision: 'pass',
+      notes: 'Fine',
+      findings: null,
+      permissionDenials: {
+        count: 12,
+        entries: Array.from({ length: 12 }, (_, i) => long(i)),
+      },
+    })
+    assert.equal(stored?.permissionDenials?.count, 12)
+    assert.equal(stored?.permissionDenials?.entries.length, 10)
+    for (const entry of stored?.permissionDenials?.entries ?? [])
+      assert.equal(entry.length, 300)
+    const plain = asReportReview({
+      lens: 'edge-cases',
+      decision: 'pass',
+      notes: 'Fine too',
+      findings: null,
+    })
+    assert.ok(plain && !('permissionDenials' in plain))
+    const spec = asSpecReview({
+      name: 'security',
+      decision: 'needsChanges',
+      notes: 'Spec gap',
+      findings: null,
+      permissionDenials: { count: 1, entries: ['Read: outside /etc'] },
+    })
+    assert.deepEqual(spec?.permissionDenials, {
+      count: 1,
+      entries: ['Read: outside /etc'],
+    })
+    const reviews = [stored, plain].filter((r): r is ReportReview => r !== null)
+    const md = reportToMarkdown({
+      ...baseReport(),
+      reviews,
+      reviewRounds: [
+        {
+          round: 1,
+          sequence: 1,
+          candidate: null,
+          reviews,
+          status: 'completed',
+        },
+      ],
+      specRounds: [
+        {
+          round: 1,
+          sequence: 1,
+          candidate: null,
+          reviews: spec ? [spec] : [],
+        },
+      ],
+    })
+    const first = long(0).slice(0, 300)
+    assert.ok(
+      md.includes(
+        `- correctness: pass — Fine\n  - tool calls the guard refused: 12; first: ${first}\n- edge-cases: pass — Fine too\n`,
+      ),
+      md,
+    )
+    assert.ok(
+      md.includes(
+        `  - correctness: pass — Fine\n    - tool calls the guard refused: 12; first: ${first}\n  - edge-cases: pass — Fine too\n`,
+      ),
+      md,
+    )
+    assert.ok(
+      md.includes(
+        '  - security: needsChanges — Spec gap\n    - tool calls the guard refused: 1; first: Read: outside /etc\n',
+      ),
+      md,
+    )
   })
 })

@@ -20,6 +20,7 @@ import { PRICE_BASIS } from './pricing.js'
 import {
   NOT_SENT,
   type AttemptMeasurement,
+  type PermissionDenials,
   type SessionHandling,
   type VerificationLog,
 } from './providers/types.js'
@@ -203,6 +204,11 @@ export interface ReportReview {
   status?: ReviewStatus
   /** Why it was cancelled, discarded or pending; absent when it counted. */
   reason?: string
+  /**
+   * The tool calls the guard refused during the review: their count and the
+   * first entries, each cut to a fixed length. Absent when there were none.
+   */
+  permissionDenials?: PermissionDenials
 }
 
 /** How a review round, or one review in it, ended; see `ReportReview.status`. */
@@ -248,6 +254,11 @@ function reviewLines(reviews: ReportReview[], indent: string): string[] {
     review.status === 'cancelled'
       ? `${indent}- ${review.lens}: no verdict${statusAside(review)}`
       : `${indent}- ${review.lens}: ${review.decision} — ${review.notes}${statusAside(review)}`,
+    ...(review.permissionDenials
+      ? [
+          `${indent}  - tool calls the guard refused: ${review.permissionDenials.count}; first: ${review.permissionDenials.entries[0] ?? ''}`,
+        ]
+      : []),
     ...findingLines(review.findings, `${indent}  `),
   ])
 }

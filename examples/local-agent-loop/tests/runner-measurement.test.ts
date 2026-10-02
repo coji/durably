@@ -131,6 +131,59 @@ describe('runner measurement on the real launch path', () => {
     assert.equal(second.measurement.elapsedMs, 5)
   })
 
+  it('records refused tool calls on the attempt, the same when read back from the completed checkpoint', async () => {
+    const checkpointsDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
+    let calls = 0
+    const denial = `Glob: glob outside the review's directories denied: ${'y'.repeat(400)}`
+    const provider = stubProvider(async () => {
+      calls++
+      return {
+        text: 'DECISION: pass',
+        session: null,
+        resolvedModel: 'resolved-model',
+        resolvedEffort: 'low',
+        reportedModel: null,
+        reportedEffort: null,
+        usage: null,
+        elapsedMs: 5,
+        permissionDenials: Array.from({ length: 11 }, () => denial),
+      }
+    })
+    const spec = {
+      provider,
+      providerName: 'codex' as const,
+      prompt: 'p',
+      workdir: '/tmp',
+      timeoutMs: 5000,
+      requestedModel: null,
+      requestedEffort: null,
+      effectiveModel: 'resolved-model',
+      effectiveEffort: 'low',
+      role: 'review-a' as const,
+      stage: 'review:correctness',
+      iteration: 1,
+      operationKey: `test/${randomUUID()}`,
+      checkpointsDir,
+      session: null,
+    }
+    const kept = {
+      count: 11,
+      entries: Array.from({ length: 10 }, () => denial.slice(0, 300)),
+    }
+    for (const recovered of [false, true]) {
+      const attempt = fakeAttempt()
+      const outcome = await runAgentCall(
+        new AbortController().signal,
+        attempt as never,
+        spec,
+      )
+      assert.equal(outcome.recovered, recovered)
+      assert.equal(outcome.permissionDenials.length, 11)
+      assert.deepEqual(attempt.snapshots.at(-1)?.permissionDenials, kept)
+    }
+    assert.equal(calls, 1)
+  })
+
   it('treats a start checkpoint with no completion as uncertain, not retryable', async () => {
     const checkpointsDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
     const operationKey = `test/${randomUUID()}`

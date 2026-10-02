@@ -18,6 +18,7 @@ import {
   estimateCostBreakdownByModel,
 } from './pricing.js'
 import {
+  boundedDenials,
   NOT_SENT,
   type AgentLog,
   type AgentProvider,
@@ -332,11 +333,15 @@ export async function runAgentCall(
       throw new Error(
         `${spec.providerName} did not report a native session id for context reuse`,
       )
+    // Kept from the result itself, so a call read back from its completed
+    // checkpoint records the same denials as the call that wrote it.
+    const denials = boundedDenials(result.permissionDenials ?? [])
     measurement = await writeMeasurement(attempt, measurement, {
       reportedModel: result.reportedModel,
       reportedEffort: result.reportedEffort,
       invocationId,
       sessionId,
+      ...(denials ? { permissionDenials: denials } : {}),
       usagePatch: result.usage,
       ...(result.usageByModel ? { usageByModel: result.usageByModel } : {}),
       elapsedMs: result.elapsedMs,

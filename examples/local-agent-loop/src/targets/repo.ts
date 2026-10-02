@@ -100,6 +100,8 @@ const UNAPPROVED_BASE: Record<
   'verification-failed': 'the pinned check still failed on it',
   'review-cap-reached':
     'reviewers still found blocking issues in it after the review cap',
+  'review-incomplete':
+    'its reviews did not finish after the pinned check passed on it',
 }
 
 /**

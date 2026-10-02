@@ -23,9 +23,10 @@ import { z } from 'zod'
 
 import { runChild } from '../engine/child.js'
 import { SPEC_CHECK_FAILED_MESSAGE } from '../engine/failure-reasons.js'
-import type {
-  AgentProvider,
-  ReviewCallSettings,
+import {
+  boundedDenials,
+  type AgentProvider,
+  type ReviewCallSettings,
 } from '../engine/providers/types.js'
 import { checkpointPaths, runAgentCall } from '../engine/runner.js'
 import type { CandidateRef, ReviewSnapshots } from '../engine/types.js'
@@ -661,7 +662,7 @@ async function reviewRoundOf(args: {
     // The findings are kept with the verdict in this completed step, so a
     // report reads them back without calling the reviewer or reading the
     // checkpoint again. The review event drops them before the state.
-    return { lens, ...readReviewReply(invocation, output, result, lens) }
+    return { lens, ...readReviewReply(output, result, lens) }
   }
   return {
     reviewOnce,
@@ -842,27 +843,30 @@ function reviewInputOf(
 /**
  * A reviewer's verdict, read only after the completed checkpoint, so a reply
  * that cannot be read stops the review and is never sent again. `who` names
- * the reviewer in the error.
+ * the reviewer in the error. A tool call the guard refused does not stop it:
+ * the guard refuses only what is outside the candidate, its trees and the
+ * review's own directory, so the refusal is kept with the verdict instead
+ * (ADR-0023).
  */
 function readReviewReply(
-  invocation: ReviewInvocation | null,
   output: ReviewInvocation['output'],
   result: { text: string; permissionDenials: string[] },
   who: string,
-): Pick<ReviewStepResult, 'decision' | 'notes' | 'findings'> {
-  if (invocation && result.permissionDenials.length > 0)
-    throw new Error(
-      `review-incomplete (${who}): ${result.permissionDenials.length} tool call(s) were refused: ${result.permissionDenials.join('; ').slice(0, 500)}`,
-    )
+): Pick<
+  ReviewStepResult,
+  'decision' | 'notes' | 'findings' | 'permissionDenials'
+> {
   const parsed =
     output === 'findings-json'
       ? parseFindingsOutput(result.text)
       : parseReviewOutput(result.text)
   if (!parsed.ok) throw new Error(`review-incomplete (${who}): ${parsed.error}`)
+  const denials = boundedDenials(result.permissionDenials)
   return {
     decision: parsed.decision,
     notes: parsed.notes,
     findings: parsed.findings ?? null,
+    ...(denials ? { permissionDenials: denials } : {}),
   }
 }
 
@@ -1155,7 +1159,7 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
     })
     return {
       name,
-      ...readReviewReply(invocation, output, result, `spec ${name}`),
+      ...readReviewReply(output, result, `spec ${name}`),
     }
   }
 

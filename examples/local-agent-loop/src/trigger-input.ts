@@ -10,7 +10,11 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { z } from 'zod'
 
 import { runChild } from './engine/child.js'
-import { stageStep } from './engine/failure-reasons.js'
+import {
+  reviewIncompleteBase,
+  stageStep,
+  type StoredStageStep,
+} from './engine/failure-reasons.js'
 import { repoRoot } from './engine/git.js'
 import { parseProviderName } from './engine/providers/index.js'
 import type { VerificationOutcome } from './engine/verification.js'
@@ -921,12 +925,17 @@ export async function readRepairFiles(
   }
 }
 
-/** The parts of a stored parent run a repair run is built from. */
+/**
+ * The parts of a stored parent run a repair run is built from. A failed
+ * parent has no output, so its error and its stored steps are read instead.
+ */
 export interface RepairParent {
   id: string
   status: string
   input: unknown
   output: unknown
+  error?: string | null
+  steps?: StoredStepRecord[]
 }
 
 interface StoredRepairInput {
@@ -966,8 +975,10 @@ const refusal = (parent: RepairParent, why: string) =>
 /**
  * The parent's candidate, when the parent may be repaired: a repository run
  * that completed either approved and delivered its last candidate, or
- * verification-failed or review-cap-reached with a recorded last candidate
- * (ADR-0030). Anything else, a rejected run included, is refused.
+ * verification-failed or review-cap-reached with a recorded last candidate,
+ * or one that failed on a review that did not finish after its last sealed
+ * candidate passed the check (ADR-0030). Anything else, a rejected run
+ * included, is refused.
  */
 export function repairableCandidate(
   parent: RepairParent,
@@ -981,8 +992,24 @@ export function repairableCandidate(
   const refuse = (why: string) => refusal(parent, why)
   const input = parent.input as StoredRepairInput | null
   if (input?.target?.kind !== 'repo') throw refuse('it is not a repository run')
+  const stored = setup as Partial<FactorySetup> | null
+  const storedSetup = () => {
+    if (stored?.target?.kind !== 'repo' || !stored.profiles)
+      throw refuse('its setup record is missing')
+    return stored as RepoSetup
+  }
+  if (parent.status === 'failed') {
+    const base = reviewIncompleteBase(parent.error, parent.steps ?? [])
+    if (!base.ok) throw refuse(base.why)
+    return {
+      setup: storedSetup(),
+      commit: base.commit,
+      branch: base.branch,
+      conclusion: 'review-incomplete',
+    }
+  }
   if (parent.status !== 'completed')
-    throw refuse(`it is ${parent.status}, not completed`)
+    throw refuse(`it is ${parent.status}, not completed or failed`)
   const output = parent.output as StoredOutput | null
   const conclusion =
     output?.conclusion === 'approved' && output.approved === true
@@ -1006,11 +1033,8 @@ export function repairableCandidate(
         `its delivered commit ${delivered.slice(0, 12)} is not its last candidate ${commit.slice(0, 12)}`,
       )
   }
-  const stored = setup as Partial<FactorySetup> | null
-  if (stored?.target?.kind !== 'repo' || !stored.profiles)
-    throw refuse('its setup record is missing')
   return {
-    setup: stored as RepoSetup,
+    setup: storedSetup(),
     commit,
     branch,
     conclusion,
@@ -1018,11 +1042,7 @@ export function repairableCandidate(
 }
 
 /** The parts of a stored step the findings are built from. */
-export interface StoredStepRecord {
-  name: string
-  status: string
-  output: unknown
-}
+export type StoredStepRecord = StoredStageStep
 
 /**
  * Findings built from a verification-failed parent's own record: the stored
@@ -1105,18 +1125,17 @@ export function checkFailureFindings(
 }
 
 /**
- * Findings built from a review-cap-reached parent's own record: the notes of
- * each review in its stored output that still asked for changes. The output
- * holds each lens's last verdict, and a findings-json lens's notes are its
- * blocker lines already, so no step or log is read. The text depends on the
- * stored output alone, so the same parent always gives the same findings.
+ * Findings from reviews that asked for changes: each one's lens as a
+ * heading and its notes beneath it. A findings-json lens's notes are its
+ * blocker lines already. Refused when no review asked for changes with
+ * notes.
  */
-export function reviewFindings(parent: RepairParent): {
-  content: string
-  ref: FindingsRef
-} {
-  const output = parent.output as StoredOutput | null
-  const blocking = (output?.reviews ?? []).filter(
+function reviewNotesFindings(
+  parent: RepairParent,
+  reviews: { lens?: string; decision?: string; notes?: string }[],
+  why: string,
+): { content: string; ref: FindingsRef } {
+  const blocking = reviews.filter(
     (r) => r.decision === 'needsChanges' && (r.notes ?? '').trim() !== '',
   )
   if (blocking.length === 0)
@@ -1127,7 +1146,7 @@ export function reviewFindings(parent: RepairParent): {
   const content = [
     `# Review findings of factory run ${parent.id}`,
     '',
-    `The pinned check passed on the run's last candidate, commit ${output?.candidate?.commit}, but these reviewers still asked for changes when it stopped at its review cap.`,
+    why,
     '',
     ...blocking.flatMap((r) => [
       `## ${r.lens ?? 'review'}`,
@@ -1137,6 +1156,55 @@ export function reviewFindings(parent: RepairParent): {
     ]),
   ].join('\n')
   return { content, ref: { parentRun: parent.id } }
+}
+
+/**
+ * Findings built from a review-cap-reached parent's own record: the notes of
+ * each review in its stored output that still asked for changes. The output
+ * holds each lens's last verdict, so no step or log is read. The text
+ * depends on the stored output alone, so the same parent always gives the
+ * same findings.
+ */
+export function reviewFindings(parent: RepairParent): {
+  content: string
+  ref: FindingsRef
+} {
+  const output = parent.output as StoredOutput | null
+  return reviewNotesFindings(
+    parent,
+    output?.reviews ?? [],
+    `The pinned check passed on the run's last candidate, commit ${output?.candidate?.commit}, but these reviewers still asked for changes when it stopped at its review cap.`,
+  )
+}
+
+/**
+ * Findings built from a parent that failed on a review that did not finish:
+ * the notes of each review of its last candidate's round that completed
+ * asking for changes. Only the review steps after that candidate's sealing
+ * are read, never an earlier candidate's, and a review that failed or was
+ * cancelled gives nothing. The text depends on the stored steps alone, so
+ * the same parent always gives the same findings.
+ */
+export function incompleteReviewFindings(parent: RepairParent): {
+  content: string
+  ref: FindingsRef
+} {
+  const steps = parent.steps ?? []
+  const base = reviewIncompleteBase(parent.error, steps)
+  if (!base.ok) throw refusal(parent, base.why)
+  const reviews = steps.flatMap((s) => {
+    const where = stageStep(s.name)
+    return s.status === 'completed' &&
+      where?.stage === 'review' &&
+      where.sequence > base.sequence
+      ? [s.output as { lens?: string; decision?: string; notes?: string }]
+      : []
+  })
+  return reviewNotesFindings(
+    parent,
+    reviews,
+    `The pinned check passed on the run's last candidate, commit ${base.commit}, but the run failed before all its reviews finished. These reviewers of that candidate finished and asked for changes.`,
+  )
 }
 
 const sha256Of = (text: string) =>
@@ -1308,8 +1376,9 @@ export interface RepairSource {
  * Read a parent run, refuse it unless it may be repaired and its candidate
  * branch is unmoved, and build the child's input. Nothing is triggered.
  * An approved parent needs a findings file; a verification-failed one uses
- * the file when given and its stored check failure otherwise, and a
- * review-cap-reached one its stored last reviews.
+ * the file when given and its stored check failure otherwise, a
+ * review-cap-reached one its stored last reviews, and one that failed on a
+ * review that did not finish the finished reviews of its last candidate.
  */
 export async function startableRepair(
   durably: RepairSource,
@@ -1318,8 +1387,11 @@ export async function startableRepair(
   /** Demo and test only: the fake provider's behavior for the child. */
   fakeScenario?: unknown,
 ): Promise<ReturnType<typeof buildRepairInput>> {
-  const parent = await durably.getRun(parentId)
-  if (!parent) throw new Error(`no run ${parentId}`)
+  const run = await durably.getRun(parentId)
+  if (!run) throw new Error(`no run ${parentId}`)
+  // A failed parent's candidate and check are read from its steps.
+  const steps = await durably.storage.getSteps(parentId)
+  const parent: RepairParent = { ...run, steps }
   const setup = (await durably.storage.getCompletedStep(parentId, 'setup'))
     ?.output
   const [final, check] = await Promise.all([
@@ -1341,11 +1413,13 @@ export async function startableRepair(
     findings =
       conclusion === 'review-cap-reached'
         ? reviewFindings(parent)
-        : checkFailureFindings(
-            parent,
-            await durably.storage.getSteps(parentId),
-            fixed.check ?? stored.target.checkCommand,
-          )
+        : conclusion === 'review-incomplete'
+          ? incompleteReviewFindings(parent)
+          : checkFailureFindings(
+              parent,
+              steps,
+              fixed.check ?? stored.target.checkCommand,
+            )
   }
   const built = buildRepairInput(
     parent,

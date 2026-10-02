@@ -131,6 +131,7 @@ const REPAIR_BASE: Record<RepairParentConclusion, string> = {
     'An approved implementation of this task is already committed in the working directory.',
   'verification-failed': `${UNAPPROVED_REPAIR_BASE} that run stopped because the pinned check still failed on it after its last repair.`,
   'review-cap-reached': `${UNAPPROVED_REPAIR_BASE} the pinned check passed on it, but that run stopped because reviewers still found blocking issues after its review cap.`,
+  'review-incomplete': `${UNAPPROVED_REPAIR_BASE} the pinned check passed on it, but that run failed because its reviews did not finish, so no reviewer has judged the whole candidate.`,
 }
 
 /** How a reviewer judges a repair whose base was never approved. */
@@ -143,6 +144,7 @@ const REVIEW_REPAIR_BASE: Record<RepairParentConclusion, string> = {
     'The base is an implementation already approved for the task: judge whether this repair addresses the findings without regressing what the approved candidate already does, not whether the diff implements the whole task.',
   'verification-failed': `The base is the last candidate of an earlier run of this task that was never approved: the pinned check still failed on it. ${UNAPPROVED_REVIEW_JUDGEMENT}`,
   'review-cap-reached': `The base is the last candidate of an earlier run of this task that was never approved: the pinned check passed on it, but reviewers still found blocking issues after the review cap. ${UNAPPROVED_REVIEW_JUDGEMENT}`,
+  'review-incomplete': `The base is the last candidate of an earlier run of this task that was never approved: the pinned check passed on it, but its reviews did not finish, so no reviewer has judged it as a whole. ${UNAPPROVED_REVIEW_JUDGEMENT}`,
 }
 
 export function codePrompt(args: CodePromptArgs): string {

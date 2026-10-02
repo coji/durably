@@ -410,6 +410,10 @@ export const COMMAND_NOTES: [string, string][] = [
     'go on from the last candidate with a new repair budget; the findings are built from the last reviews unless --findings-file is given',
     '最後の候補から、修正の回数を新しくして続けます。--findings-file を渡さなければ、最後のレビューの指摘を渡します。',
   ],
+  [
+    "go on from the last candidate, which passed the check, with a new repair budget; the findings are built from that candidate's finished reviews that asked for changes unless --findings-file is given",
+    'チェックを通った最後の候補から、修正の回数を新しくして続けます。--findings-file を渡さなければ、その候補のレビューのうち、終わって修正を求めたものの指摘を渡します。',
+  ],
   ['the reviewer notes', 'レビューのメモを読めます。'],
   [
     'read the spec reviews first',

@@ -45,6 +45,8 @@ export const BASELINE_FAILED_MESSAGE = 'baseline-check-failed'
 export const PREFLIGHT_FAILED_MESSAGE = 'preflight-failed'
 export const CANDIDATE_MOVED_MESSAGE = 'candidate-moved'
 export const SPEC_CHECK_FAILED_MESSAGE = 'spec-check-failed'
+/** How a review whose reply could not be read begins its error. */
+export const REVIEW_INCOMPLETE_MESSAGE = 'review-incomplete'
 
 /** A baseline stop because setup left files `.gitignore` does not cover. */
 const SETUP_UNTRACKED = `${BASELINE_FAILED_MESSAGE}: setup-untracked: `
@@ -344,6 +346,84 @@ export function stageStep(
     : null
 }
 
+/** The parts of a stored step a failed run's repair base is read from. */
+export interface StoredStageStep {
+  name: string
+  status: string
+  output: unknown
+  error?: string | null
+}
+
+/**
+ * The last candidate of a run that failed on a review, when a repair may
+ * start from it (ADR-0030): the run's error, or a failed review step's,
+ * begins with `review-incomplete`, its last sealed candidate step stored a
+ * commit and a branch, and the check that followed that candidate completed
+ * and passed. A failed run has no output, so all of it is read from the
+ * steps it kept. `sequence` is the stage sequence of that sealing, so the
+ * reviews of the candidate's round are the review steps after it. Otherwise
+ * why not, in words a refusal can quote.
+ */
+export function reviewIncompleteBase(
+  error: string | null | undefined,
+  steps: StoredStageStep[],
+):
+  | { ok: true; commit: string; branch: string; sequence: number }
+  | { ok: false; why: string } {
+  const staged = steps.flatMap((s) => {
+    const where = stageStep(s.name)
+    return where ? [{ ...where, step: s }] : []
+  })
+  const reviewFailed = staged.some(
+    ({ stage, step }) =>
+      stage === 'review' &&
+      step.status === 'failed' &&
+      step.error?.startsWith(REVIEW_INCOMPLETE_MESSAGE),
+  )
+  if (!error?.startsWith(REVIEW_INCOMPLETE_MESSAGE) && !reviewFailed)
+    return {
+      ok: false,
+      why: 'it failed for a reason other than a review that did not finish',
+    }
+  const done = staged.filter(({ step }) => step.status === 'completed')
+  const sealed = done
+    .filter((s) => s.stage === 'code' && s.part === 'candidate')
+    .sort((x, y) => x.sequence - y.sequence)
+    .at(-1)
+  const candidate = sealed?.step.output as {
+    commit?: unknown
+    branch?: unknown
+  } | null
+  if (
+    !sealed ||
+    typeof candidate?.commit !== 'string' ||
+    typeof candidate.branch !== 'string'
+  )
+    return {
+      ok: false,
+      why: 'it recorded no sealed candidate with a commit and a branch',
+    }
+  const check = done
+    .filter(
+      (s) =>
+        s.stage === 'verify' &&
+        s.part === 'acceptance' &&
+        s.sequence > sealed.sequence,
+    )
+    .sort((x, y) => x.sequence - y.sequence)[0]
+  if ((check?.step.output as { passed?: unknown } | null)?.passed !== true)
+    return {
+      ok: false,
+      why: 'no passing check is stored for its last candidate',
+    }
+  return {
+    ok: true,
+    commit: candidate.commit,
+    branch: candidate.branch,
+    sequence: sealed.sequence,
+  }
+}
+
 /**
  * The full-output logs of the baseline check, every physical attempt, oldest
  * first. A replay that read the completed checkpoint adds nothing.
@@ -463,6 +543,11 @@ export interface ClassifyInput {
   reload?: ReloadAdvice
   /** Whether it is a repository run; true when omitted. */
   repo?: boolean
+  /**
+   * A failed repository run a repair may start from: its review did not
+   * finish after its last candidate passed the check (`reviewIncompleteBase`).
+   */
+  repairable?: boolean
 }
 
 /**
@@ -550,7 +635,14 @@ export function classifyFailure(
               : SETUP_UNTRACKED_CHECK,
         }
       : {}),
-    next: entry.next(input.runId, reload, input.repo ?? true),
+    next: [
+      ...entry.next(input.runId, reload, input.repo ?? true),
+      ...(kind === 'unclassified' && input.repairable
+        ? [
+            `${DEMO} repair --run ${input.runId}  # go on from the last candidate, which passed the check, with a new repair budget; the findings are built from that candidate's finished reviews that asked for changes unless --findings-file is given`,
+          ]
+        : []),
+    ],
     details,
     reload,
     setupUntracked: setupPaths !== null,
@@ -571,13 +663,22 @@ export function retryText(retryable: boolean): string {
  */
 export async function classifyRun(
   durably: Pick<AnyDurably, 'getStepAttempts'> & {
-    storage: Pick<AnyDurably['storage'], 'getCompletedStep'>
+    storage: Pick<AnyDurably['storage'], 'getCompletedStep' | 'getSteps'>
   },
   run: Pick<Run, 'id' | 'status' | 'input' | 'output' | 'error'>,
 ): Promise<FailureClassification | null> {
   let uncertain: string[] = []
   let verificationLogs: VerificationLog[] = []
   let baseline: VerificationLog[] = []
+  let repairable = false
+  const repo =
+    (run.input as { target?: { kind?: unknown } } | null)?.target?.kind ===
+    'repo'
+  if (run.status === 'failed' && repo)
+    repairable = reviewIncompleteBase(
+      run.error,
+      await durably.storage.getSteps(run.id),
+    ).ok
   if (run.status === 'failed' || run.status === 'cancelled') {
     const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))
       ?.output as { checkpointsDir?: string } | null | undefined
@@ -605,8 +706,7 @@ export async function classifyRun(
       (run.input as { target?: { publish?: unknown } } | null)?.target
         ?.publish === true,
     reload: reloadAdvice(run.input),
-    repo:
-      (run.input as { target?: { kind?: unknown } } | null)?.target?.kind ===
-      'repo',
+    repo,
+    repairable,
   })
 }

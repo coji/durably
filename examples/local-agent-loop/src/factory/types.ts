@@ -10,6 +10,7 @@ import {
 } from '../engine/providers/claude.js'
 import type {
   AgentProvider,
+  PermissionDenials,
   ProviderName,
   SessionHandling,
   VerificationLog,
@@ -234,12 +235,17 @@ export interface SpecVersion {
   sha256: string
 }
 
-/** What a spec reviewer's step stores: the verdict and its findings. */
+/**
+ * What a spec reviewer's step stores: the verdict, its findings, and the
+ * tool calls the guard refused during the review.
+ */
 export interface SpecReviewResult {
   name: string
   decision: 'pass' | 'needsChanges'
   notes: string
   findings: ReviewFindings | null
+  /** Absent when no tool call was refused. */
+  permissionDenials?: PermissionDenials
 }
 
 /** What `SPEC_FINAL_STEP` stores: the spec the run goes on with. */
@@ -369,10 +375,15 @@ export interface ReviewVerdict {
   notes: string
 }
 
-/** What a review step stores: the verdict and its findings. */
+/**
+ * What a review step stores: the verdict, its findings, and the tool calls
+ * the guard refused during the review.
+ */
 export interface ReviewStepResult extends ReviewVerdict {
   /** A `findings-json` review's findings; null for a verdict review. */
   findings: ReviewFindings | null
+  /** Absent when no tool call was refused. */
+  permissionDenials?: PermissionDenials
 }
 
 /** Why a review that ran beside verification was ended before its verdict. */

@@ -28,7 +28,7 @@ import {
 } from '../src/durably.js'
 import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
-import { classifyFailure } from '../src/engine/failure-reasons.js'
+import { classifyFailure, classifyRun } from '../src/engine/failure-reasons.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
 import { BASELINE_INDEX_PRUNE_AGE_MS } from '../src/factory/baseline-reuse.js'
 import {
@@ -48,6 +48,7 @@ import { createTarget } from '../src/targets/index.js'
 import {
   buildRepairInput,
   checkFailureFindings,
+  incompleteReviewFindings,
   readRepairFiles,
   reloadTriggerInput,
   repairableCandidate,
@@ -850,7 +851,10 @@ describe('retrigger from the stored input', () => {
     const durably = {
       getRun: async (id: keyof typeof stored) => stored[id] ?? null,
       getStepAttempts: async () => [],
-      storage: { getCompletedStep: async () => null },
+      storage: {
+        getCompletedStep: async () => null,
+        getSteps: async () => [],
+      },
       jobs: {
         agentLoop: {
           trigger: async (i: unknown, options: unknown) => {
@@ -2223,7 +2227,7 @@ describe('repair', { timeout: 240000 }, () => {
       )
   })
 
-  it('refuses every parent that is not an approved, delivered, verification-failed or review-cap-reached repository run', () => {
+  it('refuses every parent that is not an approved, delivered, verification-failed, review-cap-reached or review-incomplete repository run', () => {
     const commit = 'c'.repeat(40)
     const setup = {
       target: { kind: 'repo' },
@@ -2296,7 +2300,11 @@ describe('repair', { timeout: 240000 }, () => {
       ['pending', { status: 'pending' }, /it is pending, not completed/],
       ['leased', { status: 'leased' }, /it is leased, not completed/],
       ['waiting', { status: 'waiting' }, /it is waiting, not completed/],
-      ['failed', { status: 'failed' }, /it is failed, not completed/],
+      [
+        'failed',
+        { status: 'failed' },
+        /it failed for a reason other than a review that did not finish/,
+      ],
       ['cancelled', { status: 'cancelled' }, /it is cancelled, not completed/],
       [
         'sample',
@@ -2331,12 +2339,16 @@ describe('repair', { timeout: 240000 }, () => {
         [
           `verification-failed but ${status}`,
           { ...stopped, status },
-          new RegExp(`it is ${status}, not completed`),
+          status === 'failed'
+            ? /it failed for a reason other than a review/
+            : new RegExp(`it is ${status}, not completed`),
         ],
         [
           `review-cap-reached but ${status}`,
           { ...capped, status },
-          new RegExp(`it is ${status}, not completed`),
+          status === 'failed'
+            ? /it failed for a reason other than a review/
+            : new RegExp(`it is ${status}, not completed`),
         ],
       )
     cases.push(
@@ -2363,6 +2375,314 @@ describe('repair', { timeout: 240000 }, () => {
         name,
       )
     assert.throws(() => repairableCandidate(good, null), /setup record/)
+  })
+
+  it('repairs a failed repository run only when a review did not finish after its last sealed candidate passed the check', () => {
+    const commit = 'c'.repeat(40)
+    const setup = { target: { kind: 'repo' }, profiles: {} }
+    const step = (name: string, output: unknown, status = 'completed') => ({
+      name,
+      status,
+      output,
+      error: null as string | null,
+    })
+    const sealed = (seq: number, id: string, c = commit) =>
+      step(`stage:${seq}:code:candidate`, {
+        id,
+        commit: c,
+        branch: 'factory/p',
+      })
+    const checked = (seq: number, passed: boolean) =>
+      step(`stage:${seq}:verify:acceptance`, { passed, stdout: 'out' })
+    const failedReview = step('stage:3:review:edge-cases', null, 'failed')
+    failedReview.error = 'review-incomplete (edge-cases): no status line'
+    const steps = [
+      step('setup', {}),
+      sealed(0, 'cand-1', 'a'.repeat(40)),
+      checked(1, false),
+      sealed(2, 'cand-2'),
+      checked(3, true),
+      step('stage:3:review:correctness', {
+        lens: 'correctness',
+        decision: 'needsChanges',
+        notes: 'blocker',
+      }),
+      failedReview,
+    ]
+    const parent = {
+      id: 'p',
+      status: 'failed',
+      input: { target: { kind: 'repo' } },
+      output: null,
+      error: 'review-incomplete (edge-cases): no status line',
+      steps,
+    }
+    const got = repairableCandidate(parent, setup)
+    assert.equal(got.commit, commit)
+    assert.equal(got.branch, 'factory/p')
+    assert.equal(got.conclusion, 'review-incomplete')
+    // The failed review step's error is enough when the run's says other.
+    assert.equal(
+      repairableCandidate({ ...parent, error: 'Error: step.all failed' }, setup)
+        .conclusion,
+      'review-incomplete',
+    )
+    const refused: [string, Partial<typeof parent>, RegExp][] = [
+      [
+        'unrelated failure',
+        {
+          error: 'baseline-check-failed: the check fails on the base',
+          steps: steps.filter((s) => s !== failedReview),
+        },
+        /it failed for a reason other than a review that did not finish/,
+      ],
+      [
+        'no sealed candidate',
+        {
+          steps: steps.filter((s) => !s.name.endsWith(':code:candidate')),
+        },
+        /it recorded no sealed candidate with a commit and a branch/,
+      ],
+      [
+        'candidate without a branch',
+        {
+          steps: steps.map((s) =>
+            s.name === 'stage:2:code:candidate'
+              ? step(s.name, { id: 'cand-2', commit })
+              : s,
+          ),
+        },
+        /no sealed candidate with a commit and a branch/,
+      ],
+      [
+        'no check of the last candidate',
+        { steps: steps.filter((s) => s.name !== 'stage:3:verify:acceptance') },
+        /no passing check is stored for its last candidate/,
+      ],
+      [
+        'failed check of the last candidate',
+        {
+          steps: steps.map((s) =>
+            s.name === 'stage:3:verify:acceptance' ? checked(3, false) : s,
+          ),
+        },
+        /no passing check is stored for its last candidate/,
+      ],
+      [
+        "an earlier candidate's passing check only",
+        {
+          steps: [
+            sealed(0, 'cand-1', 'a'.repeat(40)),
+            checked(1, true),
+            sealed(2, 'cand-2'),
+            failedReview,
+          ],
+        },
+        /no passing check is stored for its last candidate/,
+      ],
+      [
+        'no stored steps',
+        { steps: undefined },
+        /it recorded no sealed candidate with a commit and a branch/,
+      ],
+      [
+        'sample',
+        { input: { target: { kind: 'subject' } } },
+        /not a repository run/,
+      ],
+    ]
+    for (const [name, change, message] of refused)
+      assert.throws(
+        () => repairableCandidate({ ...parent, ...change }, setup),
+        message,
+        name,
+      )
+    assert.throws(() => repairableCandidate(parent, null), /setup record/)
+  })
+
+  it("builds a review-incomplete parent's findings from its last candidate's finished needsChanges reviews only", () => {
+    const commit = 'c'.repeat(40)
+    const step = (name: string, output: unknown, status = 'completed') => ({
+      name,
+      status,
+      output,
+      error: null as string | null,
+    })
+    const review = (
+      seq: number,
+      lens: string,
+      decision: string,
+      notes: string,
+    ) => step(`stage:${seq}:review:${lens}`, { lens, decision, notes })
+    const parent = (last: ReturnType<typeof step>[]) => ({
+      id: 'p',
+      status: 'failed',
+      input: { target: { kind: 'repo' } },
+      output: null,
+      error: 'review-incomplete (edge-cases): 0 findings',
+      steps: [
+        step('stage:0:code:candidate', {
+          id: 'cand-1',
+          commit: 'a'.repeat(40),
+          branch: 'factory/p',
+        }),
+        step('stage:1:verify:acceptance', { passed: true }),
+        // An earlier candidate's review: never part of the findings.
+        review(1, 'correctness', 'needsChanges', 'EARLIER NOTE'),
+        review(1, 'edge-cases', 'needsChanges', 'EARLIER EDGE'),
+        step('stage:2:code:candidate', {
+          id: 'cand-2',
+          commit,
+          branch: 'factory/p',
+        }),
+        step('stage:3:verify:acceptance', { passed: true }),
+        ...last,
+      ],
+    })
+    const both = parent([
+      review(3, 'correctness', 'needsChanges', 'refunds truncate\nline two'),
+      step('stage:3:review:edge-cases', null, 'failed'),
+    ])
+    const built = incompleteReviewFindings(both)
+    assert.deepEqual(built.ref, { parentRun: 'p' })
+    assert.match(built.content, /^# Review findings of factory run p$/m)
+    assert.match(built.content, new RegExp(`commit ${commit}`))
+    assert.match(
+      built.content,
+      /^## correctness\n\nrefunds truncate\nline two$/m,
+    )
+    assert.doesNotMatch(built.content, /EARLIER|## edge-cases/)
+    assert.deepEqual(incompleteReviewFindings(both), built)
+    // A pass, a blank note and a cancelled review add nothing.
+    const one = incompleteReviewFindings(
+      parent([
+        review(3, 'correctness', 'pass', 'PASS NOTE'),
+        review(3, 'edge-cases', 'needsChanges', 'empty cart'),
+      ]),
+    ).content
+    assert.doesNotMatch(one, /PASS NOTE|## correctness|EARLIER/)
+    assert.match(one, /^## edge-cases\n\nempty cart$/m)
+    for (const [name, last] of [
+      [
+        'a pass and a failed review',
+        [
+          review(3, 'correctness', 'pass', 'fine'),
+          step('stage:3:review:edge-cases', null, 'failed'),
+        ],
+      ],
+      ['blank notes', [review(3, 'correctness', 'needsChanges', '  \n\t')]],
+      [
+        'a cancelled review',
+        [
+          step('stage:3:review:correctness', {
+            lens: 'correctness',
+            status: 'cancelled',
+            reason: 'superseded-by-verify',
+          }),
+        ],
+      ],
+      ['no review of the last candidate', []],
+    ] as const)
+      assert.throws(
+        () => incompleteReviewFindings(parent([...last])),
+        /refusing to repair p: no stored review asked for changes with notes; give the findings with --findings-file <path> instead/,
+        name,
+      )
+  })
+
+  it('names repair for a failed repository run only when its last candidate passed the check and a review did not finish', async () => {
+    const commit = 'c'.repeat(40)
+    const steps = [
+      {
+        name: 'stage:0:code:candidate',
+        status: 'completed',
+        output: { id: 'cand-1', commit, branch: 'factory/r1' },
+        error: null,
+      },
+      {
+        name: 'stage:1:verify:acceptance',
+        status: 'completed',
+        output: { passed: true },
+        error: null,
+      },
+    ]
+    const classify = (
+      run: { status?: string; error?: string; kind?: string },
+      stored = steps,
+    ) =>
+      classifyRun(
+        {
+          getStepAttempts: async () => [],
+          storage: {
+            getCompletedStep: async () => null,
+            getSteps: async () => stored as never,
+          },
+        },
+        {
+          id: 'r1',
+          status: (run.status ?? 'failed') as never,
+          input: { target: { kind: run.kind ?? 'repo' } },
+          output: null,
+          error: run.error ?? 'review-incomplete (edge-cases): no status line',
+        },
+      )
+    const repair = (lines: string[] | undefined) =>
+      (lines ?? []).filter((l) => l.includes(' repair --run r1 '))
+    const eligible = await classify({})
+    assert.equal(repair(eligible?.next).length, 1)
+    assert.match(
+      repair(eligible?.next)[0] ?? '',
+      /unless --findings-file is given$/,
+    )
+    for (const [name, failure] of [
+      ['unrelated error', classify({ error: 'something else broke' })],
+      ['sample run', classify({ kind: 'subject' })],
+      [
+        'failed check',
+        classify({}, [
+          steps[0] as (typeof steps)[number],
+          {
+            ...(steps[1] as (typeof steps)[number]),
+            output: { passed: false },
+          },
+        ]),
+      ],
+      ['no candidate', classify({}, [])],
+    ] as const)
+      assert.deepEqual(repair((await failure)?.next), [], name)
+  })
+
+  it('tells the repairer and both reviewers that a review-incomplete base passed the check but was never fully reviewed', () => {
+    const code = codePrompt({
+      role: 'repair',
+      iteration: 1,
+      repairNotes: [],
+      task: 'TASK',
+      rules: [],
+      fromFindings: 'review-incomplete',
+    })
+    assert.match(
+      code,
+      /never approved: the pinned check passed on it, but that run failed because its reviews did not finish, so no reviewer has judged the whole candidate/,
+    )
+    for (const lens of ['correctness', 'edge-cases'] as const) {
+      const prompt = reviewPrompt(
+        lens,
+        'TRUSTED CONTEXT',
+        [],
+        [],
+        null,
+        'review-incomplete',
+      )
+      assert.match(
+        prompt,
+        /the pinned check passed on it, but its reviews did not finish, so no reviewer has judged it as a whole/,
+      )
+      assert.match(
+        prompt,
+        /judge the candidate as a whole, base and repair together/,
+      )
+    }
   })
 
   it('names repair beside retrigger for a verification-failed or review-cap-reached repository run only', () => {
