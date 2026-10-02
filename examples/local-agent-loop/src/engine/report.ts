@@ -249,10 +249,7 @@ function statusAside(r: { status?: ReviewStatus; reason?: string | null }) {
 }
 
 /** The guard's refusals of a review: the count, then each stored entry. */
-function denialLines(
-  d: { count: number; entries: string[] },
-  indent: string,
-): string[] {
+function denialLines(d: PermissionDenials, indent: string): string[] {
   const rest = d.count - d.entries.length
   return [
     `${indent}- tool calls the guard refused: ${d.count}`,

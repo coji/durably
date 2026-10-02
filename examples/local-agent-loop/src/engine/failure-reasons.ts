@@ -670,15 +670,13 @@ export async function classifyRun(
   let uncertain: string[] = []
   let verificationLogs: VerificationLog[] = []
   let baseline: VerificationLog[] = []
-  let repairable = false
   const repo =
     (run.input as { target?: { kind?: unknown } } | null)?.target?.kind ===
     'repo'
-  if (run.status === 'failed' && repo)
-    repairable = reviewIncompleteBase(
-      run.error,
-      await durably.storage.getSteps(run.id),
-    ).ok
+  const repairable =
+    run.status === 'failed' &&
+    repo &&
+    reviewIncompleteBase(run.error, await durably.storage.getSteps(run.id)).ok
   if (run.status === 'failed' || run.status === 'cancelled') {
     const setup = (await durably.storage.getCompletedStep(run.id, 'setup'))
       ?.output as { checkpointsDir?: string } | null | undefined
