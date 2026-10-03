@@ -4284,7 +4284,13 @@ describe('spec stages', { timeout: 240000 }, () => {
       )
       const report = await buildReport(durably, run.id)
       assert.equal(report.specRounds.length, 1)
-      assert.equal(report.spec?.content, null)
+      // The spec under review is readable while the person decides.
+      assert.equal(typeof report.spec?.content, 'string')
+      assert.equal(
+        report.spec?.sha256,
+        (first?.metadata as { specSha256?: string } | null)?.specSha256,
+      )
+      assert.equal(report.spec?.blocked, false)
       await signalSpecDecision(
         durably,
         run.id,
@@ -4321,6 +4327,55 @@ describe('spec stages', { timeout: 240000 }, () => {
         [['blocker', 'tech']],
       )
       assert.equal(final.waits.length, 2)
+    } finally {
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
+  it('reports a spec a revise led to a passing round as not blocked, with that round', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-spec-revised-'))
+    const repo = await seedSpecRepo(root)
+    const durably = createAgentDurably({ stateRoot: join(root, 'state') })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger(
+        specRun(repo, {
+          maxRounds: 1,
+          reviewers: [
+            { name: 'tech', profile: FAKE_PROFILE, invocation: null },
+          ],
+          fakeScenario: { specReviews: { tech: ['blocker', 'pass'] } },
+        }),
+      )
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'waiting',
+        120000,
+        'the run waits on the blocked spec',
+      )
+      const current = await durably.getRun(run.id)
+      const wait = (await durably.getWaits(run.id)).find(
+        (w) => w.id === current?.waitingOnWaitId,
+      )
+      await signalSpecDecision(
+        durably,
+        run.id,
+        wait?.id ?? '',
+        'revise',
+        'Name the rounding rule.',
+      )
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        120000,
+        'the run completes',
+      )
+      const report = await buildReport(durably, run.id)
+      assert.equal(report.spec?.round, 2)
+      assert.equal(report.spec?.blocked, false)
+      assert.deepEqual(
+        report.specRounds.at(-1)?.reviews.map((r) => r.decision),
+        ['pass'],
+      )
     } finally {
       await durably.stop()
       await durably.db.destroy()

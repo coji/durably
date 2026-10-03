@@ -13,6 +13,7 @@ import {
   REVIEW_PENDING_REASON,
   SPEC_CHECK_STEP,
   REVIEW_LENSES,
+  SPEC_AUTHOR_STEP,
   SPEC_FINAL_STEP,
   type RepairSessionRecord,
   type ReviewLens,
@@ -592,17 +593,29 @@ function specOf(
       })
     : []
   const supplied = !final ? suppliedSpec : null
+  // Before it is confirmed, the spec under review: the latest the stages
+  // wrote, so a person deciding on a blocked spec can read it here.
+  const draft = final || supplied !== null ? null : latestSpecDraft(steps)
+  const round = typeof final?.round === 'number' ? final.round : null
   return {
-    content: typeof final?.content === 'string' ? final.content : supplied,
+    content:
+      typeof final?.content === 'string'
+        ? final.content
+        : (supplied ?? draft?.content ?? null),
     sha256:
       typeof final?.sha256 === 'string'
         ? final.sha256
         : supplied !== null
           ? createHash('sha256').update(supplied).digest('hex')
-          : null,
+          : (draft?.sha256 ?? null),
     source: supplied !== null ? 'input' : 'stages',
-    round: typeof final?.round === 'number' ? final.round : null,
-    blocked: final?.blocked === true,
+    round,
+    // A record written before this was fixed says blocked after any wait;
+    // a confirming round with no review asking for changes was not approved
+    // over blockers.
+    blocked:
+      final?.blocked === true &&
+      (round === null || roundAskedForChanges(steps, round)),
     advice,
     check:
       check && Array.isArray(check.check)
@@ -612,6 +625,37 @@ function specOf(
           }
         : null,
   }
+}
+
+/** The latest spec the author or a fix wrote, from their stored steps. */
+function latestSpecDraft(
+  steps: StoredStep[],
+): { content: string; sha256: string | null } | null {
+  const drafts = steps.filter(
+    (s) =>
+      s.status === 'completed' &&
+      (s.name === SPEC_AUTHOR_STEP || s.name.startsWith('spec:fix:')),
+  )
+  const output = drafts.at(-1)?.output as {
+    content?: unknown
+    sha256?: unknown
+  } | null
+  return typeof output?.content === 'string'
+    ? {
+        content: output.content,
+        sha256: typeof output.sha256 === 'string' ? output.sha256 : null,
+      }
+    : null
+}
+
+/** Whether any review of spec round `round` asked for changes. */
+function roundAskedForChanges(steps: StoredStep[], round: number): boolean {
+  return steps.some(
+    (s) =>
+      s.status === 'completed' &&
+      s.name.startsWith(`spec-review:${round}:`) &&
+      (s.output as { decision?: unknown } | null)?.decision === 'needsChanges',
+  )
 }
 
 /**

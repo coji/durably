@@ -23,7 +23,7 @@ export function SpecPanel({ report: r }: { report: LoopReport }) {
   return (
     <Panel title={SPEC.heading}>
       <div className="flex flex-col gap-4">
-        {spec?.content != null ? (
+        {spec && (spec.source === 'input' || spec.round !== null) ? (
           <dl className="flex flex-col gap-2">
             <Field label={SPEC.confirmed}>
               <span className="font-ui">{specConfirmedLabel(spec)}</span>
