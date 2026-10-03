@@ -1251,7 +1251,9 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
         async (): Promise<SpecRecord> => ({
           ...version,
           round: state.round,
-          blocked: state.waits > 0,
+          // Approved over its blockers, not merely waited on: a revise
+          // that a later round passed is the reviewers' confirmation.
+          blocked: state.decision === 'approved',
           advice: specAdvice(state),
         }),
         { metadata: { stage: 'spec' } as unknown as JsonValue },

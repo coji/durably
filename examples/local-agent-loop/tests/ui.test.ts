@@ -2166,6 +2166,19 @@ describe('diagnosis wording on the page', () => {
       ),
       '',
     )
+    // Before a round confirms it: the latest draft, never called confirmed.
+    const draft = renderToStaticMarkup(
+      createElement(SpecPanel, {
+        report: {
+          ...base,
+          spec: { ...base.spec, round: null, blocked: false, advice: [] },
+        } as unknown as LoopReport,
+      }),
+    )
+    assert.ok(draft.includes('仕様はまだ確定していません。'), draft)
+    assert.ok(draft.includes('最後に書かれた仕様を開く'), draft)
+    assert.ok(!draft.includes('確定した仕様を開く'), draft)
+    assert.ok(!draft.includes('で確定'), draft)
   })
 
   it('says in Japanese what every next command the CLI annotates does', async () => {

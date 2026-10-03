@@ -780,8 +780,9 @@ export interface RunSummary {
 export interface ReportSpec {
   /**
    * The spec the run goes on with: the one the spec stages confirmed, or
-   * the one given at trigger (`--spec-file`); null while the spec stages
-   * have not confirmed one.
+   * the one given at trigger (`--spec-file`). Before the stages confirm
+   * one (`round` null), the latest spec they wrote, the one under review;
+   * null before any.
    */
   content: string | null
   sha256: string | null
@@ -1602,11 +1603,13 @@ export function reportToMarkdown(r: LoopReport): string {
   if (r.spec) {
     const sp = r.spec
     lines.push(
-      sp.content === null
-        ? '- confirmed: not yet'
-        : sp.source === 'input'
-          ? `- confirmed: from the run input (--spec-file), sha256 ${fmt(sp.sha256)}`
-          : `- confirmed: round ${fmt(sp.round)}, sha256 ${fmt(sp.sha256)}${sp.blocked ? ' (approved by a person over remaining blockers or after a revise)' : ''}`,
+      sp.source === 'input' && sp.content !== null
+        ? `- confirmed: from the run input (--spec-file), sha256 ${fmt(sp.sha256)}`
+        : sp.round !== null
+          ? `- confirmed: round ${fmt(sp.round)}, sha256 ${fmt(sp.sha256)}${sp.blocked ? ' (approved by a person over remaining blockers)' : ''}`
+          : sp.content !== null
+            ? `- confirmed: not yet; latest draft: sha256 ${fmt(sp.sha256)}`
+            : '- confirmed: not yet',
     )
     for (const f of sp.advice)
       lines.push(
