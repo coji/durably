@@ -1608,7 +1608,7 @@ export function reportToMarkdown(r: LoopReport): string {
         : sp.round !== null
           ? `- confirmed: round ${fmt(sp.round)}, sha256 ${fmt(sp.sha256)}${sp.blocked ? ' (approved by a person over remaining blockers)' : ''}`
           : sp.content !== null
-            ? `- confirmed: not yet; under review: sha256 ${fmt(sp.sha256)}`
+            ? `- confirmed: not yet; latest draft: sha256 ${fmt(sp.sha256)}`
             : '- confirmed: not yet',
     )
     for (const f of sp.advice)

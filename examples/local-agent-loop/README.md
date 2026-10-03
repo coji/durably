@@ -1518,8 +1518,10 @@ pnpm --filter example-local-agent-loop demo reject --run <id> --wait <waitId>
 - reportの `specRounds[]` は `reviewRounds[]` と同じ形で、回ごとにレビュー役ごとの
   結果を持ちます（`lens` はレビュー役の名前です）。済んだstepから読むので、
   進行中のrunでも出ます。
-- `spec` には、確定した仕様、確定した回、人の判断を経たか、助言、
-  `checkFromSpec` が決めた採点コマンドとnotesが入ります。`--spec-file` の
+- `spec` には、確定した仕様、確定した回、残った指摘を人が承認して進めたか
+  （`blocked`）、助言、`checkFromSpec` が決めた採点コマンドとnotesが入ります。
+  確定する前は、最後に書かれた仕様を `content` と `sha256` に入れ、`round` は
+  `null` のままです。仕様の判断を待つ間も、判断する仕様をここで読めます。`--spec-file` の
   runには `spec:final` が無いので、`spec-check` がまだ済んでいなくても
   （失敗していても）runの入力の仕様を `source: "input"` として入れます。
 - 使用量は `spec-author`、`spec-fix`、`spec-review:<名前>` の役割で分けて数え、

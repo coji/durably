@@ -7,9 +7,9 @@ import { ReviewVerdicts } from './ReviewsPanel'
 
 /** How the spec the run went on with was confirmed. */
 function specConfirmedLabel(spec: NonNullable<LoopReport['spec']>): string {
-  if (spec.source === 'input') return SPEC.fromInput
-  if (spec.round !== null) return SPEC.confirmedAt(spec.round)
-  return SPEC.confirmedPlain
+  return spec.source === 'input' || spec.round === null
+    ? SPEC.fromInput
+    : SPEC.confirmedAt(spec.round)
 }
 
 /**
@@ -20,10 +20,13 @@ function specConfirmedLabel(spec: NonNullable<LoopReport['spec']>): string {
 export function SpecPanel({ report: r }: { report: LoopReport }) {
   const spec = r.spec
   if (!spec && r.specRounds.length === 0) return null
+  // An input spec, or one a round confirmed; otherwise the latest draft.
+  const confirmed =
+    spec !== null && (spec.source === 'input' || spec.round !== null)
   return (
     <Panel title={SPEC.heading}>
       <div className="flex flex-col gap-4">
-        {spec && (spec.source === 'input' || spec.round !== null) ? (
+        {confirmed ? (
           <dl className="flex flex-col gap-2">
             <Field label={SPEC.confirmed}>
               <span className="font-ui">{specConfirmedLabel(spec)}</span>
@@ -61,7 +64,9 @@ export function SpecPanel({ report: r }: { report: LoopReport }) {
         ) : null}
         {spec?.content != null ? (
           <details>
-            <summary className="cursor-pointer text-sm">{SPEC.open}</summary>
+            <summary className="cursor-pointer text-sm">
+              {confirmed ? SPEC.open : SPEC.openDraft}
+            </summary>
             <pre className="bg-sunken font-code mt-2 max-h-96 overflow-auto rounded-md px-3 py-2 text-xs whitespace-pre-wrap">
               {spec.content}
             </pre>

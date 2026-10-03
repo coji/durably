@@ -740,7 +740,6 @@ export const SPEC = {
   confirmed: '確定',
   fromInput: '実行時にファイルで渡された仕様',
   confirmedAt: (round: number) => `${round}回目の仕様レビューで確定`,
-  confirmedPlain: '確定済み',
   human: '人の判断',
   humanApproved: '指摘が残った仕様を人が判断して進めました',
   notConfirmed: '仕様はまだ確定していません。',
@@ -748,6 +747,7 @@ export const SPEC = {
   checkNotes: '採点コマンドの注記',
   advice: '実装に渡した助言',
   open: '確定した仕様を開く',
+  openDraft: '最後に書かれた仕様を開く',
   round: (n: number) => `${n}回目の仕様レビュー`,
 } as const
 

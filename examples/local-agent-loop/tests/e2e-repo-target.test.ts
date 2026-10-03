@@ -4291,6 +4291,12 @@ describe('spec stages', { timeout: 240000 }, () => {
         (first?.metadata as { specSha256?: string } | null)?.specSha256,
       )
       assert.equal(report.spec?.blocked, false)
+      assert.match(
+        reportToMarkdown(report),
+        new RegExp(
+          `- confirmed: not yet; latest draft: sha256 ${report.spec?.sha256 ?? ''}`,
+        ),
+      )
       await signalSpecDecision(
         durably,
         run.id,
