@@ -224,7 +224,7 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
   },
   'agent-timeout': {
     reason:
-      "the factory stopped an agent call at its total or idle limit, and the call left no work to seal; the stop is recorded as that call's outcome, so no call was left with an unknown outcome",
+      "the factory stopped an agent call at its total or idle limit, and the run could not go on: an implementation or repair left no change to seal, or another role's call has no partial result; the stop is recorded as that call's outcome, so no call was left with an unknown outcome",
     retryable: true,
     humanCheck:
       'read the limit and the agent log of the stopped call in the report; if the call needed more time, raise agentTimeoutMs or agentIdleTimeoutMs in factory.json and retry with --reload-config, otherwise retry without it',
