@@ -10,6 +10,7 @@
 import type { DETAIL_PREFIX } from '../engine/failure-details.js'
 import type { FailureKind } from '../engine/failure-reasons.js'
 import { UNKNOWN } from '../engine/format.js'
+import type { AgentTimeout } from '../engine/providers/types.js'
 import type { CALIBRATION_KEYS as ENGINE_CALIBRATION_KEYS } from '../engine/report.js'
 import type { DiagnosisKind } from '../engine/status.js'
 import type { PipelineState, TraceCheckpoint, TraceState } from './server.js'
@@ -182,7 +183,7 @@ export const INTERRUPTION_NAME: Record<string, string> = {
 }
 
 /** Which of the factory's limits stopped an agent call. */
-export const TIMEOUT_KIND_NAME: Record<'total' | 'idle', string> = {
+export const TIMEOUT_KIND_NAME: Record<AgentTimeout['kind'], string> = {
   total: '全体の時間の上限',
   idle: '無通信の時間の上限',
 }

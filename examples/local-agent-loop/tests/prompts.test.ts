@@ -175,6 +175,9 @@ describe('a repair of a candidate sealed from a stopped call', () => {
       const [opening] = told.split('\nTASK:')
       assert.ok(opening?.includes(TIMED_OUT_CANDIDATE_LINE), told)
       assert.equal(told.split(TIMED_OUT_CANDIDATE_LINE).length, 2)
+      // A repair in a new session is not told it continues a conversation.
+      assert.equal(opening?.includes('starting a new session'), newSession)
+      assert.equal(opening?.includes('continuing'), !newSession)
       assert.ok(
         !codePrompt({ ...args, newSession }).includes(TIMED_OUT_CANDIDATE_LINE),
       )

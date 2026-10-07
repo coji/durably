@@ -3761,8 +3761,14 @@ describe(
           (c) => c.role === 'repair' && c.input?.includes('iteration 2'),
         )
         assert.ok(repairs.length > 0)
-        for (const call of repairs)
+        for (const call of repairs) {
           assert.ok(call.input?.includes(TIMED_OUT_CANDIDATE_LINE))
+          // The stopped implementation left no session to continue.
+          assert.match(
+            call.input ?? '',
+            /^You are the repair owner, starting a new session/,
+          )
+        }
 
         // Nothing to seal: stopped, settled, and safe to start again.
         const none = await buildReport(durably, empty.id)

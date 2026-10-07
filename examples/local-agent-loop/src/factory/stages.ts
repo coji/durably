@@ -184,6 +184,11 @@ export const codeStage: StageHandler = async ({
     acrossEffortModel: acrossEffort ? effortResumeModel : null,
   })
   const continuedSession = choice.handling === 'fresh' ? null : recorded
+  // The candidate to repair is the unfinished work of a call the factory
+  // stopped. That call reported no session, so a repair after a stopped
+  // implementation starts new even on the code profile.
+  const fromTimedOut =
+    role === 'repair' && state.candidate?.timedOut !== undefined
   const call = await step.run(
     `${key}:agent`,
     (signal, attempt) =>
@@ -201,11 +206,12 @@ export const codeStage: StageHandler = async ({
           rules: target.implementationRules(),
           untrusted: target.untrustedInputs('code'),
           // Told it starts a new session only when it does. A repair on the
-          // code profile keeps the prompt it always had.
-          newSession: separateRepair && continuedSession === null,
+          // code profile keeps the prompt it always had, unless it repairs a
+          // stopped call's work in a new session.
+          newSession:
+            (separateRepair || fromTimedOut) && continuedSession === null,
           fromFindings,
-          fromTimedOut:
-            role === 'repair' && state.candidate?.timedOut !== undefined,
+          fromTimedOut,
         }),
         workdir: target.workdir,
         timeoutMs: state.setup.agentTimeoutMs,
