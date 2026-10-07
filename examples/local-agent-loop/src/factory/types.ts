@@ -10,6 +10,7 @@ import {
 } from '../engine/providers/claude.js'
 import type {
   AgentProvider,
+  AgentTimeout,
   PermissionDenials,
   ProviderName,
   SessionHandling,
@@ -32,6 +33,13 @@ import type {
 } from './target.js'
 
 export type { CandidateRef, ContextMode, ResolvedProfile, SessionRef }
+
+/**
+ * A sealed candidate as the code stage stores it: `timedOut` names the
+ * factory's limit that stopped the call whose unfinished work it holds;
+ * absent when the call finished.
+ */
+export type SealedCandidate = CandidateRef & { timedOut?: AgentTimeout }
 export type { Delivery, TargetConfig }
 
 export type StageName =
@@ -132,6 +140,12 @@ export interface FactorySetup {
   triage?: ResolvedProfile | null
   maxIterations: number
   agentTimeoutMs: number
+  /**
+   * How long an agent call may go without any sign of the agent at work,
+   * at most `agentTimeoutMs`. Absent on a run set up before it existed,
+   * whose calls have the total limit only.
+   */
+  agentIdleTimeoutMs?: number
   /**
    * Run the pinned check once on the base commit before any agent call.
    * Repository targets only; absent on a run set up before it existed.
@@ -420,7 +434,7 @@ export interface FactoryOutcome {
     | 'rejected'
     | 'verification-failed'
     | 'review-cap-reached'
-  candidate: CandidateRef | null
+  candidate: SealedCandidate | null
   iterations: number
   reviewRounds: number
   reviews: ReviewVerdict[]
@@ -438,7 +452,7 @@ export interface FactoryOutcome {
 export interface FactoryState {
   setup: FactorySetup
   iteration: number
-  candidate: CandidateRef | null
+  candidate: SealedCandidate | null
   verification: VerificationResult | null
   reviews: ReviewVerdict[]
   reviewRounds: number
@@ -457,6 +471,19 @@ export interface FactoryState {
   failedCheckReviews: ReviewStepResult[]
   approval: 'approved' | 'rejected' | null
   outcome: FactoryOutcome | null
+}
+
+/**
+ * A call's idle limit, held to `capMs` when the call has a shorter total of
+ * its own; nothing on a run set up before the idle limit existed.
+ */
+export function idleLimitOf(
+  setup: Pick<FactorySetup, 'agentIdleTimeoutMs'>,
+  capMs = Number.POSITIVE_INFINITY,
+): { idleTimeoutMs?: number } {
+  return setup.agentIdleTimeoutMs === undefined
+    ? {}
+    : { idleTimeoutMs: Math.min(setup.agentIdleTimeoutMs, capMs) }
 }
 
 export function initialState(

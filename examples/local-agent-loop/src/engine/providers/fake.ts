@@ -92,6 +92,7 @@ import {
 } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
 
+import { MAX_TIMEOUT_MS } from '../child.js'
 import type { TokenUsage } from '../usage.js'
 import {
   agentOutput,
@@ -182,6 +183,12 @@ export interface FakeScenario {
    * `intervalMs`. Every call then writes its reply as its last output.
    */
   output?: { chunks: string[]; intervalMs: number }
+  /**
+   * Calls of these roles write `changes` into the workdir, if given, after
+   * the timed output, then go silent until they are aborted: a call the
+   * factory's time limit stops, with or without unfinished work.
+   */
+  stall?: { roles: AgentRole[]; changes?: Record<string, string> }
 }
 
 /** Per-run state shared by every fake provider instance of one run. */
@@ -351,6 +358,20 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     }
     signal?.addEventListener('abort', onAbort, { once: true })
   })
+}
+
+/** Write a scenario's files into the workdir, relative to it. */
+async function writeChanges(
+  workdir: string,
+  changes: Record<string, string>,
+): Promise<void> {
+  for (const [path, content] of Object.entries(changes)) {
+    const dest = resolve(workdir, path)
+    if (relative(workdir, dest).startsWith('..'))
+      throw new Error(`fake scenario change escapes the workdir: ${path}`)
+    await mkdir(dirname(dest), { recursive: true })
+    await writeFile(dest, content)
+  }
 }
 
 /** Consume the head of a comma-list env var, or `fallback` when it is empty. */
@@ -571,6 +592,11 @@ export class FakeProvider implements AgentProvider {
       await sleep(timed?.intervalMs ?? 0, options.signal)
       output.text(chunk)
     }
+    const stall = this.run?.scenario.stall
+    if (stall?.roles.includes(options.role)) {
+      await writeChanges(options.workdir, stall.changes ?? {})
+      await sleep(MAX_TIMEOUT_MS, options.signal)
+    }
     const result = await this.answer(options, started)
     output.text(result.text.endsWith('\n') ? result.text : `${result.text}\n`)
     return result
@@ -682,13 +708,7 @@ export class FakeProvider implements AgentProvider {
       } catch {
         // leave as-is; test step will report the failure
       }
-      for (const [path, content] of Object.entries(scenario.changes ?? {})) {
-        const dest = resolve(options.workdir, path)
-        if (relative(options.workdir, dest).startsWith('..'))
-          throw new Error(`fake scenario change escapes the workdir: ${path}`)
-        await mkdir(dirname(dest), { recursive: true })
-        await writeFile(dest, content)
-      }
+      await writeChanges(options.workdir, scenario.changes ?? {})
       return result(
         scenario.summary ?? 'fake: fixed add() to return a + b',
         options.sessionId ?? undefined,

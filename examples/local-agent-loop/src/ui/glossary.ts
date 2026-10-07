@@ -10,6 +10,7 @@
 import type { DETAIL_PREFIX } from '../engine/failure-details.js'
 import type { FailureKind } from '../engine/failure-reasons.js'
 import { UNKNOWN } from '../engine/format.js'
+import type { AgentTimeout } from '../engine/providers/types.js'
 import type { CALIBRATION_KEYS as ENGINE_CALIBRATION_KEYS } from '../engine/report.js'
 import type { DiagnosisKind } from '../engine/status.js'
 import type { PipelineState, TraceCheckpoint, TraceState } from './server.js'
@@ -93,6 +94,7 @@ export const STOP_NAME: Record<FailureKind, string> = {
   'preflight-failed': '事前確認で停止',
   'candidate-moved': '修正元の候補の変更',
   'rejected-invocation': '呼び出しの拒否',
+  'agent-timeout': '呼び出しの時間切れ',
   'verification-failed': '検証失敗',
   'review-cap-reached': 'レビュー上限',
   'uncertain-invocation': '結果が不明な呼び出し',
@@ -178,6 +180,12 @@ export const INTERRUPTION_NAME: Record<string, string> = {
   'lease-lost': 'ワーカーの担当期限が切れた',
   cancelled: '取り消された',
   unknown: UNKNOWN,
+}
+
+/** Which of the factory's limits stopped an agent call. */
+export const TIMEOUT_KIND_NAME: Record<AgentTimeout['kind'], string> = {
+  total: '全体の時間の上限',
+  idle: '無通信の時間の上限',
 }
 
 export const CHECKPOINT_NAME: Record<TraceCheckpoint, string> = {
@@ -286,6 +294,12 @@ export const FAILURE_TEXT: Record<
       '事前確認のあと、プロバイダーがエージェントの呼び出しをはっきり断りました。断られたことを呼び出しの答えとして記録したので、結果の分からない呼び出しは残っていません。',
     check:
       '下の拒否の理由を読み、その役割の設定か使う実行ファイルの指定を factory.json で直して、設定を読み直す再実行を使う。ログインや利用上限の問題なら、プロバイダー側で直してから通常の再実行を使う。',
+  },
+  'agent-timeout': {
+    reason:
+      'factory がエージェントの呼び出しを全体か無通信の時間の上限で止め、run を先へ進められませんでした。実装や修正なら候補にできる変更が残らず、ほかの役割なら途中の結果を使えません。止めたことを呼び出しの結果として記録したので、結果の分からない呼び出しは残っていません。',
+    check:
+      'レポートで止めた上限とエージェントの出力を読む。時間が足りなかったなら factory.json の agentTimeoutMs か agentIdleTimeoutMs を延ばして設定を読み直す再実行を、そうでなければ通常の再実行を使う。',
   },
   'verification-failed': {
     reason:
@@ -441,6 +455,10 @@ export const COMMAND_NOTES: [string, string][] = [
   [
     'the refused call and its reason',
     '断られた呼び出しと、その理由を読めます。',
+  ],
+  [
+    'the stopped call, its limit and its agent log',
+    '止めた呼び出しと、その上限、エージェントの出力を読めます。',
   ],
   [
     'the preflight result for each role',
@@ -820,6 +838,10 @@ export const TRACE = {
   reportedModel: '報告されたモデル',
   checkpoint: 'チェックポイント',
   candidate: '候補',
+  candidateOrigin: '候補の元',
+  timedOutWork: '時間の上限で止めた呼び出しの途中の作業',
+  timedOut: '止めた上限',
+  timeoutLimit: '上限の長さ',
   branch: 'ブランチ',
   commit: 'コミット',
   files: '変更ファイル数',

@@ -3,8 +3,10 @@ import { describe, it } from 'node:test'
 
 import { READ_ONLY_ROLES } from '../src/engine/providers/types.js'
 import {
+  codePrompt,
   parseReviewOutput,
   parseTriageOutput,
+  TIMED_OUT_CANDIDATE_LINE,
   triagePrompt,
 } from '../src/factory/prompts.js'
 
@@ -155,5 +157,35 @@ describe('triage permissions', () => {
     assert.ok(roles.has('triage'))
     assert.ok(roles.has('review-a') && roles.has('review-b'))
     assert.ok(!roles.has('implement') && !roles.has('repair'))
+  })
+})
+
+describe('a repair of a candidate sealed from a stopped call', () => {
+  const args = {
+    role: 'repair' as const,
+    iteration: 2,
+    repairNotes: ['acceptance: 1 failing'],
+    task: 'Fix add().',
+    rules: ['Keep it small.'],
+  }
+
+  it('is told the candidate is unfinished work, in the opening, only then', () => {
+    for (const newSession of [false, true]) {
+      const told = codePrompt({ ...args, newSession, fromTimedOut: true })
+      const [opening] = told.split('\nTASK:')
+      assert.ok(opening?.includes(TIMED_OUT_CANDIDATE_LINE), told)
+      assert.equal(told.split(TIMED_OUT_CANDIDATE_LINE).length, 2)
+      // A repair in a new session is not told it continues a conversation.
+      assert.equal(opening?.includes('starting a new session'), newSession)
+      assert.equal(opening?.includes('continuing'), !newSession)
+      assert.ok(
+        !codePrompt({ ...args, newSession }).includes(TIMED_OUT_CANDIDATE_LINE),
+      )
+      assert.ok(
+        !codePrompt({ ...args, newSession, fromTimedOut: false }).includes(
+          TIMED_OUT_CANDIDATE_LINE,
+        ),
+      )
+    }
   })
 })

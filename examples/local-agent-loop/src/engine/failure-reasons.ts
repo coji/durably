@@ -18,6 +18,7 @@ import {
 } from './failure-details.js'
 import type { AttemptMeasurement, VerificationLog } from './providers/types.js'
 import {
+  AGENT_TIMEOUT_MESSAGE,
   checkpointPaths,
   REFUSAL_MARKER,
   REJECTED_INVOCATION_MESSAGE,
@@ -30,6 +31,7 @@ export type FailureKind =
   | 'preflight-failed'
   | 'candidate-moved'
   | 'rejected-invocation'
+  | 'agent-timeout'
   | 'verification-failed'
   | 'review-cap-reached'
   | 'uncertain-invocation'
@@ -216,6 +218,18 @@ const FAILURE_REASONS: Record<FailureKind, FailureEntry> = {
       'read the refusal below; fix the profile of that role, or codexPath, in factory.json and retry with --reload-config, or fix a login or quota problem in the provider CLI and retry without it',
     next: (runId, reload) => [
       `${DEMO} report --run ${runId}  # the refused call and its reason`,
+      ...retriggerReloaded(runId, reload),
+      retrigger(runId),
+    ],
+  },
+  'agent-timeout': {
+    reason:
+      "the factory stopped an agent call at its total or idle limit, and the run could not go on: an implementation or repair left no change to seal, or another role's call has no partial result; the stop is recorded as that call's outcome, so no call was left with an unknown outcome",
+    retryable: true,
+    humanCheck:
+      'read the limit and the agent log of the stopped call in the report; if the call needed more time, raise agentTimeoutMs or agentIdleTimeoutMs in factory.json and retry with --reload-config, otherwise retry without it',
+    next: (runId, reload) => [
+      `${DEMO} report --run ${runId}  # the stopped call, its limit and its agent log`,
       ...retriggerReloaded(runId, reload),
       retrigger(runId),
     ],
@@ -596,6 +610,8 @@ export function classifyFailure(
       kind = 'preflight-failed'
     } else if (input.error?.startsWith(CANDIDATE_MOVED_MESSAGE)) {
       kind = 'candidate-moved'
+    } else if (input.error?.startsWith(AGENT_TIMEOUT_MESSAGE)) {
+      kind = 'agent-timeout'
     } else if (input.error?.startsWith(REJECTED_INVOCATION_MESSAGE)) {
       kind = 'rejected-invocation'
       const refusal = refusalOf(input.error)

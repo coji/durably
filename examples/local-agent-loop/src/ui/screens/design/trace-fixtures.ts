@@ -7,7 +7,7 @@ import type { LogView } from '../../components/trace/AttemptLog'
 import { COMMON, DESIGN, TRACE_WORDS } from '../../glossary'
 import { lensName, stageName } from '../../labels'
 import type { Trace, TraceNode } from '../../server'
-import { ORIGIN, USAGE } from './fixtures'
+import { ORIGIN, STOPPED_CANDIDATE, USAGE } from './fixtures'
 
 const min = (m: number) => m * 60_000
 const at = (ms: number | null) =>
@@ -29,6 +29,7 @@ function node(p: Spec): TraceNode {
     attempts: 1,
     leaseGeneration: null,
     interruptionReason: null,
+    timedOut: null,
     profile: null,
     usage: null,
     checkpoint: null,
@@ -206,21 +207,12 @@ const secondPassWaiting = node({
   open: true,
   startMs: min(14),
   children: [
+    // A repair stopped at its idle limit, whose unfinished work was sealed.
     entry('code', 2, 14, 18, {
       profile: codex,
       usage: USAGE.known,
-      candidate: {
-        id: '01K6D2T5CANDIDATE0000002',
-        branch: 'factory/01K6D2Q7XB3M9RKT4WAPPROV',
-        commit: '9f2c4e1a7b3d5f60718293a4b5c6d7e8f9012345',
-        changes: {
-          files: 3,
-          additions: 42,
-          deletions: 7,
-          diffPath: '',
-          changedFilesPath: '',
-        },
-      },
+      timedOut: STOPPED_CANDIDATE.timedOut,
+      candidate: STOPPED_CANDIDATE,
     }),
     entry('verify', 2, 18, 19),
     entry('review', 2, 19, 21, { label: lensName('edge-cases') }),

@@ -22,6 +22,7 @@ import { classifyRun, stageStep } from './failure-reasons.js'
 import { PRICE_BASIS } from './pricing.js'
 import {
   boundedDenials,
+  type AgentTimeout,
   type PermissionDenials,
   type VerificationLog,
 } from './providers/types.js'
@@ -42,6 +43,7 @@ import {
   usageOf,
   type AttemptRow,
   type LoopReport,
+  type ReportAgentTimeouts,
   type ReportBaseline,
   type ReportCandidate,
   type ReportCandidateChanges,
@@ -78,6 +80,8 @@ interface PersistedProfile {
 }
 
 interface PersistedInput {
+  agentTimeoutMs?: number
+  agentIdleTimeoutMs?: number
   provider?: string
   model?: string
   effort?: string
@@ -384,14 +388,25 @@ export function asReportCandidate(value: unknown): ReportCandidate | null {
     branch?: unknown
     commit?: unknown
     changes?: unknown
+    timedOut?: unknown
   } | null
-  return typeof v?.id === 'string'
-    ? {
-        id: v.id,
-        branch: typeof v.branch === 'string' ? v.branch : null,
-        commit: typeof v.commit === 'string' ? v.commit : null,
-        changes: asChanges(v.changes),
-      }
+  if (typeof v?.id !== 'string') return null
+  const timedOut = asTimeout(v.timedOut)
+  return {
+    id: v.id,
+    branch: typeof v.branch === 'string' ? v.branch : null,
+    commit: typeof v.commit === 'string' ? v.commit : null,
+    changes: asChanges(v.changes),
+    ...(timedOut ? { timedOut } : {}),
+  }
+}
+
+/** A stored timeout record, or null when the value is not one. */
+function asTimeout(value: unknown): AgentTimeout | null {
+  const v = value as { kind?: unknown; limitMs?: unknown } | null
+  return (v?.kind === 'total' || v?.kind === 'idle') &&
+    typeof v.limitMs === 'number'
+    ? { kind: v.kind, limitMs: v.limitMs }
     : null
 }
 
@@ -676,8 +691,9 @@ function toReportCandidate({
   branch,
   commit,
   changes,
+  timedOut,
 }: ReportSealedCandidate): ReportCandidate {
-  return { id, branch, commit, changes }
+  return { id, branch, commit, changes, ...(timedOut ? { timedOut } : {}) }
 }
 
 /** A reused result's source, when the stored record names one. */
@@ -1196,7 +1212,21 @@ export async function buildReport(
   )?.output as {
     target?: { kind?: string; workdir?: string }
     parallelReview?: unknown
+    agentTimeoutMs?: number
+    agentIdleTimeoutMs?: number
   } | null
+  // As setup fixed them, else as the trigger stored them.
+  const agentTotalMs = setupOutput?.agentTimeoutMs ?? input?.agentTimeoutMs
+  const agentTimeouts: ReportAgentTimeouts | null =
+    agentTotalMs === undefined
+      ? null
+      : {
+          totalMs: agentTotalMs,
+          idleMs:
+            (setupOutput
+              ? setupOutput.agentIdleTimeoutMs
+              : input?.agentIdleTimeoutMs) ?? null,
+        }
   const setupTarget = setupOutput?.target
   const candidates = sealedCandidates(steps)
   const candidate = lastCandidate(output, candidates)
@@ -1240,6 +1270,7 @@ export async function buildReport(
     output: run.output,
     fake: isFake,
     configVersion,
+    agentTimeouts,
     summary: summarizeRun({
       status: run.status,
       output: run.output,

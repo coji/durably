@@ -119,7 +119,16 @@ export interface CodePromptArgs {
    * block. Null or absent on every other code call.
    */
   fromFindings?: RepairParentConclusion | null
+  /**
+   * The candidate to repair was sealed from a call the factory stopped at
+   * its time limit: the repairer is told its work is unfinished.
+   */
+  fromTimedOut?: boolean
 }
+
+/** What a repair of a candidate sealed from a stopped call is told. */
+export const TIMED_OUT_CANDIDATE_LINE =
+  'The previous call was stopped at its time limit before it finished; its unfinished work is the current candidate in the working directory.'
 
 /** The opening of an unapproved parent's REPAIR_BASE. */
 const UNAPPROVED_REPAIR_BASE =
@@ -167,6 +176,7 @@ export function codePrompt(args: CodePromptArgs): string {
         ]
   return [
     ...opening,
+    ...(args.fromTimedOut ? [TIMED_OUT_CANDIDATE_LINE] : []),
     '',
     'TASK:',
     args.task,

@@ -4846,3 +4846,111 @@ describe('spec stages', { timeout: 240000 }, () => {
     }
   })
 })
+
+describe(
+  'a code call the factory stops at its time limit',
+  { timeout: 240000 },
+  () => {
+    it('commits what it left as a candidate that is verified and repaired, and stops retryable when it left nothing', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'repo-target-timeout-'))
+      const repo = await seedRepo(home)
+      const stateRoot = join(home, '.local', 'state', 'local-agent-loop')
+      delete process.env.FAKE_FAIL_FIRST
+      delete process.env.FAKE_REVIEW_SEQUENCE
+      const durably = createAgentDurably({ stateRoot })
+      await durably.migrate()
+      const trigger = (fakeScenario: FakeScenario) =>
+        durably.jobs.agentLoop.trigger({
+          provider: 'fake',
+          target: {
+            kind: 'repo' as const,
+            repoPath: repo,
+            baseRef: 'HEAD',
+            task: 'Fix add() so decimal inputs are not truncated.',
+            spec: null,
+            dispositions: null,
+            inputFiles: NO_FILES,
+            issue: null,
+            checkCommand: ['node', '--test', 'test/**/*.test.js'],
+            setupCommand: null,
+            publish: false,
+          },
+          maxIterations: 2,
+          context: 'reuse',
+          agentTimeoutMs: 60000,
+          agentIdleTimeoutMs: 400,
+          fakeScenario,
+        })
+      let emptyId = ''
+      try {
+        const partial = await trigger({
+          failIterations: 1,
+          stall: {
+            roles: ['implement'],
+            changes: { 'src/partial.js': 'export const partial = true\n' },
+          },
+        })
+        const empty = await trigger({ stall: { roles: ['implement'] } })
+        emptyId = empty.id
+        await durably.init()
+        for (const id of [partial.id, empty.id])
+          await waitFor(
+            async () =>
+              ['completed', 'failed'].includes(
+                (await durably.getRun(id))?.status ?? '',
+              ),
+            150000,
+            id,
+          )
+
+        const report = await buildReport(durably, partial.id)
+        assert.equal(report.status, 'completed', JSON.stringify(report.failure))
+        assert.equal(report.candidates.length, 2)
+        const [stopped, repaired] = report.candidates
+        assert.deepEqual(stopped?.timedOut, { kind: 'idle', limitMs: 400 })
+        assert.equal(repaired?.timedOut, undefined)
+        // The stopped call's work is a commit of its own, through the same
+        // sealing as any other iteration.
+        assert.ok(stopped?.commit)
+        assert.match(
+          await readFile(stopped.changes?.changedFilesPath ?? '', 'utf8'),
+          /src\/partial\.js/,
+        )
+        // The check failed on it, and the repair used the second iteration.
+        const output = report.output as {
+          iterations: number
+          conclusion: string
+        }
+        assert.equal(output.conclusion, 'approved')
+        assert.equal(output.iterations, 2)
+
+        const none = await buildReport(durably, empty.id)
+        assert.equal(none.failure?.kind, 'agent-timeout')
+        assert.equal(none.candidates.length, 0)
+        // Nothing was committed on the run's branch.
+        const setup = (
+          await durably.storage.getCompletedStep(empty.id, 'setup')
+        )?.output as FactorySetup
+        if (setup.target.kind !== 'repo') throw new Error('not a repo run')
+        assert.equal(
+          await resolveCommit(setup.target.workdir, 'HEAD'),
+          setup.target.baseCommit,
+        )
+      } finally {
+        await durably.stop()
+        await durably.db.destroy()
+      }
+      const res = await runChild(
+        join(packageRoot, 'node_modules', '.bin', 'tsx'),
+        [join(packageRoot, 'src', 'cli.ts'), 'status'],
+        { cwd: home, timeoutMs: 60000, env: { HOME: home } },
+      )
+      assert.equal(res.code, 0, res.stderr)
+      const block =
+        res.stdout.split('\n\n').find((b) => b.startsWith(emptyId)) ?? ''
+      assert.match(block, /agent-timeout:/)
+      assert.match(block, /retry: +yes/)
+      assert.match(block, new RegExp(`demo retrigger --run ${emptyId}`))
+    })
+  },
+)

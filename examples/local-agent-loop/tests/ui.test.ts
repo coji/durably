@@ -44,6 +44,7 @@ import {
   type FailureKind,
 } from '../src/engine/failure-reasons.js'
 import { formatCost } from '../src/engine/format.js'
+import type { AttemptMeasurement } from '../src/engine/providers/types.js'
 import {
   liveElapsed,
   stageUsage,
@@ -1047,6 +1048,51 @@ describe('pipeline and trace', () => {
     // A reclaimed run back in the queue has no running attempt either.
     const queued = traceOf(attempts, [], { status: 'pending' })
     assert.equal(queued.root.children[1]?.children[0]?.state, 'lost')
+  })
+
+  it('trace shows the limit that stopped a call and a candidate sealed from it', () => {
+    const timedOut = { kind: 'idle' as const, limitMs: 900_000 }
+    const stopped = {
+      ...step('stage:0:code:agent', 1, 10),
+      measurement: {
+        provider: 'codex',
+        fake: false,
+        stage: 'code',
+        role: 'implement',
+        iteration: 1,
+        invocationId: 'i1',
+        usageScope: 'invocation',
+        result: 'timed-out',
+        interruptionReason: 'timeout',
+        timedOut,
+      } as unknown as AttemptMeasurement,
+    }
+    const t = traceOf(
+      [
+        step('setup', 0, 1),
+        stopped,
+        step('stage:0:code:candidate', 10, 11),
+        step('stage:1:verify:acceptance', 11, 15),
+      ],
+      [],
+      { status: 'leased' },
+      {
+        stepOutputs: {
+          'stage:0:code:candidate': {
+            id: 'cand-1',
+            branch: 'b1',
+            commit: 'c1',
+            timedOut,
+          },
+        },
+      },
+    )
+    const code = t.root.children[1]?.children[0]
+    assert.equal(code?.stage, 'code')
+    assert.deepEqual(code?.timedOut, timedOut)
+    assert.equal(code?.checkpoint, 'completed')
+    assert.deepEqual(code?.candidate?.timedOut, timedOut)
+    assert.equal(t.root.children[1]?.children[1]?.timedOut, null)
   })
 
   it('trace (f) shows no earlier candidate or verdict on a repair still at work', () => {

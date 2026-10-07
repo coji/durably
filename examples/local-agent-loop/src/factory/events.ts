@@ -18,6 +18,13 @@ export const candidateSchema = z.object({
   branch: z.string().optional(),
   commit: z.string().optional(),
   changes: candidateChangesSchema.optional(),
+  /**
+   * The factory's limit that stopped the call whose unfinished work the
+   * candidate holds; absent when the call finished.
+   */
+  timedOut: z
+    .object({ kind: z.enum(['total', 'idle']), limitMs: z.number() })
+    .optional(),
 })
 
 /** Where one grading attempt left the check's full output. */

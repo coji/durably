@@ -330,7 +330,7 @@ describe('preflight verdicts', () => {
 })
 
 describe('what counts as agent activity on a real provider', () => {
-  it('Claude: an assistant message counts, the CLI error message and set-up do not', () => {
+  it('Claude: an assistant message, a tool result and tool progress count, the CLI error message and set-up do not', () => {
     const assistant = { type: 'assistant', message: {} } as never
     // What the CLI actually sends for an API refusal: a synthetic frame with
     // the error text as content and zero usage.
@@ -370,13 +370,37 @@ describe('what counts as agent activity on a real provider', () => {
     assert.equal(isAgentActivity(erroredFromModel), true)
     assert.equal(isAgentActivity(erroredWithCacheUsage), true)
     assert.equal(isAgentActivity(init), false)
+    // A running tool's progress and its result keep the idle limit from
+    // firing while a long command runs; a user message without a tool
+    // result does not count.
+    const progress = {
+      type: 'tool_progress',
+      tool_name: 'Bash',
+      elapsed_time_seconds: 30,
+    } as never
+    const result = {
+      type: 'user',
+      message: { content: [{ type: 'tool_result', content: 'ok' }] },
+    } as never
+    const prompt = {
+      type: 'user',
+      message: { content: [{ type: 'text', text: 'hi' }] },
+    } as never
+    assert.equal(isAgentActivity(progress), true)
+    assert.equal(isAgentActivity(result), true)
+    assert.equal(isAgentActivity(prompt), false)
   })
 
-  it('Codex: the first part that shows work fires once; set-up and the error do not', async () => {
+  it('Codex: every part that shows work fires, a preliminary tool result included; set-up and the error do not', async () => {
     const parts = (types: string[]) =>
-      new ReadableStream<{ type: string }>({
+      new ReadableStream<{ type: string; preliminary?: boolean }>({
         start(controller) {
-          for (const type of types) controller.enqueue({ type })
+          for (const type of types)
+            controller.enqueue(
+              type === 'preliminary-result'
+                ? { type: 'tool-result', preliminary: true }
+                : { type },
+            )
           controller.close()
         },
       })
@@ -395,11 +419,20 @@ describe('what counts as agent activity on a real provider', () => {
       () => fired++,
     ).doGenerate()
     assert.equal(fired, 0)
+    // Each one restarts the runner's idle limit, so each one counts.
     await watchActivity(
-      model(['stream-start', 'tool-call', 'text-delta', 'error']),
+      model([
+        'stream-start',
+        'tool-call',
+        'preliminary-result',
+        'preliminary-result',
+        'text-delta',
+        'text-delta',
+        'error',
+      ]),
       () => fired++,
     ).doGenerate()
-    assert.equal(fired, 1)
+    assert.equal(fired, 5)
   })
 
   it('Codex: the app-server model still builds doGenerate from this.doStream', async () => {
@@ -463,6 +496,7 @@ describe('the repair profile in the config version', () => {
     maxIterations: 2,
     target: 'subject',
     agentTimeoutMs: 300000,
+    agentIdleTimeoutMs: 300000,
     checkTimeoutMs: 120000,
     code: profile(null),
     correctness: profile(null),
@@ -518,6 +552,7 @@ describe('the repair session policy in the config version', () => {
     maxIterations: 2,
     target: 'subject',
     agentTimeoutMs: 300000,
+    agentIdleTimeoutMs: 300000,
     checkTimeoutMs: 120000,
     code,
     correctness: code,
@@ -585,11 +620,12 @@ describe('the repair session policy in the config version', () => {
     })
 
   it('keeps the versions every other setting had before the policy existed', () => {
-    // Pinned from the version this code computed before the policy existed.
-    assert.equal(versionWith(null), 'a4a5cc94ce08f505')
+    // Pinned from the version this code computed before the policy existed,
+    // recomputed once the idle limit entered every version (ADR-0032).
+    assert.equal(versionWith(null), '19d0617ba5a39f68')
     assert.equal(
       versionWith(claude('claude-sonnet-5', 'high')),
-      '41ef81d9828ab27e',
+      '39437b95a5d24512',
     )
     // The effort change the policy would resume, where the environment
     // blocks it, keeps its earlier version too.
@@ -597,7 +633,7 @@ describe('the repair session policy in the config version', () => {
       versionWith(claude('claude-opus-5-5', 'high'), {
         env: { CLAUDE_CODE_USE_BEDROCK: '1' },
       }),
-      '52239366cb61629f',
+      '5a180b6dbafc9bcc',
     )
   })
 
@@ -678,6 +714,7 @@ describe('commit settings in the config version', () => {
     maxIterations: 2,
     target: 'repo:node --test',
     agentTimeoutMs: 1800000,
+    agentIdleTimeoutMs: 900000,
     checkTimeoutMs: 900000,
     code: profile,
     correctness: profile,
@@ -689,7 +726,8 @@ describe('commit settings in the config version', () => {
     messageTemplate: null,
   }
   // The version such a run had before commit settings existed.
-  const PRIOR = '12ea50a6cf90735b'
+  // Recomputed once the idle limit entered every version (ADR-0032).
+  const PRIOR = '4d32349a6f799c04'
 
   it('keeps the prior version when the author and template are left out', () => {
     assert.equal(configVersionOf(base), PRIOR)
@@ -741,13 +779,15 @@ describe('reviewer invocations in the config version', () => {
     maxIterations: 2,
     target: 'repo:node --test',
     agentTimeoutMs: 1800000,
+    agentIdleTimeoutMs: 900000,
     checkTimeoutMs: 900000,
     code: profile,
     correctness: profile,
     edgeCases: profile,
   }
   // The same run's version from before reviewer invocations existed.
-  const PRIOR = '12ea50a6cf90735b'
+  // Recomputed once the idle limit entered every version (ADR-0032).
+  const PRIOR = '4d32349a6f799c04'
   const invocation = {
     command: '/code-review {base}..{head}',
     context: 'local-instructions',
@@ -811,13 +851,15 @@ describe('spec stages in the config version', () => {
     maxIterations: 2,
     target: 'repo:node --test',
     agentTimeoutMs: 1800000,
+    agentIdleTimeoutMs: 900000,
     checkTimeoutMs: 900000,
     code: profile,
     correctness: profile,
     edgeCases: profile,
   }
   // The same run's version from before spec stages existed.
-  const PRIOR = '12ea50a6cf90735b'
+  // Recomputed once the idle limit entered every version (ADR-0032).
+  const PRIOR = '4d32349a6f799c04'
   const spec = {
     author: profile,
     fix: profile,
@@ -915,6 +957,7 @@ describe('selfCheck in the config version', () => {
     maxIterations: 2,
     target: 'repo:pnpm validate',
     agentTimeoutMs: 1800000,
+    agentIdleTimeoutMs: 900000,
     checkTimeoutMs: 900000,
     code: profile,
     correctness: profile,
@@ -922,8 +965,9 @@ describe('selfCheck in the config version', () => {
   }
 
   it('keeps the version it had before selfCheck existed when it is absent', () => {
-    // Computed before the field existed.
-    const prior = '492af9658dc223a6'
+    // Computed before the field existed, and again once the idle limit
+    // entered every version (ADR-0032).
+    const prior = '26517c19576d6602'
     assert.equal(configVersionOf(base), prior)
     assert.equal(configVersionOf({ ...base, selfCheck: null }), prior)
     assert.equal(configVersionOf({ ...base, selfCheck: [] }), prior)
@@ -943,5 +987,41 @@ describe('selfCheck in the config version', () => {
       }),
     ]
     assert.equal(new Set(versions).size, versions.length)
+  })
+})
+
+describe('the agent call limits in the config version', () => {
+  const profile: ResolvedProfile = {
+    id: 'fake:fake-model:provider-default:code',
+    provider: 'fake',
+    requestedModel: null,
+    requestedEffort: null,
+    effectiveModel: 'fake-model',
+    effectiveEffort: null,
+  }
+  const base = {
+    contextMode: 'reuse',
+    instructionsVersion: 'local-factory.v3',
+    maxIterations: 2,
+    target: 'repo:node --test',
+    agentTimeoutMs: 7200000,
+    agentIdleTimeoutMs: 900000,
+    checkTimeoutMs: 900000,
+    code: profile,
+    correctness: profile,
+    edgeCases: profile,
+  }
+
+  it('changes with the idle limit, as with the total', () => {
+    const reference = configVersionOf(base)
+    assert.equal(configVersionOf({ ...base }), reference)
+    assert.notEqual(
+      configVersionOf({ ...base, agentIdleTimeoutMs: 600000 }),
+      reference,
+    )
+    assert.notEqual(
+      configVersionOf({ ...base, agentTimeoutMs: 1800000 }),
+      reference,
+    )
   })
 })

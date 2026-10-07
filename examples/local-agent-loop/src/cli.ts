@@ -458,7 +458,7 @@ Repository config: factory.json at the repository root, or --config <file>:
     "baselineCheck": false, "baselineReuse": { "maxAgeMs": 3600000 },
     "parallelReview": false, "codexPath": "<file>",
     "selfCheck": [["pnpm", "lint"], ["pnpm", "typecheck"]],
-    "checkTimeoutMs": 900000, "agentTimeoutMs": 1800000,
+    "checkTimeoutMs": 900000, "agentTimeoutMs": 7200000, "agentIdleTimeoutMs": 900000,
     "commit": { "authorName": "...", "authorEmail": "...",
                 "messageTemplate": "...", "publishSquashed": false },
     "profiles": { "code": { "provider": "codex", "model": "...", "effort": "..." },
@@ -559,7 +559,12 @@ Repository config: factory.json at the repository root, or --config <file>:
   dispositions (inherited otherwise). The same parent, findings,
   dispositions and max iterations return the same child run.
   Timeouts are positive integer milliseconds, at most 2147483647; without them, the trigger's
-  TEST_TIMEOUT_MS / AGENT_TIMEOUT_MS, then the target's default.
+  TEST_TIMEOUT_MS / AGENT_TIMEOUT_MS / AGENT_IDLE_TIMEOUT_MS, then the target's default.
+  agentTimeoutMs limits each agent call from its start; agentIdleTimeoutMs stops one
+  that shows no activity, output or usage for that long, and may not exceed agentTimeoutMs.
+  A call the factory stops at either limit is settled, never resent: an implementation or
+  repair that left changes is sealed and verified as a candidate, any other stop ends the
+  run as agent-timeout (safe to retry).
   Before the first agent call, every role's provider, model and effort is
   checked once (preflight): free where the provider can tell (Codex model
   list), otherwise one minimal call, recorded with its usage.
@@ -587,7 +592,8 @@ A call the provider explicitly refuses after preflight stops the run as
 rejected-invocation (safe to retry): fix the setting and retrigger with
 --reload-config, or fix the login and retrigger without it.
 Env (read at trigger and stored in the run, never by the worker):
-     AGENT_TIMEOUT_MS (default 300000, repository 1800000),
+     AGENT_TIMEOUT_MS (default 300000, repository 7200000),
+     AGENT_IDLE_TIMEOUT_MS (default 300000, repository 900000; at most AGENT_TIMEOUT_MS),
      TEST_TIMEOUT_MS (default 120000, repository 900000)
 Env (fake provider, read by the worker):
      FAKE_FAIL_FIRST=0, FAKE_REVIEW_SEQUENCE, FAKE_REVIEW_SLOW_MS, FAKE_TRIAGE,

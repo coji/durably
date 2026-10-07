@@ -28,7 +28,11 @@ import {
   type AgentProvider,
   type ReviewCallSettings,
 } from '../engine/providers/types.js'
-import { checkpointPaths, runAgentCall } from '../engine/runner.js'
+import {
+  AgentTimeoutError,
+  checkpointPaths,
+  runAgentCall,
+} from '../engine/runner.js'
 import type { CandidateRef, ReviewSnapshots } from '../engine/types.js'
 import {
   runVerificationStep,
@@ -65,6 +69,7 @@ import type {
   UntrustedInput,
 } from './target.js'
 import {
+  idleLimitOf,
   REVIEW_CANCEL_REASON,
   REVIEW_LENSES,
   reviewInvocationOf,
@@ -85,6 +90,7 @@ import {
   type ReviewInvocation,
   type ReviewLens,
   type ReviewStepResult,
+  type SealedCandidate,
   type SessionRef,
   type SpecCheckRecord,
   type SpecRecord,
@@ -178,6 +184,11 @@ export const codeStage: StageHandler = async ({
     acrossEffortModel: acrossEffort ? effortResumeModel : null,
   })
   const continuedSession = choice.handling === 'fresh' ? null : recorded
+  // The candidate to repair is the unfinished work of a call the factory
+  // stopped. That call reported no session, so a repair after a stopped
+  // implementation starts new even on the code profile.
+  const fromTimedOut =
+    role === 'repair' && state.candidate?.timedOut !== undefined
   const call = await step.run(
     `${key}:agent`,
     (signal, attempt) =>
@@ -195,12 +206,19 @@ export const codeStage: StageHandler = async ({
           rules: target.implementationRules(),
           untrusted: target.untrustedInputs('code'),
           // Told it starts a new session only when it does. A repair on the
-          // code profile keeps the prompt it always had.
-          newSession: separateRepair && continuedSession === null,
+          // code profile keeps the prompt it always had, unless it repairs a
+          // stopped call's work in a new session.
+          newSession:
+            (separateRepair || fromTimedOut) && continuedSession === null,
           fromFindings,
+          fromTimedOut,
         }),
         workdir: target.workdir,
         timeoutMs: state.setup.agentTimeoutMs,
+        ...idleLimitOf(state.setup),
+        // A call the factory's timer stops is settled; what it left in the
+        // worktree is sealed below, or the run stops when it left nothing.
+        acceptTimeout: true,
         requestedModel: profile.requestedModel,
         requestedEffort: profile.requestedEffort,
         effectiveModel: profile.effectiveModel,
@@ -234,20 +252,33 @@ export const codeStage: StageHandler = async ({
       } as unknown as JsonValue,
     },
   )
-  const candidate = await step.run(`${key}:candidate`, (signal, attempt) =>
-    target.seal({
-      iteration,
-      runId: step.runId,
-      attemptId: attempt.id,
-      signal,
+  // A stopped call's unfinished work is sealed and verified like any other
+  // candidate, and says so. One that left nothing ends the run: there is no
+  // candidate to verify, and the call is not sent again. The check reads
+  // the worktree against the candidate the call started from, so a replay
+  // after the seal decides the same (ADR-0032).
+  const timedOut = call.timedOut
+  if (timedOut && !(await target.hasChanges(state.candidate)))
+    throw new AgentTimeoutError(timedOut, { role })
+  const candidate: SealedCandidate = await step.run(
+    `${key}:candidate`,
+    async (signal, attempt) => ({
+      ...(await target.seal({
+        iteration,
+        runId: step.runId,
+        attemptId: attempt.id,
+        signal,
+      })),
+      ...(timedOut ? { timedOut } : {}),
     }),
   )
   // A separate repair session is not the implementation session: the one on
   // record stays, and the next repair starts new again. A repair that may
   // continue across an effort change records the session it returned, as
   // the code profile does.
+  // A stopped call reported no session, so the one on record stays.
   const session: SessionRef | null =
-    separateRepair && !acrossEffort
+    (separateRepair && !acrossEffort) || timedOut
       ? state.implementationSession
       : reuse && call.sessionId
         ? {
@@ -640,6 +671,7 @@ async function reviewRoundOf(args: {
       readableFiles,
       ...(settings ? { review: settings } : {}),
       timeoutMs: setup.agentTimeoutMs,
+      ...idleLimitOf(setup),
       requestedModel: profile.requestedModel,
       requestedEffort: profile.requestedEffort,
       effectiveModel: profile.effectiveModel,
@@ -1024,6 +1056,7 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
               readableDirs: [target.workdir],
             },
             timeoutMs: setup.agentTimeoutMs,
+            ...idleLimitOf(setup),
             requestedModel: profile.requestedModel,
             requestedEffort: profile.requestedEffort,
             effectiveModel: profile.effectiveModel,
@@ -1143,6 +1176,7 @@ export async function runSpecStages(args: SpecStageArgs): Promise<SpecOutcome> {
       ...(settings ? { review: settings } : {}),
       specReviewer: name,
       timeoutMs: setup.agentTimeoutMs,
+      ...idleLimitOf(setup),
       requestedModel: profile.requestedModel,
       requestedEffort: profile.requestedEffort,
       effectiveModel: profile.effectiveModel,

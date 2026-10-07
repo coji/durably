@@ -352,8 +352,9 @@ interface OutputPart {
 }
 
 /**
- * The same model, with `onActivity` called on the first part of its stream
- * that shows the agent at work, and `onOutput` given each text delta and
+ * The same model, with `onActivity` called on every part of its stream that
+ * shows the agent at work, a running tool's preliminary result included, so
+ * the runner's idle limit restarts on each, and `onOutput` given each text delta and
  * one line per tool call. The tool call's own `tool-call` part is the one
  * line: its `tool-input-*` parts and results are not written, nor is any
  * reasoning. The app-server model builds its `doGenerate` answer from
@@ -370,7 +371,6 @@ export function watchActivity<M extends object>(
   const target = model as unknown as StreamingModel
   const original = target.doStream.bind(target)
   const output = agentOutput(onOutput)
-  let seen = false
   target.doStream = async (streamOptions) => {
     const response = await original(streamOptions)
     return {
@@ -378,10 +378,7 @@ export function watchActivity<M extends object>(
       stream: response.stream.pipeThrough(
         new TransformStream<OutputPart, OutputPart>({
           transform(part, controller) {
-            if (onActivity && !seen && !NOT_ACTIVITY.has(part.type)) {
-              seen = true
-              onActivity()
-            }
+            if (onActivity && !NOT_ACTIVITY.has(part.type)) onActivity()
             if (part.type === 'text-delta' && typeof part.delta === 'string')
               output.text(part.delta)
             else if (part.type === 'text-end') output.line()
