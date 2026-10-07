@@ -110,6 +110,14 @@ export class SubjectTarget implements Target {
     })
   }
 
+  async hasChanges(since: CandidateRef | null): Promise<boolean> {
+    // A sealed copy leaves the workdir as it was, so its hash still differs.
+    return (
+      (await hashDir(this.config.workdir)) !==
+      (since?.sourceHash ?? this.config.baselineHash)
+    )
+  }
+
   async assertIntact(candidate: CandidateRef): Promise<void> {
     await assertCandidateIntact(candidate)
   }

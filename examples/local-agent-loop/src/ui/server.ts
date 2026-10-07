@@ -78,6 +78,7 @@ import { formatCount } from '../engine/format.js'
 import {
   NOT_SENT,
   type AgentLog,
+  type AgentTimeout,
   type VerificationLog,
 } from '../engine/providers/types.js'
 import {
@@ -550,6 +551,8 @@ export interface TraceNode {
   /** An attempt's lease generation: which worker lease ran it. */
   leaseGeneration: number | null
   interruptionReason: string | null
+  /** The factory's limit that stopped an agent call; null when none did. */
+  timedOut: AgentTimeout | null
   profile: TraceProfile | null
   /** Same sums as the report's stage usage; null when no LLM call is under the row. */
   usage: UsageTotals | null
@@ -730,7 +733,8 @@ function checkpointOf(a: AttemptRow, open: boolean): TraceCheckpoint | null {
     result.endsWith('-done') ||
     result === 'pass' ||
     result === 'fail' ||
-    result === 'cancelled'
+    result === 'cancelled' ||
+    result === 'timed-out'
   )
     return 'completed'
   return open ? 'running' : 'uncertain'
@@ -833,6 +837,7 @@ export function deriveTrace(input: TraceInput): Trace {
       attempts: 0,
       leaseGeneration: null,
       interruptionReason: null,
+      timedOut: null,
       profile: null,
       usage: null,
       checkpoint: null,
@@ -1006,6 +1011,7 @@ export function deriveTrace(input: TraceInput): Trace {
             attempts: 1,
             leaseGeneration: a.leaseGeneration,
             interruptionReason: a.interruptionReason,
+            timedOut: a.measurement?.timedOut ?? null,
             profile: profileOf([a]),
             usage: usageOf([a]),
             checkpoint: checkpointOf(a, aOpen),
@@ -1072,6 +1078,9 @@ export function deriveTrace(input: TraceInput): Trace {
       attempts: sorted.length,
       interruptionReason:
         finals.find((a) => a.interruptionReason)?.interruptionReason ?? null,
+      timedOut:
+        finals.find((a) => a.measurement?.timedOut)?.measurement?.timedOut ??
+        null,
       profile: profileOf(sorted),
       usage: usageOf(sorted),
       checkpoint: checked ? checkpointOf(checked, isOpen(checked)) : null,

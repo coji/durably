@@ -4,6 +4,7 @@ import { describe, it } from 'node:test'
 import { asReportReview, asSpecReview } from '../src/engine/build-report.js'
 import { PRICE_BASIS } from '../src/engine/pricing.js'
 import {
+  reportToJson,
   reportToMarkdown,
   reviewHighlights,
   specWallMs,
@@ -579,5 +580,48 @@ describe('refused tool calls of a review', () => {
       ),
       md,
     )
+  })
+})
+
+describe('the agent call limits and a candidate sealed from a stopped call', () => {
+  it('shows both limits and where such a candidate came from, in the Markdown and the JSON', () => {
+    const stopped = {
+      id: 'candidate-1-abc',
+      branch: 'factory/r1',
+      commit: 'c1',
+      changes: null,
+      timedOut: { kind: 'total' as const, limitMs: 7_200_000 },
+    }
+    const report: LoopReport = {
+      ...baseReport(),
+      agentTimeouts: { totalMs: 7_200_000, idleMs: 900_000 },
+      candidate: stopped,
+      candidates: [{ ...stopped, iteration: 1, sequence: 0 }],
+    }
+    const md = reportToMarkdown(report)
+    assert.match(md, /- agent call limits: total 2h, idle 15m/)
+    assert.match(
+      md,
+      /- origin: unfinished work of a call stopped at its total limit of 2h/,
+    )
+    assert.match(
+      md,
+      /- iteration 1: candidate-1-abc — .* — unfinished work of a call stopped at its total limit of 2h/,
+    )
+    const json = JSON.parse(reportToJson(report)) as LoopReport
+    assert.deepEqual(json.agentTimeouts, {
+      totalMs: 7_200_000,
+      idleMs: 900_000,
+    })
+    assert.deepEqual(json.candidates[0]?.timedOut, stopped.timedOut)
+    // A run set up before the idle limit existed has the total only.
+    assert.match(
+      reportToMarkdown({
+        ...baseReport(),
+        agentTimeouts: { totalMs: 1_800_000, idleMs: null },
+      }),
+      /- agent call limits: total 30m, idle none/,
+    )
+    assert.doesNotMatch(reportToMarkdown(baseReport()), /agent call limits/)
   })
 })

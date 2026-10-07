@@ -156,6 +156,8 @@ export interface ConfigVersionInput {
    * ones are not one population even when everything else matches.
    */
   agentTimeoutMs: number
+  /** The idle limit stops a call the total would let run, so it counts too. */
+  agentIdleTimeoutMs: number
   checkTimeoutMs: number
   /** Implementation, and repair unless `repair` is given. */
   code: ConfigVersionProfile
@@ -283,6 +285,7 @@ export function configVersionOf(input: ConfigVersionInput): string {
     maxIterations: input.maxIterations,
     target: input.target,
     agentTimeoutMs: input.agentTimeoutMs,
+    agentIdleTimeoutMs: input.agentIdleTimeoutMs,
     checkTimeoutMs: input.checkTimeoutMs,
     code: canonicalProfile(input.code),
     ...(input.repair ? { repair: canonicalProfile(input.repair) } : {}),

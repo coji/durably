@@ -50,7 +50,7 @@ import {
   validReusable,
 } from '../src/factory/baseline-reuse.js'
 import { resolveTimeouts } from '../src/factory/job.js'
-import { codePrompt } from '../src/factory/prompts.js'
+import { codePrompt, TIMED_OUT_CANDIDATE_LINE } from '../src/factory/prompts.js'
 import { codeStage } from '../src/factory/stages.js'
 import {
   EFFORT_RESUME_POLICY,
@@ -2372,6 +2372,8 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
             maxIterations: setup.maxIterations,
             target: 'subject',
             agentTimeoutMs: setup.agentTimeoutMs,
+            agentIdleTimeoutMs:
+              setup.agentIdleTimeoutMs ?? setup.agentTimeoutMs,
             checkTimeoutMs: resolveTimeouts('subject', null).checkTimeoutMs,
             code: setup.profiles.code,
             repair: setup.repair ?? null,
@@ -3636,3 +3638,175 @@ describe('agent logs of a fake run', { timeout: 180000 }, () => {
     }
   })
 })
+
+describe(
+  'agent calls the factory stops at a time limit',
+  { timeout: 300000 },
+  () => {
+    const settled =
+      (durably: ReturnType<typeof createAgentDurably>, id: string) =>
+      async () =>
+        ['completed', 'failed'].includes(
+          (await durably.getRun(id))?.status ?? '',
+        )
+
+    it('seals a stopped implementation that left work, verifies it, and tells the repair', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'e2e-timeout-'))
+      delete process.env.FAKE_FAIL_FIRST
+      delete process.env.FAKE_REVIEW_SEQUENCE
+      delete process.env.FAKE_REVIEW_SLOW_MS
+      const durably = createAgentDurably({ stateRoot: dir })
+      await durably.migrate()
+      const recording = recordFakeReviewCalls()
+      try {
+        const trigger = (fakeScenario: object) =>
+          durably.jobs.agentLoop.trigger({
+            provider: 'fake',
+            target: { kind: 'subject' as const },
+            maxIterations: 2,
+            context: 'reuse',
+            autoApprove: true,
+            agentTimeoutMs: 60000,
+            agentIdleTimeoutMs: 400,
+            fakeScenario,
+          })
+        // The implementation writes a file, then goes silent: the idle limit
+        // stops it with the bug still in place.
+        const partial = await trigger({
+          failIterations: 1,
+          stall: {
+            roles: ['implement'],
+            changes: { 'src/partial.js': '// unfinished\n' },
+          },
+        })
+        // It writes nothing before going silent.
+        const empty = await trigger({ stall: { roles: ['implement'] } })
+        // A reviewer goes silent on a candidate that passed the check.
+        const review = await trigger({
+          failIterations: 0,
+          stall: { roles: ['review-b'] },
+        })
+        // Every call keeps writing output more often than the idle limit,
+        // for longer than it: none is stopped.
+        const busy = await trigger({
+          failIterations: 0,
+          output: {
+            chunks: ['a\n', 'b\n', 'c\n', 'd\n', 'e\n'],
+            intervalMs: 150,
+          },
+        })
+        // Triage goes silent: recorded as unknown, and the run goes on.
+        const fakeProfile = {
+          provider: 'fake' as const,
+          requestedModel: null,
+          requestedEffort: null,
+        }
+        const triage = await durably.jobs.agentLoop.trigger({
+          provider: 'fake',
+          target: { kind: 'subject' as const },
+          maxIterations: 1,
+          context: 'reuse',
+          autoApprove: true,
+          agentTimeoutMs: 60000,
+          agentIdleTimeoutMs: 400,
+          profiles: {
+            code: fakeProfile,
+            correctness: fakeProfile,
+            'edge-cases': fakeProfile,
+            triage: fakeProfile,
+          },
+          fakeScenario: { failIterations: 0, stall: { roles: ['triage'] } },
+        })
+        await durably.init()
+        for (const run of [partial, empty, review, busy, triage])
+          await waitFor(settled(durably, run.id), 120000, run.id)
+
+        // Sealed, verified, failed the check, repaired, and approved.
+        const sealed = await buildReport(durably, partial.id)
+        assert.equal(sealed.status, 'completed', JSON.stringify(sealed.failure))
+        assert.equal(
+          (sealed.output as { conclusion?: string }).conclusion,
+          'approved',
+        )
+        assert.deepEqual(sealed.agentTimeouts, { totalMs: 60000, idleMs: 400 })
+        assert.equal(sealed.candidates.length, 2)
+        assert.deepEqual(sealed.candidates[0]?.timedOut, {
+          kind: 'idle',
+          limitMs: 400,
+        })
+        assert.equal(sealed.candidates[1]?.timedOut, undefined)
+        const stopped = sealed.attempts.find(
+          (a) => a.measurement?.result === 'timed-out',
+        )
+        assert.equal(stopped?.measurement?.role, 'implement')
+        assert.deepEqual(stopped?.measurement?.timedOut, {
+          kind: 'idle',
+          limitMs: 400,
+        })
+        const md = reportToMarkdown(sealed)
+        assert.match(md, /- agent call limits: total 1m, idle 0.4s/)
+        assert.match(
+          md,
+          /- iteration 1: candidate-1-\S+ — .* — unfinished work of a call stopped at its idle limit of 0.4s/,
+        )
+        const json = JSON.parse(reportToJson(sealed)) as {
+          candidates: { timedOut?: unknown }[]
+        }
+        assert.deepEqual(json.candidates[0]?.timedOut, {
+          kind: 'idle',
+          limitMs: 400,
+        })
+        // The repair, and only the repair of that candidate, is told.
+        const repairs = recording.calls.filter(
+          (c) => c.role === 'repair' && c.input?.includes('iteration 2'),
+        )
+        assert.ok(repairs.length > 0)
+        for (const call of repairs)
+          assert.ok(call.input?.includes(TIMED_OUT_CANDIDATE_LINE))
+
+        // Nothing to seal: stopped, settled, and safe to start again.
+        const none = await buildReport(durably, empty.id)
+        assert.equal(none.status, 'failed')
+        assert.equal(none.candidates.length, 0)
+        assert.equal(none.failure?.kind, 'agent-timeout')
+        assert.equal(none.failure?.retryable, true)
+        assert.ok(
+          none.failure?.next.some((n) =>
+            n.includes(`demo retrigger --run ${empty.id}`),
+          ),
+        )
+        assert.match(
+          (await durably.getRun(empty.id))?.error ?? '',
+          /^agent-timeout: the implement call was stopped at its idle limit of 400 ms/,
+        )
+
+        // A review stopped at its limit stops the run the same way.
+        const reviewed = await buildReport(durably, review.id)
+        assert.equal(reviewed.failure?.kind, 'agent-timeout')
+        assert.equal(reviewed.candidates.length, 1)
+        assert.equal(reviewed.candidates[0]?.timedOut, undefined)
+
+        const shadowed = await buildReport(durably, triage.id)
+        assert.equal(
+          shadowed.status,
+          'completed',
+          JSON.stringify(shadowed.failure),
+        )
+        assert.equal(shadowed.triage?.judgment, 'unknown')
+        assert.match(shadowed.triage?.reason ?? '', /agent-timeout/)
+
+        const kept = await buildReport(durably, busy.id)
+        assert.equal(kept.status, 'completed', JSON.stringify(kept.failure))
+        assert.equal(
+          kept.attempts.some((a) => a.measurement?.result === 'timed-out'),
+          false,
+        )
+      } finally {
+        recording.stop()
+        await durably.stop()
+        await durably.db.destroy()
+        await rm(dir, { recursive: true, force: true })
+      }
+    })
+  },
+)

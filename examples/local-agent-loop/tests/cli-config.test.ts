@@ -162,6 +162,7 @@ type RunInput = {
   provider: string
   checkTimeoutMs?: number
   agentTimeoutMs?: number
+  agentIdleTimeoutMs?: number
   codexPath?: string | null
   configSource?: { path: string | null; explicit?: boolean }
   profiles: Record<
@@ -1016,14 +1017,17 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
       check: CHECK,
       checkTimeoutMs: 45000,
       agentTimeoutMs: 600000,
+      agentIdleTimeoutMs: 120000,
     })
     const fromConfig = await trigger(box, ['--repo', box.repo, '--task', 'x'], {
       TEST_TIMEOUT_MS: '1',
       AGENT_TIMEOUT_MS: '1',
+      AGENT_IDLE_TIMEOUT_MS: '1',
     })
     const configured = await inputOf(box, fromConfig)
     assert.equal(configured.checkTimeoutMs, 45000)
     assert.equal(configured.agentTimeoutMs, 600000)
+    assert.equal(configured.agentIdleTimeoutMs, 120000)
 
     const plain = await sandbox({ check: CHECK })
     const fromEnv = await trigger(
@@ -1032,21 +1036,33 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
       {
         TEST_TIMEOUT_MS: '30000',
         AGENT_TIMEOUT_MS: '400000',
+        AGENT_IDLE_TIMEOUT_MS: '200000',
       },
     )
     const env = await inputOf(plain, fromEnv)
     assert.equal(env.checkTimeoutMs, 30000)
     assert.equal(env.agentTimeoutMs, 400000)
+    assert.equal(env.agentIdleTimeoutMs, 200000)
+    // A shorter total holds the default idle limit to itself.
+    const short = await inputOf(
+      plain,
+      await trigger(plain, ['--repo', plain.repo, '--task', 'x'], {
+        AGENT_TIMEOUT_MS: '400000',
+      }),
+    )
+    assert.equal(short.agentIdleTimeoutMs, 400000)
     // Neither: the target's own default, fixed all the same.
     const byDefault = await inputOf(
       plain,
       await trigger(plain, ['--repo', plain.repo, '--task', 'x']),
     )
     assert.equal(byDefault.checkTimeoutMs, 900000)
-    assert.equal(byDefault.agentTimeoutMs, 1800000)
+    assert.equal(byDefault.agentTimeoutMs, 7200000)
+    assert.equal(byDefault.agentIdleTimeoutMs, 900000)
     const subject = await inputOf(plain, await trigger(plain, []))
     assert.equal(subject.checkTimeoutMs, 120000)
     assert.equal(subject.agentTimeoutMs, 300000)
+    assert.equal(subject.agentIdleTimeoutMs, 300000)
 
     // The worker's environment no longer reaches a stored run: a 1 ms agent
     // timeout would fail every call, and the run still completes with the
@@ -1055,6 +1071,7 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
     delete process.env.FAKE_REVIEW_SEQUENCE
     process.env.TEST_TIMEOUT_MS = '1'
     process.env.AGENT_TIMEOUT_MS = '1'
+    process.env.AGENT_IDLE_TIMEOUT_MS = '1'
     const durably = createAgentDurably({ stateRoot: plain.stateRoot })
     await durably.init()
     try {
@@ -1070,6 +1087,7 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
       const setup = (await durably.storage.getCompletedStep(fromEnv, 'setup'))
         ?.output as FactorySetup
       assert.equal(setup.agentTimeoutMs, 400000)
+      assert.equal(setup.agentIdleTimeoutMs, 200000)
       assert.equal(
         setup.target.kind === 'repo' ? setup.target.checkTimeoutMs : null,
         30000,
@@ -1080,13 +1098,18 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
       delete process.env.FAKE_FAIL_FIRST
       delete process.env.TEST_TIMEOUT_MS
       delete process.env.AGENT_TIMEOUT_MS
+      delete process.env.AGENT_IDLE_TIMEOUT_MS
     }
   })
 
   it('refuses a timeout that is not a positive safe integer', async () => {
     // 2^31 ms and up overflow Node's timers and fire after about 1 ms.
     for (const bad of [0, -1, 1.5, 2 ** 31, Number.MAX_SAFE_INTEGER + 2]) {
-      for (const key of ['checkTimeoutMs', 'agentTimeoutMs']) {
+      for (const key of [
+        'checkTimeoutMs',
+        'agentTimeoutMs',
+        'agentIdleTimeoutMs',
+      ]) {
         const box = await sandbox({ check: CHECK, [key]: bad })
         await rejected(
           box,
@@ -1106,7 +1129,11 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
       '9007199254740993',
       '',
     ]) {
-      for (const name of ['TEST_TIMEOUT_MS', 'AGENT_TIMEOUT_MS'])
+      for (const name of [
+        'TEST_TIMEOUT_MS',
+        'AGENT_TIMEOUT_MS',
+        'AGENT_IDLE_TIMEOUT_MS',
+      ])
         await rejected(
           box,
           ['--repo', box.repo, '--task', 'x'],
@@ -1114,6 +1141,39 @@ describe('settings fixed at trigger', { timeout: 180000 }, () => {
           { [name]: bad },
         )
     }
+  })
+
+  it('refuses an idle limit longer than the total, from the config or the environment', async () => {
+    const tooLong = await sandbox({
+      check: CHECK,
+      agentTimeoutMs: 600000,
+      agentIdleTimeoutMs: 600001,
+    })
+    await rejected(
+      tooLong,
+      ['--repo', tooLong.repo, '--task', 'x'],
+      /agentIdleTimeoutMs \(600001 ms\) must not be longer than agentTimeoutMs \(600000 ms\)/,
+    )
+    const box = await sandbox({ check: CHECK })
+    await rejected(
+      box,
+      ['--repo', box.repo, '--task', 'x'],
+      /must not be longer than agentTimeoutMs/,
+      { AGENT_TIMEOUT_MS: '60000', AGENT_IDLE_TIMEOUT_MS: '60001' },
+    )
+    // The bundled sample too.
+    await rejected(box, [], /must not be longer than agentTimeoutMs/, {
+      AGENT_IDLE_TIMEOUT_MS: '300001',
+    })
+    // Equal is allowed.
+    const equal = await inputOf(
+      box,
+      await trigger(box, ['--repo', box.repo, '--task', 'x'], {
+        AGENT_TIMEOUT_MS: '60000',
+        AGENT_IDLE_TIMEOUT_MS: '60000',
+      }),
+    )
+    assert.equal(equal.agentIdleTimeoutMs, 60000)
   })
 
   it('fixes the commit settings at trigger, applies them, and reads them again only on a reload', async () => {
@@ -1777,6 +1837,7 @@ describe('retrigger --reload-config', { timeout: 240000 }, () => {
       join(box.repo, 'factory.json'),
       JSON.stringify({
         check: CHECK,
+        agentIdleTimeoutMs: 123000,
         profiles: { repair: { model: 'fixed-repair' } },
       }),
     )
@@ -1790,6 +1851,9 @@ describe('retrigger --reload-config', { timeout: 240000 }, () => {
     const nextId = /^new run (\S+)/.exec(created.stdout)?.[1] ?? ''
     const next = await inputOf(box, nextId)
     assert.equal(next.profiles['repair']?.requestedModel, 'fixed-repair')
+    // The idle limit is read again with the rest of the config.
+    assert.equal((await inputOf(box, stopped)).agentIdleTimeoutMs, 900000)
+    assert.equal(next.agentIdleTimeoutMs, 123000)
     assert.equal(next.target.task, 'the stored task')
   })
 
@@ -3005,6 +3069,7 @@ describe('repair', { timeout: 240000 }, () => {
       check: CHECK,
       checkTimeoutMs: 150000,
       agentTimeoutMs: 700000,
+      agentIdleTimeoutMs: 500000,
     })
     const parentId = await trigger(box, [
       '--repo',
@@ -3033,7 +3098,11 @@ describe('repair', { timeout: 240000 }, () => {
       join(box.repo, 'factory.json'),
       JSON.stringify({ check: ['false'], agentTimeoutMs: 1000 }),
     )
-    const env = { AGENT_TIMEOUT_MS: '5555', TEST_TIMEOUT_MS: '5555' }
+    const env = {
+      AGENT_TIMEOUT_MS: '5555',
+      AGENT_IDLE_TIMEOUT_MS: '5555',
+      TEST_TIMEOUT_MS: '5555',
+    }
     await mkdir(join(box.root, 'a'))
     await mkdir(join(box.root, 'b'))
     await writeFile(join(box.root, 'a', 'findings.md'), 'FINDING: refunds\n')
@@ -3116,6 +3185,8 @@ describe('repair', { timeout: 240000 }, () => {
     assert.deepEqual(child.target.checkCommand, CHECK)
     assert.equal(child.checkTimeoutMs, 150000)
     assert.equal(child.agentTimeoutMs, 700000)
+    // The parent's idle limit as it was fixed, never read again.
+    assert.equal(child.agentIdleTimeoutMs, 500000)
     assert.equal(child.codexPath, parent.codexPath ?? null)
     assert.equal(child.maxIterations, 1)
     assert.equal(child.target.dispositions, null)

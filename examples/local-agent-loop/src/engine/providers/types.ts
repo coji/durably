@@ -136,7 +136,10 @@ export interface AgentResult {
 export interface AgentCallOptions {
   prompt: string
   workdir: string
-  /** Upper bound per call (ms). */
+  /**
+   * Upper bound per call (ms). The runner passes a value later than its own
+   * limit, so its own timer stops the call first.
+   */
   timeoutMs: number
   requestedModel: string | null
   requestedEffort: string | null
@@ -172,9 +175,10 @@ export interface AgentCallOptions {
   onPartialUsage?: (usage: TokenUsage) => void
   /**
    * Called when the provider sees the agent at work on this call: text,
-   * reasoning, a tool call or a tool result. Protocol set-up and the error
-   * itself are not activity. After any activity, an error is never read as a
-   * refusal, since the agent may already have acted.
+   * reasoning, a tool call, a tool result or a running tool's progress, each
+   * time, since the runner's idle limit restarts on it. Protocol set-up and
+   * the error itself are not activity. After any activity, an error is never
+   * read as a refusal, since the agent may already have acted.
    */
   onActivity?: () => void
   /**
@@ -409,6 +413,15 @@ export function boundedDenials(
   }
 }
 
+/**
+ * Which of the factory's limits stopped a call: `total`, counted from its
+ * start, or `idle`, counted from the last sign of the agent at work.
+ */
+export interface AgentTimeout {
+  kind: 'total' | 'idle'
+  limitMs: number
+}
+
 /** Persisted per-attempt measurement. Missing values stay null (never 0-filled). */
 export interface AttemptMeasurement {
   provider: ProviderName
@@ -465,6 +478,11 @@ export interface AttemptMeasurement {
   error: string | null
   /** Why the attempt stopped early (cancel / lease-loss / timeout). */
   interruptionReason: string | null
+  /**
+   * The factory's limit that stopped the call, when its own timer did;
+   * absent on every other attempt.
+   */
+  timedOut?: AgentTimeout | null
   /** A verification attempt's full check output; absent on LLM calls. */
   verificationLog?: VerificationLog | null
   /** An LLM call's agent output; absent when nothing was sent. */

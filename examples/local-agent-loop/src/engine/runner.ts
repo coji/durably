@@ -12,7 +12,7 @@ import { join } from 'node:path'
 
 import type { JsonValue, StepAttemptContext } from '@coji/durably'
 
-import { timerDelay } from './child.js'
+import { MAX_TIMEOUT_MS, timerDelay } from './child.js'
 import {
   estimateCostBreakdown,
   estimateCostBreakdownByModel,
@@ -24,6 +24,7 @@ import {
   type AgentProvider,
   type AgentResult,
   type AgentRole,
+  type AgentTimeout,
   type AttemptMeasurement,
   type ProviderName,
   type ReviewCallSettings,
@@ -47,7 +48,14 @@ export interface AgentCallSpec {
   specWrite?: SpecWriteAccess
   /** A spec reviewer's name; see `AgentCallOptions.specReviewer`. */
   specReviewer?: string
+  /** The call's total limit, from its start. */
   timeoutMs: number
+  /**
+   * The longest the call may go without any sign of the agent at work:
+   * activity, output or partial usage. Absent: no such limit, as on a run
+   * set up before it existed.
+   */
+  idleTimeoutMs?: number
   requestedModel: string | null
   requestedEffort: string | null
   effectiveModel: string | null
@@ -84,6 +92,13 @@ export interface AgentCallSpec {
    */
   acceptRejection?: boolean
   /**
+   * Return a call the factory's own timer stopped (`timedOut`) as the call's
+   * outcome instead of throwing `AgentTimeoutError`. Only the code stage
+   * asks for it: it seals what the call left in the worktree. Either way the
+   * stop is saved as a completed checkpoint and never resent.
+   */
+  acceptTimeout?: boolean
+  /**
    * A signal that ends the call because its result is no longer wanted,
    * such as a review whose candidate failed verification. Unlike a cancel
    * or a lost lease, the call is settled: a completed checkpoint records it
@@ -110,6 +125,8 @@ export interface AgentCallOutcome {
   observedModel: string | null
   /** Why the call was ended early by `supersede`; null when it was not. */
   cancelled: SupersedeReason | null
+  /** Which of the factory's limits stopped the call; null when none did. */
+  timedOut: AgentTimeout | null
 }
 
 interface StartedCheckpoint {
@@ -129,6 +146,8 @@ interface CompletedCheckpoint {
   rejection?: string
   /** Why the call was ended by `supersede`; absent otherwise. */
   cancelled?: SupersedeReason
+  /** The factory's limit that stopped the call; absent otherwise. */
+  timedOut?: AgentTimeout
   invocationStartedAt: string
   invocationCompletedAt: string
 }
@@ -160,6 +179,34 @@ export class RejectedInvocationError extends Error {
     this.name = 'RejectedInvocationError'
   }
 }
+
+/** Prefix of every `AgentTimeoutError` message; the failure table matches it. */
+export const AGENT_TIMEOUT_MESSAGE = 'agent-timeout'
+
+/**
+ * The factory's own timer stopped a call: it ran past its total limit, or
+ * went silent past its idle limit. The stop is saved as the call's completed
+ * checkpoint, so the call is settled: nothing is resent, and a replay throws
+ * this again with the same limit.
+ */
+export class AgentTimeoutError extends Error {
+  constructor(
+    readonly timedOut: AgentTimeout,
+    call: { role: string },
+  ) {
+    super(
+      `${AGENT_TIMEOUT_MESSAGE}: the ${call.role} call was stopped at its ${timedOut.kind} limit of ${timedOut.limitMs} ms`,
+    )
+    this.name = 'AgentTimeoutError'
+  }
+}
+
+/**
+ * How much later than the runner's own limit the provider's copy of it
+ * fires, so the runner's timer always stops the call first and the stop is
+ * read as the factory's.
+ */
+export const PROVIDER_TIMEOUT_MARGIN_MS = 60_000
 
 /** Prefix of every `UncertainInvocationError` message; the failure table matches it. */
 export const UNCERTAIN_INVOCATION_MESSAGE = 'uncertain external invocation'
@@ -363,6 +410,7 @@ export async function runAgentCall(
       permissionDenials: result.permissionDenials ?? [],
       observedModel: result.observedModel ?? null,
       cancelled: null,
+      timedOut: null,
     }
   }
 
@@ -401,6 +449,7 @@ export async function runAgentCall(
       permissionDenials: [],
       observedModel: null,
       cancelled: null,
+      timedOut: null,
     }
   }
 
@@ -437,12 +486,55 @@ export async function runAgentCall(
       permissionDenials: [],
       observedModel: null,
       cancelled: reason,
+      timedOut: null,
+    }
+  }
+  /**
+   * A call the factory's own timer stopped: settled like a cancelled one,
+   * with the partial usage it reported kept. Only the code stage takes it as
+   * an outcome; every other caller gets `AgentTimeoutError`, first time and
+   * on replay alike.
+   */
+  const finishTimedOut = async (
+    timedOut: AgentTimeout,
+    checkpoint: CompletedCheckpoint,
+    recovered: boolean,
+  ): Promise<AgentCallOutcome> => {
+    invocationId = checkpoint.invocationId
+    await settleMeasurement()
+    measurement = await writeMeasurement(attempt, measurement, {
+      invocationId,
+      elapsedMs:
+        Date.parse(checkpoint.invocationCompletedAt) -
+        Date.parse(checkpoint.invocationStartedAt),
+      invocationStartedAt: checkpoint.invocationStartedAt,
+      invocationCompletedAt: checkpoint.invocationCompletedAt,
+      recovered,
+      result: 'timed-out',
+      error: null,
+      interruptionReason: 'timeout',
+      timedOut,
+    })
+    if (!spec.acceptTimeout) throw new AgentTimeoutError(timedOut, spec)
+    return {
+      text: '',
+      sessionId: null,
+      invocationId,
+      recovered,
+      measurement,
+      rejection: null,
+      permissionDenials: [],
+      observedModel: null,
+      cancelled: null,
+      timedOut,
     }
   }
   const settled = (
     checkpoint: CompletedCheckpoint,
     recovered: boolean,
   ): Promise<AgentCallOutcome> => {
+    if (checkpoint.timedOut)
+      return finishTimedOut(checkpoint.timedOut, checkpoint, recovered)
     if (typeof checkpoint.cancelled === 'string')
       return finishCancelled(checkpoint.cancelled, checkpoint, recovered)
     if (typeof checkpoint.rejection === 'string')
@@ -488,6 +580,7 @@ export async function runAgentCall(
       permissionDenials: [],
       observedModel: null,
       cancelled: spec.supersede.reason,
+      timedOut: null,
     }
   }
 
@@ -524,23 +617,45 @@ export async function runAgentCall(
     ...(agentLog ? { agentLog: { ...agentLog } } : {}),
   })
   const log = agentLog
-  const onOutput =
-    log && !log.writeError
-      ? (chunk: string) => {
-          if (finalized) return
-          logWrites = logWrites
-            .then(() => appendFile(log.path, chunk, 'utf8'))
-            .catch((error: unknown) => {
-              log.writeError ??= (error as Error).message
-            })
-        }
-      : undefined
 
+  // Two limits stop the call through one controller: the total, from the
+  // start, and the idle one, restarted by every sign of the agent at work.
+  // The first to fire is recorded; once the call has ended, neither fires
+  // and no late notice restarts the idle one.
   const timeout = new AbortController()
+  let fired: AgentTimeout | null = null
+  let ended = false
+  const stop = (kind: AgentTimeout['kind'], limitMs: number) => {
+    if (ended || fired) return
+    fired = { kind, limitMs }
+    timeout.abort(new Error(`agent call ${kind} timeout`))
+  }
   const timer = setTimeout(
-    () => timeout.abort(new Error('agent call timeout')),
+    () => stop('total', spec.timeoutMs),
     timerDelay(spec.timeoutMs),
   )
+  const idleMs = spec.idleTimeoutMs
+  let idleTimer: ReturnType<typeof setTimeout> | null = null
+  const heartbeat = () => {
+    if (ended || fired || idleMs === undefined) return
+    if (idleTimer) clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => stop('idle', idleMs), timerDelay(idleMs))
+  }
+  heartbeat()
+  const endTimers = () => {
+    ended = true
+    clearTimeout(timer)
+    if (idleTimer) clearTimeout(idleTimer)
+  }
+  const onOutput = (chunk: string) => {
+    heartbeat()
+    if (finalized || !log || log.writeError) return
+    logWrites = logWrites
+      .then(() => appendFile(log.path, chunk, 'utf8'))
+      .catch((error: unknown) => {
+        log.writeError ??= (error as Error).message
+      })
+  }
   const supersede = spec.supersede ?? null
   const linked = AbortSignal.any([
     signal,
@@ -557,7 +672,11 @@ export async function runAgentCall(
       ...(spec.review ? { review: spec.review } : {}),
       ...(spec.specWrite ? { specWrite: spec.specWrite } : {}),
       ...(spec.specReviewer ? { specReviewer: spec.specReviewer } : {}),
-      timeoutMs: spec.timeoutMs,
+      // The provider's own copy of the limit fires later than the runner's,
+      // so a stop at the limit is always the runner's and read as one.
+      timeoutMs: timerDelay(
+        Math.min(spec.timeoutMs + PROVIDER_TIMEOUT_MARGIN_MS, MAX_TIMEOUT_MS),
+      ),
       requestedModel: spec.effectiveModel,
       requestedEffort: spec.effectiveEffort,
       role: spec.role,
@@ -566,10 +685,12 @@ export async function runAgentCall(
       signal: linked,
       onActivity: () => {
         active = true
+        heartbeat()
       },
-      ...(onOutput ? { onOutput } : {}),
+      onOutput,
       onPartialUsage: (usage) => {
         active = true
+        heartbeat()
         partialWrites = partialWrites
           .then(async () => {
             if (finalized) return
@@ -584,6 +705,7 @@ export async function runAgentCall(
           })
       },
     })
+    endTimers()
     // Record the result before validating it. The call has already been made
     // and, on a subscription or an API key, already been paid for. Throwing
     // first would leave a start-only checkpoint, and every later resume would
@@ -612,6 +734,27 @@ export async function runAgentCall(
     // reads the checkpoint's value, and the two must agree.
     return finish(result, false, completed)
   } catch (error) {
+    endTimers()
+    // Stopped by the factory's own timer, and not by a cancel, a lost lease
+    // or supersede: the outcome is known, so it is settled with the usage it
+    // had reported, and a replay neither resends it nor reads it as
+    // uncertain. A provider's own timeout error is not this.
+    const factoryTimeout = fired as AgentTimeout | null
+    if (
+      factoryTimeout &&
+      !signal.aborted &&
+      !(supersede?.signal.aborted ?? false)
+    ) {
+      const stopped: CompletedCheckpoint = {
+        ...startRecord,
+        status: 'completed',
+        result: null,
+        timedOut: factoryTimeout,
+        invocationCompletedAt: new Date().toISOString(),
+      }
+      await writeJsonAtomic(paths.completed, stopped, attempt.id)
+      return finishTimedOut(factoryTimeout, stopped, false)
+    }
     // Ended because its result is no longer wanted, and not by a cancel, a
     // lost lease or the timeout: settled as cancelled, with the usage it had
     // reported, so a replay neither resends it nor reads it as uncertain.
@@ -669,6 +812,6 @@ export async function runAgentCall(
     })
     throw error
   } finally {
-    clearTimeout(timer)
+    endTimers()
   }
 }

@@ -247,6 +247,12 @@ export interface Target {
   reviewRules(lens: 'correctness' | 'edge-cases'): string[]
   /** Seal the current workdir as an immutable candidate. */
   seal(args: SealArgs): Promise<CandidateRef>
+  /**
+   * Whether the workdir holds anything `since`, the candidate the last call
+   * started from (null: the base), does not: what sealing now would add.
+   * Still true after that work is sealed, so a replay decides the same.
+   */
+  hasChanges(since: CandidateRef | null): Promise<boolean>
   /** Throw when a sealed candidate no longer matches what was sealed. */
   assertIntact(candidate: CandidateRef): Promise<void>
   /** Run the pinned check against a sealed candidate. */

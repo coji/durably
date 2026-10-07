@@ -222,3 +222,18 @@ export const USAGE = {
     totalTokens: null,
   },
 }
+
+/** A candidate sealed from a repair stopped at its idle limit. */
+export const STOPPED_CANDIDATE = {
+  id: '01K6D2T5CANDIDATE0000002',
+  branch: 'factory/01K6D2Q7XB3M9RKT4WAPPROV',
+  commit: '9f2c4e1a7b3d5f60718293a4b5c6d7e8f9012345',
+  changes: {
+    files: 3,
+    additions: 42,
+    deletions: 7,
+    diffPath: '',
+    changedFilesPath: '',
+  },
+  timedOut: { kind: 'idle' as const, limitMs: 15 * 60_000 },
+}

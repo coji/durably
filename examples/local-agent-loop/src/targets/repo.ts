@@ -320,6 +320,16 @@ export class RepoTarget implements Target {
     }
   }
 
+  async hasChanges(since: CandidateRef | null): Promise<boolean> {
+    // Uncommitted work, or a commit the agent made itself, or the commit a
+    // seal of that work already made: each moves away from `since`.
+    if (await isDirty(this.config.workdir)) return true
+    return (
+      (await resolveCommit(this.config.workdir, 'HEAD')) !==
+      (since?.commit ?? this.config.baseCommit)
+    )
+  }
+
   /**
    * Write the candidate's full diff and changed-file list outside the
    * worktree, and count its size. Done at sealing, so a candidate that never

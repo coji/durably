@@ -107,6 +107,7 @@ import {
   BASELINE_STEP,
   EFFORT_RESUME_POLICY,
   executionKey,
+  idleLimitOf,
   initialState,
   REVIEW_CONTEXTS,
   REVIEW_LENSES,
@@ -250,11 +251,21 @@ export const timeoutMsSchema = z.number().int().positive().max(MAX_TIMEOUT_MS)
  * bundled sample. The sample is a one-line fix graded by a two-file suite; a
  * repository task means reading the code base and running its whole check,
  * and the first real run of this factory died on a five minute agent timeout
- * before it had finished reading.
+ * before it had finished reading. A repository call may run for two hours
+ * as long as the agent keeps working; the idle limit stops one that has
+ * gone silent for fifteen minutes (ADR-0032).
  */
 const DEFAULT_TIMEOUTS = {
-  subject: { checkTimeoutMs: 120000, agentTimeoutMs: 300000 },
-  repo: { checkTimeoutMs: 900000, agentTimeoutMs: 1800000 },
+  subject: {
+    checkTimeoutMs: 120000,
+    agentTimeoutMs: 300000,
+    agentIdleTimeoutMs: 300000,
+  },
+  repo: {
+    checkTimeoutMs: 900000,
+    agentTimeoutMs: 7200000,
+    agentIdleTimeoutMs: 900000,
+  },
 } as const
 
 const providerSchema = z.enum(['codex', 'claude', 'fake'])
@@ -297,6 +308,25 @@ const fakeScenarioSchema = z
       .object({
         chunks: z.array(z.string()),
         intervalMs: z.number().int().min(0),
+      })
+      .strict()
+      .optional(),
+    stall: z
+      .object({
+        roles: z.array(
+          z.enum([
+            'implement',
+            'repair',
+            'review-a',
+            'review-b',
+            'triage',
+            'preflight',
+            'spec-author',
+            'spec-fix',
+            'spec-review',
+          ]),
+        ),
+        changes: z.record(z.string().min(1), z.string()).optional(),
       })
       .strict()
       .optional(),
@@ -625,10 +655,13 @@ const inputSchema = z
     autoApprove: z.boolean().optional(),
     /**
      * Fixed at trigger. Absent only on a run stored before they were, which
-     * still reads `TEST_TIMEOUT_MS` / `AGENT_TIMEOUT_MS` in the worker.
+     * still reads `TEST_TIMEOUT_MS` / `AGENT_TIMEOUT_MS` /
+     * `AGENT_IDLE_TIMEOUT_MS` in the worker.
      */
     checkTimeoutMs: timeoutMsSchema.optional(),
     agentTimeoutMs: timeoutMsSchema.optional(),
+    /** At most `agentTimeoutMs`; see `resolveTimeouts`. */
+    agentIdleTimeoutMs: timeoutMsSchema.optional(),
     /**
      * The Codex CLI file to launch, resolved and checked at trigger. Null or
      * absent: `codex` on PATH first, then the bundled CLI.
@@ -905,21 +938,44 @@ function positiveTimeout(name: string, fallback: number): number {
 }
 
 /**
- * A run's two timeouts: each fixed value first, then `TEST_TIMEOUT_MS` /
- * `AGENT_TIMEOUT_MS` in this process's environment, then the target default.
+ * A run's timeouts: each fixed value first, then `TEST_TIMEOUT_MS` /
+ * `AGENT_TIMEOUT_MS` / `AGENT_IDLE_TIMEOUT_MS` in this process's
+ * environment, then the target default. The default idle limit is never
+ * longer than the total; an idle limit given longer than the total is
+ * refused, before anything is created.
  */
 export function resolveTimeouts(
   kind: keyof typeof DEFAULT_TIMEOUTS,
-  fixed: { checkTimeoutMs?: number; agentTimeoutMs?: number } | null,
-): { checkTimeoutMs: number; agentTimeoutMs: number } {
+  fixed: {
+    checkTimeoutMs?: number
+    agentTimeoutMs?: number
+    agentIdleTimeoutMs?: number
+  } | null,
+): {
+  checkTimeoutMs: number
+  agentTimeoutMs: number
+  agentIdleTimeoutMs: number
+} {
   const defaults = DEFAULT_TIMEOUTS[kind]
+  const agentTimeoutMs =
+    fixed?.agentTimeoutMs ??
+    positiveTimeout('AGENT_TIMEOUT_MS', defaults.agentTimeoutMs)
+  const agentIdleTimeoutMs =
+    fixed?.agentIdleTimeoutMs ??
+    positiveTimeout(
+      'AGENT_IDLE_TIMEOUT_MS',
+      Math.min(defaults.agentIdleTimeoutMs, agentTimeoutMs),
+    )
+  if (agentIdleTimeoutMs > agentTimeoutMs)
+    throw new Error(
+      `agentIdleTimeoutMs (${agentIdleTimeoutMs} ms) must not be longer than agentTimeoutMs (${agentTimeoutMs} ms)`,
+    )
   return {
     checkTimeoutMs:
       fixed?.checkTimeoutMs ??
       positiveTimeout('TEST_TIMEOUT_MS', defaults.checkTimeoutMs),
-    agentTimeoutMs:
-      fixed?.agentTimeoutMs ??
-      positiveTimeout('AGENT_TIMEOUT_MS', defaults.agentTimeoutMs),
+    agentTimeoutMs,
+    agentIdleTimeoutMs,
   }
 }
 
@@ -971,6 +1027,7 @@ async function runTriage(
       // A one-line judgment; a hung call should not hold the code stage for
       // the full repository agent timeout.
       timeoutMs: Math.min(setup.agentTimeoutMs, TRIAGE_TIMEOUT_MS),
+      ...idleLimitOf(setup, TRIAGE_TIMEOUT_MS),
       requestedModel: profile.requestedModel,
       requestedEffort: profile.requestedEffort,
       effectiveModel: profile.effectiveModel,
@@ -1134,6 +1191,7 @@ async function runPreflight(
           prompt: PREFLIGHT_PROMPT,
           workdir: target.workdir,
           timeoutMs: Math.min(setup.agentTimeoutMs, PREFLIGHT_TIMEOUT_MS),
+          ...idleLimitOf(setup, PREFLIGHT_TIMEOUT_MS),
           requestedModel: check.requestedModel,
           requestedEffort: check.effort,
           effectiveModel: check.model,
@@ -1366,8 +1424,11 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
           // stored before they were fixed reads the worker's environment.
           // Both are read before anything is created, so a bad value leaves
           // no run directory, worktree or branch behind.
-          const { checkTimeoutMs: testTimeoutMs, agentTimeoutMs } =
-            resolveTimeouts(input.target.kind, input)
+          const {
+            checkTimeoutMs: testTimeoutMs,
+            agentTimeoutMs,
+            agentIdleTimeoutMs,
+          } = resolveTimeouts(input.target.kind, input)
           const codexPath = input.codexPath ?? null
           // The path and version of every real CLI the roles launch, so runs
           // on different builds never share a config version. A repair run
@@ -1525,6 +1586,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
                     ? `repo:from-spec:${target.checkFromSpec.join(' ')}`
                     : `repo:${target.checkCommand.join(' ')}`,
               agentTimeoutMs,
+              agentIdleTimeoutMs,
               checkTimeoutMs: testTimeoutMs,
               code: profiles.code,
               repair: ownRepair,
@@ -1562,6 +1624,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             triage,
             maxIterations: input.maxIterations,
             agentTimeoutMs,
+            agentIdleTimeoutMs,
             baselineCheck,
             // Null, not absent, without the check, so a repair run does not
             // take the value from this run's input instead.

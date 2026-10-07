@@ -6,7 +6,12 @@ import {
   UNKNOWN,
 } from '../../../engine/format'
 import type { ReportCandidate } from '../../../engine/report'
-import { COMMON, INTERRUPTION_NAME, TRACE } from '../../glossary'
+import {
+  COMMON,
+  INTERRUPTION_NAME,
+  TIMEOUT_KIND_NAME,
+  TRACE,
+} from '../../glossary'
 import { stageName } from '../../labels'
 import type { TraceNode, TraceProfile } from '../../server'
 import { InlineField, PartialTag } from '../KeyValue'
@@ -110,6 +115,16 @@ export function TimingFields({
           {INTERRUPTION_NAME[n.interruptionReason] ?? n.interruptionReason}
         </InlineField>
       ) : null}
+      {n.timedOut ? (
+        <>
+          <InlineField label={TRACE.timedOut}>
+            {TIMEOUT_KIND_NAME[n.timedOut.kind]}
+          </InlineField>
+          <InlineField label={TRACE.timeoutLimit}>
+            <Num>{formatDuration(n.timedOut.limitMs)}</Num>
+          </InlineField>
+        </>
+      ) : null}
     </>
   )
 }
@@ -143,6 +158,11 @@ export function CandidateFields({
       <InlineField label={TRACE.candidate}>
         <Num>{c.id}</Num>
       </InlineField>
+      {c.timedOut ? (
+        <InlineField label={TRACE.candidateOrigin}>
+          {TRACE.timedOutWork}
+        </InlineField>
+      ) : null}
       <InlineField label={TRACE.branch}>
         <Num>{c.branch ?? COMMON.none}</Num>
       </InlineField>

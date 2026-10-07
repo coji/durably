@@ -902,8 +902,10 @@ export function claudeRejection(error: unknown): string | null {
 
 /**
  * Whether one Agent SDK message shows the agent at work: an assistant
- * message (text, thinking or a tool call, with its usage). Every tool call
- * arrives in one, so a tool result never comes first. When the CLI reports
+ * message (text, thinking or a tool call, with its usage), a tool's result,
+ * or a running tool's progress. The last two keep the runner's idle limit
+ * from firing while a long command runs. Every tool call arrives in an
+ * assistant message, so a tool result or progress never comes first. When the CLI reports
  * an API refusal it sends a synthetic assistant message: model
  * `<synthetic>`, the error text as content and zero usage. That frame is not
  * activity. An errored message from a real model, or one that reports any
@@ -912,6 +914,8 @@ export function claudeRejection(error: unknown): string | null {
  * model request, so they are not activity.
  */
 export function isAgentActivity(message: SDKMessage): boolean {
+  if (message.type === 'tool_progress') return true
+  if (message.type === 'user') return hasToolResult(message.message)
   if (message.type !== 'assistant') return false
   if (message.error === undefined) return true
   const body = message.message as unknown as {
@@ -929,6 +933,17 @@ export function isAgentActivity(message: SDKMessage): boolean {
     return typeof value === 'number' && value > 0
   })
   return body?.model !== SYNTHETIC_MODEL || anyUsage
+}
+
+/** Whether a user message carries a tool's result, not a prompt. */
+function hasToolResult(message: unknown): boolean {
+  const content = (message as { content?: unknown } | null)?.content
+  return (
+    Array.isArray(content) &&
+    content.some(
+      (block) => (block as { type?: unknown } | null)?.type === 'tool_result',
+    )
+  )
 }
 
 /**

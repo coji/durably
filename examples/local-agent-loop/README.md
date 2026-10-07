@@ -208,6 +208,15 @@ pnpm --filter example-local-agent-loop demo status --format json
   usageの報告のどれかが届いた後）のerrorも、すでに何かを実行した可能性があるので
   拒否とせず `uncertain-invocation` として止めます。startだけの
   checkpointが残っていれば、拒否より先に `uncertain-invocation` として扱います。
+- factoryが自分の時間の上限でagent呼び出しを止めた場合は、結果の分からない
+  呼び出しにしません。止めた理由が分かっているので、上限の種類（全体か無通信か）と
+  長さを完了checkpointとして記録し、再開しても送り直しません。実装と修正の
+  呼び出しが作業ツリーに変更を残していれば、それを通常どおり候補として封印して
+  検証へ進みます（下の「実リポジトリに対して動かす」を参照）。変更が無い場合と、
+  仕様の作成・修正・レビュー、レビュー、preflightの呼び出しを止めた場合は
+  `agent-timeout` として `retry: yes` で止まります。triageは従来どおり
+  `unknown` を記録してrunを続けます。workerの停止やleaseの喪失で呼び出しが
+  終わった場合は、従来どおり `uncertain-invocation` です。
 - `--publish` 付きでcancelされたrunは `cancelled-publish` として `retry: NO`
   になります。pushやpull requestの作成が記録前に済んでいる可能性があるので、
   remoteのbranchとpull requestを先に確かめてください。
@@ -216,7 +225,7 @@ pnpm --filter example-local-agent-loop demo status --format json
   もう一度打っても、最初に始めたrunを返すだけです。`retry: NO` の
   runや、まだ止まっていないrunには実行を拒みます。素の `demo trigger` は同梱の
   題材で動くので、次の手順には出しません。
-- `baseline-check-failed`、`preflight-failed`、`rejected-invocation` には、
+- `baseline-check-failed`、`preflight-failed`、`rejected-invocation`、`agent-timeout` には、
   `demo retrigger --run <id> --reload-config` も表示します。`factory.json` を直してから打つコマンドです。
   保存したtask、spec、dispositions、issue、対象リポジトリはそのままで、
   `factory.json` だけを読み直します。読み直すのはtrigger時に `--config` で
@@ -667,7 +676,8 @@ HOME=<表示された場所> pnpm --filter example-local-agent-loop demo worker
   "base": "main",
   "baselineCheck": true,
   "checkTimeoutMs": 900000,
-  "agentTimeoutMs": 1800000,
+  "agentTimeoutMs": 7200000,
+  "agentIdleTimeoutMs": 900000,
   "commit": {
     "authorName": "Factory Bot",
     "authorEmail": "factory-bot@example.com"
@@ -716,15 +726,32 @@ pnpm --filter example-local-agent-loop demo trigger \
   既定presetを使います。明示した役割の値が他の役割やフラグで上書きされることは
   ありません。fakeと実providerを役割ごとに混ぜる
   ことはできません。
-- timeoutの既定値はターゲットで変わります。実リポジトリはagent呼び出し30分、
-  検査15分。同梱題材はそれぞれ5分と2分です。`factory.json` の
-  `agentTimeoutMs` と `checkTimeoutMs`（ミリ秒）が最優先で、無ければ `trigger`
-  を実行したプロセスの `AGENT_TIMEOUT_MS` と `TEST_TIMEOUT_MS`、それも無ければ
-  既定値を使います。どれも2147483647以下の正の整数に限り、`0`、負数、小数、
+- agent呼び出しには二つの時間の上限があります。`agentTimeoutMs` は呼び出しの
+  開始からの全体の上限です。`agentIdleTimeoutMs` は無通信の上限で、agentの活動
+  （文章、推論、tool呼び出しとその結果、実行中のtoolの進捗）、出力、usageの報告が
+  この時間途絶えたら止めます。どれかが届くたびに数え直すので、動き続けている
+  呼び出しは無通信の上限を超えても続き、全体の上限で止まります。providerに渡す
+  上限はfactoryの全体の上限より遅くしてあり、止めるのは常にfactoryのtimerです。
+- timeoutの既定値はターゲットで変わります。実リポジトリはagent呼び出しが全体2時間、
+  無通信15分、検査15分。同梱題材は全体5分、無通信5分、検査2分です。`factory.json` の
+  `agentTimeoutMs`、`agentIdleTimeoutMs`、`checkTimeoutMs`（ミリ秒）が最優先で、
+  無ければ `trigger` を実行したプロセスの `AGENT_TIMEOUT_MS`、`AGENT_IDLE_TIMEOUT_MS`、
+  `TEST_TIMEOUT_MS`、それも無ければ既定値を使います。無通信の既定値は全体の上限を
+  超えないように、全体の上限に合わせて短くします。どれも2147483647以下の正の整数に限り、`0`、負数、小数、
   `NaN`、`Infinity`、2147483647超は `trigger` の時点で拒否します。これより大きい
   値はNodeのtimerがあふれて約1ミリ秒で発火し、呼び出しを始めた直後に打ち切るからです。
+  無通信の上限が全体の上限より長い組み合わせも、作業ツリーを作る前に `trigger` で拒否します。
   解決した値はrun inputに保存し、workerの環境変数は読みません（この変更より前に
-  保存されたrunだけは、従来どおりworkerの環境変数を読みます）。
+  保存されたrunだけは、従来どおりworkerの環境変数を読みます）。修正のrunは親が
+  保存した値を引き継ぎ、`retrigger --reload-config` だけが `factory.json` から読み直します。
+  reportは解決した全体と無通信の上限を表示します。
+- 実装や修正の呼び出しをfactoryが時間の上限で止めたときは、その呼び出しを始めた
+  時点の候補（最初の実装ならbase）から作業ツリーに変更があるかを見ます。変更が
+  あれば、終わった呼び出しと同じ手順でcommitして候補にし、通常どおり検証します。
+  検証に落ちれば、修正の回数を1つ使って次の修正へ進みます。次の修正には、前の
+  呼び出しが時間の上限で止まり、その途中の作業が今の候補だと伝えます。report、
+  traceは、その候補が時間切れの呼び出しから作られたことを表示します。変更が
+  無ければ候補を作らず `agent-timeout` で止まります。
 - 反復ごとにcommitして封印します。検証・レビュー・成果物は同じcommitを見ます。
 - 既定の成果物は `~/.local/state/local-agent-loop/runs/<runId>/delivery/<candidate>.patch`
   です。patchはbase commitと最後のcandidateの差分です。issueなしのrunのbranchは

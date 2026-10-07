@@ -200,9 +200,13 @@ const factoryConfigSchema = z
     parallelReview: z.boolean().optional(),
     /** The Codex CLI file to launch; relative to this file's directory. */
     codexPath: z.string().min(1).optional(),
-    /** Milliseconds; win over `TEST_TIMEOUT_MS` / `AGENT_TIMEOUT_MS`. */
+    /**
+     * Milliseconds; win over `TEST_TIMEOUT_MS` / `AGENT_TIMEOUT_MS` /
+     * `AGENT_IDLE_TIMEOUT_MS`. The idle limit may not exceed the total.
+     */
     checkTimeoutMs: timeoutMsSchema.optional(),
     agentTimeoutMs: timeoutMsSchema.optional(),
+    agentIdleTimeoutMs: timeoutMsSchema.optional(),
     /** Commit author, message template, and the branch `--publish` pushes. */
     commit: commitConfigSchema.optional(),
     /** Spec stages before implementation, and a check chosen from the spec. */
@@ -707,10 +711,8 @@ function assembleInput(a: Record<string, string>, resolved: ResolvedTarget) {
   } = resolveProfiles(a, config, specStages !== null)
   // Fixed here, so the worker's environment never changes a stored run: the
   // config wins, then this process's environment, then the target default.
-  const { checkTimeoutMs, agentTimeoutMs } = resolveTimeouts(
-    target.kind,
-    config,
-  )
+  const { checkTimeoutMs, agentTimeoutMs, agentIdleTimeoutMs } =
+    resolveTimeouts(target.kind, config)
   const approve = a['approve']
   if (approve !== undefined && approve !== 'auto' && approve !== 'manual')
     throw new Error('--approve must be auto|manual')
@@ -738,6 +740,7 @@ function assembleInput(a: Record<string, string>, resolved: ResolvedTarget) {
     ...(approve ? { autoApprove: approve === 'auto' } : {}),
     checkTimeoutMs,
     agentTimeoutMs,
+    agentIdleTimeoutMs,
     codexPath,
     ...(configSource ? { configSource } : {}),
     ...(Object.keys(review).length > 0 ? { review } : {}),
@@ -1319,6 +1322,11 @@ export function buildRepairInput(
     autoApprove: stored.autoApprove,
     checkTimeoutMs: t.checkTimeoutMs,
     agentTimeoutMs: stored.agentTimeoutMs,
+    // A parent stored before the idle limit existed passes none on, and the
+    // repair's setup resolves it as such a run's does.
+    ...(stored.agentIdleTimeoutMs !== undefined
+      ? { agentIdleTimeoutMs: stored.agentIdleTimeoutMs }
+      : {}),
     codexPath: recorded(
       stored,
       'codexPath',

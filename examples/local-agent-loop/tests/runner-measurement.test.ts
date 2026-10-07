@@ -32,7 +32,9 @@ import type {
 import type { AttemptMeasurement } from '../src/engine/providers/types.js'
 import { cacheReadRatio, toAttemptRow } from '../src/engine/report.js'
 import {
+  AgentTimeoutError,
   checkpointPaths,
+  PROVIDER_TIMEOUT_MARGIN_MS,
   RejectedInvocationError,
   runAgentCall,
   UncertainInvocationError,
@@ -985,10 +987,10 @@ describe('a refused call after preflight stops the run, settled', () => {
       fakeAttempt() as never,
       timedOut,
     ).catch((e: unknown) => e)
-    assert.ok(!(error instanceof RejectedInvocationError))
-    assert.equal(
+    // The factory's own timeout is settled as one, never as a refusal.
+    assert.ok(error instanceof AgentTimeoutError)
+    assert.ok(
       existsSync(checkpointPaths(timedOutDir, timedOut.operationKey).completed),
-      false,
     )
     // Cancelled.
     const cancelledDir = await mkdtemp(join(tmpdir(), 'checkpoints-'))
@@ -1007,14 +1009,23 @@ describe('a refused call after preflight stops the run, settled', () => {
       ),
       false,
     )
-    // Both are left start-only: a resume stops as uncertain, never resends.
+    // The cancel is left start-only: a resume stops as uncertain, never
+    // resends. The timeout replays as the same timeout.
+    await assert.rejects(
+      runAgentCall(
+        new AbortController().signal,
+        fakeAttempt() as never,
+        cancelled,
+      ),
+      UncertainInvocationError,
+    )
     await assert.rejects(
       runAgentCall(
         new AbortController().signal,
         fakeAttempt() as never,
         timedOut,
       ),
-      UncertainInvocationError,
+      AgentTimeoutError,
     )
   })
 
@@ -1369,5 +1380,284 @@ describe('what a provider writes to the agent log', () => {
     } as never)
     read({ type: 'result', usage: { input_tokens: 9 } } as never)
     assert.equal(written, 'Looking at the tests.\n> Bash pnpm test\n')
+  })
+})
+
+describe("the factory's total and idle limits on an agent call", () => {
+  const RESULT: AgentResult = {
+    text: 'done',
+    session: { id: 'native-session' },
+    resolvedModel: 'resolved-model',
+    resolvedEffort: 'low',
+    reportedModel: null,
+    reportedEffort: null,
+    usage: null,
+    elapsedMs: 1,
+  }
+
+  /**
+   * A call that sends `beat` every `everyMs` until `doneMs` (never when
+   * null), then answers; it rejects at once when aborted. `calls` counts
+   * what was sent.
+   */
+  function beating(
+    beat: (options: AgentCallOptions) => void,
+    everyMs: number,
+    doneMs: number | null,
+  ) {
+    let markStarted = () => {}
+    const sent = {
+      calls: 0,
+      timeoutMs: 0,
+      /** Settles once the call has been sent. */
+      started: new Promise<void>((r) => (markStarted = r)),
+    }
+    const provider = stubProvider(
+      (options) =>
+        new Promise<AgentResult>((resolve, reject) => {
+          sent.calls++
+          markStarted()
+          sent.timeoutMs = options.timeoutMs
+          const started = Date.now()
+          const timer = setInterval(() => {
+            if (doneMs !== null && Date.now() - started >= doneMs) {
+              clearInterval(timer)
+              resolve(RESULT)
+            } else beat(options)
+          }, everyMs)
+          options.signal?.addEventListener(
+            'abort',
+            () => {
+              clearInterval(timer)
+              reject(new Error('aborted'))
+            },
+            { once: true },
+          )
+        }),
+    )
+    return { provider, sent }
+  }
+
+  const specOf = async (
+    provider: AgentProvider,
+    limits: { timeoutMs: number; idleTimeoutMs?: number },
+  ) => ({
+    ...baseSpec(provider, await mkdtemp(join(tmpdir(), 'checkpoints-'))),
+    ...limits,
+  })
+
+  for (const [name, beat] of [
+    ['activity', (o: AgentCallOptions) => o.onActivity?.()],
+    ['output', (o: AgentCallOptions) => o.onOutput?.('.')],
+    [
+      'partial usage',
+      (o: AgentCallOptions) => o.onPartialUsage?.(PARTIAL_USAGE),
+    ],
+  ] as const) {
+    it(`keeps a call that reports ${name} more often than the idle limit going past it`, async () => {
+      const { provider } = beating(beat, 10, 250)
+      const spec = await specOf(provider, {
+        timeoutMs: 5000,
+        idleTimeoutMs: 80,
+      })
+      const outcome = await runAgentCall(
+        new AbortController().signal,
+        fakeAttempt() as never,
+        spec,
+      )
+      assert.equal(outcome.text, 'done')
+      assert.equal(outcome.timedOut, null)
+    })
+  }
+
+  it('stops a call that goes silent at the idle limit, and records it settled', async () => {
+    const { provider, sent } = beating(() => {}, 10, null)
+    const spec = await specOf(provider, { timeoutMs: 5000, idleTimeoutMs: 60 })
+    const attempt = fakeAttempt()
+    const error = await runAgentCall(
+      new AbortController().signal,
+      attempt as never,
+      spec,
+    ).catch((e: unknown) => e)
+    assert.ok(error instanceof AgentTimeoutError)
+    assert.deepEqual(error.timedOut, { kind: 'idle', limitMs: 60 })
+    assert.match(
+      error.message,
+      /^agent-timeout: the implement call was stopped at its idle limit of 60 ms$/,
+    )
+    const last = attempt.snapshots.at(-1)
+    assert.equal(last?.result, 'timed-out')
+    assert.equal(last?.interruptionReason, 'timeout')
+    assert.deepEqual(last?.timedOut, { kind: 'idle', limitMs: 60 })
+    const completed = JSON.parse(
+      await readFile(
+        checkpointPaths(spec.checkpointsDir, spec.operationKey).completed,
+        'utf8',
+      ),
+    ) as { result: unknown; timedOut: unknown }
+    assert.equal(completed.result, null)
+    assert.deepEqual(completed.timedOut, { kind: 'idle', limitMs: 60 })
+    // The provider got a later copy of the total, never the runner's own.
+    assert.equal(sent.timeoutMs, 5000 + PROVIDER_TIMEOUT_MARGIN_MS)
+  })
+
+  it('stops a call that keeps working at the total limit', async () => {
+    const { provider } = beating((o) => o.onActivity?.(), 10, null)
+    const spec = await specOf(provider, { timeoutMs: 150, idleTimeoutMs: 60 })
+    const error = await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      spec,
+    ).catch((e: unknown) => e)
+    assert.ok(error instanceof AgentTimeoutError)
+    assert.deepEqual(error.timedOut, { kind: 'total', limitMs: 150 })
+  })
+
+  it('has no idle limit when none is given, as on a run set up before it existed', async () => {
+    const { provider } = beating(() => {}, 10, 150)
+    const spec = await specOf(provider, { timeoutMs: 5000 })
+    const outcome = await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      spec,
+    )
+    assert.equal(outcome.text, 'done')
+  })
+
+  it('hands the stop to a caller that accepts it, keeps the partial usage, and replays it without resending', async () => {
+    const { provider, sent } = beating(
+      (o) => o.onPartialUsage?.(PARTIAL_USAGE),
+      10,
+      null,
+    )
+    const spec = {
+      ...(await specOf(provider, { timeoutMs: 120, idleTimeoutMs: 100 })),
+      acceptTimeout: true,
+    }
+    const first = await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      spec,
+    )
+    assert.deepEqual(first.timedOut, { kind: 'total', limitMs: 120 })
+    assert.equal(first.measurement.usage?.inputTokens, 999)
+    assert.equal(first.measurement.result, 'timed-out')
+    const replay = fakeAttempt()
+    const again = await runAgentCall(
+      new AbortController().signal,
+      replay as never,
+      spec,
+    )
+    assert.deepEqual(again.timedOut, first.timedOut)
+    assert.equal(again.recovered, true)
+    assert.equal(replay.snapshots.at(-1)?.result, 'timed-out')
+    assert.equal(sent.calls, 1)
+    // A caller that does not accept it gets the same stop as an error.
+    await assert.rejects(
+      runAgentCall(new AbortController().signal, fakeAttempt() as never, {
+        ...spec,
+        acceptTimeout: false,
+      }),
+      AgentTimeoutError,
+    )
+    assert.equal(sent.calls, 1)
+  })
+
+  it('leaves a run-signal abort start-only and uncertain, even past the idle limit', async () => {
+    const { provider, sent } = beating(() => {}, 10, null)
+    const spec = await specOf(provider, { timeoutMs: 5000, idleTimeoutMs: 40 })
+    const controller = new AbortController()
+    const pending = runAgentCall(
+      controller.signal,
+      fakeAttempt() as never,
+      spec,
+    ).catch((e: unknown) => e)
+    await sent.started
+    controller.abort(new Error('lease lost'))
+    const error = await pending
+    assert.ok(!(error instanceof AgentTimeoutError))
+    const paths = checkpointPaths(spec.checkpointsDir, spec.operationKey)
+    assert.equal(existsSync(paths.completed), false)
+    await assert.rejects(
+      runAgentCall(new AbortController().signal, fakeAttempt() as never, spec),
+      UncertainInvocationError,
+    )
+    assert.equal(sent.calls, 1)
+  })
+
+  it('settles a superseded call as cancelled, not as a timeout', async () => {
+    const { provider, sent } = beating(() => {}, 10, null)
+    const supersede = new AbortController()
+    const spec = {
+      ...(await specOf(provider, { timeoutMs: 5000, idleTimeoutMs: 200 })),
+      role: 'review-a' as const,
+      supersede: {
+        signal: supersede.signal,
+        reason: 'superseded-by-verify' as const,
+      },
+    }
+    const pending = runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      spec,
+    )
+    await sent.started
+    supersede.abort()
+    const outcome = await pending
+    assert.equal(outcome.cancelled, 'superseded-by-verify')
+    assert.equal(outcome.timedOut, null)
+  })
+
+  it("never reads the provider's own timeout as the factory's", async () => {
+    const sent = { calls: 0 }
+    const provider = stubProvider(async () => {
+      sent.calls++
+      throw new Error('The operation was aborted due to timeout')
+    })
+    const spec = await specOf(provider, {
+      timeoutMs: 5000,
+      idleTimeoutMs: 1000,
+    })
+    const attempt = fakeAttempt()
+    const error = await runAgentCall(
+      new AbortController().signal,
+      attempt as never,
+      spec,
+    ).catch((e: unknown) => e)
+    assert.ok(!(error instanceof AgentTimeoutError))
+    assert.equal(attempt.snapshots.at(-1)?.result, 'uncertain')
+    assert.equal(attempt.snapshots.at(-1)?.timedOut, undefined)
+    assert.equal(
+      existsSync(
+        checkpointPaths(spec.checkpointsDir, spec.operationKey).completed,
+      ),
+      false,
+    )
+    await assert.rejects(
+      runAgentCall(new AbortController().signal, fakeAttempt() as never, spec),
+      UncertainInvocationError,
+    )
+    assert.equal(sent.calls, 1)
+  })
+
+  it('restarts no limit on a notice that arrives after the call ended', async () => {
+    let late: AgentCallOptions | null = null
+    const provider = stubProvider(async (options) => {
+      late = options
+      return RESULT
+    })
+    const spec = await specOf(provider, { timeoutMs: 5000, idleTimeoutMs: 30 })
+    const outcome = await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      spec,
+    )
+    const options = late as AgentCallOptions | null
+    options?.onActivity?.()
+    options?.onOutput?.('late')
+    // sleep-ok(negative): gives a restarted idle limit the time to fire
+    await new Promise((r) => setTimeout(r, 60))
+    assert.equal(options?.signal?.aborted, false)
+    assert.equal(outcome.timedOut, null)
   })
 })

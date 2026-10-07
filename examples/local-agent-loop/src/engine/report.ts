@@ -19,6 +19,7 @@ import { formatters } from './format.js'
 import { PRICE_BASIS } from './pricing.js'
 import {
   NOT_SENT,
+  type AgentTimeout,
   type AttemptMeasurement,
   type PermissionDenials,
   type SessionHandling,
@@ -170,6 +171,18 @@ export interface ReportCandidate {
   commit: string | null
   /** Null for a candidate that records no size, such as the bundled sample's. */
   changes?: ReportCandidateChanges | null
+  /**
+   * The factory's limit that stopped the call whose unfinished work the
+   * candidate holds; absent when the call finished.
+   */
+  timedOut?: AgentTimeout
+}
+
+/** The agent call limits the run was set up with. */
+export interface ReportAgentTimeouts {
+  totalMs: number
+  /** Null on a run set up before the idle limit existed. */
+  idleMs: number | null
 }
 
 /** One sealed candidate, in sealing order. */
@@ -807,6 +820,8 @@ export interface LoopReport {
   fake: boolean
   /** Shared by runs with identical provider/model/effort/context settings. */
   configVersion: string | null
+  /** The agent call limits; null or absent when the run stored none. */
+  agentTimeouts?: ReportAgentTimeouts | null
   summary: RunSummary
   triage: ReportTriage | null
   /**
@@ -928,6 +943,11 @@ function fmt(v: unknown): string {
   if (v === null || v === undefined) return 'unknown'
   if (typeof v === 'number') return String(v)
   return String(v)
+}
+
+/** Where a candidate sealed from a stopped call came from, in one phrase. */
+function timedOutOrigin(t: AgentTimeout): string {
+  return `unfinished work of a call stopped at its ${t.kind} limit of ${formatDuration(t.limitMs)}`
 }
 
 function fmtChanges(c: ReportCandidateChanges | null | undefined): string {
@@ -1424,6 +1444,10 @@ export function reportToMarkdown(r: LoopReport): string {
   )
   lines.push(`- output: ${JSON.stringify(r.output)}`)
   lines.push(`- config version: ${fmt(r.configVersion)}`)
+  if (r.agentTimeouts)
+    lines.push(
+      `- agent call limits: total ${formatDuration(r.agentTimeouts.totalMs)}, idle ${r.agentTimeouts.idleMs === null ? 'none' : formatDuration(r.agentTimeouts.idleMs)}`,
+    )
   if (r.repairSession) {
     const { setup, confirmed } = r.repairSession
     lines.push(
@@ -1536,6 +1560,8 @@ export function reportToMarkdown(r: LoopReport): string {
     lines.push(`- branch: ${fmt(r.candidate.branch)}`)
     lines.push(`- commit: ${fmt(r.candidate.commit)}`)
     lines.push(`- changes: ${fmtChanges(r.candidate.changes)}`)
+    if (r.candidate.timedOut)
+      lines.push(`- origin: ${timedOutOrigin(r.candidate.timedOut)}`)
   } else {
     lines.push('- none')
   }
@@ -1545,7 +1571,7 @@ export function reportToMarkdown(r: LoopReport): string {
   if (r.candidates.length > 0) {
     for (const c of r.candidates) {
       lines.push(
-        `- iteration ${c.iteration}: ${c.id} — ${fmtChanges(c.changes)}`,
+        `- iteration ${c.iteration}: ${c.id} — ${fmtChanges(c.changes)}${c.timedOut ? ` — ${timedOutOrigin(c.timedOut)}` : ''}`,
       )
       if (c.changes) {
         lines.push(`  - diff: ${c.changes.diffPath}`)
