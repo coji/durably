@@ -1002,12 +1002,12 @@ function stoppedCallLines(calls: StoppedCallUsage[]): string[] {
     const session = `session ${c.sessionId ?? 'unknown'}`
     if (!c.usage) {
       lines.push(
-        `${head}: no usage reported before the stop, usage unknown; ${session}`,
+        `${head}: no usage reported before the stop (${formatCount(c.reports)} reports, last report none), usage unknown; ${session}`,
       )
       continue
     }
     lines.push(
-      `${head}: partial usage from ${formatCount(c.reports)} report(s), the last ${formatDuration(c.lastReportAfterMs)} into the call (stopped after ${formatDuration(c.elapsedMs)}); ${usageLegs(c.usage)}; cost ${formatCost(c.costUsdEstimate)}; ${session}`,
+      `${head}: partial usage from ${formatCount(c.reports)} report(s), the last at ${c.lastReportAt ?? 'unknown'}, ${formatDuration(c.lastReportAfterMs)} into the call (stopped after ${formatDuration(c.elapsedMs)}); ${usageLegs(c.usage)}; cost ${formatCost(c.costUsdEstimate)}; ${session}`,
     )
     for (const [model, u] of Object.entries(c.usageByModel ?? {}))
       lines.push(`  - ${model}: ${usageLegs(u)}`)

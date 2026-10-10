@@ -956,13 +956,13 @@ describe('the Markdown report on calls stopped before their final usage (ADR-003
     assert.match(md, /lower bound/)
     assert.match(
       md,
-      /- stage:4:review:correctness \(abcdef01\), cancelled \(superseded-by-verify\): partial usage from 3 report\(s\), the last 58(\.0)?s into the call/,
+      /- stage:4:review:correctness \(abcdef01\), cancelled \(superseded-by-verify\): partial usage from 3 report\(s\), the last at 2026-01-01T00:00:58\.000Z, 58(\.0)?s into the call/,
     )
     assert.match(md, /in=4.0K .*out=200 .*cost \$0.02; session thread-1/)
     assert.match(md, / {2}- gpt-5\.6-sol: in=4.0K/)
     assert.match(
       md,
-      /- stage:4:review:edge-cases \(01234567\), cancelled \(superseded-by-verify\): no usage reported before the stop, usage unknown; session unknown/,
+      /- stage:4:review:edge-cases \(01234567\), cancelled \(superseded-by-verify\): no usage reported before the stop \(0 reports, last report none\), usage unknown; session unknown/,
     )
   })
 

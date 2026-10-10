@@ -5,8 +5,10 @@ import { fileURLToPath } from 'node:url'
 
 import {
   codexPartialUsage,
+  codexRawUsage,
   watchActivity,
 } from '../src/engine/providers/codex.js'
+import type { TokenUsage } from '../src/engine/usage.js'
 
 async function providerSource(): Promise<string> {
   const entry = fileURLToPath(import.meta.resolve('ai-sdk-provider-codex-cli'))
@@ -156,5 +158,68 @@ describe('codex usage before the turn finishes (ADR-0034)', () => {
     assert.deepEqual(seen, ['stream-start', 'text-delta', 'finish'])
     assert.equal(raws.length, 1)
     assert.equal(activity, 1)
+  })
+  it('restarts the idle timer only through a usage report with tokens, never through any other raw notification', async () => {
+    // What a Codex call wires up: raw notifications to `onRaw`, usage
+    // reports to `onPartialUsage`. The runner restarts the idle timer on
+    // `onActivity` and on `onPartialUsage` (ADR-0032), so neither may hear
+    // a raw notification that is not a usage update with model tokens.
+    const raw = (rawValue: unknown) => ({ type: 'raw', rawValue })
+    const parts = [
+      { type: 'stream-start' },
+      raw({ method: 'rawResponseItem/completed', params: { threadId: 't' } }),
+      raw({ method: 'item/started', params: { threadId: 't', turnId: 'u' } }),
+      raw(update(counts(0, 0, 0), counts(0, 0, 0))),
+      raw({ method: 'turn/started', params: { threadId: 't' } }),
+      { type: 'finish' },
+    ]
+    // `watchActivity` replaces the model's own `doStream`, so each run
+    // watches a model of its own.
+    const model = () => ({
+      doStream: async () => ({
+        stream: new ReadableStream({
+          start(controller) {
+            for (const part of parts) controller.enqueue(part)
+            controller.close()
+          },
+        }),
+      }),
+    })
+    let activity = 0
+    const reports: [TokenUsage, Record<string, TokenUsage> | undefined][] = []
+    const watched = watchActivity(
+      model(),
+      () => activity++,
+      undefined,
+      codexRawUsage(
+        codexPartialUsage(() => 'unknown'),
+        'gpt-model',
+        (u, m) => reports.push([u, m]),
+      ),
+    )
+    const { stream } = await watched.doStream()
+    for await (const _ of stream as unknown as AsyncIterable<unknown>);
+    assert.equal(activity, 0)
+    assert.equal(reports.length, 0)
+
+    // A usage update with tokens is a report, split under the call's
+    // model, and still not activity.
+    parts.splice(1, 0, raw(update(counts(100, 0, 10), counts(100, 0, 10))))
+    const again = watchActivity(
+      model(),
+      () => activity++,
+      undefined,
+      codexRawUsage(
+        codexPartialUsage(() => 'unknown'),
+        'gpt-model',
+        (u, m) => reports.push([u, m]),
+      ),
+    )
+    const second = await again.doStream()
+    for await (const _ of second.stream as unknown as AsyncIterable<unknown>);
+    assert.equal(activity, 0)
+    assert.equal(reports.length, 1)
+    assert.equal(reports[0]?.[0].inputTokens, 100)
+    assert.deepEqual(Object.keys(reports[0]?.[1] ?? {}), ['gpt-model'])
   })
 })

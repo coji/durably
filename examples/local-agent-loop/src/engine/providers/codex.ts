@@ -437,6 +437,27 @@ export function codexPartialUsage(
 }
 
 /**
+ * The `onRaw` reader of a Codex call: a raw notification reaches
+ * `onPartialUsage` only when `read` makes a new running total of it, a
+ * `thread/tokenUsage/updated` with model tokens. Any other notification,
+ * and an update without tokens, reaches nothing, so it never restarts the
+ * runner's idle timer; a usage report does, as all partial usage does
+ * (ADR-0032). The split is the whole total under `modelId`, since a Codex
+ * call runs one model, so a stopped call can be priced without a reported
+ * model.
+ */
+export function codexRawUsage(
+  read: (raw: unknown) => TokenUsage | null,
+  modelId: string,
+  onPartialUsage: NonNullable<AgentCallOptions['onPartialUsage']>,
+): (raw: unknown) => void {
+  return (raw) => {
+    const usage = read(raw)
+    if (usage) onPartialUsage(usage, { [modelId]: usage })
+  }
+}
+
+/**
  * The same model, with `onActivity` called on every part of its stream that
  * shows the agent at work, a running tool's preliminary result included, so
  * the runner's idle limit restarts on each, and `onOutput` given each text delta and
@@ -570,12 +591,7 @@ export class CodexProvider implements AgentProvider {
           options.onActivity,
           options.onOutput,
           onPartialUsage
-            ? (raw) => {
-                const usage = partialUsage(raw)
-                // One model per call: its split is the whole total, so a
-                // stopped call can be priced without a reported model.
-                if (usage) onPartialUsage(usage, { [modelId]: usage })
-              }
+            ? codexRawUsage(partialUsage, modelId, onPartialUsage)
             : undefined,
         ),
         prompt: options.prompt,

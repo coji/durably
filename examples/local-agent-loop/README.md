@@ -2018,7 +2018,9 @@ ClaudeとCodexは、呼び出しの途中でもその時点までの累計を報
   同じく、threadの累計の増えた分で足します。最初の通知は直前の応答の分だけを
   足すので、`--context reuse` で再開したthreadの前回分は入りません。この通知を
   読むためにraw通知を有効にしますが、raw通知は活動として数えず、agentのログにも
-  書きません。thread IDは、turnを始める前に `onSessionCreated` で受け取ります。
+  書きません。無通信時間をやり直すのは、tokenのある使用量の通知だけです
+  （ほかの途中の使用量と同じ）。それ以外のraw通知とtokenの無い使用量の通知では
+  やり直しません。thread IDは、turnを始める前に `onSessionCreated` で受け取ります。
 
 検証の失敗でレビューを止めたとき（`superseded-by-verify`）と、factoryの時間の
 上限で止めたとき（`timeout`）は、止めた時点までの使用量、モデル別の内訳、
