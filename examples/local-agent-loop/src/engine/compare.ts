@@ -273,8 +273,13 @@ export function compareReports(reports: LoopReport[]): Comparison {
       return {
         stage,
         workMs: stat(timing.map((t) => (t?.complete ? t.elapsedMs : null))),
-        totalTokens: stat(usage.map((u) => u?.totalTokens)),
-        cacheReadTokens: stat(usage.map((u) => u?.cacheReadTokens)),
+        // A lower bound (a stopped call, missing usage) is unknown here.
+        totalTokens: stat(
+          usage.map((u) => (u?.complete ? u.totalTokens : null)),
+        ),
+        cacheReadTokens: stat(
+          usage.map((u) => (u?.complete ? u.cacheReadTokens : null)),
+        ),
         costUsd: stat(usage.map((u) => u?.costUsd)),
         reworked: stat(visits.map((v) => v?.reworked ?? 0)),
       }
@@ -296,7 +301,11 @@ export function compareReports(reports: LoopReport[]): Comparison {
       leadTimeMs: stat(list.map((r) => r.summary.leadTimeMs)),
       workMs: stat(list.map((r) => r.summary.workMs)),
       humanWaitMs: stat(list.map((r) => r.summary.humanWaitMs)),
-      totalTokens: stat(list.map((r) => r.summary.totalTokens)),
+      totalTokens: stat(
+        list.map((r) =>
+          r.summary.tokensComplete ? r.summary.totalTokens : null,
+        ),
+      ),
       costUsd: stat(list.map((r) => r.summary.costUsd)),
       costPerSuccessUsd: stat(
         list

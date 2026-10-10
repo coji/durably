@@ -48,7 +48,7 @@ import {
 } from 'ai-sdk-provider-claude-code'
 
 import { defaultModelFor, resolveEffort } from '../models.js'
-import type { TokenUsage } from '../usage.js'
+import { tokenCount, type TokenUsage } from '../usage.js'
 import {
   agentOutput,
   isCommandModeReview,
@@ -670,12 +670,7 @@ interface UsageLegs {
 
 /** One model's `modelUsage` legs; a leg it does not report stays unknown. */
 function legsOf(model: Record<string, unknown>): UsageLegs {
-  const leg = (key: string): number | null => {
-    const value = model[key]
-    return typeof value === 'number' && Number.isFinite(value) && value >= 0
-      ? value
-      : null
-  }
+  const leg = (key: string): number | null => tokenCount(model[key])
   return {
     uncached: leg('inputTokens'),
     cacheRead: leg('cacheReadInputTokens'),
@@ -791,6 +786,204 @@ export function claudeCallUsage(
     usage: claudeUsageOf(reported, modelUsage),
     usageByModel: claudeUsageByModel(modelUsage),
   }
+}
+
+/** A running total of a call's usage, by model too; see `claudePartialUsage`. */
+export interface PartialUsageSnapshot {
+  usage: TokenUsage
+  usageByModel: Record<string, TokenUsage>
+}
+
+const asPartial = (usage: TokenUsage): TokenUsage => ({
+  ...usage,
+  usageSource: 'provider-partial',
+})
+
+/**
+ * Legs summed across messages, kept as running sums so a changed message
+ * adjusts them by its difference. A leg some message does not know stays
+ * unknown while that message is counted, as `sumUsage` has it.
+ */
+class RunningLegs {
+  private readonly sums: Record<keyof UsageLegs, number> = {
+    uncached: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    output: 0,
+  }
+  private readonly unknown: Record<keyof UsageLegs, number> = {
+    uncached: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    output: 0,
+  }
+
+  add(legs: UsageLegs, sign: 1 | -1): void {
+    for (const key of Object.keys(this.sums) as (keyof UsageLegs)[]) {
+      const value = legs[key]
+      if (value === null) this.unknown[key] += sign
+      else this.sums[key] += sign * value
+    }
+  }
+
+  usage(): TokenUsage {
+    const leg = (key: keyof UsageLegs) =>
+      this.unknown[key] > 0 ? null : this.sums[key]
+    return asPartial(
+      sumUsage([
+        {
+          uncached: leg('uncached'),
+          cacheRead: leg('cacheRead'),
+          cacheWrite: leg('cacheWrite'),
+          output: leg('output'),
+        },
+      ]),
+    )
+  }
+}
+
+/**
+ * A reader of Agent SDK messages that keeps the call's running usage total
+ * before its result message arrives, so a call stopped early keeps what it
+ * had spent (ADR-0034). Each API response counts once, by its message id.
+ * Its assistant messages, one per content block, carry the usage the
+ * response started with, whose output is only the first few tokens; the
+ * output grows only in the response's streamed `message_delta` events,
+ * which the call asks for with `includePartialMessages`. A delta names no
+ * message, so it belongs to the latest `message_start` on the same stream
+ * (the main loop, or one subagent's tool call). Within a response each leg
+ * only grows, so the response keeps the largest value seen on each leg.
+ * The frames the CLI makes up itself and frames without tokens count
+ * nothing. The scope is the final usage's: subagents count only in a
+ * command-mode review, whose final usage includes them; every other call
+ * counts its main loop alone. Returns the new total when a message changed
+ * it, and null otherwise.
+ */
+export function claudePartialUsage(
+  review: ReviewCallSettings | null | undefined,
+): (message: SDKMessage) => PartialUsageSnapshot | null {
+  const subagents = isCommandModeReview(review)
+  const byMessage = new Map<string, { model: string; legs: UsageLegs }>()
+  // The response each stream is in, by `parent_tool_use_id`.
+  const streaming = new Map<string, { id: string; model: string }>()
+  const total = new RunningLegs()
+  const models = new Map<string, RunningLegs>()
+  const modelSums = (model: string): RunningLegs => {
+    let sums = models.get(model)
+    if (!sums) models.set(model, (sums = new RunningLegs()))
+    return sums
+  }
+  const snapshot = (): PartialUsageSnapshot => ({
+    usage: total.usage(),
+    usageByModel: Object.fromEntries(
+      [...models].map(([name, sums]) => [name, sums.usage()]),
+    ),
+  })
+  const count = (
+    id: string,
+    model: string,
+    legs: UsageLegs,
+  ): PartialUsageSnapshot | null => {
+    const previous = byMessage.get(id)
+    if (!previous) {
+      if (!Object.values(legs).some((v) => v !== null && v > 0)) return null
+      byMessage.set(id, { model, legs })
+      total.add(legs, 1)
+      modelSums(model).add(legs, 1)
+      return snapshot()
+    }
+    const keys = Object.keys(legs) as (keyof UsageLegs)[]
+    const grown = Object.fromEntries(
+      keys.map((k) => {
+        const [was, now] = [previous.legs[k], legs[k]]
+        return [k, was === null ? now : now === null ? was : Math.max(was, now)]
+      }),
+    ) as unknown as UsageLegs
+    if (keys.every((k) => grown[k] === previous.legs[k])) return null
+    byMessage.set(id, { model: previous.model, legs: grown })
+    total.add(previous.legs, -1)
+    total.add(grown, 1)
+    modelSums(previous.model).add(previous.legs, -1)
+    modelSums(previous.model).add(grown, 1)
+    return snapshot()
+  }
+  return (message) => {
+    const parent = (message as { parent_tool_use_id?: unknown })
+      .parent_tool_use_id
+    if (!subagents && parent != null) return null
+    const stream = typeof parent === 'string' ? parent : ''
+    if (message.type === 'stream_event') {
+      const event = message.event as unknown as {
+        type?: unknown
+        message?: { id?: unknown; model?: unknown; usage?: unknown }
+        usage?: unknown
+      }
+      if (event?.type === 'message_start') {
+        const id = event.message?.id
+        const model = event.message?.model
+        if (typeof id !== 'string' || !isCountedModel(model)) {
+          streaming.delete(stream)
+          return null
+        }
+        streaming.set(stream, { id, model })
+        return count(id, model, responseLegs(event.message?.usage))
+      }
+      if (event?.type === 'message_delta') {
+        const current = streaming.get(stream)
+        const usage = event.usage
+        if (!current || !usage || typeof usage !== 'object') return null
+        const leg = (key: string) =>
+          tokenCount((usage as Record<string, unknown>)[key])
+        return count(current.id, current.model, {
+          uncached: leg('input_tokens'),
+          cacheRead: leg('cache_read_input_tokens'),
+          cacheWrite: leg('cache_creation_input_tokens'),
+          output: leg('output_tokens'),
+        })
+      }
+      return null
+    }
+    if (message.type !== 'assistant') return null
+    const body = message.message as unknown as {
+      id?: unknown
+      model?: unknown
+      usage?: unknown
+    }
+    if (!isCountedModel(body?.model)) return null
+    return count(
+      typeof body.id === 'string' ? body.id : message.uuid,
+      body.model,
+      responseLegs(body.usage),
+    )
+  }
+}
+
+/** A real model's name; the CLI's own frames name `<synthetic>`. */
+const isCountedModel = (model: unknown): model is string =>
+  typeof model === 'string' && model.length > 0 && model !== SYNTHETIC_MODEL
+
+/** The legs of one API response's usage; every leg unknown when it has none. */
+function responseLegs(usage: unknown): UsageLegs {
+  const read = (usage && typeof usage === 'object' ? usage : {}) as Record<
+    string,
+    unknown
+  >
+  const uncached = tokenCount(read['input_tokens'])
+  // The API reports an absent cache leg as null: no tokens on it.
+  const cacheLeg = (key: string) =>
+    tokenCount(read[key]) ?? (uncached !== null ? 0 : null)
+  return {
+    uncached,
+    cacheRead: cacheLeg('cache_read_input_tokens'),
+    cacheWrite: cacheLeg('cache_creation_input_tokens'),
+    output: tokenCount(read['output_tokens']),
+  }
+}
+
+/** The native session ID an Agent SDK message carries; null when none. */
+export function claudeSessionId(message: SDKMessage): string | null {
+  const id = (message as { session_id?: unknown }).session_id
+  return typeof id === 'string' && id.length > 0 ? id : null
 }
 
 /**
@@ -1116,8 +1309,11 @@ export class ClaudeProvider implements AgentProvider {
   readonly fake = false
   /** The Agent SDK's own binary; see `claudeExecutable`. */
   readonly cliPath = null
-  /** Claude Agent SDK reports usage once at completion — no partial snapshots. */
-  readonly partialUsage = false
+  /**
+   * The Agent SDK's result message has the call's usage; until it arrives,
+   * each API response's usage is summed into a running total.
+   */
+  readonly partialUsage = true
 
   resolveExecution(requested: {
     requestedModel: string | null
@@ -1143,6 +1339,7 @@ export class ClaudeProvider implements AgentProvider {
       throw new Error(`a ${options.role} call needs the spec file it may write`)
     const onActivity = options.onActivity
     const writeOutput = claudeOutput(options.onOutput)
+    const partialUsage = claudePartialUsage(options.review)
     // The concrete model the CLI reports, first seen wins: an alias such as
     // `opus` is resolved by the CLI, never here.
     let observedModel: string | null = null
@@ -1160,10 +1357,18 @@ export class ClaudeProvider implements AgentProvider {
         ),
         guardReasons,
       ),
+      // The streamed events carry each response's output as it grows; the
+      // provider builds its result from the other messages alone.
+      ...(options.onPartialUsage ? { includePartialMessages: true } : {}),
       onSdkMessage: (message: SDKMessage) => {
         observedModel ??= observedClaudeModel(message)
         if (onActivity && isAgentActivity(message)) onActivity()
         writeOutput(message)
+        const session = claudeSessionId(message)
+        if (session) options.onSession?.(session)
+        const snapshot = options.onPartialUsage ? partialUsage(message) : null
+        if (snapshot)
+          options.onPartialUsage?.(snapshot.usage, snapshot.usageByModel)
       },
     })
     const reported = await generateText({

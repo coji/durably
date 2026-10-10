@@ -19,6 +19,7 @@ import {
 } from '../src/engine/report.js'
 import type { LoopReport } from '../src/engine/report.js'
 import { groupTasks } from '../src/engine/status.js'
+import type { TokenUsage } from '../src/engine/usage.js'
 
 function baseReport(): LoopReport {
   return {
@@ -41,6 +42,7 @@ function baseReport(): LoopReport {
       humanWaitRatio: null,
       llmInvocations: 0,
       totalTokens: null,
+      tokensComplete: true,
       costUsd: null,
       costPerSuccessUsd: null,
       repairs: 0,
@@ -903,5 +905,162 @@ describe('reviews of candidates that failed verification', () => {
     assert.equal(total.discardedReviewCostUsd.median, 0.75)
     assert.equal(total.discardedReviewCostUsd.unknown, 1)
     assert.match(trendToMarkdown(t), /failed-candidate reviews/)
+  })
+})
+
+describe('the Markdown report on calls stopped before their final usage (ADR-0034)', () => {
+  const partial = {
+    inputTokens: 4000,
+    cachedInputTokens: 3000,
+    cacheReadTokens: 3000,
+    cacheWriteTokens: 0,
+    outputTokens: 200,
+    totalTokens: 4200,
+    usageSource: 'provider-partial' as const,
+  }
+  const stopped = {
+    stepName: 'stage:4:review:correctness',
+    invocationId: 'abcdef0123456789',
+    role: 'review-a',
+    provider: 'codex',
+    result: 'cancelled',
+    reason: 'superseded-by-verify',
+    reports: 3,
+    lastReportAt: '2026-01-01T00:00:58.000Z',
+    lastReportAfterMs: 58_000,
+    elapsedMs: 61_000,
+    usage: partial,
+    usageByModel: { 'gpt-5.6-sol': partial },
+    costUsdEstimate: 0.02,
+    sessionId: 'thread-1',
+  }
+
+  it('shows why each stopped, how far its usage goes, by model, and its session', () => {
+    const md = reportToMarkdown({
+      ...baseReport(),
+      stoppedCalls: [
+        stopped,
+        {
+          ...stopped,
+          stepName: 'stage:4:review:edge-cases',
+          invocationId: '0123456789abcdef',
+          reports: 0,
+          lastReportAt: null,
+          lastReportAfterMs: null,
+          usage: null,
+          usageByModel: null,
+          costUsdEstimate: null,
+          sessionId: null,
+        },
+      ],
+    })
+    assert.match(md, /## Usage of stopped calls/)
+    assert.match(md, /lower bound/)
+    assert.match(
+      md,
+      /- stage:4:review:correctness \(abcdef01\), cancelled \(superseded-by-verify\): partial usage from 3 report\(s\), the last at 2026-01-01T00:00:58\.000Z, 58(\.0)?s into the call/,
+    )
+    assert.match(md, /in=4.0K .*out=200 .*cost \$0.02; session thread-1/)
+    assert.match(md, / {2}- gpt-5\.6-sol: in=4.0K/)
+    assert.match(
+      md,
+      /- stage:4:review:edge-cases \(01234567\), cancelled \(superseded-by-verify\): no usage reported before the stop \(0 reports, last report none\), usage unknown; session unknown/,
+    )
+  })
+
+  /** A review attempt of one invocation, with the given usage and result. */
+  const attempt = (
+    attemptId: string,
+    usage: TokenUsage | null,
+    result: string,
+    extra: Record<string, unknown> = {},
+  ): LoopReport['attempts'][number] => ({
+    stepName: 'stage:4:review:correctness',
+    stepIndex: 4,
+    attemptId,
+    leaseGeneration: 1,
+    status: 'completed',
+    startedAt: 't',
+    completedAt: 't',
+    interruptionReason: null,
+    measurement: {
+      provider: 'codex',
+      fake: false,
+      stage: 'review',
+      iteration: 1,
+      invocationId: 'abcdef0123456789',
+      usageScope: 'invocation',
+      requestedModel: null,
+      requestedEffort: null,
+      effectiveModel: 'gpt-5.6-sol',
+      effectiveEffort: null,
+      reportedModel: null,
+      reportedEffort: null,
+      versions: {},
+      elapsedMs: 1000,
+      usage,
+      costUsdEstimate: 0.02,
+      costBasis: 'api-equivalent-estimate',
+      result,
+      error: null,
+      interruptionReason: null,
+      ...extra,
+    },
+  })
+
+  it('sums the aggregate line from the same attempt the stage totals read', () => {
+    // A worker died after the stop checkpoint: its row stays `started`
+    // with an older snapshot, and the replay holds what was reported.
+    const md = reportToMarkdown({
+      ...baseReport(),
+      attempts: [
+        attempt(
+          'stale',
+          { ...partial, inputTokens: 3000, totalTokens: 3200 },
+          'started',
+        ),
+        attempt('replay', partial, 'cancelled', {
+          usageUntilStop: {
+            reason: 'superseded-by-verify',
+            reports: 3,
+            lastReportAt: '2026-01-01T00:00:58.000Z',
+            lastReportAfterMs: 58_000,
+          },
+        }),
+      ],
+    })
+    assert.match(
+      md,
+      /- aggregate usage \(deduped by invocation\): in=4\.0K .*total=4\.2K \(PARTIAL/,
+    )
+    assert.match(
+      md,
+      /- aggregate cost \(stored per-invocation estimates\): unknown/,
+    )
+  })
+
+  it('marks an attempt whose usage is only what was reported on the way as partial', () => {
+    const md = reportToMarkdown({
+      ...baseReport(),
+      attempts: [
+        attempt('partial', partial, 'review-a-done'),
+        attempt(
+          'final',
+          { ...partial, usageSource: 'provider-final' },
+          'review-a-done',
+          { invocationId: 'fedcba9876543210' },
+        ),
+      ],
+    })
+    const rows = md.split('\n').filter((l) => l.startsWith('| stage:4'))
+    assert.equal(rows.length, 2)
+    assert.match(rows[0] ?? '', /\/4\.2K \(partial\) \|/)
+    // Its cost is an estimate from the same partial usage.
+    assert.match(rows[0] ?? '', /\(api-equivalent-estimate\) \(partial\) \|/)
+    assert.doesNotMatch(rows[1] ?? '', /\(partial\)/)
+  })
+
+  it('has no such section when no call was stopped', () => {
+    assert.doesNotMatch(reportToMarkdown(baseReport()), /stopped calls/i)
   })
 })

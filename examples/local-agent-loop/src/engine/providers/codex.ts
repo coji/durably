@@ -13,6 +13,7 @@ import {
 
 import { runChild } from '../child.js'
 import { defaultModelFor, resolveEffort } from '../models.js'
+import { tokenCount, type TokenUsage } from '../usage.js'
 import {
   agentOutput,
   READ_ONLY_ROLES,
@@ -349,13 +350,118 @@ interface OutputPart {
   result?: unknown
   preliminary?: unknown
   input?: unknown
+  rawValue?: unknown
+}
+
+/** The token counts of one `thread/tokenUsage/updated` breakdown. */
+interface CodexTokenCounts {
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+  cacheWriteInputTokens: number | null
+}
+
+function tokenCountsOf(value: unknown): CodexTokenCounts | null {
+  const v = value as Record<string, unknown> | null | undefined
+  if (!v || typeof v !== 'object') return null
+  const count = (key: string): number | null => tokenCount(v[key])
+  return {
+    inputTokens: count('inputTokens') ?? 0,
+    cachedInputTokens: count('cachedInputTokens') ?? 0,
+    outputTokens: count('outputTokens') ?? 0,
+    cacheWriteInputTokens: count('cacheWriteInputTokens'),
+  }
+}
+
+/**
+ * A reader of the app server's raw thread notifications that keeps the
+ * call's running usage total before the turn's final usage arrives, so a
+ * call stopped early keeps what it had spent (ADR-0034). It counts the way
+ * the provider sums the turn: each `thread/tokenUsage/updated` adds the
+ * growth of the thread's total since the previous one, or the response's
+ * own `last` when there is no total to compare. The first update adds its
+ * `last`, so a resumed thread's earlier turns are never counted. An update
+ * without model tokens adds nothing. Cache writes follow
+ * `codexCacheWriteTokens` with the login `auth` names. Returns the new total
+ * when a notification changed it, and null otherwise.
+ */
+export function codexPartialUsage(
+  auth: () => CodexAuthMode,
+): (raw: unknown) => TokenUsage | null {
+  let previousTotal: CodexTokenCounts | null = null
+  const sum = { input: 0, cacheRead: 0, output: 0 }
+  let cacheWrite: number | null = null
+  return (raw) => {
+    const r = raw as { method?: unknown; params?: unknown } | null
+    if (r?.method !== 'thread/tokenUsage/updated') return null
+    const tokenUsage = (r.params as { tokenUsage?: unknown } | null)
+      ?.tokenUsage as { last?: unknown; total?: unknown } | undefined
+    const last = tokenCountsOf(tokenUsage?.last)
+    if (!last) return null
+    const total = tokenCountsOf(tokenUsage?.total)
+    const growth = (key: keyof CodexTokenCounts): number | null => {
+      const now = total?.[key] ?? null
+      const before = previousTotal?.[key] ?? null
+      return now !== null && before !== null ? Math.max(0, now - before) : null
+    }
+    const increment: CodexTokenCounts =
+      total && previousTotal
+        ? {
+            inputTokens: growth('inputTokens') ?? 0,
+            cachedInputTokens: growth('cachedInputTokens') ?? 0,
+            outputTokens: growth('outputTokens') ?? 0,
+            cacheWriteInputTokens: growth('cacheWriteInputTokens'),
+          }
+        : last
+    if (total) previousTotal = total
+    if (increment.inputTokens <= 0 && increment.outputTokens <= 0) return null
+    sum.input += increment.inputTokens
+    sum.cacheRead += increment.cachedInputTokens
+    sum.output += increment.outputTokens
+    if (increment.cacheWriteInputTokens !== null)
+      cacheWrite = (cacheWrite ?? 0) + increment.cacheWriteInputTokens
+    const write = codexCacheWriteTokens(cacheWrite, auth())
+    return {
+      inputTokens: sum.input,
+      cachedInputTokens: sum.cacheRead + (write ?? 0),
+      cacheReadTokens: sum.cacheRead,
+      cacheWriteTokens: write,
+      outputTokens: sum.output,
+      totalTokens: sum.input + sum.output,
+      usageSource: 'provider-partial',
+    }
+  }
+}
+
+/**
+ * The `onRaw` reader of a Codex call: a raw notification reaches
+ * `onPartialUsage` only when `read` makes a new running total of it, a
+ * `thread/tokenUsage/updated` with model tokens. Any other notification,
+ * and an update without tokens, reaches nothing, so it never restarts the
+ * runner's idle timer; a usage report does, as all partial usage does
+ * (ADR-0032). The split is the whole total under `modelId`, since a Codex
+ * call runs one model, so a stopped call can be priced without a reported
+ * model.
+ */
+export function codexRawUsage(
+  read: (raw: unknown) => TokenUsage | null,
+  modelId: string,
+  onPartialUsage: NonNullable<AgentCallOptions['onPartialUsage']>,
+): (raw: unknown) => void {
+  return (raw) => {
+    const usage = read(raw)
+    if (usage) onPartialUsage(usage, { [modelId]: usage })
+  }
 }
 
 /**
  * The same model, with `onActivity` called on every part of its stream that
  * shows the agent at work, a running tool's preliminary result included, so
  * the runner's idle limit restarts on each, and `onOutput` given each text delta and
- * one line per tool call. The tool call's own `tool-call` part is the one
+ * one line per tool call. With `onRaw`, the stream is asked for the app
+ * server's raw notifications, and each is handed to `onRaw` and taken out
+ * of the stream: it is neither activity nor output, and `generateText`
+ * never sees it. The tool call's own `tool-call` part is the one
  * line: its `tool-input-*` parts and results are not written, nor is any
  * reasoning. The app-server model builds its `doGenerate` answer from
  * `this.doStream`, so an own `doStream` on the instance also sees what
@@ -366,18 +472,27 @@ export function watchActivity<M extends object>(
   model: M,
   onActivity: (() => void) | undefined,
   onOutput?: (chunk: string) => void,
+  onRaw?: (rawValue: unknown) => void,
 ): M {
-  if (!onActivity && !onOutput) return model
+  if (!onActivity && !onOutput && !onRaw) return model
   const target = model as unknown as StreamingModel
   const original = target.doStream.bind(target)
   const output = agentOutput(onOutput)
   target.doStream = async (streamOptions) => {
-    const response = await original(streamOptions)
+    const response = await original(
+      onRaw
+        ? { ...(streamOptions as object | undefined), includeRawChunks: true }
+        : streamOptions,
+    )
     return {
       ...response,
       stream: response.stream.pipeThrough(
         new TransformStream<OutputPart, OutputPart>({
           transform(part, controller) {
+            if (onRaw && part.type === 'raw') {
+              onRaw(part.rawValue)
+              return
+            }
             if (onActivity && !NOT_ACTIVITY.has(part.type)) onActivity()
             if (part.type === 'text-delta' && typeof part.delta === 'string')
               output.text(part.delta)
@@ -405,7 +520,8 @@ export function watchActivity<M extends object>(
 export class CodexProvider implements AgentProvider {
   readonly name = 'codex' as const
   readonly fake = false
-  readonly partialUsage = false
+  /** Read from the app server's `thread/tokenUsage/updated` notifications. */
+  readonly partialUsage = true
 
   constructor(readonly cliPath: string | null = null) {}
 
@@ -440,6 +556,13 @@ export class CodexProvider implements AgentProvider {
         `a ${options.role} call must run in the directory of the spec file it writes`,
       )
     const executable = codexExecutable(this.cliPath).path
+    // Known before the first usage notification on any call after the first,
+    // since the probe is cached; until then a reported zero write is unknown.
+    let auth: CodexAuthMode = 'unknown'
+    void codexAuthMode(this.cliPath).then((mode) => (auth = mode))
+    const onPartialUsage = options.onPartialUsage
+    const partialUsage = codexPartialUsage(() => auth)
+    const onSession = options.onSession
     const provider = createCodexAppServer({
       defaultSettings: {
         ...(executable ? { codexPath: executable } : {}),
@@ -448,6 +571,14 @@ export class CodexProvider implements AgentProvider {
         sandboxPolicy: readOnly ? 'read-only' : 'workspace-write',
         autoApprove: true,
         ...(effort ? { effort: effort as ReasoningEffort } : {}),
+        // The thread is known before the turn starts, so a call stopped
+        // early still records it.
+        ...(onSession
+          ? {
+              onSessionCreated: (session: { threadId: string }) =>
+                onSession(session.threadId),
+            }
+          : {}),
       },
     })
     try {
@@ -456,6 +587,9 @@ export class CodexProvider implements AgentProvider {
           provider(modelId),
           options.onActivity,
           options.onOutput,
+          onPartialUsage
+            ? codexRawUsage(partialUsage, modelId, onPartialUsage)
+            : undefined,
         ),
         prompt: options.prompt,
         providerOptions: {

@@ -650,13 +650,15 @@ describe('a review beside verification', () => {
       call: async (options) => {
         calls.push({ name, options })
         if (calls.length === 2) bothCalled.open()
-        options.onPartialUsage?.({
+        options.onSession?.(`${name}-session`)
+        const partial = {
           inputTokens: 1200,
           cachedInputTokens: null,
           outputTokens: 30,
           totalTokens: 1230,
-          usageSource: 'provider-partial',
-        })
+          usageSource: 'provider-partial' as const,
+        }
+        options.onPartialUsage?.(partial, { [`${name}-model`]: partial })
         if (passes)
           return {
             text: 'PLAN: p\nCOUNTEREXAMPLE: none\nDECISION: pass\nNOTES: ok',
@@ -843,6 +845,13 @@ describe('a review beside verification', () => {
       assert.equal(last?.interruptionReason, 'superseded-by-verify')
       assert.equal(last?.usage?.inputTokens, 1200)
       assert.equal(last?.usage?.usageSource, 'provider-partial')
+      // The session and the split by model are kept too, and so is how far
+      // the usage goes (ADR-0034).
+      const model = lens === 'correctness' ? 'codex-model' : 'claude-model'
+      assert.equal(last?.usageByModel?.[model]?.outputTokens, 30)
+      assert.match(last?.sessionId ?? '', /-session$/)
+      assert.equal(last?.usageUntilStop?.reason, 'superseded-by-verify')
+      assert.equal(last?.usageUntilStop?.reports, 1)
       const saved = JSON.parse(
         await readFile(
           checkpointPaths(
@@ -851,18 +860,38 @@ describe('a review beside verification', () => {
           ).completed,
           'utf8',
         ),
-      ) as { cancelled?: string; status?: string }
+      ) as {
+        cancelled?: string
+        status?: string
+        partial?: { usage?: { inputTokens?: number }; sessionId?: string }
+      }
       assert.equal(saved.status, 'completed')
       assert.equal(saved.cancelled, 'superseded-by-verify')
+      assert.equal(saved.partial?.usage?.inputTokens, 1200)
+      assert.equal(saved.partial?.sessionId, last?.sessionId)
     }
-    // A replay reads both back: nothing is sent, nothing is uncertain.
+    // A replay reads both back: nothing is sent, nothing is uncertain, and
+    // the usage, its split and the session are restored from the checkpoint.
+    const firstRun = new Map(
+      ['correctness', 'edge-cases'].map((lens) => [
+        lens,
+        h.metadata.get(`stage:1:review:${lens}`)?.at(-1),
+      ]),
+    )
+    for (const lens of ['correctness', 'edge-cases'])
+      h.metadata.delete(`stage:1:review:${lens}`)
     const replayed = await h.stage()
     assert.equal((replayed as { passed: boolean }).passed, false)
     assert.equal(h.calls.length, 2)
     for (const lens of ['correctness', 'edge-cases']) {
       const last = h.metadata.get(`stage:1:review:${lens}`)?.at(-1)
+      const first = firstRun.get(lens)
       assert.equal(last?.result, 'cancelled')
       assert.equal(last?.recovered, true)
+      assert.deepEqual(last?.usage, first?.usage)
+      assert.deepEqual(last?.usageByModel, first?.usageByModel)
+      assert.equal(last?.sessionId, first?.sessionId)
+      assert.deepEqual(last?.usageUntilStop, first?.usageUntilStop)
     }
   })
 

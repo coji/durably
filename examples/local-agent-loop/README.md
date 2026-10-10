@@ -993,9 +993,10 @@ reportの「Review rounds」では、数えなかった回に `cancelled` か `d
 使いません。「検証に落ちた候補へのレビュー」の呼び出し数と費用は、
 reportの要約、`demo compare` の設定ごとの行、`demo compare --trend` の列に、
 総費用とは別に出ます。この費用は総費用に含まれています。使用量や価格が
-分からない呼び出しがあれば、0 ではなく不明と出します。実際のCodexと
-Claudeは途中の使用量を返さないので、止めたレビューの使用量と費用は不明に
-なり、そのrunの総費用も不明と出ます。web UIでは、
+分からない呼び出しがあれば、0 ではなく不明と出します。止めたレビューは、
+止めるまでにproviderが報告した使用量（モデル別）とsession IDを残します
+（後述の「止めた呼び出しの使用量」）。この使用量は止めた時点までの下限なので、
+それを含む合計は完全な値として出さず、そのrunの総費用も不明と出ます。web UIでは、
 レビューの欄と工程の時系列の詳細に「中止」「不採用」「検証待ち」と理由が出て、
 工程の時系列では検証とレビューの重なりが実際の時刻どおりに見えます。
 
@@ -1912,6 +1913,7 @@ providerが返すusageは、一回の呼び出しの**全モデル応答の合�
 集計は `invocationId` で一度だけ数えます。同じcomplete checkpointを別attemptが
 読み直してもtokenを二重計上しません。ローカルテストやPolicyはusage対象外です。
 LLMを呼んだのにusageが無い場合は欠測として件数を残し、完全な合計にはしません。
+
 レポートはSQLiteのrun、attempt、waitから再生成する純粋な処理です。
 
 ```bash
@@ -2000,6 +2002,60 @@ Claude Fable 5.1 は0.025倍です。価格表は `src/engine/pricing.ts` にあ
 `costCacheAware: false` として区別します。レポートは保存済みの値を合計し、
 現在の価格表で再計算したとは表示しません。未知のmodelや欠けたusageを
 0円として扱いません。
+
+### 止めた呼び出しの使用量
+
+最後まで終わらなかった呼び出しも、止めるまでに使った分を残します
+（[ADR-0034](../../docs/adr/0034-local-agent-loop-stopped-call-usage.md)）。
+ClaudeとCodexは、呼び出しの途中でもその時点までの累計を報告します。
+
+- **Claude**: APIの応答ごとの使用量を、message IDごとに一度だけ足し、
+  モデル別にも分けます。assistantメッセージの使用量は応答を始めた時点の値で、
+  outputはほぼ入っていません。そのため、途中の使用量を記録する呼び出しでは
+  Agent SDKのストリームイベント（`includePartialMessages`）も受け取り、
+  `message_start` で応答を、`message_delta` でその応答のその時点までの
+  outputを読みます。各legは応答の中で増えるだけなので、見えた最大の値を
+  使います。Claude Codeが自分で作る
+  `<synthetic>` のメッセージと、tokenの無いメッセージは数えません。最終の
+  usageと同じ範囲で数えるので、subagentはcommandモードのレビューでだけ数えます。
+  session IDは各メッセージから、結果を待たずに読みます。
+- **Codex**: app-serverの `thread/tokenUsage/updated` を、providerの最終集計と
+  同じく、threadの累計の増えた分で足します。最初の通知は直前の応答の分だけを
+  足すので、`--context reuse` で再開したthreadの前回分は入りません。この通知を
+  読むためにraw通知を有効にしますが、raw通知は活動として数えず、agentのログにも
+  書きません。無通信時間をやり直すのは、tokenのある使用量の通知だけです
+  （ほかの途中の使用量と同じ）。それ以外のraw通知とtokenの無い使用量の通知では
+  やり直しません。thread IDは、turnを始める前に `onSessionCreated` で受け取ります。
+
+検証の失敗でレビューを止めたとき（`superseded-by-verify`）と、factoryの時間の
+上限で止めたとき（`timeout`）は、止めた時点までの使用量、モデル別の内訳、
+session ID、報告の回数と最後の報告の時刻を、完了のcheckpointにも保存します。
+workerが再開してcheckpointを読み直した試行にも、送り直さずに同じ値が入ります。
+runの取り消しやleaseの喪失で止まった呼び出しは、結果が分からないので今までどおり
+`uncertain` のままにし、完了のcheckpointは作りません。それまでに受け取った値は
+試行の計測にだけ残します。
+
+止めた呼び出しの結果は今までどおり使いません。採点、承認、レビュー回数には
+入らず、残るのは使用量だけです。最終のusageを受け取った呼び出しでは、途中の
+累計を最終の値で置き換え、最終の値にモデル別の内訳が無ければ途中の内訳も消します。
+最終の結果にusageやsession IDが無いまま終わった呼び出しは、途中で受け取った値を
+計測に残し、完了のcheckpointにも保存するので、読み直した試行にも同じ値が入ります。
+
+計測の `usageUntilStop` が、使用量が途中までであることを示します（止めた理由、
+報告の回数、最後の報告の時刻と呼び出し開始からの時間）。報告が一度も無かった
+呼び出しは、`usage` が `null` で報告の回数が0です。0 tokenとは扱いません。
+reportのJSONは `stoppedCalls` に、Markdownは「Usage of stopped calls」に、
+呼び出しごとの止めた理由、報告の回数、最後の報告の時点、使用量とモデル別の内訳、
+session IDを出します。止めた呼び出しを含む合計は、tokenがそろっていても
+`complete` と `costComplete` を false にし、下限として扱います。途中の報告
+（`provider-partial`）のままのusageも同じです。最終のusageが無いまま終わった
+呼び出しや、呼び出し中にworkerが落ちて `started` のまま残った試行が当たります。
+同じ呼び出しの試行が複数あるときは、完了した試行、止めた呼び出しとして確定した
+試行（`cancelled`、`timed-out`）、それ以外の順に1つを選んで集計します。
+Markdownの集計行も工程や役割の合計と同じ試行から数えます。試行の表では、途中の
+報告のままのusageとその費用に `(partial)` と付けます。Summaryのtotal tokensも、
+数えた合計のどれかが不完全なら `tokensComplete: false` にし、Markdownでは
+`(PARTIAL)` と付けます。`demo compare` は、不完全な token の合計と、不完全な工程の token・cache read の合計を、不明として扱います。
 
 ### モデルの選び方とサブスクでの制約
 

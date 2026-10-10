@@ -91,3 +91,53 @@ describe('usage accounting', () => {
     assert.equal(agg.complete, false)
   })
 })
+
+describe('a call stopped before its final usage (ADR-0034)', () => {
+  it('adds what it reported and leaves the sum incomplete', () => {
+    const reported = {
+      inputTokens: 100,
+      cachedInputTokens: null,
+      outputTokens: 10,
+      totalTokens: 110,
+      usageSource: 'provider-partial' as const,
+    }
+    const agg = aggregateUsage([
+      {
+        attemptId: 'done',
+        usage: { ...reported, usageSource: 'provider-final' },
+      },
+      { attemptId: 'stopped', usage: reported, stopped: true },
+      { attemptId: 'stopped', usage: reported },
+    ])
+    assert.equal(agg.inputTokens, 200)
+    assert.equal(agg.outputTokens, 20)
+    assert.equal(agg.complete, false)
+    assert.deepEqual(agg.missingAttempts, [])
+    const final = { ...reported, usageSource: 'provider-final' as const }
+    const finished = aggregateUsage([
+      { attemptId: 'a', usage: final },
+      { attemptId: 'b', usage: final, stopped: false },
+    ])
+    assert.equal(finished.complete, true)
+  })
+
+  it('leaves a sum with usage that never reached the final report incomplete, stop or not', () => {
+    // A call that finished without final usage after partial reports, or a
+    // worker that died mid-call: its usage is only `provider-partial`.
+    const partial = aggregateUsage([
+      {
+        attemptId: 'a',
+        usage: {
+          inputTokens: 100,
+          cachedInputTokens: null,
+          outputTokens: 10,
+          totalTokens: 110,
+          usageSource: 'provider-partial',
+        },
+      },
+    ])
+    assert.equal(partial.inputTokens, 100)
+    assert.equal(partial.complete, false)
+    assert.deepEqual(partial.missingAttempts, [])
+  })
+})

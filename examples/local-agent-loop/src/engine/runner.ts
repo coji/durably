@@ -30,6 +30,7 @@ import {
   type ReviewCallSettings,
   type SessionHandling,
   type SpecWriteAccess,
+  type UsageUntilStop,
 } from './providers/types.js'
 import type { SessionRef } from './types.js'
 import { mergeUsage, type TokenUsage } from './usage.js'
@@ -136,6 +137,22 @@ interface StartedCheckpoint {
   invocationStartedAt: string
 }
 
+/**
+ * What a call reported while it ran (ADR-0034): the running usage totals,
+ * by model when the provider split them, the native session and how far the
+ * reports go. Kept on the completed checkpoint, so a replay records the same
+ * usage and session without calling again.
+ */
+interface ReportedUsage {
+  /** The last running total; null when no usage was reported. */
+  usage: TokenUsage | null
+  usageByModel?: Record<string, TokenUsage>
+  sessionId: string | null
+  reports: number
+  lastReportAt: string | null
+  lastReportAfterMs: number | null
+}
+
 interface CompletedCheckpoint {
   operationKey: string
   invocationId: string
@@ -148,6 +165,12 @@ interface CompletedCheckpoint {
   cancelled?: SupersedeReason
   /** The factory's limit that stopped the call; absent otherwise. */
   timedOut?: AgentTimeout
+  /**
+   * What the call reported while it ran: always on a cancelled or timed-out
+   * call, and on a finished one whose result lacks a usage or a session when
+   * it reported anything. Absent on a checkpoint written before it existed.
+   */
+  partial?: ReportedUsage
   invocationStartedAt: string
   invocationCompletedAt: string
 }
@@ -349,6 +372,42 @@ export async function runAgentCall(
   }
   await attempt.setMetadata(measurement as unknown as JsonValue)
 
+  // What the provider reported while the call ran, kept here as it arrives,
+  // apart from the advisory metadata writes below: a stopped call's
+  // checkpoint and terminal write are built from it, so a snapshot whose
+  // write failed is still on record.
+  const reported: ReportedUsage = {
+    usage: null,
+    sessionId: null,
+    reports: 0,
+    lastReportAt: null,
+    lastReportAfterMs: null,
+  }
+  /**
+   * The measurement fields of a call that ended before its final usage:
+   * the usage reported up to the stop, its split and session, and how far
+   * it goes. A checkpoint written before ADR-0034 has none of it, and its
+   * call records nothing more than it did then.
+   */
+  const stoppedFields = (
+    partial: ReportedUsage | undefined,
+    reason: string,
+  ): Partial<AttemptMeasurement> & { usagePatch?: TokenUsage | null } => {
+    if (!partial) return {}
+    const usageUntilStop: UsageUntilStop = {
+      reason,
+      reports: partial.reports,
+      lastReportAt: partial.lastReportAt,
+      lastReportAfterMs: partial.lastReportAfterMs,
+    }
+    return {
+      usagePatch: partial.usage,
+      ...(partial.usageByModel ? { usageByModel: partial.usageByModel } : {}),
+      ...(partial.sessionId ? { sessionId: partial.sessionId } : {}),
+      usageUntilStop,
+    }
+  }
+
   // Partial usage snapshots are advisory and arrive while the call is still
   // running. They are written one at a time and stop once the terminal write
   // begins, so a late snapshot can never overwrite the final measurement, and
@@ -375,6 +434,9 @@ export async function runAgentCall(
   ): Promise<AgentCallOutcome> => {
     if (checkpoint) invocationId = checkpoint.invocationId
     await settleMeasurement()
+    // The outcome's session comes from the result alone, so the call and a
+    // replay of its checkpoint return the same one. A session reported
+    // during the call is kept on the measurement when the result has none.
     const sessionId = result.session?.id ?? spec.session?.nativeId ?? null
     if (spec.requireSession && !sessionId)
       throw new Error(
@@ -383,14 +445,28 @@ export async function runAgentCall(
     // Kept from the result itself, so a call read back from its completed
     // checkpoint records the same denials as the call that wrote it.
     const denials = boundedDenials(result.permissionDenials ?? [])
-    measurement = await writeMeasurement(attempt, measurement, {
+    // The final usage replaces the running totals reported before it, and a
+    // split that only those totals had is dropped, so it never prices the
+    // finished call.
+    // A result without a usage keeps the running totals instead, still
+    // partial, so every sum shows them as a lower bound; one without a
+    // session keeps the session reported during the call on the measurement.
+    // Both come from the checkpoint, so a replay records the same.
+    const early = checkpoint?.partial ?? reported
+    const base: AttemptMeasurement = { ...measurement }
+    if (result.usage) {
+      base.usage = null
+      delete base.usageByModel
+    }
+    const usageByModel = result.usage ? result.usageByModel : early.usageByModel
+    measurement = await writeMeasurement(attempt, base, {
       reportedModel: result.reportedModel,
       reportedEffort: result.reportedEffort,
       invocationId,
-      sessionId,
+      sessionId: sessionId ?? early.sessionId,
       ...(denials ? { permissionDenials: denials } : {}),
-      usagePatch: result.usage,
-      ...(result.usageByModel ? { usageByModel: result.usageByModel } : {}),
+      usagePatch: result.usage ?? early.usage,
+      ...(usageByModel ? { usageByModel } : {}),
       elapsedMs: result.elapsedMs,
       invocationStartedAt:
         checkpoint?.invocationStartedAt ?? measurement.invocationStartedAt,
@@ -475,6 +551,7 @@ export async function runAgentCall(
       result: 'cancelled',
       error: null,
       interruptionReason: reason,
+      ...stoppedFields(checkpoint.partial, reason),
     })
     return {
       text: '',
@@ -514,6 +591,7 @@ export async function runAgentCall(
       error: null,
       interruptionReason: 'timeout',
       timedOut,
+      ...stoppedFields(checkpoint.partial, 'timeout'),
     })
     if (!spec.acceptTimeout) throw new AgentTimeoutError(timedOut, spec)
     return {
@@ -688,20 +766,56 @@ export async function runAgentCall(
         heartbeat()
       },
       onOutput,
-      onPartialUsage: (usage) => {
+      onPartialUsage: (usage, usageByModel) => {
         active = true
         heartbeat()
+        if (finalized) return
+        const at = Date.now()
+        const usagePatch: TokenUsage = {
+          ...usage,
+          usageSource: 'provider-partial',
+        }
+        reported.usage = mergeUsage(reported.usage, usagePatch)
+        const split = usageByModel
+          ? Object.fromEntries(
+              Object.entries(usageByModel).map(([model, u]) => [
+                model,
+                { ...u, usageSource: 'provider-partial' as const },
+              ]),
+            )
+          : null
+        if (split) reported.usageByModel = split
+        reported.reports++
+        reported.lastReportAt = new Date(at).toISOString()
+        reported.lastReportAfterMs =
+          at - Date.parse(startRecord.invocationStartedAt)
         partialWrites = partialWrites
           .then(async () => {
             if (finalized) return
             measurement = await writeMeasurement(attempt, measurement, {
-              usagePatch: { ...usage, usageSource: 'provider-partial' },
-              elapsedMs: Date.now() - startedAt,
+              usagePatch,
+              ...(split ? { usageByModel: split } : {}),
+              elapsedMs: at - startedAt,
             })
           })
           .catch(() => {
             // Losing one progress snapshot must not fail the call or crash the
-            // worker; the terminal write reports the provider's final usage.
+            // worker; the terminal write reports the provider's final usage,
+            // or what was reported before a stop.
+          })
+      },
+      onSession: (sessionId) => {
+        if (finalized || reported.sessionId === sessionId) return
+        reported.sessionId = sessionId
+        partialWrites = partialWrites
+          .then(async () => {
+            if (finalized) return
+            measurement = await writeMeasurement(attempt, measurement, {
+              sessionId,
+            })
+          })
+          .catch(() => {
+            // Kept in `reported` for the terminal write.
           })
       },
     })
@@ -717,6 +831,12 @@ export async function runAgentCall(
       ...startRecord,
       status: 'completed',
       result,
+      // Kept only where the result lacks what was reported, so a replay
+      // can record it (ADR-0034).
+      ...((!result.usage || !result.session?.id) &&
+      (reported.reports > 0 || reported.sessionId)
+        ? { partial: { ...reported } }
+        : {}),
       invocationCompletedAt: new Date().toISOString(),
     }
     await writeJsonAtomic(paths.completed, completed, attempt.id)
@@ -745,11 +865,14 @@ export async function runAgentCall(
       !signal.aborted &&
       !(supersede?.signal.aborted ?? false)
     ) {
+      // Every report that arrived is in before the checkpoint is built.
+      await settleMeasurement()
       const stopped: CompletedCheckpoint = {
         ...startRecord,
         status: 'completed',
         result: null,
         timedOut: factoryTimeout,
+        partial: { ...reported },
         invocationCompletedAt: new Date().toISOString(),
       }
       await writeJsonAtomic(paths.completed, stopped, attempt.id)
@@ -763,11 +886,13 @@ export async function runAgentCall(
       !signal.aborted &&
       !timeout.signal.aborted
     ) {
+      await settleMeasurement()
       const cancelled: CompletedCheckpoint = {
         ...startRecord,
         status: 'completed',
         result: null,
         cancelled: supersede.reason,
+        partial: { ...reported },
         invocationCompletedAt: new Date().toISOString(),
       }
       await writeJsonAtomic(paths.completed, cancelled, attempt.id)
@@ -800,15 +925,26 @@ export async function runAgentCall(
     }
     const message = error instanceof Error ? error.message : String(error)
     await settleMeasurement()
+    const interruptionReason = signal.aborted
+      ? 'cancelled-or-lease-lost'
+      : timeout.signal.aborted || /timed? out|timeout/i.test(message)
+        ? 'timeout'
+        : null
+    // The outcome stays unknown and no completed checkpoint is written, but
+    // what was reported before the end stays on the attempt. Only a stop
+    // says how far its usage goes; a plain error keeps the usage it had
+    // reported without a stop record.
+    const { usageUntilStop, ...kept } = stoppedFields(
+      reported,
+      interruptionReason ?? 'error',
+    )
     measurement = await writeMeasurement(attempt, measurement, {
       elapsedMs: Date.now() - startedAt,
       result: 'uncertain',
       error: message.slice(0, 2000),
-      interruptionReason: signal.aborted
-        ? 'cancelled-or-lease-lost'
-        : timeout.signal.aborted || /timed? out|timeout/i.test(message)
-          ? 'timeout'
-          : null,
+      interruptionReason,
+      ...kept,
+      ...(interruptionReason ? { usageUntilStop } : {}),
     })
     throw error
   } finally {

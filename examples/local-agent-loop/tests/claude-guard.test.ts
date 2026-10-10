@@ -14,6 +14,8 @@ import {
   observedClaudeModel,
   parseCliVersion,
   claudeCallUsage,
+  claudePartialUsage,
+  claudeSessionId,
   COMMAND_MODE_LOCKDOWN,
   COMMAND_MODE_REVIEW_TOOLS,
   decideReviewToolPermission,
@@ -1029,5 +1031,200 @@ describe('how a code stage treats the recorded implementation session', () => {
       ['profile', () => handling(recorded(), { acrossEffortModel: null })],
     ] as const)
       assert.throws(run, /provenance no longer matches/, name)
+  })
+})
+
+describe('Claude usage before the result message (ADR-0034)', () => {
+  const assistant = (
+    id: string,
+    model: string,
+    usage: Record<string, number | null>,
+    parent: string | null = null,
+  ) =>
+    ({
+      type: 'assistant',
+      message: { id, model, content: [], usage },
+      parent_tool_use_id: parent,
+      uuid: `uuid-${id}-${Math.random()}`,
+      session_id: 'session-1',
+    }) as unknown as SDKMessage
+  const legs = (input: number, output: number, read = 0, write = 0) => ({
+    input_tokens: input,
+    output_tokens: output,
+    cache_read_input_tokens: read,
+    cache_creation_input_tokens: write,
+  })
+  const COMMAND_REVIEW: ReviewCallSettings = {
+    command: true,
+    context: 'prompt',
+    output: 'findings-json',
+    readableDirs: [],
+  }
+
+  it('sums each message once at its latest usage, as a running total', () => {
+    const read = claudePartialUsage(null)
+    const first = read(assistant('m1', 'claude-opus-5-5', legs(10, 5, 100, 20)))
+    assert.equal(first?.usage.inputTokens, 130)
+    assert.equal(first?.usage.cacheReadTokens, 100)
+    assert.equal(first?.usage.cacheWriteTokens, 20)
+    assert.equal(first?.usage.outputTokens, 5)
+    assert.equal(first?.usage.usageSource, 'provider-partial')
+    // The same message again, once per content block: counted once, and
+    // nothing new to report when its usage did not change.
+    assert.equal(
+      read(assistant('m1', 'claude-opus-5-5', legs(10, 5, 100, 20))),
+      null,
+    )
+    const grown = read(
+      assistant('m1', 'claude-opus-5-5', legs(10, 40, 100, 20)),
+    )
+    assert.equal(grown?.usage.outputTokens, 40)
+    assert.equal(grown?.usage.inputTokens, 130)
+    const next = read(assistant('m2', 'claude-opus-5-5', legs(3, 7, 150, 0)))
+    assert.equal(next?.usage.inputTokens, 283)
+    assert.equal(next?.usage.outputTokens, 47)
+    assert.equal(next?.usage.totalTokens, 330)
+    assert.deepEqual(Object.keys(next?.usageByModel ?? {}), ['claude-opus-5-5'])
+  })
+
+  it('counts nothing from synthetic frames, frames without tokens or other messages', () => {
+    const read = claudePartialUsage(null)
+    assert.equal(read(assistant('s', '<synthetic>', legs(0, 0))), null)
+    assert.equal(read(assistant('s2', '<synthetic>', legs(5, 5))), null)
+    assert.equal(read(assistant('z', 'claude-opus-5-5', legs(0, 0))), null)
+    assert.equal(
+      read({ type: 'system', subtype: 'init' } as unknown as SDKMessage),
+      null,
+    )
+  })
+
+  it("counts subagents only in a command-mode review, split by model, the final usage's scope", () => {
+    const sub = assistant('sub', 'claude-haiku-5-5', legs(50, 10), 'tool-1')
+    const main = assistant('main', 'claude-opus-5-5', legs(10, 5))
+    const plain = claudePartialUsage(null)
+    plain(main)
+    assert.equal(plain(sub), null)
+    const review = claudePartialUsage(COMMAND_REVIEW)
+    review(main)
+    const both = review(sub)
+    assert.equal(both?.usage.inputTokens, 60)
+    assert.equal(both?.usageByModel['claude-haiku-5-5']?.inputTokens, 50)
+    assert.equal(both?.usageByModel['claude-opus-5-5']?.outputTokens, 5)
+  })
+
+  const streamed = (event: unknown, parent: string | null = null) =>
+    ({
+      type: 'stream_event',
+      event,
+      parent_tool_use_id: parent,
+      uuid: `uuid-${Math.random()}`,
+      session_id: 'session-1',
+    }) as unknown as SDKMessage
+  const start = (id: string, model: string, usage: Record<string, number>) =>
+    streamed({ type: 'message_start', message: { id, model, usage } })
+  const delta = (output: number, parent: string | null = null) =>
+    streamed(
+      { type: 'message_delta', delta: {}, usage: { output_tokens: output } },
+      parent,
+    )
+
+  it("counts a response's output as its streamed deltas grow it", () => {
+    const read = claudePartialUsage(null)
+    const started = read(start('m1', 'claude-opus-5-5', legs(10, 1, 100, 20)))
+    assert.equal(started?.usage.inputTokens, 130)
+    assert.equal(started?.usage.outputTokens, 1)
+    // The assistant message repeats the starting usage: nothing new.
+    assert.equal(
+      read(assistant('m1', 'claude-opus-5-5', legs(10, 1, 100, 20))),
+      null,
+    )
+    assert.equal(read(delta(300))?.usage.outputTokens, 300)
+    // An assistant message after the delta never takes the output back.
+    assert.equal(
+      read(assistant('m1', 'claude-opus-5-5', legs(10, 1, 100, 20))),
+      null,
+    )
+    read(start('m2', 'claude-opus-5-5', legs(2, 1, 130, 0)))
+    const next = read(delta(50))
+    assert.equal(next?.usage.outputTokens, 350)
+    assert.equal(next?.usage.inputTokens, 262)
+    assert.equal(next?.usageByModel['claude-opus-5-5']?.outputTokens, 350)
+  })
+
+  it('gives each delta to the response on its own stream', () => {
+    const read = claudePartialUsage(COMMAND_REVIEW)
+    read(start('main', 'claude-opus-5-5', legs(10, 1)))
+    read(
+      streamed(
+        {
+          type: 'message_start',
+          message: { id: 'sub', model: 'claude-haiku-5-5', usage: legs(50, 1) },
+        },
+        'tool-1',
+      ),
+    )
+    read(delta(80, 'tool-1'))
+    const both = read(delta(20))
+    assert.equal(both?.usageByModel['claude-haiku-5-5']?.outputTokens, 80)
+    assert.equal(both?.usageByModel['claude-opus-5-5']?.outputTokens, 20)
+    // Outside a command-mode review the subagent's stream counts nothing.
+    const plain = claudePartialUsage(null)
+    plain(start('main', 'claude-opus-5-5', legs(10, 1)))
+    assert.equal(
+      plain(
+        streamed(
+          {
+            type: 'message_start',
+            message: {
+              id: 'sub',
+              model: 'claude-haiku-5-5',
+              usage: legs(50, 1),
+            },
+          },
+          'tool-1',
+        ),
+      ),
+      null,
+    )
+    assert.equal(plain(delta(80, 'tool-1')), null)
+    assert.equal(plain(delta(20))?.usage.outputTokens, 20)
+  })
+
+  it('counts no delta without its response, nor other stream events', () => {
+    const read = claudePartialUsage(null)
+    assert.equal(read(delta(40)), null)
+    assert.equal(
+      read(start('s', '<synthetic>', legs(5, 5))),
+      null,
+      'a synthetic response',
+    )
+    assert.equal(read(delta(40)), null, 'a delta of a synthetic response')
+    read(start('m1', 'claude-opus-5-5', legs(10, 1)))
+    assert.equal(
+      read(
+        streamed({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'x' },
+        }),
+      ),
+      null,
+    )
+    assert.equal(read(delta(1)), null, 'no growth')
+  })
+
+  it('reads the session from any message that carries one', () => {
+    assert.equal(
+      claudeSessionId({
+        type: 'system',
+        subtype: 'init',
+        session_id: 'abc',
+      } as unknown as SDKMessage),
+      'abc',
+    )
+    assert.equal(
+      claudeSessionId({ type: 'system' } as unknown as SDKMessage),
+      null,
+    )
   })
 })

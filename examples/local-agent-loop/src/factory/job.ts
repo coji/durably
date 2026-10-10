@@ -270,6 +270,19 @@ const DEFAULT_TIMEOUTS = {
 
 const providerSchema = z.enum(['codex', 'claude', 'fake'])
 
+/** Every agent role, as a fake scenario names one. */
+const agentRoleSchema = z.enum([
+  'implement',
+  'repair',
+  'review-a',
+  'review-b',
+  'triage',
+  'preflight',
+  'spec-author',
+  'spec-fix',
+  'spec-review',
+])
+
 const fakeScenarioSchema = z
   .object({
     failIterations: z.number().int().min(0).optional(),
@@ -313,21 +326,13 @@ const fakeScenarioSchema = z
       .optional(),
     stall: z
       .object({
-        roles: z.array(
-          z.enum([
-            'implement',
-            'repair',
-            'review-a',
-            'review-b',
-            'triage',
-            'preflight',
-            'spec-author',
-            'spec-fix',
-            'spec-review',
-          ]),
-        ),
+        roles: z.array(agentRoleSchema),
         changes: z.record(z.string().min(1), z.string()).optional(),
       })
+      .strict()
+      .optional(),
+    earlyUsage: z
+      .object({ roles: z.array(agentRoleSchema) })
       .strict()
       .optional(),
   })

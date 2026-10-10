@@ -78,6 +78,7 @@ function emptySummary(): RunSummary {
     humanWaitRatio: null,
     llmInvocations: 0,
     totalTokens: null,
+    tokensComplete: true,
     costUsd: null,
     costPerSuccessUsd: null,
     repairs: 0,

@@ -28,7 +28,7 @@ import {
 import type { WorktreeState } from './status.js'
 import { TERMINAL_STATUSES } from './terminal.js'
 import type { CandidateChanges } from './types.js'
-import { aggregateUsage } from './usage.js'
+import { aggregateUsage, type TokenUsage } from './usage.js'
 
 /** The Markdown is English; the web UI reads the same values in Japanese. */
 const { formatCost, formatCount, formatDuration, formatTokens } =
@@ -766,6 +766,11 @@ export interface RunSummary {
   humanWaitRatio: number | null
   llmInvocations: number
   totalTokens: number | null
+  /**
+   * False when `totalTokens` is not the whole run's: some counted call
+   * reported no usage, or only usage up to a stop (ADR-0034).
+   */
+  tokensComplete: boolean
   costUsd: number | null
   /** costUsd when the run succeeded, else null: what one success cost. */
   costPerSuccessUsd: number | null
@@ -809,6 +814,33 @@ export interface ReportSpec {
   advice: ReportFinding[]
   /** The check `checkFromSpec` chose and its notes; null without one. */
   check: { command: string[]; notes: string | null } | null
+}
+
+/**
+ * A call stopped before its final usage, and how far the usage it reported
+ * goes (ADR-0034). `usage` is null when nothing was reported before the
+ * stop; a sum that includes the call is never complete either way.
+ */
+export interface StoppedCallUsage {
+  stepName: string
+  invocationId: string | null
+  role: string | null
+  provider: string
+  /** `cancelled`, `timed-out` or `uncertain`. */
+  result: string | null
+  /** Why it stopped, such as `superseded-by-verify` or `timeout`. */
+  reason: string
+  /** Usage reports received before the stop; 0 when none arrived. */
+  reports: number
+  lastReportAt: string | null
+  /** From the call's start to the last report. */
+  lastReportAfterMs: number | null
+  /** From the call's start to its stop. */
+  elapsedMs: number | null
+  usage: TokenUsage | null
+  usageByModel: Record<string, TokenUsage> | null
+  costUsdEstimate: number | null
+  sessionId: string | null
 }
 
 export interface LoopReport {
@@ -861,6 +893,12 @@ export interface LoopReport {
    * rounds `cancelled` or `discarded`. Null or absent when the run had none.
    */
   discardedReviews?: UsageTotals | null
+  /**
+   * Every call stopped before its final usage, once per invocation
+   * (ADR-0034); empty when none was. Absent on a report made before it
+   * existed.
+   */
+  stoppedCalls?: StoppedCallUsage[]
   /** The review rounds in short, for the page's summary. */
   reviewHighlights: ReviewHighlights
   /**
@@ -945,6 +983,52 @@ function fmt(v: unknown): string {
   return String(v)
 }
 
+/** One usage's legs, as the aggregate line writes them. */
+function usageLegs(
+  u: Pick<
+    TokenUsage,
+    | 'inputTokens'
+    | 'cacheReadTokens'
+    | 'cacheWriteTokens'
+    | 'outputTokens'
+    | 'totalTokens'
+  >,
+): string {
+  return `in=${formatTokens(u.inputTokens)} cache-read=${formatTokens(u.cacheReadTokens)} cache-write=${formatTokens(u.cacheWriteTokens)} out=${formatTokens(u.outputTokens)} total=${formatTokens(u.totalTokens)}`
+}
+
+/**
+ * The calls stopped before their final usage: why, how far the usage they
+ * reported goes, by model, and their session (ADR-0034). Nothing when no
+ * call was stopped.
+ */
+function stoppedCallLines(calls: StoppedCallUsage[]): string[] {
+  if (calls.length === 0) return []
+  const lines = [
+    '',
+    '## Usage of stopped calls',
+    '',
+    'Each call stopped before its final usage keeps the running total its provider reported up to the stop. It is a lower bound, and a total that includes it is not complete.',
+    '',
+  ]
+  for (const c of calls) {
+    const head = `- ${c.stepName} (${c.invocationId?.slice(0, 8) ?? 'n/a'}), ${fmt(c.result)} (${c.reason})`
+    const session = `session ${c.sessionId ?? 'unknown'}`
+    if (!c.usage) {
+      lines.push(
+        `${head}: no usage reported before the stop (${formatCount(c.reports)} reports, last report none), usage unknown; ${session}`,
+      )
+      continue
+    }
+    lines.push(
+      `${head}: partial usage from ${formatCount(c.reports)} report(s), the last at ${c.lastReportAt ?? 'unknown'}, ${formatDuration(c.lastReportAfterMs)} into the call (stopped after ${formatDuration(c.elapsedMs)}); ${usageLegs(c.usage)}; cost ${formatCost(c.costUsdEstimate)}; ${session}`,
+    )
+    for (const [model, u] of Object.entries(c.usageByModel ?? {}))
+      lines.push(`  - ${model}: ${usageLegs(u)}`)
+  }
+  return lines
+}
+
 /** Where a candidate sealed from a stopped call came from, in one phrase. */
 function timedOutOrigin(t: AgentTimeout): string {
   return `unfinished work of a call stopped at its ${t.kind} limit of ${formatDuration(t.limitMs)}`
@@ -995,34 +1079,55 @@ function sortStages<T extends { stage: string }>(rows: T[]): T[] {
 }
 
 /**
- * Keep one row per invocation, preferring the attempt that completed it.
+ * Keep one row per invocation, preferring the attempt that completed it,
+ * then one that settled it as stopped (ADR-0034), over any other: a worker
+ * that died before its terminal write leaves a `started` row behind, and
+ * the replay that read the completed checkpoint is the one on record.
  * Recovery attempts re-read the same invocation and must not add tokens.
  */
 function dedupeByInvocation(attempts: AttemptRow[]): AttemptRow[] {
   const selected = new Map<string, AttemptRow>()
   // A call superseded before it was sent is no invocation (ADR-0029).
   attempts = attempts.filter((a) => a.measurement?.result !== NOT_SENT)
-  const completed = (a: AttemptRow | undefined) =>
-    a?.measurement?.result === 'checkpoint-recovered' ||
-    (a?.measurement?.result?.endsWith('-done') ?? false)
+  const rank = (a: AttemptRow): number => {
+    const result = a.measurement?.result
+    if (result === 'checkpoint-recovered' || result?.endsWith('-done')) return 2
+    if (result === 'cancelled' || result === 'timed-out') return 1
+    return 0
+  }
   for (const attempt of attempts) {
     const key = attempt.measurement?.invocationId ?? attempt.attemptId
     const previous = selected.get(key)
-    if (!previous || (completed(attempt) && !completed(previous)))
-      selected.set(key, attempt)
+    if (!previous || rank(attempt) > rank(previous)) selected.set(key, attempt)
   }
   return [...selected.values()]
 }
 
-/** Sum one group of already-deduped LLM invocations. */
-function usageTotals(list: AttemptRow[]): UsageTotals {
-  const agg = aggregateUsage(
+/**
+ * The attempts that count toward a usage sum: one per invocation, by
+ * `dedupeByInvocation`, and only steps that invoke an LLM.
+ */
+function countedInvocations(attempts: AttemptRow[]): AttemptRow[] {
+  return dedupeByInvocation(attempts).filter((a) =>
+    attemptExpectsUsage(a.stepName),
+  )
+}
+
+/** Token sums over already-deduped LLM invocations. */
+function aggregateInvocations(list: AttemptRow[]) {
+  return aggregateUsage(
     list.map((a) => ({
       attemptId: a.measurement?.invocationId ?? a.attemptId,
       usage: a.measurement?.usage ?? null,
       expectsUsage: true,
+      stopped: a.measurement?.usageUntilStop != null,
     })),
   )
+}
+
+/** Sum one group of already-deduped LLM invocations. */
+function usageTotals(list: AttemptRow[]): UsageTotals {
+  const agg = aggregateInvocations(list)
   const costs = list.map((a) => a.measurement?.costUsdEstimate ?? null)
   const costUsd =
     agg.complete && costs.every((c) => c !== null)
@@ -1047,10 +1152,38 @@ function usageTotals(list: AttemptRow[]): UsageTotals {
  * web UI's trace rows use it, so a row never sums usage another way.
  */
 export function usageOf(attempts: AttemptRow[]): UsageTotals | null {
-  const list = dedupeByInvocation(attempts).filter((a) =>
-    attemptExpectsUsage(a.stepName),
-  )
+  const list = countedInvocations(attempts)
   return list.length === 0 ? null : usageTotals(list)
+}
+
+/**
+ * Every call stopped before its final usage, once per invocation, with the
+ * usage it reported up to the stop (ADR-0034).
+ */
+export function stoppedCallsOf(attempts: AttemptRow[]): StoppedCallUsage[] {
+  return dedupeByInvocation(attempts).flatMap((a) => {
+    const m = a.measurement
+    const stop = m?.usageUntilStop
+    if (!m || !stop) return []
+    return [
+      {
+        stepName: a.stepName,
+        invocationId: m.invocationId ?? null,
+        role: m.role ?? null,
+        provider: m.provider,
+        result: m.result,
+        reason: stop.reason,
+        reports: stop.reports,
+        lastReportAt: stop.lastReportAt,
+        lastReportAfterMs: stop.lastReportAfterMs,
+        elapsedMs: m.elapsedMs,
+        usage: m.usage,
+        usageByModel: m.usageByModel ?? null,
+        costUsdEstimate: m.costUsdEstimate,
+        sessionId: m.sessionId ?? null,
+      },
+    ]
+  })
 }
 
 /** Per-stage token and cost sums, one count per invocation. */
@@ -1212,6 +1345,7 @@ export function summarizeRun(input: SummaryInput): RunSummary {
         : null,
     llmInvocations: usageRows.reduce((s, r) => s + r.invocations, 0),
     totalTokens: sumLeg((r) => r.totalTokens),
+    tokensComplete: allComplete,
     costUsd,
     costPerSuccessUsd: success ? costUsd : null,
     repairs: repairsOf(input.stageVisits, input.repairRun ?? false),
@@ -1388,15 +1522,11 @@ export function attemptExpectsUsage(stepName: string): boolean {
 
 /** Sum the already-priced invocations without applying one model to another. */
 function aggregateInvocationCost(
-  attempts: AttemptRow[],
+  counted: AttemptRow[],
   usageComplete: boolean,
 ): number | null {
   if (!usageComplete) return null
-  // Same dedupe rule as `stageUsage`, so the aggregate line and the per-stage
-  // costs can never be derived two different ways and disagree.
-  const costs = dedupeByInvocation(
-    attempts.filter((a) => attemptExpectsUsage(a.stepName)),
-  ).map((a) => a.measurement?.costUsdEstimate ?? null)
+  const costs = counted.map((a) => a.measurement?.costUsdEstimate ?? null)
   if (costs.some((cost) => cost === null)) return null
   return costs.reduce<number>((sum, cost) => sum + (cost ?? 0), 0)
 }
@@ -1740,7 +1870,9 @@ export function reportToMarkdown(r: LoopReport): string {
     `- human wait: ${formatDuration(s.humanWaitMs)}${s.humanWaitRatio !== null ? ` (${(s.humanWaitRatio * 100).toFixed(1)}% of lead time)` : ''}`,
   )
   lines.push(`- llm invocations: ${s.llmInvocations}`)
-  lines.push(`- total tokens: ${formatTokens(s.totalTokens)}`)
+  lines.push(
+    `- total tokens: ${formatTokens(s.totalTokens)}${s.totalTokens !== null && !s.tokensComplete ? ' (PARTIAL)' : ''}`,
+  )
   lines.push(`- cost (api-equiv): ${formatCost(s.costUsd)}`)
   lines.push(`- cost per success: ${formatCost(s.costPerSuccessUsd)}`)
   lines.push(`- repairs: ${s.repairs}, review rounds: ${s.reviewRounds}`)
@@ -1803,8 +1935,12 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('|---|---|---|---|---|---|---|---|---|')
   for (const a of r.attempts) {
     const m = a.measurement
+    // Usage reported only while the call ran is a lower bound, and so is
+    // the cost estimated from it (ADR-0034).
+    const partial =
+      m?.usage?.usageSource === 'provider-partial' ? ' (partial)' : ''
     const tokens = m?.usage
-      ? `${formatTokens(m.usage.inputTokens)}/${formatTokens(m.usage.cacheReadTokens)}/${formatTokens(m.usage.cacheWriteTokens)}/${formatTokens(m.usage.outputTokens)}/${formatTokens(m.usage.totalTokens)}`
+      ? `${formatTokens(m.usage.inputTokens)}/${formatTokens(m.usage.cacheReadTokens)}/${formatTokens(m.usage.cacheWriteTokens)}/${formatTokens(m.usage.outputTokens)}/${formatTokens(m.usage.totalTokens)}${partial}`
       : Array(5).fill(formatTokens(null)).join('/')
     const model =
       m != null
@@ -1815,25 +1951,23 @@ export function reportToMarkdown(r: LoopReport): string {
         ? `${fmt(m.requestedEffort)}/${fmt(m.effectiveEffort)}/${fmt(m.reportedEffort)}`
         : 'unknown/unknown/unknown'
     lines.push(
-      `| ${a.stepName} | ${m?.invocationId?.slice(0, 8) ?? 'n/a'} | ${a.status}${a.interruptionReason ? ` (${a.interruptionReason})` : ''} | ${model} | ${effort} | ${formatDuration(m?.elapsedMs)} | ${tokens} | ${m?.costUsdEstimate != null ? `${formatCost(m.costUsdEstimate)} (${m.costBasis})` : formatCost(null)} | ${fmt(m?.result)} |`,
+      `| ${a.stepName} | ${m?.invocationId?.slice(0, 8) ?? 'n/a'} | ${a.status}${a.interruptionReason ? ` (${a.interruptionReason})` : ''} | ${model} | ${effort} | ${formatDuration(m?.elapsedMs)} | ${tokens} | ${m?.costUsdEstimate != null ? `${formatCost(m.costUsdEstimate)} (${m.costBasis})${partial}` : formatCost(null)} | ${fmt(m?.result)} |`,
     )
   }
-  const agg = aggregateUsage(
-    r.attempts.map((a) => ({
-      attemptId: a.measurement?.invocationId ?? a.attemptId,
-      usage: a.measurement?.usage ?? null,
-      expectsUsage: attemptExpectsUsage(a.stepName),
-    })),
-  )
+  // The same invocations as the stage and role totals, so the line can
+  // never show other numbers than they do.
+  const counted = countedInvocations(r.attempts)
+  const agg = aggregateInvocations(counted)
   lines.push('')
   lines.push(
-    `- aggregate usage (deduped by invocation): in=${formatTokens(agg.inputTokens)} cache-read=${formatTokens(agg.cacheReadTokens)} cache-write=${formatTokens(agg.cacheWriteTokens)} out=${formatTokens(agg.outputTokens)} total=${formatTokens(agg.totalTokens)}${agg.complete ? '' : ' (PARTIAL — some invocations missing usage)'}`,
+    `- aggregate usage (deduped by invocation): ${usageLegs(agg)}${agg.complete ? '' : ' (PARTIAL — some invocations missing usage or stopped before their final usage)'}`,
   )
   lines.push(`- missing usage invocations: ${agg.missingAttempts.length}`)
-  const aggCost = aggregateInvocationCost(r.attempts, agg.complete)
+  const aggCost = aggregateInvocationCost(counted, agg.complete)
   lines.push(
     `- aggregate cost (stored per-invocation estimates): ${formatCost(aggCost)}`,
   )
+  lines.push(...stoppedCallLines(r.stoppedCalls ?? []))
   lines.push('')
   lines.push('## Waits')
   lines.push('')
