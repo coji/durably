@@ -1063,6 +1063,7 @@ describe('archive --series', { timeout: 300000 }, () => {
     let first = ''
     let repair = ''
     let other = ''
+    const work = (id: string) => join(runRootOf(box.stateRoot, id), 'work')
     try {
       await durably.migrate()
       first = await subjectRun(durably)
@@ -1072,7 +1073,7 @@ describe('archive --series', { timeout: 300000 }, () => {
       // setup recorded.
       for (const id of [first, repair, other]) {
         await durably.cancel(id)
-        const workdir = join(runRootOf(box.stateRoot, id), 'work')
+        const workdir = work(id)
         await git(box.repo, ['worktree', 'add', '-b', `factory/${id}`, workdir])
         const now = new Date().toISOString()
         await durably.db
@@ -1100,7 +1101,6 @@ describe('archive --series', { timeout: 300000 }, () => {
     } finally {
       await durably.db.destroy()
     }
-    const work = (id: string) => join(runRootOf(box.stateRoot, id), 'work')
     const branch = async (id: string) =>
       (
         await runChild(

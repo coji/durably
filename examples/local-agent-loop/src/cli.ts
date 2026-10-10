@@ -54,6 +54,7 @@ import {
   type LoopReport,
 } from './engine/report.js'
 import {
+  archivable,
   diagnose,
   diagnoseRun,
   diagnosisLines,
@@ -770,7 +771,7 @@ if (cmd === 'worker') {
     )
     // Every stop nobody archived, also one a later approved repair replaced.
     const stops = task.runs.filter(
-      (r) => r.kind === 'stopped' && !r.archived,
+      (r) => archivable(r.kind) && !r.archived,
     ).length
     if (stops > 0)
       lines.push(
