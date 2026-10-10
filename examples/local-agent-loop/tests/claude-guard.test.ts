@@ -4,7 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it } from 'node:test'
 
-import { claudeCode, type SDKMessage } from 'ai-sdk-provider-claude-code'
+import type { generateText } from 'ai'
+import {
+  claudeCode,
+  type ClaudeCodeSettings,
+  type SDKMessage,
+} from 'ai-sdk-provider-claude-code'
 
 import {
   buildClaudeSettings,
@@ -25,7 +30,10 @@ import {
   preToolUseHook,
   reviewPreToolUseHook,
 } from '../src/engine/providers/claude.js'
-import type { ReviewCallSettings } from '../src/engine/providers/types.js'
+import type {
+  AgentCallOptions,
+  ReviewCallSettings,
+} from '../src/engine/providers/types.js'
 import { fixProfile } from '../src/factory/job.js'
 import {
   confirmRepairSession,
@@ -617,6 +625,57 @@ describe('a repair that resumes the implementation session at its own effort', (
   })
 })
 
+describe('the settings a Claude call hands the provider', () => {
+  // The model factory records what it is given and the generation returns
+  // a result at once, so no call here starts the CLI.
+  const callWith = async (
+    onPartialUsage?: AgentCallOptions['onPartialUsage'],
+  ) => {
+    const workdir = await mkdtemp(join(tmpdir(), 'claude-call-'))
+    const given: ClaudeCodeSettings[] = []
+    const provider = new ClaudeProvider({
+      claudeCode: ((_model: string, settings: ClaudeCodeSettings) => {
+        given.push(settings)
+        return {}
+      }) as unknown as typeof claudeCode,
+      generateText: (async () => ({
+        text: 'done',
+        usage: { inputTokens: 130, outputTokens: 5, totalTokens: 135 },
+        response: { modelId: 'claude-opus-5-5' },
+        finalStep: {
+          providerMetadata: { 'claude-code': { sessionId: 'native-1' } },
+        },
+      })) as unknown as typeof generateText,
+    })
+    const result = await provider.call({
+      prompt: 'implement it',
+      workdir,
+      timeoutMs: 60_000,
+      requestedModel: 'claude-opus-5-5',
+      requestedEffort: null,
+      role: 'implement',
+      ...(onPartialUsage ? { onPartialUsage } : {}),
+    })
+    assert.equal(given.length, 1)
+    return { settings: given[0] as ClaudeCodeSettings, result }
+  }
+
+  it('asks for the streamed events only when the call takes partial usage', async () => {
+    const partial = await callWith(() => {})
+    assert.equal(partial.settings.includePartialMessages, true)
+    const plain = await callWith()
+    assert.equal('includePartialMessages' in plain.settings, false)
+    // The result is built from what the generation returned, as before.
+    for (const { result } of [partial, plain]) {
+      assert.equal(result.text, 'done')
+      assert.equal(result.reportedModel, 'claude-opus-5-5')
+      assert.deepEqual(result.session, { id: 'native-1' })
+      assert.equal(result.usage?.inputTokens, 130)
+      assert.equal(result.usage?.outputTokens, 5)
+    }
+  })
+})
+
 describe('whether a repair continues the session across an effort change', () => {
   const claude = (
     effort: string,
@@ -1061,7 +1120,7 @@ describe('Claude usage before the result message (ADR-0034)', () => {
     readableDirs: [],
   }
 
-  it('sums each message once at its latest usage, as a running total', () => {
+  it('counts each response once, at the largest value seen on each leg, as a running total', () => {
     const read = claudePartialUsage(null)
     const first = read(assistant('m1', 'claude-opus-5-5', legs(10, 5, 100, 20)))
     assert.equal(first?.usage.inputTokens, 130)
@@ -1085,6 +1144,22 @@ describe('Claude usage before the result message (ADR-0034)', () => {
     assert.equal(next?.usage.outputTokens, 47)
     assert.equal(next?.usage.totalTokens, 330)
     assert.deepEqual(Object.keys(next?.usageByModel ?? {}), ['claude-opus-5-5'])
+  })
+
+  it('never takes back usage a response reports smaller later', () => {
+    const read = claudePartialUsage(null)
+    read(assistant('m1', 'claude-opus-5-5', legs(10, 5, 100, 20)))
+    read(assistant('m1', 'claude-opus-5-5', legs(10, 40, 100, 20)))
+    // The same response with smaller legs, the output and the uncached input
+    // alike: the total keeps each leg's largest value, so nothing is new.
+    assert.equal(
+      read(assistant('m1', 'claude-opus-5-5', legs(3, 5, 100, 20))),
+      null,
+    )
+    const next = read(assistant('m2', 'claude-opus-5-5', legs(3, 7, 150, 0)))
+    assert.equal(next?.usage.inputTokens, 283)
+    assert.equal(next?.usage.outputTokens, 47)
+    assert.equal(next?.usageByModel['claude-opus-5-5']?.outputTokens, 47)
   })
 
   it('counts nothing from synthetic frames, frames without tokens or other messages', () => {
