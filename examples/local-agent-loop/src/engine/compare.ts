@@ -277,7 +277,9 @@ export function compareReports(reports: LoopReport[]): Comparison {
         totalTokens: stat(
           usage.map((u) => (u?.complete ? u.totalTokens : null)),
         ),
-        cacheReadTokens: stat(usage.map((u) => u?.cacheReadTokens)),
+        cacheReadTokens: stat(
+          usage.map((u) => (u?.complete ? u.cacheReadTokens : null)),
+        ),
         costUsd: stat(usage.map((u) => u?.costUsd)),
         reworked: stat(visits.map((v) => v?.reworked ?? 0)),
       }

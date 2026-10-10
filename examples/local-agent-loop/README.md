@@ -2050,7 +2050,7 @@ session IDを出します。止めた呼び出しを含む合計は、tokenが�
 Markdownの集計行も工程や役割の合計と同じ試行から数えます。試行の表では、途中の
 報告のままのusageとその費用に `(partial)` と付けます。Summaryのtotal tokensも、
 数えた合計のどれかが不完全なら `tokensComplete: false` にし、Markdownでは
-`(PARTIAL)` と付けます。`demo compare` は、不完全な token の合計を run の合計として数えず、不明として扱います。
+`(PARTIAL)` と付けます。`demo compare` は、不完全な token の合計と、不完全な工程の token・cache read の合計を、不明として扱います。
 
 ### モデルの選び方とサブスクでの制約
 

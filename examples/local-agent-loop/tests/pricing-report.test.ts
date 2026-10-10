@@ -1055,6 +1055,8 @@ describe('the Markdown report on calls stopped before their final usage (ADR-003
     const rows = md.split('\n').filter((l) => l.startsWith('| stage:4'))
     assert.equal(rows.length, 2)
     assert.match(rows[0] ?? '', /\/4\.2K \(partial\) \|/)
+    // Its cost is an estimate from the same partial usage.
+    assert.match(rows[0] ?? '', /\(api-equivalent-estimate\) \(partial\) \|/)
     assert.doesNotMatch(rows[1] ?? '', /\(partial\)/)
   })
 

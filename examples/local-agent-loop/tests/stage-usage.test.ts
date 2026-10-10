@@ -1319,7 +1319,10 @@ describe('usage of a call stopped before its final usage (ADR-0034)', () => {
     const rows = [
       row('stage:0:code:agent', 'impl'),
       row('stage:1:review:correctness', 'stopped', {
-        usage: { ...usage(4000, 200), usageSource: 'provider-partial' },
+        usage: {
+          ...usage(4000, 200, { read: 300 }),
+          usageSource: 'provider-partial',
+        },
         result: 'cancelled',
         stoppedBy: 'superseded-by-verify',
       }),
@@ -1360,5 +1363,9 @@ describe('usage of a call stopped before its final usage (ADR-0034)', () => {
     const review = group?.stages.find((s) => s.stage === 'review')
     assert.equal(review?.totalTokens.n, 1)
     assert.equal(review?.totalTokens.unknown, 1)
+    // Its cache reads are a lower bound too: the stopped run's 300 is not a
+    // sample (the finished run's review reported none).
+    assert.equal(review?.cacheReadTokens.n, 0)
+    assert.equal(review?.cacheReadTokens.unknown, 2)
   })
 })

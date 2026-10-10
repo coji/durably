@@ -18,12 +18,9 @@ import {
 } from '../../glossary'
 import { triageName } from '../../labels'
 
-/**
- * Whether the run's token total covers every call: it is the sum of the
- * stage totals, so it is partial when any stage's is.
- */
+/** Whether the run's token total covers every call, as the summary says. */
 export function tokensComplete(report: LoopReport): boolean {
-  return report.stageUsage.every((u) => u.complete)
+  return report.summary.tokensComplete
 }
 
 /** One number of the summary line: quieter when it is not known. */
