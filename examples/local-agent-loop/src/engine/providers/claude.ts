@@ -48,7 +48,7 @@ import {
 } from 'ai-sdk-provider-claude-code'
 
 import { defaultModelFor, resolveEffort } from '../models.js'
-import type { TokenUsage } from '../usage.js'
+import { tokenCount, type TokenUsage } from '../usage.js'
 import {
   agentOutput,
   isCommandModeReview,
@@ -666,13 +666,6 @@ interface UsageLegs {
   cacheRead: number | null
   cacheWrite: number | null
   output: number | null
-}
-
-/** A reported token count; null when it is not one. */
-function tokenCount(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0
-    ? value
-    : null
 }
 
 /** One model's `modelUsage` legs; a leg it does not report stays unknown. */

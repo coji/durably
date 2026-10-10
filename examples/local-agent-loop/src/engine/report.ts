@@ -979,7 +979,16 @@ function fmt(v: unknown): string {
 }
 
 /** One usage's legs, as the aggregate line writes them. */
-function usageLegs(u: TokenUsage): string {
+function usageLegs(
+  u: Pick<
+    TokenUsage,
+    | 'inputTokens'
+    | 'cacheReadTokens'
+    | 'cacheWriteTokens'
+    | 'outputTokens'
+    | 'totalTokens'
+  >,
+): string {
   return `in=${formatTokens(u.inputTokens)} cache-read=${formatTokens(u.cacheReadTokens)} cache-write=${formatTokens(u.cacheWriteTokens)} out=${formatTokens(u.outputTokens)} total=${formatTokens(u.totalTokens)}`
 }
 
@@ -1929,7 +1938,7 @@ export function reportToMarkdown(r: LoopReport): string {
   )
   lines.push('')
   lines.push(
-    `- aggregate usage (deduped by invocation): in=${formatTokens(agg.inputTokens)} cache-read=${formatTokens(agg.cacheReadTokens)} cache-write=${formatTokens(agg.cacheWriteTokens)} out=${formatTokens(agg.outputTokens)} total=${formatTokens(agg.totalTokens)}${agg.complete ? '' : ' (PARTIAL — some invocations missing usage or stopped before their final usage)'}`,
+    `- aggregate usage (deduped by invocation): ${usageLegs(agg)}${agg.complete ? '' : ' (PARTIAL — some invocations missing usage or stopped before their final usage)'}`,
   )
   lines.push(`- missing usage invocations: ${agg.missingAttempts.length}`)
   const aggCost = aggregateInvocationCost(r.attempts, agg.complete)

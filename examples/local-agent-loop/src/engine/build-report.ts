@@ -1309,7 +1309,7 @@ export async function buildReport(
     reviews,
     reviewRounds,
     discardedReviews,
-    stoppedCalls: stoppedCallsOf(rows),
+    stoppedCalls: stopped,
     reviewHighlights: reviewHighlights(countedRounds, reviews, REVIEW_LENSES),
     specRounds: specRoundsOf(steps),
     spec: specOf(

@@ -35,8 +35,10 @@ export function emptyUsage(): TokenUsage {
   }
 }
 
-const num = (v: unknown): number | null =>
+/** A reported token count; null when it is not one. */
+export const tokenCount = (v: unknown): number | null =>
   typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null
+const num = tokenCount
 
 /**
  * Merge an incremental snapshot into the stored usage.

@@ -13,7 +13,7 @@ import {
 
 import { runChild } from '../child.js'
 import { defaultModelFor, resolveEffort } from '../models.js'
-import type { TokenUsage } from '../usage.js'
+import { tokenCount, type TokenUsage } from '../usage.js'
 import {
   agentOutput,
   READ_ONLY_ROLES,
@@ -364,10 +364,7 @@ interface CodexTokenCounts {
 function tokenCountsOf(value: unknown): CodexTokenCounts | null {
   const v = value as Record<string, unknown> | null | undefined
   if (!v || typeof v !== 'object') return null
-  const count = (key: string): number | null => {
-    const n = v[key]
-    return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : null
-  }
+  const count = (key: string): number | null => tokenCount(v[key])
   return {
     inputTokens: count('inputTokens') ?? 0,
     cachedInputTokens: count('cachedInputTokens') ?? 0,
