@@ -1205,6 +1205,11 @@ describe('archive --series', { timeout: 300000 }, () => {
       ),
     )
     assert.match(res.stderr, new RegExp(`^${broken}: .*JSON`, 'm'))
+    assert.match(
+      res.stderr,
+      new RegExp(`could not diagnose or archive every run of task ${first}`),
+    )
+    assert.ok(!res.stderr.includes('again to retry'), res.stderr)
   })
 })
 

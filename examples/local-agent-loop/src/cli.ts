@@ -1033,11 +1033,13 @@ if (cmd === 'worker') {
       r.warnings.map((w) => `${r.runId}: ${w}`),
     )
     printWarnings(warnings)
-    if (warnings.length > 0 || done.errors.length > 0)
+    // Only a removal git refused is retried by asking again; a run that
+    // could not be read or archived has to be looked at first.
+    if (warnings.length > 0)
       console.error(`run ${DEMO} archive --series ${seriesId} again to retry`)
     if (done.errors.length > 0)
       throw new Error(
-        `could not archive every stopped run of task ${done.taskId}:\n${done.errors.join('\n')}`,
+        `could not diagnose or archive every run of task ${done.taskId}:\n${done.errors.join('\n')}`,
       )
   } finally {
     await durably.db.destroy()
