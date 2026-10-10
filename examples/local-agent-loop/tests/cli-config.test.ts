@@ -35,7 +35,7 @@ import {
   baselineMaxAgeMsSchema,
   specMaxRoundsSchema,
 } from '../src/factory/job.js'
-import { archiveMarkerOf } from '../src/factory/layout.js'
+import { archiveMarkerOf, runRootOf } from '../src/factory/layout.js'
 import { availableActions } from '../src/factory/policy.js'
 import {
   codePrompt,
@@ -825,6 +825,335 @@ describe('archive and unarchive', { timeout: 120000 }, () => {
       (await demo(box, ['unarchive', '--run', stopped])).stdout,
       /not archived/,
     )
+  })
+})
+
+describe('archive --series', { timeout: 300000 }, () => {
+  /** A fake subject run, a repair of `parent` when one is named. */
+  const subjectRun = async (durably: AgentLoopDurably, parent?: string) =>
+    (
+      await durably.jobs.agentLoop.trigger(
+        {
+          provider: 'fake',
+          target: { kind: 'subject' as const },
+          maxIterations: 1,
+          context: 'reuse',
+        },
+        parent ? { labels: { [REPAIR_OF_LABEL]: parent } } : {},
+      )
+    ).id
+
+  it('archives every stop of the task any of its runs names, leaves its other runs and other tasks, and status counts the stops left', async () => {
+    const box = await sandbox()
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    let first = ''
+    let repair = ''
+    let grandchild = ''
+    let waiting = ''
+    let running = ''
+    let pending = ''
+    let delivered = ''
+    let other = ''
+    try {
+      await durably.migrate()
+      const set = (
+        id: string,
+        values: {
+          status: 'waiting' | 'leased' | 'completed'
+          lease_owner?: string
+          lease_generation?: number
+          lease_expires_at?: string
+          created_at?: string
+          output?: string
+        },
+      ) =>
+        durably.db
+          .updateTable('durably_runs')
+          .set(values)
+          .where('id', '=', id)
+          .execute()
+      // One task: a first run, its repair and that repair's repair stopped,
+      // and runs that wait on a person, run, are queued, or were delivered.
+      first = await subjectRun(durably)
+      await durably.cancel(first)
+      repair = await subjectRun(durably, first)
+      await durably.cancel(repair)
+      grandchild = await subjectRun(durably, repair)
+      await durably.cancel(grandchild)
+      waiting = await subjectRun(durably, grandchild)
+      await set(waiting, { status: 'waiting' })
+      running = await subjectRun(durably, first)
+      await set(running, {
+        status: 'leased',
+        lease_owner: 'elsewhere',
+        lease_generation: 1,
+        lease_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      })
+      pending = await subjectRun(durably, grandchild)
+      // Approved and delivered after `grandchild`, from the same parent: it
+      // replaces that stop, which still counts as not archived.
+      delivered = await subjectRun(durably, repair)
+      await set(delivered, {
+        status: 'completed',
+        created_at: new Date(Date.now() + 1000).toISOString(),
+        output: JSON.stringify({
+          approved: true,
+          conclusion: 'approved',
+          delivery: {
+            kind: 'patch',
+            location: join(box.root, 'delivery.patch'),
+            summary: 'delivered',
+          },
+        }),
+      })
+      // Another task, stopped.
+      other = await subjectRun(durably)
+      await durably.cancel(other)
+    } finally {
+      await durably.db.destroy()
+    }
+    const stops = [first, repair, grandchild]
+    const rest = [waiting, running, pending, delivered, other]
+    const marked = () =>
+      [...stops, ...rest].filter((id) =>
+        existsSync(archiveMarkerOf(box.stateRoot, id)),
+      )
+    const status = async () => {
+      const res = await demo(box, ['status'])
+      assert.equal(res.code, 0, res.stderr)
+      return res.stdout
+    }
+    const stopsLine = (count: number, task: string) =>
+      `  stops:   ${count} stopped run(s) not archived; pnpm --filter example-local-agent-loop demo archive --series ${task}  #`
+    const unarchiveAll = async () => {
+      for (const id of stops)
+        assert.equal((await demo(box, ['unarchive', '--run', id])).code, 0)
+      assert.deepEqual(marked(), [])
+    }
+
+    // Each task block counts its stops, the replaced one too, and names the
+    // first run.
+    const before = await status()
+    assert.match(before, /^2 task\(s\) wait on a person or stopped unresolved:/)
+    const block = blockOf(before, waiting)
+    assert.ok(block.includes(stopsLine(3, first)), block)
+    assert.ok(block.includes(`, replaced by a later approved repair`), block)
+    assert.ok(blockOf(before, other).includes(stopsLine(1, other)))
+    // The JSON task data keeps its shape.
+    type JsonTask = { id: string; runs: Record<string, unknown>[] }
+    const jsonTasks = async () => {
+      const res = await demo(box, ['status', '--format', 'json'])
+      assert.equal(res.code, 0, res.stderr)
+      return (JSON.parse(res.stdout) as { tasks: JsonTask[] }).tasks
+    }
+    for (const task of await jsonTasks()) {
+      assert.deepEqual(Object.keys(task), [
+        'id',
+        'attention',
+        'representative',
+        'runs',
+        'fake',
+        'latestAt',
+        'total',
+      ])
+      for (const run of task.runs)
+        assert.deepEqual(Object.keys(run), [
+          'id',
+          'parentId',
+          'kind',
+          'approved',
+          'repair',
+          'superseded',
+          'archived',
+          'attention',
+        ])
+    }
+
+    // Refused with both flags, with neither, without an ID and for a run
+    // that is not there; nothing is archived.
+    const both = await demo(box, ['archive', '--series', first, '--run', first])
+    assert.notEqual(both.code, 0)
+    assert.match(both.stderr, /--run and --series exclude each other/)
+    const neither = await demo(box, ['archive'])
+    assert.notEqual(neither.code, 0)
+    assert.match(neither.stderr, /--run <id> required/)
+    const bare = await demo(box, ['archive', '--series'])
+    assert.notEqual(bare.code, 0)
+    assert.match(bare.stderr, /--series <id> required/)
+    const missing = await demo(box, ['archive', '--series', 'nope'])
+    assert.notEqual(missing.code, 0)
+    assert.match(missing.stderr, /no run nope/)
+    assert.deepEqual(marked(), [])
+
+    // `--run` still takes one stopped run, and refuses any other.
+    const open = await demo(box, ['archive', '--run', pending])
+    assert.notEqual(open.code, 0)
+    assert.match(
+      open.stderr,
+      /refusing to archive \S+: it is pending, not stopped/,
+    )
+    const one = await demo(box, ['archive', '--run', first])
+    assert.equal(one.code, 0, one.stderr)
+    assert.match(
+      one.stdout,
+      new RegExp(`^archived ${first}; status and the web UI`),
+    )
+    assert.deepEqual(marked(), [first])
+    assert.ok(blockOf(await status(), waiting).includes(stopsLine(2, first)))
+
+    // From the grandchild: every stop of its task, the one already archived
+    // again; nothing else, and no run's record changes.
+    const snapshot = rows(box)
+    const series = await demo(box, ['archive', '--series', grandchild])
+    assert.equal(series.code, 0, series.stderr)
+    assert.ok(series.stdout.includes(`${first}: already archived`))
+    for (const id of [repair, grandchild])
+      assert.ok(series.stdout.includes(`${id}: archived. Undo with`), id)
+    assert.match(
+      series.stdout,
+      new RegExp(
+        `task ${first}: 3 stopped run\\(s\\) archived, 4 other run\\(s\\) left as they are \\(not stopped\\)`,
+      ),
+    )
+    assert.deepEqual(marked().sort(), [...stops].sort())
+    assert.equal(rows(box), snapshot)
+    // The task still waits on a person, so it stays at the top, with no
+    // stops left to count; the other task is as it was.
+    const after = await status()
+    assert.match(after, /^2 task\(s\) wait on a person or stopped unresolved:/)
+    const left = blockOf(after, waiting)
+    assert.ok(left.startsWith(`${waiting}  waiting`), left)
+    assert.doesNotMatch(left, /stops:/)
+    for (const id of stops)
+      assert.match(left, new RegExp(`also:    ${id} .*, archived`))
+    assert.ok(blockOf(after, other).includes(stopsLine(1, other)))
+    // The delivered run reads as before.
+    const deliveredRun = (await jsonTasks())
+      .find((t) => t.id === first)
+      ?.runs.find((r) => r['id'] === delivered)
+    assert.deepEqual(
+      [
+        deliveredRun?.['kind'],
+        deliveredRun?.['approved'],
+        deliveredRun?.['archived'],
+      ],
+      ['finished', true, false],
+    )
+
+    // From the repair, and from the delivered run, the same stops.
+    for (const from of [repair, delivered, first]) {
+      await unarchiveAll()
+      const res = await demo(box, ['archive', '--series', from])
+      assert.equal(res.code, 0, res.stderr)
+      assert.deepEqual(marked().sort(), [...stops].sort(), from)
+    }
+
+    // A task whose only open matter was its stop leaves the top.
+    const last = await demo(box, ['archive', '--series', other])
+    assert.equal(last.code, 0, last.stderr)
+    const done = await status()
+    assert.match(done, /^1 task\(s\) wait on a person or stopped unresolved:/)
+    assert.equal(blockOf(done, other), '')
+    assert.match(done, /4 stopped run\(s\) archived:/)
+  })
+
+  it('cleans up each stop of the task, again when already archived, and deletes branches only with --delete-branch', async () => {
+    const box = await sandbox()
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    let first = ''
+    let repair = ''
+    let other = ''
+    try {
+      await durably.migrate()
+      first = await subjectRun(durably)
+      repair = await subjectRun(durably, first)
+      other = await subjectRun(durably)
+      // Each a stopped repository run with the worktree and branch its
+      // setup recorded.
+      for (const id of [first, repair, other]) {
+        await durably.cancel(id)
+        const workdir = join(runRootOf(box.stateRoot, id), 'work')
+        await git(box.repo, ['worktree', 'add', '-b', `factory/${id}`, workdir])
+        const now = new Date().toISOString()
+        await durably.db
+          .insertInto('durably_steps')
+          .values({
+            id: `setup-${id}`,
+            run_id: id,
+            name: 'setup',
+            index: 0,
+            status: 'completed',
+            output: JSON.stringify({
+              target: {
+                kind: 'repo',
+                repoPath: box.repo,
+                workdir,
+                branch: `factory/${id}`,
+              },
+            }),
+            error: null,
+            started_at: now,
+            completed_at: now,
+          })
+          .execute()
+      }
+    } finally {
+      await durably.db.destroy()
+    }
+    const work = (id: string) => join(runRootOf(box.stateRoot, id), 'work')
+    const branch = async (id: string) =>
+      (
+        await runChild(
+          'git',
+          ['rev-parse', '--verify', '--quiet', `refs/heads/factory/${id}`],
+          { cwd: box.repo, timeoutMs: 60000 },
+        )
+      ).code === 0
+
+    // A locked worktree: git refuses, the run is archived anyway, and the
+    // warning names its run. Without --delete-branch every branch stays.
+    await git(box.repo, ['worktree', 'lock', work(first)])
+    const locked = await demo(box, ['archive', '--series', repair])
+    assert.equal(locked.code, 0, locked.stderr)
+    assert.ok(locked.stdout.includes(`${repair}: removed its worktree`))
+    assert.match(
+      locked.stderr,
+      new RegExp(`warning: ${first}: worktree .*locked`),
+    )
+    assert.ok(
+      locked.stderr.includes(
+        `run pnpm --filter example-local-agent-loop demo archive --series ${repair} again to retry`,
+      ),
+    )
+    assert.ok(existsSync(work(first)))
+    assert.equal(existsSync(work(repair)), false)
+    for (const id of [first, repair, other]) assert.ok(await branch(id), id)
+
+    // Again, unlocked and with --delete-branch: the archived runs are
+    // cleaned up once more and their branches deleted.
+    await git(box.repo, ['worktree', 'unlock', work(first)])
+    const again = await demo(box, [
+      'archive',
+      '--series',
+      first,
+      '--delete-branch',
+    ])
+    assert.equal(again.code, 0, again.stderr)
+    assert.equal(again.stderr, '')
+    for (const id of [first, repair]) {
+      assert.ok(again.stdout.includes(`${id}: already archived`), id)
+      assert.ok(
+        again.stdout.includes(`${id}: deleted branches: factory/${id}`),
+        id,
+      )
+      assert.equal(await branch(id), false, id)
+    }
+    assert.ok(again.stdout.includes(`${first}: removed its worktree`))
+    assert.equal(existsSync(work(first)), false)
+    // The other task keeps its worktree, its branch and no marker.
+    assert.ok(existsSync(work(other)))
+    assert.ok(await branch(other))
+    assert.equal(existsSync(archiveMarkerOf(box.stateRoot, other)), false)
   })
 })
 

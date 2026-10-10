@@ -73,6 +73,7 @@ What we considered and why we didn't do it.
 | [0030](0030-local-agent-loop-verification-failed-repair.md)     | local-agent-loop verification-failed repair   | accepted |
 | [0031](0031-local-agent-loop-self-check.md)                     | local-agent-loop prompt-only self checks      | accepted |
 | [0032](0032-local-agent-loop-idle-timeout.md)                   | local-agent-loop idle timeout                 | accepted |
+| [0033](0033-local-agent-loop-series-archive.md)                 | local-agent-loop series archive               | accepted |
 
 ## Prior Art
 
