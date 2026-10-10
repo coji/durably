@@ -10,6 +10,7 @@ import {
   applyPrune,
   archivedRunIds,
   archiveRun,
+  archiveSeries,
   decideRun,
   planPrune,
   retriggerableRun,
@@ -53,6 +54,7 @@ import {
   type LoopReport,
 } from './engine/report.js'
 import {
+  archivable,
   diagnose,
   diagnoseRun,
   diagnosisLines,
@@ -432,6 +434,12 @@ Commands (run from examples/local-agent-loop):
                                             worktree and review snapshots are removed (again, when
                                             already archived); --delete-branch also deletes its
                                             recorded factory branch and squashed branch
+  pnpm demo archive --series <id> [--delete-branch]
+                                            the same for every stopped run of the task the run
+                                            belongs to (any of its runs' IDs; status prints the
+                                            first run's); its other runs are left as they are. A
+                                            run that cannot be archived is reported and the rest
+                                            are archived anyway
   pnpm demo unarchive --run <id>            put an archived run back where it was; a removed
                                             worktree is not made again
   pnpm demo prune [--apply] [--delete-branches]
@@ -761,6 +769,14 @@ if (cmd === 'worker') {
     lines.push(
       `  task:    ${runName(root?.run.input)}  (first run ${task.id}, ${task.runs.length} run(s))`,
     )
+    // Every stop nobody archived, also one a later approved repair replaced.
+    const stops = task.runs.filter(
+      (r) => archivable(r.kind) && !r.archived,
+    ).length
+    if (stops > 0)
+      lines.push(
+        `  stops:   ${stops} stopped run(s) not archived; ${DEMO} archive --series ${task.id}  # archive them all once you are done with them`,
+      )
     if (task.runs.length > 1)
       lines.push(
         `  total:   ${formatDuration(task.total.leadTimeMs, 'en')}, ${formatCost(task.total.costUsd, 'en')}  (lead time and cost over every run; unknown if any run's is)`,
@@ -981,10 +997,60 @@ if (cmd === 'worker') {
     )
   }
   await durably.db.destroy()
+} else if (cmd === 'archive' && args()['series'] !== undefined) {
+  const a = args()
+  const seriesId = a['series']
+  if (a['run'] !== undefined)
+    throw new Error('--run and --series exclude each other')
+  if (!seriesId || seriesId === 'true')
+    throw new Error('--series <id> required')
+  const durably = createAgentDurably()
+  await durably.migrate()
+  try {
+    const done = await archiveSeries(durably, seriesId, {
+      deleteBranches: a['delete-branch'] === 'true',
+    })
+    // What `archive --run` says of each run, led by the run's ID.
+    for (const r of done.archived) {
+      console.log(
+        r.changed
+          ? `${r.runId}: archived. Undo with ${DEMO} unarchive --run ${r.runId}`
+          : `${r.runId}: already archived; its state did not change`,
+      )
+      if (r.worktreeRemoved)
+        console.log(
+          `${r.runId}: removed its worktree; the spec, logs, checkpoints, candidate diffs and delivery record are kept`,
+        )
+      if (r.deletedBranches.length > 0)
+        console.log(
+          `${r.runId}: deleted branches: ${r.deletedBranches.join(', ')}`,
+        )
+    }
+    console.log(
+      `task ${done.taskId}: ${done.archived.length} stopped run(s) archived, ${done.skipped.length} other run(s) left as they are (not stopped)${done.errors.length > 0 ? `, ${done.errors.length} run(s) not archived` : ''}; status and the web UI no longer list the archived ones as needing a person`,
+    )
+    const warnings = done.archived.flatMap((r) =>
+      r.warnings.map((w) => `${r.runId}: ${w}`),
+    )
+    printWarnings(warnings)
+    // Only a removal git refused is retried by asking again; a run that
+    // could not be read or archived has to be looked at first.
+    if (warnings.length > 0)
+      console.error(`run ${DEMO} archive --series ${seriesId} again to retry`)
+    if (done.errors.length > 0)
+      throw new Error(
+        `could not diagnose or archive every run of task ${done.taskId}:\n${done.errors.join('\n')}`,
+      )
+  } finally {
+    await durably.db.destroy()
+  }
 } else if (cmd === 'archive') {
   const a = args()
   const runId = a['run']
-  if (!runId) throw new Error('--run <id> required')
+  if (!runId)
+    throw new Error(
+      '--run <id> required, or --series <id> for every stopped run of its task',
+    )
   const durably = createAgentDurably()
   await durably.migrate()
   try {

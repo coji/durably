@@ -160,6 +160,10 @@ Candidate IDを読み、signal payloadにも同じIDを入れます。拒否は 
   （下の「止まったrunをアーカイブする」）。同じ task のほかの run が人の手を
   待っていれば、その task は上部に残ります。アーカイブした run は最後に
   `stopped run(s) archived:` として、戻すコマンドとともに並べます。
+- 止まったままアーカイブしていない run がある task には `stops:` の行で、その件数と
+  `demo archive --series <最初の run の ID>` を出します。後の修正 run が承認されて
+  置き換えた停止も数え、アーカイブした停止は数えません。この行はテキスト表示だけで、
+  `--format json` と web UI には出しません。
 - 何もなければ「No runs need attention」と表示します。
 - run が複数ある task には `total:` の行で、全 run の所要時間と費用の合計を
   出します。どれかの run の値が分からなければ unknown です。
@@ -354,6 +358,8 @@ timing:
 ```bash
 pnpm --filter example-local-agent-loop demo archive --run <runId>
 pnpm --filter example-local-agent-loop demo archive --run <runId> --delete-branch
+pnpm --filter example-local-agent-loop demo archive --series <runId>
+pnpm --filter example-local-agent-loop demo archive --series <runId> --delete-branch
 pnpm --filter example-local-agent-loop demo unarchive --run <runId>
 ```
 
@@ -374,6 +380,20 @@ pnpm --filter example-local-agent-loop demo unarchive --run <runId>
 - ブランチは残します。`--delete-branch` を付けたときだけ、その run が記録した
   factory のブランチ（issue 付きの run は `factory/issue-<番号>-<runId>`）と
   `factory/<runId>-squashed` を消します。
+- `--series` は、指定した run が属する task（最初の run とその下の修正 run すべて）の
+  止まった run をまとめてアーカイブします。task のどの run の ID を渡してもかまいません。
+  `status` の `stops:` の行は最初の run の ID でこのコマンドを出します。
+- `--series` がアーカイブするのは止まった run だけです。判断待ち、実行中、承認と納品まで
+  済んだ run はそのまま残し、エラーにもしません。納品済みの run の ID を渡しても、
+  同じ task の止まった run をアーカイブします。
+- 納品済みの task でも、止まった run は自動では解決済みになりません。アーカイブは
+  「人が確認を終えた」合図で、worktree の片付けもこの合図で行うためです。
+- `--series` は、すでにアーカイブした止まった run にも片付けをやり直します。
+  `--delete-branch` を付けると、対象の各 run のブランチを `--run` と同じ規則で消します。
+  警告は run の ID を先頭に付けて表示します。
+- `--series` で一部の run のアーカイブに失敗しても、残りの run は続けてアーカイブします。
+  最後に失敗した run を ID 付きで表示し、0 以外で終わります。
+- `--run` と `--series` は同時に指定できません。どちらもなければエラーです。
 - `status` と web UI は同じファイルを同じ関数（`groupTasks`）で読むので、
   どちらでアーカイブしても両方から外れます。
 

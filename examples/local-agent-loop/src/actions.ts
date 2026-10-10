@@ -4,8 +4,9 @@
  * start a stopped run again with its stored input, and archive or unarchive
  * a stopped run. Both callers go through these functions, so a run acted on
  * from the page ends up exactly as one acted on from the terminal. Reading
- * files and reloading factory.json stay with the CLI, as does `demo prune`,
- * whose choice of runs is here too.
+ * files and reloading factory.json stay with the CLI, as do `demo prune`,
+ * whose choice of runs is here too, and `demo archive --series`, which
+ * archives every stopped run of a task through the same `archiveRun`.
  */
 import { existsSync, readdirSync } from 'node:fs'
 import { lstat, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
@@ -19,9 +20,16 @@ import {
   type ApprovalDecision,
 } from './approval.js'
 import type { AgentLoopDurably } from './durably.js'
+import { repairParentId } from './engine/build-report.js'
 import { classifyRun } from './engine/failure-reasons.js'
 import { branchCommit, deleteBranch } from './engine/git.js'
-import { archivable, deliveredRun, diagnose } from './engine/status.js'
+import {
+  archivable,
+  deliveredRun,
+  diagnose,
+  taskRoots,
+  taskRunIds,
+} from './engine/status.js'
 import { TERMINAL_STATUSES } from './engine/terminal.js'
 import {
   archiveDirOf,
@@ -246,6 +254,79 @@ export async function archiveRun(
     ? await cleanUpRun(files, options.deleteBranches === true)
     : { worktreeRemoved: false, deletedBranches: [], warnings: [] }
   return { changed, ...cleanup }
+}
+
+/** One run `archiveSeries` archived, as `archiveRun` answered for it. */
+export type SeriesArchived = { runId: string; changed: boolean } & RunCleanup
+
+/** What `archiveSeries` did to the task of the run it was given. */
+export interface SeriesArchive {
+  /** The task's first run's ID. */
+  taskId: string
+  /** The task's stopped runs, oldest first, each archived. */
+  archived: SeriesArchived[]
+  /** The task's other runs, left as they are: they are not stopped. */
+  skipped: string[]
+  /**
+   * Why a run could not be diagnosed, or a stopped run archived, each
+   * prefixed with its ID.
+   */
+  errors: string[]
+}
+
+/**
+ * `demo archive --series`: archive every stopped run of the task `runId`
+ * belongs to, the first run and every repair below it, by the parents
+ * `repairParentId` reads. Any run of the task may be given, also one still
+ * open or one approved and delivered: only the stops are archived, each by
+ * `archiveRun`, oldest first, also those already archived, so asking again
+ * retries a cleanup that failed. Every other run is left as it is, and a
+ * delivered run in the task changes nothing about its stops.
+ *
+ * A run that cannot be diagnosed, or a stopped run that `archiveRun` fails
+ * on, does not end the walk: its reason goes into `errors` and the next run
+ * is archived, so one answer names every run that was archived and every
+ * run that was not.
+ */
+export async function archiveSeries(
+  durably: AgentLoopDurably,
+  runId: string,
+  options: { deleteBranches?: boolean } = {},
+): Promise<SeriesArchive> {
+  const run = await stored(durably, runId)
+  const all = await durably.getRuns({ jobName: durably.jobs.agentLoop.name })
+  const linked = all.map((r) => ({ id: r.id, parentId: repairParentId(r) }))
+  const taskId = taskRoots(linked)({
+    id: run.id,
+    parentId: repairParentId(run),
+  })
+  const ids = new Set(taskRunIds(linked, run.id))
+  const members = all
+    .filter((r) => ids.has(r.id))
+    .sort(
+      (x, y) =>
+        Date.parse(x.createdAt) - Date.parse(y.createdAt) ||
+        (x.id < y.id ? -1 : 1),
+    )
+  const done: SeriesArchive = { taskId, archived: [], skipped: [], errors: [] }
+  const now = Date.now()
+  for (const member of members) {
+    try {
+      if (!archivable((await diagnose(durably, member, now)).kind)) {
+        done.skipped.push(member.id)
+        continue
+      }
+      done.archived.push({
+        runId: member.id,
+        ...(await archiveRun(durably, member.id, options)),
+      })
+    } catch (error) {
+      done.errors.push(
+        `${member.id}: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
+  return done
 }
 
 /**
