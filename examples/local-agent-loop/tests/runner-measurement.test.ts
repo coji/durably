@@ -30,7 +30,7 @@ import type {
   AgentResult,
 } from '../src/engine/providers/types.js'
 import type { AttemptMeasurement } from '../src/engine/providers/types.js'
-import { cacheReadRatio, toAttemptRow } from '../src/engine/report.js'
+import { cacheReadRatio, toAttemptRow, usageOf } from '../src/engine/report.js'
 import {
   AgentTimeoutError,
   checkpointPaths,
@@ -1659,5 +1659,306 @@ describe("the factory's total and idle limits on an agent call", () => {
     await new Promise((r) => setTimeout(r, 60))
     assert.equal(options?.signal?.aborted, false)
     assert.equal(outcome.timedOut, null)
+  })
+})
+
+describe('a stopped call keeps the usage and session it reported (ADR-0034)', () => {
+  const RUNNING: TokenUsage = {
+    inputTokens: 4000,
+    cachedInputTokens: 3000,
+    cacheReadTokens: 3000,
+    cacheWriteTokens: 0,
+    outputTokens: 200,
+    totalTokens: 4200,
+    usageSource: 'provider-partial',
+  }
+  const MODEL = 'claude-opus-5-5'
+
+  /**
+   * A call that reports its session, then the running totals in `reports`
+   * (none when empty), then waits until it is aborted. `calls` counts what
+   * was sent; `reported` settles once the reports went out.
+   */
+  function reportingThenWaiting(reports: TokenUsage[], session = 'native-1') {
+    let markReported = () => {}
+    const sent = {
+      calls: 0,
+      reported: new Promise<void>((r) => (markReported = r)),
+    }
+    const provider = stubProvider(
+      (options) =>
+        new Promise<AgentResult>((_, reject) => {
+          sent.calls++
+          options.onSession?.(session)
+          for (const usage of reports)
+            options.onPartialUsage?.(usage, { [MODEL]: usage })
+          markReported()
+          options.signal?.addEventListener(
+            'abort',
+            () => reject(new Error('aborted')),
+            { once: true },
+          )
+        }),
+    )
+    return { provider, sent }
+  }
+
+  const superseded = async (provider: AgentProvider) => {
+    const supersede = new AbortController()
+    return {
+      supersede,
+      spec: {
+        ...baseSpec(provider, await mkdtemp(join(tmpdir(), 'checkpoints-'))),
+        role: 'review-a' as const,
+        supersede: {
+          signal: supersede.signal,
+          reason: 'superseded-by-verify' as const,
+        },
+      },
+    }
+  }
+
+  it('records the last running total, its split, the session and how far it goes, on the attempt and the checkpoint, and replays them', async () => {
+    const { provider, sent } = reportingThenWaiting([
+      { ...RUNNING, inputTokens: 1000, outputTokens: 50, totalTokens: 1050 },
+      RUNNING,
+    ])
+    const { supersede, spec } = await superseded(provider)
+    const attempt = fakeAttempt()
+    const pending = runAgentCall(
+      new AbortController().signal,
+      attempt as never,
+      spec,
+    )
+    await sent.reported
+    supersede.abort()
+    const outcome = await pending
+    assert.equal(outcome.cancelled, 'superseded-by-verify')
+    // The stopped call's result is still nothing to read, and no session to
+    // continue: only the measurement keeps them.
+    assert.equal(outcome.text, '')
+    assert.equal(outcome.sessionId, null)
+    const m = outcome.measurement
+    assert.equal(m.result, 'cancelled')
+    assert.equal(m.usage?.inputTokens, 4000)
+    assert.equal(m.usage?.outputTokens, 200)
+    assert.equal(m.usage?.usageSource, 'provider-partial')
+    assert.equal(m.usageByModel?.[MODEL]?.inputTokens, 4000)
+    assert.ok((m.costUsdEstimate ?? 0) > 0)
+    assert.equal(m.sessionId, 'native-1')
+    assert.equal(m.usageUntilStop?.reason, 'superseded-by-verify')
+    assert.equal(m.usageUntilStop?.reports, 2)
+    assert.ok(m.usageUntilStop?.lastReportAt)
+    assert.ok((m.usageUntilStop?.lastReportAfterMs ?? -1) >= 0)
+    const saved = JSON.parse(
+      await readFile(
+        checkpointPaths(spec.checkpointsDir, spec.operationKey).completed,
+        'utf8',
+      ),
+    ) as {
+      result: unknown
+      partial?: {
+        usage: TokenUsage | null
+        usageByModel?: Record<string, TokenUsage>
+        sessionId: string | null
+        reports: number
+      }
+    }
+    assert.equal(saved.result, null)
+    assert.equal(saved.partial?.usage?.inputTokens, 4000)
+    assert.equal(saved.partial?.usageByModel?.[MODEL]?.outputTokens, 200)
+    assert.equal(saved.partial?.sessionId, 'native-1')
+    assert.equal(saved.partial?.reports, 2)
+
+    const replay = fakeAttempt()
+    const again = await runAgentCall(
+      new AbortController().signal,
+      replay as never,
+      spec,
+    )
+    assert.equal(sent.calls, 1)
+    assert.equal(again.recovered, true)
+    assert.equal(again.cancelled, 'superseded-by-verify')
+    for (const key of [
+      'usage',
+      'usageByModel',
+      'sessionId',
+      'usageUntilStop',
+      'costUsdEstimate',
+    ] as const)
+      assert.deepEqual(again.measurement[key], m[key], key)
+    // Both attempts are one invocation, counted once and never complete.
+    const rows = [attempt, replay].map((a, i) => ({
+      stepName: 'stage:1:review:correctness',
+      stepIndex: 0,
+      attemptId: `attempt-${i}`,
+      leaseGeneration: 1,
+      status: 'completed',
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      interruptionReason: null,
+      measurement: a.snapshots.at(-1) ?? null,
+    }))
+    const totals = usageOf(rows)
+    assert.equal(totals?.invocations, 1)
+    assert.equal(totals?.inputTokens, 4000)
+    assert.equal(totals?.complete, false)
+    assert.equal(totals?.costComplete, false)
+  })
+
+  it('keeps usage null when nothing was reported before the stop, and still keeps the session', async () => {
+    const { provider, sent } = reportingThenWaiting([], 'native-early')
+    const { supersede, spec } = await superseded(provider)
+    const pending = runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      spec,
+    )
+    await sent.reported
+    supersede.abort()
+    const { measurement } = await pending
+    assert.equal(measurement.usage, null)
+    assert.equal(measurement.usageByModel, undefined)
+    assert.equal(measurement.costUsdEstimate, null)
+    assert.equal(measurement.sessionId, 'native-early')
+    assert.deepEqual(measurement.usageUntilStop, {
+      reason: 'superseded-by-verify',
+      reports: 0,
+      lastReportAt: null,
+      lastReportAfterMs: null,
+    })
+    const replay = await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      spec,
+    )
+    assert.equal(replay.measurement.usage, null)
+    assert.equal(replay.measurement.sessionId, 'native-early')
+  })
+
+  it('keeps a report whose snapshot write failed on the checkpoint and the terminal write', async () => {
+    const { provider, sent } = reportingThenWaiting([RUNNING])
+    const { supersede, spec } = await superseded(provider)
+    const snapshots: AttemptMeasurement[] = []
+    const attempt = {
+      id: randomUUID(),
+      log: { info: () => {} },
+      setMetadata: async (m: unknown) => {
+        const next = m as AttemptMeasurement
+        if (next.result === 'started' && next.usage)
+          throw new Error('metadata store unavailable')
+        snapshots.push(JSON.parse(JSON.stringify(next)) as AttemptMeasurement)
+      },
+    }
+    const pending = runAgentCall(
+      new AbortController().signal,
+      attempt as never,
+      spec,
+    )
+    await sent.reported
+    supersede.abort()
+    const { measurement } = await pending
+    assert.ok(!snapshots.some((s) => s.result === 'started' && s.usage))
+    assert.equal(measurement.usage?.inputTokens, 4000)
+    assert.equal(snapshots.at(-1)?.usage?.inputTokens, 4000)
+    const saved = JSON.parse(
+      await readFile(
+        checkpointPaths(spec.checkpointsDir, spec.operationKey).completed,
+        'utf8',
+      ),
+    ) as { partial?: { usage: TokenUsage | null } }
+    assert.equal(saved.partial?.usage?.inputTokens, 4000)
+  })
+
+  it('keeps a timed-out call usage when it is read back from the checkpoint', async () => {
+    const { provider, sent } = reportingThenWaiting([RUNNING])
+    const spec = {
+      ...baseSpec(provider, await mkdtemp(join(tmpdir(), 'checkpoints-'))),
+      timeoutMs: 5000,
+      idleTimeoutMs: 60,
+      acceptTimeout: true,
+    }
+    const first = await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      spec,
+    )
+    assert.equal(first.measurement.result, 'timed-out')
+    assert.equal(first.measurement.usageUntilStop?.reason, 'timeout')
+    assert.equal(first.measurement.usage?.inputTokens, 4000)
+    const again = await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      spec,
+    )
+    assert.equal(sent.calls, 1)
+    assert.deepEqual(again.measurement.usage, first.measurement.usage)
+    assert.equal(again.measurement.sessionId, 'native-1')
+  })
+
+  it('leaves a run cancel uncertain, with what was reported on the attempt and no completed checkpoint', async () => {
+    const { provider, sent } = reportingThenWaiting([RUNNING])
+    const spec = baseSpec(
+      provider,
+      await mkdtemp(join(tmpdir(), 'checkpoints-')),
+    )
+    const controller = new AbortController()
+    const attempt = fakeAttempt()
+    const pending = runAgentCall(
+      controller.signal,
+      attempt as never,
+      spec,
+    ).catch((e: unknown) => e)
+    await sent.reported
+    controller.abort(new Error('run cancelled'))
+    await pending
+    const last = attempt.snapshots.at(-1)
+    assert.equal(last?.result, 'uncertain')
+    assert.equal(last?.interruptionReason, 'cancelled-or-lease-lost')
+    assert.equal(last?.usage?.inputTokens, 4000)
+    assert.equal(last?.usageByModel?.[MODEL]?.inputTokens, 4000)
+    assert.equal(last?.sessionId, 'native-1')
+    assert.equal(last?.usageUntilStop?.reason, 'cancelled-or-lease-lost')
+    assert.equal(
+      existsSync(
+        checkpointPaths(spec.checkpointsDir, spec.operationKey).completed,
+      ),
+      false,
+    )
+    await assert.rejects(
+      runAgentCall(new AbortController().signal, fakeAttempt() as never, spec),
+      UncertainInvocationError,
+    )
+    assert.equal(sent.calls, 1)
+  })
+
+  it('replaces the running totals with the final usage and drops a split the final usage lacks', async () => {
+    const provider = stubProvider(async (options) => {
+      options.onSession?.('native-1')
+      options.onPartialUsage?.(
+        { ...RUNNING, cacheWriteTokens: 5 },
+        { [MODEL]: RUNNING },
+      )
+      return {
+        text: 'done',
+        session: { id: 'native-1' },
+        resolvedModel: 'resolved-model',
+        resolvedEffort: 'low',
+        reportedModel: MODEL,
+        reportedEffort: null,
+        usage: FINAL_USAGE,
+        elapsedMs: 5,
+      }
+    })
+    const { measurement } = await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      baseSpec(provider, await mkdtemp(join(tmpdir(), 'checkpoints-'))),
+    )
+    assert.equal(measurement.result, 'implement-done')
+    assert.deepEqual(measurement.usage, FINAL_USAGE)
+    // Gone, not undefined: attempt metadata must be plain JSON.
+    assert.ok(!('usageByModel' in measurement))
+    assert.ok(!('usageUntilStop' in measurement))
   })
 })

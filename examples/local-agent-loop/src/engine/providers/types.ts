@@ -168,11 +168,23 @@ export interface AgentCallOptions {
   /** Durably step signal: cancel / lease-loss aborts the call. */
   signal?: AbortSignal
   /**
-   * Called (in order) with incremental usage snapshots when the provider
-   * offers them. Providers without partial usage document that constraint
-   * instead of fabricating numbers.
+   * Called (in order) with usage snapshots while the call runs, when the
+   * provider offers them. Each snapshot is the call's running total so far,
+   * never an increment, with `usageByModel` the same total split by the
+   * model that spent it. Providers without partial usage document that
+   * constraint instead of fabricating numbers, and none reports a snapshot
+   * without tokens.
    */
-  onPartialUsage?: (usage: TokenUsage) => void
+  onPartialUsage?: (
+    usage: TokenUsage,
+    usageByModel?: Record<string, TokenUsage>,
+  ) => void
+  /**
+   * Called with the provider's native session ID as soon as the provider
+   * knows it, before the call ends, so a call stopped early still records
+   * it. Not activity.
+   */
+  onSession?: (sessionId: string) => void
   /**
    * Called when the provider sees the agent at work on this call: text,
    * reasoning, a tool call, a tool result or a running tool's progress, each
@@ -331,7 +343,10 @@ export interface AgentProvider {
    * own resolution.
    */
   readonly cliPath: string | null
-  /** True when this provider streams partial usage via onPartialUsage. */
+  /**
+   * True when this provider streams partial usage via onPartialUsage on
+   * every call; the fake provider does so only when its scenario asks.
+   */
   readonly partialUsage: boolean
   /**
    * Resolve the execution settings (explicit > env > preset > default)
@@ -422,6 +437,22 @@ export interface AgentTimeout {
   limitMs: number
 }
 
+/**
+ * How much of a stopped call's usage was reported before it ended: the
+ * provider's running totals up to the last report, never its final usage.
+ * With no report, `usage` stays null.
+ */
+export interface UsageUntilStop {
+  /** Why the call ended early, as in `interruptionReason`. */
+  reason: string
+  /** Usage reports received before the stop; 0 when none arrived. */
+  reports: number
+  /** When the last report arrived; null when none did. */
+  lastReportAt: string | null
+  /** From the call's start to the last report; null when none arrived. */
+  lastReportAfterMs: number | null
+}
+
 /** Persisted per-attempt measurement. Missing values stay null (never 0-filled). */
 export interface AttemptMeasurement {
   provider: ProviderName
@@ -483,6 +514,12 @@ export interface AttemptMeasurement {
    * absent on every other attempt.
    */
   timedOut?: AgentTimeout | null
+  /**
+   * How far `usage` goes on a call that ended before its final usage
+   * (ADR-0034); absent on a call that finished, was refused or was never
+   * sent.
+   */
+  usageUntilStop?: UsageUntilStop | null
   /** A verification attempt's full check output; absent on LLM calls. */
   verificationLog?: VerificationLog | null
   /** An LLM call's agent output; absent when nothing was sent. */

@@ -668,14 +668,16 @@ interface UsageLegs {
   output: number | null
 }
 
+/** A reported token count; null when it is not one. */
+function tokenCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? value
+    : null
+}
+
 /** One model's `modelUsage` legs; a leg it does not report stays unknown. */
 function legsOf(model: Record<string, unknown>): UsageLegs {
-  const leg = (key: string): number | null => {
-    const value = model[key]
-    return typeof value === 'number' && Number.isFinite(value) && value >= 0
-      ? value
-      : null
-  }
+  const leg = (key: string): number | null => tokenCount(model[key])
   return {
     uncached: leg('inputTokens'),
     cacheRead: leg('cacheReadInputTokens'),
@@ -791,6 +793,90 @@ export function claudeCallUsage(
     usage: claudeUsageOf(reported, modelUsage),
     usageByModel: claudeUsageByModel(modelUsage),
   }
+}
+
+/** A running total of a call's usage, by model too; see `claudePartialUsage`. */
+export interface PartialUsageSnapshot {
+  usage: TokenUsage
+  usageByModel: Record<string, TokenUsage>
+}
+
+const asPartial = (usage: TokenUsage): TokenUsage => ({
+  ...usage,
+  usageSource: 'provider-partial',
+})
+
+/**
+ * A reader of Agent SDK messages that keeps the call's running usage total
+ * before its result message arrives, so a call stopped early keeps what it
+ * had spent (ADR-0034). Each assistant message carries its API response's
+ * usage and model. A message arrives once per content block with the same
+ * id, so each id counts once, at its latest usage. The frames the CLI makes
+ * up itself and frames without tokens count nothing. The scope is the final
+ * usage's: subagents count only in a command-mode review, whose final usage
+ * includes them; every other call counts its main loop alone. Returns the
+ * new total when a message changed it, and null otherwise.
+ */
+export function claudePartialUsage(
+  review: ReviewCallSettings | null | undefined,
+): (message: SDKMessage) => PartialUsageSnapshot | null {
+  const subagents = isCommandModeReview(review)
+  const byMessage = new Map<string, { model: string; legs: UsageLegs }>()
+  return (message) => {
+    if (message.type !== 'assistant') return null
+    if (!subagents && message.parent_tool_use_id != null) return null
+    const body = message.message as unknown as {
+      id?: unknown
+      model?: unknown
+      usage?: unknown
+    }
+    const model = typeof body?.model === 'string' ? body.model : ''
+    if (model.length === 0 || model === SYNTHETIC_MODEL) return null
+    const usage = body.usage as Record<string, unknown> | null | undefined
+    if (!usage || typeof usage !== 'object') return null
+    const uncached = tokenCount(usage['input_tokens'])
+    // The API reports an absent cache leg as null: no tokens on it.
+    const cacheLeg = (key: string) =>
+      tokenCount(usage[key]) ?? (uncached !== null ? 0 : null)
+    const legs: UsageLegs = {
+      uncached,
+      cacheRead: cacheLeg('cache_read_input_tokens'),
+      cacheWrite: cacheLeg('cache_creation_input_tokens'),
+      output: tokenCount(usage['output_tokens']),
+    }
+    if (!Object.values(legs).some((v) => v !== null && v > 0)) return null
+    const key = typeof body.id === 'string' ? body.id : message.uuid
+    const previous = byMessage.get(key)
+    if (
+      previous &&
+      previous.model === model &&
+      (Object.keys(legs) as (keyof UsageLegs)[]).every(
+        (k) => previous.legs[k] === legs[k],
+      )
+    )
+      return null
+    byMessage.set(key, { model, legs })
+    const models = new Map<string, UsageLegs[]>()
+    for (const entry of byMessage.values())
+      models.set(entry.model, [...(models.get(entry.model) ?? []), entry.legs])
+    return {
+      usage: asPartial(
+        sumUsage([...byMessage.values()].map((entry) => entry.legs)),
+      ),
+      usageByModel: Object.fromEntries(
+        [...models].map(([name, legsList]) => [
+          name,
+          asPartial(sumUsage(legsList)),
+        ]),
+      ),
+    }
+  }
+}
+
+/** The native session ID an Agent SDK message carries; null when none. */
+export function claudeSessionId(message: SDKMessage): string | null {
+  const id = (message as { session_id?: unknown }).session_id
+  return typeof id === 'string' && id.length > 0 ? id : null
 }
 
 /**
@@ -1116,8 +1202,11 @@ export class ClaudeProvider implements AgentProvider {
   readonly fake = false
   /** The Agent SDK's own binary; see `claudeExecutable`. */
   readonly cliPath = null
-  /** Claude Agent SDK reports usage once at completion — no partial snapshots. */
-  readonly partialUsage = false
+  /**
+   * The Agent SDK's result message has the call's usage; until it arrives,
+   * each assistant message's usage is summed into a running total.
+   */
+  readonly partialUsage = true
 
   resolveExecution(requested: {
     requestedModel: string | null
@@ -1143,6 +1232,7 @@ export class ClaudeProvider implements AgentProvider {
       throw new Error(`a ${options.role} call needs the spec file it may write`)
     const onActivity = options.onActivity
     const writeOutput = claudeOutput(options.onOutput)
+    const partialUsage = claudePartialUsage(options.review)
     // The concrete model the CLI reports, first seen wins: an alias such as
     // `opus` is resolved by the CLI, never here.
     let observedModel: string | null = null
@@ -1164,6 +1254,11 @@ export class ClaudeProvider implements AgentProvider {
         observedModel ??= observedClaudeModel(message)
         if (onActivity && isAgentActivity(message)) onActivity()
         writeOutput(message)
+        const session = claudeSessionId(message)
+        if (session) options.onSession?.(session)
+        const snapshot = options.onPartialUsage ? partialUsage(message) : null
+        if (snapshot)
+          options.onPartialUsage?.(snapshot.usage, snapshot.usageByModel)
       },
     })
     const reported = await generateText({

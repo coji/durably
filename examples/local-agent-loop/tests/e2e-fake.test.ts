@@ -27,7 +27,10 @@ import { createAgentDurably } from '../src/durably.js'
 import { buildReport } from '../src/engine/build-report.js'
 import { runChild } from '../src/engine/child.js'
 import { compareReports, comparisonToMarkdown } from '../src/engine/compare.js'
-import { recordFakeReviewCalls } from '../src/engine/providers/fake.js'
+import {
+  FAKE_EARLY_USAGE,
+  recordFakeReviewCalls,
+} from '../src/engine/providers/fake.js'
 import type {
   AgentCallOptions,
   AgentProvider,
@@ -2910,6 +2913,7 @@ describe('verification and review side by side', { timeout: 300000 }, () => {
       reviewSequence?: ('pass' | 'needsChanges')[]
       reviewOutputs?: string[]
       review?: boolean
+      earlyUsage?: boolean
     }) =>
       (
         await durably.jobs.agentLoop.trigger({
@@ -2960,6 +2964,13 @@ describe('verification and review side by side', { timeout: 300000 }, () => {
             ...(args.latencyMs
               ? { latencyMs: { min: args.latencyMs, max: args.latencyMs } }
               : {}),
+            ...(args.earlyUsage
+              ? {
+                  earlyUsage: {
+                    roles: ['review-a' as const, 'review-b' as const],
+                  },
+                }
+              : {}),
           },
         })
       ).id
@@ -2999,6 +3010,16 @@ describe('verification and review side by side', { timeout: 300000 }, () => {
         failIterations: 1,
         maxIterations: 1,
         latencyMs: 10000,
+      })
+      // The same, with reviews that report their session and usage while
+      // they work: the stopped calls keep them (ADR-0034).
+      ids['cancelledEarly'] = await start({
+        parallelReview: true,
+        waitFor: 'started',
+        failIterations: 1,
+        maxIterations: 1,
+        latencyMs: 10000,
+        earlyUsage: true,
       })
       // Both reviews answer, pass and needsChanges, before the check fails.
       ids['discarded'] = await start({
@@ -3192,6 +3213,74 @@ describe('verification and review side by side', { timeout: 300000 }, () => {
         reportToMarkdown(cancelledReport),
         /cancelled \(superseded-by-verify\)/,
       )
+      // Nothing was reported before the stop: no usage, told apart from a
+      // call that reported some.
+      assert.equal(cancelledReport.stoppedCalls?.length, 2)
+      for (const call of cancelledReport.stoppedCalls ?? []) {
+        assert.equal(call.usage, null)
+        assert.equal(call.reports, 0)
+        assert.equal(call.reason, 'superseded-by-verify')
+      }
+      assert.equal(cancelledReport.discardedReviews?.inputTokens, null)
+      assert.match(
+        reportToMarkdown(cancelledReport),
+        /review:correctness \([0-9a-f]{8}\), cancelled \(superseded-by-verify\): no usage reported before the stop/,
+      )
+
+      // Reported before the stop: the attempt, its checkpoint and the report
+      // keep the usage, its split and the session; the verdict is still none.
+      const earlyId = ids['cancelledEarly'] ?? ''
+      assert.equal((await output(earlyId))?.conclusion, 'verification-failed')
+      assert.equal((await output(earlyId))?.reviewRounds, 0)
+      assert.deepEqual((await output(earlyId))?.reviews, [])
+      const earlyReport = await buildReport(durably, earlyId)
+      assert.equal(earlyReport.reviewRounds[0]?.status, 'cancelled')
+      const earlyCheckpoints = join(
+        dir,
+        'runs',
+        earlyId,
+        'operation-checkpoints',
+      )
+      const earlyCalls = earlyReport.attempts.filter((a) =>
+        isReview(a.stepName),
+      )
+      assert.equal(earlyCalls.length, 2)
+      for (const call of earlyCalls) {
+        const m = call.measurement
+        assert.equal(m?.result, 'cancelled')
+        assert.deepEqual(m?.usage, FAKE_EARLY_USAGE)
+        assert.deepEqual(m?.usageByModel, { 'fake-model': FAKE_EARLY_USAGE })
+        assert.match(m?.sessionId ?? '', /^fake-/)
+        assert.equal(m?.usageUntilStop?.reports, 1)
+        const saved = JSON.parse(
+          await readFile(
+            checkpointPaths(earlyCheckpoints, m?.operationKey ?? '').completed,
+            'utf8',
+          ),
+        ) as { partial?: { usage?: unknown; sessionId?: string } }
+        assert.deepEqual(saved.partial?.usage, FAKE_EARLY_USAGE)
+        assert.equal(saved.partial?.sessionId, m?.sessionId)
+      }
+      assert.deepEqual(
+        earlyReport.stoppedCalls?.map((c) => [
+          c.reason,
+          c.reports,
+          c.usage?.inputTokens,
+        ]),
+        [
+          ['superseded-by-verify', 1, 1200],
+          ['superseded-by-verify', 1, 1200],
+        ],
+      )
+      assert.equal(earlyReport.discardedReviews?.inputTokens, 2400)
+      assert.equal(earlyReport.discardedReviews?.complete, false)
+      const earlyMd = reportToMarkdown(earlyReport)
+      assert.match(
+        earlyMd,
+        /review:correctness \([0-9a-f]{8}\), cancelled \(superseded-by-verify\): partial usage from 1 report\(s\)/,
+      )
+      assert.match(earlyMd, /session fake-/)
+      assert.match(earlyMd, /stopped calls: 2 invocation\(s\) ended before/)
 
       // Discarded: both verdicts recorded, neither used or counted.
       const discardedId = ids['discarded'] ?? ''

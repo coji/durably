@@ -189,6 +189,25 @@ export interface FakeScenario {
    * factory's time limit stops, with or without unfinished work.
    */
   stall?: { roles: AgentRole[]; changes?: Record<string, string> }
+  /**
+   * Calls of these roles report a session and `FAKE_EARLY_USAGE` as a
+   * running total as soon as they start, before any scripted output or
+   * latency, as a real provider does while it works: a call stopped
+   * mid-way keeps them (ADR-0034). Off by default, so no other fake run
+   * reports partial usage.
+   */
+  earlyUsage?: { roles: AgentRole[] }
+}
+
+/** What a fake call with `earlyUsage` reports before it answers. */
+export const FAKE_EARLY_USAGE: TokenUsage = {
+  inputTokens: 1200,
+  cachedInputTokens: 800,
+  cacheReadTokens: 800,
+  cacheWriteTokens: 0,
+  outputTokens: 150,
+  totalTokens: 1350,
+  usageSource: 'provider-partial',
 }
 
 /** Per-run state shared by every fake provider instance of one run. */
@@ -554,6 +573,7 @@ export class FakeProvider implements AgentProvider {
   readonly name = 'fake' as const
   readonly fake = true
   readonly cliPath = null
+  /** Only a scenario's `earlyUsage` roles report it. */
   readonly partialUsage = false
   private readonly run: FakeRun | null
   private readonly requestedModel: string | null
@@ -586,6 +606,13 @@ export class FakeProvider implements AgentProvider {
   async call(options: AgentCallOptions): Promise<AgentResult> {
     // Timed from before the scripted output, so its delay counts as work.
     const started = Date.now()
+    if (this.run?.scenario.earlyUsage?.roles.includes(options.role)) {
+      options.onSession?.(options.sessionId ?? `fake-${randomUUID()}`)
+      const { model } = this.resolveExecution(options)
+      options.onPartialUsage?.(FAKE_EARLY_USAGE, {
+        [model ?? 'fake-model']: FAKE_EARLY_USAGE,
+      })
+    }
     const output = agentOutput(options.onOutput)
     const timed = this.run?.scenario.output
     for (const chunk of timed?.chunks ?? []) {

@@ -27,6 +27,8 @@ import {
   type AttemptRow,
   type LoopReport,
   reviewHighlights,
+  stoppedCallsOf,
+  usageOf,
 } from '../src/engine/report.js'
 import { writeMeasurement } from '../src/engine/runner.js'
 import type { TokenUsage } from '../src/engine/usage.js'
@@ -61,6 +63,7 @@ function row(
     elapsedMs?: number | null
     result?: string
     configVersion?: string
+    stoppedBy?: string
   } = {},
 ): AttemptRow {
   return {
@@ -93,7 +96,17 @@ function row(
       configVersion: opts.configVersion ?? 'cfg-a',
       result: opts.result ?? 'implement-done',
       error: null,
-      interruptionReason: null,
+      interruptionReason: opts.stoppedBy ?? null,
+      ...(opts.stoppedBy
+        ? {
+            usageUntilStop: {
+              reason: opts.stoppedBy,
+              reports: 3,
+              lastReportAt: '2026-01-01T00:00:00.800Z',
+              lastReportAfterMs: 800,
+            },
+          }
+        : {}),
     },
   }
 }
@@ -1156,6 +1169,92 @@ describe('spec stage usage', () => {
     assert.match(
       comparisonToMarkdown(compareReports([withSpec])),
       /\| spec-review \|/,
+    )
+  })
+})
+
+describe('usage of a call stopped before its final usage (ADR-0034)', () => {
+  it('keeps its usage and cost on the attempt, and makes every sum that includes it incomplete', () => {
+    const partial: TokenUsage = {
+      ...usage(4000, 200),
+      usageSource: 'provider-partial',
+    }
+    const rows = [
+      row('stage:0:code:agent', 'impl'),
+      row('stage:1:review:correctness', 'stopped', {
+        usage: partial,
+        cost: 0.02,
+        result: 'cancelled',
+        stoppedBy: 'superseded-by-verify',
+      }),
+      // A replay of the same invocation adds nothing.
+      row('stage:1:review:correctness', 'replay', {
+        invocationId: 'stopped',
+        usage: partial,
+        cost: 0.02,
+        result: 'cancelled',
+        stoppedBy: 'superseded-by-verify',
+      }),
+    ]
+    const stopped = rows[1]?.measurement
+    assert.equal(stopped?.usage?.inputTokens, 4000)
+    assert.equal(stopped?.costUsdEstimate, 0.02)
+    const review = stageUsage(rows).find((s) => s.stage === 'review')
+    assert.equal(review?.invocations, 1)
+    assert.equal(review?.inputTokens, 4000)
+    assert.equal(review?.outputTokens, 200)
+    assert.equal(review?.complete, false)
+    assert.equal(review?.costComplete, false)
+    assert.equal(review?.costUsd, null)
+    // The finished stage is untouched.
+    const implement = stageUsage(rows).find((s) => s.stage === 'code')
+    assert.equal(implement?.complete, true)
+    const correctness = roleUsage(rows, [
+      {
+        role: 'correctness',
+        provider: 'codex',
+        requestedModel: null,
+        requestedEffort: null,
+      },
+    ]).find((r) => r.role === 'correctness')
+    assert.equal(correctness?.inputTokens, 4000)
+    assert.equal(correctness?.complete, false)
+    assert.equal(correctness?.costComplete, false)
+    // The discarded-review sum is the same `usageOf` over the round's calls.
+    const discarded = usageOf(rows.slice(1))
+    assert.equal(discarded?.inputTokens, 4000)
+    assert.equal(discarded?.complete, false)
+    assert.equal(discarded?.costComplete, false)
+  })
+
+  it('lists each stopped invocation once in the report, with or without usage', () => {
+    const rows = [
+      row('stage:1:review:correctness', 'reported', {
+        usage: { ...usage(4000, 200), usageSource: 'provider-partial' },
+        result: 'cancelled',
+        stoppedBy: 'superseded-by-verify',
+      }),
+      row('stage:1:review:correctness', 'replay', {
+        invocationId: 'reported',
+        usage: { ...usage(4000, 200), usageSource: 'provider-partial' },
+        result: 'cancelled',
+        stoppedBy: 'superseded-by-verify',
+      }),
+      row('stage:1:review:edge-cases', 'silent', {
+        usage: null,
+        cost: null,
+        result: 'cancelled',
+        stoppedBy: 'superseded-by-verify',
+      }),
+      row('stage:0:code:agent', 'finished'),
+    ]
+    const calls = stoppedCallsOf(rows)
+    assert.deepEqual(
+      calls.map((c) => [c.invocationId, c.reports, c.usage?.inputTokens]),
+      [
+        ['reported', 3, 4000],
+        ['silent', 3, undefined],
+      ],
     )
   })
 })

@@ -993,9 +993,10 @@ reportの「Review rounds」では、数えなかった回に `cancelled` か `d
 使いません。「検証に落ちた候補へのレビュー」の呼び出し数と費用は、
 reportの要約、`demo compare` の設定ごとの行、`demo compare --trend` の列に、
 総費用とは別に出ます。この費用は総費用に含まれています。使用量や価格が
-分からない呼び出しがあれば、0 ではなく不明と出します。実際のCodexと
-Claudeは途中の使用量を返さないので、止めたレビューの使用量と費用は不明に
-なり、そのrunの総費用も不明と出ます。web UIでは、
+分からない呼び出しがあれば、0 ではなく不明と出します。止めたレビューは、
+止めるまでにproviderが報告した使用量（モデル別）とsession IDを残します
+（後述の「止めた呼び出しの使用量」）。この使用量は止めた時点までの下限なので、
+それを含む合計は完全な値として出さず、そのrunの総費用も不明と出ます。web UIでは、
 レビューの欄と工程の時系列の詳細に「中止」「不採用」「検証待ち」と理由が出て、
 工程の時系列では検証とレビューの重なりが実際の時刻どおりに見えます。
 
@@ -1912,6 +1913,7 @@ providerが返すusageは、一回の呼び出しの**全モデル応答の合�
 集計は `invocationId` で一度だけ数えます。同じcomplete checkpointを別attemptが
 読み直してもtokenを二重計上しません。ローカルテストやPolicyはusage対象外です。
 LLMを呼んだのにusageが無い場合は欠測として件数を残し、完全な合計にはしません。
+
 レポートはSQLiteのrun、attempt、waitから再生成する純粋な処理です。
 
 ```bash
@@ -2000,6 +2002,43 @@ Claude Fable 5.1 は0.025倍です。価格表は `src/engine/pricing.ts` にあ
 `costCacheAware: false` として区別します。レポートは保存済みの値を合計し、
 現在の価格表で再計算したとは表示しません。未知のmodelや欠けたusageを
 0円として扱いません。
+
+### 止めた呼び出しの使用量
+
+最後まで終わらなかった呼び出しも、止めるまでに使った分を残します
+（[ADR-0034](../../docs/adr/0034-local-agent-loop-stopped-call-usage.md)）。
+ClaudeとCodexは、呼び出しの途中でもその時点までの累計を報告します。
+
+- **Claude**: Agent SDKのassistantメッセージごとの使用量を、message IDごとに
+  一度だけ（最新の値で）足し、モデル別にも分けます。Claude Codeが自分で作る
+  `<synthetic>` のメッセージと、tokenの無いメッセージは数えません。最終の
+  usageと同じ範囲で数えるので、subagentはcommandモードのレビューでだけ数えます。
+  session IDは各メッセージから、結果を待たずに読みます。
+- **Codex**: app-serverの `thread/tokenUsage/updated` を、providerの最終集計と
+  同じく、threadの累計の増えた分で足します。最初の通知は直前の応答の分だけを
+  足すので、`--context reuse` で再開したthreadの前回分は入りません。この通知を
+  読むためにraw通知を有効にしますが、raw通知は活動として数えず、agentのログにも
+  書きません。thread IDは、turnを始める前に `onSessionCreated` で受け取ります。
+
+検証の失敗でレビューを止めたとき（`superseded-by-verify`）と、factoryの時間の
+上限で止めたとき（`timeout`）は、止めた時点までの使用量、モデル別の内訳、
+session ID、報告の回数と最後の報告の時刻を、完了のcheckpointにも保存します。
+workerが再開してcheckpointを読み直した試行にも、送り直さずに同じ値が入ります。
+runの取り消しやleaseの喪失で止まった呼び出しは、結果が分からないので今までどおり
+`uncertain` のままにし、完了のcheckpointは作りません。それまでに受け取った値は
+試行の計測にだけ残します。
+
+止めた呼び出しの結果は今までどおり使いません。採点、承認、レビュー回数には
+入らず、残るのは使用量だけです。最終のusageを受け取った呼び出しでは、途中の
+累計を最終の値で置き換え、最終の値にモデル別の内訳が無ければ途中の内訳も消します。
+
+計測の `usageUntilStop` が、使用量が途中までであることを示します（止めた理由、
+報告の回数、最後の報告の時刻と呼び出し開始からの時間）。報告が一度も無かった
+呼び出しは、`usage` が `null` で報告の回数が0です。0 tokenとは扱いません。
+reportのJSONは `stoppedCalls` に、Markdownは「Usage of stopped calls」に、
+呼び出しごとの止めた理由、報告の回数、最後の報告の時点、使用量とモデル別の内訳、
+session IDを出します。止めた呼び出しを含む合計は、tokenがそろっていても
+`complete` と `costComplete` を false にし、下限として扱います。
 
 ### モデルの選び方とサブスクでの制約
 

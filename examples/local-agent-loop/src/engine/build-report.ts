@@ -40,6 +40,7 @@ import {
   CALIBRATION_KEYS,
   TRIAGE_JUDGMENTS,
   UNKNOWN_CALIBRATION,
+  stoppedCallsOf,
   usageOf,
   type AttemptRow,
   type LoopReport,
@@ -1141,6 +1142,13 @@ export async function buildReport(
   notes.push(
     'Completed invocation checkpoints are reused without resending. A start-only checkpoint is reported as uncertain and stops the run.',
   )
+  const stopped = stoppedCallsOf(rows)
+  if (stopped.length > 0) {
+    const silent = stopped.filter((c) => c.usage === null).length
+    notes.push(
+      `stopped calls: ${stopped.length} invocation(s) ended before their final usage; their usage runs only up to the last report before the stop${silent > 0 ? ` (${silent} reported none)` : ''}, so totals that include them are lower bounds.`,
+    )
+  }
   const codexUnknownWrites = new Set(
     rows
       .filter(
@@ -1301,6 +1309,7 @@ export async function buildReport(
     reviews,
     reviewRounds,
     discardedReviews,
+    stoppedCalls: stoppedCallsOf(rows),
     reviewHighlights: reviewHighlights(countedRounds, reviews, REVIEW_LENSES),
     specRounds: specRoundsOf(steps),
     spec: specOf(

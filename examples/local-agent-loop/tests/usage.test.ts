@@ -91,3 +91,32 @@ describe('usage accounting', () => {
     assert.equal(agg.complete, false)
   })
 })
+
+describe('a call stopped before its final usage (ADR-0034)', () => {
+  it('adds what it reported and leaves the sum incomplete', () => {
+    const reported = {
+      inputTokens: 100,
+      cachedInputTokens: null,
+      outputTokens: 10,
+      totalTokens: 110,
+      usageSource: 'provider-partial' as const,
+    }
+    const agg = aggregateUsage([
+      {
+        attemptId: 'done',
+        usage: { ...reported, usageSource: 'provider-final' },
+      },
+      { attemptId: 'stopped', usage: reported, stopped: true },
+      { attemptId: 'stopped', usage: reported },
+    ])
+    assert.equal(agg.inputTokens, 200)
+    assert.equal(agg.outputTokens, 20)
+    assert.equal(agg.complete, false)
+    assert.deepEqual(agg.missingAttempts, [])
+    const finished = aggregateUsage([
+      { attemptId: 'a', usage: reported },
+      { attemptId: 'b', usage: reported, stopped: false },
+    ])
+    assert.equal(finished.complete, true)
+  })
+})

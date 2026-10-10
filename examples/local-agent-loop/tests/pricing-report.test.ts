@@ -905,3 +905,68 @@ describe('reviews of candidates that failed verification', () => {
     assert.match(trendToMarkdown(t), /failed-candidate reviews/)
   })
 })
+
+describe('the Markdown report on calls stopped before their final usage (ADR-0034)', () => {
+  const partial = {
+    inputTokens: 4000,
+    cachedInputTokens: 3000,
+    cacheReadTokens: 3000,
+    cacheWriteTokens: 0,
+    outputTokens: 200,
+    totalTokens: 4200,
+    usageSource: 'provider-partial' as const,
+  }
+  const stopped = {
+    stepName: 'stage:4:review:correctness',
+    invocationId: 'abcdef0123456789',
+    role: 'review-a',
+    provider: 'codex',
+    result: 'cancelled',
+    reason: 'superseded-by-verify',
+    reports: 3,
+    lastReportAt: '2026-01-01T00:00:58.000Z',
+    lastReportAfterMs: 58_000,
+    elapsedMs: 61_000,
+    usage: partial,
+    usageByModel: { 'gpt-5.6-sol': partial },
+    costUsdEstimate: 0.02,
+    sessionId: 'thread-1',
+  }
+
+  it('shows why each stopped, how far its usage goes, by model, and its session', () => {
+    const md = reportToMarkdown({
+      ...baseReport(),
+      stoppedCalls: [
+        stopped,
+        {
+          ...stopped,
+          stepName: 'stage:4:review:edge-cases',
+          invocationId: '0123456789abcdef',
+          reports: 0,
+          lastReportAt: null,
+          lastReportAfterMs: null,
+          usage: null,
+          usageByModel: null,
+          costUsdEstimate: null,
+          sessionId: null,
+        },
+      ],
+    })
+    assert.match(md, /## Usage of stopped calls/)
+    assert.match(md, /lower bound/)
+    assert.match(
+      md,
+      /- stage:4:review:correctness \(abcdef01\), cancelled \(superseded-by-verify\): partial usage from 3 report\(s\), the last 58(\.0)?s into the call/,
+    )
+    assert.match(md, /in=4.0K .*out=200 .*cost \$0.02; session thread-1/)
+    assert.match(md, / {2}- gpt-5\.6-sol: in=4.0K/)
+    assert.match(
+      md,
+      /- stage:4:review:edge-cases \(01234567\), cancelled \(superseded-by-verify\): no usage reported before the stop, usage unknown; session unknown/,
+    )
+  })
+
+  it('has no such section when no call was stopped', () => {
+    assert.doesNotMatch(reportToMarkdown(baseReport()), /stopped calls/i)
+  })
+})
