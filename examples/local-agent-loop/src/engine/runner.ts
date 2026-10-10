@@ -433,8 +433,10 @@ export async function runAgentCall(
   ): Promise<AgentCallOutcome> => {
     if (checkpoint) invocationId = checkpoint.invocationId
     await settleMeasurement()
-    const sessionId =
-      result.session?.id ?? spec.session?.nativeId ?? reported.sessionId
+    // The outcome's session comes from the result alone, so the call and a
+    // replay of its checkpoint return the same one. A session reported
+    // during the call is kept on the measurement when the result has none.
+    const sessionId = result.session?.id ?? spec.session?.nativeId ?? null
     if (spec.requireSession && !sessionId)
       throw new Error(
         `${spec.providerName} did not report a native session id for context reuse`,
@@ -454,7 +456,7 @@ export async function runAgentCall(
       reportedModel: result.reportedModel,
       reportedEffort: result.reportedEffort,
       invocationId,
-      sessionId,
+      sessionId: sessionId ?? reported.sessionId,
       ...(denials ? { permissionDenials: denials } : {}),
       usagePatch: result.usage,
       ...(result.usageByModel ? { usageByModel: result.usageByModel } : {}),
@@ -916,13 +918,20 @@ export async function runAgentCall(
         ? 'timeout'
         : null
     // The outcome stays unknown and no completed checkpoint is written, but
-    // what was reported before the end stays on the attempt.
+    // what was reported before the end stays on the attempt. Only a stop
+    // says how far its usage goes; a plain error keeps the usage it had
+    // reported without a stop record.
+    const { usageUntilStop, ...kept } = stoppedFields(
+      reported,
+      interruptionReason ?? 'error',
+    )
     measurement = await writeMeasurement(attempt, measurement, {
       elapsedMs: Date.now() - startedAt,
       result: 'uncertain',
       error: message.slice(0, 2000),
       interruptionReason,
-      ...stoppedFields(reported, interruptionReason ?? 'error'),
+      ...kept,
+      ...(interruptionReason ? { usageUntilStop } : {}),
     })
     throw error
   } finally {

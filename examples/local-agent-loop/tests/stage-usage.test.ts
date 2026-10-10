@@ -1257,4 +1257,61 @@ describe('usage of a call stopped before its final usage (ADR-0034)', () => {
       ],
     )
   })
+
+  it('reads a stopped call from its settled replay, not the row a dead worker left started', () => {
+    const partial: TokenUsage = {
+      ...usage(4000, 200),
+      usageSource: 'provider-partial',
+    }
+    // The worker died after writing the stop checkpoint and before its
+    // terminal write: its row stays `started`, with the last snapshot.
+    const rows = [
+      row('stage:1:review:correctness', 'stale', {
+        usage: { ...usage(3000, 100), usageSource: 'provider-partial' },
+        result: 'started',
+      }),
+      row('stage:1:review:correctness', 'replay', {
+        invocationId: 'stale',
+        usage: partial,
+        cost: 0.02,
+        result: 'cancelled',
+        stoppedBy: 'superseded-by-verify',
+      }),
+    ]
+    assert.deepEqual(
+      stoppedCallsOf(rows).map((c) => [c.stepName, c.usage?.inputTokens]),
+      [['stage:1:review:correctness', 4000]],
+    )
+    const review = usageOf(rows)
+    assert.equal(review?.invocations, 1)
+    assert.equal(review?.inputTokens, 4000)
+    assert.equal(review?.complete, false)
+    assert.equal(review?.costComplete, false)
+    // In either order.
+    assert.equal(usageOf([...rows].reverse())?.inputTokens, 4000)
+  })
+
+  it('never counts usage that missed the final report as complete', () => {
+    const partial: TokenUsage = {
+      ...usage(4000, 200),
+      usageSource: 'provider-partial',
+    }
+    // A worker that died mid-call, with no replay yet.
+    const started = usageOf([
+      row('stage:1:review:correctness', 'started', {
+        usage: partial,
+        result: 'started',
+      }),
+    ])
+    assert.equal(started?.inputTokens, 4000)
+    assert.equal(started?.complete, false)
+    assert.equal(started?.costComplete, false)
+    // A call that reported usage on the way and finished without a final one.
+    const finished = stageUsage([
+      row('stage:0:code:agent', 'done', { usage: partial }),
+    ])
+    assert.equal(finished[0]?.inputTokens, 4000)
+    assert.equal(finished[0]?.complete, false)
+    assert.equal(finished[0]?.costComplete, false)
+  })
 })

@@ -2040,7 +2040,11 @@ runの取り消しやleaseの喪失で止まった呼び出しは、結果が分
 reportのJSONは `stoppedCalls` に、Markdownは「Usage of stopped calls」に、
 呼び出しごとの止めた理由、報告の回数、最後の報告の時点、使用量とモデル別の内訳、
 session IDを出します。止めた呼び出しを含む合計は、tokenがそろっていても
-`complete` と `costComplete` を false にし、下限として扱います。
+`complete` と `costComplete` を false にし、下限として扱います。途中の報告
+（`provider-partial`）のままのusageも同じです。最終のusageが無いまま終わった
+呼び出しや、呼び出し中にworkerが落ちて `started` のまま残った試行が当たります。
+同じ呼び出しの試行が複数あるときは、完了した試行、止めた呼び出しとして確定した
+試行（`cancelled`、`timed-out`）、それ以外の順に1つを選んで集計します。
 
 ### モデルの選び方とサブスクでの制約
 

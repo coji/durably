@@ -276,7 +276,8 @@ export const codeStage: StageHandler = async ({
   // record stays, and the next repair starts new again. A repair that may
   // continue across an effort change records the session it returned, as
   // the code profile does.
-  // A stopped call reported no session, so the one on record stays.
+  // A stopped call's outcome carries no session (its measurement may record
+  // one it reported), so the one on record stays.
   const session: SessionRef | null =
     (separateRepair && !acrossEffort) || timedOut
       ? state.implementationSession

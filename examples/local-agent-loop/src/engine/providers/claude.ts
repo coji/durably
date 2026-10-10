@@ -800,6 +800,49 @@ const asPartial = (usage: TokenUsage): TokenUsage => ({
 })
 
 /**
+ * Legs summed across messages, kept as running sums so a changed message
+ * adjusts them by its difference. A leg some message does not know stays
+ * unknown while that message is counted, as `sumUsage` has it.
+ */
+class RunningLegs {
+  private readonly sums: Record<keyof UsageLegs, number> = {
+    uncached: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    output: 0,
+  }
+  private readonly unknown: Record<keyof UsageLegs, number> = {
+    uncached: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    output: 0,
+  }
+
+  add(legs: UsageLegs, sign: 1 | -1): void {
+    for (const key of Object.keys(this.sums) as (keyof UsageLegs)[]) {
+      const value = legs[key]
+      if (value === null) this.unknown[key] += sign
+      else this.sums[key] += sign * value
+    }
+  }
+
+  usage(): TokenUsage {
+    const leg = (key: keyof UsageLegs) =>
+      this.unknown[key] > 0 ? null : this.sums[key]
+    return asPartial(
+      sumUsage([
+        {
+          uncached: leg('uncached'),
+          cacheRead: leg('cacheRead'),
+          cacheWrite: leg('cacheWrite'),
+          output: leg('output'),
+        },
+      ]),
+    )
+  }
+}
+
+/**
  * A reader of Agent SDK messages that keeps the call's running usage total
  * before its result message arrives, so a call stopped early keeps what it
  * had spent (ADR-0034). Each assistant message carries its API response's
@@ -815,6 +858,13 @@ export function claudePartialUsage(
 ): (message: SDKMessage) => PartialUsageSnapshot | null {
   const subagents = isCommandModeReview(review)
   const byMessage = new Map<string, { model: string; legs: UsageLegs }>()
+  const total = new RunningLegs()
+  const models = new Map<string, RunningLegs>()
+  const modelSums = (model: string): RunningLegs => {
+    let sums = models.get(model)
+    if (!sums) models.set(model, (sums = new RunningLegs()))
+    return sums
+  }
   return (message) => {
     if (message.type !== 'assistant') return null
     if (!subagents && message.parent_tool_use_id != null) return null
@@ -848,19 +898,24 @@ export function claudePartialUsage(
       )
     )
       return null
+    if (previous) {
+      total.add(previous.legs, -1)
+      modelSums(previous.model).add(previous.legs, -1)
+    }
     byMessage.set(key, { model, legs })
-    const models = new Map<string, UsageLegs[]>()
-    for (const entry of byMessage.values())
-      models.set(entry.model, [...(models.get(entry.model) ?? []), entry.legs])
+    total.add(legs, 1)
+    modelSums(model).add(legs, 1)
+    // A model whose only message moved to another model no longer counts.
+    if (previous && previous.model !== model) {
+      const stillUsed = [...byMessage.values()].some(
+        (entry) => entry.model === previous.model,
+      )
+      if (!stillUsed) models.delete(previous.model)
+    }
     return {
-      usage: asPartial(
-        sumUsage([...byMessage.values()].map((entry) => entry.legs)),
-      ),
+      usage: total.usage(),
       usageByModel: Object.fromEntries(
-        [...models].map(([name, legsList]) => [
-          name,
-          asPartial(sumUsage(legsList)),
-        ]),
+        [...models].map(([name, sums]) => [name, sums.usage()]),
       ),
     }
   }

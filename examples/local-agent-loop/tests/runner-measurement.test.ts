@@ -1961,4 +1961,102 @@ describe('a stopped call keeps the usage and session it reported (ADR-0034)', ()
     assert.ok(!('usageByModel' in measurement))
     assert.ok(!('usageUntilStop' in measurement))
   })
+
+  it('keeps reported usage as a lower bound on a call that finishes without final usage', async () => {
+    const provider = stubProvider(async (options) => {
+      options.onPartialUsage?.(RUNNING, { [MODEL]: RUNNING })
+      return {
+        text: 'done',
+        session: { id: 'native-1' },
+        resolvedModel: 'resolved-model',
+        resolvedEffort: 'low',
+        reportedModel: MODEL,
+        reportedEffort: null,
+        usage: null,
+        elapsedMs: 5,
+      }
+    })
+    const attempt = fakeAttempt()
+    const { measurement } = await runAgentCall(
+      new AbortController().signal,
+      attempt as never,
+      baseSpec(provider, await mkdtemp(join(tmpdir(), 'checkpoints-'))),
+    )
+    assert.equal(measurement.result, 'implement-done')
+    assert.equal(measurement.usage?.inputTokens, 4000)
+    assert.equal(measurement.usage?.usageSource, 'provider-partial')
+    const totals = usageOf([
+      toAttemptRow({
+        stepName: 'stage:0:code:agent',
+        stepIndex: 0,
+        id: attempt.id,
+        leaseGeneration: 1,
+        status: 'completed',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        completedAt: '2026-01-01T00:00:01.000Z',
+        interruptionReason: null,
+        metadata: measurement as unknown as JsonValue,
+      } as never),
+    ])
+    assert.equal(totals?.inputTokens, 4000)
+    assert.equal(totals?.complete, false)
+    assert.equal(totals?.costComplete, false)
+  })
+
+  it('returns the session the result names, the same on a replay, and keeps a reported one on the measurement', async () => {
+    const provider = stubProvider(async (options) => {
+      options.onSession?.('native-early')
+      return {
+        text: 'done',
+        session: null,
+        resolvedModel: 'resolved-model',
+        resolvedEffort: 'low',
+        reportedModel: null,
+        reportedEffort: null,
+        usage: null,
+        elapsedMs: 5,
+      }
+    })
+    const spec = baseSpec(
+      provider,
+      await mkdtemp(join(tmpdir(), 'checkpoints-')),
+    )
+    const first = await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      spec,
+    )
+    assert.equal(first.sessionId, null)
+    assert.equal(first.measurement.sessionId, 'native-early')
+    const again = await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      spec,
+    )
+    assert.equal(again.recovered, true)
+    assert.equal(again.sessionId, first.sessionId)
+  })
+
+  it('keeps what a call that failed with a plain error reported, with no stop record', async () => {
+    const provider = stubProvider(async (options) => {
+      options.onSession?.('native-1')
+      options.onPartialUsage?.(RUNNING, { [MODEL]: RUNNING })
+      throw new Error('provider exploded')
+    })
+    const attempt = fakeAttempt()
+    await assert.rejects(
+      runAgentCall(
+        new AbortController().signal,
+        attempt as never,
+        baseSpec(provider, await mkdtemp(join(tmpdir(), 'checkpoints-'))),
+      ),
+      /provider exploded/,
+    )
+    const m = attempt.snapshots.at(-1)
+    assert.equal(m?.result, 'uncertain')
+    assert.equal(m?.interruptionReason, null)
+    assert.equal(m?.usage?.inputTokens, 4000)
+    assert.equal(m?.sessionId, 'native-1')
+    assert.ok(!('usageUntilStop' in (m ?? {})))
+  })
 })

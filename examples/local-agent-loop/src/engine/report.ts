@@ -1074,21 +1074,26 @@ function sortStages<T extends { stage: string }>(rows: T[]): T[] {
 }
 
 /**
- * Keep one row per invocation, preferring the attempt that completed it.
+ * Keep one row per invocation, preferring the attempt that completed it,
+ * then one that settled it as stopped (ADR-0034), over any other: a worker
+ * that died before its terminal write leaves a `started` row behind, and
+ * the replay that read the completed checkpoint is the one on record.
  * Recovery attempts re-read the same invocation and must not add tokens.
  */
 function dedupeByInvocation(attempts: AttemptRow[]): AttemptRow[] {
   const selected = new Map<string, AttemptRow>()
   // A call superseded before it was sent is no invocation (ADR-0029).
   attempts = attempts.filter((a) => a.measurement?.result !== NOT_SENT)
-  const completed = (a: AttemptRow | undefined) =>
-    a?.measurement?.result === 'checkpoint-recovered' ||
-    (a?.measurement?.result?.endsWith('-done') ?? false)
+  const rank = (a: AttemptRow): number => {
+    const result = a.measurement?.result
+    if (result === 'checkpoint-recovered' || result?.endsWith('-done')) return 2
+    if (result === 'cancelled' || result === 'timed-out') return 1
+    return 0
+  }
   for (const attempt of attempts) {
     const key = attempt.measurement?.invocationId ?? attempt.attemptId
     const previous = selected.get(key)
-    if (!previous || (completed(attempt) && !completed(previous)))
-      selected.set(key, attempt)
+    if (!previous || rank(attempt) > rank(previous)) selected.set(key, attempt)
   }
   return [...selected.values()]
 }

@@ -128,8 +128,9 @@ export interface UsageAggregateRow {
  * that know it; `complete` is false when any usage-expecting attempt lacks a
  * priced leg (or any usage at all), so confirmed partial sums are never
  * presented as exact totals. Rows with `expectsUsage: false` contribute
- * nothing and never affect completeness. A `stopped` row adds what it
- * reported and makes the sum incomplete.
+ * nothing and never affect completeness. A `stopped` row, or a row whose
+ * usage is only `provider-partial`, adds what it reported and makes the sum
+ * incomplete.
  */
 export function aggregateUsage(rows: UsageAggregateRow[]): UsageAggregate {
   const unique = new Map<string, UsageAggregateRow>()
@@ -178,7 +179,10 @@ export function aggregateUsage(rows: UsageAggregateRow[]): UsageAggregate {
       continue
     }
     attempts.push(row.attemptId)
-    if (row.stopped) complete = false
+    // Usage that never reached the provider's final report (a stopped call,
+    // a call that ended without final usage, a worker that died mid-call)
+    // is a lower bound, so the sum is too.
+    if (row.stopped || u.usageSource === 'provider-partial') complete = false
     if (u.inputTokens !== null) {
       input += u.inputTokens
       hasInput = true
