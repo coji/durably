@@ -1315,6 +1315,18 @@ export class ClaudeProvider implements AgentProvider {
    */
   readonly partialUsage = true
 
+  /**
+   * `sdk` is what a call reaches Claude Code through: the provider's model
+   * factory and the AI SDK's `generateText`. Only a test hands in others,
+   * to see what a call passes without starting the CLI.
+   */
+  constructor(
+    private readonly sdk: {
+      claudeCode: typeof claudeCode
+      generateText: typeof generateText
+    } = { claudeCode, generateText },
+  ) {}
+
   resolveExecution(requested: {
     requestedModel: string | null
     requestedEffort: string | null
@@ -1344,7 +1356,7 @@ export class ClaudeProvider implements AgentProvider {
     // `opus` is resolved by the CLI, never here.
     let observedModel: string | null = null
     const guardReasons = new Map<string, string>()
-    const model = claudeCode(modelIdResolved, {
+    const model = this.sdk.claudeCode(modelIdResolved, {
       ...keepingGuardReasons(
         buildClaudeSettings(
           options.workdir,
@@ -1371,7 +1383,7 @@ export class ClaudeProvider implements AgentProvider {
           options.onPartialUsage?.(snapshot.usage, snapshot.usageByModel)
       },
     })
-    const reported = await generateText({
+    const reported = await this.sdk.generateText({
       model,
       prompt: options.prompt,
       ...(options.signal ? { abortSignal: options.signal } : {}),
