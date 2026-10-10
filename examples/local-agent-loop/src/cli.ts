@@ -1027,7 +1027,7 @@ if (cmd === 'worker') {
         )
     }
     console.log(
-      `task ${done.taskId}: ${done.archived.length} stopped run(s) archived, ${done.skipped.length} other run(s) left as they are (not stopped)${done.errors.length > 0 ? `, ${done.errors.length} stopped run(s) not archived` : ''}; status and the web UI no longer list the archived ones as needing a person`,
+      `task ${done.taskId}: ${done.archived.length} stopped run(s) archived, ${done.skipped.length} other run(s) left as they are (not stopped)${done.errors.length > 0 ? `, ${done.errors.length} run(s) not archived` : ''}; status and the web UI no longer list the archived ones as needing a person`,
     )
     const warnings = done.archived.flatMap((r) =>
       r.warnings.map((w) => `${r.runId}: ${w}`),

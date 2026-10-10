@@ -267,7 +267,10 @@ export interface SeriesArchive {
   archived: SeriesArchived[]
   /** The task's other runs, left as they are: they are not stopped. */
   skipped: string[]
-  /** Why a stopped run could not be archived, each prefixed with its ID. */
+  /**
+   * Why a run could not be diagnosed, or a stopped run archived, each
+   * prefixed with its ID.
+   */
   errors: string[]
 }
 
@@ -280,9 +283,10 @@ export interface SeriesArchive {
  * retries a cleanup that failed. Every other run is left as it is, and a
  * delivered run in the task changes nothing about its stops.
  *
- * A stopped run that `archiveRun` fails on does not end the walk: its
- * reason goes into `errors` and the next run is archived, so one answer
- * names every run that was archived and every run that was not.
+ * A run that cannot be diagnosed, or a stopped run that `archiveRun` fails
+ * on, does not end the walk: its reason goes into `errors` and the next run
+ * is archived, so one answer names every run that was archived and every
+ * run that was not.
  */
 export async function archiveSeries(
   durably: AgentLoopDurably,
@@ -299,15 +303,19 @@ export async function archiveSeries(
   const ids = new Set(taskRunIds(linked, run.id))
   const members = all
     .filter((r) => ids.has(r.id))
-    .sort((x, y) => Date.parse(x.createdAt) - Date.parse(y.createdAt))
+    .sort(
+      (x, y) =>
+        Date.parse(x.createdAt) - Date.parse(y.createdAt) ||
+        (x.id < y.id ? -1 : 1),
+    )
   const done: SeriesArchive = { taskId, archived: [], skipped: [], errors: [] }
   const now = Date.now()
   for (const member of members) {
-    if (!archivable((await diagnose(durably, member, now)).kind)) {
-      done.skipped.push(member.id)
-      continue
-    }
     try {
+      if (!archivable((await diagnose(durably, member, now)).kind)) {
+        done.skipped.push(member.id)
+        continue
+      }
       done.archived.push({
         runId: member.id,
         ...(await archiveRun(durably, member.id, options)),

@@ -1155,6 +1155,57 @@ describe('archive --series', { timeout: 300000 }, () => {
     assert.ok(await branch(other))
     assert.equal(existsSync(archiveMarkerOf(box.stateRoot, other)), false)
   })
+
+  it('archives the other stops when one run of the task cannot be diagnosed, names it and exits nonzero', async () => {
+    const box = await sandbox()
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    let first = ''
+    let broken = ''
+    let last = ''
+    try {
+      await durably.migrate()
+      first = await subjectRun(durably)
+      await durably.cancel(first)
+      broken = await subjectRun(durably, first)
+      await durably.cancel(broken)
+      last = await subjectRun(durably, broken)
+      await durably.cancel(last)
+      // A setup step whose stored output is not JSON: reading it throws, so
+      // diagnosing this one run fails.
+      const now = new Date().toISOString()
+      await durably.db
+        .insertInto('durably_steps')
+        .values({
+          id: `setup-${broken}`,
+          run_id: broken,
+          name: 'setup',
+          index: 0,
+          status: 'completed',
+          output: '{not json',
+          error: null,
+          started_at: now,
+          completed_at: now,
+        })
+        .execute()
+    } finally {
+      await durably.db.destroy()
+    }
+
+    const res = await demo(box, ['archive', '--series', first])
+    assert.notEqual(res.code, 0)
+    for (const id of [first, last]) {
+      assert.ok(res.stdout.includes(`${id}: archived. Undo with`), id)
+      assert.ok(existsSync(archiveMarkerOf(box.stateRoot, id)), id)
+    }
+    assert.equal(existsSync(archiveMarkerOf(box.stateRoot, broken)), false)
+    assert.match(
+      res.stdout,
+      new RegExp(
+        `task ${first}: 2 stopped run\\(s\\) archived, 0 other run\\(s\\) left as they are \\(not stopped\\), 1 run\\(s\\) not archived`,
+      ),
+    )
+    assert.match(res.stderr, new RegExp(`^${broken}: .*JSON`, 'm'))
+  })
 })
 
 describe('retrigger from the stored input', () => {
