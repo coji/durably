@@ -2003,6 +2003,96 @@ describe('a stopped call keeps the usage and session it reported (ADR-0034)', ()
     assert.equal(totals?.costComplete, false)
   })
 
+  it('restores the usage and session a finished call reported when a replay reads its checkpoint', async () => {
+    let sent = 0
+    const provider = stubProvider(async (options) => {
+      sent++
+      options.onSession?.('native-early')
+      options.onPartialUsage?.(RUNNING, { [MODEL]: RUNNING })
+      return {
+        text: 'done',
+        session: null,
+        resolvedModel: 'resolved-model',
+        resolvedEffort: 'low',
+        reportedModel: null,
+        reportedEffort: null,
+        usage: null,
+        elapsedMs: 5,
+      }
+    })
+    const spec = baseSpec(
+      provider,
+      await mkdtemp(join(tmpdir(), 'checkpoints-')),
+    )
+    await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      spec,
+    )
+    // A worker that died before its terminal write: the replay builds a
+    // fresh measurement from the completed checkpoint alone.
+    const replay = fakeAttempt()
+    const again = await runAgentCall(
+      new AbortController().signal,
+      replay as never,
+      spec,
+    )
+    assert.equal(sent, 1)
+    assert.equal(again.recovered, true)
+    assert.equal(again.sessionId, null)
+    const m = again.measurement
+    assert.equal(m.result, 'checkpoint-recovered')
+    assert.equal(m.sessionId, 'native-early')
+    assert.equal(m.usage?.inputTokens, 4000)
+    assert.equal(m.usage?.usageSource, 'provider-partial')
+    assert.equal(m.usageByModel?.[MODEL]?.inputTokens, 4000)
+    assert.ok(!('usageUntilStop' in m))
+    const totals = usageOf([
+      toAttemptRow({
+        stepName: 'stage:0:code:agent',
+        stepIndex: 0,
+        id: replay.id,
+        leaseGeneration: 2,
+        status: 'completed',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        completedAt: '2026-01-01T00:00:01.000Z',
+        interruptionReason: null,
+        metadata: m as unknown as JsonValue,
+      } as never),
+    ])
+    assert.equal(totals?.complete, false)
+    assert.equal(totals?.costComplete, false)
+  })
+
+  it('writes nothing more to the checkpoint of a call that reported nothing', async () => {
+    const provider = stubProvider(async () => ({
+      text: 'done',
+      session: { id: 'native-1' },
+      resolvedModel: 'resolved-model',
+      resolvedEffort: 'low',
+      reportedModel: null,
+      reportedEffort: null,
+      usage: FINAL_USAGE,
+      elapsedMs: 5,
+    }))
+    const spec = baseSpec(
+      provider,
+      await mkdtemp(join(tmpdir(), 'checkpoints-')),
+    )
+    await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      spec,
+    )
+    const saved = JSON.parse(
+      await readFile(
+        checkpointPaths(spec.checkpointsDir, spec.operationKey).completed,
+        'utf8',
+      ),
+    ) as Record<string, unknown>
+    assert.ok(!('partial' in saved))
+  })
+
   it('returns the session the result names, the same on a replay, and keeps a reported one on the measurement', async () => {
     const provider = stubProvider(async (options) => {
       options.onSession?.('native-early')

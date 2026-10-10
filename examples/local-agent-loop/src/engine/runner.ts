@@ -138,12 +138,12 @@ interface StartedCheckpoint {
 }
 
 /**
- * What a stopped call had reported before it ended (ADR-0034): the running
- * usage totals, by model when the provider split them, the native session
- * and how far the reports go. Kept on the completed checkpoint, so a replay
- * records the same usage without calling again.
+ * What a call reported while it ran (ADR-0034): the running usage totals,
+ * by model when the provider split them, the native session and how far the
+ * reports go. Kept on the completed checkpoint, so a replay records the same
+ * usage and session without calling again.
  */
-interface StoppedUsage {
+interface ReportedUsage {
   /** The last running total; null when no usage was reported. */
   usage: TokenUsage | null
   usageByModel?: Record<string, TokenUsage>
@@ -166,10 +166,12 @@ interface CompletedCheckpoint {
   /** The factory's limit that stopped the call; absent otherwise. */
   timedOut?: AgentTimeout
   /**
-   * A cancelled or timed-out call's usage up to the stop; absent otherwise,
-   * and on a checkpoint written before it existed.
+   * What the call reported while it ran: always on a cancelled or timed-out
+   * call, and on a finished one that reported anything, since its result may
+   * lack a usage or a session. Absent on a checkpoint written before it
+   * existed.
    */
-  partial?: StoppedUsage
+  partial?: ReportedUsage
   invocationStartedAt: string
   invocationCompletedAt: string
 }
@@ -375,7 +377,7 @@ export async function runAgentCall(
   // apart from the advisory metadata writes below: a stopped call's
   // checkpoint and terminal write are built from it, so a snapshot whose
   // write failed is still on record.
-  const reported: StoppedUsage = {
+  const reported: ReportedUsage = {
     usage: null,
     sessionId: null,
     reports: 0,
@@ -389,7 +391,7 @@ export async function runAgentCall(
    * call records nothing more than it did then.
    */
   const stoppedFields = (
-    partial: StoppedUsage | undefined,
+    partial: ReportedUsage | undefined,
     reason: string,
   ): Partial<AttemptMeasurement> & { usagePatch?: TokenUsage | null } => {
     if (!partial) return {}
@@ -447,19 +449,25 @@ export async function runAgentCall(
     // The final usage replaces the running totals reported before it, and a
     // split that only those totals had is dropped, so it never prices the
     // finished call.
+    // A result without a usage keeps the running totals instead, still
+    // partial, so every sum shows them as a lower bound; one without a
+    // session keeps the session reported during the call on the measurement.
+    // Both come from the checkpoint, so a replay records the same.
+    const early = checkpoint?.partial ?? reported
     const base: AttemptMeasurement = { ...measurement }
     if (result.usage) {
       base.usage = null
       delete base.usageByModel
     }
+    const usageByModel = result.usage ? result.usageByModel : early.usageByModel
     measurement = await writeMeasurement(attempt, base, {
       reportedModel: result.reportedModel,
       reportedEffort: result.reportedEffort,
       invocationId,
-      sessionId: sessionId ?? reported.sessionId,
+      sessionId: sessionId ?? early.sessionId,
       ...(denials ? { permissionDenials: denials } : {}),
-      usagePatch: result.usage,
-      ...(result.usageByModel ? { usageByModel: result.usageByModel } : {}),
+      usagePatch: result.usage ?? early.usage,
+      ...(usageByModel ? { usageByModel } : {}),
       elapsedMs: result.elapsedMs,
       invocationStartedAt:
         checkpoint?.invocationStartedAt ?? measurement.invocationStartedAt,
@@ -824,6 +832,9 @@ export async function runAgentCall(
       ...startRecord,
       status: 'completed',
       result,
+      ...(reported.reports > 0 || reported.sessionId
+        ? { partial: { ...reported } }
+        : {}),
       invocationCompletedAt: new Date().toISOString(),
     }
     await writeJsonAtomic(paths.completed, completed, attempt.id)

@@ -1098,9 +1098,19 @@ function dedupeByInvocation(attempts: AttemptRow[]): AttemptRow[] {
   return [...selected.values()]
 }
 
-/** Sum one group of already-deduped LLM invocations. */
-function usageTotals(list: AttemptRow[]): UsageTotals {
-  const agg = aggregateUsage(
+/**
+ * The attempts that count toward a usage sum: one per invocation, by
+ * `dedupeByInvocation`, and only steps that invoke an LLM.
+ */
+function countedInvocations(attempts: AttemptRow[]): AttemptRow[] {
+  return dedupeByInvocation(attempts).filter((a) =>
+    attemptExpectsUsage(a.stepName),
+  )
+}
+
+/** Token sums over already-deduped LLM invocations. */
+function aggregateInvocations(list: AttemptRow[]) {
+  return aggregateUsage(
     list.map((a) => ({
       attemptId: a.measurement?.invocationId ?? a.attemptId,
       usage: a.measurement?.usage ?? null,
@@ -1108,6 +1118,11 @@ function usageTotals(list: AttemptRow[]): UsageTotals {
       stopped: a.measurement?.usageUntilStop != null,
     })),
   )
+}
+
+/** Sum one group of already-deduped LLM invocations. */
+function usageTotals(list: AttemptRow[]): UsageTotals {
+  const agg = aggregateInvocations(list)
   const costs = list.map((a) => a.measurement?.costUsdEstimate ?? null)
   const costUsd =
     agg.complete && costs.every((c) => c !== null)
@@ -1132,9 +1147,7 @@ function usageTotals(list: AttemptRow[]): UsageTotals {
  * web UI's trace rows use it, so a row never sums usage another way.
  */
 export function usageOf(attempts: AttemptRow[]): UsageTotals | null {
-  const list = dedupeByInvocation(attempts).filter((a) =>
-    attemptExpectsUsage(a.stepName),
-  )
+  const list = countedInvocations(attempts)
   return list.length === 0 ? null : usageTotals(list)
 }
 
@@ -1503,15 +1516,11 @@ export function attemptExpectsUsage(stepName: string): boolean {
 
 /** Sum the already-priced invocations without applying one model to another. */
 function aggregateInvocationCost(
-  attempts: AttemptRow[],
+  counted: AttemptRow[],
   usageComplete: boolean,
 ): number | null {
   if (!usageComplete) return null
-  // Same dedupe rule as `stageUsage`, so the aggregate line and the per-stage
-  // costs can never be derived two different ways and disagree.
-  const costs = dedupeByInvocation(
-    attempts.filter((a) => attemptExpectsUsage(a.stepName)),
-  ).map((a) => a.measurement?.costUsdEstimate ?? null)
+  const costs = counted.map((a) => a.measurement?.costUsdEstimate ?? null)
   if (costs.some((cost) => cost === null)) return null
   return costs.reduce<number>((sum, cost) => sum + (cost ?? 0), 0)
 }
@@ -1918,8 +1927,9 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('|---|---|---|---|---|---|---|---|---|')
   for (const a of r.attempts) {
     const m = a.measurement
+    // Usage reported only while the call ran is a lower bound (ADR-0034).
     const tokens = m?.usage
-      ? `${formatTokens(m.usage.inputTokens)}/${formatTokens(m.usage.cacheReadTokens)}/${formatTokens(m.usage.cacheWriteTokens)}/${formatTokens(m.usage.outputTokens)}/${formatTokens(m.usage.totalTokens)}`
+      ? `${formatTokens(m.usage.inputTokens)}/${formatTokens(m.usage.cacheReadTokens)}/${formatTokens(m.usage.cacheWriteTokens)}/${formatTokens(m.usage.outputTokens)}/${formatTokens(m.usage.totalTokens)}${m.usage.usageSource === 'provider-partial' ? ' (partial)' : ''}`
       : Array(5).fill(formatTokens(null)).join('/')
     const model =
       m != null
@@ -1933,20 +1943,16 @@ export function reportToMarkdown(r: LoopReport): string {
       `| ${a.stepName} | ${m?.invocationId?.slice(0, 8) ?? 'n/a'} | ${a.status}${a.interruptionReason ? ` (${a.interruptionReason})` : ''} | ${model} | ${effort} | ${formatDuration(m?.elapsedMs)} | ${tokens} | ${m?.costUsdEstimate != null ? `${formatCost(m.costUsdEstimate)} (${m.costBasis})` : formatCost(null)} | ${fmt(m?.result)} |`,
     )
   }
-  const agg = aggregateUsage(
-    r.attempts.map((a) => ({
-      attemptId: a.measurement?.invocationId ?? a.attemptId,
-      usage: a.measurement?.usage ?? null,
-      expectsUsage: attemptExpectsUsage(a.stepName),
-      stopped: a.measurement?.usageUntilStop != null,
-    })),
-  )
+  // The same invocations as the stage and role totals, so the line can
+  // never show other numbers than they do.
+  const counted = countedInvocations(r.attempts)
+  const agg = aggregateInvocations(counted)
   lines.push('')
   lines.push(
     `- aggregate usage (deduped by invocation): ${usageLegs(agg)}${agg.complete ? '' : ' (PARTIAL — some invocations missing usage or stopped before their final usage)'}`,
   )
   lines.push(`- missing usage invocations: ${agg.missingAttempts.length}`)
-  const aggCost = aggregateInvocationCost(r.attempts, agg.complete)
+  const aggCost = aggregateInvocationCost(counted, agg.complete)
   lines.push(
     `- aggregate cost (stored per-invocation estimates): ${formatCost(aggCost)}`,
   )
