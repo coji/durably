@@ -2009,8 +2009,13 @@ Claude Fable 5.1 は0.025倍です。価格表は `src/engine/pricing.ts` にあ
 （[ADR-0034](../../docs/adr/0034-local-agent-loop-stopped-call-usage.md)）。
 ClaudeとCodexは、呼び出しの途中でもその時点までの累計を報告します。
 
-- **Claude**: Agent SDKのassistantメッセージごとの使用量を、message IDごとに
-  一度だけ（最新の値で）足し、モデル別にも分けます。Claude Codeが自分で作る
+- **Claude**: APIの応答ごとの使用量を、message IDごとに一度だけ足し、
+  モデル別にも分けます。assistantメッセージの使用量は応答を始めた時点の値で、
+  outputはほぼ入っていません。そのため、途中の使用量を記録する呼び出しでは
+  Agent SDKのストリームイベント（`includePartialMessages`）も受け取り、
+  `message_start` で応答を、`message_delta` でその応答のその時点までの
+  outputを読みます。各legは応答の中で増えるだけなので、見えた最大の値を
+  使います。Claude Codeが自分で作る
   `<synthetic>` のメッセージと、tokenの無いメッセージは数えません。最終の
   usageと同じ範囲で数えるので、subagentはcommandモードのレビューでだけ数えます。
   session IDは各メッセージから、結果を待たずに読みます。
