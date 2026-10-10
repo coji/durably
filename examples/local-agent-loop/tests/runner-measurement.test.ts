@@ -2093,6 +2093,39 @@ describe('a stopped call keeps the usage and session it reported (ADR-0034)', ()
     assert.ok(!('partial' in saved))
   })
 
+  it('writes nothing more to the checkpoint when the result has both usage and session', async () => {
+    const provider = stubProvider(async (options) => {
+      options.onSession?.('native-1')
+      options.onPartialUsage?.(PARTIAL_USAGE)
+      return {
+        text: 'done',
+        session: { id: 'native-1' },
+        resolvedModel: 'resolved-model',
+        resolvedEffort: 'low',
+        reportedModel: null,
+        reportedEffort: null,
+        usage: FINAL_USAGE,
+        elapsedMs: 5,
+      }
+    })
+    const spec = baseSpec(
+      provider,
+      await mkdtemp(join(tmpdir(), 'checkpoints-')),
+    )
+    await runAgentCall(
+      new AbortController().signal,
+      fakeAttempt() as never,
+      spec,
+    )
+    const saved = JSON.parse(
+      await readFile(
+        checkpointPaths(spec.checkpointsDir, spec.operationKey).completed,
+        'utf8',
+      ),
+    ) as Record<string, unknown>
+    assert.ok(!('partial' in saved))
+  })
+
   it('returns the session the result names, the same on a replay, and keeps a reported one on the measurement', async () => {
     const provider = stubProvider(async (options) => {
       options.onSession?.('native-early')

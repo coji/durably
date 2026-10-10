@@ -167,9 +167,8 @@ interface CompletedCheckpoint {
   timedOut?: AgentTimeout
   /**
    * What the call reported while it ran: always on a cancelled or timed-out
-   * call, and on a finished one that reported anything, since its result may
-   * lack a usage or a session. Absent on a checkpoint written before it
-   * existed.
+   * call, and on a finished one whose result lacks a usage or a session when
+   * it reported anything. Absent on a checkpoint written before it existed.
    */
   partial?: ReportedUsage
   invocationStartedAt: string
@@ -832,7 +831,10 @@ export async function runAgentCall(
       ...startRecord,
       status: 'completed',
       result,
-      ...(reported.reports > 0 || reported.sessionId
+      // Kept only where the result lacks what was reported, so a replay
+      // can record it (ADR-0034).
+      ...((!result.usage || !result.session?.id) &&
+      (reported.reports > 0 || reported.sessionId)
         ? { partial: { ...reported } }
         : {}),
       invocationCompletedAt: new Date().toISOString(),

@@ -1314,4 +1314,51 @@ describe('usage of a call stopped before its final usage (ADR-0034)', () => {
     assert.equal(finished[0]?.complete, false)
     assert.equal(finished[0]?.costComplete, false)
   })
+
+  it('flags the run summary token total as partial, and a finished run as complete', () => {
+    const rows = [
+      row('stage:0:code:agent', 'impl'),
+      row('stage:1:review:correctness', 'stopped', {
+        usage: { ...usage(4000, 200), usageSource: 'provider-partial' },
+        result: 'cancelled',
+        stoppedBy: 'superseded-by-verify',
+      }),
+    ]
+    const summaryOf = (attempts: typeof rows) =>
+      summarizeRun({
+        status: 'completed',
+        output: { conclusion: 'verification-failed' },
+        runElapsedMs: 1000,
+        stageTotalMs: 1000,
+        waits: [],
+        attempts,
+        stageUsage: stageUsage(attempts),
+        stageVisits: stageVisits(attempts),
+      })
+    const stopped = summaryOf(rows)
+    assert.equal(typeof stopped.totalTokens, 'number')
+    assert.equal(stopped.tokensComplete, false)
+    assert.equal(stopped.costUsd, null)
+    assert.match(
+      reportToMarkdown({ ...report('stopped'), summary: stopped }),
+      /- total tokens: \S+ \(PARTIAL\)/,
+    )
+    const finished = report('finished')
+    assert.equal(finished.summary.tokensComplete, true)
+    const md = reportToMarkdown(finished)
+    assert.match(md, /- total tokens: 1\.4K\n/)
+    assert.doesNotMatch(md, /- total tokens: .*PARTIAL/)
+    // A comparison counts a lower bound as unknown, never as a run's total.
+    const partialRun = {
+      ...report('stopped'),
+      summary: stopped,
+      stageUsage: stageUsage(rows),
+    }
+    const [group] = compareReports([partialRun, finished]).groups
+    assert.equal(group?.totalTokens.n, 1)
+    assert.equal(group?.totalTokens.unknown, 1)
+    const review = group?.stages.find((s) => s.stage === 'review')
+    assert.equal(review?.totalTokens.n, 1)
+    assert.equal(review?.totalTokens.unknown, 1)
+  })
 })

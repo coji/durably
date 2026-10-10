@@ -766,6 +766,11 @@ export interface RunSummary {
   humanWaitRatio: number | null
   llmInvocations: number
   totalTokens: number | null
+  /**
+   * False when `totalTokens` is not the whole run's: some counted call
+   * reported no usage, or only usage up to a stop (ADR-0034).
+   */
+  tokensComplete: boolean
   costUsd: number | null
   /** costUsd when the run succeeded, else null: what one success cost. */
   costPerSuccessUsd: number | null
@@ -1340,6 +1345,7 @@ export function summarizeRun(input: SummaryInput): RunSummary {
         : null,
     llmInvocations: usageRows.reduce((s, r) => s + r.invocations, 0),
     totalTokens: sumLeg((r) => r.totalTokens),
+    tokensComplete: allComplete,
     costUsd,
     costPerSuccessUsd: success ? costUsd : null,
     repairs: repairsOf(input.stageVisits, input.repairRun ?? false),
@@ -1864,7 +1870,9 @@ export function reportToMarkdown(r: LoopReport): string {
     `- human wait: ${formatDuration(s.humanWaitMs)}${s.humanWaitRatio !== null ? ` (${(s.humanWaitRatio * 100).toFixed(1)}% of lead time)` : ''}`,
   )
   lines.push(`- llm invocations: ${s.llmInvocations}`)
-  lines.push(`- total tokens: ${formatTokens(s.totalTokens)}`)
+  lines.push(
+    `- total tokens: ${formatTokens(s.totalTokens)}${s.totalTokens !== null && !s.tokensComplete ? ' (PARTIAL)' : ''}`,
+  )
   lines.push(`- cost (api-equiv): ${formatCost(s.costUsd)}`)
   lines.push(`- cost per success: ${formatCost(s.costPerSuccessUsd)}`)
   lines.push(`- repairs: ${s.repairs}, review rounds: ${s.reviewRounds}`)
@@ -1927,9 +1935,12 @@ export function reportToMarkdown(r: LoopReport): string {
   lines.push('|---|---|---|---|---|---|---|---|---|')
   for (const a of r.attempts) {
     const m = a.measurement
-    // Usage reported only while the call ran is a lower bound (ADR-0034).
+    // Usage reported only while the call ran is a lower bound, and so is
+    // the cost estimated from it (ADR-0034).
+    const partial =
+      m?.usage?.usageSource === 'provider-partial' ? ' (partial)' : ''
     const tokens = m?.usage
-      ? `${formatTokens(m.usage.inputTokens)}/${formatTokens(m.usage.cacheReadTokens)}/${formatTokens(m.usage.cacheWriteTokens)}/${formatTokens(m.usage.outputTokens)}/${formatTokens(m.usage.totalTokens)}${m.usage.usageSource === 'provider-partial' ? ' (partial)' : ''}`
+      ? `${formatTokens(m.usage.inputTokens)}/${formatTokens(m.usage.cacheReadTokens)}/${formatTokens(m.usage.cacheWriteTokens)}/${formatTokens(m.usage.outputTokens)}/${formatTokens(m.usage.totalTokens)}${partial}`
       : Array(5).fill(formatTokens(null)).join('/')
     const model =
       m != null
@@ -1940,7 +1951,7 @@ export function reportToMarkdown(r: LoopReport): string {
         ? `${fmt(m.requestedEffort)}/${fmt(m.effectiveEffort)}/${fmt(m.reportedEffort)}`
         : 'unknown/unknown/unknown'
     lines.push(
-      `| ${a.stepName} | ${m?.invocationId?.slice(0, 8) ?? 'n/a'} | ${a.status}${a.interruptionReason ? ` (${a.interruptionReason})` : ''} | ${model} | ${effort} | ${formatDuration(m?.elapsedMs)} | ${tokens} | ${m?.costUsdEstimate != null ? `${formatCost(m.costUsdEstimate)} (${m.costBasis})` : formatCost(null)} | ${fmt(m?.result)} |`,
+      `| ${a.stepName} | ${m?.invocationId?.slice(0, 8) ?? 'n/a'} | ${a.status}${a.interruptionReason ? ` (${a.interruptionReason})` : ''} | ${model} | ${effort} | ${formatDuration(m?.elapsedMs)} | ${tokens} | ${m?.costUsdEstimate != null ? `${formatCost(m.costUsdEstimate)} (${m.costBasis})${partial}` : formatCost(null)} | ${fmt(m?.result)} |`,
     )
   }
   // The same invocations as the stage and role totals, so the line can
