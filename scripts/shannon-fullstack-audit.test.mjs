@@ -24,6 +24,7 @@ import {
   collectReports,
   evidenceDiff,
   parseOptions,
+  scannerDependencyHash,
   snapshotSource,
   sqliteEvidence,
 } from './shannon-fullstack-audit.mjs'
@@ -321,14 +322,17 @@ async function fakeAuditTools(temporary) {
       sha256: createHash('sha256').update(contents).digest('hex'),
     })
   }
-  await writeFile(
-    join(scannerDir, '.durably-audit-build.json'),
-    JSON.stringify({
-      commit: '2468b67d9e40d70d0b189462c5041c24e1dc886c',
-      files: buildFiles,
-      workerImageId: 'sha256:fake-worker-image',
-    }),
+  await mkdir(join(scannerDir, 'node_modules'))
+  const cliDependency = join(
+    scannerDir,
+    'apps',
+    'cli',
+    'node_modules',
+    'fake-runtime',
+    'index.js',
   )
+  await mkdir(dirname(cliDependency), { recursive: true })
+  await writeFile(cliDependency, 'export const version = 1\n')
   for (const name of ['pi-agent-core', 'pi-ai', 'pi-coding-agent']) {
     const directory = join(
       scannerDir,
@@ -341,6 +345,15 @@ async function fakeAuditTools(temporary) {
     await mkdir(directory, { recursive: true })
     await writeFile(join(directory, 'package.json'), '{"version":"1.2.0"}')
   }
+  await writeFile(
+    join(scannerDir, '.durably-audit-build.json'),
+    JSON.stringify({
+      commit: '2468b67d9e40d70d0b189462c5041c24e1dc886c',
+      files: buildFiles,
+      dependencyHash: await scannerDependencyHash(scannerDir),
+      workerImageId: 'sha256:fake-worker-image',
+    }),
+  )
   const revision = 'a'.repeat(40)
   await writeFile(
     join(bin, 'pi'),
@@ -431,7 +444,13 @@ async function fakeAuditTools(temporary) {
       'fi',
       'if [ "$1" = "start" ]; then',
       '  for value do',
-      '    if [ "$value" = "--validate-model" ]; then exit 0; fi',
+      '    if [ "$value" = "--validate-model" ]; then',
+      '      if [ "$FAKE_PREFLIGHT_HANG" = 1 ]; then',
+      '        echo "$$" > "$HANG_MARKER"',
+      '        while :; do :; done',
+      '      fi',
+      '      exit 0',
+      '    fi',
       '  done',
       '  follow=0',
       '  while [ "$#" -gt 0 ]; do',
@@ -602,6 +621,18 @@ test('source or worker Pi drift fails before Docker setup', async (context) => {
   assert.match(patchedFile.stderr, /differs from the pinned Pi patch/)
   await writeFile(workspaceFile, originalWorkspace)
   await writeFile(
+    join(scannerDir, '.env'),
+    'SHANNON_AI_BASE_URL=https://other.example\n',
+  )
+  const dotenv = spawnSync(process.execPath, args, {
+    cwd: worktree,
+    env,
+    encoding: 'utf8',
+  })
+  assert.equal(dotenv.status, 1)
+  assert.match(dotenv.stderr, /checkout \.env must be removed/)
+  await rm(join(scannerDir, '.env'))
+  await writeFile(
     join(
       scannerDir,
       'apps',
@@ -619,7 +650,7 @@ test('source or worker Pi drift fails before Docker setup', async (context) => {
     encoding: 'utf8',
   })
   assert.equal(worker.status, 1)
-  assert.match(worker.stderr, /worker Pi package version mismatch/)
+  assert.match(worker.stderr, /build output differs/)
   await writeFile(
     join(
       scannerDir,
@@ -654,6 +685,18 @@ test('source or worker Pi drift fails before Docker setup', async (context) => {
   })
   assert.equal(build.status, 1)
   assert.match(build.stderr, /build output differs/)
+  await writeFile(join(scannerDir, 'apps', 'cli', 'dist', 'index.mjs'), 'cli')
+  await writeFile(
+    join(scannerDir, 'apps', 'cli', 'node_modules', 'fake-runtime', 'index.js'),
+    'export const version = 2\n',
+  )
+  const dependency = spawnSync(process.execPath, args, {
+    cwd: worktree,
+    env,
+    encoding: 'utf8',
+  })
+  assert.equal(dependency.status, 1)
+  assert.match(dependency.stderr, /build output differs/)
   const calls = await readFile(env.DOCKER_MARKER, 'utf8')
   assert.doesNotMatch(calls, /network create|volume create|build/)
 })
@@ -803,4 +846,54 @@ test('interrupting the scanner still removes audit resources', async (context) =
     await readFile(env.DOCKER_MARKER, 'utf8'),
     /volume rm durably-shannon-data-/,
   )
+})
+
+test('interrupting model preflight stops its detached child', async (context) => {
+  const temporary = await mkdtemp(
+    join(tmpdir(), 'durably-shannon-preflight-interrupt-test-'),
+  )
+  context.after(() => rm(temporary, { recursive: true, force: true }))
+  const { scannerDir, env } = await fakeAuditTools(temporary)
+  const marker = join(temporary, 'preflight-pid')
+  const output = join(temporary, 'output')
+  const child = spawn(
+    process.execPath,
+    [
+      join(worktree, 'scripts', 'shannon-fullstack-audit.mjs'),
+      'run',
+      '--output',
+      output,
+      '--shannon-dir',
+      scannerDir,
+    ],
+    {
+      cwd: worktree,
+      env: { ...env, FAKE_PREFLIGHT_HANG: '1', HANG_MARKER: marker },
+      stdio: 'ignore',
+    },
+  )
+  const deadline = Date.now() + 10_000
+  while (Date.now() < deadline) {
+    try {
+      await readFile(marker)
+      break
+    } catch {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50))
+    }
+  }
+  const preflightPid = Number(await readFile(marker, 'utf8'))
+  child.kill('SIGINT')
+  const exitCode = await new Promise((resolveExit, rejectExit) => {
+    const timer = setTimeout(
+      () => rejectExit(new Error('Preflight did not stop after SIGINT')),
+      10_000,
+    )
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      resolveExit(code)
+    })
+  })
+  assert.equal(exitCode, 130)
+  assert.throws(() => process.kill(preflightPid, 0), { code: 'ESRCH' })
+  await assert.rejects(readFile(join(output, 'state.json')))
 })

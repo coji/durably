@@ -9,6 +9,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  readlink,
   realpath,
   rm,
   stat,
@@ -73,6 +74,12 @@ const defaultTimeout = 2 * 60 * 1000
 const scanTimeout = 6 * 60 * 60 * 1000
 const terminationGraceMs = 5 * 1000
 const activeChildren = new Set()
+const activeAborts = new Map()
+let auditSignalActive = false
+
+function abortActiveChildren() {
+  for (const abort of activeAborts.values()) abort()
+}
 
 function killChildTree(child, signal) {
   if (process.platform !== 'win32' && child.pid) {
@@ -196,7 +203,7 @@ export async function command(file, args, options = {}) {
     let stdout = ''
     let stderr = ''
     let truncated = false
-    let timedOut = false
+    let terminationReason
     let forceTimer
     const append = (current, chunk) => {
       if (current.length >= 1024 * 1024) {
@@ -211,29 +218,35 @@ export async function command(file, args, options = {}) {
     child.stderr.on('data', (chunk) => {
       stderr = append(stderr, chunk)
     })
-    const timer = setTimeout(() => {
-      timedOut = true
+    const terminate = (reason) => {
+      if (terminationReason) return
+      terminationReason = reason
       killChildTree(child, 'SIGTERM')
       forceTimer = setTimeout(() => {
         killChildTree(child, 'SIGKILL')
         child.stdout.destroy()
         child.stderr.destroy()
         activeChildren.delete(child)
-        rejectCommand(new Error(basename(file) + ' timed out'))
+        activeAborts.delete(child)
+        rejectCommand(new Error(basename(file) + ' ' + reason))
       }, terminationGraceMs)
-    }, timeout)
+    }
+    activeAborts.set(child, () => terminate('interrupted'))
+    const timer = setTimeout(() => terminate('timed out'), timeout)
     child.on('error', (error) => {
       clearTimeout(timer)
       clearTimeout(forceTimer)
       activeChildren.delete(child)
+      activeAborts.delete(child)
       rejectCommand(error)
     })
     child.on('close', (code, signalName) => {
       clearTimeout(timer)
       clearTimeout(forceTimer)
       activeChildren.delete(child)
-      if (timedOut) {
-        rejectCommand(new Error(basename(file) + ' timed out'))
+      activeAborts.delete(child)
+      if (terminationReason) {
+        rejectCommand(new Error(basename(file) + ' ' + terminationReason))
       } else if (code === 0 || allowNonzero)
         resolveCommand({ stdout, stderr, truncated, exitCode: code })
       else {
@@ -349,6 +362,12 @@ async function checkScannerSource(shannonDir) {
 }
 
 async function scannerSourceState(shannonDir) {
+  try {
+    await lstat(join(shannonDir, '.env'))
+    throw new Error('Shannon checkout .env must be removed before an audit')
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
   const actualCommit = (
     await git(['-C', shannonDir, 'rev-parse', 'HEAD'])
   ).stdout.trim()
@@ -414,6 +433,39 @@ async function scannerBuildFiles(shannonDir) {
   return files.sort((a, b) => a.path.localeCompare(b.path))
 }
 
+export async function scannerDependencyHash(shannonDir) {
+  const hash = createHash('sha256')
+  async function walk(directory) {
+    const entries = await readdir(directory, { withFileTypes: true })
+    entries.sort((a, b) => a.name.localeCompare(b.name))
+    for (const entry of entries) {
+      const file = join(directory, entry.name)
+      const path = relative(shannonDir, file).split(sep).join('/')
+      if (entry.isDirectory()) {
+        hash.update('directory\0' + path + '\0')
+        await walk(file)
+      } else if (entry.isFile()) {
+        const digest = createHash('sha256')
+          .update(await readFile(file))
+          .digest('hex')
+        hash.update('file\0' + path + '\0' + digest + '\0')
+      } else if (entry.isSymbolicLink()) {
+        hash.update('link\0' + path + '\0' + (await readlink(file)) + '\0')
+      } else throw new Error('Unexpected Shannon dependency entry: ' + file)
+    }
+  }
+  for (const path of [
+    'node_modules',
+    'apps/cli/node_modules',
+    'apps/worker/node_modules',
+  ]) {
+    const directory = join(shannonDir, path)
+    hash.update('root\0' + path + '\0')
+    await walk(directory)
+  }
+  return hash.digest('hex')
+}
+
 async function checkScannerBuild(shannonDir) {
   let saved
   try {
@@ -424,12 +476,14 @@ async function checkScannerBuild(shannonDir) {
     throw new Error('Shannon build manifest missing; run security:scan:setup')
   }
   const actual = await scannerBuildFiles(shannonDir)
+  const dependencyHash = await scannerDependencyHash(shannonDir)
   const imageId = (
     await docker(['image', 'inspect', workerImage, '--format', '{{.Id}}'])
   ).stdout.trim()
   if (
     saved.commit !== shannonCommit ||
     JSON.stringify(saved.files) !== JSON.stringify(actual) ||
+    saved.dependencyHash !== dependencyHash ||
     saved.workerImageId !== imageId
   ) {
     throw new Error('Shannon build output differs from the pinned setup')
@@ -522,6 +576,7 @@ async function setup(shannonDir) {
       {
         commit: shannonCommit,
         files: await scannerBuildFiles(shannonDir),
+        dependencyHash: await scannerDependencyHash(shannonDir),
         workerImageId,
       },
       null,
@@ -950,18 +1005,11 @@ async function runAudit(options) {
   await saveState(output, state)
   await log(output, 'Preflight passed; source revision ' + revision)
   const temporary = await mkdtemp(join(tmpdir(), 'durably-shannon-source-'))
+  auditSignalActive = true
   const onSignal = () => {
     process.exitCode = 130
     state.interrupted = true
-    if (!state.cleaning) {
-      for (const child of activeChildren) {
-        killChildTree(child, 'SIGTERM')
-        setTimeout(
-          () => killChildTree(child, 'SIGKILL'),
-          terminationGraceMs,
-        ).unref()
-      }
-    }
+    if (!state.cleaning) abortActiveChildren()
   }
   process.on('SIGINT', onSignal)
   process.on('SIGTERM', onSignal)
@@ -1196,6 +1244,7 @@ async function runAudit(options) {
     await saveState(output, state)
     process.off('SIGINT', onSignal)
     process.off('SIGTERM', onSignal)
+    auditSignalActive = false
   }
   if (failure) throw failure
   return { output, state }
@@ -1245,21 +1294,34 @@ async function main() {
     )
     return
   }
-  if (options.action === 'setup') {
-    await setup(options.shannonDir)
-    process.stdout.write('Pinned Shannon build is ready\n')
-  } else if (options.action === 'validate') {
-    await validate(options.shannonDir)
-    process.stdout.write('Pi OAuth, model, and cyber access validated\n')
-  } else if (options.action === 'run') {
-    const result = await runAudit(options)
-    process.stdout.write('Audit completed: ' + result.output + '\n')
-  } else if (options.action === 'status') {
-    await showStatus(options)
-  } else if (options.action === 'down') {
-    await down(options)
-  } else {
-    throw new Error('Unknown action: ' + options.action)
+  const onSignal = () => {
+    process.exitCode = 130
+    if (auditSignalActive) return
+    if (activeChildren.size === 0) process.exit(130)
+    abortActiveChildren()
+  }
+  process.on('SIGINT', onSignal)
+  process.on('SIGTERM', onSignal)
+  try {
+    if (options.action === 'setup') {
+      await setup(options.shannonDir)
+      process.stdout.write('Pinned Shannon build is ready\n')
+    } else if (options.action === 'validate') {
+      await validate(options.shannonDir)
+      process.stdout.write('Pi OAuth, model, and cyber access validated\n')
+    } else if (options.action === 'run') {
+      const result = await runAudit(options)
+      process.stdout.write('Audit completed: ' + result.output + '\n')
+    } else if (options.action === 'status') {
+      await showStatus(options)
+    } else if (options.action === 'down') {
+      await down(options)
+    } else {
+      throw new Error('Unknown action: ' + options.action)
+    }
+  } finally {
+    process.off('SIGINT', onSignal)
+    process.off('SIGTERM', onSignal)
   }
 }
 
