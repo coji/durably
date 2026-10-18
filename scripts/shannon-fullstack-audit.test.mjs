@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import {
   mkdtemp,
   mkdir,
@@ -20,6 +20,7 @@ import {
   cleanupResources,
   collectReports,
   evidenceDiff,
+  snapshotSource,
   sqliteEvidence,
 } from './shannon-fullstack-audit.mjs'
 
@@ -101,6 +102,55 @@ test('SQLite evidence records integrity, table counts, and new run IDs', async (
   assert.throws(() => sqliteEvidence(join(temporary, 'invalid.sqlite')))
 })
 
+test('source snapshot has the original HEAD without local edits or .env', async (context) => {
+  const temporary = await mkdtemp(
+    join(tmpdir(), 'durably-shannon-source-test-'),
+  )
+  context.after(() => rm(temporary, { recursive: true, force: true }))
+  const repository = join(temporary, 'repository')
+  const scratch = join(temporary, 'scratch')
+  await mkdir(repository)
+  await mkdir(scratch)
+  const runGit = (...args) => {
+    const result = spawnSync('git', ['-C', repository, ...args], {
+      encoding: 'utf8',
+    })
+    assert.equal(result.status, 0, result.stderr)
+    return result.stdout.trim()
+  }
+  runGit('init', '-b', 'main')
+  runGit('config', 'user.name', 'Audit Test')
+  runGit('config', 'user.email', 'audit@example.invalid')
+  await writeFile(join(repository, 'app.txt'), 'committed\n')
+  runGit('add', 'app.txt')
+  runGit('commit', '-m', 'fixture')
+  const revision = runGit('rev-parse', 'HEAD')
+  await writeFile(join(repository, 'app.txt'), 'uncommitted\n')
+  await writeFile(join(repository, '.env'), 'LOCAL_SECRET=do-not-copy\n')
+  const source = await snapshotSource(scratch, revision, repository)
+  assert.equal(await readFile(join(source, 'app.txt'), 'utf8'), 'committed\n')
+  await assert.rejects(readFile(join(source, '.env')))
+  const head = spawnSync('git', ['-C', source, 'rev-parse', 'HEAD'], {
+    encoding: 'utf8',
+  })
+  assert.equal(head.stdout.trim(), revision)
+  const count = spawnSync(
+    'git',
+    ['-C', source, 'rev-list', '--count', 'HEAD'],
+    { encoding: 'utf8' },
+  )
+  assert.equal(count.stdout.trim(), '1')
+  runGit('add', '.env')
+  runGit('commit', '-m', 'tracked environment fixture')
+  const unsafeRevision = runGit('rev-parse', 'HEAD')
+  const unsafeScratch = join(temporary, 'unsafe-scratch')
+  await mkdir(unsafeScratch)
+  await assert.rejects(
+    snapshotSource(unsafeScratch, unsafeRevision, repository),
+    /environment files/,
+  )
+})
+
 test('cleanup attempts every resource after one removal fails', async () => {
   const calls = []
   const state = { id: '123456789abc' }
@@ -172,4 +222,257 @@ test('failed Pi preflight creates no audit output or Docker resources', async (c
   assert.match(result.stderr, /pi failed/)
   await assert.rejects(readFile(marker))
   await assert.rejects(readFile(join(output, 'state.json')))
+})
+
+async function fakeAuditTools(temporary) {
+  const bin = join(temporary, 'bin')
+  const scannerDir = join(temporary, 'scanner')
+  await mkdir(bin)
+  await mkdir(scannerDir)
+  const revision = 'a'.repeat(40)
+  await writeFile(
+    join(bin, 'pi'),
+    [
+      '#!/bin/sh',
+      'if [ "$1" = "--version" ]; then echo 1.3.0; else echo ready; fi',
+    ].join('\n') + '\n',
+    { mode: 0o755 },
+  )
+  await writeFile(
+    join(bin, 'git'),
+    [
+      '#!/bin/sh',
+      'case " $* " in',
+      '  *" clone "*) for value do last="$value"; done; mkdir -p "$last"; exit 0 ;;',
+      '  *" rev-parse HEAD "*) echo "$FAKE_REVISION"; exit 0 ;;',
+      '  *" status --porcelain=v1 "*) exit 0 ;;',
+      '  *" ls-files -z "*) exit 0 ;;',
+      '  *" checkout --detach "*) exit 0 ;;',
+      'esac',
+      'exit 1',
+    ].join('\n') + '\n',
+    { mode: 0o755 },
+  )
+  await writeFile(
+    join(bin, 'docker'),
+    [
+      '#!/bin/sh',
+      'printf "%s\\n" "$*" >> "$DOCKER_MARKER"',
+      'if [ "$1" = "cp" ]; then',
+      '  count=$(cat "$CP_COUNT" 2>/dev/null || echo 0)',
+      '  count=$((count + 1))',
+      '  echo "$count" > "$CP_COUNT"',
+      '  if [ "$count" -eq 2 ] && [ "$CORRUPT_AFTER" = 1 ]; then',
+      '    printf invalid > "$3"',
+      '  else',
+      '    cp "$DB_SOURCE" "$3"',
+      '  fi',
+      'fi',
+      'exit 0',
+    ].join('\n') + '\n',
+    { mode: 0o755 },
+  )
+  await writeFile(
+    join(scannerDir, 'shannon'),
+    [
+      '#!/bin/sh',
+      'if [ "$1" = "version" ]; then',
+      '  echo \'{"version":"git-2468b67d9e40d70d0b189462c5041c24e1dc886c"}\'',
+      '  exit 0',
+      'fi',
+      'if [ "$1" = "stop" ]; then',
+      '  echo stopped >> "$FAKE_STOP_MARKER"',
+      '  exit 0',
+      'fi',
+      'if [ "$1" = "status" ]; then',
+      '  if [ "$FAKE_STATUS" = running ]; then',
+      '    printf \'{"status":"running","workflowId":"%s_workflow"}\\n\' "$2"',
+      '    exit 0',
+      '  fi',
+      '  echo \'{"status":"completed","phases":[{"key":"preflight","state":"completed"},{"key":"cyber-access","state":"completed"},{"key":"agentic-sast","state":"completed"},{"key":"pre-recon","state":"completed"},{"key":"recon","state":"completed"},{"key":"vulnerability-analysis","state":"completed"},{"key":"reporting","state":"completed"}]}\'',
+      '  exit 0',
+      'fi',
+      'if [ "$1" = "start" ]; then',
+      '  for value do',
+      '    if [ "$value" = "--validate-model" ]; then exit 0; fi',
+      '  done',
+      '  follow=0',
+      '  while [ "$#" -gt 0 ]; do',
+      '    case "$1" in',
+      '      --follow) follow=1 ;;',
+      '      --workspace) shift; workspace="$1" ;;',
+      '      --output) shift; output="$1" ;;',
+      '    esac',
+      '    shift',
+      '  done',
+      '  if [ "$follow" -ne 1 ]; then exit 0; fi',
+      '  if [ "$FAKE_HANG" = 1 ]; then',
+      '    echo ready > "$HANG_MARKER"',
+      '    while :; do :; done',
+      '  fi',
+      '  mkdir -p "$output" "$(dirname "$0")/workspaces/$workspace/.shannon/capella"',
+      '  for name in Security-Assessment-Report.md Security-Assessment-Report.pdf report.sarif; do',
+      '    echo report > "$output/$name"',
+      '  done',
+      '  echo static > "$(dirname "$0")/workspaces/$workspace/.shannon/capella/report.md"',
+      '  echo "{}" > "$(dirname "$0")/workspaces/$workspace/.shannon/capella/capella.sarif"',
+      '  exit 0',
+      'fi',
+      'exit 1',
+    ].join('\n') + '\n',
+    { mode: 0o755 },
+  )
+  const databaseFile = join(temporary, 'source.sqlite')
+  const database = new DatabaseSync(databaseFile)
+  database.exec('CREATE TABLE durably_runs (id TEXT PRIMARY KEY)')
+  database.close()
+  return {
+    scannerDir,
+    env: {
+      ...process.env,
+      PATH: bin + ':' + process.env.PATH,
+      FAKE_REVISION: revision,
+      DOCKER_MARKER: join(temporary, 'docker-marker'),
+      CP_COUNT: join(temporary, 'copy-count'),
+      DB_SOURCE: databaseFile,
+      FAKE_STOP_MARKER: join(temporary, 'stop-marker'),
+    },
+  }
+}
+
+test('stubbed full run waits for reports and cleans up', async (context) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'durably-shannon-run-test-'))
+  context.after(() => rm(temporary, { recursive: true, force: true }))
+  const { scannerDir, env } = await fakeAuditTools(temporary)
+  const output = join(temporary, 'output')
+  const result = spawnSync(
+    process.execPath,
+    [
+      join(worktree, 'scripts', 'shannon-fullstack-audit.mjs'),
+      'run',
+      '--output',
+      output,
+      '--shannon-dir',
+      scannerDir,
+    ],
+    { cwd: worktree, env, encoding: 'utf8', timeout: 20_000 },
+  )
+  assert.equal(result.status, 0, result.stderr)
+  const state = JSON.parse(await readFile(join(output, 'state.json'), 'utf8'))
+  assert.equal(state.status, 'completed')
+  assert.match(
+    await readFile(
+      join(output, 'reports', 'Static-Analysis-Report.md'),
+      'utf8',
+    ),
+    /static/,
+  )
+  const calls = await readFile(env.DOCKER_MARKER, 'utf8')
+  assert.match(calls, /network create --internal/)
+  assert.match(calls, /image rm durably-shannon-target:/)
+  const down = spawnSync(
+    process.execPath,
+    [
+      join(worktree, 'scripts', 'shannon-fullstack-audit.mjs'),
+      'down',
+      '--output',
+      output,
+      '--shannon-dir',
+      scannerDir,
+    ],
+    {
+      cwd: worktree,
+      env: { ...env, FAKE_STATUS: 'running' },
+      encoding: 'utf8',
+    },
+  )
+  assert.equal(down.status, 0, down.stderr)
+  assert.match(await readFile(env.FAKE_STOP_MARKER, 'utf8'), /stopped/)
+})
+
+test('failed final SQLite copy still removes audit resources', async (context) => {
+  const temporary = await mkdtemp(
+    join(tmpdir(), 'durably-shannon-final-db-test-'),
+  )
+  context.after(() => rm(temporary, { recursive: true, force: true }))
+  const { scannerDir, env } = await fakeAuditTools(temporary)
+  const output = join(temporary, 'output')
+  const result = spawnSync(
+    process.execPath,
+    [
+      join(worktree, 'scripts', 'shannon-fullstack-audit.mjs'),
+      'run',
+      '--output',
+      output,
+      '--shannon-dir',
+      scannerDir,
+    ],
+    {
+      cwd: worktree,
+      env: { ...env, CORRUPT_AFTER: '1' },
+      encoding: 'utf8',
+      timeout: 20_000,
+    },
+  )
+  assert.equal(result.status, 1)
+  const state = JSON.parse(await readFile(join(output, 'state.json'), 'utf8'))
+  assert.equal(state.status, 'failed')
+  const calls = await readFile(env.DOCKER_MARKER, 'utf8')
+  assert.match(calls, /rm -f durably-shannon-target-/)
+  assert.match(calls, /volume rm durably-shannon-data-/)
+  assert.match(calls, /image rm durably-shannon-target:/)
+})
+
+test('interrupting the scanner still removes audit resources', async (context) => {
+  const temporary = await mkdtemp(
+    join(tmpdir(), 'durably-shannon-interrupt-test-'),
+  )
+  context.after(() => rm(temporary, { recursive: true, force: true }))
+  const { scannerDir, env } = await fakeAuditTools(temporary)
+  const output = join(temporary, 'output')
+  const marker = join(temporary, 'scanner-ready')
+  const child = spawn(
+    process.execPath,
+    [
+      join(worktree, 'scripts', 'shannon-fullstack-audit.mjs'),
+      'run',
+      '--output',
+      output,
+      '--shannon-dir',
+      scannerDir,
+    ],
+    {
+      cwd: worktree,
+      env: { ...env, FAKE_HANG: '1', HANG_MARKER: marker },
+      stdio: 'ignore',
+    },
+  )
+  const deadline = Date.now() + 10_000
+  while (Date.now() < deadline) {
+    try {
+      await readFile(marker)
+      break
+    } catch {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50))
+    }
+  }
+  await readFile(marker)
+  child.kill('SIGINT')
+  const exitCode = await new Promise((resolveExit, rejectExit) => {
+    const timer = setTimeout(
+      () => rejectExit(new Error('Audit did not stop after SIGINT')),
+      10_000,
+    )
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      resolveExit(code)
+    })
+  })
+  assert.notEqual(exitCode, 0)
+  const state = JSON.parse(await readFile(join(output, 'state.json'), 'utf8'))
+  assert.equal(state.status, 'failed')
+  assert.match(
+    await readFile(env.DOCKER_MARKER, 'utf8'),
+    /volume rm durably-shannon-data-/,
+  )
 })

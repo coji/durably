@@ -25,7 +25,7 @@ import {
   sep,
 } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const support = join(root, 'scripts', 'shannon-fullstack')
@@ -350,19 +350,40 @@ async function sourceRevision() {
   return (await git(['rev-parse', 'HEAD'])).stdout.trim()
 }
 
-async function snapshotSource(temporary, revision) {
+export async function snapshotSource(temporary, revision, sourceRoot = root) {
   const source = join(temporary, 'source')
   await git(
-    ['clone', '--local', '--no-hardlinks', '--no-checkout', root, source],
-    {
-      timeout: 5 * 60 * 1000,
-    },
+    [
+      'clone',
+      '--depth',
+      '1',
+      '--no-checkout',
+      pathToFileURL(sourceRoot).href,
+      source,
+    ],
+    { timeout: 5 * 60 * 1000 },
   )
   await git(['-C', source, 'checkout', '--detach', revision])
   const actual = (await git(['-C', source, 'rev-parse', 'HEAD'])).stdout.trim()
   if (actual !== revision) throw new Error('Source snapshot HEAD changed')
   if ((await git(['-C', source, 'status', '--porcelain=v1'])).stdout !== '') {
     throw new Error('Source snapshot is not clean')
+  }
+  const tracked = (await git(['-C', source, 'ls-files', '-z'])).stdout
+    .split('\0')
+    .filter(Boolean)
+  if (
+    tracked.some((file) => {
+      const name = basename(file)
+      return (
+        name.startsWith('.env') &&
+        !['.env.example', '.env.sample', '.env.template'].includes(name)
+      )
+    })
+  ) {
+    throw new Error(
+      'Committed environment files are not allowed in the audit snapshot',
+    )
   }
   return source
 }
@@ -608,6 +629,50 @@ async function stopAndCopyDatabase(state, output) {
   return after
 }
 
+async function stopUnfinishedScan(state, shannonDir, output) {
+  let status
+  try {
+    const result = await command(
+      scanner(shannonDir),
+      ['status', state.workspace, '--json'],
+      { cwd: shannonDir, env: childEnvironment(), timeout: 30 * 1000 },
+    )
+    status = JSON.parse(result.stdout)
+  } catch {
+    return
+  }
+  if (!['running', 'pending'].includes(status.status)) return
+  try {
+    await command(scanner(shannonDir), ['stop', state.workspace, '--yes'], {
+      cwd: shannonDir,
+      env: childEnvironment(),
+      timeout: 30 * 1000,
+    })
+  } catch {
+    if (
+      !status.workflowId ||
+      !status.workflowId.startsWith(state.workspace + '_')
+    ) {
+      throw new Error('Cannot identify the unfinished Shannon workflow')
+    }
+    await docker(
+      [
+        'exec',
+        'shannon-temporal',
+        'temporal',
+        'workflow',
+        'terminate',
+        '--workflow-id',
+        status.workflowId,
+        '--reason',
+        'Audit operator workflow failed or was interrupted',
+      ],
+      { timeout: 30 * 1000 },
+    )
+  }
+  await log(output, 'Unfinished Shannon workflow stopped')
+}
+
 async function runAudit(options) {
   const output = await checkedOutputPath(options.output)
   const versions = await validate(options.shannonDir)
@@ -630,7 +695,9 @@ async function runAudit(options) {
   const onSignal = () => {
     process.exitCode = 130
     state.interrupted = true
-    for (const child of activeChildren) child.kill('SIGTERM')
+    if (!state.cleaning) {
+      for (const child of activeChildren) child.kill('SIGTERM')
+    }
   }
   process.on('SIGINT', onSignal)
   process.on('SIGTERM', onSignal)
@@ -786,8 +853,15 @@ async function runAudit(options) {
     state.error = error.message
     await log(output, 'Audit failed: ' + error.message)
   } finally {
-    process.off('SIGINT', onSignal)
-    process.off('SIGTERM', onSignal)
+    state.cleaning = true
+    if (state.status !== 'completed') {
+      try {
+        await stopUnfinishedScan(state, options.shannonDir, output)
+      } catch (error) {
+        failure ??= error
+        await log(output, 'Failed to stop unfinished Shannon workflow')
+      }
+    }
     try {
       await cleanupResources(state, output)
       await log(output, 'Audit resources removed')
@@ -803,7 +877,10 @@ async function runAudit(options) {
       state.status = 'failed'
     }
     if (failure) state.error = failure.message
+    delete state.cleaning
     await saveState(output, state)
+    process.off('SIGINT', onSignal)
+    process.off('SIGTERM', onSignal)
   }
   if (failure) throw failure
   return { output, state }
@@ -812,8 +889,20 @@ async function runAudit(options) {
 async function down(options) {
   const output = await checkedOutputPath(options.output)
   const state = await readState(output)
-  await cleanupResources(state, output)
-  await log(output, 'Manual cleanup completed')
+  let failure
+  try {
+    await stopUnfinishedScan(state, options.shannonDir, output)
+  } catch (error) {
+    failure = error
+    await log(output, 'Could not stop unfinished Shannon workflow')
+  }
+  try {
+    await cleanupResources(state, output)
+    await log(output, 'Manual cleanup completed')
+  } catch (error) {
+    failure ??= error
+  }
+  if (failure) throw failure
 }
 
 async function showStatus(options) {
