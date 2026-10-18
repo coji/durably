@@ -697,6 +697,16 @@ test('source or worker Pi drift fails before Docker setup', async (context) => {
   })
   assert.equal(dependency.status, 1)
   assert.match(dependency.stderr, /build output differs/)
+  const outsideDependency = join(temporary, 'outside-dependency.js')
+  await writeFile(outsideDependency, 'export const version = 1\n')
+  await symlink(
+    outsideDependency,
+    join(scannerDir, 'node_modules', 'outside-dependency.js'),
+  )
+  await assert.rejects(
+    scannerDependencyHash(scannerDir),
+    /dependency link points outside checkout/,
+  )
   const calls = await readFile(env.DOCKER_MARKER, 'utf8')
   assert.doesNotMatch(calls, /network create|volume create|build/)
 })
@@ -794,59 +804,61 @@ test('failed Shannon run preserves status, reports, and sanitized log', async (c
   await assert.rejects(readFile(env.FAKE_STOP_MARKER))
 })
 
-test('interrupting the scanner still removes audit resources', async (context) => {
-  const temporary = await mkdtemp(
-    join(tmpdir(), 'durably-shannon-interrupt-test-'),
-  )
-  context.after(() => rm(temporary, { recursive: true, force: true }))
-  const { scannerDir, env } = await fakeAuditTools(temporary)
-  const output = join(temporary, 'output')
-  const marker = join(temporary, 'scanner-ready')
-  const child = spawn(
-    process.execPath,
-    [
-      join(worktree, 'scripts', 'shannon-fullstack-audit.mjs'),
-      'run',
-      '--output',
-      output,
-      '--shannon-dir',
-      scannerDir,
-    ],
-    {
-      cwd: worktree,
-      env: { ...env, FAKE_HANG: '1', HANG_MARKER: marker },
-      stdio: 'ignore',
-    },
-  )
-  const deadline = Date.now() + 10_000
-  while (Date.now() < deadline) {
-    try {
-      await readFile(marker)
-      break
-    } catch {
-      await new Promise((resolveWait) => setTimeout(resolveWait, 50))
-    }
-  }
-  await readFile(marker)
-  child.kill('SIGINT')
-  const exitCode = await new Promise((resolveExit, rejectExit) => {
-    const timer = setTimeout(
-      () => rejectExit(new Error('Audit did not stop after SIGINT')),
-      10_000,
+for (const signal of ['SIGINT', 'SIGHUP']) {
+  test(`interrupting the scanner with ${signal} removes audit resources`, async (context) => {
+    const temporary = await mkdtemp(
+      join(tmpdir(), 'durably-shannon-interrupt-test-'),
     )
-    child.on('close', (code) => {
-      clearTimeout(timer)
-      resolveExit(code)
+    context.after(() => rm(temporary, { recursive: true, force: true }))
+    const { scannerDir, env } = await fakeAuditTools(temporary)
+    const output = join(temporary, 'output')
+    const marker = join(temporary, 'scanner-ready')
+    const child = spawn(
+      process.execPath,
+      [
+        join(worktree, 'scripts', 'shannon-fullstack-audit.mjs'),
+        'run',
+        '--output',
+        output,
+        '--shannon-dir',
+        scannerDir,
+      ],
+      {
+        cwd: worktree,
+        env: { ...env, FAKE_HANG: '1', HANG_MARKER: marker },
+        stdio: 'ignore',
+      },
+    )
+    const deadline = Date.now() + 10_000
+    while (Date.now() < deadline) {
+      try {
+        await readFile(marker)
+        break
+      } catch {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 50))
+      }
+    }
+    await readFile(marker)
+    child.kill(signal)
+    const exitCode = await new Promise((resolveExit, rejectExit) => {
+      const timer = setTimeout(
+        () => rejectExit(new Error(`Audit did not stop after ${signal}`)),
+        10_000,
+      )
+      child.on('close', (code) => {
+        clearTimeout(timer)
+        resolveExit(code)
+      })
     })
+    assert.equal(exitCode, 130)
+    const state = JSON.parse(await readFile(join(output, 'state.json'), 'utf8'))
+    assert.equal(state.status, 'failed')
+    assert.match(
+      await readFile(env.DOCKER_MARKER, 'utf8'),
+      /volume rm durably-shannon-data-/,
+    )
   })
-  assert.equal(exitCode, 130)
-  const state = JSON.parse(await readFile(join(output, 'state.json'), 'utf8'))
-  assert.equal(state.status, 'failed')
-  assert.match(
-    await readFile(env.DOCKER_MARKER, 'utf8'),
-    /volume rm durably-shannon-data-/,
-  )
-})
+}
 
 test('interrupting model preflight stops its detached child', async (context) => {
   const temporary = await mkdtemp(
@@ -873,15 +885,20 @@ test('interrupting model preflight stops its detached child', async (context) =>
     },
   )
   const deadline = Date.now() + 10_000
+  let preflightPid
   while (Date.now() < deadline) {
     try {
-      await readFile(marker)
-      break
+      const pid = (await readFile(marker, 'utf8')).trim()
+      if (/^[0-9]+$/.test(pid)) {
+        preflightPid = Number(pid)
+        break
+      }
     } catch {
-      await new Promise((resolveWait) => setTimeout(resolveWait, 50))
+      // The marker may not exist yet.
     }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50))
   }
-  const preflightPid = Number(await readFile(marker, 'utf8'))
+  assert.ok(preflightPid > 0)
   child.kill('SIGINT')
   const exitCode = await new Promise((resolveExit, rejectExit) => {
     const timer = setTimeout(

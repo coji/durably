@@ -430,14 +430,14 @@ async function scannerBuildFiles(shannonDir) {
   }
   await walk(join(shannonDir, 'apps', 'cli', 'dist'))
   await walk(join(shannonDir, 'apps', 'worker', 'dist'))
-  return files.sort((a, b) => a.path.localeCompare(b.path))
+  return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 }
 
 export async function scannerDependencyHash(shannonDir) {
   const hash = createHash('sha256')
   async function walk(directory) {
     const entries = await readdir(directory, { withFileTypes: true })
-    entries.sort((a, b) => a.name.localeCompare(b.name))
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     for (const entry of entries) {
       const file = join(directory, entry.name)
       const path = relative(shannonDir, file).split(sep).join('/')
@@ -450,6 +450,15 @@ export async function scannerDependencyHash(shannonDir) {
           .digest('hex')
         hash.update('file\0' + path + '\0' + digest + '\0')
       } else if (entry.isSymbolicLink()) {
+        const target = await realpath(file)
+        const targetPath = relative(shannonDir, target)
+        if (
+          targetPath === '..' ||
+          targetPath.startsWith('..' + sep) ||
+          isAbsolute(targetPath)
+        ) {
+          throw new Error('Shannon dependency link points outside checkout')
+        }
         hash.update('link\0' + path + '\0' + (await readlink(file)) + '\0')
       } else throw new Error('Unexpected Shannon dependency entry: ' + file)
     }
@@ -1013,6 +1022,7 @@ async function runAudit(options) {
   }
   process.on('SIGINT', onSignal)
   process.on('SIGTERM', onSignal)
+  process.on('SIGHUP', onSignal)
   let failure
   let capturedStatus = false
   let capturedLog = false
@@ -1244,6 +1254,7 @@ async function runAudit(options) {
     await saveState(output, state)
     process.off('SIGINT', onSignal)
     process.off('SIGTERM', onSignal)
+    process.off('SIGHUP', onSignal)
     auditSignalActive = false
   }
   if (failure) throw failure
@@ -1302,6 +1313,7 @@ async function main() {
   }
   process.on('SIGINT', onSignal)
   process.on('SIGTERM', onSignal)
+  process.on('SIGHUP', onSignal)
   try {
     if (options.action === 'setup') {
       await setup(options.shannonDir)
@@ -1322,6 +1334,7 @@ async function main() {
   } finally {
     process.off('SIGINT', onSignal)
     process.off('SIGTERM', onSignal)
+    process.off('SIGHUP', onSignal)
   }
 }
 
