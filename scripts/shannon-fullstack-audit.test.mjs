@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
+import { pathToFileURL } from 'node:url'
 
 import {
   checkedOutputPath,
@@ -707,16 +708,78 @@ test('source or worker Pi drift fails before Docker setup', async (context) => {
     await scannerDependencyHash(linkedScannerDir),
     await scannerDependencyHash(scannerDir),
   )
+  for (const workspace of ['cli', 'worker']) {
+    const link = join(scannerDir, 'node_modules', workspace + '-workspace')
+    await symlink(join(scannerDir, 'apps', workspace), link)
+    await scannerDependencyHash(scannerDir)
+    await rm(link)
+  }
+  const workerSource = join(scannerDir, 'apps', 'worker', 'src')
+  await mkdir(workerSource)
+  const badWorkspaceLink = join(scannerDir, 'node_modules', 'workspace-subpath')
+  await symlink(workerSource, badWorkspaceLink)
+  await assert.rejects(
+    scannerDependencyHash(scannerDir),
+    /dependency link points outside verified roots/,
+  )
+  await rm(badWorkspaceLink)
+  await symlink(scannerDir, badWorkspaceLink)
+  await assert.rejects(
+    scannerDependencyHash(scannerDir),
+    /dependency link points outside verified roots/,
+  )
+  await rm(badWorkspaceLink)
+
+  const alternatePackage = join(
+    scannerDir,
+    'apps',
+    'cli',
+    'node_modules',
+    'alternate-runtime',
+  )
+  await mkdir(alternatePackage)
+  await writeFile(
+    join(alternatePackage, 'index.js'),
+    'export const version = 2\n',
+  )
+  const intermediate = join(temporary, 'dependency-hop')
+  const hopLink = join(scannerDir, 'node_modules', 'through-hop')
+  await symlink(
+    join(scannerDir, 'apps', 'cli', 'node_modules', 'fake-runtime'),
+    intermediate,
+  )
+  await symlink(intermediate, hopLink)
+  const beforeHopChange = await scannerDependencyHash(scannerDir)
+  const originalResolvedTarget = await realpath(hopLink)
+  const sameTargetHop = join(temporary, 'same-target-hop')
+  await symlink(
+    join(scannerDir, 'apps', 'cli', 'node_modules', 'fake-runtime'),
+    sameTargetHop,
+  )
+  await rm(intermediate)
+  await symlink(sameTargetHop, intermediate)
+  assert.equal(await realpath(hopLink), originalResolvedTarget)
+  assert.notEqual(await scannerDependencyHash(scannerDir), beforeHopChange)
+  await rm(intermediate)
+  await symlink(alternatePackage, intermediate)
+  assert.notEqual(await scannerDependencyHash(scannerDir), beforeHopChange)
+  await rm(hopLink)
+  await rm(intermediate)
+  await rm(sameTargetHop)
+
   const outsideDependency = join(temporary, 'outside-dependency.js')
   await writeFile(outsideDependency, 'export const version = 1\n')
   await symlink(
     outsideDependency,
     join(scannerDir, 'node_modules', 'outside-dependency.js'),
   )
-  await assert.rejects(
-    scannerDependencyHash(scannerDir),
-    /dependency link points outside verified roots/,
-  )
+  await assert.rejects(scannerDependencyHash(scannerDir), (error) => {
+    assert.match(error.message, /dependency link points outside verified roots/)
+    assert.match(error.message, /outside-dependency\.js/)
+    assert.ok(error.message.includes(outsideDependency))
+    assert.match(error.message, /default pnpm virtual store/)
+    return true
+  })
   await rm(join(scannerDir, 'node_modules', 'outside-dependency.js'))
   const ignoredStore = join(scannerDir, 'workspaces', 'alternate-store')
   await mkdir(ignoredStore, { recursive: true })
@@ -879,6 +942,70 @@ for (const signal of ['SIGINT', 'SIGHUP']) {
       await readFile(env.DOCKER_MARKER, 'utf8'),
       /volume rm durably-shannon-data-/,
     )
+  })
+}
+
+for (const hookName of ['afterSnapshot', 'beforeScanner']) {
+  test(`interrupt between commands at ${hookName} stops the next command`, async (context) => {
+    const temporary = await mkdtemp(
+      join(tmpdir(), `durably-shannon-${hookName}-interrupt-test-`),
+    )
+    context.after(() => rm(temporary, { recursive: true, force: true }))
+    const { scannerDir, env } = await fakeAuditTools(temporary)
+    const output = join(temporary, 'output')
+    const scannerMarker = join(temporary, 'scanner-started')
+    const moduleUrl = pathToFileURL(
+      join(worktree, 'scripts', 'shannon-fullstack-audit.mjs'),
+    ).href
+    const childScript = `
+      import { runAudit } from ${JSON.stringify(moduleUrl)}
+      try {
+        await runAudit(
+          { output: process.env.TEST_OUTPUT, shannonDir: process.env.TEST_SCANNER_DIR },
+          { ${hookName}: async () => {
+            process.kill(process.pid, 'SIGINT')
+            await new Promise((resolve) => setTimeout(resolve, 10))
+          } },
+        )
+      } catch (error) {
+        process.stderr.write(String(error) + '\\n')
+      }
+    `
+    const result = spawnSync(
+      process.execPath,
+      ['--input-type=module', '-e', childScript],
+      {
+        cwd: worktree,
+        env: {
+          ...env,
+          TEST_OUTPUT: output,
+          TEST_SCANNER_DIR: scannerDir,
+          FAKE_HANG: '1',
+          HANG_MARKER: scannerMarker,
+        },
+        encoding: 'utf8',
+        timeout: 10_000,
+      },
+    )
+    assert.equal(result.status, 130, result.stderr)
+    const state = JSON.parse(await readFile(join(output, 'state.json'), 'utf8'))
+    assert.equal(state.status, 'failed')
+    const calls = await readFile(env.DOCKER_MARKER, 'utf8')
+    if (hookName === 'afterSnapshot')
+      assert.doesNotMatch(calls, /^build|^network create|^volume create/m)
+    if (hookName === 'beforeScanner') {
+      const commands = calls.split('\n')
+      for (const command of [
+        `rm -f ${state.proxy}`,
+        `rm -f ${state.target}`,
+        `network rm ${state.network}`,
+        `volume rm ${state.volume}`,
+        `image rm ${state.image}`,
+      ]) {
+        assert.ok(commands.includes(command), `missing cleanup: ${command}`)
+      }
+    }
+    await assert.rejects(readFile(scannerMarker), { code: 'ENOENT' })
   })
 }
 

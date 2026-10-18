@@ -237,6 +237,8 @@ function Component() {
 
 Client mode encodes scope as `label.<key>` query parameters on both `/runs` lookups and `/runs/subscribe`. `isResolving` stays true until the initial lookup settles or is superseded. Scope changes discard the prior run, reset local trigger precedence, rebuild the subscription, and resolve the new scope. Scope labels are not copied into trigger labels.
 
+The server still decides which events a client may receive. With `auth` enabled, configure `scopeRunsSubscribe` when using `onRunAccess`; a client-supplied label filter is not authorization. The `run:coalesced` HTTP event carries the selected run's ID and status without the skipped trigger's input or labels.
+
 ### Return value
 
 | Property      | Type      | Description                                                                       |
@@ -320,6 +322,8 @@ function Component({ runId }: { runId: string }) {
 ## useRuns
 
 List and paginate job runs with real-time updates on the first page.
+
+An explicit empty `jobName` or `status` array returns no runs. In that case the hook does not request the list or open a global SSE stream. Omit the option to leave it unrestricted.
 
 The first page (page 0) automatically subscribes to SSE for real-time updates. It listens to:
 

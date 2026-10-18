@@ -1463,6 +1463,67 @@ export function createServerTests(createDialect: () => Dialect) {
         expect(allEvents).toContain('"status":"pending"')
         expect(allEvents).not.toContain('sub-conc-2')
       })
+
+      it("does not expose a different trigger caller's skipped data on list SSE", async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'coalesced-sse-private-input',
+            input: z.object({ secret: z.string() }),
+            run: async () => {},
+          }),
+        })
+        const inProcess: unknown[] = []
+        const off = d.on('run:coalesced', (event) => inProcess.push(event))
+        const scoped = createDurablyHandler(d, {
+          sseThrottleMs: 0,
+          auth: {
+            authenticate: () => ({ tenant: 'one' }),
+            scopeRunsSubscribe: (ctx) => ({ labels: { tenant: ctx.tenant } }),
+          },
+        })
+        const response = await scoped.handle(
+          new Request('http://localhost/api/durably/runs/subscribe'),
+          '/api/durably',
+        )
+        const reader = response.body!.getReader()
+        try {
+          await d.jobs.job.trigger(
+            { secret: 'owner-input' },
+            { concurrencyKey: 'shared', labels: { tenant: 'one' } },
+          )
+          await reader.read() // run:trigger
+          await d.jobs.job.trigger(
+            { secret: 'other-tenant-secret' },
+            {
+              concurrencyKey: 'shared',
+              coalesce: 'active',
+              labels: { tenant: 'two', private: 'other-tenant-label' },
+            },
+          )
+          const { value } = await reader.read()
+          const wire = new TextDecoder().decode(value)
+          const event = JSON.parse(wire.slice('data: '.length))
+          expect(event.type).toBe('run:coalesced')
+          expect(event.status).toBe('pending')
+          expect(event.labels).toEqual({ tenant: 'one' })
+          expect(event).not.toHaveProperty('skippedInput')
+          expect(event).not.toHaveProperty('skippedLabels')
+          expect(wire).not.toContain('other-tenant-secret')
+          expect(wire).not.toContain('other-tenant-label')
+          expect(inProcess).toEqual([
+            expect.objectContaining({
+              skippedInput: { secret: 'other-tenant-secret' },
+              skippedLabels: {
+                tenant: 'two',
+                private: 'other-tenant-label',
+              },
+            }),
+          ])
+        } finally {
+          await reader.cancel()
+          off()
+        }
+      })
     })
 
     describe('HTTP durable waits', () => {
@@ -1671,6 +1732,171 @@ export function createServerTests(createDialect: () => Dialect) {
     })
 
     describe('auth middleware', () => {
+      it('invokes every configured auth hook when authenticate returns undefined', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'void-auth-context',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        const run = await d.jobs.job.trigger({})
+        const reject = vi.fn((_ctx: unknown) => {
+          throw new Response('Forbidden', { status: 403 })
+        })
+        const authHandler = createDurablyHandler(d, {
+          auth: {
+            authenticate: () => undefined,
+            onTrigger: reject,
+            onRunAccess: reject,
+            scopeRuns: reject,
+            scopeRunsSubscribe: reject,
+          },
+        })
+        const urls = [
+          new Request('http://localhost/api/durably/trigger', {
+            method: 'POST',
+            body: JSON.stringify({ jobName: 'void-auth-context', input: {} }),
+          }),
+          new Request(`http://localhost/api/durably/run?runId=${run.id}`),
+          new Request('http://localhost/api/durably/runs'),
+          new Request('http://localhost/api/durably/runs/subscribe'),
+        ]
+        for (const request of urls) {
+          expect(
+            (await authHandler.handle(request, '/api/durably')).status,
+          ).toBe(403)
+        }
+        expect(reject).toHaveBeenCalledTimes(urls.length)
+        expect(reject.mock.calls.every((call) => call[0] === undefined)).toBe(
+          true,
+        )
+      })
+
+      it('requires an explicit stream scope for authenticated global SSE', async () => {
+        const url = new Request('http://localhost/api/durably/runs/subscribe')
+        const authOnly = createDurablyHandler(durably, {
+          auth: { authenticate: () => ({}) },
+        })
+        expect((await authOnly.handle(url, '/api/durably')).status).toBe(400)
+
+        const perRunOnly = createDurablyHandler(durably, {
+          auth: { authenticate: () => ({}), onRunAccess: () => {} },
+        })
+        expect((await perRunOnly.handle(url, '/api/durably')).status).toBe(400)
+
+        const fallbackWithPerRun = createDurablyHandler(durably, {
+          auth: {
+            authenticate: () => ({}),
+            onRunAccess: () => {},
+            scopeRuns: (_, filter) => filter,
+          },
+        })
+        expect(
+          (await fallbackWithPerRun.handle(url, '/api/durably')).status,
+        ).toBe(400)
+      })
+
+      it.each([
+        { status: ['completed'] },
+        { limit: 0 },
+        { offset: 1 },
+        { privateScope: true },
+        { jobName: '' },
+      ])('rejects an unrepresentable list scope on SSE: %j', async (extra) => {
+        const authHandler = createDurablyHandler(durably, {
+          auth: {
+            authenticate: () => ({}),
+            scopeRuns: (_, filter) =>
+              ({ ...filter, ...extra }) as typeof filter,
+          },
+        })
+        const response = await authHandler.handle(
+          new Request('http://localhost/api/durably/runs/subscribe'),
+          '/api/durably',
+        )
+        expect(response.status).toBe(400)
+      })
+
+      it.each([
+        { jobName: '' },
+        { jobName: [1] },
+        { labels: { tenant: 1 } },
+        { labels: new Date() },
+        { status: 'completed' },
+        new Date(),
+        null,
+      ])('rejects malformed subscription scopes: %j', async (scope) => {
+        const authHandler = createDurablyHandler(durably, {
+          auth: {
+            authenticate: () => ({}),
+            scopeRunsSubscribe: () => scope as never,
+          },
+        })
+        const response = await authHandler.handle(
+          new Request('http://localhost/api/durably/runs/subscribe'),
+          '/api/durably',
+        )
+        expect(response.status).toBe(400)
+      })
+
+      it.each([
+        undefined,
+        new Date(),
+        { jobName: '' },
+        { labels: { tenant: 1 } },
+        { status: 'unknown' },
+        { privateScope: true },
+      ])('rejects malformed run list scopes: %j', async (scope) => {
+        const authHandler = createDurablyHandler(durably, {
+          auth: {
+            authenticate: () => ({}),
+            scopeRuns: () => scope as never,
+          },
+        })
+        const response = await authHandler.handle(
+          new Request('http://localhost/api/durably/runs'),
+          '/api/durably',
+        )
+        expect(response.status).toBe(400)
+      })
+
+      it('does not stream events for an explicit empty authorized job set', async () => {
+        const d = durably.register({
+          job: defineJob({
+            name: 'empty-stream-scope',
+            input: z.object({}),
+            run: async () => {},
+          }),
+        })
+        const authHandler = createDurablyHandler(d, {
+          auth: {
+            authenticate: () => ({}),
+            scopeRunsSubscribe: () => ({ jobName: [] }),
+          },
+        })
+        const response = await authHandler.handle(
+          new Request('http://localhost/api/durably/runs/subscribe'),
+          '/api/durably',
+        )
+        expect(response.status).toBe(200)
+        const reader = response.body!.getReader()
+        try {
+          const next = reader.read()
+          await d.jobs.job.trigger({})
+          const result = await Promise.race([
+            next.then(() => 'event'),
+            // sleep-ok(guard): an intentionally empty stream has no event to await
+            new Promise<string>((resolve) =>
+              setTimeout(() => resolve('none'), 100),
+            ),
+          ])
+          expect(result).toBe('none')
+        } finally {
+          await reader.cancel()
+        }
+      })
+
       it('calls authenticate before onRequest', async () => {
         const callOrder: string[] = []
         const authHandler = createDurablyHandler(durably, {

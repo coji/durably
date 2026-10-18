@@ -165,7 +165,7 @@ interface UseJobClientOptions {
 
 The `autoResume` option automatically fetches leased/pending/waiting jobs on mount and subscribes to them. `isResolving` is true until this lookup settles, is skipped, or is superseded. `initialRunId` takes precedence and skips the lookup.
 
-`scope.labels` adds every label as `label.<key>` to both `/runs` lookups and `/runs/subscribe`; every label must match. `followLatest` switches immediately on matching `run:trigger`, `run:coalesced`, and `run:leased` events. `triggerOptions` is forwarded to both `trigger` and `triggerAndWait`; scope labels are not copied into trigger labels automatically.
+`scope.labels` adds every label as `label.<key>` to both `/runs` lookups and `/runs/subscribe`; every label must match. `followLatest` switches immediately on matching `run:trigger`, `run:coalesced`, and `run:leased` events. HTTP `run:coalesced` carries the selected run's identity, status, and labels, but omits the skipped trigger's input and labels. Authenticated servers need a server-defined subscription scope; `onRunAccess` alone does not authorize `/runs/subscribe`. `triggerOptions` is forwarded to both `trigger` and `triggerAndWait`; scope labels are not copied into trigger labels automatically.
 
 ### Fullstack useJobRun
 
@@ -212,6 +212,7 @@ function Component({ runId }: { runId: string }) {
 ### Fullstack useRuns
 
 List runs with pagination and real-time updates.
+An explicit empty `jobName` or `status` array returns no runs and opens no list or SSE request; omit the option for an unrestricted list.
 
 **Options:**
 
@@ -616,6 +617,7 @@ function LogViewer({ runId }: { runId: string | null }) {
 ### useRuns
 
 List runs with filtering, pagination, and real-time updates:
+An explicit empty `jobName` or `status` array returns no runs; omit the option for an unrestricted list.
 
 ```tsx
 import { useRuns, TypedRun } from '@coji/durably-react/spa'

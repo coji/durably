@@ -83,6 +83,23 @@ describe('useRuns', () => {
     expect(result.current.runs[0].jobName).toBe('test-job-runs')
   })
 
+  it.each([{ jobName: [] }, { status: [] }])(
+    'returns no runs for an explicit empty filter: %j',
+    async (filter) => {
+      const durably = await createTestDurably({ pollingIntervalMs: 50 })
+      instances.push(durably)
+      const d = durably.register({ testJobHandle: testJob })
+      await d.jobs.testJobHandle.trigger({ value: 10 })
+      expect(await d.getRuns()).toHaveLength(1)
+
+      const { result } = renderHook(() => useRuns(filter), {
+        wrapper: createWrapper(durably),
+      })
+      await waitFor(() => expect(result.current.isLoading).toBe(false))
+      expect(result.current.runs).toEqual([])
+    },
+  )
+
   it('ignores an older refresh that resolves after newer step progress', async () => {
     const durably = await createTestDurably({ pollingIntervalMs: 50 })
     instances.push(durably)

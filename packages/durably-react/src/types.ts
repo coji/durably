@@ -83,8 +83,6 @@ export type DurablyEvent =
       jobName: string
       status: 'pending' | 'leased' | 'waiting'
       labels: Record<string, string>
-      skippedInput: unknown
-      skippedLabels: Record<string, string>
     }
   | {
       type: 'run:progress'

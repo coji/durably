@@ -163,11 +163,9 @@ export function useRuns<
   const stableStatus = useStableValue(options?.status)
   const labels = useStableValue(options?.labels)
 
-  // Normalize empty status array to undefined (no filter)
-  const normalizedStatus =
-    Array.isArray(stableStatus) && stableStatus.length === 0
-      ? undefined
-      : stableStatus
+  const emptySelection =
+    (Array.isArray(stableJobName) && stableJobName.length === 0) ||
+    (Array.isArray(stableStatus) && stableStatus.length === 0)
 
   const [runs, setRuns] = useState<TypedRun<TInput, TOutput>[]>([])
   const [page, setPage] = useState(0)
@@ -184,7 +182,7 @@ export function useRuns<
     try {
       const data = await durably.getRuns({
         jobName: stableJobName,
-        status: normalizedStatus,
+        status: stableStatus,
         labels,
         limit: pageSize + 1,
         offset: page * pageSize,
@@ -200,7 +198,7 @@ export function useRuns<
       // react-doctor-disable-next-line react-doctor/no-loading-flag-reset-outside-finally -- The pending/loading state is already cleared for its matching request; this branch has separate failure semantics.
       if (refreshId === latestRefreshRef.current) setIsLoading(false)
     }
-  }, [durably, stableJobName, normalizedStatus, labels, pageSize, page])
+  }, [durably, stableJobName, stableStatus, labels, pageSize, page])
 
   // Initial fetch and subscribe to events
   // react-doctor-disable-next-line react-doctor/effect-needs-cleanup -- The returned cleanup unsubscribes every registered event listener.
@@ -209,23 +207,24 @@ export function useRuns<
 
     refresh()
 
-    const unsubscribes = realtime
-      ? [
-          durably.on('run:trigger', refresh),
-          durably.on('run:coalesced', refresh),
-          durably.on('run:leased', refresh),
-          durably.on('run:waiting', refresh),
-          durably.on('run:complete', refresh),
-          durably.on('run:fail', refresh),
-          durably.on('run:cancel', refresh),
-          durably.on('run:delete', refresh),
-          durably.on('run:progress', refresh),
-          durably.on('step:start', refresh),
-          durably.on('step:complete', refresh),
-          durably.on('step:fail', refresh),
-          durably.on('step:cancel', refresh),
-        ]
-      : []
+    const unsubscribes =
+      realtime && !emptySelection
+        ? [
+            durably.on('run:trigger', refresh),
+            durably.on('run:coalesced', refresh),
+            durably.on('run:leased', refresh),
+            durably.on('run:waiting', refresh),
+            durably.on('run:complete', refresh),
+            durably.on('run:fail', refresh),
+            durably.on('run:cancel', refresh),
+            durably.on('run:delete', refresh),
+            durably.on('run:progress', refresh),
+            durably.on('step:start', refresh),
+            durably.on('step:complete', refresh),
+            durably.on('step:fail', refresh),
+            durably.on('step:cancel', refresh),
+          ]
+        : []
 
     return () => {
       // Responses for the old filters/page must not update the new query.
@@ -234,7 +233,7 @@ export function useRuns<
         unsubscribe()
       }
     }
-  }, [durably, refresh, realtime])
+  }, [durably, refresh, realtime, emptySelection])
 
   const nextPage = useCallback(() => {
     if (hasMore) {

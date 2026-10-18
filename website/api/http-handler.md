@@ -214,7 +214,9 @@ The stream closes automatically when the run completes or fails.
 }
 ```
 
-The same `jobName` and `label.<key>` filters apply to `GET /runs/subscribe`. Every supplied label must match, so scoped clients receive only matching `run:trigger`, `run:coalesced`, and `run:leased` events.
+The same `jobName` and `label.<key>` filters apply to `GET /runs/subscribe`. Every supplied label must match, so scoped clients receive only matching `run:trigger`, `run:coalesced`, and `run:leased` events. A coalesced HTTP event includes the selected run's ID, status, and labels. It omits the new trigger's `skippedInput` and `skippedLabels`; those fields remain available to trusted in-process `durably.on('run:coalesced')` listeners.
+
+When `auth` is configured, `/runs/subscribe` needs an application-defined scope. Configure `scopeRunsSubscribe` when using `onRunAccess`; the per-run hook does not authorize a global stream. Without `onRunAccess`, `scopeRuns` can be used as a fallback only if it returns `jobName` and `labels` restrictions. A fallback that returns `status`, `limit`, or `offset` is rejected because those list restrictions cannot be enforced on this stream. An explicit empty allowed-job array matches no events. The handler rejects missing or malformed scopes before streaming.
 
 ## Auth Middleware
 
@@ -258,7 +260,7 @@ const handler = createDurablyHandler(durably, {
     }),
 
     // Scope runs subscribe stream (GET /runs/subscribe)
-    // Falls back to scopeRuns if not set
+    // Required when onRunAccess is configured
     scopeRunsSubscribe: async (ctx, filter) => ({
       ...filter,
       labels: { ...filter.labels, organizationId: ctx.orgId },
@@ -301,7 +303,7 @@ interface AuthConfig<TContext, TLabels> {
     filter: RunFilter<TLabels>,
   ) => RunFilter<TLabels> | Promise<RunFilter<TLabels>>
 
-  /** Scope runs subscribe stream. Falls back to scopeRuns if not set. */
+  /** Scope runs subscribe stream. Required with onRunAccess. */
   scopeRunsSubscribe?: (
     ctx: TContext,
     filter: RunsSubscribeFilter<TLabels>,
@@ -326,6 +328,8 @@ type RunOperation =
 3. Validate request (parse body/params)
 4. Auth hook (`onTrigger`, `onRunAccess`, `scopeRuns`, or `scopeRunsSubscribe`)
 5. Execute operation
+
+Configured hooks run even when `authenticate` successfully returns `undefined` (for example, a void-valued verification function). Throw a `Response` from `authenticate` to reject a request. `scopeRuns` and `scopeRunsSubscribe` should return a string or string array for `jobName` and string-valued `labels`; an empty `jobName` array denies all jobs. Empty arrays also match no runs in `GET /runs`.
 
 ### Rejecting Requests
 

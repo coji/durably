@@ -77,6 +77,43 @@ describe('useRuns (client)', () => {
     expect(result.current.runs[0].id).toBe('run-1')
   })
 
+  it.each([{ jobName: [] }, { status: [] }])(
+    'keeps an explicit empty filter empty without opening a stream: %j',
+    async (filter) => {
+      const fetchMock = vi.fn()
+      globalThis.fetch = fetchMock
+
+      const { result } = renderHook(() =>
+        useRuns({ api: '/api/durably', ...filter }),
+      )
+
+      await waitFor(() => expect(result.current.isLoading).toBe(false))
+      expect(result.current.runs).toEqual([])
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(mockEventSource.instances).toHaveLength(0)
+    },
+  )
+
+  it('clears existing runs and closes SSE when the allowed job list becomes empty', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve([createMockRun()]),
+    })
+    globalThis.fetch = fetchMock
+
+    const { result, rerender } = renderHook(
+      ({ jobName }) => useRuns({ api: '/api/durably', jobName }),
+      { initialProps: { jobName: ['test-job'] as string[] } },
+    )
+    await waitFor(() => expect(result.current.runs).toHaveLength(1))
+    expect(mockEventSource.instances).toHaveLength(1)
+
+    rerender({ jobName: [] })
+    await waitFor(() => expect(result.current.runs).toEqual([]))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(mockEventSource.instances[0].readyState).toBe(2)
+  })
+
   it('filters by jobName', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

@@ -163,7 +163,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
         }
       })
 
-      it('treats empty status array as no filter', async () => {
+      it('treats empty status array as matching no runs', async () => {
         const d = durably.register({
           job: defineJob({
             name: 'empty-status-filter-test',
@@ -177,7 +177,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
 
         const all = await d.getRuns()
         const withEmptyStatus = await d.getRuns({ status: [] })
-        expect(withEmptyStatus).toHaveLength(all.length)
+        expect(all).toHaveLength(2)
+        expect(withEmptyStatus).toHaveLength(0)
       })
 
       it('filters by jobName', async () => {

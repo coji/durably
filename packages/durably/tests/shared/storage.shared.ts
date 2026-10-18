@@ -222,12 +222,19 @@ export function createStorageTests(createDialect: () => Dialect) {
         expect(runs.map((r) => r.jobName).sort()).toEqual(['job-a', 'job-c'])
       })
 
-      it('ignores empty jobName array', async () => {
+      it('treats an empty jobName array as match none', async () => {
         await durably.storage.enqueue({ jobName: 'job-a', input: {} })
         await durably.storage.enqueue({ jobName: 'job-b', input: {} })
 
         const runs = await durably.storage.getRuns({ jobName: [] })
-        expect(runs).toHaveLength(2)
+        expect(runs).toHaveLength(0)
+      })
+
+      it('treats an empty status array as match none', async () => {
+        await durably.storage.enqueue({ jobName: 'job-a', input: {} })
+
+        const runs = await durably.storage.getRuns({ status: [] })
+        expect(runs).toHaveLength(0)
       })
 
       it('creates a run with labels', async () => {

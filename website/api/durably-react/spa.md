@@ -294,6 +294,8 @@ function LogViewer({ runId }: { runId: string | null }) {
 
 List runs with optional filtering, pagination, and real-time updates.
 
+An explicit empty `jobName` or `status` array returns no runs. Omit the option to leave it unrestricted.
+
 The hook automatically subscribes to Durably events and refreshes the list when runs change. It listens to:
 
 - `run:trigger`, `run:leased`, `run:waiting`, `run:complete`, `run:fail`, `run:cancel`, `run:delete` - refresh list
