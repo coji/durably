@@ -285,6 +285,10 @@ async function fakeAuditTools(temporary) {
       '  exit 0',
       'fi',
       'if [ "$1" = "status" ]; then',
+      '  if [ "$FAKE_SCAN_FAIL" = 1 ]; then',
+      '    echo \'{"status":"failed","phases":[{"key":"preflight","state":"completed"},{"key":"reporting","state":"failed"}]}\'',
+      '    exit 1',
+      '  fi',
       '  if [ "$FAKE_STATUS" = running ]; then',
       '    printf \'{"status":"running","workflowId":"%s_workflow"}\\n\' "$2"',
       '    exit 0',
@@ -316,6 +320,8 @@ async function fakeAuditTools(temporary) {
       '  done',
       '  echo static > "$(dirname "$0")/workspaces/$workspace/.shannon/capella/report.md"',
       '  echo "{}" > "$(dirname "$0")/workspaces/$workspace/.shannon/capella/capella.sarif"',
+      '  echo \'[2026-10-18 09:00:00] [agent] step: {"secret":"synthetic-secret"}\' > "$(dirname "$0")/workspaces/$workspace/.shannon/workflow.log"',
+      '  if [ "$FAKE_SCAN_FAIL" = 1 ]; then exit 1; fi',
       '  exit 0',
       'fi',
       'exit 1',
@@ -367,6 +373,12 @@ test('stubbed full run waits for reports and cleans up', async (context) => {
     ),
     /static/,
   )
+  const scannerLog = await readFile(
+    join(output, 'shannon-workflow.log'),
+    'utf8',
+  )
+  assert.match(scannerLog, /details omitted/)
+  assert.doesNotMatch(scannerLog, /synthetic-secret/)
   const calls = await readFile(env.DOCKER_MARKER, 'utf8')
   assert.match(calls, /network create --internal/)
   assert.match(calls, /image rm durably-shannon-target:/)
@@ -421,6 +433,52 @@ test('failed final SQLite copy still removes audit resources', async (context) =
   assert.match(calls, /rm -f durably-shannon-target-/)
   assert.match(calls, /volume rm durably-shannon-data-/)
   assert.match(calls, /image rm durably-shannon-target:/)
+})
+
+test('failed Shannon run preserves status, reports, and sanitized log', async (context) => {
+  const temporary = await mkdtemp(
+    join(tmpdir(), 'durably-shannon-failed-scan-test-'),
+  )
+  context.after(() => rm(temporary, { recursive: true, force: true }))
+  const { scannerDir, env } = await fakeAuditTools(temporary)
+  const output = join(temporary, 'output')
+  const result = spawnSync(
+    process.execPath,
+    [
+      join(worktree, 'scripts', 'shannon-fullstack-audit.mjs'),
+      'run',
+      '--output',
+      output,
+      '--shannon-dir',
+      scannerDir,
+    ],
+    {
+      cwd: worktree,
+      env: { ...env, FAKE_SCAN_FAIL: '1' },
+      encoding: 'utf8',
+      timeout: 20_000,
+    },
+  )
+  assert.equal(result.status, 1)
+  const status = JSON.parse(
+    await readFile(join(output, 'shannon-status.json'), 'utf8'),
+  )
+  assert.equal(status.status, 'failed')
+  assert.match(
+    await readFile(
+      join(output, 'reports', 'Static-Analysis-Report.md'),
+      'utf8',
+    ),
+    /static/,
+  )
+  assert.doesNotMatch(
+    await readFile(join(output, 'shannon-workflow.log'), 'utf8'),
+    /synthetic-secret/,
+  )
+  assert.equal(
+    JSON.parse(await readFile(join(output, 'state.json'), 'utf8')).status,
+    'failed',
+  )
 })
 
 test('interrupting the scanner still removes audit resources', async (context) => {

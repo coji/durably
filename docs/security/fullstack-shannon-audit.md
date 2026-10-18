@@ -42,7 +42,7 @@ The rules ask for fewer than three requests per second, minimal benign proofs, a
 
 ## Results and failure handling
 
-The output directory contains metadata.json, state.json, the rendered scanner config, shannon-status.json, before.sqlite, after.sqlite, JSON integrity/count summaries and a diff, a workflow log of stage transitions, and reports/. The report directory must contain:
+The output directory contains metadata.json, state.json, the rendered scanner config, shannon-status.json, before.sqlite, after.sqlite, JSON integrity/count summaries and a diff, workflow.log for operator stage transitions, shannon-workflow.log with scanner payload details omitted, and reports/. The report directory must contain:
 
 - Security-Assessment-Report.md and .pdf
 - report.sarif for exploit-confirmed findings

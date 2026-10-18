@@ -39,13 +39,6 @@ const defaultShannonDir = join(
   'shannon-' + shannonCommit.slice(0, 7),
 )
 const model = 'openai:gpt-6-sol'
-const artifactNames = [
-  'Security-Assessment-Report.md',
-  'Security-Assessment-Report.pdf',
-  'report.sarif',
-  'Static-Analysis-Report.md',
-  'static-analysis.sarif',
-]
 const requiredPhases = [
   'preflight',
   'cyber-access',
@@ -156,6 +149,7 @@ export async function command(file, args, options = {}) {
     timeout = defaultTimeout,
     env = process.env,
     signal,
+    allowNonzero = false,
   } = options
   return await new Promise((resolveCommand, rejectCommand) => {
     const child = spawn(file, args, {
@@ -190,7 +184,8 @@ export async function command(file, args, options = {}) {
     child.on('close', (code, signalName) => {
       clearTimeout(timer)
       activeChildren.delete(child)
-      if (code === 0) resolveCommand({ stdout, stderr, truncated })
+      if (code === 0 || allowNonzero)
+        resolveCommand({ stdout, stderr, truncated, exitCode: code })
       else {
         const error = new Error(
           basename(file) +
@@ -579,6 +574,7 @@ export async function collectReports(shannonDir, state, output) {
   const reports = join(output, 'reports')
   await mkdir(reports, { recursive: true })
   const published = join(output, 'shannon-output')
+  const missing = []
   for (const name of [
     'Security-Assessment-Report.md',
     'Security-Assessment-Report.pdf',
@@ -601,19 +597,45 @@ export async function collectReports(shannonDir, state, output) {
     } catch {
       source = fallback
     }
-    await copyRequired(source, join(reports, name))
+    try {
+      await copyRequired(source, join(reports, name))
+    } catch {
+      missing.push(name)
+    }
   }
-  await copyRequired(
-    join(workspace, 'capella', 'report.md'),
-    join(reports, 'Static-Analysis-Report.md'),
-  )
-  await copyRequired(
-    join(workspace, 'capella', 'capella.sarif'),
-    join(reports, 'static-analysis.sarif'),
-  )
-  for (const name of artifactNames) {
-    await stat(join(reports, name))
+  for (const [name, source] of [
+    ['Static-Analysis-Report.md', join(workspace, 'capella', 'report.md')],
+    ['static-analysis.sarif', join(workspace, 'capella', 'capella.sarif')],
+  ]) {
+    try {
+      await copyRequired(source, join(reports, name))
+    } catch {
+      missing.push(name)
+    }
   }
+  if (missing.length > 0)
+    throw new Error('Missing or empty reports: ' + missing.join(', '))
+}
+
+export async function captureScannerLog(shannonDir, state, output) {
+  const source = join(
+    shannonDir,
+    'workspaces',
+    state.workspace,
+    '.shannon',
+    'workflow.log',
+  )
+  const raw = await readFile(source, 'utf8')
+  const lines = raw.split(/\r?\n/).map((line) => {
+    const json = line.indexOf('{')
+    const withoutPayload =
+      json === -1 ? line : line.slice(0, json) + '[details omitted]'
+    return withoutPayload
+      .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+      .replace(/\b(?:sk-|gh[pousr]_|shp_)[A-Za-z0-9_-]{12,}\b/g, '[redacted]')
+      .slice(0, 1000)
+  })
+  await writeFile(join(output, 'shannon-workflow.log'), lines.join('\n'))
 }
 
 async function stopAndCopyDatabase(state, output) {
@@ -834,16 +856,23 @@ async function runAudit(options) {
     const statusResult = await command(
       scanner(options.shannonDir),
       ['status', state.workspace, '--json'],
-      { cwd: options.shannonDir, env: childEnvironment() },
+      {
+        cwd: options.shannonDir,
+        env: childEnvironment(),
+        allowNonzero: true,
+      },
     )
     const status = JSON.parse(statusResult.stdout)
     await writeFile(
       join(output, 'shannon-status.json'),
       JSON.stringify(status, null, 2) + '\n',
     )
+    await captureScannerLog(options.shannonDir, state, output)
     await collectReports(options.shannonDir, state, output)
     if (state.interrupted) throw new Error('Audit interrupted')
     if (failure) throw failure
+    if (statusResult.exitCode !== 0)
+      throw new Error('Shannon status command failed')
     checkedStatus(status)
     state.status = 'completed'
     await log(output, 'Shannon completed all required phases')
@@ -855,6 +884,31 @@ async function runAudit(options) {
   } finally {
     state.cleaning = true
     if (state.status !== 'completed') {
+      try {
+        await captureScannerLog(options.shannonDir, state, output)
+      } catch {
+        await log(output, 'Shannon execution log unavailable')
+      }
+      try {
+        const result = await command(
+          scanner(options.shannonDir),
+          ['status', state.workspace, '--json'],
+          {
+            cwd: options.shannonDir,
+            env: childEnvironment(),
+            allowNonzero: true,
+            timeout: 30 * 1000,
+          },
+        )
+        await writeFile(join(output, 'shannon-status.json'), result.stdout)
+      } catch {
+        await log(output, 'Shannon structured status unavailable')
+      }
+      try {
+        await collectReports(options.shannonDir, state, output)
+      } catch {
+        await log(output, 'Only available Shannon reports were preserved')
+      }
       try {
         await stopUnfinishedScan(state, options.shannonDir, output)
       } catch (error) {
