@@ -50,7 +50,7 @@ const patchedScannerFiles = {
   'pnpm-lock.yaml':
     'e7ac65e86a58509994933def3f25d081cb609cb5728f44271ac1c67d1d0dea4e',
   'pnpm-workspace.yaml':
-    'b521cbbeb7da78093c8e31c93a2b1c8ff273fa7d82ded96050093288b228e564',
+    '489bec1784e964b27d6a78792950b4e6ca57b7bdc51dcda3f5549654c1c92e1e',
 }
 const defaultShannonDir = join(
   homedir(),
