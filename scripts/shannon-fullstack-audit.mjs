@@ -435,6 +435,17 @@ async function scannerBuildFiles(shannonDir) {
 
 export async function scannerDependencyHash(shannonDir) {
   const hash = createHash('sha256')
+  const roots = [
+    'node_modules',
+    'apps/cli/node_modules',
+    'apps/worker/node_modules',
+  ]
+  const coveredRoots = await Promise.all(
+    roots.map((path) => realpath(join(shannonDir, path))),
+  )
+  const workspaceRoots = await Promise.all(
+    ['apps/cli', 'apps/worker'].map((path) => realpath(join(shannonDir, path))),
+  )
   async function walk(directory) {
     const entries = await readdir(directory, { withFileTypes: true })
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
@@ -451,23 +462,21 @@ export async function scannerDependencyHash(shannonDir) {
         hash.update('file\0' + path + '\0' + digest + '\0')
       } else if (entry.isSymbolicLink()) {
         const target = await realpath(file)
-        const targetPath = relative(shannonDir, target)
         if (
-          targetPath === '..' ||
-          targetPath.startsWith('..' + sep) ||
-          isAbsolute(targetPath)
+          !coveredRoots.some(
+            (root) => target === root || target.startsWith(root + sep),
+          ) &&
+          !workspaceRoots.includes(target)
         ) {
-          throw new Error('Shannon dependency link points outside checkout')
+          throw new Error(
+            'Shannon dependency link points outside verified roots',
+          )
         }
         hash.update('link\0' + path + '\0' + (await readlink(file)) + '\0')
       } else throw new Error('Unexpected Shannon dependency entry: ' + file)
     }
   }
-  for (const path of [
-    'node_modules',
-    'apps/cli/node_modules',
-    'apps/worker/node_modules',
-  ]) {
+  for (const path of roots) {
     const directory = join(shannonDir, path)
     hash.update('root\0' + path + '\0')
     await walk(directory)

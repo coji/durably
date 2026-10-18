@@ -697,6 +697,16 @@ test('source or worker Pi drift fails before Docker setup', async (context) => {
   })
   assert.equal(dependency.status, 1)
   assert.match(dependency.stderr, /build output differs/)
+  await symlink(
+    join(scannerDir, 'apps', 'cli', 'node_modules', 'fake-runtime'),
+    join(scannerDir, 'node_modules', 'internal-dependency'),
+  )
+  const linkedScannerDir = join(temporary, 'scanner-link')
+  await symlink(scannerDir, linkedScannerDir)
+  assert.equal(
+    await scannerDependencyHash(linkedScannerDir),
+    await scannerDependencyHash(scannerDir),
+  )
   const outsideDependency = join(temporary, 'outside-dependency.js')
   await writeFile(outsideDependency, 'export const version = 1\n')
   await symlink(
@@ -705,7 +715,19 @@ test('source or worker Pi drift fails before Docker setup', async (context) => {
   )
   await assert.rejects(
     scannerDependencyHash(scannerDir),
-    /dependency link points outside checkout/,
+    /dependency link points outside verified roots/,
+  )
+  await rm(join(scannerDir, 'node_modules', 'outside-dependency.js'))
+  const ignoredStore = join(scannerDir, 'workspaces', 'alternate-store')
+  await mkdir(ignoredStore, { recursive: true })
+  await writeFile(join(ignoredStore, 'index.js'), 'alternate dependency\n')
+  await symlink(
+    ignoredStore,
+    join(scannerDir, 'node_modules', 'unverified-dependency'),
+  )
+  await assert.rejects(
+    scannerDependencyHash(linkedScannerDir),
+    /dependency link points outside verified roots/,
   )
   const calls = await readFile(env.DOCKER_MARKER, 'utf8')
   assert.doesNotMatch(calls, /network create|volume create|build/)
