@@ -212,6 +212,7 @@ function Component({ runId }: { runId: string }) {
 ### Fullstack useRuns
 
 List runs with pagination and real-time updates.
+An explicit empty `jobName` or `status` array returns no runs and opens no list or SSE request; omit the option for an unrestricted list.
 
 **Options:**
 
@@ -616,6 +617,7 @@ function LogViewer({ runId }: { runId: string | null }) {
 ### useRuns
 
 List runs with filtering, pagination, and real-time updates:
+An explicit empty `jobName` or `status` array returns no runs; omit the option for an unrestricted list.
 
 ```tsx
 import { useRuns, TypedRun } from '@coji/durably-react/spa'

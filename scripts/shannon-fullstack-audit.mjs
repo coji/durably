@@ -434,11 +434,10 @@ async function scannerBuildFiles(shannonDir) {
   return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 }
 
-async function dependencyLinkTrace(file) {
+async function dependencyLinkTrace(file, canonicalScannerDir) {
   const hops = []
-  const absolute = resolve(file)
-  let current = parse(absolute).root
-  let pending = absolute.slice(current.length).split(sep)
+  let current = canonicalScannerDir
+  let pending = relative(canonicalScannerDir, file).split(sep)
   while (pending.length > 0) {
     const part = pending.shift()
     if (!part || part === '.') continue
@@ -511,7 +510,7 @@ export async function scannerDependencyHash(shannonDir) {
           'link\0' +
             path +
             '\0' +
-            JSON.stringify(await dependencyLinkTrace(file)) +
+            JSON.stringify(await dependencyLinkTrace(file, shannonDir)) +
             '\0' +
             target +
             '\0',
@@ -1048,7 +1047,7 @@ async function stopUnfinishedScan(state, shannonDir, output) {
   await log(output, 'Unfinished Shannon workflow stopped')
 }
 
-async function runAudit(options) {
+export async function runAudit(options, hooks = {}) {
   const output = await checkedOutputPath(options.output)
   try {
     await lstat(output)
@@ -1092,6 +1091,7 @@ async function runAudit(options) {
     ensureRunning()
     const source = await snapshotSource(temporary, revision)
     await log(output, 'Created detached Git source snapshot')
+    if (hooks.afterSnapshot) await hooks.afterSnapshot()
     await preparingDocker(
       [
         'build',
@@ -1185,7 +1185,9 @@ async function runAudit(options) {
     state.scanStarted = true
     await saveState(output, state)
     await log(output, 'Scan started; workspace ' + state.workspace)
+    if (hooks.beforeScanner) await hooks.beforeScanner()
     try {
+      ensureRunning()
       await command(
         scanner(options.shannonDir),
         [

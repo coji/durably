@@ -323,6 +323,8 @@ function Component({ runId }: { runId: string }) {
 
 List and paginate job runs with real-time updates on the first page.
 
+An explicit empty `jobName` or `status` array returns no runs. In that case the hook does not request the list or open a global SSE stream. Omit the option to leave it unrestricted.
+
 The first page (page 0) automatically subscribes to SSE for real-time updates. It listens to:
 
 - `run:trigger`, `run:leased`, `run:waiting`, `run:complete`, `run:fail`, `run:cancel`, `run:delete` - refresh list

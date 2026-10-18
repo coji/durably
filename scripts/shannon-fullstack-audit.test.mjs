@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
+import { pathToFileURL } from 'node:url'
 
 import {
   checkedOutputPath,
@@ -378,7 +379,7 @@ async function fakeAuditTools(temporary) {
       'case " $* " in',
       '  *" clone "*) for value do last="$value"; done; mkdir -p "$last"; exit 0 ;;',
       '  *" rev-parse HEAD "*) echo "$FAKE_REVISION"; exit 0 ;;',
-      '  *" status --porcelain=v1 "*) if [ "$FAKE_INTERRUPT_AFTER_SNAPSHOT" = 1 ] && [ "$1" = "-C" ]; then kill -INT "$PPID"; fi; exit 0 ;;',
+      '  *" status --porcelain=v1 "*) exit 0 ;;',
       '  *" ls-files -z "*) exit 0 ;;',
       '  *" checkout --detach "*) exit 0 ;;',
       'esac',
@@ -944,36 +945,57 @@ for (const signal of ['SIGINT', 'SIGHUP']) {
   })
 }
 
-test('interrupt after the source snapshot does not start the target build', async (context) => {
-  const temporary = await mkdtemp(
-    join(tmpdir(), 'durably-shannon-snapshot-interrupt-test-'),
-  )
-  context.after(() => rm(temporary, { recursive: true, force: true }))
-  const { scannerDir, env } = await fakeAuditTools(temporary)
-  const output = join(temporary, 'output')
-  const result = spawnSync(
-    process.execPath,
-    [
+for (const hookName of ['afterSnapshot', 'beforeScanner']) {
+  test(`interrupt between commands at ${hookName} stops the next command`, async (context) => {
+    const temporary = await mkdtemp(
+      join(tmpdir(), `durably-shannon-${hookName}-interrupt-test-`),
+    )
+    context.after(() => rm(temporary, { recursive: true, force: true }))
+    const { scannerDir, env } = await fakeAuditTools(temporary)
+    const output = join(temporary, 'output')
+    const scannerMarker = join(temporary, 'scanner-started')
+    const moduleUrl = pathToFileURL(
       join(worktree, 'scripts', 'shannon-fullstack-audit.mjs'),
-      'run',
-      '--output',
-      output,
-      '--shannon-dir',
-      scannerDir,
-    ],
-    {
-      cwd: worktree,
-      env: { ...env, FAKE_INTERRUPT_AFTER_SNAPSHOT: '1' },
-      encoding: 'utf8',
-      timeout: 20_000,
-    },
-  )
-  assert.equal(result.status, 130, result.stderr)
-  const state = JSON.parse(await readFile(join(output, 'state.json'), 'utf8'))
-  assert.equal(state.status, 'failed')
-  const calls = await readFile(env.DOCKER_MARKER, 'utf8')
-  assert.doesNotMatch(calls, /^build|^network create|^volume create/m)
-})
+    ).href
+    const childScript = `
+      import { runAudit } from ${JSON.stringify(moduleUrl)}
+      try {
+        await runAudit(
+          { output: process.env.TEST_OUTPUT, shannonDir: process.env.TEST_SCANNER_DIR },
+          { ${hookName}: async () => {
+            process.kill(process.pid, 'SIGINT')
+            await new Promise((resolve) => setTimeout(resolve, 10))
+          } },
+        )
+      } catch (error) {
+        process.stderr.write(String(error) + '\\n')
+      }
+    `
+    const result = spawnSync(
+      process.execPath,
+      ['--input-type=module', '-e', childScript],
+      {
+        cwd: worktree,
+        env: {
+          ...env,
+          TEST_OUTPUT: output,
+          TEST_SCANNER_DIR: scannerDir,
+          FAKE_HANG: '1',
+          HANG_MARKER: scannerMarker,
+        },
+        encoding: 'utf8',
+        timeout: 10_000,
+      },
+    )
+    assert.equal(result.status, 130, result.stderr)
+    const state = JSON.parse(await readFile(join(output, 'state.json'), 'utf8'))
+    assert.equal(state.status, 'failed')
+    const calls = await readFile(env.DOCKER_MARKER, 'utf8')
+    if (hookName === 'afterSnapshot')
+      assert.doesNotMatch(calls, /^build|^network create|^volume create/m)
+    await assert.rejects(readFile(scannerMarker), { code: 'ENOENT' })
+  })
+}
 
 test('interrupting model preflight stops its detached child', async (context) => {
   const temporary = await mkdtemp(

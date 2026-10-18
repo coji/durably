@@ -222,11 +222,9 @@ export function useRuns<
   const stableJobName = useStableValue(jobName)
   const stableStatus = useStableValue(status)
 
-  // Normalize empty status array to undefined (no filter)
-  const normalizedStatus =
-    Array.isArray(stableStatus) && stableStatus.length === 0
-      ? undefined
-      : stableStatus
+  const emptySelection =
+    (Array.isArray(stableJobName) && stableJobName.length === 0) ||
+    (Array.isArray(stableStatus) && stableStatus.length === 0)
 
   const [runs, setRuns] = useState<TypedClientRun<TInput, TOutput>[]>([])
   const [page, setPage] = useState(0)
@@ -245,9 +243,20 @@ export function useRuns<
     setError(null)
 
     try {
+      if (emptySelection) {
+        if (
+          isMountedRef.current &&
+          refreshId > latestAppliedRefreshRef.current
+        ) {
+          latestAppliedRefreshRef.current = refreshId
+          setRuns([])
+          setHasMore(false)
+        }
+        return
+      }
       const params = new URLSearchParams()
       appendArrayParam(params, 'jobName', stableJobName)
-      appendArrayParam(params, 'status', normalizedStatus)
+      appendArrayParam(params, 'status', stableStatus)
       appendLabelsToParams(params, stableLabels)
       params.set('limit', String(pageSize + 1))
       params.set('offset', String(page * pageSize))
@@ -300,7 +309,15 @@ export function useRuns<
         setIsLoading(false)
       }
     }
-  }, [api, stableJobName, normalizedStatus, stableLabels, pageSize, page])
+  }, [
+    api,
+    stableJobName,
+    stableStatus,
+    stableLabels,
+    pageSize,
+    page,
+    emptySelection,
+  ])
 
   // Initial fetch
   useEffect(() => {
@@ -316,7 +333,7 @@ export function useRuns<
   // SSE subscription for first page only (when realtime is enabled)
   useEffect(() => {
     // Only subscribe to SSE on first page with realtime enabled
-    if (!realtime || page !== 0) {
+    if (!realtime || page !== 0 || emptySelection) {
       // Clean up any existing connection when navigating away from first page
       if (eventSourceRef.current) {
         eventSourceRef.current.close()
@@ -397,7 +414,15 @@ export function useRuns<
       eventSource.close()
       eventSourceRef.current = null
     }
-  }, [api, stableJobName, stableLabels, page, realtime, refresh])
+  }, [
+    api,
+    stableJobName,
+    stableLabels,
+    page,
+    realtime,
+    refresh,
+    emptySelection,
+  ])
 
   const nextPage = useCallback(() => {
     if (hasMore) {

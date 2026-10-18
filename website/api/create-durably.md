@@ -241,6 +241,7 @@ interface RunFilter<TLabels extends Record<string, string> = Record<string, stri
 Returns runs newest first: by creation time, then by ID for runs created in the same millisecond, so `limit`/`offset` pages are stable.
 
 Gets runs with optional filtering and pagination. Supports generic type parameter.
+An explicit empty `jobName` or `status` array matches no runs; omit the option for an unrestricted list.
 
 ```ts
 // Filter by multiple job names

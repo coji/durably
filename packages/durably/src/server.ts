@@ -104,7 +104,7 @@ export interface AuthConfig<
     filter: RunFilter<TLabels>,
   ) => RunFilter<TLabels> | Promise<RunFilter<TLabels>>
 
-  /** Scope runs subscribe stream (GET /runs/subscribe). Falls back to scopeRuns if not set. */
+  /** Scope GET /runs/subscribe. Required with onRunAccess; otherwise scopeRuns may be used if it returns only stream-compatible filters. */
   scopeRunsSubscribe?: (
     ctx: TContext,
     filter: RunsSubscribeFilter<TLabels>,

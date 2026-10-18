@@ -922,6 +922,8 @@ interface RunFilter<
 }
 ```
 
+An explicit empty `jobName` or `status` array in `getRuns()` matches no runs; omit the option for an unrestricted list.
+
 ## Error Classes
 
 Durably exports typed error classes for programmatic error handling:
