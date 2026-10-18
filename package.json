@@ -18,14 +18,20 @@
     "lint:fix": "pnpm -r lint:fix",
     "format": "turbo run format",
     "format:fix": "pnpm -r format:fix",
-    "validate": "node scripts/check-test-sleeps.mjs && turbo run format lint typecheck test && pnpm smoke:react-examples && pnpm doctor:check",
+    "validate": "node scripts/check-test-sleeps.mjs && turbo run format lint typecheck test && pnpm smoke:react-examples && pnpm doctor:check && pnpm test:security-scan",
     "smoke:react-examples": "node scripts/check-react-example-imports.mjs",
     "doctor": "react-doctor --scope full",
     "doctor:check": "node scripts/check-react-doctor.mjs",
     "db:up": "docker compose -f docker-compose.postgres.yml up -d",
     "db:down": "docker compose -f docker-compose.postgres.yml down",
     "deps:outdated": "pnpm outdated -r --include-github-actions",
-    "deps:update:actions": "pnpm update --include-github-actions \"actions/*\" pnpm/setup"
+    "deps:update:actions": "pnpm update --include-github-actions \"actions/*\" pnpm/setup",
+    "security:scan:setup": "node scripts/shannon-fullstack-audit.mjs setup",
+    "security:scan:validate": "node scripts/shannon-fullstack-audit.mjs validate",
+    "security:scan:fullstack": "node scripts/shannon-fullstack-audit.mjs run",
+    "security:scan:status": "node scripts/shannon-fullstack-audit.mjs status",
+    "security:scan:down": "node scripts/shannon-fullstack-audit.mjs down",
+    "test:security-scan": "node --test scripts/shannon-fullstack-audit.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.13.5",
