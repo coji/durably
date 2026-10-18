@@ -15,7 +15,7 @@ This workflow scans the committed examples/fullstack app and its Durably depende
 pi auth check --provider openai-codex
 ```
 
-The scanner build is pinned to Keygraph Shannon commit 2468b67d9e40d70d0b189462c5041c24e1dc886c (Shannon 3.4.0). A checked-in patch pins its three Pi worker packages to 1.2.0 and fixes Shannon's pnpm lockfile. Setup applies the patch, installs with a frozen lockfile, and builds under ~/.cache/durably-shannon/. Each run checks the source patch and installed worker versions before starting. The host Pi CLI may be 1.2.0 or later; its actual version and the worker version are recorded separately. Setup does not change this repository.
+The scanner build is pinned to Keygraph Shannon commit 2468b67d9e40d70d0b189462c5041c24e1dc886c (Shannon 3.4.0). Checked-in worker manifest and lockfile copies pin its three Pi worker packages to 1.2.0. Setup copies those files onto the clean pinned checkout, installs with a frozen lockfile, and builds the CLI and worker Docker image under ~/.cache/durably-shannon/. It records hashes of the built scanner files and the worker image ID; each run checks the pinned source files, build output, worker image, and installed Pi versions before starting. Rerun setup after updating this workflow. The host Pi CLI may be 1.2.0 or later; its actual version and the worker version are recorded separately. Setup does not change this repository.
 
 ## Commands
 
@@ -30,7 +30,7 @@ Use a new absolute output directory for every run. It must be outside this check
     pnpm security:scan:status --output /absolute/path/to/assessment
     pnpm security:scan:down --output /absolute/path/to/assessment
 
-The down command is idempotent and can recover resources left by a killed terminal or host interruption. The state.json file records the exact resource names. It never removes resources outside that run's names. A failed install or build can be retried at the same Shannon directory when its source still matches the pinned patch. If using an already built checkout of the pinned Shannon revision and patch, pass --shannon-dir /absolute/path to setup, validate, and run.
+The down command is idempotent and recovers named Docker resources after a terminal or host interruption. The state.json file records the exact resource names. It never removes resources outside that run's names. A hard kill can leave a temporary committed-source clone under the system temporary directory. A failed install or build can be retried at the same Shannon directory when its source still matches the pinned files. If using an already built checkout of the pinned Shannon revision and files, pass --shannon-dir /absolute/path to setup, validate, and run.
 
 ## What the run does
 

@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
   mkdtemp,
   mkdir,
+  copyFile,
   readFile,
   realpath,
   symlink,
@@ -10,7 +12,7 @@ import {
   rm,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 
@@ -97,6 +99,26 @@ test(
       command(
         process.execPath,
         ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'],
+        { timeout: 300 },
+      ),
+      /timed out/,
+    )
+    assert.ok(Date.now() - started < 7_000)
+  },
+)
+
+test(
+  'command timeout closes pipes held by a descendant',
+  { timeout: 8_000 },
+  async () => {
+    const started = Date.now()
+    await assert.rejects(
+      command(
+        process.execPath,
+        [
+          '-e',
+          'const { spawn } = require("node:child_process"); spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"] }); process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)',
+        ],
         { timeout: 300 },
       ),
       /timed out/,
@@ -274,6 +296,39 @@ async function fakeAuditTools(temporary) {
   const scannerDir = join(temporary, 'scanner')
   await mkdir(bin)
   await mkdir(scannerDir)
+  for (const path of [
+    'apps/worker/package.json',
+    'pnpm-lock.yaml',
+    'pnpm-workspace.yaml',
+  ]) {
+    const destination = join(scannerDir, path)
+    await mkdir(dirname(destination), { recursive: true })
+    await copyFile(
+      join(worktree, 'scripts', 'shannon-fullstack', 'pinned-shannon', path),
+      destination,
+    )
+  }
+  const buildFiles = []
+  for (const [path, contents] of [
+    ['apps/cli/dist/index.mjs', 'cli'],
+    ['apps/worker/dist/index.js', 'worker'],
+  ]) {
+    const file = join(scannerDir, path)
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, contents)
+    buildFiles.push({
+      path,
+      sha256: createHash('sha256').update(contents).digest('hex'),
+    })
+  }
+  await writeFile(
+    join(scannerDir, '.durably-audit-build.json'),
+    JSON.stringify({
+      commit: '2468b67d9e40d70d0b189462c5041c24e1dc886c',
+      files: buildFiles,
+      workerImageId: 'sha256:fake-worker-image',
+    }),
+  )
   for (const name of ['pi-agent-core', 'pi-ai', 'pi-coding-agent']) {
     const directory = join(
       scannerDir,
@@ -302,7 +357,7 @@ async function fakeAuditTools(temporary) {
       'if [ "$1" = "-C" ] && [ "$2" = "$FAKE_SCANNER_DIR" ]; then',
       '  if [ "$3" = "rev-parse" ]; then echo 2468b67d9e40d70d0b189462c5041c24e1dc886c; exit 0; fi',
       '  if [ "$3" = "diff" ]; then',
-      '    if [ "$FAKE_DRIFT" = 1 ]; then echo drift; else cat "$FAKE_PATCH"; fi',
+      '    if [ "$FAKE_DRIFT" = 1 ] || [ "$FAKE_STAGED" = 1 ]; then printf "unexpected.txt\\0"; else printf "apps/worker/package.json\\0pnpm-lock.yaml\\0pnpm-workspace.yaml\\0"; fi',
       '    exit 0',
       '  fi',
       '  if [ "$3" = "ls-files" ]; then exit 0; fi',
@@ -323,6 +378,18 @@ async function fakeAuditTools(temporary) {
     [
       '#!/bin/sh',
       'printf "%s\\n" "$*" >> "$DOCKER_MARKER"',
+      'if [ "$1" = image ] && [ "$2" = inspect ]; then',
+      '  if [ "$FAKE_IMAGE_DRIFT" = 1 ]; then echo sha256:stale-worker-image; else echo sha256:fake-worker-image; fi',
+      '  exit 0',
+      'fi',
+      'if [ "$1" = run ] && [ "$4" = node ] && [ "$5" = shannon-worker ]; then',
+      '  if [ "$FAKE_IMAGE_PI_DRIFT" = 1 ]; then',
+      '    echo \'{"@earendil-works/pi-agent-core":"1.2.0","@earendil-works/pi-ai":"1.3.0","@earendil-works/pi-coding-agent":"1.2.0"}\'',
+      '    exit 0',
+      '  fi',
+      '  echo \'{"@earendil-works/pi-agent-core":"1.2.0","@earendil-works/pi-ai":"1.2.0","@earendil-works/pi-coding-agent":"1.2.0"}\'',
+      '  exit 0',
+      'fi',
       'if [ "$1" = "cp" ]; then',
       '  count=$(cat "$CP_COUNT" 2>/dev/null || echo 0)',
       '  count=$((count + 1))',
@@ -389,6 +456,7 @@ async function fakeAuditTools(temporary) {
       '  echo \'[2026-10-18 09:00:00] [agent] step: {"secret":"synthetic-secret"}\' > "$(dirname "$0")/workspaces/$workspace/.shannon/workflow.log"',
       '  echo \'[2026-10-18 09:00:01] [agent] Authorization: Basic synthetic-basic\' >> "$(dirname "$0")/workspaces/$workspace/.shannon/workflow.log"',
       '  echo \'[2026-10-18 09:00:02] [agent] token=eyJhbGci.eyJwYXlsb2Fk.signature\' >> "$(dirname "$0")/workspaces/$workspace/.shannon/workflow.log"',
+      '  echo \'[2026-10-18 09:00:03] [PHASE] PI_REFRESH_TOKEN=synthetic-refresh\' >> "$(dirname "$0")/workspaces/$workspace/.shannon/workflow.log"',
       '  if [ "$FAKE_SCAN_FAIL" = 1 ]; then exit 1; fi',
       '  exit 0',
       'fi',
@@ -407,12 +475,6 @@ async function fakeAuditTools(temporary) {
       PATH: bin + ':' + process.env.PATH,
       FAKE_REVISION: revision,
       FAKE_SCANNER_DIR: scannerDir,
-      FAKE_PATCH: join(
-        worktree,
-        'scripts',
-        'shannon-fullstack',
-        'shannon-pi-1.2.0.patch',
-      ),
       DOCKER_MARKER: join(temporary, 'docker-marker'),
       CP_COUNT: join(temporary, 'copy-count'),
       DB_SOURCE: databaseFile,
@@ -454,7 +516,7 @@ test('stubbed full run waits for reports and cleans up', async (context) => {
   )
   assert.match(scannerLog, /details omitted/)
   assert.doesNotMatch(scannerLog, /synthetic-secret/)
-  assert.doesNotMatch(scannerLog, /synthetic-basic|eyJhbGci/)
+  assert.doesNotMatch(scannerLog, /synthetic-basic|eyJhbGci|synthetic-refresh/)
   const calls = await readFile(env.DOCKER_MARKER, 'utf8')
   assert.match(calls, /network create --internal/)
   assert.match(calls, /image rm durably-shannon-target:/)
@@ -518,6 +580,27 @@ test('source or worker Pi drift fails before Docker setup', async (context) => {
   })
   assert.equal(source.status, 1)
   assert.match(source.stderr, /differs from the pinned Pi patch/)
+  const staged = spawnSync(process.execPath, args, {
+    cwd: worktree,
+    env: { ...env, FAKE_STAGED: '1' },
+    encoding: 'utf8',
+  })
+  assert.equal(staged.status, 1)
+  assert.match(staged.stderr, /differs from the pinned Pi patch/)
+  const workspaceFile = join(scannerDir, 'pnpm-workspace.yaml')
+  const originalWorkspace = await readFile(workspaceFile)
+  await writeFile(
+    workspaceFile,
+    Buffer.concat([originalWorkspace, Buffer.from('\n# drift\n')]),
+  )
+  const patchedFile = spawnSync(process.execPath, args, {
+    cwd: worktree,
+    env,
+    encoding: 'utf8',
+  })
+  assert.equal(patchedFile.status, 1)
+  assert.match(patchedFile.stderr, /differs from the pinned Pi patch/)
+  await writeFile(workspaceFile, originalWorkspace)
   await writeFile(
     join(
       scannerDir,
@@ -537,7 +620,42 @@ test('source or worker Pi drift fails before Docker setup', async (context) => {
   })
   assert.equal(worker.status, 1)
   assert.match(worker.stderr, /worker Pi package version mismatch/)
-  await assert.rejects(readFile(env.DOCKER_MARKER))
+  await writeFile(
+    join(
+      scannerDir,
+      'apps',
+      'worker',
+      'node_modules',
+      '@earendil-works',
+      'pi-ai',
+      'package.json',
+    ),
+    '{"version":"1.2.0"}',
+  )
+  const staleImage = spawnSync(process.execPath, args, {
+    cwd: worktree,
+    env: { ...env, FAKE_IMAGE_DRIFT: '1' },
+    encoding: 'utf8',
+  })
+  assert.equal(staleImage.status, 1)
+  assert.match(staleImage.stderr, /build output differs/)
+  const imagePi = spawnSync(process.execPath, args, {
+    cwd: worktree,
+    env: { ...env, FAKE_IMAGE_PI_DRIFT: '1' },
+    encoding: 'utf8',
+  })
+  assert.equal(imagePi.status, 1)
+  assert.match(imagePi.stderr, /worker image Pi version mismatch/)
+  await writeFile(join(scannerDir, 'apps', 'cli', 'dist', 'index.mjs'), 'drift')
+  const build = spawnSync(process.execPath, args, {
+    cwd: worktree,
+    env,
+    encoding: 'utf8',
+  })
+  assert.equal(build.status, 1)
+  assert.match(build.stderr, /build output differs/)
+  const calls = await readFile(env.DOCKER_MARKER, 'utf8')
+  assert.doesNotMatch(calls, /network create|volume create|build/)
 })
 
 test('failed final SQLite copy still removes audit resources', async (context) => {
@@ -617,6 +735,20 @@ test('failed Shannon run preserves status, reports, and sanitized log', async (c
     JSON.parse(await readFile(join(output, 'state.json'), 'utf8')).status,
     'failed',
   )
+  const down = spawnSync(
+    process.execPath,
+    [
+      join(worktree, 'scripts', 'shannon-fullstack-audit.mjs'),
+      'down',
+      '--output',
+      output,
+      '--shannon-dir',
+      scannerDir,
+    ],
+    { cwd: worktree, env: { ...env, FAKE_SCAN_FAIL: '1' }, encoding: 'utf8' },
+  )
+  assert.equal(down.status, 0, down.stderr)
+  await assert.rejects(readFile(env.FAKE_STOP_MARKER))
 })
 
 test('interrupting the scanner still removes audit resources', async (context) => {
@@ -664,7 +796,7 @@ test('interrupting the scanner still removes audit resources', async (context) =
       resolveExit(code)
     })
   })
-  assert.notEqual(exitCode, 0)
+  assert.equal(exitCode, 130)
   const state = JSON.parse(await readFile(join(output, 'state.json'), 'utf8'))
   assert.equal(state.status, 'failed')
   assert.match(

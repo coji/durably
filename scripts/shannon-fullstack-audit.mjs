@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   appendFile,
   copyFile,
   lstat,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -32,15 +33,25 @@ const support = join(root, 'scripts', 'shannon-fullstack')
 const shannonCommit = '2468b67d9e40d70d0b189462c5041c24e1dc886c'
 const shannonVersion = 'git-' + shannonCommit
 const shannonSource = 'https://github.com/KeygraphHQ/shannon.git'
-const shannonPatch = join(support, 'shannon-pi-1.2.0.patch')
+const pinnedShannonFiles = join(support, 'pinned-shannon')
+const buildManifestName = '.durably-audit-build.json'
 const proxyImage =
   'alpine/socat@sha256:3d9e7966201dd3a065df591020a09fd3c70845de7e7086e3531ea69db774406b'
+const workerImage = 'shannon-worker'
 const workerPiVersion = '1.2.0'
 const workerPiPackages = [
   '@earendil-works/pi-agent-core',
   '@earendil-works/pi-ai',
   '@earendil-works/pi-coding-agent',
 ]
+const patchedScannerFiles = {
+  'apps/worker/package.json':
+    '35ce612b44dcd2b9bde098157f89f3b2d5333926e5faf2de5c6e44f8566ce6f0',
+  'pnpm-lock.yaml':
+    'e7ac65e86a58509994933def3f25d081cb609cb5728f44271ac1c67d1d0dea4e',
+  'pnpm-workspace.yaml':
+    'b521cbbeb7da78093c8e31c93a2b1c8ff273fa7d82ded96050093288b228e564',
+}
 const defaultShannonDir = join(
   homedir(),
   '.cache',
@@ -62,6 +73,18 @@ const defaultTimeout = 2 * 60 * 1000
 const scanTimeout = 6 * 60 * 60 * 1000
 const terminationGraceMs = 5 * 1000
 const activeChildren = new Set()
+
+function killChildTree(child, signal) {
+  if (process.platform !== 'win32' && child.pid) {
+    try {
+      process.kill(-child.pid, signal)
+      return
+    } catch (error) {
+      if (error.code !== 'ESRCH') throw error
+    }
+  }
+  child.kill(signal)
+}
 
 export function parseOptions(argv) {
   const [action = 'help', ...rest] = argv
@@ -167,6 +190,7 @@ export async function command(file, args, options = {}) {
       env,
       signal,
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
     })
     activeChildren.add(child)
     let stdout = ''
@@ -189,8 +213,14 @@ export async function command(file, args, options = {}) {
     })
     const timer = setTimeout(() => {
       timedOut = true
-      child.kill('SIGTERM')
-      forceTimer = setTimeout(() => child.kill('SIGKILL'), terminationGraceMs)
+      killChildTree(child, 'SIGTERM')
+      forceTimer = setTimeout(() => {
+        killChildTree(child, 'SIGKILL')
+        child.stdout.destroy()
+        child.stderr.destroy()
+        activeChildren.delete(child)
+        rejectCommand(new Error(basename(file) + ' timed out'))
+      }, terminationGraceMs)
     }, timeout)
     child.on('error', (error) => {
       clearTimeout(timer)
@@ -256,6 +286,7 @@ async function checkTools(shannonDir) {
   ).stdout.trim()
   if (auth !== 'ready') throw new Error('Pi ChatGPT OAuth is not ready')
   await checkScannerSource(shannonDir)
+  const workerImageId = await checkScannerBuild(shannonDir)
   for (const name of workerPiPackages) {
     const installed = JSON.parse(
       await readFile(
@@ -273,6 +304,28 @@ async function checkTools(shannonDir) {
     if (installed.version !== workerPiVersion)
       throw new Error('Shannon worker Pi package version mismatch: ' + name)
   }
+  const imageVersions = JSON.parse(
+    (
+      await docker(
+        [
+          'run',
+          '--rm',
+          '--entrypoint',
+          'node',
+          workerImage,
+          '-e',
+          'console.log(JSON.stringify(Object.fromEntries(' +
+            JSON.stringify(workerPiPackages) +
+            '.map(name=>[name,require("/app/apps/worker/node_modules/"+name+"/package.json").version]))))',
+        ],
+        { timeout: 30 * 1000 },
+      )
+    ).stdout,
+  )
+  for (const name of workerPiPackages) {
+    if (imageVersions[name] !== workerPiVersion)
+      throw new Error('Shannon worker image Pi version mismatch: ' + name)
+  }
   const version = JSON.parse(
     (
       await command(scanner(shannonDir), ['version', '--json'], {
@@ -282,32 +335,106 @@ async function checkTools(shannonDir) {
   )
   if (version.version !== shannonVersion)
     throw new Error('Shannon source version does not match the pinned commit')
-  return { piVersion, workerPiVersion, shannonVersion: version.version }
+  return {
+    piVersion,
+    workerPiVersion,
+    workerImageId,
+    shannonVersion: version.version,
+  }
 }
 
 async function checkScannerSource(shannonDir) {
+  if ((await scannerSourceState(shannonDir)) !== 'patched')
+    throw new Error('Shannon source is missing the pinned Pi patch')
+}
+
+async function scannerSourceState(shannonDir) {
   const actualCommit = (
     await git(['-C', shannonDir, 'rev-parse', 'HEAD'])
   ).stdout.trim()
   if (actualCommit !== shannonCommit)
     throw new Error('Shannon directory is not at the pinned commit')
-  const expected = await readFile(shannonPatch, 'utf8')
-  const actual = (
+  const changed = (
     await git([
       '-C',
       shannonDir,
       'diff',
-      '--binary',
-      '--no-color',
+      '--name-only',
+      '-z',
+      '--no-renames',
       '--no-ext-diff',
+      'HEAD',
     ])
   ).stdout
-  if (actual !== expected)
-    throw new Error('Shannon source differs from the pinned Pi patch')
+    .split('\0')
+    .filter(Boolean)
   const untracked = (
     await git(['-C', shannonDir, 'ls-files', '--others', '--exclude-standard'])
   ).stdout
-  if (untracked !== '') throw new Error('Shannon source has untracked files')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+  if (untracked.some((name) => name !== buildManifestName))
+    throw new Error('Shannon source has untracked files')
+  if (changed.length === 0) return 'clean'
+  if (
+    changed.length !== Object.keys(patchedScannerFiles).length ||
+    changed.some((name) => !(name in patchedScannerFiles))
+  ) {
+    throw new Error('Shannon source differs from the pinned Pi patch')
+  }
+  for (const [file, expected] of Object.entries(patchedScannerFiles)) {
+    const actual = createHash('sha256')
+      .update(await readFile(join(shannonDir, file)))
+      .digest('hex')
+    if (actual !== expected)
+      throw new Error('Shannon source differs from the pinned Pi patch')
+  }
+  return 'patched'
+}
+
+async function scannerBuildFiles(shannonDir) {
+  const files = []
+  async function walk(directory) {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const file = join(directory, entry.name)
+      if (entry.isDirectory()) await walk(file)
+      else if (entry.isFile()) {
+        files.push({
+          path: relative(shannonDir, file),
+          sha256: createHash('sha256')
+            .update(await readFile(file))
+            .digest('hex'),
+        })
+      } else throw new Error('Unexpected Shannon build entry: ' + file)
+    }
+  }
+  await walk(join(shannonDir, 'apps', 'cli', 'dist'))
+  await walk(join(shannonDir, 'apps', 'worker', 'dist'))
+  return files.sort((a, b) => a.path.localeCompare(b.path))
+}
+
+async function checkScannerBuild(shannonDir) {
+  let saved
+  try {
+    saved = JSON.parse(
+      await readFile(join(shannonDir, buildManifestName), 'utf8'),
+    )
+  } catch {
+    throw new Error('Shannon build manifest missing; run security:scan:setup')
+  }
+  const actual = await scannerBuildFiles(shannonDir)
+  const imageId = (
+    await docker(['image', 'inspect', workerImage, '--format', '{{.Id}}'])
+  ).stdout.trim()
+  if (
+    saved.commit !== shannonCommit ||
+    JSON.stringify(saved.files) !== JSON.stringify(actual) ||
+    saved.workerImageId !== imageId
+  ) {
+    throw new Error('Shannon build output differs from the pinned setup')
+  }
+  return imageId
 }
 
 async function withPreflightServer(work) {
@@ -363,28 +490,12 @@ async function setup(shannonDir) {
     })
     await git(['-C', shannonDir, 'checkout', '--detach', shannonCommit])
   }
-  const actualCommit = (
-    await git(['-C', shannonDir, 'rev-parse', 'HEAD'])
-  ).stdout.trim()
-  if (actualCommit !== shannonCommit)
-    throw new Error('Shannon directory is not at the pinned commit')
-  const expectedPatch = await readFile(shannonPatch, 'utf8')
-  const actualPatch = (
-    await git([
-      '-C',
-      shannonDir,
-      'diff',
-      '--binary',
-      '--no-color',
-      '--no-ext-diff',
-    ])
-  ).stdout
-  if (actualPatch === '') {
-    await git(['-C', shannonDir, 'apply', '--check', shannonPatch])
-    await git(['-C', shannonDir, 'apply', shannonPatch])
-  } else if (actualPatch !== expectedPatch) {
-    throw new Error('Shannon source differs from the pinned Pi patch')
+  if ((await scannerSourceState(shannonDir)) === 'clean') {
+    for (const file of Object.keys(patchedScannerFiles)) {
+      await copyFile(join(pinnedShannonFiles, file), join(shannonDir, file))
+    }
   }
+  await checkScannerSource(shannonDir)
   await command(
     'npx',
     ['--yes', 'pnpm@10.33.0', 'install', '--frozen-lockfile'],
@@ -397,6 +508,26 @@ async function setup(shannonDir) {
     cwd: shannonDir,
     timeout: 10 * 60 * 1000,
   })
+  await command(scanner(shannonDir), ['build'], {
+    cwd: shannonDir,
+    env: childEnvironment(),
+    timeout: 30 * 60 * 1000,
+  })
+  const workerImageId = (
+    await docker(['image', 'inspect', workerImage, '--format', '{{.Id}}'])
+  ).stdout.trim()
+  await writeFile(
+    join(shannonDir, buildManifestName),
+    JSON.stringify(
+      {
+        commit: shannonCommit,
+        files: await scannerBuildFiles(shannonDir),
+        workerImageId,
+      },
+      null,
+      2,
+    ) + '\n',
+  )
   await checkTools(shannonDir)
 }
 
@@ -714,11 +845,11 @@ export async function captureScannerLog(shannonDir, state, output) {
     return withoutPayload
       .replace(/\b(?:Bearer|Basic)\s+\S+/gi, '[redacted]')
       .replace(
-        /\b(?:Authorization|Proxy-Authorization|Cookie|Set-Cookie)\s*:\s*\S+/gi,
+        /\b(?:Authorization|Proxy-Authorization|Cookie|Set-Cookie)\s*:\s*.*$/gi,
         '[redacted]',
       )
       .replace(
-        /\b(?:access_token|refresh_token|id_token|api_key|secret|password|token)\s*[:=]\s*\S+/gi,
+        /\b[A-Za-z0-9_-]*(?:access_token|refresh_token|id_token|api_key|secret|password|token)\s*[:=]\s*.*$/gi,
         '[redacted]',
       )
       .replace(
@@ -751,7 +882,12 @@ async function stopUnfinishedScan(state, shannonDir, output) {
     const result = await command(
       scanner(shannonDir),
       ['status', state.workspace, '--json'],
-      { cwd: shannonDir, env: childEnvironment(), timeout: 30 * 1000 },
+      {
+        cwd: shannonDir,
+        env: childEnvironment(),
+        allowNonzero: true,
+        timeout: 30 * 1000,
+      },
     )
     status = JSON.parse(result.stdout)
   } catch {
@@ -819,14 +955,20 @@ async function runAudit(options) {
     state.interrupted = true
     if (!state.cleaning) {
       for (const child of activeChildren) {
-        child.kill('SIGTERM')
-        setTimeout(() => child.kill('SIGKILL'), terminationGraceMs).unref()
+        killChildTree(child, 'SIGTERM')
+        setTimeout(
+          () => killChildTree(child, 'SIGKILL'),
+          terminationGraceMs,
+        ).unref()
       }
     }
   }
   process.on('SIGINT', onSignal)
   process.on('SIGTERM', onSignal)
   let failure
+  let capturedStatus = false
+  let capturedLog = false
+  let capturedReports = false
   try {
     const source = await snapshotSource(temporary, revision)
     await log(output, 'Created detached Git source snapshot')
@@ -908,6 +1050,7 @@ async function runAudit(options) {
           sourceRevision: revision,
           piVersion: versions.piVersion,
           workerPiVersion: versions.workerPiVersion,
+          workerImageId: versions.workerImageId,
           shannonVersion: versions.shannonVersion,
           model,
           target: 'examples/fullstack',
@@ -917,6 +1060,7 @@ async function runAudit(options) {
         2,
       ) + '\n',
     )
+    if (state.interrupted) throw new Error('Audit interrupted')
     state.status = 'scanning'
     state.scanStarted = true
     await saveState(output, state)
@@ -972,8 +1116,11 @@ async function runAudit(options) {
       join(output, 'shannon-status.json'),
       JSON.stringify(status, null, 2) + '\n',
     )
+    capturedStatus = true
     await captureScannerLog(options.shannonDir, state, output)
+    capturedLog = true
     await collectReports(options.shannonDir, state, output)
+    capturedReports = true
     if (state.interrupted) throw new Error('Audit interrupted')
     if (failure) throw failure
     if (statusResult.exitCode !== 0)
@@ -989,30 +1136,39 @@ async function runAudit(options) {
   } finally {
     state.cleaning = true
     if (state.status !== 'completed') {
-      try {
-        await captureScannerLog(options.shannonDir, state, output)
-      } catch {
-        await log(output, 'Shannon execution log unavailable')
+      if (!capturedLog) {
+        try {
+          await captureScannerLog(options.shannonDir, state, output)
+        } catch {
+          await log(output, 'Shannon execution log unavailable')
+        }
       }
-      try {
-        const result = await command(
-          scanner(options.shannonDir),
-          ['status', state.workspace, '--json'],
-          {
-            cwd: options.shannonDir,
-            env: childEnvironment(),
-            allowNonzero: true,
-            timeout: 30 * 1000,
-          },
-        )
-        await writeFile(join(output, 'shannon-status.json'), result.stdout)
-      } catch {
-        await log(output, 'Shannon structured status unavailable')
+      if (!capturedStatus) {
+        try {
+          const result = await command(
+            scanner(options.shannonDir),
+            ['status', state.workspace, '--json'],
+            {
+              cwd: options.shannonDir,
+              env: childEnvironment(),
+              allowNonzero: true,
+              timeout: 30 * 1000,
+            },
+          )
+          await writeFile(
+            join(output, 'shannon-status.json'),
+            JSON.stringify(JSON.parse(result.stdout), null, 2) + '\n',
+          )
+        } catch {
+          await log(output, 'Shannon structured status unavailable')
+        }
       }
-      try {
-        await collectReports(options.shannonDir, state, output)
-      } catch {
-        await log(output, 'Only available Shannon reports were preserved')
+      if (!capturedReports) {
+        try {
+          await collectReports(options.shannonDir, state, output)
+        } catch {
+          await log(output, 'Only available Shannon reports were preserved')
+        }
       }
       try {
         await stopUnfinishedScan(state, options.shannonDir, output)
@@ -1113,6 +1269,6 @@ if (
 ) {
   main().catch((error) => {
     process.stderr.write('Shannon audit: ' + error.message + '\n')
-    process.exitCode = 1
+    if (process.exitCode !== 130) process.exitCode = 1
   })
 }
