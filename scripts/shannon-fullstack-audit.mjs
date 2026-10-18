@@ -22,6 +22,7 @@ import {
   dirname,
   isAbsolute,
   join,
+  parse,
   relative,
   resolve,
   sep,
@@ -433,7 +434,37 @@ async function scannerBuildFiles(shannonDir) {
   return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 }
 
+async function dependencyLinkTrace(file) {
+  const hops = []
+  const absolute = resolve(file)
+  let current = parse(absolute).root
+  let pending = absolute.slice(current.length).split(sep)
+  while (pending.length > 0) {
+    const part = pending.shift()
+    if (!part || part === '.') continue
+    if (part === '..') {
+      current = dirname(current)
+      continue
+    }
+    current = join(current, part)
+    if (!(await lstat(current)).isSymbolicLink()) continue
+    if (hops.length === 40)
+      throw new Error('Too many Shannon dependency link redirects: ' + file)
+    const link = await readlink(current)
+    hops.push([current, link])
+    if (isAbsolute(link)) {
+      current = parse(link).root
+      pending = [...link.slice(current.length).split(sep), ...pending]
+    } else {
+      current = dirname(current)
+      pending = [...link.split(sep), ...pending]
+    }
+  }
+  return hops
+}
+
 export async function scannerDependencyHash(shannonDir) {
+  shannonDir = await realpath(shannonDir)
   const hash = createHash('sha256')
   const roots = [
     'node_modules',
@@ -480,7 +511,7 @@ export async function scannerDependencyHash(shannonDir) {
           'link\0' +
             path +
             '\0' +
-            (await readlink(file)) +
+            JSON.stringify(await dependencyLinkTrace(file)) +
             '\0' +
             target +
             '\0',

@@ -749,11 +749,22 @@ test('source or worker Pi drift fails before Docker setup', async (context) => {
   )
   await symlink(intermediate, hopLink)
   const beforeHopChange = await scannerDependencyHash(scannerDir)
+  const originalResolvedTarget = await realpath(hopLink)
+  const sameTargetHop = join(temporary, 'same-target-hop')
+  await symlink(
+    join(scannerDir, 'apps', 'cli', 'node_modules', 'fake-runtime'),
+    sameTargetHop,
+  )
+  await rm(intermediate)
+  await symlink(sameTargetHop, intermediate)
+  assert.equal(await realpath(hopLink), originalResolvedTarget)
+  assert.notEqual(await scannerDependencyHash(scannerDir), beforeHopChange)
   await rm(intermediate)
   await symlink(alternatePackage, intermediate)
   assert.notEqual(await scannerDependencyHash(scannerDir), beforeHopChange)
   await rm(hopLink)
   await rm(intermediate)
+  await rm(sameTargetHop)
 
   const outsideDependency = join(temporary, 'outside-dependency.js')
   await writeFile(outsideDependency, 'export const version = 1\n')
