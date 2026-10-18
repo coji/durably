@@ -742,6 +742,7 @@ async function runAudit(options) {
           state.workspace,
           '--output',
           join(output, 'shannon-output'),
+          '--follow',
         ],
         {
           cwd: options.shannonDir,
