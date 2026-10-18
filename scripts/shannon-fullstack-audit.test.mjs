@@ -89,6 +89,20 @@ test('SQLite evidence records integrity, table counts, and new run IDs', async (
   database.close()
   const before = sqliteEvidence(file)
   assert.deepEqual(before.integrity, ['ok'])
+  assert.deepEqual(before.schema, [
+    {
+      type: 'table',
+      name: 'durably_runs',
+      tableName: 'durably_runs',
+      sql: 'CREATE TABLE durably_runs (id TEXT PRIMARY KEY)',
+    },
+    {
+      type: 'index',
+      name: 'sqlite_autoindex_durably_runs_1',
+      tableName: 'durably_runs',
+      sql: null,
+    },
+  ].sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name)))
   assert.equal(before.counts.durably_runs, 1)
   const next = new DatabaseSync(file)
   next.exec("INSERT INTO durably_runs (id) VALUES ('second')")

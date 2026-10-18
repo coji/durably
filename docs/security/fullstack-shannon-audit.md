@@ -34,7 +34,7 @@ The down command is idempotent and can recover resources left by a killed termin
 
 1. Checks Pi and the pinned Shannon build, then runs Shannon's model and cyber access validation against a temporary benign HTTP endpoint. It stops before creating the audit target or database if validation fails.
 2. Records the repository HEAD, requires a clean checkout, and makes a detached local Git clone at that exact commit. The clone supplies Git HEAD to Shannon's agentic SAST. Working-tree files, local .env files, and ignored databases are not included.
-3. Builds the app from the clone. The target runs as a non-root user in a read-only container with its synthetic SQLite database on a disposable volume. An internal Docker network has no outbound route. A TCP proxy on Shannon's shannon-net is the only scanner entry point to the target.
+3. Builds the app from the clone. The target runs as a non-root user in a read-only container with a fresh SQLite database on a disposable volume. The app initializes its schema there; no production data is copied in. An internal Docker network has no outbound route. A TCP proxy on Shannon's shannon-net is the only scanner entry point to the target.
 4. Runs the five-class Shannon scan with exploit enabled, openai:gpt-6-sol, and the rules in scripts/shannon-fullstack/shannon-config.yaml. The target URL is filled from a generated resource name; the command accepts no alternate target URL.
 5. Stops the app before the final SQLite copy, checks database integrity, records per-table counts and created run IDs, copies the main and static-analysis reports, and removes the run's containers, network, volume, image, and temporary source clone.
 
@@ -42,7 +42,7 @@ The rules ask for fewer than three requests per second, minimal benign proofs, a
 
 ## Results and failure handling
 
-The output directory contains metadata.json, state.json, the rendered scanner config, shannon-status.json, before.sqlite, after.sqlite, JSON integrity/count summaries and a diff, workflow.log for operator stage transitions, shannon-workflow.log with scanner payload details omitted, and reports/. The report directory must contain:
+The output directory contains metadata.json, state.json, the rendered scanner config, shannon-status.json, before.sqlite, after.sqlite, JSON integrity/schema/count summaries and a diff, workflow.log for operator stage transitions, shannon-workflow.log with scanner payload details omitted, and reports/. The report directory must contain:
 
 - Security-Assessment-Report.md and .pdf
 - report.sarif for exploit-confirmed findings

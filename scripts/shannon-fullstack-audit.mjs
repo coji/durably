@@ -390,6 +390,12 @@ export function sqliteEvidence(file) {
       .prepare('PRAGMA integrity_check')
       .all()
       .map((row) => Object.values(row)[0])
+    const schema = database
+      .prepare(
+        "SELECT type, name, tbl_name AS tableName, sql FROM sqlite_master WHERE name LIKE 'durably_%' OR tbl_name LIKE 'durably_%' ORDER BY type, name",
+      )
+      .all()
+      .map((row) => ({ ...row }))
     const tables = database
       .prepare(
         "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'durably_%' ORDER BY name",
@@ -408,7 +414,7 @@ export function sqliteEvidence(file) {
           .all()
           .map((row) => row.id)
       : []
-    return { integrity, counts, runIds }
+    return { integrity, schema, counts, runIds }
   } finally {
     database.close()
   }
