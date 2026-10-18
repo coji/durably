@@ -689,6 +689,9 @@ export function createDurablyHandler<
   }
 
   function createRunsSSEStream(filter: RunsSubscribeFilter): Response {
+    if (Array.isArray(filter.jobName) && filter.jobName.length === 0) {
+      return createSSEResponse(createSSEStreamFromSubscriptions(() => []))
+    }
     const jobNameFilter = Array.isArray(filter.jobName)
       ? filter.jobName
       : filter.jobName === undefined

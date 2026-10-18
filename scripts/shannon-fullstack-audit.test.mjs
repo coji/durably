@@ -993,6 +993,18 @@ for (const hookName of ['afterSnapshot', 'beforeScanner']) {
     const calls = await readFile(env.DOCKER_MARKER, 'utf8')
     if (hookName === 'afterSnapshot')
       assert.doesNotMatch(calls, /^build|^network create|^volume create/m)
+    if (hookName === 'beforeScanner') {
+      const commands = calls.split('\n')
+      for (const command of [
+        `rm -f ${state.proxy}`,
+        `rm -f ${state.target}`,
+        `network rm ${state.network}`,
+        `volume rm ${state.volume}`,
+        `image rm ${state.image}`,
+      ]) {
+        assert.ok(commands.includes(command), `missing cleanup: ${command}`)
+      }
+    }
     await assert.rejects(readFile(scannerMarker), { code: 'ENOENT' })
   })
 }

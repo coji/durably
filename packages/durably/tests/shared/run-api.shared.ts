@@ -163,7 +163,7 @@ export function createRunApiTests(createDialect: () => Dialect) {
         }
       })
 
-      it('treats empty status array as no filter', async () => {
+      it('treats empty status array as matching no runs', async () => {
         const d = durably.register({
           job: defineJob({
             name: 'empty-status-filter-test',
