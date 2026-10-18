@@ -75,6 +75,7 @@ What we considered and why we didn't do it.
 | [0032](0032-local-agent-loop-idle-timeout.md)                   | local-agent-loop idle timeout                 | accepted |
 | [0033](0033-local-agent-loop-series-archive.md)                 | local-agent-loop series archive               | accepted |
 | [0034](0034-local-agent-loop-stopped-call-usage.md)             | local-agent-loop stopped-call usage           | accepted |
+| [0035](0035-isolated-shannon-fullstack-audit.md)                | Isolated Shannon fullstack audit              | accepted |
 
 ## Prior Art
 

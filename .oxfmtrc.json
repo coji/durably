@@ -9,6 +9,7 @@
   "sortTailwindcss": true,
   "ignorePatterns": [
     "pnpm-lock.yaml",
+    "scripts/shannon-fullstack/pinned-shannon/",
     "dist/",
     "node_modules/",
     ".turbo/",

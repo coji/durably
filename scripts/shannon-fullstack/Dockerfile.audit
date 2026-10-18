@@ -1,0 +1,17 @@
+FROM node:24.21.0-bookworm-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
+RUN npm install -g pnpm@12.4.2
+
+WORKDIR /app
+COPY . .
+RUN pnpm install --frozen-lockfile \
+  && pnpm exec turbo run build --filter=example-fullstack
+RUN mkdir /data && chown node:node /data
+
+WORKDIR /app/examples/fullstack
+USER node
+ENV HOST=0.0.0.0 PORT=3000 DATABASE_URL=file:/data/audit.db
+CMD ["./node_modules/.bin/react-router-serve", "./build/server/index.js"]

@@ -1,0 +1,17 @@
+description: |
+  Authorized audit of the committed Durably fullstack example, served from a
+  disposable read-only container with a synthetic SQLite database and no outbound network.
+
+agentic_sast:
+  enabled: 'true'
+
+exploit: 'true'
+
+rules_of_engagement: |
+  - Use only __TARGET_URL__ and the supplied repository.
+  - Confirm findings with the minimum benign proof needed.
+  - Keep traffic below 3 requests per second.
+  - Do not access other hosts, services, or the Internet except the model provider.
+  - Do not modify source files; any necessary test writes must stay in the disposable SQLite database.
+  - Do not perform brute force, denial of service, persistence, high-volume traffic, external callbacks, or data exfiltration.
+  - The demo intentionally has no login and its HTTP API is public; do not report that design choice alone as a Durably library vulnerability.

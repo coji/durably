@@ -1,0 +1,5 @@
+packages:
+  - 'apps/*'
+
+minimumReleaseAgeExclude:
+  - '@earendil-works/pi-*'

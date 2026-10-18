@@ -57,6 +57,9 @@ jobs:
       - name: Test sleeps are explained
         run: node scripts/check-test-sleeps.mjs
 
+      - name: Audit workflow tests
+        run: pnpm test:security-scan
+
   test-node:
     runs-on: ubuntu-latest
 
