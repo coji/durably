@@ -87,7 +87,7 @@ function killChildTree(child, signal) {
       process.kill(-child.pid, signal)
       return
     } catch (error) {
-      if (error.code !== 'ESRCH') throw error
+      if (error.code !== 'ESRCH' && error.code !== 'EPERM') throw error
     }
   }
   child.kill(signal)
@@ -284,7 +284,7 @@ function scanner(shannonDir) {
   return join(shannonDir, 'shannon')
 }
 
-async function checkTools(shannonDir) {
+async function checkTools(shannonDir, dependencyHash) {
   const piVersion = (await command('pi', ['--version'])).stdout.trim()
   const parts = piVersion.split('.').map(Number)
   if (
@@ -299,7 +299,7 @@ async function checkTools(shannonDir) {
   ).stdout.trim()
   if (auth !== 'ready') throw new Error('Pi ChatGPT OAuth is not ready')
   await checkScannerSource(shannonDir)
-  const workerImageId = await checkScannerBuild(shannonDir)
+  const workerImageId = await checkScannerBuild(shannonDir, dependencyHash)
   for (const name of workerPiPackages) {
     const installed = JSON.parse(
       await readFile(
@@ -464,15 +464,27 @@ export async function scannerDependencyHash(shannonDir) {
         const target = await realpath(file)
         if (
           !coveredRoots.some(
-            (root) => target === root || target.startsWith(root + sep),
+            (covered) => target === covered || target.startsWith(covered + sep),
           ) &&
           !workspaceRoots.includes(target)
         ) {
           throw new Error(
-            'Shannon dependency link points outside verified roots',
+            'Shannon dependency link points outside verified roots: ' +
+              file +
+              ' -> ' +
+              target +
+              '. Use the default pnpm virtual store and rerun security:scan:setup',
           )
         }
-        hash.update('link\0' + path + '\0' + (await readlink(file)) + '\0')
+        hash.update(
+          'link\0' +
+            path +
+            '\0' +
+            (await readlink(file)) +
+            '\0' +
+            target +
+            '\0',
+        )
       } else throw new Error('Unexpected Shannon dependency entry: ' + file)
     }
   }
@@ -484,7 +496,7 @@ export async function scannerDependencyHash(shannonDir) {
   return hash.digest('hex')
 }
 
-async function checkScannerBuild(shannonDir) {
+async function checkScannerBuild(shannonDir, expectedDependencyHash) {
   let saved
   try {
     saved = JSON.parse(
@@ -494,7 +506,8 @@ async function checkScannerBuild(shannonDir) {
     throw new Error('Shannon build manifest missing; run security:scan:setup')
   }
   const actual = await scannerBuildFiles(shannonDir)
-  const dependencyHash = await scannerDependencyHash(shannonDir)
+  const dependencyHash =
+    expectedDependencyHash ?? (await scannerDependencyHash(shannonDir))
   const imageId = (
     await docker(['image', 'inspect', workerImage, '--format', '{{.Id}}'])
   ).stdout.trim()
@@ -588,20 +601,21 @@ async function setup(shannonDir) {
   const workerImageId = (
     await docker(['image', 'inspect', workerImage, '--format', '{{.Id}}'])
   ).stdout.trim()
+  const dependencyHash = await scannerDependencyHash(shannonDir)
   await writeFile(
     join(shannonDir, buildManifestName),
     JSON.stringify(
       {
         commit: shannonCommit,
         files: await scannerBuildFiles(shannonDir),
-        dependencyHash: await scannerDependencyHash(shannonDir),
+        dependencyHash,
         workerImageId,
       },
       null,
       2,
     ) + '\n',
   )
-  await checkTools(shannonDir)
+  await checkTools(shannonDir, dependencyHash)
 }
 
 async function sourceRevision() {
@@ -1032,14 +1046,22 @@ async function runAudit(options) {
   process.on('SIGINT', onSignal)
   process.on('SIGTERM', onSignal)
   process.on('SIGHUP', onSignal)
+  const ensureRunning = () => {
+    if (state.interrupted) throw new Error('Audit interrupted')
+  }
+  const preparingDocker = async (args, commandOptions) => {
+    ensureRunning()
+    return await docker(args, commandOptions)
+  }
   let failure
   let capturedStatus = false
   let capturedLog = false
   let capturedReports = false
   try {
+    ensureRunning()
     const source = await snapshotSource(temporary, revision)
     await log(output, 'Created detached Git source snapshot')
-    await docker(
+    await preparingDocker(
       [
         'build',
         '-t',
@@ -1052,9 +1074,9 @@ async function runAudit(options) {
         timeout: 20 * 60 * 1000,
       },
     )
-    await docker(['network', 'create', '--internal', state.network])
-    await docker(['volume', 'create', state.volume])
-    await docker([
+    await preparingDocker(['network', 'create', '--internal', state.network])
+    await preparingDocker(['volume', 'create', state.volume])
+    await preparingDocker([
       'run',
       '-d',
       '--name',
@@ -1073,7 +1095,7 @@ async function runAudit(options) {
       state.image,
     ])
     await waitForTarget(state)
-    await docker([
+    await preparingDocker([
       'run',
       '-d',
       '--name',
@@ -1088,9 +1110,9 @@ async function runAudit(options) {
       'TCP-LISTEN:3001,fork,reuseaddr',
       'TCP:' + state.target + ':3000',
     ])
-    await docker(['network', 'connect', state.network, state.proxy])
+    await preparingDocker(['network', 'connect', state.network, state.proxy])
     await waitForProxy(state)
-    await docker([
+    await preparingDocker([
       'cp',
       state.target + ':/data/audit.db',
       join(output, 'before.sqlite'),
@@ -1127,7 +1149,7 @@ async function runAudit(options) {
         2,
       ) + '\n',
     )
-    if (state.interrupted) throw new Error('Audit interrupted')
+    ensureRunning()
     state.status = 'scanning'
     state.scanStarted = true
     await saveState(output, state)

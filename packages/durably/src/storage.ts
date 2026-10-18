@@ -917,22 +917,25 @@ export function createKyselyStore(
     },
 
     async getRuns<T extends Run = Run>(filter?: RunFilter): Promise<T[]> {
+      if (
+        (Array.isArray(filter?.status) && filter.status.length === 0) ||
+        (Array.isArray(filter?.jobName) && filter.jobName.length === 0)
+      ) {
+        return []
+      }
+
       let query = db.selectFrom('durably_runs').selectAll()
 
       if (filter?.status) {
         if (Array.isArray(filter.status)) {
-          if (filter.status.length > 0) {
-            query = query.where('status', 'in', filter.status)
-          }
+          query = query.where('status', 'in', filter.status)
         } else {
           query = query.where('status', '=', filter.status)
         }
       }
       if (filter?.jobName) {
         if (Array.isArray(filter.jobName)) {
-          if (filter.jobName.length > 0) {
-            query = query.where('job_name', 'in', filter.jobName)
-          }
+          query = query.where('job_name', 'in', filter.jobName)
         } else {
           query = query.where('job_name', '=', filter.jobName)
         }

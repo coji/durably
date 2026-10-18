@@ -265,6 +265,103 @@ function parseRunsSubscribeFilter(url: URL): RunsSubscribeFilter {
   }
 }
 
+/** Validate a hook result before it can become a global event stream. */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
+
+function validJobNameScope(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (typeof value === 'string' && value.length > 0) ||
+    (Array.isArray(value) &&
+      value.every((name) => typeof name === 'string' && name.length > 0))
+  )
+}
+
+function validLabelsScope(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (isPlainRecord(value) &&
+      Object.values(value).every((label) => typeof label === 'string'))
+  )
+}
+
+function checkedRunListFilter(value: unknown): RunFilter | Response {
+  if (!isPlainRecord(value))
+    return errorResponse('Run list scope must be an object', 400)
+  if (
+    Object.keys(value).some(
+      (key) =>
+        !['jobName', 'labels', 'status', 'limit', 'offset'].includes(key),
+    )
+  ) {
+    return errorResponse('Run list scope contains an unsupported field', 400)
+  }
+  if (!validJobNameScope(value.jobName) || !validLabelsScope(value.labels))
+    return errorResponse('Invalid run list scope', 400)
+  const status = value.status
+  if (
+    status !== undefined &&
+    !(
+      (typeof status === 'string' && VALID_STATUSES_SET.has(status)) ||
+      (Array.isArray(status) &&
+        status.every(
+          (item) => typeof item === 'string' && VALID_STATUSES_SET.has(item),
+        ))
+    )
+  ) {
+    return errorResponse('Invalid run list status scope', 400)
+  }
+  for (const key of ['limit', 'offset']) {
+    const field = value[key]
+    if (
+      field !== undefined &&
+      (!Number.isSafeInteger(field) || (field as number) < 0)
+    ) {
+      return errorResponse(`Invalid run list ${key} scope`, 400)
+    }
+  }
+  return value as RunFilter
+}
+
+function checkedRunsSubscribeFilter(
+  value: unknown,
+  fromRunsList = false,
+): RunsSubscribeFilter | Response {
+  if (!isPlainRecord(value)) {
+    return errorResponse('Run subscription scope must be an object', 400)
+  }
+
+  const filter = value as Record<string, unknown>
+  for (const [key, field] of Object.entries(filter)) {
+    if (key === 'jobName' || key === 'labels') continue
+    if (
+      fromRunsList &&
+      (key === 'status' || key === 'limit' || key === 'offset') &&
+      field === undefined
+    ) {
+      continue
+    }
+    return errorResponse(`Run subscription cannot enforce ${key}`, 400)
+  }
+
+  const jobName = filter.jobName
+  if (!validJobNameScope(jobName)) {
+    return errorResponse('Invalid run subscription jobName scope', 400)
+  }
+
+  const labels = filter.labels
+  if (!validLabelsScope(labels)) {
+    return errorResponse('Invalid run subscription labels scope', 400)
+  }
+
+  return { jobName, labels } as RunsSubscribeFilter
+}
+
 /**
  * Check if event labels match filter labels (all filter labels must match)
  */
@@ -340,10 +437,7 @@ export function createDurablyHandler<
       return errorResponse('Wait access requires onRunAccess', 400)
     }
 
-    if (
-      auth?.onRunAccess &&
-      (ctx !== undefined || operation === 'waits' || operation === 'signal')
-    ) {
+    if (auth?.onRunAccess) {
       await auth.onRunAccess(ctx as TContext, run as Run<TLabels>, {
         operation,
       })
@@ -371,7 +465,7 @@ export function createDurablyHandler<
       }
 
       // Auth hook: onTrigger (after validation)
-      if (auth?.onTrigger && ctx !== undefined) {
+      if (auth?.onTrigger) {
         await auth.onTrigger(ctx as TContext, body)
       }
 
@@ -417,8 +511,12 @@ export function createDurablyHandler<
       let filter: RunFilter<TLabels> = filterOrError as RunFilter<TLabels>
 
       // Auth hook: scopeRuns
-      if (auth?.scopeRuns && ctx !== undefined) {
-        filter = await auth.scopeRuns(ctx as TContext, filter)
+      if (auth?.scopeRuns) {
+        const scoped = checkedRunListFilter(
+          await auth.scopeRuns(ctx as TContext, filter),
+        )
+        if (scoped instanceof Response) return scoped
+        filter = scoped as RunFilter<TLabels>
       }
 
       const runs = await durably.getRuns(filter)
@@ -569,46 +667,40 @@ export function createDurablyHandler<
     url: URL,
     ctx: TContext | undefined,
   ): Promise<Response> {
-    let filter: RunsSubscribeFilter<TLabels>
+    const parsed = parseRunsSubscribeFilter(url) as RunsSubscribeFilter<TLabels>
+    if (!auth) return createRunsSSEStream(parsed)
 
-    if (ctx !== undefined && auth?.scopeRunsSubscribe) {
-      const parsed = parseRunsSubscribeFilter(
-        url,
-      ) as RunsSubscribeFilter<TLabels>
-      filter = await auth.scopeRunsSubscribe(ctx as TContext, parsed)
-    } else if (ctx !== undefined && auth?.scopeRuns) {
-      // Fallback: use scopeRuns with subscribe-compatible filter
-      const parsed = parseRunsSubscribeFilter(
-        url,
-      ) as RunsSubscribeFilter<TLabels>
-      const scoped = await auth.scopeRuns(
-        ctx as TContext,
-        {
-          ...parsed,
-        } as RunFilter<TLabels>,
-      )
-      filter = { jobName: scoped.jobName, labels: scoped.labels }
+    let scoped: unknown
+    let fromRunsList = false
+    if (auth.scopeRunsSubscribe) {
+      scoped = await auth.scopeRunsSubscribe(ctx as TContext, parsed)
+    } else if (auth.onRunAccess) {
+      return errorResponse('Run subscription requires scopeRunsSubscribe', 400)
+    } else if (auth.scopeRuns) {
+      scoped = await auth.scopeRuns(ctx as TContext, parsed)
+      fromRunsList = true
     } else {
-      filter = parseRunsSubscribeFilter(url) as RunsSubscribeFilter<TLabels>
+      return errorResponse('Run subscription requires a scope hook', 400)
     }
 
+    const filter = checkedRunsSubscribeFilter(scoped, fromRunsList)
+    if (filter instanceof Response) return filter
     return createRunsSSEStream(filter)
   }
 
   function createRunsSSEStream(filter: RunsSubscribeFilter): Response {
     const jobNameFilter = Array.isArray(filter.jobName)
       ? filter.jobName
-      : filter.jobName
-        ? [filter.jobName]
-        : []
+      : filter.jobName === undefined
+        ? undefined
+        : [filter.jobName]
     const labelsFilter = filter.labels
 
     const matchesFilter = (
       jobName: string,
       labels?: Record<string, string>,
     ) => {
-      if (jobNameFilter.length > 0 && !jobNameFilter.includes(jobName))
-        return false
+      if (jobNameFilter && !jobNameFilter.includes(jobName)) return false
       if (
         labelsFilter &&
         (!labels ||
@@ -645,8 +737,6 @@ export function createDurablyHandler<
                 jobName: event.jobName,
                 status: event.status,
                 labels: event.labels,
-                skippedInput: event.skippedInput,
-                skippedLabels: event.skippedLabels,
               })
             }
           }),

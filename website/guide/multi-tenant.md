@@ -8,6 +8,7 @@ Isolate job data per organization using labels and scoped queries. Builds on the
 2. **`scopeRuns`** — Auto-filter run listings to the current tenant
 3. **`onRunAccess`** — Block access to other tenants' runs
 4. **`onTrigger`** — Validate labels on new runs
+5. **`scopeRunsSubscribe`** — Scope the global live stream to the current tenant
 
 ## Full Setup
 
@@ -46,6 +47,12 @@ export const durablyHandler = createDurablyHandler(durably, {
 
     // 4. Auto-filter listings to current org
     scopeRuns: async (ctx, filter) => ({
+      ...filter,
+      labels: { ...filter.labels, organizationId: ctx.orgId },
+    }),
+
+    // 5. Scope the global event stream independently of per-run access
+    scopeRunsSubscribe: async (ctx, filter) => ({
       ...filter,
       labels: { ...filter.labels, organizationId: ctx.orgId },
     }),
@@ -104,13 +111,13 @@ function Dashboard() {
 
 ## SSE Scoping
 
-SSE subscriptions are also scoped. By default, `scopeRunsSubscribe` falls back to `scopeRuns`. Override it for custom SSE filtering:
+The global SSE subscription needs its own server-derived scope when `onRunAccess` is configured. A per-run authorization check does not cover `/runs/subscribe` events:
 
 ```ts
 auth: {
   // ...other hooks
 
-  // Custom SSE scoping (optional — defaults to scopeRuns)
+  // Required with onRunAccess
   scopeRunsSubscribe: async (ctx, filter) => ({
     ...filter,
     labels: { ...filter.labels, organizationId: ctx.orgId },
@@ -119,6 +126,8 @@ auth: {
 ```
 
 This means `durablyClient.useRuns()` only receives real-time updates for the current tenant's runs.
+
+The HTTP `run:coalesced` event identifies the selected run but omits the incoming trigger's unused input and labels. Include the tenant ID in concurrency keys when coalescing must stay within a tenant; run labels alone do not isolate coalescing.
 
 ## Role-Based Access per Tenant
 
@@ -152,6 +161,11 @@ auth: {
   },
 
   scopeRuns: async (ctx, filter) => ({
+    ...filter,
+    labels: { ...filter.labels, organizationId: ctx.orgId },
+  }),
+
+  scopeRunsSubscribe: async (ctx, filter) => ({
     ...filter,
     labels: { ...filter.labels, organizationId: ctx.orgId },
   }),

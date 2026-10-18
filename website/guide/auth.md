@@ -22,7 +22,7 @@ const handler = createDurablyHandler(durably, {
 })
 ```
 
-That's it. Every request to `/api/durably/*` now requires authentication.
+Every request to `/api/durably/*` now requires authentication. Global `GET /runs/subscribe` also requires an application-defined stream scope; this minimal example returns 400 for that route until you configure one. See [Multi-Tenant](/guide/multi-tenant) for a scoped setup.
 
 ## Rejecting Requests
 
@@ -63,6 +63,10 @@ auth: {
       throw new Response('Forbidden', { status: 403 })
     }
   },
+
+  // Here every authenticated caller may read every run. Use a narrower
+  // server-derived scope when callers have different run permissions.
+  scopeRunsSubscribe: (_ctx, filter) => filter,
 }
 ```
 
@@ -83,12 +87,14 @@ auth: {
 
 Wait endpoints require `onRunAccess` when authentication is configured. They check the owning run and reject a wait ID paired with another run ID. Use `onSignal(ctx, run, wait, signal)` to validate an application-specific payload or target commit before the result is stored. A wait ID alone grants no access. See [HTTP durable waits](/api/http-handler#durable-waits-over-http).
 
+`/runs/subscribe` does not call `onRunAccess` for each event. An authenticated handler must define a stream scope. When `onRunAccess` is configured, define `scopeRunsSubscribe` explicitly. A `scopeRuns` fallback is allowed only without `onRunAccess` and only for `jobName` and `labels` restrictions; status and pagination restrictions cannot be enforced on a live stream. A scope with `jobName: []` receives no events. Hooks still run if a successful `authenticate` returns `undefined`; throw a `Response` to reject unauthenticated callers.
+
 ## Execution Order
 
 1. **`authenticate(request)`** — fail fast, before anything else
 2. **`onRequest()`** — lazy init (migrations, etc.)
 3. **Validate request** — parse body/params
-4. **Auth hook** — `onTrigger`, `onRunAccess`, or `scopeRuns`
+4. **Auth hook** — `onTrigger`, `onRunAccess`, `scopeRuns`, or `scopeRunsSubscribe`
 5. **Execute operation**
 
 ## Type-Safe Context
@@ -126,11 +132,29 @@ export const durablyHandler = createDurablyHandler(durably, {
       if (!session.userId) throw new Response('Unauthorized', { status: 401 })
       return { userId: session.userId }
     },
+    onTrigger: (ctx, trigger) => {
+      if (trigger.labels?.userId !== ctx.userId)
+        throw new Response('Forbidden', { status: 403 })
+    },
+    onRunAccess: (ctx, run) => {
+      if (run.labels.userId !== ctx.userId)
+        throw new Response('Forbidden', { status: 403 })
+    },
+    scopeRuns: (ctx, filter) => ({
+      ...filter,
+      labels: { ...filter.labels, userId: ctx.userId },
+    }),
+    scopeRunsSubscribe: (ctx, filter) => ({
+      ...filter,
+      labels: { ...filter.labels, userId: ctx.userId },
+    }),
   },
 })
 
 await durably.init()
 ```
+
+Pass the authenticated `userId` label when triggering jobs. The server's `onTrigger` hook verifies it; the client-provided label alone is not proof of ownership.
 
 ```ts
 // app/routes/api.durably.$.ts
@@ -162,6 +186,22 @@ export const durablyHandler = createDurablyHandler(durably, {
       if (!session?.user) throw new Response('Unauthorized', { status: 401 })
       return { userId: session.user.id }
     },
+    onTrigger: (ctx, trigger) => {
+      if (trigger.labels?.userId !== ctx.userId)
+        throw new Response('Forbidden', { status: 403 })
+    },
+    onRunAccess: (ctx, run) => {
+      if (run.labels.userId !== ctx.userId)
+        throw new Response('Forbidden', { status: 403 })
+    },
+    scopeRuns: (ctx, filter) => ({
+      ...filter,
+      labels: { ...filter.labels, userId: ctx.userId },
+    }),
+    scopeRunsSubscribe: (ctx, filter) => ({
+      ...filter,
+      labels: { ...filter.labels, userId: ctx.userId },
+    }),
   },
 })
 
@@ -202,6 +242,9 @@ const handler = createDurablyHandler(durably, {
       }
       return { apiKey }
     },
+    // This example uses one shared administrator key. All authenticated
+    // callers are allowed to see the same run stream.
+    scopeRunsSubscribe: (_ctx, filter) => filter,
   },
 })
 

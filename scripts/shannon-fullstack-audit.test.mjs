@@ -378,7 +378,7 @@ async function fakeAuditTools(temporary) {
       'case " $* " in',
       '  *" clone "*) for value do last="$value"; done; mkdir -p "$last"; exit 0 ;;',
       '  *" rev-parse HEAD "*) echo "$FAKE_REVISION"; exit 0 ;;',
-      '  *" status --porcelain=v1 "*) exit 0 ;;',
+      '  *" status --porcelain=v1 "*) if [ "$FAKE_INTERRUPT_AFTER_SNAPSHOT" = 1 ] && [ "$1" = "-C" ]; then kill -INT "$PPID"; fi; exit 0 ;;',
       '  *" ls-files -z "*) exit 0 ;;',
       '  *" checkout --detach "*) exit 0 ;;',
       'esac',
@@ -707,16 +707,67 @@ test('source or worker Pi drift fails before Docker setup', async (context) => {
     await scannerDependencyHash(linkedScannerDir),
     await scannerDependencyHash(scannerDir),
   )
+  for (const workspace of ['cli', 'worker']) {
+    const link = join(scannerDir, 'node_modules', workspace + '-workspace')
+    await symlink(join(scannerDir, 'apps', workspace), link)
+    await scannerDependencyHash(scannerDir)
+    await rm(link)
+  }
+  const workerSource = join(scannerDir, 'apps', 'worker', 'src')
+  await mkdir(workerSource)
+  const badWorkspaceLink = join(scannerDir, 'node_modules', 'workspace-subpath')
+  await symlink(workerSource, badWorkspaceLink)
+  await assert.rejects(
+    scannerDependencyHash(scannerDir),
+    /dependency link points outside verified roots/,
+  )
+  await rm(badWorkspaceLink)
+  await symlink(scannerDir, badWorkspaceLink)
+  await assert.rejects(
+    scannerDependencyHash(scannerDir),
+    /dependency link points outside verified roots/,
+  )
+  await rm(badWorkspaceLink)
+
+  const alternatePackage = join(
+    scannerDir,
+    'apps',
+    'cli',
+    'node_modules',
+    'alternate-runtime',
+  )
+  await mkdir(alternatePackage)
+  await writeFile(
+    join(alternatePackage, 'index.js'),
+    'export const version = 2\n',
+  )
+  const intermediate = join(temporary, 'dependency-hop')
+  const hopLink = join(scannerDir, 'node_modules', 'through-hop')
+  await symlink(
+    join(scannerDir, 'apps', 'cli', 'node_modules', 'fake-runtime'),
+    intermediate,
+  )
+  await symlink(intermediate, hopLink)
+  const beforeHopChange = await scannerDependencyHash(scannerDir)
+  await rm(intermediate)
+  await symlink(alternatePackage, intermediate)
+  assert.notEqual(await scannerDependencyHash(scannerDir), beforeHopChange)
+  await rm(hopLink)
+  await rm(intermediate)
+
   const outsideDependency = join(temporary, 'outside-dependency.js')
   await writeFile(outsideDependency, 'export const version = 1\n')
   await symlink(
     outsideDependency,
     join(scannerDir, 'node_modules', 'outside-dependency.js'),
   )
-  await assert.rejects(
-    scannerDependencyHash(scannerDir),
-    /dependency link points outside verified roots/,
-  )
+  await assert.rejects(scannerDependencyHash(scannerDir), (error) => {
+    assert.match(error.message, /dependency link points outside verified roots/)
+    assert.match(error.message, /outside-dependency\.js/)
+    assert.ok(error.message.includes(outsideDependency))
+    assert.match(error.message, /default pnpm virtual store/)
+    return true
+  })
   await rm(join(scannerDir, 'node_modules', 'outside-dependency.js'))
   const ignoredStore = join(scannerDir, 'workspaces', 'alternate-store')
   await mkdir(ignoredStore, { recursive: true })
@@ -881,6 +932,37 @@ for (const signal of ['SIGINT', 'SIGHUP']) {
     )
   })
 }
+
+test('interrupt after the source snapshot does not start the target build', async (context) => {
+  const temporary = await mkdtemp(
+    join(tmpdir(), 'durably-shannon-snapshot-interrupt-test-'),
+  )
+  context.after(() => rm(temporary, { recursive: true, force: true }))
+  const { scannerDir, env } = await fakeAuditTools(temporary)
+  const output = join(temporary, 'output')
+  const result = spawnSync(
+    process.execPath,
+    [
+      join(worktree, 'scripts', 'shannon-fullstack-audit.mjs'),
+      'run',
+      '--output',
+      output,
+      '--shannon-dir',
+      scannerDir,
+    ],
+    {
+      cwd: worktree,
+      env: { ...env, FAKE_INTERRUPT_AFTER_SNAPSHOT: '1' },
+      encoding: 'utf8',
+      timeout: 20_000,
+    },
+  )
+  assert.equal(result.status, 130, result.stderr)
+  const state = JSON.parse(await readFile(join(output, 'state.json'), 'utf8'))
+  assert.equal(state.status, 'failed')
+  const calls = await readFile(env.DOCKER_MARKER, 'utf8')
+  assert.doesNotMatch(calls, /^build|^network create|^volume create/m)
+})
 
 test('interrupting model preflight stops its detached child', async (context) => {
   const temporary = await mkdtemp(

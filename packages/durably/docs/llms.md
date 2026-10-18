@@ -579,7 +579,7 @@ const handler = createDurablyHandler(durably, {
       labels: { ...filter.labels, organizationId: ctx.orgId },
     }),
 
-    // Scope runs subscribe stream (GET /runs/subscribe). Falls back to scopeRuns if not set.
+    // Scope runs subscribe stream (GET /runs/subscribe). Required with onRunAccess.
     scopeRunsSubscribe: async (ctx, filter) => ({
       ...filter,
       labels: { ...filter.labels, organizationId: ctx.orgId },
@@ -596,6 +596,8 @@ GET /runs/subscribe?label.organizationId=org_123&label.env=prod
 ```
 
 Every supplied label must match. The same filters apply to the initial run list and the `/runs/subscribe` event stream, including `run:trigger`, `run:coalesced`, and `run:leased` projections. HTTP trigger responses include the selected run's current `status`; active coalescing can therefore return `pending`, `leased`, or `waiting` with disposition `coalesced`.
+
+When `auth` is configured, `/runs/subscribe` requires a server-defined scope. If `onRunAccess` is configured, supply `scopeRunsSubscribe` explicitly; per-run authorization does not authorize the global stream. Otherwise `scopeRuns` can be used as a fallback only when it returns stream-compatible `jobName` and `labels` restrictions. A fallback containing `status`, `limit`, or `offset` is rejected. `jobName: []` means no authorized jobs, and empty `status` or `jobName` arrays on `GET /runs` match no runs. HTTP `run:coalesced` events omit `skippedInput` and `skippedLabels`; trusted in-process listeners retain them. Configured auth hooks run even if `authenticate` successfully returns `undefined`; it must throw a `Response` to reject a request.
 
 **Response Shape:** The `/runs` and `/run` endpoints return `ClientRun` objects (internal fields like `leaseOwner`, `leaseExpiresAt`, `idempotencyKey`, `concurrencyKey`, `leaseGeneration`, `updatedAt` are stripped). Each response includes derived `isTerminal`, `isActive`, and `isWaiting` booleans from `status` (terminal: completed, failed, or cancelled; active: pending or leased; waiting: waiting). Use `toClientRun()` to apply the same projection in custom code:
 

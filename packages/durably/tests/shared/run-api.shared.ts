@@ -177,7 +177,8 @@ export function createRunApiTests(createDialect: () => Dialect) {
 
         const all = await d.getRuns()
         const withEmptyStatus = await d.getRuns({ status: [] })
-        expect(withEmptyStatus).toHaveLength(all.length)
+        expect(all).toHaveLength(2)
+        expect(withEmptyStatus).toHaveLength(0)
       })
 
       it('filters by jobName', async () => {
