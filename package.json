@@ -31,7 +31,7 @@
     "security:scan:fullstack": "node scripts/shannon-fullstack-audit.mjs run",
     "security:scan:status": "node scripts/shannon-fullstack-audit.mjs status",
     "security:scan:down": "node scripts/shannon-fullstack-audit.mjs down",
-    "test:security-scan": "node --test scripts/shannon-fullstack-audit.test.mjs"
+    "test:security-scan": "oxfmt --check scripts/shannon-fullstack-audit.mjs scripts/shannon-fullstack-audit.test.mjs && node --test scripts/shannon-fullstack-audit.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.13.5",

@@ -18,8 +18,10 @@ import {
   checkedOutputPath,
   checkedStatus,
   cleanupResources,
+  command,
   collectReports,
   evidenceDiff,
+  parseOptions,
   snapshotSource,
   sqliteEvidence,
 } from './shannon-fullstack-audit.mjs'
@@ -79,6 +81,30 @@ test('rejects output paths inside the worktree, including a symlink', async (con
   )
 })
 
+test('requires an absolute output path', async () => {
+  await assert.rejects(
+    checkedOutputPath(parseOptions(['run', '--output', '../audit']).output),
+    /absolute/,
+  )
+})
+
+test(
+  'command timeout forces a child that ignores SIGTERM to exit',
+  { timeout: 8_000 },
+  async () => {
+    const started = Date.now()
+    await assert.rejects(
+      command(
+        process.execPath,
+        ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'],
+        { timeout: 300 },
+      ),
+      /timed out/,
+    )
+    assert.ok(Date.now() - started < 7_000)
+  },
+)
+
 test('SQLite evidence records integrity, table counts, and new run IDs', async (context) => {
   const temporary = await mkdtemp(join(tmpdir(), 'durably-shannon-sqlite-'))
   context.after(() => rm(temporary, { recursive: true, force: true }))
@@ -89,20 +115,25 @@ test('SQLite evidence records integrity, table counts, and new run IDs', async (
   database.close()
   const before = sqliteEvidence(file)
   assert.deepEqual(before.integrity, ['ok'])
-  assert.deepEqual(before.schema, [
-    {
-      type: 'table',
-      name: 'durably_runs',
-      tableName: 'durably_runs',
-      sql: 'CREATE TABLE durably_runs (id TEXT PRIMARY KEY)',
-    },
-    {
-      type: 'index',
-      name: 'sqlite_autoindex_durably_runs_1',
-      tableName: 'durably_runs',
-      sql: null,
-    },
-  ].sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name)))
+  assert.deepEqual(
+    before.schema,
+    [
+      {
+        type: 'table',
+        name: 'durably_runs',
+        tableName: 'durably_runs',
+        sql: 'CREATE TABLE durably_runs (id TEXT PRIMARY KEY)',
+      },
+      {
+        type: 'index',
+        name: 'sqlite_autoindex_durably_runs_1',
+        tableName: 'durably_runs',
+        sql: null,
+      },
+    ].sort(
+      (a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name),
+    ),
+  )
   assert.equal(before.counts.durably_runs, 1)
   const next = new DatabaseSync(file)
   next.exec("INSERT INTO durably_runs (id) VALUES ('second')")
@@ -243,6 +274,18 @@ async function fakeAuditTools(temporary) {
   const scannerDir = join(temporary, 'scanner')
   await mkdir(bin)
   await mkdir(scannerDir)
+  for (const name of ['pi-agent-core', 'pi-ai', 'pi-coding-agent']) {
+    const directory = join(
+      scannerDir,
+      'apps',
+      'worker',
+      'node_modules',
+      '@earendil-works',
+      name,
+    )
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, 'package.json'), '{"version":"1.2.0"}')
+  }
   const revision = 'a'.repeat(40)
   await writeFile(
     join(bin, 'pi'),
@@ -256,6 +299,14 @@ async function fakeAuditTools(temporary) {
     join(bin, 'git'),
     [
       '#!/bin/sh',
+      'if [ "$1" = "-C" ] && [ "$2" = "$FAKE_SCANNER_DIR" ]; then',
+      '  if [ "$3" = "rev-parse" ]; then echo 2468b67d9e40d70d0b189462c5041c24e1dc886c; exit 0; fi',
+      '  if [ "$3" = "diff" ]; then',
+      '    if [ "$FAKE_DRIFT" = 1 ]; then echo drift; else cat "$FAKE_PATCH"; fi',
+      '    exit 0',
+      '  fi',
+      '  if [ "$3" = "ls-files" ]; then exit 0; fi',
+      'fi',
       'case " $* " in',
       '  *" clone "*) for value do last="$value"; done; mkdir -p "$last"; exit 0 ;;',
       '  *" rev-parse HEAD "*) echo "$FAKE_REVISION"; exit 0 ;;',
@@ -299,6 +350,7 @@ async function fakeAuditTools(temporary) {
       '  exit 0',
       'fi',
       'if [ "$1" = "status" ]; then',
+      '  if [ "$FAKE_STATUS_ERROR" = 1 ]; then echo invalid; exit 1; fi',
       '  if [ "$FAKE_SCAN_FAIL" = 1 ]; then',
       '    echo \'{"status":"failed","phases":[{"key":"preflight","state":"completed"},{"key":"reporting","state":"failed"}]}\'',
       '    exit 1',
@@ -335,6 +387,8 @@ async function fakeAuditTools(temporary) {
       '  echo static > "$(dirname "$0")/workspaces/$workspace/.shannon/capella/report.md"',
       '  echo "{}" > "$(dirname "$0")/workspaces/$workspace/.shannon/capella/capella.sarif"',
       '  echo \'[2026-10-18 09:00:00] [agent] step: {"secret":"synthetic-secret"}\' > "$(dirname "$0")/workspaces/$workspace/.shannon/workflow.log"',
+      '  echo \'[2026-10-18 09:00:01] [agent] Authorization: Basic synthetic-basic\' >> "$(dirname "$0")/workspaces/$workspace/.shannon/workflow.log"',
+      '  echo \'[2026-10-18 09:00:02] [agent] token=eyJhbGci.eyJwYXlsb2Fk.signature\' >> "$(dirname "$0")/workspaces/$workspace/.shannon/workflow.log"',
       '  if [ "$FAKE_SCAN_FAIL" = 1 ]; then exit 1; fi',
       '  exit 0',
       'fi',
@@ -352,6 +406,13 @@ async function fakeAuditTools(temporary) {
       ...process.env,
       PATH: bin + ':' + process.env.PATH,
       FAKE_REVISION: revision,
+      FAKE_SCANNER_DIR: scannerDir,
+      FAKE_PATCH: join(
+        worktree,
+        'scripts',
+        'shannon-fullstack',
+        'shannon-pi-1.2.0.patch',
+      ),
       DOCKER_MARKER: join(temporary, 'docker-marker'),
       CP_COUNT: join(temporary, 'copy-count'),
       DB_SOURCE: databaseFile,
@@ -393,6 +454,7 @@ test('stubbed full run waits for reports and cleans up', async (context) => {
   )
   assert.match(scannerLog, /details omitted/)
   assert.doesNotMatch(scannerLog, /synthetic-secret/)
+  assert.doesNotMatch(scannerLog, /synthetic-basic|eyJhbGci/)
   const calls = await readFile(env.DOCKER_MARKER, 'utf8')
   assert.match(calls, /network create --internal/)
   assert.match(calls, /image rm durably-shannon-target:/)
@@ -414,6 +476,68 @@ test('stubbed full run waits for reports and cleans up', async (context) => {
   )
   assert.equal(down.status, 0, down.stderr)
   assert.match(await readFile(env.FAKE_STOP_MARKER, 'utf8'), /stopped/)
+  const unreadable = spawnSync(
+    process.execPath,
+    [
+      join(worktree, 'scripts', 'shannon-fullstack-audit.mjs'),
+      'down',
+      '--output',
+      output,
+      '--shannon-dir',
+      scannerDir,
+    ],
+    {
+      cwd: worktree,
+      env: { ...env, FAKE_STATUS_ERROR: '1' },
+      encoding: 'utf8',
+    },
+  )
+  assert.equal(unreadable.status, 0, unreadable.stderr)
+  assert.equal(
+    (await readFile(env.FAKE_STOP_MARKER, 'utf8')).trim().split('\n').length,
+    2,
+  )
+})
+
+test('source or worker Pi drift fails before Docker setup', async (context) => {
+  const temporary = await mkdtemp(join(tmpdir(), 'durably-shannon-drift-test-'))
+  context.after(() => rm(temporary, { recursive: true, force: true }))
+  const { scannerDir, env } = await fakeAuditTools(temporary)
+  const args = [
+    join(worktree, 'scripts', 'shannon-fullstack-audit.mjs'),
+    'run',
+    '--output',
+    join(temporary, 'output'),
+    '--shannon-dir',
+    scannerDir,
+  ]
+  const source = spawnSync(process.execPath, args, {
+    cwd: worktree,
+    env: { ...env, FAKE_DRIFT: '1' },
+    encoding: 'utf8',
+  })
+  assert.equal(source.status, 1)
+  assert.match(source.stderr, /differs from the pinned Pi patch/)
+  await writeFile(
+    join(
+      scannerDir,
+      'apps',
+      'worker',
+      'node_modules',
+      '@earendil-works',
+      'pi-ai',
+      'package.json',
+    ),
+    '{"version":"1.3.0"}',
+  )
+  const worker = spawnSync(process.execPath, args, {
+    cwd: worktree,
+    env,
+    encoding: 'utf8',
+  })
+  assert.equal(worker.status, 1)
+  assert.match(worker.stderr, /worker Pi package version mismatch/)
+  await assert.rejects(readFile(env.DOCKER_MARKER))
 })
 
 test('failed final SQLite copy still removes audit resources', async (context) => {

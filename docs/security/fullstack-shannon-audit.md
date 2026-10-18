@@ -11,9 +11,11 @@ This workflow scans the committed examples/fullstack app and its Durably depende
 - A clean, committed checkout. The workflow rejects staged, unstaged, and untracked files.
 - A trusted local network while validation runs. Its temporary HTTP response endpoint listens on the host only during preflight.
 
-  pi auth check --provider openai-codex
+```bash
+pi auth check --provider openai-codex
+```
 
-The scanner build is pinned to Keygraph Shannon commit 2468b67d9e40d70d0b189462c5041c24e1dc886c (Shannon 3.4.0) with Pi's three worker packages set to 1.2.0. The setup command clones that revision and builds it under ~/.cache/durably-shannon/. It does not change this repository.
+The scanner build is pinned to Keygraph Shannon commit 2468b67d9e40d70d0b189462c5041c24e1dc886c (Shannon 3.4.0). A checked-in patch pins its three Pi worker packages to 1.2.0 and fixes Shannon's pnpm lockfile. Setup applies the patch, installs with a frozen lockfile, and builds under ~/.cache/durably-shannon/. Each run checks the source patch and installed worker versions before starting. The host Pi CLI may be 1.2.0 or later; its actual version and the worker version are recorded separately. Setup does not change this repository.
 
 ## Commands
 
@@ -28,7 +30,7 @@ Use a new absolute output directory for every run. It must be outside this check
     pnpm security:scan:status --output /absolute/path/to/assessment
     pnpm security:scan:down --output /absolute/path/to/assessment
 
-The down command is idempotent and can recover resources left by a killed terminal or host interruption. The state.json file records the exact resource names. It never removes resources outside that run's names. A failed setup can be retried at the same Shannon directory. If using an already built checkout of the pinned Shannon revision, pass --shannon-dir /absolute/path to setup, validate, and run.
+The down command is idempotent and can recover resources left by a killed terminal or host interruption. The state.json file records the exact resource names. It never removes resources outside that run's names. A failed install or build can be retried at the same Shannon directory when its source still matches the pinned patch. If using an already built checkout of the pinned Shannon revision and patch, pass --shannon-dir /absolute/path to setup, validate, and run.
 
 ## What the run does
 
