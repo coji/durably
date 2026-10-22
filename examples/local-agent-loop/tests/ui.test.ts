@@ -2439,7 +2439,8 @@ async function demo(home: string, args: string[]) {
     cwd: packageRoot,
     timeoutMs: 60000,
     maxOutputChars: 10_000_000,
-    env: { HOME: home },
+    // No auto-started worker: the test drives the runs itself.
+    env: { HOME: home, LOCAL_AGENT_LOOP_NO_AUTO_WORKER: '1' },
   })
 }
 

@@ -34,7 +34,17 @@ and steer it.
 
 ## Starting a run
 
-1. Confirm a worker is running:
+1. A worker is not a precondition. `trigger` (and `repair`, `retrigger`,
+   `approve`, `reject`, `spec-revise`) starts a detached
+   `demo worker --exit-when-idle` when none runs; it lives in a session of its
+   own, so cleaning up this session does not stop it, and it stops by itself
+   once it has had no work for a while. Do not ask the user to start a
+   long-lived worker and do not stop when none is running.
+
+   Checking for a worker is informational only. `demo status` shows it, and
+   the `worker` field of the trigger JSON says what happened: `autoStarted`
+   (pid and log file) when the trigger started one, `running: true` when one
+   was already up. You can also count worker processes:
 
    ```bash
    pgrep -f "local-agent-loop.*cli.ts worker" | wc -l
@@ -42,21 +52,23 @@ and steer it.
 
    Count the worker process itself, not the pnpm wrapper that launched it: a
    single healthy worker matches this pattern exactly once, however it was
-   started.
-
-   If the count is 0, tell the user to start one in another terminal and stop
-   here. Do not start it yourself; it is long-running and owns the terminal.
-
-   ```bash
-   pnpm --filter example-local-agent-loop demo worker
-   ```
-
-   A second worker on the same state root refuses to start and prints the
-   running one's pid and checkout, so a count above 1 means a worker from a
-   version before that lock is still running. Say so and stop; the user
-   stops the old one (`kill <pid>`). Which worker picks up a run no longer
+   started. A second worker on the same state root refuses to start and prints
+   the running one's pid and checkout. A count above 1 can be momentary: an
+   idling worker starts its successor after letting go of the lock and exits
+   right after, and workers under another `HOME` use their own state root.
+   Count again after a few seconds and check each pid's `HOME` and checkout.
+   Only when two workers on the same state root stay up does it mean a worker
+   from a version before that lock is still running. Then say so and stop;
+   the user stops the old one (`kill <pid>`). Which worker picks up a run no longer
    matters for its settings: the timeouts and the Codex CLI are fixed in the
    run when it is triggered, never read from the worker's environment.
+
+   An auto-started worker appends its output to
+   `~/.local/state/local-agent-loop/logs/worker-YYYY-MM-DD.log`, including
+   `[shutdown] reason=<SIGTERM|SIGINT|idle>` when it stops. It runs the CLI of
+   the checkout the command ran from. The user can switch auto-start off with
+   `--no-auto-worker` on the command or `LOCAL_AGENT_LOOP_NO_AUTO_WORKER=1`;
+   then a run stays pending until they start `demo worker` themselves.
 
 2. Confirm the repository is clean. The factory cuts a worktree from a
    commit, so uncommitted work would not be included and the user should know
@@ -81,7 +93,8 @@ and steer it.
    - Use `--provider claude` when the user asks for Claude, `--provider fake`
      for a dry run of the wiring.
 
-4. Report the run id and stop. Do not poll. The run takes as long as the work
+4. Report the run id, and the auto-started worker's pid and log file when the
+   trigger JSON names one, and stop. Do not poll. The run takes as long as the work
    takes, and this session does not need to stay open.
 
 ## Reading a run
