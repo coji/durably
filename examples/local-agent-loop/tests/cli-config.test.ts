@@ -4808,10 +4808,12 @@ describe('auto-started worker', { timeout: 300000 }, () => {
       const firstId = (JSON.parse(first.stdout) as { runId: string }).runId
       const w1 = first.pid
       assert.ok(w1, first.stderr)
+      const today = new Date()
+      const pad = (n: number) => String(n).padStart(2, '0')
       const log = join(
         box.stateRoot,
         'logs',
-        `worker-${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}.log`,
+        `worker-${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}.log`,
       )
       assert.ok(first.stderr.includes(log), first.stderr)
       await stopsWhenIdle(w1, 'trigger')
