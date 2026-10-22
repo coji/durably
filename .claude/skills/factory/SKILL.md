@@ -53,9 +53,13 @@ and steer it.
    Count the worker process itself, not the pnpm wrapper that launched it: a
    single healthy worker matches this pattern exactly once, however it was
    started. A second worker on the same state root refuses to start and prints
-   the running one's pid and checkout, so a count above 1 means a worker from
-   a version before that lock is still running. Say so and stop; the user
-   stops the old one (`kill <pid>`). Which worker picks up a run no longer
+   the running one's pid and checkout. A count above 1 can be momentary: an
+   idling worker starts its successor after letting go of the lock and exits
+   right after, and workers under another `HOME` use their own state root.
+   Count again after a few seconds and check each pid's `HOME` and checkout.
+   Only when two workers on the same state root stay up does it mean a worker
+   from a version before that lock is still running. Then say so and stop;
+   the user stops the old one (`kill <pid>`). Which worker picks up a run no longer
    matters for its settings: the timeouts and the Codex CLI are fixed in the
    run when it is triggered, never read from the worker's environment.
 
