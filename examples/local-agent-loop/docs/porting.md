@@ -22,7 +22,10 @@ durablyのcheckoutを特定のcommitに固定し、そこから `demo worker` �
 2. 対象リポジトリ直下に `factory.json` を置き、`check`、必要なら `setup`、
    `base`、役割ごとの `profiles` を書く。書式は [README](../README.md) の
    「実リポジトリに対して動かす」にある。
-3. workerを一つ起動し、`demo trigger --repo <path> --task-file <file>` で渡す。
+3. 固定したcheckoutでworkerを一つ起動し、`demo trigger --repo <path> --task-file <file>`
+   で渡す。workerを起動しなくても `trigger` が自動で起動するが、そのworkerは
+   コマンドを実行したcheckoutのCLIで動く。固定したcheckoutのworkerで処理
+   させるには、先にそこでworkerを起動しておく。
 4. 結果は `demo status` と `demo report --format json` で読む。使用量を台帳に
    つけるなら、run後に利用側がこのJSONを取り込む。
 

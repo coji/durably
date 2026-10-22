@@ -91,6 +91,9 @@ Claudeは `ai-sdk-provider-claude-code@4.3.1` が返す `sessionId` を保存し
 
 ## 実行
 
+Terminal 1でworkerを常駐させる手順です。常駐させなくても、Terminal 2の
+`trigger` などがworkerを自動で起動します（「workerの自動起動とアイドル終了」の節）。
+
 Terminal 1:
 
 ```bash
@@ -171,6 +174,12 @@ Terminal 1でworkerを常駐させなくても、runを進めるコマンドが�
 - 自動起動したworkerのアイドル期間は `LOCAL_AGENT_LOOP_IDLE_MS`（既定30000）で
   変えられます。1から2147483647までの整数ミリ秒だけを受け付け、範囲外ならworker
   を起動せずに警告します。
+- 自動起動したworkerは、コマンドを実行したcheckoutのCLIで動きます（どのcheckout
+  かは `worker.json` の `checkout` に残ります）。同じstate rootを共有していると、
+  固定したcheckout（「durably checkoutを固定して呼ぶ」の節）とは別のcheckoutから
+  実行したコマンドが、そのcheckoutのworkerを起動することがあります。固定した
+  checkoutのworkerで処理したいときは、そのcheckoutでworkerを動かしておくか、
+  自動起動を止めてください。
 
 `demo worker --exit-when-idle [--idle-ms <ms>]` は、仕事がない状態が `--idle-ms`
 （既定30000、1から2147483647までの整数）続くと終了します。オプションなしの
@@ -182,10 +191,15 @@ Terminal 1でworkerを常駐させなくても、runを進めるコマンドが�
 - アイドル期間が過ぎたら、ポーリングを止めてからもう一度確かめます。そこで仕事が
   見つかれば、ポーリングを再開して処理します。
 - この最後の確認からロックを手放すまでの間にrunが作られると、起動元のコマンドは
-  まだworkerがいると見て新しく起動せず、そのrunはpendingのまま残ることがあります。
-  この窓はごく短いものの、なくすことはできません。`demo wait` は
-  `--worker-timeout`（既定10秒）でworkerがいない状態を検出して終了コード6で
-  知らせるので、そのときは `demo worker` を起動してください。
+  まだworkerがいると見て新しく起動しません。そのため、アイドル終了するworkerは
+  ロックを手放したあとにもう一度仕事を確かめ、仕事があれば自動起動と同じ方法で
+  後継のworkerを起動し、ログに `[idle] work arrived as the worker stopped; started
+a successor (pid N)` を書きます。後継も同じようにアイドル終了するので、workerが
+  ロックを握っている間に作られたrunは、そのworkerがロックを手放す前か後のどちらか
+  で必ず見つかります。後継が起動しない場合（起動の失敗、自動起動を止めている場合）
+  はrunがpendingのまま残ります。`demo wait` は `--worker-timeout`（既定10秒）で
+  workerがいない状態を検出して終了コード6で知らせるので、そのときは
+  `demo worker` を起動してください。
 - SIGTERM、SIGINT、アイドル終了では、`[shutdown] reason=SIGTERM`、
   `[shutdown] reason=SIGINT`、`[shutdown] reason=idle` をログに書き、実行中の
   エージェントCLIを止め、DBを閉じてロックを手放し、出力を書き終えてから終了コード
@@ -319,7 +333,11 @@ pnpm --filter example-local-agent-loop demo status --format json
 
 `trigger` のJSON、`status --run` のJSON、`status` の一覧は、workerが動いているかを
 表示します。workerがいなければpendingのrunは進まないので、`trigger` と `status`
-はworkerの起動コマンドを案内します。
+はworkerの起動コマンドを案内します。ただし `trigger` がworkerを自動起動したときは、
+`start` を `null` にし、起動したworkerのpidとログの場所を `autoStarted` に入れます。
+起動したworkerがまだロックを握っていなければ `running` は `false` のことがあります。
+自動起動しなかったとき（止めている、不要、workerがいる）のJSONは下の例のとおりで、
+`autoStarted` はありません。
 
 ```json
 "worker": {
@@ -334,6 +352,21 @@ pnpm --filter example-local-agent-loop demo status --format json
   `kill -9` で止まったworkerの `worker.json` は残りますが、ロックは残らないので、
   稼働中とは表示しません。pidと起動時刻は、ロックが握られているときだけ
   `worker.json` から読んで表示します。
+
+```json
+"worker": {
+  "running": false,
+  "pid": null,
+  "startedAt": null,
+  "start": null,
+  "unknownReason": null,
+  "autoStarted": {
+    "pid": 51234,
+    "log": "~/.local/state/local-agent-loop/logs/worker-2026-10-22.log"
+  }
+}
+```
+
 - workerが動いていれば、pendingのrunや判断済みのwaitにworkerの起動を案内しません。
 - `status --run` の `lastLeaseRenewedAt` は、workerがそのrunのleaseを最後に更新した
   時刻です。専用のheartbeatは記録していないので、有効なleaseの期限からlease期間
@@ -1779,6 +1812,11 @@ pnpm -C ~/src/durably --filter example-local-agent-loop demo trigger \
   --repo "$PWD" --task-file "$PWD/task.md"                                # Terminal 2
 ```
 
+Terminal 1のworkerは省略できますが、そのときは `trigger` が自動で起動する
+workerが、コマンドを実行したcheckoutのCLIで動きます（「workerの自動起動と
+アイドル終了」の節）。固定したcheckoutのworkerで処理させるには、先にそこで
+workerを起動しておきます。
+
 対象リポジトリに置くのは `factory.json` と作業内容のファイルだけです。固定する
 commitは利用側で記録し、上げるときは意図してcheckoutし直します。コピーする方式との
 比較は [docs/porting.md](docs/porting.md) にあります。
@@ -2214,10 +2252,12 @@ repairs の中央値を見ます。unknown は統計から外して件数だけ�
 ## fake mode
 
 ```bash
-pnpm --filter example-local-agent-loop demo worker &
 pnpm --filter example-local-agent-loop demo trigger \
   --provider fake --context reuse --max-iterations 3
 ```
+
+workerは `trigger` が自動で起動し、runが終わってしばらく仕事がなければ自分で
+終了します（「workerの自動起動とアイドル終了」の節）。
 
 `FAKE_FAIL_FIRST=0` で初回実装を成功させられます。
 `FAKE_REVIEW_SEQUENCE="needsChanges,pass"` でreview修正ループを再現できます。

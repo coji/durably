@@ -2426,7 +2426,14 @@ function startWorker(
 ) {
   const child = spawn(tsx, [cli, 'worker', ...flags], {
     cwd: box.root,
-    env: { ...process.env, HOME: box.home, FAKE_FAIL_FIRST: '0', ...env },
+    // An idle worker never starts a successor unless a test asks for one.
+    env: {
+      ...process.env,
+      HOME: box.home,
+      FAKE_FAIL_FIRST: '0',
+      LOCAL_AGENT_LOOP_NO_AUTO_WORKER: '1',
+      ...env,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let out = ''
@@ -4805,7 +4812,14 @@ describe('auto-started worker', { timeout: 300000 }, () => {
       ])
       assert.equal(first.code, 0, first.stderr)
       // stdout is still the trigger's JSON alone.
-      const firstId = (JSON.parse(first.stdout) as { runId: string }).runId
+      const firstJson = JSON.parse(first.stdout) as {
+        runId: string
+        worker: {
+          start: string | null
+          autoStarted?: { pid: number; log: string }
+        }
+      }
+      const firstId = firstJson.runId
       const w1 = first.pid
       assert.ok(w1, first.stderr)
       const today = new Date()
@@ -4816,6 +4830,10 @@ describe('auto-started worker', { timeout: 300000 }, () => {
         `worker-${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}.log`,
       )
       assert.ok(first.stderr.includes(log), first.stderr)
+      // The JSON names the worker it started instead of a command to start
+      // one by hand.
+      assert.equal(firstJson.worker.start, null)
+      assert.deepEqual(firstJson.worker.autoStarted, { pid: w1, log })
       await stopsWhenIdle(w1, 'trigger')
       await db.migrate()
       assert.equal((await db.getRun(firstId))?.status, 'completed')
@@ -4945,8 +4963,19 @@ describe('auto-started worker', { timeout: 300000 }, () => {
       try {
         await db.migrate()
         for (const out of [flagged.stdout, off.stdout]) {
-          const id = (JSON.parse(out) as { runId: string }).runId
-          assert.equal((await db.getRun(id))?.status, 'pending')
+          const json = JSON.parse(out) as {
+            runId: string
+            worker: Record<string, unknown>
+          }
+          assert.equal((await db.getRun(json.runId))?.status, 'pending')
+          // Switched off, the JSON is as it always was.
+          assert.deepEqual(json.worker, {
+            running: false,
+            pid: null,
+            startedAt: null,
+            start: 'pnpm --filter example-local-agent-loop demo worker',
+            unknownReason: null,
+          })
         }
       } finally {
         await db.db.destroy()
@@ -4981,6 +5010,12 @@ describe('auto-started worker', { timeout: 300000 }, () => {
         const res = await run(box, ['trigger', '--provider', 'fake'])
         assert.equal(res.code, 0, res.stderr)
         assert.equal(res.pid, null, res.stderr)
+        const json = JSON.parse(res.stdout) as {
+          worker: { running: boolean | null; start: string | null }
+        }
+        assert.equal(json.worker.running, true)
+        assert.equal(json.worker.start, null)
+        assert.equal('autoStarted' in json.worker, false)
         running.kill('SIGTERM')
         assert.equal(await running.exited, 0)
       } finally {

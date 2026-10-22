@@ -535,6 +535,12 @@ function localDate(date: Date): string {
 
 const CLI_PATH = fileURLToPath(import.meta.url)
 
+/** A worker `startWorkerIfNeeded` started, and the file it logs to. */
+interface AutoStartedWorker {
+  pid: number
+  log: string
+}
+
 /**
  * After a command that may leave a worker something to do: start
  * `worker --exit-when-idle` when there is work and no worker runs. The
@@ -542,35 +548,39 @@ const CLI_PATH = fileURLToPath(import.meta.url)
  * process group does not end it, and appends its output to
  * `<state root>/logs/worker-YYYY-MM-DD.log`. Every message goes to stderr
  * and nothing here changes the command's exit code: its run is already
- * stored, and `wait` reports a run no worker picks up.
+ * stored, and `wait` reports a run no worker picks up. Returns the started
+ * worker, or null when none was started.
  */
 async function startWorkerIfNeeded(
   durably: AgentLoopDurably,
   a: Record<string, string>,
-): Promise<void> {
+  /** The idle period to give the worker; LOCAL_AGENT_LOOP_IDLE_MS or 30000 by default. */
+  idleMsOverride?: number,
+): Promise<AutoStartedWorker | null> {
   if (a['no-auto-worker'] === 'true' || process.env[NO_AUTO_WORKER_ENV] === '1')
-    return
-  const warn = (why: string) =>
+    return null
+  const warn = (why: string): null => {
     console.error(
       `warning: no worker started: ${why}. Start one with ${DEMO} worker`,
     )
+    return null
+  }
   let work: boolean
   try {
     work = await workerHasWork(durably)
   } catch (error) {
-    warn(
+    return warn(
       `could not read the runs (${error instanceof Error ? error.message : String(error)})`,
     )
-    return
   }
-  if (!work) return
+  if (!work) return null
   const presence = probeWorkerLock(durably.stateRoot)
-  if (presence.running === true) return
+  if (presence.running === true) return null
   if (presence.running === null)
     return warn(`whether a worker runs is unknown (${presence.unknownReason})`)
   let idleMs: number
   try {
-    idleMs = idleMsFromEnv()
+    idleMs = idleMsOverride ?? idleMsFromEnv()
   } catch (error) {
     return warn((error as Error).message)
   }
@@ -610,12 +620,13 @@ async function startWorkerIfNeeded(
       warn(`the worker did not start (${error.message})`),
     )
     child.unref()
-    if (child.pid !== undefined)
-      console.error(
-        `started a worker (pid ${child.pid}) that stops after ${idleMs} ms without work; log: ${logFile}`,
-      )
+    if (child.pid === undefined) return null
+    console.error(
+      `started a worker (pid ${child.pid}) that stops after ${idleMs} ms without work; log: ${logFile}`,
+    )
+    return { pid: child.pid, log: logFile }
   } catch (error) {
-    warn(`the worker did not start (${(error as Error).message})`)
+    return warn(`the worker did not start (${(error as Error).message})`)
   } finally {
     closeSync(fd)
   }
@@ -888,8 +899,8 @@ if (cmd === 'worker') {
   process.on('exit', lock.release)
   // A signal or the idle check names why the worker stops; the first one
   // wins and a later one is ignored, so shutdown runs once. The handlers are
-  // in place before init, and a signal during init stops the worker once
-  // init has finished.
+  // in place before startup; a signal during startup stops the worker once
+  // the migration and sweep have finished, without polling for runs.
   let shuttingDown = false
   let requestShutdown: (reason: ShutdownReason) => void = () => {}
   const shutdownRequested = new Promise<ShutdownReason>((resolve) => {
@@ -913,20 +924,26 @@ if (cmd === 'worker') {
   durably.on('step:complete', (e) =>
     console.log(`[step:complete] ${e.stepName} run=${e.runId}`),
   )
-  await durably.init()
+  await durably.migrate()
   // Runs that ended while no worker could clean up after them.
   const swept = await sweepReviewSnapshots(durably)
   if (swept.length > 0)
     console.log(`[sweep] removed review snapshots of ${swept.join(', ')}`)
-  console.log(
-    `worker running, pid ${process.pid} (Ctrl-C to stop; kill -9 <pid> to test resume)${exitWhenIdle ? `; exits after ${idleMs} ms without work` : ''}`,
-  )
-  const idle = exitWhenIdle
-    ? watchIdle(durably, idleMs, {
-        stopping: () => shuttingDown,
-        idle: () => requestShutdown('idle'),
-      })
-    : null
+  // Polling starts only when no signal came during startup, so a run is
+  // never claimed by a worker that is about to stop.
+  if (!shuttingDown) {
+    durably.start()
+    console.log(
+      `worker running, pid ${process.pid} (Ctrl-C to stop; kill -9 <pid> to test resume)${exitWhenIdle ? `; exits after ${idleMs} ms without work` : ''}`,
+    )
+  }
+  const idle =
+    exitWhenIdle && !shuttingDown
+      ? watchIdle(durably, idleMs, {
+          stopping: () => shuttingDown,
+          idle: () => requestShutdown('idle'),
+        })
+      : null
   const reason = await shutdownRequested
   console.log(`[shutdown] reason=${reason}`)
   // Children lead their own process group, so an interrupt reaches the
@@ -935,8 +952,19 @@ if (cmd === 'worker') {
   // The idle check in flight settles before the database closes under it.
   await idle?.settled()
   await durably.stop()
-  await durably.db.destroy()
   lock.release()
+  // A run triggered after the last idle check saw this worker's lock and
+  // started nothing. Every such run was stored before the lock was let go,
+  // so one more look now finds it, and a successor takes it (the lock still
+  // keeps it to one worker). A successor does the same when it idles out.
+  if (reason === 'idle') {
+    const successor = await startWorkerIfNeeded(durably, {}, idleMs)
+    if (successor)
+      console.log(
+        `[idle] work arrived as the worker stopped; started a successor (pid ${successor.pid})`,
+      )
+  }
+  await durably.db.destroy()
   // An auto-started worker writes to a file and a test's to a pipe; exit
   // only once both streams have taken every line, the shutdown one included.
   await flushed(process.stdout)
@@ -948,6 +976,9 @@ if (cmd === 'worker') {
   const durably = createAgentDurably()
   await durably.migrate()
   const run = await durably.jobs.agentLoop.trigger(input)
+  // Started before the JSON is printed, so the JSON never tells the caller
+  // to start a worker this command has just started.
+  const autoStarted = await startWorkerIfNeeded(durably, a)
   console.log(
     JSON.stringify(
       {
@@ -955,14 +986,17 @@ if (cmd === 'worker') {
         status: run.status,
         target: input.target.kind,
         db: dbPath(),
-        // Without a worker the run stays pending; `start` says how to start one.
-        worker: workerStatus(),
+        // Without a worker the run stays pending; `start` says how to start
+        // one. An auto-started worker may not hold the lock yet: `start` is
+        // then null and `autoStarted` names it.
+        worker: autoStarted
+          ? { ...workerStatus(), start: null, autoStarted }
+          : workerStatus(),
       },
       null,
       2,
     ),
   )
-  await startWorkerIfNeeded(durably, a)
   await durably.db.destroy()
 } else if (cmd === 'repair') {
   const a = args()

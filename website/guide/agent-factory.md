@@ -52,6 +52,8 @@ Start the worker in one terminal:
 pnpm --filter example-local-agent-loop demo worker
 ```
 
+This step is optional: when no worker runs, `trigger` and the other commands that create work start a detached `demo worker --exit-when-idle`, which stops by itself once it has had no work for 30 seconds. Pass `--no-auto-worker` or set `LOCAL_AGENT_LOOP_NO_AUTO_WORKER=1` to switch that off.
+
 Trigger the bundled subject in another terminal, then inspect and approve its durable wait:
 
 ```bash
