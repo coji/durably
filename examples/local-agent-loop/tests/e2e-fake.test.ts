@@ -419,7 +419,12 @@ describe('fake runs that stop', { timeout: 180000 }, () => {
       runChild(
         join(packageRoot, 'node_modules', '.bin', 'tsx'),
         [join(packageRoot, 'src', 'cli.ts'), 'retrigger', '--run', id],
-        { cwd: home, timeoutMs: 60000, env: { HOME: home } },
+        {
+          cwd: home,
+          timeoutMs: 60000,
+          // No auto-started worker: the new run stays pending.
+          env: { HOME: home, LOCAL_AGENT_LOOP_NO_AUTO_WORKER: '1' },
+        },
       )
     const refused = await retrigger(ids['uncertain'] ?? '')
     assert.notEqual(refused.code, 0)

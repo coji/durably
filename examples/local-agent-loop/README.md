@@ -141,6 +141,56 @@ Claudeでは `--provider claude` に替えるだけです。承認CLIはwait met
 Candidate IDを読み、signal payloadにも同じIDを入れます。拒否は `approve` の
 代わりに `reject` を使います。
 
+### workerの自動起動とアイドル終了
+
+Terminal 1でworkerを常駐させなくても、runを進めるコマンドが必要なときにworkerを
+起動します。
+
+- `trigger`、`repair`、`retrigger`、`approve`、`reject`、`spec-revise` が成功した
+  あと、workerの仕事があれば、workerのロックを調べます。workerがいなければ
+  `demo worker --exit-when-idle` を起動し、既にいれば何もしません。ロックが読めず
+  workerの有無が不明なとき（`running: null`）は起動せず、理由をstderrに出します。
+  失敗したコマンドや入力の検証で拒否したコマンドは起動しません。
+- workerの仕事とは、`pending` と `leased` のrun（leaseの期限は問いません）と、
+  いま待っているwaitが判断済み（`resolved`）の `waiting` のrunです。判断済みの
+  waitを持つrunは、pendingに戻るのを待たずにworkerが再開します。誰も判断して
+  いないwaitだけを待つrunは数えません。
+- 起動したworkerは起動元と別のセッション（別のプロセスグループ）で動き、
+  コマンドの終了を待たせません。エージェントが起動元のシェルやプロセスグループを
+  片付けても、workerは止まりません。
+- 起動の知らせと警告はすべてstderrに出します。stdoutはこれまでどおりコマンドの
+  出力（`trigger` のJSONなど）だけです。起動に失敗しても、コマンドの終了コードは
+  変わりません（runはもう保存されています）。成功すると、workerのpidとログの
+  場所を1行出します。
+- workerの標準出力と標準エラーは、state rootの
+  `~/.local/state/local-agent-loop/logs/worker-YYYY-MM-DD.log`（起動した日、
+  ローカル時刻）に追記します。同じ日に何度起動しても既存のログは消しません。
+- 止めるには、各コマンドに `--no-auto-worker` を付けるか、環境変数
+  `LOCAL_AGENT_LOOP_NO_AUTO_WORKER=1` を設定します。runはworkerが来るまで
+  pendingのままです。
+- 自動起動したworkerのアイドル期間は `LOCAL_AGENT_LOOP_IDLE_MS`（既定30000）で
+  変えられます。1から2147483647までの整数ミリ秒だけを受け付け、範囲外ならworker
+  を起動せずに警告します。
+
+`demo worker --exit-when-idle [--idle-ms <ms>]` は、仕事がない状態が `--idle-ms`
+（既定30000、1から2147483647までの整数）続くと終了します。オプションなしの
+`demo worker` はこれまでどおり常駐します。
+
+- 仕事の有無は500ミリ秒ごと（`--idle-ms` がそれより短ければその間隔）に確かめ、
+  前の確認が終わってから次を始めます。DBを読めなかった確認はアイドルと数えず、
+  エラーをstderrに出してアイドル期間を数え直します。
+- アイドル期間が過ぎたら、ポーリングを止めてからもう一度確かめます。そこで仕事が
+  見つかれば、ポーリングを再開して処理します。
+- この最後の確認からロックを手放すまでの間にrunが作られると、起動元のコマンドは
+  まだworkerがいると見て新しく起動せず、そのrunはpendingのまま残ることがあります。
+  この窓はごく短いものの、なくすことはできません。`demo wait` は
+  `--worker-timeout`（既定10秒）でworkerがいない状態を検出して終了コード6で
+  知らせるので、そのときは `demo worker` を起動してください。
+- SIGTERM、SIGINT、アイドル終了では、`[shutdown] reason=SIGTERM`、
+  `[shutdown] reason=SIGINT`、`[shutdown] reason=idle` をログに書き、実行中の
+  エージェントCLIを止め、DBを閉じてロックを手放し、出力を書き終えてから終了コード
+  0で終わります。終了処理中に届いたシグナルで終了処理を重ねることはありません。
+
 ### 止まったrunと次の手順を見る
 
 `--run` を付けない `status` は、手を打つ必要がある task を一覧します。task は

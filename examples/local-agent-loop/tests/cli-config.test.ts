@@ -10,7 +10,15 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, realpathSync } from 'node:fs'
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, it } from 'node:test'
@@ -32,6 +40,7 @@ import { classifyFailure, classifyRun } from '../src/engine/failure-reasons.js'
 import { reportToJson, reportToMarkdown } from '../src/engine/report.js'
 import { BASELINE_INDEX_PRUNE_AGE_MS } from '../src/factory/baseline-reuse.js'
 import {
+  AGENT_LOOP_JOB_NAME,
   baselineMaxAgeMsSchema,
   specMaxRoundsSchema,
 } from '../src/factory/job.js'
@@ -128,6 +137,9 @@ async function demo(
       HOME: box.home,
       // Must not move the database anywhere.
       DURABLY_DB: join(box.root, 'durably-db-override.db'),
+      // No worker unless a test starts one: a run stays where the command
+      // left it. A test that exercises the auto-started worker overrides it.
+      LOCAL_AGENT_LOOP_NO_AUTO_WORKER: '1',
       ...env,
     },
   })
@@ -2407,8 +2419,12 @@ describe('retrigger --reload-config', { timeout: 240000 }, () => {
 })
 
 /** A worker process, with its output so far. */
-function startWorker(box: Sandbox, env: Record<string, string> = {}) {
-  const child = spawn(tsx, [cli, 'worker'], {
+function startWorker(
+  box: Sandbox,
+  env: Record<string, string> = {},
+  flags: string[] = [],
+) {
+  const child = spawn(tsx, [cli, 'worker', ...flags], {
     cwd: box.root,
     env: { ...process.env, HOME: box.home, FAKE_FAIL_FIRST: '0', ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -4504,5 +4520,487 @@ describe('compare --trend', { timeout: 120000 }, () => {
     const noRuns = await demo(box, ['compare'])
     assert.notEqual(noRuns.code, 0)
     assert.match(noRuns.stderr, /--runs <id,id,...> required/)
+  })
+})
+
+/** Whether a process this test started is still there. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Signal a process this test started; one already gone is fine. */
+function signal(pid: number, sig: NodeJS.Signals): void {
+  try {
+    process.kill(pid, sig)
+  } catch {
+    // Already gone.
+  }
+}
+
+/** The pid of the worker a command says it started, or null. */
+function startedWorker(stderr: string): number | null {
+  const m = /started a worker \(pid (\d+)\)/.exec(stderr)
+  return m ? Number(m[1]) : null
+}
+
+/** Every auto-started worker log under a state root, read together. */
+async function workerLogs(stateRoot: string): Promise<string> {
+  const dir = join(stateRoot, 'logs')
+  if (!existsSync(dir)) return ''
+  const names = await readdir(dir)
+  const texts = await Promise.all(
+    names.map((n) => readFile(join(dir, n), 'utf8')),
+  )
+  return texts.join('')
+}
+
+/** Commands run with auto-start on, as a person would. */
+const AUTO = { LOCAL_AGENT_LOOP_NO_AUTO_WORKER: '0' }
+
+/**
+ * Rows written straight into a state database, for the runs an idle worker
+ * counts. A run of another job holds a lease on concurrency key `K` far into
+ * the future, so the worker can claim no agent-loop run on `K`: a pending
+ * or resumable run stays as written and only the idle check sees it.
+ */
+async function seededDatabase(box: Sandbox) {
+  const durably = createAgentDurably({ stateRoot: box.stateRoot })
+  await durably.migrate()
+  await durably.db.destroy()
+  const db = new Database(dbPath(box.stateRoot), { timeout: 10000 })
+  const now = new Date().toISOString()
+  const run = (
+    id: string,
+    fields: {
+      job?: string
+      status: string
+      leaseOwner?: string
+      waitId?: string
+    },
+  ) =>
+    db
+      .prepare(
+        `INSERT INTO durably_runs (id, job_name, input, status, concurrency_key,
+           current_step_index, completed_step_count, labels, lease_owner,
+           lease_expires_at, lease_generation, waiting_on_wait_id, created_at,
+           updated_at)
+         VALUES (?, ?, '{}', ?, 'K', 0, 0, '{}', ?, ?, 1, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        fields.job ?? AGENT_LOOP_JOB_NAME,
+        fields.status,
+        fields.leaseOwner ?? null,
+        fields.leaseOwner ? '2099-01-01T00:00:00.000Z' : null,
+        fields.waitId ?? null,
+        now,
+        now,
+      )
+  run('blocker', { job: 'blocker', status: 'leased', leaseOwner: 'elsewhere' })
+  return {
+    run,
+    wait: (id: string, runId: string, status: string) =>
+      db
+        .prepare(
+          `INSERT INTO durably_waits (id, run_id, name, status, created_at)
+           VALUES (?, ?, 'decision', ?, ?)`,
+        )
+        .run(id, runId, status, now),
+    exec: (sql: string) => db.exec(sql),
+    close: () => db.close(),
+  }
+}
+
+describe('worker --exit-when-idle', { timeout: 240000 }, () => {
+  it('refuses an idle period outside 1 to 2147483647 ms before taking the lock', async () => {
+    const box = await sandbox()
+    for (const value of [
+      '0',
+      '-1',
+      '1.5',
+      'NaN',
+      'Infinity',
+      '2147483648',
+      '9007199254740993',
+      '1e3',
+    ]) {
+      const res = await demo(box, [
+        'worker',
+        '--exit-when-idle',
+        '--idle-ms',
+        value,
+      ])
+      assert.notEqual(res.code, 0, value)
+      assert.match(res.stderr, /--idle-ms must be an integer/, value)
+    }
+    const bare = await demo(box, ['worker', '--exit-when-idle', '--idle-ms'])
+    assert.notEqual(bare.code, 0)
+    const alone = await demo(box, ['worker', '--idle-ms', '1000'])
+    assert.notEqual(alone.code, 0)
+    assert.match(alone.stderr, /--idle-ms applies only with --exit-when-idle/)
+    // No worker ever started on this root.
+    assert.equal(existsSync(join(box.stateRoot, 'worker.lock')), false)
+  })
+
+  it('stays up while a run is pending, leased or resumable, and stops once only an undecided wait is left', async () => {
+    const box = await sandbox()
+    const rows = await seededDatabase(box)
+    const worker = startWorker(box, {}, [
+      '--exit-when-idle',
+      '--idle-ms',
+      '300',
+    ])
+    try {
+      rows.run('pending-run', { status: 'pending' })
+      await worker.running()
+      // sleep-ok(negative): an idle stop would have to happen within this window; a slow machine only hides one
+      await new Promise((r) => setTimeout(r, 2000))
+      assert.ok(alive(worker.pid()), worker.output())
+      assert.doesNotMatch(worker.output(), /\[shutdown\]/)
+
+      // A run leased by someone else, lease or not, is work too.
+      rows.exec('BEGIN')
+      rows.exec("DELETE FROM durably_runs WHERE id = 'pending-run'")
+      rows.run('leased-run', { status: 'leased', leaseOwner: 'elsewhere' })
+      rows.exec('COMMIT')
+      // sleep-ok(negative): as above, for the leased run
+      await new Promise((r) => setTimeout(r, 2000))
+      assert.ok(alive(worker.pid()), worker.output())
+
+      // A waiting run whose wait was decided is resumed without turning
+      // pending first, so it is work as well.
+      rows.exec('BEGIN')
+      rows.exec("DELETE FROM durably_runs WHERE id = 'leased-run'")
+      rows.run('waiting-run', { status: 'waiting', waitId: 'wait-1' })
+      rows.wait('wait-1', 'waiting-run', 'resolved')
+      rows.exec('COMMIT')
+      // sleep-ok(negative): as above, for the decided wait
+      await new Promise((r) => setTimeout(r, 2000))
+      assert.ok(alive(worker.pid()), worker.output())
+
+      // Only a wait nobody decided is left: the worker stops by itself.
+      rows.exec(
+        "UPDATE durably_waits SET status = 'pending' WHERE id = 'wait-1'",
+      )
+      assert.equal(await worker.exited, 0)
+      assert.match(worker.output(), /\[shutdown\] reason=idle/)
+      assert.equal(probeWorkerLock(box.stateRoot).running, false)
+    } finally {
+      worker.kill('SIGKILL')
+      await worker.exited
+      rows.close()
+    }
+  })
+
+  it('stops on SIGINT and SIGTERM with the reason logged, and without the flag stays up while idle', async () => {
+    const box = await sandbox()
+    const plain = startWorker(box)
+    try {
+      await plain.running()
+      // sleep-ok(negative): an idle stop the plain worker must not make would happen in this window
+      await new Promise((r) => setTimeout(r, 1500))
+      assert.ok(alive(plain.pid()), plain.output())
+      plain.kill('SIGINT')
+      assert.equal(await plain.exited, 0)
+      assert.match(plain.output(), /\[shutdown\] reason=SIGINT/)
+    } finally {
+      plain.kill('SIGKILL')
+      await plain.exited
+    }
+    const idle = startWorker(box, {}, [
+      '--exit-when-idle',
+      '--idle-ms',
+      '60000',
+    ])
+    try {
+      await idle.running()
+      idle.kill('SIGTERM')
+      assert.equal(await idle.exited, 0)
+      assert.match(idle.output(), /\[shutdown\] reason=SIGTERM/)
+      assert.equal(idle.output().match(/\[shutdown\]/g)?.length, 1)
+    } finally {
+      idle.kill('SIGKILL')
+      await idle.exited
+    }
+  })
+})
+
+describe('auto-started worker', { timeout: 300000 }, () => {
+  /** Wait for an auto-started worker to stop by itself after its work. */
+  async function stopsWhenIdle(pid: number, label: string) {
+    await until(async () => !alive(pid), `${label}: worker ${pid} stops`)
+  }
+
+  it('starts after trigger, retrigger, approve and reject when work needs one, and stops when idle', async () => {
+    const box = await sandbox()
+    const env = { ...AUTO, LOCAL_AGENT_LOOP_IDLE_MS: '500' }
+    const started: number[] = []
+    const db = createAgentDurably({ stateRoot: box.stateRoot })
+    try {
+      // The fake check fails first: one iteration stops verification-failed.
+      const first = await demo(
+        box,
+        ['trigger', '--provider', 'fake', '--max-iterations', '1'],
+        env,
+      )
+      assert.equal(first.code, 0, first.stderr)
+      // stdout is still the trigger's JSON alone.
+      const firstId = (JSON.parse(first.stdout) as { runId: string }).runId
+      const w1 = startedWorker(first.stderr)
+      assert.ok(w1, first.stderr)
+      started.push(w1)
+      const log = join(
+        box.stateRoot,
+        'logs',
+        `worker-${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-${String(new Date().getDate()).padStart(2, '0')}.log`,
+      )
+      assert.ok(first.stderr.includes(log), first.stderr)
+      await stopsWhenIdle(w1, 'trigger')
+      await db.migrate()
+      assert.equal((await db.getRun(firstId))?.status, 'completed')
+
+      // retrigger: a new run, and a worker for it, which stops once the run
+      // waits on a person.
+      const again = await demo(box, ['retrigger', '--run', firstId], {
+        ...env,
+        FAKE_FAIL_FIRST: '0',
+      })
+      assert.equal(again.code, 0, again.stderr)
+      const secondId = /^new run (\S+)/.exec(again.stdout)?.[1] ?? ''
+      const w2 = startedWorker(again.stderr)
+      assert.ok(w2, again.stderr)
+      started.push(w2)
+      await stopsWhenIdle(w2, 'retrigger')
+      const second = await db.getRun(secondId)
+      assert.equal(second?.status, 'waiting')
+      const waitId = second?.waitingOnWaitId ?? ''
+
+      // A failed command starts nothing.
+      const bad = await demo(
+        box,
+        ['approve', '--run', secondId, '--wait', 'no-such-wait'],
+        env,
+      )
+      assert.notEqual(bad.code, 0)
+      assert.equal(startedWorker(bad.stderr), null, bad.stderr)
+      const missing = await demo(box, ['retrigger', '--run', 'nope'], env)
+      assert.notEqual(missing.code, 0)
+      assert.equal(startedWorker(missing.stderr), null, missing.stderr)
+
+      // approve: the decided wait is resumed as it is.
+      const approved = await demo(
+        box,
+        ['approve', '--run', secondId, '--wait', waitId],
+        env,
+      )
+      assert.equal(approved.code, 0, approved.stderr)
+      const w3 = startedWorker(approved.stderr)
+      assert.ok(w3, approved.stderr)
+      started.push(w3)
+      await stopsWhenIdle(w3, 'approve')
+      assert.equal((await db.getRun(secondId))?.status, 'completed')
+
+      // reject, on a third run.
+      const third = await demo(box, ['trigger', '--provider', 'fake'], {
+        ...env,
+        FAKE_FAIL_FIRST: '0',
+      })
+      assert.equal(third.code, 0, third.stderr)
+      const thirdId = (JSON.parse(third.stdout) as { runId: string }).runId
+      const w4 = startedWorker(third.stderr)
+      assert.ok(w4, third.stderr)
+      started.push(w4)
+      await stopsWhenIdle(w4, 'trigger')
+      const thirdRun = await db.getRun(thirdId)
+      assert.equal(thirdRun?.status, 'waiting')
+      const rejected = await demo(
+        box,
+        ['reject', '--run', thirdId, '--wait', thirdRun?.waitingOnWaitId ?? ''],
+        env,
+      )
+      assert.equal(rejected.code, 0, rejected.stderr)
+      const w5 = startedWorker(rejected.stderr)
+      assert.ok(w5, rejected.stderr)
+      started.push(w5)
+      await stopsWhenIdle(w5, 'reject')
+      assert.equal((await db.getRun(thirdId))?.status, 'completed')
+
+      // One log for the day, appended by every worker in turn.
+      const text = await readFile(log, 'utf8')
+      assert.equal(text.match(/\[shutdown\] reason=idle/g)?.length, 5, text)
+      for (const pid of started)
+        assert.match(text, new RegExp(`worker running, pid ${pid}\\b`))
+    } finally {
+      for (const pid of started) signal(pid, 'SIGKILL')
+      await db.db.destroy()
+    }
+  })
+
+  it('starts no second worker, none when switched off, and none when the lock cannot be read', async () => {
+    const box = await sandbox()
+    const env = { ...AUTO, LOCAL_AGENT_LOOP_IDLE_MS: '500' }
+    const started: number[] = []
+    try {
+      // Switched off by the flag (repair accepts it too) or the variable:
+      // the run stays pending and no worker starts.
+      const flagged = await demo(
+        box,
+        ['trigger', '--provider', 'fake', '--no-auto-worker'],
+        env,
+      )
+      assert.equal(flagged.code, 0, flagged.stderr)
+      assert.equal(startedWorker(flagged.stderr), null, flagged.stderr)
+      const off = await demo(box, ['trigger', '--provider', 'fake'], {
+        LOCAL_AGENT_LOOP_NO_AUTO_WORKER: '1',
+      })
+      assert.equal(off.code, 0, off.stderr)
+      assert.equal(startedWorker(off.stderr), null, off.stderr)
+      const repair = await demo(
+        box,
+        ['repair', '--run', 'nope', '--no-auto-worker'],
+        env,
+      )
+      assert.notEqual(repair.code, 0)
+      assert.doesNotMatch(repair.stderr, /not accepted/)
+      assert.equal(startedWorker(repair.stderr), null, repair.stderr)
+      assert.equal(probeWorkerLock(box.stateRoot).running, false)
+      assert.equal(existsSync(join(box.stateRoot, 'logs')), false)
+      const db = createAgentDurably({ stateRoot: box.stateRoot })
+      try {
+        await db.migrate()
+        for (const out of [flagged.stdout, off.stdout]) {
+          const id = (JSON.parse(out) as { runId: string }).runId
+          assert.equal((await db.getRun(id))?.status, 'pending')
+        }
+      } finally {
+        await db.db.destroy()
+      }
+
+      // An idle period out of range starts no worker; the trigger itself
+      // still succeeds.
+      for (const value of [
+        '0',
+        '-5',
+        '2.5',
+        'NaN',
+        'Infinity',
+        '2147483648',
+        '9007199254740993',
+      ]) {
+        const res = await demo(box, ['trigger', '--provider', 'fake'], {
+          ...AUTO,
+          LOCAL_AGENT_LOOP_IDLE_MS: value,
+        })
+        assert.equal(res.code, 0, res.stderr)
+        JSON.parse(res.stdout)
+        assert.equal(startedWorker(res.stderr), null, value)
+        assert.match(res.stderr, /LOCAL_AGENT_LOOP_IDLE_MS must be/, value)
+      }
+    } finally {
+      for (const pid of started) signal(pid, 'SIGKILL')
+    }
+
+    // A worker already runs: none is started beside it, and it takes the run.
+    const running = startWorker(box, { FAKE_FAIL_FIRST: '0' })
+    try {
+      await running.running()
+      const res = await demo(box, ['trigger', '--provider', 'fake'], env)
+      assert.equal(res.code, 0, res.stderr)
+      assert.equal(startedWorker(res.stderr), null, res.stderr)
+      running.kill('SIGTERM')
+      assert.equal(await running.exited, 0)
+    } finally {
+      running.kill('SIGKILL')
+      await running.exited
+    }
+
+    // Whether a worker runs cannot be told: a warning, and no worker.
+    const unreadable = await sandbox()
+    await mkdir(join(unreadable.stateRoot, 'worker.lock'), { recursive: true })
+    const res = await demo(unreadable, ['trigger', '--provider', 'fake'], env)
+    assert.equal(res.code, 0, res.stderr)
+    JSON.parse(res.stdout)
+    assert.equal(startedWorker(res.stderr), null, res.stderr)
+    assert.match(
+      res.stderr,
+      /no worker started: whether a worker runs is unknown/,
+    )
+  })
+
+  it('outlives the process group of the shell that triggered it', async () => {
+    const box = await sandbox()
+    const errFile = join(box.root, 'trigger.err')
+    // The shell leads a process group of its own, so signalling that group
+    // reaches the shell and the trigger but never this test runner.
+    const shell = spawn(
+      '/bin/sh',
+      [
+        '-c',
+        `"$0" "$1" trigger --provider fake 2>"$2" >/dev/null; exec sleep 120`,
+        tsx,
+        cli,
+        errFile,
+      ],
+      {
+        cwd: box.root,
+        env: {
+          ...process.env,
+          HOME: box.home,
+          LOCAL_AGENT_LOOP_NO_AUTO_WORKER: '0',
+          LOCAL_AGENT_LOOP_IDLE_MS: '60000',
+        },
+        detached: true,
+        stdio: 'ignore',
+      },
+    )
+    const shellPid = shell.pid
+    // Never 0: a negative 0 would signal this runner's own group.
+    assert.ok(shellPid !== undefined && shellPid > 0)
+    const shellExited = new Promise<void>((resolve) =>
+      shell.once('exit', () => resolve()),
+    )
+    let workerPid: number | null = null
+    try {
+      await until(async () => {
+        workerPid = existsSync(errFile)
+          ? startedWorker(await readFile(errFile, 'utf8'))
+          : null
+        return workerPid !== null
+      }, 'the trigger starts a worker')
+      const pid = workerPid ?? 0
+      await until(
+        async () => existsSync(join(box.stateRoot, 'worker.json')),
+        'the worker takes the lock',
+      )
+      const holder = JSON.parse(
+        await readFile(join(box.stateRoot, 'worker.json'), 'utf8'),
+      ) as { pid: number }
+      assert.equal(holder.pid, pid)
+
+      process.kill(-shellPid, 'SIGTERM')
+      await shellExited
+      assert.ok(alive(pid), 'the worker died with the shell')
+      const pgid = await runChild('ps', ['-o', 'pgid=', '-p', String(pid)], {
+        timeoutMs: 10000,
+      })
+      assert.equal(pgid.code, 0, pgid.stderr)
+      assert.notEqual(Number(pgid.stdout.trim()), shellPid)
+
+      signal(pid, 'SIGTERM')
+      await until(async () => !alive(pid), 'the worker stops on SIGTERM')
+      assert.match(
+        await workerLogs(box.stateRoot),
+        /\[shutdown\] reason=SIGTERM/,
+      )
+      assert.equal(probeWorkerLock(box.stateRoot).running, false)
+    } finally {
+      signal(-shellPid, 'SIGKILL')
+      if (workerPid !== null) signal(workerPid, 'SIGKILL')
+    }
   })
 })

@@ -1,5 +1,7 @@
 #!/usr/bin/env tsx
 /** CLI: worker | trigger | repair | status | wait | waits | approve | reject | spec-revise | retrigger | archive | unarchive | prune | report | compare | ui | seed */
+import { spawn } from 'node:child_process'
+import { closeSync, mkdirSync, openSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -388,11 +390,248 @@ async function waitCommand(
   return stop.exit
 }
 
+/** How long `worker --exit-when-idle` goes without work before it stops. */
+const DEFAULT_IDLE_MS = 30000
+/** The longest gap between two idle checks. */
+const IDLE_CHECK_MS = 500
+
+type ShutdownReason = 'SIGTERM' | 'SIGINT' | 'idle'
+
+/**
+ * Whether a worker has anything to do on this database: a pending or leased
+ * run, whatever its lease, or a waiting run whose current wait is resolved
+ * (the worker resumes it without its status changing first). A waiting run
+ * whose wait nobody has resolved is not work.
+ */
+async function workerHasWork(durably: AgentLoopDurably): Promise<boolean> {
+  const runs = await durably.getRuns({
+    jobName: durably.jobs.agentLoop.name,
+    status: ['pending', 'leased', 'waiting'],
+  })
+  for (const run of runs) {
+    if (run.status !== 'waiting') return true
+    // A waiting run that names no wait cannot be resumed by a worker.
+    if (!run.waitingOnWaitId) continue
+    const wait = await durably.getWait(run.waitingOnWaitId)
+    if (wait?.status === 'resolved') return true
+  }
+  return false
+}
+
+/**
+ * Check every IDLE_CHECK_MS (or `idleMs`, when shorter) whether the worker
+ * has work, and call `idle` once it has had none for `idleMs`. Each check is
+ * scheduled after the one before it settled, so checks never overlap. A
+ * check that cannot read the database is not idle: it is reported and the
+ * idle clock starts again. Before `idle`, polling stops and the database is
+ * read once more; work found then resumes polling instead.
+ */
+function watchIdle(
+  durably: AgentLoopDurably,
+  idleMs: number,
+  hooks: { stopping: () => boolean; idle: () => void },
+): { settled: () => Promise<void> } {
+  const interval = Math.min(IDLE_CHECK_MS, idleMs)
+  let idleSince: number | null = null
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let inFlight: Promise<void> | null = null
+  const hasWork = async (): Promise<boolean | null> => {
+    try {
+      return await workerHasWork(durably)
+    } catch (error) {
+      if (!hooks.stopping())
+        console.error(
+          `[idle] could not read the runs, so the worker stays up: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      return null
+    }
+  }
+  const check = async (): Promise<void> => {
+    const work = await hasWork()
+    if (hooks.stopping()) return
+    if (work !== false) {
+      idleSince = null
+      return
+    }
+    const now = Date.now()
+    idleSince ??= now
+    if (now - idleSince < idleMs) return
+    // Stop polling, then look once more: a run triggered since the last
+    // check is picked up rather than left behind.
+    await durably.stop()
+    const again = await hasWork()
+    if (again === false) {
+      hooks.idle()
+      return
+    }
+    if (hooks.stopping()) return
+    if (again) console.log('[idle] work appeared at the last check; polling on')
+    idleSince = null
+    durably.start()
+  }
+  const schedule = () => {
+    if (hooks.stopping()) return
+    timer = setTimeout(() => {
+      timer = null
+      inFlight = check()
+        .catch((error: unknown) => {
+          console.error(
+            `[idle] check failed, so the worker stays up: ${error instanceof Error ? error.message : String(error)}`,
+          )
+          idleSince = null
+          if (!hooks.stopping()) durably.start()
+        })
+        .finally(() => {
+          inFlight = null
+          schedule()
+        })
+    }, interval)
+  }
+  schedule()
+  return {
+    settled: async () => {
+      if (timer) clearTimeout(timer)
+      timer = null
+      await inFlight
+    },
+  }
+}
+
+/** Resolves once everything written to `stream` so far has been handed on. */
+function flushed(stream: NodeJS.WriteStream): Promise<void> {
+  return new Promise((resolve) => stream.write('', () => resolve()))
+}
+
+/** Environment variables that steer the auto-started worker. */
+const NO_AUTO_WORKER_ENV = 'LOCAL_AGENT_LOOP_NO_AUTO_WORKER'
+const IDLE_MS_ENV = 'LOCAL_AGENT_LOOP_IDLE_MS'
+
+/** `a` without `--no-auto-worker`, for commands that refuse unknown flags. */
+function withoutAutoWorkerFlag(
+  a: Record<string, string>,
+): Record<string, string> {
+  const rest = { ...a }
+  delete rest['no-auto-worker']
+  return rest
+}
+
+/** The auto-started worker's idle period: LOCAL_AGENT_LOOP_IDLE_MS or 30000. */
+function idleMsFromEnv(): number {
+  const raw = process.env[IDLE_MS_ENV]
+  if (raw === undefined) return DEFAULT_IDLE_MS
+  const v = /^\d+$/.test(raw) ? Number(raw) : Number.NaN
+  if (!timeoutMsSchema.safeParse(v).success)
+    throw new Error(
+      `${IDLE_MS_ENV} must be an integer number of milliseconds between 1 and ${MAX_TIMEOUT_MS}`,
+    )
+  return v
+}
+
+/** YYYY-MM-DD in local time. */
+function localDate(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+const CLI_PATH = fileURLToPath(import.meta.url)
+
+/**
+ * After a command that may leave a worker something to do: start
+ * `worker --exit-when-idle` when there is work and no worker runs. The
+ * worker runs in a session of its own, so whatever ends this command's
+ * process group does not end it, and appends its output to
+ * `<state root>/logs/worker-YYYY-MM-DD.log`. Every message goes to stderr
+ * and nothing here changes the command's exit code: its run is already
+ * stored, and `wait` reports a run no worker picks up.
+ */
+async function startWorkerIfNeeded(
+  durably: AgentLoopDurably,
+  a: Record<string, string>,
+): Promise<void> {
+  if (a['no-auto-worker'] === 'true' || process.env[NO_AUTO_WORKER_ENV] === '1')
+    return
+  const warn = (why: string) =>
+    console.error(
+      `warning: no worker started: ${why}. Start one with ${DEMO} worker`,
+    )
+  let work: boolean
+  try {
+    work = await workerHasWork(durably)
+  } catch (error) {
+    warn(
+      `could not read the runs (${error instanceof Error ? error.message : String(error)})`,
+    )
+    return
+  }
+  if (!work) return
+  const presence = probeWorkerLock(durably.stateRoot)
+  if (presence.running === true) return
+  if (presence.running === null)
+    return warn(`whether a worker runs is unknown (${presence.unknownReason})`)
+  let idleMs: number
+  try {
+    idleMs = idleMsFromEnv()
+  } catch (error) {
+    return warn((error as Error).message)
+  }
+  const logFile = join(
+    durably.stateRoot,
+    'logs',
+    `worker-${localDate(new Date())}.log`,
+  )
+  let fd: number
+  try {
+    mkdirSync(dirname(logFile), { recursive: true })
+    fd = openSync(logFile, 'a')
+  } catch (error) {
+    return warn(`cannot open ${logFile} (${(error as Error).message})`)
+  }
+  try {
+    // The same Node and loader flags this command runs with (tsx under
+    // `pnpm demo`); the bare `--import tsx` resolves from the package root.
+    const child = spawn(
+      process.execPath,
+      [
+        ...process.execArgv,
+        CLI_PATH,
+        'worker',
+        '--exit-when-idle',
+        '--idle-ms',
+        String(idleMs),
+      ],
+      {
+        cwd: join(dirname(CLI_PATH), '..'),
+        env: process.env,
+        detached: true,
+        stdio: ['ignore', fd, fd],
+      },
+    )
+    child.on('error', (error) =>
+      warn(`the worker did not start (${error.message})`),
+    )
+    child.unref()
+    if (child.pid !== undefined)
+      console.error(
+        `started a worker (pid ${child.pid}) that stops after ${idleMs} ms without work; log: ${logFile}`,
+      )
+  } catch (error) {
+    warn(`the worker did not start (${(error as Error).message})`)
+  } finally {
+    closeSync(fd)
+  }
+}
+
 function usage(): void {
   console.log(`local-agent-loop — Durably local agent demo
 Commands (run from examples/local-agent-loop):
-  pnpm demo worker                          start worker (long-running; kill -9 to test resume)
-                                            one per state root: a second one is refused
+  pnpm demo worker [--exit-when-idle [--idle-ms <ms>]]
+                                            start worker (long-running; kill -9 to test resume)
+                                            one per state root: a second one is refused.
+                                            --exit-when-idle stops it once it has had no work
+                                            for --idle-ms (default 30000, 1 to 2147483647):
+                                            no pending or leased run and no waiting run whose
+                                            wait was decided. SIGTERM, SIGINT and the idle stop
+                                            exit 0 and print [shutdown] reason=<SIGTERM|SIGINT|idle>
   pnpm demo trigger --provider codex|claude|fake [--context reuse|fresh] [--max-iterations 2] [--model X] [--effort Y]
       --max-iterations: implementation and repair stages per run, 1 to 5 (default 2)
       bundled sample (default): no further flags
@@ -581,6 +820,13 @@ Repository config: factory.json at the repository root, or --config <file>:
   report shows each input file's SHA-256.
 State: database and run data live in ${dirname(dbPath())}
   (worktrees, checkpoints, verification scratch, delivery patches under runs/<id>/).
+Auto-started worker: after trigger, repair, retrigger, approve, reject and
+  spec-revise succeed, a worker --exit-when-idle is started in a session of its
+  own when a run needs one and no worker runs (none when whether one runs is
+  unknown; a warning says so). Its output is appended to
+  ${join(dirname(dbPath()), 'logs', 'worker-YYYY-MM-DD.log')}; its messages go to stderr.
+  --no-auto-worker on the command, or ${NO_AUTO_WORKER_ENV}=1, starts none;
+  ${IDLE_MS_ENV}=<ms> sets its idle period (default 30000, 1 to 2147483647).
 Model presets (--model selects one; effort defaults from the preset and is
 overridden only by --effort — no environment variable participates, so a run's
 configuration is readable off the command line that started it):
@@ -619,6 +865,13 @@ const legacyWarning = legacyDbWarning()
 if (legacyWarning) console.error(legacyWarning)
 
 if (cmd === 'worker') {
+  const a = args()
+  // Every flag is checked before the lock is taken.
+  const exitWhenIdle = a['exit-when-idle'] === 'true'
+  const idleFlag = timeoutFlag(a, 'idle-ms')
+  if (idleFlag !== undefined && !exitWhenIdle)
+    throw new Error('--idle-ms applies only with --exit-when-idle')
+  const idleMs = idleFlag ?? DEFAULT_IDLE_MS
   // One worker per state root. The lock is the operating system's, so it
   // ends with this process however the process ends.
   const lock = acquireWorkerLock()
@@ -633,6 +886,21 @@ if (cmd === 'worker') {
   }
   // Every way out, a failed init or a shutdown, passes through 'exit'.
   process.on('exit', lock.release)
+  // A signal or the idle check names why the worker stops; the first one
+  // wins and a later one is ignored, so shutdown runs once. The handlers are
+  // in place before init, and a signal during init stops the worker once
+  // init has finished.
+  let shuttingDown = false
+  let requestShutdown: (reason: ShutdownReason) => void = () => {}
+  const shutdownRequested = new Promise<ShutdownReason>((resolve) => {
+    requestShutdown = (reason) => {
+      if (shuttingDown) return
+      shuttingDown = true
+      resolve(reason)
+    }
+  })
+  process.on('SIGINT', () => requestShutdown('SIGINT'))
+  process.on('SIGTERM', () => requestShutdown('SIGTERM'))
   const durably = createAgentDurably()
   durably.on('run:leased', (e) =>
     console.log(`[run:leased] ${e.jobName} ${e.runId}`),
@@ -651,21 +919,32 @@ if (cmd === 'worker') {
   if (swept.length > 0)
     console.log(`[sweep] removed review snapshots of ${swept.join(', ')}`)
   console.log(
-    `worker running, pid ${process.pid} (Ctrl-C to stop; kill -9 <pid> to test resume)`,
+    `worker running, pid ${process.pid} (Ctrl-C to stop; kill -9 <pid> to test resume)${exitWhenIdle ? `; exits after ${idleMs} ms without work` : ''}`,
   )
-  const shutdown = async () => {
-    // Children lead their own process group, so an interrupt reaches the
-    // worker but not the agent CLI it launched.
-    killOwnedChildren()
-    await durably.stop()
-    await durably.db.destroy()
-    process.exit(0)
-  }
-  process.on('SIGINT', () => void shutdown())
-  process.on('SIGTERM', () => void shutdown())
-  await new Promise(() => {})
+  const idle = exitWhenIdle
+    ? watchIdle(durably, idleMs, {
+        stopping: () => shuttingDown,
+        idle: () => requestShutdown('idle'),
+      })
+    : null
+  const reason = await shutdownRequested
+  console.log(`[shutdown] reason=${reason}`)
+  // Children lead their own process group, so an interrupt reaches the
+  // worker but not the agent CLI it launched.
+  killOwnedChildren()
+  // The idle check in flight settles before the database closes under it.
+  await idle?.settled()
+  await durably.stop()
+  await durably.db.destroy()
+  lock.release()
+  // An auto-started worker writes to a file and a test's to a pipe; exit
+  // only once both streams have taken every line, the shutdown one included.
+  await flushed(process.stdout)
+  await flushed(process.stderr)
+  process.exit(0)
 } else if (cmd === 'trigger') {
-  const input = await buildTriggerInput(args())
+  const a = args()
+  const input = await buildTriggerInput(withoutAutoWorkerFlag(a))
   const durably = createAgentDurably()
   await durably.migrate()
   const run = await durably.jobs.agentLoop.trigger(input)
@@ -683,13 +962,14 @@ if (cmd === 'worker') {
       2,
     ),
   )
+  await startWorkerIfNeeded(durably, a)
   await durably.db.destroy()
 } else if (cmd === 'repair') {
   const a = args()
   const runId = a['run']
   if (!runId) throw new Error('--run <id> required')
   // Read before the database is opened: a bad file starts nothing.
-  const files = await readRepairFiles(a)
+  const files = await readRepairFiles(withoutAutoWorkerFlag(a))
   const durably = createAgentDurably()
   await durably.migrate()
   try {
@@ -717,6 +997,7 @@ if (cmd === 'worker') {
         2,
       ),
     )
+    await startWorkerIfNeeded(durably, a)
   } finally {
     await durably.db.destroy()
   }
@@ -943,6 +1224,7 @@ if (cmd === 'worker') {
       (line) => console.log(line),
     )
     console.log(JSON.stringify(receipt, null, 2))
+    await startWorkerIfNeeded(durably, a)
   } finally {
     await durably.db.destroy()
   }
@@ -961,6 +1243,7 @@ if (cmd === 'worker') {
       console.log(line),
     )
     console.log(JSON.stringify(receipt, null, 2))
+    await startWorkerIfNeeded(durably, a)
   } finally {
     await durably.db.destroy()
   }
@@ -996,6 +1279,7 @@ if (cmd === 'worker') {
         : `already retriggered as ${next.runId}; nothing new started`,
     )
   }
+  await startWorkerIfNeeded(durably, a)
   await durably.db.destroy()
 } else if (cmd === 'archive' && args()['series'] !== undefined) {
   const a = args()
