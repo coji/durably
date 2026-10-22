@@ -4566,6 +4566,34 @@ function startedWorker(stderr: string): number | null {
   return m ? Number(m[1]) : null
 }
 
+/**
+ * Stop whatever worker holds a test's own temporary state root, read from
+ * that root's worker.json, so a worker whose pid the test never got to
+ * record is still stopped; then confirm the lock is free. Once a worker has
+ * been started there (its logs exist), the lock must stay free for a quiet
+ * period, so a worker spawned just before a failure but still loading is
+ * caught when it takes the lock.
+ */
+async function reapRootWorker(stateRoot: string): Promise<void> {
+  const quietMs = existsSync(join(stateRoot, 'logs')) ? 5000 : 0
+  const deadline = Date.now() + 30000
+  let freeSince = Date.now()
+  for (;;) {
+    const presence = probeWorkerLock(stateRoot)
+    if (presence.running === false) {
+      if (Date.now() - freeSince >= quietMs) return
+    } else {
+      if (presence.holder) await reap(presence.holder.pid)
+      freeSince = Date.now()
+      if (Date.now() > deadline)
+        throw new Error(`a worker still holds ${stateRoot}`)
+    }
+    // sleep-ok(poll): the holder note may lag the lock, and a worker just
+    // spawned takes the lock only once it has loaded
+    await new Promise((r) => setTimeout(r, 50))
+  }
+}
+
 /** Every auto-started worker log under a state root, read together. */
 async function workerLogs(stateRoot: string): Promise<string> {
   const dir = join(stateRoot, 'logs')
@@ -4758,20 +4786,28 @@ describe('auto-started worker', { timeout: 300000 }, () => {
     const box = await sandbox()
     const env = { ...AUTO, LOCAL_AGENT_LOOP_IDLE_MS: '500' }
     const started: number[] = []
+    /** Run a command, recording any worker it started before anything else. */
+    const run = async (args: string[], extra: Record<string, string> = {}) => {
+      const res = await demo(box, args, { ...env, ...extra })
+      const pid = startedWorker(res.stderr)
+      if (pid !== null) started.push(pid)
+      return { ...res, pid }
+    }
     const db = createAgentDurably({ stateRoot: box.stateRoot })
     try {
       // The fake check fails first: one iteration stops verification-failed.
-      const first = await demo(
-        box,
-        ['trigger', '--provider', 'fake', '--max-iterations', '1'],
-        env,
-      )
+      const first = await run([
+        'trigger',
+        '--provider',
+        'fake',
+        '--max-iterations',
+        '1',
+      ])
       assert.equal(first.code, 0, first.stderr)
       // stdout is still the trigger's JSON alone.
       const firstId = (JSON.parse(first.stdout) as { runId: string }).runId
-      const w1 = startedWorker(first.stderr)
+      const w1 = first.pid
       assert.ok(w1, first.stderr)
-      started.push(w1)
       const log = join(
         box.stateRoot,
         'logs',
@@ -4784,67 +4820,67 @@ describe('auto-started worker', { timeout: 300000 }, () => {
 
       // retrigger: a new run, and a worker for it, which stops once the run
       // waits on a person.
-      const again = await demo(box, ['retrigger', '--run', firstId], {
-        ...env,
+      const again = await run(['retrigger', '--run', firstId], {
         FAKE_FAIL_FIRST: '0',
       })
       assert.equal(again.code, 0, again.stderr)
       const secondId = /^new run (\S+)/.exec(again.stdout)?.[1] ?? ''
-      const w2 = startedWorker(again.stderr)
+      const w2 = again.pid
       assert.ok(w2, again.stderr)
-      started.push(w2)
       await stopsWhenIdle(w2, 'retrigger')
       const second = await db.getRun(secondId)
       assert.equal(second?.status, 'waiting')
       const waitId = second?.waitingOnWaitId ?? ''
 
       // A failed command starts nothing.
-      const bad = await demo(
-        box,
-        ['approve', '--run', secondId, '--wait', 'no-such-wait'],
-        env,
-      )
+      const bad = await run([
+        'approve',
+        '--run',
+        secondId,
+        '--wait',
+        'no-such-wait',
+      ])
       assert.notEqual(bad.code, 0)
-      assert.equal(startedWorker(bad.stderr), null, bad.stderr)
-      const missing = await demo(box, ['retrigger', '--run', 'nope'], env)
+      assert.equal(bad.pid, null, bad.stderr)
+      const missing = await run(['retrigger', '--run', 'nope'])
       assert.notEqual(missing.code, 0)
-      assert.equal(startedWorker(missing.stderr), null, missing.stderr)
+      assert.equal(missing.pid, null, missing.stderr)
 
       // approve: the decided wait is resumed as it is.
-      const approved = await demo(
-        box,
-        ['approve', '--run', secondId, '--wait', waitId],
-        env,
-      )
+      const approved = await run([
+        'approve',
+        '--run',
+        secondId,
+        '--wait',
+        waitId,
+      ])
       assert.equal(approved.code, 0, approved.stderr)
-      const w3 = startedWorker(approved.stderr)
+      const w3 = approved.pid
       assert.ok(w3, approved.stderr)
-      started.push(w3)
       await stopsWhenIdle(w3, 'approve')
       assert.equal((await db.getRun(secondId))?.status, 'completed')
 
       // reject, on a third run.
-      const third = await demo(box, ['trigger', '--provider', 'fake'], {
-        ...env,
+      const third = await run(['trigger', '--provider', 'fake'], {
         FAKE_FAIL_FIRST: '0',
       })
       assert.equal(third.code, 0, third.stderr)
       const thirdId = (JSON.parse(third.stdout) as { runId: string }).runId
-      const w4 = startedWorker(third.stderr)
+      const w4 = third.pid
       assert.ok(w4, third.stderr)
-      started.push(w4)
       await stopsWhenIdle(w4, 'trigger')
       const thirdRun = await db.getRun(thirdId)
       assert.equal(thirdRun?.status, 'waiting')
-      const rejected = await demo(
-        box,
-        ['reject', '--run', thirdId, '--wait', thirdRun?.waitingOnWaitId ?? ''],
-        env,
-      )
+      const rejected = await run([
+        'reject',
+        '--run',
+        thirdId,
+        '--wait',
+        thirdRun?.waitingOnWaitId ?? '',
+      ])
       assert.equal(rejected.code, 0, rejected.stderr)
-      const w5 = startedWorker(rejected.stderr)
+      const w5 = rejected.pid
       assert.ok(w5, rejected.stderr)
-      started.push(w5)
       await stopsWhenIdle(w5, 'reject')
       assert.equal((await db.getRun(thirdId))?.status, 'completed')
 
@@ -4856,36 +4892,51 @@ describe('auto-started worker', { timeout: 300000 }, () => {
     } finally {
       await Promise.all(started.map((pid) => reap(pid)))
       await db.db.destroy()
+      await reapRootWorker(box.stateRoot)
     }
   })
 
   it('starts no second worker, none when switched off, and none when the lock cannot be read', async () => {
     const box = await sandbox()
+    const unreadable = await sandbox()
     const env = { ...AUTO, LOCAL_AGENT_LOOP_IDLE_MS: '500' }
     const started: number[] = []
+    /** Run a command, recording any worker it started before anything else. */
+    const run = async (
+      target: Sandbox,
+      args: string[],
+      runEnv: Record<string, string> = env,
+    ) => {
+      const res = await demo(target, args, runEnv)
+      const pid = startedWorker(res.stderr)
+      if (pid !== null) started.push(pid)
+      return { ...res, pid }
+    }
     try {
       // Switched off by the flag (repair accepts it too) or the variable:
       // the run stays pending and no worker starts.
-      const flagged = await demo(
-        box,
-        ['trigger', '--provider', 'fake', '--no-auto-worker'],
-        env,
-      )
+      const flagged = await run(box, [
+        'trigger',
+        '--provider',
+        'fake',
+        '--no-auto-worker',
+      ])
       assert.equal(flagged.code, 0, flagged.stderr)
-      assert.equal(startedWorker(flagged.stderr), null, flagged.stderr)
-      const off = await demo(box, ['trigger', '--provider', 'fake'], {
+      assert.equal(flagged.pid, null, flagged.stderr)
+      const off = await run(box, ['trigger', '--provider', 'fake'], {
         LOCAL_AGENT_LOOP_NO_AUTO_WORKER: '1',
       })
       assert.equal(off.code, 0, off.stderr)
-      assert.equal(startedWorker(off.stderr), null, off.stderr)
-      const repair = await demo(
-        box,
-        ['repair', '--run', 'nope', '--no-auto-worker'],
-        env,
-      )
+      assert.equal(off.pid, null, off.stderr)
+      const repair = await run(box, [
+        'repair',
+        '--run',
+        'nope',
+        '--no-auto-worker',
+      ])
       assert.notEqual(repair.code, 0)
       assert.doesNotMatch(repair.stderr, /not accepted/)
-      assert.equal(startedWorker(repair.stderr), null, repair.stderr)
+      assert.equal(repair.pid, null, repair.stderr)
       assert.equal(probeWorkerLock(box.stateRoot).running, false)
       assert.equal(existsSync(join(box.stateRoot, 'logs')), false)
       const db = createAgentDurably({ stateRoot: box.stateRoot })
@@ -4910,44 +4961,47 @@ describe('auto-started worker', { timeout: 300000 }, () => {
         '2147483648',
         '9007199254740993',
       ]) {
-        const res = await demo(box, ['trigger', '--provider', 'fake'], {
+        const res = await run(box, ['trigger', '--provider', 'fake'], {
           ...AUTO,
           LOCAL_AGENT_LOOP_IDLE_MS: value,
         })
         assert.equal(res.code, 0, res.stderr)
         JSON.parse(res.stdout)
-        assert.equal(startedWorker(res.stderr), null, value)
+        assert.equal(res.pid, null, value)
         assert.match(res.stderr, /LOCAL_AGENT_LOOP_IDLE_MS must be/, value)
       }
+
+      // A worker already runs: none is started beside it, and it takes the
+      // run.
+      const running = startWorker(box, { FAKE_FAIL_FIRST: '0' })
+      try {
+        await running.running()
+        const res = await run(box, ['trigger', '--provider', 'fake'])
+        assert.equal(res.code, 0, res.stderr)
+        assert.equal(res.pid, null, res.stderr)
+        running.kill('SIGTERM')
+        assert.equal(await running.exited, 0)
+      } finally {
+        running.kill('SIGKILL')
+        await running.exited
+      }
+
+      // Whether a worker runs cannot be told: a warning, and no worker.
+      await mkdir(join(unreadable.stateRoot, 'worker.lock'), {
+        recursive: true,
+      })
+      const res = await run(unreadable, ['trigger', '--provider', 'fake'])
+      assert.equal(res.code, 0, res.stderr)
+      JSON.parse(res.stdout)
+      assert.equal(res.pid, null, res.stderr)
+      assert.match(
+        res.stderr,
+        /no worker started: whether a worker runs is unknown/,
+      )
     } finally {
       await Promise.all(started.map((pid) => reap(pid)))
+      await reapRootWorker(box.stateRoot)
     }
-
-    // A worker already runs: none is started beside it, and it takes the run.
-    const running = startWorker(box, { FAKE_FAIL_FIRST: '0' })
-    try {
-      await running.running()
-      const res = await demo(box, ['trigger', '--provider', 'fake'], env)
-      assert.equal(res.code, 0, res.stderr)
-      assert.equal(startedWorker(res.stderr), null, res.stderr)
-      running.kill('SIGTERM')
-      assert.equal(await running.exited, 0)
-    } finally {
-      running.kill('SIGKILL')
-      await running.exited
-    }
-
-    // Whether a worker runs cannot be told: a warning, and no worker.
-    const unreadable = await sandbox()
-    await mkdir(join(unreadable.stateRoot, 'worker.lock'), { recursive: true })
-    const res = await demo(unreadable, ['trigger', '--provider', 'fake'], env)
-    assert.equal(res.code, 0, res.stderr)
-    JSON.parse(res.stdout)
-    assert.equal(startedWorker(res.stderr), null, res.stderr)
-    assert.match(
-      res.stderr,
-      /no worker started: whether a worker runs is unknown/,
-    )
   })
 
   it('outlives the process group of the shell that triggered it', async () => {
@@ -4979,9 +5033,10 @@ describe('auto-started worker', { timeout: 300000 }, () => {
     const shellPid = shell.pid
     // Never 0: a negative 0 would signal this runner's own group.
     assert.ok(shellPid !== undefined && shellPid > 0)
-    const shellExited = new Promise<void>((resolve) =>
-      shell.once('exit', () => resolve()),
-    )
+    const shellExited = new Promise<void>((resolve) => {
+      shell.once('exit', () => resolve())
+      shell.once('error', () => resolve())
+    })
     let workerPid: number | null = null
     try {
       await until(async () => {
@@ -5018,7 +5073,9 @@ describe('auto-started worker', { timeout: 300000 }, () => {
       assert.equal(probeWorkerLock(box.stateRoot).running, false)
     } finally {
       await reap(-shellPid)
+      await shellExited
       if (workerPid !== null) await reap(workerPid)
+      await reapRootWorker(box.stateRoot)
     }
   })
 })
