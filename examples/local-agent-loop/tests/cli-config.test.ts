@@ -4542,6 +4542,24 @@ function signal(pid: number, sig: NodeJS.Signals): void {
   }
 }
 
+/**
+ * Stop a process (or, with a negative pid, a process group) this test
+ * started and wait until it is gone: SIGTERM first, SIGKILL if it outlives
+ * the grace period, and an error if even that does not end it.
+ */
+async function reap(pid: number, graceMs = 5000): Promise<void> {
+  for (const sig of ['SIGTERM', 'SIGKILL'] as const) {
+    signal(pid, sig)
+    const deadline = Date.now() + graceMs
+    while (Date.now() < deadline) {
+      if (!alive(pid)) return
+      // sleep-ok(poll): one tick of a loop that waits for the process to exit
+      await new Promise((r) => setTimeout(r, 50))
+    }
+  }
+  if (alive(pid)) throw new Error(`process ${pid} survived SIGKILL`)
+}
+
 /** The pid of the worker a command says it started, or null. */
 function startedWorker(stderr: string): number | null {
   const m = /started a worker \(pid (\d+)\)/.exec(stderr)
@@ -4836,7 +4854,7 @@ describe('auto-started worker', { timeout: 300000 }, () => {
       for (const pid of started)
         assert.match(text, new RegExp(`worker running, pid ${pid}\\b`))
     } finally {
-      for (const pid of started) signal(pid, 'SIGKILL')
+      await Promise.all(started.map((pid) => reap(pid)))
       await db.db.destroy()
     }
   })
@@ -4902,7 +4920,7 @@ describe('auto-started worker', { timeout: 300000 }, () => {
         assert.match(res.stderr, /LOCAL_AGENT_LOOP_IDLE_MS must be/, value)
       }
     } finally {
-      for (const pid of started) signal(pid, 'SIGKILL')
+      await Promise.all(started.map((pid) => reap(pid)))
     }
 
     // A worker already runs: none is started beside it, and it takes the run.
@@ -4999,8 +5017,8 @@ describe('auto-started worker', { timeout: 300000 }, () => {
       )
       assert.equal(probeWorkerLock(box.stateRoot).running, false)
     } finally {
-      signal(-shellPid, 'SIGKILL')
-      if (workerPid !== null) signal(workerPid, 'SIGKILL')
+      await reap(-shellPid)
+      if (workerPid !== null) await reap(workerPid)
     }
   })
 })
