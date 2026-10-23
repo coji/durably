@@ -239,6 +239,10 @@ describe('a repair run from outside findings', () => {
     assert.equal(blockBody(prompt, 'SPEC'), SPEC)
     assert.match(prompt, /starting a new session \(iteration 1\)/)
     assert.match(prompt, /approved implementation/)
+    assert.match(
+      prompt,
+      /The findings bound this repair: change only what they require/,
+    )
     const dataStart = prompt.indexOf('UNTRUSTED INPUT DATA:')
     assert.ok(prompt.indexOf(FINDINGS) > dataStart)
     // Never promoted to verified feedback or a factory instruction.
