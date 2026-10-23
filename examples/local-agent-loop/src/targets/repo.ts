@@ -269,7 +269,7 @@ export class RepoTarget implements Target {
       'Work only inside this worktree. Do not touch any other checkout.',
       'Follow the conventions already present in the repository: match neighbouring code, and read the project instructions if the repository ships any.',
       `Grading runs ${this.checkDescription()}. The command was fixed before you started, so editing scripts cannot change what is run.`,
-      'Add or update tests that would fail without your change. Tests that pass whether or not the fix is present do not count.',
+      'When you change behaviour, add or update tests that would fail without your change. Tests that pass whether or not the fix is present do not count. A change that only removes or reverts something needs no new test.',
       'Do not commit; the factory commits for you. Do not push, open pull requests, or run network commands.',
       ...this.selfCheckRule(),
     ]
