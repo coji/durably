@@ -22,7 +22,7 @@
 
 ## Layout
 
-表と時系列の固定幅だけをトークンにする：`--size-trace-max`（動いている実行の時系列の高さの上限。終わった実行は全行を出す）、`--size-inspector`（詳細の列）、`--size-label`（横並びのキー）、`--size-stage-name` と `--size-stage-value`（工程ごとの時間と費用）、`--size-scroll-margin`（目次や件数の並びから飛んだ見出しを固定ヘッダーの下に出す余白）、`--size-meta-runs`・`--size-meta-time`・`--size-meta-cost`・`--size-meta-ago`（一覧の行の末尾にそろえて並べる実行の件数、所要時間、費用、開始時刻の列）、`--size-filter`（一覧の絞り込み欄）。時系列は自分の箱の幅で段組みを変える（コンテナクエリ）。
+表と時系列の固定幅だけをトークンにする：`--size-trace-max`（動いている実行の時系列の高さの上限。終わった実行は全行を出す）、`--size-inspector`（詳細の列）、`--size-label`（横並びのキー）、`--size-stage-name` と `--size-stage-value`（工程ごとの時間と費用）、`--size-scroll-margin`（目次や件数の並びから飛んだ見出しを固定ヘッダーの下に出す余白）、`--size-meta-runs`・`--size-meta-time`・`--size-meta-cost`・`--size-meta-ago`（一覧の行の末尾にそろえて並べる実行の件数、所要時間、費用、開始時刻の列。48rem 未満の画面では列幅を中身に合わせ、空の列は詰めるので、行どうしではそろわない）、`--size-filter`（一覧の絞り込み欄）。時系列は自分の箱の幅で段組みを変える（コンテナクエリ）。
 
 ## Radius
 

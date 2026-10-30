@@ -549,7 +549,7 @@ export const ACTION_DONE = {
   decided: 'ワーカーが実行を再開すると、一覧に反映されます。',
   queued: 'ワーカーが順に取りかかります。',
   archived:
-    '終わったタスクに移しました。「アーカイブ済みも表示」にすると、そこから戻せます。',
+    'アーカイブしました。戻すときは実行の詳細を開くか、終わったタスクにあれば「アーカイブ済みも表示」にします。',
   worktreeLeft:
     '作業ツリーは片付けられず、残っています。git が返した理由は次のとおりです。',
   unarchived: '状態に合った場所に戻ります。',
@@ -592,9 +592,10 @@ export const LIST = {
   onlyArchived:
     'アーカイブ済みのタスクだけです。「アーカイブ済みも表示」にすると出ます。',
   filterEmpty: (q: string) => `「${q}」を含むタスクはありません。`,
-  showArchived: (n: string) => `アーカイブ済み ${n} 件も表示`,
+  showArchived: 'アーカイブ済みも表示',
   showMore: (n: string) => `さらに ${n} 件表示`,
   shownOf: (shown: string, all: string) => `${all} 件中 ${shown} 件`,
+  archivedCount: (n: string) => `${n} 件`,
   done: '終わったタスク',
   doneEmpty: '終わったタスクはまだありません。',
   noDbBefore:

@@ -49,7 +49,10 @@ export function DoneFilters({
             onChange={(e) => onArchived(e.target.checked)}
             className="accent-fg size-4"
           />
-          {LIST.showArchived(formatCount(archivedCount))}
+          {LIST.showArchived}
+          <span className="font-code text-fg-3">
+            {LIST.archivedCount(formatCount(archivedCount))}
+          </span>
         </label>
       ) : null}
     </>
@@ -136,12 +139,6 @@ export function DoneTasks({
           >
             {LIST.showMore(formatCount(Math.min(rest, PAGE)))}
           </button>
-          <span className="text-fg-2 text-xs tabular-nums">
-            {LIST.shownOf(
-              formatCount(shown.length),
-              formatCount(matches.length),
-            )}
-          </span>
         </div>
       ) : null}
     </Section>

@@ -47,7 +47,7 @@ export function Section({
     <section
       id={id}
       tabIndex={id ? -1 : undefined}
-      className="scroll-target mb-8 focus-visible:outline-none"
+      className="scroll-target mb-8"
     >
       <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
         <h2 className="flex items-baseline gap-2 text-lg font-semibold">

@@ -335,6 +335,10 @@ dd {
     grid-template-columns: repeat(4, auto);
     justify-content: start;
   }
+  /* A blank column would still leave its gap. */
+  .task-meta > :empty {
+    display: none;
+  }
 }
 @media (width >= 48rem) {
   .task-meta {

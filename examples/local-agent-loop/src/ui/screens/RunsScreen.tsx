@@ -28,8 +28,10 @@ export function RunsScreen({ data, act }: { data: RunsResponse; act: Act }) {
   const stop = data.tasks.filter((t) => t.attention === 'stop')
   const active = data.tasks.filter((t) => t.attention === 'active')
   const done = data.tasks.filter((t) => t.attention === 'done')
-  const running = active.filter(
-    (t) => rows.get(t.representative)?.diagnosis.kind === 'running',
+  // Any run of the task, not only the one that shows it: an older repair
+  // can be running while a newer one waits its turn.
+  const running = active.filter((t) =>
+    t.runs.some((r) => r.kind === 'running'),
   ).length
   return (
     <>

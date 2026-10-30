@@ -352,8 +352,8 @@ timing:
 
 ### 止まったrunをアーカイブする
 
-止まったまま誰も手を打たない run は、アーカイブすると `status` の
-「人の手が要るもの」と web UI の「止まったもの」から外れます。
+止まったまま誰も手を打たない run は、アーカイブすると `status` の上部
+（`wait on a person or stopped`）と web UI の「止まったもの」から外れます。
 
 ```bash
 pnpm --filter example-local-agent-loop demo archive --run <runId>

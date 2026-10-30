@@ -3420,7 +3420,8 @@ describe('numbers on the screens', () => {
     // The overview and the section count both finished tasks, as status does.
     assert.match(list, new RegExp(`${LIST.overviewDone}\\n+2\\n`))
     assert.ok(list.includes(LIST.shownOf('1', '2')))
-    assert.ok(list.includes(LIST.showArchived('1')))
+    assert.ok(list.includes(LIST.showArchived))
+    assert.ok(list.includes(LIST.archivedCount('1')))
     assert.ok(list.includes('shown task'))
     assert.ok(!list.includes('archived task'))
   })
@@ -3457,9 +3458,16 @@ describe('numbers on the screens', () => {
       (m) => m[1],
     )
     assert.deepEqual(expanded, ['true', 'false'])
-    const list = htmlText(html)
-    assert.ok(list.includes(stageName('verify')))
-    assert.ok(list.includes(PIPELINE_SUFFIX.stopped ?? ''))
+    // The stopped row up to its closed body: what shows without opening it.
+    const closed = html.indexOf('aria-expanded="false"')
+    const visible = htmlText(
+      html.slice(closed, html.indexOf('hidden=""', closed)),
+    )
+    const suffix = PIPELINE_SUFFIX.stopped
+    assert.ok(suffix)
+    assert.ok(visible.includes(stageName('verify')))
+    assert.ok(visible.includes(suffix))
+    assert.ok(visible.includes(diagnosisText({ kind: 'stopped' }, false)))
   })
 
   it('shows the total on a stopped task that took more than one run, not on a single run', () => {
