@@ -44,7 +44,11 @@ export function Section({
   children: ReactNode
 }) {
   return (
-    <section id={id} className="scroll-target mb-8">
+    <section
+      id={id}
+      tabIndex={id ? -1 : undefined}
+      className="scroll-target mb-8 focus-visible:outline-none"
+    >
       <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
         <h2 className="flex items-baseline gap-2 text-lg font-semibold">
           {title}

@@ -8,7 +8,7 @@ import { Section } from '../../components/Layout'
 import { LIST } from '../../glossary'
 import type { RunRow } from '../../server'
 import { SECTION_ID } from './Overview'
-import { Tasks } from './Tasks'
+import { isArchivedTask, taskName, Tasks } from './Tasks'
 
 /**
  * The finished list's tools: a filter on the task's name, and a switch
@@ -78,24 +78,27 @@ export function DoneTasks({
   const [query, setQuery] = useState('')
   const [archived, setArchived] = useState(false)
   const [limit, setLimit] = useState(PAGE)
-  const isArchived = (t: Task) => rows.get(t.representative)?.archived === true
+  const isArchived = (t: Task) => isArchivedTask(t, rows)
   const archivedCount = tasks.filter(isArchived).length
   const q = query.trim().toLowerCase()
-  const matches = tasks.filter(
-    (t) =>
-      (archived || !isArchived(t)) &&
-      (q === '' ||
-        (rows.get(t.id)?.name ?? rows.get(t.representative)?.name ?? '')
-          .toLowerCase()
-          .includes(q)),
+  const named = tasks.filter(
+    (t) => q === '' || (taskName(t, rows) ?? '').toLowerCase().includes(q),
   )
+  const matches = archived ? named : named.filter((t) => !isArchived(t))
+  // Said when the list is empty only because archived tasks are hidden.
+  const onlyArchived = matches.length === 0 && named.length > 0
   const shown = matches.slice(0, limit)
   const rest = matches.length - shown.length
   return (
     <Section
       id={SECTION_ID.done}
       title={LIST.done}
-      count={matches.length}
+      count={tasks.length}
+      note={
+        matches.length === tasks.length
+          ? undefined
+          : LIST.shownOf(formatCount(matches.length), formatCount(tasks.length))
+      }
       tools={
         tasks.length > 0 ? (
           <DoneFilters
@@ -115,7 +118,13 @@ export function DoneTasks({
         tasks={shown}
         rows={rows}
         now={now}
-        empty={q ? LIST.filterEmpty(query.trim()) : LIST.doneEmpty}
+        empty={
+          onlyArchived
+            ? LIST.onlyArchived
+            : q
+              ? LIST.filterEmpty(query.trim())
+              : LIST.doneEmpty
+        }
         act={act}
       />
       {rest > 0 ? (
@@ -138,5 +147,3 @@ export function DoneTasks({
     </Section>
   )
 }
-
-/** Where the overview's entries scroll to. */

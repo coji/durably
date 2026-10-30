@@ -329,6 +329,13 @@ dd {
   justify-items: end;
   white-space: nowrap;
 }
+/* A narrow screen has no room for the fixed columns: the facts close up. */
+@media (width < 48rem) {
+  .task-meta {
+    grid-template-columns: repeat(4, auto);
+    justify-content: start;
+  }
+}
 @media (width >= 48rem) {
   .task-meta {
     margin-left: auto;

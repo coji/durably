@@ -28,10 +28,8 @@ export function RunsScreen({ data, act }: { data: RunsResponse; act: Act }) {
   const stop = data.tasks.filter((t) => t.attention === 'stop')
   const active = data.tasks.filter((t) => t.attention === 'active')
   const done = data.tasks.filter((t) => t.attention === 'done')
-  // The finished section hides archived tasks until asked, so its count
-  // here is the one the section starts with.
-  const doneShown = done.filter(
-    (t) => rows.get(t.representative)?.archived !== true,
+  const running = active.filter(
+    (t) => rows.get(t.representative)?.diagnosis.kind === 'running',
   ).length
   return (
     <>
@@ -41,27 +39,13 @@ export function RunsScreen({ data, act }: { data: RunsResponse; act: Act }) {
             ? LIST.attentionEmpty
             : undefined
         }
-        counts={[
-          {
-            key: 'decision',
-            label: LIST.decision,
-            n: decision.length,
-            tone: 'waiting',
-          },
-          {
-            key: 'active',
-            label: LIST.active,
-            n: active.length,
-            tone: 'running',
-          },
-          { key: 'stop', label: LIST.stopped, n: stop.length, tone: 'failed' },
-          {
-            key: 'done',
-            label: LIST.overviewDone,
-            n: doneShown,
-            tone: 'done',
-          },
-        ]}
+        counts={{
+          decision: decision.length,
+          active: active.length,
+          running,
+          stop: stop.length,
+          done: done.length,
+        }}
       />
       {decision.length > 0 ? (
         <Section
@@ -69,14 +53,7 @@ export function RunsScreen({ data, act }: { data: RunsResponse; act: Act }) {
           title={LIST.decision}
           count={decision.length}
         >
-          <Tasks
-            tasks={decision}
-            rows={rows}
-            now={data.now}
-            empty={LIST.attentionEmpty}
-            act={act}
-            open
-          />
+          <Tasks tasks={decision} rows={rows} now={data.now} act={act} open />
         </Section>
       ) : null}
       <Section id={SECTION_ID.active} title={LIST.active} count={active.length}>
@@ -96,13 +73,7 @@ export function RunsScreen({ data, act }: { data: RunsResponse; act: Act }) {
           count={stop.length}
           note={LIST.stoppedNote}
         >
-          <Tasks
-            tasks={stop}
-            rows={rows}
-            now={data.now}
-            empty={LIST.attentionEmpty}
-            act={act}
-          />
+          <Tasks tasks={stop} rows={rows} now={data.now} act={act} />
         </Section>
       ) : null}
       <DoneTasks tasks={done} rows={rows} now={data.now} act={act} />

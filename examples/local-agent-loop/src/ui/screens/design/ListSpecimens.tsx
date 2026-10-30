@@ -11,22 +11,12 @@ export function OverviewStates() {
     <>
       <State label={DESIGN.state.attention}>
         <Overview
-          counts={[
-            { key: 'decision', label: LIST.decision, n: 2, tone: 'waiting' },
-            { key: 'active', label: LIST.active, n: 1, tone: 'running' },
-            { key: 'stop', label: LIST.stopped, n: 3, tone: 'failed' },
-            { key: 'done', label: LIST.overviewDone, n: 41, tone: 'done' },
-          ]}
+          counts={{ decision: 2, active: 1, running: 1, stop: 3, done: 41 }}
         />
       </State>
       <State label={DESIGN.state.calm}>
         <Overview
-          counts={[
-            { key: 'decision', label: LIST.decision, n: 0, tone: 'waiting' },
-            { key: 'active', label: LIST.active, n: 0, tone: 'running' },
-            { key: 'stop', label: LIST.stopped, n: 0, tone: 'failed' },
-            { key: 'done', label: LIST.overviewDone, n: 41, tone: 'done' },
-          ]}
+          counts={{ decision: 0, active: 1, running: 0, stop: 0, done: 41 }}
           note={LIST.attentionEmpty}
         />
       </State>

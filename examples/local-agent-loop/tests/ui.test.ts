@@ -78,6 +78,7 @@ import {
   DIAGNOSIS_TEXT,
   KIND_NAME,
   LIST,
+  PIPELINE_SUFFIX,
   REVIEW,
   REVIEW_STATUS,
   TREND,
@@ -3379,6 +3380,87 @@ describe('numbers on the screens', () => {
       diagnosis: { kind: 'finished', next: [], failure: null },
       ...over,
     }) as unknown as RunRow
+
+  const listOf = (runs: RunRow[]) => {
+    const data = {
+      exists: true,
+      db: '/tmp/x.db',
+      now,
+      runs,
+      tasks: groupTasks(
+        runs.map((r) => ({
+          id: r.id,
+          createdAt: r.createdAt,
+          parentId: null,
+          kind: r.diagnosis.kind,
+          approved: r.conclusion === 'approved',
+          leadTimeMs: r.leadTimeMs,
+          costUsd: r.costUsd,
+          archived: r.archived,
+        })),
+      ),
+    } as unknown as RunsResponse
+    return renderToStaticMarkup(createElement(RunsScreen, { data, act: noAct }))
+  }
+  const archivedStop = (over: Partial<RunRow>) =>
+    row({
+      status: 'failed',
+      conclusion: null,
+      archived: true,
+      diagnosis: { kind: 'stopped', next: [], failure: null },
+      ...over,
+    } as Partial<RunRow>)
+
+  it('hides archived finished tasks until asked, while every count includes them', () => {
+    const html = listOf([
+      row({ name: 'shown task' }),
+      archivedStop({ id: '01K6D2Q7XB3M9RKT4WARCHVD', name: 'archived task' }),
+    ])
+    const list = htmlText(html)
+    // The overview and the section count both finished tasks, as status does.
+    assert.match(list, new RegExp(`${LIST.overviewDone}\\n+2\\n`))
+    assert.ok(list.includes(LIST.shownOf('1', '2')))
+    assert.ok(list.includes(LIST.showArchived('1')))
+    assert.ok(list.includes('shown task'))
+    assert.ok(!list.includes('archived task'))
+  })
+
+  it('says the finished list is empty only because archived tasks are hidden', () => {
+    const list = htmlText(
+      listOf([archivedStop({ id: '01K6D2Q7XB3M9RKT4WARCHVD' })]),
+    )
+    assert.ok(list.includes(LIST.onlyArchived))
+    assert.ok(!list.includes(LIST.doneEmpty))
+  })
+
+  it('opens a decision and closes a stop, which keeps its stage and reason on the row', () => {
+    const html = listOf([
+      row({
+        id: '01K6D2Q7XB3M9RKT4WAPPROV',
+        status: 'waiting',
+        conclusion: null,
+        diagnosis: { kind: 'approval', next: [], failure: null },
+      } as unknown as Partial<RunRow>),
+      row({
+        id: '01K6D2Q7XB3M9RKT4WSTOPPD',
+        status: 'failed',
+        conclusion: null,
+        createdAt: '2026-09-30T10:00:00.000Z',
+        pipeline: {
+          stages: [{ stage: 'verify', state: 'stopped', count: 2 }],
+          label: '',
+        },
+        diagnosis: { kind: 'stopped', next: [], failure: null },
+      } as unknown as Partial<RunRow>),
+    ])
+    const expanded = [...html.matchAll(/aria-expanded="(true|false)"/g)].map(
+      (m) => m[1],
+    )
+    assert.deepEqual(expanded, ['true', 'false'])
+    const list = htmlText(html)
+    assert.ok(list.includes(stageName('verify')))
+    assert.ok(list.includes(PIPELINE_SUFFIX.stopped ?? ''))
+  })
 
   it('shows the total on a stopped task that took more than one run, not on a single run', () => {
     const stopped = {

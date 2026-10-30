@@ -182,7 +182,7 @@ export function TaskMeta({
       ) : (
         <MetaValue
           value={formatCost(costUsd)}
-          title={total ?? COMMON.costNote}
+          title={total ? `${total}\n${COMMON.costNote}` : COMMON.costNote}
         />
       )}
       <Ago iso={at} now={now} />

@@ -548,7 +548,8 @@ export const ACTION_DONE = {
   unarchiveAgain: 'アーカイブしていません',
   decided: 'ワーカーが実行を再開すると、一覧に反映されます。',
   queued: 'ワーカーが順に取りかかります。',
-  archived: '終わったタスクに移しました。そこから戻せます。',
+  archived:
+    '終わったタスクに移しました。「アーカイブ済みも表示」にすると、そこから戻せます。',
   worktreeLeft:
     '作業ツリーは片付けられず、残っています。git が返した理由は次のとおりです。',
   unarchived: '状態に合った場所に戻ります。',
@@ -579,7 +580,6 @@ export const REFRESH = {
 // ---------------------------------------------------------------- run list
 
 export const LIST = {
-  attention: '人の手が要るもの',
   attentionEmpty: '人の手が要るものはありません',
   decision: '判断待ち',
   stopped: '止まったもの',
@@ -589,6 +589,8 @@ export const LIST = {
   overview: '状況',
   overviewDone: '終わった',
   filter: 'タスク名で絞り込む',
+  onlyArchived:
+    'アーカイブ済みのタスクだけです。「アーカイブ済みも表示」にすると出ます。',
   filterEmpty: (q: string) => `「${q}」を含むタスクはありません。`,
   showArchived: (n: string) => `アーカイブ済み ${n} 件も表示`,
   showMore: (n: string) => `さらに ${n} 件表示`,
@@ -612,7 +614,7 @@ export const LIST = {
   fakeTitle:
     '最初の実行が模擬のプロバイダーで動いたタスクです。実際のモデルは呼んでいないので、週ごとの推移には数えません。',
   archivedTitle:
-    '止まった実行を人がアーカイブしたので、人の手が要るものには出しません。止まった理由はそのまま残っています。',
+    '止まった実行を人がアーカイブしたので、止まったものには出しません。止まった理由はそのまま残っています。',
   supersededTitle:
     '同じ修正元から後に始めた修正が承認されたので、この実行は判断が要りません',
   showRuns: (name: string) => `${name}の実行を表示`,
