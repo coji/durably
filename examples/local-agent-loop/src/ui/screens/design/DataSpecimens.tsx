@@ -1,7 +1,6 @@
 import {
   formatCost,
   formatDuration,
-  formatRelative,
   formatTokens,
   UNKNOWN,
 } from '../../../engine/format'
@@ -13,12 +12,13 @@ import {
   PartialTag,
 } from '../../components/KeyValue'
 import { Collapsible } from '../../components/Layout'
+import { LiveProgress } from '../../components/LiveProgress'
 import { MetricCard, MetricGrid } from '../../components/MetricCard'
 import { RunLink } from '../../components/RunLink'
-import { StageTrack } from '../../components/StageTrack'
+import { StageNow, StageTrack } from '../../components/StageTrack'
 import { StatusBadge } from '../../components/StatusBadge'
 import { FakeMark } from '../../components/SupersededMark'
-import { TaskList, TaskRow, TaskTotal } from '../../components/TaskRow'
+import { TaskList, TaskMeta, TaskRow } from '../../components/TaskRow'
 import { LogBody } from '../../components/trace/AttemptLog'
 import { TraceView } from '../../components/trace/TraceView'
 import {
@@ -27,16 +27,15 @@ import {
   DESIGN,
   DETAIL,
   DIAGNOSIS_TEXT,
+  FAILURE_TEXT,
   KIND_NAME,
-  LIST,
   TRACE,
 } from '../../glossary'
 import { MULTI_RUN, NOW, PIPELINES, TASK_ROWS, USAGE } from './fixtures'
 import { State } from './Specimen'
 import { LOG_VIEWS, TOTALS, TRACES } from './trace-fixtures'
 
-const ago = (m: number) =>
-  formatRelative(new Date(Date.parse(NOW) - m * 60_000).toISOString(), NOW)
+const at = (m: number) => new Date(Date.parse(NOW) - m * 60_000).toISOString()
 
 export function TaskRowStates() {
   const [first] = TASK_ROWS
@@ -49,38 +48,59 @@ export function TaskRowStates() {
             name={first.task.name}
             href="#/design"
             id={first.task.id}
-            meta={<span>{ago(first.minutes)}</span>}
+            stage={<StageNow pipeline={first.pipeline} />}
+            meta={<TaskMeta runs={1} at={at(first.minutes)} now={NOW} />}
+            summary={DIAGNOSIS_TEXT.approval}
             toggleLabel={first.task.name}
             defaultOpen
           >
             <StageTrack pipeline={first.pipeline} />
-            <p className="text-fg-2 text-sm">{DIAGNOSIS_TEXT.approval}</p>
           </TaskRow>
         </TaskList>
       </State>
       <State label={DESIGN.state.closed}>
         <TaskList>
-          {TASK_ROWS.slice(1).map((r) => (
-            <TaskRow
-              key={r.task.id}
-              status={r.status}
-              name={r.task.name}
-              href="#/design"
-              id={r.task.id}
-              toggleLabel={r.task.name}
-              meta={
-                <>
-                  {r.fake ? <FakeMark /> : null}
-                  <span className="font-code">
-                    {formatCost(USAGE.known.costUsd)}
-                  </span>
-                  <span>{ago(r.minutes)}</span>
-                </>
-              }
-            >
-              <StageTrack pipeline={r.pipeline} />
-            </TaskRow>
-          ))}
+          {TASK_ROWS.slice(1).map((r) => {
+            const finished = r.status.tone === 'done'
+            return (
+              <TaskRow
+                key={r.task.id}
+                status={r.status}
+                name={r.task.name}
+                href="#/design"
+                id={r.task.id}
+                marks={r.fake ? <FakeMark /> : null}
+                stage={finished ? null : <StageNow pipeline={r.pipeline} />}
+                toggleLabel={r.task.name}
+                meta={
+                  <TaskMeta
+                    runs={1}
+                    leadTimeMs={finished ? 1_200_000 : undefined}
+                    costUsd={finished ? USAGE.known.costUsd : undefined}
+                    at={at(r.minutes)}
+                    now={NOW}
+                  />
+                }
+                summary={
+                  finished ? null : r.status.tone === 'running' ? (
+                    <LiveProgress
+                      live={{
+                        stage: 'code',
+                        stepName: null,
+                        stageMs: 184_000,
+                        runMs: 720_000,
+                      }}
+                      inline
+                    />
+                  ) : (
+                    FAILURE_TEXT['review-cap-reached'].reason
+                  )
+                }
+              >
+                <StageTrack pipeline={r.pipeline} />
+              </TaskRow>
+            )
+          })}
         </TaskList>
       </State>
       <State label={DESIGN.state.total}>
@@ -94,11 +114,13 @@ export function TaskRowStates() {
               id={r.task.id}
               toggleLabel={r.task.name}
               meta={
-                <>
-                  <span>{LIST.runs(r.runs)}</span>
-                  <TaskTotal total={r.total} several />
-                  <span>{ago(r.minutes)}</span>
-                </>
+                <TaskMeta
+                  runs={r.runs}
+                  leadTimeMs={r.total.leadTimeMs}
+                  costUsd={r.total.costUsd}
+                  at={at(r.minutes)}
+                  now={NOW}
+                />
               }
             >
               <StageTrack pipeline={PIPELINES[r.pipeline]} />

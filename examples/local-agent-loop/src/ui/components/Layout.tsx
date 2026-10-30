@@ -23,22 +23,40 @@ function Count({ n }: { n: number }) {
   return <span className="text-fg-2 text-sm font-normal tabular-nums">{n}</span>
 }
 
-/** A titled part of a page, with how many items it holds. */
+/**
+ * A titled part of a page, with how many items it holds. `note` is a short
+ * line beside the heading; `tools` sit at its far end, such as a filter.
+ */
 export function Section({
+  id,
   title,
   count,
+  note,
+  tools,
   children,
 }: {
+  /** Where the page's overview scrolls to. */
+  id?: string
   title: string
   count?: number
+  note?: string
+  tools?: ReactNode
   children: ReactNode
 }) {
   return (
-    <section className="mb-8">
-      <h2 className="mb-3 flex items-baseline gap-2 text-lg font-semibold">
-        {title}
-        {count !== undefined ? <Count n={count} /> : null}
-      </h2>
+    <section id={id} className="scroll-target mb-8">
+      <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+        <h2 className="flex items-baseline gap-2 text-lg font-semibold">
+          {title}
+          {count !== undefined ? <Count n={count} /> : null}
+        </h2>
+        {note ? <span className="text-fg-2 text-xs">{note}</span> : null}
+        {tools ? (
+          <div className="flex flex-wrap items-center gap-3 md:ml-auto">
+            {tools}
+          </div>
+        ) : null}
+      </div>
       {children}
     </section>
   )

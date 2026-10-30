@@ -581,8 +581,18 @@ export const REFRESH = {
 export const LIST = {
   attention: '人の手が要るもの',
   attentionEmpty: '人の手が要るものはありません',
+  decision: '判断待ち',
+  stopped: '止まったもの',
+  stoppedNote: '開くと工程、次の一手、実行の履歴が出ます。',
   active: '動いているもの',
   activeEmpty: '動いている実行も、順番を待つ実行もありません。',
+  overview: '状況',
+  overviewDone: '終わった',
+  filter: 'タスク名で絞り込む',
+  filterEmpty: (q: string) => `「${q}」を含むタスクはありません。`,
+  showArchived: (n: string) => `アーカイブ済み ${n} 件も表示`,
+  showMore: (n: string) => `さらに ${n} 件表示`,
+  shownOf: (shown: string, all: string) => `${all} 件中 ${shown} 件`,
   done: '終わったタスク',
   doneEmpty: '終わったタスクはまだありません。',
   noDbBefore:
@@ -968,9 +978,20 @@ export const DESIGN = {
       name: '状態バッジ',
       about: '色が付くのは人待ち、失敗、実行中の三つだけです。',
     },
+    overview: {
+      name: '件数の並び',
+      about:
+        '一覧の先頭で、どこに何件あるかを見せます。0 件は色を付けず、押すとその節へ移ります。',
+    },
+    filters: {
+      name: '一覧の絞り込み',
+      about:
+        '終わったタスクを名前で絞り込み、アーカイブ済みを出し入れします。表示だけを変えます。',
+    },
     taskRow: {
       name: 'タスクの行',
-      about: '名前が主役で、ID は末尾だけを添えます。開くと詳細が出ます。',
+      about:
+        '名前が主役で、ID は末尾だけを添えます。数値は列をそろえ、閉じていても止まった理由かいまの工程を1行で読めます。',
     },
     stageTrack: {
       name: '工程の並び',
@@ -1046,6 +1067,8 @@ export const DESIGN = {
     },
   },
   state: {
+    attention: '人の手が要るとき',
+    calm: '何も待っていないとき',
     closed: '閉じた状態',
     open: '開いた状態',
     known: '分かっている値',

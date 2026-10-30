@@ -26,12 +26,15 @@ import {
   TaskRowStates,
   TraceStates,
 } from './design/DataSpecimens'
+import { FilterStates, OverviewStates } from './design/ListSpecimens'
 import { HighlightStates } from './design/ReviewSpecimens'
 import { Specimen } from './design/Specimen'
 
 const PARTS: [keyof typeof DESIGN.part, () => ReactNode][] = [
   ['badge', BadgeStates],
+  ['overview', OverviewStates],
   ['taskRow', TaskRowStates],
+  ['filters', FilterStates],
   ['links', LinkStates],
   ['stageTrack', StageTrackStates],
   ['live', LiveStates],

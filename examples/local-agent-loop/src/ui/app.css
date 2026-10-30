@@ -73,7 +73,12 @@
   --size-label: 6.5rem;
   --size-stage-name: 9rem;
   --size-stage-value: 5rem;
-  --size-scroll-margin: var(--space-12);
+  --size-meta-runs: 4.5rem;
+  --size-meta-time: 5.5rem;
+  --size-meta-cost: 3.5rem;
+  --size-meta-ago: 4.5rem;
+  --size-filter: 18rem;
+  --size-scroll-margin: calc(var(--space-12) + var(--space-6));
   --size-hatch: 4px;
 
   /* semantics */
@@ -82,7 +87,7 @@
   --surface-sunken: light-dark(var(--gray-100), var(--gray-1000));
   --text-primary: light-dark(var(--gray-900), var(--gray-50));
   --text-secondary: light-dark(var(--gray-600), var(--gray-400));
-  --text-tertiary: var(--gray-500);
+  --text-tertiary: light-dark(var(--gray-500), var(--gray-400));
   --text-inverse: light-dark(var(--white), var(--gray-950));
   --border-subtle: light-dark(oklch(0% 0 0 / 0.07), oklch(100% 0 0 / 0.07));
   --border-default: light-dark(oklch(0% 0 0 / 0.13), oklch(100% 0 0 / 0.13));
@@ -299,6 +304,34 @@ dd {
   }
   .stage-bar {
     display: block;
+  }
+}
+/*
+ * A task row: the chevron in its own column, and everything else, the
+ * summary line and what opening shows, in the second, so they all start
+ * at the badge.
+ */
+.task-row {
+  display: grid;
+  grid-template-columns: var(--space-8) minmax(0, 1fr);
+  column-gap: var(--space-3);
+}
+/*
+ * A row's facts in fixed, right-aligned columns, so the time, cost and age
+ * of every row in a list line up.
+ */
+.task-meta {
+  display: grid;
+  grid-template-columns:
+    var(--size-meta-runs) var(--size-meta-time) var(--size-meta-cost)
+    var(--size-meta-ago);
+  column-gap: var(--space-3);
+  justify-items: end;
+  white-space: nowrap;
+}
+@media (width >= 48rem) {
+  .task-meta {
+    margin-left: auto;
   }
 }
 /* A heading the design page's contents jump to clears the sticky header. */
