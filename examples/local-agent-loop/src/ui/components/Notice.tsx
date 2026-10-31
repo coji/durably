@@ -4,16 +4,16 @@ import { ACTION } from '../glossary'
 import { BUTTON_QUIET } from './button'
 import type { Tone } from './status'
 
-const RULE: Record<Tone, string> = {
-  waiting: 'border-waiting bg-waiting-bg',
-  failed: 'border-failed bg-failed-bg',
-  running: 'border-running bg-running-bg',
-  done: 'border-line-strong bg-sunken',
+const FILL: Record<Tone, string> = {
+  waiting: 'border-waiting/30 bg-waiting-bg',
+  failed: 'border-failed/30 bg-failed-bg',
+  running: 'border-running/30 bg-running-bg',
+  done: 'border-line bg-sunken',
 }
 
 /**
  * A short message about the page itself, such as a refresh that failed or
- * an action that finished. The rule on its left carries the state's color.
+ * an action that finished. Its fill and hairline carry the state's color.
  */
 export function Notice({
   tone = 'done',
@@ -30,7 +30,7 @@ export function Notice({
   return (
     <div
       role={tone === 'failed' ? 'alert' : 'status'}
-      className={`flex items-start gap-3 rounded-sm border-l-2 px-3 py-2 text-sm ${RULE[tone]}`}
+      className={`flex items-start gap-3 rounded-md border px-3 py-2 text-sm ${FILL[tone]}`}
     >
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         {title ? <p className="text-fg font-medium">{title}</p> : null}

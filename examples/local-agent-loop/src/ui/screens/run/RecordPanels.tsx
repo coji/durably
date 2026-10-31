@@ -6,7 +6,13 @@ import { Field } from '../../components/KeyValue'
 import { Panel } from '../../components/Layout'
 import { PathValue } from '../../components/PathValue'
 import { IdSuffix } from '../../components/RunLink'
-import { COMMON, INPUT_NAME, RECORD, REVIEW } from '../../glossary'
+import {
+  COMMON,
+  DELIVERY_KIND_NAME,
+  INPUT_NAME,
+  RECORD,
+  REVIEW,
+} from '../../glossary'
 import { squashedBranchField } from '../../labels'
 
 /** A candidate's size as the report recorded it at sealing. */
@@ -29,7 +35,6 @@ function CandidateList({ report: r }: { report: LoopReport }) {
           className="flex flex-wrap items-baseline gap-x-2 text-sm"
         >
           <span>{REVIEW.candidateOf(c.iteration)}</span>
-          <IdSuffix id={c.id} />
           <span className="text-fg-2 tabular-nums">
             {c.changes ? changesText(c.changes) : RECORD.changesMissing}
           </span>
@@ -44,7 +49,6 @@ function CandidatePanel({ report: r }: { report: LoopReport }) {
     <Panel title={RECORD.candidate}>
       {r.candidate ? (
         <dl className="flex flex-col gap-2">
-          <Field label={RECORD.id}>{r.candidate.id}</Field>
           <Field label={RECORD.branch}>
             {r.candidate.branch ?? COMMON.none}
           </Field>
@@ -73,7 +77,9 @@ function DeliveryPanel({ report: r }: { report: LoopReport }) {
       <CopyAnnouncer copied={copied} />
       {r.delivery ? (
         <dl className="flex flex-col gap-2">
-          <Field label={RECORD.kind}>{r.delivery.kind}</Field>
+          <Field label={RECORD.kind}>
+            {DELIVERY_KIND_NAME[r.delivery.kind] ?? r.delivery.kind}
+          </Field>
           <Field label={RECORD.location}>{r.delivery.location}</Field>
           <Field label={RECORD.branch}>
             {r.delivery.branch ?? COMMON.none}
@@ -92,9 +98,6 @@ function DeliveryPanel({ report: r }: { report: LoopReport }) {
             ) : (
               COMMON.none
             )}
-          </Field>
-          <Field label={RECORD.summary}>
-            <span className="font-ui">{r.delivery.summary}</span>
           </Field>
         </dl>
       ) : (
@@ -126,10 +129,9 @@ export function RecordPanels({ report: r }: { report: LoopReport }) {
                 {!file ? (
                   RECORD.notGiven
                 ) : 'path' in file ? (
-                  `${file.sha256}  ${file.path}`
+                  file.path
                 ) : (
                   <span className="inline-flex flex-wrap items-baseline gap-x-2">
-                    <span>{file.sha256}</span>
                     <span className="font-ui">{RECORD.findingsFromParent}</span>
                     <IdSuffix id={file.parentRun} />
                   </span>

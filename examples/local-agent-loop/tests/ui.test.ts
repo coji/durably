@@ -67,11 +67,18 @@ import {
 import { archiveMarkerOf } from '../src/factory/layout.js'
 import { repairLabels } from '../src/factory/repair.js'
 import { ActionNotice } from '../src/ui/components/ActionNotice.js'
+import {
+  BulkNotice,
+  undoItems,
+  type BulkOutcome,
+  type SeriesResult,
+} from '../src/ui/components/BulkNotice.js'
 import { ReviewFindingTitles } from '../src/ui/components/ReviewFindingTitles.js'
 import { openNow } from '../src/ui/components/TaskRow.js'
 import {
   ACTION,
   ACTION_DONE,
+  BULK,
   COMPARE,
   COPY,
   DESIGN,
@@ -102,6 +109,8 @@ import {
   stageName,
   stopName,
 } from '../src/ui/labels.js'
+import { seriesCommand } from '../src/ui/screens/list/BulkBar.js'
+import { STOP_PAGE } from '../src/ui/screens/list/StopTasks.js'
 import { TaskRuns } from '../src/ui/screens/list/TaskRuns.js'
 import { RecordPanels } from '../src/ui/screens/run/RecordPanels.js'
 import { SpecPanel } from '../src/ui/screens/run/SpecPanel.js'
@@ -142,6 +151,7 @@ import {
   readLogChunk,
   wholeUtf8Length,
   type LogChunk,
+  listRows,
   readOnce,
   runName,
   SUBJECT_RUN_NAME,
@@ -593,7 +603,7 @@ describe('pipeline and trace', () => {
       ['baseline', 'stopped', 1],
       ['code', 'not-reached', 0],
     ])
-    assert.equal(stopped.label, '工程: ベースの検証で停止')
+    assert.equal(stopped.label, '工程: 事前検証で停止')
     const refused = derivePipeline({
       status: 'failed',
       diagnosisKind: 'stopped',
@@ -2792,8 +2802,14 @@ describe('web UI over fake runs', { timeout: 300000 }, () => {
         'rejected-invocation',
       )
       assert.equal(row('rejected').diagnosis.failure?.retryable, true)
+      // The failure's details are the run page's; the list leaves them out.
+      assert.deepEqual(row('rejected').diagnosis.failure?.details, [])
+      const rejected = await api<RunDetailResponse>(
+        port,
+        `/api/runs/${ids.rejected}`,
+      )
       assert.ok(
-        row('rejected').diagnosis.failure?.details.includes(
+        rejected.diagnosis.failure?.details.includes(
           'refusal: fake: the review-a call on rejects-review is refused',
         ),
       )
@@ -3436,7 +3452,107 @@ describe('numbers on the screens', () => {
     assert.ok(!list.includes(LIST.doneEmpty))
   })
 
-  it('opens a decision and closes a stop, which keeps its stage and reason on the row', () => {
+  it('gives stopped rows a checkbox only when tasks can be archived together', () => {
+    const stops = [0, 1].map((i) =>
+      row({
+        id: `01K6D2Q7XB3M9RKT4WPICK0${i}`,
+        name: `pick ${i}`,
+        status: 'failed',
+        conclusion: null,
+        diagnosis: { kind: 'stopped', next: [], failure: null },
+      } as unknown as Partial<RunRow>),
+    )
+    const plain = listOf(stops)
+    assert.ok(!plain.includes('task-pick'))
+    assert.ok(!htmlText(plain).includes(BULK.selectAll))
+    const data = {
+      exists: true,
+      db: '/tmp/x.db',
+      now,
+      runs: stops,
+      tasks: groupTasks(
+        stops.map((r) => ({
+          id: r.id,
+          createdAt: r.createdAt,
+          parentId: null,
+          kind: r.diagnosis.kind,
+          approved: false,
+          leadTimeMs: r.leadTimeMs,
+          costUsd: r.costUsd,
+          archived: false,
+        })),
+      ),
+    } as unknown as RunsResponse
+    const html = renderToStaticMarkup(
+      createElement(RunsScreen, { data, act: noAct, actMany: async () => {} }),
+    )
+    assert.equal([...html.matchAll(/class="task-pick/g)].length, 2)
+    assert.ok(html.includes(`aria-label="${BULK.select('pick 0')}"`))
+    assert.ok(htmlText(html).includes(BULK.selectAll))
+  })
+
+  it('brings back only the runs a bulk archive newly archived, shows the worktrees git left, and names one CLI line for the tasks', () => {
+    const outcome: BulkOutcome = {
+      action: 'archive-series',
+      done: [
+        {
+          item: { runId: 'a', name: 'task a' },
+          archived: ['a', 'a2'],
+          warnings: [],
+        },
+        {
+          item: { runId: 'b', name: 'task b' },
+          archived: [],
+          warnings: ['worktree /w/b: git worktree remove failed'],
+        },
+      ],
+      failed: [{ item: { runId: 'c', name: 'task c' }, error: 'no run c' }],
+    }
+    assert.deepEqual(undoItems(outcome), [
+      { runId: 'a', name: 'task a' },
+      { runId: 'a2', name: 'task a' },
+    ])
+    assert.equal(
+      seriesCommand([
+        { runId: 'a', name: 'task a' },
+        { runId: 'b', name: 'task b' },
+      ]),
+      'pnpm --filter example-local-agent-loop demo archive --series a --series b',
+    )
+    const text = htmlText(
+      renderToStaticMarkup(
+        createElement(BulkNotice, { outcome, onUndo: () => {} }),
+      ),
+    )
+    assert.ok(text.includes(BULK.archived('2')))
+    assert.ok(text.includes(BULK.undo))
+    assert.ok(text.includes(BULK.failed('1')))
+    assert.ok(text.includes('no run c'))
+    assert.ok(text.includes(ACTION_DONE.worktreeLeft))
+    assert.ok(text.includes('worktree /w/b: git worktree remove failed'))
+  })
+
+  it('shows the newest stopped tasks and asks before showing the rest', () => {
+    const stops = Array.from({ length: STOP_PAGE + 2 }, (_, i) =>
+      row({
+        id: `01K6D2Q7XB3M9RKT4WST0P${String(i).padStart(2, '0')}`,
+        name: `stop ${i}`,
+        status: 'failed',
+        conclusion: null,
+        createdAt: `2026-09-${String(10 + i)}T10:00:00.000Z`,
+        diagnosis: { kind: 'stopped', next: [], failure: null },
+      } as unknown as Partial<RunRow>),
+    )
+    const list = htmlText(listOf(stops))
+    const shown = stops.filter((r) => list.includes(r.name)).length
+    assert.equal(shown, STOP_PAGE)
+    // The newest show; the section still counts every stopped task.
+    assert.ok(list.includes(`stop ${STOP_PAGE + 1}`))
+    assert.ok(!list.includes('stop 0'))
+    assert.ok(list.includes(LIST.showMore('2')))
+  })
+
+  it('opens a decision and keeps a stop to one line, its reason shown once opened', () => {
     const html = listOf([
       row({
         id: '01K6D2Q7XB3M9RKT4WAPPROV',
@@ -3465,11 +3581,8 @@ describe('numbers on the screens', () => {
     const visible = htmlText(
       html.slice(closed, html.indexOf('hidden=""', closed)),
     )
-    const suffix = PIPELINE_SUFFIX.stopped
-    assert.ok(suffix)
-    assert.ok(visible.includes(stageName('verify')))
-    assert.ok(visible.includes(suffix))
-    assert.ok(visible.includes(diagnosisText({ kind: 'stopped' }, false)))
+    // Closed, the badge says how it stopped; the reason waits for opening.
+    assert.ok(!visible.includes(diagnosisText({ kind: 'stopped' }, false)))
   })
 
   // A first run whose review asked for changes, and two repairs of it.
@@ -3507,13 +3620,7 @@ describe('numbers on the screens', () => {
     return html.slice(at, html.indexOf('id="tasks-done"', at))
   }
 
-  for (const kind of [
-    'running',
-    'pending',
-    'lease-expired',
-    'decided',
-    'stopped',
-  ])
+  for (const kind of ['running', 'pending', 'lease-expired', 'decided'])
     it(`opens a stopped row whose retried repair is ${kind}`, () => {
       const html = listOf(
         [
@@ -3534,9 +3641,14 @@ describe('numbers on the screens', () => {
       assert.ok(htmlText(section).includes(LIST.repairRun(2)))
     })
 
-  it('keeps a stopped row closed when nothing else of its task is open', () => {
+  it('keeps a stopped row closed when nothing else of its task moves or waits', () => {
+    // An older stop of the same task does not open it: it is the row's state.
     const html = listOf(
-      [asked, as(older, 'stopped', '2026-09-30T11:10:00.000Z')],
+      [
+        asked,
+        as(older, 'stopped', '2026-09-30T11:10:00.000Z'),
+        as(newer, 'stopped', '2026-09-30T11:20:00.000Z'),
+      ],
       repairs,
     )
     const rows = [...stopSection(html).matchAll(/aria-expanded="(\w+)"/g)]
@@ -3622,6 +3734,46 @@ describe('numbers on the screens', () => {
     assert.ok(!list.includes('$0.25'))
   })
 
+  it('sends only the fields of a run the list reads', () => {
+    const full = (id: string, archived = false) =>
+      row({
+        id,
+        archived,
+        diagnosis: {
+          kind: 'finished',
+          reason: 'why',
+          next: ['next'],
+          cleanup: null,
+          worktree: null,
+        },
+        pipeline: {
+          stages: [{ stage: 'code', state: 'done', count: 1 }],
+          label: 'x',
+        },
+      } as unknown as Partial<RunRow>)
+    const rows = [
+      full('01K6D2Q7XB3M9RKT4WSHOWN0'),
+      full('01K6D2Q7XB3M9RKT4WOTHER0'),
+      full('01K6D2Q7XB3M9RKT4WARCHV0', true),
+    ]
+    const tasks = [
+      { representative: '01K6D2Q7XB3M9RKT4WSHOWN0' },
+    ] as unknown as Task[]
+    const [shown, other, archived] = listRows(rows, tasks)
+    // The run that shows its task keeps what its row and actions read.
+    assert.deepEqual(shown?.diagnosis.next, ['next'])
+    assert.deepEqual(shown?.pipeline, rows[0]?.pipeline)
+    assert.equal(shown?.diagnosis.worktree, null)
+    // Any other run, archived or not, is a line: its kind and its row.
+    for (const line of [other, archived]) {
+      assert.equal(line?.diagnosis.kind, 'finished')
+      assert.deepEqual(line?.diagnosis.next, [])
+      assert.deepEqual(line?.pipeline.stages, [])
+    }
+    assert.equal(archived?.archived, true)
+    assert.equal(other?.leadTimeMs, rows[1]?.leadTimeMs)
+  })
+
   it('offers the way back beside an archived run that does not show its task', () => {
     const first = '01K6D2Q7XB3M9RKT4WFIRST0'
     const repair = '01K6D2Q7XB3M9RKT4WREPAIR'
@@ -3660,10 +3812,23 @@ describe('numbers on the screens', () => {
       [tasks.length, task?.attention, task?.representative],
       [1, 'done', repair],
     )
+    // A finished row is closed, and draws its runs only when opened: the
+    // way back shows among them.
     const data = { exists: true, db: '/tmp/x.db', now, runs, tasks }
-    const html = renderToStaticMarkup(
+    const closed = renderToStaticMarkup(
       createElement(RunsScreen, {
         data: data as unknown as RunsResponse,
+        act: noAct,
+      }),
+    )
+    assert.match(closed, /aria-expanded="false"/)
+    assert.ok(!htmlText(closed).includes(ACTION.unarchive))
+    const html = renderToStaticMarkup(
+      createElement(TaskRuns, {
+        task: task as Task,
+        rows: new Map(runs.map((r) => [r.id, r])),
+        now,
+        name: 'task',
         act: noAct,
       }),
     )
@@ -4071,7 +4236,7 @@ describe('reviews beside verification on the page', () => {
     // why it is set aside, and that only newer runs hand it on.
     const discarded = REVIEW_STATUS['discarded']?.reason ?? ''
     assert.match(discarded, /^検証に落ちた候補へのレビューなので/)
-    assert.match(discarded, /新しいrunでは/)
+    assert.match(discarded, /新しい実行では/)
     assert.doesNotMatch(discarded, /[()（）]/)
     assert.ok(text.includes(REVIEW.noVerdict))
     assert.ok(text.includes(REVIEW.discardedCost))
@@ -4345,6 +4510,17 @@ describe('web UI actions', { timeout: 300000 }, () => {
         list.runs.find((r) => r.id === cancelled)?.diagnosis,
         row?.diagnosis,
       )
+      // A task's stops, by archive-series, as `archive --series` does it.
+      const series = await post(`/api/runs/${cancelled}/archive-series`)
+      assert.equal(series.status, 200, series.body)
+      const answer = JSON.parse(series.body) as SeriesResult
+      assert.deepEqual(
+        answer.archived?.map((r) => [r.runId, r.changed]),
+        [[cancelled, true]],
+      )
+      assert.deepEqual(answer.errors, [])
+      assert.equal(archived(cancelled), true)
+      assert.equal((await post(`/api/runs/${cancelled}/unarchive`)).status, 200)
       // A run waiting on a decision is decided, not archived.
       const open = await post(`/api/runs/${toApprove}/archive`)
       assert.equal(open.status, 409)

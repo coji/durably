@@ -10,7 +10,6 @@ import type { DiagnosisKind, TaskRun } from '../../engine/status'
 import { TERMINAL_STATUSES } from '../../engine/terminal'
 import { COMMON, LIST } from '../glossary'
 import { Chevron } from './Layout'
-import { IdSuffix } from './RunLink'
 import { conclusionStatus, kindStatus, type Status } from './status'
 import { StatusBadge } from './StatusBadge'
 import { Ago } from './Time'
@@ -49,7 +48,7 @@ export function openNow(toggled: boolean | null, wanted: boolean): boolean {
 
 /**
  * One task in a list: its state, its name as a link to the run that shows
- * it, where it stands, and its facts in aligned columns. A summary line,
+ * it, and its facts in aligned columns. A summary line,
  * such as why it stopped, stays under the name while closed, cut to one
  * line, and shows whole when open. The chevron opens what is below: the
  * next step and every run the task took. The name leads; the ID is a quiet
@@ -59,24 +58,20 @@ export function TaskRow({
   status,
   name,
   href,
-  id,
   marks,
-  stage,
   meta,
   summary,
   toggleLabel,
   defaultOpen,
+  select,
   children,
 }: {
   status: Status
   name: string
   /** Where the name leads; the row is plain text without one. */
   href?: string
-  id: string
-  /** Quiet words beside the ID, such as アーカイブ済み. */
+  /** Quiet words beside the name, such as アーカイブ済み. */
   marks?: ReactNode
-  /** Where the run stands, from `StageNow`. */
-  stage?: ReactNode
   /** The facts at the end of the line, from `TaskMeta`. */
   meta?: ReactNode
   /** One line under the name: why it stopped, or where it is now. */
@@ -84,6 +79,8 @@ export function TaskRow({
   /** What the chevron button says to a screen reader. */
   toggleLabel: string
   defaultOpen?: boolean
+  /** A checkbox before the row, for choosing it among others. */
+  select?: { checked: boolean; label: string; onChange: (on: boolean) => void }
   children: ReactNode
 }) {
   // Only a person's own toggle is held; until then the row follows
@@ -93,6 +90,17 @@ export function TaskRow({
   const bodyId = useId()
   return (
     <li className="task-row py-2 pr-4 pl-2">
+      {select ? (
+        <label className="task-pick inline-flex size-8 cursor-pointer items-center justify-center">
+          <input
+            type="checkbox"
+            checked={select.checked}
+            onChange={(e) => select.onChange(e.target.checked)}
+            aria-label={select.label}
+            className="accent-fg size-4 cursor-pointer"
+          />
+        </label>
+      ) : null}
       <button
         type="button"
         aria-expanded={open}
@@ -103,7 +111,7 @@ export function TaskRow({
       >
         <Chevron open={open} />
       </button>
-      <div className="flex min-h-8 min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+      <div className="task-line flex min-h-8 min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
         <StatusBadge label={status.label} tone={status.tone} />
         <span className="flex min-w-0 flex-1 basis-48 items-baseline gap-2">
           {href ? (
@@ -118,27 +126,24 @@ export function TaskRow({
               {name}
             </span>
           )}
-          <span className="inline-flex shrink-0 items-baseline gap-2 whitespace-nowrap">
-            <IdSuffix id={id} />
-            {marks}
-          </span>
+          {marks ? (
+            <span className="inline-flex shrink-0 items-baseline gap-2 whitespace-nowrap">
+              {marks}
+            </span>
+          ) : null}
         </span>
-        {stage}
         {meta}
       </div>
-      {summary ? (
-        <div
-          className={`text-fg-2 col-start-2 min-w-0 text-sm ${open ? '' : 'truncate'}`}
-        >
-          {summary}
-        </div>
+      {summary && open ? (
+        <div className="task-tail text-fg-2 min-w-0 text-sm">{summary}</div>
       ) : null}
       <div
         id={bodyId}
         hidden={!open}
-        className="col-start-2 flex min-w-0 flex-col gap-3 pt-2 pb-2"
+        className="task-tail flex min-w-0 flex-col gap-3 pt-2 pb-2"
       >
-        {children}
+        {/* Drawn only when open: most rows of a long list stay closed. */}
+        {open ? children : null}
       </div>
     </li>
   )

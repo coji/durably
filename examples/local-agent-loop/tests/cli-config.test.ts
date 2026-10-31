@@ -855,6 +855,42 @@ describe('archive --series', { timeout: 300000 }, () => {
       )
     ).id
 
+  it('archives each task a repeated --series names, past one that fails, and unarchive takes a repeated --run', async () => {
+    const box = await sandbox()
+    const durably = createAgentDurably({ stateRoot: box.stateRoot })
+    let one = ''
+    let two = ''
+    try {
+      await durably.migrate()
+      one = await subjectRun(durably)
+      await durably.cancel(one)
+      two = await subjectRun(durably)
+      await durably.cancel(two)
+    } finally {
+      await durably.db.destroy()
+    }
+    const marked = () =>
+      [one, two].filter((id) => existsSync(archiveMarkerOf(box.stateRoot, id)))
+    const res = await demo(box, [
+      'archive',
+      '--series',
+      one,
+      '--series',
+      'nope',
+      '--series',
+      two,
+    ])
+    // The missing task fails the command, after the others are archived.
+    assert.notEqual(res.code, 0)
+    assert.match(res.stderr, /no run nope/)
+    assert.deepEqual(marked(), [one, two])
+    const back = await demo(box, ['unarchive', '--run', one, '--run', two])
+    assert.equal(back.code, 0, back.stderr)
+    assert.ok(back.stdout.includes(`unarchived ${one}`))
+    assert.ok(back.stdout.includes(`unarchived ${two}`))
+    assert.deepEqual(marked(), [])
+  })
+
   it('archives every stop of the task any of its runs names, leaves its other runs and other tasks, and status counts the stops left', async () => {
     const box = await sandbox()
     const durably = createAgentDurably({ stateRoot: box.stateRoot })

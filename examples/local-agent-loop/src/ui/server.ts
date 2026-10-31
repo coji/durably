@@ -38,6 +38,7 @@ import type { Run } from '@coji/durably'
 import {
   archivedRunIds,
   archiveRun,
+  archiveSeries,
   decideRun,
   retriggerRun,
   reviseSpec,
@@ -1503,6 +1504,7 @@ const ACTIONS = [
   'spec-revise',
   'retrigger',
   'archive',
+  'archive-series',
   'unarchive',
 ] as const
 type Action = (typeof ACTIONS)[number]
@@ -1567,7 +1569,7 @@ function createUiApi() {
         archived: archived.has(run.id),
       })),
     )
-    return { ...base, exists: true, runs: rows, tasks }
+    return { ...base, exists: true, runs: listRows(rows, tasks), tasks }
   }
 
   async function run(id: string): Promise<RunDetailResponse> {
@@ -1704,11 +1706,24 @@ function createUiApi() {
     )
   }
 
+  // Writes wait for the one before: several sent at once, such as a bulk
+  // archive, never ask git to change one repository twice at a time.
+  let writing: Promise<unknown> = Promise.resolve()
+  function act(
+    runId: string,
+    action: Action,
+    body: { waitId?: unknown; notes?: unknown },
+  ): Promise<unknown> {
+    const next = writing.then(() => write(runId, action, body))
+    writing = next.catch(() => undefined)
+    return next
+  }
+
   /**
    * One write, through the function its `demo` subcommand calls. The caller
    * has already checked the method, the Origin and the token.
    */
-  async function act(
+  async function write(
     runId: string,
     action: Action,
     body: { waitId?: unknown; notes?: unknown },
@@ -1737,6 +1752,8 @@ function createUiApi() {
           return await retriggerRun(db, runId)
         case 'archive':
           return await archiveRun(db, runId)
+        case 'archive-series':
+          return await archiveSeries(db, runId)
         case 'unarchive':
           return await unarchiveRun(db, runId)
       }
@@ -1855,6 +1872,46 @@ async function readJson(
     // Answered below.
   }
   throw new HttpError(400, 'the body must be a JSON object')
+}
+
+/**
+ * The rows the list draws, at the weight it draws them. Polled every few
+ * seconds over hundreds of runs, the full diagnoses and stages were most of
+ * the response, and the list reads few of their fields:
+ * - a run that shows its task keeps its next commands, its stages, and its
+ *   failure's kind and retry advice, not the failure's details, human check
+ *   and own commands, which only the run's page shows;
+ * - any other run, an archived one included, is a line in its task's runs:
+ *   its kind, and the archive command it already carries on the row.
+ * No row keeps its worktree state, which only the run's page reads.
+ */
+export function listRows(rows: RunRow[], tasks: Task[]): RunRow[] {
+  const shown = new Set(tasks.map((t) => t.representative))
+  return rows.map((row) => {
+    const d = row.diagnosis
+    if (shown.has(row.id))
+      return {
+        ...row,
+        diagnosis: {
+          ...d,
+          worktree: null,
+          failure: d.failure
+            ? { ...d.failure, details: [], humanCheck: '', next: [] }
+            : d.failure,
+        },
+      }
+    return {
+      ...row,
+      diagnosis: {
+        kind: d.kind,
+        reason: '',
+        next: [],
+        cleanup: null,
+        worktree: null,
+      },
+      pipeline: { stages: [], label: '' },
+    }
+  })
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

@@ -15,7 +15,7 @@ import { Collapsible } from '../../components/Layout'
 import { LiveProgress } from '../../components/LiveProgress'
 import { MetricCard, MetricGrid } from '../../components/MetricCard'
 import { RunLink } from '../../components/RunLink'
-import { StageNow, StageTrack } from '../../components/StageTrack'
+import { StageTrack } from '../../components/StageTrack'
 import { StatusBadge } from '../../components/StatusBadge'
 import { FakeMark } from '../../components/SupersededMark'
 import { TaskList, TaskMeta, TaskRow } from '../../components/TaskRow'
@@ -47,8 +47,6 @@ export function TaskRowStates() {
             status={first.status}
             name={first.task.name}
             href="#/design"
-            id={first.task.id}
-            stage={<StageNow pipeline={first.pipeline} />}
             meta={<TaskMeta runs={1} at={at(first.minutes)} now={NOW} />}
             summary={DIAGNOSIS_TEXT.approval}
             toggleLabel={first.task.name}
@@ -68,9 +66,7 @@ export function TaskRowStates() {
                 status={r.status}
                 name={r.task.name}
                 href="#/design"
-                id={r.task.id}
                 marks={r.fake ? <FakeMark /> : null}
-                stage={finished ? null : <StageNow pipeline={r.pipeline} />}
                 toggleLabel={r.task.name}
                 meta={
                   <TaskMeta
@@ -111,7 +107,6 @@ export function TaskRowStates() {
               status={r.status}
               name={r.task.name}
               href="#/design"
-              id={r.task.id}
               toggleLabel={r.task.name}
               meta={
                 <TaskMeta
