@@ -77,9 +77,9 @@ export function stageContextDirOf(runRoot: string): string {
 
 /**
  * The test probe's detached worktree at the base commit (ADR-0039), beside
- * the agent's and made only with `testProbe`. The run removes it when it
- * ends; an archive and `demo prune --apply` remove what is left of it with
- * the worktree.
+ * the agent's and made only with `testProbe`. The run keeps it across its
+ * waits and removes it when it ends; an archive and `demo prune --apply`
+ * remove what is left of it with the worktree.
  */
 export function baseWorkdirOf(runRoot: string): string {
   return join(runRoot, 'base-work')
@@ -99,18 +99,16 @@ export function testProbeResultOf(
 
 /**
  * The paths of a finished repository run that may be removed, and nothing
- * else of the run: its worktree, the test probe's base worktree and its
- * review snapshots.
+ * else of the run: its git worktrees (the agent's, then the test probe's
+ * base) and its other directories (the review snapshots).
  */
 export function removableRunPathsOf(runRoot: string): {
-  worktree: string
-  baseWorktree: string
-  reviewSnapshots: string
+  worktrees: string[]
+  dirs: string[]
 } {
   return {
-    worktree: repoWorkdirOf(runRoot),
-    baseWorktree: baseWorkdirOf(runRoot),
-    reviewSnapshots: reviewSnapshotsDirOf(runRoot),
+    worktrees: [repoWorkdirOf(runRoot), baseWorkdirOf(runRoot)],
+    dirs: [reviewSnapshotsDirOf(runRoot)],
   }
 }
 

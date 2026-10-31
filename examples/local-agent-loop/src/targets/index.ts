@@ -12,6 +12,7 @@ import { join } from 'node:path'
 import { runChild } from '../engine/child.js'
 import {
   addWorktree,
+  describeGitFailure,
   discardWorktree,
   repoRoot,
   resolveCommit,
@@ -99,8 +100,7 @@ export async function prepareRepoTarget(
   await runSetupCommand(args.setupCommand, workdir, args.signal)
   // The probe's base worktree, only with `testProbe`. Its failure never
   // stops setup: the probe records it and the run goes on.
-  const testProbe =
-    args.testProbe && args.testProbe.length > 0 ? args.testProbe : null
+  const testProbe = args.testProbe ?? null
   const testProbeBase = testProbe
     ? await prepareTestProbeBase({
         repo,
@@ -193,12 +193,6 @@ export async function prepareTestProbeBase(args: {
     if (args.signal?.aborted || (error as Error).name === 'SpawnCancelledError')
       throw error
     await removeTestProbeBase(args.repo, workdir)
-    const stderr = (error as { stderr?: string }).stderr?.trim()
-    return {
-      workdir,
-      setupFailure: [(error as Error).message, stderr]
-        .filter(Boolean)
-        .join(': '),
-    }
+    return { workdir, setupFailure: describeGitFailure(error) }
   }
 }

@@ -39,7 +39,6 @@ import {
   runVerificationStep,
   type VerificationOutcome,
 } from '../engine/verification.js'
-import { createTarget } from '../targets/index.js'
 import { SpecEventSchema, type SpecEvent } from './events.js'
 import { readInputFile } from './input-file.js'
 import { agentLogsDirBeside } from './layout.js'
@@ -67,12 +66,14 @@ import {
 } from './reducer.js'
 import {
   checkContextText,
+  checkStageContextName,
   MAX_CONTEXT_BYTES,
   type Delivery,
   type RepairParentConclusion,
   type StageContext,
   type Target,
   type UntrustedInput,
+  withStageContext,
 } from './target.js'
 import { runTestProbe } from './test-probe.js'
 import {
@@ -318,9 +319,9 @@ export const verifyStage: StageHandler = async (args) => {
   const target = services.target
   const candidate = requireCandidate(state)
   await target.assertIntact(candidate)
-  // The review that follows reads this probe's stored result back.
-  if (await testProbeOf(args, candidate, key))
-    await target.assertIntact(candidate)
+  // The review that follows gets its result through the event: the
+  // reducer registers it, and the job rebuilds the target with it.
+  const probe = await testProbeOf(args, candidate, key)
   const result = await step.run(`${key}:acceptance`, (signal, attempt) =>
     verifyCandidate(
       state,
@@ -339,24 +340,24 @@ export const verifyStage: StageHandler = async (args) => {
     stdout: result.stdout,
     exitCode: result.exitCode,
     log: result.log ?? null,
+    ...(probe ? { stageContext: probe } : {}),
   }
 }
 
-export const reviewStage: StageHandler = async (args) => {
-  const { step, key, services } = args
-  const candidate = requireCandidate(args.state)
+export const reviewStage: StageHandler = async ({
+  step,
+  state,
+  key,
+  services,
+}) => {
+  const target = services.target
+  const candidate = requireCandidate(state)
   if (
-    !args.state.verification?.passed ||
-    args.state.verification.targetId !== candidate.id
+    !state.verification?.passed ||
+    state.verification.targetId !== candidate.id
   )
     throw new Error('review requires the same verified candidate')
-  await services.target.assertIntact(candidate)
-  // The verify stage right before this one probed the candidate: its stored
-  // result is read back, never run again, and the target the reviewers are
-  // given is rebuilt with it.
-  const probed = await testProbeOf(args, candidate, verifyKeyBefore(key))
-  const state = probed?.state ?? args.state
-  const target = probed?.target ?? services.target
+  await target.assertIntact(candidate)
   const round = await reviewRoundOf({
     step,
     state,
@@ -411,12 +412,16 @@ const verifyReviewStage: StageHandler = async (args) => {
   const { step, key, services } = args
   const candidate = requireCandidate(args.state)
   await services.target.assertIntact(candidate)
-  // The probe completes before the check and the reviews start, and the
-  // reviewers are given a target rebuilt with its result.
-  const probed = await testProbeOf(args, candidate, key)
-  const state = probed?.state ?? args.state
-  const target = probed?.target ?? services.target
-  if (probed) await target.assertIntact(candidate)
+  // The probe completes before the check and the reviews start. Its result
+  // is registered here too, as the reducer does with the event, so the
+  // reviewers of this round are given a target built with it.
+  const probe = await testProbeOf(args, candidate, key)
+  const state = probe
+    ? { ...args.state, setup: withStageContext(args.state.setup, probe) }
+    : args.state
+  const target = probe
+    ? services.createTarget(state.setup.target)
+    : services.target
   const reviewKey = key.replace(/:verify$/, ':review')
   const round = await reviewRoundOf({
     step,
@@ -489,38 +494,25 @@ const verifyReviewStage: StageHandler = async (args) => {
     ...(verification.passed
       ? { reviews: completed }
       : { reviews: null, failedCheckReviews: completed }),
+    ...(probe ? { stageContext: probe } : {}),
   }
-}
-
-/**
- * The key of the verify stage a sequential review stage follows: policy
- * offers a review only right after a passing verification of the same
- * candidate, so it is the stage one before.
- */
-function verifyKeyBefore(reviewKey: string): string {
-  const found = /^stage:(\d+):review$/.exec(reviewKey)
-  return found
-    ? `stage:${Number(found[1]) - 1}:verify`
-    : reviewKey.replace(/:review$/, ':verify')
 }
 
 /**
  * The candidate's test probe (ADR-0039), in the verify stage's step
  * `<verifyKey>:test-probe`: run once, before the candidate's check and
- * reviews, and read back from the step on every later call and replay. Its
- * stored result is registered as the `test-probe` stage context, replacing
- * an earlier candidate's, and the target is rebuilt from that setup: this
- * is where the reviewers' target gets it. Null, with no step, on a run
+ * reviews, and read back from the step on every replay. Returns its stored
+ * result, for the stage's event to register as the `test-probe` stage
+ * context, replacing an earlier candidate's. Null, with no step, on a run
  * without `testProbe`.
  */
 async function testProbeOf(
-  args: StageArgs,
+  { step, state, services }: StageArgs,
   candidate: CandidateRef,
   verifyKey: string,
-): Promise<{ state: StageArgs['state']; target: Target } | null> {
-  const { step, state, services } = args
+): Promise<StageContext | null> {
   const config = state.setup.target
-  if (config.kind !== 'repo' || !config.testProbe?.length) return null
+  if (config.kind !== 'repo' || !config.testProbe) return null
   const record: TestProbeRecord = await step.run(
     testProbeStepOf(verifyKey),
     async (signal) => {
@@ -542,12 +534,7 @@ async function testProbeOf(
       }
     },
   )
-  if (record.candidateId !== candidate.id)
-    throw new Error(
-      `test probe ${testProbeStepOf(verifyKey)} is of ${record.candidateId}, not ${candidate.id}`,
-    )
-  const setup = withStageContext(state.setup, record.context)
-  return { state: { ...state, setup }, target: createTarget(setup.target) }
+  return record.context
 }
 
 /** Grade one sealed candidate through the verification checkpoint pair. */
@@ -1496,16 +1483,6 @@ export async function runCheckFromSpec(
   )
 }
 
-/** A stage context's name: it names the block and the factory's copy. */
-const STAGE_CONTEXT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
-
-function checkStageContextName(name: string): void {
-  if (!STAGE_CONTEXT_NAME.test(name))
-    throw new Error(
-      `stage context ${name}: a name is lower-case letters, digits and dashes`,
-    )
-}
-
 /**
  * Read a file a stage produced, such as the result of a test it ran on the
  * base and the candidate, for the reviewers' trusted context. Call it inside
@@ -1542,35 +1519,4 @@ export async function readStageContextFile(args: {
   })
   checkContextText(`stage context ${name}`, content)
   return { name, content }
-}
-
-/**
- * The internal hook through which a stage hands the reviewers a result of
- * its own as trusted context: `settled` is that stage's completed step
- * output, from `readStageContextFile`. Only the content is registered,
- * never the file the stage read, and the reviewers read the factory's own
- * copy under the run directory, outside the candidate worktree. A result of
- * the same name replaces the earlier one. Returns the setup to rebuild the
- * target from, as the spec stages' advice and the check's notes are.
- */
-export function withStageContext(
-  setup: FactorySetup,
-  settled: StageContext,
-): FactorySetup {
-  const target = setup.target
-  if (target.kind !== 'repo')
-    throw new Error('stage context needs a repository target')
-  checkStageContextName(settled.name)
-  checkContextText(`stage context ${settled.name}`, settled.content)
-  const entry: StageContext = { name: settled.name, content: settled.content }
-  return {
-    ...setup,
-    target: {
-      ...target,
-      stageContext: [
-        ...(target.stageContext ?? []).filter((e) => e.name !== entry.name),
-        entry,
-      ],
-    },
-  }
 }

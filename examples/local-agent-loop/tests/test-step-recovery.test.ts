@@ -28,6 +28,7 @@ import { checkpointPaths } from '../src/engine/runner.js'
 import { runVerificationStep } from '../src/engine/verification.js'
 import { verifyStage } from '../src/factory/stages.js'
 import { initialState, type FactorySetup } from '../src/factory/types.js'
+import { createTarget } from '../src/targets/index.js'
 import { assertSetupLeftNoUntracked, RepoTarget } from '../src/targets/repo.js'
 import {
   runAcceptanceSuite,
@@ -796,6 +797,7 @@ describe('a review beside verification', () => {
             'edge-cases': spy('claude'),
           },
           target: target as never,
+          createTarget,
         },
       })
     return {

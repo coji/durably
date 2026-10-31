@@ -15,7 +15,7 @@ import type { CandidateRef, ReviewSnapshots } from '../engine/types.js'
  * database to work from.
  */
 import type { GradeResult } from '../engine/verification.js'
-import type { ProfileRole, TestProbeRule } from './types.js'
+import type { FactorySetup, ProfileRole, TestProbeRule } from './types.js'
 
 export type TargetKind = 'subject' | 'repo'
 
@@ -222,6 +222,49 @@ export interface StageContext {
   content: string
 }
 
+/** A stage context's name: it names the block and the factory's copy. */
+const STAGE_CONTEXT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+export function checkStageContextName(name: string): void {
+  if (!STAGE_CONTEXT_NAME.test(name))
+    throw new Error(
+      `stage context ${name}: a name is lower-case letters, digits and dashes`,
+    )
+}
+
+/**
+ * The internal hook through which a stage hands the reviewers a result of
+ * its own as trusted context: `settled` is that stage's completed step
+ * output, from `readStageContextFile`. Only the content is registered,
+ * never the file the stage read, and the reviewers read the factory's own
+ * copy under the run directory, outside the candidate worktree. A result of
+ * the same name replaces the earlier one. Returns the setup to rebuild the
+ * target from, as the spec stages' advice and the check's notes are; the
+ * reducer applies it to a stage event that carries one, and the job then
+ * rebuilds the target.
+ */
+export function withStageContext(
+  setup: FactorySetup,
+  settled: StageContext,
+): FactorySetup {
+  const target = setup.target
+  if (target.kind !== 'repo')
+    throw new Error('stage context needs a repository target')
+  checkStageContextName(settled.name)
+  checkContextText(`stage context ${settled.name}`, settled.content)
+  const entry: StageContext = { name: settled.name, content: settled.content }
+  return {
+    ...setup,
+    target: {
+      ...target,
+      stageContext: [
+        ...(target.stageContext ?? []).filter((e) => e.name !== entry.name),
+        entry,
+      ],
+    },
+  }
+}
+
 /** Where an input file was read from at trigger time. */
 export interface InputFileRef {
   path: string
@@ -391,10 +434,12 @@ export interface Target {
    */
   releaseReviewSnapshots?(options: { base: boolean }): Promise<void>
   /**
-   * Remove the test probe's base worktree and git's registration of it, if
-   * there is one. Never throws; a probe that finds it gone makes it again.
+   * Remove what a run that stopped running leaves behind it: every review
+   * snapshot, base tree included, and, when the run `ended` (a failure or a
+   * cancel, not a wait), the test probe's base worktree with git's
+   * registration of it. Never throws.
    */
-  releaseTestProbeBase?(): Promise<void>
+  releaseRunScratch?(options: { ended: boolean }): Promise<void>
   /** Turn an approved candidate into something the human can act on. */
   deliver(args: DeliverArgs): Promise<Delivery>
   /**

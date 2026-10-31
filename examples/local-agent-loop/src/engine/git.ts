@@ -126,7 +126,7 @@ export async function removeWorktree(
 }
 
 /** A failed git call as one line: the command and what git printed. */
-function describeGitFailure(error: unknown): string {
+export function describeGitFailure(error: unknown): string {
   if (error instanceof GitError) {
     const stderr = error.stderr.trim()
     return stderr ? `${error.message}: ${stderr}` : error.message

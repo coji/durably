@@ -561,6 +561,17 @@ export function fixReviewInvocation(
 }
 
 /**
+ * Whether `error` is Durably parking the run on a wait: `step.waitFor`
+ * suspends by throwing this error, and the run goes on once the wait
+ * resolves, so it has not ended.
+ */
+function isSuspension(error: unknown): boolean {
+  return (
+    error instanceof Error && error.message === 'Durably execution suspended'
+  )
+}
+
+/**
  * Whether a run checks its base commit before any agent call. A repair of a
  * verification-failed parent keeps the setting for its own children but
  * never runs the baseline: its base is the candidate the check failed on,
@@ -1731,6 +1742,15 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       )
 
       let target = createTarget(setup.target)
+      let targetConfig = setup.target
+      // The target is only its config: one built again from a config that
+      // changed, at setup or by a stage's event, is the same target with
+      // what changed.
+      const syncTarget = (config: TargetConfig) => {
+        if (config === targetConfig) return
+        targetConfig = config
+        target = createTarget(config)
+      }
       // One per run, shared by every role. Review verdicts are read by round
       // and lens, so replaying completed rounds shifts nothing.
       const fakeRun = input.fakeScenario
@@ -1794,7 +1814,9 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       // review snapshots behind: whichever of these steps throws, the base
       // tree extracted for spec review must not wait for the worker's
       // startup sweep. A suspension on the spec wait is not a failure and
-      // is left alone by the `LeaseLostError` exemption below.
+      // is left alone by the `LeaseLostError` exemption below. The test
+      // probe's base worktree is kept across that wait, for the probes
+      // after it.
       let roleProviders!: Record<ProfileRole, AgentProvider>
       let providers!: Record<ProfileRole, AgentProvider> & {
         repair: AgentProvider
@@ -1874,7 +1896,7 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
               : {}),
           }
         }
-        if (runSetup !== setup) target = createTarget(runSetup.target)
+        syncTarget(runSetup.target)
         // The pinned check must pass on the base commit, or no candidate could
         // be graded: stop before paying for any agent call. The same checkpoint
         // pair as verification, so a completed result is read back on resume
@@ -1994,10 +2016,8 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
       } catch (error) {
         // As the stage loop below does: a suspension on the spec wait, a
         // failure or a cancel leaves no review snapshots behind.
-        if (!(error instanceof Error && error.name === 'LeaseLostError')) {
-          await target.releaseReviewSnapshots?.({ base: true })
-          await target.releaseTestProbeBase?.()
-        }
+        if (!(error instanceof Error && error.name === 'LeaseLostError'))
+          await target.releaseRunScratch?.({ ended: !isSuspension(error) })
         throw error
       }
       let state = initialState(runSetup, repairSession?.confirmed ?? null)
@@ -2032,21 +2052,22 @@ export function createAgentLoopJob(options: AgentLoopJobOptions) {
             state,
             decision: selected,
             key: `stage:${sequence}:${selected.stage}`,
-            services: { providers, target },
+            services: { providers, target, createTarget },
           })
           state = reduce(state, FactoryEventSchema.parse(rawEvent))
+          // A stage result registered for the reviewers, such as the test
+          // probe's, changes the setup: the next stage gets a target with it.
+          syncTarget(state.setup.target)
         }
       } catch (error) {
         // A failed or cancelled run never runs again, so its review
         // snapshots go now, before the failure is recorded. A lost lease is
         // left alone: the run may be picked up again and read them. A
         // suspension for approval finds none left. The probe's base
-        // worktree goes with them; a probe that finds it gone makes it
-        // again.
-        if (!(error instanceof Error && error.name === 'LeaseLostError')) {
-          await target.releaseReviewSnapshots?.({ base: true })
-          await target.releaseTestProbeBase?.()
-        }
+        // worktree goes with them when the run ended, and is kept across
+        // a wait; a probe that finds it gone makes it again.
+        if (!(error instanceof Error && error.name === 'LeaseLostError'))
+          await target.releaseRunScratch?.({ ended: !isSuspension(error) })
         throw error
       }
       await target.cleanup()

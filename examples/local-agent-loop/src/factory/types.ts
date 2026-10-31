@@ -824,8 +824,16 @@ export interface FactoryServices {
    * `repair` is `code`'s unless `separateRepairProfile(setup)` names one.
    */
   providers: Record<ProfileRole | 'repair', AgentProvider>
-  /** Rebuilt from `setup.target` on every replay. */
+  /**
+   * Rebuilt from `setup.target` on every replay, and whenever a stage's
+   * event changes it.
+   */
   target: Target
+  /**
+   * Build a target from a config, as the job does: for a stage that
+   * registers a result of its own and reviews within the same stage.
+   */
+  createTarget: (config: TargetConfig) => Target
 }
 
 export interface StageArgs {

@@ -73,13 +73,14 @@ import {
   readStageContextFile,
   reviewStage,
   specAdviceText,
-  withStageContext,
 } from '../src/factory/stages.js'
-import { DEFAULT_COMMIT_SETTINGS } from '../src/factory/target.js'
+import {
+  DEFAULT_COMMIT_SETTINGS,
+  withStageContext,
+} from '../src/factory/target.js'
 import {
   probeTargets,
   runTestProbe,
-  testProbeRecordFile,
   testProbeText,
 } from '../src/factory/test-probe.js'
 import {
@@ -5288,6 +5289,7 @@ describe('owner context and stage context', { timeout: 240000 }, () => {
             'edge-cases': spy('claude'),
           },
           target,
+          createTarget,
         },
       })
     }
@@ -5599,6 +5601,50 @@ describe('the test probe', { timeout: 300000 }, () => {
     }
   })
 
+  it('keeps the base worktree across a wait and removes it when the run ends', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-test-probe-wait-'))
+    const repo = await probeRepo(root)
+    const stateRoot = join(root, 'state')
+    process.env.PROBE_LOG = join(root, 'probe.log')
+    process.env.FAKE_FAIL_FIRST = '0'
+    delete process.env.FAKE_REVIEW_SEQUENCE
+    const durably = createAgentDurably({ stateRoot })
+    await durably.init()
+    try {
+      const run = await durably.jobs.agentLoop.trigger({
+        ...probeRun(repo, false),
+        autoApprove: false,
+      })
+      const base = join(stateRoot, 'runs', run.id, 'base-work')
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'waiting',
+        150000,
+        'the run waits for the candidate approval',
+      )
+      // A suspension is not the end of the run.
+      assert.equal(existsSync(base), true)
+      assert.equal(await baseRegistered(repo), true)
+      const approval = (await durably.getWaits(run.id)).find(
+        (w) =>
+          typeof (w.metadata as { candidateId?: unknown } | null)
+            ?.candidateId === 'string',
+      )
+      assert.ok(approval, 'a candidate approval wait')
+      await signalApproval(durably, run.id, approval.id, 'approved')
+      await waitFor(
+        async () => (await durably.getRun(run.id))?.status === 'completed',
+        60000,
+        'the approved run completes',
+      )
+      assert.equal(existsSync(base), false)
+      assert.equal(await baseRegistered(repo), false)
+    } finally {
+      delete process.env.PROBE_LOG
+      await durably.stop()
+      await durably.db.destroy()
+    }
+  })
+
   it('runs only added or modified files that match, once each, and records a timeout and a broken base as not run', async () => {
     assert.deepEqual(
       probeTargets(
@@ -5617,11 +5663,11 @@ describe('the test probe', { timeout: 300000 }, () => {
           'added: docs/readme.md',
           '',
         ],
-      ).map((t) => [t.path, t.rule.command[0]]),
+      ).map((t) => [t.path, t.argv]),
       [
-        ['test/new.test.js', 'a'],
-        ['test/old.test.js', 'a'],
-        ['src/calc.js', 'b'],
+        ['test/new.test.js', ['a', 'test/new.test.js']],
+        ['test/old.test.js', ['a', 'test/old.test.js']],
+        ['src/calc.js', ['b', 'src/calc.js']],
       ],
     )
 
@@ -5685,7 +5731,7 @@ describe('the test probe', { timeout: 300000 }, () => {
         assertIntact: () => target.assertIntact(candidate),
         signal: new AbortController().signal,
       })
-    // A base the run removed since, as on a wait for a person, is made again.
+    // A base removed since, by hand or by a failed attempt, is made again.
     await rm(join(runRoot, 'base-work'), { recursive: true, force: true })
     const timedOut = await probe(config)
     assert.deepEqual(
@@ -5728,8 +5774,8 @@ describe('the test probe', { timeout: 300000 }, () => {
       command: ['node', '--test', `test/t${i}.test.js`],
       base: { ran: true as const, exitCode: 1, elapsedMs: 5 },
       candidate: { ran: true as const, exitCode: 0, elapsedMs: 5 },
-      baseOutput: 'é'.repeat(9000),
-      candidateOutput: 'x'.repeat(9000),
+      baseOutputTail: 'é'.repeat(2000),
+      candidateOutputTail: 'x'.repeat(2000),
     }))
     const args = {
       candidateId: 'candidate-1-abc',
@@ -5748,18 +5794,72 @@ describe('the test probe', { timeout: 300000 }, () => {
     const all = testProbeText({ ...args, files: files.slice(0, 400) })
     assert.match(all, /more file\(s\) ran but are not listed/)
     assert.ok(!all.includes('## test/t399.test.js'))
-    // The stored record keeps every file's tails, the unlisted ones too.
-    const stored = files.map(testProbeRecordFile)
-    assert.equal(stored.length, 400)
-    for (const file of stored) {
-      assert.equal(file.baseOutputTail, 'é'.repeat(2000), file.path)
-      assert.equal(file.candidateOutputTail, 'x'.repeat(2000), file.path)
-      assert.ok(!('baseOutput' in file) && !('candidateOutput' in file))
-    }
     assert.match(
       testProbeText({ ...args, files: [] }),
       /No added or modified file of this candidate matches a testProbe glob, so no test ran\./,
     )
+  })
+
+  it("stores every file's output tails, also those the result text leaves out", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'repo-test-probe-tails-'))
+    const repo = await seedRepo(root)
+    const runRoot = join(root, 'state', 'runs', 'run-1')
+    const config = await prepareRepoTarget({
+      repoPath: repo,
+      baseRef: 'HEAD',
+      branch: `factory/probe-${randomUUID()}`,
+      root: runRoot,
+      task: 'x',
+      spec: null,
+      dispositions: null,
+      issue: null,
+      checkCommand: ['node', '--test'],
+      setupCommand: null,
+      // Prints the file itself: a quick command with a long output.
+      testProbe: [
+        { glob: 'probe/**', command: ['head', '-c', '5000', '{files}'] },
+      ],
+      checkTimeoutMs: 10000,
+      publish: false,
+      commit: DEFAULT_COMMIT_SETTINGS,
+    })
+    // Long paths, so the result text has room for only some of the files;
+    // each output ends with its file's number.
+    const tailOf = (i: number) =>
+      `${'o'.repeat(1990)}${String(i).padStart(10, '-')}`
+    const paths = Array.from(
+      { length: 80 },
+      (_, i) => `probe/${String(i).padStart(3, '0')}-${'p'.repeat(180)}.txt`,
+    )
+    await mkdir(join(config.workdir, 'probe'))
+    for (const [i, path] of paths.entries())
+      await writeFile(
+        join(config.workdir, path),
+        `${'o'.repeat(3000)}${tailOf(i)}`,
+      )
+    const target = createTarget(config)
+    const candidate = await target.seal({
+      iteration: 1,
+      runId: 'run-1',
+      attemptId: 'a',
+      signal: new AbortController().signal,
+    })
+    const probed = await runTestProbe({
+      config,
+      candidate,
+      runRoot,
+      assertIntact: () => target.assertIntact(candidate),
+      signal: new AbortController().signal,
+    })
+    const text = await readFile(probed.resultFile, 'utf8')
+    assert.match(text, /more file\(s\) ran but are not listed/)
+    assert.ok(!text.includes(`## ${paths.at(-1)}`))
+    assert.deepEqual(probed.files.map((f) => f.path).sort(), [...paths].sort())
+    for (const file of probed.files) {
+      const tail = tailOf(Number(file.path.slice('probe/'.length, 9)))
+      assert.equal(file.baseOutputTail, tail, file.path)
+      assert.equal(file.candidateOutputTail, tail, file.path)
+    }
   })
 
   it('removes a base worktree a stopped run left when it is archived, and when it is pruned', async () => {

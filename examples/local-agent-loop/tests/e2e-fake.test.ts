@@ -65,6 +65,7 @@ import {
   type FactorySetup,
   type FactoryState,
 } from '../src/factory/types.js'
+import { createTarget } from '../src/targets/index.js'
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -2675,6 +2676,7 @@ describe('repair across an effort change', { timeout: 300000 }, () => {
             repair: provider,
           },
           target: target as never,
+          createTarget,
         },
       })
       return { sent: sent[0], measurement: measurements.at(-1), event }

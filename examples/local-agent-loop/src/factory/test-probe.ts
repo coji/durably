@@ -20,6 +20,7 @@ import { formatters } from '../engine/format.js'
 import {
   checkoutPathsFrom,
   describeCommitChanges,
+  describeGitFailure,
   resetHard,
 } from '../engine/git.js'
 import { fencedText } from '../engine/markdown.js'
@@ -49,16 +50,20 @@ const TAIL_CHARS = 2000
 /** The longest reason a side that could not run records. */
 const REASON_CHARS = 1000
 
-/** One test file to probe, with the entry whose glob it matched first. */
+/**
+ * One test file to probe, with the argv of the entry whose glob it matched
+ * first, its `{files}` elements already replaced by the path.
+ */
 interface ProbeTarget {
   path: string
-  rule: TestProbeRule
+  argv: [string, ...string[]]
 }
 
 /**
  * The files to probe: each `added:` or `modified:` line of the candidate's
  * changed-file list whose path matches an entry's glob, once, with the
- * first entry it matches. Deleted, renamed and copied files are never run.
+ * argv of the first entry it matches. Deleted, renamed and copied files
+ * are never run.
  */
 export function probeTargets(
   rules: TestProbeRule[],
@@ -73,7 +78,13 @@ export function probeTargets(
     const rule = rules.find((r) => posix.matchesGlob(path, r.glob))
     if (!rule) continue
     seen.add(path)
-    targets.push({ path, rule })
+    targets.push({
+      path,
+      // The schema gives every command at least one element.
+      argv: rule.command.map((arg) =>
+        arg === TEST_PROBE_FILES ? path : arg,
+      ) as [string, ...string[]],
+    })
   }
   return targets
 }
@@ -107,9 +118,9 @@ interface SideRun {
 }
 
 /**
- * Run one test file in `cwd`, as argv: the path replaces each `{files}`
- * element and is never seen by a shell. A command that cannot start or
- * times out is a side that could not run; a cancel or a lost lease throws.
+ * Run one test file in `cwd`, as its argv, which no shell ever sees. A
+ * command that cannot start or times out is a side that could not run; a
+ * cancel or a lost lease throws.
  */
 async function runSide(
   target: ProbeTarget,
@@ -119,10 +130,7 @@ async function runSide(
 ): Promise<SideRun> {
   const outside = await escapes(cwd, target.path)
   if (outside) return { side: notRun(outside), output: '' }
-  const [command, ...args] = target.rule.command.map((arg) =>
-    arg === TEST_PROBE_FILES ? target.path : arg,
-  )
-  if (!command) return { side: notRun('empty command'), output: '' }
+  const [command, ...args] = target.argv
   const started = Date.now()
   try {
     const res = await runChild(command, args, {
@@ -148,29 +156,26 @@ async function runSide(
   }
 }
 
-/** A git failure in one line, with what git printed. */
-function describeFailure(error: unknown): string {
-  const stderr = (error as { stderr?: string }).stderr?.trim()
-  return [(error as Error).message, stderr].filter(Boolean).join(': ')
-}
-
 /**
  * Make the base worktree ready for this candidate's files: made again when
  * it is gone, reset to the base commit, and given only those files from the
- * candidate. Returns why it could not be, or null.
+ * candidate. Returns its directory, or why it could not be made ready.
  */
 async function prepareBase(
   config: RepoTargetConfig,
   candidate: CandidateRef,
   paths: string[],
   signal: AbortSignal,
-): Promise<string | null> {
+): Promise<{ dir: string } | { failure: string }> {
   const base = config.testProbeBase
-  if (!base) return 'no base worktree was set up'
+  if (!base) return { failure: 'no base worktree was set up' }
   if (base.setupFailure)
-    return `the base worktree could not be set up: ${base.setupFailure}`
-  // The run removes it whenever it stops running, a wait for a person's
-  // decision on the spec included; the next probe makes it again.
+    return {
+      failure: `the base worktree could not be set up: ${base.setupFailure}`,
+    }
+  // The run keeps it across its waits and removes it when it ends; one
+  // removed since, by hand or by an earlier attempt's failure, is made
+  // again.
   if (!existsSync(base.workdir)) {
     const made = await prepareTestProbeBase({
       repo: config.repoPath,
@@ -180,16 +185,20 @@ async function prepareBase(
       signal,
     })
     if (made.setupFailure)
-      return `the base worktree could not be set up again: ${made.setupFailure}`
+      return {
+        failure: `the base worktree could not be set up again: ${made.setupFailure}`,
+      }
   }
-  if (!candidate.commit) return `${candidate.id} has no commit`
+  if (!candidate.commit) return { failure: `${candidate.id} has no commit` }
   try {
     await resetHard(base.workdir, config.baseCommit, signal)
     await checkoutPathsFrom(base.workdir, candidate.commit, paths, signal)
-    return null
+    return { dir: base.workdir }
   } catch (error) {
     if (signal.aborted) throw error
-    return `the candidate's test files could not be put on the base: ${describeFailure(error)}`
+    return {
+      failure: `the candidate's test files could not be put on the base: ${describeGitFailure(error)}`,
+    }
   }
 }
 
@@ -222,42 +231,24 @@ function sideLine(name: string, side: TestProbeSide): string {
     : `${name}: could not run: ${side.reason}`
 }
 
-/** The last `chars` characters of `output`, or nothing. */
-function tailLines(name: string, output: string, chars: number): string[] {
-  const text = output.trimEnd()
-  if (chars === 0 || text.length === 0) return []
-  const tail = text.slice(-chars)
-  return [
-    tail.length < text.length
-      ? `${name} output, last ${chars} characters:`
-      : `${name} output:`,
-    ...fencedText(tail),
-  ]
-}
-
-/** A probed file with everything each side printed, before it is stored. */
-interface ProbedFile extends Omit<
-  TestProbeFile,
-  'baseOutputTail' | 'candidateOutputTail'
-> {
-  baseOutput: string
-  candidateOutput: string
+/** What the probe stores of a side's output: its last characters. */
+function storedTail(output: string): string {
+  return output.trimEnd().slice(-TAIL_CHARS)
 }
 
 /**
- * What the probe step stores of a file: its results and each side's output
- * tail, every file's, however much of them the result text could show.
+ * The last `chars` characters of a stored tail, or nothing. A tail shorter
+ * than that is a whole output, since one is cut only at `TAIL_CHARS`.
  */
-export function testProbeRecordFile({
-  baseOutput,
-  candidateOutput,
-  ...file
-}: ProbedFile): TestProbeFile {
-  return {
-    ...file,
-    baseOutputTail: baseOutput.trimEnd().slice(-TAIL_CHARS),
-    candidateOutputTail: candidateOutput.trimEnd().slice(-TAIL_CHARS),
-  }
+function tailLines(name: string, tail: string, chars: number): string[] {
+  if (chars === 0 || tail.length === 0) return []
+  const shown = tail.slice(-chars)
+  return [
+    shown.length === chars
+      ? `${name} output, last ${chars} characters:`
+      : `${name} output:`,
+    ...fencedText(shown),
+  ]
 }
 
 /**
@@ -270,7 +261,7 @@ export function testProbeText(args: {
   candidateId: string
   baseCommit: string
   rules: TestProbeRule[]
-  files: ProbedFile[]
+  files: TestProbeFile[]
   elapsedMs: number
 }): string {
   const { files } = args
@@ -297,6 +288,9 @@ export function testProbeText(args: {
     )
       .map((outcome) => `${counts.get(outcome) ?? 0} ${OUTCOME_TEXT[outcome]}`)
       .join('; ')}.`,
+    // How to read it, here rather than in the review rules, which hold for
+    // any stage result.
+    'A test that failed on the base is not evidence by itself that it checks the changed behaviour: read its output tail. Failing only because a module, export or file it imports is missing on the base proves nothing about the behaviour; failing on an assertion about that behaviour does. A test that could not run is judged from the code.',
   ]
   const render = (chars: number, listed: number) =>
     [
@@ -310,8 +304,8 @@ export function testProbeText(args: {
           `command: ${file.command.join(' ')}`,
           sideLine('base', file.base),
           sideLine('candidate', file.candidate),
-          ...tailLines('base', file.baseOutput, chars),
-          ...tailLines('candidate', file.candidateOutput, chars),
+          ...tailLines('base', file.baseOutputTail, chars),
+          ...tailLines('candidate', file.candidateOutputTail, chars),
         ]),
       ...(listed < files.length
         ? [
@@ -321,19 +315,27 @@ export function testProbeText(args: {
         : []),
       '',
     ].join('\n')
-  const fits = (text: string) =>
-    Buffer.byteLength(text, 'utf8') <= MAX_CONTEXT_BYTES
-  for (const chars of [TAIL_CHARS, 1000, 400, 0]) {
-    const text = render(chars, files.length)
-    if (fits(text)) return text
-  }
-  let listed = files.length
-  while (listed > 0) {
+  // Shorter tails, then none, then half as many files listed each time; the
+  // last attempt lists none and is taken whatever its size.
+  const attempts: [chars: number, listed: number][] = [
+    TAIL_CHARS,
+    1000,
+    400,
+    0,
+  ].map((chars) => [chars, files.length])
+  for (
+    let listed = Math.floor(files.length / 2);
+    listed > 0;
     listed = Math.floor(listed / 2)
-    const text = render(0, listed)
-    if (fits(text)) return text
+  )
+    attempts.push([0, listed])
+  attempts.push([0, 0])
+  let text = ''
+  for (const [chars, listed] of attempts) {
+    text = render(chars, listed)
+    if (Buffer.byteLength(text, 'utf8') <= MAX_CONTEXT_BYTES) break
   }
-  return render(0, 0)
+  return text
 }
 
 /** The candidate's changed-file list, as its seal wrote it. */
@@ -355,9 +357,9 @@ async function changedFilesOf(
  * Probe one sealed candidate and write its result file, outside both
  * worktrees. Call it inside the candidate's probe step, which reads the
  * file back as the `test-probe` stage context: the step's output is the
- * record, so a replay reads it back and runs nothing. Every file runs on the base
- * first, then on the candidate in its own worktree, whose tracked files are
- * then put back as sealed and checked with `assertIntact`. A base that
+ * record, so a replay reads it back and runs nothing. Each file runs on the
+ * base, then on the candidate in its own worktree, whose tracked files are
+ * put back as sealed after the last one and checked with `assertIntact`. A base that
  * cannot be prepared, a command that cannot start and one that times out
  * are recorded as not run; only a cancel, a lost lease or a candidate that
  * no longer matches its seal throws.
@@ -376,43 +378,35 @@ export async function runTestProbe(args: {
     config.testProbe ?? [],
     await changedFilesOf(config, candidate),
   )
-  const files: ProbedFile[] = []
+  const files: TestProbeFile[] = []
   if (targets.length > 0) {
     // The candidate's other changes stay out of the base: each file runs
     // against the code it was written to test, as the base has it.
-    const baseFailure = await prepareBase(
+    const base = await prepareBase(
       config,
       candidate,
       targets.map((t) => t.path),
       signal,
     )
-    const baseDir =
-      baseFailure === null ? config.testProbeBase?.workdir : undefined
-    const baseRuns: SideRun[] = []
-    for (const target of targets)
-      baseRuns.push(
-        baseDir
-          ? await runSide(target, baseDir, config.checkTimeoutMs, signal)
-          : { side: notRun(baseFailure ?? 'no base worktree'), output: '' },
-      )
     try {
-      for (const [i, target] of targets.entries()) {
-        const run = await runSide(
+      for (const target of targets) {
+        const onBase =
+          'dir' in base
+            ? await runSide(target, base.dir, config.checkTimeoutMs, signal)
+            : { side: notRun(base.failure), output: '' }
+        const onCandidate = await runSide(
           target,
           config.workdir,
           config.checkTimeoutMs,
           signal,
         )
-        const base = baseRuns[i] as SideRun
         files.push({
           path: target.path,
-          command: target.rule.command.map((arg) =>
-            arg === TEST_PROBE_FILES ? target.path : arg,
-          ),
-          base: base.side,
-          candidate: run.side,
-          baseOutput: base.output,
-          candidateOutput: run.output,
+          command: target.argv,
+          base: onBase.side,
+          candidate: onCandidate.side,
+          baseOutputTail: storedTail(onBase.output),
+          candidateOutputTail: storedTail(onCandidate.output),
         })
       }
     } finally {
@@ -437,7 +431,7 @@ export async function runTestProbe(args: {
   )
   return {
     candidateId: candidate.id,
-    files: files.map(testProbeRecordFile),
+    files,
     elapsedMs,
     resultFile: file,
   }
