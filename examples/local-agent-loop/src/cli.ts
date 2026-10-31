@@ -28,7 +28,7 @@ import {
   LEASE_MS,
   legacyDbWarning,
   probeWorkerLock,
-  sweepReviewSnapshots,
+  sweepRunScratch,
   type AgentLoopDurably,
 } from './durably.js'
 import {
@@ -952,9 +952,11 @@ if (cmd === 'worker') {
   )
   await durably.migrate()
   // Runs that ended while no worker could clean up after them.
-  const swept = await sweepReviewSnapshots(durably)
+  const swept = await sweepRunScratch(durably)
   if (swept.length > 0)
-    console.log(`[sweep] removed review snapshots of ${swept.join(', ')}`)
+    console.log(
+      `[sweep] removed review snapshots and probe base worktrees of ${swept.join(', ')}`,
+    )
   // Polling starts only when no signal came during startup, so a run is
   // never claimed by a worker that is about to stop.
   if (!shuttingDown) {

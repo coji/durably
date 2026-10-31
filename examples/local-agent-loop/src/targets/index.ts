@@ -168,7 +168,8 @@ async function runSetupCommand(
  * setup that runs again, or a probe that finds the worktree gone, starts
  * clean. A worktree that cannot be made or set up is removed again and its
  * reason returned: the probe records it, and nothing stops the run. A cancel
- * or a lost lease still throws.
+ * or a lost lease still throws, after removing what was made of it, since
+ * no step will run again to remove it.
  */
 export async function prepareTestProbeBase(args: {
   repo: string
@@ -190,9 +191,9 @@ export async function prepareTestProbeBase(args: {
     await runSetupCommand(args.setupCommand, workdir, args.signal)
     return { workdir, setupFailure: null }
   } catch (error) {
+    await removeTestProbeBase(args.repo, workdir)
     if (args.signal?.aborted || (error as Error).name === 'SpawnCancelledError')
       throw error
-    await removeTestProbeBase(args.repo, workdir)
     return { workdir, setupFailure: describeGitFailure(error) }
   }
 }

@@ -426,16 +426,17 @@ export async function planPrune(
       archivable((await diagnose(durably, run, now)).kind)
     if (!files.delivered && !shelved) continue
     // Every worktree of the run counts as one entry, also when the agent's
-    // own is gone.
+    // own is gone; the entry names the first one still there.
     const left = files.worktrees.filter((dir) => existsSync(dir))
-    if (left.length > 0) {
+    const [first] = left
+    if (first) {
       const bytes = (await Promise.all(left.map(sizeOf))).reduce(
         (sum, size) => sum + size,
         0,
       )
       plan.worktrees.push({
         runId: run.id,
-        path: files.worktree,
+        path: first,
         bytes,
         reason: files.delivered ? 'delivered' : 'archived',
       })

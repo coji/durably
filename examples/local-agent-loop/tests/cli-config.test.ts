@@ -2206,9 +2206,14 @@ describe('testProbe', { timeout: 240000 }, () => {
     )
   })
 
-  it('refuses an empty list, a command without a whole {files} element, an empty glob or command, and unknown keys', async () => {
+  it('refuses an empty list, a command without a whole {files} element, an empty glob or command, unknown keys, more than 20 entries and a glob over 200 characters', async () => {
     for (const testProbe of [
       [],
+      Array.from({ length: 21 }, (_, i) => ({
+        glob: `test/${i}/**`,
+        command: ['node', '{files}'],
+      })),
+      [{ glob: `test/${'x'.repeat(196)}`, command: ['node', '{files}'] }],
       [{ glob: 'test/**', command: ['node', '--test'] }],
       [{ glob: 'test/**', command: ['node', '--test={files}'] }],
       [{ glob: 'test/**', command: [] }],

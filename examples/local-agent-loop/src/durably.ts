@@ -18,8 +18,12 @@ import { SqliteDialect } from 'kysely'
 
 import { TERMINAL_STATUSES } from './engine/terminal.js'
 import { createAgentLoopJob } from './factory/job.js'
-import { reviewSnapshotsDirOf, runRootOf } from './factory/layout.js'
-import { removeQuietly } from './targets/repo.js'
+import {
+  baseWorkdirOf,
+  reviewSnapshotsDirOf,
+  runRootOf,
+} from './factory/layout.js'
+import { removeQuietly, removeTestProbeBase } from './targets/repo.js'
 
 /**
  * Where the database and every run's data live: outside both the durably
@@ -254,19 +258,20 @@ function withDatabase(
       },
     }),
   })
-  // The worker removes a run's review snapshots itself: after each review
-  // round, before every other stage, when the run fails, is cancelled or
-  // finishes, and at startup for runs that have already ended
-  // (`sweepReviewSnapshots`). A cancel from another process is seen by the
-  // worker only as a lost lease, after which it leaves the trees alone, so
-  // the cancel also removes them here, best effort: an extraction the
-  // worker had under way at that moment can still leave a tree, which the
-  // next worker start removes. The cancel has happened, so a failure here is
-  // not reported as a failed cancel.
+  // The worker removes a run's review snapshots and the test probe's base
+  // worktree itself: the snapshots after each review round, before every
+  // other stage, and both when the run fails, is cancelled or finishes, and
+  // at startup for runs that have already ended (`sweepRunScratch`). A
+  // cancel from another process is seen by the worker only as a lost lease,
+  // after which it leaves them alone, so the cancel also removes them here,
+  // best effort: an extraction or a setup the worker had under way at that
+  // moment can still leave something, which the next worker start removes.
+  // The cancel has happened, so a failure here is not reported as a failed
+  // cancel.
   const cancel = durably.cancel.bind(durably)
   durably.cancel = async (runId: string) => {
     await cancel(runId)
-    await removeQuietly(reviewSnapshotsDirOf(runRootOf(stateRoot, runId)))
+    await removeRunScratch(durably, stateRoot, runId)
   }
   // The state root travels with the instance, so a sweep never reads one
   // database's runs against another root's files.
@@ -275,18 +280,70 @@ function withDatabase(
 
 export type AgentLoopDurably = ReturnType<typeof build>
 
+/** What `removeRunScratch` reads of a run's records. */
+interface RunRecords {
+  storage: {
+    getCompletedStep(
+      runId: string,
+      name: string,
+    ): Promise<{ output: unknown } | null>
+  }
+  getRun(runId: string): Promise<{ input: unknown } | null>
+}
+
 /**
- * Remove the review snapshots of every run that has ended, or no longer
- * exists. The worker calls it at startup: a worker that died, or a cancel
- * from another process that raced an extraction, can leave them behind, and
- * no step of an ended run will run again to remove them. A run that may
- * still run keeps its own. The runs are those under the instance's own
- * state root. Only a run directory that still has a `review-snapshots`
- * entry is looked up, so the cost is one existence check per retained run
- * and one lookup per run with snapshots. Returns the runs whose snapshots
- * were removed.
+ * The repository a run works in, as its setup recorded it, or as its input
+ * names it when setup never finished; null for any other run.
  */
-export async function sweepReviewSnapshots(
+async function repoPathOf(
+  durably: RunRecords,
+  runId: string,
+): Promise<string | null> {
+  const setup = (await durably.storage.getCompletedStep(runId, 'setup'))
+    ?.output as { target?: { repoPath?: unknown } } | null
+  const recorded = setup?.target?.repoPath
+  if (typeof recorded === 'string') return recorded
+  const input = (await durably.getRun(runId))?.input as {
+    target?: { repoPath?: unknown }
+  } | null
+  const named = input?.target?.repoPath
+  return typeof named === 'string' ? named : null
+}
+
+/**
+ * Remove what only a running run reads, for a run that has ended: its
+ * review snapshots, and the test probe's base worktree with git's
+ * registration of it. The base's path follows from the run's directory, and
+ * the repository it is registered in from the run's own record; without
+ * one, only the directory goes. Never throws.
+ */
+async function removeRunScratch(
+  durably: RunRecords,
+  stateRoot: string,
+  runId: string,
+): Promise<void> {
+  const runRoot = runRootOf(stateRoot, runId)
+  await removeQuietly(reviewSnapshotsDirOf(runRoot))
+  const base = baseWorkdirOf(runRoot)
+  if (!existsSync(base)) return
+  const repoPath = await repoPathOf(durably, runId).catch(() => null)
+  if (repoPath) await removeTestProbeBase(repoPath, base)
+  else await removeQuietly(base)
+}
+
+/**
+ * Remove the review snapshots and the test probe's base worktree of every
+ * run that has ended, or no longer exists (`removeRunScratch`). The worker
+ * calls it at startup: a worker that died, or a cancel from another process
+ * that raced an extraction or a setup, can leave them behind, and no step of
+ * an ended run will run again to remove them. A run that may still run
+ * keeps its own. The runs are those under the instance's own state root.
+ * Only a run directory that still has a `review-snapshots` or `base-work`
+ * entry is looked up, so the cost is two existence checks per retained run
+ * and one lookup per run with either. Returns the runs whose leftovers were
+ * removed.
+ */
+export async function sweepRunScratch(
   durably: AgentLoopDurably,
 ): Promise<string[]> {
   const { stateRoot } = durably
@@ -298,11 +355,15 @@ export async function sweepReviewSnapshots(
   }
   const swept: string[] = []
   for (const runId of runIds) {
-    const dir = reviewSnapshotsDirOf(runRootOf(stateRoot, runId))
-    if (!existsSync(dir)) continue
+    const runRoot = runRootOf(stateRoot, runId)
+    if (
+      !existsSync(reviewSnapshotsDirOf(runRoot)) &&
+      !existsSync(baseWorkdirOf(runRoot))
+    )
+      continue
     const run = await durably.getRun(runId)
     if (run && !TERMINAL_STATUSES.includes(run.status)) continue
-    await removeQuietly(dir)
+    await removeRunScratch(durably, stateRoot, runId)
     swept.push(runId)
   }
   return swept

@@ -75,7 +75,7 @@ import {
   type UntrustedInput,
   withStageContext,
 } from './target.js'
-import { runTestProbe } from './test-probe.js'
+import { recoverInterruptedProbe, runTestProbe } from './test-probe.js'
 import {
   idleLimitOf,
   REVIEW_CANCEL_REASON,
@@ -318,6 +318,7 @@ export const verifyStage: StageHandler = async (args) => {
   if (state.setup.parallelReview) return verifyReviewStage(args)
   const target = services.target
   const candidate = requireCandidate(state)
+  await recoverProbe(args, candidate)
   await target.assertIntact(candidate)
   // The review that follows gets its result through the event: the
   // reducer registers it, and the job rebuilds the target with it.
@@ -411,6 +412,7 @@ export const reviewStage: StageHandler = async ({
 const verifyReviewStage: StageHandler = async (args) => {
   const { step, key, services } = args
   const candidate = requireCandidate(args.state)
+  await recoverProbe(args, candidate)
   await services.target.assertIntact(candidate)
   // The probe completes before the check and the reviews start. Its result
   // is registered here too, as the reducer does with the event, so the
@@ -496,6 +498,24 @@ const verifyReviewStage: StageHandler = async (args) => {
       : { reviews: null, failedCheckReviews: completed }),
     ...(probe ? { stageContext: probe } : {}),
   }
+}
+
+/**
+ * Before a verify stage checks its candidate: a worker that died while the
+ * probe's tests ran in the candidate's worktree left it as the tests did,
+ * and the probe step that runs again needs it as sealed.
+ */
+async function recoverProbe(
+  { state }: StageArgs,
+  candidate: CandidateRef,
+): Promise<void> {
+  const config = state.setup.target
+  if (config.kind !== 'repo') return
+  await recoverInterruptedProbe({
+    config,
+    candidate,
+    runRoot: dirname(state.setup.checkpointsDir),
+  })
 }
 
 /**

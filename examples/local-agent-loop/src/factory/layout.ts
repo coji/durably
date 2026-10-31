@@ -98,6 +98,19 @@ export function testProbeResultOf(
 }
 
 /**
+ * Present while the probe runs one candidate's tests in its worktree, and
+ * removed once that worktree is back as sealed. A verify stage that finds
+ * it, after a worker died mid-probe, puts the worktree back before it
+ * checks the candidate (ADR-0039). Outside both worktrees, like the result.
+ */
+export function testProbeMarkerOf(
+  runRoot: string,
+  candidateId: string,
+): string {
+  return join(runRoot, 'test-probe', `${candidateId}.running`)
+}
+
+/**
  * The paths of a finished repository run that may be removed, and nothing
  * else of the run: its git worktrees (the agent's, then the test probe's
  * base) and its other directories (the review snapshots).
